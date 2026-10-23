@@ -246,7 +246,8 @@ func u11() spec {
 }
 
 // requireLiveAfter: every header client received a block minted after
-// from, and each such block within bound of its mint.
+// from, and each such block within bound of its first header on the pod
+// (waitFrom).
 func (s *scenario) requireLiveAfter(from time.Time, bound time.Duration) {
 	var cs []*clientBase
 	for _, c := range s.heads {
@@ -263,8 +264,8 @@ func (s *scenario) requireLiveAfter(from time.Time, bound time.Duration) {
 				continue
 			}
 			got++
-			if l := d.at.Sub(d.minted); l > bound {
-				s.violate(c.name, "pod-%d: block %d reached the client %s after it was minted, after the flow resumed (bound %s)", d.pod+1, d.number, l.Round(time.Millisecond), bound)
+			if l := d.at.Sub(s.waitFrom(d.pod, d.hash, d.minted)); l > bound {
+				s.violate(c.name, "pod-%d: block %d reached the client %s after its first header there, after the flow resumed (bound %s)", d.pod+1, d.number, l.Round(time.Millisecond), bound)
 			}
 		}
 		c.mu.Unlock()
@@ -288,9 +289,9 @@ func (s *scenario) firstRanked(pod int) string {
 
 // U18: the upstream pod-1's selection policy ranks first serves a
 // minority fork at the same heights for 20 blocks; the other vendors run
-// u18OthersLatency slower, so it stays first. No tap sends a fork block
-// and no HTTP read by number or tag serves one (§6.3 minority fork,
-// §6.5).
+// u18OthersLatency slower, so it stays first. No tap sends a fork block;
+// an HTTP read by number or tag may serve one only for W after the fork,
+// while the forked voter keeps its number vote (§6.3 minority fork, §6.5).
 func u18() spec {
 	return spec{name: "U18", bound: settleDelivery, body: func(s *scenario) {
 		s.blocks(25)
@@ -309,6 +310,9 @@ func u18() spec {
 		s.blocks(10)
 		f := s.chain.StartFork(1, 1, s.vendors[forked])
 		at := time.Now()
+		s.mu.Lock()
+		s.fork = s.vendors[forked].Head()
+		s.mu.Unlock()
 		s.logf("%s, ranked first on pod-1, on a minority fork", s.upstream(forked))
 		done := make(chan struct{})
 		var wg sync.WaitGroup
@@ -350,11 +354,13 @@ func u18() spec {
 }
 
 // requireNoMinority reads a block by tag or number on pod and fails on a
-// minority-fork answer.
+// minority-fork answer to a read that started more than W after the
+// fork's first header reached pod.
 func (s *scenario) requireNoMinority(pod int, forkAt time.Time, what, ref string) {
+	start := time.Now()
 	got := s.blockAnswer(pod, "", "eth_getBlockByNumber", ref, false)
-	if b := s.blockOf(got); b != nil && b.Minority() {
-		s.violate(s.name, "pod-%d: %s served minority-fork block %d %s, %s after the fork", pod+1, what, b.Number, short(b.Hash), time.Since(forkAt).Round(time.Millisecond))
+	if b := s.blockOf(got); b != nil && b.Minority() && !s.minorityGrace(pod, start, got) {
+		s.violate(s.name, "pod-%d: %s served minority-fork block %d %s, read %s after the fork (allowed for %s)", pod+1, what, b.Number, short(b.Hash), start.Sub(forkAt).Round(time.Millisecond), liveBound)
 	}
 }
 

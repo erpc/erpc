@@ -44,6 +44,34 @@ type harness struct {
 	mu      sync.Mutex
 	pids    map[int]*pod
 	proxies []*proxy
+
+	// headers is when each block header first reached each pod, by pod
+	// index (headerScan).
+	headersMu sync.Mutex
+	headers   map[int]map[hash]time.Time
+}
+
+// sawHeader notes that a header of block bh reached pod at at; the first
+// sighting stays.
+func (h *harness) sawHeader(pod int, bh hash, at time.Time) {
+	h.headersMu.Lock()
+	defer h.headersMu.Unlock()
+	m := h.headers[pod]
+	if m == nil {
+		m = make(map[hash]time.Time)
+		h.headers[pod] = m
+	}
+	if _, ok := m[bh]; !ok {
+		m[bh] = at
+	}
+}
+
+// headerAt is when a header of block bh first reached pod.
+func (h *harness) headerAt(pod int, bh hash) (time.Time, bool) {
+	h.headersMu.Lock()
+	defer h.headersMu.Unlock()
+	at, ok := h.headers[pod][bh]
+	return at, ok
 }
 
 func newHarness(t *testing.T, dir string, withRedis bool) *harness {
@@ -51,7 +79,7 @@ func newHarness(t *testing.T, dir string, withRedis bool) *harness {
 		t.Fatal(err)
 	}
 	h := &harness{t: t, dir: dir, pids: make(map[int]*pod), dumped: make(map[int]bool), start: time.Now(), cpu0: selfCPU(), lookups: &lookups{},
-		series: make(chan struct{})}
+		series: make(chan struct{}), headers: make(map[int]map[hash]time.Time)}
 	if withRedis {
 		h.redis = startRedis(t, dir)
 	}
@@ -216,9 +244,9 @@ func (h *harness) startPods(n int, nets []*netSpec) {
 }
 
 // seriesNames are the gauges and counters recordSeries keeps: who votes,
-// who is live, the selection policy's order, and the tracker's re-anchors,
+// how old each report is, the selection policy's order, and the tracker's re-anchors,
 // resets and out-of-range tap ends (triage, not a bound).
-var seriesNames = []string{"erpc_source_live{", "erpc_chain_tracker_source_heads_total{", "erpc_selection_position{",
+var seriesNames = []string{"erpc_upstream_report_age_seconds{", "erpc_chain_tracker_source_heads_total{", "erpc_selection_position{",
 	"erpc_chain_tracker_reanchor_total{", "erpc_chain_tracker_reset_total{", "erpc_tap_out_of_range_total{"}
 
 const seriesEvery = 2 * time.Second

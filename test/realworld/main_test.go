@@ -27,8 +27,8 @@ const (
 	// liveBound: max(3 × block time, 2s) (§1). A live source's head is
 	// pinned, and sent, within it.
 	liveBound = 2 * time.Second
-	// healthyDelivery bounds mint → client receipt, and any wait between
-	// two receipts, while a live source serves the chain (§1, §5).
+	// healthyDelivery bounds a block's first header on a pod → client
+	// receipt, and any wait between two receipts (spec §15.1, U3, X9).
 	healthyDelivery = liveBound
 	// settleDelivery adds one settle round, itself within a live bound, for
 	// sources that disagree (§6 rule 5, §13.1 "sources disagree: 1 settle").

@@ -105,6 +105,24 @@ type scenario struct {
 	reorgs     []reorg
 	memo       map[string]*memoEntry
 	allowSet   map[string]bool
+	// fork is the first block of a minority fork the scenario runs, nil
+	// none: for W after its first header reached a pod, an HTTP read there
+	// may answer a minority-fork block (spec §6.3: a voter off the pins
+	// keeps its number vote for W).
+	fork *chainsim.Block
+}
+
+// minorityGrace reports whether an HTTP read on pod that started at start
+// may answer the minority-fork block answer names.
+func (s *scenario) minorityGrace(pod int, start time.Time, answer string) bool {
+	s.mu.Lock()
+	fork := s.fork
+	s.mu.Unlock()
+	b := s.blockOf(answer)
+	if fork == nil || b == nil || !b.Minority() {
+		return false
+	}
+	return start.Before(s.waitFrom(pod, fork.Hash, fork.MintedAt).Add(liveBound))
 }
 
 // excuse: checks on pod (-1 any) during [from, to] may fail, because the
@@ -273,16 +291,19 @@ func (s *scenario) execute(t *testing.T) {
 	s.judge(time.Since(start))
 }
 
-// stallDump: a header tap silent this long on a pod that should serve it
-// gets the pod a SIGQUIT goroutine dump (triage, not a bound).
+// stallDump: a header tap silent this long, or past its scenario's bound
+// when that is longer, on a pod that should serve it gets the pod a SIGQUIT
+// goroutine dump (triage, not a bound).
 const stallDump = 10 * time.Second
 
 // watchStalls dumps a pod's goroutines, once per pod and phase, when one of
-// the scenario's header taps is silent past stallDump while the chain
+// the scenario's header taps is silent past stallDump and the scenario's
+// own bound (a scenario such as U11 waits for a bench by spec) while the chain
 // mints and no fault excuses the pod; it then restarts the pod. Verdicts
 // of the phase's other scenarios on that pod after the dump carry the
 // restart.
 func (s *scenario) watchStalls() {
+	after := max(stallDump, s.bound)
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -304,7 +325,7 @@ func (s *scenario) watchStalls() {
 		}
 		for _, c := range taps {
 			pod, since, ok := c.silence()
-			if !ok || c.slow || since < stallDump || s.excused(pod, time.Now().Add(-since), time.Now()) || !s.h.claimDump(pod) {
+			if !ok || c.slow || since < after || s.excused(pod, time.Now().Add(-since), time.Now()) || !s.h.claimDump(pod) {
 				continue
 			}
 			p := s.h.pods[pod]
@@ -646,10 +667,11 @@ func (s *scenario) checkHead(c *headsClient, pod int, n uint64, h hash, delivere
 					s.violate(c.name, "pod-%d: eth_getBlockByHash(%s) delivered on pod-%d answered %s", target+1, short(h), pod+1, got)
 				}
 			}
+			read := time.Now()
 			got := s.memoize(fmt.Sprintf("number/%d/%s/%d/%s", target, sel, n, h.Hex()), func() string {
 				return s.blockAnswer(target, sel, "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
 			})
-			if got != h.Hex() && !s.excused(target, start, time.Now()) {
+			if got != h.Hex() && !s.excused(target, start, time.Now()) && !s.minorityGrace(target, read, got) {
 				c.mismatch(pendingNumber{target: target, number: n, hash: h, got: got, delivered: delivered})
 			}
 		}
@@ -777,8 +799,8 @@ func (s *scenario) judge(wall time.Duration) {
 			if v := heads("voted"); v == 0 {
 				s.violate(s.name, "pod-%d: %s, registered after the network started, never voted", pod+1, up)
 			}
-			if v := heads("gated_authority"); v > 0 {
-				s.violate(s.name, "pod-%d: %v heads of %s, registered after the network started, counted gated_authority", pod+1, v, up)
+			if v := heads("gated_voter"); v > 0 {
+				s.violate(s.name, "pod-%d: %v heads of %s, registered after the network started, counted gated_voter", pod+1, v, up)
 			}
 		}
 	}
@@ -809,8 +831,9 @@ func (s *scenario) judgeChain(name string, hc *headerChain, tip *chainsim.Block)
 	}
 }
 
-// judgeDelivery checks each live delivery against the scenario's bound:
-// mint → receipt, and for header streams the wait between receipts. A
+// judgeDelivery checks each live delivery against the scenario's bound,
+// counted from when the block's first header reached the pod (waitFrom):
+// to its receipt, and for header streams the wait between receipts. A
 // block minted before the client's connection opened is catch-up, not
 // live delivery.
 func (s *scenario) judgeDelivery(c *clientBase, stalls bool) []time.Duration {
@@ -825,11 +848,13 @@ func (s *scenario) judgeDelivery(c *clientBase, stalls bool) []time.Duration {
 		if d.minted.Before(d.connStart) {
 			continue
 		}
-		l := d.at.Sub(d.minted)
+		from := s.waitFrom(d.pod, d.hash, d.minted)
+		l := d.at.Sub(from)
 		out = append(out, l)
-		if l > s.bound && !s.excused(d.pod, d.minted, d.at) {
-			msg := fmt.Sprintf("pod-%d: block %d %s reached the client %s after it was minted (bound %s)", d.pod+1, d.number, short(d.hash), l.Round(time.Millisecond), s.bound)
-			s.violate(c.name, "%s", s.h.host.verdict(d.minted, d.at, msg))
+		if l > s.bound && !s.excused(d.pod, from, d.at) {
+			msg := fmt.Sprintf("pod-%d: block %d %s reached the client %s after its first header there, %s after it was minted (bound %s)",
+				d.pod+1, d.number, short(d.hash), l.Round(time.Millisecond), d.at.Sub(d.minted).Round(time.Millisecond), s.bound)
+			s.violate(c.name, "%s", s.h.host.verdict(from, d.at, msg))
 		}
 	}
 	if !stalls {
@@ -849,12 +874,31 @@ func (s *scenario) judgeDelivery(c *clientBase, stalls bool) []time.Duration {
 		if to.After(s.haltAt) {
 			to = s.haltAt
 		}
+		// The tap waits from the later of its last block and the first
+		// header of the block after it.
+		next := s.chain.CanonAt(ds[i-1].number + 1)
+		if next == nil {
+			continue
+		}
+		if at := s.waitFrom(pod, next.Hash, next.MintedAt); at.After(from) {
+			from = at
+		}
 		if gap := to.Sub(from); gap > s.bound && !s.excused(pod, from, to) {
 			msg := fmt.Sprintf("pod-%d: no block from %s to %s (%s, bound %s)", pod+1, from.Format("15:04:05.000"), to.Format("15:04:05.000"), gap.Round(time.Millisecond), s.bound)
 			s.violate(c.name, "%s", s.h.host.verdict(from, to, msg))
 		}
 	}
 	return out
+}
+
+// waitFrom is where a delivery's bound starts: when the block's first
+// header from any upstream reached the pod (spec §15.1, rows U3 and X9),
+// or its mint while none was seen there.
+func (s *scenario) waitFrom(pod int, bh hash, minted time.Time) time.Time {
+	if at, ok := s.h.headerAt(pod, bh); ok && at.After(minted) {
+		return at
+	}
+	return minted
 }
 
 // judgeLogs: over each subscription's covered range, the client's live

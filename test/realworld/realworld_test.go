@@ -212,9 +212,9 @@ func (c *clientBase) deliveredOn(pod int, after time.Time) bool {
 }
 
 // U3: pod-1's TCP path to ws-a goes half-open: the proxy forwards nothing
-// either way and keeps both sockets. ws-a stops being live on pod-1 within
-// the live bound and pod-1 reconnects it within 30s; the other vendors
-// carry every client.
+// either way and keeps both sockets. ws-a's hash vote ages past W on pod-1
+// and pod-1 reconnects it within 30s; the other vendors carry every
+// client.
 func u3() spec {
 	return spec{name: "U3", bound: healthyDelivery, body: halfOpenWsA}
 }
@@ -225,14 +225,19 @@ func u3Lone() spec {
 	return spec{name: "U3-lone", pods: 1, memory: true, bound: healthyDelivery, body: halfOpenWsA}
 }
 
+// hashAge labels an upstream's hash-age gauge (spec §17).
+func hashAge(up string) map[string]string {
+	return map[string]string{"upstream": up, "evidence": "hash"}
+}
+
 func halfOpenWsA(s *scenario) {
 	s.blocks(40)
 	p1, px, up := s.h.pods[0], s.proxies["ws-a"], s.upstream("ws-a")
 	acc := px.accepts(p1)
 	px.set(p1, linkFaults{BlackHole: true})
 	cut := time.Now()
-	if _, ok := s.waitMetric(0, "erpc_source_live", map[string]string{"upstream": up}, liveBound+blockTime+scrapeEvery, func(v float64) bool { return v == 0 }); !ok {
-		s.violate(s.name, "pod-1: %s still live %s after its socket went half-open", up, liveBound+blockTime+scrapeEvery)
+	if _, ok := s.waitMetric(0, "erpc_upstream_report_age_seconds", hashAge(up), liveBound+blockTime+scrapeEvery, func(v float64) bool { return v > liveBound.Seconds() }); !ok {
+		s.violate(s.name, "pod-1: %s still a hash voter %s after its socket went half-open", up, liveBound+blockTime+scrapeEvery)
 	}
 	for px.accepts(p1) == acc && time.Since(cut) < silentReconnect+reconnectSlack {
 		time.Sleep(100 * time.Millisecond)
@@ -243,8 +248,8 @@ func halfOpenWsA(s *scenario) {
 		s.logf("pod-1 reconnected %s after %s", up, time.Since(cut).Round(100*time.Millisecond))
 	}
 	px.set(p1, linkFaults{})
-	if _, ok := s.waitMetric(0, "erpc_source_live", map[string]string{"upstream": up}, silentReconnect+reconnectSlack, func(v float64) bool { return v == 1 }); !ok {
-		s.violate(s.name, "pod-1: %s not live again within %s of the path healing", up, silentReconnect+reconnectSlack)
+	if _, ok := s.waitMetric(0, "erpc_upstream_report_age_seconds", hashAge(up), silentReconnect+reconnectSlack, func(v float64) bool { return v <= liveBound.Seconds() }); !ok {
+		s.violate(s.name, "pod-1: %s not a hash voter again within %s of the path healing", up, silentReconnect+reconnectSlack)
 	}
 	s.blocks(25)
 }
@@ -393,8 +398,8 @@ func n5() spec {
 			s.violate("N5", "%d newHeads subscribes on %d connections to %s", d, total, up)
 		}
 		for pod := range s.h.pods {
-			if _, ok := s.waitMetric(pod, "erpc_source_live", map[string]string{"upstream": up}, silentReconnect+reconnectSlack, func(v float64) bool { return v == 1 }); !ok {
-				s.violate("N5", "pod-%d: %s not live again within %s of the last close", pod+1, up, silentReconnect+reconnectSlack)
+			if _, ok := s.waitMetric(pod, "erpc_upstream_report_age_seconds", hashAge(up), silentReconnect+reconnectSlack, func(v float64) bool { return v <= liveBound.Seconds() }); !ok {
+				s.violate("N5", "pod-%d: %s not a hash voter again within %s of the last close", pod+1, up, silentReconnect+reconnectSlack)
 			}
 		}
 		s.blocks(25)
@@ -420,8 +425,8 @@ func k2() spec {
 				if v, _ := s.metric(pod, "erpc_chain_tracker_source_heads_total", map[string]string{"upstream": http}); v > 0 {
 					s.violate("K2", "pod-%d: %s, an https upstream with subscriptionSource unset, fed %v source headers", pod+1, http, v)
 				}
-				if v, _ := s.metric(pod, "erpc_source_live", map[string]string{"upstream": http}); v > 0 {
-					s.violate("K2", "pod-%d: %s counted as a live source", pod+1, http)
+				if v, ok := s.metric(pod, "erpc_upstream_report_age_seconds", hashAge(http)); ok && v <= liveBound.Seconds() {
+					s.violate("K2", "pod-%d: %s, no source, has a fresh hash vote", pod+1, http)
 				}
 			}
 			hb := s.vendors["http-b"]

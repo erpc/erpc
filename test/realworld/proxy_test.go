@@ -1,6 +1,7 @@
 package realworld
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand/v2"
 	"net"
@@ -8,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	gethcommon "github.com/ethereum/go-ethereum/common"
 )
 
 // linkFaults are the network faults of one (pod, vendor) link.
@@ -50,6 +53,51 @@ type pconn struct {
 	client, server net.Conn
 	once           sync.Once
 	done           chan struct{}
+}
+
+// headerScan finds the block headers in one connection's vendor→pod bytes
+// as they reach the pod: the first header of a block from any upstream is
+// where a pod's delivery bound starts (spec §15.1, rows U3 and X9). tail
+// keeps the last bytes of the previous chunk, so a header split across two
+// chunks is still found.
+type headerScan struct {
+	h    *harness
+	pod  int
+	tail []byte
+}
+
+// hashKey is how a header's own hash opens in vendor JSON: object keys are
+// sorted, so "hash" never follows "blockHash" or "parentHash" here.
+var hashKey = []byte(`"hash":"0x`)
+
+// scan records every header hash in b, written to the pod at at.
+func (sc *headerScan) scan(b []byte, at time.Time) {
+	buf := append(sc.tail, b...)
+	for i := 0; ; {
+		j := bytes.Index(buf[i:], hashKey)
+		if j < 0 {
+			break
+		}
+		start := i + j + len(hashKey)
+		if start+64 > len(buf) {
+			break
+		}
+		if hx := buf[start : start+64]; isHex(hx) {
+			sc.h.sawHeader(sc.pod, gethcommon.HexToHash(string(hx)), at)
+		}
+		i = start
+	}
+	keep := min(len(buf), len(hashKey)+64)
+	sc.tail = append(sc.tail[:0], buf[len(buf)-keep:]...)
+}
+
+func isHex(b []byte) bool {
+	for _, c := range b {
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *pconn) close() {
@@ -194,8 +242,8 @@ func (px *proxy) handle(c net.Conn) {
 	l.mu.Lock()
 	l.conns[pc] = true
 	l.mu.Unlock()
-	go l.pipe(pc, s, c, true)
-	l.pipe(pc, c, s, false)
+	go l.pipe(pc, s, c, &headerScan{h: px.h, pod: p.idx})
+	l.pipe(pc, c, s, nil)
 	<-pc.done
 	l.mu.Lock()
 	delete(l.conns, pc)
@@ -266,10 +314,11 @@ type chunk struct {
 	due time.Time
 }
 
-// pipe forwards src to dst under the link's faults; down is the vendor→pod
-// direction. Reads stop while black-holed, so TCP backpressure builds as on
-// a dead path.
-func (l *link) pipe(pc *pconn, src, dst net.Conn, down bool) {
+// pipe forwards src to dst under the link's faults; down (non-nil) is the
+// vendor→pod direction, whose headers it records as they reach the pod.
+// Reads stop while black-holed, so TCP backpressure builds as on a dead
+// path.
+func (l *link) pipe(pc *pconn, src, dst net.Conn, down *headerScan) {
 	ch := make(chan chunk, 256)
 	go func() {
 		defer pc.close()
@@ -287,13 +336,16 @@ func (l *link) pipe(pc *pconn, src, dst net.Conn, down bool) {
 			}
 			f := l.faults()
 			b := ck.b
-			if down && f.RSTAfter > 0 && sent+int64(len(b)) >= f.RSTAfter {
+			if down != nil && f.RSTAfter > 0 && sent+int64(len(b)) >= f.RSTAfter {
 				_, _ = dst.Write(b[:max(0, f.RSTAfter-sent)])
 				pc.reset()
 				return
 			}
 			if _, err := dst.Write(b); err != nil {
 				return
+			}
+			if down != nil {
+				down.scan(b, time.Now())
 			}
 			sent += int64(len(b))
 			if f.Bandwidth > 0 {
