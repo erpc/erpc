@@ -29,8 +29,9 @@ type networkIntake struct {
 	nw *Network
 
 	mu sync.Mutex
-	// last is each source's newest accepted header.
-	last map[string]indexer.Cursor
+	// last is each upstream's accepted headers: a parentHash-linked path
+	// ending at its hash vote, newest last, at most voteLinksKept.
+	last map[string][]voteLink
 	// hashVoterSince is, per primary voter, since when it has been a hash
 	// voter without a break, as the reconciler's passes saw it; leads is
 	// whether one has been for primaryLeadAfter.
@@ -58,7 +59,7 @@ const rejectedKept = 64
 var primaryLeadAfter = util.NewDuration(60 * time.Second)
 
 func newNetworkIntake(nw *Network) *networkIntake {
-	return &networkIntake{nw: nw, last: make(map[string]indexer.Cursor), hashVoterSince: make(map[string]time.Time)}
+	return &networkIntake{nw: nw, last: make(map[string][]voteLink), hashVoterSince: make(map[string]time.Time)}
 }
 
 var _ indexer.Intake = (*networkIntake)(nil)
@@ -102,9 +103,9 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay b
 		return
 	}
 	in.mu.Lock()
-	last, seen := in.last[upstreamId]
+	behind := onVotePath(in.last[upstreamId], cur)
 	in.mu.Unlock()
-	if seen && last == cur {
+	if behind {
 		in.count(upstreamId, "duplicate")
 		return
 	}
@@ -123,7 +124,7 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay b
 		in.count(upstreamId, "gated_identity")
 		return
 	}
-	if !in.accept(upstreamId, cur, replay) {
+	if !in.accept(upstreamId, sh, replay) {
 		in.count(upstreamId, "duplicate")
 		return
 	}
@@ -224,15 +225,52 @@ func (in *networkIntake) upstream(id string) *upstream.Upstream {
 	return nil
 }
 
-// accept makes cur its source's newest accepted header; onlyNewer: only
-// when it is above the newest one, compared and set in one section.
-func (in *networkIntake) accept(upstreamId string, cur indexer.Cursor, onlyNewer bool) bool {
-	in.mu.Lock()
-	defer in.mu.Unlock()
-	if last, seen := in.last[upstreamId]; onlyNewer && seen && cur.Number <= last.Number {
+// voteLink is one accepted header of an upstream.
+type voteLink struct {
+	cur    indexer.Cursor
+	parent [32]byte
+}
+
+// voteLinksKept bounds the path of accepted headers kept per upstream.
+const voteLinksKept = 64
+
+// onVotePath reports whether cur is on path, the upstream's accepted headers
+// up to its hash vote: its vote, or an ancestor of it. Such a header never
+// moves the vote back (spec §6.5 rule 3); a lower header on another branch
+// is a rewind, left to the trackers.
+func onVotePath(path []voteLink, cur indexer.Cursor) bool {
+	if len(path) == 0 || cur.Number > path[len(path)-1].cur.Number {
 		return false
 	}
-	in.last[upstreamId] = cur
+	for _, l := range path {
+		if l.cur == cur || l.cur.Number == cur.Number+1 && l.parent == cur.Hash {
+			return true
+		}
+	}
+	return false
+}
+
+// accept makes sh its upstream's hash vote unless it is on the vote's path;
+// onlyNewer: only when it is above the vote. Compared and set in one
+// section.
+func (in *networkIntake) accept(upstreamId string, sh evm.SourceHeader, onlyNewer bool) bool {
+	cur, parent := sh.Cursor(), sh.Parent()
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	path := in.last[upstreamId]
+	if n := len(path); n > 0 {
+		if cur.Number <= path[n-1].cur.Number && (onlyNewer || onVotePath(path, cur)) {
+			return false
+		}
+		if path[n-1].cur.Hash != parent {
+			path = path[:0]
+		}
+	}
+	path = append(path, voteLink{cur, parent})
+	if over := len(path) - voteLinksKept; over > 0 {
+		path = slices.Delete(path, 0, over)
+	}
+	in.last[upstreamId] = path
 	return true
 }
 

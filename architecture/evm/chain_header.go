@@ -110,6 +110,9 @@ func ParseSourceHeader(raw json.RawMessage) (SourceHeader, error) {
 
 func (s SourceHeader) Cursor() indexer.Cursor { return s.h.cursor() }
 
+// Parent is the header's parentHash.
+func (s SourceHeader) Parent() [32]byte { return s.h.parentHash }
+
 // Timestamp is the header's timestamp in seconds, 0 when it carries none.
 func (s SourceHeader) Timestamp() int64 { return int64(s.h.timestamp) }
 
