@@ -103,9 +103,17 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay b
 		return
 	}
 	in.mu.Lock()
-	behind := onVotePath(in.last[upstreamId], cur)
+	path := in.last[upstreamId]
+	behind := onVotePath(path, cur)
+	current := behind && path[len(path)-1].cur == cur
 	in.mu.Unlock()
 	if behind {
+		// After a reconnect the first header is the current vote; on a
+		// halted chain no newer one comes, so it renews the vote.
+		if mt := in.nw.metricsTracker; current && mt != nil && mt.RenewHashVote(u) {
+			evm.VotersChanged(in.nw)
+			in.nw.sources.wake()
+		}
 		in.count(upstreamId, "duplicate")
 		return
 	}

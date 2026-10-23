@@ -1839,6 +1839,23 @@ func (t *Tracker) ExpireHashVote(ups common.Upstream) {
 	t.reportAges(ups, meta, t.now())
 }
 
+// RenewHashVote makes ups's expired hash vote fresh again: after a
+// reconnect its first header is that vote, so on a halted chain no newer one
+// comes (spec §15.1). It reports whether the vote was expired.
+func (t *Tracker) RenewHashVote(ups common.Upstream) bool {
+	net := ups.NetworkId()
+	ntwMeta := t.getMetadata(metadataKey{nil, net})
+	ntwMeta.headMu.Lock()
+	defer ntwMeta.headMu.Unlock()
+	meta := t.addHeadReporter(ntwMeta, net, ups)
+	if !meta.hashVoted || !meta.hashExpired {
+		return false
+	}
+	meta.hashExpired = false
+	t.reportAges(ups, meta, t.now())
+	return true
+}
+
 // HashVote is what this instance knows of an upstream's newest hash vote
 // (spec §6.1, §6.3).
 type HashVote struct {
