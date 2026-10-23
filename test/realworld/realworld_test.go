@@ -47,6 +47,11 @@ func TestRealWorld(t *testing.T) {
 		{"n4-lone", 9601, []spec{n4Lone()}},
 		{"voters", 9701, []spec{n3(), u10(), u11(), u18(), k6()}},
 		{"x9", 9801, []spec{x9()}},
+		{"head", 9901, []spec{u12(), u14(), p1(), p5(), p6(), p10()}},
+		{"finality", 10001, []spec{c12(), p7(), c13()}},
+		{"polling", 10101, []spec{k7(true), k7(false), p9()}},
+		{"x2", 10201, []spec{x2()}},
+		{"c9", 10301, []spec{c9()}},
 	}
 	if alone := os.Getenv("REALWORLD_ALONE"); alone != "" {
 		known := map[string]spec{}
