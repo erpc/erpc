@@ -150,5 +150,9 @@ type UpstreamMetrics struct {
 	FinalizationLag        int64   `json:"finalizationLag"`
 	BlockHeadLagSeconds    float64 `json:"blockHeadLagSeconds"`
 	FinalizationLagSeconds float64 `json:"finalizationLagSeconds"`
-	CordonedReason         string  `json:"cordonedReason,omitempty"`
+	// BlockHeadMissing: the network has a head but this upstream never
+	// reported one, so BlockHeadLag is 0 by absence, not by freshness.
+	// The lag gates treat it as unbounded lag.
+	BlockHeadMissing bool   `json:"blockHeadMissing"`
+	CordonedReason   string `json:"cordonedReason,omitempty"`
 }

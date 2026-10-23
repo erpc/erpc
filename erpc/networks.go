@@ -1789,13 +1789,40 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// skipped at forward time anyway — but letting it into the request's
 	// upstream list makes it consume retry/hedge/consensus attempts and
 	// emit instant "method ignored" skips; under consensus fan-out those
-	// skips become phantom participants. When EVERY upstream ignores the
-	// method, keep the full list so the request fails with the descriptive
-	// per-upstream "method ignored" error instead of a generic
-	// "no upstreams found".
-	if eligible, dropped := filterMethodEligible(upsList, method); dropped > 0 && len(eligible) > 0 {
+	// skips become phantom participants.
+	//
+	// An empty eligible set does not mean every upstream ignores the
+	// method: a selection policy (e.g. stickyPrimary + take) can return a
+	// survivor set that excludes the upstreams that serve it. The old
+	// fallback assumed upsList was the full registry and kept the
+	// ineligible survivors, so the request retried only the pinned node
+	// and never reached a sender that handles the method (erpc#1125).
+	// Fall back to the method-eligible upstreams of the full registry,
+	// in registry order; only when the registry has none either is the
+	// ineligible survivor list kept, so the request still fails with the
+	// descriptive per-upstream "method ignored" error rather than a
+	// generic "no upstreams found".
+	if eligible, dropped := filterMethodEligible(upsList, method); dropped > 0 {
 		upstreamSpan.SetAttributes(attribute.Int("upstreams.method_ineligible", dropped))
-		upsList = eligible
+		if len(eligible) == 0 {
+			registryUps := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+			all := make([]common.Upstream, len(registryUps))
+			for i, u := range registryUps {
+				all[i] = u
+			}
+			eligible, _ = filterMethodEligible(all, method)
+			if len(eligible) > 0 {
+				lg.Debug().
+					Str("method", method).
+					Int("survivors", len(upsList)).
+					Int("registryEligible", len(eligible)).
+					Msg("selection-policy survivors all ignore this method; falling back to method-eligible upstreams from the full registry")
+				upstreamSpan.SetAttributes(attribute.Int("upstreams.registry_fallback", len(eligible)))
+			}
+		}
+		if len(eligible) > 0 {
+			upsList = eligible
+		}
 	}
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
 	if common.IsTracingDetailed {
