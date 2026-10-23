@@ -2460,7 +2460,6 @@ func migrateLegacyIntegrityChecks(n *NetworkConfig) {
 }
 
 const DefaultEvmFinalityDepth = 1024
-const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
 const DefaultDynamicBlockTimeDebounceMultiplier = 0.7
 const DefaultFinalizedDebounceDepthMultiplier = 0.05
 const DefaultBlockUnavailableDelayMultiplier = 1.0
@@ -2644,9 +2643,6 @@ func (c *EvmChainTrackerConfig) SetDefaults() {
 func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.FallbackFinalityDepth == 0 {
 		e.FallbackFinalityDepth = DefaultEvmFinalityDepth
-	}
-	if e.FallbackStatePollerDebounce == 0 {
-		e.FallbackStatePollerDebounce = DefaultEvmStatePollerDebounce
 	}
 	if e.DynamicBlockTimeDebounceMultiplier == nil {
 		d := DefaultDynamicBlockTimeDebounceMultiplier

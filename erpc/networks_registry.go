@@ -185,8 +185,8 @@ func NewNetwork(
 	}
 
 	if nwCfg.Architecture == common.ArchitectureEvm {
-		// Intake, sources and taps first: trackers ask intake whether votes
-		// count from their first message on, and intake reaches the sources.
+		// Intake, sources and taps first: trackers read their voters from
+		// intake from their first message on, and intake reaches the sources.
 		network.intake = newNetworkIntake(network)
 		network.sources = newSourceReconciler(network)
 		network.taps = indexer.NewTaps(projectId, func(string) {
@@ -196,7 +196,6 @@ func NewNetwork(
 		network.mempool = mempool.New(projectId, network.Label())
 		network.chainTracker = evm.StartChainTrackers(appCtx, network)
 		evm.OnCheckSuspended(network, network.intake.replayRejected)
-		network.bg.Go(func() { network.intake.run(appCtx) })
 	}
 
 	return network, nil

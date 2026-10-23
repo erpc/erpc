@@ -641,7 +641,7 @@ func TestCovDefaults_SelectionPolicyAndEvmNetworkDefaults(t *testing.T) {
 	assert.Nil(t, e.MaxFutureBlockRetryDistance, "deprecated field is cleared")
 	assert.Equal(t, []string{}, e.MarkEmptyAsErrorMethods, "explicit empty list is kept")
 	assert.Equal(t, AvailbilityConfidenceBlockHead, e.EmptyResultConfidence)
-	assert.Equal(t, DefaultEvmStatePollerDebounce, e.FallbackStatePollerDebounce)
+	assert.Zero(t, e.FallbackStatePollerDebounce, "no default: the cold block time sets the cold cadence")
 	assert.Equal(t, 10, e.TraceFilterSplitConcurrency)
 	assert.Nil(t, e.TraceFilterSplitOnError)
 }

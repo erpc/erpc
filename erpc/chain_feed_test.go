@@ -351,7 +351,7 @@ func (s *chaosSeed) trackerContext(since time.Time) string {
 		if c, ok := tr.Tip(); ok {
 			head = fmt.Sprint(c.Number)
 		}
-		if c, ok := tr.SendTip(); ok {
+		if c, ok := tr.Confirmed(); ok {
 			send = fmt.Sprint(c.Number)
 		}
 	}
@@ -1357,7 +1357,7 @@ func (s *chaosSeed) deepReorg() {
 func (s *chaosSeed) caughtUp() time.Time {
 	want := s.chain.Tip()
 	require.Eventually(s.t, func() bool {
-		c, ok := s.tracker().SendTip()
+		c, ok := s.tracker().Confirmed()
 		return ok && (c.Number > want.Number || c.Hash == want.Hash)
 	}, 15*time.Second, 10*time.Millisecond, "the tracker may send the head %d again", want.Number)
 	return time.Now()
@@ -1376,21 +1376,21 @@ func (s *chaosSeed) silentVendor() {
 	v := s.liveWS()
 	stalls := telemetry.MetricUpstreamWebsocketHeadsStallReconnectsTotal.WithLabelValues("test_ws", "evm:123", v.ID)
 	before := testutil.ToFloat64(stalls)
-	live := telemetry.MetricSourceLive.WithLabelValues("test_ws", "evm:123", v.ID)
+	age := telemetry.MetricUpstreamReportAgeSeconds.WithLabelValues("test_ws", "evm:123", v.ID, "hash")
 	v.Update(func(f *chainsim.Faults) { f.SilentHeads = true })
-	wentDead := false
+	agedOut := false
 	deadline := time.Now().Add(20 * chaosBlock)
 	for time.Now().Before(deadline) {
-		if testutil.ToFloat64(live) == 0 {
-			wentDead = true
+		if testutil.ToFloat64(age) > s.tracker().W().Seconds() {
+			agedOut = true
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
 	v.Update(func(f *chainsim.Faults) { f.SilentHeads = false })
 	reconnects := testutil.ToFloat64(stalls) - before
-	require.True(s.t, wentDead, "%s stops being live while its newHeads is silent", v.ID)
+	require.True(s.t, agedOut, "%s's hash vote ages past W while its newHeads is silent", v.ID)
 	require.Positive(s.t, reconnects, "%s reconnects its silent newHeads", v.ID)
-	s.occur(fSilent, fmt.Sprintf("%s silent for 20 blocks: not live, %v stall reconnects", v.ID, reconnects))
+	s.occur(fSilent, fmt.Sprintf("%s silent for 20 blocks: hash vote aged past W, %v stall reconnects", v.ID, reconnects))
 }
 
 func (s *chaosSeed) laggingVendor() {
@@ -1565,7 +1565,7 @@ func (s *chaosSeed) clientsHave(b *chainsim.Block) bool {
 
 func (s *chaosSeed) nonLinking() {
 	for _, v := range s.vendors {
-		require.Equal(s.t, 1.0, testutil.ToFloat64(telemetry.MetricSourceLive.WithLabelValues("test_ws", "evm:123", v.ID)), "%s is live before 2 of 4 votes leave", v.ID)
+		require.LessOrEqual(s.t, testutil.ToFloat64(telemetry.MetricUpstreamReportAgeSeconds.WithLabelValues("test_ws", "evm:123", v.ID, "hash")), s.tracker().W().Seconds(), "%s is a hash voter before 2 of 4 votes leave", v.ID)
 	}
 	pair := slices.Clone(s.vendors)
 	s.rng.Shuffle(len(pair), func(i, j int) { pair[i], pair[j] = pair[j], pair[i] })
@@ -1655,7 +1655,7 @@ func (s *chaosSeed) orphanCached() {
 func (s *chaosSeed) mailboxBurst() {
 	v := s.pick(s.wsA, s.wsB)
 	heads := func() (n float64) {
-		for _, o := range []string{"voted", "duplicate", "gated_authority", "gated_identity", "malformed"} {
+		for _, o := range []string{"voted", "duplicate", "gated_voter", "gated_identity", "malformed"} {
 			n += testutil.ToFloat64(telemetry.MetricChainTrackerSourceHeadsTotal.WithLabelValues("test_ws", "evm:123", v.ID, o))
 		}
 		return n

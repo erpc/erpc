@@ -1165,11 +1165,11 @@ func (t *ChainTracker) planReceipts() {
 	t.publishLogsHead()
 }
 
-// logsHeadOf is the logs head over published pins: the highest sendable
+// logsHeadOf is the logs head over published pins: the highest confirmed
 // pin up to which every block within reorgWindow of the head has its
 // receipts held or not needed.
 func (t *ChainTracker) logsHeadOf(s *feedState) indexer.Cursor {
-	send := s.sendHead()
+	send := s.confirmedHead()
 	if send == nil {
 		return indexer.Cursor{}
 	}

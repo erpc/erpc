@@ -39,15 +39,16 @@ var (
 // sourceReconciler decides which topics each source of one network feeds:
 //
 //	push u: newHeads                    always, from network init
-//	poll u: newHeads                    while demand has newHeads, authoritative(u) and u serves latest
-//	push u: newPendingTransactions:<v>  while demand has it and authoritative(u)
+//	poll u: newHeads                    while demand has newHeads, admitted(u) and u serves latest
+//	push u: newPendingTransactions:<v>  while demand has it and admitted(u)
 //
 // A push source whose newHeads the upstream refused as unsupported is polled
 // under the poll rule until a subscribe succeeds. An upstream that refused
 // latest as unsupported is no poll source until its give-up expires (#240).
 // It runs on one goroutine, from network init whether or not a WebSocket or
-// gRPC server runs, and wakes on demand changes, liveness and authority
-// changes, subscribe answers, and a timer at the live bound.
+// gRPC server runs, and wakes on demand changes, hash-voter changes,
+// subscribe answers, and a timer at W. admitted(u) is topic admission
+// (spec §6.2); each pass computes it first.
 type sourceReconciler struct {
 	nw *Network
 
@@ -410,7 +411,7 @@ func (r *sourceReconciler) run(ctx context.Context) {
 // pass makes every source feed what the rules say now and returns when the
 // next pass is due without a wake.
 func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
-	next = r.nw.chainTracker.LiveBound()
+	next = r.nw.chainTracker.W()
 	defer func() {
 		if rec := recover(); rec != nil {
 			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
@@ -458,6 +459,7 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 		next = min(next, left)
 	}
 	txHeadAt := r.nw.chainTracker.TxHeadAt()
+	r.nw.intake.admit(now, r.nw.chainTracker.W())
 
 	heads, push := false, false
 	for _, s := range r.sources {
@@ -469,7 +471,7 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 		if s.poll == nil {
 			continue
 		}
-		pollOn := polling && (s.push == nil || s.push.HeadsRefused()) && !s.poll.LatestUnsupported() && r.nw.intake.authoritative(s.id)
+		pollOn := polling && (s.push == nil || s.push.HeadsRefused()) && !s.poll.LatestUnsupported() && r.nw.intake.admits(s.id)
 		if pollOn != s.pollOn {
 			s.poll.Set(topicsIf(pollOn))
 			s.pollOn = pollOn
@@ -522,12 +524,12 @@ func (r *sourceReconciler) pendingWanted(demand []indexer.Topic, now time.Time) 
 }
 
 // setPush sets push source s to newHeads plus the wanted pending topics
-// while s is authoritative. While s is connected, each pending topic it
+// while s is admitted. While s is connected, each pending topic it
 // carries that stayed silent for its silentAfter, while heads carried
 // transactions, is subscribed again, and its next silentAfter doubles.
 func (r *sourceReconciler) setPush(s *source, wanted []indexer.Topic, now, txHeadAt time.Time) {
 	topics := []indexer.Topic{indexer.TopicNewHeads}
-	if len(wanted) > 0 && r.nw.intake.authoritative(s.id) {
+	if len(wanted) > 0 && r.nw.intake.admits(s.id) {
 		topics = append(topics, wanted...)
 	}
 	type activity struct{ heard, subscribed time.Time }
@@ -600,7 +602,14 @@ func (r *sourceReconciler) newSource(u *upstream.Upstream) *source {
 		}
 	}
 	if util.IsWsEndpoint(cfg.Endpoint) {
-		opts := wsupstream.Options{NetworkLabel: r.nw.Label()}
+		opts := wsupstream.Options{
+			NetworkLabel: r.nw.Label(),
+			HashAge: func() time.Duration {
+				v, _ := r.nw.intake.hashVote(u)
+				return v.Age
+			},
+			Disconnected: func() { r.nw.intake.disconnected(u.Id()) },
+		}
 		if a := wsupstream.New(u, indexerNetworkKey(r.nw), r.nw.intake, r.nw.logger, opts); a != nil {
 			s.push = a
 		}
@@ -677,4 +686,11 @@ func (n *Network) requireSubscriptionSource(ctx context.Context, subType string)
 		return common.NewErrNoSubscriptionSource(n.networkId, subType)
 	}
 	return nil
+}
+
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }

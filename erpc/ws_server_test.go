@@ -1901,12 +1901,12 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		defer s.stopERPC()
 		tr := s.tracker()
 		require.Eventually(t, func() bool { _, ok := tr.Tip(); return ok }, 10*time.Second, 10*time.Millisecond, "ws-a's heads are pinned")
-		_, sendable := tr.SendTip()
+		_, sendable := tr.Confirmed()
 		require.False(t, sendable, "the delivery gate waits for the held sources")
 		s.dialLogs("cold")
 		from := s.chain.Tip().Number + 1
 		s.blocks(4)
-		_, sendable = tr.SendTip()
+		_, sendable = tr.Confirmed()
 		require.False(t, sendable, "the gate is still shut %d blocks after the subscription", 4)
 		for _, v := range []*chainsim.Vendor{s.wsB, s.httpA, s.httpB} {
 			v.Update(func(f *chainsim.Faults) { f.Held = false })
@@ -2648,8 +2648,8 @@ func TestWebSocket_HttpSourcePolledHeads(t *testing.T) {
 		return testutil.ToFloat64(telemetry.MetricChainTrackerSourceHeadsTotal.WithLabelValues("test_ws", "evm:123", "ws-syncing", outcome))
 	}
 	pollsSettle(t, &syncingHttp.latestPolls, 700*time.Millisecond, "a syncing source is not polled for heads")
-	syncingPolls, voted, gated := syncingHttp.latestPolls.Load(), heads("voted"), heads("gated_authority")
-	require.Eventually(t, func() bool { return heads("gated_authority") >= gated+3 }, 10*time.Second, 10*time.Millisecond,
+	syncingPolls, voted, gated := syncingHttp.latestPolls.Load(), heads("voted"), heads("gated_voter")
+	require.Eventually(t, func() bool { return heads("gated_voter") >= gated+3 }, 10*time.Second, 10*time.Millisecond,
 		"a syncing wss source's heads reach intake and are held back")
 	prev = requireContiguous(t, conn, 3, prev)
 	assert.Equal(t, syncingPolls, syncingHttp.latestPolls.Load(), "a syncing source is not polled for heads")
@@ -2840,9 +2840,9 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 }
 
 // With failover on, a fallback-tier poll source polls only while no primary
-// source has been live for primaryLeadAfter; the client's heads stay
+// has been a hash voter for primaryLeadAfter; the client's heads stay
 // contiguous across both hand-overs. A fallback-tier wss source subscribes
-// newPendingTransactions only while it is authoritative too.
+// newPendingTransactions only while topic admission admits it too.
 func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -2861,6 +2861,9 @@ func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 	fallbackCfg.Tags = []string{common.TagTierFallback}
 	wsFallbackCfg := sourceUpstream("rpc-fallback-ws", wsFallbackURL, nil)
 	wsFallbackCfg.Tags = []string{common.TagTierFallback}
+	// Its polls move the lag reference past a primary that stops pushing,
+	// so the primary's hash vote ages out (spec §6.1).
+	wsFallbackCfg.Evm.StatePollerInterval = common.Duration(300 * time.Millisecond)
 	primaryCfg := sourceUpstream("rpc-primary", wsURL, nil)
 	// The primary's own polls let the network see blocks it stops pushing.
 	primaryCfg.Evm.StatePollerInterval = common.Duration(300 * time.Millisecond)
@@ -2912,9 +2915,9 @@ func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 	// The no-source ask (§6 rule 6) may deliver the block before the
 	// vendor counts the fallback's first poll.
 	require.Eventually(t, func() bool { return fallback.latestPolls.Load() > stalled }, 2*time.Second, 10*time.Millisecond,
-		"the fallback polls again once the primary is not live")
+		"the fallback polls again once the primary is no hash voter")
 	require.Eventually(t, pendingOn(1, 1), 10*time.Second, 10*time.Millisecond,
-		"the fallback subscribes newPendingTransactions again once the primary is not live")
+		"the fallback subscribes newPendingTransactions again once the primary is no hash voter")
 
 	chain.setGated(true)
 	chain.setPaused(false)
@@ -3006,7 +3009,7 @@ func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
 	lateHeads := func(outcome string) float64 {
 		return testutil.ToFloat64(telemetry.MetricChainTrackerSourceHeadsTotal.WithLabelValues("test_ws", "evm:123", "ws-joins-late", outcome))
 	}
-	voted, gated := lateHeads("voted"), lateHeads("gated_authority")
+	voted, gated := lateHeads("voted"), lateHeads("gated_voter")
 	release()
 	require.Eventually(t, func() bool { return vendorLate.subscribes.Load() > 0 },
 		10*time.Second, 20*time.Millisecond, "the late upstream's source subscribes newHeads")
@@ -3032,7 +3035,7 @@ func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
 	}
 	require.Eventually(t, func() bool { return lateHeads("voted") >= voted+3 }, 5*time.Second, 10*time.Millisecond,
 		"the late upstream's heads vote")
-	assert.Equal(t, gated, lateHeads("gated_authority"), "no head of the late upstream is held back from the vote")
+	assert.Equal(t, gated, lateHeads("gated_voter"), "no head of the late upstream is held back from the vote")
 }
 
 // A wss upstream that refuses newHeads as unsupported feeds them by poll,

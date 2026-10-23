@@ -618,7 +618,7 @@ func (s *chaosSeed) streamBadHeader() {
 		require.NotNil(s.t, g)
 		tr := g.nw.chainTracker
 		require.Eventually(s.t, func() bool {
-			send, ok := tr.SendTip()
+			send, ok := tr.Confirmed()
 			return ok && send == bc
 		}, 10*time.Second, 10*time.Millisecond, "%s may send block %d", g.name, bad.Number)
 		for range 2 {

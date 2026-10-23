@@ -72,8 +72,8 @@ https://docs.erpc.cloud/reference/evm/block-tracking.llms.txt`}
 <PromptExample
 	n={2}
 	title="tune block polling for a fast chain like Arbitrum"
-	prompt={`I'm running eRPC against Arbitrum (250ms block time) and the default 5s
-fallbackStatePollerDebounce causes stale served-tip data on startup. Adjust the polling
+	prompt={`I'm running eRPC against Arbitrum (250ms block time) and want block tracking
+tight from the first second after startup. Adjust the polling
 and debounce settings in my eRPC config so the EMA warms up quickly and block tracking
 stays tight. Reference:
 https://docs.erpc.cloud/reference/evm/block-tracking.llms.txt`}
@@ -118,15 +118,15 @@ eRPC keeps the `safe` tag verbatim and routes standard block-tagged JSON-RPC req
 
 **Debounce resolution.** To avoid redundant RPC calls, each fetch is gated by `resolveDebounce()`, which picks the first applicable value from:
 1. `upstream.evm.statePollerDebounce` — hard per-upstream override; short-circuits all other steps.
-2. `tracker.GetNetworkBlockTime × dynamicBlockTimeDebounceMultiplier` (default 0.7) — EMA-derived; active after ≥3 samples.
-3. `network.evm.fallbackStatePollerDebounce` (default 5 s) — used while EMA warms up.
-4. Hard 1 s floor — applies only if both step 2 and 3 yield zero.
+2. `tracker.GetNetworkBlockTime × dynamicBlockTimeDebounceMultiplier` (default 0.7) — set once 4 headers are seen.
+3. `network.evm.fallbackStatePollerDebounce` (no default) — when set, used until step 2 applies.
+4. The 1 s cold block time × the multiplier (0.7 s) — until step 2 applies.
 
 On a 12 s Ethereum Mainnet chain this yields ~8.4 s debounce — fresh enough to catch every block, conservative enough that concurrent pollers share one actual RPC call per window. In Redis-backed multi-pod deployments, the shared counter coalesces fetches across replicas too.
 
 **Finalized debounce.** The finalized fetch widens that debounce to `(latest − finalized) × EMA block time × finalizedDebounceDepthMultiplier` (default 0.05) when this is longer, using the upstream's own latest and finalized blocks. Finalized advances once per finality window, so polling it at the latest-block cadence mostly returns the number already held. With the default the finalized block trails by at most about 5% of the window: ~43 s on Ethereum Mainnet (~72 blocks × 12 s), ~45 s on an Arbitrum-style L2 with a 15 min window. An upstream behind the network's corroborated finalized block (second-highest across upstreams) keeps the regular debounce until it catches up: once a peer sees the next finalized block, the others sample it at the regular cadence. This also covers vendors whose load balancer mixes stale and fresh backends. Chains with near-instant finality (depth of a few blocks) keep the regular debounce. Unknown finalized, latest at or below finalized, or a cold EMA also keep it. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="449-471" />
 
-**Dynamic block-time EMA.** The EMA (`alpha = 0.1`, ~19-sample effective window) lives in `health.Tracker` and updates whenever the corroborated network-level latest block advances, using the on-chain timestamp of the upstream report that holds that head (each upstream's latest timestamp is stored beside its head, so the sample comes from whichever poller reported the block). All head publication for a network is serialized under one per-network lock, so a slow re-derivation can never overwrite a newer one. On fast chains where consecutive blocks share the same integer second, block gaps accumulate and samples are normalized. The EMA is not published until ≥3 samples are collected (requiring 4 total advances, because the first stores the baseline without incrementing the sample counter). Values outside `[10 ms, 120 s]` are rejected and reset to the last valid value to prevent runaway spikes after a chain halt. Consumers receive 0 until warm-up completes.
+**Dynamic block-time EMA.** The EMA (`alpha = 0.1`, ~19-sample effective window) lives in `health.Tracker` and updates whenever the corroborated network-level latest block advances, using the on-chain timestamp of the upstream report that holds that head (each upstream's latest timestamp is stored beside its head, so the sample comes from whichever poller reported the block). All head publication for a network is serialized under one per-network lock, so a slow re-derivation can never overwrite a newer one. On fast chains where consecutive blocks share the same integer second, block gaps accumulate and samples are normalized. Accepted source headers (pushes and poll-source polls) sample it too. Until the EMA has ≥3 samples (4 timestamp advances), each observation at least 3 blocks past the first publishes the mean step since that first one, so 4 headers set the block time even when they share timestamps. Values outside `[10 ms, 120 s]` are rejected and reset to the last valid value to prevent runaway spikes after a chain halt. `GetNetworkBlockTime` returns 0 until then; the chain tracker's W and the poll cadence use the 1 s cold block time meanwhile.
 
 **Per-upstream block counters.** Both `latestBlockShared` and `finalizedBlockShared` are forward-only shared counters: `TryUpdate` rejects values ≤ the current value. A value that would regress more than 1024 blocks fires an `OnLargeRollback` callback and records `erpc_upstream_block_head_large_rollback`.
 
@@ -224,7 +224,7 @@ With a `use-upstream` selector, `EvmRoutableUpstreams` narrows the candidates to
 
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
-| `networks[*].evm.fallbackStatePollerDebounce` | Duration | `5s` | Debounce used when EMA is not yet available (step 3 of `resolveDebounce`). Setting to `0` causes the 1 s hard floor to apply during EMA warm-up. Source: <SourceLink file="common/defaults.go" lines="1975-1976" /> |
+| `networks[*].evm.fallbackStatePollerDebounce` | Duration | unset | Debounce used while the block time is not yet known (step 3 of `resolveDebounce`). Unset, the 1 s cold block time × the multiplier (0.7 s) applies. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="505-530" /> |
 | `networks[*].evm.fallbackFinalityDepth` | int64 | `1024` | Blocks subtracted from latest to infer finalized when the upstream does not support `eth_getBlockByNumber("finalized")`. Applied only when `finalizedBlock == 0` and `latestBlock > 0`. Source: <SourceLink file="common/defaults.go" lines="1975" /> |
 | `networks[*].evm.dynamicBlockTimeDebounceMultiplier` | \*float64 | `0.7` | Scales the EMA block time to compute the debounce. **`0` is silently treated as unset** — the default 0.7 is used. Valid useful range: `0.1`–`1.0`; values above `1.0` make the debounce longer than one block time, causing stale data between polls. To eliminate the EMA-derived debounce, use `statePollerDebounce` on the upstream instead. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="368-372" /> |
 | `networks[*].evm.finalizedDebounceDepthMultiplier` | \*float64 | `0.05` | Finalized polls wait until the upstream's finalized block is older than `(latest − finalized) × EMA block time × multiplier`, when that is longer than the regular debounce. `0` disables it: finalized uses the regular debounce, as before. Also throttles the forced finalized re-check of `blockAvailability` with finalized confidence. Source: <SourceLink file="common/defaults.go" lines="2446" /> |
@@ -252,7 +252,7 @@ With a `use-upstream` selector, `EvmRoutableUpstreams` narrows the candidates to
 }]`}
 />
 
-**2. Faster polling for a sub-second chain (Arbitrum).** The EMA auto-tunes the debounce to ~70% of block time, but `fallbackStatePollerDebounce` should be shortened so warm-up doesn't bottleneck fresh starts:
+**2. Faster polling for a sub-second chain (Arbitrum).** The block time auto-tunes the debounce to ~70% of block time within 4 headers; before that the cold debounce is 0.7 s. `fallbackStatePollerDebounce` shortens those first headers:
 
 <ConfigTabs
   path="networks[].evm"

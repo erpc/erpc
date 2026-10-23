@@ -199,7 +199,6 @@ func TestCovValidation_EvmNetwork(t *testing.T) {
 	}
 	cvRunCases(t, baseline, (*EvmNetworkConfig).Validate, []cvCase[EvmNetworkConfig]{
 		{"fallbackFinalityDepth", func(e *EvmNetworkConfig) { e.FallbackFinalityDepth = 0 }, "network.*.evm.fallbackFinalityDepth must be greater than 0"},
-		{"fallbackStatePollerDebounce", func(e *EvmNetworkConfig) { e.FallbackStatePollerDebounce = 0 }, "network.*.evm.fallbackStatePollerDebounce is required"},
 		{"getLogsMaxAllowedRange", func(e *EvmNetworkConfig) { e.GetLogsMaxAllowedRange = 0 }, "network.*.evm.getLogsMaxAllowedRange must be greater than 0"},
 		{"unknown local answer", func(e *EvmNetworkConfig) { e.LocalAnswers["eth_getBalance"] = true }, "network.*.evm.localAnswers.eth_getBalance: eRPC has no local answer for this method"},
 		{"bad safeBlockSource", func(e *EvmNetworkConfig) { e.SafeBlockSource = "(tag:archive" }, `network.*.evm.safeBlockSource has invalid selector "(tag:archive"`},

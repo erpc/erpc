@@ -323,7 +323,7 @@ const (
 )
 
 // settleState is one settle (§6 rule 5): latest asked from up to 3
-// authoritative upstreams that do not vote. Each answer, once its walk
+// voters that do not vote. Each answer, once its walk
 // ended, adds one vote while the decision it was asked for stands.
 type settleState struct {
 	key       string               // the decision: settleKey
@@ -488,16 +488,15 @@ func (t *ChainTracker) waitsBackoff(s *settleState) bool {
 	return false
 }
 
-// settleUpstreams are up to settleAsks authoritative upstreams that do not
-// vote, in selection order. A network without intake is swept once in
-// selection order.
+// settleUpstreams are up to settleAsks voters that do not vote, in
+// selection order. A network without intake is swept once in selection
+// order.
 func (t *ChainTracker) settleUpstreams(base []voter) []string {
-	n, ok := t.network.(interface{ EvmAuthoritativeUpstreams(string) []string })
-	if !ok {
+	if t.voters.all {
 		return []string{""}
 	}
 	var out []string
-	for _, id := range n.EvmAuthoritativeUpstreams(t.selector) {
+	for _, id := range t.voters.Voters {
 		if slices.ContainsFunc(base, func(v voter) bool { return v.who == id }) {
 			continue
 		}
@@ -509,8 +508,8 @@ func (t *ChainTracker) settleUpstreams(base []voter) []string {
 	return out
 }
 
-// askState is §6 rule 6: with demand and no live source, the tracker asks
-// the first authoritative upstream for latest each block time; that answer
+// askState is §6 rule 6: with demand and no hash voter, the tracker asks
+// the first voter for latest each block time; that answer
 // is the only vote until the next.
 type askState struct {
 	vote, pending       *node
@@ -546,7 +545,7 @@ func (t *ChainTracker) askWanted() bool {
 	return true
 }
 
-// maybeAsk asks the first authoritative upstream for latest; after an ask
+// maybeAsk asks the first voter for latest; after an ask
 // that failed, the next one sweeps the whole list in selection order.
 func (t *ChainTracker) maybeAsk() {
 	now := time.Now()
@@ -555,8 +554,8 @@ func (t *ChainTracker) maybeAsk() {
 	}
 	t.ask.last = now
 	targets := []string{""}
-	if n, ok := t.network.(interface{ EvmAuthoritativeUpstreams(string) []string }); ok {
-		ups := n.EvmAuthoritativeUpstreams(t.selector)
+	if !t.voters.all {
+		ups := t.voters.Voters
 		if len(ups) == 0 {
 			t.ask.failed = true
 			return
@@ -632,11 +631,11 @@ func (t *ChainTracker) conflicts(nd *node) bool {
 }
 
 // rearm ticks the tracker at its next deadline: the next no-source ask, the
-// end of an undecided settle's backoff, the next catch-up while the
-// network's latest block caps the sends, or the end of the cold window,
-// when sources that never reported stop counting for the delivery gate. It
-// runs after every message, so a deadline that fires never hides a later
-// one.
+// end of an undecided settle's backoff, the next catch-up while the lane's
+// Latest caps the sends, the end of the cold window, the moment the
+// soonest hash voter's hash age passes W, or the moment a vote off the pins
+// has been off for W (minority fork). It runs after every message, so a
+// deadline that fires never hides a later one.
 func (t *ChainTracker) rearm() {
 	now := time.Now()
 	var at time.Time
@@ -651,8 +650,11 @@ func (t *ChainTracker) rearm() {
 	if c := t.catchUpAt; c.After(now) && (at.IsZero() || c.Before(at)) {
 		at = c
 	}
-	if cold := t.since.Add(t.LiveBound()); cold.After(now) && (at.IsZero() || cold.Before(at)) {
-		at = cold
+	w := t.W()
+	for _, due := range []time.Time{t.since.Add(w), t.voters.Next, t.forkAt} {
+		if due.After(now) && (at.IsZero() || due.Before(at)) {
+			at = due
+		}
 	}
 	if at.Equal(t.wakeAt) {
 		return

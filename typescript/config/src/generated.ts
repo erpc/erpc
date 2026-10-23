@@ -1015,8 +1015,8 @@ export interface EvmUpstreamConfig {
   /**
    * StatePollerDebounce overrides the debounce interval for the state poller.
    * When 0 (default), the interval is dynamically inferred from the chain's
-   * observed block time, falling back to the network-level
-   * FallbackStatePollerDebounce, then to a 1s floor.
+   * observed block time; until that is known, the network-level
+   * FallbackStatePollerDebounce when set, else the 1s cold block time.
    */
   statePollerDebounce?: Duration;
   blockAvailability?: EvmBlockAvailabilityConfig;

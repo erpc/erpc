@@ -187,10 +187,11 @@ func streamBlocksResponse(header json.RawMessage) (*bdsevm.StreamBlocksResponse,
 
 // waitBoundedFeed ends a wait the client should not sit through with
 // errStreamBlocksStalled, so a pod that lags, restarted or fills slowly
-// tells the client to reconnect (spec §13.1): a Head wait longer than
-// wait, and a Read wait that spends wait while the sendable head is not the
-// cursor and stands at or above it, or while no source is live. A Read at
-// the head of a live chain that makes no blocks waits without end.
+// tells the client to reconnect (spec §10.2): a Head wait longer than
+// wait, and a Read wait that spends wait while the confirmed head is not the
+// cursor and stands at or above it, or while no hash voter exists. A Read
+// at the head of a chain that makes no blocks waits without end: no lag
+// reference moves, so its hash voters stay.
 type waitBoundedFeed struct {
 	*evm.ChainTracker
 	wait time.Duration
@@ -218,8 +219,8 @@ func (f waitBoundedFeed) Read(ctx context.Context, c indexer.Cursor, o indexer.R
 }
 
 // watchStall ends a Read on c with errStreamBlocksStalled once it waited
-// f.wait in a row while stalled. Liveness changes without a published
-// state, so it is checked again every quarter of the wait too.
+// f.wait in a row while stalled; it is checked on each published state
+// and every quarter of the wait.
 func (f waitBoundedFeed) watchStall(ctx context.Context, c indexer.Cursor, cancel context.CancelCauseFunc) {
 	recheck := f.wait / 4
 	timer := time.NewTimer(recheck)
@@ -252,13 +253,13 @@ func (f waitBoundedFeed) watchStall(ctx context.Context, c indexer.Cursor, cance
 }
 
 // stalled reports whether a Read on c waits on this pod rather than on the
-// chain: the sendable head stands above c, or at c's number on another
-// branch, or no source is live.
+// chain: the confirmed head stands above c, or at c's number on another
+// branch, or no hash voter exists.
 func (f waitBoundedFeed) stalled(c indexer.Cursor) bool {
-	if !f.SourceLive() {
+	if !f.HashVoting() {
 		return true
 	}
-	send, ok := f.SendTip()
+	send, ok := f.Confirmed()
 	return ok && (send.Number > c.Number || send.Number == c.Number && send.Hash != c.Hash)
 }
 

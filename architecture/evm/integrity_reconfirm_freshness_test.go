@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
@@ -22,11 +23,19 @@ type capturingNetwork struct {
 	dirs map[string][]*common.RequestDirectives // block ref -> directives, in order
 	hash string
 	num  string
-	// sourcesVote is the intake's predicate: while false no source vote counts.
+	// sourcesVote is the intake's predicate: while false no source is a
+	// hash voter; the voters are sources a and b, of two vendors.
 	sourcesVote atomic.Bool
 }
 
-func (n *capturingNetwork) EvmSourceVotes(string, string) bool { return n.sourcesVote.Load() }
+func (n *capturingNetwork) EvmHashVoters(string, time.Duration, bool) HashVoters {
+	hv := HashVoters{Voters: []string{"a", "b"}, Need: 1, Evidence: 2,
+		Vendors: map[string]string{"a": "vendor-a", "b": "vendor-b"}}
+	if n.sourcesVote.Load() {
+		hv.Hash, hv.Need = []string{"a", "b"}, 2
+	}
+	return hv
+}
 
 func newCapturingNetwork(t *testing.T, number int64, hash string) *capturingNetwork {
 	t.Helper()

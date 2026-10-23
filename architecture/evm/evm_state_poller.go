@@ -232,6 +232,9 @@ func NewEvmStatePoller(
 	fbs.OnLargeRollback(func(currentVal, newVal int64) {
 		e.tracker.RecordBlockHeadLargeRollback(e.upstream, "finalized", currentVal, newVal)
 	})
+	if tracker != nil {
+		tracker.SetFetchCadence(up, e.BackedOffCadence)
+	}
 
 	return e
 }
@@ -504,7 +507,10 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 // The debounce prevents redundant fetches when request traffic or other
 // paths (e.g. SuggestLatestBlock) already keep the block number fresh.
 //
-//	user config → block time → network FallbackStatePollerDebounce → 1s default
+//	user config → block time × multiplier → while the block time is unknown,
+//	network FallbackStatePollerDebounce, else health.ColdBlockTime × multiplier
+//
+// so a cold instance polls at the cold block time's cadence (spec §6.7).
 func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Duration {
 	e.stateMu.RLock()
 	dbi := e.debounceInterval
@@ -512,20 +518,21 @@ func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Dura
 	if dbi != 0 {
 		return dbi
 	}
-	if blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId()); blockTime != 0 {
-		// Scale block time down by the configured multiplier (default 0.7) so the
-		// debounce expires before the next block is expected. This prefers freshness
-		// over saving RPC calls — EMA smooths long-term, multiplier covers the tail.
-		mult := common.DefaultDynamicBlockTimeDebounceMultiplier
-		if cfg != nil && cfg.DynamicBlockTimeDebounceMultiplier != nil && *cfg.DynamicBlockTimeDebounceMultiplier > 0 {
-			mult = *cfg.DynamicBlockTimeDebounceMultiplier
+	blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
+	if blockTime == 0 {
+		if cfg != nil && cfg.FallbackStatePollerDebounce != 0 {
+			return cfg.FallbackStatePollerDebounce.Duration()
 		}
-		return time.Duration(float64(blockTime) * mult)
+		blockTime = health.ColdBlockTime
 	}
-	if cfg != nil && cfg.FallbackStatePollerDebounce != 0 {
-		return cfg.FallbackStatePollerDebounce.Duration()
+	// Scale block time down by the configured multiplier (default 0.7) so the
+	// debounce expires before the next block is expected. This prefers freshness
+	// over saving RPC calls — EMA smooths long-term, multiplier covers the tail.
+	mult := common.DefaultDynamicBlockTimeDebounceMultiplier
+	if cfg != nil && cfg.DynamicBlockTimeDebounceMultiplier != nil && *cfg.DynamicBlockTimeDebounceMultiplier > 0 {
+		mult = *cfg.DynamicBlockTimeDebounceMultiplier
 	}
-	return 1 * time.Second
+	return time.Duration(float64(blockTime) * mult)
 }
 
 // resolveFinalizedDebounce widens the debounce for finalized polls to a fraction of the
@@ -833,6 +840,30 @@ func (e *EvmStatePoller) pollSourceDelay() time.Duration {
 		d = max(d, min(d<<min(n, 16), PollSourceMaxBackoff.Load()))
 	}
 	return d
+}
+
+// BackedOffCadence is how often this upstream's latest head reaches this
+// instance now, the head bench's cadence (spec §6.1, §6.8): while a poll
+// source, its backed-off pollSourceDelay; a wss subscription source pushes
+// every head, so its poll cadence; else the full poll interval or the
+// debounce, the longer, since a poll inside the debounce reuses the stored
+// head.
+func (e *EvmStatePoller) BackedOffCadence() time.Duration {
+	if e.activePollSource() != nil {
+		return e.pollSourceDelay()
+	}
+	c := e.upstream.Config()
+	if c != nil && c.IsSubscriptionSource() && util.IsWsEndpoint(c.Endpoint) {
+		return e.pollCadence()
+	}
+	e.stateMu.RLock()
+	cfg := e.cfg
+	e.stateMu.RUnlock()
+	interval := time.Duration(0)
+	if c != nil && c.Evm != nil {
+		interval = c.Evm.StatePollerInterval.Duration()
+	}
+	return max(interval, e.resolveDebounce(cfg))
 }
 
 // latestDebounce is how fresh a latest poll keeps the counter: while a poll

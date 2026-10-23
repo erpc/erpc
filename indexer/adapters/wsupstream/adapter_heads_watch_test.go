@@ -21,15 +21,15 @@ func compressHeadsWatch(t *testing.T) {
 }
 
 // TestAdapterReconnectsSilentNewHeads: a newHeads subscription that goes
-// silent on a live connection while the upstream's polled head advances is
-// recovered by reconnecting.
+// silent on a live connection while its hash age runs past the watch
+// interval is recovered by reconnecting.
 func TestAdapterReconnectsSilentNewHeads(t *testing.T) {
 	compressResubRetry(t)
 	compressHeadsWatch(t)
 	server := newNotifyServer(t)
 	a, sink := newTestAdapter(t, server.wsURL(t))
-	var polled atomic.Int64
-	a.polledHead = polled.Load
+	var age atomic.Int64
+	a.hashAge = func() time.Duration { return time.Duration(age.Load()) }
 	conn1 := <-server.newConn
 	startHeadsSource(a)
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
@@ -39,7 +39,7 @@ func TestAdapterReconnectsSilentNewHeads(t *testing.T) {
 
 	conn1.sendNewHead(conn1.nextRequest(t, methodEthSubscribe).SubID, 100)
 	require.Equal(t, int64(100), nextHead(t, sink))
-	polled.Store(105)
+	age.Store(int64(time.Second))
 
 	var conn2 *notifyConn
 	select {
@@ -53,26 +53,25 @@ func TestAdapterReconnectsSilentNewHeads(t *testing.T) {
 	require.Equal(t, int64(106), nextHead(t, sink))
 }
 
-// TestAdapterKeepsSilentNewHeadsWhenChainHalts: silence while the upstream
-// reports no newer block is a halted chain, not a dead subscription.
+// TestAdapterKeepsSilentNewHeadsWhenChainHalts: silence while the lag
+// reference stands still (hash age 0) is a halted chain, not a dead
+// subscription.
 func TestAdapterKeepsSilentNewHeadsWhenChainHalts(t *testing.T) {
 	compressResubRetry(t)
 	compressHeadsWatch(t)
 	server := newNotifyServer(t)
 	a, sink := newTestAdapter(t, server.wsURL(t))
-	var polled atomic.Int64
-	a.polledHead = polled.Load
+	a.hashAge = func() time.Duration { return 0 }
 	conn1 := <-server.newConn
 	startHeadsSource(a)
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 
 	conn1.sendNewHead(conn1.nextRequest(t, methodEthSubscribe).SubID, 100)
 	require.Equal(t, int64(100), nextHead(t, sink))
-	polled.Store(100)
 
 	select {
 	case <-server.newConn:
-		t.Fatal("reconnected although the upstream reported no newer block")
+		t.Fatal("reconnected although the lag reference stood still")
 	case <-time.After(500 * time.Millisecond):
 	}
 }
@@ -87,7 +86,7 @@ func TestAdapterWatchHeadsStopsWithClient(t *testing.T) {
 	logger := zerolog.Nop()
 	ci, err := clients.NewWsJsonRpcClient(ctx, &logger, "test-project", common.NewFakeUpstream("test-ws-upstream"), server.wsURL(t), nil, nil)
 	require.NoError(t, err)
-	a := &Adapter{wsClient: ci.(*clients.WsJsonRpcClient), logger: &logger, polledHead: func() int64 { return 0 }}
+	a := &Adapter{wsClient: ci.(*clients.WsJsonRpcClient), logger: &logger, hashAge: func() time.Duration { return 0 }}
 
 	done := make(chan struct{})
 	go func() {

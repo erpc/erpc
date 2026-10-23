@@ -228,7 +228,7 @@ primary control surface.
 |---|---|---|---|
 | `evm.chainId` | int64 | required (0 = unset) | Used for `eth_chainId` responses and network ID formation (`evm:<chainId>`). |
 | `evm.fallbackFinalityDepth` | int64 | `1024` | Depth used when the network cannot determine finality dynamically. A block is considered finalized if `latestBlock - blockNumber >= fallbackFinalityDepth`. |
-| `evm.fallbackStatePollerDebounce` | Duration | `5s` | Fallback poll interval for state poller when dynamic block time is unknown. |
+| `evm.fallbackStatePollerDebounce` | Duration | unset | Poll interval for the state poller while the block time is unknown; unset, 0.7s (the 1s cold block time × 0.7). |
 | `evm.getLogsMaxAllowedRange` | int64 | `30_000` | Max block range for `eth_getLogs` before forced splitting. <SourceLink file="common/defaults.go" lines="2092-2094" /> |
 | `evm.getLogsMaxAllowedAddresses` | int64 | `0` (unlimited) | Max address count in `eth_getLogs` filter. |
 | `evm.getLogsMaxAllowedTopics` | int64 | `0` (unlimited) | Max topic count in `eth_getLogs` filter. |

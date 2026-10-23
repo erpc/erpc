@@ -12,6 +12,7 @@ import (
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
@@ -21,20 +22,23 @@ import (
 // networkIntake is the network's side of every source: each header is
 // parsed (check 0), checked for integrity while it is on (check 1), and
 // passed through its upstream's identity gate and head counter (checks 2
-// and 3); an accepted header becomes its source's vote. Intake owns the one
-// predicate that decides whether a vote counts: liveness and authority
-// (check 4).
+// and 3); an accepted header is its source's hash vote. Intake owns who
+// votes (check 4, spec §6.2) and which topics a voter feeds (topic
+// admission); the health tracker owns how fresh each vote is (§6.1).
 type networkIntake struct {
 	nw *Network
 
-	mu      sync.Mutex
-	sources map[string]*sourceState // upstream id -> state
-	// primaryLeads: some primary source has been live and policy-eligible
-	// for primaryLeadAfter; fallback-tier sources are not authoritative.
-	primaryLeads bool
-	// authorities is the authoritative upstreams as authority last read
-	// them, for per-transaction checks that take no lock.
-	authorities atomic.Pointer[[]string]
+	mu sync.Mutex
+	// last is each source's newest accepted header.
+	last map[string]indexer.Cursor
+	// hashVoterSince is, per primary voter, since when it has been a hash
+	// voter without a break, as the reconciler's passes saw it; leads is
+	// whether one has been for primaryLeadAfter.
+	hashVoterSince map[string]time.Time
+	leads          bool
+	// admitted is the voters topic admission admits, as the last pass
+	// read them, for per-transaction checks that take no lock.
+	admitted atomic.Pointer[[]string]
 	// rejected are the newest headers integrity held back, oldest first;
 	// a check suspended for the network lets them in again.
 	rejected []rejectedHeader
@@ -48,27 +52,13 @@ type rejectedHeader struct {
 // rejectedKept bounds the headers integrity held back that intake keeps.
 const rejectedKept = 64
 
-type sourceState struct {
-	last indexer.Cursor // newest accepted header
-	// behindSince is when the newest known block was first seen above last;
-	// zero while it is not.
-	behindSince time.Time
-	live        bool
-	// liveSince is when the source last became live; eligibleSince when a
-	// primary source last entered the policy's eligible set. Zero while not.
-	liveSince     time.Time
-	eligibleSince time.Time
-	// eligibleNow is authority's per-pass mark, under in.mu: a primary in
-	// the eligible set it read.
-	eligibleNow bool
-}
-
-// primaryLeadAfter is how long a primary source must stay live and eligible,
-// without a break, before fallback-tier sources stop being authoritative.
+// primaryLeadAfter is how long a primary voter must stay a hash voter,
+// without a break, before topic admission stops admitting the fallback
+// tier (spec §6.2).
 var primaryLeadAfter = util.NewDuration(60 * time.Second)
 
 func newNetworkIntake(nw *Network) *networkIntake {
-	return &networkIntake{nw: nw, sources: make(map[string]*sourceState)}
+	return &networkIntake{nw: nw, last: make(map[string]indexer.Cursor), hashVoterSince: make(map[string]time.Time)}
 }
 
 var _ indexer.Intake = (*networkIntake)(nil)
@@ -80,12 +70,13 @@ func (in *networkIntake) Subscribed(upstreamId string, t indexer.Topic, err erro
 }
 
 // PendingTx takes one pending transaction of a push source into the
-// mempool feed while the source is authoritative as authority last read.
+// mempool feed while topic admission admits the source, as the last pass
+// read it.
 func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessage) {
 	if in.nw.mempool == nil {
 		return
 	}
-	if ids := in.authorities.Load(); ids == nil || !slices.Contains(*ids, upstreamId) {
+	if ids := in.admitted.Load(); ids == nil || !slices.Contains(*ids, upstreamId) {
 		return
 	}
 	in.nw.mempool.Add(variant, raw)
@@ -111,10 +102,9 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay b
 		return
 	}
 	in.mu.Lock()
-	s := in.sources[upstreamId]
-	dup := s != nil && s.last == cur
+	last, seen := in.last[upstreamId]
 	in.mu.Unlock()
-	if dup {
+	if seen && last == cur {
 		in.count(upstreamId, "duplicate")
 		return
 	}
@@ -137,11 +127,17 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay b
 		in.count(upstreamId, "duplicate")
 		return
 	}
+	// The hash vote is recorded before the trackers see the header, so the
+	// tracker that handles it counts its sender as a hash voter.
+	if mt := in.nw.metricsTracker; mt != nil {
+		mt.RecordHashVote(u, int64(cur.Number))
+		mt.SampleSourceHeaderTime(u, int64(cur.Number), sh.Timestamp())
+	}
 	evm.ObserveSourceHeader(in.nw, u, sh)
-	if in.votes(upstreamId) {
+	if in.isVoter(upstreamId) {
 		in.count(upstreamId, "voted")
 	} else {
-		in.count(upstreamId, "gated_authority")
+		in.count(upstreamId, "gated_voter")
 	}
 }
 
@@ -174,6 +170,28 @@ func (in *networkIntake) replayRejected() {
 	}()
 }
 
+// disconnected expires a push source's hash vote at once: its socket
+// closed, so nothing it said is fresh any more (spec §15.1). The trackers
+// read their voters again and the reconciler rechecks the topics.
+func (in *networkIntake) disconnected(upstreamId string) {
+	u := in.upstream(upstreamId)
+	if u == nil || in.nw.metricsTracker == nil {
+		return
+	}
+	in.nw.metricsTracker.ExpireHashVote(u)
+	evm.VotersChanged(in.nw)
+	in.nw.sources.wake()
+}
+
+// hashVote is u's newest hash vote (spec §6.1, §6.3); false before its
+// first.
+func (in *networkIntake) hashVote(u common.Upstream) (health.HashVote, bool) {
+	if in.nw.metricsTracker == nil {
+		return health.HashVote{}, false
+	}
+	return in.nw.metricsTracker.HashVote(u)
+}
+
 func (in *networkIntake) count(upstreamId, outcome string) {
 	telemetry.CounterHandle(telemetry.MetricChainTrackerSourceHeadsTotal,
 		in.nw.projectId, in.nw.Label(), upstreamId, outcome).Inc()
@@ -191,352 +209,217 @@ func (in *networkIntake) upstream(id string) *upstream.Upstream {
 	return nil
 }
 
-// newestKnown is the higher of the tracker's head and the network's served
-// tip; never a single vote.
-func (in *networkIntake) newestKnown() uint64 {
-	newest := uint64(0)
-	if tip, ok := in.nw.chainTracker.Tip(); ok {
-		newest = tip.Number
-	}
-	if served := in.nw.EvmHighestLatestBlockNumber(context.Background()); served > 0 {
-		newest = max(newest, uint64(served))
-	}
-	return newest
-}
-
 // accept makes cur its source's newest accepted header; onlyNewer: only
 // when it is above the newest one, compared and set in one section.
 func (in *networkIntake) accept(upstreamId string, cur indexer.Cursor, onlyNewer bool) bool {
-	newest, bound, now := in.newestKnown(), in.nw.chainTracker.LiveBound(), time.Now()
-	in.mu.Lock()
-	s := in.sources[upstreamId]
-	if onlyNewer && s != nil && cur.Number <= s.last.Number {
-		in.mu.Unlock()
-		return false
-	}
-	if s == nil {
-		s = &sourceState{}
-		in.sources[upstreamId] = s
-	}
-	s.last, s.behindSince = cur, time.Time{}
-	changed := in.evaluateLocked(upstreamId, s, newest, bound, now)
-	in.mu.Unlock()
-	if changed {
-		in.changed()
-	}
-	return true
-}
-
-// evaluateLocked updates s.live: a source stays live unless the newest known
-// block has stood above its accepted header for longer than the live bound.
-func (in *networkIntake) evaluateLocked(upstreamId string, s *sourceState, newest uint64, bound time.Duration, now time.Time) (changed bool) {
-	if newest > s.last.Number {
-		if s.behindSince.IsZero() {
-			s.behindSince = now
-		}
-	} else {
-		s.behindSince = time.Time{}
-	}
-	live := s.behindSince.IsZero() || now.Sub(s.behindSince) <= bound
-	if live == s.live {
-		return false
-	}
-	s.live = live
-	v := 0.0
-	s.liveSince = time.Time{}
-	if live {
-		v = 1
-		s.liveSince = now
-	}
-	telemetry.GaugeHandle(telemetry.MetricSourceLive, in.nw.projectId, in.nw.Label(), upstreamId).Set(v)
-	return true
-}
-
-// changed tells the trackers to count votes again and the reconciler to
-// recheck which topics run: liveness or authority moved.
-func (in *networkIntake) changed() {
-	evm.LivenessChanged(in.nw)
-	in.nw.sources.wake()
-}
-
-func (in *networkIntake) live(upstreamId string) bool {
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	s := in.sources[upstreamId]
-	return s != nil && s.live
+	if last, seen := in.last[upstreamId]; onlyNewer && seen && cur.Number <= last.Number {
+		return false
+	}
+	in.last[upstreamId] = cur
+	return true
 }
 
-// authoritative: upstreamId is in the selection policy's eligible set, not
-// syncing, and, with failover on, outside the fallback tier or no primary
-// source leads.
-func (in *networkIntake) authoritative(upstreamId string) bool {
-	primary, eligible, leads := in.authority(upstreamId)
-	return eligible && in.admits(primary, leads)
+// reported reports whether a source header of upstreamId was accepted.
+func (in *networkIntake) reported(upstreamId string) bool {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	_, seen := in.last[upstreamId]
+	return seen
 }
 
-// syncing: u reports itself syncing (#202). It neither votes nor feeds a
-// topic as authoritative, as tipVoterRank keeps it out of the served tip.
+// syncing: u reports itself syncing (#202); it is no voter.
 func syncing(u common.Upstream) bool {
 	eu, ok := u.(common.EvmUpstream)
 	return ok && eu.EvmSyncingState() == common.EvmSyncingStateSyncing
 }
 
-// admits is the tier half of authority: with failover on, a fallback-tier
-// upstream is authoritative only while no primary source leads.
-func (in *networkIntake) admits(primary, leads bool) bool {
-	return in.nw.cfg == nil || !in.nw.cfg.Failover.Enabled() || primary || !leads
-}
-
-// authoritativeIn lists, in the policy's selection order, the authoritative
-// upstreams; for a group selector, the eligible upstreams it matches that
-// are not syncing, whose headers vote before the authority gate.
-func (in *networkIntake) authoritativeIn(selector string) []string {
-	_, _, leads := in.authority("")
-	var out []string
+// voters lists the voters of the lane of selector ("" network-wide) in
+// selection order (spec §6.2): upstreams in the policy's eligible set that
+// the selector matches, with a state poller and not syncing, of the best
+// rank present (tipVoterRank: live heads, or none yet, before benched ones
+// before configured caps). No tier filter: the fallback tier votes too. cands are the
+// eligible, matched upstreams that are not syncing, voters or not.
+func (in *networkIntake) voters(selector string) (voters, cands []common.Upstream) {
+	best := -1
 	for c := range in.nw.EvmRoutableUpstreams(context.Background()) {
-		if syncing(c) {
-			continue
-		}
 		if selector != "" {
-			if m, _ := common.UpstreamMatchesSelector(selector, c); m {
-				out = append(out, c.Id())
+			if m, _ := common.UpstreamMatchesSelector(selector, c); !m {
+				continue
 			}
-			continue
 		}
-		if in.admits(!isFallbackTier(c), leads) {
-			out = append(out, c.Id())
-		}
-	}
-	return out
-}
-
-// authority reads the policy's eligible set now, syncing upstreams left
-// out: whether upstreamId is in it and outside the fallback tier, and
-// whether some primary source has been live and eligible for
-// primaryLeadAfter. A primary counts as live only while it is eligible. It
-// publishes the authoritative upstreams to authorities; a change of that
-// set, as of the leads, makes the trackers count votes again. The set is
-// read under in.mu, so a caller holding an older set cannot overwrite
-// eligibleSince or authorities after a newer one.
-func (in *networkIntake) authority(upstreamId string) (primary, eligible, leads bool) {
-	in.mu.Lock()
-	now := time.Now()
-	for _, s := range in.sources {
-		s.eligibleNow = false
-	}
-	var buf [16]authorityCandidate
-	cands := buf[:0]
-	for c := range in.nw.EvmRoutableUpstreams(context.Background()) {
 		if syncing(c) {
 			continue
 		}
-		isPrimary := !isFallbackTier(c)
-		cands = append(cands, authorityCandidate{c.Id(), isPrimary})
-		if c.Id() == upstreamId {
-			primary, eligible = isPrimary, true
-		}
-		if s := in.sources[c.Id()]; s != nil && isPrimary {
-			s.eligibleNow = true
-		}
-	}
-	for _, s := range in.sources {
-		if !s.eligibleNow {
-			s.eligibleSince = time.Time{}
-			continue
-		}
-		if s.eligibleSince.IsZero() {
-			s.eligibleSince = now
-		}
-		if s.live && now.Sub(later(s.liveSince, s.eligibleSince)) >= primaryLeadAfter.Load() {
-			leads = true
-		}
-	}
-	flipped := leads != in.primaryLeads
-	in.primaryLeads = leads
-	flipped = in.publishAuthoritiesLocked(cands, leads) || flipped
-	in.mu.Unlock()
-	if flipped {
-		in.changed()
-	}
-	return primary, eligible, leads
-}
-
-type authorityCandidate struct {
-	id      string
-	primary bool
-}
-
-// publishAuthoritiesLocked stores the authoritative ones of cands, the
-// eligible set in selection order, and reports whether they changed; a set
-// equal to the stored one is kept, so a steady set allocates nothing.
-func (in *networkIntake) publishAuthoritiesLocked(cands []authorityCandidate, leads bool) (changed bool) {
-	old := in.authorities.Load()
-	n, same := 0, old != nil
-	for _, c := range cands {
-		if !in.admits(c.primary, leads) {
-			continue
-		}
-		same = same && n < len(*old) && (*old)[n] == c.id
-		n++
-	}
-	if same && n == len(*old) {
-		return false
-	}
-	ids := make([]string, 0, n)
-	for _, c := range cands {
-		if in.admits(c.primary, leads) {
-			ids = append(ids, c.id)
-		}
-	}
-	in.authorities.Store(&ids)
-	return true
-}
-
-func later(a, b time.Time) time.Time {
-	if a.After(b) {
-		return a
-	}
-	return b
-}
-
-// livenessInterval is how often, in live bounds, liveness is re-evaluated
-// without a new header.
-var livenessInterval = func(bound time.Duration) time.Duration { return bound / 4 }
-
-// run re-evaluates liveness until ctx ends, so a silent or lagging source
-// stops voting within the live bound. The bound shrinks once the block time
-// is known (from 12s to the chain's), so each pin change may bring the
-// next evaluation forward.
-func (in *networkIntake) run(ctx context.Context) {
-	tr := in.nw.chainTracker
-	next := time.Now().Add(livenessInterval(tr.LiveBound()))
-	for {
-		timer := time.NewTimer(time.Until(next))
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-tr.Changed():
-			timer.Stop()
-			if due := time.Now().Add(livenessInterval(tr.LiveBound())); due.Before(next) {
-				next = due
+		cands = append(cands, c)
+		_, rank, ok := tipVoterRank(c, false, in.nw.metricsTracker)
+		if !ok {
+			// No head yet is no reason to leave the ballot of voters: a
+			// poll source gets its first head only once admitted.
+			eu, isEvm := c.(common.EvmUpstream)
+			if !isEvm || eu.EvmStatePoller() == nil || eu.EvmStatePoller().IsObjectNull() {
+				continue
 			}
+			rank = 0
+		}
+		if best >= 0 && rank > best {
 			continue
-		case <-timer.C:
 		}
-		in.tick()
-		next = time.Now().Add(livenessInterval(tr.LiveBound()))
-	}
-}
-
-func (in *networkIntake) tick() {
-	defer func() {
-		if rec := recover(); rec != nil {
-			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
-				"network-intake",
-				fmt.Sprintf("project:%s network:%s", in.nw.projectId, in.nw.networkId),
-				common.ErrorFingerprint(rec),
-			).Inc()
-			in.nw.logger.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).
-				Msg("unexpected panic while evaluating source liveness")
+		if best < 0 || rank < best {
+			best, voters = rank, voters[:0]
 		}
-	}()
-	newest, bound, now := in.newestKnown(), in.nw.chainTracker.LiveBound(), time.Now()
-	changed := false
-	in.mu.Lock()
-	for id, s := range in.sources {
-		changed = in.evaluateLocked(id, s, newest, bound, now) || changed
+		voters = append(voters, c)
 	}
-	in.mu.Unlock()
-	if changed {
-		in.changed()
-	}
-	// A primary's lead begins with time alone, without a header or a
-	// liveness change; authority notices it.
-	in.authority("")
+	return voters, cands
 }
 
-// votes is the one predicate for whether a source's vote counts: the
-// source is live and authoritative now.
-func (in *networkIntake) votes(upstreamId string) bool {
-	return in.live(upstreamId) && in.authoritative(upstreamId)
+// isVoter reports whether upstreamId is a network-wide voter now.
+func (in *networkIntake) isVoter(upstreamId string) bool {
+	vs, _ := in.voters("")
+	return slices.ContainsFunc(vs, func(u common.Upstream) bool { return u.Id() == upstreamId })
 }
 
-func (in *networkIntake) anyLive() bool {
+// hashVoter reports whether voter u is a hash voter: its hash age is at
+// most w and its socket stayed up since (spec §6.1, §15.1). at is when it stops being one, zero while its age
+// does not run.
+func (in *networkIntake) hashVoter(u common.Upstream, w time.Duration, now time.Time) (ok bool, at time.Time) {
+	v, voted := in.hashVote(u)
+	if !voted || v.Expired || v.Age > w {
+		return false, time.Time{}
+	}
+	if v.Age > 0 {
+		at = now.Add(w - v.Age)
+	}
+	return true, at
+}
+
+// admit is topic admission (spec §6.2), run by each reconciler pass, at
+// least every W: it notes which primary voters are hash voters, whether
+// one has been for primaryLeadAfter without a break, and publishes the
+// admitted voters:
+//
+//	admitted(u) = voter(u) and (failover off, or u is not fallback tier,
+//	                            or no primary has been a hash voter for 60s without a break)
+func (in *networkIntake) admit(now time.Time, w time.Duration) {
+	voters, _ := in.voters("")
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	for _, s := range in.sources {
-		if s.live {
-			return true
+	leads := false
+	for _, u := range voters {
+		if isFallbackTier(u) {
+			continue
+		}
+		if ok, _ := in.hashVoter(u, w, now); !ok {
+			delete(in.hashVoterSince, u.Id())
+			continue
+		}
+		since, seen := in.hashVoterSince[u.Id()]
+		if !seen {
+			since = now
+			in.hashVoterSince[u.Id()] = now
+		}
+		leads = leads || now.Sub(since) >= primaryLeadAfter.Load()
+	}
+	for id := range in.hashVoterSince {
+		if !slices.ContainsFunc(voters, func(u common.Upstream) bool { return u.Id() == id }) {
+			delete(in.hashVoterSince, id)
 		}
 	}
-	return false
-}
-
-// EvmSourceVotes reports whether upstreamId's vote counts now in the tracker
-// of selector ("" network-wide); the trackers count only these votes. A
-// group tracker's upstreams vote while live and not syncing, before the
-// authority gate.
-func (n *Network) EvmSourceVotes(upstreamId, selector string) bool {
-	if n.intake == nil {
-		return false
+	in.leads = leads
+	tiers := in.nw.cfg != nil && in.nw.cfg.Failover.Enabled()
+	ids := make([]string, 0, len(voters))
+	for _, u := range voters {
+		if !tiers || !isFallbackTier(u) || !leads {
+			ids = append(ids, u.Id())
+		}
 	}
-	if selector != "" {
-		u := n.intake.upstream(upstreamId)
-		return u != nil && !syncing(u) && n.intake.live(upstreamId)
+	if old := in.admitted.Load(); old == nil || !slices.Equal(*old, ids) {
+		in.admitted.Store(&ids)
 	}
-	return n.intake.votes(upstreamId)
 }
 
-// EvmAnySourceLive reports whether any of the network's sources is live.
-func (n *Network) EvmAnySourceLive() bool {
-	return n.intake != nil && n.intake.anyLive()
+// admits reports whether topic admission admitted upstreamId at the last
+// pass.
+func (in *networkIntake) admits(upstreamId string) bool {
+	ids := in.admitted.Load()
+	return ids != nil && slices.Contains(*ids, upstreamId)
 }
 
-// EvmDeliveryQuorum is how many counted source votes a pin of the tracker
-// of selector needs before taps send it: the served-tip quorum of the
-// voting sources. Voting are the sources whose votes count now and, within
-// one live bound of since (the tracker's start or reset), the sources that
-// have not reported yet, so a cold pod's first header waits for a second.
-// After that a silent source does not count, so a one-source network flows.
-func (n *Network) EvmDeliveryQuorum(selector string, since time.Time) int {
+// EvmHashVoters is the voter set of the tracker of selector ("" network
+// wide), read once per tracker message (spec §6.2, §6.5): the lane's voters
+// in selection order; the hash voters, those whose hash age is at most w,
+// and, while cold, the eligible sources that have not reported a header
+// yet, so a cold instance's first header waits for a second; q.Of of them;
+// each upstream's vendor and the evidence quorum.
+func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm.HashVoters {
 	var q common.ServedTipQuorum
 	if n.cfg != nil {
 		q = n.cfg.Evm.ServedTipQuorum()
 	}
-	if n.intake == nil {
-		return q.Of(0)
+	hv := evm.HashVoters{Evidence: 1, Vendors: make(map[string]string)}
+	if n.intake == nil || n.upstreamsRegistry == nil {
+		hv.Need = q.Of(0)
+		return hv
 	}
-	return q.Of(n.intake.votingSources(selector, time.Since(since) < n.chainTracker.LiveBound()))
-}
-
-// votingSources counts the sources of the tracker of selector whose votes
-// count now; cold adds the sources that have not reported a header yet.
-func (in *networkIntake) votingSources(selector string, cold bool) int {
-	voting := 0
-	for _, id := range in.authoritativeIn(selector) {
-		in.mu.Lock()
-		s := in.sources[id]
-		live := s != nil && s.live
-		in.mu.Unlock()
-		if live {
-			voting++
+	var vendors []string
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
+		hv.Vendors[u.Id()] = u.VendorName()
+		if !slices.Contains(vendors, u.VendorName()) {
+			vendors = append(vendors, u.VendorName())
+		}
+	}
+	if len(vendors) >= 2 {
+		hv.Evidence = 2
+	}
+	now := time.Now()
+	voters, cands := n.intake.voters(selector)
+	for _, u := range voters {
+		hv.Voters = append(hv.Voters, u.Id())
+		ok, at := n.intake.hashVoter(u, w, now)
+		if !ok {
 			continue
 		}
-		if u := in.upstream(id); s == nil && cold && u != nil && u.Config().IsSubscriptionSource() {
-			voting++
+		hv.Hash = append(hv.Hash, u.Id())
+		if !at.IsZero() && (hv.Next.IsZero() || at.Before(hv.Next)) {
+			hv.Next = at
 		}
 	}
-	return voting
+	if cold {
+		for _, u := range cands {
+			if u.Config().IsSubscriptionSource() && !n.intake.reported(u.Id()) && !slices.Contains(hv.Hash, u.Id()) {
+				hv.Hash = append(hv.Hash, u.Id())
+			}
+		}
+	}
+	hv.Need = q.Of(len(hv.Hash))
+	return hv
 }
 
-// EvmAuthoritativeUpstreams lists the upstreams a tracker of selector asks
-// for latest (settles, no-source asks), in selection order.
-func (n *Network) EvmAuthoritativeUpstreams(selector string) []string {
-	if n.intake == nil {
-		return nil
+// EvmForkDemoted takes the network-wide tracker's minority-fork set: the
+// voters whose hash vote stayed off the pins for longer than W (spec §6.3).
+// They lose their number vote and go last in routing.
+func (n *Network) EvmForkDemoted(ids []string) {
+	if len(ids) == 0 {
+		n.forkDemoted.Store(nil)
+	} else {
+		n.forkDemoted.Store(&ids)
 	}
-	return n.intake.authoritativeIn(selector)
+	if n.logger != nil {
+		n.logger.Info().Strs("upstreams", ids).Msg("minority-fork demotion changed: demoted voters lose their number vote and go last in routing")
+	}
+}
+
+// EvmHashVotersChanged is the network-wide tracker's note that its hash
+// voters changed: the reconciler rechecks topic admission (spec §5.2).
+func (n *Network) EvmHashVotersChanged() {
+	n.sources.wake()
+}
+
+// isForkDemoted reports whether u is on a minority fork (EvmForkDemoted).
+func (n *Network) isForkDemoted(u common.Upstream) bool {
+	ids := n.forkDemoted.Load()
+	return ids != nil && slices.Contains(*ids, u.Id())
 }
 
 // EvmHeadsDemanded reports whether an open tap needs newHeads.

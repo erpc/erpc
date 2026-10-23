@@ -201,18 +201,21 @@ var (
 
 	// MetricChainTrackerSourceHeadsTotal counts every source header intake
 	// handled, by outcome: voted, duplicate, malformed, gated_identity,
-	// gated_integrity, gated_authority.
+	// gated_integrity, gated_voter.
 	MetricChainTrackerSourceHeadsTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "chain_tracker_source_heads_total",
 		Help:      "Source headers handled by network intake, by outcome.",
 	}, []string{"project", "network", "upstream", "outcome"})
 
-	MetricSourceLive = DefineGauge(prometheus.GaugeOpts{
+	// MetricUpstreamReportAgeSeconds is how long the lag reference has stood
+	// above an upstream's newest report, by evidence: number (its shared
+	// counter) or hash (its newest hash vote; +Inf without one).
+	MetricUpstreamReportAgeSeconds = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
-		Name:      "source_live",
-		Help:      "1 while the source is live: its accepted header has not trailed the newest known block for longer than the live bound.",
-	}, []string{"project", "network", "upstream"})
+		Name:      "upstream_report_age_seconds",
+		Help:      "How long the lag reference has stood above the upstream's newest report, by evidence: number or hash.",
+	}, []string{"project", "network", "upstream", "evidence"})
 
 	MetricSourceResubscribeTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",

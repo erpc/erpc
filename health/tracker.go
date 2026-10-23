@@ -1,7 +1,10 @@
 package health
 
 import (
+	"cmp"
 	"context"
+	"math"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -61,6 +64,11 @@ type NetworkMetadata struct {
 	// newer one; reporters is every upstream that has reported a head here.
 	headMu    sync.Mutex
 	reporters []headReporter
+	// refMovedAt is when the lag reference (evmLatestBlockNumber) last
+	// rose; firstVotes are when this instance first received a hash vote
+	// for each recent block number (ageHashVote). Guarded by headMu.
+	refMovedAt time.Time
+	firstVotes []firstVote
 
 	// On upstream entries only; guarded by the network entry's headMu.
 	// headChangedAt is when this upstream's stored latest head last changed;
@@ -89,6 +97,26 @@ type NetworkMetadata struct {
 	// only; guarded by the network entry's headMu.
 	headReport      headReport
 	finalizedReport headReport
+	// hashVote is this upstream's newest hash vote (spec §6.3): a header
+	// this instance received by push or fetched with cache reads skipped;
+	// hashVoted is false before the first. hashExpired: its socket closed
+	// since. hashBehindSince is when the lag reference first stood above
+	// it, zero while it does not; hashVotedAt is when the vote arrived. On
+	// upstream entries only; guarded by the network entry's headMu.
+	hashVote        int64
+	hashVoted       bool
+	hashExpired     bool
+	hashBehindSince time.Time
+	hashVotedAt     time.Time
+	// ageGauges are this upstream's report-age gauges, number then hash,
+	// bound to ageLabel, its network label; guarded by the network entry's
+	// headMu.
+	ageGauges [2]prometheus.Gauge
+	ageLabel  string
+	// cadence reads the upstream's backed-off fetch cadence
+	// (SetFetchCadence); nil until its state poller exists. On upstream
+	// entries only; guarded by the network entry's headMu.
+	cadence func() time.Duration
 
 	// Dynamic block time via EMA on on-chain block timestamps: on the network
 	// entry from the corroborated head, on an upstream entry from that
@@ -97,14 +125,16 @@ type NetworkMetadata struct {
 	// count gap. For fast chains where consecutive blocks share the same
 	// timestamp, samples are skipped until the timestamp advances, then
 	// blockGap normalization recovers sub-second precision.
-	// Callers should use GetNetworkBlockTime which returns 0 until enough
-	// samples have been collected.
-	evmBlockTime              atomic.Int64 // computed result in nanoseconds (read by consumers)
-	evmBlockTimeMu            sync.Mutex   // protects EMA state below
-	evmBlockTimePrevBlock     int64        // last block number fed to EMA
-	evmBlockTimePrevTimestamp int64        // block.timestamp (seconds) of that block
-	evmBlockTimeEmaNs         float64      // current EMA value in nanoseconds
-	evmBlockTimeSamples       int          // number of EMA samples collected
+	// Callers should use GetNetworkBlockTime which returns 0 until 4
+	// headers set it (sampleBlockTime).
+	evmBlockTime                atomic.Int64 // computed result in nanoseconds (read by consumers)
+	evmBlockTimeMu              sync.Mutex   // protects EMA state below
+	evmBlockTimePrevBlock       int64        // last block number fed to EMA
+	evmBlockTimePrevTimestamp   int64        // block.timestamp (seconds) of that block
+	evmBlockTimeEmaNs           float64      // current EMA value in nanoseconds
+	evmBlockTimeSamples         int          // number of EMA samples collected
+	evmBlockTimeAnchorBlock     int64        // first observation: the cold estimate's base
+	evmBlockTimeAnchorTimestamp int64
 }
 
 type Timer struct {
@@ -1465,11 +1495,35 @@ func secondHighestHead(ntwMeta *NetworkMetadata, getVal func(*NetworkMetadata) i
 	return first, firstUps
 }
 
-// headStallAfter is how long an upstream may stay behind (headIsBehind)
-// before its head is benched: three of its poll periods, never under
-// 30s, so ordinary poll skew never benches anyone.
-func headStallAfter(ups common.Upstream, blockTime time.Duration) time.Duration {
-	return max(30*time.Second, 3*pollPeriod(ups, blockTime))
+// headStallAfter is how long an upstream may stay behind before its head
+// is benched: max(30s, 3 × its backed-off fetch cadence) (spec §6.1), so
+// ordinary poll skew never benches anyone.
+func headStallAfter(r headReporter, blockTime time.Duration) time.Duration {
+	return max(30*time.Second, 3*fetchCadence(r.ups, r.meta, blockTime))
+}
+
+// fetchCadence is how often ups's head reaches this instance now, backoff
+// included: its state poller's reader (SetFetchCadence), else its
+// configured poll period. Caller holds the network's headMu.
+func fetchCadence(ups common.Upstream, meta *NetworkMetadata, blockTime time.Duration) time.Duration {
+	if meta.cadence != nil {
+		if d := meta.cadence(); d > 0 {
+			return d
+		}
+	}
+	return pollPeriod(ups, blockTime)
+}
+
+// SetFetchCadence gives the head bench ups's backed-off fetch cadence
+// (spec §6.1, §6.8). The state poller injects it at construction, so health
+// never reads a poller field another goroutine may still be writing.
+func (t *Tracker) SetFetchCadence(ups common.Upstream, cadence func() time.Duration) {
+	net := ups.NetworkId()
+	ntwMeta := t.getMetadata(metadataKey{nil, net})
+	meta := t.getMetadata(metadataKey{ups, net})
+	ntwMeta.headMu.Lock()
+	meta.cadence = cadence
+	ntwMeta.headMu.Unlock()
 }
 
 // pollPeriod is how often an upstream's head is fetched: the longer of the
@@ -1520,8 +1574,9 @@ func (r *headReport) presumed(head, network int64, now time.Time, period time.Du
 
 // evaluateHeadBench runs the head bench state machine over every reporter of
 // the network after `changed` (if non-nil) stored a new latest head. A
-// reporter is "behind" while a non-benched peer proves the chain went on
-// without it (headIsBehind); one behind without a break for its stall window
+// reporter is "behind" while its number age runs (numberBehind: the lag
+// reference stands above its counter) or a non-benched peer proves the
+// chain went on without it (headIsBehind); one behind without a break for its stall window
 // is benched. A benched reporter rejoins once it has moved since, no rule
 // still proves it behind, and it reached the corroborated non-benched head
 // (the second-highest, or the only one): adding a voter at or above the k-th
@@ -1535,13 +1590,21 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 	blockTime := time.Duration(ntwMeta.evmBlockTime.Load())
 	reporters := ntwMeta.reporters
 	for i := range reporters {
-		reporters[i].stallAfter = headStallAfter(reporters[i].ups, blockTime)
+		reporters[i].stallAfter = headStallAfter(reporters[i], blockTime)
 	}
 	if changed != nil {
 		changed.headChangedAt = now
 	}
+	ref, _ := corroboratedNetworkHead(ntwMeta, func(m *NetworkMetadata) int64 { return m.evmLatestBlockNumber.Load() })
+	// A reference that stopped moving runs no number age (spec §6.1): a
+	// halted chain, or a pair frozen above one that went on, benches no one
+	// by it; headIsBehind's rules decide those.
+	if ref <= ntwMeta.evmLatestBlockNumber.Load() && now.Sub(ntwMeta.refMovedAt) > FreshnessWindow(blockTime) {
+		ref = 0
+	}
 	for _, u := range reporters {
-		behind := u.meta.evmLatestBlockNumber.Load() > 0 && headIsBehind(u, reporters, now, blockTime)
+		head := u.meta.evmLatestBlockNumber.Load()
+		behind := head > 0 && (numberBehind(u, changed, ref, now, blockTime) || headIsBehind(u, reporters, now, blockTime))
 		switch {
 		case !behind:
 			u.meta.headBehindSince = time.Time{}
@@ -1603,6 +1666,23 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 // network's headMu.
 func (m *NetworkMetadata) movedSinceBench() bool {
 	return m.headChangedAt.After(m.headBenchedAt)
+}
+
+// numberBehind reports whether the lag reference ref (0 while it does not
+// move) stands above u's counter (spec §6.1 number age). For one fetch cadence after u's last
+// report, what the reference made since counts as made by u too (#1296):
+// a slow poll is not lag, while a source that keeps reporting below the
+// reference stays behind however often it moves. changed: the reporter
+// whose head this evaluation stored, its own fresh report.
+func numberBehind(u headReporter, changed *NetworkMetadata, ref int64, now time.Time, blockTime time.Duration) bool {
+	head := u.meta.evmLatestBlockNumber.Load()
+	if ref <= 0 || head >= ref {
+		return false
+	}
+	if r := u.meta.headReport; u.meta != changed && !r.at.IsZero() && now.Sub(r.at) <= fetchCadence(u.ups, u.meta, blockTime) {
+		head += max(0, ref-r.network)
+	}
+	return head < ref
 }
 
 // headIsBehind reports whether a non-benched peer proves the chain went on
@@ -1704,6 +1784,155 @@ func (t *Tracker) IsHeadBenched(ups common.Upstream) bool {
 	return false
 }
 
+// RecordHashVote makes number ups's newest hash vote (spec §6.3). Its hash
+// age runs while the lag reference stands above it.
+func (t *Tracker) RecordHashVote(ups common.Upstream, number int64) {
+	if number <= 0 {
+		return
+	}
+	net := ups.NetworkId()
+	ntwMeta := t.getMetadata(metadataKey{nil, net})
+	ntwMeta.headMu.Lock()
+	defer ntwMeta.headMu.Unlock()
+	meta := t.addHeadReporter(ntwMeta, net, ups)
+	now := t.now()
+	ntwMeta.firstVotes = firstVoteAt(ntwMeta.firstVotes, number, now)
+	meta.hashVote, meta.hashVoted, meta.hashExpired, meta.hashVotedAt = number, true, false, now
+	meta.ageHashVote(ntwMeta.evmLatestBlockNumber.Load(), ntwMeta.firstVotes, now)
+	t.reportAges(ups, meta, now)
+}
+
+// firstVote is when this instance first received a hash vote, from any
+// upstream, for a block number.
+type firstVote struct {
+	number int64
+	at     time.Time
+}
+
+// firstVotesKept bounds the numbers whose first hash vote a network keeps.
+const firstVotesKept = 256
+
+// firstVoteAt notes at as number's first hash vote unless one is noted;
+// fv stays sorted by number, the lowest leaving past firstVotesKept.
+func firstVoteAt(fv []firstVote, number int64, at time.Time) []firstVote {
+	i, found := slices.BinarySearchFunc(fv, number, func(v firstVote, n int64) int { return cmp.Compare(v.number, n) })
+	if found {
+		return fv
+	}
+	fv = slices.Insert(fv, i, firstVote{number, at})
+	if over := len(fv) - firstVotesKept; over > 0 {
+		fv = slices.Delete(fv, 0, over)
+	}
+	return fv
+}
+
+// ExpireHashVote ends the freshness of ups's hash vote at once: its socket
+// closed, so its next header can come only after a reconnect (spec §15.1).
+func (t *Tracker) ExpireHashVote(ups common.Upstream) {
+	net := ups.NetworkId()
+	ntwMeta := t.getMetadata(metadataKey{nil, net})
+	ntwMeta.headMu.Lock()
+	defer ntwMeta.headMu.Unlock()
+	meta := t.addHeadReporter(ntwMeta, net, ups)
+	meta.hashExpired = true
+	t.reportAges(ups, meta, t.now())
+}
+
+// HashVote is what this instance knows of an upstream's newest hash vote
+// (spec §6.1, §6.3).
+type HashVote struct {
+	// Age is how long the lag reference has stood above it, counted from
+	// the first hash vote above it that reached this instance; it runs only
+	// while the reference moves, so a halted chain trips no silent-socket
+	// watch.
+	Age time.Duration
+	// Expired: its socket closed since, so it is no longer fresh whatever
+	// its age.
+	Expired bool
+	// At is when it arrived.
+	At time.Time
+}
+
+// HashVote is ups's newest hash vote; false before its first.
+func (t *Tracker) HashVote(ups common.Upstream) (HashVote, bool) {
+	ntwMeta := t.getMetadata(metadataKey{nil, ups.NetworkId()})
+	meta := t.getMetadata(metadataKey{ups, ups.NetworkId()})
+	ntwMeta.headMu.Lock()
+	defer ntwMeta.headMu.Unlock()
+	age, ok := meta.hashAge(t.now())
+	return HashVote{Age: age, Expired: meta.hashExpired, At: meta.hashVotedAt}, ok
+}
+
+// ageHashVote starts the hash age when the lag reference ref stands above
+// the hash vote, and ends it once the vote reaches ref. The age counts from
+// the first hash vote above it that reached this instance (fv) at or below
+// ref, so a voter that goes silent stops being a hash voter W after
+// another voter's first header (spec §15.1, U3), even when the reference
+// passes it later; votes above ref, such as a lone far-ahead one, never
+// start it. A newer vote still below ref keeps the age running: a lagging
+// source that keeps pushing stays behind. Caller holds the network's
+// headMu.
+func (m *NetworkMetadata) ageHashVote(ref int64, fv []firstVote, now time.Time) {
+	if !m.hashVoted || m.hashVote >= ref {
+		m.hashBehindSince = time.Time{}
+		return
+	}
+	if !m.hashBehindSince.IsZero() {
+		return
+	}
+	m.hashBehindSince = now
+	i, _ := slices.BinarySearchFunc(fv, m.hashVote+1, func(v firstVote, n int64) int { return cmp.Compare(v.number, n) })
+	for _, v := range fv[i:] {
+		if v.number > ref {
+			break
+		}
+		if v.at.Before(m.hashBehindSince) {
+			m.hashBehindSince = v.at
+		}
+	}
+}
+
+// hashAge: see HashVote.Age. Caller holds the network's headMu.
+func (m *NetworkMetadata) hashAge(now time.Time) (time.Duration, bool) {
+	if !m.hashVoted {
+		return 0, false
+	}
+	if m.hashBehindSince.IsZero() {
+		return 0, true
+	}
+	return now.Sub(m.hashBehindSince), true
+}
+
+// reportAges sets ups's report-age gauges: number age is how long peers
+// have proven the chain went on without its counter (the bench clock),
+// hash age as HashVote.Age, +Inf without a fresh hash vote. Caller holds
+// the network's headMu.
+func (t *Tracker) reportAges(ups common.Upstream, m *NetworkMetadata, now time.Time) {
+	number := 0.0
+	if !m.headBehindSince.IsZero() {
+		number = now.Sub(m.headBehindSince).Seconds()
+	}
+	hash := math.Inf(1)
+	if age, ok := m.hashAge(now); ok && !m.hashExpired {
+		hash = age.Seconds()
+	}
+	// The upstream learns its network label after it first reports, so a
+	// bound gauge is bound again when the label moved, and the series under
+	// the old label goes: it would report a frozen age.
+	if label := ups.NetworkLabel(); m.ageGauges[0] == nil || m.ageLabel != label {
+		if m.ageGauges[0] != nil {
+			for _, ev := range []string{"number", "hash"} {
+				telemetry.MetricUpstreamReportAgeSeconds.DeleteLabelValues(t.projectId, m.ageLabel, ups.Id(), ev)
+			}
+		}
+		m.ageLabel = label
+		m.ageGauges[0] = telemetry.GaugeHandle(telemetry.MetricUpstreamReportAgeSeconds, t.projectId, label, ups.Id(), "number")
+		m.ageGauges[1] = telemetry.GaugeHandle(telemetry.MetricUpstreamReportAgeSeconds, t.projectId, label, ups.Id(), "hash")
+	}
+	m.ageGauges[0].Set(number)
+	m.ageGauges[1].Set(hash)
+}
+
 func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64, blockTimestamp int64) {
 	id := upstream.Id()
 	net := upstream.NetworkId()
@@ -1777,6 +2006,9 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	}
 	needsGlobalUpdate := ntwBn != oldNtwVal
 	if needsGlobalUpdate {
+		if ntwBn > oldNtwVal {
+			ntwMeta.refMovedAt = t.now()
+		}
 		ntwMeta.evmLatestBlockNumber.Store(ntwBn)
 		g := t.getLatestBlockGauge(t.projectId, "*", netLabel, "*")
 		g.Set(float64(ntwBn))
@@ -1821,6 +2053,10 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	// network made beyond its last report (headReport).
 	now, blockTime := t.now(), time.Duration(ntwMeta.evmBlockTime.Load())
 	upsMeta.headReport.reported(now, ntwBn)
+	for _, r := range ntwMeta.reporters {
+		r.meta.ageHashVote(ntwBn, ntwMeta.firstVotes, now)
+		t.reportAges(r.ups, r.meta, now)
+	}
 	lagHead := func(ups common.Upstream, meta *NetworkMetadata) int64 {
 		h := meta.evmLatestBlockNumber.Load()
 		if !meta.headBenched.Load() {
@@ -1874,7 +2110,34 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 const (
 	blockTimeEmaAlpha   = 0.1 // smoothing factor; effective window ~19 samples
 	blockTimeMinSamples = 3   // minimum EMA samples before emitting (requires 4 observations total)
+	// blockTimeColdSpan is how many blocks past the first observation a
+	// cold estimate needs: 4 headers (spec §6.7, row C9).
+	blockTimeColdSpan = 3
 )
+
+// ColdBlockTime is every reader's block time until the network's has 4
+// samples (spec §6.7).
+const ColdBlockTime = time.Second
+
+// FreshnessWindow is W for block time bt (spec §1): max(3 × bt, 2s), at
+// most 60s; ColdBlockTime while bt is unknown (0).
+func FreshnessWindow(bt time.Duration) time.Duration {
+	if bt <= 0 {
+		bt = ColdBlockTime
+	}
+	return min(max(3*bt, 2*time.Second), 60*time.Second)
+}
+
+// SampleSourceHeaderTime feeds an accepted source header's timestamp into
+// the network block time EMA (spec §6.7): a local sample, as the poller's
+// are. Pushed heads carry no timestamp through the shared counter, so an
+// instance that polls rarely would otherwise learn the block time late.
+func (t *Tracker) SampleSourceHeaderTime(ups common.Upstream, number, timestamp int64) {
+	if number <= 0 || timestamp <= 0 {
+		return
+	}
+	t.updateBlockTimeSample(t.getMetadata(metadataKey{nil, ups.NetworkId()}), ups.NetworkLabel(), number, timestamp)
+}
 
 // updateBlockTimeSample feeds the network head's block into the network block
 // time EMA and publishes the result.
@@ -1891,7 +2154,10 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 // evmBlockTime. For fast chains where consecutive blocks share the same
 // timestamp, we skip the sample and do NOT advance prev — the block gap
 // accumulates until the timestamp ticks, then normalization recovers
-// sub-second precision (e.g. 1s / 4 blocks = 250ms for Arbitrum).
+// sub-second precision (e.g. 1s / 4 blocks = 250ms for Arbitrum). Until
+// the EMA emits, each observation blockTimeColdSpan or more blocks past
+// the first one stores the mean step since it, so 4 headers set the block
+// time even when they share few timestamp ticks (spec §6.7).
 func (m *NetworkMetadata) sampleBlockTime(blockNumber int64, blockTimestamp int64) bool {
 	m.evmBlockTimeMu.Lock()
 	defer m.evmBlockTimeMu.Unlock()
@@ -1899,10 +2165,10 @@ func (m *NetworkMetadata) sampleBlockTime(blockNumber int64, blockTimestamp int6
 	prevBlock := m.evmBlockTimePrevBlock
 	prevTimestamp := m.evmBlockTimePrevTimestamp
 
-	// First observation: store as previous and return.
+	// First observation: store as previous and as the cold anchor.
 	if prevBlock == 0 {
-		m.evmBlockTimePrevBlock = blockNumber
-		m.evmBlockTimePrevTimestamp = blockTimestamp
+		m.evmBlockTimePrevBlock, m.evmBlockTimePrevTimestamp = blockNumber, blockTimestamp
+		m.evmBlockTimeAnchorBlock, m.evmBlockTimeAnchorTimestamp = blockNumber, blockTimestamp
 		return false
 	}
 
@@ -1912,17 +2178,25 @@ func (m *NetworkMetadata) sampleBlockTime(blockNumber int64, blockTimestamp int6
 	blockGap := blockNumber - prevBlock
 	if blockGap <= 0 {
 		if prevBlock-blockNumber > common.DefaultToleratedBlockHeadRollback {
-			m.evmBlockTimePrevBlock = blockNumber
-			m.evmBlockTimePrevTimestamp = blockTimestamp
+			m.evmBlockTimePrevBlock, m.evmBlockTimePrevTimestamp = blockNumber, blockTimestamp
+			m.evmBlockTimeAnchorBlock, m.evmBlockTimeAnchorTimestamp = blockNumber, blockTimestamp
 		}
 		return false
+	}
+
+	stored := false
+	if m.evmBlockTimeSamples < blockTimeMinSamples {
+		span, secs := blockNumber-m.evmBlockTimeAnchorBlock, blockTimestamp-m.evmBlockTimeAnchorTimestamp
+		if span >= blockTimeColdSpan && secs > 0 {
+			stored = m.storeBlockTime(int64(float64(secs) * 1e9 / float64(span)))
+		}
 	}
 
 	// Skip if timestamp hasn't advanced (fast chains where blocks share the same second).
 	// Do NOT advance prev — let blockGap accumulate until the timestamp ticks.
 	timestampDeltaSec := blockTimestamp - prevTimestamp
 	if timestampDeltaSec <= 0 {
-		return false
+		return stored
 	}
 
 	// Per-block sample in nanoseconds (seconds → ms → ns, divided by block count).
@@ -1942,28 +2216,36 @@ func (m *NetworkMetadata) sampleBlockTime(blockNumber int64, blockTimestamp int6
 
 	// Don't emit until we have enough samples.
 	if m.evmBlockTimeSamples < blockTimeMinSamples {
-		return false
+		return stored
 	}
 
 	blockTimeNs := int64(m.evmBlockTimeEmaNs)
-
-	// Sanity bounds: reject absurd values.
-	// Reset the internal EMA to the last published value so that recovery from a
-	// prolonged halt doesn't create a delayed spike when the EMA first crosses
-	// back below the threshold (e.g. jumping from 2s to ~119s).
-	if blockTimeNs < int64(10*time.Millisecond) || blockTimeNs > int64(120*time.Second) {
+	if !m.storeBlockTime(blockTimeNs) {
+		// Reset the internal EMA to the last published value so that recovery
+		// from a prolonged halt doesn't create a delayed spike when the EMA
+		// first crosses back below the threshold (e.g. jumping from 2s to
+		// ~119s).
 		if lastGood := m.evmBlockTime.Load(); lastGood > 0 {
 			m.evmBlockTimeEmaNs = float64(lastGood)
 		}
-		return false
+		return stored
 	}
-
-	m.evmBlockTime.Store(blockTimeNs)
 	return true
 }
 
-// GetNetworkBlockTime returns the EMA-estimated block time for a network.
-// Returns 0 until at least blockTimeMinSamples have been collected.
+// storeBlockTime publishes ns as the block time unless it is absurd.
+// Caller holds evmBlockTimeMu.
+func (m *NetworkMetadata) storeBlockTime(ns int64) bool {
+	if ns < int64(10*time.Millisecond) || ns > int64(120*time.Second) {
+		return false
+	}
+	m.evmBlockTime.Store(ns)
+	return true
+}
+
+// GetNetworkBlockTime returns the estimated block time for a network: 0
+// until 4 headers set it (sampleBlockTime); readers that need a value
+// meanwhile use ColdBlockTime.
 func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
 

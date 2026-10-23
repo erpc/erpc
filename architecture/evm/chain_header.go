@@ -110,6 +110,9 @@ func ParseSourceHeader(raw json.RawMessage) (SourceHeader, error) {
 
 func (s SourceHeader) Cursor() indexer.Cursor { return s.h.cursor() }
 
+// Timestamp is the header's timestamp in seconds, 0 when it carries none.
+func (s SourceHeader) Timestamp() int64 { return int64(s.h.timestamp) }
+
 func (h *chainHeader) cursor() indexer.Cursor {
 	return indexer.Cursor{Number: h.number, Hash: h.hash}
 }

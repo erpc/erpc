@@ -8,6 +8,7 @@ import (
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog/log"
 )
@@ -411,9 +412,9 @@ func (s *checkSuspensions) head() (uint64, bool) {
 
 func (s *checkSuspensions) bound() time.Duration {
 	if t := s.tracker.Load(); t != nil {
-		return t.LiveBound()
+		return t.W()
 	}
-	return liveBoundFloor
+	return health.FreshnessWindow(0)
 }
 
 func (s *checkSuspensions) suspended() {

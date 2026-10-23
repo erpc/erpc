@@ -55,6 +55,10 @@ type Network struct {
 	initializer         *util.Initializer
 	architectureHandler common.ArchitectureHandler
 
+	// forkDemoted are the voters on a minority fork (EvmForkDemoted): no
+	// number vote, last in routing. nil while none is.
+	forkDemoted atomic.Pointer[[]string]
+
 	// servedTipAll is the network-wide served-tip lane. Lanes hold the
 	// advance-age watchdog and the regression guard's memory; the pick itself
 	// is stateless (common.PickServedTip).
@@ -469,7 +473,8 @@ func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (h
 
 // evmTipBallot builds the served-tip pick for an axis under quorum q from the
 // request's tip candidates (EvmRoutableUpstreams) that satisfy member (nil =
-// all of them): the heads of the best-ranked voters (tipVoterRank). live
+// all of them): the heads of the best-ranked voters (tipVoterRank), minus
+// the voters on a minority fork, which have no number vote (spec §6.3). live
 // reports whether live, non-capped heads decided it (benched or not): a
 // cap-only ballot gives the regression guard no live reference.
 //
@@ -488,7 +493,7 @@ func (n *Network) evmTipBallot(ctx context.Context, useFinalized bool, q common.
 	heads := buf[:0]
 	best := -1
 	for u := range n.EvmRoutableUpstreams(ctx) {
-		if member != nil && !member(u) {
+		if member != nil && !member(u) || n.isForkDemoted(u) {
 			continue
 		}
 		head, rank, ok := tipVoterRank(u, useFinalized, n.metricsTracker)
@@ -1678,7 +1683,8 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 }
 
 // preferUpstreams reorders ups by hints only, every upstream staying
-// eligible: upstreams whose poller has the block first, then failover tiers.
+// eligible: upstreams whose poller has the block first, then failover tiers,
+// and voters on a minority fork last.
 func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedRequest, method string, upsList []common.Upstream) []common.Upstream {
 	// For a specific block, try upstreams whose poller already has it first.
 	// Ordering hints only: every upstream stays eligible.
@@ -1694,7 +1700,32 @@ func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedReq
 	if n.cfg.Failover.Enabled() {
 		upsList = tierUpstreamsByGroup(upsList)
 	}
-	return upsList
+	return n.demotedLast(upsList)
+}
+
+// demotedLast moves the voters on a minority fork to the end of upsList,
+// keeping each part's order (spec §6.3). upsList is the request's own copy.
+func (n *Network) demotedLast(upsList []common.Upstream) []common.Upstream {
+	ids := n.forkDemoted.Load()
+	if ids == nil {
+		return upsList
+	}
+	demoted := func(u common.Upstream) bool { return slices.Contains(*ids, u.Id()) }
+	if !slices.ContainsFunc(upsList, demoted) {
+		return upsList
+	}
+	out := make([]common.Upstream, 0, len(upsList))
+	for _, u := range upsList {
+		if !demoted(u) {
+			out = append(out, u)
+		}
+	}
+	for _, u := range upsList {
+		if demoted(u) {
+			out = append(out, u)
+		}
+	}
+	return out
 }
 
 func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {

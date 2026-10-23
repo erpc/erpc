@@ -53,10 +53,11 @@ func parseLogsSubscribe(params []interface{}) (*logfilter.LogsFilter, error) {
 // that left the pins before its logs are written ends the batch there. Any
 // end other than ctx or a failed write closes the connection with 1013
 // after a random delay within logsCloseSpread, so the client reconnects
-// knowing it may have missed logs.
-func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, f *logfilter.LogsFilter) {
+// knowing it may have missed logs. lane, when set, holds blocks above the
+// connection's lane's Latest.
+func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane *common.NormalizedRequest, f *logfilter.LogsFilter) {
 	tracker := nw.chainTracker
-	feed := &cutFeed{ChainFeed: logsFeed{tracker}}
+	feed := &cutFeed{ChainFeed: gated(logsFeed{tracker}, nw, lane)}
 	window := uint64(tracker.ReorgWindow())
 	write := func(log json.RawMessage) error {
 		if err := wsc.WriteSubscriptionNotification(sub, log); err != nil {
@@ -143,7 +144,7 @@ func removedLog(log json.RawMessage) (json.RawMessage, error) {
 
 // logsFeed is the network-wide tracker as a logs tap reads it: a Read that
 // waits logsReceiptsWait on one block's receipts is out of range. The wait
-// counts from when the delivery gate first stands above the cursor, so a
+// counts from when the confirmed head first stands above the cursor, so a
 // wait for the next head never counts.
 type logsFeed struct{ *evm.ChainTracker }
 
@@ -163,7 +164,7 @@ func (f logsFeed) watchReceipts(ctx context.Context, c indexer.Cursor, cancel co
 	for {
 		changed := f.Changed()
 		if timeout == nil {
-			if send, ok := f.SendTip(); ok && send.Number > c.Number {
+			if send, ok := f.Confirmed(); ok && send.Number > c.Number {
 				t := time.NewTimer(logsReceiptsWait.Load())
 				defer t.Stop()
 				timeout = t.C

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
 )
@@ -32,8 +33,9 @@ func (e wsWriteError) Error() string { return e.err.Error() }
 // time but writes only once opened, after the client has its id. It ends
 // only with ctx or a failed write; out of range, lag, a panic or any other
 // error restart it after the head, so the client sees a jump in numbers,
-// as with geth, and never a silent subscription.
-func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network) {
+// as with geth, and never a silent subscription. lane, when set, holds
+// blocks above the connection's lane's Latest.
+func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane *common.NormalizedRequest) {
 	tracker := nw.chainTracker
 	window := uint64(tracker.ReorgWindow())
 	var feed *cutFeed
@@ -43,10 +45,10 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		// Lag counts from the sendable head: a delivery gate holding the
-		// tracker head back is not the tap falling behind.
+		// Lag counts from the confirmed head: Latest holding the tracker
+		// head back is not the tap falling behind.
 		if len(b.Reverted) == 0 && len(b.Applied) > 0 {
-			if send, ok := tracker.SendTip(); ok && send.Number > b.Applied[0].Number-1+window {
+			if send, ok := tracker.Confirmed(); ok && send.Number > b.Applied[0].Number-1+window {
 				return errNewHeadsLag
 			}
 		}
@@ -67,7 +69,7 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 		return nil
 	}
 	for {
-		feed = &cutFeed{ChainFeed: tracker}
+		feed = &cutFeed{ChainFeed: gated(tracker, nw, lane)}
 		err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeNewHeads, feed, nil, indexer.ReadOpts{}, emit)
 		var writeErr wsWriteError
 		if ctx.Err() != nil || errors.As(err, &writeErr) {

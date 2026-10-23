@@ -37,8 +37,8 @@ var (
 	resubRetryMax = 30 * time.Second
 )
 
-// HeadsWatchInterval is how long newHeads may stay silent about a block the
-// upstream already reports over RPC; a var so tests can shorten it.
+// HeadsWatchInterval is how long newHeads may stay silent while the
+// source's hash age runs past it; a var so tests can shorten it.
 var HeadsWatchInterval = util.NewDuration(15 * time.Second)
 
 // HeadsReaskInterval is how long a newHeads refused as unsupported waits
@@ -65,11 +65,14 @@ type Adapter struct {
 	retryMax time.Duration
 	// attemptTimeout bounds each subscribe attempt and unsubscribe.
 	attemptTimeout time.Duration
-	// polledHead is the upstream's latest block as polled over RPC, 0 if
-	// unknown; nil disables watchHeads.
-	polledHead func() int64
-	headsSeen  atomic.Uint64
-	lastHead   atomic.Int64
+	// hashAge is how long the network's lag reference has stood above this
+	// source's newest hash vote (spec §6.1); nil disables watchHeads.
+	hashAge func() time.Duration
+	// pushedAt is when the last newHeads push arrived, in unix nanoseconds.
+	pushedAt atomic.Int64
+	// disconnected tells the network the socket closed, so the source's
+	// hash vote expires at once.
+	disconnected func()
 
 	// intake takes every newHeads and pending-transaction push and every
 	// subscribe answer.
@@ -120,6 +123,11 @@ type Options struct {
 	// NetworkLabel labels the adapter's metrics; the network knows it
 	// before its upstreams do.
 	NetworkLabel string
+	// HashAge is the source's hash age (spec §6.1); nil disables the
+	// silent-newHeads watch.
+	HashAge func() time.Duration
+	// Disconnected runs when the socket closes.
+	Disconnected func()
 }
 
 // pendingSub is one pending-transaction topic of Set.
@@ -158,12 +166,8 @@ func New(up *upstream.Upstream, networkID string, intake indexer.Intake, logger 
 		retryMin:       resubRetryMin,
 		retryMax:       resubRetryMax,
 		attemptTimeout: resubAttemptTimeout,
-		polledHead: func() int64 {
-			if p := up.EvmStatePoller(); p != nil && !p.IsObjectNull() {
-				return p.LatestBlock()
-			}
-			return 0
-		},
+		hashAge:        opts.HashAge,
+		disconnected:   opts.Disconnected,
 	}
 }
 
@@ -312,8 +316,11 @@ func (a *Adapter) attach() {
 				sub.id = ""
 			}
 			a.subsMu.Unlock()
+			if a.disconnected != nil {
+				a.disconnected()
+			}
 		})
-		if a.polledHead != nil {
+		if a.hashAge != nil {
 			go a.watchHeads()
 		}
 	})
@@ -355,33 +362,39 @@ func (a *Adapter) HeadsRefused() bool {
 	return a.headsRefused
 }
 
-// watchHeads reconnects when the newHeads subscription stays silent for a
-// whole interval although the upstream reported a newer block over RPC when
-// it began: pings keep such a connection up, so nothing else notices the
-// dead subscription. A halted chain or a lagging node trips neither half.
+// watchHeads reconnects when the newHeads subscription stays silent for
+// HeadsWatchInterval while the source's hash age runs past it (spec §15.1):
+// the network's lag reference moved on without this source, so its socket
+// is half-open even if pings or polls riding it still pass. A halted chain
+// moves no reference and a lagging node keeps pushing: neither trips it. A
+// network with one upstream has no other reference, so only the socket's
+// ping/pong ends a dead one there.
 func (a *Adapter) watchHeads() {
-	ticker := time.NewTicker(HeadsWatchInterval.Load())
+	ticker := time.NewTicker(max(HeadsWatchInterval.Load()/8, time.Millisecond))
 	defer ticker.Stop()
-	var prevID string
-	var prevEpoch, prevSeen uint64
-	var prevPolled int64
 	for {
 		select {
 		case <-a.wsClient.Done():
 			return
 		case <-ticker.C:
 		}
+		silent := HeadsWatchInterval.Load()
 		a.subsMu.Lock()
-		id, epoch := a.heads.id, a.heads.epoch
+		id, epoch, since := a.heads.id, a.heads.epoch, a.heads.since
 		a.subsMu.Unlock()
-		seen, lastHead := a.headsSeen.Load(), a.lastHead.Load()
-		if id != "" && id == prevID && epoch == prevEpoch && seen == prevSeen && prevPolled > lastHead {
-			a.logger.Warn().Str("upstreamSubId", id).Int64("lastHead", lastHead).Int64("polledHead", prevPolled).
-				Msg("newHeads subscription silent while upstream head advances, reconnecting")
+		quiet := since
+		if at := time.Unix(0, a.pushedAt.Load()); at.After(quiet) {
+			quiet = at
+		}
+		if id == "" || time.Since(quiet) < silent {
+			continue
+		}
+		if age := a.hashAge(); age > silent {
+			a.logger.Warn().Str("upstreamSubId", id).Dur("hashAge", age).Dur("silentFor", time.Since(quiet)).
+				Msg("newHeads subscription silent while the network moved on without it, reconnecting")
 			telemetry.CounterHandle(telemetry.MetricUpstreamWebsocketHeadsStallReconnectsTotal, a.projectID, a.networkLabel, a.upstreamID).Inc()
 			a.wsClient.Reconnect(epoch)
 		}
-		prevID, prevEpoch, prevSeen, prevPolled = id, epoch, seen, a.polledHead()
 	}
 }
 
@@ -657,15 +670,7 @@ func (a *Adapter) handleNewHeads(raw []byte) {
 		return
 	}
 	// Counted before intake: a source whose heads intake gates is not silent.
-	a.headsSeen.Add(1)
-	var header struct {
-		Number string `json:"number"`
-	}
-	if err := common.SonicCfg.Unmarshal(outer.Result, &header); err == nil {
-		if num, err := common.HexToInt64(header.Number); err == nil {
-			a.lastHead.Store(num)
-		}
-	}
+	a.pushedAt.Store(time.Now().UnixNano())
 	a.intake.Header(a.upstreamID, outer.Result)
 }
 

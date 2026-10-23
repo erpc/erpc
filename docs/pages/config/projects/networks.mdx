@@ -272,7 +272,7 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 |---|---|---|---|
 | `chainId` | `int64` | — (no default) | Drives `networkId = "evm:<chainId>"`. Not validated &gt; 0 for networks; `chainId: 0` yields `evm:0`. |
 | `fallbackFinalityDepth` | `int64` | `1024` (<SourceLink file="common/defaults.go" lines="1975" />) | Used when an upstream doesn't expose the `finalized` tag. Must be &gt; 0 after defaults. |
-| `fallbackStatePollerDebounce` | `Duration` | `5s` (<SourceLink file="common/defaults.go" lines="1976" />) | Static debounce for block polling until dynamic block time is learned. Must be &gt; 0. |
+| `fallbackStatePollerDebounce` | `Duration` | unset | Set: the block-polling debounce until the block time is learned. Unset: the 1s cold block time × `dynamicBlockTimeDebounceMultiplier` (0.7s). |
 | `dynamicBlockTimeDebounceMultiplier` | `*float64` | `0.7` (<SourceLink file="common/defaults.go" lines="1977" />) | Polling debounce = EMA block time × multiplier. Lower → more aggressive polling (fresher data, more upstream load). |
 | `finalizedDebounceDepthMultiplier` | `*float64` | `0.05` (<SourceLink file="common/defaults.go" lines="2446" />) | Finalized-poll debounce = (latest − finalized) × EMA block time × multiplier, when longer than the regular debounce. `0` disables it. |
 | `blockUnavailableDelayMultiplier` | `*float64` | `1.0` (<SourceLink file="common/defaults.go" lines="1978" />) | Retry delay for block-unavailable = EMA block time × multiplier. |
