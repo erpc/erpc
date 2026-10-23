@@ -201,9 +201,10 @@ completed attempt from its (response, error) pair:
 <SourceLink file="upstream/upstream_executor.go" lines="391-421" />
 
 - **OutcomeFailure**: `ErrCodeEndpointServerSideException` (5xx), `ErrCodeEndpointTransportFailure`,
-  `ErrCodeEndpointUnauthorized`, `ErrCodeEndpointBillingIssue`, and a syncing upstream that
-  returns an empty/null response (`EvmSyncingStateSyncing && resp.IsResultEmptyish()`).
-- **OutcomeIgnore**: request-canceled, request-skipped, rate-limit errors, timeout errors,
+  `ErrCodeEndpointUnauthorized`, `ErrCodeEndpointBillingIssue`, `ErrCodeEndpointRequestTimeout`
+  (the endpoint accepted the request and never answered within the attempt's timeout), and a
+  syncing upstream that returns an empty/null response (`EvmSyncingStateSyncing && resp.IsResultEmptyish()`).
+- **OutcomeIgnore**: request-canceled, request-skipped, rate-limit errors,
   client-side errors, hedge cancellations — these do not affect the window.
 - **OutcomeSuccess**: all non-error, non-syncing-empty responses.
 
@@ -568,18 +569,22 @@ window and require a high success ratio. This pairs well with the fast-trip brea
     `Validate`, so omitting the field from YAML is safe. If you call `Validate` before
     `SetDefaults` in custom tooling, the zero value will be rejected.
     [`common/validation.go:L1038-L1040`](https://github.com/erpc/erpc/blob/main/common/validation.go#L1038-L1040)
-15. **Own-timeouts are failures at connector scope only.** A cache read the executor's own
+15. **Own-timeouts are failures at both scopes.** A cache read the executor's own
     failsafe timeout had to kill is classified `OutcomeFailure` — on a best-effort layer it
     is pure tax (the caller pays the wait and falls through to upstreams anyway). Sustained
     timeouts open the breaker: the connector is excluded — cache reads fail fast — until a
-    half-open probe completes in time and re-admits it. The timeout policy is the sole
-    definition of "too slow"; there is no separate slowness threshold. At upstream scope
-    timeout errors remain `OutcomeIgnore`: benching capacity is the selection policy's job,
-    and upstream slowness already feeds scoring. Attempts that did not complete on their own
-    never count at either scope: interrupted / canceled / skipped attempts are ignored —
-    their duration reflects the canceller, not the target.
+    half-open probe completes in time and re-admits it. At upstream scope an endpoint
+    timeout (`ErrCodeEndpointRequestTimeout`) is a failure too: a node whose worker pool is
+    saturated keeps answering `eth_blockNumber` in milliseconds while every state read is
+    accepted and never answered, so scoring sees a healthy head and only the breaker can
+    take it out of rotation. The timeout policy is the sole definition of "too slow"; there
+    is no separate slowness threshold, and a short per-attempt timeout on a slow-but-healthy
+    node needs `failureThresholdCount` of `failureThresholdCapacity` before it opens anything.
+    Attempts that did not complete on their own never count at either scope: interrupted /
+    canceled / skipped attempts are ignored — their duration reflects the canceller, not
+    the target.
     <SourceLink file="data/cache_executor.go" lines="292-309" />,
-    <SourceLink file="upstream/upstream_executor.go" lines="399-414" />
+    <SourceLink file="upstream/upstream_executor.go" lines="406-431" />
 16. **Ignored outcomes release HalfOpen trial permits.** `Record(OutcomeIgnore)` moves no
     thresholds but decrements `halfOpenInflight` when the breaker is HalfOpen. Without the
     release, a run of ignored outcomes (e.g. cache misses during a probe window) would pin

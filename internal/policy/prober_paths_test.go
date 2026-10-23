@@ -90,6 +90,23 @@ func TestProber_SkipGates(t *testing.T) {
 		assert.Equal(t, int64(0), up.calls.Load())
 	})
 
+	t.Run("upstream ignoreMethods veto the probe; a glob error does not", func(t *testing.T) {
+		deps := &stubEngine{}
+		ignoring := &stubProbeUpstream{id: "cov-ignored", ignored: []string{"txpool_content"}}
+		broken := &stubProbeUpstream{id: "cov-badglob", handleErr: errors.New("bad glob")}
+		deps.setExcluded(network, []common.Upstream{ignoring, broken})
+		p, _ := newTestProber(t, deps, &ProbeConfig{SampleRate: 1})
+		defer p.Stop()
+		before := skipped("method_ignored")
+		p.Publish(makeProbeReq(t, "txpool_content"))
+		require.Eventually(t, func() bool { return skipped("method_ignored") == before+1 }, 5*time.Second, 5*time.Millisecond)
+		require.Eventually(t, func() bool { return broken.calls.Load() == 1 }, 5*time.Second, 5*time.Millisecond)
+		assert.Equal(t, int64(0), ignoring.calls.Load(), "a method the operator forbids is never probed")
+
+		p.Publish(makeProbeReq(t, "eth_blockNumber"))
+		require.Eventually(t, func() bool { return ignoring.calls.Load() == 1 }, 5*time.Second, 5*time.Millisecond)
+	})
+
 	t.Run("nil config and empty excluded set are no-ops", func(t *testing.T) {
 		deps := &stubEngine{}
 		up := &stubProbeUpstream{id: "cov-noop"}

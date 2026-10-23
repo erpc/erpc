@@ -24,6 +24,10 @@ type stubProbeUpstream struct {
 	// hold a probe in-flight to assert the inflight counter is
 	// enforced.
 	blockUntil chan struct{}
+	// ignored mirrors the upstream's ignoreMethods; handleErr makes
+	// ShouldHandleMethod fail (a bad glob) so the veto is not a verdict.
+	ignored   []string
+	handleErr error
 }
 
 func (s *stubProbeUpstream) Id() string           { return s.id }
@@ -51,7 +55,17 @@ func (s *stubProbeUpstream) Forward(ctx context.Context, nq *common.NormalizedRe
 func (s *stubProbeUpstream) Cordon(method, reason string)                   {}
 func (s *stubProbeUpstream) Uncordon(method, reason string)                 {}
 func (s *stubProbeUpstream) IgnoreMethod(method string)                     {}
-func (s *stubProbeUpstream) ShouldHandleMethod(method string) (bool, error) { return true, nil }
+func (s *stubProbeUpstream) ShouldHandleMethod(method string) (bool, error) {
+	if s.handleErr != nil {
+		return false, s.handleErr
+	}
+	for _, m := range s.ignored {
+		if m == method {
+			return false, nil
+		}
+	}
+	return true, nil
+}
 
 // stubEngine implements the narrow proberDeps interface so we can
 // drive the prober without standing up a full Engine.

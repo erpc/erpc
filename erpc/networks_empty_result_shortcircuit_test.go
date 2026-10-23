@@ -218,6 +218,75 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 		assert.Less(t, elapsed, 500*time.Millisecond, "should return immediately without trying rpc2")
 	})
 
+	t.Run("EthGetUncleCount_ZeroHex_OnlyFirstUpstreamCalled", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		var rpc1Calls, rpc2Calls atomic.Int32
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getUncleCountByBlockNumber")
+			}).
+			Persist().
+			Reply(200).
+			Map(func(r *http.Response) *http.Response { rpc1Calls.Add(1); return r }).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x0",
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getUncleCountByBlockNumber")
+			}).
+			Persist().
+			Reply(200).
+			Map(func(r *http.Response) *http.Response { rpc2Calls.Add(1); return r }).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x0",
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithRetryConfig(t, ctx,
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			&common.RetryPolicyConfig{
+				MaxAttempts:       3,
+				Delay:             common.Duration(50 * time.Millisecond),
+				EmptyResultDelay:  common.Duration(200 * time.Millisecond),
+				EmptyResultAccept: common.DefaultEmptyResultAccept(),
+			},
+		)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getUncleCountByBlockNumber","params":["0x1"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		start := time.Now()
+		resp, err := network.Forward(ctx, req)
+		elapsed := time.Since(start)
+
+		require.NoError(t, err, "a zero uncle count is a real answer and must be accepted")
+		require.NotNil(t, resp)
+
+		jrr, jrrErr := resp.JsonRpcResponse()
+		require.NoError(t, jrrErr)
+		assert.True(t, jrr.IsResultEmptyish(), "0x0 is classified emptyish by shape")
+
+		t.Logf("rpc1=%d  rpc2=%d  elapsed=%v", rpc1Calls.Load(), rpc2Calls.Load(), elapsed)
+		assert.Equal(t, int32(1), rpc1Calls.Load(), "rpc1 should be called exactly once")
+		assert.Equal(t, int32(0), rpc2Calls.Load(), "rpc2 should never be called — short-circuited")
+		assert.Less(t, elapsed, 500*time.Millisecond, "should return immediately without trying rpc2")
+	})
+
 	t.Run("MethodNotInAcceptList_BothUpstreamsTried", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

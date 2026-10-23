@@ -452,7 +452,7 @@ Ingestion lag (`maxShredInsertSlot − processedSlot`) has **no gauge** — it i
 | `erpc_upstream_selection_total` | Upstream chosen for attempt; `reason` ∈ primary/retry/hedge/consensus_slot/sweep |
 | `erpc_upstream_attempt_outcome_total` | Terminal outcome per attempt; `outcome` ∈ success/empty/transport_error/server_error/client_error/rate_limited/missing_data/exec_revert/block_unavailable/breaker_open/cancelled/timeout/skipped; `is_hedge`/`is_retry` ∈ `"true"`/`"false"` |
 | `erpc_selection_probe_errors_total` | Probe to excluded upstream errored; `reason` ∈ timeout/throttled/auth/skipped/error |
-| `erpc_selection_probe_skipped_total` | Probe candidate skipped pre-fire; `reason` ∈ write_method/opt_out/sampled_out/max_concurrent/no_method |
+| `erpc_selection_probe_skipped_total` | Probe candidate skipped pre-fire; `reason` ∈ write_method/method_ignored/opt_out/sampled_out/max_concurrent/no_method |
 
 **gRPC BDS resilience**
 

@@ -217,6 +217,14 @@ func (p *Prober) onRequest(ctx context.Context, req *common.NormalizedRequest) {
 	}
 
 	for _, u := range excluded {
+		// The upstream's own ignoreMethods/allowMethods veto a probe: mirror
+		// bypasses shouldSkip, and nothing un-learns a method, so a probe of
+		// an ignored method can never re-admit the upstream. An error is not
+		// a verdict - one bad glob must not end re-admission.
+		if handle, herr := u.ShouldHandleMethod(method); herr == nil && !handle {
+			telemetry.MetricSelectionProbeSkipped.WithLabelValues(p.networkID, "method_ignored").Inc()
+			continue
+		}
 		if !p.tryReserveProbe(u, cfg) {
 			continue
 		}
@@ -392,8 +400,11 @@ func (p *Prober) mirror(req *common.NormalizedRequest, u common.Upstream, cfg *P
 	ctx, cancel := context.WithTimeout(context.Background(), timeout) // #nosec G118 -- probe runs independently; must not be cancelled by the originating request
 	defer cancel()
 
-	method, _ := req.Method()
-	finality := req.Finality(ctx)
+	// The client's request holds its last valid response, which the network
+	// serves when every routed attempt fails: a probe must not write to it.
+	probeReq := req.Detach()
+	method, _ := probeReq.Method()
+	finality := probeReq.Finality(ctx)
 
 	start := time.Now()
 	telemetry.MetricSelectionProbeRequests.WithLabelValues(p.networkID, u.Id(), method).Inc()
@@ -404,8 +415,11 @@ func (p *Prober) mirror(req *common.NormalizedRequest, u common.Upstream, cfg *P
 	// non-supporting; we want probe traffic to reach the upstream so
 	// it can prove (or disprove) itself. isHedgeAttempt=false — probes
 	// are not hedge fan-outs.
-	_, err := u.Forward(ctx, req, true, false)
+	resp, err := u.Forward(ctx, probeReq, true, false)
 	duration := time.Since(start)
+	if resp != nil {
+		resp.Release()
+	}
 
 	isSuccess := err == nil
 	// "probe" composite-type label keeps probe samples grouped under
