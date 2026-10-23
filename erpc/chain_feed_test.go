@@ -1337,18 +1337,30 @@ func (s *chaosSeed) deepReorg() {
 	depth := chaosReorgWindow + 4
 	from := time.Now()
 	tip := s.reorg(depth)
-	s.allowCloses(from, time.Now(), tip.Number-uint64(depth))
+	caught := s.caughtUp()
+	s.allowCloses(from, caught, tip.Number-uint64(depth))
 	resent := ""
 	if s.opts.grpc {
 		resent = "; " + s.awaitResend(tip.Number-uint64(depth), from)
 	}
 	// Closes spread over logsCloseSpread: count them once it has passed.
-	time.Sleep(time.Until(from.Add(logsCloseBound())))
+	time.Sleep(time.Until(caught.Add(logsCloseBound())))
 	closed := s.closed1013(from)
 	if closed > 0 {
 		s.dialLogs("after-deep-reorg")
 	}
 	s.occur(fDeepReorg, fmt.Sprintf("depth %d > reorgWindow %d, new head %d; %d logs clients closed with 1013%s", depth, chaosReorgWindow, tip.Number, closed, resent))
+}
+
+// caughtUp waits until the tracker may send the chain's head as of now: a
+// fault's taps end once eRPC sees the chain again, however long that took.
+func (s *chaosSeed) caughtUp() time.Time {
+	want := s.chain.Tip()
+	require.Eventually(s.t, func() bool {
+		c, ok := s.tracker().SendTip()
+		return ok && (c.Number > want.Number || c.Hash == want.Hash)
+	}, 15*time.Second, 10*time.Millisecond, "the tracker may send the head %d again", want.Number)
+	return time.Now()
 }
 
 // liveWS is one of the wss vendors, not one that is down.
@@ -1414,8 +1426,9 @@ func (s *chaosSeed) allDown() {
 	s.setAll(func(f *chainsim.Faults) { f.Down = false })
 	up := time.Now()
 	s.addQuiet(interval{from, up})
-	s.allowCloses(from, up, 0)
-	time.Sleep(time.Until(up.Add(logsCloseBound())))
+	caught := s.caughtUp()
+	s.allowCloses(from, caught, 0)
+	time.Sleep(time.Until(caught.Add(logsCloseBound())))
 	closed := s.closed1013(from)
 	if closed > 0 {
 		s.dialLogs("after-all-down")
