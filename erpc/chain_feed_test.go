@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -192,7 +193,9 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 		{67, true, chaosOpts{integrity: true, badBaseFee: true}, []string{fBadBaseFee}},
 		{71, true, chaosOpts{integrity: true, badBaseFee: true, oneVendor: true}, []string{fBadBaseFeeLone}},
 		{73, true, chaosOpts{integrity: true, strict: true}, []string{fSlowWalk}},
-		{79, true, chaosOpts{grpc: true}, []string{fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow, fStreamBadHeader, fReorg3}},
+		// A window of 10s holds the deep reorg's fork point, 20 blocks
+		// down, even when load slows block production 2x.
+		{79, true, chaosOpts{grpc: true, maxBackfill: 10 * time.Second}, []string{fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow, fStreamBadHeader, fReorg3, fDeepReorg}},
 	}
 	before := erpcGoroutines()
 	covered := make(map[string][]int64)
@@ -1886,13 +1889,14 @@ func (s *chaosSeed) faultsSince(since time.Time) string {
 // chain), strict (a reorg-sensitive mismatch on an unfinalized block is a
 // hard reject), a chain whose base fee no parent derives, a network of one
 // vendor, gRPC streams on 2 eRPC instances (with headers padded by
-// chaosStreamPad).
+// chaosStreamPad), a maxBackfill other than chaosMaxBackfill.
 type chaosOpts struct {
-	integrity  bool
-	strict     bool
-	badBaseFee bool
-	oneVendor  bool
-	grpc       bool
+	integrity   bool
+	strict      bool
+	badBaseFee  bool
+	oneVendor   bool
+	grpc        bool
+	maxBackfill time.Duration
 }
 
 func newChaosSeed(t *testing.T, seed int64, pollSources bool, opts chaosOpts) *chaosSeed {
@@ -1953,7 +1957,7 @@ func (s *chaosSeed) config() *common.Config {
 		})
 	}
 	cfg := sourcesConfig(func(nw *common.NetworkConfig) {
-		nw.Evm.ChainTracker = &common.EvmChainTrackerConfig{ReorgWindow: chaosReorgWindow, MaxBackfill: common.Duration(chaosMaxBackfill)}
+		nw.Evm.ChainTracker = &common.EvmChainTrackerConfig{ReorgWindow: chaosReorgWindow, MaxBackfill: common.Duration(s.maxBackfill())}
 		if s.opts.integrity {
 			nw.Integrity = &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{
 				Level:  "authoritative",
@@ -1976,6 +1980,10 @@ func (s *chaosSeed) config() *common.Config {
 		}},
 	}}
 	return cfg
+}
+
+func (s *chaosSeed) maxBackfill() time.Duration {
+	return cmp.Or(s.opts.maxBackfill, chaosMaxBackfill)
 }
 
 // startERPC boots the primary eRPC instance and, in the gRPC seed, its
@@ -2422,19 +2430,25 @@ func (s *chaosSeed) aheadFork() {
 }
 
 // deepReorg: the logs taps' fork may leave the window, so they end with
-// their transport's signal, 1013 (spec §13.1); new ones replace them.
+// their transport's signal, 1013 (spec §13.1); new ones replace them. In
+// the gRPC seed the window holds the fork point, so the streams get the
+// new branch resent from the fork point + 1 (spec §10.1).
 func (s *chaosSeed) deepReorg() {
 	depth := chaosReorgWindow + 4
 	from := time.Now()
 	tip := s.chain.reorg(depth)
 	s.allowCloses(from, time.Now(), tip.number-uint64(depth))
+	resent := ""
+	if s.opts.grpc {
+		resent = "; " + s.awaitResend(tip.number-uint64(depth), from)
+	}
 	// Closes spread over logsCloseSpread: count them once it has passed.
 	time.Sleep(time.Until(from.Add(logsCloseBound())))
 	closed := s.closed1013(from)
 	if closed > 0 {
 		s.dialLogs("after-deep-reorg")
 	}
-	s.occur(fDeepReorg, fmt.Sprintf("depth %d > reorgWindow %d, new head %d; %d logs clients closed with 1013", depth, chaosReorgWindow, tip.number, closed))
+	s.occur(fDeepReorg, fmt.Sprintf("depth %d > reorgWindow %d, new head %d; %d logs clients closed with 1013%s", depth, chaosReorgWindow, tip.number, closed, resent))
 }
 
 func (s *chaosSeed) silentVendor() {
@@ -3317,6 +3331,13 @@ func (s *chaosSeed) forgedHash() {
 	s.chain.mu.Lock()
 	forged := v.forged
 	s.chain.mu.Unlock()
+	// Intake counts a push after the vendor wrote it: under load the last
+	// one may still be in flight.
+	for end := time.Now().Add(10 * chaosBlock); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		if gated()-gated0 >= float64(forged) && violations()-violations0 >= float64(forged) {
+			break
+		}
+	}
 	require.Equal(s.t, float64(forged), gated()-gated0, "intake holds back every forged head of %s", v.id)
 	require.Equal(s.t, float64(forged), violations()-violations0, "each forged head counts against %s", v.id)
 	s.occur(fForgedHash, fmt.Sprintf("%s pushed %d heads with a wrong hash, the first 2 in a row", v.id, forged))

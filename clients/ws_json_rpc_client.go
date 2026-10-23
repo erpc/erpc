@@ -38,10 +38,14 @@ const (
 // Liveness windows: a connection with no pong or data frame for wsPongWait
 // is torn down and re-dialed, since a half-open connection would otherwise
 // block reads forever while pings keep "succeeding" into a buffer. Two
-// pings fit in the window. Vars so tests can shorten them.
+// pings fit in the window. A request that times out shortens the window
+// to wsProbeWait and pings: a live peer answers well within it, and a
+// half-open one fails its pending requests over seconds after the
+// timeout, not at the end of wsPongWait. Vars so tests can shorten them.
 var (
 	wsPingInterval = 30 * time.Second
 	wsPongWait     = 75 * time.Second
+	wsProbeWait    = 5 * time.Second
 )
 
 // WsJsonRpcClient implements ClientInterface for WebSocket-based JSON-RPC upstream connections.
@@ -56,6 +60,7 @@ type WsJsonRpcClient struct {
 
 	pingInterval time.Duration
 	pongWait     time.Duration
+	probeWait    time.Duration
 
 	// Connection state. Only readLoop replaces or tears down conn (besides
 	// the initial dial and shutdown); the dial itself runs without connMu so
@@ -67,6 +72,10 @@ type WsJsonRpcClient struct {
 	// written under connMu, epochs counts connections ever installed.
 	epoch  atomic.Uint64
 	epochs uint64
+	// probing is the connection whose liveness probe is armed; a frame or
+	// pong on it disarms it. Later timeouts on it never re-arm the probe,
+	// so a stream of them cannot push the probe's deadline back.
+	probing atomic.Pointer[websocket.Conn]
 
 	// Write synchronization (gorilla/websocket requires synchronized writes)
 	writeMu sync.Mutex
@@ -174,6 +183,7 @@ func NewWsJsonRpcClient(
 		headers:         headers,
 		pingInterval:    wsPingInterval,
 		pongWait:        wsPongWait,
+		probeWait:       wsProbeWait,
 		projectId:       projectId,
 		upstream:        upstream,
 		appCtx:          appCtx,
@@ -340,6 +350,9 @@ func (c *WsJsonRpcClient) SendRequest(ctx context.Context, req *common.Normalize
 			err := ctx.Err()
 			if errors.Is(err, context.DeadlineExceeded) {
 				err = common.NewErrEndpointRequestTimeout(time.Since(startedAt), err)
+				// The write may block on a full send buffer; the caller
+				// has waited long enough.
+				go c.probe(conn)
 			} else if errors.Is(err, context.Canceled) {
 				err = common.NewErrEndpointRequestCanceled(err)
 			}
@@ -429,9 +442,10 @@ func (c *WsJsonRpcClient) connect() error {
 	}
 
 	// Every pong (here) and data frame (in readLoop) extends the liveness
-	// deadline.
+	// deadline and disarms a probe.
 	_ = conn.SetReadDeadline(time.Now().Add(c.pongWait))
 	conn.SetPongHandler(func(string) error {
+		c.probing.CompareAndSwap(conn, nil)
 		return conn.SetReadDeadline(time.Now().Add(c.pongWait))
 	})
 
@@ -466,6 +480,7 @@ func (c *WsJsonRpcClient) teardownConn(conn *websocket.Conn, cause error) {
 	c.connMu.Unlock()
 
 	if conn != nil {
+		c.probing.CompareAndSwap(conn, nil)
 		_ = conn.Close()
 	}
 	c.subHandlersMu.Lock()
@@ -555,6 +570,7 @@ func (c *WsJsonRpcClient) readLoop() {
 			continue
 		}
 
+		c.probing.CompareAndSwap(conn, nil)
 		_ = conn.SetReadDeadline(time.Now().Add(c.pongWait))
 
 		c.handleMessage(message, epoch)
@@ -702,6 +718,20 @@ func (c *WsJsonRpcClient) writeToConn(conn *websocket.Conn, messageType int, dat
 		return err
 	}
 	return conn.WriteMessage(messageType, data)
+}
+
+// probe pings conn and gives it probeWait to answer: a pong or any frame
+// restores the liveness deadline, and a half-open peer sends neither, so
+// readLoop tears the connection down and fails its pending requests. A
+// probe already armed on conn keeps its deadline.
+func (c *WsJsonRpcClient) probe(conn *websocket.Conn) {
+	if c.probing.Swap(conn) == conn {
+		return
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(min(c.probeWait, c.pongWait)))
+	if err := c.writeToConn(conn, websocket.PingMessage, nil); err != nil {
+		_ = conn.Close()
+	}
 }
 
 // UnsubscribeOrphan cancels a subscription of connection epoch that nobody

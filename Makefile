@@ -7,6 +7,7 @@ help:
 	@echo " build                         Build the eRPC server + simulator"
 	@echo " fmt                           Format source code"
 	@echo " test                          Run unit tests"
+	@echo " test-realworld                Run the chain tracker real-world suite (-race eRPC pods, redis-server)"
 	@echo
 	@echo " run-k6                        Run k6 tests"
 	@echo " run-pprof                     Run the eRPC server with pprof"
@@ -117,6 +118,10 @@ test-race:
 	@go clean -testcache
 	@go test ./cmd/... -count 5 -parallel 5 -v -race
 	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -count 15 -parallel 15 -v -timeout 30m -race
+
+.PHONY: test-realworld
+test-realworld:
+	@go test ./test/realworld/... -count=1 -v -timeout 60m
 
 .PHONY: bench
 bench:

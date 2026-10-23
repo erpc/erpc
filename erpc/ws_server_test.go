@@ -2320,6 +2320,9 @@ type mockWsVendor struct {
 	staleRPC bool
 	// syncing answers eth_syncing as a node still syncing.
 	syncing bool
+	// chainIdHeld, if set, holds the eth_chainId answer until it closes,
+	// so the upstream registers only then.
+	chainIdHeld chan struct{}
 	// refusePending, if set, gives the JSON-RPC error answering the n-th
 	// newPendingTransactions subscribe (from 1), nil to accept it.
 	refusePending func(n int32) map[string]interface{}
@@ -2387,6 +2390,9 @@ func newMockWsVendor(t *testing.T, chain *mockChain, configure func(v *mockWsVen
 			reply := map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0x1"}
 			switch req["method"] {
 			case "eth_chainId":
+				if v.chainIdHeld != nil {
+					<-v.chainIdHeld
+				}
 				reply["result"] = "0x7b"
 			case "eth_syncing":
 				reply["result"] = false
@@ -2942,6 +2948,9 @@ func TestWebSocket_PollsStopWhenIdle(t *testing.T) {
 
 // With the WebSocket server off, each project's network subscribes newHeads
 // on its wss upstream at init, and HTTP eth_blockNumber follows the pushes.
+// A wss upstream that registers after its network started votes from its
+// first head: the selection policy takes it in at once, not at its next
+// evalInterval.
 func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -2950,8 +2959,12 @@ func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
 	stale := func(v *mockWsVendor) { v.staleRPC = true }
 	vendorA, urlA := newMockWsVendor(t, chain, stale)
 	vendorB, urlB := newMockWsVendor(t, chain, stale)
+	held := make(chan struct{})
+	release := sync.OnceFunc(func() { close(held) })
+	vendorLate, urlLate := newMockWsVendor(t, chain, func(v *mockWsVendor) { v.staleRPC, v.chainIdHeld = true, held })
+	t.Cleanup(release)
 
-	cfg := sourcesConfig(nil, sourceUpstream("ws-a", urlA, nil))
+	cfg := sourcesConfig(nil, sourceUpstream("ws-a", urlA, nil), sourceUpstream("ws-joins-late", urlLate, nil))
 	second := *cfg.Projects[0]
 	second.Id = "test_ws2"
 	second.Networks = []*common.NetworkConfig{{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}}
@@ -2963,6 +2976,13 @@ func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
 
 	require.Eventually(t, func() bool { return vendorA.subscribes.Load() > 0 && vendorB.subscribes.Load() > 0 },
 		10*time.Second, 20*time.Millisecond, "each project subscribes newHeads on its own upstream without any client")
+	lateHeads := func(outcome string) float64 {
+		return testutil.ToFloat64(telemetry.MetricChainTrackerSourceHeadsTotal.WithLabelValues("test_ws", "evm:123", "ws-joins-late", outcome))
+	}
+	voted, gated := lateHeads("voted"), lateHeads("gated_authority")
+	release()
+	require.Eventually(t, func() bool { return vendorLate.subscribes.Load() > 0 },
+		10*time.Second, 20*time.Millisecond, "the late upstream's source subscribes newHeads")
 
 	for range 3 {
 		chain.advance()
@@ -2983,6 +3003,9 @@ func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
 			return out["result"] == want
 		}, 10*time.Second, 50*time.Millisecond, "%s: eth_blockNumber follows the pushed heads", project)
 	}
+	require.Eventually(t, func() bool { return lateHeads("voted") >= voted+3 }, 5*time.Second, 10*time.Millisecond,
+		"the late upstream's heads vote")
+	assert.Equal(t, gated, lateHeads("gated_authority"), "no head of the late upstream is held back from the vote")
 }
 
 // A wss upstream that refuses newHeads as unsupported feeds them by poll,

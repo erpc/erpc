@@ -1,0 +1,327 @@
+// Package chainsim simulates one EVM chain and the vendor nodes that serve
+// it over real sockets: HTTP JSON-RPC and WebSocket eth_subscribe, each
+// vendor with its own view of the chain and its own app-level faults.
+package chainsim
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"math/big"
+	"math/rand/v2"
+	"strings"
+	"time"
+
+	gethcommon "github.com/ethereum/go-ethereum/common"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/trie"
+)
+
+// Hash is a block, transaction or topic hash.
+type Hash = gethcommon.Hash
+
+// Logs of simulated blocks use these addresses and topic0s. Filters match
+// the first address and the second topic0.
+var (
+	Addrs = []gethcommon.Address{
+		gethcommon.HexToAddress("0x00000000000000000000000000000000000000a1"),
+		gethcommon.HexToAddress("0x00000000000000000000000000000000000000a2"),
+		gethcommon.HexToAddress("0x00000000000000000000000000000000000000a3"),
+		gethcommon.HexToAddress("0x00000000000000000000000000000000000000a4"),
+	}
+	Topics = []Hash{
+		gethcommon.HexToHash("0x01"),
+		gethcommon.HexToHash("0x02"),
+		gethcommon.HexToHash("0x03"),
+	}
+)
+
+// Filter is a logs subscription filter: one address, or one topic0.
+type Filter struct {
+	Address *gethcommon.Address
+	Topic0  *Hash
+}
+
+// Filters are the two filters logs clients subscribe; a matching block
+// holds a log of each, a quiet block none.
+var Filters = []Filter{
+	{Address: &Addrs[0]},
+	{Topic0: &Topics[1]},
+}
+
+// Params is the filter as eth_subscribe and eth_getLogs take it.
+func (f Filter) Params() map[string]interface{} {
+	if f.Address != nil {
+		return map[string]interface{}{"address": f.Address.Hex()}
+	}
+	return map[string]interface{}{"topics": []interface{}{f.Topic0.Hex()}}
+}
+
+// Matches reports whether the filter selects l.
+func (f Filter) Matches(l Log) bool {
+	if f.Address != nil {
+		return l.Address == *f.Address
+	}
+	return len(l.Topics) > 0 && l.Topics[0] == *f.Topic0
+}
+
+// Log is one log of a simulated block.
+type Log struct {
+	BlockHash   Hash
+	BlockNumber uint64
+	TxHash      Hash
+	TxIndex     int
+	LogIndex    int
+	Address     gethcommon.Address
+	Topics      []Hash
+}
+
+// LogKey identifies a log across answers.
+type LogKey struct {
+	BlockHash Hash
+	LogIndex  int
+}
+
+func (l Log) Key() LogKey { return LogKey{l.BlockHash, l.LogIndex} }
+
+func (l Log) json() map[string]interface{} {
+	topics := make([]string, len(l.Topics))
+	for i, t := range l.Topics {
+		topics[i] = t.Hex()
+	}
+	return map[string]interface{}{
+		"address": strings.ToLower(l.Address.Hex()), "topics": topics, "data": "0x",
+		"blockHash": l.BlockHash.Hex(), "blockNumber": hexU(l.BlockNumber),
+		"transactionHash": l.TxHash.Hex(), "transactionIndex": hexU(uint64(l.TxIndex)),
+		"logIndex": hexU(uint64(l.LogIndex)), "removed": false,
+	}
+}
+
+type kind uint8
+
+const (
+	kindEmpty kind = iota
+	kindQuiet
+	kindMatching
+)
+
+type logSpec struct{ addr, topic int }
+
+// Block is one minted block; immutable once minted.
+type Block struct {
+	Number   uint64
+	Hash     Hash
+	Parent   *Block // nil for the first history block
+	Time     uint64
+	MintedAt time.Time // when it became a vendor's view: the start of its delivery latency
+
+	minority bool
+	tag      string
+	txs      [][]logSpec
+	raw      json.RawMessage
+}
+
+// ParentHash is the header's parentHash.
+func (b *Block) ParentHash() Hash {
+	if b.Parent == nil {
+		return Hash{}
+	}
+	return b.Parent.Hash
+}
+
+// Minority reports whether the block was minted on a minority fork.
+func (b *Block) Minority() bool { return b.minority }
+
+// TxCount is how many transactions the block holds.
+func (b *Block) TxCount() int { return len(b.txs) }
+
+// JSON is the header as eth_getBlockByNumber(n, false) answers it.
+func (b *Block) JSON() json.RawMessage { return b.raw }
+
+// Logs are the block's logs, in logIndex order.
+func (b *Block) Logs() []Log {
+	var out []Log
+	i := 0
+	for tx, logs := range b.txs {
+		for _, l := range logs {
+			out = append(out, Log{
+				BlockHash: b.Hash, BlockNumber: b.Number, TxHash: txHash(b.Hash, tx), TxIndex: tx, LogIndex: i,
+				Address: Addrs[l.addr], Topics: []Hash{Topics[l.topic], txTopic(b.tag, tx)},
+			})
+			i++
+		}
+	}
+	return out
+}
+
+// receipts are the block's receipts as a vendor answers them: badBloom
+// zeroes each receipt's logsBloom, drop leaves out the last receipts,
+// forge changes the first log's data.
+func (b *Block) receipts(badBloom bool, drop int, forge bool) []map[string]interface{} {
+	logs := b.Logs()
+	n := max(0, len(b.txs)-drop)
+	out := make([]map[string]interface{}, 0, n)
+	li := 0
+	for i := range n {
+		var bloom gethtypes.Bloom
+		if !badBloom {
+			addTxBloom(&bloom, b.tag, i, b.txs[i])
+		}
+		rl := make([]map[string]interface{}, 0, len(b.txs[i]))
+		for range b.txs[i] {
+			j := logs[li].json()
+			if forge && li == 0 {
+				j["data"] = ForgedData
+			}
+			rl = append(rl, j)
+			li++
+		}
+		out = append(out, map[string]interface{}{
+			"blockHash": b.Hash.Hex(), "blockNumber": hexU(b.Number),
+			"transactionHash": txHash(b.Hash, i).Hex(), "transactionIndex": hexU(uint64(i)),
+			"status": "0x1", "cumulativeGasUsed": "0x5208", "gasUsed": "0x5208", "type": "0x0",
+			"logsBloom": "0x" + hex.EncodeToString(bloom[:]), "logs": rl,
+		})
+	}
+	return out
+}
+
+// ForgedData is the data of a forged log: no block of any chain holds it.
+const ForgedData = "0xbad0"
+
+func content(r *rand.Rand, k kind) [][]logSpec {
+	if k == kindEmpty {
+		return nil
+	}
+	txs := make([][]logSpec, 12+r.IntN(5))
+	for i := range txs {
+		for range 1 + r.IntN(2) {
+			l := logSpec{addr: r.IntN(len(Addrs)), topic: r.IntN(len(Topics))}
+			if k == kindQuiet {
+				l = logSpec{addr: 2 + r.IntN(2), topic: []int{0, 2}[r.IntN(2)]}
+			}
+			txs[i] = append(txs[i], l)
+		}
+	}
+	if k == kindMatching {
+		txs[0][0] = logSpec{addr: 0, topic: 1}
+	}
+	return txs
+}
+
+// addTxBloom adds a transaction's logs to bloom. Every log carries a second
+// topic unique to its transaction, so receipts that miss a transaction
+// never match the header's bloom.
+func addTxBloom(bloom *gethtypes.Bloom, tag string, tx int, logs []logSpec) {
+	own := txTopic(tag, tx)
+	for _, l := range logs {
+		bloom.Add(Addrs[l.addr].Bytes())
+		bloom.Add(Topics[l.topic].Bytes())
+		bloom.Add(own.Bytes())
+	}
+}
+
+func txTopic(tag string, tx int) Hash {
+	return sha256.Sum256(fmt.Appendf(nil, "topic/%s/%d", tag, tx))
+}
+
+func txHash(block Hash, i int) Hash {
+	return sha256.Sum256(fmt.Appendf(nil, "%x/%d", block, i))
+}
+
+func receiptsRoot(tag string, txs [][]logSpec) Hash {
+	rs := make(gethtypes.Receipts, len(txs))
+	for i, tx := range txs {
+		var bloom gethtypes.Bloom
+		addTxBloom(&bloom, tag, i, tx)
+		logs := make([]*gethtypes.Log, len(tx))
+		for k, l := range tx {
+			logs[k] = &gethtypes.Log{Address: Addrs[l.addr], Topics: []Hash{Topics[l.topic], txTopic(tag, i)}, Data: []byte{}}
+		}
+		rs[i] = &gethtypes.Receipt{Type: gethtypes.LegacyTxType, Status: gethtypes.ReceiptStatusSuccessful, CumulativeGasUsed: 0x5208, Bloom: bloom, Logs: logs}
+	}
+	return gethtypes.DeriveSha(rs, trie.NewStackTrie(nil))
+}
+
+// header builds a block whose header hashes to its hash (blockHashRecompute)
+// and whose logsBloom is the OR of its receipts' blooms.
+func header(chainID int64, parent *Block, number uint64, ts uint64, tag string, txs [][]logSpec, pad int) (Hash, json.RawMessage) {
+	var ph Hash
+	if parent != nil {
+		ph = parent.Hash
+	}
+	var bloom gethtypes.Bloom
+	for i, tx := range txs {
+		addTxBloom(&bloom, tag, i, tx)
+	}
+	hdr := &gethtypes.Header{
+		ParentHash:  ph,
+		UncleHash:   gethtypes.EmptyUncleHash,
+		Coinbase:    gethcommon.HexToAddress("0x0000000000000000000000000000000000000001"),
+		TxHash:      gethtypes.EmptyTxsHash,
+		ReceiptHash: gethtypes.EmptyReceiptsHash,
+		Bloom:       bloom,
+		Difficulty:  big.NewInt(0),
+		Number:      new(big.Int).SetUint64(number),
+		GasLimit:    30_000_000,
+		Time:        ts,
+		Extra:       append(fmt.Appendf(nil, "%d/%s", chainID, tag), make([]byte, pad)...),
+		BaseFee:     big.NewInt(7),
+	}
+	if len(txs) > 0 {
+		hdr.TxHash = sha256.Sum256(fmt.Appendf(nil, "txs/%d/%s", chainID, tag))
+		hdr.ReceiptHash = receiptsRoot(tag, txs)
+		hdr.GasUsed = uint64(len(txs)) * 21000
+	}
+	hash := hdr.Hash()
+	raw, err := hdr.MarshalJSON()
+	if err != nil {
+		panic(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		panic(err)
+	}
+	fields["size"] = json.RawMessage(`"0x220"`)
+	hashes := make([]string, len(txs))
+	for i := range txs {
+		hashes[i] = txHash(hash, i).Hex()
+	}
+	fields["transactions"], _ = json.Marshal(hashes)
+	fields["uncles"] = json.RawMessage(`[]`)
+	raw, _ = json.Marshal(fields)
+	return hash, raw
+}
+
+// forgeHash is raw with a hash it does not hash to.
+func forgeHash(raw json.RawMessage) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		panic(err)
+	}
+	h := sha256.Sum256(fields["hash"])
+	fields["hash"], _ = json.Marshal("0x" + hex.EncodeToString(h[:]))
+	out, _ := json.Marshal(fields)
+	return out
+}
+
+// withNumber is raw with its number field set to n: a header that claims
+// a height it is not at.
+func withNumber(raw json.RawMessage, n uint64) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		panic(err)
+	}
+	fields["number"], _ = json.Marshal(hexU(n))
+	out, _ := json.Marshal(fields)
+	return out
+}
+
+// ForgedHashOf is the hash a forged push of b carries.
+func ForgedHashOf(b *Block) Hash {
+	q, _ := json.Marshal(b.Hash.Hex())
+	return sha256.Sum256(q)
+}
+
+func hexU(n uint64) string { return fmt.Sprintf("0x%x", n) }
