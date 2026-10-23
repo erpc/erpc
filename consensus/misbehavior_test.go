@@ -75,7 +75,7 @@ func trackRound(t *testing.T, e *executor, labels metricsLabels, responses []*ex
 	ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
 	lg := zerolog.Nop()
 	analysis := newConsensusAnalysis(&lg, ctx, e.config, responses)
-	winner := e.determineWinner(&lg, analysis)
+	winner := e.determineWinner(&lg, nil, analysis)
 	e.trackAndPunishMisbehavingUpstreams(&lg, req, labels, winner, analysis)
 	return winner
 }
