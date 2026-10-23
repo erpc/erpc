@@ -70,7 +70,7 @@ T   the rest of the real-world catalogue
   - Per-method interpolation: absent params, EIP-1898 leaves, method config for `eth_callMany` and `eth_createAccessList`, `erigon_blockNumber` = `Latest`; `eth_getBlockByNumber(latest|finalized)` interpolated with a pre-forward refresh.
   - `enforceNonNullTaggedBlocks` reads the original tag; one head predicate with `headLagToleranceBlocks`.
   - Finality split: reads `Head.Finalized`; permanent writes also the serving upstream's finalized; the cache write guard reads the network-wide lane.
-  - Block-time EMA sampled from accepted source headers; one default.
+  - Block-time EMA sampled from accepted source headers; one default, 1s, until 4 samples, the poll cadence included; `fallbackStatePollerDebounce` loses its 5s default.
 - Delete: per-request served-tip evaluation; post-forward raise, `pickHighestBlock`, `enforceHighestBlock` for `eth_getBlockByNumber`; raw-max consensus leader; `EvmLowestFinalizedBlockNumber`; `pinLatestTag` re-read per attempt; the cache key on the word `latest`; the tracker's pins-mean block time and its 12s default.
 - Tests, real-world: X2, U12, U14, P1, P5, P6, P7, P9, P10, K7, C9, C12, C13. Extend `erpc/networks_served_tip_invariants_test.go` (assertions unchanged) and the existing interpolation tests.
 
