@@ -78,7 +78,7 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 	sender := newStreamSender(stream)
 	defer sender.stop()
 	tracker := nw.chainTracker
-	feed := &cutFeed{ChainFeed: waitBoundedFeed{ChainTracker: tracker, wait: streamBlocksReadWait.Load()}}
+	feed := &cutFeed{ChainFeed: waitBoundedFeed{ChainTracker: tracker, wait: streamBlocksReadWait.Load(), lastVote: nw.newestHashVoteAt}}
 	sendWait := streamBlocksSendWait.Load()
 	emit := func(b indexer.Batch) error {
 		for _, blk := range b.Applied {
@@ -195,6 +195,9 @@ func streamBlocksResponse(header json.RawMessage) (*bdsevm.StreamBlocksResponse,
 type waitBoundedFeed struct {
 	*evm.ChainTracker
 	wait time.Duration
+	// lastVote is when the newest hash vote reached this instance; zero
+	// before one.
+	lastVote func() time.Time
 }
 
 func (f waitBoundedFeed) Head(ctx context.Context) (indexer.Cursor, error) {
@@ -220,7 +223,9 @@ func (f waitBoundedFeed) Read(ctx context.Context, c indexer.Cursor, o indexer.R
 
 // watchStall ends a Read on c with errStreamBlocksStalled once it waited
 // f.wait in a row while stalled; it is checked on each published state
-// and every quarter of the wait.
+// and every quarter of the wait. Without a hash voter the wait counts from
+// the newest hash vote: a cut-off pod's sockets close only at their
+// liveness deadline, well after its last header.
 func (f waitBoundedFeed) watchStall(ctx context.Context, c indexer.Cursor, cancel context.CancelCauseFunc) {
 	recheck := f.wait / 4
 	timer := time.NewTimer(recheck)
@@ -229,9 +234,13 @@ func (f waitBoundedFeed) watchStall(ctx context.Context, c indexer.Cursor, cance
 	for {
 		changed := f.Changed()
 		next := recheck
-		if f.stalled(c) {
+		voting := f.HashVoting()
+		if f.stalled(c, voting) {
 			if since.IsZero() {
 				since = time.Now()
+				if at := f.lastVote(); !voting && !at.IsZero() && at.Before(since) {
+					since = at
+				}
 			}
 			left := f.wait - time.Since(since)
 			if left <= 0 {
@@ -253,10 +262,10 @@ func (f waitBoundedFeed) watchStall(ctx context.Context, c indexer.Cursor, cance
 }
 
 // stalled reports whether a Read on c waits on this pod rather than on the
-// chain: the confirmed head stands above c, or at c's number on another
-// branch, or no hash voter exists.
-func (f waitBoundedFeed) stalled(c indexer.Cursor) bool {
-	if !f.HashVoting() {
+// chain: no hash voter exists (voting false), or the confirmed head stands
+// above c, or at c's number on another branch.
+func (f waitBoundedFeed) stalled(c indexer.Cursor, voting bool) bool {
+	if !voting {
 		return true
 	}
 	send, ok := f.Confirmed()

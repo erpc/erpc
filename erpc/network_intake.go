@@ -192,6 +192,21 @@ func (in *networkIntake) hashVote(u common.Upstream) (health.HashVote, bool) {
 	return in.nw.metricsTracker.HashVote(u)
 }
 
+// newestHashVoteAt is when the newest hash vote of any upstream of the
+// network reached this instance; zero before one (the gRPC stall rule,
+// spec §10.2).
+func (n *Network) newestHashVoteAt() (at time.Time) {
+	if n.intake == nil || n.upstreamsRegistry == nil {
+		return at
+	}
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
+		if v, ok := n.intake.hashVote(u); ok && v.At.After(at) {
+			at = v.At
+		}
+	}
+	return at
+}
+
 func (in *networkIntake) count(upstreamId, outcome string) {
 	telemetry.CounterHandle(telemetry.MetricChainTrackerSourceHeadsTotal,
 		in.nw.projectId, in.nw.Label(), upstreamId, outcome).Inc()
