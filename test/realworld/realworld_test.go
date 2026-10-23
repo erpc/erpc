@@ -2,6 +2,7 @@ package realworld
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -408,25 +409,74 @@ func n5() spec {
 
 // K2: a minimal config, 1 wss and 1 https upstream with no evm block and no
 // network entry. The wss upstream is a source, the https one is not, the
-// served tip needs both (quorum 2), and every subscription works. The
-// network-wide `latest` is floored at the delivered head (feature.md: "the
-// network-wide tracker's pin changes floor it"), and the lag gauge reads 0
-// at quorum ≤ 2, so the quorum shows on a use-upstream lane over both.
+// served tip needs both (quorum 2), and every subscription works. A
+// non-source's polls vote too (§6.3), so what tells it from a poll source
+// is its cadence: k2QuietAfter after the last tap closes, its latest polls
+// fall to the full-poll interval, while a poll source keeps polling at its
+// cadence for 60s. The network-wide `latest` is floored at the delivered
+// head (feature.md: "the network-wide tracker's pin changes floor it"), and
+// the lag gauge reads 0 at quorum ≤ 2, so the quorum shows on a
+// use-upstream lane over both.
 func k2() spec {
 	return spec{name: "K2", project: "k2", minimal: true, bound: healthyDelivery,
 		vendors: []vendorSpec{{"ws-a", "vendor-a", true}, {"http-b", "vendor-b", false}},
+		clients: func(*scenario) {},
 		body: func(s *scenario) {
-			s.blocks(25)
+			s.blocks(5)
 			ws, http := s.upstream("ws-a"), s.upstream("http-b")
+			var taps []func()
+			for pod, p := range s.h.pods {
+				cl, err := rpc.DialContext(s.ctx, p.wsURL(s.project, s.chain.ID()))
+				if err != nil {
+					s.t.Fatal(err)
+				}
+				ch := make(chan json.RawMessage, 1024)
+				sub, err := cl.EthSubscribe(s.ctx, ch, "newHeads")
+				if err != nil {
+					s.violate("K2", "pod-%d: newHeads subscription: %v", pod+1, err)
+					cl.Close()
+					continue
+				}
+				taps = append(taps, func() { sub.Unsubscribe(); cl.Close() })
+				got, end := 0, time.After(3*k2Heads*s.chain.BlockTime())
+			recv:
+				for got < k2Heads {
+					select {
+					case <-ch:
+						got++
+					case <-end:
+						break recv
+					}
+				}
+				if got < k2Heads {
+					s.violate("K2", "pod-%d: newHeads delivered %d headers in %d block times, wants %d", pod+1, got, 3*k2Heads, k2Heads)
+				}
+			}
+			s.blocks(10)
+			for _, closeTap := range taps {
+				closeTap()
+			}
+			time.Sleep(k2QuietAfter)
+			polled := func(pod int) float64 {
+				v, ok := s.metric(pod, "erpc_upstream_latest_block_polled_total", map[string]string{"upstream": http})
+				if !ok {
+					s.violate("K2", "pod-%d: %s exports no latest polls", pod+1, http)
+				}
+				return v
+			}
+			before := make([]float64, len(s.h.pods))
 			for pod := range s.h.pods {
+				before[pod] = polled(pod)
+			}
+			time.Sleep(k2QuietWindow)
+			for pod := range s.h.pods {
+				n := polled(pod) - before[pod]
+				if n > 1 {
+					s.violate("K2", "pod-%d: %s, an https upstream with subscriptionSource unset, polled latest %v times in %s from %s after the last tap closed: it polls as a source", pod+1, http, n, k2QuietWindow, k2QuietAfter)
+				}
+				s.logf("pod-%d: %s polled latest %v times in %s from %s after the last tap closed (%v before)", pod+1, http, n, k2QuietWindow, k2QuietAfter, before[pod])
 				if v, _ := s.metric(pod, "erpc_chain_tracker_source_heads_total", map[string]string{"upstream": ws, "outcome": "voted"}); v == 0 {
 					s.violate("K2", "pod-%d: %s, a wss upstream with subscriptionSource unset, voted no header", pod+1, ws)
-				}
-				if v, _ := s.metric(pod, "erpc_chain_tracker_source_heads_total", map[string]string{"upstream": http}); v > 0 {
-					s.violate("K2", "pod-%d: %s, an https upstream with subscriptionSource unset, fed %v source headers", pod+1, http, v)
-				}
-				if v, ok := s.metric(pod, "erpc_upstream_report_age_seconds", hashAge(http)); ok && v <= liveBound.Seconds() {
-					s.violate("K2", "pod-%d: %s, no source, has a fresh hash vote", pod+1, http)
 				}
 			}
 			hb := s.vendors["http-b"]
@@ -458,6 +508,16 @@ func k2() spec {
 			s.blocks(25)
 		}}
 }
+
+// k2Heads: the headers each K2 newHeads subscription must deliver.
+// k2QuietAfter and k2QuietWindow: from k2QuietAfter after the last tap
+// closes, the https non-source polls latest at most once in k2QuietWindow,
+// a third of its 30s full-poll interval (§6.8, row K2).
+const (
+	k2Heads       = 5
+	k2QuietAfter  = 5 * time.Second
+	k2QuietWindow = 10 * time.Second
+)
 
 // slowHeaderPad and slowPauseBlocks: D1's header size, and how long its
 // ws client stops reading. Loopback TCP holds up to slowKernelHeld bytes
