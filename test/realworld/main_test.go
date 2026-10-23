@@ -27,15 +27,19 @@ const (
 	// liveBound: max(3 × block time, 2s) (§1). A live source's head is
 	// pinned, and sent, within it.
 	liveBound = 2 * time.Second
+	// tapProcessingSlack: a tap waits at most W after the block's first
+	// header, plus the tracker's processing (§15.1): a silent voter leaves
+	// the hash voters at W exactly, and the send follows.
+	tapProcessingSlack = 50 * time.Millisecond
 	// healthyDelivery bounds a block's first header on a pod → client
 	// receipt, and any wait between two receipts (spec §15.1, U3, X9).
-	healthyDelivery = liveBound
+	healthyDelivery = liveBound + tapProcessingSlack
 	// settleDelivery adds one settle round, itself within a live bound, for
 	// sources that disagree (§6 rule 5, §13.1 "sources disagree: 1 settle").
-	settleDelivery = 2 * liveBound
+	settleDelivery = healthyDelivery + liveBound
 	// deepReorgDelivery adds reorgWindow blocks of walk (§13.1 "reorg
 	// deeper than the window").
-	deepReorgDelivery = liveBound + reorgWindow*blockTime
+	deepReorgDelivery = healthyDelivery + reorgWindow*blockTime
 	// grpcReadWait: a StreamBlocks Read stalled this long ends UNAVAILABLE
 	// (§9.2).
 	grpcReadWait = 60 * time.Second

@@ -25,7 +25,7 @@ const (
 	// cutOverDelivery: a voter cut off stops counting toward the hash
 	// quorum once its hash age passes W (§6.1, §6.5); the next header
 	// follows within one block.
-	cutOverDelivery = liveBound + blockTime
+	cutOverDelivery = healthyDelivery + blockTime
 	// u10Lag, k6Lag: how far behind the faulty upstream serves (§19).
 	u10Lag = 40
 	k6Lag  = 5
@@ -42,7 +42,7 @@ const (
 // quorum (§6.5). The oracle never asks pods 1 and 3 eth_blockNumber, so
 // its own reads never make pod-1 poll a fresh https head.
 func x9() spec {
-	return spec{name: "X9", pods: 3, headless: []int{0, 2}, bound: liveBound,
+	return spec{name: "X9", pods: 3, headless: []int{0, 2}, bound: healthyDelivery,
 		vendors: []vendorSpec{{"ws-a", "vendor-a", true}, {"http-a", "vendor-a", false}, {"http-b", "vendor-b", false}},
 		clients: func(s *scenario) {
 			s.podClients(0, 0)
