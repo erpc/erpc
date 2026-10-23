@@ -58,9 +58,9 @@ type Network struct {
 	// forkDemoted are the voters on a minority fork (EvmForkDemoted): no
 	// number vote, last in routing. nil while none is.
 	forkDemoted atomic.Pointer[[]string]
-	// hashStale are the voters whose hash vote another voter's header
-	// passed, or whose socket closed (setHashStale): tried after the rest,
-	// before forkDemoted. nil while none is.
+	// hashStale are the sources whose hash age exceeds W, or whose socket
+	// closed (setHashStale): tried after the rest, before forkDemoted. nil
+	// while none is.
 	hashStale atomic.Pointer[[]string]
 
 	// servedTipAll is the network-wide served-tip lane. Lanes hold the
@@ -1693,8 +1693,8 @@ func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedReq
 	// For a specific block, try upstreams whose poller already has it first.
 	// Ordering hints only: every upstream stays eligible.
 	if n.Architecture() == common.ArchitectureEvm {
-		if bn := requestBlockNumber(ctx, req); bn > 0 {
-			upsList = partitionUpstreamsByLatestBlock(upsList, bn)
+		if bn := n.routingBlockNumber(ctx, req); bn > 0 {
+			upsList = n.partitionUpstreamsByLatestBlock(upsList, bn)
 			upsList = preferTipLeaderForNearTipGetBlock(upsList, method, bn)
 		}
 	}
@@ -1707,7 +1707,7 @@ func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedReq
 	return n.lateLast(upsList)
 }
 
-// lateLast moves voters with a stale hash vote (spec §6.1), then voters on
+// lateLast moves sources with a stale hash vote (spec §6.1), then voters on
 // a minority fork (§6.3), to the end of upsList, keeping each part's order:
 // a half-open socket keeps its upstream's rank in the policy for a while,
 // and a request it holds waits for its timeout. upsList is the request's
@@ -3559,14 +3559,21 @@ func isFallbackTier(u common.Upstream) bool {
 	return u.Config() != nil && u.Config().HasTag(common.TagTierFallback)
 }
 
-// partitionUpstreamsByLatestBlock moves upstreams whose polled head is known
-// to be below bn behind the rest, preserving order within each group. An
+// partitionUpstreamsByLatestBlock moves the upstreams known not to have
+// reached block bn behind the rest, preserving order within each group
+// (spec §6.1, §8). A source is judged by its hash vote on this instance, as
+// its requests ride this instance's socket, which may be half-open while
+// the shared head counter moves; any other upstream by its head counter. An
 // upstream with no known head keeps its place.
-func partitionUpstreamsByLatestBlock(ups []common.Upstream, bn int64) []common.Upstream {
+func (n *Network) partitionUpstreamsByLatestBlock(ups []common.Upstream, bn int64) []common.Upstream {
 	if bn <= 0 || len(ups) < 2 {
 		return ups
 	}
 	return stablePartition(ups, func(u common.Upstream) bool {
+		if cfg := u.Config(); n.intake != nil && cfg != nil && cfg.IsSubscriptionSource() {
+			v, voted := n.intake.hashVote(u)
+			return voted && v.Number < bn
+		}
 		lb := upstreamLatestBlock(u)
 		return lb > 0 && lb < bn
 	})
@@ -3640,6 +3647,29 @@ func requestBlockNumber(ctx context.Context, req *common.NormalizedRequest) int6
 	}
 	if _, x, ebn := evm.ExtractBlockReferenceFromRequest(ctx, req); ebn == nil && x > 0 {
 		return x
+	}
+	return 0
+}
+
+// routingBlockNumber is the block req reads, for routing: requestBlockNumber,
+// or for a read by block hash the number of the header the network-wide
+// tracker holds; 0 otherwise.
+func (n *Network) routingBlockNumber(ctx context.Context, req *common.NormalizedRequest) int64 {
+	if req == nil {
+		return 0
+	}
+	if v, ok := req.EvmBlockNumber().(int64); ok && v > 0 {
+		return v
+	}
+	ref, x, err := evm.ExtractBlockReferenceFromRequest(ctx, req)
+	switch {
+	case err != nil:
+		return 0
+	case x > 0:
+		return x
+	case len(ref) == 66:
+		bn, _ := evm.HeldNumber(n, ref)
+		return bn
 	}
 	return 0
 }

@@ -394,24 +394,11 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 	}
 	now := time.Now()
 	voters, cands := n.intake.voters(selector)
-	type read struct {
-		v     health.HashVote
-		voted bool
-	}
-	votes := make([]read, len(voters))
-	var newest int64
-	for i, u := range voters {
-		v, voted := n.intake.hashVote(u)
-		votes[i] = read{v, voted}
-		if voted && !v.Expired {
-			newest = max(newest, v.Number)
-		}
-	}
 	var stale []string
-	for i, u := range voters {
+	for _, u := range voters {
 		hv.Voters = append(hv.Voters, u.Id())
-		v, voted := votes[i].v, votes[i].voted
-		if voted && (v.Expired || v.Age > 0 || v.Number < newest) {
+		v, voted := n.intake.hashVote(u)
+		if voted && u.Config().IsSubscriptionSource() && (v.Expired || v.Age > w) {
 			stale = append(stale, u.Id())
 		}
 		ok, at := freshVote(v, voted, w, now)
@@ -437,10 +424,11 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 	return hv
 }
 
-// setHashStale publishes the network-wide voters whose hash vote is below
-// another voter's newest, or aged, or whose socket closed (spec §6.1):
-// routing tries them after the rest, so a half-open socket holds no
-// request.
+// setHashStale publishes the network-wide sources whose hash age exceeds W
+// or whose socket closed (spec §6.1): routing tries them after the rest, so
+// a half-open socket holds no request. A source behind by less than W, or an
+// upstream that is no source, keeps its rank: its poll schedule is no
+// evidence of a fault.
 func (n *Network) setHashStale(ids []string) {
 	old := n.hashStale.Load()
 	switch {

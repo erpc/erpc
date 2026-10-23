@@ -27,7 +27,7 @@ func TestPartitionUpstreamsByLatestBlock_AllHaveTheBlock_NoReorder(t *testing.T)
 		upWithLatest("b", 105),
 		upWithLatest("c", 110),
 	}
-	got := partitionUpstreamsByLatestBlock(in, 100)
+	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100)
 	assert.Equal(t, []string{"a", "b", "c"}, ids(got), "no upstream lags the requested block; partition is identity")
 }
 
@@ -37,7 +37,7 @@ func TestPartitionUpstreamsByLatestBlock_NoneHaveTheBlock_NoReorder(t *testing.T
 		upWithLatest("b", 60),
 		upWithLatest("c", 70),
 	}
-	got := partitionUpstreamsByLatestBlock(in, 100)
+	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100)
 	assert.Equal(t, []string{"a", "b", "c"}, ids(got), "no upstream has the requested block; partition is identity (caller can still try them)")
 }
 
@@ -49,7 +49,7 @@ func TestPartitionUpstreamsByLatestBlock_SplitsAndPreservesIntraGroupOrder(t *te
 		upWithLatest("d", 105),
 		upWithLatest("e", 88),
 	}
-	got := partitionUpstreamsByLatestBlock(in, 100)
+	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100)
 	assert.Equal(t, []string{"b", "d", "a", "c", "e"}, ids(got))
 }
 
@@ -59,7 +59,7 @@ func TestPartitionUpstreamsByLatestBlock_EqualLatestIsTreatedAsHavingBlock(t *te
 		upWithLatest("b", 100),
 		upWithLatest("c", 100),
 	}
-	got := partitionUpstreamsByLatestBlock(in, 100)
+	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100)
 	assert.Equal(t, []string{"b", "c", "a"}, ids(got))
 }
 
@@ -70,7 +70,7 @@ func TestPartitionUpstreamsByLatestBlock_UnknownHeadKeepsItsPlace(t *testing.T) 
 		upWithLatest("c", 110),
 		upWithLatest("d", 0),
 	}
-	got := partitionUpstreamsByLatestBlock(in, 100)
+	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100)
 	assert.Equal(t, []string{"a", "c", "d", "b"}, ids(got), "only a known head below the block moves back")
 }
 
@@ -79,13 +79,13 @@ func TestPartitionUpstreamsByLatestBlock_ZeroOrNegativeBlockIsNoOp(t *testing.T)
 		upWithLatest("a", 100),
 		upWithLatest("b", 50),
 	}
-	assert.Equal(t, in, partitionUpstreamsByLatestBlock(in, 0), "no block reference means no per-block routing preference")
-	assert.Equal(t, in, partitionUpstreamsByLatestBlock(in, -1), "negative block numbers are nonsensical; skip the partition rather than mis-sort")
+	assert.Equal(t, in, (&Network{}).partitionUpstreamsByLatestBlock(in, 0), "no block reference means no per-block routing preference")
+	assert.Equal(t, in, (&Network{}).partitionUpstreamsByLatestBlock(in, -1), "negative block numbers are nonsensical; skip the partition rather than mis-sort")
 }
 
 func TestPartitionUpstreamsByLatestBlock_SingleUpstreamIsNoOp(t *testing.T) {
 	in := []common.Upstream{upWithLatest("a", 50)}
-	got := partitionUpstreamsByLatestBlock(in, 100)
+	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100)
 	assert.Equal(t, in, got, "no other upstream to prefer; partition is a no-op")
 }
 
