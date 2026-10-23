@@ -1,12 +1,11 @@
 module github.com/erpc/erpc
 
-go 1.25.1
-
-toolchain go1.25.3
+go 1.27.3
 
 require (
 	github.com/DataDog/sketches-go v1.4.8
 	github.com/IGLOU-EU/go-wildcard/v2 v2.1.1
+	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/blockchain-data-standards/manifesto v0.0.0-20260924092100-34daf4bfdb2d
 	github.com/bytedance/sonic v1.15.4
@@ -29,11 +28,13 @@ require (
 	github.com/lyft/gostats v0.4.14
 	github.com/mediocregopher/radix/v3 v3.8.1
 	github.com/prometheus/client_golang v1.24.1
+	github.com/prometheus/client_model v0.6.2
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/rs/zerolog v1.35.1
 	github.com/spf13/afero v1.15.0
 	github.com/spruceid/siwe-go v0.2.1
 	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.43.0
 	github.com/urfave/cli/v3 v3.10.1
 	// Pinned: v0.61 removed UnaryServerInterceptor, v0.62 removed StreamServerInterceptor, and
 	// envoyproxy/ratelimit/src/server (pulled in transitively by src/redis) still calls them;
@@ -45,16 +46,15 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.45.0
 	go.opentelemetry.io/otel/sdk v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
-	golang.org/x/crypto v0.55.0
-	golang.org/x/net v0.58.0
-	golang.org/x/sync v0.22.0
+	golang.org/x/crypto v0.57.0
+	golang.org/x/net v0.60.0
+	golang.org/x/sync v0.23.0
 	golang.org/x/time v0.15.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.11
+	gopkg.in/yaml.v2 v2.4.0
 	gopkg.in/yaml.v3 v3.0.1
 )
-
-require github.com/prometheus/client_model v0.6.2
 
 require (
 	cel.dev/expr v0.25.2 // indirect
@@ -125,6 +125,8 @@ require (
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/lyft/goruntime v0.3.0 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/minio/sha256-simd v1.0.0 // indirect
 	github.com/mitchellh/mapstructure v1.4.1 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
@@ -162,17 +164,9 @@ require (
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/arch v0.8.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect
-)
-
-require (
-	github.com/alicebob/miniredis/v2 v2.38.0
-	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/testcontainers/testcontainers-go v0.43.0
-	golang.org/x/sys v0.47.0 // indirect
-	gopkg.in/yaml.v2 v2.4.0
 )
