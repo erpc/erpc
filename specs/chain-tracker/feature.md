@@ -935,7 +935,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 |---|---|---|
 | U1 | one https vendor answers after 15s, for 30 blocks | no tap waits more than W; HTTP hedges; no breaker opened by a tracker fetch |
 | U2 | proxy sends RST after half of a header or receipts body | fetch fails over; no malformed vote; logs complete |
-| U3 | wss TCP half-open: proxy stops forwarding, socket kept | hash vote expires within W; reconnect within 15s after the counter passes; no gap past `reorgWindow` |
+| U3 | wss TCP half-open: proxy stops forwarding, socket kept | hash vote expires within W; no tap waits more than W after another voter's first header for a block; reconnect within 15s after the counter passes; no gap past `reorgWindow` |
 | U4 | https keep-alive pool black-holed | one timeout, then new connections; `Latest` keeps moving |
 | U5 | 429 on every vendor for 4 blocks | nobody benched; delivery resumes within 2 bt |
 | U6 | one vendor `-32005` / compute units for 60s | throttled vendor bypassed; scheduler share unchanged |
@@ -950,7 +950,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | U15 | one vendor lacks `eth_getBlockReceipts` | logs from the other vendor; subscribe accepted |
 | U16 | wss refuses `newHeads` as unsupported | polled at cadence; asked again on reconnect and every 10 min |
 | U17 | https refuses `latest` 10 times | give-up; re-probed after 10 min; never a stuck poll source |
-| U18 | one vendor on a minority fork at the same heights, 20 blocks | taps never send its blocks; HTTP never serves them |
+| U18 | one vendor on a minority fork at the same heights, 20 blocks | taps never send its blocks; after W from the fork, HTTP never serves them (§6.3 demotion) |
 | N1 | +300 ms constant latency to one vendor | delivery p99 within 2 bt; `Latest` from the faster voters |
 | N2 | 0–2 bt jitter on every vendor; pushes reordered | `newHeads` in order, parent-linked, no duplicate |
 | N3 | instance 1 cut from vendor X for 50 blocks | instance 1 flows on vendor Y's votes; no stall |
@@ -989,7 +989,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | X6 | breaker open only on instance 1 for vendor X | `Latest` may differ by instance; the oracle holds |
 | X7 | old-image instance + new-image instance, one Redis | no client sees `latest` regress across instances by more than 1 bt; counters agree |
 | X8 | canary instance writes a bogus +1000 head to a counter | `Latest` unchanged on control; only the ceiling rises |
-| X9 | 1 wss + 2 https non-sources, 3 instances, Redis; `eth_blockNumber` traffic on instance 2 only | taps on instance 1 never wait longer than W: only voters that sent instance 1 a header within W count toward its hash quorum |
+| X9 | 1 wss + 2 https non-sources, 3 instances, Redis; `eth_blockNumber` traffic on instance 2 only | taps on instance 1 never wait longer than W after the block's first header there: only voters that sent instance 1 a header within W count toward its hash quorum |
 | K1 | YAML and TS configs with each deleted key | boot refuses and names the key |
 | K2 | minimal YAML: 1 wss + 1 https, no `evm` block | wss is a source, https is not; q = 2; subscriptions work |
 | K3 | 2 networks, `reorgWindow` 64 on one; 40-deep reorg on both | 64: Reverted; 32: re-anchor + `1013` |
