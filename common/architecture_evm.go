@@ -145,9 +145,8 @@ type EvmStatePoller interface {
 	// RefreshLatestBlock polls the latest block in the background when the
 	// stored head is older than the poll debounce; non-blocking, one in flight.
 	RefreshLatestBlock()
-	// PollHead polls latest in the background for a hash vote unless this
-	// instance fetched it within the poll debounce; non-blocking, one in
-	// flight.
+	// PollHead polls latest in the background now, for a hash vote, however
+	// fresh the stored head is; non-blocking, one in flight.
 	PollHead()
 	SetNetworkConfig(cfg *NetworkConfig)
 	IsObjectNull() bool

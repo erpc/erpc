@@ -567,6 +567,12 @@ func (e *EvmStatePoller) resolveFinalizedDebounce(cfg *common.EvmNetworkConfig, 
 // give-up after latest was refused as unsupported applies to a poll source
 // too: while it lasts, the reconciler polls other sources (LatestUnsupported).
 func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, error) {
+	return e.pollLatest(ctx, true)
+}
+
+// pollLatest is PollLatestBlockNumber; debounced: skip while this
+// instance's last fetch is within the debounce.
+func (e *EvmStatePoller) pollLatest(ctx context.Context, debounced bool) (int64, error) {
 	if e.shouldSkipLatestBlockCheck() {
 		e.logger.Trace().Msg("skipping latest block number poll as it is not supported by the upstream")
 		return 0, nil
@@ -577,7 +583,10 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	networkLabel := e.networkLabel
 	e.stateMu.RUnlock()
 
-	dbi := e.latestDebounce(cfg)
+	var dbi time.Duration
+	if debounced {
+		dbi = e.latestDebounce(cfg)
+	}
 	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.PollLatestBlockNumber",
 		trace.WithAttributes(
 			attribute.String("upstream.id", e.upstream.Id()),
@@ -687,16 +696,17 @@ func (e *EvmStatePoller) RefreshLatestBlock() {
 	e.refreshLatest(true)
 }
 
-// PollHead is RefreshLatestBlock for a hash vote (spec §6.3): it polls
-// unless this instance fetched latest within the debounce, however fresh
-// the shared counter is, since another instance's fetch or a client
-// response votes no hash here.
+// PollHead is RefreshLatestBlock for a hash vote (spec §6.3): it polls now,
+// however fresh the shared counter or this instance's last fetch is, since
+// another instance's fetch or a client response votes no hash here and a
+// vote from before a reorg is no evidence. Its callers pace their asks.
 func (e *EvmStatePoller) PollHead() {
 	e.refreshLatest(false)
 }
 
-// refreshLatest: shared, skip while the shared counter is fresh; the poll
-// itself skips while this instance's last fetch is.
+// refreshLatest: shared, poll only once the shared counter is older than
+// the debounce, and then only once this instance's last fetch is too;
+// otherwise poll now, as the caller paces its own asks.
 func (e *EvmStatePoller) refreshLatest(shared bool) {
 	if e.IsObjectNull() || e.latestBlockShared == nil || e.shouldSkipLatestBlockCheck() {
 		return
@@ -716,7 +726,7 @@ func (e *EvmStatePoller) refreshLatest(shared bool) {
 		defer e.latestRefreshInFlight.Store(false)
 		ctx, cancel := context.WithTimeout(e.appCtx, 10*time.Second)
 		defer cancel()
-		if _, err := e.PollLatestBlockNumber(ctx); err != nil {
+		if _, err := e.pollLatest(ctx, shared); err != nil {
 			e.logger.Debug().Err(err).Msg("on-demand latest block refresh failed in evm state poller")
 		}
 	}()
