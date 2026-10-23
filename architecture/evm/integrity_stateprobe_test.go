@@ -36,6 +36,8 @@ func newProbeNetwork(t *testing.T) *probeNetwork {
 	pn.On("Id").Return("evm:1").Maybe()
 	pn.On("ProjectId").Return("test").Maybe()
 	pn.On("Label").Return("mainnet").Maybe()
+	// No served tip here: latest never caps the delivery gate.
+	pn.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1) << 62).Maybe()
 	pn.On("Forward", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			jrq, _ := req.JsonRpcRequest()

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -115,6 +116,9 @@ type ChainTracker struct {
 	maxHeld  *chainHeader
 	wakeAt   time.Time
 	wake     *time.Timer
+	// catchUpAt is when the next catch-up may ask while the network's latest
+	// block caps the sends; zero while it does not (gate).
+	catchUpAt time.Time
 	// since is when the tracker started or last reset: for one live bound
 	// after it, sources that never reported count toward the delivery gate.
 	since time.Time
@@ -465,8 +469,10 @@ func (t *ChainTracker) run(ctx context.Context) {
 
 // handle applies one message, then moves walks, fill, settles and asks on.
 // Each step recovers on its own: a panicking message is dropped, and a
-// panicking step of update never blames the message. 3 messages in a row
-// that panic reset the tracker to empty.
+// panicking step of update never blames the message. 3 panics with no
+// header handled cleanly between them reset the tracker to empty: ticks,
+// receipts and fetch callbacks come between any two headers, so a state
+// that breaks only header handling would never reset if they ended the run.
 func (t *ChainTracker) handle(msg trackerMsg) {
 	if msg.done != nil {
 		defer close(msg.done)
@@ -484,7 +490,9 @@ func (t *ChainTracker) handle(msg trackerMsg) {
 		ok = t.update() && ok
 	}
 	if ok {
-		t.panics = 0
+		if msg.kind == msgHeader || msg.kind == msgFetched {
+			t.panics = 0
+		}
 		return
 	}
 	t.panics++
@@ -1042,8 +1050,7 @@ func (t *ChainTracker) pick(counted []voter) (path []*node, tie []*node) {
 
 // apply makes path the pins in one step: the pins inside the window are
 // computed first, compared with the published state, then committed and
-// published together. The network-wide tracker moves the network's latest
-// block before taps wake.
+// published together.
 func (t *ChainTracker) apply(path []*node) {
 	head := path[len(path)-1].h
 	i := 0
@@ -1056,12 +1063,12 @@ func (t *ChainTracker) apply(path []*node) {
 		return
 	}
 	s := newFeedState(path, t.window)
-	b := t.backingOf(path)
+	b := t.gate(path)
 	s.send, s.backing = b.send(), b
 	t.pins, t.treesDirty, t.receiptsDirty = path, true, true
 	s.logs = t.logsHeadOf(s)
 	if t.selector == "" && pub.head() != head {
-		t.noteLatest(head.number)
+		telemetry.GaugeHandle(telemetry.MetricNetworkSubscriptionLastHeadTimestamp, t.projectId(), t.networkLabel()).SetToCurrentTime()
 	}
 	if pub.head() != head && !head.emptyTxs {
 		t.txHeadAt.Store(time.Now().UnixNano())
@@ -1071,23 +1078,6 @@ func (t *ChainTracker) apply(path []*node) {
 
 	t.recordMove(pub.pins, path)
 	t.evict()
-}
-
-// noteLatest floors the network's latest block at n; a panic there never
-// splits the pins from the published state.
-func (t *ChainTracker) noteLatest(n uint64) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			telemetry.MetricUnexpectedPanicTotal.WithLabelValues("chain-tracker-note",
-				fmt.Sprintf("project:%s network:%s", t.projectId(), t.networkLabel()), common.ErrorFingerprint(rec)).Inc()
-		}
-	}()
-	if noter, ok := t.network.(interface {
-		NoteObservedLatestBlock(context.Context, int64)
-	}); ok {
-		noter.NoteObservedLatestBlock(context.Background(), int64(n))
-	}
-	telemetry.GaugeHandle(telemetry.MetricNetworkSubscriptionLastHeadTimestamp, t.projectId(), t.networkLabel()).SetToCurrentTime()
 }
 
 // recordMove counts a re-anchor, or the depth of a reorg, from old to path,
@@ -1183,7 +1173,7 @@ func newFeedState(pins []*node, window int) *feedState {
 
 func (t *ChainTracker) publish() {
 	s := newFeedState(t.pins, t.window)
-	b := t.backingOf(t.pins)
+	b := t.gate(t.pins)
 	s.send, s.backing = b.send(), b
 	s.logs = t.logsHeadOf(s)
 	close(t.state.Swap(s).changed)
@@ -1197,19 +1187,35 @@ type pinBacking struct {
 	base   uint64
 	backed []int // sorted
 	need   int   // the delivery quorum
+	// ceiling is the highest number taps may send (sendCeiling).
+	ceiling uint64
 	// undisputed is how many pins, from the lowest, every walking counted
 	// vote descends from; a pin above them may yet be reorged away.
 	undisputed int
 }
 
 // send is the delivery gate: the index of the highest pin backed by the
-// delivery quorum; -1 while no pin is. A pin one source alone votes for,
-// such as a cold pod's first header, so waits for a second vote.
+// delivery quorum and at most the ceiling; -1 while no pin is. A pin one
+// source alone votes for, such as a cold pod's first header, so waits for
+// a second vote.
 func (b *pinBacking) send() int {
-	if len(b.backed) < b.need || len(b.backed) == 0 {
+	if len(b.backed) < b.need || len(b.backed) == 0 || b.ceiling < b.base {
 		return -1
 	}
-	return b.backed[len(b.backed)-b.need]
+	i := b.backed[len(b.backed)-b.need]
+	if b.base+uint64(i) > b.ceiling {
+		i = int(b.ceiling - b.base)
+	}
+	return i
+}
+
+// capped reports whether the network's latest block, not the vote need,
+// holds back the highest pin the votes back.
+func (b *pinBacking) capped() bool {
+	if len(b.backed) == 0 || len(b.backed) < b.need {
+		return false
+	}
+	return b.base+uint64(b.backed[len(b.backed)-b.need]) > b.ceiling
 }
 
 // backers is how many counted votes and decided answers back the pin at
@@ -1241,7 +1247,7 @@ func (b *pinBacking) sameConfirms(o *pinBacking) bool {
 // answer on the pinned branch backs the whole branch the settle chose, so
 // a split the settle decided flows at once.
 func (t *ChainTracker) backingOf(path []*node) *pinBacking {
-	b := &pinBacking{need: t.deliveryQuorum()}
+	b := &pinBacking{need: t.deliveryQuorum(), ceiling: t.sendCeiling()}
 	if len(path) == 0 {
 		return b
 	}
@@ -1284,6 +1290,28 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 	return b
 }
 
+// gate is the pins' backing for a publish. While the network's latest
+// block holds back a pin the votes back and a tap waits, it asks the
+// network's voters for their heads once per block time, at most catchUpMax
+// apart (spec §6.5 catch-up): a voter that is no source, polled every
+// statePollerInterval, would otherwise hold every tap until its next poll.
+// A poller skips a refresh inside its debounce, so rearm asks again at
+// catchUpAt; a counter that moves wakes the tracker (LatestChanged).
+func (t *ChainTracker) gate(path []*node) *pinBacking {
+	b := t.backingOf(path)
+	if !b.capped() || !t.demanded() {
+		t.catchUpAt = time.Time{}
+		return b
+	}
+	if now := time.Now(); !now.Before(t.catchUpAt) {
+		t.catchUpAt = now.Add(min(t.BlockTime(), catchUpMax))
+		if r, ok := t.network.(interface{ EvmRefreshLatestBlock(context.Context) }); ok {
+			r.EvmRefreshLatestBlock(t.ctx)
+		}
+	}
+	return b
+}
+
 // deliveryQuorum is how many counted source votes a pin needs before taps
 // send it; the network intake owns it. A network without intake needs one.
 func (t *ChainTracker) deliveryQuorum() int {
@@ -1295,17 +1323,30 @@ func (t *ChainTracker) deliveryQuorum() int {
 	return 1
 }
 
+// sendCeiling is the highest number the network-wide tracker's taps may
+// send: the network's latest block, so no transport shows a block
+// eth_blockNumber does not, and one source alone never moves either (spec
+// §6.5). A group tracker has no request selector to compute its lane's
+// latest from, so only the vote need gates it.
+func (t *ChainTracker) sendCeiling() uint64 {
+	latest := networkLatest(t.network)
+	if t.selector != "" || latest == nil {
+		return math.MaxUint64
+	}
+	return uint64(max(latest(t.ctx), 0))
+}
+
 // gateSend republishes the pins when the delivery gate or the pins it
 // confirms moved while they stayed: a vote moved up the pinned branch or
-// started a walk off it, liveness changed, or the cold window ended. A
-// change taps cannot see keeps the state's changed channel, so no tap
-// wakes for it.
+// started a walk off it, liveness changed, the cold window ended, or the
+// network's latest block moved. A change taps cannot see keeps the state's
+// changed channel, so no tap wakes for it.
 func (t *ChainTracker) gateSend() {
 	pub := t.state.Load()
 	if len(pub.pins) == 0 {
 		return
 	}
-	b := t.backingOf(t.pins)
+	b := t.gate(t.pins)
 	send := b.send()
 	if send == pub.send && b.sameConfirms(pub.backing) {
 		return
@@ -2554,6 +2595,14 @@ func ObserveSourceHeader(n common.Network, u common.Upstream, sh SourceHeader) {
 
 // LivenessChanged makes every tracker of n count its votes again.
 func LivenessChanged(n common.Network) { tickTrackers(n) }
+
+// LatestChanged makes the network-wide tracker of n gate its sends on the
+// network's latest block again. It never blocks.
+func LatestChanged(n common.Network) {
+	if t := lookupChainTracker(n, ""); t != nil {
+		t.mb.put(trackerMsg{kind: msgTick})
+	}
+}
 
 // DemandChanged makes every tracker of n check whether it asks for latest
 // with no live source (§6 rule 6). It never blocks.

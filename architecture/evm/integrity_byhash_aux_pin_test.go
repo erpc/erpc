@@ -49,6 +49,8 @@ func newByRefNetwork(t *testing.T) *byRefNetwork {
 	).Maybe()
 	n.On("Id").Return("evm:1").Maybe()
 	n.On("ProjectId").Return("test").Maybe()
+	// No served tip here: latest never caps the delivery gate.
+	n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1) << 62).Maybe()
 	return n
 }
 

@@ -544,6 +544,20 @@ func (n *Network) EvmHeadsDemanded() bool {
 	return n.taps != nil && slices.Contains(n.taps.Demand(n.Label()), indexer.TopicNewHeads)
 }
 
+// ObserveFetchedHead moves an upstream's head counter to a latest header
+// the chain tracker fetched from it, as a source header moves its source's;
+// ObserveHead verifies a major jump first.
+func (n *Network) ObserveFetchedHead(upstreamId string, raw json.RawMessage) {
+	if n.intake == nil {
+		return
+	}
+	if u := n.intake.upstream(upstreamId); u != nil {
+		if p := u.EvmStatePoller(); p != nil && !p.IsObjectNull() {
+			p.ObserveHead(raw)
+		}
+	}
+}
+
 // EvmTaps is the network's taps and the key its demand is counted under:
 // the network label, which also labels the tap metrics (spec §15). Taps
 // belong to one project's network, so the label alone is unique in them.

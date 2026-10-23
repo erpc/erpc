@@ -2195,7 +2195,8 @@ func (c *mockChain) run(ctx context.Context, every time.Duration) {
 	}
 }
 
-// block is block n as a vendor serves it, transactions included.
+// block is block n as a vendor serves it, transactions included, with the
+// gas fields a gRPC StreamBlocks header needs.
 func (c *mockChain) block(n int64) map[string]interface{} {
 	h := mockHead(n)
 	c.mu.Lock()
@@ -2203,6 +2204,7 @@ func (c *mockChain) block(n int64) map[string]interface{} {
 	c.mu.Unlock()
 	h["transactions"] = []interface{}{fmt.Sprintf("0x%064x", n+1_000_000)}
 	h["miner"] = "0x0000000000000000000000000000000000000001"
+	h["gasLimit"], h["gasUsed"] = "0x1c9c380", "0x5208"
 	return h
 }
 
@@ -2651,8 +2653,11 @@ func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
 	crossedCfg := sourceUpstream("rpc-crossed", crossedSrv.URL, util.BoolPtr(true))
 	// Its own state polls reach it while it is no poll source, cordoned.
 	crossedCfg.Evm.StatePollerInterval = common.Duration(200 * time.Millisecond)
-	erpcSrv, addr, cancel := startTestERPCServer(t, sourcesConfig(nil,
-		sourceUpstream("rpc-a", srv.URL, util.BoolPtr(true)), crossedCfg))
+	// Quorum 1: the cordoned upstream's frozen head must not hold latest,
+	// which bounds what the client receives.
+	erpcSrv, addr, cancel := startTestERPCServer(t, sourcesConfig(func(nw *common.NetworkConfig) {
+		nw.Evm.ServedTip = &common.EvmServedTipConfig{Quorum: 1}
+	}, sourceUpstream("rpc-a", srv.URL, util.BoolPtr(true)), crossedCfg))
 	defer func() { _ = erpcSrv.Shutdown(&log.Logger); cancel() }()
 	prj, err := erpcSrv.erpc.GetProject("test_ws")
 	require.NoError(t, err)

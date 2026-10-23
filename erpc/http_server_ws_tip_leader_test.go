@@ -105,19 +105,17 @@ func TestHttpServer_GetBlockByNumberLatest_RefetchReachesTipUpstream(t *testing.
 		JSON([]byte(`{"result":{"number":"0x22228889","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f1"}}`))
 
 	// rpc1 lags, so the initial "latest" comes from it and triggers the
-	// EnforceHighestBlock re-fetch.
+	// EnforceHighestBlock re-fetch. Quorum 1: rpc2's head alone is the tip.
 	sendRequest, shutdown, nw, leader := setupTipLeaderServer(t, &common.EvmNetworkConfig{
 		ChainId: 123,
 		Integrity: &common.EvmIntegrityConfig{
 			EnforceHighestBlock: util.BoolPtr(true),
 		},
+		ServedTip: &common.EvmServedTipConfig{Quorum: 1},
 	}, 3)
 	defer shutdown()
 
-	// Mirror WS ingest: the tip-source poller and the delivered-head floor
-	// advance before any client sees the head.
 	leader.EvmStatePoller().SuggestLatestBlock(tip)
-	nw.NoteObservedLatestBlock(context.Background(), tip)
 
 	require.Equal(t, tip, leader.EvmStatePoller().LatestBlock())
 	require.Equal(t, "rpc2", nw.EvmLeaderUpstream(context.Background()).Id())

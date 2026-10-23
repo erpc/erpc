@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -17,6 +18,7 @@ var (
 	settleAsks       = 3                // upstreams a settle asks
 	noSourceAskMax   = 12 * time.Second // longest gap between no-source asks
 	noSourceAskRetry = time.Second      // after an ask that found no answer
+	catchUpMax       = time.Second      // longest gap between catch-ups while latest caps the sends
 	followTapPause   = time.Second      // before a follow tap that failed restarts
 )
 
@@ -374,6 +376,7 @@ func (t *ChainTracker) startSettle(key string, waiter chan settleOutcome, client
 			if who == "" {
 				who = from
 			}
+			t.noteHead(from, h)
 			nd := t.heldOrHold(h)
 			s.answers[who] = nd
 			t.walkFrom(nd, who)
@@ -579,10 +582,24 @@ func (t *ChainTracker) askNext(seq uint64, targets []string) {
 		if who == "" {
 			who = from
 		}
+		t.noteHead(from, h)
 		nd := t.heldOrHold(h)
 		t.ask.pending, t.ask.pendingVoter = nd, who
 		t.walkFrom(nd, who)
 	})
+}
+
+// noteHead moves the head counter of the upstream that answered a latest
+// fetch (from; empty for a cached answer), as a source header moves its
+// source's (spec §6.3). Every send stops at Latest (§6.5), so an asked head
+// becomes sendable once enough upstreams have it, not at their next poll.
+func (t *ChainTracker) noteHead(from string, h *chainHeader) {
+	n, ok := t.network.(interface {
+		ObserveFetchedHead(upstreamId string, raw json.RawMessage)
+	})
+	if ok && from != "" {
+		n.ObserveFetchedHead(from, h.raw)
+	}
 }
 
 // demanded reports whether newHeads demand stands for this tracker: an
@@ -606,9 +623,11 @@ func (t *ChainTracker) conflicts(nd *node) bool {
 }
 
 // rearm ticks the tracker at its next deadline: the next no-source ask, the
-// end of an undecided settle's backoff, or the end of the cold window, when
-// sources that never reported stop counting for the delivery gate. It runs
-// after every message, so a deadline that fires never hides a later one.
+// end of an undecided settle's backoff, the next catch-up while the
+// network's latest block caps the sends, or the end of the cold window,
+// when sources that never reported stop counting for the delivery gate. It
+// runs after every message, so a deadline that fires never hides a later
+// one.
 func (t *ChainTracker) rearm() {
 	now := time.Now()
 	var at time.Time
@@ -619,6 +638,9 @@ func (t *ChainTracker) rearm() {
 	}
 	if s := t.settle; s != nil && !s.inflight && !s.decided && s.retryAt.After(now) && (at.IsZero() || s.retryAt.Before(at)) {
 		at = s.retryAt
+	}
+	if c := t.catchUpAt; c.After(now) && (at.IsZero() || c.Before(at)) {
+		at = c
 	}
 	if cold := t.since.Add(t.LiveBound()); cold.After(now) && (at.IsZero() || cold.Before(at)) {
 		at = cold

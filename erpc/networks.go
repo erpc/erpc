@@ -19,7 +19,6 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/mempool"
@@ -55,14 +54,6 @@ type Network struct {
 	policyEngine        *policy.Engine
 	initializer         *util.Initializer
 	architectureHandler common.ArchitectureHandler
-
-	// latestBlockShared is the highest head any instance has delivered to a
-	// WebSocket subscriber (see applyDeliveredHeadFloor). Nil when shared
-	// state is not configured.
-	latestBlockShared data.CounterInt64SharedVariable
-	// deliveredLatestBlock is the highest head this instance has delivered to
-	// a WebSocket subscriber.
-	deliveredLatestBlock atomic.Int64
 
 	// servedTipAll is the network-wide served-tip lane. Lanes hold the
 	// advance-age watchdog and the regression guard's memory; the pick itself
@@ -103,33 +94,6 @@ func (n *Network) wait() {
 	n.bg.Wait()
 	if n.chainTracker != nil {
 		n.chainTracker.Wait()
-	}
-}
-
-// NoteObservedLatestBlock records a head about to be delivered on a WebSocket
-// newHeads subscription, so "latest" over HTTP never trails it. Callers must
-// invoke it before delivering the notification.
-func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64) {
-	if n == nil || blockNumber <= 0 {
-		return
-	}
-	if ctx == nil {
-		ctx = n.appCtx
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if n.latestBlockShared != nil {
-		n.latestBlockShared.TryUpdate(ctx, blockNumber)
-	}
-	for {
-		cur := n.deliveredLatestBlock.Load()
-		if blockNumber <= cur {
-			return
-		}
-		if n.deliveredLatestBlock.CompareAndSwap(cur, blockNumber) {
-			return
-		}
 	}
 }
 
@@ -221,20 +185,23 @@ func servedTipClock() time.Time {
 }
 
 // observe records v as the latest served value, stamping the anchor when the
-// value changed since the last observation.
+// value changed since the last observation. moved: this caller saw v replace
+// another value, the first one included.
 //
 // LOAD FIRST: the served tip is read several times per request and is the same
 // value on almost every one of them, so the steady state must be a shared READ
 // of this cache line, not an exclusive read-modify-write from every serving
 // core. The Swap survives only on the (rare) path where the value really moved,
 // where it is what makes exactly one caller see the transition.
-func (a *servedTipAnchor) observe(v int64) {
+func (a *servedTipAnchor) observe(v int64) (moved bool) {
 	if a.seenValue.Load() == v {
-		return
+		return false
 	}
-	if old := a.seenValue.Swap(v); old != v && old != 0 {
+	old := a.seenValue.Swap(v)
+	if old != v && old != 0 {
 		a.changedAtMs.Store(time.Now().UnixMilli())
 	}
+	return old != v
 }
 
 // age returns time since the last observed value change, or -1 when no change
@@ -782,8 +749,7 @@ func isSimpleGroupSelector(selector string) bool {
 // non-syncing, live, non-benched upstreams already have — so interpolated
 // requests land on upstreams that can serve the advertised block, and a lone
 // far-ahead (or wrong-chain) upstream never defines it — then guarded against a
-// deep regression, floored to the head already delivered to WebSocket
-// subscribers, and clamped to every configured guarantee. See servedTip.
+// deep regression and clamped to every configured guarantee. See servedTip.
 func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestLatestBlockNumber")
 	defer span.End()
@@ -902,9 +868,8 @@ func (n *Network) futureBlockCeiling(ctx context.Context) (head int64, known boo
 // servedTip computes the served tip for one axis of the request bound to ctx:
 // the freshest block at least the configured quorum of the eligible voters
 // already has (see evmTipBallot and common.PickServedTip), guarded against a
-// regression far below the live heads, lifted to the head already delivered to
-// WebSocket subscribers (network-wide latest only), clamped to every
-// configured guarantee, then exported on the request's lane.
+// regression far below the live heads, clamped to every configured guarantee,
+// then exported on the request's lane.
 //
 // The guard is in-process, bounded and one-directional (it can only hold the
 // tip, and only briefly), and it cannot produce a block that no live upstream
@@ -934,19 +899,12 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 		tip = n.guardServedTipRegression(axis, lane.label, anchor, pick, live)
 	}
 
-	// The delivered-head floor is network-wide, so it applies to unscoped
-	// requests only.
-	if lane == &n.servedTipAll && !finalized {
-		tip = n.applyDeliveredHeadFloor(tip, pick.Max)
-	}
-
 	// Capability guarantee (#855): the served tip must never exceed what any
 	// configured guarantee SUBSET can serve — a method's supporting upstreams
 	// (guaranteedMethods) or an operator-named group (guaranteedFor) — so a
 	// request on such a method (e.g. trace_*), or one consensus requires that
 	// group to answer, never resolves "latest" to a block only upstreams
-	// outside the subset have. It runs after the delivered-head floor, so the
-	// floor may lift the tip but never past a guarantee.
+	// outside the subset have.
 	if tip > 0 {
 		if floor := n.guaranteedFloor(ctx, finalized); floor > 0 && floor < tip {
 			tip = floor
@@ -963,10 +921,11 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 	}
 
 	// Watchdog anchor: when did this process last see the served value
-	// change. Telemetry only — nothing feeds back into the pick.
+	// change. A change of the network-wide latest also wakes the network's
+	// tracker, whose taps send no block above it (spec §6.5).
 	if lane != nil {
-		if tip > 0 {
-			anchor.observe(tip)
+		if tip > 0 && anchor.observe(tip) && lane == &n.servedTipAll && !finalized {
+			evm.LatestChanged(n)
 		}
 		n.observeServedTipMetrics(axis, lane.label, tip, pick.Freshest, anchor.age())
 	}
@@ -1420,36 +1379,6 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	defer span.End()
 
 	return n.servedTip(ctx, span, true)
-}
-
-// applyDeliveredHeadFloor lifts the computed network-wide "latest" head to the
-// highest head already delivered to a WebSocket subscriber by this or any
-// instance, so a client never sees "latest" regress below a streamed head.
-// Only delivered heads feed the floor; remembering the computed head would
-// turn the served tip into a persisted clamp.
-//
-// A delivered head always came from some live upstream, so the floor is
-// honoured only within maxRetryableBlockDistance of the ballot's highest head
-// (liveMax), or when no head is known at all. A stale shared value is ignored
-// and ages out as the chain advances.
-func (n *Network) applyDeliveredHeadFloor(computed, liveMax int64) int64 {
-	floor := n.deliveredLatestBlock.Load()
-	if n.latestBlockShared != nil {
-		floor = max(floor, n.latestBlockShared.GetValue())
-	}
-	if floor <= computed {
-		return computed
-	}
-	ceiling := max(liveMax, computed)
-	if ceiling <= 0 || floor-ceiling <= n.maxRetryableBlockDistance() {
-		return floor
-	}
-	n.logger.Debug().
-		Int64("computed", computed).
-		Int64("liveMax", liveMax).
-		Int64("deliveredFloor", floor).
-		Msg("ignoring delivered-head floor too far ahead of every live head")
-	return computed
 }
 
 // guaranteedFloor returns the lowest majority served tip across every

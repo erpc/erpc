@@ -586,6 +586,11 @@ func topicsIf(newHeads bool) []indexer.Topic {
 func (r *sourceReconciler) newSource(u *upstream.Upstream) *source {
 	cfg := u.Config()
 	s := &source{id: u.Id(), isSource: cfg.IsSubscriptionSource()}
+	// Every move of its head counter, by a poll, a push or another instance,
+	// may move the network's latest block, which caps every send (spec §6.5).
+	if p, ok := u.EvmStatePoller().(*evm.EvmStatePoller); ok && !p.IsObjectNull() {
+		p.OnLatestBlock(func(int64) { evm.LatestChanged(r.nw) })
+	}
 	if util.IsWsEndpoint(cfg.Endpoint) {
 		opts := wsupstream.Options{NetworkLabel: r.nw.Label()}
 		if a := wsupstream.New(u, indexerNetworkKey(r.nw), r.nw.intake, r.nw.logger, opts); a != nil {

@@ -318,24 +318,6 @@ func TestNetworksPaths_BareNetworkAccessors(t *testing.T) {
 		assert.Nil(t, n.servedTipLaneFor(rctx), "a selector that forms no group gets no lane")
 	})
 
-	t.Run("NoteObservedLatestBlockIsMonotonic", func(t *testing.T) {
-		var nilNet *Network
-		nilNet.NoteObservedLatestBlock(ctx, 10)
-
-		n := pathsBareNetwork(nil)
-		var nilCtx context.Context
-		n.NoteObservedLatestBlock(nilCtx, 10)
-		assert.Equal(t, int64(10), n.deliveredLatestBlock.Load())
-		n.NoteObservedLatestBlock(ctx, 5)
-		assert.Equal(t, int64(10), n.deliveredLatestBlock.Load(), "a lower head never moves it back")
-		n.NoteObservedLatestBlock(ctx, 0)
-		n.NoteObservedLatestBlock(ctx, -3)
-		assert.Equal(t, int64(10), n.deliveredLatestBlock.Load())
-		n.appCtx = ctx
-		n.NoteObservedLatestBlock(nilCtx, 25)
-		assert.Equal(t, int64(25), n.deliveredLatestBlock.Load())
-	})
-
 	t.Run("RetryDistanceAndRegressionDefaults", func(t *testing.T) {
 		n := pathsBareNetwork(nil)
 		assert.Equal(t, defaultMaxRetryableBlockDistance, n.maxRetryableBlockDistance())
