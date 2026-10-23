@@ -321,9 +321,10 @@ Each concept answers one question and has one home. W (§1) is the one freshness
 ### 6.1 Freshness: is upstream U current?
 
 - Two ages, by evidence, against one reference: the lag reference (§6.6), never `Latest`, which would loop through the policy.
-  - Number age reads the shared counter, by local receive time (§14).
-  - Hash age reads the newest hash vote (§6.3).
-- Number age decides the bench: an upstream is benched after `max(30s, 3 × its backed-off cadence)` (§6.8), and readmitted once its counter reaches the lag reference. A benched upstream is no voter.
+  - Number age reads the shared counter, by local receive time (§14): how long U's counter, credited one fetch cadence, has stood below the reference, counted only while the reference rose within W.
+  - Hash age reads the newest hash vote (§6.3): how long since another voter's first local header above U's vote, at or below the reference, arrived.
+- Number age decides the bench: an upstream is benched after `max(30s, 3 × its backed-off cadence)` (§6.8), and readmitted once its counter reaches the lag reference. A wss source's cadence is its poll cadence, so it benches at the 30s floor. A benched upstream is no voter.
+- #1263's stall rules stay beside number age: a head frozen above peers whose newest blocks are a stall window younger is benched by block age, so a frozen pair above the chain never benches the honest pair below it.
 - Hash age decides the hash voters: a voter is a hash voter while its hash age is at most W.
 - A chain that makes no blocks moves no reference: every age stays 0 and nothing reconnects.
 
@@ -445,7 +446,7 @@ Owner: `health/tracker.go`. Readers: freshness (§6.1), routing lag (`blockNumbe
 ### 6.7 Block time: how long is a block?
 
 - The network EMA (`GetNetworkBlockTime`), sampled from poller timestamps and from the timestamps of accepted source headers. Both are local samples (#1208).
-- Until the EMA has 4 samples, bt = 1s for every reader, the poll cadence included (0.7s). `fallbackStatePollerDebounce` has no default any more: set, it overrides that cold-start cadence.
+- Until the EMA has 4 samples, bt = 1s for every reader, the poll cadence included (0.7s); a mean step since the first observation is published once 3 blocks past it. `fallbackStatePollerDebounce` has no default any more: set, it overrides that cold-start cadence.
 - The poll cadence is the poller's debounce: bt × `dynamicBlockTimeDebounceMultiplier` (0.7), at most 12s; `statePollerDebounce` overrides (#790).
 
 Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, the by-hash wait, the window. Bounds: on a halt or a restart the caps hold (cadence 12s, W 60s). Keeps: #790, #1208.
