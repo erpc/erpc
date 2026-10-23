@@ -174,10 +174,13 @@ func (s *scenario) watchLatest(bad func(pod int, bn, tip uint64)) (stop func()) 
 
 // U11: two wss upstreams only, quorum 2; ws-b's head freezes while it
 // still answers. Latest and the taps wait for ws-b's bench, then flow at
-// once (§6.1, §15.1 "one ahead, peers stalled": at most 90s); each gRPC
-// stream resumes at most once.
+// once (§6.1, §15.1 "one ahead, peers stalled": at most 90s). The wait is
+// longer than reorgWindow blocks, so each transport signals it as §10.2
+// says: one newHeads restart (a number jump) per subscription, ws logs
+// closed with 1013 within the close spread, each gRPC stream resumed at
+// most once.
 func u11() spec {
-	return spec{name: "U11", bound: benchBound + liveBound, allow: []string{"grpc:Unavailable"},
+	return spec{name: "U11", bound: benchBound + liveBound, allow: []string{"grpc:Unavailable", "ws:jump", "ws:logs-end"},
 		vendors: []vendorSpec{{"ws-a", "vendor-a", true}, {"ws-b", "vendor-b", true}},
 		clients: func(s *scenario) {
 			for pod := range s.h.pods {
@@ -227,6 +230,25 @@ func u11() spec {
 			flowed = time.Now()
 			s.blocks(25)
 			s.requireLiveAfter(flowed.Add(liveBound), healthyDelivery)
+			time.Sleep(time.Until(flowed.Add(logsCloseSpread + reconnectSlack)))
+			for _, c := range s.heads {
+				c.mu.Lock()
+				n := 0
+				for _, j := range c.jumps {
+					if !j.newConn && j.at.After(at) {
+						n++
+					}
+				}
+				c.mu.Unlock()
+				if n != 1 {
+					s.violate(c.name, "newHeads restarted %d times on one connection after the freeze; the bench wait restarts it once", n)
+				}
+			}
+			for _, c := range s.logs {
+				if !c.endedWith(at, flowed.Add(logsCloseSpread+reconnectSlack), func(e clientEnd) bool { return e.server && closedWith(e.reason, 1013) }) {
+					s.violate(c.name, "no 1013 close within %s of the flow resuming", logsCloseSpread)
+				}
+			}
 			for _, g := range s.grpcs {
 				g.mu.Lock()
 				n := 0
