@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -189,11 +192,50 @@ func Init(
 		if cfg.Metrics.Port == nil {
 			return fmt.Errorf("metrics.port is not configured")
 		}
-		logger.Info().Msgf("starting metrics server on port: %d", *cfg.Metrics.Port)
+		// Bind exactly where metrics.hostV4/hostV6 + listenV4/listenV6 say, the
+		// way the main server honours its server.* keys: a loopback host must
+		// keep /metrics off the LAN. One http.Server serves both listeners.
+		var metricsListeners []net.Listener
+		closeMetricsListeners := func() {
+			for _, ln := range metricsListeners {
+				_ = ln.Close()
+			}
+		}
+		// JoinHostPort brackets an IPv6 literal itself, so accept both the
+		// defaults' "[::]" and a bare "::1" without doubling the brackets.
+		listen := func(network, host string) error {
+			addr := net.JoinHostPort(strings.Trim(host, "[]"), strconv.Itoa(*cfg.Metrics.Port))
+			ln, err := net.Listen(network, addr)
+			if err != nil {
+				closeMetricsListeners()
+				return fmt.Errorf("failed to listen for metrics on %s: %w", addr, err)
+			}
+			logger.Info().Msgf("starting metrics server on %s", addr)
+			metricsListeners = append(metricsListeners, ln)
+			return nil
+		}
+		if cfg.Metrics.ListenV4 != nil && *cfg.Metrics.ListenV4 {
+			if cfg.Metrics.HostV4 == nil {
+				return fmt.Errorf("metrics.listenV4 is true but metrics.hostV4 is not configured")
+			}
+			if err := listen("tcp4", *cfg.Metrics.HostV4); err != nil {
+				return err
+			}
+		}
+		if cfg.Metrics.ListenV6 != nil && *cfg.Metrics.ListenV6 {
+			if cfg.Metrics.HostV6 == nil {
+				return fmt.Errorf("metrics.listenV6 is true but metrics.hostV6 is not configured")
+			}
+			if err := listen("tcp6", *cfg.Metrics.HostV6); err != nil {
+				return err
+			}
+		}
+		if len(metricsListeners) == 0 {
+			return fmt.Errorf("metrics.enabled is true but neither metrics.listenV4 nor metrics.listenV6 is set")
+		}
 		// No appCtx BaseContext: scrapes keep working after SIGTERM, until the
 		// shutdown below.
 		metricsSrv = &http.Server{
-			Addr: fmt.Sprintf(":%d", *cfg.Metrics.Port),
 			// promhttp.Handler() with the gatherer wrapped, so drop customizations
 			// also govern the stock collectors the manager does not own.
 			Handler: promhttp.InstrumentMetricHandler(
@@ -202,12 +244,14 @@ func Init(
 			),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
-		go func() {
-			if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				logger.Error().Msgf("error starting metrics server: %s", err)
-				util.OsExit(util.ExitCodeHttpServerFailed)
-			}
-		}()
+		for _, ln := range metricsListeners {
+			go func(ln net.Listener) {
+				if err := metricsSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
+					logger.Error().Msgf("error starting metrics server on %s: %s", ln.Addr(), err)
+					util.OsExit(util.ExitCodeHttpServerFailed)
+				}
+			}(ln)
+		}
 	}
 
 	// Wait until the context is cancelled, then for the http server to finish

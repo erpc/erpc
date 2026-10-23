@@ -1707,10 +1707,10 @@ func determineResponseStatusCode(res interface{}, architectureHint ...common.Net
 	// 400 Bad Request - malformed requests. Solana clients expect what Agave
 	// does: HTTP 200 with the -32700/-32600/-32602 error in the body. web3.js
 	// and @solana/kit throw a transport error on 400 and never read the code.
-	case common.HasErrorCode(err, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeInvalidRequest) &&
+	case common.HasErrorCode(err, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeJsonRpcRequestInvalidId, common.ErrCodeInvalidRequest) &&
 		isSvmRequest(extractRequest(res), architectureHint...):
 		return http.StatusOK
-	case common.HasErrorCode(err, common.ErrCodeInvalidUrlPath, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeInvalidRequest):
+	case common.HasErrorCode(err, common.ErrCodeInvalidUrlPath, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeJsonRpcRequestInvalidId, common.ErrCodeInvalidRequest):
 		return http.StatusBadRequest
 	// 401 Unauthorized - authentication failures
 	case common.HasErrorCode(err, common.ErrCodeAuthUnauthorized, common.ErrCodeEndpointUnauthorized):
@@ -1788,6 +1788,7 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 			common.ErrCodeAuthUnauthorized,
 			common.ErrCodeAuthRateLimitRuleExceeded,
 			common.ErrCodeJsonRpcRequestUnmarshal,
+			common.ErrCodeJsonRpcRequestInvalidId,
 			common.ErrCodeProjectNotFound,
 		) {
 			logger.Debug().Err(err).Object("request", nq).Object("response", respMarshaler).Msg("forward request errored with client-side exception")

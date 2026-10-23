@@ -1029,6 +1029,7 @@ func TestJsonRpcRequest_UnmarshalID_NumericPrecision(t *testing.T) {
 
 			if c.wantErr {
 				require.Error(t, err, "lossy id %s must be rejected, not silently converted", c.idJSON)
+				require.True(t, HasErrorCode(err, ErrCodeJsonRpcRequestInvalidId), "lossy id %s must carry %s, got %v", c.idJSON, ErrCodeJsonRpcRequestInvalidId, err)
 				return
 			}
 

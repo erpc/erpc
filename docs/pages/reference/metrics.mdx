@@ -100,10 +100,10 @@ All fields are under `metrics.` in the root YAML config. Source: <SourceLink fil
 |---|---|---|---|
 | `metrics.enabled` | `*bool` | `true` in production; `nil` (disabled) under `go test` | Whether to start the `/metrics` HTTP server. Metrics are still registered and counted when false — they just are not scraped. Source: <SourceLink file="common/defaults.go" lines="909-911" /> |
 | `metrics.port` | `*int` | `4001` | TCP port for the metrics server. Required when `enabled=true`; `erpc.Init` aborts if nil. Source: <SourceLink file="common/defaults.go" lines="918-920" /> |
-| `metrics.hostV4` | `*string` | `"0.0.0.0"` | Defined and defaulted but **not used** — the server binds `":%d"` (all interfaces). Setting this to `127.0.0.1` does NOT restrict to loopback. Use firewall rules instead. Source: <SourceLink file="erpc/init.go" lines="189" /> |
-| `metrics.hostV6` | `*string` | `"[::]"` | Same caveat as `hostV4` — defined but not used in the bind address. Source: <SourceLink file="common/defaults.go" lines="915-917" /> |
-| `metrics.listenV4` | `*bool` | `nil` | Defined in struct but never read in production code. Dead config field. |
-| `metrics.listenV6` | `*bool` | `nil` | Defined in struct but never read. Dead config field. |
+| `metrics.hostV4` | `*string` | `"0.0.0.0"` | IPv4 bind host, honoured like `server.httpHostV4`. `127.0.0.1` keeps `/metrics` on loopback. Source: <SourceLink file="erpc/init.go" lines="195-232" /> |
+| `metrics.hostV6` | `*string` | `"[::]"` | IPv6 bind host; brackets optional. Source: <SourceLink file="common/defaults.go" lines="942-954" /> |
+| `metrics.listenV4` | `*bool` | `true` | Enables the IPv4 metrics listener; validation requires `hostV4` when true. |
+| `metrics.listenV6` | `*bool` | `nil` (OFF) | IPv6 is opt-in, like `server.listenV6`; validation requires `hostV6` when true. `Init` fails if neither listener is enabled. |
 | `metrics.errorLabelMode` | `string` | `"compact"` | Controls the `error` label on all error-labeled metrics. `"compact"` → short stable codes (bounded cardinality, recommended). `"verbose"` → full human messages including block numbers and IP addresses (unbounded cardinality risk). Must be `""`, `"compact"`, or `"verbose"`. Source: <SourceLink file="common/defaults.go" lines="921-923" /> |
 | `metrics.histogramBuckets` | `string` | `""` → `[0.05, 0.5, 5, 30]` | Comma-separated float64 bucket boundaries for every histogram that does not declare its own buckets. Empty → use defaults. Parsed and sorted by `ParseHistogramBuckets`. Invalid float → warning + fallback to defaults. Source: <SourceLink file="telemetry/metrics.go" lines="943-948" /> |
 | `metrics.customizations` | `[]object` | `nil` (nothing customized) | The one knob for shaping `/metrics`. Each entry has a `subject`, an optional `action`, an optional `labels` list, and optional `buckets`. Startup-only — every field is resolved before the first registration, so a change needs a restart. Source: <SourceLink file="telemetry/policy.go" /> |
@@ -245,7 +245,7 @@ metrics:
 
 - Use `errorLabelMode: compact` (the default) in production. Verbose mode can create one Prometheus series per unique block number or IP address in error messages — this is an unbounded cardinality hazard.
 - Drop `user` and `agent_name` with a `subject: "*"` customization when serving untrusted callers or managing many API keys. These labels are the leading cardinality source across the projected families. Re-add them with an exact subject on the one or two metrics a dashboard or billing pipeline actually reads.
-- Do not rely on `hostV4`/`hostV6` to restrict scrape access — the server binds all interfaces regardless of those fields. Use firewall rules or network policy to limit who can reach port 4001.
+- Use `hostV4: 127.0.0.1` (and leave `listenV6` unset) when the metrics port must not be reachable from the network; it binds exactly that host, the way `server.httpHostV4` does.
 - Alert on `erpc_network_failed_request_total{severity="critical"}` and page on `severity="warning"`. Severity is already classified by `common.ClassifySeverity` — no need to build your own error-code regexes.
 - Use `erpc_rate_limits_total` for rate-limit alerting. The bundled alert rule referencing `erpc_upstream_request_self_rate_limited_total` uses a stale metric name that no longer exists.
 - Monitor `erpc_upstream_cordoned` as an early-warning signal for upstream health. A non-zero value means eRPC has autonomously excluded that upstream; combine with `erpc_upstream_cordon_event_total` to track how often it happens.
@@ -255,7 +255,7 @@ metrics:
 
 ### Edge cases & gotchas
 
-1. **`hostV4`/`hostV6` are defined but unused.** The bind address is always `":%d"` (all interfaces). Firewall rules are the only way to restrict access to the metrics port. (<SourceLink file="erpc/init.go" lines="189" />)
+1. **`hostV4`/`hostV6` were ignored through 0.4.0** — the bind address was always `":%d"` (all interfaces). They are honoured now; upgrade and set `hostV4: 127.0.0.1` instead of relying on firewall rules alone. (<SourceLink file="erpc/init.go" lines="195-232" />)
 2. **`metrics.enabled` is `nil` (disabled) under `go test`.** Integration tests that call `erpc.Init` will not spin up a metrics server unless `Enabled: true` is set explicitly. (<SourceLink file="common/defaults.go" lines="909-911" />)
 3. **Changing `errorLabelMode` does not retroactively relabel existing series.** Counter Vec children are created lazily on first `WithLabelValues`. Any series created before `erpc.Init` sets the mode carry verbose labels; subsequent series carry compact labels. Both sets coexist in Prometheus until the verbose series naturally expire.
 4. **Label-set, bucket and exposure changes need a restart.** Prometheus keeps a family's label-set hash for the registry's lifetime, so a second `Configure` leaves already-registered families exactly as they are — a changed `customizations` list or `histogramBuckets` is silently not applied to them. (<SourceLink file="telemetry/manager.go" />)
