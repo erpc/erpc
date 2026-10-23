@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -29,9 +30,9 @@ type networkIntake struct {
 	nw *Network
 
 	mu sync.Mutex
-	// last is each upstream's accepted headers: a parentHash-linked path
-	// ending at its hash vote, newest last, at most voteLinksKept.
-	last map[string][]voteLink
+	// last is each upstream's accepted headers, ending at its hash vote
+	// (votePath).
+	last map[string]votePath
 	// hashVoterSince is, per primary voter, since when it has been a hash
 	// voter without a break, as the reconciler's passes saw it; leads is
 	// whether one has been for primaryLeadAfter.
@@ -59,7 +60,7 @@ const rejectedKept = 64
 var primaryLeadAfter = util.NewDuration(60 * time.Second)
 
 func newNetworkIntake(nw *Network) *networkIntake {
-	return &networkIntake{nw: nw, last: make(map[string][]voteLink), hashVoterSince: make(map[string]time.Time)}
+	return &networkIntake{nw: nw, last: make(map[string]votePath), hashVoterSince: make(map[string]time.Time)}
 }
 
 var _ indexer.Intake = (*networkIntake)(nil)
@@ -104,8 +105,8 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay b
 	}
 	in.mu.Lock()
 	path := in.last[upstreamId]
-	behind := onVotePath(path, cur)
-	current := behind && path[len(path)-1].cur == cur
+	behind := !path.moves(cur)
+	current := behind && len(path) > 0 && path[len(path)-1].cur == cur
 	in.mu.Unlock()
 	if behind {
 		// After a reconnect the first header is the current vote; on a
@@ -242,43 +243,65 @@ type voteLink struct {
 // voteLinksKept bounds the path of accepted headers kept per upstream.
 const voteLinksKept = 64
 
-// onVotePath reports whether cur is on path, the upstream's accepted headers
-// up to its hash vote: its vote, or an ancestor of it. Such a header never
-// moves the vote back (spec §6.5 rule 3); a lower header on another branch
-// is a rewind, left to the trackers.
-func onVotePath(path []voteLink, cur indexer.Cursor) bool {
-	if len(path) == 0 || cur.Number > path[len(path)-1].cur.Number {
-		return false
+// votePath is an upstream's accepted headers up to its hash vote, newest
+// last, by ascending number. Links across a gap stay: a missed header
+// proves no reorg below it.
+type votePath []voteLink
+
+// moves reports whether cur moves the vote: it is above the vote, or a
+// rewind, a lower header where the path holds another hash. Its vote or an
+// ancestor of it never moves the vote back (spec §6.5 rule 3), nor does a
+// lower header the path says nothing about, such as a lagging poll's
+// across a gap.
+func (p votePath) moves(cur indexer.Cursor) bool {
+	if len(p) == 0 || cur.Number > p[len(p)-1].cur.Number {
+		return true
 	}
-	for _, l := range path {
-		if l.cur == cur || l.cur.Number == cur.Number+1 && l.parent == cur.Hash {
-			return true
+	other := false
+	for _, l := range p {
+		switch {
+		case l.cur.Number == cur.Number:
+			if l.cur.Hash == cur.Hash {
+				return false
+			}
+			other = true
+		case l.cur.Number == cur.Number+1:
+			if l.parent == cur.Hash {
+				return false
+			}
+			other = true
 		}
 	}
-	return false
+	return other
 }
 
-// accept makes sh its upstream's hash vote unless it is on the vote's path;
-// onlyNewer: only when it is above the vote. Compared and set in one
-// section.
+// with is p with cur, child of parent, as its vote: links at or above cur
+// go (a rewind), and so does the link below it that names another hash
+// than parent.
+func (p votePath) with(cur indexer.Cursor, parent [32]byte) votePath {
+	i, _ := slices.BinarySearchFunc(p, cur.Number, func(l voteLink, n uint64) int { return cmp.Compare(l.cur.Number, n) })
+	p = p[:i]
+	if n := len(p); n > 0 && p[n-1].cur.Number+1 == cur.Number && p[n-1].cur.Hash != parent {
+		p = p[:n-1]
+	}
+	p = append(p, voteLink{cur, parent})
+	if over := len(p) - voteLinksKept; over > 0 {
+		p = slices.Delete(p, 0, over)
+	}
+	return p
+}
+
+// accept makes sh its upstream's hash vote when it moves it; onlyNewer:
+// only when it is above the vote. Compared and set in one section.
 func (in *networkIntake) accept(upstreamId string, sh evm.SourceHeader, onlyNewer bool) bool {
-	cur, parent := sh.Cursor(), sh.Parent()
+	cur := sh.Cursor()
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	path := in.last[upstreamId]
-	if n := len(path); n > 0 {
-		if cur.Number <= path[n-1].cur.Number && (onlyNewer || onVotePath(path, cur)) {
-			return false
-		}
-		if path[n-1].cur.Hash != parent {
-			path = path[:0]
-		}
+	if !path.moves(cur) || onlyNewer && len(path) > 0 && cur.Number <= path[len(path)-1].cur.Number {
+		return false
 	}
-	path = append(path, voteLink{cur, parent})
-	if over := len(path) - voteLinksKept; over > 0 {
-		path = slices.Delete(path, 0, over)
-	}
-	in.last[upstreamId] = path
+	in.last[upstreamId] = path.with(cur, sh.Parent())
 	return true
 }
 
