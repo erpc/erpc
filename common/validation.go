@@ -1710,6 +1710,14 @@ func (e *EvmNetworkConfig) Validate() error {
 			return fmt.Errorf("network.*.evm.safeBlockSource has invalid selector %q: %w", e.SafeBlockSource, err)
 		}
 	}
+	// Values >= 1 make the finalized debounce grow as fast as (or faster than)
+	// wall-clock age while latest advances and finalized is stuck, so the
+	// sample never becomes stale again. 0 disables the depth widening.
+	if e.FinalizedDebounceDepthMultiplier != nil {
+		if m := *e.FinalizedDebounceDepthMultiplier; m >= 1 {
+			return fmt.Errorf("network.*.evm.finalizedDebounceDepthMultiplier must be < 1 (0 disables; >= 1 stalls finalized polling while latest advances)")
+		}
+	}
 	return nil
 }
 
