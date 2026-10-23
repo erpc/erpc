@@ -61,6 +61,10 @@ type sourceReconciler struct {
 	// Owned by the run goroutine.
 	sources    map[string]*source
 	demandSeen time.Time
+	// watched holds the pollers whose head counter wakes the network's
+	// tracker; a poller's callbacks cannot be removed, so an upstream that
+	// leaves and comes back is not watched twice.
+	watched map[*evm.EvmStatePoller]struct{}
 
 	mu sync.Mutex
 	// heads: some upstream is a subscription source; push: some push
@@ -169,6 +173,7 @@ func newSourceReconciler(nw *Network) *sourceReconciler {
 		wakeCh:  make(chan struct{}, 1),
 		syncCh:  make(chan chan struct{}),
 		sources: make(map[string]*source),
+		watched: make(map[*evm.EvmStatePoller]struct{}),
 		pending: make(map[indexer.Topic]*pendingTopic),
 	}
 }
@@ -589,7 +594,10 @@ func (r *sourceReconciler) newSource(u *upstream.Upstream) *source {
 	// Every move of its head counter, by a poll, a push or another instance,
 	// may move the network's latest block, which caps every send (spec §6.5).
 	if p, ok := u.EvmStatePoller().(*evm.EvmStatePoller); ok && !p.IsObjectNull() {
-		p.OnLatestBlock(func(int64) { evm.LatestChanged(r.nw) })
+		if _, seen := r.watched[p]; !seen {
+			r.watched[p] = struct{}{}
+			p.OnLatestBlock(func(int64) { evm.LatestChanged(r.nw) })
+		}
 	}
 	if util.IsWsEndpoint(cfg.Endpoint) {
 		opts := wsupstream.Options{NetworkLabel: r.nw.Label()}

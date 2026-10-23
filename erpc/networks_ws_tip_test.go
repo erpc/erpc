@@ -305,41 +305,67 @@ func TestNetworkIntake_HeaderAdvancesNetworkTip(t *testing.T) {
 	reach(grpcHeads, grpcEnded, 1005, "gRPC StreamBlocks")
 }
 
-// One wss source and one HTTP upstream that is no source, polled every 30s:
-// latest is the lower of the two heads, and taps stop at latest, so a
-// waiting tap refreshes the HTTP upstream's head instead of holding the
-// client until its next poll.
+// An HTTP upstream that is no source, polled every 30s, can hold latest:
+// as the lower of two heads, or as the one member of a guarantee subset.
+// Taps stop at latest, so a waiting tap refreshes every voter below the
+// held block instead of holding the client until that upstream's next poll.
 func TestNetworkIntake_NonSourceVoterNeverHoldsTaps(t *testing.T) {
-	setupGock()
-	defer util.ResetGock()
+	for _, tc := range []struct {
+		name      string
+		wsSources []string
+		network   func(nw *common.NetworkConfig)
+	}{
+		{name: "lower of two heads", wsSources: []string{"a-ws"}},
+		{
+			// Routing order puts z-http last, so the ballot's first voters,
+			// all at the pushed head, are not the ones holding latest.
+			name:      "guarantee subset",
+			wsSources: []string{"a-ws", "b-ws", "c-ws"},
+			network: func(nw *common.NetworkConfig) {
+				nw.SelectionPolicy = &common.SelectionPolicyConfig{
+					EvalFunc: `(upstreams, ctx) => upstreams.filter(u => true).sort((a, b) => (a.id < b.id ? -1 : 1))`,
+				}
+				nw.Evm.ServedTip = &common.EvmServedTipConfig{GuaranteedFor: []string{"z-http"}}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupGock()
+			defer util.ResetGock()
 
-	chain := newMockChain(1000, false)
-	httpVendor, srv := newMockHttpVendor(t, chain)
-	_, wsURL := newMockWsVendor(t, chain, nil)
-	httpUp := sourceUpstream("rpc-http", srv.URL, nil)
-	httpUp.Evm.StatePollerInterval = common.Duration(30 * time.Second)
-	addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-ws", wsURL, nil), httpUp))
-	defer cleanup()
-	conn := dialWs(t, addr)
-	defer conn.Close()
-	subscribeNewHeads(t, conn)
-	tapLabels := []string{"test_ws", "evm:123", "ws", indexer.SubTypeNewHeads}
-	require.Eventually(t, func() bool { return testutil.ToFloat64(telemetry.MetricTaps.WithLabelValues(tapLabels...)) == 1 },
-		5*time.Second, 10*time.Millisecond, "the client's tap opens")
-	require.Eventually(t, func() bool { return httpVendor.latestPolls.Load() > 0 }, 5*time.Second, 10*time.Millisecond,
-		"the HTTP upstream's poller reads its first head")
+			chain := newMockChain(1000, false)
+			httpVendor, srv := newMockHttpVendor(t, chain)
+			ups := make([]*common.UpstreamConfig, 0, len(tc.wsSources)+1)
+			for _, id := range tc.wsSources {
+				_, wsURL := newMockWsVendor(t, chain, nil)
+				ups = append(ups, sourceUpstream(id, wsURL, nil))
+			}
+			httpUp := sourceUpstream("z-http", srv.URL, nil)
+			httpUp.Evm.StatePollerInterval = common.Duration(30 * time.Second)
+			addr, cleanup := setupTestERPCServer(t, sourcesConfig(tc.network, append(ups, httpUp)...))
+			defer cleanup()
+			conn := dialWs(t, addr)
+			defer conn.Close()
+			subscribeNewHeads(t, conn)
+			tapLabels := []string{"test_ws", "evm:123", "ws", indexer.SubTypeNewHeads}
+			require.Eventually(t, func() bool { return testutil.ToFloat64(telemetry.MetricTaps.WithLabelValues(tapLabels...)) == 1 },
+				5*time.Second, 10*time.Millisecond, "the client's tap opens")
+			require.Eventually(t, func() bool { return httpVendor.latestPolls.Load() > 0 }, 5*time.Second, 10*time.Millisecond,
+				"the HTTP upstream's poller reads its first head")
 
-	polled := httpVendor.latestPolls.Load()
-	for want := int64(1001); want <= 1005; want++ {
-		chain.advance()
-		n, _ := nextNewHead(t, conn, 3*time.Second)
-		for n < want && n <= 1000 {
-			// The head the tap found when it opened.
-			n, _ = nextNewHead(t, conn, 3*time.Second)
-		}
-		require.Equal(t, want, n, "each pushed head reaches the client well before the HTTP upstream's next 30s poll")
+			polled := httpVendor.latestPolls.Load()
+			for want := int64(1001); want <= 1005; want++ {
+				chain.advance()
+				n, _ := nextNewHead(t, conn, 3*time.Second)
+				for n < want && n <= 1000 {
+					// The head the tap found when it opened.
+					n, _ = nextNewHead(t, conn, 3*time.Second)
+				}
+				require.Equal(t, want, n, "each pushed head reaches the client well before the HTTP upstream's next 30s poll")
+			}
+			assert.Greater(t, httpVendor.latestPolls.Load(), polled, "the waiting tap refreshed the HTTP upstream's head")
+		})
 	}
-	assert.Greater(t, httpVendor.latestPolls.Load(), polled, "the waiting tap refreshed the HTTP upstream's head")
 }
 
 // An unknown source lifts nothing, nor does one eligible source alone; a

@@ -607,7 +607,7 @@ func (t *ChainTracker) noteHead(from string, h *chainHeader) {
 		ObserveFetchedHead(upstreamId string, raw json.RawMessage)
 	})
 	if ok && from != "" {
-		n.ObserveFetchedHead(from, h.raw)
+		t.callNetwork("note-head", func() { n.ObserveFetchedHead(from, h.raw) })
 	}
 }
 

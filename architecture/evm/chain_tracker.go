@@ -40,15 +40,16 @@ var (
 	defaultBlockTime = 12 * time.Second
 )
 
-// trackerPanicsToReset is how many messages in a row may panic before the
-// tracker resets to empty.
+// trackerPanicsToReset is how many messages of one kind may panic, with
+// none of that kind handled cleanly between them, before the tracker resets
+// to empty (handle).
 const trackerPanicsToReset = 3
 
 // TrackerMessageHook, when set, runs on a tracker's goroutine before each
-// message is applied, with the message's header when it carries one; a
-// panic in it is the message's panic. Tests use it to stall or panic a
-// tracker; production never sets it.
-var TrackerMessageHook atomic.Pointer[func(t *ChainTracker, upstreamId string, header *indexer.Cursor)]
+// message is applied, with the message's header when it carries one and
+// whether it is a source vote; a panic in it is the message's panic. Tests
+// use it to stall or panic a tracker; production never sets it.
+var TrackerMessageHook atomic.Pointer[func(t *ChainTracker, upstreamId string, header *indexer.Cursor, sourceVote bool)]
 
 // ChainTracker is fork choice for one (network, group) on one goroutine, and
 // the only writer of its chain feed: headers by hash, pins, receipts. Votes
@@ -138,7 +139,9 @@ type ChainTracker struct {
 	probe         *time.Timer
 	anchorNumbers []int64
 	anchorVotes   map[int64][]anchorVote // the hashes vendors answered per anchor
-	panics        int
+	// panics counts, per panicSlot, the panics since a message of that slot
+	// was last handled cleanly (handle).
+	panics [panicSlots]int
 	stack         []*node // walkTree's scratch
 	// treesDirty: a header was held or dropped, or a walk or fill ended,
 	// since trees was last published.
@@ -240,6 +243,7 @@ const (
 	msgSync
 	msgCall   // a tracker-owned fetch ended: fn runs on the tracker
 	msgSettle // ReconfirmPin asks for a settle; settled gets its outcome
+	msgKinds
 )
 
 type trackerMsg struct {
@@ -469,10 +473,11 @@ func (t *ChainTracker) run(ctx context.Context) {
 
 // handle applies one message, then moves walks, fill, settles and asks on.
 // Each step recovers on its own: a panicking message is dropped, and a
-// panicking step of update never blames the message. 3 panics with no
-// header handled cleanly between them reset the tracker to empty: ticks,
-// receipts and fetch callbacks come between any two headers, so a state
-// that breaks only header handling would never reset if they ended the run.
+// panicking step of update never blames the message. 3 panics in one
+// panicSlot, with no message of that slot handled cleanly between them,
+// reset the tracker to empty: other kinds come between any two of one kind,
+// so a state that breaks only source votes, or only fetch answers, still
+// resets, while one vendor's bad header among clean ones never does.
 func (t *ChainTracker) handle(msg trackerMsg) {
 	if msg.done != nil {
 		defer close(msg.done)
@@ -489,18 +494,29 @@ func (t *ChainTracker) handle(msg trackerMsg) {
 	if msg.kind != msgSync {
 		ok = t.update() && ok
 	}
+	slot := panicSlot(msg)
 	if ok {
-		if msg.kind == msgHeader || msg.kind == msgFetched {
-			t.panics = 0
-		}
+		t.panics[slot] = 0
 		return
 	}
-	t.panics++
-	if t.panics >= trackerPanicsToReset {
-		t.panics = 0
+	t.panics[slot]++
+	if t.panics[slot] >= trackerPanicsToReset {
+		t.panics = [panicSlots]int{}
 		t.reset()
 		telemetry.CounterHandle(telemetry.MetricChainTrackerResetTotal, t.projectId(), t.networkLabel()).Inc()
 	}
+}
+
+// panicSlots is one run per message kind, plus source votes apart from
+// the client answers that share their kind.
+const panicSlots = int(msgKinds) + 1
+
+// panicSlot is the run a message's panics count in.
+func panicSlot(msg trackerMsg) int {
+	if msg.kind == msgHeader && msg.vote == voteSource {
+		return int(msgKinds)
+	}
+	return int(msg.kind)
 }
 
 func (t *ChainTracker) receive(msg trackerMsg) {
@@ -514,7 +530,7 @@ func (t *ChainTracker) receive(msg trackerMsg) {
 				cur = &c
 			}
 		}
-		(*hook)(t, msg.upstream, cur)
+		(*hook)(t, msg.upstream, cur, msg.kind == msgHeader && msg.vote == voteSource)
 	}
 	switch msg.kind {
 	case msgHeader, msgFetched:
@@ -1209,13 +1225,14 @@ func (b *pinBacking) send() int {
 	return i
 }
 
-// capped reports whether the network's latest block, not the vote need,
-// holds back the highest pin the votes back.
-func (b *pinBacking) capped() bool {
+// capped returns the highest pin the votes back while the network's latest
+// block, not the vote need, holds it back; ok false otherwise.
+func (b *pinBacking) capped() (number uint64, ok bool) {
 	if len(b.backed) == 0 || len(b.backed) < b.need {
-		return false
+		return 0, false
 	}
-	return b.base+uint64(b.backed[len(b.backed)-b.need]) > b.ceiling
+	number = b.base + uint64(b.backed[len(b.backed)-b.need])
+	return number, number > b.ceiling
 }
 
 // backers is how many counted votes and decided answers back the pin at
@@ -1291,22 +1308,25 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 }
 
 // gate is the pins' backing for a publish. While the network's latest
-// block holds back a pin the votes back and a tap waits, it asks the
-// network's voters for their heads once per block time, at most catchUpMax
-// apart (spec §6.5 catch-up): a voter that is no source, polled every
-// statePollerInterval, would otherwise hold every tap until its next poll.
-// A poller skips a refresh inside its debounce, so rearm asks again at
+// block holds back a pin the votes back and a tap waits, it asks the voters
+// whose head is below that pin for their heads once per block time, at most
+// catchUpMax apart (spec §6.5 catch-up): a voter that is no source, polled
+// every statePollerInterval, would otherwise hold every tap until its next
+// poll. A poller skips a refresh inside its debounce, so rearm asks again at
 // catchUpAt; a counter that moves wakes the tracker (LatestChanged).
 func (t *ChainTracker) gate(path []*node) *pinBacking {
 	b := t.backingOf(path)
-	if !b.capped() || !t.demanded() {
+	pin, capped := b.capped()
+	if !capped || !t.demanded() {
 		t.catchUpAt = time.Time{}
 		return b
 	}
 	if now := time.Now(); !now.Before(t.catchUpAt) {
 		t.catchUpAt = now.Add(min(t.BlockTime(), catchUpMax))
-		if r, ok := t.network.(interface{ EvmRefreshLatestBlock(context.Context) }); ok {
-			r.EvmRefreshLatestBlock(t.ctx)
+		if r, ok := t.network.(interface {
+			EvmRefreshHeadsBelow(context.Context, int64)
+		}); ok {
+			t.callNetwork("catch-up", func() { r.EvmRefreshHeadsBelow(t.ctx, int64(pin)) })
 		}
 	}
 	return b
@@ -1326,14 +1346,32 @@ func (t *ChainTracker) deliveryQuorum() int {
 // sendCeiling is the highest number the network-wide tracker's taps may
 // send: the network's latest block, so no transport shows a block
 // eth_blockNumber does not, and one source alone never moves either (spec
-// §6.5). A group tracker has no request selector to compute its lane's
-// latest from, so only the vote need gates it.
-func (t *ChainTracker) sendCeiling() uint64 {
+// §6.5). Latest unknown, no voter yet, holds every send (§7). A group
+// tracker has no request selector to compute its lane's latest from, so
+// only the vote need gates it.
+func (t *ChainTracker) sendCeiling() (ceiling uint64) {
 	latest := networkLatest(t.network)
 	if t.selector != "" || latest == nil {
 		return math.MaxUint64
 	}
-	return uint64(max(latest(t.ctx), 0))
+	t.callNetwork("send-ceiling", func() { ceiling = uint64(max(latest(t.ctx), 0)) })
+	return ceiling
+}
+
+// callNetwork runs a call into the network's head code from the tracker's
+// goroutine. A panic there is counted and dropped, so it never fails the
+// message being handled: a bug outside the tracker would otherwise reset it
+// every 3 messages. A dropped ceiling call leaves 0, which holds the sends.
+func (t *ChainTracker) callNetwork(what string, fn func()) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			telemetry.MetricUnexpectedPanicTotal.WithLabelValues("chain-tracker-"+what,
+				fmt.Sprintf("project:%s network:%s", t.projectId(), t.networkLabel()), common.ErrorFingerprint(rec)).Inc()
+			log.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).
+				Str("network", t.networkLabel()).Msg("chain tracker call into the network panicked")
+		}
+	}()
+	fn()
 }
 
 // gateSend republishes the pins when the delivery gate or the pins it
