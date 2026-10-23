@@ -134,13 +134,24 @@ func (q *ServedTipQuorum) set(s string) error {
 //     networks_served_tip_invariants_test.go (package erpc) pins that class
 //     of outcome forever.
 //
+// PAIR RULE: two voters cannot corroborate anything — the lower head is one
+// upstream's claim exactly as the higher one is — so a pick that needs both
+// (q >= 2) would only ever pin "latest" to whichever of the two trails, and a
+// node a few blocks behind would hold every reader of "latest" (eth_blockNumber,
+// eth_call interpolation) at its height for as long as it is not benched
+// (erpc#1253). With exactly two valid heads at most pairLead apart, the higher
+// head is served and is the Freshest view; a wider gap is another chain or a
+// garbage head, not a lead, and the lower head still wins. pairLead <= 0
+// disables the rule.
+//
 // A voter that stopped moving holds the pick back only while it is needed for
 // the quorum; the health tracker benches such a voter (see
 // health.Tracker.IsHeadBenched) so it leaves the ballot instead.
 //
-// Examples (heads descending), default q=2: N=1 → that head; N=2 → the lower;
-// N=3..∞ → 2nd. Majority: N=3 → 2nd; N=4 → 3rd; N=5 → 3rd.
-func PickServedTip(heads []int64, q ServedTipQuorum) ServedTipPick {
+// Examples (heads descending), default q=2: N=1 → that head; N=2 → the higher
+// when within pairLead, else the lower; N=3..∞ → 2nd. Majority: N=3 → 2nd;
+// N=4 → 3rd; N=5 → 3rd.
+func PickServedTip(heads []int64, q ServedTipQuorum, pairLead int64) ServedTipPick {
 	slices.Sort(heads)
 	first, _ := slices.BinarySearch(heads, 1)
 	valid := heads[first:]
@@ -148,9 +159,14 @@ func PickServedTip(heads []int64, q ServedTipQuorum) ServedTipPick {
 	if n == 0 {
 		return ServedTipPick{}
 	}
+	tip := valid[n-q.Of(n)]
+	freshest := valid[max(n-2, 0)]
+	if n == 2 && tip < valid[1] && valid[1]-valid[0] <= pairLead {
+		tip, freshest = valid[1], valid[1]
+	}
 	return ServedTipPick{
-		Tip:      valid[n-q.Of(n)],
-		Freshest: valid[max(n-2, 0)],
+		Tip:      tip,
+		Freshest: freshest,
 		Max:      valid[n-1],
 		Inputs:   n,
 	}

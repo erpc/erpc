@@ -406,8 +406,9 @@ func TestServedTip_DefaultQuorum_LoneFarAheadUpstreamDoesNotDefineHead(t *testin
 
 // A selection-policy-EXCLUDED upstream must drop out of the served tip — head
 // tracking and routing share one eligible set. Here u3 reports the cluster min
-// (98); once the policy keeps only {u1,u2} eligible, the served tip must move to
-// the eligible cluster min (99) and never reflect u3's block.
+// (98) and u2 the second-highest head (99) that the full ballot serves; once the
+// policy keeps only {u1,u2} eligible, the pair rule serves the higher of the
+// two (100): the pick reflects the eligible set and never reflects u3's block.
 func TestServedTip_ExcludedUpstreamDropsOutOfTip(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -428,8 +429,8 @@ func TestServedTip_ExcludedUpstreamDropsOutOfTip(t *testing.T) {
 	network.PinUpstreamOrderForTest("u1", "u2")
 
 	served := network.EvmHighestLatestBlockNumber(ctx)
-	assert.Equal(t, int64(99), served,
-		"served tip must ignore policy-excluded u3 (block 98); eligible {100,99} → min 99")
+	assert.Equal(t, int64(100), served,
+		"served tip must ignore policy-excluded u3 (block 98); eligible pair {100,99} → the higher, 100")
 }
 
 // A configured guaranteed method clamps the global served tip down to what that
@@ -636,7 +637,7 @@ func TestServedTip_EligibleSetChurn_DipBoundedBySpread(t *testing.T) {
 	network.PinUpstreamOrderForTest("u3", "u4")
 
 	served2 := network.EvmHighestLatestBlockNumber(ctx)
-	assert.Equal(t, int64(100), served2, "majority of the remaining [101,100]")
+	assert.Equal(t, int64(101), served2, "the remaining pair [101,100] serves its higher head")
 	assert.GreaterOrEqual(t, served2, served1-3,
 		"a set-churn dip must stay within the pre-churn head spread")
 }
@@ -733,9 +734,9 @@ func TestServedTip_BoundCappedUpstreamsDoNotVote(t *testing.T) {
 		{id: "capped-2", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
 	})
 
-	// Ballot without the caps: [10000, 9998] → the lower live head.
+	// Ballot without the caps: [10000, 9998] → the higher of the live pair.
 	// With them it would be [10000, 9998, 5000, 5000] → 3rd highest = 5000.
-	assert.Equal(t, int64(9_998), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
 		"a bound-capped upstream declares what it SERVES, not where the head is; "+
 			"it must not vote a cap onto the ballot while live heads exist")
 }
@@ -1634,8 +1635,9 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		stalledAt := head
 
 		// stalled stops advancing; live keeps moving, finalized included.
-		// Inside the stall window nothing changes: quorum 2 still serves the
-		// lower heads on both axes.
+		// Inside the stall window the pair rule serves live's heads on both
+		// axes: stalled trails by far less than the plausible lead, and it
+		// stays the lag reference (the tracker's own second-highest head).
 		window := stallAfter(stalled, 0)
 		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
 			advance(2 * time.Second)
@@ -1644,8 +1646,8 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 			setServedTipFinalized(t, live, head-10)
 		}
 		require.False(t, tr.IsHeadBenched(stalled), "a peer below for less than its stall window is not benched")
-		served(t, network, stalledAt, "inside the stall window")
-		require.Equal(t, stalledFinalized, finalizedOf(), "finalized: quorum 2 holds the stalled one's finalized inside the stall window")
+		served(t, network, head, "inside the stall window")
+		require.Equal(t, head-10, finalizedOf(), "finalized: the pair rule serves live's finalized inside the stall window")
 		require.Zero(t, lagOf(network, stalled), "inside the stall window the lower head is still the lag reference")
 
 		// Past the stall window, the next head live reports benches stalled.
@@ -1871,14 +1873,14 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		}
 		report(tr, replaying, behind, tsOf(behind))
 		report(tr, live, head, tsOf(head))
-		served(t, network, behind, "at boot quorum 2 serves the replaying head")
+		served(t, network, head, "at boot the pair rule serves the live head: 600 blocks is a plausible lead")
 
 		window := stallAfter(replaying, 2*time.Second)
 		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
 			poll(2 * time.Second)
 		}
 		require.False(t, tr.IsHeadBenched(replaying), "not benched inside its stall window")
-		served(t, network, behind, "inside the stall window quorum 2 serves the replaying head")
+		served(t, network, head, "inside the stall window the pair rule serves the live head")
 
 		// Its own moves never reset the window: its head block stays a stall
 		// window older than live's.
@@ -1909,7 +1911,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		}
 		require.Equal(t, head-1, behind)
 		require.Zero(t, lagOf(network, replaying), "the lower voter is the lag reference again")
-		served(t, network, behind, "quorum 2 serves the lower of two heads at the tip")
+		served(t, network, head, "the pair rule serves the higher of two heads at the tip")
 	})
 
 	t.Run("a staleness verdict ends when the node catches up, so a plausible rogue cannot keep it", func(t *testing.T) {
@@ -1988,11 +1990,19 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 				require.True(t, tr.IsHeadBenched(restored), "a benched head two stall windows behind the tip stays benched, even once it reaches a stale voter (restored %d, peer-replay %d, live %d)", r, p, head)
 			}
 			got := network.EvmHighestLatestBlockNumber(ctx)
-			require.GreaterOrEqual(t, got, last, "latest never regresses (restored %d, peer-replay %d, live %d)", r, p, head)
+			if tr.IsHeadBenched(restored) {
+				require.GreaterOrEqual(t, got, last, "latest never regresses while restored is benched (restored %d, peer-replay %d, live %d)", r, p, head)
+			} else if wasBenched {
+				// The rejoin turns the pair {live, peer-replay}, which the pair
+				// rule served at live's head, into three voters served at the
+				// second-highest: restored's head, within a stall window of
+				// chain time of the tip.
+				require.Equal(t, r, got, "the rejoin lowers latest to the restored head (peer-replay %d, live %d)", p, head)
+			}
 			last = got
 		}
 		require.Less(t, head-r, int64(window/(2*time.Second))+2, "it rejoins once within a stall window of chain time of the tip")
-		served(t, network, r, "after the rejoin quorum 2 serves the restored head")
+		served(t, network, r, "after the rejoin three voters serve the second-highest, the restored head")
 	})
 
 	t.Run("heads frozen above a chain that restarted lower are benched and routed around", func(t *testing.T) {
@@ -2076,8 +2086,8 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 				report(tr, u, 20_000, forkTs)
 			}
 			canon += int64(d / (2 * time.Second))
-			// The canonical pair stays one block apart, so its highest head is
-			// not the quorum pick.
+			// The canonical pair stays one block apart: once the forks are
+			// benched, the pair rule serves canon-a's head.
 			report(tr, canons[0], canon, servedTipClock().Unix())
 			report(tr, canons[1], canon-1, servedTipClock().Unix())
 		}
@@ -2094,10 +2104,10 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		for _, u := range forks {
 			require.True(t, tr.IsHeadBenched(u), "%s", u.Id())
 		}
-		served(t, network, canon-1, "the live voters agree with the pick: the guard must not hold the frozen pair's height, nor serve canon-a's head alone")
+		served(t, network, canon, "the live pair's pick stands: the guard must not hold the frozen pair's height")
 		for end := servedTipClock().Add(servedTipRegressionTTL + 2*time.Second); servedTipClock().Before(end); {
 			poll(2 * time.Second)
-			served(t, network, canon-1, "while the remembered height ages out")
+			served(t, network, canon, "while the remembered height ages out")
 		}
 		assert.Equal(t, held, servedTipRegressionCount(network, "latest", "held"), "a bench is not a regression")
 		assert.Equal(t, failedOpen, servedTipRegressionCount(network, "latest", "failed_open"), "a guard that never held does not fail open")
@@ -2320,8 +2330,8 @@ func TestServedTip_Finalized_BoundCappedUpstreamsDoNotVote(t *testing.T) {
 		setServedTipFinalized(t, u, fin)
 	}
 
-	assert.Equal(t, int64(9_898), network.EvmHighestFinalizedBlockNumber(ctx),
-		"the capped pair's effective finalized is their 5000 bound, which is a serving range, not a finalized head")
+	assert.Equal(t, int64(9_900), network.EvmHighestFinalizedBlockNumber(ctx),
+		"the live pair serves its higher finalized; the capped pair's effective finalized is their 5000 bound, which is a serving range, not a finalized head")
 }
 
 // The regression guard on the finalized axis: one of the fresh pair leaves the
