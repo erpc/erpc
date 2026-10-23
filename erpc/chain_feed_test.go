@@ -23,6 +23,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/failsafe"
+	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsupstream"
 	"github.com/erpc/erpc/telemetry"
@@ -1377,7 +1378,9 @@ func (s *chaosSeed) silentVendor() {
 	stalls := telemetry.MetricUpstreamWebsocketHeadsStallReconnectsTotal.WithLabelValues("test_ws", "evm:123", v.ID)
 	before := testutil.ToFloat64(stalls)
 	age := telemetry.MetricUpstreamReportAgeSeconds.WithLabelValues("test_ws", "evm:123", v.ID, "hash")
-	v.Update(func(f *chainsim.Faults) { f.SilentHeads = true })
+	// Every latest poll is a hash vote (spec §6.3), so the vendor refuses
+	// latest too: only then does nothing it says keep its vote fresh.
+	v.Update(func(f *chainsim.Faults) { f.SilentHeads, f.RefuseLatest = true, true })
 	agedOut := false
 	deadline := time.Now().Add(20 * chaosBlock)
 	for time.Now().Before(deadline) {
@@ -1386,7 +1389,7 @@ func (s *chaosSeed) silentVendor() {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	v.Update(func(f *chainsim.Faults) { f.SilentHeads = false })
+	v.Update(func(f *chainsim.Faults) { f.SilentHeads, f.RefuseLatest = false, false })
 	reconnects := testutil.ToFloat64(stalls) - before
 	require.True(s.t, agedOut, "%s's hash vote ages past W while its newHeads is silent", v.ID)
 	require.Positive(s.t, reconnects, "%s reconnects its silent newHeads", v.ID)
@@ -1523,13 +1526,19 @@ func (s *chaosSeed) clientLoad() {
 }
 
 func (s *chaosSeed) split() {
-	// The HTTP vendors are no sources here: only the 2 wss vendors vote,
-	// and http-a is the one upstream that answers a settle.
+	// Only the 2 wss vendors' votes count here, and http-a is the one
+	// upstream that answers a settle. Every latest poll votes (spec §6.3),
+	// so http-a is held for W first: its vote stops counting, the fork ties
+	// 1-vs-1, and the settle's ask waits on http-a until it is released.
+	s.httpB.Update(func(f *chainsim.Faults) { f.Down = true })
+	s.httpA.Update(func(f *chainsim.Faults) { f.Held = true })
+	s.blocks(int(health.FreshnessWindow(chaosBlock)/chaosBlock) + 2)
 	settled := telemetry.MetricChainTrackerSettleTotal.WithLabelValues("test_ws", "evm:123", "decided")
 	before := testutil.ToFloat64(settled)
-	s.httpB.Update(func(f *chainsim.Faults) { f.Down = true })
 	// ws-b's sibling of the next canonical block, pushed as it lands.
 	canon, f := s.chain.StartSplit(s.wsB)
+	s.blocks(1)
+	s.httpA.Update(func(f *chainsim.Faults) { f.Held = false })
 	// ws-b stays live on its growing fork; the settle alone must release
 	// the branch it decided to the clients.
 	require.Eventually(s.t, func() bool { return testutil.ToFloat64(settled) > before }, 5*chaosBlock, 5*time.Millisecond, "a settle decides the 1-vs-1 split")
