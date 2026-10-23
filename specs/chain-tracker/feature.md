@@ -147,7 +147,7 @@ Execution model:
 - The mailbox never blocks a sender, and never drops fetch results or ticks: at most 16 fetches are in flight. When headers fill it, answers drop first, then each source keeps only its newest header; walks fill the heights that dropped.
 - `Head` is published as one atomic value; no request computes it again.
 - Taps read the state the tracker publishes after each change; a Read never takes a lock the tracker waits on.
-- Tracker, reconciler, Ask and tap loops run under `recover`, counted in `erpc_unexpected_panic_total`, as the ws server's handlers do (`erpc/ws_server.go`). In the tracker, a panic drops only the message it was handling; 3 in a row reset it (§6.5).
+- Tracker, reconciler, Ask and tap loops run under `recover`, counted in `erpc_unexpected_panic_total`, as the ws server's handlers do (`erpc/ws_server.go`). In the tracker, a panic drops only the message it was handling; 3 panics with no header handled cleanly between them reset it (§6.5).
 
 ## 4. Contracts
 
@@ -344,7 +344,7 @@ Owner: `erpc/network_intake.go`. Readers: `Head`, the confirmed head, settle tar
 
 ### 6.3 Reports: what does a voter say?
 
-- Numbers are shared: each upstream's latest and finalized live in shared counters (§14), and every instance's `Head` reads them.
+- Numbers are shared: each upstream's latest and finalized live in shared counters (§14), and every instance's `Head` reads them. Every `latest` header this instance fetches from an upstream, by poll, Ask or settle, also moves that upstream's counter.
 - A hash vote comes only from this instance's tracker or poller: a push, a poll-source poll, an Ask answer, or a full poll, each fetched with cache reads skipped. Client answers and cached answers never vote (#1001).
 - Minority fork: a voter whose hash vote stays off the pins for longer than W loses its number vote and goes last in routing, until its hash vote is on the pins again.
 
@@ -410,14 +410,14 @@ Confirmed head:
 - The confirmed head is the highest pin with `q.Of(hash voters)` hash votes at or above it and a number at or below the lane's `Latest`. The second clause proves that q upstreams hold N.
 - Cold window: for W after a tracker starts or resets, a voter that is a source and has not reported yet counts as a hash voter, so a cold instance's first header waits for a second.
 - Every transport delivers only up to the confirmed head (§10). Tap lag is measured from it.
-- Catch-up: while a tap is open, a pin above `Latest` Asks, with a number need, the voters whose number is below it.
+- Catch-up: while a tap is open and `Latest` holds back a pin its hash votes back, the tracker Asks, with a number need, the voters whose number is below it, once per bt and at most 1s apart. Every move of an upstream's counter, from any path or instance, wakes the tracker, so the pin goes out as soon as `Latest` reaches it.
 - `PinFresh` = confirmed ∧ evidence quorum (§6.10) ∧ undisputed (no hash voter on another branch at that height). `ReconfirmPin(n)` returns `PinFresh` only then; otherwise it settles, or returns `PinRateLimited` when the settle cannot run.
 - A hash-proven rollback lowers the shared counters (§14).
 
 Other rules:
 
 - A re-anchor is counted in `erpc_chain_tracker_reanchor_total`.
-- A message's changes are computed first and applied in one step. A panic drops the message and counts the header as `malformed` for its sender. 3 panics in a row reset the tracker to empty, counted in `erpc_chain_tracker_reset_total`; taps continue from their cursors (§10.1).
+- A message's changes are computed first and applied in one step. A panic drops the message and counts the header as `malformed` for its sender. 3 panics with no header handled cleanly between them reset the tracker to empty, counted in `erpc_chain_tracker_reset_total`; taps continue from their cursors (§10.1). Ticks, receipts and fetch callbacks come between any two headers, so they never end the count: a state that breaks only header handling still resets.
 - Each change of the confirmed head wakes the taps.
 - A majority branch that reverts a block at or below `Finalized` is followed, and logged as an error (`final_hash_changed`): clients stay on the chain the upstreams serve.
 - By-number answers at or below `Finalized` feed integrity's finalized anchors below the window (`observeNarrowAnchors`), only with the evidence quorum. Inside the window, pins win.
@@ -445,7 +445,7 @@ Owner: `health/tracker.go`. Readers: freshness (§6.1), routing lag (`blockNumbe
 ### 6.7 Block time: how long is a block?
 
 - The network EMA (`GetNetworkBlockTime`), sampled from poller timestamps and from the timestamps of accepted source headers. Both are local samples (#1208).
-- Until the EMA has 4 samples, bt = 1s for every reader: the poller's fallback on `main`. `fallbackStatePollerDebounce` still sets the cadence then.
+- Until the EMA has 4 samples, bt = 1s for every reader, the poll cadence included (0.7s). `fallbackStatePollerDebounce` has no default any more: set, it overrides that cold-start cadence.
 - The poll cadence is the poller's debounce: bt × `dynamicBlockTimeDebounceMultiplier` (0.7), at most 12s; `statePollerDebounce` overrides (#790).
 
 Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, the by-hash wait, the window. Bounds: on a halt or a restart the caps hold (cadence 12s, W 60s). Keeps: #790, #1208.
@@ -729,7 +729,7 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | intake, integrity | a check no upstream passes | §6.9 | suspended; observe-only after 100 blocks; enforced after 2 passing heights | 2 heights |
 | tracker | voters disagree | split votes | the branch with the most votes; ties settle | 1 settle |
 | tracker | reorg deeper than `reorgWindow`, or a gap past it | the majority's tree is not the pinned one | re-anchor; fill joins the trees at the fork point while the window holds it; taps then get Reverted per §10.2 (ws `logs` more than `reorgWindow` behind end `1013`); a fork point outside the window ends taps with their transport's signal | `reorgWindow` blocks of walk |
-| tracker | a message panics | `recover` | the message drops; 3 in a row reset the tracker to empty | 3 messages |
+| tracker | a message panics | `recover` | the message drops; 3 panics with no clean header between them reset the tracker to empty | 3 panics |
 | tracker | no hash voter | hash ages | one Ask with a hash need per cadence, a settle on conflict | 12s |
 | Head | ceiling stale | `CeilingAt` older than 1 bt | Ask before any "future" answer | 1 Ask |
 | Head | cold start | no counters | tags pass through; taps wait for the first confirmed head | first reports |
@@ -823,6 +823,7 @@ networks:
 | `server.webSocket.subscriptionBufferSize` | deleted: no per-subscription queue |
 | `indexer` (`canonicalChainDepth`, `dedupWindowSize`) | deleted: the mempool bounds in §15.2 replace `dedupWindowSize` |
 | `translateLatestTag` default for `eth_getBlockByNumber` | now on, as for every method; `enforceHighestBlock` for it is deleted |
+| `networks[].evm.fallbackStatePollerDebounce` | default removed (was 5s): unset, the cold-start cadence follows bt's 1s default (§6.7) |
 
 Strict decoding rejects the deleted keys and names the key: a breaking config change, no aliases. The head model adds no config key.
 
@@ -847,7 +848,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_integrity_follow_stall_total` | deleted: no stall states; see re-anchor and settle |
 | `erpc_integrity_reorg_depth` | renamed `erpc_chain_tracker_reorg_depth` |
 | `erpc_chain_tracker_reanchor_total{project,network}` | new |
-| `erpc_chain_tracker_reset_total{project,network}` | new: resets after 3 panics in a row |
+| `erpc_chain_tracker_reset_total{project,network}` | new: resets after 3 panics with no clean header between them |
 | `erpc_chain_tracker_settle_total{project,network,outcome}` | new; outcome: `decided`, `undecided` |
 | `erpc_chain_tracker_fetch_total{project,network,kind,class,outcome}` | new; kind: `header`, `receipts`, `logs`; outcome: `ok`, `error`, `capacity` |
 | `erpc_chain_tracker_fetch_slots{project,network,class}` | new gauge: current share per class |

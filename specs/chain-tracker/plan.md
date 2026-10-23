@@ -32,10 +32,15 @@ T   the rest of the real-world catalogue
 ## H0: delete the delivered-head floor
 
 - Delete: `Network.NoteObservedLatestBlock`, `deliveredLatestBlock`, the network counter `latestBlockShared` (key `network/<project>/<network>/latestBlock`) and its setup, `applyDeliveredHeadFloor` and its call in the served tip, the tracker's call on each pin change. No replacement floor.
-- Change: taps deliver a pin only when its number ≤ the network-wide lane's `Latest` and the vote need is met (spec §6.5, until H1 replaces the need).
+- Change:
+  - Taps deliver a pin only when its number ≤ the network-wide lane's `Latest` and the vote need is met (spec §6.5, until H1 replaces the need).
+  - Catch-up (spec §6.5): while `Latest` holds back a pin and a tap is open, the voters' pollers refresh once per bt, at most 1s apart; every head-counter move wakes the tracker.
+  - A `latest` header the tracker fetches (no-source ask, settle answer) moves the answering upstream's counter (spec §6.3).
+  - 3 panics with no clean header between them reset the tracker: the extra wake-ups must not end the count.
 - Tests:
   - Red first: 3 sources at 1005, 1001, 1000, q = 2 → `eth_blockNumber` and `eth_getBlockByNumber("latest")` = 1001; ws `newHeads` and `StreamBlocks` never above 1001; a 2nd source at 1005 moves both to 1005.
-  - Real-world: X3, K6 (guarantee clamp).
+  - Red first: 1 wss source + 1 HTTP non-source polled every 30s → each pushed head reaches a `newHeads` client within 3s.
+  - Real-world: X3, K2, K6 (guarantee clamp).
   - Deleted with their code: `erpc/networks_tip_floor_test.go`, the floor cases of `erpc/networks_ws_tip_test.go`, `erpc/networks_served_tip_guaranteedfor_test.go`.
 
 ## H1: freshness, voters, reports, confirmed head
@@ -65,7 +70,7 @@ T   the rest of the real-world catalogue
   - Per-method interpolation: absent params, EIP-1898 leaves, method config for `eth_callMany` and `eth_createAccessList`, `erigon_blockNumber` = `Latest`; `eth_getBlockByNumber(latest|finalized)` interpolated with a pre-forward refresh.
   - `enforceNonNullTaggedBlocks` reads the original tag; one head predicate with `headLagToleranceBlocks`.
   - Finality split: reads `Head.Finalized`; permanent writes also the serving upstream's finalized; the cache write guard reads the network-wide lane.
-  - Block-time EMA sampled from accepted source headers; one default.
+  - Block-time EMA sampled from accepted source headers; one default, 1s, until 4 samples, the poll cadence included; `fallbackStatePollerDebounce` loses its 5s default.
 - Delete: per-request served-tip evaluation; post-forward raise, `pickHighestBlock`, `enforceHighestBlock` for `eth_getBlockByNumber`; raw-max consensus leader; `EvmLowestFinalizedBlockNumber`; `pinLatestTag` re-read per attempt; the cache key on the word `latest`; the tracker's pins-mean block time and its 12s default.
 - Tests, real-world: X2, U12, U14, P1, P5, P6, P7, P9, P10, K7, C9, C12, C13. Extend `erpc/networks_served_tip_invariants_test.go` (assertions unchanged) and the existing interpolation tests.
 
