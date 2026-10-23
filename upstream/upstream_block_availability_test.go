@@ -66,6 +66,7 @@ func (m *mockEvmStatePollerEnhanced) SuggestFinalizedBlock(blockNumber int64)   
 func (m *mockEvmStatePollerEnhanced) SuggestLatestBlock(blockNumber int64)       {}
 func (m *mockEvmStatePollerEnhanced) ObserveHead(json.RawMessage) bool           { return false }
 func (m *mockEvmStatePollerEnhanced) RefreshLatestBlock()                        {}
+func (m *mockEvmStatePollerEnhanced) PollHead()                                  {}
 func (m *mockEvmStatePollerEnhanced) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerEnhanced) IsObjectNull() bool                         { return m.isNull }
 func (m *mockEvmStatePollerEnhanced) GetDiagnostics() *common.EvmStatePollerDiagnostics {
@@ -630,6 +631,7 @@ func (m *mockEvmStatePollerWithCustomBehavior) SuggestFinalizedBlock(blockNumber
 func (m *mockEvmStatePollerWithCustomBehavior) SuggestLatestBlock(blockNumber int64)       {}
 func (m *mockEvmStatePollerWithCustomBehavior) ObserveHead(json.RawMessage) bool           { return false }
 func (m *mockEvmStatePollerWithCustomBehavior) RefreshLatestBlock()                        {}
+func (m *mockEvmStatePollerWithCustomBehavior) PollHead()                                  {}
 func (m *mockEvmStatePollerWithCustomBehavior) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerWithCustomBehavior) IsObjectNull() bool                         { return false }
 func (m *mockEvmStatePollerWithCustomBehavior) GetDiagnostics() *common.EvmStatePollerDiagnostics {

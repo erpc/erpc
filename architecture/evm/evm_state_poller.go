@@ -684,14 +684,30 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 // so a head read on the request path does not wait for the next ticker poll.
 // It never blocks and spawns at most one goroutine per poller at a time.
 func (e *EvmStatePoller) RefreshLatestBlock() {
-	if e.IsObjectNull() || e.latestBlockShared == nil {
+	e.refreshLatest(true)
+}
+
+// PollHead is RefreshLatestBlock for a hash vote (spec §6.3): it polls
+// unless this instance fetched latest within the debounce, however fresh
+// the shared counter is, since another instance's fetch or a client
+// response votes no hash here.
+func (e *EvmStatePoller) PollHead() {
+	e.refreshLatest(false)
+}
+
+// refreshLatest: shared, skip while the shared counter is fresh; the poll
+// itself skips while this instance's last fetch is.
+func (e *EvmStatePoller) refreshLatest(shared bool) {
+	if e.IsObjectNull() || e.latestBlockShared == nil || e.shouldSkipLatestBlockCheck() {
 		return
 	}
-	e.stateMu.RLock()
-	cfg := e.cfg
-	e.stateMu.RUnlock()
-	if e.shouldSkipLatestBlockCheck() || !e.latestBlockShared.IsStale(e.latestDebounce(cfg)) {
-		return
+	if shared {
+		e.stateMu.RLock()
+		cfg := e.cfg
+		e.stateMu.RUnlock()
+		if !e.latestBlockShared.IsStale(e.latestDebounce(cfg)) {
+			return
+		}
 	}
 	if !e.latestRefreshInFlight.CompareAndSwap(false, true) {
 		return

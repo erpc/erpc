@@ -814,6 +814,24 @@ func (n *Network) EvmRefreshHeadsBelow(ctx context.Context, block int64) {
 	}
 }
 
+// EvmPollHeads polls the latest header of each upstream in ids for a hash
+// vote (spec §6.3, §6.5): a voter whose vote the pins moved off, or that a
+// held vote need waits on. Each poller skips a poll inside its debounce on
+// this instance and keeps one in flight.
+func (n *Network) EvmPollHeads(ids []string) {
+	if n.upstreamsRegistry == nil {
+		return
+	}
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
+		if !slices.Contains(ids, u.Id()) {
+			continue
+		}
+		if p := u.EvmStatePoller(); p != nil && !p.IsObjectNull() {
+			p.PollHead()
+		}
+	}
+}
+
 // tryShortCircuitFutureBlock returns a truthful null response (ok=true) when
 // `req` is a concrete-numbered eth_getBlockByNumber lookup whose target block is
 // beyond every upstream's latest head.

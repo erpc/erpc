@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -568,4 +569,190 @@ func TestNetworkIntake_WithholdsUnverifiableSource(t *testing.T) {
 	network.intake.Header("not-in-this-network", tipHead("a", 5_000_000))
 	time.Sleep(100 * time.Millisecond)
 	assert.Equal(t, before, pinned(network))
+}
+
+// sourcesNetwork starts an eRPC server for cfg and returns its network,
+// its upstreams by id and its address.
+func sourcesNetwork(t *testing.T, cfg *common.Config) (*Network, map[string]*upstream.Upstream, string) {
+	t.Helper()
+	srv, addr, cancel := startTestERPCServer(t, cfg)
+	t.Cleanup(func() { _ = srv.Shutdown(&log.Logger); cancel() })
+	prj, err := srv.erpc.GetProject("test_ws")
+	require.NoError(t, err)
+	network, err := prj.GetNetwork(context.Background(), "evm:123")
+	require.NoError(t, err)
+	byId := map[string]*upstream.Upstream{}
+	for _, u := range network.upstreamsRegistry.GetNetworkUpstreams(context.Background(), network.networkId) {
+		byId[u.Id()] = u
+	}
+	require.Len(t, byId, len(cfg.Projects[0].Upstreams))
+	return network, byId, addr
+}
+
+// pollerUpstream is an HTTP upstream that is no source, polled every 30s.
+func pollerUpstream(id, endpoint string) *common.UpstreamConfig {
+	u := sourceUpstream(id, endpoint, nil)
+	u.Evm.StatePollerInterval = common.Duration(30 * time.Second)
+	return u
+}
+
+// A group tracker's pins go out as far as its lane's Latest. When that
+// Latest moves through a counter alone (another instance, a client
+// response), the group tracker confirms the pin at once, not at its next
+// header.
+func TestNetworkIntake_GroupLaneConfirmsWhenLatestMovesWithoutHeader(t *testing.T) {
+	setupGock()
+	defer util.ResetGock()
+	ctx := context.Background()
+
+	chain := newMockChain(1000, false)
+	aVendor, aURL := newMockWsVendor(t, chain, nil)
+	xVendor, xURL := newMockWsVendor(t, chain, nil)
+	httpVendor, srv := newMockHttpVendor(t, chain)
+	network, byId, _ := sourcesNetwork(t, sourcesConfig(func(nw *common.NetworkConfig) {
+		nw.Evm.ServedTip = &common.EvmServedTipConfig{Quorum: 2}
+	}, sourceUpstream("g-a", aURL, nil), pollerUpstream("g-b", srv.URL), sourceUpstream("x-c", xURL, nil)))
+	require.Eventually(t, func() bool {
+		return httpVendor.latestPolls.Load() > 0 && aVendor.subscribes.Load() > 0 && xVendor.subscribes.Load() > 0
+	}, 5*time.Second, 10*time.Millisecond, "the poller reads its first head and both sources subscribe")
+	group := evm.ChainTrackerOf(ctx, network, "g-*")
+	require.NotSame(t, network.chainTracker, group, "g-* is a lane of its own")
+	laneReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+	laneReq.SetDirectives(&common.RequestDirectives{UseUpstream: "g-*"})
+	laneCtx := context.WithValue(ctx, common.RequestContextKey, laneReq)
+
+	chain.advance()
+	require.Eventually(t, func() bool {
+		tip, ok := group.Tip()
+		hv := network.EvmHashVoters("g-*", group.W(), false)
+		return ok && tip.Number == 1001 && slices.Equal(hv.Hash, []string{"g-a"})
+	}, 10*time.Second, 10*time.Millisecond, "the lane pins 1001, and only g-a's vote is fresh once g-b's ages past W")
+	require.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(laneCtx), "g-b's counter holds the lane's Latest")
+	time.Sleep(200 * time.Millisecond)
+	if c, ok := group.Confirmed(); ok {
+		require.Less(t, c.Number, uint64(1001), "the lane's Latest holds 1001 back")
+	}
+
+	byId["g-b"].EvmStatePoller().SuggestLatestBlock(1001)
+	require.Eventually(t, func() bool {
+		c, ok := group.Confirmed()
+		return ok && c.Number == 1001
+	}, 2*time.Second, 10*time.Millisecond, "the lane's Latest reaching 1001 confirms it without another header")
+}
+
+// One wss source and two HTTP pollers, quorum 2: the pollers' counters
+// already show the pushed head (another instance or a client response
+// moved them), but their hash votes do not. The waiting tap polls them for
+// their heads instead of waiting for their 30s polls or for W.
+func TestNetworkIntake_HeldHashVoteNeedPollsVotersBelowThePin(t *testing.T) {
+	setupGock()
+	defer util.ResetGock()
+	ctx := context.Background()
+
+	chain := newMockChain(1000, false)
+	aVendor, aURL := newMockWsVendor(t, chain, nil)
+	bVendor, bSrv := newMockHttpVendor(t, chain)
+	cVendor, cSrv := newMockHttpVendor(t, chain)
+	network, byId, addr := sourcesNetwork(t, sourcesConfig(func(nw *common.NetworkConfig) {
+		nw.Evm.ServedTip = &common.EvmServedTipConfig{Quorum: 2}
+	}, sourceUpstream("a-ws", aURL, nil), pollerUpstream("b-http", bSrv.URL), pollerUpstream("c-http", cSrv.URL)))
+	conn := dialWs(t, addr)
+	defer conn.Close()
+	subscribeNewHeads(t, conn)
+	require.Eventually(t, func() bool {
+		for _, id := range []string{"b-http", "c-http"} {
+			if v, ok := network.intake.hashVote(byId[id]); !ok || v.Number != 1000 {
+				byId[id].EvmStatePoller().RefreshLatestBlock()
+				return false
+			}
+		}
+		return aVendor.subscribes.Load() > 0
+	}, 5*time.Second, 10*time.Millisecond, "both pollers vote 1000 and the source subscribes")
+	n, _ := nextNewHead(t, conn, 3*time.Second)
+	require.Equal(t, int64(1000), n)
+
+	polled := bVendor.latestPolls.Load() + cVendor.latestPolls.Load()
+	for _, id := range []string{"b-http", "c-http"} {
+		byId[id].EvmStatePoller().SuggestLatestBlock(1001)
+	}
+	eventuallyLatest(t, ctx, network, 1001, "the pollers' counters move Latest to 1001")
+	chain.advance()
+	n, _ = nextNewHead(t, conn, 2500*time.Millisecond)
+	require.Equal(t, int64(1001), n, "the pushed head reaches the client before the pollers' votes age past W")
+	assert.Greater(t, bVendor.latestPolls.Load()+cVendor.latestPolls.Load(), polled, "the held tap polled the voters below the pin")
+}
+
+// A 1-block reorg leaves a healthy HTTP voter's last vote, polled up to 30s
+// ago, on the old branch. The tracker polls it at once; its answer is on
+// the new branch, so it is never demoted.
+func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
+	setupGock()
+	defer util.ResetGock()
+
+	chain := newMockChain(1000, false)
+	aVendor, aURL := newMockWsVendor(t, chain, nil)
+	bVendor, bURL := newMockWsVendor(t, chain, nil)
+	httpVendor, srv := newMockHttpVendor(t, chain)
+	network, byId, _ := sourcesNetwork(t, sourcesConfig(nil,
+		sourceUpstream("a-ws", aURL, nil), sourceUpstream("b-ws", bURL, nil), pollerUpstream("z-http", srv.URL)))
+	require.Eventually(t, func() bool {
+		return httpVendor.latestPolls.Load() > 0 && aVendor.subscribes.Load() > 0 && bVendor.subscribes.Load() > 0
+	}, 5*time.Second, 10*time.Millisecond, "the poller reads its first head and both sources subscribe")
+	for range 3 {
+		chain.advance()
+	}
+	eventuallyPinned(t, network, 1003, "the sources' pushes pin 1003")
+	require.Eventually(t, func() bool {
+		v, ok := network.intake.hashVote(byId["z-http"])
+		if !ok || v.Number != 1003 {
+			byId["z-http"].EvmStatePoller().RefreshLatestBlock()
+			return false
+		}
+		return true
+	}, 5*time.Second, 10*time.Millisecond, "the poller's vote is 1003")
+
+	polled := httpVendor.latestPolls.Load()
+	chain.reorg(1)
+	eventuallyPinned(t, network, 1004, "the sources' pushes pin the new branch")
+	deadline := time.Now().Add(network.chainTracker.W() + 2*time.Second)
+	for time.Now().Before(deadline) {
+		require.False(t, network.isForkDemoted(byId["z-http"]), "a healthy poller whose last vote a reorg left behind is never demoted")
+		time.Sleep(20 * time.Millisecond)
+	}
+	assert.Greater(t, httpVendor.latestPolls.Load(), polled, "the tracker polled the voter whose vote left the pins")
+}
+
+// A push source's socket closes on a halted chain and comes back: its first
+// header after the reconnect is its current vote. That vote is fresh again,
+// so the source neither stays last in routing nor stops being a hash voter.
+func TestNetworkIntake_ReconnectOnHaltedChainRenewsVote(t *testing.T) {
+	setupGock()
+	defer util.ResetGock()
+
+	chain := newMockChain(1000, false)
+	aVendor, aURL := newMockWsVendor(t, chain, nil)
+	bVendor, bURL := newMockWsVendor(t, chain, nil)
+	network, byId, _ := sourcesNetwork(t, sourcesConfig(nil, sourceUpstream("a-ws", aURL, nil), sourceUpstream("b-ws", bURL, nil)))
+	require.Eventually(t, func() bool { return aVendor.subscribes.Load() > 0 && bVendor.subscribes.Load() > 0 },
+		5*time.Second, 10*time.Millisecond, "both sources subscribe")
+	chain.advance()
+	eventuallyPinned(t, network, 1001, "the sources' pushes pin 1001")
+	head, err := json.Marshal(chain.block(1001))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		v, ok := network.intake.hashVote(byId["a-ws"])
+		return ok && v.Number == 1001
+	}, 5*time.Second, 10*time.Millisecond, "a-ws votes 1001")
+
+	network.intake.disconnected("a-ws")
+	require.Eventually(t, func() bool {
+		s := network.hashStale.Load()
+		return s != nil && slices.Contains(*s, "a-ws")
+	}, 2*time.Second, 10*time.Millisecond, "a closed socket goes last in routing")
+
+	network.intake.Header("a-ws", head)
+	require.Eventually(t, func() bool {
+		v, _ := network.intake.hashVote(byId["a-ws"])
+		return !v.Expired && network.hashStale.Load() == nil
+	}, 2*time.Second, 10*time.Millisecond, "the reconnect's first header, the current vote, renews it on a halted chain")
 }
