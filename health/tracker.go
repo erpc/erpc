@@ -1786,8 +1786,10 @@ func (t *Tracker) IsHeadBenched(ups common.Upstream) bool {
 }
 
 // RecordHashVote makes number ups's newest hash vote (spec §6.3). Its hash
-// age runs while the lag reference stands above it.
-func (t *Tracker) RecordHashVote(ups common.Upstream, number int64) {
+// age runs while the lag reference stands above it. replay: the header is
+// one integrity held back earlier, so its arrival time stays the previous
+// vote's; the gRPC stall clock reads it.
+func (t *Tracker) RecordHashVote(ups common.Upstream, number int64, replay bool) {
 	if number <= 0 {
 		return
 	}
@@ -1798,7 +1800,10 @@ func (t *Tracker) RecordHashVote(ups common.Upstream, number int64) {
 	meta := t.addHeadReporter(ntwMeta, net, ups)
 	now := t.now()
 	ntwMeta.firstVotes = firstVoteAt(ntwMeta.firstVotes, number, now)
-	meta.hashVote, meta.hashVoted, meta.hashExpired, meta.hashVotedAt = number, true, false, now
+	meta.hashVote, meta.hashVoted, meta.hashExpired = number, true, false
+	if !replay {
+		meta.hashVotedAt = now
+	}
 	meta.ageHashVote(ntwMeta.evmLatestBlockNumber.Load(), ntwMeta.firstVotes, now)
 	t.reportAges(ups, meta, now)
 }

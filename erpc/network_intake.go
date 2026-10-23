@@ -140,7 +140,7 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay b
 	// The hash vote is recorded before the trackers see the header, so the
 	// tracker that handles it counts its sender as a hash voter.
 	if mt := in.nw.metricsTracker; mt != nil {
-		mt.RecordHashVote(u, int64(cur.Number))
+		mt.RecordHashVote(u, int64(cur.Number), replay)
 		mt.SampleSourceHeaderTime(u, int64(cur.Number), sh.Timestamp())
 	}
 	evm.ObserveSourceHeader(in.nw, u, sh)
