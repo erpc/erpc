@@ -115,8 +115,10 @@ type ChainTracker struct {
 	wakeAt   time.Time
 	wake     *time.Timer
 	// catchUpAt is when the next catch-up may ask while the network's latest
-	// block caps the sends; zero while it does not (gate).
+	// block or the vote need holds back a backed pin; zero while neither
+	// does (gate). heldSince is when the vote need began to hold one.
 	catchUpAt time.Time
+	heldSince time.Time
 	// since is when the tracker started or last reset: for W after it,
 	// voters that are sources and never reported count as hash voters
 	// (spec §6.5 cold window).
@@ -1352,6 +1354,19 @@ func (b *pinBacking) capped() (number uint64, ok bool) {
 	return number, number > b.ceiling
 }
 
+// held returns the highest pin a vote backs while the vote need holds it
+// back; ok false otherwise.
+func (b *pinBacking) held() (number uint64, ok bool) {
+	if len(b.backs) == 0 {
+		return 0, false
+	}
+	top, need := b.backs[len(b.backs)-1].i, max(b.need, 1)
+	if len(b.backs) >= need && b.backs[len(b.backs)-need].i >= top {
+		return 0, false
+	}
+	return b.base + uint64(top), true
+}
+
 // confirms reports whether the pin at n is PinFresh (spec §6.5): confirmed,
 // backed by the evidence quorum of vendors, and undisputed.
 func (b *pinBacking) confirms(n uint64) bool {
@@ -1431,27 +1446,55 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 	return b
 }
 
-// gate is the pins' backing for a publish. While the lane's Latest holds
-// back a pin the votes back and a tap waits, it asks the voters whose head
-// is below that pin for their heads once per block time, at most
+// gate is the pins' backing for a publish. While a tap waits and the
+// lane's Latest holds back a pin the votes back, it asks the voters whose
+// head is below that pin for their heads once per block time, at most
 // catchUpMax apart (spec §6.5 catch-up): a voter that is no source, polled
 // every statePollerInterval, would otherwise hold every tap until its next
-// poll. A poller skips a refresh inside its debounce, so rearm asks again at
-// catchUpAt; a counter that moves wakes the tracker (LatestChanged).
+// poll. A pin the vote need holds back for one block time is asked for the
+// same way: a hash voter that went silent counts until the lag reference
+// passes its vote, and with one live pusher only those answers move the
+// reference. A poller skips a refresh inside its debounce, so rearm asks
+// again at catchUpAt; a counter that moves wakes the tracker
+// (LatestChanged).
 func (t *ChainTracker) gate(path []*node) *pinBacking {
 	b := t.backingOf(path)
+	now := time.Now()
 	pin, capped := b.capped()
-	if !capped || !t.demanded() {
+	held, holding := b.held()
+	switch {
+	case !holding:
+		t.heldSince = time.Time{}
+	case t.heldSince.IsZero():
+		t.heldSince = now
+	}
+	if !capped && !holding || !t.demanded() {
 		t.catchUpAt = time.Time{}
 		return b
 	}
-	if now := time.Now(); !now.Before(t.catchUpAt) {
+	if !capped {
+		// Pushes of one block arrive together: only a pin held one block
+		// time is asked for.
+		pin = held
+		if ripe := t.heldSince.Add(t.BlockTime()); now.Before(ripe) {
+			t.catchUpAt = maxTime(t.catchUpAt, ripe)
+			return b
+		}
+	}
+	if !now.Before(t.catchUpAt) {
 		t.catchUpAt = now.Add(min(t.BlockTime(), catchUpMax))
 		if r, ok := t.network.(interface {
 			EvmRefreshHeadsBelow(context.Context, int64)
 		}); ok {
 			t.callNetwork("catch-up", func() { r.EvmRefreshHeadsBelow(t.laneCtx(), int64(pin)) })
 		}
+	}
+	return b
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
 	}
 	return b
 }
