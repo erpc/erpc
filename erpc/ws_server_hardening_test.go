@@ -632,6 +632,10 @@ func TestWebSocket_ProjectsSharingANetworkUseTheirOwnUpstreams(t *testing.T) {
 	cfg := standardWsConfig("ws" + strings.TrimPrefix(upA.URL, "http"))
 	second := *cfg.Projects[0]
 	second.Id = "test_ws2"
+	// Its own network config object, as a config file gives each project:
+	// a shallow copy would share the first project's, and both bootstraps
+	// would write it at once.
+	second.Networks = []*common.NetworkConfig{{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}}
 	second.Upstreams = []*common.UpstreamConfig{
 		{Id: "http-upstream", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 		{Id: "ws-upstream", Type: common.UpstreamTypeEvm, Endpoint: "ws" + strings.TrimPrefix(upB.URL, "http"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
