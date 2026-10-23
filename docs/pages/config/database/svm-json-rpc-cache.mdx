@@ -419,7 +419,7 @@ The SVM cache emits the **same `erpc_cache_*` metric family** as the EVM cache, 
 | `erpc_cache_set_skipped_total` | counter | Payload rejected by a policy's size limits |
 | `erpc_cache_set_error_total` | counter | A connector `Set` errored (logged at WARN, swallowed) |
 | `erpc_cache_set_original_bytes_total` / `erpc_cache_set_compressed_bytes_total` | counter | Pre- and post-zstd payload accounting; the compressed counter only advances when compression actually shrank the value |
-| `erpc_cache_get_success_hit_duration_seconds` / `erpc_cache_get_success_miss_duration_seconds` / `erpc_cache_set_success_duration_seconds` | histogram | Hit, miss, and successful-set latency |
+| `erpc_cache_get_success_hit_duration_seconds` / `erpc_cache_get_success_miss_duration_seconds` / `erpc_cache_set_success_duration_seconds` / `erpc_cache_set_error_duration_seconds` | histogram | Hit, miss, successful-set, and failed-set latency |
 
 Use the `*_total` **counters** (not duration histograms) for hit/miss rates. `neverCacheMethods` short-circuits stay silent — they are not cache skips and do not inflate skipped counters.
 

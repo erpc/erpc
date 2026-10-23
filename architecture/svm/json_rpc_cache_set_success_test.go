@@ -2,6 +2,7 @@ package svm
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -14,49 +15,78 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSvmCache_Set_EmitsSuccessMetrics guards the EVM-parity path: a successful
-// connector.Set must increment erpc_cache_set_success_total and record
-// erpc_cache_set_success_duration_seconds. Without these, Solana "Cache Set
-// Latency (Success)" panels stay dead even when writes are healthy.
-func TestSvmCache_Set_EmitsSuccessMetrics(t *testing.T) {
+// TestSvmCache_Set_EmitsOutcomeMetrics guards EVM parity on both Set outcomes:
+// each must bump its counter and record one latency sample. Without these,
+// Solana "Cache Set Latency" panels stay dead.
+func TestSvmCache_Set_EmitsOutcomeMetrics(t *testing.T) {
 	t.Parallel()
 
-	projectId := t.Name()
-	conn := data.NewMockConnector("set-success-mem")
-	conn.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-		Return(nil).Once()
-
-	c, policies := newMissReasonCache(t, projectId, conn)
-	require.Len(t, policies, 1)
-	policy := policies[0]
-
-	req := newMissReasonRequest(t)
-	jrr, err := common.NewJsonRpcResponse(1, map[string]interface{}{"blockhash": "abc"}, nil)
-	require.NoError(t, err)
-	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
-
-	labels := []string{
-		projectId,
-		missReasonNetworkLabel,
-		missReasonMethod,
-		conn.Id(),
-		policy.String(),
-		ttlString(policy.GetTTL()),
+	setErr := errors.New("connector down")
+	cases := []struct {
+		name     string
+		connErr  error
+		total    func(labels []string) prometheus.Counter
+		duration func(labels []string) prometheus.Observer
+	}{
+		{
+			name: "success",
+			total: func(l []string) prometheus.Counter {
+				return telemetry.MetricCacheSetSuccessTotal.WithLabelValues(l...)
+			},
+			duration: func(l []string) prometheus.Observer {
+				return telemetry.MetricCacheSetSuccessDuration.WithLabelValues(l...)
+			},
+		},
+		{
+			name:    "error",
+			connErr: setErr,
+			total: func(l []string) prometheus.Counter {
+				return telemetry.MetricCacheSetErrorTotal.WithLabelValues(append(l, common.ErrorSummary(setErr))...)
+			},
+			duration: func(l []string) prometheus.Observer {
+				return telemetry.MetricCacheSetErrorDuration.WithLabelValues(append(l, common.ErrorSummary(setErr))...)
+			},
+		},
 	}
 
-	beforeTotal := promUtil.ToFloat64(telemetry.MetricCacheSetSuccessTotal.WithLabelValues(labels...))
-	beforeDuration := histogramSampleCount(t, telemetry.MetricCacheSetSuccessDuration.WithLabelValues(labels...))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.NoError(t, c.Set(context.Background(), req, resp))
+			projectId := t.Name()
+			conn := data.NewMockConnector("set-outcome-mem")
+			conn.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+				Return(tc.connErr).Once()
 
-	afterTotal := promUtil.ToFloat64(telemetry.MetricCacheSetSuccessTotal.WithLabelValues(labels...))
-	afterDuration := histogramSampleCount(t, telemetry.MetricCacheSetSuccessDuration.WithLabelValues(labels...))
+			c, policies := newMissReasonCache(t, projectId, conn)
+			require.Len(t, policies, 1)
+			policy := policies[0]
 
-	require.Equal(t, 1.0, afterTotal-beforeTotal,
-		"erpc_cache_set_success_total must rise by 1 on a successful Set")
-	require.Equal(t, uint64(1), afterDuration-beforeDuration,
-		"erpc_cache_set_success_duration_seconds must record one observation")
-	conn.AssertExpectations(t)
+			req := newMissReasonRequest(t)
+			jrr, err := common.NewJsonRpcResponse(1, map[string]interface{}{"blockhash": "abc"}, nil)
+			require.NoError(t, err)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+			labels := []string{
+				projectId,
+				missReasonNetworkLabel,
+				missReasonMethod,
+				conn.Id(),
+				policy.String(),
+				ttlString(policy.GetTTL()),
+			}
+
+			beforeTotal := promUtil.ToFloat64(tc.total(labels))
+			beforeDuration := histogramSampleCount(t, tc.duration(labels))
+
+			// Set swallows connector errors so the upstream request path never fails.
+			require.NoError(t, c.Set(context.Background(), req, resp))
+
+			require.Equal(t, 1.0, promUtil.ToFloat64(tc.total(labels))-beforeTotal)
+			require.Equal(t, uint64(1), histogramSampleCount(t, tc.duration(labels))-beforeDuration)
+			conn.AssertExpectations(t)
+		})
+	}
 }
 
 func histogramSampleCount(t *testing.T, obs prometheus.Observer) uint64 {

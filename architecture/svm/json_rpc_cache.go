@@ -363,11 +363,15 @@ func (c *SvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		// mis-attribute "Cache Set Latency (Success)" panels.
 		setStart := time.Now()
 		if err := connector.Set(setCtx, groupKey, requestKey, valueToStore, ttl); err != nil {
+			errSummary := common.ErrorSummary(err)
 			telemetry.MetricCacheSetErrorTotal.WithLabelValues(
 				c.projectId, req.NetworkLabel(), rpcReq.Method,
-				connector.Id(), policy.String(), ttlLabel,
-				common.ErrorSummary(err),
+				connector.Id(), policy.String(), ttlLabel, errSummary,
 			).Inc()
+			telemetry.MetricCacheSetErrorDuration.WithLabelValues(
+				c.projectId, req.NetworkLabel(), rpcReq.Method,
+				connector.Id(), policy.String(), ttlLabel, errSummary,
+			).Observe(time.Since(setStart).Seconds())
 			c.logger.Warn().Err(err).Str("connector", connector.Id()).
 				Str("groupKey", groupKey).Str("requestKey", requestKey).
 				Msg("svm cache set failed")
