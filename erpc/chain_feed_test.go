@@ -1699,7 +1699,7 @@ func (s *chaosSeed) panicThrice() {
 	}
 	require.Eventually(s.t, func() bool { return trackerResets() == resets+1 }, 2*time.Second, 10*time.Millisecond, "3 panics in a row reset the tracker")
 	s.blocks(6)
-	s.occur(fPanicThrice, fmt.Sprintf("header %d and the next 2 messages panicked; tracker reset", r.number))
+	s.occur(fPanicThrice, fmt.Sprintf("source header %d and the next 2 source headers panicked; tracker reset", r.number))
 }
 
 //
@@ -1729,7 +1729,7 @@ type chaosHook struct {
 	panicDone chan panicReport
 }
 
-func (h *chaosHook) on(tr *evm.ChainTracker, upstreamId string, hdr *indexer.Cursor) {
+func (h *chaosHook) on(tr *evm.ChainTracker, upstreamId string, hdr *indexer.Cursor, sourceVote bool) {
 	h.mu.Lock()
 	if hdr != nil && upstreamId != "" {
 		if _, ok := h.first[tr]; !ok {
@@ -1746,22 +1746,33 @@ func (h *chaosHook) on(tr *evm.ChainTracker, upstreamId string, hdr *indexer.Cur
 		}
 		h.counts[upstreamId]++
 	}
-	if r := h.panicked; r != nil {
+	if r := h.panicked; r != nil && r.after == (indexer.Cursor{}) {
 		// The message after the one that panicked first: the pins it left.
-		h.panicked = nil
 		r.after, _ = tr.Tip()
-		done := h.panicDone
-		if h.panicLeft > 0 {
-			h.panicLeft--
+		if h.panicLeft == 0 {
+			h.panicked = nil
+			done := h.panicDone
 			h.mu.Unlock()
 			done <- *r
-			panic("chaos: tracker message panics again")
+			return
 		}
-		h.mu.Unlock()
-		done <- *r
-		return
 	}
-	if h.panicDone != nil && h.panicLeft > 0 && hdr != nil && upstreamId != "" && hdr.Number > h.panicAbv && h.panicked == nil {
+	if r := h.panicked; r != nil && sourceVote && hdr != nil {
+		// The next source headers panic too, while panics are left: one
+		// run of source-vote panics, whatever other messages come between.
+		h.panicLeft--
+		last := h.panicLeft == 0
+		if last {
+			h.panicked = nil
+		}
+		done := h.panicDone
+		h.mu.Unlock()
+		if last {
+			done <- *r
+		}
+		panic("chaos: tracker source header panics again")
+	}
+	if h.panicDone != nil && h.panicLeft > 0 && sourceVote && hdr != nil && hdr.Number > h.panicAbv && h.panicked == nil {
 		h.panicLeft--
 		before, _ := tr.Tip()
 		h.panicked = &panicReport{number: hdr.Number, before: before}
@@ -1806,8 +1817,9 @@ func (h *chaosHook) stallOn(upstreamId string) (stalled <-chan struct{}, release
 }
 
 // panicAfter makes the first source header above number panic, and the
-// messages right after it until times panics ran in a row. The report
-// carries the pins before the first panic and after it.
+// next times-1 source headers, other messages between them handled as
+// usual: one run of source-vote panics. The report carries the pins
+// before the first panic and after it.
 func (h *chaosHook) panicAfter(number uint64, times int) <-chan panicReport {
 	h.mu.Lock()
 	defer h.mu.Unlock()

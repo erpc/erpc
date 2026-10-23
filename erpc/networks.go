@@ -792,6 +792,19 @@ func (n *Network) EvmRefreshLatestBlock(ctx context.Context) {
 	}
 }
 
+// EvmRefreshHeadsBelow asks every voter whose head is below block n for a
+// background refresh (spec §6.5 catch-up): the network's latest block holds
+// n back from subscribers until enough of them report it, guarantee subsets
+// included, so a voter already at n is never polled for it. Each poller
+// skips a refresh inside its debounce and keeps one in flight.
+func (n *Network) EvmRefreshHeadsBelow(ctx context.Context, block int64) {
+	for u := range n.EvmRoutableUpstreams(ctx) {
+		if head, _, ok := tipVoterRank(u, false, n.metricsTracker); ok && head < block {
+			u.(common.EvmUpstream).EvmStatePoller().RefreshLatestBlock()
+		}
+	}
+}
+
 // tryShortCircuitFutureBlock returns a truthful null response (ok=true) when
 // `req` is a concrete-numbered eth_getBlockByNumber lookup whose target block is
 // beyond every upstream's latest head.
