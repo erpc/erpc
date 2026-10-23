@@ -150,7 +150,7 @@ https://docs.erpc.cloud/config/failsafe/consensus.llms.txt`}
 | 4 | `onlyBlockHeadLeader` on low participants | `lowParticipantsBehavior == onlyBlockHeadLeader` AND low participants | Leader non-error → leader non-infra error → low-participants error |
 | 5 | `preferBlockHeadLeader` on dispute/low | `preferBlockHeadLeader` AND no group meets threshold AND leader non-error exists | Return leader non-error; else dispute |
 | 6 | `preferLarger + acceptMostCommon` below threshold | `preferLargerResponses` AND `acceptMostCommon` AND below threshold | Return largest non-empty by size |
-| 7 | `acceptMostCommon + preferNonEmpty` above threshold (empty/error leads) | `preferNonEmpty` AND `acceptMostCommon` AND threshold met AND leader is empty or error AND non-empty exists | Return best non-empty (count, then size) |
+| 7 | `acceptMostCommon + preferNonEmpty` above threshold (empty/error leads or ties for the lead) | `preferNonEmpty` AND `acceptMostCommon` AND threshold met AND an empty or error group has the best count AND non-empty exists | Return best non-empty (count, then size) |
 | 8 | Tie at/above threshold (no preference) | Multiple non-error groups share best count ≥ threshold | Dispute |
 | 9 | `acceptMostCommon` below threshold: non-empty over empty | `preferNonEmpty` AND `acceptMostCommon` AND below threshold AND exactly 1 non-empty AND ≥1 empty | Return single non-empty |
 | 10 | `acceptMostCommon` below threshold: non-empty over error | `preferNonEmpty` AND `acceptMostCommon` AND below threshold AND leader is error AND non-empty exists | Return best non-empty |
@@ -175,7 +175,7 @@ https://docs.erpc.cloud/config/failsafe/consensus.llms.txt`}
 
 **`eth_sendRawTransaction` broadcast mode.** Rule 1 fires as soon as any single non-empty response exists — threshold is ignored entirely. Combined with `fireAndForget: true`, eRPC returns the first accepted tx hash immediately while remaining participant goroutines continue broadcasting using `context.WithoutCancel(ctx)` as their base, surviving HTTP client disconnection. They are bounded by upstream call completion, wait-cap timers, or process exit — not by graceful shutdown signals.
 
-**Wait caps.** `maxWaitOnResult` (adaptive p50, default min=5ms, max=1s) arms when the first non-empty response arrives. `maxWaitOnEmpty` (adaptive p90, default min=50ms, max=2s) arms on the very first response of any kind. When a cap fires, the analyzer resolves with what it has collected, applying `disputeBehavior` or `lowParticipantsBehavior` as appropriate. `erpc_consensus_wait_capped_total{trigger}` tracks firings.
+**Wait caps.** `maxWaitOnResult` (adaptive p50, default min=5ms, max=1s) arms when the first non-empty response arrives. `maxWaitOnEmpty` (adaptive p90, default min=50ms, max=2s) arms on the very first response of any kind. When a cap fires, the analyzer first takes every response already delivered to the collection channel, then resolves with what it has collected, applying `disputeBehavior` or `lowParticipantsBehavior` as appropriate. `erpc_consensus_wait_capped_total{trigger}` tracks firings.
 
 **SkipConsensus directive.** Any request can bypass consensus via `X-ERPC-Skip-Consensus: true` header, `?skip-consensus=true` query param, or `directiveDefaults.skipConsensus: true` in network/project config. When set, the executor falls through to `retry(hedge(runUpstreamSweep))`. Only `"true"` activates bypass; any other value keeps consensus active.
 
