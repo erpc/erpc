@@ -147,7 +147,7 @@ Execution model:
 - The mailbox never blocks a sender, and never drops fetch results or ticks: at most 16 fetches are in flight. When headers fill it, answers drop first, then each source keeps only its newest header; walks fill the heights that dropped.
 - `Head` is published as one atomic value; no request computes it again.
 - Taps read the state the tracker publishes after each change; a Read never takes a lock the tracker waits on.
-- Tracker, reconciler, Ask and tap loops run under `recover`, counted in `erpc_unexpected_panic_total`, as the ws server's handlers do (`erpc/ws_server.go`). In the tracker, a panic drops only the message it was handling; 3 panics with no header handled cleanly between them reset it (§6.5).
+- Tracker, reconciler, Ask and tap loops run under `recover`, counted in `erpc_unexpected_panic_total`, as the ws server's handlers do (`erpc/ws_server.go`). In the tracker, a panic drops only the message it was handling; 3 panics of one message kind, with none of that kind handled cleanly between them, reset it (§6.5). Calls from the tracker into the network's head code recover on their own and never fail a message.
 
 ## 4. Contracts
 
@@ -417,7 +417,7 @@ Confirmed head:
 Other rules:
 
 - A re-anchor is counted in `erpc_chain_tracker_reanchor_total`.
-- A message's changes are computed first and applied in one step. A panic drops the message and counts the header as `malformed` for its sender. 3 panics with no header handled cleanly between them reset the tracker to empty, counted in `erpc_chain_tracker_reset_total`; taps continue from their cursors (§10.1). Ticks, receipts and fetch callbacks come between any two headers, so they never end the count: a state that breaks only header handling still resets.
+- A message's changes are computed first and applied in one step. A panic drops the message and counts the header as `malformed` for its sender. 3 panics of one message kind (source votes count apart from client answers), with no message of that kind handled cleanly between them, reset the tracker to empty, counted in `erpc_chain_tracker_reset_total`; taps continue from their cursors (§10.1). Other kinds come between any two of one kind, so a state that breaks only source votes, or only fetch answers, still resets, while one vendor's bad header among clean ones never does.
 - Each change of the confirmed head wakes the taps.
 - A majority branch that reverts a block at or below `Finalized` is followed, and logged as an error (`final_hash_changed`): clients stay on the chain the upstreams serve.
 - By-number answers at or below `Finalized` feed integrity's finalized anchors below the window (`observeNarrowAnchors`), only with the evidence quorum. Inside the window, pins win.
@@ -729,10 +729,10 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | intake, integrity | a check no upstream passes | §6.9 | suspended; observe-only after 100 blocks; enforced after 2 passing heights | 2 heights |
 | tracker | voters disagree | split votes | the branch with the most votes; ties settle | 1 settle |
 | tracker | reorg deeper than `reorgWindow`, or a gap past it | the majority's tree is not the pinned one | re-anchor; fill joins the trees at the fork point while the window holds it; taps then get Reverted per §10.2 (ws `logs` more than `reorgWindow` behind end `1013`); a fork point outside the window ends taps with their transport's signal | `reorgWindow` blocks of walk |
-| tracker | a message panics | `recover` | the message drops; 3 panics with no clean header between them reset the tracker to empty | 3 panics |
+| tracker | a message panics | `recover` | the message drops; 3 panics of one message kind with no clean one of that kind between them reset the tracker to empty | 3 panics |
 | tracker | no hash voter | hash ages | one Ask with a hash need per cadence, a settle on conflict | 12s |
 | Head | ceiling stale | `CeilingAt` older than 1 bt | Ask before any "future" answer | 1 Ask |
-| Head | cold start | no counters | tags pass through; taps wait for the first confirmed head | first reports |
+| Head | cold start, or no voter (all syncing or excluded) | `Latest` unknown | tags pass through; taps wait for the first confirmed head | first voter report |
 | shared state | backend down | publish and watch errors | each instance runs on its own polls; no frozen tip after | backend back |
 | shared state | a writer's clock is skewed | — | higher values win whatever their timestamp; freshness by receive time | none needed |
 | shared state | chain rewinds on every upstream | pins re-anchor below counters | rollback write (§14) | 2 bt |
@@ -848,7 +848,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_integrity_follow_stall_total` | deleted: no stall states; see re-anchor and settle |
 | `erpc_integrity_reorg_depth` | renamed `erpc_chain_tracker_reorg_depth` |
 | `erpc_chain_tracker_reanchor_total{project,network}` | new |
-| `erpc_chain_tracker_reset_total{project,network}` | new: resets after 3 panics with no clean header between them |
+| `erpc_chain_tracker_reset_total{project,network}` | new: resets after 3 panics of one message kind with no clean one between them |
 | `erpc_chain_tracker_settle_total{project,network,outcome}` | new; outcome: `decided`, `undecided` |
 | `erpc_chain_tracker_fetch_total{project,network,kind,class,outcome}` | new; kind: `header`, `receipts`, `logs`; outcome: `ok`, `error`, `capacity` |
 | `erpc_chain_tracker_fetch_slots{project,network,class}` | new gauge: current share per class |

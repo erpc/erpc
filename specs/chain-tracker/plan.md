@@ -34,12 +34,12 @@ T   the rest of the real-world catalogue
 - Delete: `Network.NoteObservedLatestBlock`, `deliveredLatestBlock`, the network counter `latestBlockShared` (key `network/<project>/<network>/latestBlock`) and its setup, `applyDeliveredHeadFloor` and its call in the served tip, the tracker's call on each pin change. No replacement floor.
 - Change:
   - Taps deliver a pin only when its number ≤ the network-wide lane's `Latest` and the vote need is met (spec §6.5, until H1 replaces the need).
-  - Catch-up (spec §6.5): while `Latest` holds back a pin and a tap is open, the voters' pollers refresh once per bt, at most 1s apart; every head-counter move wakes the tracker.
+  - Catch-up (spec §6.5): while `Latest` holds back a pin and a tap is open, the voters whose head is below it, guarantee subsets included, refresh once per bt, at most 1s apart; every head-counter move wakes the tracker.
   - A `latest` header the tracker fetches (no-source ask, settle answer) moves the answering upstream's counter (spec §6.3).
-  - 3 panics with no clean header between them reset the tracker: the extra wake-ups must not end the count.
+  - 3 panics of one message kind, with no clean one of that kind between them, reset the tracker: the extra wake-ups must not end the count. Calls into the network's head code recover on their own.
 - Tests:
   - Red first: 3 sources at 1005, 1001, 1000, q = 2 → `eth_blockNumber` and `eth_getBlockByNumber("latest")` = 1001; ws `newHeads` and `StreamBlocks` never above 1001; a 2nd source at 1005 moves both to 1005.
-  - Red first: 1 wss source + 1 HTTP non-source polled every 30s → each pushed head reaches a `newHeads` client within 3s.
+  - Red first: 1 wss source + 1 HTTP non-source polled every 30s, and 3 wss sources + an HTTP non-source named in `guaranteedFor` → each pushed head reaches a `newHeads` client within 3s.
   - Real-world: X3, K2, K6 (guarantee clamp).
   - Deleted with their code: `erpc/networks_tip_floor_test.go`, the floor cases of `erpc/networks_ws_tip_test.go`, `erpc/networks_served_tip_guaranteedfor_test.go`.
 
