@@ -45,10 +45,10 @@ var (
 	chaosMaxBackfill   = 3 * time.Second
 	chaosHeadsWatch    = time.Second
 	chaosStatePoll     = 300 * time.Millisecond
-	chaosSeedBudget    = 30 * time.Second
-	chaosSettleRound   = chaosBlock // a settle's asks and walks on local vendors
-	chaosVendorBudget  = uint32(40) // requests per second per upstream; client load under -race exceeds 4x this
-	chaosMailboxBurst  = 1500       // above the tracker's mailbox header cap of 1024
+	chaosSeedBudget    = uint64(150) // block times a seed may take
+	chaosSettleRound   = chaosBlock  // a settle's asks and walks on local vendors
+	chaosVendorBudget  = uint32(40)  // requests per second per upstream; client load under -race exceeds 4x this
+	chaosMailboxBurst  = 1500        // above the tracker's mailbox header cap of 1024
 	chaosHistoryBlocks = 40
 )
 
@@ -198,9 +198,9 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 			s := newChaosSeed(t, p.seed, p.pollSources, p.opts)
 			start := time.Now()
 			s.run(p.faults)
-			elapsed := time.Since(start)
-			t.Logf("seed %d ran in %s", p.seed, elapsed)
-			require.Less(t, elapsed, chaosSeedBudget, "each seed runs within its budget")
+			ticks := s.chain.Ticks()
+			t.Logf("seed %d ran in %s, %d block times", p.seed, time.Since(start), ticks)
+			require.LessOrEqual(t, ticks, chaosSeedBudget, "each seed runs within its budget of block times")
 			for f := range s.occurred {
 				covered[f] = append(covered[f], p.seed)
 			}
@@ -978,7 +978,9 @@ func (s *chaosSeed) tracker() *evm.ChainTracker {
 	return nil
 }
 
-func (s *chaosSeed) blocks(n int) { time.Sleep(time.Duration(n) * chaosBlock) }
+// blocks waits n block times of the chain, so a fault lasts as many
+// blocks however slowly the host runs.
+func (s *chaosSeed) blocks(n int) { s.chain.WaitTicks(uint64(n)) }
 
 func (s *chaosSeed) occur(fault, evidence string) {
 	s.mu.Lock()

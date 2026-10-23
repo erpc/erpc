@@ -76,6 +76,11 @@ type Chain struct {
 	stopOnce sync.Once
 	started  atomic.Bool
 	done     chan struct{}
+	// ticks counts block times passed, halted ones included; tickCh is
+	// closed and replaced at each.
+	ticks  atomic.Uint64
+	tickMu sync.Mutex
+	tickCh chan struct{}
 }
 
 // Fork is a branch some vendors serve instead of the canonical chain; it
@@ -92,7 +97,7 @@ type Trap struct {
 func NewChain(cfg Config) *Chain {
 	c := &Chain{cfg: cfg, rng: rand.New(rand.NewPCG(cfg.Seed, uint64(cfg.ChainID))), noise: rand.New(rand.NewPCG(cfg.Seed, uint64(cfg.ChainID)+1)),
 		byHash: make(map[Hash]*Block), forks: make(map[*Fork]bool), pushed: make(map[Hash]bool), traps: make(map[Hash]*Trap),
-		stop: make(chan struct{}), done: make(chan struct{})}
+		stop: make(chan struct{}), done: make(chan struct{}), tickCh: make(chan struct{})}
 	history := cfg.History
 	if history == 0 {
 		history = HistoryBlocks
@@ -129,6 +134,27 @@ func (c *Chain) Start() {
 			}
 		}
 	}()
+}
+
+// Ticks is how many block times passed since Start, halted ones included:
+// a block time the host was too slow to tick is not one.
+func (c *Chain) Ticks() uint64 { return c.ticks.Load() }
+
+// WaitTicks waits until n more block times passed, or the chain stopped.
+func (c *Chain) WaitTicks(n uint64) {
+	for to := c.Ticks() + n; c.Ticks() < to; {
+		c.tickMu.Lock()
+		ch := c.tickCh
+		c.tickMu.Unlock()
+		if c.Ticks() >= to {
+			return
+		}
+		select {
+		case <-ch:
+		case <-c.stop:
+			return
+		}
+	}
 }
 
 // Stop ends block production and waits for the tick in progress; vendors
@@ -321,6 +347,11 @@ func (c *Chain) tick() {
 	c.mu.Unlock()
 	writePushes(pushes)
 	c.refresh()
+	c.ticks.Add(1)
+	c.tickMu.Lock()
+	close(c.tickCh)
+	c.tickCh = make(chan struct{})
+	c.tickMu.Unlock()
 }
 
 // Reorg replaces the top depth canonical blocks with a new branch one block
