@@ -58,6 +58,10 @@ type Network struct {
 	// forkDemoted are the voters on a minority fork (EvmForkDemoted): no
 	// number vote, last in routing. nil while none is.
 	forkDemoted atomic.Pointer[[]string]
+	// hashStale are the voters whose hash vote another voter's header
+	// passed, or whose socket closed (setHashStale): tried after the rest,
+	// before forkDemoted. nil while none is.
+	hashStale atomic.Pointer[[]string]
 
 	// servedTipAll is the network-wide served-tip lane. Lanes hold the
 	// advance-age watchdog and the regression guard's memory; the pick itself
@@ -1684,7 +1688,7 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 
 // preferUpstreams reorders ups by hints only, every upstream staying
 // eligible: upstreams whose poller has the block first, then failover tiers,
-// and voters on a minority fork last.
+// then voters with a stale hash vote, and voters on a minority fork last.
 func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedRequest, method string, upsList []common.Upstream) []common.Upstream {
 	// For a specific block, try upstreams whose poller already has it first.
 	// Ordering hints only: every upstream stays eligible.
@@ -1700,29 +1704,37 @@ func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedReq
 	if n.cfg.Failover.Enabled() {
 		upsList = tierUpstreamsByGroup(upsList)
 	}
-	return n.demotedLast(upsList)
+	return n.lateLast(upsList)
 }
 
-// demotedLast moves the voters on a minority fork to the end of upsList,
-// keeping each part's order (spec §6.3). upsList is the request's own copy.
-func (n *Network) demotedLast(upsList []common.Upstream) []common.Upstream {
-	ids := n.forkDemoted.Load()
-	if ids == nil {
+// lateLast moves voters with a stale hash vote (spec §6.1), then voters on
+// a minority fork (§6.3), to the end of upsList, keeping each part's order:
+// a half-open socket keeps its upstream's rank in the policy for a while,
+// and a request it holds waits for its timeout. upsList is the request's
+// own copy.
+func (n *Network) lateLast(upsList []common.Upstream) []common.Upstream {
+	stale, demoted := n.hashStale.Load(), n.forkDemoted.Load()
+	if stale == nil && demoted == nil {
 		return upsList
 	}
-	demoted := func(u common.Upstream) bool { return slices.Contains(*ids, u.Id()) }
-	if !slices.ContainsFunc(upsList, demoted) {
+	rank := func(u common.Upstream) int {
+		switch {
+		case demoted != nil && slices.Contains(*demoted, u.Id()):
+			return 2
+		case stale != nil && slices.Contains(*stale, u.Id()):
+			return 1
+		}
+		return 0
+	}
+	if !slices.ContainsFunc(upsList, func(u common.Upstream) bool { return rank(u) > 0 }) {
 		return upsList
 	}
 	out := make([]common.Upstream, 0, len(upsList))
-	for _, u := range upsList {
-		if !demoted(u) {
-			out = append(out, u)
-		}
-	}
-	for _, u := range upsList {
-		if demoted(u) {
-			out = append(out, u)
+	for r := 0; r <= 2; r++ {
+		for _, u := range upsList {
+			if rank(u) == r {
+				out = append(out, u)
+			}
 		}
 	}
 	return out

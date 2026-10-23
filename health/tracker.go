@@ -1849,8 +1849,9 @@ type HashVote struct {
 	// Expired: its socket closed since, so it is no longer fresh whatever
 	// its age.
 	Expired bool
-	// At is when it arrived.
-	At time.Time
+	// At is when it arrived; Number is its block number.
+	At     time.Time
+	Number int64
 }
 
 // HashVote is ups's newest hash vote; false before its first.
@@ -1860,7 +1861,7 @@ func (t *Tracker) HashVote(ups common.Upstream) (HashVote, bool) {
 	ntwMeta.headMu.Lock()
 	defer ntwMeta.headMu.Unlock()
 	age, ok := meta.hashAge(t.now())
-	return HashVote{Age: age, Expired: meta.hashExpired, At: meta.hashVotedAt}, ok
+	return HashVote{Age: age, Expired: meta.hashExpired, At: meta.hashVotedAt, Number: meta.hashVote}, ok
 }
 
 // ageHashVote starts the hash age when the lag reference ref stands above

@@ -281,10 +281,15 @@ func (in *networkIntake) isVoter(upstreamId string) bool {
 }
 
 // hashVoter reports whether voter u is a hash voter: its hash age is at
-// most w and its socket stayed up since (spec §6.1, §15.1). at is when it stops being one, zero while its age
-// does not run.
+// most w and its socket stayed up since (spec §6.1, §15.1). at is when it
+// stops being one, zero while its age does not run.
 func (in *networkIntake) hashVoter(u common.Upstream, w time.Duration, now time.Time) (ok bool, at time.Time) {
 	v, voted := in.hashVote(u)
+	return freshVote(v, voted, w, now)
+}
+
+// freshVote is hashVoter over a vote already read.
+func freshVote(v health.HashVote, voted bool, w time.Duration, now time.Time) (ok bool, at time.Time) {
 	if !voted || v.Expired || v.Age > w {
 		return false, time.Time{}
 	}
@@ -374,9 +379,27 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 	}
 	now := time.Now()
 	voters, cands := n.intake.voters(selector)
-	for _, u := range voters {
+	type read struct {
+		v     health.HashVote
+		voted bool
+	}
+	votes := make([]read, len(voters))
+	var newest int64
+	for i, u := range voters {
+		v, voted := n.intake.hashVote(u)
+		votes[i] = read{v, voted}
+		if voted && !v.Expired {
+			newest = max(newest, v.Number)
+		}
+	}
+	var stale []string
+	for i, u := range voters {
 		hv.Voters = append(hv.Voters, u.Id())
-		ok, at := n.intake.hashVoter(u, w, now)
+		v, voted := votes[i].v, votes[i].voted
+		if voted && (v.Expired || v.Age > 0 || v.Number < newest) {
+			stale = append(stale, u.Id())
+		}
+		ok, at := freshVote(v, voted, w, now)
 		if !ok {
 			continue
 		}
@@ -384,6 +407,9 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 		if !at.IsZero() && (hv.Next.IsZero() || at.Before(hv.Next)) {
 			hv.Next = at
 		}
+	}
+	if selector == "" {
+		n.setHashStale(stale)
 	}
 	if cold {
 		for _, u := range cands {
@@ -394,6 +420,20 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 	}
 	hv.Need = q.Of(len(hv.Hash))
 	return hv
+}
+
+// setHashStale publishes the network-wide voters whose hash vote is below
+// another voter's newest, or aged, or whose socket closed (spec §6.1):
+// routing tries them after the rest, so a half-open socket holds no
+// request.
+func (n *Network) setHashStale(ids []string) {
+	old := n.hashStale.Load()
+	switch {
+	case len(ids) == 0 && old != nil:
+		n.hashStale.Store(nil)
+	case len(ids) > 0 && (old == nil || !slices.Equal(*old, ids)):
+		n.hashStale.Store(&ids)
+	}
 }
 
 // EvmForkDemoted takes the network-wide tracker's minority-fork set: the
