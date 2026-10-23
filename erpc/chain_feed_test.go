@@ -2562,10 +2562,24 @@ func (s *chaosSeed) fetchPanic() {
 	defer evm.TrackerFetchHook.Store(nil)
 	held, joined, failed := s.followTrapped()
 	require.Positive(s.t, joined, "a client joins the tracker's receipts sweep whose check panics (%d blocks held)", held)
+	// A hook marks its block before it panics, and the fetch counts the
+	// panic once it unwinds: with the hook gone, the count catches up.
+	evm.TrackerFetchHook.Store(nil)
 	mu.Lock()
 	n := len(panicked)
 	mu.Unlock()
-	require.GreaterOrEqual(s.t, panics()-before, float64(n), "each panicking fetch is counted")
+	for deadline := time.Now().Add(5 * time.Second); panics()-before < float64(n) && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := panics() - before; got < float64(n) {
+		var fetches []string
+		for _, g := range erpcGoroutines() {
+			if strings.Contains(g, "fetchScheduler") {
+				fetches = append(fetches, g)
+			}
+		}
+		s.t.Fatalf("%g of the %d panicking fetches are counted; tracker fetch goroutines:\n%s", got, n, strings.Join(fetches, "\n\n"))
+	}
 	s.occur(fFetchPanic, fmt.Sprintf("%d receipts checks panicked; %d client requests that joined those sweeps got the block's own receipts; %d got an error", n, joined, failed))
 }
 
