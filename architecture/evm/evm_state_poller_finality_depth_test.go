@@ -10,8 +10,8 @@ import (
 
 // driveBlockTimeEMA settles the tracker's block-time estimate at
 // (tsDelta/numDelta) seconds per block by replaying observations through the
-// same entry point the poller uses. blockTimeMinSamples is 3, so a handful of
-// rounds is plenty.
+// same entry point the poller uses. The first sample lands on the third
+// observation, so a handful of rounds is plenty.
 func driveBlockTimeEMA(t *testing.T, p *EvmStatePoller, up common.Upstream, numDelta, tsDelta int64) {
 	t.Helper()
 	var num int64 = 1_000_000

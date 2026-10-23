@@ -1053,20 +1053,22 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		assert.Equal(t, time.Duration(0), d, "single observation should return 0")
 	})
 
-	t.Run("BelowMinSamples_ReturnsZero", func(t *testing.T) {
+	t.Run("BeforeFirstSample_ReturnsZero", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
 		baseBlock := int64(1000)
 		baseTs := int64(1700000000)
 
-		for i := int64(0); i < 3; i++ {
+		// The first block may sit anywhere in its second: a sample spans the
+		// first two timestamp changes after it (spec §6.7).
+		for i := int64(0); i < 2; i++ {
 			feedBlockDetection(tracker, networkId, netLabel, baseBlock+i, baseTs+i*6)
 		}
 		d := tracker.GetNetworkBlockTime(networkId)
-		assert.Equal(t, time.Duration(0), d, "below minSamples should return 0")
+		assert.Equal(t, time.Duration(0), d, "before the first sample should return 0")
 
-		feedBlockDetection(tracker, networkId, netLabel, baseBlock+3, baseTs+18)
+		feedBlockDetection(tracker, networkId, netLabel, baseBlock+2, baseTs+12)
 		d = tracker.GetNetworkBlockTime(networkId)
-		assert.InDelta(t, 6.0, d.Seconds(), 0.5, "at minSamples should return block time")
+		assert.InDelta(t, 6.0, d.Seconds(), 0.5, "the first sample seeds the block time")
 	})
 
 	t.Run("ConvergesToTrueBlockTime", func(t *testing.T) {
@@ -1179,21 +1181,20 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		assert.InDelta(t, 2.0, d.Seconds(), 0.2, "large block gap should normalize to per-block time")
 	})
 
-	t.Run("ExactlyMinSamplesThreshold", func(t *testing.T) {
+	t.Run("FirstSampleSeedsEMA", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
 		baseBlock := int64(1000)
 		baseTs := int64(1700000000)
 
-		for i := int64(0); i < 3; i++ {
+		for i := int64(0); i < 2; i++ {
 			feedBlockDetection(tracker, networkId, netLabel, baseBlock+i, baseTs+i*3)
 		}
 		assert.Equal(t, time.Duration(0), tracker.GetNetworkBlockTime(networkId),
-			"at minSamples-1 should still return 0")
+			"one timestamp change is no sample yet")
 
-		feedBlockDetection(tracker, networkId, netLabel, baseBlock+3, baseTs+9)
+		feedBlockDetection(tracker, networkId, netLabel, baseBlock+2, baseTs+6)
 		d := tracker.GetNetworkBlockTime(networkId)
-		assert.Greater(t, d, time.Duration(0), "at exactly minSamples should return non-zero")
-		assert.InDelta(t, 3.0, d.Seconds(), 0.1, "should reflect 3s block time")
+		assert.InDelta(t, 3.0, d.Seconds(), 0.1, "the first sample is the block time")
 	})
 
 	t.Run("EMA_AdaptsToNewBlockTime", func(t *testing.T) {
@@ -1232,12 +1233,12 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		assert.Equal(t, time.Duration(0), tracker.GetNetworkBlockTime(networkId))
 
 		feedBlockDetection(tracker, networkId, netLabel, baseBlock+2, baseTs+24)
-		assert.Equal(t, time.Duration(0), tracker.GetNetworkBlockTime(networkId))
+		d := tracker.GetNetworkBlockTime(networkId)
+		assert.Greater(t, d, time.Duration(0), "observation 3: block time should be emitted")
+		assert.InDelta(t, 12.0, d.Seconds(), 0.5)
 
 		feedBlockDetection(tracker, networkId, netLabel, baseBlock+3, baseTs+36)
-		d := tracker.GetNetworkBlockTime(networkId)
-		assert.Greater(t, d, time.Duration(0), "observation 4: block time should be emitted")
-		assert.InDelta(t, 12.0, d.Seconds(), 0.5)
+		assert.InDelta(t, 12.0, tracker.GetNetworkBlockTime(networkId).Seconds(), 0.5)
 	})
 
 	t.Run("EdgeCase_NodeDowntime_BlockGapNormalization", func(t *testing.T) {
