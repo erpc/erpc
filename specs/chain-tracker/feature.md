@@ -410,7 +410,7 @@ Confirmed head:
 
 - The confirmed head is the highest pin with `q.Of(hash voters)` hash votes at or above it and a number at or below the lane's `Latest`. The second clause proves that q upstreams hold N.
 - Cold window: for W after a tracker starts or resets, a voter that is a source and has not reported yet counts as a hash voter, so a cold instance's first header waits for a second.
-- Every transport delivers only up to the confirmed head (§10). Tap lag is measured from it.
+- Every transport delivers only up to the confirmed head (§10). Tap lag is measured from it. A tap waits at most W after the block's first header on its instance, plus the tracker's processing (at most 50 ms): a silent hash voter stops counting exactly at W, and the next pass sends.
 - Catch-up: while a tap is open and `Latest` holds back a pin its hash votes back, the tracker Asks, with a number need, the voters whose number is below it, once per bt and at most 1s apart. Every move of an upstream's counter, from any path or instance, wakes the tracker, so the pin goes out as soon as `Latest` reaches it.
 - `PinFresh` = confirmed ∧ evidence quorum (§6.10) ∧ undisputed (no hash voter on another branch at that height). `ReconfirmPin(n)` returns `PinFresh` only then; otherwise it settles, or returns `PinRateLimited` when the settle cannot run.
 - A hash-proven rollback lowers the shared counters (§14).
@@ -944,7 +944,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | U8 | vendor pushes headers with wrong hashes; integrity off and on | never pinned or sent; integrity on: counted on that upstream only |
 | U9 | truncated receipts, forged log, wrong bloom from one vendor | refetched from the other vendor; logs equal canonical |
 | U10 | primary 40 behind, still advancing | `Latest` unchanged; its hash vote expires; benched after 30s or more |
-| U11 | 2 upstreams only; one head frozen, still answering | taps and `latest` wait for the bench (at most 90s), then flow; gRPC resumes at most once |
+| U11 | 2 upstreams only; one head frozen, still answering | taps and `latest` wait for the bench (at most 90s), then flow; a wait longer than `reorgWindow` blocks ends as §10.2 states: one `newHeads` restart, ws `logs` close `1013` within the spread; gRPC resumes at most once |
 | U12 | one upstream reports +30M, same chainId | `Latest`, `Leader`, lag unchanged; ceiling raised, no short-circuit |
 | U13 | one endpoint answers another chainId | cordoned, out of ceiling; uncordoned after 2 matches 5 min apart |
 | U14 | archive syncing at head+5; `eth_getBlockByNumber(head+3)` | served by the archive in the refusal band, not `null` |
