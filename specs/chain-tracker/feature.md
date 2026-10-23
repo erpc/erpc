@@ -326,9 +326,10 @@ Each concept answers one question and has one home. W (§1) is the one freshness
 - Number age decides the bench: an upstream is benched after `max(30s, 3 × its backed-off cadence)` (§6.8), and readmitted once its counter reaches the lag reference. A wss source's cadence is its poll cadence, so it benches at the 30s floor. A benched upstream is no voter.
 - #1263's stall rules stay beside number age: a head frozen above peers whose newest blocks are a stall window younger is benched by block age, so a frozen pair above the chain never benches the honest pair below it.
 - Hash age decides the hash voters: a voter is a hash voter while its hash age is at most W.
+- Routing reads hash age for sources only: a source whose hash age exceeds W, or whose socket closed, is tried after the other upstreams until it reports again, so a half-open socket holds no client request. An upstream that is no source is never reordered by hash age: its freshness follows the poll schedule, which is no evidence of a fault. Being behind another voter by less than W reorders nobody.
 - A chain that makes no blocks moves no reference: every age stays 0 and nothing reconnects.
 
-Owner: `health/tracker.go`. Readers: the `Head` ballots (bench), the confirmed head (hash voters), the reconciler, tap start, the gRPC stall rule (§10.2). Bounds: one upstream ahead with its peers stalled holds `Latest` until the bench, at most 90s. Keeps: #1263 (one bench rule, 30s floor), #1296 (lag credit for slow polls), #1208 (local samples only).
+Owner: `health/tracker.go`. Readers: the `Head` ballots (bench), the confirmed head (hash voters), routing (sources), the reconciler, tap start, the gRPC stall rule (§10.2). Bounds: one upstream ahead with its peers stalled holds `Latest` until the bench, at most 90s. Keeps: #1263 (one bench rule, 30s floor), #1296 (lag credit for slow polls), #1208 (local samples only).
 
 ### 6.2 Voters: who votes?
 
@@ -411,7 +412,7 @@ Confirmed head:
 - The confirmed head is the highest pin with `q.Of(hash voters)` hash votes at or above it and a number at or below the lane's `Latest`. The second clause proves that q upstreams hold N.
 - Cold window: for W after a tracker starts or resets, a voter that is a source and has not reported yet counts as a hash voter, so a cold instance's first header waits for a second.
 - Every transport delivers only up to the confirmed head (§10). Tap lag is measured from it. A tap waits at most W after the block's first header on its instance, plus the tracker's processing (at most 50 ms): a silent hash voter stops counting exactly at W, and the next pass sends.
-- Catch-up: while a tap is open and `Latest` holds back a pin its hash votes back, the tracker Asks, with a number need, the voters whose number is below it, once per bt and at most 1s apart. Every move of an upstream's counter, from any path or instance, wakes the tracker, so the pin goes out as soon as `Latest` reaches it.
+- Catch-up: while a tap is open and `Latest` holds back a pin its hash votes back, the tracker Asks, with a number need, the voters whose number is below it, once per bt and at most 1s apart. When the hash-vote need holds a pin back for one bt, it polls the voters without a fresh hash vote; each poll is a hash vote (§6.3). Every move of an upstream's counter, from any path or instance, wakes the tracker, so the pin goes out as soon as `Latest` reaches it.
 - `PinFresh` = confirmed ∧ evidence quorum (§6.10) ∧ undisputed (no hash voter on another branch at that height). `ReconfirmPin(n)` returns `PinFresh` only then; otherwise it settles, or returns `PinRateLimited` when the settle cannot run.
 - A hash-proven rollback lowers the shared counters (§14).
 
@@ -608,7 +609,7 @@ From cursor `c`, first matching case:
 - ws `newHeads` is lossy, as in geth: a restart shows as a jump in numbers.
 - `removed:true` logs go to every filter matching now, as geth does. They are the sent logs, from the same receipts.
 - ws writes keep the deadline of 10s per message (`wsWriteDeadline`). The subscription id reaches the client before the first notification.
-- gRPC stall: a Read wait counts toward the 60s only while the confirmed head stands above the cursor, or at its number on another branch, or no hash voter exists. A Read at the head of a chain that makes no blocks waits without end.
+- gRPC stall: a Read wait counts toward the 60s only while the confirmed head stands above the cursor, or at its number on another branch, or no hash voter exists, counted then from the newest hash vote's arrival. A Read at the head of a chain that makes no blocks waits without end.
 - gRPC client rule: a header with a number at or below the last one replaces that number and every number above it.
   - The first resent number is fork point + 1: the same fact as Substreams `BlockUndoSignal.last_valid_block`, with no extra message.
   - Per-block removal (Firehose `STEP_UNDO`, geth `removed:true`) costs one message per dropped block and keeps every sent payload until finality.
