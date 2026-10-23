@@ -27,6 +27,7 @@ import (
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsupstream"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/test/chainsim"
 	"github.com/erpc/erpc/util"
 	"github.com/gorilla/websocket"
 	"github.com/h2non/gock"
@@ -1792,29 +1793,23 @@ func TestWebSocket_EveryUpstreamHeadReachesItsPoller(t *testing.T) {
 // a network where no upstream serves receipts or eth_getLogs refuses logs
 // with ErrNoSubscriptionSource.
 func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
-	tick := func(s *chaosSeed, n int) {
-		for range n {
-			s.chain.tick()
-			time.Sleep(chaosBlock)
-		}
+	start := func(s *chaosSeed) {
+		s.startERPC()
+		s.chain.Start()
 	}
 	receiptsAndLogsCalls := func(s *chaosSeed) (calls int64) {
-		s.chain.mu.Lock()
-		defer s.chain.mu.Unlock()
 		for _, v := range s.vendors {
-			for _, n := range v.receiptsCalls {
-				calls += int64(n)
-			}
-			calls += v.getLogsCalls.Load() + v.logsSubscribe.Load()
+			st := v.Stats()
+			calls += st.ReceiptsCalls + st.LogsCalls + st.LogsSubscribes
 		}
 		return calls
 	}
 
 	t.Run("baseline", func(t *testing.T) {
 		s := newChaosSeed(t, 5, true, chaosOpts{})
-		s.startERPC()
+		start(s)
 		defer s.stopERPC()
-		tick(s, 3)
+		s.blocks(3)
 
 		// No logs tap yet: the feed fetches no receipts, so any receipts,
 		// eth_getLogs or logs subscribe call would come from the bad filter.
@@ -1825,30 +1820,27 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		errObj, ok := resp["error"].(map[string]interface{})
 		require.True(t, ok, "a malformed address fails: %v", resp)
 		assert.EqualValues(t, common.JsonRpcErrorInvalidArgument, errObj["code"])
-		tick(s, 2)
+		s.blocks(2)
 		assert.Zero(t, receiptsAndLogsCalls(s), "a filter that does not parse makes no upstream call")
 
 		sent := telemetry.MetricWebsocketNotificationsSentTotal.WithLabelValues("test_ws", "evm:123", "logs")
 		sentBytes := telemetry.MetricWebsocketNotificationBytesTotal.WithLabelValues("test_ws", "evm:123", "logs")
 		sentBefore, bytesBefore := testutil.ToFloat64(sent), testutil.ToFloat64(sentBytes)
 		s.dialLogs("base")
-		tick(s, 3)
+		s.blocks(3)
 
-		s.chain.mu.Lock()
-		from := s.chain.tipLocked().number + 1
-		plan := []simKind{}
+		plan := []chainsim.Kind{}
 		for range 8 {
-			plan = append(plan, simMatching)
+			plan = append(plan, chainsim.KindMatching)
 		}
-		plan = append(plan, simQuiet)
+		plan = append(plan, chainsim.KindQuiet)
 		for range 4 {
-			plan = append(plan, simMatching)
+			plan = append(plan, chainsim.KindMatching)
 		}
-		s.chain.plan = plan
-		s.chain.mu.Unlock()
-		tick(s, len(plan)+2)
+		from := s.chain.Plan(plan...).Number + 1
+		s.blocks(len(plan) + 2)
 
-		tip := s.chain.tip()
+		tip := s.chain.Tip()
 		require.Eventually(t, func() bool {
 			for _, cl := range s.openLogs() {
 				cl.mu.Lock()
@@ -1860,23 +1852,24 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 			}
 			return true
 		}, 10*time.Second, 20*time.Millisecond, "both clients hold the matching logs of every planned block")
-		require.Len(t, s.openLogs(), len(simFilters))
+		require.Len(t, s.openLogs(), len(chainsim.Filters))
 		for i, kind := range plan {
-			b := s.chain.canonAt(from + uint64(i))
+			b := s.chain.CanonAt(from + uint64(i))
 			require.NotNil(t, b)
-			require.Equal(t, kind, b.kind)
+			require.Equal(t, kind, b.Kind())
 			want := 1
-			if kind == simQuiet {
+			if kind == chainsim.KindQuiet {
 				want = 0
 			}
-			assert.Equal(t, want, s.receiptsCallsOf(b.hash), "receipts calls for block %d (%d of the plan)", b.number, i+1)
-			for f := range simFilters {
-				assert.Equal(t, kind == simMatching, len(b.matched(f)) > 0, "block %d holds logs of filter %d only when planned to match", b.number, f)
+			assert.Equal(t, want, s.receiptsCallsOf(b.Hash), "receipts calls for block %d (%d of the plan)", b.Number, i+1)
+			for f, filter := range chainsim.Filters {
+				matches := slices.ContainsFunc(b.Logs(), filter.Matches)
+				assert.Equal(t, kind == chainsim.KindMatching, matches, "block %d holds logs of filter %d only when planned to match", b.Number, f)
 			}
 		}
 		for _, v := range s.vendors {
-			assert.Zero(t, v.logsSubscribe.Load(), "%s gets no eth_subscribe logs", v.id)
-			assert.Zero(t, v.getLogsCalls.Load(), "%s gets no eth_getLogs while receipts serve", v.id)
+			assert.Zero(t, v.Stats().LogsSubscribes, "%s gets no eth_subscribe logs", v.ID)
+			assert.Zero(t, v.Stats().LogsCalls, "%s gets no eth_getLogs while receipts serve", v.ID)
 		}
 		// The counters move after the write returns, so after the client
 		// may have read it.
@@ -1892,15 +1885,15 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 			notes, size := received()
 			return notes > 0 && float64(notes) == testutil.ToFloat64(sent)-sentBefore && float64(size) == testutil.ToFloat64(sentBytes)-bytesBefore
 		}, 5*time.Second, 20*time.Millisecond, "logs notifications sent and their bytes equal what the clients received")
-		t.Logf("planned blocks %d..%d, head %d", from, from+uint64(len(plan))-1, tip.number)
+		t.Logf("planned blocks %d..%d, head %d", from, from+uint64(len(plan))-1, tip.Number)
 	})
 
 	t.Run("no upstream serves receipts or eth_getLogs", func(t *testing.T) {
 		s := newChaosSeed(t, 6, true, chaosOpts{})
 		s.ignore = []string{"eth_getBlockReceipts", "eth_getLogs"}
-		s.startERPC()
+		start(s)
 		defer s.stopERPC()
-		tick(s, 3)
+		s.blocks(3)
 		conn, rerr := s.subscribeLogs(0)
 		require.Nil(t, conn)
 		require.NotNil(t, rerr, "logs subscribe is refused")
@@ -1916,25 +1909,19 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 	// answer one log short over the first planned blocks: those wait for it
 	// to answer in full, and no client ever holds a block with a log missing.
 	t.Run("integrity on, no upstream serves receipts: logs by eth_getLogs", func(t *testing.T) {
-		s := newChaosSeed(t, 7, true, chaosOpts{integrity: true})
+		s := newChaosSeed(t, 7, true, chaosOpts{integrity: true, matchLast: true})
 		s.ignore = []string{"eth_getBlockReceipts"}
-		s.chain.mu.Lock()
-		s.wsB.capLogs, s.httpB.capLogs, s.chain.matchLast = true, true, true
-		s.chain.mu.Unlock()
-		s.startERPC()
+		s.setVendor("vendor-b", func(f *chainsim.Faults) { f.CapLogs = true })
+		start(s)
 		defer s.stopERPC()
-		tick(s, 3)
+		s.blocks(3)
 		s.dialLogs("fallback")
-		tick(s, 2)
-		from := s.chain.tip().number + 1
-		s.chain.mu.Lock()
-		s.chain.plan = []simKind{simMatching, simMatching, simQuiet, simMatching, simMatching, simMatching, simMatching, simMatching}
-		s.chain.mu.Unlock()
-		tick(s, 5)
-		s.chain.mu.Lock()
-		s.wsB.capLogs, s.httpB.capLogs = false, false
-		s.chain.mu.Unlock()
-		tick(s, 5)
+		s.blocks(2)
+		m, q := chainsim.KindMatching, chainsim.KindQuiet
+		from := s.chain.Plan(m, m, q, m, m, m, m, m).Number + 1
+		s.blocks(5)
+		s.setVendor("vendor-b", func(f *chainsim.Faults) { f.CapLogs = false })
+		s.blocks(5)
 		require.Eventually(t, func() bool {
 			for _, cl := range s.openLogs() {
 				cl.mu.Lock()
@@ -1946,22 +1933,22 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 			}
 			return true
 		}, 10*time.Second, 20*time.Millisecond, "both clients hold the matching logs of every planned block, none missing")
-		require.Len(t, s.openLogs(), len(simFilters))
+		require.Len(t, s.openLogs(), len(chainsim.Filters))
 		for _, cl := range s.openLogs() {
 			cl.mu.Lock()
 			assert.Empty(t, cl.problems, "logs client %s", cl.name)
 			cl.mu.Unlock()
 		}
-		assert.Positive(t, s.wsB.capped.Load()+s.httpB.capped.Load(), "vendor-b cut answers short")
-		assert.Positive(t, s.wsA.getLogsCalls.Load()+s.httpA.getLogsCalls.Load(), "vendor-a answers eth_getLogs by blockHash")
+		assert.Positive(t, s.wsB.Stats().CappedLogs+s.httpB.Stats().CappedLogs, "vendor-b cut answers short")
+		assert.Positive(t, s.wsA.Stats().LogsCalls+s.httpA.Stats().LogsCalls, "vendor-a answers eth_getLogs by blockHash")
 	})
 
 	t.Run("integrity on, one vendor serves eth_getLogs and none receipts", func(t *testing.T) {
 		s := newChaosSeed(t, 8, true, chaosOpts{integrity: true, oneVendor: true})
 		s.ignore = []string{"eth_getBlockReceipts"}
-		s.startERPC()
+		start(s)
 		defer s.stopERPC()
-		tick(s, 3)
+		s.blocks(3)
 		conn, rerr := s.subscribeLogs(0)
 		require.Nil(t, conn)
 		require.NotNil(t, rerr, "logs subscribe is refused: one vendor's logs cannot be compared")

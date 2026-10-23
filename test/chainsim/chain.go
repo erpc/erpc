@@ -1,10 +1,12 @@
 package chainsim
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,6 +32,15 @@ type Config struct {
 	History int
 	// NoFinalized: the chain has no finalized tag; every vendor refuses it.
 	NoFinalized bool
+	// BadBaseFee: every block's base fee is 1000 + its number, which no
+	// parent derives (baseFeeDerivation).
+	BadBaseFee bool
+	// PendingNoise drops a quarter of the pending-transaction pushes and
+	// sends a quarter twice.
+	PendingNoise bool
+	// MatchLast: every matching block ends with a log both filters match,
+	// in a transaction with another log, so Faults.CapLogs can cut it.
+	MatchLast bool
 }
 
 // Chain is one simulated chain: its canonical branch, every block ever
@@ -40,25 +51,48 @@ type Chain struct {
 
 	mu      sync.Mutex
 	rng     *rand.Rand
+	noise   *rand.Rand
 	minted  uint64
 	canon   []*Block
 	byHash  map[Hash]*Block
 	halted  bool
 	vendors []*Vendor
 	forks   map[*Fork]bool
+	// plan, while not empty, is the kind of the next blocks minted.
+	plan []Kind
+	// pushed are the transactions a vendor pushed as pending.
+	pushed map[Hash]bool
+	// trapHold, while set, holds each block's first receipts call; traps
+	// are the calls held since it was set.
+	trapHold time.Duration
+	traps    map[Hash]*Trap
+	// failHold, while set, makes the next canonical matching block failing,
+	// whose receipts and logs calls fail until failUntil.
+	failHold  time.Duration
+	failing   *Block
+	failUntil time.Time
 
-	stop chan struct{}
-	done chan struct{}
+	stop     chan struct{}
+	stopOnce sync.Once
+	started  atomic.Bool
+	done     chan struct{}
 }
 
 // Fork is a branch some vendors serve instead of the canonical chain; it
 // gains a block every tick.
 type Fork struct{ tip *Block }
 
+// Trap is one block's held first receipts call.
+type Trap struct {
+	AnsweredAt time.Time // zero while held
+	During     int       // other receipts calls for the block while it was held
+}
+
 // NewChain mints the history; Start makes blocks.
 func NewChain(cfg Config) *Chain {
-	c := &Chain{cfg: cfg, rng: rand.New(rand.NewPCG(cfg.Seed, uint64(cfg.ChainID))), byHash: make(map[Hash]*Block),
-		forks: make(map[*Fork]bool), stop: make(chan struct{}), done: make(chan struct{})}
+	c := &Chain{cfg: cfg, rng: rand.New(rand.NewPCG(cfg.Seed, uint64(cfg.ChainID))), noise: rand.New(rand.NewPCG(cfg.Seed, uint64(cfg.ChainID)+1)),
+		byHash: make(map[Hash]*Block), forks: make(map[*Fork]bool), pushed: make(map[Hash]bool), traps: make(map[Hash]*Trap),
+		stop: make(chan struct{}), done: make(chan struct{})}
 	history := cfg.History
 	if history == 0 {
 		history = HistoryBlocks
@@ -79,8 +113,9 @@ func (c *Chain) ID() int64 { return c.cfg.ChainID }
 // BlockTime is the chain's block time.
 func (c *Chain) BlockTime() time.Duration { return c.cfg.BlockTime }
 
-// Start makes a block every block time until Close.
+// Start makes a block every block time until Stop or Close.
 func (c *Chain) Start() {
+	c.started.Store(true)
 	go func() {
 		defer close(c.done)
 		t := time.NewTicker(c.cfg.BlockTime)
@@ -96,13 +131,18 @@ func (c *Chain) Start() {
 	}()
 }
 
+// Stop ends block production and waits for the tick in progress; vendors
+// keep serving.
+func (c *Chain) Stop() {
+	c.stopOnce.Do(func() { close(c.stop) })
+	if c.started.Load() {
+		<-c.done
+	}
+}
+
 // Close stops block production and every vendor.
 func (c *Chain) Close() {
-	select {
-	case <-c.stop:
-	default:
-		close(c.stop)
-	}
+	c.Stop()
 	c.mu.Lock()
 	vs := slices.Clone(c.vendors)
 	c.mu.Unlock()
@@ -117,20 +157,35 @@ func (c *Chain) mintLocked(parent *Block, number uint64, at time.Time, minority 
 	if parent != nil && ts < parent.Time {
 		ts = parent.Time
 	}
-	var k kind
-	switch r := c.rng.IntN(8); {
-	case r == 0:
-		k = kindEmpty
-	case r <= 2:
-		k = kindQuiet
-	default:
-		k = kindMatching
+	var k Kind
+	if len(c.plan) > 0 {
+		k, c.plan = c.plan[0], c.plan[1:]
+	} else {
+		switch r := c.rng.IntN(8); {
+		case r == 0:
+			k = KindEmpty
+		case r <= 2:
+			k = KindQuiet
+		default:
+			k = KindMatching
+		}
 	}
 	txs := content(c.rng, k)
+	if c.cfg.MatchLast && k == KindMatching {
+		last := len(txs) - 1
+		txs[last] = append(txs[last][:1], logSpec{addr: 0, topic: 1})
+	}
 	tag := fmt.Sprintf("%d/%d", c.cfg.Seed, c.minted)
-	hash, raw := header(c.cfg.ChainID, parent, number, ts, tag, txs, c.cfg.HeaderPad)
-	b := &Block{Number: number, Hash: hash, Parent: parent, Time: ts, MintedAt: time.Now(), minority: minority, tag: tag, txs: txs, raw: raw}
+	baseFee := int64(7)
+	if c.cfg.BadBaseFee {
+		baseFee = 1000 + int64(number)
+	}
+	hash, raw := header(c.cfg.ChainID, parent, number, ts, tag, txs, c.cfg.HeaderPad, baseFee)
+	b := &Block{Number: number, Hash: hash, Parent: parent, Time: ts, MintedAt: time.Now(), minority: minority, kind: k, tag: tag, txs: txs, raw: raw}
 	c.byHash[hash] = b
+	if c.failHold > 0 && k == KindMatching && !minority {
+		c.failing, c.failUntil, c.failHold = b, b.MintedAt.Add(c.failHold), 0
+	}
 	return b
 }
 
@@ -142,6 +197,15 @@ func (c *Chain) canonAtLocked(n uint64) *Block {
 		return nil
 	}
 	return c.canon[n-base]
+}
+
+// timeAtLocked is the time of a block at height n off the canonical chain:
+// the canonical block's at n, or, above the head, when the chain reaches n.
+func (c *Chain) timeAtLocked(n uint64) time.Time {
+	if b := c.canonAtLocked(n); b != nil {
+		return time.Unix(int64(b.Time), 0)
+	}
+	return time.Now().Add(time.Duration(int64(n)-int64(c.tipLocked().Number)) * c.cfg.BlockTime)
 }
 
 // Tip is the canonical head.
@@ -184,6 +248,13 @@ func (c *Chain) CanonicalLogs(f Filter, from, to uint64) map[LogKey]Log {
 	return out
 }
 
+// Pushed reports whether a vendor pushed tx as a pending transaction.
+func (c *Chain) Pushed(tx Hash) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pushed[tx]
+}
+
 // Halt stops or resumes canonical block production.
 func (c *Chain) Halt(halted bool) {
 	c.mu.Lock()
@@ -191,22 +262,61 @@ func (c *Chain) Halt(halted bool) {
 	c.mu.Unlock()
 }
 
+// Plan makes the next blocks minted, on any branch, of these kinds, ahead
+// of the kinds planned before. It returns the canonical head as planned:
+// while only ticks mint, the planned blocks follow it.
+func (c *Chain) Plan(kinds ...Kind) (head *Block) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.plan = append(slices.Clone(kinds), c.plan...)
+	return c.tipLocked()
+}
+
+// Append mints the next canonical block at once, of kind k, with its header
+// JSON edited by edit; its hash stays the unedited header's.
+func (c *Chain) Append(k Kind, edit func(fields map[string]json.RawMessage)) *Block {
+	c.mu.Lock()
+	c.plan = append([]Kind{k}, c.plan...)
+	tip := c.tipLocked()
+	b := c.mintLocked(tip, tip.Number+1, time.Now(), false)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(b.raw, &fields); err != nil {
+		panic(err)
+	}
+	edit(fields)
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		panic(err)
+	}
+	b.raw = raw
+	c.canon = append(c.canon, b)
+	c.mu.Unlock()
+	c.refresh()
+	return b
+}
+
+// Orphan mints a minority child of parent that no vendor serves.
+func (c *Chain) Orphan(parent *Block) *Block {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.mintLocked(parent, parent.Number+1, time.Now(), true)
+}
+
 // tick adds a canonical block unless the chain halted, grows every fork,
 // and lets each vendor follow; wss vendors first push the new block's
 // transactions as pending ones.
 func (c *Chain) tick() {
 	c.mu.Lock()
-	now := time.Now()
 	var pushes []push
 	if !c.halted {
-		b := c.mintLocked(c.tipLocked(), c.tipLocked().Number+1, now, false)
+		b := c.mintLocked(c.tipLocked(), c.tipLocked().Number+1, time.Now(), false)
 		c.canon = append(c.canon, b)
 		for _, v := range c.vendors {
 			pushes = v.pendingPushesLocked(b, pushes)
 		}
 	}
 	for f := range c.forks {
-		f.tip = c.mintLocked(f.tip, f.tip.Number+1, now, true)
+		f.tip = c.mintLocked(f.tip, f.tip.Number+1, c.timeAtLocked(f.tip.Number+1), true)
 	}
 	c.mu.Unlock()
 	writePushes(pushes)
@@ -233,18 +343,41 @@ func (c *Chain) Reorg(depth int) (old []*Block, tip *Block) {
 	return old, tip
 }
 
-// StartFork moves vs onto a minority branch off the canonical head's
-// parent; it grows every tick until EndFork.
-func (c *Chain) StartFork(vs ...*Vendor) *Fork {
+// StartFork moves vs onto a minority branch that leaves the canonical chain
+// depth blocks below its head and runs length blocks from there; it grows
+// every tick until EndFork.
+func (c *Chain) StartFork(depth, length int, vs ...*Vendor) *Fork {
+	c.mu.Lock()
+	f := c.forkLocked(c.canonAtLocked(c.tipLocked().Number-uint64(depth)), length, vs)
+	c.mu.Unlock()
+	c.refresh()
+	return f
+}
+
+// StartSplit mints the next canonical block and, for vs, a minority sibling
+// of it in one step, so vs never serve the canonical one; the sibling's
+// branch grows every tick until EndFork.
+func (c *Chain) StartSplit(vs ...*Vendor) (canon *Block, f *Fork) {
 	c.mu.Lock()
 	tip := c.tipLocked()
-	f := &Fork{tip: c.mintLocked(tip.Parent, tip.Number, time.Now(), true)}
+	canon = c.mintLocked(tip, tip.Number+1, time.Now(), false)
+	c.canon = append(c.canon, canon)
+	f = c.forkLocked(tip, 1, vs)
+	c.mu.Unlock()
+	c.refresh()
+	return canon, f
+}
+
+func (c *Chain) forkLocked(base *Block, length int, vs []*Vendor) *Fork {
+	b := base
+	for range length {
+		b = c.mintLocked(b, b.Number+1, c.timeAtLocked(b.Number+1), true)
+	}
+	f := &Fork{tip: b}
 	c.forks[f] = true
 	for _, v := range vs {
 		v.fork = f
 	}
-	c.mu.Unlock()
-	c.refresh()
 	return f
 }
 
@@ -259,6 +392,48 @@ func (c *Chain) EndFork(f *Fork) {
 	}
 	c.mu.Unlock()
 	c.refresh()
+}
+
+// SetTrap holds the first eth_getBlockReceipts call of each block with
+// transactions, on any vendor, for hold, then answers it with zero
+// logsBlooms; 0 ends it. Setting it forgets the calls held before.
+func (c *Chain) SetTrap(hold time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if hold > 0 {
+		c.traps = make(map[Hash]*Trap)
+	}
+	c.trapHold = hold
+}
+
+// Traps are the receipts calls SetTrap held, by block hash.
+func (c *Chain) Traps() map[Hash]Trap {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[Hash]Trap, len(c.traps))
+	for h, tr := range c.traps {
+		out[h] = *tr
+	}
+	return out
+}
+
+// FailNextMatching makes the next canonical block with matching logs fail
+// every receipts and logs call on every vendor for hold after it is minted.
+func (c *Chain) FailNextMatching(hold time.Duration) {
+	c.mu.Lock()
+	c.failHold, c.failing = hold, nil
+	c.mu.Unlock()
+}
+
+// Failing is the block FailNextMatching chose, nil until it is minted.
+func (c *Chain) Failing() *Block {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.failing
+}
+
+func (c *Chain) failingLocked(h Hash) bool {
+	return c.failing != nil && c.failing.Hash == h && time.Now().Before(c.failUntil)
 }
 
 // refresh moves each vendor's tip to what its view serves and pushes each

@@ -98,12 +98,14 @@ func (l Log) json() map[string]interface{} {
 	}
 }
 
-type kind uint8
+// Kind is what a block holds: no transactions, logs neither filter
+// matches, or logs both filters match.
+type Kind uint8
 
 const (
-	kindEmpty kind = iota
-	kindQuiet
-	kindMatching
+	KindEmpty Kind = iota
+	KindQuiet
+	KindMatching
 )
 
 type logSpec struct{ addr, topic int }
@@ -115,8 +117,8 @@ type Block struct {
 	Parent   *Block // nil for the first history block
 	Time     uint64
 	MintedAt time.Time // when it became a vendor's view: the start of its delivery latency
-
 	minority bool
+	kind     Kind
 	tag      string
 	txs      [][]logSpec
 	raw      json.RawMessage
@@ -133,8 +135,14 @@ func (b *Block) ParentHash() Hash {
 // Minority reports whether the block was minted on a minority fork.
 func (b *Block) Minority() bool { return b.minority }
 
+// Kind is what the block holds.
+func (b *Block) Kind() Kind { return b.kind }
+
 // TxCount is how many transactions the block holds.
 func (b *Block) TxCount() int { return len(b.txs) }
+
+// Receipts are the block's receipts as an honest vendor answers them.
+func (b *Block) Receipts() []map[string]interface{} { return b.receipts(false, 0, false) }
 
 // JSON is the header as eth_getBlockByNumber(n, false) answers it.
 func (b *Block) JSON() json.RawMessage { return b.raw }
@@ -187,24 +195,48 @@ func (b *Block) receipts(badBloom bool, drop int, forge bool) []map[string]inter
 	return out
 }
 
+// lastLogCovered reports whether the block's other logs carry its last
+// log's address, topic0 and transaction topic, so the bloom of the logs
+// without it is the header's.
+func (b *Block) lastLogCovered() bool {
+	if len(b.txs) == 0 {
+		return false
+	}
+	lastTx := b.txs[len(b.txs)-1]
+	if len(lastTx) < 2 {
+		return false
+	}
+	last := lastTx[len(lastTx)-1]
+	addr, topic := false, false
+	for i, tx := range b.txs {
+		for k, l := range tx {
+			if i == len(b.txs)-1 && k == len(tx)-1 {
+				continue
+			}
+			addr, topic = addr || l.addr == last.addr, topic || l.topic == last.topic
+		}
+	}
+	return addr && topic
+}
+
 // ForgedData is the data of a forged log: no block of any chain holds it.
 const ForgedData = "0xbad0"
 
-func content(r *rand.Rand, k kind) [][]logSpec {
-	if k == kindEmpty {
+func content(r *rand.Rand, k Kind) [][]logSpec {
+	if k == KindEmpty {
 		return nil
 	}
 	txs := make([][]logSpec, 12+r.IntN(5))
 	for i := range txs {
 		for range 1 + r.IntN(2) {
 			l := logSpec{addr: r.IntN(len(Addrs)), topic: r.IntN(len(Topics))}
-			if k == kindQuiet {
+			if k == KindQuiet {
 				l = logSpec{addr: 2 + r.IntN(2), topic: []int{0, 2}[r.IntN(2)]}
 			}
 			txs[i] = append(txs[i], l)
 		}
 	}
-	if k == kindMatching {
+	if k == KindMatching {
 		txs[0][0] = logSpec{addr: 0, topic: 1}
 	}
 	return txs
@@ -246,7 +278,7 @@ func receiptsRoot(tag string, txs [][]logSpec) Hash {
 
 // header builds a block whose header hashes to its hash (blockHashRecompute)
 // and whose logsBloom is the OR of its receipts' blooms.
-func header(chainID int64, parent *Block, number uint64, ts uint64, tag string, txs [][]logSpec, pad int) (Hash, json.RawMessage) {
+func header(chainID int64, parent *Block, number uint64, ts uint64, tag string, txs [][]logSpec, pad int, baseFee int64) (Hash, json.RawMessage) {
 	var ph Hash
 	if parent != nil {
 		ph = parent.Hash
@@ -267,7 +299,7 @@ func header(chainID int64, parent *Block, number uint64, ts uint64, tag string, 
 		GasLimit:    30_000_000,
 		Time:        ts,
 		Extra:       append(fmt.Appendf(nil, "%d/%s", chainID, tag), make([]byte, pad)...),
-		BaseFee:     big.NewInt(7),
+		BaseFee:     big.NewInt(baseFee),
 	}
 	if len(txs) > 0 {
 		hdr.TxHash = sha256.Sum256(fmt.Appendf(nil, "txs/%d/%s", chainID, tag))
@@ -294,8 +326,8 @@ func header(chainID int64, parent *Block, number uint64, ts uint64, tag string, 
 	return hash, raw
 }
 
-// forgeHash is raw with a hash it does not hash to.
-func forgeHash(raw json.RawMessage) json.RawMessage {
+// ForgeHash is raw with a hash it does not hash to.
+func ForgeHash(raw json.RawMessage) json.RawMessage {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		panic(err)
@@ -306,9 +338,9 @@ func forgeHash(raw json.RawMessage) json.RawMessage {
 	return out
 }
 
-// withNumber is raw with its number field set to n: a header that claims
+// WithNumber is raw with its number field set to n: a header that claims
 // a height it is not at.
-func withNumber(raw json.RawMessage, n uint64) json.RawMessage {
+func WithNumber(raw json.RawMessage, n uint64) json.RawMessage {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		panic(err)

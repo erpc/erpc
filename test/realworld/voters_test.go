@@ -307,7 +307,7 @@ func u18() spec {
 			}
 		}
 		s.blocks(10)
-		f := s.chain.StartFork(s.vendors[forked])
+		f := s.chain.StartFork(1, 1, s.vendors[forked])
 		at := time.Now()
 		s.logf("%s, ranked first on pod-1, on a minority fork", s.upstream(forked))
 		done := make(chan struct{})

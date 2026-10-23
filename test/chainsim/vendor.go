@@ -20,12 +20,17 @@ import (
 // Faults are a vendor's app-level faults; the zero value is a healthy node.
 type Faults struct {
 	Down          bool          // HTTP 503, ws upgrades refused, open sockets closed
+	Held          bool          // block and head answers wait until it clears; newHeads pushes nothing meanwhile, then its head
 	Lag           uint64        // serves the canonical block this far below the head
 	Frozen        bool          // head stops moving; still answers what it holds
 	WrongChainID  bool          // eth_chainId answers another chain
 	ChainIDHeld   bool          // eth_chainId answers wait until it clears
 	NullHeld      bool          // null for blocks by number or hash, even below its head
 	WrongHashes   bool          // newHeads pushes carry a hash the header does not hash to
+	NullReceipts  bool          // eth_getBlockReceipts answers null
+	ReceiptsDown  bool          // eth_getBlockReceipts answers -32603
+	LogsDown      bool          // eth_getLogs answers -32603
+	CapLogs       bool          // eth_getLogs one log short where the bloom and logIndexes hide it (lastLogCovered)
 	TruncReceipts bool          // receipts without their last 10
 	ForgedLog     bool          // receipts whose first log's data is forged
 	WrongBloom    bool          // receipts whose logsBloom is zero
@@ -35,6 +40,8 @@ type Faults struct {
 	NoNewHeads    bool          // eth_subscribe newHeads answers unsupported
 	RefuseLatest  bool          // eth_getBlockByNumber(latest) answers an error
 	Slow          time.Duration // every answer waits this long
+	SlowReceipts  time.Duration // receipts and logs answers wait this long more
+	SlowHistory   time.Duration // answers by hash, and by number below its head, wait this long more
 	SilentHeads   bool          // newHeads subscriptions stay open and push nothing
 	SilentPending bool          // newPendingTransactions subscriptions push nothing
 	Ahead         uint64        // eth_blockNumber and the latest tag claim a head this far above its own
@@ -45,8 +52,10 @@ type Faults struct {
 // Stats are what a vendor counted since it started.
 type Stats struct {
 	Connects, HeadsSubscribes, PendingSubscribes, LogsSubscribes, Throttled int64
-	// ReceiptsCalls counts eth_getBlockReceipts and eth_getLogs calls.
-	ReceiptsCalls int64
+	ReceiptsCalls, LogsCalls                                                int64 // eth_getBlockReceipts, eth_getLogs calls
+	SlowAnswers                                                             int64 // answers a Slow fault delayed
+	ForgedHeads                                                             int64 // heads pushed with a wrong hash, once per head
+	CappedLogs                                                              int64 // eth_getLogs answers CapLogs cut short
 }
 
 // Vendor is one simulated node of a chain, on its own listener.
@@ -65,13 +74,21 @@ type Vendor struct {
 	faults Faults
 	fork   *Fork
 	conns  map[*wsConn]bool
-	// held closes when ChainIDHeld clears; nil while it is off.
-	held chan struct{}
+	// held closes when ChainIDHeld clears, blocksHeld when Held clears;
+	// each nil while its fault is off.
+	held, blocksHeld chan struct{}
+	// heldTip is the tip when Held was set: a release pushes a tip that
+	// moved since.
+	heldTip *Block
 	// numberCalls are when eth_getBlockByNumber asked each explicit number.
 	numberCalls map[uint64][]time.Time
+	// receipts counts eth_getBlockReceipts calls per block; served are the
+	// blocks answered with their receipts in full.
+	receipts map[Hash]int
+	served   map[Hash]bool
 
 	connects, headsSubs, pendingSubs, logsSubs, throttled, receiptsCalls atomic.Int64
-	subSeq                                                               atomic.Int64
+	logsCalls, slowAnswers, forgedHeads, cappedLogs, subSeq              atomic.Int64
 }
 
 type wsConn struct {
@@ -119,13 +136,17 @@ type push struct {
 	res  interface{}
 }
 
+func notification(sub string, res interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"jsonrpc": "2.0", "method": "eth_subscription",
+		"params": map[string]interface{}{"subscription": sub, "result": res},
+	}
+}
+
 func writePushes(ps []push) {
 	for _, p := range ps {
 		select {
-		case p.conn.pushes <- map[string]interface{}{
-			"jsonrpc": "2.0", "method": "eth_subscription",
-			"params": map[string]interface{}{"subscription": p.sub, "result": p.res},
-		}:
+		case p.conn.pushes <- notification(p.sub, p.res):
 		default:
 			_ = p.conn.c.Close()
 		}
@@ -140,7 +161,7 @@ func (c *Chain) AddVendor(id, name string, ws bool) (*Vendor, error) {
 		return nil, err
 	}
 	v := &Vendor{ID: id, Name: name, WS: ws, chain: c, ln: ln, seen: make(map[Hash]bool), conns: make(map[*wsConn]bool),
-		numberCalls: make(map[uint64][]time.Time)}
+		numberCalls: make(map[uint64][]time.Time), receipts: make(map[Hash]int), served: make(map[Hash]bool)}
 	v.srv = &http.Server{Handler: v, ReadHeaderTimeout: 10 * time.Second}
 	c.mu.Lock()
 	v.setTipLocked(c.tipLocked())
@@ -169,16 +190,32 @@ func (v *Vendor) Faults() Faults {
 }
 
 // SetFaults replaces the vendor's faults; its view follows at once.
-func (v *Vendor) SetFaults(f Faults) {
+func (v *Vendor) SetFaults(f Faults) { v.Update(func(old *Faults) { *old = f }) }
+
+// Update changes some of the vendor's faults in one step; its view follows
+// at once.
+func (v *Vendor) Update(fn func(*Faults)) {
 	c := v.chain
 	c.mu.Lock()
-	v.faults = f
+	fn(&v.faults)
+	f := v.faults
 	switch {
 	case f.ChainIDHeld && v.held == nil:
 		v.held = make(chan struct{})
 	case !f.ChainIDHeld && v.held != nil:
 		close(v.held)
 		v.held = nil
+	}
+	var pushes []push
+	switch {
+	case f.Held && v.blocksHeld == nil:
+		v.blocksHeld, v.heldTip = make(chan struct{}), v.tip
+	case !f.Held && v.blocksHeld != nil:
+		close(v.blocksHeld)
+		v.blocksHeld = nil
+		if v.tip != v.heldTip {
+			pushes = v.headPushesLocked(pushes)
+		}
 	}
 	var drop []*wsConn
 	if f.Down {
@@ -190,14 +227,8 @@ func (v *Vendor) SetFaults(f Faults) {
 	for _, w := range drop {
 		_ = w.c.Close()
 	}
+	writePushes(pushes)
 	c.refresh()
-}
-
-// Update changes some of the vendor's faults.
-func (v *Vendor) Update(fn func(*Faults)) {
-	f := v.Faults()
-	fn(&f)
-	v.SetFaults(f)
 }
 
 // Head is the block the vendor serves as latest.
@@ -224,7 +255,44 @@ func (v *Vendor) NumberCalls(n uint64, from, to time.Time) int {
 // Stats are the vendor's counters.
 func (v *Vendor) Stats() Stats {
 	return Stats{Connects: v.connects.Load(), HeadsSubscribes: v.headsSubs.Load(), PendingSubscribes: v.pendingSubs.Load(),
-		LogsSubscribes: v.logsSubs.Load(), Throttled: v.throttled.Load(), ReceiptsCalls: v.receiptsCalls.Load()}
+		LogsSubscribes: v.logsSubs.Load(), Throttled: v.throttled.Load(), ReceiptsCalls: v.receiptsCalls.Load(),
+		LogsCalls: v.logsCalls.Load(), SlowAnswers: v.slowAnswers.Load(), ForgedHeads: v.forgedHeads.Load(), CappedLogs: v.cappedLogs.Load()}
+}
+
+// ReceiptsOf are the eth_getBlockReceipts calls the vendor got for block h,
+// and whether it answered one with the block's receipts in full.
+func (v *Vendor) ReceiptsOf(h Hash) (calls int, served bool) {
+	v.chain.mu.Lock()
+	defer v.chain.mu.Unlock()
+	return v.receipts[h], v.served[h]
+}
+
+// Push writes raws, in order, on each of the vendor's newHeads
+// subscriptions at once, past its push queue, as a node that floods its
+// subscribers. It returns how many messages it wrote.
+func (v *Vendor) Push(raws ...json.RawMessage) int {
+	type sub struct {
+		w  *wsConn
+		id string
+	}
+	var subs []sub
+	v.chain.mu.Lock()
+	for w := range v.conns {
+		for id := range w.heads {
+			subs = append(subs, sub{w, id})
+		}
+	}
+	v.chain.mu.Unlock()
+	n := 0
+	for _, s := range subs {
+		for _, raw := range raws {
+			if s.w.write(notification(s.id, raw)) != nil {
+				break
+			}
+			n++
+		}
+	}
+	return n
 }
 
 func (v *Vendor) close() {
@@ -274,30 +342,54 @@ func (v *Vendor) followLocked(out []push) []push {
 		return out
 	}
 	v.setTipLocked(target)
+	if v.faults.Held {
+		return out
+	}
+	return v.headPushesLocked(out)
+}
+
+// headPushesLocked adds the pushes of the vendor's tip on its newHeads
+// subscriptions.
+func (v *Vendor) headPushesLocked(out []push) []push {
 	if !v.WS || v.faults.Down || v.faults.SilentHeads {
 		return out
 	}
 	raw := v.tip.JSON()
 	if v.faults.WrongHashes {
-		raw = forgeHash(raw)
+		raw = ForgeHash(raw)
 	}
+	n := len(out)
 	for w := range v.conns {
 		for sub := range w.heads {
 			out = append(out, push{w, sub, raw})
 		}
 	}
+	if v.faults.WrongHashes && len(out) > n {
+		v.forgedHeads.Add(1)
+	}
 	return out
 }
 
+// pendingPushesLocked adds b's transactions on the vendor's pending
+// subscriptions; with PendingNoise a quarter are dropped and a quarter
+// sent twice.
 func (v *Vendor) pendingPushesLocked(b *Block, out []push) []push {
 	if !v.WS || v.faults.Down || v.faults.SilentPending {
 		return out
 	}
+	c := v.chain
 	for i := range b.txs {
-		h := txHash(b.Hash, i).Hex()
+		h := txHash(b.Hash, i)
 		for w := range v.conns {
 			for sub := range w.pending {
-				out = append(out, push{w, sub, h})
+				times := 1
+				if c.cfg.PendingNoise {
+					times = []int{0, 2, 1, 1}[c.noise.IntN(4)]
+				}
+				for range times {
+					out = append(out, push{w, sub, h.Hex()})
+					c.pushed[h] = true
+				}
 			}
 		}
 	}
@@ -482,17 +574,27 @@ func (v *Vendor) byNumberLocked(n uint64) *Block {
 
 // answer serves one JSON-RPC call from the vendor's view and faults.
 func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcError) {
-	if slow := v.Faults().Slow; slow > 0 {
-		time.Sleep(slow)
+	if method == "eth_getBlockReceipts" {
+		if res, ok := v.trapped(params); ok {
+			return res, nil
+		}
+	}
+	if d := v.delay(method, params); d > 0 {
+		v.slowAnswers.Add(1)
+		time.Sleep(d)
 	}
 	c := v.chain
-	if method == "eth_chainId" {
-		c.mu.Lock()
-		held := v.held
-		c.mu.Unlock()
-		if held != nil {
-			<-held
-		}
+	c.mu.Lock()
+	var held chan struct{}
+	switch method {
+	case "eth_chainId":
+		held = v.held
+	case "eth_blockNumber", "eth_getBlockByNumber", "eth_getBlockByHash":
+		held = v.blocksHeld
+	}
+	c.mu.Unlock()
+	if held != nil {
+		<-held
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -538,7 +640,7 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 				return nil, &rpcError{-32000, "latest block unavailable"}
 			}
 			if f.Ahead > 0 {
-				return withNumber(v.tip.JSON(), v.tip.Number+f.Ahead), nil
+				return WithNumber(v.tip.JSON(), v.tip.Number+f.Ahead), nil
 			}
 			b = v.tip
 		case "finalized", "safe":
@@ -573,25 +675,35 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		return b.JSON(), nil
 	case "eth_getBlockReceipts":
 		v.receiptsCalls.Add(1)
-		if f.NoReceipts {
-			return nil, &rpcError{-32601, "the method eth_getBlockReceipts does not exist/is not available"}
-		}
 		hs, _ := firstString(params)
 		h, ok := parseHash(hs)
 		if !ok {
 			return nil, &rpcError{-32602, "invalid block hash"}
 		}
+		v.receipts[h]++
+		switch {
+		case f.NoReceipts:
+			return nil, &rpcError{-32601, "the method eth_getBlockReceipts does not exist/is not available"}
+		case f.ReceiptsDown || c.failingLocked(h):
+			return nil, &rpcError{-32603, "receipts unavailable"}
+		}
 		b := c.byHash[h]
-		if b == nil || !v.seen[h] || f.NullHeld {
+		if b == nil || !v.seen[h] || f.NullHeld || f.NullReceipts {
 			return nil, nil
 		}
 		drop := 0
 		if f.TruncReceipts {
 			drop = 10
 		}
+		if drop == 0 && !f.WrongBloom && !f.ForgedLog {
+			v.served[h] = true
+		}
 		return b.receipts(f.WrongBloom, drop, f.ForgedLog), nil
 	case "eth_getLogs":
-		v.receiptsCalls.Add(1)
+		v.logsCalls.Add(1)
+		if f.LogsDown {
+			return nil, &rpcError{-32603, "logs unavailable"}
+		}
 		return v.logsLocked(params)
 	case "eth_getBlockTransactionCountByNumber":
 		tag, _ := firstString(params)
@@ -606,6 +718,58 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		return hexU(uint64(len(b.txs))), nil
 	}
 	return "0x0", nil
+}
+
+// delay is how long the vendor's Slow faults hold an answer to method.
+func (v *Vendor) delay(method string, params []interface{}) time.Duration {
+	c := v.chain
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	f := v.faults
+	d := f.Slow
+	switch method {
+	case "eth_getBlockReceipts", "eth_getLogs":
+		d += f.SlowReceipts
+	case "eth_getBlockByHash":
+		d += f.SlowHistory
+	case "eth_getBlockByNumber":
+		tag, _ := firstString(params)
+		if n, ok := parseNumber(tag); ok && n < v.tip.Number {
+			d += f.SlowHistory
+		}
+	}
+	return d
+}
+
+// trapped answers a block's first receipts call while the chain's trap is
+// set: after the trap's hold, with zero logsBlooms.
+func (v *Vendor) trapped(params []interface{}) (interface{}, bool) {
+	hs, _ := firstString(params)
+	h, ok := parseHash(hs)
+	if !ok {
+		return nil, false
+	}
+	c := v.chain
+	c.mu.Lock()
+	tr, b := c.traps[h], c.byHash[h]
+	if tr != nil && tr.AnsweredAt.IsZero() {
+		tr.During++
+	}
+	if c.trapHold == 0 || tr != nil || b == nil || len(b.txs) == 0 || !v.seen[h] || v.faults.Down || v.faults.NoReceipts {
+		c.mu.Unlock()
+		return nil, false
+	}
+	tr = &Trap{}
+	c.traps[h] = tr
+	hold := c.trapHold
+	c.mu.Unlock()
+	time.Sleep(hold)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	tr.AnsweredAt = time.Now()
+	v.receipts[h]++
+	v.receiptsCalls.Add(1)
+	return b.receipts(true, 0, false), true
 }
 
 // Multicall3 and its getBlockNumber() selector: the call returns the
@@ -675,6 +839,9 @@ func (v *Vendor) logsLocked(params []interface{}) (interface{}, *rpcError) {
 		if !ok {
 			return nil, &rpcError{-32602, "invalid block hash"}
 		}
+		if v.chain.failingLocked(h) {
+			return nil, &rpcError{-32603, "logs unavailable"}
+		}
 		b := v.chain.byHash[h]
 		if b == nil || !v.seen[h] {
 			return nil, &rpcError{-32000, "unknown block"}
@@ -697,7 +864,12 @@ func (v *Vendor) logsLocked(params []interface{}) (interface{}, *rpcError) {
 	addrs, topics := queryOf(q)
 	out := []map[string]interface{}{}
 	for _, b := range blocks {
-		for _, l := range b.Logs() {
+		logs := b.Logs()
+		if v.faults.CapLogs && b.lastLogCovered() {
+			logs = logs[:len(logs)-1]
+			v.cappedLogs.Add(1)
+		}
+		for _, l := range logs {
 			if matchQuery(l, addrs, topics) {
 				out = append(out, l.json())
 			}

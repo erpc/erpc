@@ -309,7 +309,13 @@ func u9() spec {
 		s.blocks(25)
 		va := []*chainsim.Vendor{s.vendors["ws-a"], s.vendors["http-a"]}
 		vb := []*chainsim.Vendor{s.vendors["ws-b"], s.vendors["http-b"]}
-		calls := func(vs []*chainsim.Vendor) int64 { return vs[0].Stats().ReceiptsCalls + vs[1].Stats().ReceiptsCalls }
+		calls := func(vs []*chainsim.Vendor) (n int64) {
+			for _, v := range vs {
+				st := v.Stats()
+				n += st.ReceiptsCalls + st.LogsCalls
+			}
+			return n
+		}
 		var during, duringB int64
 		for _, fault := range []func(*chainsim.Faults, bool){
 			func(f *chainsim.Faults, on bool) { f.TruncReceipts = on },

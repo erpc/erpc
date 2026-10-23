@@ -13,6 +13,7 @@ import (
 	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/test/chainsim"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -305,18 +306,18 @@ func (st *chaosStream) apply(s *chaosSeed, h *bdsevm.BlockHeader, g *grpcInstanc
 			st.problem("header %d %x arrived %s after it left %s's pins", n, hash[:4], late.Round(time.Millisecond), g.name)
 		}
 	}
-	b := s.chain.block(hash)
+	b := s.chain.Block(hash)
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	switch {
 	case b == nil:
 		st.problems = append(st.problems, fmt.Sprintf("header %d %x: no vendor ever served it", n, hash[:4]))
-	case b.minority:
+	case b.Minority():
 		st.problems = append(st.problems, fmt.Sprintf("header %d %x: a minority fork reached the stream", n, hash[:4]))
-	case b.number != n:
-		st.problems = append(st.problems, fmt.Sprintf("header %x: number %d, block %d", hash[:4], n, b.number))
-	case b.parent != nil && b.parent.hash != parent:
-		st.problems = append(st.problems, fmt.Sprintf("header %d: parentHash %x, block's parent %x", n, parent[:4], b.parent.hash[:4]))
+	case b.Number != n:
+		st.problems = append(st.problems, fmt.Sprintf("header %x: number %d, block %d", hash[:4], n, b.Number))
+	case b.Parent != nil && b.Parent.Hash != parent:
+		st.problems = append(st.problems, fmt.Sprintf("header %d: parentHash %x, block's parent %x", n, parent[:4], b.Parent.Hash[:4]))
 	}
 	if st.last != 0 {
 		if n > st.last+1 {
@@ -344,18 +345,18 @@ func (st *chaosStream) apply(s *chaosSeed, h *bdsevm.BlockHeader, g *grpcInstanc
 
 // awaitStreams waits until every stream holds the canonical head, then
 // stops them.
-func (s *chaosSeed) awaitStreams(tip *simBlock) {
+func (s *chaosSeed) awaitStreams(tip *chainsim.Block) {
 	require.Eventually(s.t, func() bool {
 		for _, st := range s.streams {
 			st.mu.Lock()
 			last, h := st.last, st.chain[st.last]
 			st.mu.Unlock()
-			if last != tip.number || h != tip.hash {
+			if last != tip.Number || h != tip.Hash {
 				return false
 			}
 		}
 		return true
-	}, 15*time.Second, 20*time.Millisecond, "every stream reaches the canonical head %d", tip.number)
+	}, 15*time.Second, 20*time.Millisecond, "every stream reaches the canonical head %d", tip.Number)
 	s.stopStreams()
 	s.streamsWG.Wait()
 }
@@ -370,11 +371,11 @@ func (s *chaosSeed) judgeStreams() {
 		require.Empty(t, st.problems, "stream %s", st.name)
 		require.NotZero(t, st.first, "stream %s got no header", st.name)
 		for n := st.first; n <= st.last; n++ {
-			want := s.chain.canonAt(n)
+			want := s.chain.CanonAt(n)
 			got, ok := st.chain[n]
 			require.True(t, ok, "stream %s misses block %d (first %d, last %d)", st.name, n, st.first, st.last)
 			require.NotNil(t, want)
-			require.Equal(t, hex.EncodeToString(want.hash[:]), hex.EncodeToString(got[:]), "stream %s block %d", st.name, n)
+			require.Equal(t, hex.EncodeToString(want.Hash[:]), hex.EncodeToString(got[:]), "stream %s block %d", st.name, n)
 		}
 		t.Logf("stream %s: blocks %d..%d over %d sessions, %d resumes (%d on the other instance), %d UNAVAILABLE, %d INTERNAL, %d resends",
 			st.name, st.first, st.last, st.opens, st.resumes, st.moves, st.unavailable, st.internal, len(st.resends))
@@ -445,33 +446,30 @@ func openOnce(g *grpcInstance, req *bdsevm.StreamBlocksRequest, within time.Dura
 // served, on either instance: each ends with OUT_OF_RANGE and sends
 // nothing. A resume with one field alone is INVALID_ARGUMENT.
 func (s *chaosSeed) streamOutOfRange() {
-	c := s.chain
-	c.mu.Lock()
-	tip := c.tipLocked()
+	tip := s.chain.Tip()
 	// Header times are whole seconds: 2s clear of the window's edge.
-	edge := tip.ts - uint64(s.maxBackfill()/time.Second) - 2
-	var old *simBlock
-	for _, b := range c.canon {
-		if b.ts < edge && b.number+uint64(chaosReorgWindow) < tip.number {
+	edge := tip.Time - uint64(s.maxBackfill()/time.Second) - 2
+	var old *chainsim.Block
+	for b := tip; b != nil && old == nil; b = b.Parent {
+		if b.Time < edge && b.Number+uint64(chaosReorgWindow) < tip.Number {
 			old = b
 		}
 	}
 	require.NotNil(s.t, old, "the chain holds a header older than the window")
-	orphan := c.childLocked(c.canonAtLocked(tip.number-3), time.Now(), true)
-	c.mu.Unlock()
+	orphan := s.chain.Orphan(s.chain.CanonAt(tip.Number - 3))
 	var got []string
 	for _, cur := range []struct {
 		name string
-		b    *simBlock
+		b    *chainsim.Block
 	}{{"older than the window", old}, {"an orphan no vendor serves", orphan}} {
 		g := s.grpcAt(s.rng.IntN(2))
 		require.NotNil(s.t, g)
-		sent, err := openOnce(g, resumeFrom(cur.b.number, cur.b.hash), 10*time.Second)
-		require.Equal(s.t, codes.OutOfRange, status.Code(err), "resume from %s (%d, head %d) on %s: %v", cur.name, cur.b.number, tip.number, g.name, err)
+		sent, err := openOnce(g, resumeFrom(cur.b.Number, cur.b.Hash), 10*time.Second)
+		require.Equal(s.t, codes.OutOfRange, status.Code(err), "resume from %s (%d, head %d) on %s: %v", cur.name, cur.b.Number, tip.Number, g.name, err)
 		require.Empty(s.t, sent, "resume from %s sends nothing", cur.name)
-		got = append(got, fmt.Sprintf("%s %d on %s", cur.name, cur.b.number, g.name))
+		got = append(got, fmt.Sprintf("%s %d on %s", cur.name, cur.b.Number, g.name))
 	}
-	n := tip.number
+	n := tip.Number
 	_, err := openOnce(s.grpcAt(0), &bdsevm.StreamBlocksRequest{FromBlock: &n}, 5*time.Second)
 	require.Equal(s.t, codes.InvalidArgument, status.Code(err), "fromBlock without fromHash: %v", err)
 	s.occur(fStreamOutOfRange, "OUT_OF_RANGE for "+strings.Join(got, ", "))
@@ -486,27 +484,18 @@ func (s *chaosSeed) streamOutOfRange() {
 func (s *chaosSeed) streamAhead() {
 	from := time.Now()
 	s.stopGrpc(1)
-	c := s.chain
-	c.mu.Lock()
-	c.halted = true
-	for _, v := range s.vendors {
-		v.holdUntil = time.Now().Add(time.Hour)
-	}
-	tip := c.tipLocked()
-	c.mu.Unlock()
+	s.chain.Halt(true)
+	s.setAll(func(f *chainsim.Faults) { f.Held = true })
+	tip := s.chain.Tip()
 	release := func() {
-		c.mu.Lock()
-		c.halted = false
-		for _, v := range s.vendors {
-			v.holdUntil = time.Time{}
-		}
-		c.mu.Unlock()
+		s.setAll(func(f *chainsim.Faults) { f.Held = false })
+		s.chain.Halt(false)
 	}
 	defer release()
 	g := s.startSecond()
 	tr := g.nw.chainTracker
 	if head, ok := tr.Tip(); ok {
-		require.Less(s.t, head.Number, tip.number, "the fresh instance's head is below the cursor")
+		require.Less(s.t, head.Number, tip.Number, "the fresh instance's head is below the cursor")
 	}
 
 	type stallEnd struct {
@@ -518,14 +507,14 @@ func (s *chaosSeed) streamAhead() {
 	stalled := make(chan stallEnd, 1)
 	go func() {
 		opened := time.Now()
-		got, err := openOnce(g, resumeFrom(tip.number, tip.hash), readWait+10*chaosBlock)
+		got, err := openOnce(g, resumeFrom(tip.Number, tip.Hash), readWait+10*chaosBlock)
 		stalled <- stallEnd{got, err, time.Since(opened)}
 	}()
 	time.Sleep(readWait - 5*chaosBlock)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream, err := g.client.StreamBlocks(streamMD(ctx), resumeFrom(tip.number, tip.hash))
+	stream, err := g.client.StreamBlocks(streamMD(ctx), resumeFrom(tip.Number, tip.Hash))
 	require.NoError(s.t, err)
 	got := make(chan *bdsevm.BlockHeader, 16)
 	ended := make(chan error, 1)
@@ -541,7 +530,7 @@ func (s *chaosSeed) streamAhead() {
 	}()
 	select {
 	case h := <-got:
-		s.t.Fatalf("the fresh instance sent %d before its head reached the cursor %d", h.Number, tip.number)
+		s.t.Fatalf("the fresh instance sent %d before its head reached the cursor %d", h.Number, tip.Number)
 	case err := <-ended:
 		s.t.Fatalf("the resume on the fresh instance ended while it waited: %v", err)
 	case <-time.After(4 * chaosBlock):
@@ -558,18 +547,18 @@ func (s *chaosSeed) streamAhead() {
 	for range 2 {
 		select {
 		case h := <-got:
-			require.Equal(s.t, want.number+1, h.Number, "the resume continues after the cursor")
-			require.Equal(s.t, hex.EncodeToString(want.hash[:]), hex.EncodeToString(h.ParentHash), "block %d links to the cursor's branch", h.Number)
-			want = s.chain.block([32]byte(h.Hash))
+			require.Equal(s.t, want.Number+1, h.Number, "the resume continues after the cursor")
+			require.Equal(s.t, hex.EncodeToString(want.Hash[:]), hex.EncodeToString(h.ParentHash), "block %d links to the cursor's branch", h.Number)
+			want = s.chain.Block(chainsim.Hash(h.Hash))
 			require.NotNil(s.t, want)
 		case err := <-ended:
 			s.t.Fatalf("the resume on the fresh instance ended: %v", err)
 		case <-time.After(10 * time.Second):
-			s.t.Fatalf("the resume on the fresh instance sent nothing after %d", want.number)
+			s.t.Fatalf("the resume on the fresh instance sent nothing after %d", want.Number)
 		}
 	}
 	s.occur(fStreamAhead, fmt.Sprintf("resumed at %d on a fresh instance (held a header while it waited: %t); then %d; a resume held %s ended UNAVAILABLE",
-		tip.number, held, want.number, st.in.Round(time.Millisecond)))
+		tip.Number, held, want.Number, st.in.Round(time.Millisecond)))
 }
 
 // streamSlow resumes a stream from a dozen blocks back on a client with the
@@ -583,11 +572,11 @@ func (s *chaosSeed) streamSlow() {
 		grpc.WithInitialWindowSize(64<<10), grpc.WithInitialConnWindowSize(64<<10))
 	require.NoError(s.t, err)
 	defer conn.Close()
-	cur := s.chain.canonAt(s.chain.tip().number - 12)
+	cur := s.chain.CanonAt(s.chain.Tip().Number - 12)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	opened := time.Now()
-	stream, err := bdsevm.NewStreamServiceClient(conn).StreamBlocks(streamMD(ctx), resumeFrom(cur.number, cur.hash))
+	stream, err := bdsevm.NewStreamServiceClient(conn).StreamBlocks(streamMD(ctx), resumeFrom(cur.Number, cur.Hash))
 	require.NoError(s.t, err)
 	// Wait for the headers to arrive, then hold them unread past the send wait.
 	_, err = stream.Header()
@@ -612,31 +601,17 @@ func (s *chaosSeed) streamSlow() {
 // and so does the next one, as the encoding's error is kept. A 1-block
 // reorg then replaces it.
 func (s *chaosSeed) streamBadHeader() {
-	c := s.chain
-	c.mu.Lock()
-	c.halted = true
-	parent := c.tipLocked()
-	c.plan = append([]simKind{simEmpty}, c.plan...)
-	bad := c.childLocked(parent, time.Now(), false)
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(bad.raw, &fields); err != nil {
-		panic(err)
-	}
-	fields["gasLimit"] = json.RawMessage(`"0x10000000000000000"`)
-	raw, err := json.Marshal(fields)
-	if err != nil {
-		panic(err)
-	}
-	bad.raw = raw
-	c.canon = append(c.canon, bad)
-	c.mu.Unlock()
+	s.chain.Halt(true)
+	parent := s.chain.Tip()
 	s.grpcMu.Lock()
 	s.internalOK = append(s.internalOK, interval{from: time.Now()})
 	k := len(s.internalOK) - 1
 	s.grpcMu.Unlock()
-	c.refresh()
+	bad := s.chain.Append(chainsim.KindEmpty, func(fields map[string]json.RawMessage) {
+		fields["gasLimit"] = json.RawMessage(`"0x10000000000000000"`)
+	})
 
-	bc := indexer.Cursor{Number: bad.number, Hash: bad.hash}
+	bc := indexer.Cursor{Number: bad.Number, Hash: bad.Hash}
 	var got []string
 	for i := range 2 {
 		g := s.grpcAt(i)
@@ -645,45 +620,43 @@ func (s *chaosSeed) streamBadHeader() {
 		require.Eventually(s.t, func() bool {
 			send, ok := tr.SendTip()
 			return ok && send == bc
-		}, 10*time.Second, 10*time.Millisecond, "%s may send block %d", g.name, bad.number)
+		}, 10*time.Second, 10*time.Millisecond, "%s may send block %d", g.name, bad.Number)
 		for range 2 {
-			sent, err := openOnce(g, resumeFrom(parent.number, parent.hash), 10*time.Second)
+			sent, err := openOnce(g, resumeFrom(parent.Number, parent.Hash), 10*time.Second)
 			require.Equal(s.t, codes.Internal, status.Code(err), "resume before a header that cannot be encoded, on %s: %v", g.name, err)
-			require.Contains(s.t, status.Convert(err).Message(), fmt.Sprintf("cannot encode block %d", bad.number))
-			require.Empty(s.t, sent, "nothing after the previous header %d", parent.number)
+			require.Contains(s.t, status.Convert(err).Message(), fmt.Sprintf("cannot encode block %d", bad.Number))
+			require.Empty(s.t, sent, "nothing after the previous header %d", parent.Number)
 		}
 		got = append(got, g.name)
 	}
 
-	c.reorg(1)
-	c.mu.Lock()
-	c.halted = false
-	c.mu.Unlock()
+	s.reorg(1)
+	s.chain.Halt(false)
 	for i := range 2 {
 		tr := s.grpcAt(i).nw.chainTracker
-		require.Eventually(s.t, func() bool { return !tr.Pinned(bc) }, 10*time.Second, 10*time.Millisecond, "a reorg replaces block %d", bad.number)
+		require.Eventually(s.t, func() bool { return !tr.Pinned(bc) }, 10*time.Second, 10*time.Millisecond, "a reorg replaces block %d", bad.Number)
 	}
 	s.grpcMu.Lock()
 	s.internalOK[k].to = time.Now().Add(streamPinGrace)
 	s.grpcMu.Unlock()
-	s.occur(fStreamBadHeader, fmt.Sprintf("block %d: INTERNAL twice on %s, nothing sent", bad.number, strings.Join(got, ", ")))
+	s.occur(fStreamBadHeader, fmt.Sprintf("block %d: INTERNAL twice on %s, nothing sent", bad.Number, strings.Join(got, ", ")))
 }
 
 // resumeOrphan resumes on g, which never held it, from orphan: a block of a
 // branch a reorg replaced, that vendors still serve by hash. The stream
 // starts at the fork point + 1, linked to the fork point.
-func (s *chaosSeed) resumeOrphan(g *grpcInstance, orphan *simBlock, fork uint64) string {
-	forkAt := s.chain.canonAt(fork)
+func (s *chaosSeed) resumeOrphan(g *grpcInstance, orphan *chainsim.Block, fork uint64) string {
+	forkAt := s.chain.CanonAt(fork)
 	require.NotNil(s.t, forkAt)
-	require.NotEqual(s.t, orphan, s.chain.canonAt(orphan.number), "block %d is an orphan", orphan.number)
+	require.NotEqual(s.t, orphan, s.chain.CanonAt(orphan.Number), "block %d is an orphan", orphan.Number)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	stream, err := g.client.StreamBlocks(streamMD(ctx), resumeFrom(orphan.number, orphan.hash))
+	stream, err := g.client.StreamBlocks(streamMD(ctx), resumeFrom(orphan.Number, orphan.Hash))
 	require.NoError(s.t, err)
 	resp, err := stream.Recv()
-	require.NoError(s.t, err, "resume from orphan %d on %s", orphan.number, g.name)
+	require.NoError(s.t, err, "resume from orphan %d on %s", orphan.Number, g.name)
 	h := resp.Header
-	require.Equal(s.t, fork+1, h.Number, "the resume from orphan %d starts after the fork point", orphan.number)
-	require.Equal(s.t, hex.EncodeToString(forkAt.hash[:]), hex.EncodeToString(h.ParentHash), "block %d links to the fork point", h.Number)
-	return fmt.Sprintf("resume from orphan %d on the fresh %s started at %d", orphan.number, g.name, h.Number)
+	require.Equal(s.t, fork+1, h.Number, "the resume from orphan %d starts after the fork point", orphan.Number)
+	require.Equal(s.t, hex.EncodeToString(forkAt.Hash[:]), hex.EncodeToString(h.ParentHash), "block %d links to the fork point", h.Number)
+	return fmt.Sprintf("resume from orphan %d on the fresh %s started at %d", orphan.Number, g.name, h.Number)
 }
