@@ -182,4 +182,51 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 			"eth_blockNumber must refresh the ballot's pollers and reach the moved served head (0x%x) without waiting for the 30s poll interval",
 			bniLaggingHead+5)
 	})
+
+	t.Run("LateUpstreamVotesOnceRegistered", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// rpc4 answers eth_chainId 3s late, so it registers after the network
+		// started with rpc1-rpc3. gock runs every mock's filter on every
+		// request, so the filter checks the host.
+		gock.New("http://rpc4.localhost").Post("").Persist().
+			Filter(func(r *http.Request) bool {
+				return r.URL.Host == "rpc4.localhost" && strings.Contains(util.SafeReadBody(r), "eth_chainId")
+			}).
+			Reply(200).
+			Delay(3 * time.Second).
+			JSON([]byte(`{"result":"0x7b"}`))
+		mockPollerHostWithLatest("http://rpc1.localhost", 1005, 995)
+		mockPollerHostWithLatest("http://rpc2.localhost", 1004, 994)
+		mockPollerHostWithLatest("http://rpc3.localhost", 1003, 993)
+		mockPollerHostWithLatest("http://rpc4.localhost", 1006, 996)
+
+		// Real policy engine at the default 15s evalInterval: no order override.
+		cfg := bniConfig(false, nil)
+		rpc4 := cfg.Projects[0].Upstreams[2].Copy()
+		rpc4.Id, rpc4.Endpoint = "rpc4", "http://rpc4.localhost"
+		cfg.Projects[0].Upstreams = append(cfg.Projects[0].Upstreams, rpc4)
+		send, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		// The default quorum (2) serves the second-highest head.
+		servesHead := func(hex string) func() bool {
+			return func() bool {
+				_, _, body := send(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`, nil, nil)
+				return strings.Contains(body, `"result":"`+hex+`"`)
+			}
+		}
+		require.Eventually(t, servesHead("0x3ec"), 2*time.Second, 50*time.Millisecond,
+			"rpc1-rpc3 (1005, 1004, 1003) must serve 1004")
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		require.Eventually(t, func() bool {
+			return len(prj.upstreamsRegistry.GetNetworkUpstreams(context.Background(), util.EvmNetworkId(123))) == 4
+		}, 10*time.Second, 20*time.Millisecond, "rpc4 must register once its eth_chainId answers")
+
+		require.Eventually(t, servesHead("0x3ed"), 2*time.Second, 50*time.Millisecond,
+			"a registered upstream (rpc4, 1006) must vote on the served tip (1005) at once, not at the next policy evaluation (15s)")
+	})
 }
