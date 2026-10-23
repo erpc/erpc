@@ -44,6 +44,8 @@ type scriptedBdsServer struct {
 	receipt  *evm.GetTransactionReceiptResponse
 	receipts *evm.GetBlockReceiptsResponse
 	logs     *evm.GetLogsResponse
+	trace    *evm.TraceResponse
+	balance  *evm.GetBalanceResponse
 	headerMD metadata.MD
 
 	byNumber   *evm.GetBlockByNumberRequest
@@ -52,6 +54,9 @@ type scriptedBdsServer struct {
 	receiptReq *evm.GetTransactionReceiptRequest
 	blockRcpts *evm.GetBlockReceiptsRequest
 	logsReq    *evm.GetLogsRequest
+	traceBlk   *evm.TraceBlockRequest
+	traceTx    *evm.TraceTransactionRequest
+	balanceReq *evm.GetBalanceRequest
 }
 
 func (s *scriptedBdsServer) enter(ctx context.Context, record func()) error {
@@ -112,6 +117,27 @@ func (s *scriptedBdsServer) GetLogs(ctx context.Context, req *evm.GetLogsRequest
 		return nil, err
 	}
 	return orEmpty(s.logs, &evm.GetLogsResponse{}), nil
+}
+
+func (s *scriptedBdsServer) TraceBlock(ctx context.Context, req *evm.TraceBlockRequest) (*evm.TraceResponse, error) {
+	if err := s.enter(ctx, func() { s.traceBlk = req }); err != nil {
+		return nil, err
+	}
+	return orEmpty(s.trace, &evm.TraceResponse{}), nil
+}
+
+func (s *scriptedBdsServer) TraceTransaction(ctx context.Context, req *evm.TraceTransactionRequest) (*evm.TraceResponse, error) {
+	if err := s.enter(ctx, func() { s.traceTx = req }); err != nil {
+		return nil, err
+	}
+	return orEmpty(s.trace, &evm.TraceResponse{}), nil
+}
+
+func (s *scriptedBdsServer) GetBalance(ctx context.Context, req *evm.GetBalanceRequest) (*evm.GetBalanceResponse, error) {
+	if err := s.enter(ctx, func() { s.balanceReq = req }); err != nil {
+		return nil, err
+	}
+	return orEmpty(s.balance, &evm.GetBalanceResponse{}), nil
 }
 
 func orEmpty[T any](v *T, empty *T) *T {
@@ -343,6 +369,85 @@ func TestGrpcBdsClient_RequestResponseMapping(t *testing.T) {
 				assert.Equal(t, `"0xa"`, string(result))
 			},
 		},
+		{
+			name:   "traceBlockByNumber passes tracer options through and the trace verbatim",
+			method: "debug_traceBlockByNumber",
+			params: `["0x10",{"tracer":"callTracer","tracerConfig":{"onlyTopCall":true},"timeout":"10s"}]`,
+			setup: func(s *scriptedBdsServer) {
+				s.trace = &evm.TraceResponse{Result: []byte(`[{"txHash":"0x01","result":{"type":"CALL","gas":"0x5208"}}]`)}
+			},
+			check: func(t *testing.T, s *scriptedBdsServer, result []byte) {
+				require.NotNil(t, s.traceBlk)
+				assert.Equal(t, "0x10", s.traceBlk.GetBlockNumber())
+				assert.Nil(t, s.traceBlk.BlockHash)
+				assert.Equal(t, chainID, s.traceBlk.GetChainId())
+				assert.Equal(t, "callTracer", s.traceBlk.GetTrace().GetTracer())
+				assert.JSONEq(t, `{"onlyTopCall":true}`, string(s.traceBlk.GetTrace().GetTracerConfig()))
+				assert.JSONEq(t, `{"timeout":"10s"}`, string(s.traceBlk.GetTrace().GetOptions()))
+				assert.Equal(t, `[{"txHash":"0x01","result":{"type":"CALL","gas":"0x5208"}}]`, string(result))
+			},
+		},
+		{
+			name:   "traceBlockByHash sends the hash and empty options when none are given",
+			method: "debug_traceBlockByHash",
+			params: fmt.Sprintf(`[%q]`, hashHex),
+			setup: func(s *scriptedBdsServer) {
+				s.trace = &evm.TraceResponse{Result: []byte(`[]`)}
+			},
+			check: func(t *testing.T, s *scriptedBdsServer, result []byte) {
+				require.NotNil(t, s.traceBlk)
+				assert.Equal(t, hashBytes, s.traceBlk.BlockHash)
+				assert.Nil(t, s.traceBlk.BlockNumber)
+				assert.Empty(t, s.traceBlk.GetTrace().GetTracer())
+				assert.Empty(t, s.traceBlk.GetTrace().GetTracerConfig())
+				assert.Empty(t, s.traceBlk.GetTrace().GetOptions())
+				assert.Equal(t, `[]`, string(result))
+			},
+		},
+		{
+			name:   "traceTransaction returns the tracer's bytes unchanged",
+			method: "debug_traceTransaction",
+			params: fmt.Sprintf(`[%q,{"tracer":"callTracer"}]`, hashHex),
+			setup: func(s *scriptedBdsServer) {
+				s.trace = &evm.TraceResponse{Result: []byte(`{"type":"CALL",  "to":"0xaa"}`)}
+			},
+			check: func(t *testing.T, s *scriptedBdsServer, result []byte) {
+				require.NotNil(t, s.traceTx)
+				assert.Equal(t, hashBytes, s.traceTx.TransactionHash)
+				assert.Equal(t, chainID, s.traceTx.GetChainId())
+				assert.Equal(t, "callTracer", s.traceTx.GetTrace().GetTracer())
+				assert.Empty(t, s.traceTx.GetTrace().GetOptions())
+				assert.Equal(t, `{"type":"CALL",  "to":"0xaa"}`, string(result), "no re-encoding")
+			},
+		},
+		{
+			name:   "getBalance renders wei as a quantity without leading zeros",
+			method: "eth_getBalance",
+			params: fmt.Sprintf(`[%q,"0x10"]`, addrA),
+			setup: func(s *scriptedBdsServer) {
+				s.balance = &evm.GetBalanceResponse{Balance: []byte{0x01, 0xa0}}
+			},
+			check: func(t *testing.T, s *scriptedBdsServer, result []byte) {
+				require.NotNil(t, s.balanceReq)
+				require.Len(t, s.balanceReq.Address, 20)
+				assert.Equal(t, byte(0xaa), s.balanceReq.Address[19])
+				assert.Equal(t, "0x10", s.balanceReq.GetBlockNumber())
+				assert.Nil(t, s.balanceReq.BlockHash)
+				assert.Equal(t, chainID, s.balanceReq.GetChainId())
+				assert.Equal(t, `"0x1a0"`, string(result))
+			},
+		},
+		{
+			name:   "getBalance of zero (empty bytes) is 0x0, by EIP-1898 hash",
+			method: "eth_getBalance",
+			params: fmt.Sprintf(`[%q,{"blockHash":%q}]`, addrA, hashHex),
+			check: func(t *testing.T, s *scriptedBdsServer, result []byte) {
+				require.NotNil(t, s.balanceReq)
+				assert.Equal(t, hashBytes, s.balanceReq.BlockHash)
+				assert.Nil(t, s.balanceReq.BlockNumber)
+				assert.Equal(t, `"0x0"`, string(result))
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -480,6 +585,98 @@ func TestGrpcBdsClient_EveryMethodPropagatesGrpcStatus(t *testing.T) {
 			assert.Contains(t, err.Error(), "block not indexed")
 		})
 	}
+}
+
+// Every status a trace reader answers trace/balance calls with must leave the
+// request free to fall through to another upstream: never a client error
+// (which ends the sweep and reaches the user) and never non-retryable.
+func TestGrpcBdsClient_TraceAndBalanceStatusesFallThrough(t *testing.T) {
+	_, hashHex := hash32(0x02)
+	addr := "0x00000000000000000000000000000000000000aa"
+	calls := []struct{ method, params string }{
+		{"debug_traceBlockByNumber", `["0x1",{"tracer":"callTracer"}]`},
+		{"debug_traceBlockByHash", fmt.Sprintf(`[%q,{}]`, hashHex)},
+		{"debug_traceTransaction", fmt.Sprintf(`[%q]`, hashHex)},
+		{"eth_getBalance", fmt.Sprintf(`[%q,"0x1"]`, addr)},
+	}
+	statuses := []struct {
+		code codes.Code
+		want common.ErrorCode
+	}{
+		{codes.Unimplemented, common.ErrCodeEndpointUnsupported},
+		{codes.OutOfRange, common.ErrCodeEndpointMissingData},
+		{codes.NotFound, common.ErrCodeEndpointMissingData},
+		{codes.Unavailable, common.ErrCodeEndpointServerSideException},
+		{codes.FailedPrecondition, common.ErrCodeEndpointServerSideException},
+		{codes.InvalidArgument, common.ErrCodeUpstreamRequestSkipped},
+	}
+	for _, st := range statuses {
+		s := &scriptedBdsServer{err: status.Error(st.code, "reader says "+st.code.String())}
+		client := newTestClient(t, startScriptedBdsServer(t, s))
+		for _, c := range calls {
+			t.Run(st.code.String()+"/"+c.method, func(t *testing.T) {
+				before := s.calls.Load()
+				_, err := bdsCall(t, client, c.method, c.params)
+				require.Error(t, err)
+				// >, not +1: the service config retries UNAVAILABLE once.
+				assert.Greater(t, s.calls.Load(), before, "the reader is asked")
+				assert.True(t, common.HasErrorCode(err, st.want), "want %s, got %v", st.want, err)
+				assert.False(t, common.IsClientError(err), "must not end the sweep: %v", err)
+				assert.True(t, common.IsRetryableTowardNetwork(err), "must fall through: %v", err)
+				assert.Contains(t, err.Error(), "reader says")
+			})
+		}
+	}
+}
+
+// Requests the reader cannot answer by construction — block tags, malformed
+// parameters, non-object trace options — are skipped without a call, as a
+// skip rather than ErrEndpointUnsupported so autoIgnoreUnsupportedMethods
+// does not learn to drop the method from one such request.
+func TestGrpcBdsClient_TraceAndBalanceSkipWithoutCall(t *testing.T) {
+	_, hashHex := hash32(0x03)
+	addr := "0x00000000000000000000000000000000000000aa"
+	cases := []struct{ name, method, params string }{
+		{"trace block latest", "debug_traceBlockByNumber", `["latest",{}]`},
+		{"trace block finalized", "debug_traceBlockByNumber", `["finalized"]`},
+		{"trace block earliest", "debug_traceBlockByNumber", `["earliest"]`},
+		{"trace block no params", "debug_traceBlockByNumber", `[]`},
+		{"trace block bool", "debug_traceBlockByNumber", `[true]`},
+		{"trace block options not object", "debug_traceBlockByNumber", `["0x1","callTracer"]`},
+		{"trace block tracer not string", "debug_traceBlockByNumber", `["0x1",{"tracer":1}]`},
+		{"trace tx no params", "debug_traceTransaction", `[]`},
+		{"trace tx numeric", "debug_traceTransaction", `[1]`},
+		{"trace tx bad hex", "debug_traceTransaction", `["0xzz"]`},
+		{"balance pending", "eth_getBalance", fmt.Sprintf(`[%q,"pending"]`, addr)},
+		{"balance safe", "eth_getBalance", fmt.Sprintf(`[%q,"safe"]`, addr)},
+		{"balance EIP-1898 tag", "eth_getBalance", fmt.Sprintf(`[%q,{"blockTag":"latest"}]`, addr)},
+		{"balance default block", "eth_getBalance", fmt.Sprintf(`[%q]`, addr)},
+		{"balance short address", "eth_getBalance", `["0xaa","0x1"]`},
+		{"balance hash as address", "eth_getBalance", fmt.Sprintf(`[%q,"0x1"]`, hashHex)},
+	}
+	s := &scriptedBdsServer{chainID: 1}
+	client := newTestClient(t, startScriptedBdsServer(t, s))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := s.calls.Load()
+			_, err := bdsCall(t, client, tc.method, tc.params)
+			require.Error(t, err)
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamRequestSkipped), "got %v", err)
+			assert.False(t, common.HasErrorCode(err, common.ErrCodeEndpointUnsupported), "must not trigger auto-ignore: %v", err)
+			assert.True(t, common.IsRetryableTowardNetwork(err))
+			assert.Equal(t, before, s.calls.Load(), "the reader must not be asked")
+		})
+	}
+}
+
+// A reader answering with no trace bytes broke its contract; it is a server
+// error, never an empty successful result.
+func TestGrpcBdsClient_EmptyTraceIsServerError(t *testing.T) {
+	s := &scriptedBdsServer{}
+	client := newTestClient(t, startScriptedBdsServer(t, s))
+	_, err := bdsCall(t, client, "debug_traceBlockByNumber", `["0x1"]`)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException), "got %v", err)
 }
 
 // A request body that is not JSON-RPC fails before any connection is used.

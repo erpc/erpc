@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -327,6 +328,12 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		resp, err = c.handleGetBlockReceipts(ctx, conn, req, jrReq)
 	case "eth_chainId":
 		resp, err = c.handleChainId(ctx, conn, req, jrReq)
+	case "eth_getBalance":
+		resp, err = c.handleGetBalance(ctx, conn, req, jrReq)
+	case "debug_traceBlockByNumber", "debug_traceBlockByHash":
+		resp, err = c.handleTraceBlock(ctx, conn, req, jrReq)
+	case "debug_traceTransaction":
+		resp, err = c.handleTraceTransaction(ctx, conn, req, jrReq)
 	case "getBlock":
 		resp, err = c.handleSvmGetBlock(ctx, conn, req, jrReq)
 	default:
@@ -1023,11 +1030,248 @@ func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, conn 
 		WithJsonRpcResponse(jsonRpcResp), nil
 }
 
+// bdsSkip declines a request this reader cannot answer but a node can — a
+// block tag, a malformed parameter, an INVALID_ARGUMENT from the server — so
+// the network moves on to the next upstream. It is a skip rather than
+// ErrEndpointUnsupported so one such request does not teach
+// autoIgnoreUnsupportedMethods to drop the method, and rather than a client
+// error so the user gets the node's own answer instead of the reader's.
+func (c *GenericGrpcBdsClient) bdsSkip(format string, args ...any) error {
+	return common.NewErrUpstreamRequestSkipped(fmt.Errorf(format, args...), c.upstreamId)
+}
+
+// bdsCallError maps a failed trace/balance call. INVALID_ARGUMENT is a skip
+// (see bdsSkip); every other status goes through the shared classifier.
+func (c *GenericGrpcBdsClient) bdsCallError(err error) error {
+	if st, ok := status.FromError(err); ok && st.Code() == codes.InvalidArgument {
+		return c.bdsSkip("request not servable by BDS: %s", st.Message())
+	}
+	return fmt.Errorf("gRPC call failed: %w", err)
+}
+
+func bdsParams(jrReq *common.JsonRpcRequest) ([]interface{}, error) {
+	var params []interface{}
+	jrReq.RLock()
+	paramsBytes, err := sonic.Marshal(jrReq.Params)
+	jrReq.RUnlock()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal params: %w", err)
+	}
+	if err := sonic.Unmarshal(paramsBytes, &params); err != nil {
+		return nil, fmt.Errorf("failed to parse params: %w", err)
+	}
+	return params, nil
+}
+
+// bdsBlockRef resolves a block parameter to a hex number or a hash. A block
+// tag is skipped without a call: the reader serves only stored, numbered
+// history, and this client resolves no tags for any method.
+func (c *GenericGrpcBdsClient) bdsBlockRef(param interface{}) (*string, []byte, error) {
+	number, hash, err := util.ParseBlockParameter(param)
+	if err != nil {
+		return nil, nil, c.bdsSkip("invalid block parameter: %v", err)
+	}
+	if hash != nil {
+		return nil, hash, nil
+	}
+	if !strings.HasPrefix(number, "0x") {
+		return nil, nil, c.bdsSkip("block tag %q not served by BDS", number)
+	}
+	return &number, nil, nil
+}
+
+// bdsTraceOptions splits a debug_trace* options object into the proto's
+// tracer, raw tracerConfig and the remaining options, passed through as sent.
+// Whether this tracer and config are servable is the server's call
+// (UNIMPLEMENTED falls through), not the client's.
+func (c *GenericGrpcBdsClient) bdsTraceOptions(params []interface{}, idx int) (*evm.TraceOptions, error) {
+	opts := &evm.TraceOptions{}
+	if len(params) <= idx || params[idx] == nil {
+		return opts, nil
+	}
+	m, ok := params[idx].(map[string]interface{})
+	if !ok {
+		return nil, c.bdsSkip("trace options must be an object")
+	}
+	if t, present := m["tracer"]; present {
+		delete(m, "tracer")
+		if t != nil {
+			s, ok := t.(string)
+			if !ok {
+				return nil, c.bdsSkip("tracer must be a string")
+			}
+			opts.Tracer = s
+		}
+	}
+	if tc, present := m["tracerConfig"]; present {
+		delete(m, "tracerConfig")
+		if tc != nil {
+			b, err := sonic.Marshal(tc)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal tracerConfig: %w", err)
+			}
+			opts.TracerConfig = b
+		}
+	}
+	if len(m) > 0 {
+		b, err := sonic.Marshal(m)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal trace options: %w", err)
+		}
+		opts.Options = b
+	}
+	return opts, nil
+}
+
+func bdsRawResponse(req *common.NormalizedRequest, jrReq *common.JsonRpcRequest, result []byte) (*common.NormalizedResponse, error) {
+	jsonRpcResp := &common.JsonRpcResponse{}
+	if err := jsonRpcResp.SetID(jrReq.ID); err != nil {
+		return nil, fmt.Errorf("failed to set ID: %w", err)
+	}
+	jsonRpcResp.SetResult(result)
+	return common.NewNormalizedResponse().
+		WithRequest(req).
+		WithJsonRpcResponse(jsonRpcResp), nil
+}
+
+// handleTraceBlock serves debug_traceBlockByNumber and debug_traceBlockByHash;
+// both take a block parameter then trace options, and the parameter's shape
+// decides number vs hash.
+func (c *GenericGrpcBdsClient) handleTraceBlock(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	params, err := bdsParams(jrReq)
+	if err != nil {
+		return nil, err
+	}
+	if len(params) < 1 {
+		return nil, c.bdsSkip("insufficient params for %s", jrReq.Method)
+	}
+	number, hash, err := c.bdsBlockRef(params[0])
+	if err != nil {
+		return nil, err
+	}
+	trace, err := c.bdsTraceOptions(params, 1)
+	if err != nil {
+		return nil, err
+	}
+	grpcReq := &evm.TraceBlockRequest{
+		BlockNumber: number,
+		BlockHash:   hash,
+		Trace:       trace,
+		ChainId:     c.chainIdParam(),
+	}
+	grpcResp, err := callBoundedT(ctx, func(ctx context.Context) (*evm.TraceResponse, error) {
+		return conn.rpcClient.TraceBlock(ctx, grpcReq)
+	})
+	if err != nil {
+		return nil, c.bdsCallError(err)
+	}
+	return c.traceResult(req, jrReq, grpcResp)
+}
+
+func (c *GenericGrpcBdsClient) handleTraceTransaction(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	params, err := bdsParams(jrReq)
+	if err != nil {
+		return nil, err
+	}
+	if len(params) < 1 {
+		return nil, c.bdsSkip("insufficient params for debug_traceTransaction")
+	}
+	txHashStr, ok := params[0].(string)
+	if !ok {
+		return nil, c.bdsSkip("invalid transaction hash parameter")
+	}
+	txHash, err := parseHexBytes(txHashStr)
+	if err != nil {
+		return nil, c.bdsSkip("failed to parse transaction hash: %v", err)
+	}
+	trace, err := c.bdsTraceOptions(params, 1)
+	if err != nil {
+		return nil, err
+	}
+	grpcReq := &evm.TraceTransactionRequest{
+		TransactionHash: txHash,
+		Trace:           trace,
+		ChainId:         c.chainIdParam(),
+	}
+	grpcResp, err := callBoundedT(ctx, func(ctx context.Context) (*evm.TraceResponse, error) {
+		return conn.rpcClient.TraceTransaction(ctx, grpcReq)
+	})
+	if err != nil {
+		return nil, c.bdsCallError(err)
+	}
+	return c.traceResult(req, jrReq, grpcResp)
+}
+
+// traceResult hands the tracer's JSON to the caller byte for byte: its shape
+// belongs to the tracer, and re-encoding it could reorder or reformat it.
+func (c *GenericGrpcBdsClient) traceResult(req *common.NormalizedRequest, jrReq *common.JsonRpcRequest, grpcResp *evm.TraceResponse) (*common.NormalizedResponse, error) {
+	result := grpcResp.GetResult()
+	if len(result) == 0 {
+		return nil, common.NewErrEndpointServerSideException(
+			fmt.Errorf("BDS returned an empty trace result for %s", jrReq.Method), nil, 0,
+		)
+	}
+	return bdsRawResponse(req, jrReq, result)
+}
+
+func (c *GenericGrpcBdsClient) handleGetBalance(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	params, err := bdsParams(jrReq)
+	if err != nil {
+		return nil, err
+	}
+	if len(params) < 2 {
+		// The block parameter defaults to "latest", a tag.
+		return nil, c.bdsSkip("eth_getBalance without a block parameter is not served by BDS")
+	}
+	addrStr, ok := params[0].(string)
+	if !ok {
+		return nil, c.bdsSkip("invalid address parameter")
+	}
+	addr, err := parseHexBytes(addrStr)
+	if err != nil || len(addr) != 20 {
+		return nil, c.bdsSkip("invalid address %q", addrStr)
+	}
+	number, hash, err := c.bdsBlockRef(params[1])
+	if err != nil {
+		return nil, err
+	}
+	grpcReq := &evm.GetBalanceRequest{
+		Address:     addr,
+		BlockNumber: number,
+		BlockHash:   hash,
+		ChainId:     c.chainIdParam(),
+	}
+	grpcResp, err := callBoundedT(ctx, func(ctx context.Context) (*evm.GetBalanceResponse, error) {
+		return conn.rpcClient.GetBalance(ctx, grpcReq)
+	})
+	if err != nil {
+		return nil, c.bdsCallError(err)
+	}
+	return bdsRawResponse(req, jrReq, bdsQuantity(grpcResp.GetBalance()))
+}
+
+// bdsQuantity renders big-endian bytes as a JSON-RPC quantity string:
+// "0x"-prefixed hex without leading zeros, "0x0" for zero or empty.
+func bdsQuantity(b []byte) []byte {
+	digits := strings.TrimLeft(hex.EncodeToString(b), "0")
+	if digits == "" {
+		digits = "0"
+	}
+	out := make([]byte, 0, len(digits)+4)
+	out = append(out, `"0x`...)
+	out = append(out, digits...)
+	return append(out, '"')
+}
+
 func (c *GenericGrpcBdsClient) normalizeGrpcError(err error) error {
 	if err == nil {
 		return nil
 	}
-
+	// A skip (bdsSkip) is already classified; wrapping it as a transport
+	// failure would mislabel a declined request as a broken connection.
+	if common.HasErrorCode(err, common.ErrCodeUpstreamRequestSkipped) {
+		return err
+	}
 	// status.FromError only checks the top-level error for GRPCStatus().
 	// Handler methods wrap gRPC errors with fmt.Errorf, so we walk the
 	// Unwrap chain to find the original gRPC status.
