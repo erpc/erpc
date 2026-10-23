@@ -133,6 +133,15 @@ export interface EvmProbeEarliestInfo {
 }
 
 //////////
+// source: architecture_jsonrpc.go
+
+/**
+ * UpstreamTypeJsonRpc marks an upstream that serves a `jsonrpc:<slug>`
+ * network: plain JSON-RPC 2.0 over HTTP with no chain-specific probing.
+ */
+export const UpstreamTypeJsonRpc: UpstreamType = "jsonrpc";
+
+//////////
 // source: architecture_svm.go
 
 export const UpstreamTypeSvm: UpstreamType = "svm";
@@ -420,6 +429,12 @@ export interface AliasingRuleConfig {
 export interface DatabaseConfig {
   evmJsonRpcCache?: CacheConfig;
   svmJsonRpcCache?: CacheConfig;
+  /**
+   * GenericJsonRpcCache is the opt-in cache for `jsonrpc` networks. Policies
+   * should key on `finality: unknown` since generic networks derive no block
+   * finality; a TTL on the policy is what bounds staleness.
+   */
+  genericJsonRpcCache?: CacheConfig;
   sharedState?: SharedStateConfig;
 }
 export interface SharedStateConfig {
@@ -854,6 +869,7 @@ export interface UpstreamConfig {
   endpoint?: string;
   evm?: EvmUpstreamConfig;
   svm?: SvmUpstreamConfig;
+  generic?: GenericUpstreamConfig;
   jsonRpc?: JsonRpcUpstreamConfig;
   grpc?: GrpcUpstreamConfig;
   ignoreMethods?: string[];
@@ -1487,6 +1503,7 @@ export interface NetworkConfig {
   failsafe?: (FailsafeConfig | undefined)[];
   evm?: EvmNetworkConfig;
   svm?: SvmNetworkConfig;
+  generic?: GenericNetworkConfig;
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
   alias?: string;
@@ -1690,6 +1707,28 @@ export interface SvmAvailabilityBoundConfig {
   latestSlotMinus?: number /* int64 */;
   firstAvailableSlotPlus?: number /* int64 */;
   updateRate?: Duration;
+}
+/**
+ * GenericNetworkConfig is the identity + replay policy of a `jsonrpc` network.
+ */
+export interface GenericNetworkConfig {
+  /**
+   * Slug is the user-chosen network name; network id = "jsonrpc:<slug>".
+   */
+  slug?: string;
+  /**
+   * ReplaySafeMethods lists method patterns (wildcards, same matcher as
+   * allowMethods) that may be retried, hedged and failed over. Every other
+   * method is dispatched exactly once: after an upstream error its outcome is
+   * surfaced as-is with no second physical call.
+   */
+  replaySafeMethods?: string[];
+}
+/**
+ * GenericUpstreamConfig names which `jsonrpc:<slug>` network an upstream serves.
+ */
+export interface GenericUpstreamConfig {
+  slug?: string;
 }
 export interface EvmNetworkConfig {
   chainId: number /* int64 */;
@@ -2674,6 +2713,11 @@ export interface ExecStateSnapshot {
 export type NetworkArchitecture = string;
 export const ArchitectureEvm: NetworkArchitecture = "evm";
 export const ArchitectureSvm: NetworkArchitecture = "svm";
+/**
+ * ArchitectureJsonRpc is the protocol-agnostic architecture: any JSON-RPC
+ * 2.0 endpoint gets load balancing and failsafe with no chain logic.
+ */
+export const ArchitectureJsonRpc: NetworkArchitecture = "jsonrpc";
 export type Network = any;
 /**
  * EvmNetwork is the EVM-specific view of a Network. Callers that need

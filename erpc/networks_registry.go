@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/jsonrpc"
 	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/consensus"
@@ -26,6 +27,7 @@ type NetworksRegistry struct {
 	metricsTracker       *health.Tracker
 	evmJsonRpcCache      *evm.EvmJsonRpcCache
 	svmJsonRpcCache      *svm.SvmJsonRpcCache
+	genericJsonRpcCache  *jsonrpc.GenericJsonRpcCache
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	policyEngine         *policy.Engine
 	preparedNetworks     sync.Map // map[string]*Network
@@ -83,6 +85,14 @@ func NewNetworksRegistry(
 		project.cfgMu.RUnlock()
 	}
 	return r
+}
+
+// SetGenericJsonRpcCache wires the opt-in cache for `jsonrpc` networks. It is
+// a setter rather than a constructor parameter so the many existing
+// NewNetworksRegistry call sites stay untouched; networks prepared after this
+// call pick it up in prepareNetwork.
+func (nr *NetworksRegistry) SetGenericJsonRpcCache(cache *jsonrpc.GenericJsonRpcCache) {
+	nr.genericJsonRpcCache = cache
 }
 
 func NewNetwork(
@@ -330,7 +340,8 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 
 	// Architecture-specific cache wiring. Each architecture has its own cache
 	// implementation because key partitioning differs (EVM uses blockRef, SVM
-	// uses commitment+slotRef). A given network gets exactly one cache.
+	// uses commitment+slotRef, generic jsonrpc has no block dimension at all).
+	// A given network gets exactly one cache.
 	switch nwCfg.Architecture {
 	case common.ArchitectureEvm:
 		if nr.evmJsonRpcCache != nil {
@@ -339,6 +350,10 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 	case common.ArchitectureSvm:
 		if nr.svmJsonRpcCache != nil {
 			network.cacheDal = nr.svmJsonRpcCache.WithProjectId(nr.project.Config.Id)
+		}
+	case common.ArchitectureJsonRpc:
+		if nr.genericJsonRpcCache != nil {
+			network.cacheDal = nr.genericJsonRpcCache.WithProjectId(nr.project.Config.Id)
 		}
 	}
 	// Register alias for lazy-created networks to support alias-based routing
@@ -402,6 +417,13 @@ func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.Netw
 				return nil, common.NewErrInvalidEvmChainId(networkId)
 			}
 			nwCfg.Svm = &common.SvmNetworkConfig{Chain: chain, Cluster: cluster}
+		case common.ArchitectureJsonRpc:
+			// s[1] is the user-chosen slug: a single segment, no sub-parts.
+			slug := s[1]
+			if slug == "" || strings.Contains(slug, ":") {
+				return nil, common.NewErrInvalidEvmChainId(networkId)
+			}
+			nwCfg.Generic = &common.GenericNetworkConfig{Slug: slug}
 		default:
 			return nil, common.NewErrInvalidEvmChainId(networkId)
 		}

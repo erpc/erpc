@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/jsonrpc"
 	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/failsafe"
@@ -254,8 +255,11 @@ func (e *upstreamExecutor) shouldRetry(req *common.NormalizedRequest, _ *common.
 		}
 		return false
 	}
+	// Non-replay-safe methods never retry: EVM/SVM write sets by name, and on
+	// a generic jsonrpc network any method the operator did not declare in
+	// generic.replaySafeMethods (eRPC cannot know which calls have effects).
 	if req != nil {
-		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
+		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m) || !jsonrpc.IsReplaySafe(req)) {
 			return false
 		}
 	}
@@ -288,12 +292,13 @@ func (e *upstreamExecutor) runHedge(
 		return e.callBreakerWithTimeout(ctx, req, inner, false)
 	}
 
-	// Hedge is not used for composite or write-only requests.
+	// Hedge is not used for composite or write-only requests, nor for methods
+	// a generic jsonrpc network did not declare replay-safe.
 	if req != nil {
 		if req.IsCompositeRequest() {
 			return e.callBreakerWithTimeout(ctx, req, inner, false)
 		}
-		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
+		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m) || !jsonrpc.IsReplaySafe(req)) {
 			return e.callBreakerWithTimeout(ctx, req, inner, false)
 		}
 	}

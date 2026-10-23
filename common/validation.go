@@ -867,6 +867,9 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	if err := validateSvmUpstreamNetworkPairing(p.Upstreams, p.Networks); err != nil {
 		return err
 	}
+	if err := validateJsonRpcUpstreamNetworkPairing(p.Upstreams, p.Networks); err != nil {
+		return err
+	}
 	if p.Auth != nil {
 		if err := p.Auth.Validate(); err != nil {
 			return err
@@ -1098,6 +1101,22 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 		if err := u.Svm.Validate(u); err != nil {
 			return err
 		}
+	}
+	if u.Type == UpstreamTypeJsonRpc {
+		if u.Generic == nil || u.Generic.Slug == "" {
+			return fmt.Errorf("upstream.*.generic.slug is required for jsonrpc upstreams")
+		}
+		if !IsValidNetwork(util.JsonRpcNetworkId(u.Generic.Slug)) {
+			return fmt.Errorf("upstream.*.generic.slug '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", u.Generic.Slug)
+		}
+		if u.Evm != nil {
+			return fmt.Errorf("upstream.*.evm is not supported on jsonrpc upstreams")
+		}
+		if u.Svm != nil {
+			return fmt.Errorf("upstream.*.svm is not supported on jsonrpc upstreams")
+		}
+	} else if u.Generic != nil {
+		return fmt.Errorf("upstream.*.generic is only valid on upstreams with type: jsonrpc")
 	}
 	if u.Failsafe != nil {
 		for _, fs := range u.Failsafe {
@@ -1584,6 +1603,13 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	if n.Architecture == ArchitectureSvm && n.Svm == nil {
 		return fmt.Errorf("network.*.svm is required for svm networks")
 	}
+	if n.Architecture == ArchitectureJsonRpc {
+		if err := n.validateJsonRpcArchitecture(); err != nil {
+			return err
+		}
+	} else if n.Generic != nil {
+		return fmt.Errorf("network.*.generic is only valid with architecture: jsonrpc")
+	}
 	if n.Evm != nil {
 		if err := n.Evm.Validate(); err != nil {
 			return err
@@ -1627,6 +1653,38 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	}
 	if err := n.Integrity.Validate(); err != nil {
 		return fmt.Errorf("network.*: %w", err)
+	}
+	return nil
+}
+
+// validateJsonRpcArchitecture rejects, at load time, every chain-specific
+// block on a `jsonrpc` network: there is no block tracking or finality to
+// drive them, so accepting them would only produce silent no-ops.
+func (n *NetworkConfig) validateJsonRpcArchitecture() error {
+	if n.Generic == nil || n.Generic.Slug == "" {
+		return fmt.Errorf("network.*.generic.slug is required for jsonrpc networks")
+	}
+	if !IsValidNetwork(util.JsonRpcNetworkId(n.Generic.Slug)) {
+		return fmt.Errorf("network.*.generic.slug '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", n.Generic.Slug)
+	}
+	for _, p := range n.Generic.ReplaySafeMethods {
+		if err := ValidatePattern(p); err != nil {
+			return fmt.Errorf("network.*.generic.replaySafeMethods pattern '%s' is invalid: %w", p, err)
+		}
+	}
+	if n.Evm != nil {
+		return fmt.Errorf("network.*.evm is not supported on jsonrpc networks (no block tracking or finality)")
+	}
+	if n.Svm != nil {
+		return fmt.Errorf("network.*.svm is not supported on jsonrpc networks (no block tracking or finality)")
+	}
+	if n.Integrity != nil {
+		return fmt.Errorf("network.*.integrity is not supported on jsonrpc networks (no block tracking or finality)")
+	}
+	for _, fs := range n.Failsafe {
+		if fs != nil && fs.Consensus != nil {
+			return fmt.Errorf("network.*.failsafe.consensus is not supported on jsonrpc networks (no block tracking or finality)")
+		}
 	}
 	return nil
 }
@@ -1885,6 +1943,28 @@ func validateSvmUpstreamNetworkPairing(upstreams []*UpstreamConfig, networks []*
 		}
 		if clusterDeclared && !matched {
 			return fmt.Errorf("upstream.*.svm.chain '%s' (upstream '%s') matches no network.*.svm.chain for cluster '%s'; the upstream would never be selected", upChain, u.Id, u.Svm.Cluster)
+		}
+	}
+	return nil
+}
+
+// validateJsonRpcUpstreamNetworkPairing mirrors the svm pairing check: a jsonrpc
+// upstream whose slug matches no declared jsonrpc network would never be
+// selected. It only fires once at least one jsonrpc network is declared, so
+// lazy-network projects keep working.
+func validateJsonRpcUpstreamNetworkPairing(upstreams []*UpstreamConfig, networks []*NetworkConfig) error {
+	slugs := map[string]bool{}
+	for _, n := range networks {
+		if n != nil && n.Architecture == ArchitectureJsonRpc && n.Generic != nil {
+			slugs[n.Generic.Slug] = true
+		}
+	}
+	if len(slugs) == 0 {
+		return nil
+	}
+	for _, u := range upstreams {
+		if u != nil && u.Type == UpstreamTypeJsonRpc && u.Generic != nil && !slugs[u.Generic.Slug] {
+			return fmt.Errorf("upstream.*.generic.slug '%s' (upstream '%s') matches no network.*.generic.slug; the upstream would never be selected", u.Generic.Slug, u.Id)
 		}
 	}
 	return nil

@@ -188,6 +188,8 @@ func TestUpstreamState_DetectFeatures(t *testing.T) {
 			{&common.UpstreamConfig{Id: "bad-type", Type: "cosmos"}, "upstream type not supported"},
 			{&common.UpstreamConfig{Id: "svm-nocfg", Type: common.UpstreamTypeSvm}, "missing svm config"},
 			{&common.UpstreamConfig{Id: "svm-nocluster", Type: common.UpstreamTypeSvm, Svm: &common.SvmUpstreamConfig{}}, "missing svm.cluster"},
+			{&common.UpstreamConfig{Id: "jsonrpc-nocfg", Type: common.UpstreamTypeJsonRpc}, "missing generic config"},
+			{&common.UpstreamConfig{Id: "jsonrpc-noslug", Type: common.UpstreamTypeJsonRpc, Generic: &common.GenericUpstreamConfig{}}, "missing generic.slug"},
 		} {
 			u := &Upstream{config: tc.cfg, logger: &lg}
 			err := u.detectFeatures(context.Background())
@@ -197,6 +199,10 @@ func TestUpstreamState_DetectFeatures(t *testing.T) {
 		u := &Upstream{config: &common.UpstreamConfig{Id: "svm-ok", Type: common.UpstreamTypeSvm, Svm: &common.SvmUpstreamConfig{Cluster: "devnet"}}, logger: &lg}
 		require.NoError(t, u.detectFeatures(context.Background()))
 		assert.Equal(t, "svm:devnet", u.NetworkId())
+		u = &Upstream{config: &common.UpstreamConfig{Id: "jsonrpc-ok", Type: common.UpstreamTypeJsonRpc, Generic: &common.GenericUpstreamConfig{Slug: "starknet"}}, logger: &lg}
+		require.NoError(t, u.detectFeatures(context.Background()))
+		assert.Equal(t, "jsonrpc:starknet", u.NetworkId())
+		assert.Nil(t, u.SvmStatePoller(), "a generic upstream has no state poller")
 	})
 }
 
