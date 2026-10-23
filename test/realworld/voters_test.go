@@ -297,27 +297,16 @@ func (s *scenario) requireLiveAfter(from time.Time, bound time.Duration) {
 	}
 }
 
-// firstRanked is the vendor key of the upstream pod's selection policy
-// ranks first (erpc_selection_position 0), or ws-a when none is ranked.
-func (s *scenario) firstRanked(pod int) string {
-	for key := range s.vendors {
-		if v, ok := s.metric(pod, "erpc_selection_position", map[string]string{"method": "*", "upstream": s.upstream(key)}); ok && v == 0 {
-			return key
-		}
-	}
-	s.logf("pod-%d ranks no upstream first; forking ws-a", pod+1)
-	return "ws-a"
-}
-
-// U18: the upstream pod-1's selection policy ranks first serves a
-// minority fork at the same heights for 20 blocks; the other vendors run
-// u18OthersLatency slower, so it stays first. No tap sends a fork block;
-// an HTTP read by number or tag may serve one only for W after the fork,
-// while the forked voter keeps its number vote (§6.3 minority fork, §6.5).
+// U18: http-b, an HTTP vendor that is no source, serves a minority fork at
+// the same heights for 20 blocks; the other vendors run u18OthersLatency
+// slower, so the policy ranks it first. No tap sends a fork block; an HTTP
+// read by number or tag may serve one until W, plus the tracker's
+// processing, after a fork block first reached the pod as a latest answer:
+// http-b's hash vote (§6.3), after which it loses its number vote.
 func u18() spec {
 	return spec{name: "U18", bound: settleDelivery, body: func(s *scenario) {
 		s.blocks(25)
-		forked := s.firstRanked(0)
+		forked := "http-b"
 		var others []string
 		for key := range s.vendors {
 			if key != forked {
@@ -335,7 +324,7 @@ func u18() spec {
 		s.mu.Lock()
 		s.fork = s.vendors[forked].Head()
 		s.mu.Unlock()
-		s.logf("%s, ranked first on pod-1, on a minority fork", s.upstream(forked))
+		s.logf("%s, ranked first, on a minority fork", s.upstream(forked))
 		done := make(chan struct{})
 		var wg sync.WaitGroup
 		wg.Add(1)
@@ -371,19 +360,43 @@ func u18() spec {
 			}
 		}
 		s.requireNoMinorityDelivered()
+		for pod := range s.h.pods {
+			latest, header := s.forkFirsts(pod)
+			if latest.IsZero() {
+				s.h.headersMu.Lock()
+				n := len(s.h.latests[pod])
+				s.h.headersMu.Unlock()
+				s.logf("pod-%d: no fork block reached it as a latest answer (%d latest answers)", pod+1, n)
+				continue
+			}
+			s.logf("pod-%d: first fork latest answer %s after the fork's first header", pod+1, latest.Sub(header).Round(time.Millisecond))
+		}
 		s.blocks(25)
 	}}
 }
 
 // requireNoMinority reads a block by tag or number on pod and fails on a
-// minority-fork answer to a read that started more than W after the
-// fork's first header reached pod.
+// minority-fork answer to a read that started more than W, plus the
+// tracker's processing, after a fork block first reached pod as a latest
+// answer (minorityGrace); it logs the answers the grace allows.
 func (s *scenario) requireNoMinority(pod int, forkAt time.Time, what, ref string) {
 	start := time.Now()
 	got := s.blockAnswer(pod, "", "eth_getBlockByNumber", ref, false)
-	if b := s.blockOf(got); b != nil && b.Minority() && !s.minorityGrace(pod, start, got) {
-		s.violate(s.name, "pod-%d: %s served minority-fork block %d %s, read %s after the fork (allowed for %s)", pod+1, what, b.Number, short(b.Hash), start.Sub(forkAt).Round(time.Millisecond), liveBound)
+	b := s.blockOf(got)
+	if b == nil || !b.Minority() {
+		return
 	}
+	latest, _ := s.forkFirsts(pod)
+	if !s.minorityGrace(pod, start, got) {
+		s.violate(s.name, "pod-%d: %s served minority-fork block %d %s, read %s after the fork, %s after its first fork latest answer (allowed for %s)",
+			pod+1, what, b.Number, short(b.Hash), start.Sub(forkAt).Round(time.Millisecond), start.Sub(latest).Round(time.Millisecond), liveBound+tapProcessingSlack)
+		return
+	}
+	since := "no fork latest answer yet"
+	if !latest.IsZero() {
+		since = start.Sub(latest).Round(time.Millisecond).String() + " after its first fork latest answer"
+	}
+	s.logf("pod-%d: %s served minority-fork block %d, read %s after the fork, %s", pod+1, what, b.Number, start.Sub(forkAt).Round(time.Millisecond), since)
 }
 
 // blockOf is the chain's block of a blockAnswer, nil for null or an error.

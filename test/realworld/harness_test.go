@@ -46,23 +46,31 @@ type harness struct {
 	proxies []*proxy
 
 	// headers is when each block header first reached each pod, by pod
-	// index (headerScan).
+	// index (headerScan); latests, when it first reached the pod as an
+	// eth_getBlockByNumber("latest") answer.
 	headersMu sync.Mutex
 	headers   map[int]map[hash]time.Time
+	latests   map[int]map[hash]time.Time
 }
 
-// sawHeader notes that a header of block bh reached pod at at; the first
-// sighting stays.
-func (h *harness) sawHeader(pod int, bh hash, at time.Time) {
+// sawHeader notes that a header of block bh reached pod at at, as a latest
+// answer or not; the first sighting stays.
+func (h *harness) sawHeader(pod int, bh hash, at time.Time, latest bool) {
 	h.headersMu.Lock()
 	defer h.headersMu.Unlock()
-	m := h.headers[pod]
-	if m == nil {
-		m = make(map[hash]time.Time)
-		h.headers[pod] = m
+	first := func(byPod map[int]map[hash]time.Time) {
+		m := byPod[pod]
+		if m == nil {
+			m = make(map[hash]time.Time)
+			byPod[pod] = m
+		}
+		if _, ok := m[bh]; !ok {
+			m[bh] = at
+		}
 	}
-	if _, ok := m[bh]; !ok {
-		m[bh] = at
+	first(h.headers)
+	if latest {
+		first(h.latests)
 	}
 }
 
@@ -74,12 +82,20 @@ func (h *harness) headerAt(pod int, bh hash) (time.Time, bool) {
 	return at, ok
 }
 
+// latestAt is when block bh first reached pod as a latest answer.
+func (h *harness) latestAt(pod int, bh hash) (time.Time, bool) {
+	h.headersMu.Lock()
+	defer h.headersMu.Unlock()
+	at, ok := h.latests[pod][bh]
+	return at, ok
+}
+
 func newHarness(t *testing.T, dir string, withRedis bool) *harness {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	h := &harness{t: t, dir: dir, pids: make(map[int]*pod), dumped: make(map[int]bool), start: time.Now(), cpu0: selfCPU(), lookups: &lookups{},
-		series: make(chan struct{}), headers: make(map[int]map[hash]time.Time)}
+		series: make(chan struct{}), headers: make(map[int]map[hash]time.Time), latests: make(map[int]map[hash]time.Time)}
 	if withRedis {
 		h.redis = startRedis(t, dir)
 	}

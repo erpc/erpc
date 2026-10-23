@@ -561,8 +561,9 @@ func (e *EvmStatePoller) resolveFinalizedDebounce(cfg *common.EvmNetworkConfig, 
 
 // PollLatestBlockNumber fetches the latest block number in a blocking manner.
 // Respects the debounce interval if configured (if the last poll happened too recently, it reuses the cached value).
-// While this poller is a poll source, each fetched header goes to its intake
-// and the counter moves only there, after the header passed its checks. The
+// With an intake bound, each fetched header goes to it, as a hash vote of
+// this upstream (spec §6.3: every latest poll skips cache reads), and the
+// counter moves only there, after the header passed its checks. The
 // give-up after latest was refused as unsupported applies to a poll source
 // too: while it lasts, the reconciler polls other sources (LatestUnsupported).
 func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, error) {
@@ -570,7 +571,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		e.logger.Trace().Msg("skipping latest block number poll as it is not supported by the upstream")
 		return 0, nil
 	}
-	src := e.activePollSource()
+	src, bound := e.activePollSource(), e.pollSrc.Load()
 	e.stateMu.RLock()
 	cfg := e.cfg
 	networkLabel := e.networkLabel
@@ -643,9 +644,11 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 
 		if src != nil {
 			e.pollFailures.Store(0)
+		}
+		if bound != nil {
 			// Intake parses, verifies a major jump and moves the counter
 			// through ObserveHead; the fetch itself must not move it.
-			src.intake.Header(e.upstream.Id(), header)
+			bound.intake.Header(e.upstream.Id(), header)
 			counter := e.latestBlockShared.GetValue()
 			if counter >= blockNum {
 				e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
@@ -654,7 +657,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 				Int64("blockNumber", blockNum).
 				Int64("blockTimestamp", blockTimestamp).
 				Int64("counter", counter).
-				Msg("fetched latest block from upstream for its poll source")
+				Msg("fetched latest block from upstream for its intake")
 			return counter, nil
 		}
 
@@ -759,13 +762,13 @@ func (e *EvmStatePoller) ObserveHead(raw json.RawMessage) (accepted bool) {
 	return e.LatestBlock() >= n
 }
 
-// pollSource is where a poll source's headers go.
+// pollSource is where a poller's latest headers go.
 type pollSource struct {
 	intake indexer.Intake
 }
 
-// BindIntake makes this poller a poll source of intake; Set turns it on and
-// off.
+// BindIntake sends this poller's latest headers to intake; Set makes it a
+// poll source, polled at its cadence.
 func (e *EvmStatePoller) BindIntake(intake indexer.Intake) {
 	e.pollSrc.Store(&pollSource{intake: intake})
 }

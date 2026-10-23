@@ -59,36 +59,154 @@ type pconn struct {
 // as they reach the pod: the first header of a block from any upstream is
 // where a pod's delivery bound starts (spec §15.1, rows U3 and X9). tail
 // keeps the last bytes of the previous chunk, so a header split across two
-// chunks is still found.
+// chunks is still found. pending are the ids of the pod's
+// eth_getBlockByNumber("latest") requests not answered yet; a header in the
+// answer to one is a latest answer (row U18). cur is the id of the vendor
+// message being read, "" in a push, which carries no id.
 type headerScan struct {
 	h    *harness
 	pod  int
 	tail []byte
+	cur  string
+
+	mu      sync.Mutex
+	pending map[string]bool
 }
 
 // hashKey is how a header's own hash opens in vendor JSON: object keys are
-// sorted, so "hash" never follows "blockHash" or "parentHash" here.
+// sorted, so "hash" never follows "blockHash" or "parentHash" here, and a
+// message opens with its id, or with "jsonrpc" when it is a push.
 var hashKey = []byte(`"hash":"0x`)
+
+var (
+	byNumberKey = []byte(`eth_getBlockByNumber`)
+	latestKey   = []byte(`"latest"`)
+	jsonrpcKey  = []byte(`"jsonrpc"`)
+	idKey       = []byte(`"id":`)
+	answerKey   = []byte(`{"id":`)
+	pushKey     = []byte(`{"jsonrpc"`)
+)
+
+// request notes the ids of the latest block requests in a pod→vendor
+// chunk; each message is the part of the chunk from one "jsonrpc" key to
+// the next.
+func (sc *headerScan) request(b []byte) {
+	if !bytes.Contains(b, byNumberKey) || !bytes.Contains(b, latestKey) {
+		return
+	}
+	starts := []int{}
+	for i := 0; ; {
+		j := bytes.Index(b[i:], jsonrpcKey)
+		if j < 0 {
+			break
+		}
+		starts = append(starts, i+j)
+		i += j + len(jsonrpcKey)
+	}
+	if len(starts) == 0 {
+		return
+	}
+	starts[0] = 0
+	for k, from := range starts {
+		to := len(b)
+		if k+1 < len(starts) {
+			to = starts[k+1]
+		}
+		msg := b[from:to]
+		if !bytes.Contains(msg, byNumberKey) || !bytes.Contains(msg, latestKey) {
+			continue
+		}
+		if id, ok := jsonID(msg, bytes.Index(msg, idKey)); ok {
+			sc.mu.Lock()
+			if sc.pending == nil {
+				sc.pending = make(map[string]bool)
+			}
+			sc.pending[id] = true
+			sc.mu.Unlock()
+		}
+	}
+}
+
+// jsonID is the raw id value whose "id": key starts at at in b; false when
+// there is none or it is cut off.
+func jsonID(b []byte, at int) (string, bool) {
+	if at < 0 {
+		return "", false
+	}
+	v := b[at+len(idKey):]
+	end := bytes.IndexAny(v, ",}")
+	if end < 0 {
+		return "", false
+	}
+	return string(bytes.TrimSpace(v[:end])), true
+}
+
+// answers reports whether id names a pending latest request, which it
+// then no longer is.
+func (sc *headerScan) answers(id string) bool {
+	if id == "" {
+		return false
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if !sc.pending[id] {
+		return false
+	}
+	delete(sc.pending, id)
+	return true
+}
 
 // scan records every header hash in b, written to the pod at at.
 func (sc *headerScan) scan(b []byte, at time.Time) {
 	buf := append(sc.tail, b...)
+	keepFrom := -1
+scan:
 	for i := 0; ; {
-		j := bytes.Index(buf[i:], hashKey)
-		if j < 0 {
-			break
+		h, a, p := index(buf, i, hashKey), index(buf, i, answerKey), index(buf, i, pushKey)
+		next := -1
+		for _, x := range []int{h, a, p} {
+			if x >= 0 && (next < 0 || x < next) {
+				next = x
+			}
 		}
-		start := i + j + len(hashKey)
-		if start+64 > len(buf) {
-			break
+		switch {
+		case next < 0:
+			break scan
+		case next == a:
+			id, ok := jsonID(buf, a+1)
+			if !ok {
+				keepFrom = a
+				break scan
+			}
+			sc.cur = id
+			i = a + len(answerKey)
+		case next == p:
+			sc.cur = ""
+			i = p + len(pushKey)
+		default:
+			start := h + len(hashKey)
+			if start+64 > len(buf) {
+				break scan
+			}
+			if hx := buf[start : start+64]; isHex(hx) {
+				sc.h.sawHeader(sc.pod, gethcommon.HexToHash(string(hx)), at, sc.answers(sc.cur))
+			}
+			i = start
 		}
-		if hx := buf[start : start+64]; isHex(hx) {
-			sc.h.sawHeader(sc.pod, gethcommon.HexToHash(string(hx)), at)
-		}
-		i = start
 	}
 	keep := min(len(buf), len(hashKey)+64)
+	if keepFrom >= 0 {
+		keep = max(keep, len(buf)-keepFrom)
+	}
 	sc.tail = append(sc.tail[:0], buf[len(buf)-keep:]...)
+}
+
+// index is the position of key in b at or after from, -1 when absent.
+func index(b []byte, from int, key []byte) int {
+	if j := bytes.Index(b[from:], key); j >= 0 {
+		return from + j
+	}
+	return -1
 }
 
 func isHex(b []byte) bool {
@@ -242,8 +360,9 @@ func (px *proxy) handle(c net.Conn) {
 	l.mu.Lock()
 	l.conns[pc] = true
 	l.mu.Unlock()
-	go l.pipe(pc, s, c, &headerScan{h: px.h, pod: p.idx})
-	l.pipe(pc, c, s, nil)
+	sc := &headerScan{h: px.h, pod: p.idx}
+	go l.pipe(pc, s, c, sc, nil)
+	l.pipe(pc, c, s, nil, sc)
 	<-pc.done
 	l.mu.Lock()
 	delete(l.conns, pc)
@@ -315,10 +434,10 @@ type chunk struct {
 }
 
 // pipe forwards src to dst under the link's faults; down (non-nil) is the
-// vendor→pod direction, whose headers it records as they reach the pod.
-// Reads stop while black-holed, so TCP backpressure builds as on a dead
-// path.
-func (l *link) pipe(pc *pconn, src, dst net.Conn, down *headerScan) {
+// vendor→pod direction, whose headers it records as they reach the pod, up
+// (non-nil) the pod→vendor one, whose latest requests it notes. Reads stop
+// while black-holed, so TCP backpressure builds as on a dead path.
+func (l *link) pipe(pc *pconn, src, dst net.Conn, down, up *headerScan) {
 	ch := make(chan chunk, 256)
 	go func() {
 		defer pc.close()
@@ -346,6 +465,9 @@ func (l *link) pipe(pc *pconn, src, dst net.Conn, down *headerScan) {
 			}
 			if down != nil {
 				down.scan(b, time.Now())
+			}
+			if up != nil {
+				up.request(b)
 			}
 			sent += int64(len(b))
 			if f.Bandwidth > 0 {

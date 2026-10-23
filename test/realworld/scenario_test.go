@@ -106,9 +106,10 @@ type scenario struct {
 	memo       map[string]*memoEntry
 	allowSet   map[string]bool
 	// fork is the first block of a minority fork the scenario runs, nil
-	// none: for W after its first header reached a pod, an HTTP read there
-	// may answer a minority-fork block (spec §6.3: a voter off the pins
-	// keeps its number vote for W).
+	// none: an HTTP read on a pod may answer a minority-fork block until W,
+	// plus the tracker's processing, after a fork block first reached the
+	// pod as a latest answer, the forked upstream's hash vote (spec §6.3,
+	// row U18).
 	fork *chainsim.Block
 }
 
@@ -122,7 +123,25 @@ func (s *scenario) minorityGrace(pod int, start time.Time, answer string) bool {
 	if fork == nil || b == nil || !b.Minority() {
 		return false
 	}
-	return start.Before(s.waitFrom(pod, fork.Hash, fork.MintedAt).Add(liveBound))
+	latest, _ := s.forkFirsts(pod)
+	return latest.IsZero() || start.Before(latest.Add(liveBound+tapProcessingSlack))
+}
+
+// forkFirsts is when a minority-fork block first reached pod as a latest
+// answer, and when a minority-fork header first reached it at all; zero
+// before either.
+func (s *scenario) forkFirsts(pod int) (latest, header time.Time) {
+	first := func(byHash map[hash]time.Time) (t time.Time) {
+		for bh, at := range byHash {
+			if b := s.chain.Block(bh); b != nil && b.Minority() && (t.IsZero() || at.Before(t)) {
+				t = at
+			}
+		}
+		return t
+	}
+	s.h.headersMu.Lock()
+	defer s.h.headersMu.Unlock()
+	return first(s.h.latests[pod]), first(s.h.headers[pod])
 }
 
 // excuse: checks on pod (-1 any) during [from, to] may fail, because the

@@ -589,16 +589,22 @@ func topicsIf(newHeads bool) []indexer.Topic {
 }
 
 // newSource sets up u's transports: its WebSocket client as a push source
-// and its state poller as a poll source.
+// and its state poller as a poll source. Every poller's latest headers go
+// through intake as u's hash votes (spec §6.3), source or not.
 func (r *sourceReconciler) newSource(u *upstream.Upstream) *source {
 	cfg := u.Config()
 	s := &source{id: u.Id(), isSource: cfg.IsSubscriptionSource()}
 	// Every move of its head counter, by a poll, a push or another instance,
 	// may move the network's latest block, which caps every send (spec §6.5).
-	if p, ok := u.EvmStatePoller().(*evm.EvmStatePoller); ok && !p.IsObjectNull() {
+	p, ok := u.EvmStatePoller().(*evm.EvmStatePoller)
+	if ok && !p.IsObjectNull() {
 		if _, seen := r.watched[p]; !seen {
 			r.watched[p] = struct{}{}
 			p.OnLatestBlock(func(int64) { evm.LatestChanged(r.nw) })
+		}
+		p.BindIntake(r.nw.intake)
+		if s.isSource {
+			s.poll = p
 		}
 	}
 	if util.IsWsEndpoint(cfg.Endpoint) {
@@ -612,12 +618,6 @@ func (r *sourceReconciler) newSource(u *upstream.Upstream) *source {
 		}
 		if a := wsupstream.New(u, indexerNetworkKey(r.nw), r.nw.intake, r.nw.logger, opts); a != nil {
 			s.push = a
-		}
-	}
-	if s.isSource {
-		if p, ok := u.EvmStatePoller().(*evm.EvmStatePoller); ok && !p.IsObjectNull() {
-			p.BindIntake(r.nw.intake)
-			s.poll = p
 		}
 	}
 	return s
