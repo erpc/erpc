@@ -73,19 +73,20 @@ T   the rest of the real-world catalogue
   - Finality split: reads `Head.Finalized`; permanent writes also the serving upstream's finalized; the cache write guard reads the network-wide lane.
   - Lane taps read their lane's `Head`; the 50ms re-read H1 left for them is deleted.
 - Delete: per-request served-tip evaluation; post-forward raise, `pickHighestBlock`, `enforceHighestBlock` for `eth_getBlockByNumber`; raw-max consensus leader; `EvmLowestFinalizedBlockNumber`; `pinLatestTag` re-read per attempt; the cache key on the word `latest`.
-- Tests, real-world: X2, U12, U14, P1, P5, P6, P7, P9, P10, K7, C12, C13. Extend `erpc/networks_served_tip_invariants_test.go` (assertions unchanged) and the existing interpolation tests.
+- Tests, real-world: U12, U14, P5, P6, P7, P9, P10, K7, C12, C13. Extend `erpc/networks_served_tip_invariants_test.go` (assertions unchanged) and the existing interpolation tests.
 
 ## H3: fetch schedule
 
 - Add (spec §6.8):
   - One backoff per upstream (cadence doubled per failure, at most 60s); the bench reads it.
-  - Ask: single-flight per upstream, outcome to every waiter; number need met by a fresh shared counter, hash need only by a local fetch.
+  - Ask: single-flight per upstream, outcome to every waiter; it joins a fetch already in flight and waits for its answer; debounced only by a fetch sent within the debounce; number need met by a fresh shared counter, hash need only by a local fetch.
+  - Evidence time (spec §6.4 `OldestReportAt`): every report carries when its evidence was taken (an answer's request send time, a push's receive time) through `ObserveHead`, `SuggestLatestBlock` and the intake, with no window where an answer looks fresher.
   - Poll source = Asked once per cadence while demanded and admitted.
   - Settle = Ask with a hash need: voters without a fresh hash vote, then non-voters, up to 3; no-hash-voter Asks.
   - Settle rounds (spec §6.5): keyed on the pinned head and the conflicting branch; a changed key never reports `decided` from votes alone; a client ctx ending with answers pending gets `PinRateLimited`; a deferred re-check does not start the reconfirm cooldown.
   - A panic in an Ask fails its waiters.
 - Delete: tracker-owned settle and no-source fetches in the scheduler; class 1 keeps walks only.
-- Tests, real-world: U1, U16, U17, C4, C7, D8 (Ask permits).
+- Tests, real-world: U1, U16, U17, C4, C7, D8 (Ask permits), P1 (the other instance within 1 Ask; the reorg settle before any demotion), X2 (slow links, no shared state).
 
 ## H4: suspension parameters, evidence quorum
 
