@@ -41,6 +41,12 @@ type networkIntake struct {
 	// admitted is the voters topic admission admits, as the last pass
 	// read them, for per-transaction checks that take no lock.
 	admitted atomic.Pointer[[]string]
+	// voterIds are the network-wide voters as the network-wide tracker
+	// last read them, for counting each header's outcome.
+	voterIds atomic.Pointer[[]string]
+	// vendors is the network's upstreams' vendors, kept until the upstream
+	// set or a vendor changes.
+	vendors atomic.Pointer[upstreamVendors]
 	// rejected are the newest headers integrity held back, oldest first;
 	// a check suspended for the network lets them in again.
 	rejected []rejectedHeader
@@ -143,7 +149,7 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay b
 		mt.RecordHashVote(u, int64(cur.Number), replay)
 	}
 	evm.ObserveSourceHeader(in.nw, u, sh)
-	if in.isVoter(upstreamId) {
+	if ids := in.voterIds.Load(); ids != nil && slices.Contains(*ids, upstreamId) {
 		in.count(upstreamId, "voted")
 	} else {
 		in.count(upstreamId, "gated_voter")
@@ -365,10 +371,43 @@ func (in *networkIntake) voters(selector string) (voters, cands []common.Upstrea
 	return voters, cands
 }
 
-// isVoter reports whether upstreamId is a network-wide voter now.
-func (in *networkIntake) isVoter(upstreamId string) bool {
-	vs, _ := in.voters("")
-	return slices.ContainsFunc(vs, func(u common.Upstream) bool { return u.Id() == upstreamId })
+// upstreamVendors is each upstream's vendor and the evidence quorum (spec
+// §6.10) for one upstream set.
+type upstreamVendors struct {
+	ups      []*upstream.Upstream
+	vendors  map[string]string
+	evidence int
+}
+
+// vendorsOf is the vendors of ups, computed again only when the set or a
+// vendor name changed.
+func (in *networkIntake) vendorsOf(ups []*upstream.Upstream) *upstreamVendors {
+	if c := in.vendors.Load(); c != nil && c.of(ups) {
+		return c
+	}
+	c := &upstreamVendors{ups: slices.Clone(ups), vendors: make(map[string]string, len(ups)), evidence: 1}
+	distinct := make(map[string]struct{}, len(ups))
+	for _, u := range ups {
+		c.vendors[u.Id()] = u.VendorName()
+		distinct[u.VendorName()] = struct{}{}
+	}
+	if len(distinct) >= 2 {
+		c.evidence = 2
+	}
+	in.vendors.Store(c)
+	return c
+}
+
+func (c *upstreamVendors) of(ups []*upstream.Upstream) bool {
+	if len(ups) != len(c.ups) {
+		return false
+	}
+	for i, u := range ups {
+		if c.ups[i] != u || c.vendors[u.Id()] != u.VendorName() {
+			return false
+		}
+	}
+	return true
 }
 
 // hashVoter reports whether voter u is a hash voter: its hash age is at
@@ -453,24 +492,18 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 	if n.cfg != nil {
 		q = n.cfg.Evm.ServedTipQuorum()
 	}
-	hv := evm.HashVoters{Evidence: 1, Vendors: make(map[string]string)}
+	hv := evm.HashVoters{Evidence: 1}
 	if n.intake == nil || n.upstreamsRegistry == nil {
 		hv.Need = q.Of(0)
 		return hv
 	}
-	var vendors []string
-	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
-		hv.Vendors[u.Id()] = u.VendorName()
-		if !slices.Contains(vendors, u.VendorName()) {
-			vendors = append(vendors, u.VendorName())
-		}
-	}
-	if len(vendors) >= 2 {
-		hv.Evidence = 2
-	}
+	vs := n.intake.vendorsOf(n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId))
+	hv.Vendors, hv.Evidence = vs.vendors, vs.evidence
 	now := time.Now()
 	voters, cands := n.intake.voters(selector)
 	var stale []string
+	hv.Voters = make([]string, 0, len(voters))
+	hv.Hash = make([]string, 0, len(voters))
 	for _, u := range voters {
 		hv.Voters = append(hv.Voters, u.Id())
 		v, voted := n.intake.hashVote(u)
@@ -488,6 +521,9 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 	}
 	if selector == "" {
 		n.setHashStale(stale)
+		if old := n.intake.voterIds.Load(); old == nil || !slices.Equal(*old, hv.Voters) {
+			n.intake.voterIds.Store(&hv.Voters)
+		}
 	}
 	if cold {
 		for _, u := range cands {

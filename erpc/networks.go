@@ -3588,9 +3588,9 @@ func (n *Network) partitionUpstreamsByLatestBlock(ups []common.Upstream, bn int6
 		return ups
 	}
 	return stablePartition(ups, func(u common.Upstream) bool {
-		if n.intake != nil && n.sources.pushSource(u.Id()) {
-			v, voted := n.intake.hashVote(u)
-			return voted && v.Number < bn
+		if n.metricsTracker != nil && n.sources.pushSource(u.Id()) {
+			v := n.metricsTracker.HashVoteNumber(u)
+			return v > 0 && v < bn
 		}
 		lb := upstreamLatestBlock(u)
 		return lb > 0 && lb < bn
@@ -3686,7 +3686,7 @@ func (n *Network) routingBlockNumber(ctx context.Context, req *common.Normalized
 	case x > 0:
 		return x
 	case len(ref) == 66:
-		bn, _ := evm.HeldNumber(n, ref)
+		bn, _ := n.chainTracker.HeldNumber(ref)
 		return bn
 	}
 	return 0

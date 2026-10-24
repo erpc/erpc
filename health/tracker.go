@@ -66,9 +66,11 @@ type NetworkMetadata struct {
 	reporters []headReporter
 	// refMovedAt is when the lag reference (evmLatestBlockNumber) last
 	// rose; firstVotes are when this instance first received a hash vote
-	// for each recent block number (ageHashVote). Guarded by headMu.
+	// for each recent block number (ageHashVote); agesAt is when every
+	// reporter's age gauges were last set. Guarded by headMu.
 	refMovedAt time.Time
 	firstVotes []firstVote
+	agesAt     time.Time
 
 	// On upstream entries only; guarded by the network entry's headMu.
 	// headChangedAt is when this upstream's stored latest head last changed;
@@ -97,14 +99,15 @@ type NetworkMetadata struct {
 	// only; guarded by the network entry's headMu.
 	headReport      headReport
 	finalizedReport headReport
-	// hashVote is this upstream's newest hash vote (spec §6.3): a header
-	// this instance received by push or fetched with cache reads skipped;
-	// hashVoted is false before the first. hashExpired: its socket closed
-	// since. hashBehindSince is when the lag reference first stood above
-	// it, zero while it does not; hashVotedAt is when the vote arrived. On
-	// upstream entries only; guarded by the network entry's headMu.
-	hashVote        int64
-	hashVoted       bool
+	// hashVote is this upstream's newest hash vote's number (spec §6.3): a
+	// header this instance received by push or fetched with cache reads
+	// skipped; 0 before the first. Written under the network entry's
+	// headMu, read without it by routing (HashVoteNumber). hashExpired: its
+	// socket closed since. hashBehindSince is when the lag reference first
+	// stood above it, zero while it does not; hashVotedAt is when the vote
+	// arrived. On upstream entries only; guarded by the network entry's
+	// headMu.
+	hashVote        atomic.Int64
 	hashExpired     bool
 	hashBehindSince time.Time
 	hashVotedAt     time.Time
@@ -1800,7 +1803,8 @@ func (t *Tracker) RecordHashVote(ups common.Upstream, number int64, replay bool)
 	meta := t.addHeadReporter(ntwMeta, net, ups)
 	now := t.now()
 	ntwMeta.firstVotes = firstVoteAt(ntwMeta.firstVotes, number, now)
-	meta.hashVote, meta.hashVoted, meta.hashExpired = number, true, false
+	meta.hashVote.Store(number)
+	meta.hashExpired = false
 	if !replay {
 		meta.hashVotedAt = now
 	}
@@ -1853,7 +1857,7 @@ func (t *Tracker) RenewHashVote(ups common.Upstream) bool {
 	ntwMeta.headMu.Lock()
 	defer ntwMeta.headMu.Unlock()
 	meta := t.addHeadReporter(ntwMeta, net, ups)
-	if !meta.hashVoted || !meta.hashExpired {
+	if meta.hashVote.Load() == 0 || !meta.hashExpired {
 		return false
 	}
 	meta.hashExpired = false
@@ -1884,7 +1888,16 @@ func (t *Tracker) HashVote(ups common.Upstream) (HashVote, bool) {
 	ntwMeta.headMu.Lock()
 	defer ntwMeta.headMu.Unlock()
 	age, ok := meta.hashAge(t.now())
-	return HashVote{Age: age, Expired: meta.hashExpired, At: meta.hashVotedAt, Number: meta.hashVote}, ok
+	return HashVote{Age: age, Expired: meta.hashExpired, At: meta.hashVotedAt, Number: meta.hashVote.Load()}, ok
+}
+
+// HashVoteNumber is the number of ups's newest hash vote, 0 before its
+// first; it takes no lock, for routing (spec §6.1).
+func (t *Tracker) HashVoteNumber(ups common.Upstream) int64 {
+	if v, ok := t.metadata.Load(metadataKey{ups, ups.NetworkId()}); ok {
+		return v.(*NetworkMetadata).hashVote.Load()
+	}
+	return 0
 }
 
 // ageHashVote starts the hash age when the lag reference ref stands above
@@ -1894,18 +1907,20 @@ func (t *Tracker) HashVote(ups common.Upstream) (HashVote, bool) {
 // another voter's first header (spec §15.1, U3), even when the reference
 // passes it later; votes above ref, such as a lone far-ahead one, never
 // start it. A newer vote still below ref keeps the age running: a lagging
-// source that keeps pushing stays behind. Caller holds the network's
-// headMu.
-func (m *NetworkMetadata) ageHashVote(ref int64, fv []firstVote, now time.Time) {
-	if !m.hashVoted || m.hashVote >= ref {
+// source that keeps pushing stays behind. It reports whether the age
+// started or ended. Caller holds the network's headMu.
+func (m *NetworkMetadata) ageHashVote(ref int64, fv []firstVote, now time.Time) (changed bool) {
+	vote := m.hashVote.Load()
+	if vote == 0 || vote >= ref {
+		changed = !m.hashBehindSince.IsZero()
 		m.hashBehindSince = time.Time{}
-		return
+		return changed
 	}
 	if !m.hashBehindSince.IsZero() {
-		return
+		return false
 	}
 	m.hashBehindSince = now
-	i, _ := slices.BinarySearchFunc(fv, m.hashVote+1, func(v firstVote, n int64) int { return cmp.Compare(v.number, n) })
+	i, _ := slices.BinarySearchFunc(fv, vote+1, func(v firstVote, n int64) int { return cmp.Compare(v.number, n) })
 	for _, v := range fv[i:] {
 		if v.number > ref {
 			break
@@ -1914,11 +1929,12 @@ func (m *NetworkMetadata) ageHashVote(ref int64, fv []firstVote, now time.Time) 
 			m.hashBehindSince = v.at
 		}
 	}
+	return true
 }
 
 // hashAge: see HashVote.Age. Caller holds the network's headMu.
 func (m *NetworkMetadata) hashAge(now time.Time) (time.Duration, bool) {
-	if !m.hashVoted {
+	if m.hashVote.Load() == 0 {
 		return 0, false
 	}
 	if m.hashBehindSince.IsZero() {
@@ -2077,9 +2093,16 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	// network made beyond its last report (headReport).
 	now, blockTime := t.now(), time.Duration(ntwMeta.evmBlockTime.Load())
 	upsMeta.headReport.reported(now, ntwBn)
+	// Ages are set for the reporter and for reporters whose hash age started
+	// or ended; every reporter's, which run with time, once a second.
+	allAges := now.Sub(ntwMeta.agesAt) >= reportAgesEvery
+	if allAges {
+		ntwMeta.agesAt = now
+	}
 	for _, r := range ntwMeta.reporters {
-		r.meta.ageHashVote(ntwBn, ntwMeta.firstVotes, now)
-		t.reportAges(r.ups, r.meta, now)
+		if r.meta.ageHashVote(ntwBn, ntwMeta.firstVotes, now) || allAges || r.meta == upsMeta {
+			t.reportAges(r.ups, r.meta, now)
+		}
 	}
 	lagHead := func(ups common.Upstream, meta *NetworkMetadata) int64 {
 		h := meta.evmLatestBlockNumber.Load()
@@ -2137,6 +2160,10 @@ const blockTimeEmaAlpha = 0.1
 
 // blockTimeSampleCap bounds a block time sample to this many times the EMA.
 const blockTimeSampleCap = 3
+
+// reportAgesEvery is how often a head update sets every reporter's
+// report-age gauges, which run with time.
+const reportAgesEvery = time.Second
 
 // ColdBlockTime is every reader's block time until the network's first
 // sample (spec §6.7).

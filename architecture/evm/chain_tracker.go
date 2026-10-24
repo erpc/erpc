@@ -2844,10 +2844,9 @@ func LatestChanged(n common.Network) { tickTrackers(n) }
 // with no hash voter (§6 rule 6). It never blocks.
 func DemandChanged(n common.Network) { tickTrackers(n) }
 
-// HeldNumber is the number of the header with hash that the network-wide
-// tracker of n holds; false when it holds none. It never fetches.
-func HeldNumber(n common.Network, hash string) (int64, bool) {
-	t := lookupChainTracker(n, "")
+// HeldNumber is the number of the header with hash that t holds; false
+// when it holds none, or t is nil. It never fetches and takes no lock.
+func (t *ChainTracker) HeldNumber(hash string) (int64, bool) {
 	if t == nil {
 		return 0, false
 	}
