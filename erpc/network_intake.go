@@ -59,12 +59,15 @@ type networkIntake struct {
 	polls map[string]pollRecord
 }
 
-// pollRecord is an upstream's last successful latest poll, and the first
-// and last poll its node failed since (zero while none did).
-type pollRecord struct{ ok, first, last time.Time }
-
-// failedFor is how long the polls have failed, first to last.
-func (r pollRecord) failedFor() time.Duration { return r.last.Sub(r.first) }
+// pollRecord is an upstream's last successful latest poll; since it, when
+// the first poll its node failed was sent and when the last failed (zero
+// while none did); and whether those failures expired its hash vote. A
+// failed poll spans from its send to its failure: the node did not answer
+// in between, so one timeout as long as W spans W alone.
+type pollRecord struct {
+	ok, first, last time.Time
+	expired         bool
+}
 
 type rejectedHeader struct {
 	upstreamId string
@@ -115,13 +118,14 @@ func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessa
 	in.nw.mempool.Add(variant, raw)
 }
 
-// Polled takes the header a poll of upstreamId's latest fetched.
+// Polled takes the header a poll of upstreamId's latest fetched. A success
+// renews a vote its failed polls expired (PollFailed).
 func (in *networkIntake) Polled(upstreamId string, raw json.RawMessage, kind evm.HeaderKind) {
 	in.mu.Lock()
-	failed := in.polls[upstreamId].failedFor()
+	expired := in.polls[upstreamId].expired
 	in.polls[upstreamId] = pollRecord{ok: time.Now()}
 	in.mu.Unlock()
-	if failed >= in.w() {
+	if u := in.upstream(upstreamId); expired && u != nil && in.nw.metricsTracker != nil && in.nw.metricsTracker.RenewHashVote(u) {
 		evm.VotersChanged(in.nw)
 		in.nw.sources.wake()
 	}
@@ -131,10 +135,10 @@ func (in *networkIntake) Polled(upstreamId string, raw json.RawMessage, kind evm
 // PollFailed notes a poll of upstreamId's latest, sent at started, that its
 // node failed; one sent before the last success does not count. A voter
 // that is no push source is no hash voter once its failed polls span W
-// with no success since (spec §6.1), so the trackers read their voters
-// again when a failure makes the span reach W (EvmHashVoters).
+// with no success since (spec §6.1): its channel stopped answering, so its
+// hash vote expires as a push source's does when its socket closes.
 func (in *networkIntake) PollFailed(upstreamId string, started time.Time) {
-	now := time.Now()
+	now, w, push := time.Now(), in.w(), in.nw.sources.pushSource(upstreamId)
 	in.mu.Lock()
 	r := in.polls[upstreamId]
 	if started.Before(r.ok) {
@@ -142,23 +146,18 @@ func (in *networkIntake) PollFailed(upstreamId string, started time.Time) {
 		return
 	}
 	if r.first.IsZero() {
-		r.first = now
+		r.first = started
 	}
-	was := r.failedFor()
 	r.last = now
+	expire := !r.expired && r.last.Sub(r.first) >= w && !push
+	r.expired = r.expired || expire
 	in.polls[upstreamId] = r
 	in.mu.Unlock()
-	if w := in.w(); was < w && r.failedFor() >= w {
+	if u := in.upstream(upstreamId); expire && u != nil && in.nw.metricsTracker != nil {
+		in.nw.metricsTracker.ExpireHashVote(u)
 		evm.VotersChanged(in.nw)
+		in.nw.sources.wake()
 	}
-}
-
-// pollsFailedFor is how long upstreamId's failed latest polls span with no
-// success since; 0 while none failed since its last success.
-func (in *networkIntake) pollsFailedFor(upstreamId string) time.Duration {
-	in.mu.Lock()
-	defer in.mu.Unlock()
-	return in.polls[upstreamId].failedFor()
 }
 
 // w is the network's freshness window, as its trackers read it.
@@ -678,9 +677,6 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 			stale = append(stale, u.Id())
 		}
 		ok, at := freshVote(v, voted, w, now)
-		if ok && n.intake.pollsFailedFor(u.Id()) >= w && !n.sources.pushSource(u.Id()) {
-			ok = false
-		}
 		if !ok {
 			continue
 		}
