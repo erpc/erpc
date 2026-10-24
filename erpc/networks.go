@@ -3583,35 +3583,15 @@ func isFallbackTier(u common.Upstream) bool {
 	return u.Config() != nil && u.Config().HasTag(common.TagTierFallback)
 }
 
-// headFirst picks req's band retry (spec §6.4): the upstreams of its lane
-// not yet attempted, routed ones in routing order, then every other
-// registered one within its use-upstream selector, since the ceiling that
-// put the block in the band counts them all (syncing, excluded or fallback
-// upstreams included); ordered by their heads as they are now, those
-// reaching bn first, with no I/O.
+// headFirst picks req's band retry (spec §6.4): its routed upstreams not
+// yet attempted, ordered by their heads as they are now, those reaching bn
+// first, with no I/O. Upstreams the policy did not route stay the
+// fallback escape's.
 func (n *Network) headFirst(req *common.NormalizedRequest, attempted map[string]struct{}, bn int64) func() (common.Upstream, error) {
-	sel := ""
-	if d := req.Directives(); d != nil {
-		sel = d.UseUpstream
-	}
 	var rest []common.Upstream
-	add := func(u common.Upstream) {
-		if _, seen := attempted[u.Id()]; seen || slices.Contains(rest, u) {
-			return
-		}
-		if sel != "" {
-			if m, _ := common.UpstreamMatchesSelector(sel, u); !m {
-				return
-			}
-		}
-		rest = append(rest, u)
-	}
 	for _, u := range req.Upstreams() {
-		add(u)
-	}
-	if n.upstreamsRegistry != nil {
-		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
-			add(u)
+		if _, seen := attempted[u.Id()]; !seen {
+			rest = append(rest, u)
 		}
 	}
 	rest = n.partitionUpstreamsByLatestBlock(rest, bn)
