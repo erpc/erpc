@@ -341,8 +341,10 @@ Owner: `health/tracker.go`. Readers: the `Head` ballots (bench), the confirmed h
 
 ```
 admitted(u) = voter(u) and (failover off, or u is not fallback tier,
-                            or no primary has been a hash voter for 60s without a break)
+                            or no primary source has streamed for 60s without a break)
 ```
+
+- A source streams while the newest header its own channel brought, a push for a wss source or a poll-source poll for an http source, has a hash age of at most W. Its other polls still vote (§6.3) but do not count here, so a primary whose pushes stop releases the fallback's topics, pending transactions included, while its polls still serve heads.
 
 Owner: `erpc/network_intake.go`. Readers: `Head`, the confirmed head, settle targets, the reconciler, mempool admission. Keeps: #320 (no syncing or excluded upstream), #202 (syncing never votes), #888 (eligible set), #1063 (caps rank below live heads), #836 (fallback held while a primary streams).
 
