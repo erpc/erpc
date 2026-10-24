@@ -84,6 +84,9 @@ type Network struct {
 	// taps on a selector with no lane.
 	headWake chan struct{}
 	headPass atomic.Pointer[chan struct{}]
+	// headRefresh is the head loop's timer, set before Bootstrap; 0 is
+	// headRefreshInterval.
+	headRefresh time.Duration
 
 	// queryTraceSource remembers which trace method answered the eth_query*
 	// shim on this network (queryTraceSource* values), so a network whose

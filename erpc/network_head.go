@@ -17,8 +17,8 @@ import (
 
 // headRefreshInterval is the longest a lane's Head goes without being
 // computed (spec §6.4, #1273): the guard's TTL, the bench's clocks and the
-// gauges move with time alone.
-var headRefreshInterval = time.Second
+// gauges move with time alone. Network.headRefresh overrides it.
+const headRefreshInterval = time.Second
 
 // unknownHead is the Head of a lane before its first computation.
 var unknownHead = &common.EvmHead{}
@@ -124,16 +124,20 @@ func (n *Network) headsChanged() {
 
 // startHeads computes every lane's Head now, so a network bootstrapped on
 // upstreams with known heads serves its first request with a Head, then on
-// each headsChanged and every headRefreshInterval until the app stops. Once
-// per network: its bootstrap can run again after it succeeded.
+// each headsChanged and every headRefresh until the app stops. Once per
+// network: its bootstrap can run again after it succeeded.
 func (n *Network) startHeads() {
 	if n.cfg == nil || n.cfg.Architecture != common.ArchitectureEvm || n.appCtx == nil {
 		return
 	}
+	every := n.headRefresh
+	if every <= 0 {
+		every = headRefreshInterval
+	}
 	n.headLoopOnce.Do(func() {
 		n.refreshHeadsRecovered()
 		n.bg.Go(func() {
-			ticker := time.NewTicker(headRefreshInterval)
+			ticker := time.NewTicker(every)
 			defer ticker.Stop()
 			for {
 				select {

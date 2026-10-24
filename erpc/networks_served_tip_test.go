@@ -65,6 +65,13 @@ func setupServedTipNetwork(t *testing.T, ctx context.Context, fixtures []servedT
 
 func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []servedTipFixture, stCfg *common.EvmServedTipConfig) (*Network, []*upstream.Upstream) {
 	t.Helper()
+	return setupServedTipNetworkEvery(t, ctx, fixtures, stCfg, headRefreshInterval)
+}
+
+// setupServedTipNetworkEvery is setupServedTipNetworkWith whose head loop
+// computes on its timer every headRefresh, besides every wake.
+func setupServedTipNetworkEvery(t *testing.T, ctx context.Context, fixtures []servedTipFixture, stCfg *common.EvmServedTipConfig, headRefresh time.Duration) (*Network, []*upstream.Upstream) {
+	t.Helper()
 	// The network's goroutines read package variables later tests swap.
 	ctx, cancel := context.WithCancel(ctx)
 	t.Cleanup(cancel)
@@ -175,6 +182,7 @@ func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []ser
 		nil,
 	)
 	require.NoError(t, err)
+	network.headRefresh = headRefresh
 	t.Cleanup(func() {
 		cancel()
 		network.wait()
@@ -1241,12 +1249,9 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		// The head loop evaluates on every head move (spec §6.4); each step
 		// below must be the one evaluation that sees its ballot, so the 1s
 		// pass is off and the setup's partial ballots are forgotten.
-		prevRefresh := headRefreshInterval
-		headRefreshInterval = time.Hour
-		t.Cleanup(func() { headRefreshInterval = prevRefresh })
 		util.SetupMocksForEvmStatePoller()
 		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		network, ups := setupServedTipNetworkEvery(t, ctx, []servedTipFixture{
 			{id: "rogue-1", chainID: 123, latestBlock: 100_000_000},
 			{id: "rogue-2", chainID: 123, latestBlock: 100_000_000},
 			{id: "h1", chainID: 123, latestBlock: 10_000},
@@ -1254,7 +1259,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 			{id: "h3", chainID: 123, latestBlock: 10_000},
 			{id: "stuck-1", chainID: 123, latestBlock: 5},
 			{id: "stuck-2", chainID: 123, latestBlock: 5},
-		})
+		}, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority}, time.Hour)
 		byID := map[string]*upstream.Upstream{}
 		for _, u := range ups {
 			byID[u.Id()] = u
