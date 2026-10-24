@@ -161,7 +161,7 @@ not-yet-produced blocks. Fail-open on unknown head or block tags. <SourceLink fi
 
 | Field | Type | Default | Behavior |
 |---|---|---|---|
-| `enforceHighestBlock` | `*bool` | `true` | Highest-block enforcement for `eth_blockNumber` (answered from the served head; every response pinned to it, incl. cache hits) and `eth_getBlockByNumber[latest/finalized]` (re-fetch). Gates the stale-tip cache write guard. Header: `X-ERPC-Enforce-Highest-Block`. <SourceLink file="common/defaults.go" lines="1458-1460" /> |
+| `enforceHighestBlock` | `*bool` | `true` | Highest-block enforcement for `eth_blockNumber`: answered from the served head; every response pinned to it, incl. cache hits. `eth_getBlockByNumber[latest/finalized]` needs no enforcement: its tag is interpolated to the request's Head. Gates the stale-tip cache write guard. Header: `X-ERPC-Enforce-Highest-Block`. <SourceLink file="common/defaults.go" lines="1458-1460" /> |
 | `enforceGetLogsBlockRange` | `*bool` | `true` | Pre-screens `eth_getLogs`/`trace_filter` ranges against upstream availability. The actual hooks read `evm.integrity.enforceGetLogsBlockRange` directly. Header: `X-ERPC-Enforce-GetLogs-Range`. <SourceLink file="common/defaults.go" lines="1461-1463" /> |
 | `enforceNonNullTaggedBlocks` | `*bool` | `true` | Converts null tagged `eth_getBlockByNumber` responses into `ErrEndpointMissingData`. Disable for chains that legitimately return null for some tags (e.g. ZKSync Era). Header: `X-ERPC-Enforce-Non-Null-Tagged-Blocks`. <SourceLink file="common/defaults.go" lines="1464-1466" /> |
 
@@ -621,7 +621,6 @@ integrity:
 | `erpc_integrity_failed_total` | counter | project, network, category, **check** | Requests that **failed** toward the user due to integrity (a check rejected and no good response was found). The `check` is the why. |
 | `erpc_integrity_overhead_seconds` | histogram | project, network, category | Per-request latency the module added — time waited on data-checks + aux force-fetches. Same config-driven buckets as `network_request_duration_seconds`. |
 | `erpc_upstream_stale_latest_block_total` | counter | project, vendor, network, upstream, category | Upstream returned a block below the network-known latest head (Layer-1 highest-block enforcement). |
-| `erpc_upstream_stale_finalized_block_total` | counter | project, vendor, network, upstream | Upstream returned a finalized block below the known finalized head. |
 | `erpc_upstream_stale_upper_bound_total` / `_lower_bound_total` | counter | …, confidence | Request skipped: upstream's range doesn't cover the requested `toBlock`/`fromBlock`. |
 | `erpc_upstream_attempt_outcome_total` | counter | …, outcome | `outcome=block_unavailable` on range failure; `missing_data` on null responses. |
 | `erpc_network_retry_attempt_total` | counter | …, reason | `reason=block_unavailable` / `missing_data` on the corresponding retries. |
@@ -655,7 +654,7 @@ tracing is off. Sample a few requests in detailed mode to audit a specific upstr
 
 - [Retry](/config/failsafe/retry) — integrity violations are retryable; retry routes them to a fresh upstream.
 - [Consensus](/config/failsafe/consensus) — content-validation errors are excluded from agreement/preferLargerResponses.
-- [Timeout](/config/failsafe/timeout) — bounds the re-fetch triggered by highest-block enforcement and authoritative force-fetch.
+- [Timeout](/config/failsafe/timeout) — bounds the authoritative force-fetch.
 - [Selection policies](/config/projects/selection-policies) — upstream scoring uses stale-block metrics.
 - [Survive provider outages](/use-cases/survive-provider-outages) — the broader scenario this feature serves.
 

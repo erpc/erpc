@@ -100,7 +100,7 @@ https://docs.erpc.cloud/reference/evm/method-handlers.llms.txt`}
 2. **Network.PreForward** (`HandleNetworkPreForward`, `architecture/evm/hooks.go:L40`) — fires after upstream selection. Handles proactive `trace_filter`/`arbtrace_filter` auto-splitting when the request range exceeds the per-upstream threshold.
 3. **Upstream.PreForward** (`HandleUpstreamPreForward`, `architecture/evm/hooks.go:L86`) — fires once per upstream attempt. Handles `eth_getLogs`/`trace_filter` block-range availability.
 4. **Upstream.PostForward** (`HandleUpstreamPostForward`, `architecture/evm/hooks.go:L109`) — fires after each upstream response. Handles `eth_getBlockByNumber`/`eth_getBlockByHash` block validation, `eth_getBlockReceipts` integrity checks, and `eth_sendRawTransaction` nonce-exception interception. Also applies the configurable `markEmptyAsErrorMethods` gate to convert null/empty results to retryable `ErrEndpointMissingData`. Conversion only fires when the `RetryEmpty` directive is `true` on the request; when `RetryEmpty=false`, null/empty passes through unchanged even for methods in the list.
-5. **Network.PostForward** (`HandleNetworkPostForward`, `architecture/evm/hooks.go:L62`) — fires once after the failsafe loop. Handles `eth_getBlockByNumber` highest-block enforcement, `eth_sendRawTransaction` exhausted-broadcast recovery, and reactive `trace_filter` splitting.
+5. **Network.PostForward** (`HandleNetworkPostForward`, `architecture/evm/hooks.go:L62`) — fires once after the failsafe loop. Pins `eth_blockNumber` to the served head, applies `enforceNonNullTaggedBlocks` to `eth_getBlockByNumber`, and handles `eth_sendRawTransaction` exhausted-broadcast recovery and reactive `trace_filter` splitting.
 
 **Block-tag interpolation.** `NormalizeHttpJsonRpc` (`architecture/evm/json_rpc.go:L92`) runs on every request before upstream selection. It resolves `"latest"` to the highest known block number and `"finalized"` to the highest known finalized block number (when available), normalizes numeric hex to canonical form, caches the result in the request for downstream cache-key generation, and sets `EvmBlockRef` metadata (`"latest"`, `"finalized"`, or `"*"` when both appear) for routing and observability. `"safe"` and `"pending"` pass through unchanged. When a `ReqRefs` path points to a map/object param (rather than a scalar block tag), the function skips replacing that param — this prevents accidentally replacing a complex call-data object with a hex string.
 
@@ -185,7 +185,7 @@ Execution order:
 
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
-| `integrity.enforceHighestBlock` | `*bool` | `true` | Enables highest-block enforcement for `eth_blockNumber` and `eth_getBlockByNumber`. Also propagated to `DirectiveDefaults.EnforceHighestBlock`. **Deprecated path** — new canonical path is `networks[].directiveDefaults`. Source: <SourceLink file="common/config.go" lines="2114" />, <SourceLink file="common/defaults.go" lines="1458-1459" /> |
+| `integrity.enforceHighestBlock` | `*bool` | `true` | Answers `eth_blockNumber` from the served head and pins every response to it. `eth_getBlockByNumber("latest"/"finalized")` is not re-fetched: its tag is interpolated to the request's Head before forwarding. Also propagated to `DirectiveDefaults.EnforceHighestBlock`. **Deprecated path** — new canonical path is `networks[].directiveDefaults`. Source: <SourceLink file="common/config.go" lines="2114" />, <SourceLink file="common/defaults.go" lines="1458-1459" /> |
 | `integrity.enforceNonNullTaggedBlocks` | `*bool` | `true` | When true, null responses for tagged block queries (`"latest"`, `"finalized"`) trigger `ErrEndpointMissingData`. Propagated to `DirectiveDefaults.EnforceNonNullTaggedBlocks`. Source: <SourceLink file="common/config.go" lines="2116" />, <SourceLink file="common/defaults.go" lines="1464-1465" /> |
 | `integrity.enforceGetLogsBlockRange` | `*bool` | `true` | Enables upstream-level block range availability checking for `trace_filter`/`arbtrace_filter` and `eth_getLogs`. Source: <SourceLink file="common/config.go" lines="2115" />, <SourceLink file="common/defaults.go" lines="2121-2122" /> |
 | `emptyResultConfidence` | `AvailabilityConfidence` | `blockHead` | Confidence head for `emptyResultBeyondConfidence`: `blockHead` uses `EvmHighestLatestBlockNumber`; `finalizedBlock` uses `EvmHighestFinalizedBlockNumber`. Source: <SourceLink file="common/config.go" lines="2250" />, <SourceLink file="common/defaults.go" lines="2075-2078" /> |
@@ -369,8 +369,7 @@ upstreams: [
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
-| `erpc_upstream_stale_latest_block_total` | Counter | `project`, `vendor`, `network`, `upstream`, `category` | Upstream returned an older block than the network's known highest; `category` = `"eth_blockNumber"` or `"eth_getBlockByNumber"` |
-| `erpc_upstream_stale_finalized_block_total` | Counter | `project`, `vendor`, `network`, `upstream` | Upstream returned an older finalized block in `eth_getBlockByNumber` |
+| `erpc_upstream_stale_latest_block_total` | Counter | `project`, `vendor`, `network`, `upstream`, `category` | An `eth_blockNumber` or `erigon_blockNumber` answer below the request's Head, pinned up to it; `category` = the method |
 | `erpc_network_latest_block_timestamp_distance_seconds` | Gauge | `project`, `network`, `origin` | `eth_getBlockByNumber(latest)` response received with `origin="network_response"` |
 | `erpc_network_evm_trace_filter_range_requested` | Histogram | `project`, `network`, `method`, `user`, `finality` | Any `trace_filter`/`arbtrace_filter` request with resolvable block bounds |
 | `erpc_network_evm_trace_filter_forced_splits_total` | Counter | `project`, `network`, `method`, `dimension`, `user`, `agent_name` | Each split by dimension (`block_range`, `from_address`, `to_address`) |
@@ -383,7 +382,7 @@ upstreams: [
 - `Network.PostForward.eth_blockNumber`, `Network.PostForward.eth_getBlockByNumber`, `Network.PostForward.eth_sendRawTransaction`
 - `Upstream.PreForwardHook`, `Upstream.PreForwardHook.trace_filter`
 - `Upstream.PostForwardHook.eth_getBlockByNumber`, `Upstream.PostForwardHook.eth_getBlockReceipts`, `Upstream.PostForwardHook.eth_sendRawTransaction`
-- `Evm.PickHighestBlock`, `extractTxHashFromSendRawTransaction`, `createSyntheticSuccessResponse`, `verifyAndHandleNonceTooLow`
+- `extractTxHashFromSendRawTransaction`, `createSyntheticSuccessResponse`, `verifyAndHandleNonceTooLow`
 
 **Notable log messages** (for debugging):
 - `"interpolated block tag to concrete block number"` (debug) — `NormalizeHttpJsonRpc` resolved `"latest"` or `"finalized"` to a concrete hex.

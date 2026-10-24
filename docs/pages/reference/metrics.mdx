@@ -350,7 +350,6 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 | `erpc_upstream_latest_block_polled_total` | counter | project, vendor, network, upstream | State poller proactively polled latest block. |
 | `erpc_upstream_finalized_block_polled_total` | counter | project, vendor, network, upstream | State poller proactively polled finalized block. |
 | `erpc_upstream_stale_latest_block_total` | counter | project, vendor, network, upstream, category | Upstream returned a stale latest block vs. others. |
-| `erpc_upstream_stale_finalized_block_total` | counter | project, vendor, network, upstream | Upstream returned a stale finalized block vs. others. |
 | `erpc_upstream_stale_upper_bound_total` | counter | project, vendor, network, upstream, category, confidence | Request skipped: upstream latest block &lt; requested upper bound. `confidence` ∈ `"blockHead"`, `"finalizedBlock"`. |
 | `erpc_upstream_stale_lower_bound_total` | counter | project, vendor, network, upstream, category, confidence | Request skipped: requested lower bound below upstream's available range. Same `confidence` values. |
 | `erpc_network_latest_block_timestamp_distance_seconds` | gauge | project, network, origin | `now − latest block timestamp`. `origin` ∈ `"evm_state_poller"`, `"network_response"`. |
