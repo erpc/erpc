@@ -158,8 +158,8 @@ type EvmStatePoller interface {
 	// evidence was taken (a poll's send time, else this instance's receive
 	// time), and whether this instance's newest poll succeeded.
 	LatestReport() (block int64, at time.Time, live bool)
-	// FinalizedBlock is the upstream's finalized block: its finalized tag,
-	// or, while it has none, latest − the derived finality depth (#1079).
+	// FinalizedBlock is the upstream's finalized tag; only an upstream known
+	// to have no finalized tag reports latest − the derived finality depth (#1079).
 	FinalizedBlock() int64
 	IsBlockFinalized(blockNumber int64) (bool, error)
 	SuggestFinalizedBlock(blockNumber int64)

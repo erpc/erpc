@@ -2933,6 +2933,17 @@ func (c *EvmNetworkConfig) ServedTipQuorum() ServedTipQuorum {
 	return c.ServedTip.Quorum
 }
 
+// PollCadence is the head poll debounce at blockTime: blockTime ×
+// dynamicBlockTimeDebounceMultiplier, the default for an unset or
+// non-positive multiplier. Nil-receiver safe.
+func (c *EvmNetworkConfig) PollCadence(blockTime time.Duration) time.Duration {
+	mult := DefaultDynamicBlockTimeDebounceMultiplier
+	if c != nil && c.DynamicBlockTimeDebounceMultiplier != nil && *c.DynamicBlockTimeDebounceMultiplier > 0 {
+		mult = *c.DynamicBlockTimeDebounceMultiplier
+	}
+	return time.Duration(float64(blockTime) * mult)
+}
+
 // EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
 type EvmIntegrityConfig struct {
 	// @deprecated: use DirectiveDefaults.EnforceHighestBlock

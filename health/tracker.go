@@ -2286,7 +2286,10 @@ func (m *NetworkMetadata) sampleBlockTime(blockNumber int64, blockTimestamp int6
 
 	sampleNs := float64(timestampDeltaSec) * 1e9 / float64(blockGap)
 	if m.evmBlockTimeSamples == 0 {
+		// No EMA yet tells a halt apart, so the seed never enters the
+		// floor: it restarts at the seed's end, as the halt clip does.
 		m.evmBlockTimeEmaNs = sampleNs
+		m.evmBlockTimeAnchorBlock, m.evmBlockTimeAnchorTimestamp = blockNumber, blockTimestamp
 	} else {
 		// One span across a halt counts as 3× the EMA, so it never sets W
 		// to its cap (spec §6.7). The floor restarts at its end: a pause

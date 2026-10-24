@@ -1249,7 +1249,9 @@ func (t *ChainTracker) apply(path []*node) {
 // height is followed, logged as an error (final_hash_changed) and kept in
 // revertedFinal, so no permanent cache entry serves the old branch (spec
 // §6.5). A re-anchor's old pins below the new tree are decided once fill
-// links that tree down to them (unlinkedPins).
+// links that tree down to them (unlinkedPins), or dropped once they leave
+// the window. Headers compare by hash: fill can fetch an evicted block
+// again as a new header.
 func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	head := path[len(path)-1].h
 	telemetry.MetricChainTrackerHead.WithLabelValues(t.projectId(), t.networkLabel(), t.group).Set(float64(head.number))
@@ -1265,7 +1267,7 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	}
 	fork := -1
 	for i := len(old) - 1; i >= 0; i-- {
-		if pathAt(old[i].number) == old[i] {
+		if p := pathAt(old[i].number); p != nil && p.hash == old[i].hash {
 			fork = i
 			break
 		}
@@ -1283,7 +1285,7 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	var span heightSpan
 	replaced := func(hs []*chainHeader) {
 		for _, h := range hs {
-			if p := pathAt(h.number); p != nil && p != h {
+			if p := pathAt(h.number); p != nil && p.hash != h.hash {
 				if span.hi == 0 {
 					span.lo = int64(h.number)
 				}
@@ -1292,15 +1294,20 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 		}
 	}
 	replaced(old)
-	if len(t.unlinkedPins) > 0 {
-		replaced(t.unlinkedPins)
-		if base <= t.unlinkedPins[0].number {
-			t.unlinkedPins = nil
+	replaced(t.unlinkedPins)
+	var unlinked []*chainHeader
+	keepUnlinked := func(hs []*chainHeader) {
+		for _, h := range hs {
+			if h.number < base && t.holds(head, h) {
+				unlinked = append(unlinked, h)
+			}
 		}
 	}
-	if fork < 0 && base > old[0].number {
-		t.unlinkedPins = old
+	keepUnlinked(t.unlinkedPins)
+	if fork < 0 {
+		keepUnlinked(old)
 	}
+	t.unlinkedPins = unlinked
 	if fin := t.finalizedHead(); span.hi > 0 && fin > 0 && span.lo <= fin {
 		log.Error().Str("network", t.networkLabel()).Str("group", t.group).Str("invariant", "final_hash_changed").
 			Int64("revertedFrom", span.lo).Int64("finalized", fin).Uint64("head", head.number).

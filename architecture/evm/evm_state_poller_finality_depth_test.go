@@ -54,9 +54,10 @@ func TestFallbackFinalityDepth(t *testing.T) {
 
 		// 1024 blocks is only ~1.7 minutes of this chain — potentially shallower
 		// than its real reorg risk. 30 minutes is 18,000 blocks at 100ms; the
-		// 7s seen allow blocks as short as 6s over 70, so up to 21,000.
+		// block time floor may read the blocks seen shorter than 100ms, which
+		// only deepens it, but never to twice the minimum age.
 		d := p.fallbackFinalityDepth()
 		assert.GreaterOrEqual(t, time.Duration(d)*100*time.Millisecond, 30*time.Minute)
-		assert.LessOrEqual(t, d, int64(21_001))
+		assert.Less(t, d, int64(2*18_000))
 	})
 }

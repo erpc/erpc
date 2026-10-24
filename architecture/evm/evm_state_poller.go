@@ -537,14 +537,9 @@ func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Dura
 		}
 		blockTime = health.ColdBlockTime
 	}
-	// Scale block time down by the configured multiplier (default 0.7) so the
-	// debounce expires before the next block is expected. This prefers freshness
-	// over saving RPC calls — EMA smooths long-term, multiplier covers the tail.
-	mult := common.DefaultDynamicBlockTimeDebounceMultiplier
-	if cfg != nil && cfg.DynamicBlockTimeDebounceMultiplier != nil && *cfg.DynamicBlockTimeDebounceMultiplier > 0 {
-		mult = *cfg.DynamicBlockTimeDebounceMultiplier
-	}
-	return time.Duration(float64(blockTime) * mult)
+	// The multiplier (default 0.7) makes the debounce expire before the next
+	// block is expected: freshness over saving RPC calls.
+	return cfg.PollCadence(blockTime)
 }
 
 // resolveFinalizedDebounce widens the debounce for finalized polls to a fraction of the
@@ -1430,12 +1425,17 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 	}()
 }
 
-// FinalizedBlock is the upstream's finalized tag, or, while it reports
-// none, latest − fallbackFinalityDepth: the one finalized number its
-// finality and its Head.Finalized report read (#1079).
+// FinalizedBlock is the upstream's finalized tag. Only an upstream known to
+// have no finalized tag (skipFinalizedCheck) reports latest −
+// fallbackFinalityDepth instead: a tagged upstream reports 0 until its tag
+// first answers, so a derived guess never enters the Head.Finalized ballot
+// on a chain whose real finality is slower (#1079).
 func (e *EvmStatePoller) FinalizedBlock() int64 {
 	if fin := e.finalizedBlockShared.GetValue(); fin > 0 {
 		return fin
+	}
+	if !e.shouldSkipFinalizedCheck() {
+		return 0
 	}
 	latest := e.latestBlockShared.GetValue()
 	if latest <= 0 {
