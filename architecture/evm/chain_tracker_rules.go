@@ -669,8 +669,7 @@ func (t *ChainTracker) rearm() {
 	if c := t.catchUpAt; c.After(now) && (at.IsZero() || c.Before(at)) {
 		at = c
 	}
-	w := t.W()
-	for _, due := range []time.Time{t.since.Add(w), t.voters.Next, t.forkAt} {
+	for _, due := range []time.Time{t.coldUntil, t.voters.Next, t.forkAt} {
 		if due.After(now) && (at.IsZero() || due.Before(at)) {
 			at = due
 		}

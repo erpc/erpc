@@ -123,10 +123,11 @@ type ChainTracker struct {
 	// does (gate). heldSince is when the vote need began to hold one.
 	catchUpAt time.Time
 	heldSince time.Time
-	// since is when the tracker started or last reset: for W after it,
-	// voters that are sources and never reported count as hash voters
-	// (spec §6.5 cold window).
-	since time.Time
+	// coldUntil is W after the tracker started or last reset, W read then:
+	// until it, voters that are sources and never reported count as hash
+	// voters (spec §6.5 cold window). A W learned later neither ends nor
+	// reopens the window.
+	coldUntil time.Time
 	// voters is the lane's voter set as the network's intake last read it,
 	// before the message being handled.
 	voters HashVoters
@@ -423,7 +424,7 @@ func (t *ChainTracker) clear() {
 	t.askSeq++
 	t.settle, t.settleIn = nil, 0
 	t.pins, t.maxHeld = nil, nil
-	t.since = time.Now()
+	t.coldUntil = time.Now().Add(t.W())
 	t.offPins = make(map[string]offPin)
 	t.treesDirty = true
 	for _, j := range t.jobs {
@@ -785,7 +786,7 @@ func (t *ChainTracker) readVoters() {
 		return
 	}
 	w := t.W()
-	cold := time.Since(t.since) < w
+	cold := time.Now().Before(t.coldUntil)
 	old := t.voters.Hash
 	t.callNetwork("voters", func() { t.voters = n.EvmHashVoters(t.selector, w, cold) })
 	if t.selector != "" || slices.Equal(old, t.voters.Hash) {
