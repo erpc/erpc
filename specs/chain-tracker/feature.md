@@ -365,7 +365,7 @@ One `Head` per (network, lane). It is computed when an upstream head changes (lo
 | `Latest` | q-th highest voter number; caps, regression guard (1024 blocks, 60s, per instance) and guarantees (`servedTip.guaranteedFor`, `guaranteedMethods`) apply as today |
 | `Finalized` | the same ballot over voters' finalized numbers; a voter without a finalized tag reports latest − the derived depth (at least 30 min of chain, #1079) |
 | `Leader` | the highest voter within `Latest + maxRetryableBlockDistance` |
-| ceiling | raw max of the reports of the lane's registered upstreams, minus upstreams cordoned for chain identity or whose polls are failing (§6.1); `OldestReportAt` = the local receive time of the oldest of those reports |
+| ceiling | raw max of the reports of the lane's registered upstreams, minus upstreams cordoned for chain identity or whose polls are failing (§6.1); `OldestReportAt` = the oldest time at which those reports' evidence was taken: a poll's request send time (its answer can show no later head than the node had then), a push's receive time |
 
 - A lane is one use-upstream group, at most 16 per network. A selector without a lane (`partitionKeyFor` returns `""`) keeps the stateless pick: the same rules, computed for that request.
 - Nothing is persisted or shared as a served value: a rogue value cannot spread to every instance or freeze `Latest` (#924).
@@ -376,7 +376,7 @@ Refusal rule, for block N on a request:
 |---|---|
 | N ≤ `Latest` | serve |
 | `Latest` < N ≤ ceiling | refresh (Ask with a number need for the lane's upstreams below N that the ceiling counts, voters first, §6.8); an empty or null answer, or a missing-data error, is a retryable miss once per request, its hedges included; the retry waits for that Ask, at most 1 bt, then orders the request's routed upstreams by the head predicate, head ≥ N first, with no further I/O; the answer after it goes to the client as the upstream gave it |
-| above | future, only when every counted report is younger than 1 bt; the older ones are Asked first (one poll each, single-flight, at most once per bt) and N decided again, counted `future_after_refresh`; an estimate of where a stale upstream is now never stands in for asking it |
+| above | future, only when every counted report is younger than 1 bt; the older ones are Asked first (one poll each, single-flight, at most once per bt) and N decided again, counted `future_after_refresh`; a report still older than 1 bt after the Ask keeps N in the band; an estimate of where a stale upstream is now never stands in for asking it |
 
 - Sites: `tryShortCircuitFutureBlock` (with `shortCircuitFutureBlocks`, a future block gets `null` with no dispatch, #1238), `EmptyResultBeyondConfidence` (`enforceNonNullBlock`, empty-is-miss), the `eth_query` range check, and the `eth_getLogs` and `trace_filter` range check: a future `toBlock` is refused, never dispatched, since a node answers a range above its head with the part it has.
 - The availability gate checks configured bounds only (#934). One head predicate adds `headLagToleranceBlocks` to `latestBlockMinus` bounds in the gate and in upstream ordering (#1099); votes and the ceiling keep the bound.
@@ -533,7 +533,7 @@ Owner: `architecture/evm/integrity_stateprobe.go`; the skip in `checkEvmUpstream
 | 2. Block by tag | `eth_getBlockByNumber`, `eth_getBlockReceipts`, `eth_getBlockTransactionCountByNumber`, `eth_getTransactionByBlockNumberAndIndex`, uncle-by-number, `trace_block`, `debug_traceBlockByNumber`, `trace_replayBlockTransactions`, `debug_getRaw*`, `erigon_getHeaderByNumber`, `arbtrace_block` | interpolate to `Latest`/`Finalized`; `latest` and `finalized` refresh heads before forward (§6.8); `null` for a numbered tag follows `enforceNonNullBlock` |
 | 3. State at a block | `eth_call`, `eth_estimateGas`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`, `eth_getProof`, `eth_getAccount`, `eth_createAccessList`, `eth_simulateV1`, `eth_callMany`, `debug_traceCall`, `trace_call`, `arbtrace_call*`, `debug_storageRangeAt` | interpolate every form: an absent param means `latest`; the EIP-1898 `blockNumber` leaf is rewritten; `eth_callMany` and `eth_createAccessList` get method config |
 | 4. Ranges | `eth_getLogs`, `trace_filter`, `arbtrace_filter`, `eth_query*` | an absent bound means `latest`, so `toBlock` is never above `Latest` and range limits apply |
-| 5. By hash | `eth_getBlockByHash`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `debug_traceTransaction`, `trace_transaction` | sent as is; an answer from above `Latest` follows §6.4 |
+| 5. By hash | `eth_getBlockByHash`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `trace_transaction`, `eth_getLogs` by `blockHash`; `debug_traceTransaction` too, but its answer names no block, so it is sent as is | sent as is; an answer from above `Latest` follows §6.4 |
 | 6. Pending | `pending` anywhere, `eth_sendRawTransaction`, pending-tx filters and subscriptions | unchanged: one node's mempool |
 | 7. Safe | `safe` tag | unchanged: routed to `evm.safeBlockSource` when set, tag verbatim (#1030) |
 | 8. Absolute | numbers, hashes, `earliest` | sent as is; a number above `Latest` follows the refusal rule (§6.4) |
@@ -1091,6 +1091,7 @@ One home per fact:
 - `eth_getBlockByNumber("finalized")` answers block `Finalized`, which trails up to 5% of the finality window.
 - A request just above `Latest` costs one extra upstream call for an empty answer. Above the ceiling, every upstream whose report is older than 1 bt is Asked first: head+1 polling polls slow upstreams up to once per bt per instance, only while clients ask above the head.
 - `eth_blockNumber` on another instance may trail a sent head by one poll; the block itself loads.
+- Without shared state, a lane whose voters all push over links slower than another instance's by more than 1 bt can call a block that instance sent "future": a push carries no send time to age it by.
 - A by-hash lookup of a block above `Latest` waits up to 1 bt.
 - Absent block params read as `latest`: the JSON-RPC default; now cacheable and consistent across upstreams.
 - A voter benched by number age can step `Latest` back by one block; the block itself still loads.
