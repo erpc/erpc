@@ -25,9 +25,10 @@ type CounterInt64SharedVariable interface {
 	TryUpdate(ctx context.Context, newValue int64) int64
 	OnValue(callback func(int64))
 	OnLargeRollback(callback func(currentVal, newVal int64))
-	// UpdatedAt is when the counter last took its value or a fresh report
-	// of it; zero before any.
-	UpdatedAt() time.Time
+	// ReceivedAt is when this instance last took the counter's value or a
+	// fresh report of it, by its own clock, from any source (spec §14);
+	// zero before any.
+	ReceivedAt() time.Time
 }
 
 type baseSharedVariable struct {
@@ -48,13 +49,6 @@ func (v *baseSharedVariable) IsStale(staleness time.Duration) bool {
 
 func (v *baseSharedVariable) updatedAtMs() int64 {
 	return v.updatedAtUnixMs.Load()
-}
-
-func (v *baseSharedVariable) UpdatedAt() time.Time {
-	if ms := v.updatedAtUnixMs.Load(); ms > 0 {
-		return time.UnixMilli(ms)
-	}
-	return time.Time{}
 }
 
 // allocateUpdatedAtMs allocates a strictly-increasing UpdatedAt timestamp (unix ms) for a local update.
@@ -113,6 +107,9 @@ func (v *baseSharedVariable) advanceTimestampPast(remoteTs int64) {
 type counterInt64 struct {
 	baseSharedVariable
 	localRefresh           baseSharedVariable
+	// receivedAtUnixMs is this instance's clock when it last took the value
+	// or a fresh report of it (ReceivedAt).
+	receivedAtUnixMs       atomic.Int64
 	registry               *sharedStateRegistry
 	key                    string
 	value                  atomic.Int64
@@ -131,6 +128,17 @@ type counterInt64 struct {
 
 func (c *counterInt64) GetValue() int64 {
 	return c.value.Load()
+}
+
+func (c *counterInt64) ReceivedAt() time.Time {
+	if ms := c.receivedAtUnixMs.Load(); ms > 0 {
+		return time.UnixMilli(ms)
+	}
+	return time.Time{}
+}
+
+func (c *counterInt64) markReceived() {
+	c.receivedAtUnixMs.Store(time.Now().UnixMilli())
 }
 
 func (c *counterInt64) processNewState(source string, st CounterInt64State) bool {
@@ -176,6 +184,7 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 		// causing us to incorrectly set the remote's stale timestamp for a different local value.
 		if isRemoteUpdate {
 			if c.updateUpdatedAtMs(st.UpdatedAt) {
+				c.markReceived()
 				// Timestamp was updated. Verify value is still what we expect.
 				// If a concurrent update changed the value after our initial Load(),
 				// we need to ensure our timestamp reflects that change, not the remote's stale state.
@@ -198,6 +207,7 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 				if isRemoteUpdate {
 					c.updateUpdatedAtMs(st.UpdatedAt)
 				}
+				c.markReceived()
 				c.registry.logger.Trace().
 					Str("source", source).
 					Str("key", c.key).
@@ -274,6 +284,7 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 			if isRemoteUpdate {
 				c.updateUpdatedAtMs(st.UpdatedAt)
 			}
+			c.markReceived()
 			c.registry.logger.Trace().
 				Str("source", source).
 				Str("key", c.key).
@@ -314,6 +325,7 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 	if newVal == currentValue {
 		// Value is the same, but mark as fresh to prevent repeated refresh attempts
 		c.allocateUpdatedAtMs()
+		c.markReceived()
 		return false
 	}
 
@@ -322,6 +334,7 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 		for {
 			if c.value.CompareAndSwap(currentValue, newVal) {
 				c.allocateUpdatedAtMs() // Mark as fresh
+				c.markReceived()
 				c.registry.logger.Trace().
 					Str("source", source).
 					Str("key", c.key).
@@ -372,6 +385,7 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 	for {
 		if c.value.CompareAndSwap(currentValue, newVal) {
 			c.allocateUpdatedAtMs() // Mark as fresh
+			c.markReceived()
 			c.registry.logger.Trace().
 				Str("source", source).
 				Str("key", c.key).
