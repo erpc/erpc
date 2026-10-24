@@ -50,10 +50,16 @@ func bniServedTipBoot(t *testing.T, cfg *common.Config, order ...string) (
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		ctx := context.Background()
 		ceiling, known := laneCeilingOf(ntw)
-		return known && ceiling == bniHealthyHead &&
-			servedHead(ntw, ctx).Latest == bniLaggingHead
+		return known && ceiling == bniHealthyHead
+	}, 5*time.Second, 50*time.Millisecond, "pollers must learn every head (max=0x1000)")
+	// The head loop evaluates from boot on (spec §6.4), before the order
+	// override narrows the voters to rpc1 and rpc2: the regression guard
+	// armed at the 3-voter pick holds it against the 2-voter one. The
+	// scenario starts on the 2-voter topology, as a fresh process would.
+	freshHeadMemory(ntw)
+	require.Eventually(t, func() bool {
+		return servedHead(ntw, context.Background()).Latest == bniLaggingHead
 	}, 5*time.Second, 50*time.Millisecond,
 		"pollers must learn both heads (served=0x800, max=0x1000) before the scenario starts")
 

@@ -1238,6 +1238,12 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 	// the syncing state is how an upstream leaves and RE-ENTERS the ballot (the
 	// order-pinning helper only ever removes, and removes from the registry).
 	fantasyFleet := func(t *testing.T, ctx context.Context) (*Network, func(id string, in bool), func(time.Duration)) {
+		// The head loop evaluates on every head move (spec §6.4); each step
+		// below must be the one evaluation that sees its ballot, so the 1s
+		// pass is off and the setup's partial ballots are forgotten.
+		prevRefresh := headRefreshInterval
+		headRefreshInterval = time.Hour
+		t.Cleanup(func() { headRefreshInterval = prevRefresh })
 		util.SetupMocksForEvmStatePoller()
 		advance := pinServedTipClock(t)
 		network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
@@ -1263,6 +1269,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		for _, id := range []string{"rogue-1", "rogue-2", "h1", "h2", "h3", "stuck-1", "stuck-2"} {
 			eligible(id, false)
 		}
+		freshHeadMemory(network)
 		return network, eligible, advance
 	}
 

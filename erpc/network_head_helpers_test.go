@@ -21,6 +21,23 @@ func laneCeilingOf(n *Network) (int64, bool) {
 	return c, c > 0
 }
 
+// freshHeadMemory wipes the network-wide lane's guard and watchdog memory,
+// as in a process that has evaluated nothing yet: the head loop already
+// evaluated the partial ballots a fixture's setup pushes, head by head.
+func freshHeadMemory(n *Network) {
+	l := &n.servedTipAll
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, a := range []*servedTipAnchor{&l.latest, &l.finalized} {
+		a.seenValue.Store(0)
+		a.changedAtMs.Store(0)
+		a.lastGoodValue.Store(0)
+		a.lastGoodAt.Store(nil)
+		a.guardState.Store(servedTipGuardHealthy)
+	}
+	l.head.Store(nil)
+}
+
 // highestOf is the first upstream of ups with the highest head: the Leader
 // a Head of exactly ups would elect.
 func highestOf(ups []common.Upstream) common.Upstream {
