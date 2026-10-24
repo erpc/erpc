@@ -33,11 +33,11 @@ type networkIntake struct {
 	// last is each upstream's accepted headers, ending at its hash vote
 	// (votePath).
 	last map[string]votePath
-	// streams is each source's newest header from its own channel (spec
-	// §6.2): a push for a push source, a poll while its poller is a poll
-	// source. streamingSince is, per primary voter, since when it has
+	// streams is each source's newest header number from its own channel
+	// (spec §6.2): a push for a push source, a poll at its cadence for a
+	// poll source. streamingSince is, per primary voter, since when it has
 	// streamed without a break, as the reconciler's passes saw it.
-	streams        map[string]streamHead
+	streams        map[string]int64
 	streamingSince map[string]time.Time
 	// admitted is the voters topic admission admits, as the last pass
 	// read them, for per-transaction checks that take no lock.
@@ -66,16 +66,8 @@ const rejectedKept = 64
 // §6.2).
 var primaryLeadAfter = util.NewDuration(60 * time.Second)
 
-// streamHead is a source's newest header from its own channel. passed: a
-// newer header reached intake since, so its hash age may run and the
-// reconciler was woken to schedule its end.
-type streamHead struct {
-	number int64
-	passed bool
-}
-
 func newNetworkIntake(nw *Network) *networkIntake {
-	return &networkIntake{nw: nw, last: make(map[string]votePath), streams: make(map[string]streamHead), streamingSince: make(map[string]time.Time)}
+	return &networkIntake{nw: nw, last: make(map[string]votePath), streams: make(map[string]int64), streamingSince: make(map[string]time.Time)}
 }
 
 // pushIntake is a push source's channel into intake: its headers are the
@@ -146,7 +138,7 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, kind evm
 		}
 		// A poll often brings a push source's header first.
 		if current && stream {
-			in.noteHeader(upstreamId, int64(cur.Number), true)
+			in.noteStream(upstreamId, int64(cur.Number))
 		}
 		in.count(upstreamId, "duplicate")
 		return
@@ -175,7 +167,9 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, kind evm
 	if mt := in.nw.metricsTracker; mt != nil {
 		mt.RecordHashVote(u, int64(cur.Number), replay)
 	}
-	in.noteHeader(upstreamId, int64(cur.Number), stream)
+	if stream {
+		in.noteStream(upstreamId, int64(cur.Number))
+	}
 	evm.ObserveSourceHeader(in.nw, u, sh)
 	if in.isVoter(upstreamId) {
 		in.count(upstreamId, "voted")
@@ -184,26 +178,14 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, kind evm
 	}
 }
 
-// noteHeader notes an accepted header of upstreamId at number: its
-// stream's head when stream. Every other stream below it may start its
-// hash age now, so the reconciler is woken once per stream head to
-// schedule the end of its streaming (admit).
-func (in *networkIntake) noteHeader(upstreamId string, number int64, stream bool) {
-	wake := false
+// noteStream notes number as upstreamId's stream head. No wake is needed
+// when another header passes it: its hash age starts then, and the
+// reconciler, which passes at least every W, schedules the end of its
+// streaming at its next pass, within W of that start (admit).
+func (in *networkIntake) noteStream(upstreamId string, number int64) {
 	in.mu.Lock()
-	for id, s := range in.streams {
-		if id != upstreamId && !s.passed && s.number < number {
-			s.passed, wake = true, true
-			in.streams[id] = s
-		}
-	}
-	if stream {
-		in.streams[upstreamId] = streamHead{number: number}
-	}
+	in.streams[upstreamId] = number
 	in.mu.Unlock()
-	if wake {
-		in.nw.sources.wake()
-	}
 }
 
 // replayRejected runs the headers integrity held back through intake
@@ -520,10 +502,10 @@ func (in *networkIntake) admit(now time.Time, w time.Duration) (next time.Durati
 		if isFallbackTier(u) {
 			continue
 		}
-		s, ok := in.streams[u.Id()]
+		head, ok := in.streams[u.Id()]
 		var age time.Duration
 		if ok && in.nw.metricsTracker != nil {
-			age = in.nw.metricsTracker.HashAgeAt(in.nw.networkId, s.number)
+			age = in.nw.metricsTracker.HashAgeAt(in.nw.networkId, head)
 		}
 		if !ok || age > w {
 			delete(in.streamingSince, u.Id())
