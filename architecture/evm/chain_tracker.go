@@ -119,8 +119,9 @@ type ChainTracker struct {
 	wakeAt   time.Time
 	wake     *time.Timer
 	// catchUpAt is when the next catch-up may ask while the network's latest
-	// block or the vote need holds back a backed pin; zero while neither
-	// does (gate). heldSince is when the vote need began to hold one.
+	// block holds back a backed pin, or, while the vote need holds one, when
+	// the tracker asks again (the network paces those polls); zero while
+	// neither does (gate). heldSince is when the vote need began to hold one.
 	catchUpAt time.Time
 	heldSince time.Time
 	// coldUntil is W after the tracker started or last reset, W read then:
@@ -1500,12 +1501,13 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 // head is below that pin for their heads once per block time, at most
 // catchUpMax apart (spec §6.5 catch-up): a voter that is no source, polled
 // every statePollerInterval, would otherwise hold every tap until its next
-// poll. A pin the vote need holds back for one block time is polled for the
-// same way, from the voters whose hash vote here is below it: their shared
-// counters may already show it, moved by another instance or a client
-// response, which votes no hash. A poller skips a refresh inside its
-// debounce, so rearm asks again at catchUpAt; a counter that moves wakes
-// the tracker (LatestChanged).
+// poll. A pin the vote need holds back for one block time is polled for
+// from the voters whose hash vote here is below it, at each publish: the
+// network paces those polls per upstream across lanes (EvmPollHeads).
+// Their shared counters may already show it, moved by another instance or
+// a client response, which votes no hash. A poller skips a refresh inside
+// its debounce, so rearm asks again at catchUpAt; a counter that moves
+// wakes the tracker (LatestChanged).
 func (t *ChainTracker) gate(path []*node) *pinBacking {
 	b := t.backingOf(path)
 	now := time.Now()
@@ -1528,27 +1530,26 @@ func (t *ChainTracker) gate(path []*node) *pinBacking {
 			t.catchUpAt = maxTime(t.catchUpAt, ripe)
 			return b
 		}
+		t.catchUpAt = now.Add(t.BlockTime())
+		var below []string
+		for _, u := range t.voters.Voters {
+			if nd := t.votes[u]; nd == nil || !t.alive(nd) || nd.h.number < held {
+				below = append(below, u)
+			}
+		}
+		if p, ok := t.network.(interface{ EvmPollHeads(ids []string) }); ok && len(below) > 0 {
+			t.callNetwork("catch-up", func() { p.EvmPollHeads(below) })
+		}
+		return b
 	}
 	if now.Before(t.catchUpAt) {
 		return b
 	}
 	t.catchUpAt = now.Add(min(t.BlockTime(), catchUpMax))
-	if capped {
-		if r, ok := t.network.(interface {
-			EvmRefreshHeadsBelow(context.Context, int64)
-		}); ok {
-			t.callNetwork("catch-up", func() { r.EvmRefreshHeadsBelow(t.laneCtx(), int64(pin)) })
-		}
-		return b
-	}
-	var below []string
-	for _, u := range t.voters.Voters {
-		if nd := t.votes[u]; nd == nil || !t.alive(nd) || nd.h.number < held {
-			below = append(below, u)
-		}
-	}
-	if p, ok := t.network.(interface{ EvmPollHeads(ids []string) }); ok && len(below) > 0 {
-		t.callNetwork("catch-up", func() { p.EvmPollHeads(below) })
+	if r, ok := t.network.(interface {
+		EvmRefreshHeadsBelow(context.Context, int64)
+	}); ok {
+		t.callNetwork("catch-up", func() { r.EvmRefreshHeadsBelow(t.laneCtx(), int64(pin)) })
 	}
 	return b
 }

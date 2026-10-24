@@ -51,9 +51,9 @@ type networkIntake struct {
 	// rejected are the newest headers integrity held back, oldest first;
 	// a check suspended for the network lets them in again.
 	rejected []rejectedHeader
-	// heldPollAt is, per upstream, when the network last polled it for a
-	// held vote need (EvmPollHeads).
-	heldPollAt map[string]time.Time
+	// pollAt is, per upstream and kind, when the network last polled it
+	// for a held vote need or a fork (EvmPollHeads, EvmPollForks).
+	pollAt map[string]map[evm.HeaderKind]time.Time
 	// polls is, per polled upstream, its last successful latest poll and
 	// the failures its node gave since (spec §6.1).
 	polls map[string]pollRecord
@@ -80,7 +80,7 @@ const rejectedKept = 64
 var primaryLeadAfter = util.NewDuration(60 * time.Second)
 
 func newNetworkIntake(nw *Network) *networkIntake {
-	return &networkIntake{nw: nw, last: make(map[string]votePath), streams: make(map[string]int64), streamingSince: make(map[string]time.Time), heldPollAt: make(map[string]time.Time), polls: make(map[string]pollRecord)}
+	return &networkIntake{nw: nw, last: make(map[string]votePath), streams: make(map[string]int64), streamingSince: make(map[string]time.Time), pollAt: make(map[string]map[evm.HeaderKind]time.Time), polls: make(map[string]pollRecord)}
 }
 
 // pushIntake is a push source's channel into intake: its headers are the
@@ -418,19 +418,24 @@ func (in *networkIntake) forget(upstreamId string) {
 	delete(in.last, upstreamId)
 	delete(in.streams, upstreamId)
 	delete(in.streamingSince, upstreamId)
-	delete(in.heldPollAt, upstreamId)
+	delete(in.pollAt, upstreamId)
 	delete(in.polls, upstreamId)
 }
 
-// heldPollDue reports whether a held vote-need poll of upstreamId may go
-// now, and notes it: one per every per upstream, however many lanes ask.
-func (in *networkIntake) heldPollDue(upstreamId string, now time.Time, every time.Duration) bool {
+// pollDue reports whether a poll of upstreamId of kind may go now, and
+// notes it: one per every per upstream and kind, however many lanes ask.
+func (in *networkIntake) pollDue(upstreamId string, kind evm.HeaderKind, now time.Time, every time.Duration) bool {
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	if at, ok := in.heldPollAt[upstreamId]; ok && now.Sub(at) < every {
+	at := in.pollAt[upstreamId]
+	if last, ok := at[kind]; ok && now.Sub(last) < every {
 		return false
 	}
-	in.heldPollAt[upstreamId] = now
+	if at == nil {
+		at = make(map[evm.HeaderKind]time.Time, 2)
+		in.pollAt[upstreamId] = at
+	}
+	at[kind] = now
 	return true
 }
 

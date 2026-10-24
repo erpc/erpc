@@ -823,20 +823,21 @@ func (n *Network) EvmRefreshHeadsBelow(ctx context.Context, block int64) {
 
 // EvmPollHeads polls the latest header of each upstream in ids for a hash
 // vote: voters that a held vote need waits on (spec §6.5). Every lane's
-// tracker asks; the network polls each upstream at most once per block
-// time, and each poller keeps one poll in flight.
+// tracker asks at each publish; the network polls each upstream at most
+// once per block time, and each poller keeps one poll in flight.
 func (n *Network) EvmPollHeads(ids []string) {
-	n.pollHeads(ids, false)
+	n.pollHeads(ids, evm.HeaderPolled)
 }
 
 // EvmPollForks polls the latest header of each voter in ids, whose vote the
-// pins moved off (spec §6.3); the tracker paces these asks. Each answer is
-// its voter's hash vote, whatever it voted before.
+// pins moved off (spec §6.3), at most once per block time per upstream as
+// EvmPollHeads. Each answer is its voter's hash vote, whatever it voted
+// before.
 func (n *Network) EvmPollForks(ids []string) {
-	n.pollHeads(ids, true)
+	n.pollHeads(ids, evm.HeaderForkPolled)
 }
 
-func (n *Network) pollHeads(ids []string, fork bool) {
+func (n *Network) pollHeads(ids []string, kind evm.HeaderKind) {
 	if n.upstreamsRegistry == nil {
 		return
 	}
@@ -850,10 +851,10 @@ func (n *Network) pollHeads(ids []string, fork bool) {
 			continue
 		}
 		p := u.EvmStatePoller()
-		if p == nil || p.IsObjectNull() || !fork && n.intake != nil && !n.intake.heldPollDue(u.Id(), now, every) {
+		if p == nil || p.IsObjectNull() || n.intake != nil && !n.intake.pollDue(u.Id(), kind, now, every) {
 			continue
 		}
-		p.PollHead(fork)
+		p.PollHead(kind == evm.HeaderForkPolled)
 	}
 }
 
