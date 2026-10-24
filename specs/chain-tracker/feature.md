@@ -363,7 +363,7 @@ One `Head` per (network, lane). It is computed when an upstream head changes (lo
 | Field | Rule |
 |---|---|
 | `Latest` | q-th highest voter number; caps, regression guard (1024 blocks, 60s, per instance) and guarantees (`servedTip.guaranteedFor`, `guaranteedMethods`) apply as today |
-| `Finalized` | the same ballot over voters' finalized numbers; a voter without a finalized tag reports latest − the derived depth: 30 min of chain at the block time floor (§6.7), at least `fallbackFinalityDepth` (#1079) |
+| `Finalized` | the same ballot over voters' finalized numbers; a voter without a finalized tag (its tag refused 10 times in a row, never answered) reports latest − the derived depth: 30 min of chain at the block time floor (§6.7), at least `fallbackFinalityDepth` (#1079); until either is known, a voter has no finalized vote |
 | `Leader` | the highest voter within `Latest + maxRetryableBlockDistance` |
 | ceiling | raw max of the reports of the lane's registered upstreams, minus upstreams cordoned for chain identity or whose polls are failing (§6.1); `OldestReportAt` = the oldest time at which those reports' evidence was taken: for an answer, a poll's or a client request's, the time its request was sent (it can show no later head than the node had then); for a push, its receive time |
 
@@ -425,7 +425,7 @@ Other rules:
 - A re-anchor is counted in `erpc_chain_tracker_reanchor_total`.
 - A message's changes are computed first and applied in one step. A panic drops the message and counts the header as `malformed` for its sender. 3 panics of one message kind (source votes count apart from client answers), with no message of that kind handled cleanly between them, reset the tracker to empty, counted in `erpc_chain_tracker_reset_total`; taps continue from their cursors (§10.1). Other kinds come between any two of one kind, so a state that breaks only source votes, or only fetch answers, still resets, while one vendor's bad header among clean ones never does.
 - Each change of the confirmed head wakes the taps.
-- A majority branch that reverts a block at or below `Finalized` is followed, and logged as an error (`final_hash_changed`): clients stay on the chain the upstreams serve.
+- A majority branch that reverts a block at or below `Finalized` is followed, and logged as an error (`final_hash_changed`): clients stay on the chain the upstreams serve. An instance that followed the revert reads such a block past its permanent cache entry, and the fresh answer rewrites the shared entry; an instance started after the revert reads the entry as stored.
 - By-number answers at or below `Finalized` feed integrity's finalized anchors below the window (`observeNarrowAnchors`), only with the evidence quorum. Inside the window, pins win.
 
 Reorg example, three voters:
@@ -531,10 +531,10 @@ Owner: `architecture/evm/integrity_stateprobe.go`; the skip in `checkEvmUpstream
 
 | Family | Methods | Rule |
 |---|---|---|
-| 1. Head number | `eth_blockNumber`, `erigon_blockNumber` | answer `Latest` |
-| 2. Block by tag | `eth_getBlockByNumber`, `eth_getBlockReceipts`, `eth_getBlockTransactionCountByNumber`, `eth_getTransactionByBlockNumberAndIndex`, uncle-by-number, `trace_block`, `debug_traceBlockByNumber`, `trace_replayBlockTransactions`, `debug_getRaw*`, `erigon_getHeaderByNumber`, `arbtrace_block` | interpolate to `Latest`/`Finalized`; `latest` and `finalized` refresh heads before forward (§6.8); `null` for a numbered tag follows `enforceNonNullBlock` |
-| 3. State at a block | `eth_call`, `eth_estimateGas`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`, `eth_getProof`, `eth_getAccount`, `eth_createAccessList`, `eth_simulateV1`, `eth_callMany`, `debug_traceCall`, `trace_call`, `arbtrace_call*`, `debug_storageRangeAt` | interpolate every form: an absent param means `latest`; the EIP-1898 `blockNumber` leaf is rewritten; `eth_callMany` and `eth_createAccessList` get method config |
-| 4. Ranges | `eth_getLogs`, `trace_filter`, `arbtrace_filter`, `eth_query*` | an absent bound means `latest`, so `toBlock` is never above `Latest` and range limits apply |
+| 1. Head number | `eth_blockNumber`, `erigon_blockNumber` | answer `Latest`; `erigon_blockNumber` with a block param: `finalized` answers `Finalized`, any value but `latest` is forwarded as is |
+| 2. Block by tag | `eth_getBlockByNumber`, `eth_getBlockReceipts`, `eth_getBlockTransactionCountByNumber`, `eth_getTransactionByBlockNumberAndIndex`, uncle-by-number, `trace_block`, `debug_traceBlockByNumber`, `trace_replayBlockTransactions`, `debug_getRaw*`, `erigon_getHeaderByNumber` | interpolate to `Latest`/`Finalized`; `latest` and `finalized` refresh heads before forward (§6.8); `null` for a numbered tag follows `enforceNonNullBlock` |
+| 3. State at a block | `eth_call`, `eth_estimateGas`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`, `eth_getProof`, `eth_getAccount`, `eth_createAccessList`, `eth_simulateV1`, `eth_callMany`, `debug_traceCall`, `trace_call`, `debug_storageRangeAt` | interpolate every form: an absent param means `latest`; the EIP-1898 `blockNumber` leaf is rewritten; `eth_callMany` and `eth_createAccessList` get method config |
+| 4. Ranges | `eth_getLogs`, `trace_filter`, `eth_query*` | an absent bound means `latest`, so `toBlock` is never above `Latest` and range limits apply |
 | 5. By hash | `eth_getBlockByHash`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `trace_transaction`, `eth_getLogs` by `blockHash`; `debug_traceTransaction` too, but its answer names no block, so it is sent as is | sent as is; an answer from above `Latest` follows §6.4 |
 | 6. Pending | `pending` anywhere, `eth_sendRawTransaction`, pending-tx filters and subscriptions | unchanged: one node's mempool |
 | 7. Safe | `safe` tag | unchanged: routed to `evm.safeBlockSource` when set, tag verbatim (#1030) |
@@ -545,11 +545,13 @@ Owner: `architecture/evm/integrity_stateprobe.go`; the skip in `checkEvmUpstream
 
 | Switch | Rule |
 |---|---|
-| `translateLatestTag`, `translateFinalizedTag` | on for every method; off is the per-method opt-out and covers every form (plain tag, absent param, EIP-1898): the tag reaches upstreams as is, and that method leaves the promise |
-| `skip-interpolation` directive | per-request opt-out, unchanged |
+| `translateLatestTag`, `translateFinalizedTag` | on for every method but `arbtrace_*`; off is the per-method opt-out and covers every form (plain tag, absent param, EIP-1898): the tag reaches upstreams as is, an absent selector as the literal `latest`, and that method leaves the promise |
+| `skip-interpolation` directive | per-request opt-out: tags and absent selectors reach upstreams as the client sent them |
 | `evm.pinLatestTag` | pins a lagging upstream to the request's one number, on every attempt and hedge; must stay off for upstreams of a tag-only method |
 
 Chains whose state works only at the tag: on HyperEVM, HyperCore read precompiles (`0x…0800`–`0x…08ff`) fail at any explicit block number, even the exact head; a nested read fails silently. At `latest` they succeed. Such methods set `translateLatestTag: false`; the tag-state gate (§6.11) protects them.
+
+`arbtrace_*` default to `translateLatestTag: false`, absent params staying absent: Arbitrum classic nodes serve them, and their `latest` is not the network's.
 
 ## 8. Tracker fetches
 
@@ -832,6 +834,7 @@ networks:
 | `server.webSocket.subscriptionBufferSize` | deleted: no per-subscription queue |
 | `indexer` (`canonicalChainDepth`, `dedupWindowSize`) | deleted: the mempool bounds in §15.2 replace `dedupWindowSize` |
 | `translateLatestTag` default for `eth_getBlockByNumber` | now on, as for every method; `enforceHighestBlock` for it is deleted |
+| `translateLatestTag` default for `arbtrace_*` | off: classic nodes serve them (§7) |
 | `networks[].evm.fallbackStatePollerDebounce` | default removed (was 5s): unset, the cold-start cadence follows bt's 1s default (§6.7) |
 
 Strict decoding rejects the deleted keys and names the key: a breaking config change, no aliases. The head model adds no config key.
