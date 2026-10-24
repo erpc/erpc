@@ -2239,14 +2239,16 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 							n.awaitBandAsk(loopCtx, sel, refusal.Block)
 						}
 						nextUpstream = n.headFirst(effectiveReq, attempted, refusal.Block)
-						if err == nil {
-							err = common.NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish above Latest"), u)
-						}
-						lastErr = err
-						if r != nil {
+						// With no upstream left to retry, the client gets
+						// this answer as the upstream gave it: an empty
+						// answer stays the result, never a missing-data
+						// error made up from it.
+						if r != nil && !r.IsObjectNull() {
 							bestResp = r
+						} else {
+							lastErr = err
+							common.SetTraceSpanError(loopSpan, err)
 						}
-						common.SetTraceSpanError(loopSpan, err)
 						loopSpan.End()
 						continue
 					case common.MissSibling:
