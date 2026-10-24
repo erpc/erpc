@@ -2086,7 +2086,10 @@ func (s *chaosSeed) receiptsVendor() string {
 
 // faultyVendor gives the receipts fault set to the vendor a sweep asks
 // first, for at least 10 and at most 30 blocks: until that vendor was asked
-// and, when rotates, the other vendor served a block it was asked for. It
+// and, when rotates, the other vendor served a block it was asked for. When
+// the selection order moves during the fault, the fault moves to the vendor
+// sweeps ask first now and starts again, at most twice. Receipt fetches
+// that land late, under -race, are counted while the fault is still on. It
 // returns the vendor, the blocks of the fault, the receipts calls the vendor
 // got in them, and how many blocks rotated.
 func (s *chaosSeed) faultyVendor(rotates bool, set func(f *chainsim.Faults, on bool)) (name string, from, to uint64, calls, rotated int) {
@@ -2094,13 +2097,26 @@ func (s *chaosSeed) faultyVendor(rotates bool, set func(f *chainsim.Faults, on b
 	name = s.receiptsVendor()
 	from = s.chain.Tip().Number + 1
 	s.setVendor(name, func(f *chainsim.Faults) { set(f, true) })
+	exercised := func() bool {
+		calls, rotated = s.callsTo(name, from, to), s.rotated(name, from, to)
+		return calls > 0 && (!rotates || rotated > 0)
+	}
+	moves := 0
 	for i := 0; i < 30; i += 2 {
+		if now := s.receiptsVendor(); now != name && moves < 2 {
+			moves++
+			s.setVendor(name, func(f *chainsim.Faults) { set(f, false) })
+			name, from, i = now, s.chain.Tip().Number+1, 0
+			s.setVendor(name, func(f *chainsim.Faults) { set(f, true) })
+		}
 		s.blocks(2)
 		to = s.chain.Tip().Number
-		calls, rotated = s.callsTo(name, from, to), s.rotated(name, from, to)
-		if i >= 10 && calls > 0 && (!rotates || rotated > 0) {
+		if i >= 10 && exercised() {
 			break
 		}
+	}
+	for deadline := time.Now().Add(5 * time.Second); !exercised() && time.Now().Before(deadline); {
+		time.Sleep(50 * time.Millisecond)
 	}
 	s.setVendor(name, func(f *chainsim.Faults) { set(f, false) })
 	require.Positive(s.t, calls, "%s, first in the receipts sweep, is asked for blocks %d..%d during its fault", name, from, to)
