@@ -223,7 +223,7 @@ func (n *Network) computeHead(l *servedTipLane, sel string) common.EvmHead {
 		Finalized: n.laneTip(l, sel, true),
 	}
 	h.Leader = n.laneLeader(sel, h.Latest)
-	h.Ceiling, h.ReachFrom, h.ReachAt = n.laneCeiling(sel)
+	h.Ceiling, h.OldestReportAt = n.laneCeiling(sel)
 	return h
 }
 
@@ -311,49 +311,42 @@ func (n *Network) laneLeader(sel string, latest int64) common.Upstream {
 }
 
 // laneCeiling is the highest effective latest head across the lane's
-// registered upstreams, regardless of selection policy, tier or syncing
-// state, since any of them can end up serving a request (policy order, the
-// fallback escape, syncing upstreams without skipWhenSyncing), minus those
-// cordoned for answering for another chain. It uses latest heads whatever
-// emptyResultConfidence says: that setting decides how an empty answer is
-// treated, not whether an upstream can have the block. 0 (unknown) when the
-// lane has no upstream or any upstream's head is unknown. reachFrom and
-// reachAt are the report and receive time of the upstream whose report
-// reaches furthest at the chain's pace (common.EvmHead.Reach), among those
-// whose newest poll succeeded and whose report no exact bound caps.
-func (n *Network) laneCeiling(sel string) (ceiling, reachFrom int64, reachAt time.Time) {
-	bt := n.EvmBlockTime()
-	if bt <= 0 {
-		bt = health.ColdBlockTime
-	}
-	now := time.Now()
-	var reach int64
-	for _, u := range n.ceilingUpstreams(sel) {
+// counted upstreams (countedUpstreams), regardless of selection policy,
+// tier or syncing state, since any of them can end up serving a request
+// (policy order, the fallback escape, syncing upstreams without
+// skipWhenSyncing). It uses latest heads whatever emptyResultConfidence
+// says: that setting decides how an empty answer is treated, not whether
+// an upstream can have the block. 0 (unknown) when the lane has no counted
+// upstream or any one's head is unknown. oldest is the local receive time
+// of the oldest counted report, zero when one has none.
+func (n *Network) laneCeiling(sel string) (ceiling int64, oldest time.Time) {
+	ups := n.countedUpstreams(sel)
+	for i, u := range ups {
 		sp := u.EvmStatePoller()
 		if sp == nil {
-			return 0, 0, time.Time{}
+			return 0, time.Time{}
 		}
-		blk, capped := evmTipObservation(u, false)
+		blk, _ := evmTipObservation(u, false)
 		if blk <= 0 {
-			return 0, 0, time.Time{}
+			return 0, time.Time{}
 		}
 		ceiling = max(ceiling, blk)
-		if capped || sp.IsObjectNull() {
-			continue
+		var at time.Time
+		if !sp.IsObjectNull() {
+			_, at, _ = sp.LatestReport()
 		}
-		if _, at, live := sp.LatestReport(); live && !at.IsZero() {
-			if r := blk + int64(max(now.Sub(at), 0)/bt); reachAt.IsZero() || r > reach {
-				reach, reachFrom, reachAt = r, blk, at
-			}
+		if i == 0 || at.Before(oldest) {
+			oldest = at
 		}
 	}
-	return ceiling, reachFrom, reachAt
+	return ceiling, oldest
 }
 
-// ceilingUpstreams are the upstreams selector sel's lane ceiling counts:
+// countedUpstreams are the upstreams selector sel's lane ceiling counts:
 // every registered one within sel, minus those cordoned for answering for
-// another chain.
-func (n *Network) ceilingUpstreams(sel string) []*upstream.Upstream {
+// another chain and those whose newest poll on this instance failed
+// (spec §6.1, §6.4).
+func (n *Network) countedUpstreams(sel string) []*upstream.Upstream {
 	if n.upstreamsRegistry == nil {
 		return nil
 	}
@@ -364,12 +357,37 @@ func (n *Network) ceilingUpstreams(sel string) []*upstream.Upstream {
 				continue
 			}
 		}
-		if c, ok := u.EvmStatePoller().(interface{ ChainIdCordoned() bool }); ok && c.ChainIdCordoned() {
+		sp := u.EvmStatePoller()
+		if c, ok := sp.(interface{ ChainIdCordoned() bool }); ok && c.ChainIdCordoned() {
 			continue
+		}
+		if sp != nil && !sp.IsObjectNull() {
+			if _, _, live := sp.LatestReport(); !live {
+				continue
+			}
 		}
 		out = append(out, u)
 	}
 	return out
+}
+
+// EvmAskStale Asks each of selector's counted upstreams whose report is
+// 1 bt old or older, waits for those polls, at most 1 bt or until ctx
+// ends, and returns the lane's ceiling and oldest report after them (spec
+// §6.4: no future on a stale report).
+func (n *Network) EvmAskStale(ctx context.Context, selector string) (ceiling int64, oldestReportAt time.Time) {
+	bt := n.blockTimeOrCold()
+	now := time.Now()
+	var stale []common.EvmUpstream
+	for _, u := range n.countedUpstreams(selector) {
+		if sp := u.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+			if _, at, _ := sp.LatestReport(); now.Sub(at) >= bt {
+				stale = append(stale, u)
+			}
+		}
+	}
+	n.awaitPolls(ctx, n.ask(selector, stale))
+	return n.laneCeiling(selector)
 }
 
 // EvmAskBand Asks, in the background, with a number need, each upstream
@@ -383,7 +401,7 @@ func (n *Network) EvmAskBand(selector string, block int64) {
 // askBand is EvmAskBand, returning a channel per asked upstream, closed
 // when its poll ends.
 func (n *Network) askBand(sel string, block int64) []<-chan struct{} {
-	ups := n.ceilingUpstreams(sel)
+	ups := n.countedUpstreams(sel)
 	targets := make([]common.EvmUpstream, 0, len(ups))
 	for _, voters := range [2]bool{true, false} {
 		for _, u := range ups {
@@ -395,12 +413,23 @@ func (n *Network) askBand(sel string, block int64) []<-chan struct{} {
 	return n.askBelow(sel, block, targets)
 }
 
-// askBelow Asks each of targets whose head is below block, in order: a
-// poll debounced by this instance's last fetch of it, on the network's
-// context bounded by W, so no caller's end fails it for the others. One
-// poll per upstream is in flight at a time; a caller finding one joins it.
-// It returns a channel per asked upstream, closed when its poll ends.
+// askBelow Asks each of targets whose head is below block, in order (ask).
 func (n *Network) askBelow(sel string, block int64, targets []common.EvmUpstream) []<-chan struct{} {
+	below := targets[:0:0]
+	for _, u := range targets {
+		if head, _ := evmTipObservation(u, false); head < block {
+			below = append(below, u)
+		}
+	}
+	return n.ask(sel, below)
+}
+
+// ask polls each of targets, in order: a poll debounced by this
+// instance's last fetch of it, on the network's context bounded by W, so
+// no caller's end fails it for the others. One poll per upstream is in
+// flight at a time; a caller finding one joins it. It returns a channel
+// per asked upstream, closed when its poll ends.
+func (n *Network) ask(sel string, targets []common.EvmUpstream) []<-chan struct{} {
 	parent := n.appCtx
 	if parent == nil {
 		parent = context.Background()
@@ -409,9 +438,6 @@ func (n *Network) askBelow(sel string, block int64, targets []common.EvmUpstream
 	for _, u := range targets {
 		sp := u.EvmStatePoller()
 		if sp == nil || sp.IsObjectNull() {
-			continue
-		}
-		if head, _ := evmTipObservation(u, false); head >= block {
 			continue
 		}
 		done := make(chan struct{})
@@ -445,18 +471,18 @@ func (n *Network) recoverAskPanic(sel string) {
 }
 
 // awaitBandAsk joins the band's Ask of selector sel's lane for block
-// (askBand) and waits for its polls, at most 1 bt or until ctx ends, so the
-// band's retry orders upstreams on the heads it brings (spec §6.4).
+// (askBand) and waits for its polls (awaitPolls), so the band's retry
+// orders upstreams on the heads it brings (spec §6.4).
 func (n *Network) awaitBandAsk(ctx context.Context, sel string, block int64) {
-	polls := n.askBand(sel, block)
+	n.awaitPolls(ctx, n.askBand(sel, block))
+}
+
+// awaitPolls waits for polls, at most 1 bt or until ctx ends.
+func (n *Network) awaitPolls(ctx context.Context, polls []<-chan struct{}) {
 	if len(polls) == 0 {
 		return
 	}
-	bt := n.EvmBlockTime()
-	if bt <= 0 {
-		bt = health.ColdBlockTime
-	}
-	timer := time.NewTimer(bt)
+	timer := time.NewTimer(n.blockTimeOrCold())
 	defer timer.Stop()
 	for _, p := range polls {
 		select {
@@ -467,6 +493,15 @@ func (n *Network) awaitBandAsk(ctx context.Context, sel string, block int64) {
 			return
 		}
 	}
+}
+
+// blockTimeOrCold is the network's block time, or the cold-start one
+// before its first sample (spec §6.7).
+func (n *Network) blockTimeOrCold() time.Duration {
+	if bt := n.EvmBlockTime(); bt > 0 {
+		return bt
+	}
+	return health.ColdBlockTime
 }
 
 // byHashFamily is the §7 by-hash family, eth_getLogs by blockHash included

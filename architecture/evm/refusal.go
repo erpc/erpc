@@ -9,9 +9,11 @@ import (
 )
 
 // headRefuser is the network's side of the refusal rule (spec §6.4, §6.8):
-// its block time, and the band's Ask of the upstreams below a block.
+// its block time, the Ask of the reports older than 1 bt, and the band's
+// Ask of the upstreams below a block.
 type headRefuser interface {
 	EvmBlockTime() time.Duration
+	EvmAskStale(ctx context.Context, selector string) (ceiling int64, oldestReportAt time.Time)
 	EvmAskBand(selector string, block int64)
 }
 
@@ -38,13 +40,15 @@ func HeadRefusalOf(ctx context.Context, rq *common.NormalizedRequest) *common.He
 	if d := rq.Directives(); d != nil {
 		sel = d.UseUpstream
 	}
-	return rq.TakeHeadRefusal(DecideHeadRefusal(nw, common.EvmHeadOf(nw, ctx, rq), sel, bn))
+	return rq.TakeHeadRefusal(DecideHeadRefusal(ctx, nw, common.EvmHeadOf(nw, ctx, rq), sel, bn))
 }
 
 // DecideHeadRefusal applies the refusal rule to block n on head h of
-// selector sel's lane, at once: a band block Asks the upstreams below it,
-// in the background.
-func DecideHeadRefusal(nw common.Network, h common.EvmHead, sel string, n int64) *common.HeadRefusal {
+// selector sel's lane: above the ceiling with a report 1 bt old or older,
+// those reports are Asked first and n decided again; still stale after
+// the Ask, n is in the band, the cheaper way to be wrong. A band block
+// Asks the upstreams below it, in the background.
+func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead, sel string, n int64) *common.HeadRefusal {
 	net, _ := nw.(headRefuser)
 	bt := health.ColdBlockTime
 	if net != nil {
@@ -53,6 +57,13 @@ func DecideHeadRefusal(nw common.Network, h common.EvmHead, sel string, n int64)
 		}
 	}
 	v := &common.HeadRefusal{Block: n, Rule: h.Rule(n, bt, time.Now())}
+	if v.Rule == common.HeadStale && net != nil {
+		h.Ceiling, h.OldestReportAt = net.EvmAskStale(ctx, sel)
+		v.Rule, v.Refreshed = h.Rule(n, bt, time.Now()), true
+	}
+	if v.Rule == common.HeadStale {
+		v.Rule = common.HeadBand
+	}
 	if v.Rule == common.HeadBand && net != nil {
 		net.EvmAskBand(sel, n)
 	}

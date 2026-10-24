@@ -60,22 +60,9 @@ type EvmHead struct {
 	// Ceiling is the raw max report of the lane's counted upstreams, 0
 	// while any of them has none.
 	Ceiling int64
-	// ReachFrom and ReachAt are the report, and its local receive time,
-	// of the counted upstream whose report reaches furthest at the
-	// chain's pace: Reach(t) = max(Ceiling, ReachFrom + (t − ReachAt)/bt).
-	// ReachAt is zero while no counted upstream's newest poll succeeded.
-	ReachFrom int64
-	ReachAt   time.Time
-}
-
-// Reach is the highest block a counted upstream can have reached at now,
-// bt the block time (> 0): a stale report stands for the blocks the chain
-// has made since (spec §6.4).
-func (h EvmHead) Reach(bt time.Duration, now time.Time) int64 {
-	if h.ReachAt.IsZero() {
-		return h.Ceiling
-	}
-	return max(h.Ceiling, h.ReachFrom+int64(max(now.Sub(h.ReachAt), 0)/bt))
+	// OldestReportAt is the local receive time of the oldest counted
+	// report; zero while one has none.
+	OldestReportAt time.Time
 }
 
 // HeadRule is the refusal rule's row for block N on a request (spec §6.4).
@@ -85,10 +72,15 @@ const (
 	// HeadServe: N ≤ Latest, or Latest unknown (tags and numbers reach
 	// upstreams unchanged).
 	HeadServe HeadRule = iota
-	// HeadBand: Latest < N ≤ reach, or the ceiling is unknown.
+	// HeadBand: Latest < N ≤ ceiling, or the ceiling is unknown.
 	HeadBand
-	// HeadFuture: above the reach: no counted upstream can have N yet.
+	// HeadFuture: above the ceiling, every counted report younger than
+	// 1 bt: no counted upstream has N yet.
 	HeadFuture
+	// HeadStale: above the ceiling, a counted report 1 bt old or older:
+	// those reports are Asked before N is decided again. Never a request's
+	// verdict.
+	HeadStale
 )
 
 // Rule is the refusal rule's row for block n at now, bt the block time (> 0).
@@ -96,8 +88,10 @@ func (h EvmHead) Rule(n int64, bt time.Duration, now time.Time) HeadRule {
 	switch {
 	case h.Latest <= 0 || n <= h.Latest:
 		return HeadServe
-	case h.Ceiling <= 0 || n <= h.Reach(bt, now):
+	case h.Ceiling <= 0 || n <= h.Ceiling:
 		return HeadBand
+	case h.OldestReportAt.IsZero() || now.Sub(h.OldestReportAt) >= bt:
+		return HeadStale
 	}
 	return HeadFuture
 }
@@ -107,10 +101,21 @@ func (h EvmHead) Rule(n int64, bt time.Duration, now time.Time) HeadRule {
 type HeadRefusal struct {
 	Rule  HeadRule
 	Block int64
+	// Refreshed: N was decided again after its stale reports were Asked.
+	Refreshed bool
 	// owner is the leg that took the request's one retryable miss.
 	owner atomic.Pointer[RefusalLeg]
 	// answered: a leg took its answer after the miss.
 	answered atomic.Bool
+}
+
+// FutureRule is the refusal counter's rule for a future verdict:
+// future_after_refresh when its stale reports were Asked first.
+func (r *HeadRefusal) FutureRule() string {
+	if r.Refreshed {
+		return "future_after_refresh"
+	}
+	return "future"
 }
 
 // RefusalLeg is one execution of a request: a hedge leg, or a retry

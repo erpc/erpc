@@ -81,8 +81,8 @@ const (
 // calls, no client subscribes there, and it hears every vendor x2Latency
 // late. Every block a pod-1 client receives is served on pod-2 by number
 // on the first call, never null (§6.4 refusal rule: a block above pod-2's
-// Latest is refreshed, Asked on a stale ceiling, and retried once, never
-// answered "future").
+// Latest is refreshed, its reports older than 1 bt Asked, and retried
+// once, never answered "future").
 func x2() spec {
 	return spec{name: "X2", memory: true, numbered: []int{1}, bound: healthyDelivery,
 		clients: func(s *scenario) { s.podClients(0, 0) },
@@ -91,7 +91,7 @@ func x2() spec {
 				px.set(s.h.pods[1], linkFaults{Latency: x2Latency})
 			}
 			s.blocks(150)
-			for _, rule := range []string{"future", "retried_missing"} {
+			for _, rule := range []string{"future", "future_after_refresh", "retried_missing"} {
 				s.requireZeroIfExported(1, "erpc_head_refusal_total", map[string]string{"rule": rule})
 			}
 		}}

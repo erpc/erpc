@@ -916,7 +916,7 @@ func (n *Network) refuseFutureRange(ctx context.Context, req *common.NormalizedR
 	if v == nil || v.Rule != common.HeadFuture {
 		return nil
 	}
-	n.countHeadRefusal("future")
+	n.countHeadRefusal(v.FutureRule())
 	ceiling := common.EvmHeadOf(n, ctx, req).Ceiling
 	return &common.ErrUpstreamBlockUnavailable{
 		BaseError: common.BaseError{
@@ -951,7 +951,7 @@ func (n *Network) countRefusal(ctx context.Context, req *common.NormalizedReques
 	case v.Rule == common.HeadBand:
 		n.countHeadRefusal("retried_missing")
 	case v.Rule == common.HeadFuture:
-		n.countHeadRefusal("future")
+		n.countHeadRefusal(v.FutureRule())
 	}
 }
 

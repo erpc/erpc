@@ -370,8 +370,8 @@ func (qe *EvmQueryExecutor) checkAvailability(ctx context.Context, p *queryPlan,
 				sel = d.UseUpstream
 			}
 		}
-		if v := archevm.DecideHeadRefusal(qe.network, p.head, sel, int64(hi)); v.Rule == common.HeadFuture {
-			qe.network.countHeadRefusal("future")
+		if v := archevm.DecideHeadRefusal(ctx, qe.network, p.head, sel, int64(hi)); v.Rule == common.HeadFuture {
+			qe.network.countHeadRefusal(v.FutureRule())
 			return queryRangeUnavailable("block %#x is above the highest known block %#x", hi, p.head.Ceiling)
 		}
 	}
