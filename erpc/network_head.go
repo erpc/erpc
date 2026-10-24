@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -369,4 +370,73 @@ func (n *Network) EvmAskCeiling(ctx context.Context, sel string, block int64) in
 	}
 	wg.Wait()
 	return n.laneCeiling(sel)
+}
+
+// holdByHash returns the answer to send for resp, an answer to req, which
+// names a block or transaction by hash (spec §6.4): from a block above its
+// lane's Latest, it waits up to 1 bt while the voters below that block
+// refresh, then is sent if Latest includes the block, else it is null.
+// held: resp was replaced by null.
+func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (out *common.NormalizedResponse, held bool) {
+	if resp == nil || resp.IsObjectNull(ctx) || resp.IsResultEmptyish(ctx) || !namesHash(ctx, req) {
+		return resp, false
+	}
+	_, bn, err := evm.ExtractBlockReferenceFromResponse(ctx, resp)
+	if err != nil || bn <= 0 {
+		return resp, false
+	}
+	sel := ""
+	if d := req.Directives(); d != nil {
+		sel = d.UseUpstream
+	}
+	latest := func() (int64, <-chan struct{}) {
+		if l := n.laneFor(sel); l != nil {
+			moved := l.latestMoved()
+			return l.published().Latest, moved
+		}
+		computed := n.headsComputed()
+		return n.headFor(sel).Latest, computed
+	}
+	at, moved := latest()
+	if at <= 0 || bn <= at {
+		return resp, false
+	}
+	n.EvmRefreshHeadsBelow(sel, bn)
+	bt := n.EvmBlockTime()
+	if bt <= 0 {
+		bt = health.ColdBlockTime
+	}
+	timer := time.NewTimer(bt)
+	defer timer.Stop()
+	for at < bn {
+		select {
+		case <-moved:
+		case <-timer.C:
+			jrr, err := common.NewJsonRpcResponse(req.ID(), nil, nil)
+			if err != nil {
+				return resp, false
+			}
+			return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr), true
+		case <-ctx.Done():
+			return resp, false
+		}
+		at, moved = latest()
+	}
+	return resp, false
+}
+
+// namesHash reports whether req's first param is a 32-byte hash: a block
+// or transaction named by hash.
+func namesHash(ctx context.Context, req *common.NormalizedRequest) bool {
+	jrq, err := req.JsonRpcRequest(ctx)
+	if err != nil || jrq == nil {
+		return false
+	}
+	jrq.RLock()
+	defer jrq.RUnlock()
+	if len(jrq.Params) == 0 {
+		return false
+	}
+	h, ok := jrq.Params[0].(string)
+	return ok && len(h) == 66 && strings.HasPrefix(h, "0x")
 }

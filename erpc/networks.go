@@ -2448,8 +2448,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
+	held := false
+	if n.cfg.Architecture == common.ArchitectureEvm {
+		resp, held = n.holdByHash(ctx, req, resp)
+	}
 	if resp != nil {
-		if n.cacheDal != nil {
+		if n.cacheDal != nil && !held {
 			n.storeInCache(ctx, forwardSpan.SpanContext(), &lg, method, req, resp)
 		}
 
