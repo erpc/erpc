@@ -760,7 +760,7 @@ func (s *scenario) finish() {
 	s.logf("halted at %d %s", tip.Number, short(tip.Hash))
 	deadline := time.Now().Add(finalSettle)
 	await := func(cb *clientBase, hc *headerChain) {
-		final := s.finalHead(cb.selector, tip)
+		final := s.finalHead(cb.selector)
 		has := func() bool {
 			cb.mu.Lock()
 			defer cb.mu.Unlock()
@@ -787,19 +787,19 @@ func (s *scenario) finish() {
 }
 
 // finalHead is the last head a client on use-upstream selector sel can get
-// after the halt at tip: the network-wide lane's is tip; a lane's is its
-// Latest, the q-th highest head of the vendors behind the upstreams its
-// selector matches (§6.4; §6.5: a lane sends no block above its Latest),
-// so a lane whose vendors lag stops below tip.
-func (s *scenario) finalHead(sel string, tip *chainsim.Block) *chainsim.Block {
-	if sel == "" {
-		return tip
-	}
+// after the halt: its lane's Latest, the q-th highest head of the vendors
+// behind the upstreams its selector matches; the network-wide lane ("")
+// matches every vendor (§6.4; §6.5: no block above Latest is sent), so a
+// lane whose vendors lag stops below the chain's tip.
+func (s *scenario) finalHead(sel string) *chainsim.Block {
 	var heads []*chainsim.Block
 	for key, v := range s.vendors {
-		ok, err := common.MatchesSelector(sel, s.upstream(key), s.tags[key])
-		if err != nil {
-			s.t.Fatalf("selector %q of %s: %v", sel, s.name, err)
+		ok := sel == ""
+		if !ok {
+			var err error
+			if ok, err = common.MatchesSelector(sel, s.upstream(key), s.tags[key]); err != nil {
+				s.t.Fatalf("selector %q of %s: %v", sel, s.name, err)
+			}
 		}
 		if h := v.Head(); ok && h != nil {
 			heads = append(heads, h)
@@ -834,10 +834,9 @@ func (s *scenario) servedTipQuorum() common.ServedTipQuorum {
 // judge applies the end-of-run oracle and fails the scenario with its
 // violations.
 func (s *scenario) judge(wall time.Duration) {
-	tip := s.chain.Tip()
 	var lat []time.Duration
 	for _, c := range s.heads {
-		s.judgeChain(c.name, &c.hc, s.finalHead(c.selector, tip))
+		s.judgeChain(c.name, &c.hc, s.finalHead(c.selector))
 		for _, p := range c.unresolved() {
 			s.violate(c.name, "pod-%d: eth_getBlockByNumber(%d) answered %s, not the delivered %s, and no reorg at or below %d followed", p.target+1, p.number, p.got, short(p.hash), p.number)
 		}
@@ -845,7 +844,7 @@ func (s *scenario) judge(wall time.Duration) {
 		c.tr.close()
 	}
 	for _, g := range s.grpcs {
-		s.judgeChain(g.name, &g.hc, s.finalHead(g.selector, tip))
+		s.judgeChain(g.name, &g.hc, s.finalHead(g.selector))
 		lat = append(lat, s.judgeDelivery(&g.clientBase, true)...)
 		g.tr.close()
 	}

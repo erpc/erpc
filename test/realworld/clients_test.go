@@ -601,7 +601,7 @@ func (c *logsClient) run(ctx context.Context) {
 }
 
 // closeConn ends a subscription's covered range. At the scenario's end it
-// covers up to the final head; a client-side close covers up to the block
+// covers up to its lane's final head (finalHead); a client-side close covers up to the block
 // before its last log. A server-side end (1013, a dead pod) tells the client
 // nothing about how deep its logs went stale, so it covers nothing and its
 // logs leave the live set: the client resubscribes and starts over.
@@ -613,7 +613,7 @@ func (c *logsClient) closeConn(conn int, server, final bool) {
 	lc.closed = time.Now()
 	switch {
 	case final:
-		lc.to = c.s.chain.Tip().Number
+		lc.to = c.s.finalHead(c.selector).Number
 	case server:
 		lc.to = 0
 		for k, l := range c.live {
