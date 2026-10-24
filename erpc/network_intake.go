@@ -149,7 +149,7 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay b
 		mt.RecordHashVote(u, int64(cur.Number), replay)
 	}
 	evm.ObserveSourceHeader(in.nw, u, sh)
-	if ids := in.voterIds.Load(); ids != nil && slices.Contains(*ids, upstreamId) {
+	if in.isVoter(upstreamId) {
 		in.count(upstreamId, "voted")
 	} else {
 		in.count(upstreamId, "gated_voter")
@@ -369,6 +369,17 @@ func (in *networkIntake) voters(selector string) (voters, cands []common.Upstrea
 		voters = append(voters, c)
 	}
 	return voters, cands
+}
+
+// isVoter reports whether upstreamId is a network-wide voter: in the set
+// the network-wide tracker last read, else, as that set lags a voter that
+// just joined, in the policy's set now.
+func (in *networkIntake) isVoter(upstreamId string) bool {
+	if ids := in.voterIds.Load(); ids != nil && slices.Contains(*ids, upstreamId) {
+		return true
+	}
+	vs, _ := in.voters("")
+	return slices.ContainsFunc(vs, func(u common.Upstream) bool { return u.Id() == upstreamId })
 }
 
 // upstreamVendors is each upstream's vendor and the evidence quorum (spec
