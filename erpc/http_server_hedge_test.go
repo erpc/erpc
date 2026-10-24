@@ -230,7 +230,9 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		require.NoError(t, err)
 		policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+		// No block number, as the client sent it: an interpolated one routes
+		// this sequence differently.
+		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, map[string]string{"X-ERPC-Skip-Interpolation": "true"}, nil)
 
 		// With try-all-upstreams, rpc1 fails → rpc2 fails → rpc3 succeeds
 		assert.Equal(t, http.StatusOK, statusCode)

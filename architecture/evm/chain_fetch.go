@@ -83,9 +83,11 @@ func (s fetchSpec) key() fetchKey {
 // directives keep the integrity engine off the fetch and select the
 // tracker's upstream policies, which for fill yield rate permits to
 // clients. Only an answer that cannot change may come from the cache: one
-// addressed by hash, or a block at or below the finalized height.
+// addressed by hash, or a block at or below the finalized height. A tag
+// reaches the upstream as is: the tracker's "latest" is a report the Head
+// is computed from, never a number the Head already holds.
 func (s fetchSpec) directives() *common.RequestDirectives {
-	d := &common.RequestDirectives{IsInternal: true, UpstreamPolicies: common.UpstreamPoliciesTracker}
+	d := &common.RequestDirectives{IsInternal: true, UpstreamPolicies: common.UpstreamPoliciesTracker, SkipInterpolation: true}
 	if s.class == classFill {
 		d.UpstreamPolicies = common.UpstreamPoliciesTrackerFill
 	}

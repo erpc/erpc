@@ -2,8 +2,10 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -2117,29 +2119,77 @@ func TestInterpolation_EveryForm(t *testing.T) {
 	type form struct {
 		name, method, params string
 		want, absent         []string
+		key                  string // what identifies the request upstream; formKey when empty
+		sent                 atomic.Value
 	}
-	run := func(t *testing.T, network *Network, forms []form) {
+	translated := []*form{
+		{name: "eth_call absent", method: "eth_call", params: `[{"to":"0x1"}]`,
+			want: []string{`"params":[{"to":"0x1"},"0x11118888"]`}},
+		{name: "eth_estimateGas absent", method: "eth_estimateGas", params: `[{"to":"0x1"}]`,
+			want: []string{`"params":[{"to":"0x1"},"0x11118888"]`}},
+		{name: "eth_createAccessList absent", method: "eth_createAccessList", params: `[{"to":"0x1"}]`,
+			want: []string{`"params":[{"to":"0x1"},"0x11118888"]`}},
+		{name: "eth_getBalance null", method: "eth_getBalance", params: `["0xabc",null]`,
+			want: []string{`"params":["0xabc","0x11118888"]`}},
+		{name: "trace_call absent after trace types", method: "trace_call", params: `[{"to":"0x1"},["trace"]]`,
+			want: []string{`"params":[{"to":"0x1"},["trace"],"0x11118888"]`}},
+		{name: "trace_call tag in second place", method: "trace_call", params: `[{"to":"0x9"},"latest"]`,
+			want: []string{`"params":[{"to":"0x9"},"0x11118888"]`}},
+		{name: "eth_call EIP-1898 latest", method: "eth_call", params: `[{"to":"0x2"},{"blockNumber":"latest"}]`,
+			want: []string{`{"blockNumber":"0x11118888"}`}},
+		{name: "eth_call EIP-1898 finalized", method: "eth_call", params: `[{"to":"0x3"},{"blockNumber":"finalized"}]`,
+			want: []string{`{"blockNumber":"0x11117777"}`}},
+		{name: "eth_call EIP-1898 hash", method: "eth_call", params: `[{"to":"0x4"},{"blockHash":"0x` + strings.Repeat("ab", 32) + `"}]`,
+			want: []string{`"blockHash"`}, absent: []string{`"blockNumber"`}},
+		{name: "eth_callMany state context", method: "eth_callMany", params: `[[{"transactions":[]}],{"blockNumber":"latest","transactionIndex":-1}]`,
+			want: []string{`"blockNumber":"0x11118888"`, `"transactionIndex":-1`}},
+		{name: "eth_getLogs absent bounds", method: "eth_getLogs", params: `[{"address":"0x0000000000000000000000000000000000000001"}]`, key: "0000000000000000000000000000000000000001",
+			want: []string{`"fromBlock":"0x11118888"`, `"toBlock":"0x11118888"`}},
+		{name: "eth_getLogs absent toBlock", method: "eth_getLogs", params: `[{"fromBlock":"0x11118880","address":"0x0000000000000000000000000000000000000002"}]`, key: "0000000000000000000000000000000000000002",
+			want: []string{`"fromBlock":"0x11118880"`, `"toBlock":"0x11118888"`}},
+		{name: "eth_getLogs by blockHash", method: "eth_getLogs", params: `[{"blockHash":"0x` + strings.Repeat("cd", 32) + `"}]`, key: strings.Repeat("cd", 32),
+			absent: []string{`"fromBlock"`, `"toBlock"`}},
+	}
+	off := []*form{
+		{name: "eth_call absent", method: "eth_call", params: `[{"to":"0x5"}]`,
+			want: []string{`"params":[{"to":"0x5"},"latest"]`}},
+		{name: "eth_call EIP-1898 latest", method: "eth_call", params: `[{"to":"0x6"},{"blockNumber":"latest"}]`,
+			want: []string{`{"blockNumber":"latest"}`}},
+		{name: "eth_call plain tag", method: "eth_call", params: `[{"to":"0x7"},"latest"]`,
+			want: []string{`"params":[{"to":"0x7"},"latest"]`}},
+		{name: "eth_getLogs absent bounds", method: "eth_getLogs", params: `[{"address":"0x0000000000000000000000000000000000000003"}]`, key: "0000000000000000000000000000000000000003",
+			want: []string{`"fromBlock":"latest"`, `"toBlock":"latest"`}},
+	}
+	// Every mock is registered before any network starts: gock's mocks are
+	// not safe to register while pollers match them.
+	for _, f := range append(slices.Clone(translated), off...) {
+		f.sent.Store("")
+		var result interface{} = "0x1"
+		if f.method == "eth_getLogs" {
+			result = []interface{}{}
+		}
+		key := f.key
+		if key == "" {
+			key = formKey(f.params)
+		}
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(1).
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				// The client's own params identify its request; each form's are unique.
+				if !strings.Contains(body, `"`+f.method+`"`) || !strings.Contains(body, key) {
+					return false
+				}
+				f.sent.Store(body)
+				return true
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": result})
+	}
+	run := func(t *testing.T, network *Network, forms []*form) {
 		for _, f := range forms {
 			t.Run(f.name, func(t *testing.T) {
-				var got string
-				var result interface{} = "0x1"
-				if f.method == "eth_getLogs" {
-					result = []interface{}{}
-				}
-				gock.New("http://rpc1.localhost").
-					Post("").
-					Times(1).
-					Filter(func(r *http.Request) bool {
-						body := util.SafeReadBody(r)
-						if !strings.Contains(body, `"`+f.method+`"`) {
-							return false
-						}
-						got = body
-						return true
-					}).
-					Reply(200).
-					JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": result})
-
 				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + f.method + `","params":` + f.params + `}`))
 				req.SetNetwork(network)
 				resp, err := network.Forward(ctx, req)
@@ -2147,11 +2197,12 @@ func TestInterpolation_EveryForm(t *testing.T) {
 				if resp != nil {
 					resp.Release()
 				}
+				sent := f.sent.Load().(string)
 				for _, w := range f.want {
-					assert.Contains(t, got, w)
+					assert.Contains(t, sent, w)
 				}
 				for _, a := range f.absent {
-					assert.NotContains(t, got, a)
+					assert.NotContains(t, sent, a)
 				}
 			})
 		}
@@ -2159,34 +2210,7 @@ func TestInterpolation_EveryForm(t *testing.T) {
 
 	t.Run("Translated", func(t *testing.T) {
 		network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-		run(t, network, []form{
-			{name: "eth_call absent", method: "eth_call", params: `[{"to":"0x1"}]`,
-				want: []string{`"params":[{"to":"0x1"},"0x11118888"]`}},
-			{name: "eth_estimateGas absent", method: "eth_estimateGas", params: `[{"to":"0x1"}]`,
-				want: []string{`"params":[{"to":"0x1"},"0x11118888"]`}},
-			{name: "eth_createAccessList absent", method: "eth_createAccessList", params: `[{"to":"0x1"}]`,
-				want: []string{`"params":[{"to":"0x1"},"0x11118888"]`}},
-			{name: "eth_getBalance null", method: "eth_getBalance", params: `["0xabc",null]`,
-				want: []string{`"params":["0xabc","0x11118888"]`}},
-			{name: "trace_call absent after trace types", method: "trace_call", params: `[{"to":"0x1"},["trace"]]`,
-				want: []string{`"params":[{"to":"0x1"},["trace"],"0x11118888"]`}},
-			{name: "trace_call tag in second place", method: "trace_call", params: `[{"to":"0x1"},"latest"]`,
-				want: []string{`"params":[{"to":"0x1"},"0x11118888"]`}},
-			{name: "eth_call EIP-1898 latest", method: "eth_call", params: `[{"to":"0x2"},{"blockNumber":"latest"}]`,
-				want: []string{`{"blockNumber":"0x11118888"}`}},
-			{name: "eth_call EIP-1898 finalized", method: "eth_call", params: `[{"to":"0x3"},{"blockNumber":"finalized"}]`,
-				want: []string{`{"blockNumber":"0x11117777"}`}},
-			{name: "eth_call EIP-1898 hash", method: "eth_call", params: `[{"to":"0x4"},{"blockHash":"0x` + strings.Repeat("ab", 32) + `"}]`,
-				want: []string{`"blockHash"`}, absent: []string{`"blockNumber"`}},
-			{name: "eth_callMany state context", method: "eth_callMany", params: `[[{"transactions":[]}],{"blockNumber":"latest","transactionIndex":-1}]`,
-				want: []string{`"blockNumber":"0x11118888"`, `"transactionIndex":-1`}},
-			{name: "eth_getLogs absent bounds", method: "eth_getLogs", params: `[{"address":"0x0000000000000000000000000000000000000001"}]`,
-				want: []string{`"fromBlock":"0x11118888"`, `"toBlock":"0x11118888"`}},
-			{name: "eth_getLogs absent toBlock", method: "eth_getLogs", params: `[{"fromBlock":"0x11118880","address":"0x0000000000000000000000000000000000000002"}]`,
-				want: []string{`"fromBlock":"0x11118880"`, `"toBlock":"0x11118888"`}},
-			{name: "eth_getLogs by blockHash", method: "eth_getLogs", params: `[{"blockHash":"0x` + strings.Repeat("cd", 32) + `"}]`,
-				absent: []string{`"fromBlock"`, `"toBlock"`}},
-		})
+		run(t, network, translated)
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
 		req.SetNetwork(network)
@@ -2201,24 +2225,25 @@ func TestInterpolation_EveryForm(t *testing.T) {
 	})
 
 	t.Run("TranslateLatestTagOff", func(t *testing.T) {
-		off := false
+		no := false
 		network, _ := setupTestNetworkForInterpolation(t, ctx, &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
 			Evm:          &common.EvmNetworkConfig{ChainId: 123},
 			Methods: &common.MethodsConfig{Definitions: map[string]*common.CacheMethodConfig{
-				"eth_call":    {ReqRefs: common.SecondParam, TranslateLatestTag: &off},
-				"eth_getLogs": {ReqRefs: [][]interface{}{{0, "fromBlock"}, {0, "toBlock"}, {0, "blockHash"}}, TranslateLatestTag: &off},
+				"eth_call":    {ReqRefs: common.SecondParam, TranslateLatestTag: &no},
+				"eth_getLogs": {ReqRefs: [][]interface{}{{0, "fromBlock"}, {0, "toBlock"}, {0, "blockHash"}}, TranslateLatestTag: &no},
 			}},
 		})
-		run(t, network, []form{
-			{name: "eth_call absent", method: "eth_call", params: `[{"to":"0x5"}]`,
-				want: []string{`"params":[{"to":"0x5"},"latest"]`}},
-			{name: "eth_call EIP-1898 latest", method: "eth_call", params: `[{"to":"0x6"},{"blockNumber":"latest"}]`,
-				want: []string{`{"blockNumber":"latest"}`}},
-			{name: "eth_call plain tag", method: "eth_call", params: `[{"to":"0x7"},"latest"]`,
-				want: []string{`"params":[{"to":"0x7"},"latest"]`}},
-			{name: "eth_getLogs absent bounds", method: "eth_getLogs", params: `[{"address":"0x0000000000000000000000000000000000000003"}]`,
-				want: []string{`"fromBlock":"latest"`, `"toBlock":"latest"`}},
-		})
+		run(t, network, off)
 	})
+}
+
+// formKey is the part of a form's params that survives interpolation: its
+// first param's JSON, which no other form shares.
+func formKey(params string) string {
+	var ps []json.RawMessage
+	if err := json.Unmarshal([]byte(params), &ps); err != nil || len(ps) == 0 {
+		return params
+	}
+	return string(ps[0])
 }
