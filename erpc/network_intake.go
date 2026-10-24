@@ -54,10 +54,17 @@ type networkIntake struct {
 	// heldPollAt is, per upstream, when the network last polled it for a
 	// held vote need (EvmPollHeads).
 	heldPollAt map[string]time.Time
-	// pollFailing is, per upstream whose latest polls fail, since when they
-	// have failed with no success (spec §6.1).
-	pollFailing map[string]time.Time
+	// pollFailing is, per upstream whose node fails its latest polls, the
+	// first and last failure since its last success (spec §6.1).
+	pollFailing map[string]failedPolls
 }
+
+// failedPolls is the first and last of an upstream's failed latest polls
+// with no success between.
+type failedPolls struct{ first, last time.Time }
+
+// span is how long the polls have failed, first to last.
+func (f failedPolls) span() time.Duration { return f.last.Sub(f.first) }
 
 type rejectedHeader struct {
 	upstreamId string
@@ -73,7 +80,7 @@ const rejectedKept = 64
 var primaryLeadAfter = util.NewDuration(60 * time.Second)
 
 func newNetworkIntake(nw *Network) *networkIntake {
-	return &networkIntake{nw: nw, last: make(map[string]votePath), streams: make(map[string]int64), streamingSince: make(map[string]time.Time), heldPollAt: make(map[string]time.Time), pollFailing: make(map[string]time.Time)}
+	return &networkIntake{nw: nw, last: make(map[string]votePath), streams: make(map[string]int64), streamingSince: make(map[string]time.Time), heldPollAt: make(map[string]time.Time), pollFailing: make(map[string]failedPolls)}
 }
 
 // pushIntake is a push source's channel into intake: its headers are the
@@ -111,39 +118,47 @@ func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessa
 // Polled takes the header a poll of upstreamId's latest fetched.
 func (in *networkIntake) Polled(upstreamId string, raw json.RawMessage, kind evm.HeaderKind) {
 	in.mu.Lock()
-	_, failed := in.pollFailing[upstreamId]
+	f, failed := in.pollFailing[upstreamId]
 	delete(in.pollFailing, upstreamId)
 	in.mu.Unlock()
-	if failed {
+	if failed && f.span() >= in.w() {
 		evm.VotersChanged(in.nw)
 		in.nw.sources.wake()
 	}
 	in.header(upstreamId, raw, kind, false)
 }
 
-// PollFailed notes a poll of upstreamId's latest that fetched no header. A
-// voter that is no push source is no hash voter once its polls have failed
-// for W with no success (spec §6.1), so the trackers read their voters
-// again at the first failure and learn when that comes (EvmHashVoters).
+// PollFailed notes a poll of upstreamId's latest that its node failed. A
+// voter that is no push source is no hash voter once its failed polls span
+// W with no success since (spec §6.1), so the trackers read their voters
+// again when a failure makes the span reach W (EvmHashVoters).
 func (in *networkIntake) PollFailed(upstreamId string) {
+	now := time.Now()
 	in.mu.Lock()
-	_, failing := in.pollFailing[upstreamId]
+	f, failing := in.pollFailing[upstreamId]
 	if !failing {
-		in.pollFailing[upstreamId] = time.Now()
+		f.first = now
 	}
+	was := f.span()
+	f.last = now
+	in.pollFailing[upstreamId] = f
 	in.mu.Unlock()
-	if !failing {
+	if w := in.w(); was < w && f.span() >= w {
 		evm.VotersChanged(in.nw)
 	}
 }
 
-// pollFailingSince is since when upstreamId's latest polls have failed with
-// no success; false while they succeed.
-func (in *networkIntake) pollFailingSince(upstreamId string) (time.Time, bool) {
+// pollsFailedFor is how long upstreamId's failed latest polls span with no
+// success since; 0 while none failed since its last success.
+func (in *networkIntake) pollsFailedFor(upstreamId string) time.Duration {
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	since, ok := in.pollFailing[upstreamId]
-	return since, ok
+	return in.pollFailing[upstreamId].span()
+}
+
+// w is the network's freshness window, as its trackers read it.
+func (in *networkIntake) w() time.Duration {
+	return health.FreshnessWindow(in.nw.EvmBlockTime())
 }
 
 // header takes a source header that came as kind; replay: raw is a header
@@ -653,14 +668,8 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 			stale = append(stale, u.Id())
 		}
 		ok, at := freshVote(v, voted, w, now)
-		if since, failing := n.intake.pollFailingSince(u.Id()); ok && failing && !n.sources.pushSource(u.Id()) {
-			if end := since.Add(w); now.Before(end) {
-				if at.IsZero() || end.Before(at) {
-					at = end
-				}
-			} else {
-				ok = false
-			}
+		if ok && n.intake.pollsFailedFor(u.Id()) >= w && !n.sources.pushSource(u.Id()) {
+			ok = false
 		}
 		if !ok {
 			continue
