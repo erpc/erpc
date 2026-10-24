@@ -34,6 +34,9 @@ type harness struct {
 	host *hostLoad
 	// dumped are the pods that got a goroutine dump this phase.
 	dumped map[int]bool
+	// vars are the eRPC duration variables the pods run with, by name
+	// (testdata/realworld_vars.go).
+	vars map[string]time.Duration
 	// lookups time how long the proxies take to tell pods apart.
 	lookups *lookups
 	// series ends the per-second record of the pods' vote gauges;
@@ -328,6 +331,13 @@ func (p *pod) start() error {
 	cmd.Dir = p.h.dir
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if len(p.h.vars) > 0 {
+		var kvs []string
+		for name, d := range p.h.vars {
+			kvs = append(kvs, name+"="+d.String())
+		}
+		cmd.Env = append(os.Environ(), "REALWORLD_VARS="+strings.Join(kvs, ","))
+	}
 	if err := cmd.Start(); err != nil {
 		p.mu.Unlock()
 		return err
@@ -682,8 +692,12 @@ type netSpec struct {
 type upSpec struct {
 	id, endpoint, vendor string
 	tags                 []string
-	// evm is merged into the upstream's evm block (statePollerInterval, …).
-	evm map[string]interface{}
+	// evm is merged into the upstream's evm block (statePollerInterval, …),
+	// extra into the upstream entry (failsafe, …).
+	evm, extra map[string]interface{}
+	// budget is the upstream's rateLimitBudget in requests per second on
+	// each pod; 0 none.
+	budget uint32
 }
 
 // The evmJsonRpcCache connectors of networks with cache: permanent
@@ -703,7 +717,7 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 	type m = map[string]interface{}
 	projects := map[string]m{}
 	var order []string
-	var policies []m
+	var policies, budgets []m
 	for _, n := range nets {
 		pr := projects[n.project]
 		if pr == nil {
@@ -750,6 +764,13 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 					up["tags"] = u.tags
 				}
 			}
+			for k, v := range u.extra {
+				up[k] = v
+			}
+			if u.budget > 0 {
+				up["rateLimitBudget"] = u.id
+				budgets = append(budgets, m{"id": u.id, "rules": []m{{"method": "*", "maxCount": u.budget, "period": "second"}}})
+			}
 			pr["upstreams"] = append(pr["upstreams"].([]m), up)
 		}
 	}
@@ -770,6 +791,9 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 		},
 		"metrics":  m{"enabled": true, "listenV4": true, "hostV4": "127.0.0.1", "port": p.metricsPort},
 		"projects": prs,
+	}
+	if len(budgets) > 0 {
+		cfg["rateLimiters"] = m{"budgets": budgets}
 	}
 	db := m{}
 	if redis != nil {

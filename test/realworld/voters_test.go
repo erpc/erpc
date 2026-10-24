@@ -310,9 +310,7 @@ func u18() spec {
 		upEvm: map[string]map[string]interface{}{
 			"http-b": {"statePollerInterval": u18PollInterval.String()},
 		},
-		network: map[string]interface{}{"selectionPolicy": map[string]interface{}{
-			"evalFunc": `(upstreams, ctx) => upstreams.filter(u => true).sort((a, b) => (b.id.endsWith('-http-b') ? 1 : 0) - (a.id.endsWith('-http-b') ? 1 : 0))`,
-		}},
+		network: map[string]interface{}{"selectionPolicy": rankFirst("http-b")},
 		body: func(s *scenario) {
 			s.blocks(35)
 			forked := "http-b"
@@ -373,6 +371,12 @@ func u18() spec {
 			}
 			s.blocks(25)
 		}}
+}
+
+// rankFirst is a selectionPolicy that ranks the upstream of vendor key
+// first and keeps every upstream eligible.
+func rankFirst(key string) map[string]interface{} {
+	return map[string]interface{}{"evalFunc": fmt.Sprintf(`(upstreams, ctx) => upstreams.filter(u => true).sort((a, b) => (b.id.endsWith('-%[1]s') ? 1 : 0) - (a.id.endsWith('-%[1]s') ? 1 : 0))`, key)}
 }
 
 // requireNoMinority reads a block by tag or number on pod and fails on a

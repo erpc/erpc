@@ -5,6 +5,7 @@
 package realworld
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -67,7 +68,8 @@ const (
 	finalSettle   = 30 * time.Second
 )
 
-// erpcBin is the -race eRPC binary built from this worktree.
+// erpcBin is the -race eRPC binary built from this worktree, with
+// testdata/realworld_vars.go added to cmd/erpc.
 var erpcBin string
 
 func TestMain(m *testing.M) {
@@ -86,7 +88,17 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	erpcBin = filepath.Join(dir, "erpc")
-	build := exec.Command("go", "build", "-race", "-o", erpcBin, "./cmd/erpc")
+	overlay, err := json.Marshal(map[string]map[string]string{"Replace": {
+		filepath.Join(root, "cmd", "erpc", "realworld_vars.go"): filepath.Join(root, "test", "realworld", "testdata", "realworld_vars.go"),
+	}})
+	if err == nil {
+		err = os.WriteFile(filepath.Join(dir, "overlay.json"), overlay, 0o644)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	build := exec.Command("go", "build", "-race", "-overlay", filepath.Join(dir, "overlay.json"), "-o", erpcBin, "./cmd/erpc")
 	build.Dir = root
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	start := time.Now()
