@@ -154,8 +154,9 @@ type EvmStatePoller interface {
 	SyncingState() EvmSyncingState
 	SetSyncingState(state EvmSyncingState)
 	LatestBlock() int64
-	// LatestReport is the latest block's report: its number, when this
-	// instance received it, and whether this instance's newest poll succeeded.
+	// LatestReport is the latest block's report: its number, when its
+	// evidence was taken (a poll's send time, else this instance's receive
+	// time), and whether this instance's newest poll succeeded.
 	LatestReport() (block int64, at time.Time, live bool)
 	FinalizedBlock() int64
 	IsBlockFinalized(blockNumber int64) (bool, error)

@@ -215,8 +215,8 @@ func TestSharedStateRegistry_UpdateCounter_RemoteHigherValue(t *testing.T) {
 	}, 500*time.Millisecond, 10*time.Millisecond)
 	// The remote writer's clock runs 10s ahead; freshness reads this
 	// instance's receive time (spec §14).
-	assert.WithinDuration(t, time.Now(), counter.ReceivedAt(), time.Second)
-	assert.Less(t, counter.ReceivedAt().UnixMilli(), remoteUpdatedAt-5_000)
+	assert.WithinDuration(t, time.Now(), counter.ReportAt(), time.Second)
+	assert.Less(t, counter.ReportAt().UnixMilli(), remoteUpdatedAt-5_000)
 
 	connector.AssertExpectations(t)
 	lock.AssertExpectations(t)

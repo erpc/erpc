@@ -317,8 +317,8 @@ func (n *Network) laneLeader(sel string, latest int64) common.Upstream {
 // skipWhenSyncing). It uses latest heads whatever emptyResultConfidence
 // says: that setting decides how an empty answer is treated, not whether
 // an upstream can have the block. 0 (unknown) when the lane has no counted
-// upstream or any one's head is unknown. oldest is the local receive time
-// of the oldest counted report, zero when one has none.
+// upstream or any one's head is unknown. oldest is when the oldest counted
+// report's evidence was taken (LatestReport), zero when one has none.
 func (n *Network) laneCeiling(sel string) (ceiling int64, oldest time.Time) {
 	ups := n.countedUpstreams(sel)
 	for i, u := range ups {

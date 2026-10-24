@@ -1023,13 +1023,14 @@ func (e *EvmStatePoller) OnLatestBlock(cb func(int64)) {
 }
 
 // LatestReport is the upstream's latest block report: its number, when
-// this instance received it, by its own clock (spec §14), and live: this
-// instance's newest poll of it succeeded (spec §6.4 reach).
+// its evidence was taken by this instance's clock (spec §6.4, §14): a
+// poll's send time, else the receive time; and live: this instance's
+// newest poll of it succeeded (spec §6.4 reach).
 func (e *EvmStatePoller) LatestReport() (block int64, at time.Time, live bool) {
 	if e.latestBlockShared == nil {
 		return 0, time.Time{}, false
 	}
-	return e.latestBlockShared.GetValue(), e.latestBlockShared.ReceivedAt(), !e.latestPollFailed.Load()
+	return e.latestBlockShared.GetValue(), e.latestBlockShared.ReportAt(), !e.latestPollFailed.Load()
 }
 
 // OnFinalizedBlock is OnLatestBlock for the finalized block number.

@@ -608,7 +608,7 @@ func TestCounterInt64_SetValueUpdatesLastUpdated(t *testing.T) {
 	}
 
 	// Simulate a write originating from the remote sync by calling setValue directly.
-	counter.processNewValue(UpdateSourceTest, 123)
+	counter.processNewValue(UpdateSourceTest, 123, time.Now())
 
 	// Immediately after the write the counter must not be considered stale for any reasonable staleness window.
 	assert.False(t, counter.IsStale(time.Second), "counter should not be stale right after setValue call")
@@ -1270,7 +1270,7 @@ func TestSharedVariableTimeoutHandling(t *testing.T) {
 		})
 
 		// Process a value with large rollback (gap=100 > ignoreRollbackOf=10)
-		counter.processNewValue(UpdateSourceRemoteSync, 100)
+		counter.processNewValue(UpdateSourceRemoteSync, 100, time.Now())
 
 		// Value SHOULD be rolled back (large rollback is applied)
 		assert.Equal(t, int64(100), counter.GetValue())
@@ -1300,12 +1300,12 @@ func TestCounterInt64_EarliestBlockSemantics(t *testing.T) {
 
 		// Simulate detection that earliest is actually lower (e.g., re-detection found earlier block)
 		// This is a DECREASE: 1500 → 1000
-		updated := counter.processNewValue(UpdateSourceTryUpdate, 1000)
+		updated := counter.processNewValue(UpdateSourceTryUpdate, 1000, time.Now())
 		assert.True(t, updated, "should accept decrease with ignoreRollbackOf=0")
 		assert.Equal(t, int64(1000), counter.GetValue())
 
 		// Also accepts increases (forward progress due to pruning)
-		updated = counter.processNewValue(UpdateSourceTryUpdate, 2000)
+		updated = counter.processNewValue(UpdateSourceTryUpdate, 2000, time.Now())
 		assert.True(t, updated, "should also accept increases")
 		assert.Equal(t, int64(2000), counter.GetValue())
 	})
@@ -1950,7 +1950,7 @@ func TestCounterInt64_ZeroIsNotAHeadObservation(t *testing.T) {
 		var rollbacks int
 		counter.OnLargeRollback(func(int64, int64) { rollbacks++ })
 
-		updated := counter.processNewValue(UpdateSourceTryUpdate, 0)
+		updated := counter.processNewValue(UpdateSourceTryUpdate, 0, time.Now())
 
 		assert.False(t, updated, "a zero head must be rejected on the local path too")
 		assert.Equal(t, int64(71_589_993), counter.GetValue())
@@ -1960,7 +1960,7 @@ func TestCounterInt64_ZeroIsNotAHeadObservation(t *testing.T) {
 	t.Run("negative values are rejected too", func(t *testing.T) {
 		counter := newHeadCounter(1_000_000)
 
-		assert.False(t, counter.processNewValue(UpdateSourceTryUpdate, -1))
+		assert.False(t, counter.processNewValue(UpdateSourceTryUpdate, -1, time.Now()))
 		assert.Equal(t, int64(1_000_000), counter.GetValue())
 	})
 
@@ -1972,7 +1972,7 @@ func TestCounterInt64_ZeroIsNotAHeadObservation(t *testing.T) {
 
 		// The guard must not blunt the behaviour it sits next to: a genuine deep
 		// reorg is a positive value and still exceeds ignoreRollbackOf.
-		updated := counter.processNewValue(UpdateSourceTryUpdate, 995_000)
+		updated := counter.processNewValue(UpdateSourceTryUpdate, 995_000, time.Now())
 
 		assert.True(t, updated, "a real reorg must still be applied")
 		assert.Equal(t, int64(995_000), counter.GetValue())
@@ -1993,7 +1993,7 @@ func TestCounterInt64_ZeroIsNotAHeadObservation(t *testing.T) {
 		counter.value.Store(5_000_000)
 		counter.updatedAtUnixMs.Store(1)
 
-		updated := counter.processNewValue(UpdateSourceTryUpdate, 0)
+		updated := counter.processNewValue(UpdateSourceTryUpdate, 0, time.Now())
 
 		assert.True(t, updated, "earliest-block counters legitimately move to 0")
 		assert.Equal(t, int64(0), counter.GetValue())

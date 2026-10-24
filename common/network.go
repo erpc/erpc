@@ -60,8 +60,9 @@ type EvmHead struct {
 	// Ceiling is the raw max report of the lane's counted upstreams, 0
 	// while any of them has none.
 	Ceiling int64
-	// OldestReportAt is the local receive time of the oldest counted
-	// report; zero while one has none.
+	// OldestReportAt is when the oldest counted report's evidence was
+	// taken: a poll's send time, a push's receive time; zero while one has
+	// none.
 	OldestReportAt time.Time
 }
 

@@ -25,10 +25,11 @@ type CounterInt64SharedVariable interface {
 	TryUpdate(ctx context.Context, newValue int64) int64
 	OnValue(callback func(int64))
 	OnLargeRollback(callback func(currentVal, newVal int64))
-	// ReceivedAt is when this instance last took the counter's value or a
-	// fresh report of it, by its own clock, from any source (spec §14);
-	// zero before any.
-	ReceivedAt() time.Time
+	// ReportAt is when the evidence for the counter's newest report was
+	// taken, by this instance's clock (spec §6.4, §14): a refresh's start,
+	// since its answer can show no later value than the source had then;
+	// any other report's receive time. Zero before any.
+	ReportAt() time.Time
 }
 
 type baseSharedVariable struct {
@@ -107,9 +108,8 @@ func (v *baseSharedVariable) advanceTimestampPast(remoteTs int64) {
 type counterInt64 struct {
 	baseSharedVariable
 	localRefresh           baseSharedVariable
-	// receivedAtUnixMs is this instance's clock when it last took the value
-	// or a fresh report of it (ReceivedAt).
-	receivedAtUnixMs       atomic.Int64
+	// reportAtUnixMs is ReportAt.
+	reportAtUnixMs         atomic.Int64
 	registry               *sharedStateRegistry
 	key                    string
 	value                  atomic.Int64
@@ -130,15 +130,15 @@ func (c *counterInt64) GetValue() int64 {
 	return c.value.Load()
 }
 
-func (c *counterInt64) ReceivedAt() time.Time {
-	if ms := c.receivedAtUnixMs.Load(); ms > 0 {
+func (c *counterInt64) ReportAt() time.Time {
+	if ms := c.reportAtUnixMs.Load(); ms > 0 {
 		return time.UnixMilli(ms)
 	}
 	return time.Time{}
 }
 
-func (c *counterInt64) markReceived() {
-	c.receivedAtUnixMs.Store(time.Now().UnixMilli())
+func (c *counterInt64) markReported(at time.Time) {
+	c.reportAtUnixMs.Store(at.UnixMilli())
 }
 
 func (c *counterInt64) processNewState(source string, st CounterInt64State) bool {
@@ -184,7 +184,7 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 		// causing us to incorrectly set the remote's stale timestamp for a different local value.
 		if isRemoteUpdate {
 			if c.updateUpdatedAtMs(st.UpdatedAt) {
-				c.markReceived()
+				c.markReported(time.Now())
 				// Timestamp was updated. Verify value is still what we expect.
 				// If a concurrent update changed the value after our initial Load(),
 				// we need to ensure our timestamp reflects that change, not the remote's stale state.
@@ -207,7 +207,7 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 				if isRemoteUpdate {
 					c.updateUpdatedAtMs(st.UpdatedAt)
 				}
-				c.markReceived()
+				c.markReported(time.Now())
 				c.registry.logger.Trace().
 					Str("source", source).
 					Str("key", c.key).
@@ -284,7 +284,7 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 			if isRemoteUpdate {
 				c.updateUpdatedAtMs(st.UpdatedAt)
 			}
-			c.markReceived()
+			c.markReported(time.Now())
 			c.registry.logger.Trace().
 				Str("source", source).
 				Str("key", c.key).
@@ -315,17 +315,17 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 }
 
 // processNewValue handles local updates (TryUpdate, applyRefreshResult) where we don't have
-// an external timestamp. The ignoreRollbackOf parameter controls rollback behavior:
+// an external timestamp; at is when the value's evidence was taken (ReportAt). The ignoreRollbackOf parameter controls rollback behavior:
 // - ignoreRollbackOf = 0: Accept all changes (used for earliest block - can decrease due to pruning)
 // - ignoreRollbackOf > 0: Ignore small rollbacks (noise from lagging RPCs), trigger callback for large ones
 //
 // This is different from processNewState which uses timestamp ordering for remote reconciliation.
-func (c *counterInt64) processNewValue(source string, newVal int64) bool {
+func (c *counterInt64) processNewValue(source string, newVal int64, at time.Time) bool {
 	currentValue := c.value.Load()
 	if newVal == currentValue {
 		// Value is the same, but mark as fresh to prevent repeated refresh attempts
 		c.allocateUpdatedAtMs()
-		c.markReceived()
+		c.markReported(at)
 		return false
 	}
 
@@ -334,7 +334,7 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 		for {
 			if c.value.CompareAndSwap(currentValue, newVal) {
 				c.allocateUpdatedAtMs() // Mark as fresh
-				c.markReceived()
+				c.markReported(at)
 				c.registry.logger.Trace().
 					Str("source", source).
 					Str("key", c.key).
@@ -385,7 +385,7 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 	for {
 		if c.value.CompareAndSwap(currentValue, newVal) {
 			c.allocateUpdatedAtMs() // Mark as fresh
-			c.markReceived()
+			c.markReported(at)
 			c.registry.logger.Trace().
 				Str("source", source).
 				Str("key", c.key).
@@ -442,7 +442,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	// IMPORTANT: TryUpdate must never wait on updateMu.
 	// updateMu exists to coordinate expensive refresh execution in TryUpdateIfStale (thundering herd control),
 	// but local counter advancement must remain fast even if a refresh is in-flight.
-	updated := c.processNewValue(UpdateSourceTryUpdate, newValue)
+	updated := c.processNewValue(UpdateSourceTryUpdate, newValue, time.Now())
 
 	// Schedule background push when value was actually updated (increase OR decrease).
 	// With unified semantics, all value changes are propagated to remote.
@@ -522,6 +522,7 @@ func (c *counterInt64) tryUpdateIfStale(ctx context.Context, staleness time.Dura
 				attribute.Int64("timeout_ms", fnTimeout.Milliseconds()),
 			),
 		)
+		started := time.Now()
 		value, err := executeNewValueFn(fnCtx)
 		if err != nil {
 			fnSpan.SetAttributes(attribute.String("error", err.Error()))
@@ -530,7 +531,7 @@ func (c *counterInt64) tryUpdateIfStale(ctx context.Context, staleness time.Dura
 		}
 		fnSpan.End()
 
-		resultCh <- refreshResult{val: value, err: err}
+		resultCh <- refreshResult{val: value, err: err, started: started}
 	}()
 
 	timer := time.NewTimer(c.registry.updateMaxWait)
@@ -574,8 +575,9 @@ func (c *counterInt64) markFreshAttempt() {
 }
 
 type refreshResult struct {
-	val int64
-	err error
+	val     int64
+	err     error
+	started time.Time
 }
 
 func (c *counterInt64) applyRefreshResult(initialVal int64, r refreshResult) (int64, error) {
@@ -583,7 +585,7 @@ func (c *counterInt64) applyRefreshResult(initialVal int64, r refreshResult) (in
 		c.markFreshAttempt()
 		return initialVal, r.err
 	}
-	updated := c.processNewValue(UpdateSourceTryUpdateIfStale, r.val)
+	updated := c.processNewValue(UpdateSourceTryUpdateIfStale, r.val, r.started)
 	if updated {
 		c.scheduleBackgroundPushCurrent()
 	}
@@ -782,7 +784,7 @@ func (c *counterInt64) scheduleBackgroundPushCurrent() {
 				// Remote ahead by no more than ignoreRollbackOf means we are
 				// lagging: adopt it instead of overwriting it with a lower value.
 				if remoteOk && remote.Value > local.Value && remote.Value-local.Value <= c.ignoreRollbackOf {
-					c.processNewValue(UpdateSourceRemoteCheck, remote.Value)
+					c.processNewValue(UpdateSourceRemoteCheck, remote.Value, time.Now())
 					return
 				}
 
