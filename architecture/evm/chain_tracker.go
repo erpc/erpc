@@ -85,6 +85,10 @@ type ChainTracker struct {
 	// while any is, fill runs down to the window base, else it stops
 	// reorgWindow blocks below the head.
 	deepFill atomic.Int32
+	// fillReads counts, by cursor hash, the Reads that wait on fill: fill
+	// of a tree holding one runs past its reorgWindow cap (fillRoots).
+	fillMu    sync.Mutex
+	fillReads map[[32]byte]int
 
 	reconfirmMu   sync.Mutex
 	reconfirmedAt map[int64]time.Time
@@ -617,9 +621,10 @@ func (t *ChainTracker) update() bool {
 	return t.guard("wake", t.rearm, nil) && ok
 }
 
-// publishTrees publishes the roots whose extension ended, once a header
-// was held or dropped, an extension ended or the pins moved. A tracker
-// that cannot fetch extends no root.
+// publishTrees publishes the roots whose extension ended for good, once a
+// header was held or dropped, an extension ended or the pins moved. A
+// capped tree has not ended: a Read in it lifts the cap (spec §10.1). A
+// tracker that cannot fetch extends no root.
 func (t *ChainTracker) publishTrees() {
 	pub := t.state.Load()
 	if !t.treesDirty && t.trees.Load().state == pub {
@@ -632,7 +637,7 @@ func (t *ChainTracker) publishTrees() {
 		s.pinRoot = pinRoot.h
 	}
 	for r, e := range t.exts {
-		if e.atBase || e.capped && r != pinRoot || !t.canFetch() {
+		if e.atBase || !t.canFetch() {
 			s.ended[r.h.hash] = struct{}{}
 		}
 	}
@@ -929,8 +934,8 @@ func (t *ChainTracker) capOrphans(number uint64, keep *node) {
 // they become roots. base: n left the window below the head, so fill does
 // not fetch it again. Else only the reorgWindow cap of a tree without the
 // pins dropped it: the children's tree stays capped, and fill fetches n
-// again once that tree holds the pins (spec §10.1: a cursor held in the
-// other tree waits while fill links it).
+// again once that tree holds the pins or a Read waits on fill in it (spec
+// §10.1: a cursor held in the other tree waits while fill links it).
 func (t *ChainTracker) drop(n *node, base bool) {
 	delete(t.nodes, n.h.hash)
 	t.held.Delete(n.h.hashHex)
@@ -1745,7 +1750,8 @@ func (t *ChainTracker) HashVoting() bool {
 //     upstream, out of range; any other failure, fetched again after the
 //     key's backoff.
 //
-// While Read waits on fill, fill runs below reorgWindow (wantFill).
+// While Read waits on fill, fill runs below reorgWindow, and past the cap
+// of the tree that holds c (wantFill).
 //
 // Read waits only on the state the tracker publishes, and the tracker
 // never waits on a Read.
@@ -1776,7 +1782,7 @@ func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, o indexer.Rea
 		}
 		switch {
 		case step == readWaitFill && unfill == nil:
-			unfill = t.wantFill()
+			unfill = t.wantFill(c.Hash)
 		case step != readWaitFill && unfill != nil:
 			unfill()
 			unfill = nil
@@ -2070,12 +2076,23 @@ func (t *ChainTracker) Want(o indexer.ReadOpts) (release func()) {
 	}
 }
 
-// wantFill holds fill below reorgWindow until release: for a Read that
-// waits on fill (spec §9.1).
-func (t *ChainTracker) wantFill() (release func()) {
+// wantFill holds fill below reorgWindow, and past the cap of the tree that
+// holds c, until release: for a Read that waits on fill (spec §9.1).
+func (t *ChainTracker) wantFill(c [32]byte) (release func()) {
 	t.deepFill.Add(1)
+	t.fillMu.Lock()
+	if t.fillReads == nil {
+		t.fillReads = make(map[[32]byte]int)
+	}
+	t.fillReads[c]++
+	t.fillMu.Unlock()
 	t.mb.put(trackerMsg{kind: msgTick})
 	return func() {
+		t.fillMu.Lock()
+		if t.fillReads[c]--; t.fillReads[c] == 0 {
+			delete(t.fillReads, c)
+		}
+		t.fillMu.Unlock()
 		t.deepFill.Add(-1)
 		t.mb.put(trackerMsg{kind: msgTick})
 	}

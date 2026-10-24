@@ -36,7 +36,8 @@ type extension struct {
 	busy   bool
 	atBase bool // the window below the head ends here, for good
 	// capped: reorgWindow below the top of a tree without the pins. Fill
-	// goes on once the tree holds the pins.
+	// goes on once the tree holds the pins, or while a Read waits on fill
+	// in it (fillRoots).
 	capped bool
 }
 
@@ -179,13 +180,14 @@ func (t *ChainTracker) nearTop(top, h *chainHeader) bool {
 
 // outside ends the walk or fill e of root r when h, the next header down,
 // lies outside the window: for good below the head's window, and capped
-// reorgWindow below the top of a tree without the pins, which bounds the
-// fetches of a tree that may never join.
-func (t *ChainTracker) outside(e *extension, r *node, h *chainHeader, pinTree bool) bool {
+// reorgWindow below the top of a tree neither uncapped, the pins' tree or
+// one a Read waits on fill in, which bounds the fetches of a tree that may
+// never join.
+func (t *ChainTracker) outside(e *extension, r *node, h *chainHeader, uncapped bool) bool {
 	switch {
 	case !t.keeps(nil, h, true):
 		e.atBase = true
-	case pinTree || t.nearTop(t.treeTop(r), h):
+	case uncapped || t.nearTop(t.treeTop(r), h):
 		return false
 	default:
 		e.capped = true
@@ -194,15 +196,32 @@ func (t *ChainTracker) outside(e *extension, r *node, h *chainHeader, pinTree bo
 	return true
 }
 
+// fillRoots are the roots of the trees that hold a cursor a Read waits on
+// fill for; nil while none does.
+func (t *ChainTracker) fillRoots() map[*node]bool {
+	t.fillMu.Lock()
+	defer t.fillMu.Unlock()
+	var roots map[*node]bool
+	for h := range t.fillReads {
+		if n := t.nodes[h]; n != nil {
+			if roots == nil {
+				roots = make(map[*node]bool)
+			}
+			roots[rootOf(n)] = true
+		}
+	}
+	return roots
+}
+
 // extendRoots starts the next step of every root's walk or fill.
 func (t *ChainTracker) extendRoots() {
 	if !t.canFetch() {
 		return
 	}
-	pinRoot := t.pinRoot()
+	pinRoot, reads := t.pinRoot(), t.fillRoots()
 	for r, e := range t.exts {
-		if !e.busy && !e.atBase && (!e.capped || r == pinRoot) {
-			t.extend(r, e, r == pinRoot)
+		if uncapped := r == pinRoot || reads[r]; !e.busy && !e.atBase && (!e.capped || uncapped) {
+			t.extend(r, e, uncapped)
 		}
 	}
 }
@@ -226,14 +245,14 @@ func (t *ChainTracker) windowRef() *chainHeader {
 	return t.maxHeld
 }
 
-func (t *ChainTracker) extend(r *node, e *extension, pinTree bool) {
+func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
 	if r.h.number == 0 {
 		e.atBase, e.walk, t.treesDirty = true, 0, true
 		return
 	}
 	// The parent is no newer than r: when even r's time puts its height
 	// outside the window, the parent is outside too.
-	if t.outside(e, r, &chainHeader{number: r.h.number - 1, timestamp: r.h.timestamp}, pinTree) {
+	if t.outside(e, r, &chainHeader{number: r.h.number - 1, timestamp: r.h.timestamp}, uncapped) {
 		return
 	}
 	class := classFill
@@ -273,7 +292,7 @@ func (t *ChainTracker) extend(r *node, e *extension, pinTree bool) {
 // extended holds a root's fetched parent; the root joins under it, and the
 // walk or fill moves to the parent while the parent is itself a root.
 func (t *ChainTracker) extended(r *node, e *extension, h *chainHeader) {
-	if t.outside(e, r, h, r == t.pinRoot()) {
+	if t.outside(e, r, h, r == t.pinRoot() || t.fillRoots()[r]) {
 		return
 	}
 	p := t.nodes[h.hash]

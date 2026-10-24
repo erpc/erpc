@@ -660,3 +660,34 @@ func (s *chaosSeed) resumeOrphan(g *grpcInstance, orphan *chainsim.Block, fork u
 	require.Equal(s.t, hex.EncodeToString(forkAt.Hash[:]), hex.EncodeToString(h.ParentHash), "block %d links to the fork point", h.Number)
 	return fmt.Sprintf("resume from orphan %d on the fresh %s started at %d", orphan.Number, g.name, h.Number)
 }
+
+// streamForkTree moves one vendor onto a branch that leaves the chain
+// reorgWindow+4 blocks down, as when one vendor serves a deep reorg's new
+// branch first. Each instance holds the branch as a tree without the pins,
+// its walk capped reorgWindow below its top, above the fork point. A
+// resume from the branch's head waits while fill links that tree, then
+// resends from the fork point + 1 (spec §10.1), never OUT_OF_RANGE.
+func (s *chaosSeed) streamForkTree() {
+	v := s.pick(s.vendors...)
+	depth := chaosReorgWindow + 4
+	f := s.chain.StartFork(depth, depth, v)
+	defer s.chain.EndFork(f)
+	head := v.Head()
+	fork := head
+	for s.chain.CanonAt(fork.Number) != fork {
+		fork = fork.Parent
+	}
+	key := "0x" + hex.EncodeToString(head.Hash[:])
+	var got []string
+	for i := range 2 {
+		g := s.grpcAt(i)
+		require.NotNil(s.t, g)
+		require.Eventually(s.t, func() bool {
+			_, ok := g.nw.chainTracker.HeaderByHash(key)
+			return ok
+		}, 10*chaosBlock, 10*time.Millisecond, "%s holds %s's fork head %d", g.name, v.ID, head.Number)
+		require.False(s.t, g.nw.chainTracker.Pinned(indexer.Cursor{Number: head.Number, Hash: head.Hash}), "%s keeps the canonical pins", g.name)
+		got = append(got, s.resumeOrphan(g, head, fork.Number))
+	}
+	s.occur(fStreamForkTree, fmt.Sprintf("%s forked %d blocks deep at %d; %s", v.ID, head.Number-fork.Number, fork.Number, strings.Join(got, "; ")))
+}
