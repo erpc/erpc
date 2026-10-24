@@ -1283,10 +1283,8 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		feedBlockDetection(tracker, networkId, netLabel, lastBlock+1, lastTs+haltDuration)
 
 		spiked := tracker.GetNetworkBlockTime(networkId)
-		assert.Greater(t, spiked.Seconds(), 30.0,
-			"chain halt with blockGap=1 causes a spike (expected, documented behavior)")
-		assert.Less(t, spiked.Seconds(), 120.0,
-			"spike should still be within sanity bounds")
+		assert.InDelta(t, 2.4, spiked.Seconds(), 0.01,
+			"the 600s span across the halt counts as 3× the 2s EMA: 0.1×6s + 0.9×2s")
 
 		resumeBlock := lastBlock + 1
 		resumeTs := lastTs + haltDuration
@@ -1321,7 +1319,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 
 		feedBlockDetection(tracker, networkId, netLabel, lastBlock+1, lastTs+halt)
 		spiked := tracker.GetNetworkBlockTime(networkId)
-		assert.Greater(t, spiked.Seconds(), 30.0, "first block after halt spikes EMA")
+		assert.InDelta(t, 14.4, spiked.Seconds(), 0.05, "the span across the halt counts as 3× the 12s EMA: 0.1×36s + 0.9×12s")
 
 		for i := int64(2); i <= 5; i++ {
 			feedBlockDetection(tracker, networkId, netLabel, lastBlock+i, lastTs+halt+(i-1))

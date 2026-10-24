@@ -2135,6 +2135,9 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 // samples.
 const blockTimeEmaAlpha = 0.1
 
+// blockTimeSampleCap bounds a block time sample to this many times the EMA.
+const blockTimeSampleCap = 3
+
 // ColdBlockTime is every reader's block time until the network's first
 // sample (spec §6.7).
 const ColdBlockTime = time.Second
@@ -2212,6 +2215,9 @@ func (m *NetworkMetadata) sampleBlockTime(blockNumber int64, blockTimestamp int6
 	if m.evmBlockTimeSamples == 0 {
 		m.evmBlockTimeEmaNs = sampleNs
 	} else {
+		// One span across a halt counts as 3× the EMA, so it never sets W
+		// to its cap (spec §6.7).
+		sampleNs = min(sampleNs, blockTimeSampleCap*m.evmBlockTimeEmaNs)
 		m.evmBlockTimeEmaNs = blockTimeEmaAlpha*sampleNs + (1-blockTimeEmaAlpha)*m.evmBlockTimeEmaNs
 	}
 	m.evmBlockTimeSamples++
