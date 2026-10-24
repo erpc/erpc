@@ -203,9 +203,6 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	defer l.mu.Unlock()
 	old := l.published()
 	h := n.computeHead(l, l.selector)
-	if h.Ceiling == old.Ceiling && h.Ceiling > 0 {
-		h.CeilingAt = old.CeilingAt
-	}
 	if h == *old {
 		return
 	}
@@ -227,10 +224,7 @@ func (n *Network) computeHead(l *servedTipLane, sel string) common.EvmHead {
 		Finalized: n.laneTip(l, sel, true),
 	}
 	h.Leader = n.laneLeader(sel, h.Latest)
-	h.Ceiling = n.laneCeiling(sel)
-	if h.Ceiling > 0 {
-		h.CeilingAt = time.Now()
-	}
+	h.Ceiling, h.ReachFrom, h.ReachAt = n.laneCeiling(sel)
 	return h
 }
 
@@ -324,21 +318,37 @@ func (n *Network) laneLeader(sel string, latest int64) common.Upstream {
 // cordoned for answering for another chain. It uses latest heads whatever
 // emptyResultConfidence says: that setting decides how an empty answer is
 // treated, not whether an upstream can have the block. 0 (unknown) when the
-// lane has no upstream or any upstream's head is unknown.
-func (n *Network) laneCeiling(sel string) int64 {
-	ups := n.ceilingUpstreams(sel)
-	var head int64
-	for _, u := range ups {
-		if sp := u.EvmStatePoller(); sp == nil {
-			return 0
-		}
-		blk, _ := evmTipObservation(u, false)
-		if blk <= 0 {
-			return 0
-		}
-		head = max(head, blk)
+// lane has no upstream or any upstream's head is unknown. reachFrom and
+// reachAt are the report and receive time of the upstream whose report
+// reaches furthest at the chain's pace (common.EvmHead.Reach), among those
+// whose newest poll succeeded and whose report no exact bound caps.
+func (n *Network) laneCeiling(sel string) (ceiling, reachFrom int64, reachAt time.Time) {
+	bt := n.EvmBlockTime()
+	if bt <= 0 {
+		bt = health.ColdBlockTime
 	}
-	return head
+	now := time.Now()
+	var reach int64
+	for _, u := range n.ceilingUpstreams(sel) {
+		sp := u.EvmStatePoller()
+		if sp == nil {
+			return 0, 0, time.Time{}
+		}
+		blk, capped := evmTipObservation(u, false)
+		if blk <= 0 {
+			return 0, 0, time.Time{}
+		}
+		ceiling = max(ceiling, blk)
+		if capped || sp.IsObjectNull() {
+			continue
+		}
+		if _, at, live := sp.LatestReport(); live && !at.IsZero() {
+			if r := blk + int64(max(now.Sub(at), 0)/bt); reachAt.IsZero() || r > reach {
+				reach, reachFrom, reachAt = r, blk, at
+			}
+		}
+	}
+	return ceiling, reachFrom, reachAt
 }
 
 // ceilingUpstreams are the upstreams selector sel's lane ceiling counts:
@@ -368,12 +378,14 @@ func (n *Network) ceilingUpstreams(sel string) []*upstream.Upstream {
 // §6.8): a poll debounced by this instance's last fetch of it, on the
 // network's context bounded by W, so no caller's end fails it for the
 // others. One poll per upstream is in flight at a time; a caller finding
-// one joins it.
-func (n *Network) askLane(sel string, block int64) {
+// one joins it. It returns a channel per asked upstream, closed when its
+// poll ends.
+func (n *Network) askLane(sel string, block int64) []<-chan struct{} {
 	parent := n.appCtx
 	if parent == nil {
 		parent = context.Background()
 	}
+	var polls []<-chan struct{}
 	ups := n.ceilingUpstreams(sel)
 	for _, voters := range [2]bool{true, false} {
 		for _, u := range ups {
@@ -387,10 +399,14 @@ func (n *Network) askLane(sel string, block int64) {
 			if head, _ := evmTipObservation(u, false); head >= block {
 				continue
 			}
-			if _, inFlight := n.asks.LoadOrStore(u.Id(), struct{}{}); inFlight {
+			done := make(chan struct{})
+			if cur, inFlight := n.asks.LoadOrStore(u.Id(), (<-chan struct{})(done)); inFlight {
+				polls = append(polls, cur.(<-chan struct{}))
 				continue
 			}
+			polls = append(polls, done)
 			go func() {
+				defer close(done)
 				defer n.asks.Delete(u.Id())
 				defer n.recoverAskPanic(sel)
 				ctx, cancel := context.WithTimeout(parent, health.FreshnessWindow(n.EvmBlockTime()))
@@ -399,6 +415,7 @@ func (n *Network) askLane(sel string, block int64) {
 			}()
 		}
 	}
+	return polls
 }
 
 func (n *Network) recoverAskPanic(sel string) {
@@ -413,30 +430,27 @@ func (n *Network) recoverAskPanic(sel string) {
 	}
 }
 
-// EvmAskCeiling Asks selector sel's lane for block (askLane) and waits
-// until its ceiling reaches block, 1 bt passes or ctx ends, re-reading it
-// at each head pass, then returns the lane's ceiling: a stale ceiling is
-// Asked before any "future" answer, and the band's retry orders upstreams
-// on the Ask's heads (spec §6.4).
-func (n *Network) EvmAskCeiling(ctx context.Context, sel string, block int64) int64 {
-	n.askLane(sel, block)
+// awaitBandAsk joins the band's Ask of selector sel's lane for block
+// (askLane) and waits for its polls, at most 1 bt or until ctx ends, so the
+// band's retry orders upstreams on the heads it brings (spec §6.4).
+func (n *Network) awaitBandAsk(ctx context.Context, sel string, block int64) {
+	polls := n.askLane(sel, block)
+	if len(polls) == 0 {
+		return
+	}
 	bt := n.EvmBlockTime()
 	if bt <= 0 {
 		bt = health.ColdBlockTime
 	}
 	timer := time.NewTimer(bt)
 	defer timer.Stop()
-	for {
-		pass := n.headsComputed()
-		if c := n.laneCeiling(sel); c >= block {
-			return c
-		}
+	for _, p := range polls {
 		select {
-		case <-pass:
+		case <-p:
 		case <-timer.C:
-			return n.laneCeiling(sel)
+			return
 		case <-ctx.Done():
-			return n.laneCeiling(sel)
+			return
 		}
 	}
 }

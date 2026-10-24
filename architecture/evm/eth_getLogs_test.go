@@ -1762,8 +1762,9 @@ type fixedPoller struct {
 	finalized int64
 }
 
-func (p *fixedPoller) LatestBlock() int64 { return p.latest }
-func (p *fixedPoller) RefreshLatestBlock() {}
+func (p *fixedPoller) LatestBlock() int64                     { return p.latest }
+func (p *fixedPoller) RefreshLatestBlock()                    {}
+func (p *fixedPoller) LatestReport() (int64, time.Time, bool) { return 0, time.Time{}, false }
 
 func (p *fixedPoller) FinalizedBlock() int64 { return p.finalized }
 

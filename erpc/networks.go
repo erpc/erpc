@@ -910,7 +910,7 @@ func (n *Network) refuseFutureRange(ctx context.Context, req *common.NormalizedR
 	if v == nil || v.Rule != common.HeadFuture {
 		return nil
 	}
-	n.countHeadRefusal(futureRule(v))
+	n.countHeadRefusal("future")
 	ceiling := common.EvmHeadOf(n, ctx, req).Ceiling
 	return &common.ErrUpstreamBlockUnavailable{
 		BaseError: common.BaseError{
@@ -926,9 +926,8 @@ func (n *Network) refuseFutureRange(ctx context.Context, req *common.NormalizedR
 
 // countRefusal counts the refusal rule's outcome for req (spec §17): data
 // is served, or retried_found after a miss; an empty or missing answer is
-// retried_missing in the band, future (future_after_refresh after an Ask)
-// above it. Requests naming no block, and empty answers at or below
-// Latest, are no refusal.
+// retried_missing in the band, future above it. Requests naming no block,
+// and empty answers at or below Latest, are no refusal.
 func (n *Network) countRefusal(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse, err error) {
 	v := req.HeadRefusal()
 	if v == nil || v.Block <= 0 {
@@ -946,17 +945,8 @@ func (n *Network) countRefusal(ctx context.Context, req *common.NormalizedReques
 	case v.Rule == common.HeadBand:
 		n.countHeadRefusal("retried_missing")
 	case v.Rule == common.HeadFuture:
-		n.countHeadRefusal(futureRule(v))
+		n.countHeadRefusal("future")
 	}
-}
-
-// futureRule is the refusal counter's rule for a future block: Asked
-// first when its ceiling was stale.
-func futureRule(v *common.HeadRefusal) string {
-	if v.Asked {
-		return "future_after_refresh"
-	}
-	return "future"
 }
 
 func (n *Network) countHeadRefusal(rule string) {
@@ -2129,6 +2119,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					loopSpan.End()
 					return nil, cause
 				}
+				// Another leg holds the request's one miss and its retry
+				// (spec §6.4): this leg dispatches no more.
+				if effectiveReq.HeadRefusal().Sibling(leg) {
+					err := common.NewErrEndpointMissingData(fmt.Errorf("another hedge holds the retryable miss above Latest"), nil)
+					common.SetTraceSpanError(loopSpan, err)
+					loopSpan.End()
+					return nil, err
+				}
 
 				u, selErr := nextUpstream()
 				if selErr != nil {
@@ -2224,14 +2222,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					switch refusal.Miss(leg) {
 					case common.MissRetry:
 						if refusal.Rule == common.HeadBand {
-							// The retry orders on the heads the band's Ask
-							// brings, waited for while the ceiling is below
-							// the block.
+							// The retry waits for the band's Ask, at most
+							// 1 bt, and orders on the heads it brings.
 							sel := ""
 							if d := effectiveReq.Directives(); d != nil {
 								sel = d.UseUpstream
 							}
-							n.EvmAskCeiling(loopCtx, sel, refusal.Block)
+							n.awaitBandAsk(loopCtx, sel, refusal.Block)
 						}
 						nextUpstream = n.headFirst(effectiveReq, attempted, refusal.Block)
 						if err == nil {

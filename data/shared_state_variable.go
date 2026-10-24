@@ -25,6 +25,9 @@ type CounterInt64SharedVariable interface {
 	TryUpdate(ctx context.Context, newValue int64) int64
 	OnValue(callback func(int64))
 	OnLargeRollback(callback func(currentVal, newVal int64))
+	// UpdatedAt is when the counter last took its value or a fresh report
+	// of it; zero before any.
+	UpdatedAt() time.Time
 }
 
 type baseSharedVariable struct {
@@ -45,6 +48,13 @@ func (v *baseSharedVariable) IsStale(staleness time.Duration) bool {
 
 func (v *baseSharedVariable) updatedAtMs() int64 {
 	return v.updatedAtUnixMs.Load()
+}
+
+func (v *baseSharedVariable) UpdatedAt() time.Time {
+	if ms := v.updatedAtUnixMs.Load(); ms > 0 {
+		return time.UnixMilli(ms)
+	}
+	return time.Time{}
 }
 
 // allocateUpdatedAtMs allocates a strictly-increasing UpdatedAt timestamp (unix ms) for a local update.

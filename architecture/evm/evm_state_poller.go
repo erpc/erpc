@@ -131,6 +131,9 @@ type EvmStatePoller struct {
 	latestBlockFailureCount   int
 	latestBlockSuccessfulOnce bool
 	latestBlockShared         data.CounterInt64SharedVariable
+	// latestPollFailed: this instance's newest latest poll failed, so the
+	// report's age is no evidence the upstream moved on (spec §6.4 reach).
+	latestPollFailed atomic.Bool
 
 	// pollSrc is set once the network binds this poller as a poll source;
 	// while pollHeads is on, each latest poll feeds its intake, at the poll
@@ -616,6 +619,7 @@ func (e *EvmStatePoller) pollLatest(ctx context.Context, debounced bool, kind He
 		started := time.Now()
 		blockNum, blockTimestamp, header, err := e.fetchBlock(ctx, "latest")
 		if err != nil || blockNum == 0 {
+			e.latestPollFailed.Store(true)
 			if err == nil ||
 				common.HasErrorCode(err,
 					common.ErrCodeUpstreamRequestSkipped,
@@ -658,6 +662,7 @@ func (e *EvmStatePoller) pollLatest(ctx context.Context, debounced bool, kind He
 			return 0, err
 		}
 
+		e.latestPollFailed.Store(false)
 		// Mark as successful and reset failure counter
 		e.stateMu.Lock()
 		e.latestBlockSuccessfulOnce = true
@@ -1015,6 +1020,16 @@ func (e *EvmStatePoller) OnLatestBlock(cb func(int64)) {
 	if e.latestBlockShared != nil {
 		e.latestBlockShared.OnValue(cb)
 	}
+}
+
+// LatestReport is the upstream's latest block report: its number, when the
+// shared counter took it, and live: this instance's newest poll of it
+// succeeded (spec §6.4 reach).
+func (e *EvmStatePoller) LatestReport() (block int64, at time.Time, live bool) {
+	if e.latestBlockShared == nil {
+		return 0, time.Time{}, false
+	}
+	return e.latestBlockShared.GetValue(), e.latestBlockShared.UpdatedAt(), !e.latestPollFailed.Load()
 }
 
 // OnFinalizedBlock is OnLatestBlock for the finalized block number.

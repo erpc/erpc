@@ -35,7 +35,7 @@ func (n *queryTestNetwork) GetFinality(ctx context.Context, req *common.Normaliz
 	return common.DataFinalityStateFinalized
 }
 func (n *queryTestNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
-	return common.EvmHead{Latest: n.latest, Finalized: n.finalized, Ceiling: n.ceiling, CeilingAt: time.Now()}
+	return common.EvmHead{Latest: n.latest, Finalized: n.finalized, Ceiling: n.ceiling, ReachFrom: n.ceiling, ReachAt: time.Now()}
 }
 func (n *queryTestNetwork) EvmLaneHead(string, string) common.EvmHead {
 	return n.EvmHead(context.Background(), nil)

@@ -57,10 +57,25 @@ type EvmHead struct {
 	Finalized int64
 	// Leader is the highest voter within Latest + maxRetryableBlockDistance.
 	Leader Upstream
-	// Ceiling is the raw max head of the lane's registered upstreams, 0 while
-	// any of them has none; CeilingAt is when this instance saw it.
-	Ceiling   int64
-	CeilingAt time.Time
+	// Ceiling is the raw max report of the lane's counted upstreams, 0
+	// while any of them has none.
+	Ceiling int64
+	// ReachFrom and ReachAt are the report, and its local receive time,
+	// of the counted upstream whose report reaches furthest at the
+	// chain's pace: Reach(t) = max(Ceiling, ReachFrom + (t − ReachAt)/bt).
+	// ReachAt is zero while no counted upstream's newest poll succeeded.
+	ReachFrom int64
+	ReachAt   time.Time
+}
+
+// Reach is the highest block a counted upstream can have reached at now,
+// bt the block time (> 0): a stale report stands for the blocks the chain
+// has made since (spec §6.4).
+func (h EvmHead) Reach(bt time.Duration, now time.Time) int64 {
+	if h.ReachAt.IsZero() {
+		return h.Ceiling
+	}
+	return max(h.Ceiling, h.ReachFrom+int64(max(now.Sub(h.ReachAt), 0)/bt))
 }
 
 // HeadRule is the refusal rule's row for block N on a request (spec §6.4).
@@ -70,42 +85,28 @@ const (
 	// HeadServe: N ≤ Latest, or Latest unknown (tags and numbers reach
 	// upstreams unchanged).
 	HeadServe HeadRule = iota
-	// HeadBand: Latest < N ≤ ceiling + ceiling age / bt, or the ceiling is
-	// unknown: an empty answer is a retryable miss once.
+	// HeadBand: Latest < N ≤ reach, or the ceiling is unknown.
 	HeadBand
-	// HeadFuture: above the band on a ceiling younger than 1 bt: an empty
-	// answer is final.
+	// HeadFuture: above the reach: no counted upstream can have N yet.
 	HeadFuture
-	// HeadStale: above the band on an older ceiling: Ask it, then decide
-	// again.
-	HeadStale
 )
 
 // Rule is the refusal rule's row for block n at now, bt the block time (> 0).
 func (h EvmHead) Rule(n int64, bt time.Duration, now time.Time) HeadRule {
-	if h.Latest <= 0 || n <= h.Latest {
-		return HeadServe
-	}
-	if h.Ceiling <= 0 {
-		return HeadBand
-	}
-	age := max(now.Sub(h.CeilingAt), 0)
 	switch {
-	case n <= h.Ceiling+int64(age/bt):
+	case h.Latest <= 0 || n <= h.Latest:
+		return HeadServe
+	case h.Ceiling <= 0 || n <= h.Reach(bt, now):
 		return HeadBand
-	case age < bt:
-		return HeadFuture
 	}
-	return HeadStale
+	return HeadFuture
 }
 
 // HeadRefusal is the refusal rule's verdict for one request's block, taken
 // once (spec §6.4), and the one retryable miss it got since.
 type HeadRefusal struct {
-	Rule  HeadRule // HeadServe, HeadBand or HeadFuture
+	Rule  HeadRule
 	Block int64
-	// Asked: the ceiling was stale and Asked before Rule was decided.
-	Asked bool
 	// owner is the leg that took the request's one retryable miss.
 	owner atomic.Pointer[RefusalLeg]
 	// answered: a leg took its answer after the miss.
@@ -156,11 +157,21 @@ func (r *HeadRefusal) Miss(leg *RefusalLeg) MissVerdict {
 	if r.owner.CompareAndSwap(nil, leg) {
 		return MissRetry
 	}
-	if o := r.owner.Load(); o != leg && !o.ended.Load() {
+	if r.Sibling(leg) {
 		return MissSibling
 	}
 	r.answered.Store(true)
 	return MissFinal
+}
+
+// Sibling reports whether another leg, still running, holds the request's
+// miss and its retry: leg is a hedge beside it.
+func (r *HeadRefusal) Sibling(leg *RefusalLeg) bool {
+	if r == nil {
+		return false
+	}
+	o := r.owner.Load()
+	return o != nil && o != leg && !o.ended.Load()
 }
 
 // Retried reports whether the request got its retryable miss.

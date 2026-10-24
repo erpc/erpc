@@ -902,12 +902,11 @@ var (
 
 	// MetricHeadRefusalTotal counts the refusal rule's outcomes for requests
 	// naming a block (spec §6.4, §17): served, retried_found,
-	// retried_missing (the promise broke on this instance), future,
-	// future_after_refresh.
+	// retried_missing (the promise broke on this instance), future.
 	MetricHeadRefusalTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "head_refusal_total",
-		Help:      "Total requests naming a block, by the refusal rule's outcome: served, retried_found, retried_missing, future, future_after_refresh.",
+		Help:      "Total requests naming a block, by the refusal rule's outcome: served, retried_found, retried_missing, future.",
 	}, []string{"project", "network", "rule"})
 
 	// MetricCacheExecutorAttempt counts every attempt a cache-connector

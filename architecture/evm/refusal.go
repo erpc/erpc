@@ -9,14 +9,10 @@ import (
 )
 
 // headRefuser is the network's side of the refusal rule (spec §6.4, §6.8):
-// its block time, the refresh of the voters below a block, and the Ask of a
-// stale ceiling.
+// its block time, and the band's Ask of the upstreams below a block.
 type headRefuser interface {
 	EvmBlockTime() time.Duration
 	EvmRefreshHeadsBelow(selector string, block int64)
-	// EvmAskCeiling asks the lane's upstreams below block for their head,
-	// waits for their answers, and returns the lane's ceiling after them.
-	EvmAskCeiling(ctx context.Context, selector string, block int64) int64
 }
 
 // HeadRefusalOf is the refusal verdict for rq's block, decided once: by the
@@ -42,13 +38,13 @@ func HeadRefusalOf(ctx context.Context, rq *common.NormalizedRequest) *common.He
 	if d := rq.Directives(); d != nil {
 		sel = d.UseUpstream
 	}
-	return rq.TakeHeadRefusal(DecideHeadRefusal(ctx, nw, common.EvmHeadOf(nw, ctx, rq), sel, bn))
+	return rq.TakeHeadRefusal(DecideHeadRefusal(nw, common.EvmHeadOf(nw, ctx, rq), sel, bn))
 }
 
 // DecideHeadRefusal applies the refusal rule to block n on head h of
-// selector sel's lane: a stale ceiling is Asked and n decided again; a
-// band block refreshes the voters below it, in the background.
-func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead, sel string, n int64) *common.HeadRefusal {
+// selector sel's lane, at once: a band block Asks the upstreams below it,
+// in the background.
+func DecideHeadRefusal(nw common.Network, h common.EvmHead, sel string, n int64) *common.HeadRefusal {
 	net, _ := nw.(headRefuser)
 	bt := health.ColdBlockTime
 	if net != nil {
@@ -57,15 +53,6 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 		}
 	}
 	v := &common.HeadRefusal{Block: n, Rule: h.Rule(n, bt, time.Now())}
-	if v.Rule == common.HeadStale {
-		v.Asked = true
-		if net != nil {
-			h.Ceiling, h.CeilingAt = net.EvmAskCeiling(ctx, sel, n), time.Now()
-		}
-		if v.Rule = h.Rule(n, bt, time.Now()); v.Rule == common.HeadStale {
-			v.Rule = common.HeadFuture
-		}
-	}
 	if v.Rule == common.HeadBand && net != nil {
 		net.EvmRefreshHeadsBelow(sel, n)
 	}
