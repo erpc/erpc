@@ -30,6 +30,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -195,7 +196,9 @@ func setupRealPollLagNetwork(t *testing.T, ctx context.Context, fixtures []realP
 
 	// Drive the REAL poll, highest tip first so the network-level max settles
 	// to the true head before laggards compute their lag against it. Two passes
-	// so every upstream's lag is recomputed against the final max.
+	// so every upstream's lag is recomputed against the final max. A copy: the
+	// registry's own slice is read by the head loop meanwhile.
+	upsList = slices.Clone(upsList)
 	sort.SliceStable(upsList, func(i, j int) bool {
 		return latestForFixtureID(fixtures, upsList[i].Id()) > latestForFixtureID(fixtures, upsList[j].Id())
 	})
