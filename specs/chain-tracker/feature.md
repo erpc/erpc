@@ -959,7 +959,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | U8 | vendor pushes headers with wrong hashes; integrity off and on | never pinned or sent; integrity on: counted on that upstream only |
 | U9 | truncated receipts, forged log, wrong bloom from one vendor | refetched from the other vendor; logs equal canonical |
 | U10 | primary 40 behind, still advancing | `Latest` unchanged; its hash vote expires; benched after 30s or more |
-| U11 | 2 upstreams only; one head frozen, still answering | taps and `latest` wait for the bench (at most 90s), then flow; a wait longer than `reorgWindow` blocks ends as §10.2 states: one `newHeads` restart, ws `logs` close `1013` within the spread; gRPC resumes at most once |
+| U11 | 2 upstreams only; one head frozen, still answering | taps and `latest` wait for the bench (at most 90s), then flow: the held blocks were not deliverable during the wait, so they arrive in batches of at most `reorgWindow`, no gap, no `newHeads` restart and no `1013` (§10.2, as C7); gRPC resumes at most once |
 | U12 | one upstream reports +30M, same chainId | `Latest`, `Leader`, lag unchanged; ceiling raised, no short-circuit |
 | U13 | one endpoint answers another chainId | cordoned, out of ceiling; uncordoned after 2 matches 5 min apart |
 | U14 | archive syncing at head+5; `eth_getBlockByNumber(head+3)` | served by the archive in the refusal band, not `null` |
@@ -1094,7 +1094,7 @@ One home per fact:
 ## 21. Risks and behaviour changes
 
 - Subscribers get a pushed head once q upstreams report it: one poll round trip with one wss vendor (70–160 ms measured on eth, sepolia, hoodi, monad); none with two.
-- One vendor ahead with its peers stalled: subscribers and `latest` wait up to 90s (the bench); gRPC reconnects at most once.
+- One vendor ahead with its peers stalled: subscribers and `latest` wait up to 90s (the bench), then get the held blocks in batches; gRPC reconnects at most once. A wait longer than `maxBackfill` re-anchors instead, and taps end as §10.2 states.
 - Catch-up refreshes while a subscriber is open: at most one per upstream per cadence per instance, only for voters below the pin.
 - `eth_getBlockByNumber(latest)` answers block `Latest`: up to one poll behind a vendor's newest block; it now equals `eth_blockNumber`.
 - `eth_getBlockByNumber("finalized")` answers block `Finalized`, which trails up to 5% of the finality window.
