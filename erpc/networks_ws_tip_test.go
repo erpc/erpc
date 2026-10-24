@@ -789,7 +789,9 @@ func TestNetworkIntake_ReconnectOnHaltedChainRenewsVote(t *testing.T) {
 // span W, first to last, with no success since (spec §6.1):
 //  1. Two 429s W/2 apart, read W after the first, keep the vote; a third
 //     past W ends it; a success brings it back.
-//  2. Client traffic uses up the upstream's daily rate-limit budget: eRPC's
+//  2. A slow poll the node fails after a later poll succeeded started before
+//     that success, so it does not count: a 429 W after it keeps the vote.
+//  3. Client traffic uses up the upstream's daily rate-limit budget: eRPC's
 //     own refusals for 2·W are no poll, so the vote holds.
 func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) {
 	setupGock()
@@ -840,6 +842,24 @@ func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) 
 	require.True(t, hashVoter(), "two 429s W/2 apart: the polls failed for less than W")
 	pollFails("the third 429")
 	require.False(t, hashVoter(), "failed polls spanning W end the vote")
+	vendor.failLatest.Store(0)
+	restored("a success ends the failures")
+
+	polled = vendor.latestPolls.Load()
+	vendor.slowFail.Store(int64(time.Second))
+	poller.PollHead(false)
+	require.Eventually(t, func() bool { return vendor.latestPolls.Load() > polled }, 2*time.Second, 5*time.Millisecond, "the slow poll reaches the node")
+	time.Sleep(200 * time.Millisecond)
+	_, err := poller.PollLatestBlockNumber(ctx)
+	require.NoError(t, err)
+	require.Equal(t, polled+2, vendor.latestPolls.Load(), "a poll after the slow one succeeds while it is in flight")
+	require.Eventually(t, func() bool { return vendor.slowFailed.Load() == 1 }, 3*time.Second, 5*time.Millisecond, "the node fails the slow poll")
+	time.Sleep(100 * time.Millisecond)
+	slowFailedAt := time.Now()
+	vendor.failLatest.Store(http.StatusTooManyRequests)
+	time.Sleep(time.Until(slowFailedAt.Add(w + 300*time.Millisecond)))
+	pollFails("a 429 W after the slow poll failed")
+	require.True(t, hashVoter(), "a failure whose request started before the last success does not count")
 	vendor.failLatest.Store(0)
 	restored("a success ends the failures")
 

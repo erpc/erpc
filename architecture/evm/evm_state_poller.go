@@ -609,6 +609,7 @@ func (e *EvmStatePoller) pollLatest(ctx context.Context, debounced bool, kind He
 			networkLabel,
 			e.upstream.Id(),
 		).Inc()
+		started := time.Now()
 		blockNum, blockTimestamp, header, err := e.fetchBlock(ctx, "latest")
 		if err != nil || blockNum == 0 {
 			if err == nil ||
@@ -636,7 +637,7 @@ func (e *EvmStatePoller) pollLatest(ctx context.Context, debounced bool, kind He
 			}
 			if nodeFailedPoll(err) {
 				if bound != nil {
-					bound.intake.PollFailed(e.upstream.Id())
+					bound.intake.PollFailed(e.upstream.Id(), started)
 				}
 				if src != nil {
 					e.pollFailures.Add(1)
@@ -837,8 +838,9 @@ const (
 // PollIntake takes a bound poller's latest headers.
 type PollIntake interface {
 	Polled(upstreamId string, raw json.RawMessage, kind HeaderKind)
-	// PollFailed notes a poll of latest that the node failed (spec §6.1).
-	PollFailed(upstreamId string)
+	// PollFailed notes a poll of latest, sent at started, that the node
+	// failed (spec §6.1).
+	PollFailed(upstreamId string, started time.Time)
 }
 
 // BindIntake sends this poller's latest headers to intake; Set makes it a
