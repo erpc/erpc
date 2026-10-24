@@ -56,6 +56,9 @@ func (t *testNetwork) Logger() *zerolog.Logger {
 func (t *testNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
 	return common.EvmHead{Latest: t.highestLatest}
 }
+func (t *testNetwork) EvmLaneHead(string, string) common.EvmHead {
+	return t.EvmHead(context.Background(), nil)
+}
 
 func (t *testNetwork) EvmRefreshLatestBlock(ctx context.Context) {}
 
@@ -200,6 +203,9 @@ type tipFetchNetwork struct {
 func (n *tipFetchNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
 	return common.EvmHead{Latest: n.highestLatest, Finalized: n.finalizedTip}
 }
+func (n *tipFetchNetwork) EvmLaneHead(string, string) common.EvmHead {
+	return n.EvmHead(context.Background(), nil)
+}
 
 func (n *tipFetchNetwork) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	rqj, err := req.JsonRpcRequest(ctx)
@@ -272,6 +278,9 @@ func (n *refetchNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequ
 		return common.EvmHead{Latest: n.scopedTip}
 	}
 	return common.EvmHead{Latest: n.highestLatest}
+}
+func (n *refetchNetwork) EvmLaneHead(string, string) common.EvmHead {
+	return n.EvmHead(context.Background(), nil)
 }
 
 func (n *refetchNetwork) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {

@@ -95,6 +95,8 @@ func (n *covIntegHeadNet) EvmLaneHead(groupKey, selector string) common.EvmHead 
 	return common.EvmHead{Latest: n.latest, Finalized: n.finalized}
 }
 
+func (n *covIntegHeadNet) EvmRefreshLatestBlock(context.Context) {}
+
 // covIntegPlainUp hides every EVM capability of the wrapped upstream.
 type covIntegPlainUp struct{ common.Upstream }
 

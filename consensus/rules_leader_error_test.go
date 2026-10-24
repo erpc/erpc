@@ -38,6 +38,9 @@ func (n *leaderNetwork) Architecture() common.NetworkArchitecture {
 func (n *leaderNetwork) EvmHead(context.Context, *common.NormalizedRequest) common.EvmHead {
 	return common.EvmHead{Leader: n.leader}
 }
+func (n *leaderNetwork) EvmLaneHead(string, string) common.EvmHead {
+	return n.EvmHead(context.Background(), nil)
+}
 func (n *leaderNetwork) EvmRefreshLatestBlock(context.Context) {}
 
 // Without this, a new EvmNetwork method makes the fake silently stop being an

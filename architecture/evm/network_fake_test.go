@@ -37,6 +37,9 @@ func (n *queryTestNetwork) GetFinality(ctx context.Context, req *common.Normaliz
 func (n *queryTestNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
 	return common.EvmHead{Latest: n.latest, Finalized: n.finalized, Ceiling: n.ceiling, CeilingAt: time.Now()}
 }
+func (n *queryTestNetwork) EvmLaneHead(string, string) common.EvmHead {
+	return n.EvmHead(context.Background(), nil)
+}
 func (n *queryTestNetwork) EvmRefreshLatestBlock(ctx context.Context)             {}
 
 // queryTestConfigUpstream is a minimal common.Upstream with a given config.

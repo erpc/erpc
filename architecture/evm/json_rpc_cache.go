@@ -1184,15 +1184,16 @@ func shouldCacheResponse(
 	// never serve such a value as-is, so caching it can only poison future
 	// reads (e.g. the eth_blockNumber sawtooth: a lagging upstream's value
 	// lands in the cache and is then served for a full TTL window). The tip
-	// is resolved network-wide on purpose — the cache entry is shared by all
-	// requests regardless of any use-upstream selector — and the guard fails
-	// open when pollers don't know a tip yet.
+	// is the network-wide lane's on purpose, whatever lane the request used
+	// (spec §6.4, #932): the cache entry is shared by all requests regardless
+	// of any use-upstream selector. The guard fails open while that Head is
+	// unknown.
 	if finality == common.DataFinalityStateRealtime && resp != nil {
 		if req := resp.Request(); req != nil {
 			if dirs := req.Directives(); dirs != nil && dirs.EnforceHighestBlock {
-				if ntw := req.Network(); ntw != nil {
+				if ntw, ok := req.Network().(common.EvmNetwork); ok {
 					if _, respBlock, err := ExtractBlockReferenceFromResponse(ctx, resp); err == nil && respBlock > 0 {
-						if tip := common.EvmHeadOf(ntw, ctx, nil).Latest; tip > respBlock {
+						if tip := ntw.EvmLaneHead("", "").Latest; tip > respBlock {
 							lg.Debug().
 								Int64("responseBlockNumber", respBlock).
 								Int64("knownHighestBlock", tip).

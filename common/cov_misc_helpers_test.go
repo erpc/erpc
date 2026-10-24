@@ -65,6 +65,9 @@ type covMiscEvmNetwork struct {
 func (n *covMiscEvmNetwork) EvmHead(context.Context, *NormalizedRequest) EvmHead {
 	return EvmHead{Latest: n.latest, Finalized: n.finalized, Leader: n.leader}
 }
+func (n *covMiscEvmNetwork) EvmLaneHead(string, string) EvmHead {
+	return n.EvmHead(context.Background(), nil)
+}
 func (n *covMiscEvmNetwork) EvmRefreshLatestBlock(context.Context)                { n.refreshed.Add(1) }
 func (n *covMiscEvmNetwork) EvmRoutableUpstreams(context.Context) iter.Seq[Upstream] {
 	return func(yield func(Upstream) bool) {

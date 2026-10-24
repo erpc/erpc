@@ -37,6 +37,10 @@ type EvmNetwork interface {
 	// once per request from its lane, else the request bound to ctx, else
 	// the network-wide lane's. It never computes a ballot for a lane.
 	EvmHead(ctx context.Context, req *NormalizedRequest) EvmHead
+	// EvmLaneHead is the published Head of the lane keyed groupKey, ""
+	// being the network-wide lane, materialized from selector on first use:
+	// for readers bound to a lane, not to a request (spec §6.4, §6.5).
+	EvmLaneHead(groupKey, selector string) EvmHead
 	// EvmRefreshLatestBlock asks the pollers of the request's latest-head
 	// ballot for a fresh head in the background (see
 	// EvmStatePoller.RefreshLatestBlock); it never blocks.

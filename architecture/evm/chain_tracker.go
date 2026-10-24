@@ -2782,7 +2782,7 @@ func (nt *networkTrackers) get(n common.Network, groupKey, selector, lane string
 		backfill = nt.backfill
 	}
 	var head func() common.EvmHead
-	if ln, ok := n.(laneHeads); ok {
+	if ln, ok := n.(common.EvmNetwork); ok {
 		head = func() common.EvmHead { return ln.EvmLaneHead(groupKey, selector) }
 	}
 	t := newChainTracker(nt.ctx, n, nt.window, backfill, selector, groupKey, lane, head, nt.fetch)
@@ -2897,11 +2897,6 @@ func tickTrackers(n common.Network) {
 	for _, t := range nt.groups {
 		t.VotersChanged()
 	}
-}
-
-// laneHeads is the network's published Head per lane.
-type laneHeads interface {
-	EvmLaneHead(groupKey, selector string) common.EvmHead
 }
 
 var (

@@ -120,6 +120,9 @@ func (m *mockNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest
 		Finalized: m.headAxis("EvmHighestFinalizedBlockNumber", ctx),
 	}
 }
+func (m *mockNetwork) EvmLaneHead(string, string) common.EvmHead {
+	return m.EvmHead(context.Background(), nil)
+}
 
 func (m *mockNetwork) headAxis(method string, ctx context.Context) (v int64) {
 	defer func() {
