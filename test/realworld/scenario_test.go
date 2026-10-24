@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -746,8 +747,8 @@ func (s *scenario) checkLog(c *logsClient, pod int, l chainsim.Log) {
 // --- end of run ---
 //
 
-// finish halts the chain, waits until every client holds the final head,
-// then stops the clients and the pending checks.
+// finish halts the chain, waits until every client holds its lane's final
+// head, then stops the clients and the pending checks.
 func (s *scenario) finish() {
 	s.chain.Halt(true)
 	s.mu.Lock()
@@ -757,26 +758,25 @@ func (s *scenario) finish() {
 	tip := s.chain.Tip()
 	s.logf("halted at %d %s", tip.Number, short(tip.Hash))
 	deadline := time.Now().Add(finalSettle)
-	has := func(cb *clientBase, hc *headerChain) bool {
-		cb.mu.Lock()
-		defer cb.mu.Unlock()
-		return hc.m[tip.Number] == tip.Hash
+	await := func(cb *clientBase, hc *headerChain) {
+		final := s.finalHead(cb.selector, tip)
+		has := func() bool {
+			cb.mu.Lock()
+			defer cb.mu.Unlock()
+			return hc.m[final.Number] == final.Hash
+		}
+		for !has() && time.Now().Before(deadline) {
+			time.Sleep(50 * time.Millisecond)
+		}
+		if !has() {
+			s.violate(cb.name, "never received the final head %d %s within %s of the halt", final.Number, short(final.Hash), finalSettle)
+		}
 	}
 	for _, c := range heads {
-		for !has(&c.clientBase, &c.hc) && time.Now().Before(deadline) {
-			time.Sleep(50 * time.Millisecond)
-		}
-		if !has(&c.clientBase, &c.hc) {
-			s.violate(c.name, "never received the final head %d %s within %s of the halt", tip.Number, short(tip.Hash), finalSettle)
-		}
+		await(&c.clientBase, &c.hc)
 	}
 	for _, g := range grpcs {
-		for !has(&g.clientBase, &g.hc) && time.Now().Before(deadline) {
-			time.Sleep(50 * time.Millisecond)
-		}
-		if !has(&g.clientBase, &g.hc) {
-			s.violate(g.name, "never received the final head %d %s within %s of the halt", tip.Number, short(tip.Hash), finalSettle)
-		}
+		await(&g.clientBase, &g.hc)
 	}
 	// Logs follow one receipts fetch after their head (§10).
 	time.Sleep(3 * liveBound)
@@ -785,13 +785,36 @@ func (s *scenario) finish() {
 	s.checks.Wait()
 }
 
+// finalHead is the last head a client on use-upstream selector sel can get
+// after the halt at tip: the network-wide lane's is tip; a lane's is the
+// highest head its vendors serve (§6.5: a lane sends no block above its
+// Latest), so a lane whose vendors all lag stops below tip.
+func (s *scenario) finalHead(sel string, tip *chainsim.Block) *chainsim.Block {
+	if sel == "" {
+		return tip
+	}
+	var final *chainsim.Block
+	for key, v := range s.vendors {
+		if ok, _ := path.Match(sel, s.upstream(key)); !ok {
+			continue
+		}
+		if h := v.Head(); h != nil && (final == nil || h.Number > final.Number) {
+			final = h
+		}
+	}
+	if final == nil {
+		s.t.Fatalf("selector %q matches no vendor of %s", sel, s.name)
+	}
+	return final
+}
+
 // judge applies the end-of-run oracle and fails the scenario with its
 // violations.
 func (s *scenario) judge(wall time.Duration) {
 	tip := s.chain.Tip()
 	var lat []time.Duration
 	for _, c := range s.heads {
-		s.judgeChain(c.name, &c.hc, tip)
+		s.judgeChain(c.name, &c.hc, s.finalHead(c.selector, tip))
 		for _, p := range c.unresolved() {
 			s.violate(c.name, "pod-%d: eth_getBlockByNumber(%d) answered %s, not the delivered %s, and no reorg at or below %d followed", p.target+1, p.number, p.got, short(p.hash), p.number)
 		}
@@ -799,7 +822,7 @@ func (s *scenario) judge(wall time.Duration) {
 		c.tr.close()
 	}
 	for _, g := range s.grpcs {
-		s.judgeChain(g.name, &g.hc, tip)
+		s.judgeChain(g.name, &g.hc, s.finalHead(g.selector, tip))
 		lat = append(lat, s.judgeDelivery(&g.clientBase, true)...)
 		g.tr.close()
 	}
