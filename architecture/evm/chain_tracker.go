@@ -650,6 +650,12 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 			return
 		}
 	}
+	// A source header from a non-voter (syncing, benched, outside the
+	// lane) is no vote (spec §6.2, #202): holding it would walk or fill
+	// the heights only it has, by number, from it.
+	if msg.vote == voteSource && !t.counts(msg.upstream) && !slices.Contains(t.voters.Voters, msg.upstream) {
+		return
+	}
 	nd := t.nodes[h.hash]
 	if nd == nil {
 		// Rule 1: every vote is held. Answers are held only inside the
@@ -2828,7 +2834,7 @@ func ChainTrackerOf(ctx context.Context, n common.Network, selector string) *Cha
 
 // ObserveSourceHeader hands an accepted source header to the network-wide
 // tracker and to every group tracker whose selector matches u, as u's vote.
-// Whether that vote counts is decided when the trackers count votes.
+// Each tracker drops it unless u is one of its lane's voters.
 func ObserveSourceHeader(n common.Network, u common.Upstream, sh SourceHeader) {
 	nt := registeredTrackers(n)
 	if nt == nil {
