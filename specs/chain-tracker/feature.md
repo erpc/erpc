@@ -929,7 +929,7 @@ oracle            HTTP checks per delivered block, on the same and another insta
 
 Oracle, for every block any subscriber receives, on the same instance and on another:
 
-- ws `newHeads` header N/H: `eth_blockNumber` ≥ N on the same instance at once, and on the other within 1 bt; `eth_getBlockByHash(H)` not null on both; `eth_getBlockByNumber(N).hash` = H, or the client later receives a reorg at or below N.
+- ws `newHeads` header N/H: `eth_blockNumber` ≥ N on the same instance at once, and on the other within 1 bt; `eth_getBlockByHash(H)` not null on both; `eth_getBlockByNumber(N).hash` = H on the same instance at once and on the other within W (two instances follow the same voters, so they disagree on a branch for at most W), or the client later receives a reorg at or below N.
 - ws `logs`: every non-removed log is returned by `eth_getLogs` by block hash on both; the client's final live log set equals the canonical logs for its filter over its range; `removed:true` only for logs it received.
 - gRPC `StreamBlocks`: ascending and gap-free per stream across reconnects with a resume cursor, on the other instance too; a reorg resends from the fork point; end codes as §10.2.
 - Each client's chain ends equal to the canonical chain. Delivery latency per block is recorded and bounded per scenario.
@@ -1116,7 +1116,7 @@ One home per fact:
 - With integrity on, a network where no upstream serves `eth_getBlockReceipts` serves `logs` only through the corroborated fallback (§11).
 - A network with one voter follows it: `q.Of(1)` = 1, so a fork it alone is on reaches clients.
 - A tie with no upstream left to settle keeps the pinned branch.
-- A majority branch that reverts a finalized block is followed, and logged as an error.
+- A majority branch that reverts a finalized block is followed, and logged as an error. Until another instance has followed it too, at most W, that instance serves the reverted block from its permanent cache.
 - Fallback-tier polls run while no primary has led for 60s: after a primary fails, seconds of head latency, no gap.
 - A polled header and a vendor push can differ in optional fields; the first held wins.
 - ws `logs` slow client: today a full 256-notification buffer closes it with `1013`; now a block that waited `reorgWindow` × bt behind the logs head does.
