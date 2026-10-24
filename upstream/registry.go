@@ -61,6 +61,10 @@ type UpstreamsRegistry struct {
 	pendingUpstreams sync.Map // upstreamId -> *Upstream
 
 	onUpstreamRegistered func(ups *Upstream) error
+
+	// networkUpstreamHooks are the networks' OnNetworkUpstream callbacks,
+	// guarded by upstreamsMu.
+	networkUpstreamHooks map[string]func(*Upstream)
 }
 
 type UpstreamsHealth struct {
@@ -692,7 +696,6 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	cfg := ups.Config()
 
 	u.upstreamsMu.Lock()
-	defer u.upstreamsMu.Unlock()
 
 	// A bootstrap task may be re-executed against an already-registered
 	// upstream; never register the same instance twice.
@@ -733,16 +736,40 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	}
 
 	// Refresh atomic snapshot for this network's upstreams
+	var hook func(*Upstream)
 	if !isShadow {
 		cp := make([]*Upstream, len(u.networkUpstreams[networkId]))
 		copy(cp, u.networkUpstreams[networkId])
 		u.networkUpstreamsAtomic.Store(networkId, cp)
+		if !exists {
+			hook = u.networkUpstreamHooks[networkId]
+		}
 	}
+	u.upstreamsMu.Unlock()
 
+	if hook != nil {
+		hook(ups)
+	}
 	u.logger.Debug().
 		Str("upstreamId", cfg.Id).
 		Str("networkId", networkId).
 		Msg("upstream registered and initialized in registry")
+}
+
+// OnNetworkUpstream runs fn for every upstream of networkId registered now
+// and for each one registered later, once per upstream, outside the
+// registry's lock. One per network; a later one replaces it.
+func (u *UpstreamsRegistry) OnNetworkUpstream(networkId string, fn func(*Upstream)) {
+	u.upstreamsMu.Lock()
+	if u.networkUpstreamHooks == nil {
+		u.networkUpstreamHooks = map[string]func(*Upstream){}
+	}
+	u.networkUpstreamHooks[networkId] = fn
+	existing := append([]*Upstream(nil), u.networkUpstreams[networkId]...)
+	u.upstreamsMu.Unlock()
+	for _, ups := range existing {
+		fn(ups)
+	}
 }
 
 func (u *UpstreamsRegistry) GetUpstreamsHealth() (*UpstreamsHealth, error) {

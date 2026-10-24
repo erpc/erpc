@@ -179,6 +179,9 @@ func NewNetwork(
 	if policyEngine != nil {
 		policyEngine.OnEligibleChanged(network.networkId, network.headsChanged)
 	}
+	if upstreamsRegistry != nil {
+		upstreamsRegistry.OnNetworkUpstream(network.networkId, network.watchHeadCounters)
+	}
 
 	if nwCfg.Architecture == "" {
 		nwCfg.Architecture = common.ArchitectureEvm

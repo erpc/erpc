@@ -9,6 +9,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/upstream"
 )
 
 // headRefreshInterval is the longest a lane's Head goes without being
@@ -118,34 +119,33 @@ func (n *Network) headsChanged() {
 	}
 }
 
-// startHeads computes every lane's Head on each headsChanged and every
-// headRefreshInterval until the app stops. Once per network: its bootstrap
-// can run again after it succeeded.
+// startHeads computes every lane's Head now, so a network bootstrapped on
+// upstreams with known heads serves its first request with a Head, then on
+// each headsChanged and every headRefreshInterval until the app stops. Once
+// per network: its bootstrap can run again after it succeeded.
 func (n *Network) startHeads() {
 	if n.cfg == nil || n.cfg.Architecture != common.ArchitectureEvm || n.appCtx == nil {
 		return
 	}
 	n.headLoopOnce.Do(func() {
+		n.refreshHeadsRecovered()
 		n.bg.Go(func() {
-			// The loop's own: a poller's callbacks cannot be removed, so an
-			// upstream that leaves and comes back is watched once.
-			watched := map[*evm.EvmStatePoller]struct{}{}
 			ticker := time.NewTicker(headRefreshInterval)
 			defer ticker.Stop()
 			for {
-				n.refreshHeadsRecovered(watched)
 				select {
 				case <-n.appCtx.Done():
 					return
 				case <-ticker.C:
 				case <-n.headWake:
 				}
+				n.refreshHeadsRecovered()
 			}
 		})
 	})
 }
 
-func (n *Network) refreshHeadsRecovered(watched map[*evm.EvmStatePoller]struct{}) {
+func (n *Network) refreshHeadsRecovered() {
 	defer func() {
 		if rec := recover(); rec != nil {
 			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
@@ -157,28 +157,19 @@ func (n *Network) refreshHeadsRecovered(watched map[*evm.EvmStatePoller]struct{}
 				Msg("unexpected panic while computing the network's heads")
 		}
 	}()
-	n.watchHeadCounters(watched)
 	n.refreshHeads()
 }
 
-// watchHeadCounters makes every move of each upstream's head counters, by a
-// poll, a push or another instance, wake the head loop (spec §6.4).
-func (n *Network) watchHeadCounters(watched map[*evm.EvmStatePoller]struct{}) {
-	if n.upstreamsRegistry == nil {
-		return
-	}
-	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
-		p, ok := u.EvmStatePoller().(*evm.EvmStatePoller)
-		if !ok || p.IsObjectNull() {
-			continue
-		}
-		if _, seen := watched[p]; seen {
-			continue
-		}
-		watched[p] = struct{}{}
+// watchHeadCounters makes every move of ups's head counters, by a poll, a
+// push or another instance, wake the head loop (spec §6.4). The registry
+// calls it once per upstream as it joins the network, which is itself a
+// change of the voters.
+func (n *Network) watchHeadCounters(ups *upstream.Upstream) {
+	if p, ok := ups.EvmStatePoller().(*evm.EvmStatePoller); ok && !p.IsObjectNull() {
 		p.OnLatestBlock(func(int64) { n.headsChanged() })
 		p.OnFinalizedBlock(func(int64) { n.headsChanged() })
 	}
+	n.headsChanged()
 }
 
 // refreshHeads computes and publishes every lane's Head.
