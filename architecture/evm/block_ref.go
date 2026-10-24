@@ -118,9 +118,11 @@ func ExtractBlockReferenceFromRequest(ctx context.Context, r *common.NormalizedR
 // "latest" or "finalized" tag resolves to a concrete block so each head
 // advance gets its own key. It uses the response's block number when given
 // (SET), else the number the request's Head interpolates the tag to (spec
-// §7), so GET and SET key on the number the request ran at. A tag that
-// reaches upstreams as is gets no key: "" is never cached. Other refs,
-// including "safe", are returned unchanged.
+// §7), so GET and SET key on the number the request ran at, in the decimal
+// form a numbered request's ref takes (parseCompositeBlockParam): the same
+// call at that number hits the entry. A tag that reaches upstreams as is
+// gets no key: "" is never cached. Other refs, including "safe", are
+// returned unchanged.
 func ResolveCacheBlockRef(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (string, int64, error) {
 	blockRef, blockNumber, err := ExtractBlockReferenceFromRequest(ctx, req)
 	if err != nil {
@@ -131,24 +133,19 @@ func ResolveCacheBlockRef(ctx context.Context, req *common.NormalizedRequest, re
 		return blockRef, blockNumber, nil
 	}
 
+	num := blockNumber
 	if resp != nil {
 		if _, respBN, rerr := ExtractBlockReferenceFromResponse(ctx, resp); rerr == nil && respBN > 0 {
-			if hex, herr := common.NormalizeHex(respBN); herr == nil {
-				return hex, respBN, nil
-			}
+			num = respBN
 		}
 	}
-
-	num := blockNumber
 	if num <= 0 {
 		num = TagBlockNumber(ctx, req, blockRef)
 	}
-	if num > 0 {
-		if hex, herr := common.NormalizeHex(num); herr == nil {
-			return hex, num, nil
-		}
+	if num <= 0 {
+		return "", 0, nil
 	}
-	return "", 0, nil
+	return strconv.FormatInt(num, 10), num, nil
 }
 
 func ExtractBlockReferenceFromResponse(ctx context.Context, r *common.NormalizedResponse) (string, int64, error) {
