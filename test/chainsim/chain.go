@@ -335,11 +335,7 @@ func (c *Chain) tick() {
 	c.mu.Lock()
 	var pushes []push
 	if !c.halted {
-		b := c.mintLocked(c.tipLocked(), c.tipLocked().Number+1, time.Now(), false)
-		c.canon = append(c.canon, b)
-		for _, v := range c.vendors {
-			pushes = v.pendingPushesLocked(b, pushes)
-		}
+		pushes = c.mintCanonLocked()
 	}
 	for f := range c.forks {
 		f.tip = c.mintLocked(f.tip, f.tip.Number+1, c.timeAtLocked(f.tip.Number+1), true)
@@ -352,6 +348,33 @@ func (c *Chain) tick() {
 	close(c.tickCh)
 	c.tickCh = make(chan struct{})
 	c.tickMu.Unlock()
+}
+
+// Burst mints n canonical blocks spread evenly over d, halted or not;
+// vendors follow each at once.
+func (c *Chain) Burst(n int, d time.Duration) {
+	for i := range n {
+		if i > 0 {
+			time.Sleep(d / time.Duration(n))
+		}
+		c.mu.Lock()
+		pushes := c.mintCanonLocked()
+		c.mu.Unlock()
+		writePushes(pushes)
+		c.refresh()
+	}
+}
+
+// mintCanonLocked appends the next canonical block and returns the pushes
+// of its transactions as pending ones.
+func (c *Chain) mintCanonLocked() []push {
+	b := c.mintLocked(c.tipLocked(), c.tipLocked().Number+1, time.Now(), false)
+	c.canon = append(c.canon, b)
+	var pushes []push
+	for _, v := range c.vendors {
+		pushes = v.pendingPushesLocked(b, pushes)
+	}
+	return pushes
 }
 
 // Reorg replaces the top depth canonical blocks with a new branch one block

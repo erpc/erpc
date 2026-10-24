@@ -123,19 +123,23 @@ func (c *clientBase) connected(at time.Time) {
 	c.mu.Unlock()
 }
 
-// silence is how long the open connection on pod has delivered nothing;
+// silence is the client's pod, how long since its last block or since its
+// connection opened, whichever is later, and that block's number (0 none);
 // ok is false while no connection is open.
-func (c *clientBase) silence() (pod int, since time.Duration, ok bool) {
+func (c *clientBase) silence() (pod int, since time.Duration, last uint64, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.connAt.IsZero() {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
-	last := c.connAt
-	if n := len(c.deliveries); n > 0 && c.deliveries[n-1].at.After(last) {
-		last = c.deliveries[n-1].at
+	at := c.connAt
+	if n := len(c.deliveries); n > 0 {
+		last = c.deliveries[n-1].number
+		if c.deliveries[n-1].at.After(at) {
+			at = c.deliveries[n-1].at
+		}
 	}
-	return c.pod, time.Since(last), true
+	return c.pod, time.Since(at), last, true
 }
 
 func (c *clientBase) otherPod() int {

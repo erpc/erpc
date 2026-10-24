@@ -38,7 +38,7 @@ type Faults struct {
 	Throttled     bool          // HTTP 429; -32005 over ws
 	Capacity      bool          // -32005 compute units exceeded, on every method
 	NoNewHeads    bool          // eth_subscribe newHeads answers unsupported
-	RefuseLatest  bool          // eth_getBlockByNumber(latest) answers an error
+	RefuseLatest  bool          // eth_getBlockByNumber(latest) answers unsupported
 	Slow          time.Duration // every answer waits this long
 	SlowReceipts  time.Duration // receipts and logs answers wait this long more
 	SlowHistory   time.Duration // answers by hash, and by number below its head, wait this long more
@@ -52,6 +52,7 @@ type Faults struct {
 // Stats are what a vendor counted since it started.
 type Stats struct {
 	Connects, HeadsSubscribes, PendingSubscribes, LogsSubscribes, Throttled int64
+	HeadsRefused                                                            int64 // newHeads subscribes NoNewHeads refused
 	ReceiptsCalls, LogsCalls                                                int64 // eth_getBlockReceipts, eth_getLogs calls
 	SlowAnswers                                                             int64 // answers a Slow fault delayed
 	ForgedHeads                                                             int64 // heads pushed with a wrong hash, once per head
@@ -86,9 +87,17 @@ type Vendor struct {
 	// blocks answered with their receipts in full.
 	receipts map[Hash]int
 	served   map[Hash]bool
+	// latestCalls are the eth_getBlockByNumber(latest) calls answered.
+	latestCalls []LatestCall
 
-	connects, headsSubs, pendingSubs, logsSubs, throttled, receiptsCalls atomic.Int64
-	logsCalls, slowAnswers, forgedHeads, cappedLogs, subSeq              atomic.Int64
+	connects, headsSubs, pendingSubs, logsSubs, throttled, receiptsCalls  atomic.Int64
+	logsCalls, slowAnswers, forgedHeads, cappedLogs, subSeq, headsRefused atomic.Int64
+}
+
+// LatestCall is one eth_getBlockByNumber(latest) call a vendor answered.
+type LatestCall struct {
+	At      time.Time
+	Refused bool // RefuseLatest refused it
 }
 
 type wsConn struct {
@@ -238,6 +247,20 @@ func (v *Vendor) Head() *Block {
 	return v.tip
 }
 
+// LatestCalls are the eth_getBlockByNumber(latest) calls the vendor
+// answered in [from, to], oldest first.
+func (v *Vendor) LatestCalls(from, to time.Time) []LatestCall {
+	v.chain.mu.Lock()
+	defer v.chain.mu.Unlock()
+	var out []LatestCall
+	for _, c := range v.latestCalls {
+		if !c.At.Before(from) && !c.At.After(to) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // NumberCalls counts the eth_getBlockByNumber calls for explicit number n
 // the vendor answered in [from, to].
 func (v *Vendor) NumberCalls(n uint64, from, to time.Time) int {
@@ -255,7 +278,7 @@ func (v *Vendor) NumberCalls(n uint64, from, to time.Time) int {
 // Stats are the vendor's counters.
 func (v *Vendor) Stats() Stats {
 	return Stats{Connects: v.connects.Load(), HeadsSubscribes: v.headsSubs.Load(), PendingSubscribes: v.pendingSubs.Load(),
-		LogsSubscribes: v.logsSubs.Load(), Throttled: v.throttled.Load(), ReceiptsCalls: v.receiptsCalls.Load(),
+		LogsSubscribes: v.logsSubs.Load(), Throttled: v.throttled.Load(), HeadsRefused: v.headsRefused.Load(), ReceiptsCalls: v.receiptsCalls.Load(),
 		LogsCalls: v.logsCalls.Load(), SlowAnswers: v.slowAnswers.Load(), ForgedHeads: v.forgedHeads.Load(), CappedLogs: v.cappedLogs.Load()}
 }
 
@@ -503,6 +526,7 @@ func (v *Vendor) handleWS(wc *wsConn, req map[string]interface{}) {
 		_, open := v.conns[wc]
 		switch {
 		case topic == "newHeads" && f.NoNewHeads:
+			v.headsRefused.Add(1)
 			e = &rpcError{-32601, "notifications not supported"}
 		case topic == "newHeads":
 			v.headsSubs.Add(1)
@@ -636,8 +660,9 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		var b *Block
 		switch tag {
 		case "latest", "pending":
+			v.latestCalls = append(v.latestCalls, LatestCall{At: time.Now(), Refused: f.RefuseLatest})
 			if f.RefuseLatest {
-				return nil, &rpcError{-32000, "latest block unavailable"}
+				return nil, &rpcError{-32000, "latest block tag not supported"}
 			}
 			if f.Ahead > 0 {
 				return WithNumber(v.tip.JSON(), v.tip.Number+f.Ahead), nil

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -56,15 +57,21 @@ type spec struct {
 	// faults are vendor faults set before any pod boots, by vendor key.
 	faults map[string]chainsim.Faults
 	// tags are upstream tags by vendor key; upEvm are keys merged into an
-	// upstream's evm block, by vendor key; evm and network are merged into
-	// the network's evm block and network entry; cache gives the network an
-	// evmJsonRpcCache with a permanent and a recent connector (cacheFinal,
-	// cacheRecent).
+	// upstream's evm block, up keys merged into its entry, budgets its
+	// rateLimitBudget in requests per second on each pod, all by vendor
+	// key; evm and network are merged into the network's evm block and
+	// network entry; cache gives the network an evmJsonRpcCache with a
+	// permanent and a recent connector (cacheFinal, cacheRecent).
 	tags    map[string][]string
 	upEvm   map[string]map[string]interface{}
+	up      map[string]map[string]interface{}
+	budgets map[string]uint32
 	evm     map[string]interface{}
 	network map[string]interface{}
 	cache   bool
+	// vars shorten eRPC duration variables, by name
+	// (testdata/realworld_vars.go), on every pod of the scenario's phase.
+	vars map[string]time.Duration
 	// headless are pods the oracle never asks eth_blockNumber, so its reads
 	// never make their pollers fetch a head; numbered pods are headless and
 	// get numbered calls only: no by-hash, logs by number.
@@ -206,7 +213,8 @@ func newScenario(h *harness, sp spec, chainID int64) *scenario {
 		if f, ok := sp.faults[vs.key]; ok {
 			v.SetFaults(f)
 		}
-		s.net.ups = append(s.net.ups, upSpec{id: id, endpoint: px.URL(), vendor: vs.name, tags: sp.tags[vs.key], evm: sp.upEvm[vs.key]})
+		s.net.ups = append(s.net.ups, upSpec{id: id, endpoint: px.URL(), vendor: vs.name, tags: sp.tags[vs.key], evm: sp.upEvm[vs.key],
+			extra: sp.up[vs.key], budget: sp.budgets[vs.key]})
 	}
 	s.chain.Start()
 	for _, key := range sp.late {
@@ -248,6 +256,15 @@ func (r *run) phase(t *testing.T, name string, firstChain int64, specs []spec) {
 		}
 		h := newHarness(t, filepath.Join(r.root, name), !specs[0].memory)
 		h.host = r.host
+		h.vars = map[string]time.Duration{}
+		for _, sp := range specs {
+			for name, d := range sp.vars {
+				if old, ok := h.vars[name]; ok && old != d {
+					t.Fatalf("phase %s: %s sets %s to %s, another scenario to %s", name, sp.name, name, d, old)
+				}
+				h.vars[name] = d
+			}
+		}
 		var scs []*scenario
 		var nets []*netSpec
 		for i, sp := range specs {
@@ -325,9 +342,10 @@ const stallDump = 10 * time.Second
 // watchStalls dumps a pod's goroutines, once per pod and phase, when one of
 // the scenario's header taps is silent past stallDump and the scenario's
 // own bound (a scenario such as U11 waits for a bench by spec) while the chain
-// mints and no fault excuses the pod; it then restarts the pod. Verdicts
-// of the phase's other scenarios on that pod after the dump carry the
-// restart.
+// mints and no fault excuses the pod; it then restarts the pod. Silence
+// counts from the later of the tap's last block and the mint of the block
+// after it, so a halted chain silences no tap. Verdicts of the phase's
+// other scenarios on that pod after the dump carry the restart.
 func (s *scenario) watchStalls() {
 	after := max(stallDump, s.bound)
 	for {
@@ -337,7 +355,6 @@ func (s *scenario) watchStalls() {
 		case <-time.After(time.Second):
 		}
 		s.mu.Lock()
-		halted := !s.haltAt.IsZero()
 		var taps []*clientBase
 		for _, c := range s.heads {
 			taps = append(taps, &c.clientBase)
@@ -346,11 +363,15 @@ func (s *scenario) watchStalls() {
 			taps = append(taps, &g.clientBase)
 		}
 		s.mu.Unlock()
-		if halted {
-			return
-		}
 		for _, c := range taps {
-			pod, since, ok := c.silence()
+			pod, since, last, ok := c.silence()
+			if ok && last > 0 {
+				next := s.chain.CanonAt(last + 1)
+				if next == nil {
+					continue
+				}
+				since = min(since, time.Since(next.MintedAt))
+			}
 			if !ok || c.slow || since < after || s.excused(pod, time.Now().Add(-since), time.Now()) || !s.h.claimDump(pod) {
 				continue
 			}
@@ -437,11 +458,28 @@ func (s *scenario) call(pod int, result interface{}, method string, args ...inte
 	return s.callAs(pod, "", result, method, args...)
 }
 
+// callAs calls method on pod through use-upstream selector sel. eRPC's own
+// rate-limit refusal (-32005) says nothing about the chain, so the call is
+// tried again until httpCheckWait (D8 spends every upstream budget).
 func (s *scenario) callAs(pod int, sel string, result interface{}, method string, args ...interface{}) error {
 	ctx, cancel := context.WithTimeout(context.Background(), httpCheckWait)
 	defer cancel()
-	return s.client(pod, sel).CallContext(ctx, result, method, args...)
+	for {
+		err := s.client(pod, sel).CallContext(ctx, result, method, args...)
+		var re rpc.Error
+		if !errors.As(err, &re) || re.ErrorCode() != rateLimitedCode || ctx.Err() != nil {
+			return err
+		}
+		sleepCtx(ctx, rateLimitedRetry)
+	}
 }
+
+// rateLimitedCode is the JSON-RPC code of a rate-limit refusal;
+// rateLimitedRetry, harness: the wait before trying again.
+const (
+	rateLimitedCode  = -32005
+	rateLimitedRetry = 50 * time.Millisecond
+)
 
 //
 // --- clients ---
