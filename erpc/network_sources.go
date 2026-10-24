@@ -463,7 +463,9 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 		next = min(next, left)
 	}
 	txHeadAt := r.nw.chainTracker.TxHeadAt()
-	r.nw.intake.admit(now, r.nw.chainTracker.W())
+	if left := r.nw.intake.admit(now, r.nw.chainTracker.W()); left > 0 {
+		next = min(next, left)
+	}
 
 	heads, push := false, false
 	pushes := make(map[string]*wsupstream.Adapter)
@@ -641,7 +643,7 @@ func (r *sourceReconciler) newSource(u *upstream.Upstream) *source {
 			},
 			Disconnected: func() { r.nw.intake.disconnected(u.Id()) },
 		}
-		if a := wsupstream.New(u, indexerNetworkKey(r.nw), r.nw.intake, r.nw.logger, opts); a != nil {
+		if a := wsupstream.New(u, indexerNetworkKey(r.nw), pushIntake{r.nw.intake}, r.nw.logger, opts); a != nil {
 			s.push = a
 		}
 	}

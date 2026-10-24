@@ -33,11 +33,12 @@ type networkIntake struct {
 	// last is each upstream's accepted headers, ending at its hash vote
 	// (votePath).
 	last map[string]votePath
-	// hashVoterSince is, per primary voter, since when it has been a hash
-	// voter without a break, as the reconciler's passes saw it; leads is
-	// whether one has been for primaryLeadAfter.
-	hashVoterSince map[string]time.Time
-	leads          bool
+	// streams is each source's newest header from its own channel (spec
+	// §6.2): a push for a push source, a poll while its poller is a poll
+	// source. streamingSince is, per primary voter, since when it has
+	// streamed without a break, as the reconciler's passes saw it.
+	streams        map[string]streamHead
+	streamingSince map[string]time.Time
 	// admitted is the voters topic admission admits, as the last pass
 	// read them, for per-transaction checks that take no lock.
 	admitted atomic.Pointer[[]string]
@@ -60,13 +61,29 @@ type rejectedHeader struct {
 // rejectedKept bounds the headers integrity held back that intake keeps.
 const rejectedKept = 64
 
-// primaryLeadAfter is how long a primary voter must stay a hash voter,
-// without a break, before topic admission stops admitting the fallback
-// tier (spec §6.2).
+// primaryLeadAfter is how long a primary source must stream, without a
+// break, before topic admission stops admitting the fallback tier (spec
+// §6.2).
 var primaryLeadAfter = util.NewDuration(60 * time.Second)
 
+// streamHead is a source's newest header from its own channel. passed: a
+// newer header reached intake since, so its hash age may run and the
+// reconciler was woken to schedule its end.
+type streamHead struct {
+	number int64
+	passed bool
+}
+
 func newNetworkIntake(nw *Network) *networkIntake {
-	return &networkIntake{nw: nw, last: make(map[string]votePath), hashVoterSince: make(map[string]time.Time)}
+	return &networkIntake{nw: nw, last: make(map[string]votePath), streams: make(map[string]streamHead), streamingSince: make(map[string]time.Time)}
+}
+
+// pushIntake is a push source's channel into intake: its headers are the
+// source's stream (spec §6.2).
+type pushIntake struct{ *networkIntake }
+
+func (p pushIntake) Header(upstreamId string, raw json.RawMessage) {
+	p.header(upstreamId, raw, false, true)
 }
 
 var _ indexer.Intake = (*networkIntake)(nil)
@@ -90,15 +107,16 @@ func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessa
 	in.nw.mempool.Add(variant, raw)
 }
 
-// Header takes one source header.
+// Header takes one source header that is no push: a poll's.
 func (in *networkIntake) Header(upstreamId string, raw json.RawMessage) {
-	in.header(upstreamId, raw, false)
+	in.header(upstreamId, raw, false, false)
 }
 
 // header is Header; replay: raw is a header integrity held back before a
 // check was suspended, so it votes only when it is newer than its source's
-// newest accepted header: a replay never moves a vote back.
-func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay bool) {
+// newest accepted header: a replay never moves a vote back. pushed: raw
+// came on a push source's channel (pushIntake).
+func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay, pushed bool) {
 	sh, err := evm.ParseSourceHeader(raw)
 	if err != nil {
 		in.count(upstreamId, "malformed")
@@ -120,6 +138,10 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay b
 		if mt := in.nw.metricsTracker; current && mt != nil && mt.RenewHashVote(u) {
 			evm.VotersChanged(in.nw)
 			in.nw.sources.wake()
+		}
+		// A poll often brings a push source's header first.
+		if current && (pushed || !replay && pollSourcePoll(u)) {
+			in.noteHeader(upstreamId, int64(cur.Number), true)
 		}
 		in.count(upstreamId, "duplicate")
 		return
@@ -148,11 +170,41 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay b
 	if mt := in.nw.metricsTracker; mt != nil {
 		mt.RecordHashVote(u, int64(cur.Number), replay)
 	}
+	in.noteHeader(upstreamId, int64(cur.Number), pushed || !replay && pollSourcePoll(u))
 	evm.ObserveSourceHeader(in.nw, u, sh)
 	if in.isVoter(upstreamId) {
 		in.count(upstreamId, "voted")
 	} else {
 		in.count(upstreamId, "gated_voter")
+	}
+}
+
+// pollSourcePoll reports whether a poll of u came on its source's own
+// channel: its poller is a poll source (spec §6.2).
+func pollSourcePoll(u *upstream.Upstream) bool {
+	p, ok := u.EvmStatePoller().(*evm.EvmStatePoller)
+	return ok && !p.IsObjectNull() && p.PollsHeads()
+}
+
+// noteHeader notes an accepted header of upstreamId at number: its
+// stream's head when stream. Every other stream below it may start its
+// hash age now, so the reconciler is woken once per stream head to
+// schedule the end of its streaming (admit).
+func (in *networkIntake) noteHeader(upstreamId string, number int64, stream bool) {
+	wake := false
+	in.mu.Lock()
+	for id, s := range in.streams {
+		if id != upstreamId && !s.passed && s.number < number {
+			s.passed, wake = true, true
+			in.streams[id] = s
+		}
+	}
+	if stream {
+		in.streams[upstreamId] = streamHead{number: number}
+	}
+	in.mu.Unlock()
+	if wake {
+		in.nw.sources.wake()
 	}
 }
 
@@ -180,15 +232,19 @@ func (in *networkIntake) replayRejected() {
 			}
 		}()
 		for _, r := range held {
-			in.header(r.upstreamId, r.raw, true)
+			in.header(r.upstreamId, r.raw, true, false)
 		}
 	}()
 }
 
 // disconnected expires a push source's hash vote at once: its socket
-// closed, so nothing it said is fresh any more (spec §15.1). The trackers
-// read their voters again and the reconciler rechecks the topics.
+// closed, so nothing it said is fresh any more (spec §15.1), and its
+// stream ended. The trackers read their voters again and the reconciler
+// rechecks the topics.
 func (in *networkIntake) disconnected(upstreamId string) {
+	in.mu.Lock()
+	delete(in.streams, upstreamId)
+	in.mu.Unlock()
 	u := in.upstream(upstreamId)
 	if u == nil || in.nw.metricsTracker == nil {
 		return
@@ -315,7 +371,8 @@ func (in *networkIntake) forget(upstreamId string) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	delete(in.last, upstreamId)
-	delete(in.hashVoterSince, upstreamId)
+	delete(in.streams, upstreamId)
+	delete(in.streamingSince, upstreamId)
 }
 
 // reported reports whether a source header of upstreamId was accepted.
@@ -421,15 +478,9 @@ func (c *upstreamVendors) of(ups []*upstream.Upstream) bool {
 	return true
 }
 
-// hashVoter reports whether voter u is a hash voter: its hash age is at
-// most w and its socket stayed up since (spec §6.1, §15.1). at is when it
-// stops being one, zero while its age does not run.
-func (in *networkIntake) hashVoter(u common.Upstream, w time.Duration, now time.Time) (ok bool, at time.Time) {
-	v, voted := in.hashVote(u)
-	return freshVote(v, voted, w, now)
-}
-
-// freshVote is hashVoter over a vote already read.
+// freshVote reports whether a voter with vote v is a hash voter: its hash
+// age is at most w and its socket stayed up since (spec §6.1, §15.1). at
+// is when it stops being one, zero while its age does not run.
 func freshVote(v health.HashVote, voted bool, w time.Duration, now time.Time) (ok bool, at time.Time) {
 	if !voted || v.Expired || v.Age > w {
 		return false, time.Time{}
@@ -441,38 +492,58 @@ func freshVote(v health.HashVote, voted bool, w time.Duration, now time.Time) (o
 }
 
 // admit is topic admission (spec §6.2), run by each reconciler pass, at
-// least every W: it notes which primary voters are hash voters, whether
-// one has been for primaryLeadAfter without a break, and publishes the
+// least every W: it notes which primary sources stream, whether one has
+// streamed for primaryLeadAfter without a break, and publishes the
 // admitted voters:
 //
 //	admitted(u) = voter(u) and (failover off, or u is not fallback tier,
-//	                            or no primary has been a hash voter for 60s without a break)
-func (in *networkIntake) admit(now time.Time, w time.Duration) {
+//	                            or no primary source has streamed for 60s without a break)
+//
+// A source streams while its stream head's hash age is at most w. next is
+// when a primary's streaming or lead next changes, 0 when no clock runs.
+func (in *networkIntake) admit(now time.Time, w time.Duration) (next time.Duration) {
 	voters, _ := in.voters("")
+	soonest := func(d time.Duration) {
+		if next == 0 || d < next {
+			next = max(d, time.Millisecond)
+		}
+	}
 	in.mu.Lock()
 	defer in.mu.Unlock()
+	lead := primaryLeadAfter.Load()
 	leads := false
 	for _, u := range voters {
 		if isFallbackTier(u) {
 			continue
 		}
-		if ok, _ := in.hashVoter(u, w, now); !ok {
-			delete(in.hashVoterSince, u.Id())
+		s, ok := in.streams[u.Id()]
+		var age time.Duration
+		if ok && in.nw.metricsTracker != nil {
+			age = in.nw.metricsTracker.HashAgeAt(in.nw.networkId, s.number)
+		}
+		if !ok || age > w {
+			delete(in.streamingSince, u.Id())
 			continue
 		}
-		since, seen := in.hashVoterSince[u.Id()]
+		if age > 0 {
+			soonest(w - age)
+		}
+		since, seen := in.streamingSince[u.Id()]
 		if !seen {
 			since = now
-			in.hashVoterSince[u.Id()] = now
+			in.streamingSince[u.Id()] = now
 		}
-		leads = leads || now.Sub(since) >= primaryLeadAfter.Load()
+		if left := lead - now.Sub(since); left > 0 {
+			soonest(left)
+		} else {
+			leads = true
+		}
 	}
-	for id := range in.hashVoterSince {
+	for id := range in.streamingSince {
 		if !slices.ContainsFunc(voters, func(u common.Upstream) bool { return u.Id() == id }) {
-			delete(in.hashVoterSince, id)
+			delete(in.streamingSince, id)
 		}
 	}
-	in.leads = leads
 	tiers := in.nw.cfg != nil && in.nw.cfg.Failover.Enabled()
 	ids := make([]string, 0, len(voters))
 	for _, u := range voters {
@@ -483,6 +554,7 @@ func (in *networkIntake) admit(now time.Time, w time.Duration) {
 	if old := in.admitted.Load(); old == nil || !slices.Equal(*old, ids) {
 		in.admitted.Store(&ids)
 	}
+	return next
 }
 
 // admits reports whether topic admission admitted upstreamId at the last

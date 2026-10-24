@@ -2912,9 +2912,12 @@ func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 	stalled := fallback.latestPolls.Load()
 	chain.advance()
 	last = requireContiguous(t, conn, 1, last)
-	// The no-source ask (§6 rule 6) may deliver the block before the
-	// vendor counts the fallback's first poll.
-	require.Eventually(t, func() bool { return fallback.latestPolls.Load() > stalled }, 2*time.Second, 10*time.Millisecond,
+	// The primary's polls still vote, so the client has the block at once;
+	// the primary stops streaming W after that block reached this instance
+	// (spec §6.2).
+	// W is 3s: 3 × the mock's 1s block time.
+	w := 3 * time.Second
+	require.Eventually(t, func() bool { return fallback.latestPolls.Load() > stalled }, w+time.Second, 10*time.Millisecond,
 		"the fallback polls again once the primary is no hash voter")
 	require.Eventually(t, pendingOn(1, 1), 10*time.Second, 10*time.Millisecond,
 		"the fallback subscribes newPendingTransactions again once the primary is no hash voter")

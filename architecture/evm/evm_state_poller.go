@@ -832,6 +832,12 @@ func (e *EvmStatePoller) activePollSource() *pollSource {
 	return e.pollSrc.Load()
 }
 
+// PollsHeads reports whether this poller is a poll source now: its latest
+// polls are its source's own channel (spec §6.2).
+func (e *EvmStatePoller) PollsHeads() bool {
+	return e.activePollSource() != nil
+}
+
 // pollCadence is the poller's debounce (resolveDebounce: the learned block
 // time × dynamicBlockTimeDebounceMultiplier), at most pollSourceMaxCadence;
 // statePollerDebounce overrides it, cap included.

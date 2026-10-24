@@ -1920,16 +1920,39 @@ func (m *NetworkMetadata) ageHashVote(ref int64, fv []firstVote, now time.Time) 
 		return false
 	}
 	m.hashBehindSince = now
+	if at := firstVoteAbove(fv, vote, ref); !at.IsZero() && at.Before(now) {
+		m.hashBehindSince = at
+	}
+	return true
+}
+
+// firstVoteAbove is when the earliest hash vote above vote, at or below
+// ref, reached this instance (fv); zero when none did.
+func firstVoteAbove(fv []firstVote, vote, ref int64) (at time.Time) {
 	i, _ := slices.BinarySearchFunc(fv, vote+1, func(v firstVote, n int64) int { return cmp.Compare(v.number, n) })
 	for _, v := range fv[i:] {
 		if v.number > ref {
 			break
 		}
-		if v.at.Before(m.hashBehindSince) {
-			m.hashBehindSince = v.at
+		if at.IsZero() || v.at.Before(at) {
+			at = v.at
 		}
 	}
-	return true
+	return at
+}
+
+// HashAgeAt is the hash age a header at number of the network has now
+// (spec §6.1): how long since the first hash vote above it, at or below
+// the lag reference, reached this instance; 0 while none did.
+func (t *Tracker) HashAgeAt(networkId string, number int64) time.Duration {
+	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
+	ntwMeta.headMu.Lock()
+	defer ntwMeta.headMu.Unlock()
+	at := firstVoteAbove(ntwMeta.firstVotes, number, ntwMeta.evmLatestBlockNumber.Load())
+	if at.IsZero() {
+		return 0
+	}
+	return t.now().Sub(at)
 }
 
 // hashAge: see HashVote.Age. Caller holds the network's headMu.
