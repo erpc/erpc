@@ -64,9 +64,9 @@ T   the rest of the real-world catalogue
 ## H2: Head, refusal rule, lanes, finality, per-method tags
 
 - Add:
-  - `Head` per (network, lane), published atomically; triggers: head change (local or remote), bench change, eligible-set change, 1s timer for every lane. `Leader` within `Latest + maxRetryableBlockDistance`; ceiling with `CeilingAt` (spec §6.4).
+  - `Head` per (network, lane), published atomically; triggers: head change (local or remote), bench change, eligible-set change, 1s timer for every lane. `Leader` within `Latest + maxRetryableBlockDistance`; ceiling and reach (spec §6.4).
   - One `Head` read per request before the multiplexer and cache (spec §7).
-  - Refusal rule in `tryShortCircuitFutureBlock`, `EmptyResultBeyondConfidence`, the `eth_query` range check: band `ceiling + ceiling age / bt`; retry ordered head ≥ N first; stale ceiling Asked before "future".
+  - Refusal rule in `tryShortCircuitFutureBlock`, `EmptyResultBeyondConfidence`, the `eth_query` range check: band up to the reach; the retry waits for the band's Ask, then orders head ≥ N first.
   - By-hash answers above `Latest` wait up to 1 bt.
   - Per-method interpolation: absent params, EIP-1898 leaves, method config for `eth_callMany` and `eth_createAccessList`, `erigon_blockNumber` = `Latest`; `eth_getBlockByNumber(latest|finalized)` interpolated with a pre-forward refresh.
   - `enforceNonNullTaggedBlocks` reads the original tag; one head predicate with `headLagToleranceBlocks`.
@@ -103,12 +103,12 @@ T   the rest of the real-world catalogue
 
 ## H6: signals
 
-- Add (spec §17): `erpc_chain_tracker_invariant_violations_total` (`latest_regressed` only below a block this instance sent), `erpc_head_refusal_total` with `future_after_refresh`, `erpc_head_ask_total`, `erpc_chain_tracker_confirm_lag_blocks`, `erpc_tap_delivery_seconds`, `erpc_served_tip_voters`, `erpc_served_tip_quorum`, `erpc_upstream_tag_state_stale`, `erpc_upstream_tag_state_all_stale_total`; structured transition logs; spans for tracker fetches, Asks and tap reads.
+- Add (spec §17): `erpc_chain_tracker_invariant_violations_total` (`latest_regressed` only below a block this instance sent), `erpc_head_refusal_total`, `erpc_head_ask_total`, `erpc_chain_tracker_confirm_lag_blocks`, `erpc_tap_delivery_seconds`, `erpc_served_tip_voters`, `erpc_served_tip_quorum`, `erpc_upstream_tag_state_stale`, `erpc_upstream_tag_state_all_stale_total`; structured transition logs; spans for tracker fetches, Asks and tap reads.
 - Tests, real-world: every scenario asserts invariant violations 0 and `retried_missing` 0; X7, X8.
 
 ## HS: shared counters
 
-- Change (spec §14): a higher remote value wins whatever its timestamp; timestamps decide only rollbacks past 1024 blocks; freshness = local receive time; `erpc_shared_counter_remote_rejected_total`.
+- Change (spec §14): a higher remote value wins whatever its timestamp (#1243, open on `main`: merge it, never rewrite it); timestamps decide only rollbacks past 1024 blocks; freshness = local receive time; `erpc_shared_counter_remote_rejected_total`.
 - Add: rollback write when the pins re-anchor below a voter's counter and its hash vote is on the new branch.
 - Tests, real-world: X5, C5, N6.
 
