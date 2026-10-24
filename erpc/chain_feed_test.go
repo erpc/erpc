@@ -112,6 +112,7 @@ const (
 	fStreamAhead      = "gRPC resume above a fresh instance's head"
 	fStreamSlow       = "gRPC client that stops reading"
 	fStreamBadHeader  = "gRPC header that cannot be encoded"
+	fStreamForkTree   = "gRPC resume from one vendor's branch deeper than reorgWindow, held in a tree without the pins"
 )
 
 var chaosFaults = []string{
@@ -119,7 +120,7 @@ var chaosFaults = []string{
 	f429, fLate, fLoad, fSplit, fNonLinking, fRestart, fOrphanCached, fMailbox, fPanicOnce, fPanicThrice, fPendingSilent,
 	fNullReceipts, fTruncReceipts, fLateReceipts, fNoReceipts, fReceiptsDown13, fBlockDown60, fReceiptsDown90, fWrongBloom, fChainBloom, fBloomFollower, fFetchPanic,
 	fForgedLog, fForgedHash, fReorg3, fClientGetLogs, fBadBaseFee, fBadBaseFeeLone, fForgedAhead, fSlowWalk,
-	fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow, fStreamBadHeader,
+	fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow, fStreamBadHeader, fStreamForkTree,
 }
 
 // TestChainFeed_ConvergesUnderFaults runs real eRPC against 4 mocked vendors
@@ -190,7 +191,7 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 		{73, true, chaosOpts{integrity: true, strict: true}, []string{fSlowWalk}},
 		// A window of 10s holds the deep reorg's fork point, 20 blocks
 		// down, even when load slows block production 2x.
-		{79, true, chaosOpts{grpc: true, maxBackfill: 10 * time.Second}, []string{fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow, fStreamBadHeader, fReorg3, fDeepReorg}},
+		{79, true, chaosOpts{grpc: true, maxBackfill: 10 * time.Second}, []string{fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow, fStreamBadHeader, fStreamForkTree, fReorg3, fDeepReorg}},
 	}
 	before := erpcGoroutines()
 	covered := make(map[string][]int64)
@@ -1288,6 +1289,8 @@ func (s *chaosSeed) inject(f string) {
 		s.streamSlow()
 	case fStreamBadHeader:
 		s.streamBadHeader()
+	case fStreamForkTree:
+		s.streamForkTree()
 	case fForgedAhead:
 		s.forgedAhead()
 	case fSlowWalk:

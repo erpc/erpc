@@ -860,3 +860,68 @@ func slicesEqual(a, b []hash) bool {
 func closedWith(reason string, code int) bool {
 	return strings.Contains(reason, fmt.Sprintf("close %d", code))
 }
+
+// resumeNewBranch resumes a gRPC stream on every pod, again and again until
+// until, from the block below the new head of reorg r: a pod that has not
+// re-anchored yet holds it in a tree without the pins. Each stream's first
+// header must link to that block or to the fork point (spec §10.1); it
+// returns how many resumes ran.
+func (s *scenario) resumeNewBranch(r reorg, until time.Time) int {
+	from := r.tip.Parent
+	fork := r.old[0].Number - 1
+	done := make(chan int)
+	for pod := range s.h.pods {
+		go func() {
+			n := 0
+			for time.Now().Before(until) && s.ctx.Err() == nil {
+				s.resumeOnce(pod, from, fork)
+				n++
+				time.Sleep(100 * time.Millisecond)
+			}
+			done <- n
+		}()
+	}
+	total := 0
+	for range s.h.pods {
+		total += <-done
+	}
+	return total
+}
+
+func (s *scenario) resumeOnce(pod int, from *chainsim.Block, fork uint64) {
+	conn, err := grpc.NewClient(s.h.pods[pod].grpcAddr(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		s.violate("C3", "pod-%d: dial: %v", pod+1, err)
+		return
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(s.ctx, deepReorgDelivery)
+	defer cancel()
+	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("x-erpc-project", s.project, "x-erpc-chain-id", fmt.Sprint(s.chain.ID())))
+	n := from.Number
+	ended := func(err error) {
+		if s.ctx.Err() == nil {
+			st, _ := status.FromError(err)
+			s.violate("C3", "pod-%d: resume from new-branch block %d %s ended %s: %s", pod+1, n, short(from.Hash), st.Code(), st.Message())
+		}
+	}
+	stream, err := bdsevm.NewStreamServiceClient(conn).StreamBlocks(ctx, &bdsevm.StreamBlocksRequest{FromBlock: &n, FromHash: from.Hash.Bytes()})
+	if err != nil {
+		ended(err)
+		return
+	}
+	resp, err := stream.Recv()
+	if err != nil {
+		ended(err)
+		return
+	}
+	h := resp.GetHeader()
+	parent := gethcommon.BytesToHash(h.GetParentHash())
+	switch {
+	case h.GetNumber() == n+1 && parent == from.Hash:
+	case h.GetNumber() == fork+1 && s.chain.Block(parent) != nil && s.chain.Block(parent).Number == fork:
+	default:
+		s.violate("C3", "pod-%d: resume from new-branch block %d %s sent %d %s first, linked to neither it nor the fork point %d",
+			pod+1, n, short(from.Hash), h.GetNumber(), short(gethcommon.BytesToHash(h.GetHash())), fork)
+	}
+}
