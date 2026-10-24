@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"os"
 	"slices"
@@ -626,29 +627,38 @@ func nudge(c *clientBase) {
 // gRPC stream on pod-1 ends UNAVAILABLE within the read wait and resumes on
 // pod-2 from its last header with no gap; pod-2's clients never wait.
 func n4() spec {
-	return spec{name: "N4", bound: healthyDelivery, allow: []string{"grpc:Unavailable@pod-1", "ws:jump@pod-1", "ws:logs-end@pod-1"}, body: cutPod1}
+	return spec{name: "N4", bound: healthyDelivery, allow: []string{"grpc:Unavailable@pod-1", "ws:jump@pod-1", "ws:logs-end@pod-1"}, body: func(s *scenario) { cutPod1(s) }}
 }
 
 // N4-lone: N4 on a single-instance deployment (one pod, shared state in
 // memory): no peer tells the cut pod the chain moved on. Its streams still
 // end UNAVAILABLE within the read wait and resume on it once healed. The
-// selection policy ranks http-a first, so a voter that polls is among the
-// cut pod's voters on every run.
+// selection policy ranks http-a, ws-a, ws-b, so the cut pod's two voters
+// use both channels; each stops being a hash voter before the streams end:
+// http-a by its failed polls, ws-a by its socket.
 func n4Lone() spec {
 	return spec{name: "N4-lone", pods: 1, memory: true, bound: healthyDelivery, allow: []string{"grpc:Unavailable@pod-1", "ws:jump@pod-1", "ws:logs-end@pod-1"},
 		network: map[string]interface{}{"selectionPolicy": map[string]interface{}{
-			"evalFunc": `(upstreams, ctx) => upstreams.filter(u => true).sort((a, b) => (b.id.endsWith('-http-a') ? 1 : 0) - (a.id.endsWith('-http-a') ? 1 : 0))`,
+			"evalFunc": `(upstreams, ctx) => {
+				const rank = (u) => { const i = ['-http-a', '-ws-a', '-ws-b'].findIndex(k => u.id.endsWith(k)); return i < 0 ? 3 : i };
+				return upstreams.filter(u => true).sort((a, b) => rank(a) - rank(b));
+			}`,
 		}},
 		body: func(s *scenario) {
 			s.blocks(20)
-			if pos, ok := s.metric(0, "erpc_selection_position", map[string]string{"method": "*", "upstream": s.upstream("http-a")}); !ok || pos != 0 {
-				s.violate("harness", "http-a ranks %v (scraped %v), not first", pos, ok)
+			for want, key := range []string{"http-a", "ws-a", "ws-b"} {
+				if pos, ok := s.metric(0, "erpc_selection_position", map[string]string{"method": "*", "upstream": s.upstream(key)}); !ok || int(pos) != want {
+					s.violate("harness", "%s ranks %v (scraped %v), not %d", key, pos, ok, want)
+				}
 			}
-			cutPod1(s)
+			cutPod1(s, "http-a", "ws-a")
 		}}
 }
 
-func cutPod1(s *scenario) {
+// cutPod1 cuts pod-1 from every vendor for 2 minutes. Each voter in
+// channels must stop being a hash voter on pod-1 (its hash-age gauge
+// +Inf: its channel stopped answering) before a stream there ends.
+func cutPod1(s *scenario, channels ...string) {
 	s.blocks(50)
 	p1 := s.h.pods[0]
 	resumeOn := 1 % len(s.h.pods)
@@ -664,6 +674,17 @@ func cutPod1(s *scenario) {
 	}
 	cut := time.Now()
 	s.logf("pod-1 cut from every vendor; %d gRPC streams on it", len(onP1))
+	ended := make([]chan time.Time, len(channels))
+	for i, key := range channels {
+		ended[i] = make(chan time.Time, 1)
+		go func() {
+			var at time.Time
+			if _, ok := s.waitMetric(0, "erpc_upstream_report_age_seconds", hashAge(s.upstream(key)), grpcReadWait+reconnectSlack, func(v float64) bool { return math.IsInf(v, 1) }); ok {
+				at = time.Now()
+			}
+			ended[i] <- at
+		}()
+	}
 	time.Sleep(2 * time.Minute)
 	for _, px := range s.proxies {
 		px.set(p1, linkFaults{})
@@ -676,6 +697,14 @@ func cutPod1(s *scenario) {
 	// logsCloseSpread later; their clients then need blocks on pod-2 to
 	// cover.
 	time.Sleep(max(silentReconnect, logsCloseSpread+reconnectSlack) + 10*time.Second)
+	channelEnds := make([]time.Time, len(channels))
+	for i, key := range channels {
+		if channelEnds[i] = <-ended[i]; channelEnds[i].IsZero() {
+			s.violate(s.name, "pod-1: %s still a hash voter %s after the cut", key, grpcReadWait+reconnectSlack)
+		} else {
+			s.logf("pod-1: %s no hash voter %s after the cut", key, channelEnds[i].Sub(cut).Round(100*time.Millisecond))
+		}
+	}
 	for _, g := range onP1 {
 		var end *clientEnd
 		g.mu.Lock()
@@ -696,6 +725,14 @@ func cutPod1(s *scenario) {
 			s.violate(g.name, "StreamBlocks on the cut pod-1 ended UNAVAILABLE %s after the cut, above the %s read wait", end.at.Sub(cut).Round(time.Second), grpcReadWait)
 		case !g.deliveredOn(resumeOn, end.at):
 			s.violate(g.name, "did not resume on pod-%d after UNAVAILABLE", resumeOn+1)
+		}
+		if end != nil {
+			for i, key := range channels {
+				// The gauge is seen one scrape after it changes.
+				if at := channelEnds[i]; !at.IsZero() && at.Add(-scrapeEvery).After(end.at) {
+					s.violate(g.name, "StreamBlocks on the cut pod-1 ended before %s stopped being a hash voter", key)
+				}
+			}
 		}
 		if resumes == 0 {
 			s.violate(g.name, "never resumed from a cursor")

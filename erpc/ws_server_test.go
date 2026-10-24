@@ -2287,6 +2287,12 @@ type mockHttpVendor struct {
 	// wrongChain answers for another chain: eth_chainId 0x1, and latest a
 	// block mockWrongChainLead above the chain's head.
 	wrongChain atomic.Bool
+	// failLatest, while set, is the HTTP status every latest poll fails with.
+	failLatest atomic.Int32
+	// slowFail holds the next latest poll for that long, then fails it with
+	// a 503; slowFailed counts the polls failed so.
+	slowFail   atomic.Int64
+	slowFailed atomic.Int32
 }
 
 // mockWrongChainLead is how far another chain's latest is above the
@@ -2301,6 +2307,12 @@ func newMockHttpVendor(t *testing.T, chain *mockChain) (*mockHttpVendor, *httpte
 	v := &mockHttpVendor{chain: chain}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		if status := v.latestFault(body); status != 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"node failure"}}`))
+			return
+		}
 		answer := func(req map[string]interface{}) map[string]interface{} {
 			params, _ := req["params"].([]interface{})
 			var result interface{} = "0x1"
@@ -2351,6 +2363,29 @@ func newMockHttpVendor(t *testing.T, chain *mockChain) (*mockHttpVendor, *httpte
 	}))
 	t.Cleanup(srv.Close)
 	return v, srv
+}
+
+// latestFault is the HTTP status a single latest poll in body fails with,
+// 0 for none; it counts the poll it fails.
+func (v *mockHttpVendor) latestFault(body []byte) int {
+	var req struct {
+		Method string        `json:"method"`
+		Params []interface{} `json:"params"`
+	}
+	if json.Unmarshal(body, &req) != nil || req.Method != "eth_getBlockByNumber" || len(req.Params) == 0 || req.Params[0] != "latest" {
+		return 0
+	}
+	if d := v.slowFail.Swap(0); d > 0 {
+		v.latestPolls.Add(1)
+		time.Sleep(time.Duration(d))
+		v.slowFailed.Add(1)
+		return http.StatusServiceUnavailable
+	}
+	if status := v.failLatest.Load(); status != 0 {
+		v.latestPolls.Add(1)
+		return int(status)
+	}
+	return 0
 }
 
 // mockWsVendor is a WebSocket vendor of chain that pushes each new head on

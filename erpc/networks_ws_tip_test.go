@@ -1,12 +1,16 @@
 package erpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -779,4 +783,121 @@ func TestNetworkIntake_ReconnectOnHaltedChainRenewsVote(t *testing.T) {
 		v, _ := network.intake.hashVote(byId["a-ws"])
 		return !v.Expired && network.hashStale.Load() == nil
 	}, 2*time.Second, 10*time.Millisecond, "the reconnect's first header, the current vote, renews it on a halted chain")
+}
+
+// A polled voter is a hash voter until its node's failed polls of latest
+// span W, first to last, with no success since (spec §6.1):
+//  1. Two 429s W/2 apart, read W after the first, keep the vote; a third
+//     past W ends it; a success brings it back.
+//  2. A slow poll the node fails after a later poll succeeded started before
+//     that success, so it does not count: a 429 W after it keeps the vote.
+//  3. Client traffic uses up the upstream's daily rate-limit budget: eRPC's
+//     own refusals for 2·W are no poll, so the vote holds.
+func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) {
+	setupGock()
+	defer util.ResetGock()
+	ctx := context.Background()
+
+	chain := newMockChain(1000, false)
+	vendor, srv := newMockHttpVendor(t, chain)
+	up := pollerUpstream("p-http", srv.URL)
+	up.RateLimitBudget = "p-budget"
+	up.RateLimitAutoTune = &common.RateLimitAutoTuneConfig{Enabled: util.BoolPtr(false)}
+	up.Failsafe = []*common.FailsafeConfig{{MatchMethod: "*"}}
+	up.JsonRpc = &common.JsonRpcUpstreamConfig{SupportsBatch: util.BoolPtr(false)}
+	cfg := sourcesConfig(nil, up)
+	cfg.RateLimiters.Budgets = []*common.RateLimitBudgetConfig{{Id: "p-budget",
+		Rules: []*common.RateLimitRuleConfig{{Method: "eth_getBlockByNumber", MaxCount: 100, Period: common.RateLimitPeriodDay}}}}
+	network, byId, addr := sourcesNetwork(t, cfg)
+	poller := byId["p-http"].EvmStatePoller()
+	hashVoter := func() bool {
+		return slices.Contains(network.EvmHashVoters("", network.chainTracker.W(), false).Hash, "p-http")
+	}
+	restored := func(msg string) {
+		require.Eventually(t, func() bool {
+			if !hashVoter() {
+				poller.RefreshLatestBlock()
+				return false
+			}
+			return true
+		}, 5*time.Second, 10*time.Millisecond, msg)
+	}
+	// pollFails polls once the poller's 100ms debounce has passed.
+	pollFails := func(msg string) {
+		time.Sleep(150 * time.Millisecond)
+		_, err := poller.PollLatestBlockNumber(ctx)
+		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded), "%s: got %v", msg, err)
+	}
+	restored("the poller's head makes it a hash voter")
+
+	w := network.chainTracker.W()
+	polled := vendor.latestPolls.Load()
+	vendor.failLatest.Store(http.StatusTooManyRequests)
+	pollFails("the first 429")
+	first := time.Now()
+	time.Sleep(w / 2)
+	pollFails("the second 429")
+	time.Sleep(time.Until(first.Add(w + 300*time.Millisecond)))
+	require.Equal(t, polled+2, vendor.latestPolls.Load(), "only the test polls the node")
+	require.True(t, hashVoter(), "two 429s W/2 apart: the polls failed for less than W")
+	pollFails("the third 429")
+	require.False(t, hashVoter(), "failed polls spanning W end the vote")
+	vendor.failLatest.Store(0)
+	restored("a success ends the failures")
+
+	polled = vendor.latestPolls.Load()
+	vendor.slowFail.Store(int64(time.Second))
+	poller.PollHead(false)
+	require.Eventually(t, func() bool { return vendor.latestPolls.Load() > polled }, 2*time.Second, 5*time.Millisecond, "the slow poll reaches the node")
+	time.Sleep(200 * time.Millisecond)
+	_, err := poller.PollLatestBlockNumber(ctx)
+	require.NoError(t, err)
+	require.Equal(t, polled+2, vendor.latestPolls.Load(), "a poll after the slow one succeeds while it is in flight")
+	require.Eventually(t, func() bool { return vendor.slowFailed.Load() == 1 }, 3*time.Second, 5*time.Millisecond, "the node fails the slow poll")
+	time.Sleep(100 * time.Millisecond)
+	slowFailedAt := time.Now()
+	vendor.failLatest.Store(http.StatusTooManyRequests)
+	time.Sleep(time.Until(slowFailedAt.Add(w + 300*time.Millisecond)))
+	pollFails("a 429 W after the slow poll failed")
+	require.True(t, hashVoter(), "a failure whose request started before the last success does not count")
+	vendor.failLatest.Store(0)
+	restored("a success ends the failures")
+
+	flood, stopFlood := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	defer func() { stopFlood(); wg.Wait() }()
+	var answer atomic.Value
+	for range 4 {
+		wg.Go(func() {
+			body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1",false]}`)
+			for flood.Err() == nil {
+				if resp, err := http.Post(fmt.Sprintf("http://%s/test_ws/evm/123", addr), "application/json", bytes.NewReader(body)); err == nil {
+					b, _ := io.ReadAll(resp.Body)
+					_ = resp.Body.Close()
+					answer.Store(string(b))
+				}
+			}
+		})
+	}
+	var lastErr error
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end) && !common.HasErrorCode(lastErr, common.ErrCodeUpstreamRateLimitRuleExceeded); {
+		time.Sleep(150 * time.Millisecond)
+		_, lastErr = poller.PollLatestBlockNumber(ctx)
+	}
+	require.True(t, common.HasErrorCode(lastErr, common.ErrCodeUpstreamRateLimitRuleExceeded),
+		"client traffic uses up the upstream's budget: last poll %v, last client answer %.600v", lastErr, answer.Load())
+	polled = vendor.latestPolls.Load()
+	var refused []time.Time
+	for end := time.Now().Add(2 * network.chainTracker.W()); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
+		if _, err := poller.PollLatestBlockNumber(ctx); common.HasErrorCode(err, common.ErrCodeUpstreamRateLimitRuleExceeded) {
+			refused = append(refused, time.Now())
+		}
+	}
+	keptVote := hashVoter()
+	stopFlood()
+	wg.Wait()
+	require.Equal(t, polled, vendor.latestPolls.Load(), "client traffic uses up the budget: no poll reaches the node")
+	require.NotEmpty(t, refused)
+	require.GreaterOrEqual(t, refused[len(refused)-1].Sub(refused[0]), network.chainTracker.W(), "eRPC refused the polls for W")
+	require.True(t, keptVote, "polls eRPC refused itself never end a hash vote")
 }
