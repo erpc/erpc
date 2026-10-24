@@ -12,6 +12,27 @@ const (
 	UpstreamTypeEvm UpstreamType = "evm"
 )
 
+// EvmHeadReaches is the one head predicate (spec §6.4, #1099): u, with head
+// as its latest, reaches block bn when head plus its
+// headLagToleranceBlocks is at least bn. The availability gate's
+// latestBlockMinus upper bounds and the ordering of upstreams by head read
+// it.
+func EvmHeadReaches(u Upstream, head, bn int64) bool {
+	return head+EvmHeadLagTolerance(u) >= bn
+}
+
+// EvmHeadLagTolerance is u's headLagToleranceBlocks: how many blocks above
+// its observed head u can serve.
+func EvmHeadLagTolerance(u Upstream) int64 {
+	if u == nil {
+		return 0
+	}
+	if cfg := u.Config(); cfg != nil && cfg.Evm != nil {
+		return cfg.Evm.HeadLagToleranceBlocks
+	}
+	return 0
+}
+
 type EvmUpstream interface {
 	Upstream
 	EvmGetChainId(ctx context.Context) (string, error)

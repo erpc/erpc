@@ -90,7 +90,7 @@ func TestUpstreamPreForward_trace_filter(t *testing.T) {
 		u.On("Id").Return("u1").Maybe()
 		u.On("EvmStatePoller").Return(poller).Maybe()
 		// Both bounds are available
-		u.On("EvmAssertBlockAvailability", mock.Anything, "trace_filter", common.AvailbilityConfidenceBlockHead, true, int64(16)).
+		u.On("EvmAssertBlockAvailability", mock.Anything, "trace_filter", common.AvailbilityConfidenceBlockHead, false, int64(16)).
 			Return(true, nil).Once()
 		u.On("EvmAssertBlockAvailability", mock.Anything, "trace_filter", common.AvailbilityConfidenceBlockHead, false, int64(1)).
 			Return(true, nil).Once()
@@ -123,7 +123,7 @@ func TestUpstreamPreForward_trace_filter(t *testing.T) {
 		u.On("Id").Return("u1").Maybe()
 		u.On("EvmStatePoller").Return(poller).Maybe()
 		// toBlock=100 is not available
-		u.On("EvmAssertBlockAvailability", mock.Anything, "trace_filter", common.AvailbilityConfidenceBlockHead, true, int64(100)).
+		u.On("EvmAssertBlockAvailability", mock.Anything, "trace_filter", common.AvailbilityConfidenceBlockHead, false, int64(100)).
 			Return(false, nil).Once()
 
 		r := createTraceFilterRequest(map[string]interface{}{
@@ -155,7 +155,7 @@ func TestUpstreamPreForward_trace_filter(t *testing.T) {
 		u.On("Id").Return("u1").Maybe()
 		u.On("EvmStatePoller").Return(poller).Maybe()
 		// toBlock is available
-		u.On("EvmAssertBlockAvailability", mock.Anything, "trace_filter", common.AvailbilityConfidenceBlockHead, true, int64(100)).
+		u.On("EvmAssertBlockAvailability", mock.Anything, "trace_filter", common.AvailbilityConfidenceBlockHead, false, int64(100)).
 			Return(true, nil).Once()
 		// fromBlock=1 is not available (pruned node)
 		u.On("EvmAssertBlockAvailability", mock.Anything, "trace_filter", common.AvailbilityConfidenceBlockHead, false, int64(1)).
@@ -229,7 +229,7 @@ func TestUpstreamPreForward_arbtrace_filter(t *testing.T) {
 		u.On("Id").Return("u1").Maybe()
 		u.On("EvmStatePoller").Return(poller).Maybe()
 		// Both bounds are available
-		u.On("EvmAssertBlockAvailability", mock.Anything, "arbtrace_filter", common.AvailbilityConfidenceBlockHead, true, int64(16)).
+		u.On("EvmAssertBlockAvailability", mock.Anything, "arbtrace_filter", common.AvailbilityConfidenceBlockHead, false, int64(16)).
 			Return(true, nil).Once()
 		u.On("EvmAssertBlockAvailability", mock.Anything, "arbtrace_filter", common.AvailbilityConfidenceBlockHead, false, int64(1)).
 			Return(true, nil).Once()

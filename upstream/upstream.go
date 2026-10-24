@@ -1108,6 +1108,12 @@ func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
 			}
 			if latest > 0 {
 				val = latest - *bound.LatestBlockMinus
+				if !isLower {
+					// The one head predicate (common.EvmHeadReaches): an
+					// upper bound relative to the head moves with the
+					// upstream's headLagToleranceBlocks.
+					val += common.EvmHeadLagTolerance(u)
+				}
 				u.logger.Debug().
 					Int64("latestBlock", latest).
 					Int64("minus", *bound.LatestBlockMinus).

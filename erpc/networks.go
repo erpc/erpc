@@ -3586,23 +3586,23 @@ func (n *Network) headFirst(req *common.NormalizedRequest, attempted map[string]
 	}
 }
 
-// partitionUpstreamsByLatestBlock moves the upstreams known not to have
-// reached block bn behind the rest, preserving order within each group
-// (spec §6.1, §8). A push source is judged by its hash vote on this
-// instance, as its requests ride this instance's socket, which may be
-// half-open while the shared head counter moves; any other upstream by its
-// head counter. An upstream with no known head keeps its place.
+// partitionUpstreamsByLatestBlock moves the upstreams known not to reach
+// block bn (common.EvmHeadReaches) behind the rest, preserving order within
+// each group (spec §6.1, §6.4, §8). A push source is judged by its hash
+// vote on this instance, as its requests ride this instance's socket,
+// which may be half-open while the shared head counter moves; any other
+// upstream by its head counter. An upstream with no known head keeps its
+// place.
 func (n *Network) partitionUpstreamsByLatestBlock(ups []common.Upstream, bn int64) []common.Upstream {
 	if bn <= 0 || len(ups) < 2 {
 		return ups
 	}
 	return stablePartition(ups, func(u common.Upstream) bool {
+		head := upstreamLatestBlock(u)
 		if n.metricsTracker != nil && n.sources.pushSource(u.Id()) {
-			v := n.metricsTracker.HashVoteNumber(u)
-			return v > 0 && v < bn
+			head = n.metricsTracker.HashVoteNumber(u)
 		}
-		lb := upstreamLatestBlock(u)
-		return lb > 0 && lb < bn
+		return head > 0 && !common.EvmHeadReaches(u, head, bn)
 	})
 }
 

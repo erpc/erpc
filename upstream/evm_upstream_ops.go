@@ -220,23 +220,17 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 		// UPPER BOUND: Check if block is before the latest block
 		//
 		latestBlock := statePoller.LatestBlock()
-		// An upstream may declare it can serve a few blocks past its observed
-		// head (headLagToleranceBlocks) — it holds or briefly waits for the
-		// block internally. The gate then only reroutes requests pinned
-		// beyond head+tolerance.
-		tolerance := cfg.Evm.HeadLagToleranceBlocks
-		// If the requested block is beyond the current latest block (plus
-		// tolerance), try force-polling once
-		if blockNumber > latestBlock+tolerance && forceFreshIfStale {
+		// The one head predicate (common.EvmHeadReaches): an upstream may
+		// serve a few blocks past its observed head (headLagToleranceBlocks).
+		// If the requested block is beyond it, try force-polling once.
+		if !common.EvmHeadReaches(u, latestBlock, blockNumber) && forceFreshIfStale {
 			var err error
 			latestBlock, err = statePoller.PollLatestBlockNumber(ctx)
 			if err != nil {
 				return false, fmt.Errorf("failed to poll latest block number: %w", err)
 			}
 		}
-		// Check if the requested block is still beyond the latest known block
-		// (plus tolerance)
-		if blockNumber > latestBlock+tolerance {
+		if !common.EvmHeadReaches(u, latestBlock, blockNumber) {
 			// Upper bound issue - block is beyond latest
 			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
 				u.ProjectId,
@@ -262,9 +256,9 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 			}
 		}
 
-		// If MaxAvailableRecentBlocks is not configured, assume the node can handle the block if it's
-		// <= latest (plus the declared head-lag tolerance)
-		return blockNumber <= latestBlock+tolerance, nil
+		// If MaxAvailableRecentBlocks is not configured, the head predicate
+		// above already passed.
+		return true, nil
 	default:
 		return false, fmt.Errorf("unsupported block availability confidence: %s", confidence)
 	}

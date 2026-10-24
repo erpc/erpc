@@ -12,13 +12,17 @@ import (
 // trace_filter, and arbtrace_filter.
 //
 // It checks:
-// 1. toBlock (upper bound) - with forceFreshIfStale=true since this is typically the "latest" end
-// 2. fromBlock (lower bound) - with forceFreshIfStale=false since this is historical data
+//  1. toBlock (upper bound) by the one head predicate, with no I/O: a refusal
+//     refreshes the upstream's head in the background, as the availability
+//     gate does. A toBlock the refusal rule calls future (no upstream reports
+//     it) is the rule's to answer, so it is not checked (spec §6.4).
+//  2. fromBlock (lower bound) against the configured window.
 //
 // Returns nil if both blocks are available, otherwise returns an appropriate error.
 func CheckBlockRangeAvailability(
 	ctx context.Context,
 	up common.EvmUpstream,
+	rq *common.NormalizedRequest,
 	method string,
 	fromBlock, toBlock int64,
 ) error {
@@ -30,36 +34,44 @@ func CheckBlockRangeAvailability(
 		)
 	}
 
-	// Check upper bound (toBlock) first - this is typically near the chain head
-	// Use forceFreshIfStale=true since we want accurate head information
-	available, err := up.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, true, toBlock)
-	if err != nil {
-		return err
+	future := false
+	if v := HeadRefusalOf(ctx, rq); v != nil && v.Rule == common.HeadFuture {
+		future = true
 	}
-	if !available {
-		latestBlock := statePoller.LatestBlock()
-		finalizedBlock := statePoller.FinalizedBlock()
+	if !future {
+		available, err := up.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, false, toBlock)
+		if err != nil {
+			return err
+		}
+		if !available {
+			statePoller.RefreshLatestBlock()
+			latestBlock := statePoller.LatestBlock()
+			finalizedBlock := statePoller.FinalizedBlock()
 
-		// This is a transient condition (not missing data): the upstream is simply behind its head/finality.
-		// Use a retryable upstream-level error code so network-level retries can re-attempt
-		// the SAME upstream after a short delay.
-		return &common.ErrUpstreamBlockUnavailable{
-			BaseError: common.BaseError{
-				Code:    common.ErrCodeUpstreamBlockUnavailable,
-				Message: fmt.Sprintf("block not found for %s, requested toBlock %d is not yet available on the node (latestBlock: %d, finalizedBlock: %d)", method, toBlock, latestBlock, finalizedBlock),
-				Details: map[string]interface{}{
-					"upstreamId":     up.Id(),
-					"blockNumber":    toBlock,
-					"latestBlock":    latestBlock,
-					"finalizedBlock": finalizedBlock,
+			// This is a transient condition (not missing data): the upstream is simply behind its head/finality.
+			// Use a retryable upstream-level error code so network-level retries can re-attempt
+			// the SAME upstream after a short delay.
+			return &common.ErrUpstreamBlockUnavailable{
+				BaseError: common.BaseError{
+					Code:    common.ErrCodeUpstreamBlockUnavailable,
+					Message: fmt.Sprintf("block not found for %s, requested toBlock %d is not yet available on the node (latestBlock: %d, finalizedBlock: %d)", method, toBlock, latestBlock, finalizedBlock),
+					Details: map[string]interface{}{
+						"upstreamId":     up.Id(),
+						"blockNumber":    toBlock,
+						"latestBlock":    latestBlock,
+						"finalizedBlock": finalizedBlock,
+					},
 				},
-			},
+			}
 		}
 	}
 
-	// Check lower bound (fromBlock) - this is historical data
-	// Use forceFreshIfStale=false since we're checking historical availability
-	available, err = up.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, false, fromBlock)
+	// Check lower bound (fromBlock) - this is historical data. A fromBlock
+	// above the head of a future range is the refusal rule's, as its toBlock.
+	if future && fromBlock > statePoller.LatestBlock() {
+		return nil
+	}
+	available, err := up.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, false, fromBlock)
 	if err != nil {
 		return err
 	}
