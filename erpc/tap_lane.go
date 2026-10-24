@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
@@ -47,9 +48,18 @@ func (f laneFeed) latest() (uint64, <-chan struct{}) {
 }
 
 // Read returns the next batch from c up to the lane's Latest: Applied
-// blocks above it wait for the lane's Latest to move. Reverted blocks pass,
-// so a reorg below Latest still reaches the client.
+// blocks above it wait for the lane's Latest to move. While one waits, the
+// lane's voters below it are asked for their head once per block time, at
+// most 1s apart (spec §6.5 catch-up): the network-wide tracker under the
+// feed asks only the network's voters. Reverted blocks pass, so a reorg
+// below Latest still reaches the client.
 func (f laneFeed) Read(ctx context.Context, c indexer.Cursor, o indexer.ReadOpts) (indexer.Batch, error) {
+	var timer *time.Timer
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
 	for {
 		b, err := f.ChainFeed.Read(ctx, c, o)
 		if err != nil {
@@ -72,10 +82,21 @@ func (f laneFeed) Read(ctx context.Context, c indexer.Cursor, o indexer.ReadOpts
 			b.Applied, b.Next = nil, indexer.Cursor{Number: fork.Number - 1, Hash: fork.ParentHash}
 			return b, nil
 		}
+		f.nw.EvmRefreshHeadsBelow(f.selector, int64(b.Applied[0].Number))
+		every := f.nw.EvmBlockTime()
+		if every <= 0 || every > time.Second {
+			every = time.Second
+		}
+		if timer == nil {
+			timer = time.NewTimer(every)
+		} else {
+			timer.Reset(every)
+		}
 		select {
 		case <-ctx.Done():
 			return indexer.Batch{}, ctx.Err()
 		case <-moved:
+		case <-timer.C:
 		}
 	}
 }
