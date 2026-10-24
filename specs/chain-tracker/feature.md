@@ -68,7 +68,7 @@ Decisions:
 | fork point | The highest pinned block two branches share; replay starts at fork point + 1 |
 | re-anchor | The pins move to another tree |
 | window | What the network-wide tracker holds: the last `maxBackfill` of chain time, at least `reorgWindow` blocks |
-| reorgWindow | Floor of the window; window of group trackers; walk depth; receipts depth; ws lag bound |
+| reorgWindow | Floor of the window; window of group trackers; walk depth; receipts depth; ws lag bound (`reorgWindow` × bt of delivery delay) |
 | logs head | The highest confirmed pin up to which every block's receipts are held or not needed |
 | scheduler | Per (network, instance) limit, classes and backoff for walks, receipts and fill (§8) |
 | mempool feed | Rings of deduplicated pending transactions, one per (network, variant) |
@@ -607,11 +607,13 @@ From cursor `c`, first matching case:
 
 | Transport | Reads | Reorg on the wire | Out of range | Wait bounds |
 |---|---|---|---|---|
-| ws `newHeads` | headers | each new-branch head, oldest first | restart after the confirmed head | more than `reorgWindow` behind the confirmed head, nothing Reverted → restart |
-| ws `logs` | receipts where the filter bloom may match | `removed:true` logs of Reverted, newest first; then logs of Applied | close `1013`; closes from one event spread over 60s | more than `reorgWindow` behind the logs head → out of range; 60s on one block's receipts → out of range |
+| ws `newHeads` | headers | each new-branch head, oldest first | restart after the confirmed head | the block after its cursor reached the confirmed head more than `reorgWindow` × bt ago, nothing Reverted → restart |
+| ws `logs` | receipts where the filter bloom may match | `removed:true` logs of Reverted, newest first; then logs of Applied | close `1013`; closes from one event spread over 60s | the block after its cursor reached the logs head more than `reorgWindow` × bt ago → out of range; 60s on one block's receipts → out of range |
 | ws `newPendingTransactions` | mempool | none | skip to the newest | — |
 | gRPC `StreamBlocks` | headers | resend from the fork point | end, `OUT_OF_RANGE` | 60s of stalled Read → `UNAVAILABLE`; one `Send` 10s → `UNAVAILABLE` |
 | Kafka, later | headers, receipts | resend from the fork point | write a reset record, then restart after the confirmed head | — |
+
+A ws tap's lag is the age of the block after its cursor: how long that block has been deliverable. A client that stops reading for `reorgWindow` blocks crosses the bound (§19 D1); a burst never does, since its blocks just arrived and a tap that reads takes them in batches (§19 C7). Each pin is stamped once when it first reaches the confirmed head and once when it first reaches the logs head.
 
 - geth sends only the new head after a reorg; ws `newHeads` sends each new-branch head.
 - ws `newHeads` is lossy, as in geth: a restart shows as a jump in numbers.
@@ -755,7 +757,7 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | receipts | method auto-ignored | ignore entry | the entry expires | 10 min |
 | receipts | wrong bloom from one vendor | answer check | counted on it; refetch from another vendor | 1 fetch |
 | reconciler | panic, missed wake | `recover`, timer | restart; timer at W | W |
-| taps | slow client | lag | ws `logs` out of range and ws `newHeads` restart past `reorgWindow`; gRPC `UNAVAILABLE` after a 10s `Send` | `reorgWindow` blocks |
+| taps | slow client | lag | ws `logs` out of range and ws `newHeads` restart once the block after the cursor has waited `reorgWindow` × bt; gRPC `UNAVAILABLE` after a 10s `Send` | `reorgWindow` × bt |
 | gRPC | instance lags, restarted, or fill is slow | a stalled Read | 60s, then `UNAVAILABLE`; the client reconnects | 60s |
 | mempool | subscription silent | no message for 60s while blocks carry transactions | resubscribe, backing off to 30 min | 60s |
 | integrity follow tap | out of range | Read error | restart after the confirmed head | 1 Read |
@@ -1115,7 +1117,7 @@ One home per fact:
 - A majority branch that reverts a finalized block is followed, and logged as an error.
 - Fallback-tier polls run while no primary has led for 60s: after a primary fails, seconds of head latency, no gap.
 - A polled header and a vendor push can differ in optional fields; the first held wins.
-- ws `logs` slow client: today a full 256-notification buffer closes it with `1013`; now `reorgWindow` blocks of lag behind the logs head do.
+- ws `logs` slow client: today a full 256-notification buffer closes it with `1013`; now a block that waited `reorgWindow` × bt behind the logs head does.
 - One block whose receipts fail for 60s closes every ws `logs` connection of the network with `1013`, spread over 60s.
 - gRPC slow client: today it skips forward past 256 blocks; now the stream ends with `OUT_OF_RANGE` past the window, or `UNAVAILABLE` after a 10s `Send`.
 - A gRPC client whose cursor is an orphan no upstream serves gets `OUT_OF_RANGE` and backfills, even after a 1-block reorg.
