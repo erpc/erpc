@@ -179,6 +179,15 @@ func (r *HeadRefusal) Retried() bool {
 	return r != nil && r.owner.Load() != nil
 }
 
+// Refuse records that the request's null was decided with no dispatch (a
+// future block under shortCircuitFutureBlocks): that null is its answer.
+func (r *HeadRefusal) Refuse() {
+	l := &RefusalLeg{}
+	l.End()
+	r.owner.CompareAndSwap(nil, l)
+	r.answered.Store(true)
+}
+
 // SvmNetwork is the SVM-specific view of a Network. Production Network
 // implementations satisfy this automatically when the underlying network is
 // SVM; EVM networks correctly fail the assertion.

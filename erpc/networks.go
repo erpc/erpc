@@ -898,6 +898,7 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 	if err != nil {
 		return nil, false
 	}
+	v.Refuse()
 	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 	resp.SetEvmBlockNumber(v.Block)
 	return resp, true
