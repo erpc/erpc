@@ -244,16 +244,12 @@ func TestEvmJsonRpcCache_ConnectorFreshnessThroughGet(t *testing.T) {
 		require.NoError(t, err)
 
 		cache := &EvmJsonRpcCache{projectId: "test-project", logger: &logger, policies: []*data.CachePolicy{policy}}
-		// The tag keys on the number its Head gives it (plan H2 deletes the
-		// key on the word `latest`), so the method translates it here.
-		translate := true
+		// The tag keys on the number its Head gives it, never on the word `latest`.
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
 		req.SetNetwork(&testNetwork{
 			finalityState: common.DataFinalityStateRealtime,
 			highestLatest: 0x1234,
-			cfg: &common.NetworkConfig{Architecture: common.ArchitectureEvm, Methods: &common.MethodsConfig{Definitions: map[string]*common.CacheMethodConfig{
-				"eth_getBlockByNumber": {ReqRefs: common.FirstParam, RespRefs: common.NumberOrHashParam, TranslateLatestTag: &translate},
-			}}},
+			cfg:           &common.NetworkConfig{Architecture: common.ArchitectureEvm},
 		})
 		return cache, req
 	}

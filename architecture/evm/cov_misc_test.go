@@ -904,8 +904,14 @@ func TestCovMisc_ReplaceParamAtPath(t *testing.T) {
 		{"index out of range", []interface{}{5}, false, nil},
 		{"negative index", []interface{}{-1}, false, nil},
 		{"string key on non-object", []interface{}{1, "fromBlock"}, false, nil},
-		{"missing key is not created", []interface{}{0, "toBlock"}, false, nil},
-		{"missing nested key", []interface{}{0, "nested", "absent"}, false, nil},
+		{"missing nested key", []interface{}{0, "nested2", "absent"}, false, nil},
+		{"missing leaf key is created", []interface{}{0, "toBlock"}, true, func(t *testing.T, out []interface{}) {
+			assert.Equal(t, "0x64", out[0].(map[string]interface{})["toBlock"])
+			assert.Equal(t, "latest", out[0].(map[string]interface{})["fromBlock"])
+		}},
+		{"index right after the last is appended", []interface{}{2}, true, func(t *testing.T, out []interface{}) {
+			assert.Equal(t, []interface{}{params[0], "latest", "0x64"}, out)
+		}},
 		{"unsupported path element", []interface{}{0, 1.5}, false, nil},
 		{"string key at root", []interface{}{"fromBlock"}, false, nil},
 		{"top-level index", []interface{}{1}, true, func(t *testing.T, out []interface{}) {

@@ -85,8 +85,8 @@ func projectPreForward_trace_filter(ctx context.Context, n common.Network, nq *c
 		jrq.RUnlock()
 		return false, nil, nil
 	}
-	fbStr, _ := filter["fromBlock"].(string)
-	tbStr, _ := filter["toBlock"].(string)
+	fbStr := rangeBound(filter, "fromBlock")
+	tbStr := rangeBound(filter, "toBlock")
 	jrq.RUnlock()
 
 	// Reuse the getLogs tag resolver since trace_filter uses the same
@@ -148,8 +148,8 @@ func networkPreForward_trace_filter(ctx context.Context, n common.Network, ups [
 		return false, nil, nil
 	}
 
-	fbStr, _ := filter["fromBlock"].(string)
-	tbStr, _ := filter["toBlock"].(string)
+	fbStr := rangeBound(filter, "fromBlock")
+	tbStr := rangeBound(filter, "toBlock")
 	jrq.RUnlock()
 
 	// If either block can't be resolved to a number, pass through to upstream

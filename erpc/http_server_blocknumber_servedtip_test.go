@@ -86,6 +86,13 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 			bniLaggingHead, bniHealthyHead)
 		assert.Empty(t, hdrs["X-Erpc-Upstream"],
 			"the pin discards any upstream answer, so the served tip must be answered without dispatching")
+
+		// erigon_blockNumber is the same question (spec §7 family 1).
+		status, ehdrs, body := send(`{"jsonrpc":"2.0","id":1,"method":"erigon_blockNumber","params":[]}`, nil, nil)
+		require.Equal(t, http.StatusOK, status, body)
+		assert.Contains(t, body, fmt.Sprintf(`"result":"0x%x"`, bniLaggingHead),
+			"erigon_blockNumber must answer the served tip, not an upstream's head")
+		assert.Empty(t, ehdrs["X-Erpc-Upstream"], "erigon_blockNumber is answered without dispatching")
 	})
 
 	t.Run("Bug_CacheHitAboveTipMustBePinnedToServedTip", func(t *testing.T) {

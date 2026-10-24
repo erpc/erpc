@@ -291,9 +291,9 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 		jrq.RUnlock()
 		return false, nil, nil
 	}
-	// Extract block values (may be hex or tags like "latest")
-	fbStr, _ := filter["fromBlock"].(string)
-	tbStr, _ := filter["toBlock"].(string)
+	// Bounds may be hex, tags, or absent ("latest", spec §7 family 4)
+	fbStr := rangeBound(filter, "fromBlock")
+	tbStr := rangeBound(filter, "toBlock")
 	addrCount, topicCount := getLogsFilterCounts(filter)
 	jrq.RUnlock()
 
@@ -370,8 +370,8 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		return false, nil, nil
 	}
 
-	fbStr, _ := filter["fromBlock"].(string)
-	tbStr, _ := filter["toBlock"].(string)
+	fbStr := rangeBound(filter, "fromBlock")
+	tbStr := rangeBound(filter, "toBlock")
 	addrCount, topicCount := getLogsFilterCounts(filter)
 	jrq.RUnlock()
 
@@ -493,8 +493,8 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		return false, nil, nil
 	}
 
-	fb, _ := filter["fromBlock"].(string)
-	tb, _ := filter["toBlock"].(string)
+	fb := rangeBound(filter, "fromBlock")
+	tb := rangeBound(filter, "toBlock")
 	jrq.RUnlock()
 
 	// Resolve block tags (like "latest", "finalized") to hex numbers for validation.

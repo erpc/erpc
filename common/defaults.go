@@ -273,17 +273,11 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"eth_getBlockByNumber": {
 		ReqRefs:  FirstParam,
 		RespRefs: NumberOrHashParam,
-		// The post-forward hook in evm/eth_getBlockByNumber.go only enforces "latest"/"finalized"
-		// tag handling; it does not gate numeric block requests against per-upstream bounds.
+		// The network-level future-block refusal and enforceNonNullBlock cover
+		// numeric blocks; per-upstream bounds are not gated for this method.
 		// Numeric blocks beyond an upstream's known head will be forwarded and may return
 		// missing-data, which the failsafe retry policy can space out via emptyResultDelay.
 		EnforceBlockAvailability: util.BoolPtr(false),
-		// Don't interpolate "latest"/"finalized" tags for this method - it should fetch actual
-		// current state from upstream. This method is the source of truth for block tags,
-		// not a consumer of interpolated values. Other methods (eth_getLogs, eth_call, etc.)
-		// will still interpolate tags using the state poller's highest known block.
-		TranslateLatestTag:    util.BoolPtr(false),
-		TranslateFinalizedTag: util.BoolPtr(false),
 	},
 	"eth_getTransactionByBlockHashAndIndex": {
 		ReqRefs:  FirstParam,
@@ -329,6 +323,13 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		ReqRefs: SecondParam,
 	},
 	"eth_estimateGas": {
+		ReqRefs: SecondParam,
+	},
+	"eth_createAccessList": {
+		ReqRefs: SecondParam,
+	},
+	"eth_callMany": {
+		// The state context object; its blockNumber leaf is the selector.
 		ReqRefs: SecondParam,
 	},
 	"trace_call": {

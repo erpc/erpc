@@ -32,8 +32,6 @@ func HandleProjectPreForward(ctx context.Context, network common.Network, nq *co
 	}
 
 	switch strings.ToLower(method) {
-	case "eth_call", "eth_estimategas":
-		return projectPreForward_defaultLatestBlock(ctx, network, nq)
 	case "eth_getlogs":
 		return projectPreForward_eth_getLogs(ctx, network, nq)
 	case "trace_filter", "arbtrace_filter":
@@ -57,8 +55,10 @@ func HandleNetworkPreForward(ctx context.Context, network common.Network, upstre
 	switch strings.ToLower(method) {
 	case "eth_getlogs":
 		return networkPreForward_eth_getLogs(ctx, network, upstreams, nq)
-	case "eth_blocknumber":
+	case "eth_blocknumber", "erigon_blocknumber":
 		return networkPreForward_eth_blockNumber(ctx, network, nq)
+	case "eth_getblockbynumber":
+		return networkPreForward_eth_getBlockByNumber(ctx, network, nq)
 	case "trace_filter", "arbtrace_filter":
 		return networkPreForward_trace_filter(ctx, network, upstreams, nq)
 	default:
@@ -78,7 +78,7 @@ func HandleNetworkPostForward(ctx context.Context, network common.Network, nq *c
 	}
 
 	switch strings.ToLower(method) {
-	case "eth_blocknumber":
+	case "eth_blocknumber", "erigon_blocknumber":
 		return networkPostForward_eth_blockNumber(ctx, network, nq, nr, re)
 	case "eth_getblockbynumber":
 		return networkPostForward_eth_getBlockByNumber(ctx, network, nq, nr, re)

@@ -5534,105 +5534,6 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 
-	t.Run("FallbackToHighestBlockIfUpstreamReturnsOlderBlock", func(t *testing.T) {
-		// 1. Reset gock, set up poller mocks, etc.
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-
-		// 2. Create a config with 2 upstreams and enforce highest block
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: "evm",
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-								Integrity: &common.EvmIntegrityConfig{
-									EnforceHighestBlock: util.BoolPtr(true),
-								},
-							},
-						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Endpoint: "http://rpc1.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
-							},
-						},
-						{
-							Id:       "rpc2",
-							Endpoint: "http://rpc2.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
-							},
-						},
-						{
-							Id:       "rpc3",
-							Endpoint: "http://rpc3.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
-							},
-						},
-					},
-				},
-			},
-		}
-
-		// 3. Request: eth_getBlockByNumber("latest", true)
-		requestBody := `{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"method":  "eth_getBlockByNumber",
-			"params": ["latest", true]
-		}`
-
-		// 4. Spin up the test server, make the request, and check the final result
-		// The test will use the state poller's mocks which return the latest block as 0x11118888
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
-
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
-
-		// Give state poller time to initialize and update shared state
-		time.Sleep(500 * time.Millisecond)
-
-		headers := map[string]string{
-			"X-ERPC-Skip-Interpolation": "true",
-		}
-		statusCode, _, body := sendRequest(requestBody, headers, nil)
-
-		assert.Equal(t, http.StatusOK, statusCode, "should return 200 OK body: %s", body)
-
-		t.Logf("Response body: %s", body)
-
-		var respObject map[string]interface{}
-		err = sonic.UnmarshalString(body, &respObject)
-		assert.NoError(t, err, "should parse response body")
-
-		// 8. Confirm we got the highest known block from state poller
-		result, hasResult := respObject["result"].(map[string]interface{})
-		assert.True(t, hasResult, "response should have a 'result' field")
-		assert.Equal(t, "0x22228888", result["number"], "should have the state poller's latest block number")
-		// The test confirms that when an upstream returns an older block than what the state poller knows,
-		// it falls back to requesting the highest known block
-	})
-
 	t.Run("ReturnBlockIfUpstreamReturnsNewerBlock", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -5770,12 +5671,9 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			"params": ["latest", false]
 		}`
 
-		// eth_getBlockByNumber does NOT interpolate "latest" (TranslateLatestTag=false by default),
-		// so the request goes to upstream with "latest" directly.
-		// The state poller mock for rpc1 returns 0x11118888 for "latest".
-		// EnforceHighestBlock will detect that 0x11118888 < 0x22228888 (highest known from rpc2)
-		// and re-fetch using 0x22228888.
-		// The state poller mock for rpc2 matches "0x22228888", so it will handle the re-fetch.
+		// "latest" is interpolated to the request's Head.Latest, 0x22228888 (rpc2's head),
+		// and sent as that number.
+		// The state poller mock for rpc2 matches "0x22228888" and answers it.
 
 		// Spin up the test server, make the request, and check final result.
 		// The test will use the state poller's mocks which return the latest block as 0x11118888
@@ -5876,12 +5774,9 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			"params": ["latest", false]
 		}`
 
-		// eth_getBlockByNumber does NOT interpolate "latest" (TranslateLatestTag=false by default),
-		// so the request goes to upstream with "latest" directly.
-		// The state poller mock for rpc1 returns 0x11118888 for "latest".
-		// EnforceHighestBlock will detect that 0x11118888 < 0x22228888 (highest known from rpc2)
-		// and re-fetch using 0x22228888.
-		// The state poller mock for rpc2 matches "0x22228888", so it will handle the re-fetch and return the block.
+		// "latest" is interpolated to the request's Head.Latest, 0x22228888 (rpc2's head),
+		// and sent as that number.
+		// The state poller mock for rpc2 matches "0x22228888" and answers it.
 
 		// Spin up the test server, make the request, and check final result.
 		// The test will use the state poller's mocks which return the latest block as 0x11118888
@@ -6859,97 +6754,6 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 	// Highest finalized from poller mocks: rpc1=0x11117777, rpc2=0x22227777
 	// Expect final result to be 0x22227777.
 
-	t.Run("ShouldHonorSkipInterpolationOnFinalized", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-								Integrity: &common.EvmIntegrityConfig{
-									EnforceHighestBlock: util.BoolPtr(true),
-								},
-							},
-						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Endpoint: "http://rpc1.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(30 * time.Second),
-								StatePollerDebounce: common.Duration(10 * time.Second),
-							},
-						},
-						{
-							Id:       "rpc2",
-							Endpoint: "http://rpc2.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(30 * time.Second),
-								StatePollerDebounce: common.Duration(10 * time.Second),
-							},
-						},
-						{
-							Id:       "rpc3",
-							Endpoint: "http://rpc3.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
-							},
-						},
-					},
-				},
-			},
-		}
-
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
-
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
-
-		// Allow poller to initialize
-		time.Sleep(500 * time.Millisecond)
-
-		requestBody := `{
-			"jsonrpc": "2.0",
-			"id":      42,
-			"method":  "eth_getBlockByNumber",
-			"params": ["finalized", false]
-		}`
-
-		headers := map[string]string{
-			"X-ERPC-Skip-Interpolation": "true",
-		}
-
-		statusCode, _, body := sendRequest(requestBody, headers, nil)
-		assert.Equal(t, http.StatusOK, statusCode)
-
-		var resp map[string]interface{}
-		err = sonic.UnmarshalString(body, &resp)
-		require.NoError(t, err)
-		result, ok := resp["result"].(map[string]interface{})
-		require.True(t, ok, "the response must contain a 'result' object")
-		assert.Equal(t, "0x22227777", result["number"], "should return highest finalized when skip-interpolation is true")
-	})
-
 	t.Run("ShouldOverrideIfUpstreamReturnsOlderBlockOnFinalized", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -7019,12 +6823,8 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Give state poller time to initialize and populate highest finalized
 		time.Sleep(500 * time.Millisecond)
 
-		// eth_getBlockByNumber does NOT interpolate "finalized" (TranslateFinalizedTag=false by default),
-		// so the request goes to upstream with "finalized" directly.
-		// The state poller mock for rpc1 returns 0x11117777 for finalized, and rpc2 returns 0x22227777.
-		// EnforceHighestBlock will detect that rpc1's response (0x11117777) is older than the highest
-		// known finalized (0x22227777 from rpc2), and will re-fetch using that block number.
-		// The state poller mocks already handle both "finalized" and the concrete hex block numbers.
+		// "finalized" is interpolated to the request's Head.Finalized, 0x22227777 (rpc2's),
+		// and the state poller mocks answer that number.
 
 		userRequest := `{
 			"jsonrpc": "2.0",
@@ -7202,17 +7002,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		}`
 
 		// The user request mock should be more specific and placed after the general mocks
-		// eth_getBlockByNumber does NOT interpolate "finalized" (TranslateFinalizedTag=false by default),
-		// so the request goes to upstream with "finalized" directly.
+		// "finalized" is interpolated to the request's Head.Finalized, 0x100.
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(1). // Only match once for the specific user request
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
-				// Match the exact user request with id:999 and "finalized" tag (NOT interpolated)
 				return strings.Contains(body, `"id":999`) &&
 					strings.Contains(body, `"eth_getBlockByNumber"`) &&
-					strings.Contains(body, `"finalized"`) &&
+					strings.Contains(body, `"0x100"`) &&
 					strings.Contains(body, `true`) // Full block data requested
 			}).
 			Reply(200).

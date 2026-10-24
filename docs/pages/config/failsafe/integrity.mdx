@@ -136,13 +136,11 @@ a lower one raised, with no re-request. The head is resolved request-aware: a
 `use-upstream` selector scopes it to the targeted subset. See
 [Block tracking](/reference/evm/block-tracking). <SourceLink file="architecture/evm/eth_blockNumber.go" lines="13-171" />
 
-**Highest-block enforcement — `eth_getBlockByNumber[latest/finalized]`.** Reads
-`dirs.EnforceHighestBlock`. If the returned block is behind the network-known highest,
-eRPC re-requests that block (`SkipCacheRead=true`), keeping the request's own
-`use-upstream` selector if any; the upstream that answered is not excluded, since on fast
-chains it is often the only one that already has the tip block. `pickHighestBlock` keeps
-the higher of the two — protecting against a corrupted state pointer. Cache hits are enforced the same way, so a cached block behind the tip is
-re-fetched rather than served. <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="111-283" />
+**`eth_getBlockByNumber[latest/finalized]`.** The tag is interpolated to the request's
+`Latest`/`Finalized`, like every method's, before the cache and every attempt; each such
+request also asks the voters' pollers for a debounced refresh, as `eth_blockNumber` does.
+No answer is re-requested. A `null` for an interpolated tag follows
+`enforceNonNullTaggedBlocks`, which reads the tag the client sent. <SourceLink file="architecture/evm/eth_getBlockByNumber.go" />
 
 **Stale-tip cache write guard.** Under `enforceHighestBlock`, a realtime-finality
 response already behind the network-wide tip is never written to cache (the classic

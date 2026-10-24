@@ -86,9 +86,90 @@ func tagBlockNumber(ctx context.Context, nrq *common.NormalizedRequest, cfg *com
 	return 0
 }
 
+// stateBlockParam is the block selector's position for the §7 state-at-a-block
+// methods whose nodes read an absent or null selector as "latest" (geth's
+// blockNrOrHashOrLatest, erigon's trace_call): absent, it is interpolated
+// like "latest". eth_callMany is not here: its selector is a required
+// object, whose blockNumber leaf is rewritten like any EIP-1898 one.
+var stateBlockParam = map[string]int{
+	"eth_call":                1,
+	"eth_estimateGas":         1,
+	"eth_getBalance":          1,
+	"eth_getCode":             1,
+	"eth_getStorageAt":        2,
+	"eth_getTransactionCount": 1,
+	"eth_getProof":            2,
+	"eth_getAccount":          1,
+	"eth_createAccessList":    1,
+	"eth_simulateV1":          1,
+	"debug_traceCall":         1,
+	"trace_call":              2,
+	"arbtrace_call":           2,
+	"arbtrace_callMany":       1,
+}
+
+// stateBlockParamAbsent reports whether params end right before idx or hold
+// null there.
+func stateBlockParamAbsent(params []interface{}, idx int) bool {
+	return len(params) == idx || (len(params) > idx && params[idx] == nil)
+}
+
+// rangeBoundAbsent reports whether a range filter's bound key (fromBlock,
+// toBlock) is absent or null with no blockHash: nodes read it as "latest"
+// (spec §7 family 4).
+func rangeBoundAbsent(filter map[string]interface{}, key string) bool {
+	if filter["blockHash"] != nil {
+		return false
+	}
+	v, ok := filter[key]
+	return !ok || v == nil
+}
+
+// rangeBound is a range filter's bound key as the range checks read it:
+// "latest" when absent (rangeBoundAbsent), else its string value.
+func rangeBound(filter map[string]interface{}, key string) string {
+	if rangeBoundAbsent(filter, key) {
+		return "latest"
+	}
+	s, _ := filter[key].(string)
+	return s
+}
+
+// absentLatestPaths are the block selectors of params that are absent and
+// mean "latest" for method; selectorSeen: a ReqRef already holds one.
+func absentLatestPaths(method string, params []interface{}, selectorSeen bool) [][]interface{} {
+	if idx, ok := stateBlockParam[method]; ok {
+		if !selectorSeen && stateBlockParamAbsent(params, idx) {
+			return [][]interface{}{{idx}}
+		}
+		return nil
+	}
+	switch method {
+	case "eth_getLogs", "trace_filter", "arbtrace_filter":
+	default:
+		return nil
+	}
+	if len(params) == 0 {
+		return nil
+	}
+	filter, ok := params[0].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	var paths [][]interface{}
+	for _, key := range []string{"fromBlock", "toBlock"} {
+		if rangeBoundAbsent(filter, key) {
+			paths = append(paths, []interface{}{0, key})
+		}
+	}
+	return paths
+}
+
 // NormalizeHttpJsonRpc normalizes and translates block parameters in JSON-RPC requests.
 // It converts supported block tags (latest, finalized) to concrete hex block numbers
-// and normalizes hex values. Tags like "safe" and "pending" are passed through unchanged.
+// and normalizes hex values, in every form (spec §7): a plain tag, an EIP-1898
+// object's blockNumber leaf, and an absent selector that means "latest"
+// (absentLatestPaths). Tags like "safe" and "pending" are passed through unchanged.
 // The function minimizes lock contention by:
 // 1. Briefly holding a read lock to extract parameter values
 // 2. Releasing the lock before performing expensive operations (network state lookups)
@@ -103,6 +184,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		paramsToProcess []paramRef
 		method          string
 		reqId           interface{}
+		anyAbsent       bool
 	)
 
 	jrq.RLock()
@@ -124,9 +206,10 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 			value: val,
 		})
 	}
+	anyAbsent = len(absentLatestPaths(method, jrq.Params, false)) > 0
 	jrq.RUnlock()
 
-	if len(paramsToProcess) == 0 {
+	if len(paramsToProcess) == 0 && !anyAbsent {
 		return
 	}
 
@@ -137,6 +220,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		needsUpdate   bool
 		seenLatest    bool
 		seenFinalized bool
+		selectorSeen  bool
 	)
 
 	// Helper: cache numeric block number when safe.
@@ -165,6 +249,13 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 			newVal  interface{}
 			changed bool
 		)
+		// An EIP-1898 object selects its block by its blockNumber leaf.
+		if m, ok := p.value.(map[string]interface{}); ok && len(p.path) == 1 && m["blockHash"] == nil {
+			if leaf, ok := m["blockNumber"]; ok {
+				p.path = []interface{}{p.path[0], "blockNumber"}
+				p.value = leaf
+			}
+		}
 		// Avoid replacing entire object params; prefer leaf updates when refs include nested keys.
 		isTopLevelParamOfMap := false
 		if len(p.path) == 1 {
@@ -177,6 +268,9 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 
 		// Use composite parser to distinguish block numbers, tags, and hashes.
 		blockRef, blockNum, err := parseCompositeBlockParam(p.value)
+		if err == nil && (blockRef != "" || blockNum > 0) {
+			selectorSeen = true
+		}
 		if err == nil {
 			// Cache numeric block number (for single-ref methods)
 			if blockNum > 0 {
@@ -255,6 +349,24 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		}
 	}
 
+	jrq.RLock()
+	absent := absentLatestPaths(method, jrq.Params, selectorSeen)
+	jrq.RUnlock()
+	// An absent selector is "latest" spelled out: interpolated when the tag
+	// is, else sent as the word, so no node applies its own default block (a
+	// vendor answered a bare eth_estimateGas from state far behind its head).
+	for _, path := range absent {
+		seenLatest = true
+		var val interface{} = "latest"
+		n := tagBlockNumber(ctx, nrq, methodCfg, "latest")
+		if hx, herr := common.NormalizeHex(n); n > 0 && herr == nil {
+			val = hx
+			cacheBlockNumber(n)
+		}
+		changes = append(changes, change{path: path, newVal: val})
+		needsUpdate = true
+	}
+
 	// Set EvmBlockRef from observed tags: collapse only when both appear
 	if seenLatest && seenFinalized {
 		nrq.SetEvmBlockRef("*")
@@ -301,7 +413,9 @@ func replaceParamAtPath(params []interface{}, path []interface{}, newValue inter
 }
 
 // setByPath clones only the necessary containers along the path and sets the leaf to newValue.
-// Supports param arrays (top-level) and map[string]interface{} nesting.
+// Supports param arrays (top-level) and map[string]interface{} nesting. A missing
+// leaf is created (an absent selector, absentLatestPaths): a key of an existing
+// map, or the element right after an array's last; containers never are.
 func setByPath(current interface{}, path []interface{}, newValue interface{}) (interface{}, bool) {
 	if len(path) == 0 {
 		return newValue, true
@@ -309,15 +423,19 @@ func setByPath(current interface{}, path []interface{}, newValue interface{}) (i
 	switch key := path[0].(type) {
 	case int:
 		arr, ok := current.([]interface{})
-		if !ok || key < 0 || key >= len(arr) {
+		if !ok || key < 0 || key > len(arr) || (key == len(arr) && len(path) > 1) {
 			return current, false
 		}
-		updatedChild, changed := setByPath(arr[key], path[1:], newValue)
+		var child interface{}
+		if key < len(arr) {
+			child = arr[key]
+		}
+		updatedChild, changed := setByPath(child, path[1:], newValue)
 		if !changed {
 			return current, false
 		}
 		// Clone slice and set updated child
-		newArr := make([]interface{}, len(arr))
+		newArr := make([]interface{}, max(len(arr), key+1))
 		copy(newArr, arr)
 		newArr[key] = updatedChild
 		return newArr, true
@@ -327,8 +445,8 @@ func setByPath(current interface{}, path []interface{}, newValue interface{}) (i
 			return current, false
 		}
 		child, exists := m[key]
-		if !exists {
-			// If path does not exist, do not create new structure
+		if !exists && len(path) > 1 {
+			// Never create intermediate structure
 			return current, false
 		}
 		updatedChild, changed := setByPath(child, path[1:], newValue)

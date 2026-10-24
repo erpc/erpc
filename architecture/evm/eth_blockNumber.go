@@ -10,8 +10,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// networkPreForward_eth_blockNumber answers eth_blockNumber with the
-// request's Head.Latest (spec §7 family 1) without dispatching whenever
+// networkPreForward_eth_blockNumber answers eth_blockNumber and
+// erigon_blockNumber with the request's Head.Latest (spec §7 family 1) without dispatching whenever
 // enforce-highest-block is on and the head is known: the post-forward hook
 // below pins every response to that same value EXACTLY,
 // so an upstream's answer is always discarded and the call buys nothing but
@@ -67,7 +67,8 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 		return nr, re
 	}
 
-	ctx, span := common.StartDetailSpan(ctx, "Network.PostForward.eth_blockNumber", trace.WithAttributes(
+	method, _ := nq.Method()
+	ctx, span := common.StartDetailSpan(ctx, "Network.PostForward."+method, trace.WithAttributes(
 		attribute.String("request.id", fmt.Sprintf("%v", nq.ID())),
 		attribute.String("network.id", network.Id()),
 	))
@@ -110,7 +111,7 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 		// Pin-down: the response is AHEAD of the served head — freshness, not
 		// staleness, so the stale-block metric stays out of it.
 		evt := network.Logger().Debug().
-			Str("method", "eth_blockNumber").
+			Str("method", method).
 			Int64("servedTip", highestBlock).
 			Int64("responseBlockNumber", blockNumber).
 			Bool("fromCache", nr.FromCache())
@@ -124,10 +125,10 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 			ups.VendorName(),
 			network.Label(),
 			ups.Id(),
-			"eth_blockNumber",
+			method,
 		).Inc()
 		network.Logger().Debug().
-			Str("method", "eth_blockNumber").
+			Str("method", method).
 			Int64("knownHighestBlock", highestBlock).
 			Int64("responseBlockNumber", blockNumber).
 			Str("upstreamId", ups.Id()).
@@ -137,7 +138,7 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 		// below the tip (e.g. written before the tip advanced, or by another
 		// instance reading from a lagging upstream).
 		network.Logger().Debug().
-			Str("method", "eth_blockNumber").
+			Str("method", method).
 			Int64("knownHighestBlock", highestBlock).
 			Int64("responseBlockNumber", blockNumber).
 			Bool("fromCache", nr.FromCache()).

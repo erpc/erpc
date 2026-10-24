@@ -148,6 +148,18 @@ func ResolveCacheBlockRef(ctx context.Context, req *common.NormalizedRequest, re
 	return strconv.FormatInt(num, 10), num, nil
 }
 
+// requestBlockTag is the block tag req asked for as the client sent it,
+// kept in EvmBlockRef after interpolation (spec §7), or "" for a number, a
+// hash or no selector.
+func requestBlockTag(ctx context.Context, req *common.NormalizedRequest) string {
+	ref, _, _ := ExtractBlockReferenceFromRequest(ctx, req)
+	switch ref {
+	case "latest", "finalized", "safe", "pending", "earliest":
+		return ref
+	}
+	return ""
+}
+
 func ExtractBlockReferenceFromResponse(ctx context.Context, r *common.NormalizedResponse) (string, int64, error) {
 	ctx, span := common.StartDetailSpan(ctx, "Evm.ExtractBlockReferenceFromResponse")
 	defer span.End()
