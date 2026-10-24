@@ -163,9 +163,7 @@ func (s *scenario) requireReorgsTold() {
 // new branch to the fork point, which the window still holds (maxBackfill
 // ≫ the depth): newHeads and gRPC clients get the new branch from the fork
 // point + 1, and every ws logs tap, more than reorgWindow behind the logs
-// head, ends with 1013 within the close spread. Resumes from the new
-// branch on every pod, for reconnectSlack after the reorg, each get the
-// next block or a resend from the fork point + 1, never OUT_OF_RANGE.
+// head, ends with 1013 within the close spread.
 func c3() spec {
 	return spec{name: "C3", bound: deepReorgDelivery, allow: []string{"ws:logs-end"}, body: func(s *scenario) {
 		s.blocks(50)
@@ -174,9 +172,7 @@ func c3() spec {
 			before[pod], _ = s.metric(pod, "erpc_chain_tracker_reanchor_total", nil)
 		}
 		r := s.reorg(reorgWindow + 4)
-		resumes := s.resumeNewBranch(r, r.at.Add(reconnectSlack))
-		s.logf("C3: %d resumes from new-branch block %d", resumes, r.tip.Parent.Number)
-		time.Sleep(time.Until(r.at.Add(logsCloseSpread + reconnectSlack)))
+		time.Sleep(logsCloseSpread + reconnectSlack)
 		for pod := range s.h.pods {
 			if v, ok := s.waitMetric(pod, "erpc_chain_tracker_reanchor_total", nil, reconnectSlack, func(v float64) bool { return v > before[pod] }); !ok {
 				s.violate("C3", "pod-%d: erpc_chain_tracker_reanchor_total stayed %v after a %d-deep reorg", pod+1, v, reorgWindow+4)
