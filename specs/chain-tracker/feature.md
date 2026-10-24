@@ -1005,7 +1005,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | K4 | `subscriptionSource: true` on https, `false` on wss | https polled at cadence; wss no source |
 | K5 | same seed and plan, integrity on vs off | identical client chains and logs |
 | K6 | `servedTip.quorum: majority`, `guaranteedFor`, failover tiers | taps never above the guarantee-clamped `Latest`; no deadlock |
-| K7 | `shortCircuitFutureBlocks` on and off; head+1 polling | on: `null` with 0 dispatch above the ceiling, at most 1 retry in the band; off: at most 2 dispatches |
+| K7 | `shortCircuitFutureBlocks` on and off; head+1 polling | on: `null` with 0 dispatch above the reach, at most 1 retry in the band; off: at most 2 dispatches |
 | P1 | U10, C1 | `eth_blockNumber` ≥ N on the same instance at delivery; on the other within 1 Ask |
 | P2 | C1 | `eth_getBlockByNumber(N).hash` = delivered hash, or a reorg the client was told about |
 | P3 | C1 | `eth_getBlockByHash(delivered)` not null on both instances until a reorg notice |
@@ -1091,7 +1091,7 @@ One home per fact:
 - Catch-up refreshes while a subscriber is open: at most one per upstream per cadence per instance, only for voters below the pin.
 - `eth_getBlockByNumber(latest)` answers block `Latest`: up to one poll behind a vendor's newest block; it now equals `eth_blockNumber`.
 - `eth_getBlockByNumber("finalized")` answers block `Finalized`, which trails up to 5% of the finality window.
-- A request just above `Latest` costs one extra upstream call for an empty answer.
+- A request just above `Latest` costs one extra upstream call for an empty answer; within a stale upstream's reach it also Asks that upstream, at most once per its debounce.
 - `eth_blockNumber` on another instance may trail a sent head by one poll; the block itself loads.
 - A by-hash lookup of a block above `Latest` waits up to 1 bt.
 - Absent block params read as `latest`: the JSON-RPC default; now cacheable and consistent across upstreams.
