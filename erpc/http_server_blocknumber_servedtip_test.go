@@ -137,11 +137,13 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 
 		// Heads move up 5 blocks once `moved` flips. Registered before the
 		// static bootstrap mocks so gock matches them first; until the flip
-		// they decline and the static heads (0x800/0x1000) answer.
+		// they decline and the static heads (0x800/0x1000) answer. Each poll
+		// passes intake, which drops a header without hash and parentHash
+		// (spec §5.3 check 0), so these carry both.
 		var moved atomic.Bool
-		for host, head := range map[string]string{
-			"http://rpc1.localhost": "0x805",
-			"http://rpc2.localhost": "0x1005",
+		for host, head := range map[string]int64{
+			"http://rpc1.localhost": bniLaggingHead + 5,
+			"http://rpc2.localhost": bniHealthyHead + 5,
 		} {
 			gock.New(host).Post("").Persist().
 				Filter(func(r *http.Request) bool {
@@ -149,7 +151,7 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 					return moved.Load() && strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
 				}).
 				Reply(200).
-				JSON([]byte(fmt.Sprintf(`{"result":{"number":"%s","timestamp":"0x6702a8f0"}}`, head)))
+				JSON([]byte(fmt.Sprintf(`{"result":{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","timestamp":"0x6702a8f0"}}`, head, head, head-1)))
 		}
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
