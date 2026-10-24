@@ -2119,8 +2119,8 @@ func (t *ChainTracker) TxHeadAt() time.Time {
 func (t *ChainTracker) ReorgWindow() int { return t.window }
 
 // BlockTime is the network's block time (GetNetworkBlockTime, which the
-// poller's debounce reads too); health.ColdBlockTime until 4 headers set
-// it (spec §6.7).
+// poller's debounce reads too); health.ColdBlockTime until the first
+// sample, 2 timestamp changes after the first observed header (spec §6.7).
 func (t *ChainTracker) BlockTime() time.Duration {
 	if n, ok := t.network.(interface{ EvmBlockTime() time.Duration }); ok {
 		if bt := n.EvmBlockTime(); bt > 0 {

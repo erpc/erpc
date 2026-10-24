@@ -118,7 +118,7 @@ eRPC keeps the `safe` tag verbatim and routes standard block-tagged JSON-RPC req
 
 **Debounce resolution.** To avoid redundant RPC calls, each fetch is gated by `resolveDebounce()`, which picks the first applicable value from:
 1. `upstream.evm.statePollerDebounce` — hard per-upstream override; short-circuits all other steps.
-2. `tracker.GetNetworkBlockTime × dynamicBlockTimeDebounceMultiplier` (default 0.7) — set once 4 headers are seen.
+2. `tracker.GetNetworkBlockTime × dynamicBlockTimeDebounceMultiplier` (default 0.7) — set by the first block-time sample, which needs 2 timestamp changes after the first observed header.
 3. `network.evm.fallbackStatePollerDebounce` (no default) — when set, used until step 2 applies.
 4. The 1 s cold block time × the multiplier (0.7 s) — until step 2 applies.
 
@@ -126,7 +126,7 @@ On a 12 s Ethereum Mainnet chain this yields ~8.4 s debounce — fresh enough to
 
 **Finalized debounce.** The finalized fetch widens that debounce to `(latest − finalized) × EMA block time × finalizedDebounceDepthMultiplier` (default 0.05) when this is longer, using the upstream's own latest and finalized blocks. Finalized advances once per finality window, so polling it at the latest-block cadence mostly returns the number already held. With the default the finalized block trails by at most about 5% of the window: ~43 s on Ethereum Mainnet (~72 blocks × 12 s), ~45 s on an Arbitrum-style L2 with a 15 min window. An upstream behind the network's corroborated finalized block (second-highest across upstreams) keeps the regular debounce until it catches up: once a peer sees the next finalized block, the others sample it at the regular cadence. This also covers vendors whose load balancer mixes stale and fresh backends. Chains with near-instant finality (depth of a few blocks) keep the regular debounce. Unknown finalized, latest at or below finalized, or a cold EMA also keep it. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="449-471" />
 
-**Dynamic block-time EMA.** The EMA (`alpha = 0.1`, ~19-sample effective window) lives in `health.Tracker` and updates whenever the corroborated network-level latest block advances, using the on-chain timestamp of the upstream report that holds that head (each upstream's latest timestamp is stored beside its head, so the sample comes from whichever poller reported the block). All head publication for a network is serialized under one per-network lock, so a slow re-derivation can never overwrite a newer one. On fast chains where consecutive blocks share the same integer second, block gaps accumulate and samples are normalized. Accepted source headers (pushes and poll-source polls) sample it too. Until the EMA has ≥3 samples (4 timestamp advances), each observation at least 3 blocks past the first publishes the mean step since that first one, so 4 headers set the block time even when they share timestamps. Values outside `[10 ms, 120 s]` are rejected and reset to the last valid value to prevent runaway spikes after a chain halt. `GetNetworkBlockTime` returns 0 until then; the chain tracker's W and the poll cadence use the 1 s cold block time meanwhile.
+**Dynamic block-time EMA.** The EMA (`alpha = 0.1`, ~19-sample effective window) lives in `health.Tracker` and updates whenever the corroborated network-level latest block advances, using the on-chain timestamp of the upstream report that holds that head (each upstream's latest timestamp is stored beside its head, so the sample comes from whichever poller reported the block). All head publication for a network is serialized under one per-network lock, so a slow re-derivation can never overwrite a newer one. Source headers (pushes and poll-source polls) sample it too, once the network's confirmed head reaches them, so a lagging or bogus header is no sample. A sample spans two observations whose timestamps differ: seconds elapsed over blocks elapsed; blocks that share a timestamp extend the span. Spans start at the first timestamp change after the first observation, so the first sample needs 2 timestamp changes after it, and seeds the EMA. A sample above 3× the EMA counts as 3× the EMA, so one span across a chain halt never sets W to its 60 s cap; values outside `[10 ms, 120 s]` are rejected. `GetNetworkBlockTime` returns 0 until the first sample; the chain tracker's W and the poll cadence use the 1 s cold block time meanwhile (poll cadence 0.7 s).
 
 **Per-upstream block counters.** Both `latestBlockShared` and `finalizedBlockShared` are forward-only shared counters: `TryUpdate` rejects values ≤ the current value. A value that would regress more than 1024 blocks fires an `OnLargeRollback` callback and records `erpc_upstream_block_head_large_rollback`.
 
@@ -252,7 +252,7 @@ With a `use-upstream` selector, `EvmRoutableUpstreams` narrows the candidates to
 }]`}
 />
 
-**2. Faster polling for a sub-second chain (Arbitrum).** The block time auto-tunes the debounce to ~70% of block time within 4 headers; before that the cold debounce is 0.7 s. `fallbackStatePollerDebounce` shortens those first headers:
+**2. Faster polling for a sub-second chain (Arbitrum).** The block time auto-tunes the debounce to ~70% of block time from its first sample, 2 timestamp changes after the first header; before that the cold debounce is 0.7 s (the 1 s cold block time × 0.7). `fallbackStatePollerDebounce` shortens those first headers:
 
 <ConfigTabs
   path="networks[].evm"
@@ -340,7 +340,7 @@ With a `use-upstream` selector, `EvmRoutableUpstreams` narrows the candidates to
 ### Best practices
 
 - Use `guaranteedMethods: ["trace_*"]` when mixing archive and non-archive upstreams — prevents the served tip from advancing past what trace-capable nodes have.
-- Lower `fallbackStatePollerDebounce` to 200–500 ms on sub-second chains (Arbitrum, Base, Optimism) so warm-up doesn't stall on a 5 s default.
+- Lower `fallbackStatePollerDebounce` to 200–500 ms on sub-second chains (Arbitrum, Base, Optimism) to poll faster than the 0.7 s cold cadence during warm-up.
 - Avoid setting `dynamicBlockTimeDebounceMultiplier: 0`; it is silently ignored and the default 0.7 is used. To impose a fixed debounce, use `statePollerDebounce` on the upstream instead.
 - Monitor `erpc_upstream_block_head_lag` per upstream, and alert on `erpc_network_served_tip_advance_age_seconds` (stuck tip), `erpc_network_served_tip_regression_total` and `erpc_upstream_head_benched_total` ([metrics reference](/reference/metrics#area-3-block-number-and-tip-tracking)).
 
@@ -411,7 +411,7 @@ Served-tip and bench metrics (`erpc_network_served_tip_*`, `erpc_upstream_head_b
 - [`health/tracker.go:L1428-L1664`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1428-L1664) — `corroboratedNetworkHead`, `headStallAfter`, `evaluateHeadBench`, `movedSinceBench`, `headIsBehind`, `benchPlausibleLead`, `IsHeadBenched`
 - [`health/tracker.go:L1666-L1918`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1666-L1918) — `SetLatestBlockNumber`, EMA update (`updateBlockTimeSample`, `sampleBlockTime`), `BlockHeadLag` computation
 - [`health/tracker.go:L1937-L2033`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1937-L2033) — `SetFinalizedBlockNumber`, `rederiveNetworkFinalized`, `FinalizationLag` computation
-- [`common/defaults.go:L1718-L1977`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1718-L1977) — `DefaultEvmFinalityDepth=1024`, `DefaultEvmStatePollerDebounce=5s`, `DefaultDynamicBlockTimeDebounceMultiplier=0.7`
+- [`common/defaults.go:L1718-L1977`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1718-L1977) — `DefaultEvmFinalityDepth=1024`, `DefaultDynamicBlockTimeDebounceMultiplier=0.7`
 - [`common/served_tip_test.go`](https://github.com/erpc/erpc/blob/main/common/served_tip_test.go) — unit tests for `PickServedTip` and quorum parsing
 - [`erpc/networks_served_tip_test.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_served_tip_test.go) — integration tests: quorum, voter ranks, benching, static caps, selector scoping, guarantee floors
 
