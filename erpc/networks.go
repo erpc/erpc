@@ -181,6 +181,10 @@ type servedTipAnchor struct {
 	// on transitions, so a sustained regression reports twice (once when it
 	// starts holding, once if it gives up) instead of once per request.
 	guardState atomic.Int32
+
+	// refreshedAtNs is when EvmRefreshHead last walked this axis's voters
+	// (UnixNano); the pollers' own debounce makes a walk sooner a no-op.
+	refreshedAtNs atomic.Int64
 }
 
 const (
@@ -793,12 +797,27 @@ func isSimpleGroupSelector(selector string) bool {
 // finalized axis when finalized is set, for a background refresh: in
 // routing order, only as many of the ballot's voters (its best
 // tipVoterRank) as the quorum needs, since a fresher head anywhere else
-// cannot move the served value. Two passes over the candidates, counting
-// then refreshing, keep a hot path such as eth_blockNumber free of
-// allocation.
+// cannot move the served value. A lane walks its voters at most once per
+// poll cadence per axis, the debounce each poller applies anyway, so the
+// per-request call costs no upstream iteration in between. Two passes over
+// the candidates, counting then refreshing, keep it free of allocation.
 func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
+	sel := requestSelector(ctx)
+	var ec *common.EvmNetworkConfig
+	if n.cfg != nil {
+		ec = n.cfg.Evm
+	}
+	if l := n.laneFor(sel); l != nil {
+		a := l.anchor(finalized)
+		now, last := time.Now().UnixNano(), a.refreshedAtNs.Load()
+		if now-last < int64(ec.PollCadence(n.blockTimeOrCold())) || !a.refreshedAtNs.CompareAndSwap(last, now) {
+			return
+		}
+	}
+	// The latest-axis rank on both axes: an upstream with no finalized
+	// number yet still gets polled for its first one.
 	best, voters := -1, 0
-	for u := range n.EvmRoutableUpstreams(ctx) {
+	for u := range n.tipCandidates(sel) {
 		if _, rank, ok := tipVoterRank(u, false, n.metricsTracker); ok {
 			switch {
 			case best < 0 || rank < best:
@@ -811,12 +830,8 @@ func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 	if voters == 0 {
 		return
 	}
-	var q common.ServedTipQuorum
-	if n.cfg != nil {
-		q = n.cfg.Evm.ServedTipQuorum()
-	}
-	need := q.Of(voters)
-	for u := range n.EvmRoutableUpstreams(ctx) {
+	need := ec.ServedTipQuorum().Of(voters)
+	for u := range n.tipCandidates(sel) {
 		if _, rank, ok := tipVoterRank(u, false, n.metricsTracker); ok && rank == best {
 			if sp := u.(common.EvmUpstream).EvmStatePoller(); finalized {
 				sp.RefreshFinalizedBlock()
@@ -2988,7 +3003,7 @@ func (n *Network) checkSvmUpstreamSlotAvailability(ctx context.Context, u common
 // apply any implicit "blockNumber > latestBlock" head check. Tip-awareness — i.e.
 // "is this block past the chain head?" — is owned elsewhere:
 //   - served-tip short-circuits concrete future blocks beyond the network tip, and
-//   - integrity.enforceHighestBlock keeps "latest"/"finalized" tag responses honest.
+//   - interpolation sends "latest"/"finalized" tags as the request's Head number.
 //
 // Coupling an implicit head check to this path raced with the state poller on fast
 // block-time chains and falsely rejected fresh blocks an upstream already had
