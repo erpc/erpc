@@ -288,6 +288,11 @@ func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, bt *multicall3
 	mrq.SetDirectives(first.Directives().Clone())
 	mrq.SetParentRequestId(first.ID())
 	mrq.CopyHttpContextFrom(first)
+	// The aggregate runs at the Head its entries took (spec §7): a "latest"
+	// it still carries resolves to their Latest, never a newer one.
+	if h := first.EvmHead(); h != nil {
+		mrq.TakeEvmHead(h)
+	}
 
 	ctx, cancel := multicall3Context(entries)
 	defer cancel()
