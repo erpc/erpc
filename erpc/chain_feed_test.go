@@ -2086,12 +2086,13 @@ func (s *chaosSeed) receiptsVendor() string {
 
 // faultyVendor gives the receipts fault set to the vendor a sweep asks
 // first, for at least 10 and at most 30 blocks: until that vendor was asked
-// and, when rotates, the other vendor served a block it was asked for. When
-// the selection order moves during the fault, the fault moves to the vendor
-// sweeps ask first now and starts again, at most twice. Receipt fetches
-// that land late, under -race, are counted while the fault is still on. It
-// returns the vendor, the blocks of the fault, the receipts calls the vendor
-// got in them, and how many blocks rotated.
+// and, when rotates, the other vendor served a block it was asked for.
+// When the sweeps ask the other vendor instead, by the selection order now
+// or by the calls of the fault's first blocks, the fault moves to it and
+// starts again, at most twice. Receipt fetches that land late, under -race,
+// are counted while the fault is still on. It returns the vendor, the
+// blocks of the fault, the receipts calls the vendor got in them, and how
+// many blocks rotated.
 func (s *chaosSeed) faultyVendor(rotates bool, set func(f *chainsim.Faults, on bool)) (name string, from, to uint64, calls, rotated int) {
 	require.NotEmpty(s.t, s.openLogs(), "logs clients are open, so receipts are wanted")
 	name = s.receiptsVendor()
@@ -2103,7 +2104,11 @@ func (s *chaosSeed) faultyVendor(rotates bool, set func(f *chainsim.Faults, on b
 	}
 	moves := 0
 	for i := 0; i < 30; i += 2 {
-		if now := s.receiptsVendor(); now != name && moves < 2 {
+		now := s.receiptsVendor()
+		if i >= 4 && s.callsTo(name, from, to) == 0 && s.callsTo(otherVendor(name), from, to) > 0 {
+			now = otherVendor(name)
+		}
+		if now != name && moves < 2 {
 			moves++
 			s.setVendor(name, func(f *chainsim.Faults) { set(f, false) })
 			name, from, i = now, s.chain.Tip().Number+1, 0
@@ -2119,7 +2124,8 @@ func (s *chaosSeed) faultyVendor(rotates bool, set func(f *chainsim.Faults, on b
 		time.Sleep(50 * time.Millisecond)
 	}
 	s.setVendor(name, func(f *chainsim.Faults) { set(f, false) })
-	require.Positive(s.t, calls, "%s, first in the receipts sweep, is asked for blocks %d..%d during its fault", name, from, to)
+	require.Positive(s.t, calls, "%s, first in the receipts sweep, is asked for blocks %d..%d during its fault; %s got %d calls; the fault moved %d times",
+		name, from, to, otherVendor(name), s.callsTo(otherVendor(name), from, to), moves)
 	if rotates {
 		require.Positive(s.t, rotated, "blocks %s answered wrong in %d..%d are refetched from %s", name, from, to, otherVendor(name))
 	}
