@@ -1816,8 +1816,9 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		}
 		served(t, network, stalledAt, "at boot quorum 2 serves the stalled head")
 
-		// Three timestamped head changes: live's block time is not known yet.
-		for range 3 {
+		// Two timestamped heads: live's block time is not known yet. Its first
+		// sample spans its first two timestamp changes (spec §6.7, C9).
+		for range 2 {
 			poll(2 * time.Second)
 		}
 		for _, u := range ups {
@@ -1825,7 +1826,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		}
 		served(t, network, stalledAt, "before live's block time is known")
 
-		// The fourth settles it; the stall window runs from there.
+		// The third settles it; the stall window runs from there.
 		poll(2 * time.Second)
 		window := stallAfter(stalls[0], 0)
 		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
