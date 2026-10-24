@@ -170,8 +170,10 @@ type EvmStatePoller struct {
 	// keep-fresh advances never touch this.
 	latestMajorVerifyInProgress sync.Mutex
 
-	// Single in-flight flag for RefreshLatestBlock's background poll.
-	latestRefreshInFlight atomic.Bool
+	// Single in-flight flags for RefreshLatestBlock's and
+	// RefreshFinalizedBlock's background polls.
+	latestRefreshInFlight    atomic.Bool
+	finalizedRefreshInFlight atomic.Bool
 
 	// Earliest per probe tracking
 	earliestByProbe              map[common.EvmAvailabilityProbeType]data.CounterInt64SharedVariable
@@ -552,8 +554,8 @@ func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Dura
 //
 // An upstream behind the network's corroborated finalized block keeps the regular
 // debounce: peers already saw the next finalized block, and a vendor whose load balancer
-// mixes stale and fresh backends needs every sample to catch up. Response finality uses
-// the serving upstream's own finalized block, and cache hits the lowest across upstreams.
+// mixes stale and fresh backends needs every sample to catch up. Finality reads the
+// voters' finalized ballot, Head.Finalized, and an answer its upstream's own too (spec §6.4).
 func (e *EvmStatePoller) resolveFinalizedDebounce(cfg *common.EvmNetworkConfig, debounce time.Duration) time.Duration {
 	if cfg == nil || cfg.FinalizedDebounceDepthMultiplier == nil {
 		return debounce
@@ -764,6 +766,32 @@ func (e *EvmStatePoller) refreshLatest(shared bool, kind HeaderKind) {
 		defer cancel()
 		if _, err := e.pollLatest(ctx, shared, kind); err != nil {
 			e.logger.Debug().Err(err).Msg("on-demand latest block refresh failed in evm state poller")
+		}
+	}()
+}
+
+// RefreshFinalizedBlock starts a background finalized-block poll when the
+// stored one is older than the finalized poll's debounce and no refresh is
+// already in flight; it never blocks.
+func (e *EvmStatePoller) RefreshFinalizedBlock() {
+	if e.IsObjectNull() || e.finalizedBlockShared == nil || e.shouldSkipFinalizedCheck() {
+		return
+	}
+	e.stateMu.RLock()
+	cfg := e.cfg
+	e.stateMu.RUnlock()
+	if !e.finalizedBlockShared.IsStale(e.resolveFinalizedDebounce(cfg, e.resolveDebounce(cfg))) {
+		return
+	}
+	if !e.finalizedRefreshInFlight.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer e.finalizedRefreshInFlight.Store(false)
+		ctx, cancel := context.WithTimeout(e.appCtx, 10*time.Second)
+		defer cancel()
+		if _, err := e.PollFinalizedBlockNumber(ctx); err != nil {
+			e.logger.Debug().Err(err).Msg("on-demand finalized block refresh failed in evm state poller")
 		}
 	}()
 }
@@ -1402,8 +1430,21 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 	}()
 }
 
+// FinalizedBlock is the upstream's finalized tag, or, while it reports
+// none, latest − fallbackFinalityDepth: the one finalized number its
+// finality and its Head.Finalized report read (#1079).
 func (e *EvmStatePoller) FinalizedBlock() int64 {
-	return e.finalizedBlockShared.GetValue()
+	if fin := e.finalizedBlockShared.GetValue(); fin > 0 {
+		return fin
+	}
+	latest := e.latestBlockShared.GetValue()
+	if latest <= 0 {
+		return 0
+	}
+	if depth := e.fallbackFinalityDepth(); latest > depth {
+		return latest - depth
+	}
+	return 0
 }
 
 func (e *EvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {
@@ -1671,45 +1712,10 @@ func (e *EvmStatePoller) fallbackFinalityDepth() int64 {
 }
 
 func (e *EvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
-	finalizedBlock := e.finalizedBlockShared.GetValue()
-	latestBlock := e.latestBlockShared.GetValue()
-	if latestBlock == 0 && finalizedBlock == 0 {
-		e.logger.Debug().
-			Int64("finalizedBlock", finalizedBlock).
-			Int64("latestBlock", latestBlock).
-			Int64("blockNumber", blockNumber).
-			Msgf("finalized/latest blocks are not available yet when checking block finality")
+	if e.latestBlockShared.GetValue() == 0 && e.finalizedBlockShared.GetValue() == 0 {
 		return false, common.NewErrFinalizedBlockUnavailable(blockNumber)
 	}
-
-	e.logger.Debug().
-		Int64("finalizedBlock", finalizedBlock).
-		Int64("latestBlock", latestBlock).
-		Int64("blockNumber", blockNumber).
-		Msgf("calculating block finality")
-
-	if finalizedBlock > 0 {
-		return blockNumber <= finalizedBlock, nil
-	}
-
-	if latestBlock == 0 {
-		return false, nil
-	}
-
-	var fb int64
-	depth := e.fallbackFinalityDepth()
-	if latestBlock > depth {
-		fb = latestBlock - depth
-	}
-
-	e.logger.Debug().
-		Int64("inferredFinalizedBlock", fb).
-		Int64("fallbackFinalityDepth", depth).
-		Int64("latestBlock", latestBlock).
-		Int64("blockNumber", blockNumber).
-		Msgf("calculating block finality using inferred finalized block")
-
-	return blockNumber <= fb, nil
+	return blockNumber <= e.FinalizedBlock(), nil
 }
 
 func (e *EvmStatePoller) SyncingState() common.EvmSyncingState {

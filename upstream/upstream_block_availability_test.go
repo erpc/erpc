@@ -66,6 +66,7 @@ func (m *mockEvmStatePollerEnhanced) SuggestFinalizedBlock(blockNumber int64) {}
 func (m *mockEvmStatePollerEnhanced) SuggestLatestBlock(blockNumber int64)    {}
 func (m *mockEvmStatePollerEnhanced) ObserveHead(json.RawMessage) bool        { return false }
 func (m *mockEvmStatePollerEnhanced) RefreshLatestBlock()                     {}
+func (m *mockEvmStatePollerEnhanced) RefreshFinalizedBlock()                  {}
 func (m *mockEvmStatePollerEnhanced) LatestReport() (int64, time.Time, bool) {
 	return 0, time.Time{}, false
 }
@@ -634,6 +635,7 @@ func (m *mockEvmStatePollerWithCustomBehavior) SuggestFinalizedBlock(blockNumber
 func (m *mockEvmStatePollerWithCustomBehavior) SuggestLatestBlock(blockNumber int64)    {}
 func (m *mockEvmStatePollerWithCustomBehavior) ObserveHead(json.RawMessage) bool        { return false }
 func (m *mockEvmStatePollerWithCustomBehavior) RefreshLatestBlock()                     {}
+func (m *mockEvmStatePollerWithCustomBehavior) RefreshFinalizedBlock()                  {}
 func (m *mockEvmStatePollerWithCustomBehavior) LatestReport() (int64, time.Time, bool) {
 	return 0, time.Time{}, false
 }

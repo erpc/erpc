@@ -813,16 +813,16 @@ func TestNetworksPaths_ForwardOnLiveNetwork(t *testing.T) {
 		require.NotNil(t, leader)
 		assert.Equal(t, "test", leader.Id())
 		assert.NotNil(t, network.MetricsTracker())
-		network.EvmRefreshLatestBlock(ctx)
+		network.EvmRefreshHead(ctx, false)
 		assert.Equal(t, head, servedHead(network, ctx).Latest, "one voter: the served tip is its head")
 	})
 
-	t.Run("FinalityHeuristicFromRegistry", func(t *testing.T) {
-		lowest := network.EvmLowestFinalizedBlockNumber(ctx)
-		require.Greater(t, lowest, int64(0))
-		below := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1",false]}`))
-		assert.Equal(t, common.DataFinalityStateFinalized, network.GetFinality(ctx, below, nil))
-		above := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, lowest+1000)))
+	t.Run("FinalityFromHeadFinalized", func(t *testing.T) {
+		fin := servedHead(network, ctx).Finalized
+		require.Greater(t, fin, int64(0))
+		at := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, fin)))
+		assert.Equal(t, common.DataFinalityStateFinalized, network.GetFinality(ctx, at, nil))
+		above := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, fin+1)))
 		assert.Equal(t, common.DataFinalityStateUnfinalized, network.GetFinality(ctx, above, nil))
 	})
 

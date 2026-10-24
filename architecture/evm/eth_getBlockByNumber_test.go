@@ -60,7 +60,7 @@ func (t *testNetwork) EvmLaneHead(string, string) common.EvmHead {
 	return t.EvmHead(context.Background(), nil)
 }
 
-func (t *testNetwork) EvmRefreshLatestBlock(ctx context.Context) {}
+func (t *testNetwork) EvmRefreshHead(ctx context.Context, finalized bool) {}
 
 func (t *testNetwork) GetMethodMetrics(method string) common.TrackedMetrics {
 	return nil

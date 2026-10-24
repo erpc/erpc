@@ -327,6 +327,8 @@ func (p *FakeEvmStatePoller) ObserveHead(raw json.RawMessage) bool {
 
 func (p *FakeEvmStatePoller) RefreshLatestBlock() {}
 
+func (p *FakeEvmStatePoller) RefreshFinalizedBlock() {}
+
 func (p *FakeEvmStatePoller) PollHead(bool) {}
 
 func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {

@@ -158,6 +158,8 @@ type EvmStatePoller interface {
 	// evidence was taken (a poll's send time, else this instance's receive
 	// time), and whether this instance's newest poll succeeded.
 	LatestReport() (block int64, at time.Time, live bool)
+	// FinalizedBlock is the upstream's finalized block: its finalized tag,
+	// or, while it has none, latest − the derived finality depth (#1079).
 	FinalizedBlock() int64
 	IsBlockFinalized(blockNumber int64) (bool, error)
 	SuggestFinalizedBlock(blockNumber int64)
@@ -170,6 +172,9 @@ type EvmStatePoller interface {
 	// RefreshLatestBlock polls the latest block in the background when the
 	// stored head is older than the poll debounce; non-blocking, one in flight.
 	RefreshLatestBlock()
+	// RefreshFinalizedBlock is RefreshLatestBlock for the finalized block,
+	// against the finalized poll's debounce.
+	RefreshFinalizedBlock()
 	// PollHead polls latest in the background now, for a hash vote, however
 	// fresh the stored head is; non-blocking, one in flight. fork: it asks
 	// a voter whose vote the pins moved off, so its answer is fresh evidence.

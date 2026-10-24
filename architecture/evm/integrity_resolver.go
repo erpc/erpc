@@ -8,7 +8,7 @@ import (
 )
 
 // integrityResolver implements integrity.Resolver over the real network and the
-// serving upstream. Finality comes from the upstream's effective finalized block;
+// serving upstream. Finality is the request's Head.Finalized (spec §6.4);
 // canonical block data comes from the group's chain tracker, which fetches a
 // miss through the scheduler (deduped, reorg-aware). held: the response under
 // check is eRPC's own data (a tracker fetch, a source header), so the
@@ -31,11 +31,7 @@ func (r *integrityResolver) IsFinalized(ctx context.Context, blockNumber int64) 
 	if blockNumber < 0 {
 		return false, false
 	}
-	eu, ok := r.upstream.(common.EvmUpstream)
-	if !ok {
-		return false, false
-	}
-	fin := eu.EvmEffectiveFinalizedBlock()
+	fin := common.EvmHeadOf(r.network, ctx, nil).Finalized
 	if fin <= 0 {
 		return false, false // finality unknown — caller treats as unfinalized
 	}

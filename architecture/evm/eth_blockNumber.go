@@ -28,7 +28,7 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 	if tip <= 0 {
 		return false, nil, nil
 	}
-	common.EvmRefreshLatestBlock(network, ctx)
+	common.EvmRefreshHead(network, ctx, false)
 	hex, err := common.NormalizeHex(tip)
 	if err != nil {
 		return true, nil, err

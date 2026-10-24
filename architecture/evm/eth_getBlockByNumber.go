@@ -12,13 +12,16 @@ import (
 )
 
 // networkPreForward_eth_getBlockByNumber asks the voters' pollers for a
-// debounced background refresh when the request asks for "latest" or
-// "finalized" (spec §7 family 2), as eth_blockNumber does: the tag is
-// interpolated to the request's Head, and the next request reads a fresher one.
+// debounced background refresh of the axis the request's "latest" or
+// "finalized" tag names (spec §7 family 2), as eth_blockNumber does: the
+// tag is interpolated to the request's Head, and the next request reads a
+// fresher one.
 func networkPreForward_eth_getBlockByNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
 	switch requestBlockTag(ctx, nq) {
-	case "latest", "finalized":
-		common.EvmRefreshLatestBlock(network, ctx)
+	case "latest":
+		common.EvmRefreshHead(network, ctx, false)
+	case "finalized":
+		common.EvmRefreshHead(network, ctx, true)
 	}
 	return false, nil, nil
 }

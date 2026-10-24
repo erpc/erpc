@@ -133,7 +133,7 @@ func (m *mockNetwork) headAxis(method string, ctx context.Context) (v int64) {
 	return m.MethodCalled(method, ctx).Get(0).(int64)
 }
 
-func (m *mockNetwork) EvmRefreshLatestBlock(ctx context.Context) {}
+func (m *mockNetwork) EvmRefreshHead(ctx context.Context, finalized bool) {}
 
 var _ common.EvmUpstream = (*mockEvmUpstream)(nil)
 
@@ -1764,6 +1764,7 @@ type fixedPoller struct {
 
 func (p *fixedPoller) LatestBlock() int64                     { return p.latest }
 func (p *fixedPoller) RefreshLatestBlock()                    {}
+func (p *fixedPoller) RefreshFinalizedBlock()                 {}
 func (p *fixedPoller) LatestReport() (int64, time.Time, bool) { return 0, time.Time{}, false }
 
 func (p *fixedPoller) FinalizedBlock() int64 { return p.finalized }

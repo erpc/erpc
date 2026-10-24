@@ -41,10 +41,10 @@ type EvmNetwork interface {
 	// being the network-wide lane, materialized from selector on first use:
 	// for readers bound to a lane, not to a request (spec §6.4, §6.5).
 	EvmLaneHead(groupKey, selector string) EvmHead
-	// EvmRefreshLatestBlock asks the pollers of the request's latest-head
-	// ballot for a fresh head in the background (see
-	// EvmStatePoller.RefreshLatestBlock); it never blocks.
-	EvmRefreshLatestBlock(ctx context.Context)
+	// EvmRefreshHead asks the pollers of the request's head ballot, its
+	// finalized axis when finalized is set, for a fresh head in the
+	// background (see EvmStatePoller.RefreshLatestBlock); it never blocks.
+	EvmRefreshHead(ctx context.Context, finalized bool)
 }
 
 // EvmHead is one lane's head (spec §6.4), published as one value. The zero
@@ -220,11 +220,10 @@ func EvmHeadOf(n Network, ctx context.Context, req *NormalizedRequest) EvmHead {
 	return EvmHead{}
 }
 
-// EvmRefreshLatestBlock calls EvmNetwork.EvmRefreshLatestBlock when n is an
-// EVM network.
-func EvmRefreshLatestBlock(n Network, ctx context.Context) {
+// EvmRefreshHead calls EvmNetwork.EvmRefreshHead when n is an EVM network.
+func EvmRefreshHead(n Network, ctx context.Context, finalized bool) {
 	if e, ok := n.(EvmNetwork); ok {
-		e.EvmRefreshLatestBlock(ctx)
+		e.EvmRefreshHead(ctx, finalized)
 	}
 }
 

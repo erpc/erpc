@@ -480,7 +480,9 @@ func p7() spec {
 
 // requireFinalizedTag reads the finalized tag on pod between two
 // eth_blockNumber reads; it is Latest − FinalizedLag, the finalized every
-// vendor but http-b reports. It returns the answered block.
+// vendor but http-b reports, as fresh as the voters' finalized polls: the
+// tag refreshes them, at most once per finalized debounce, so it may
+// trail by up to W (§6.8 #1265). It returns the answered block.
 func (s *scenario) requireFinalizedTag(pod int) *chainsim.Block {
 	var before, after hexutil.Uint64
 	err1 := s.call(pod, &before, "eth_blockNumber")
@@ -492,8 +494,8 @@ func (s *scenario) requireFinalizedTag(pod int) *chainsim.Block {
 		s.violate(s.name, "pod-%d: eth_blockNumber: %v, %v", pod+1, err1, err2)
 	case b == nil:
 		s.violate(s.name, "pod-%d: eth_getBlockByNumber(finalized) answered %s", pod+1, got)
-	case b.Number+chainsim.FinalizedLag < uint64(before) || b.Number+chainsim.FinalizedLag > uint64(after):
-		s.violate(s.name, "pod-%d: finalized is %d; Head.Finalized is Latest − %d, Latest %d…%d", pod+1, b.Number, chainsim.FinalizedLag, before, after)
+	case b.Number+chainsim.FinalizedLag+uint64(liveBound/blockTime) < uint64(before) || b.Number+chainsim.FinalizedLag > uint64(after):
+		s.violate(s.name, "pod-%d: finalized is %d; Head.Finalized is Latest − %d, at most W behind, Latest %d…%d", pod+1, b.Number, chainsim.FinalizedLag, before, after)
 	}
 	return b
 }

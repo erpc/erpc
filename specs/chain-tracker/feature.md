@@ -385,7 +385,7 @@ Refusal rule, for block N on a request:
 Finality:
 
 - Reads: N is final when N ≤ `Head.Finalized`. The `finalized` tag, cache hits, labels, integrity `IsFinalized`, narrow anchors and empty-result confidence read it.
-- Permanent cache writes: N ≤ `Head.Finalized` and N ≤ the serving upstream's own finalized (#90). An upstream on a minority fork cannot write a permanent entry.
+- Permanent cache writes: N ≤ `Head.Finalized` and N ≤ the serving upstream's own finalized (#90): its polls of the `finalized` tag and its answers to a tag it was sent, never an interpolated request it served. An upstream on a minority fork cannot write a permanent entry.
 - Per-upstream finality stays per upstream for routing (`upstream/evm_upstream_ops.go`, `EvmStatePoller`): a routing fact, not a head.
 - The cache write guard reads the network-wide lane's `Latest`, whatever lane the request used (#932).
 
@@ -470,6 +470,7 @@ Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, th
 | refusal band and stale ceiling (§6.4) | number |
 | `eth_blockNumber`, `eth_getBlockByNumber(latest\|finalized)` pre-forward refresh | number |
 | settle: voters without a fresh hash vote, then non-voters, up to 3 | hash |
+| a numbered read above `Head.Finalized` (§6.4 Finality), the finalized axis, at most once per finalized debounce | number |
 | no hash voter, with demand (§6.5 rule 6) | hash |
 
 - An upstream that rejects `latest` 10 times stops being a poll source until the 10-min re-check.

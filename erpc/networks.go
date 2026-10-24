@@ -789,13 +789,14 @@ func isSimpleGroupSelector(selector string) bool {
 	return true
 }
 
-// EvmRefreshLatestBlock asks the pollers that decide the request's latest head
-// for a background refresh: in routing order, only as many of the ballot's
-// voters (its best tipVoterRank) as the quorum needs, since a fresher head
-// anywhere else cannot move the served value. Two passes over the candidates,
-// counting then refreshing, keep a hot path such as eth_blockNumber free of
+// EvmRefreshHead asks the pollers that decide the request's head, its
+// finalized axis when finalized is set, for a background refresh: in
+// routing order, only as many of the ballot's voters (its best
+// tipVoterRank) as the quorum needs, since a fresher head anywhere else
+// cannot move the served value. Two passes over the candidates, counting
+// then refreshing, keep a hot path such as eth_blockNumber free of
 // allocation.
-func (n *Network) EvmRefreshLatestBlock(ctx context.Context) {
+func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 	best, voters := -1, 0
 	for u := range n.EvmRoutableUpstreams(ctx) {
 		if _, rank, ok := tipVoterRank(u, false, n.metricsTracker); ok {
@@ -817,7 +818,11 @@ func (n *Network) EvmRefreshLatestBlock(ctx context.Context) {
 	need := q.Of(voters)
 	for u := range n.EvmRoutableUpstreams(ctx) {
 		if _, rank, ok := tipVoterRank(u, false, n.metricsTracker); ok && rank == best {
-			u.(common.EvmUpstream).EvmStatePoller().RefreshLatestBlock()
+			if sp := u.(common.EvmUpstream).EvmStatePoller(); finalized {
+				sp.RefreshFinalizedBlock()
+			} else {
+				sp.RefreshLatestBlock()
+			}
 			if need--; need == 0 {
 				return
 			}
@@ -1522,43 +1527,6 @@ func (n *Network) observeServedTipMetrics(axis string, laneLabel string, tip, fr
 			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
 			Set(advanceAge.Seconds())
 	}
-}
-
-func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
-	ctx, span := common.StartDetailSpan(ctx, "Network.EvmLowestFinalizedBlockNumber", trace.WithAttributes(
-		attribute.String("network.id", n.networkId),
-	))
-	defer span.End()
-
-	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	var minBlock int64 = 0
-	var initialized bool = false
-
-	for _, u := range upstreams {
-		statePoller := u.EvmStatePoller()
-		if statePoller == nil {
-			continue
-		}
-
-		// Check if the node is syncing - skip syncing nodes as their block numbers may be unreliable
-		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
-			n.logger.Debug().Str("upstreamId", u.Id()).Msg("skipping syncing upstream for lowest finalized block calculation")
-			continue
-		}
-
-		// Use effective finalized block which considers blockAvailability.upper config
-		upBlock := u.EvmEffectiveFinalizedBlock()
-		// Skip upstreams that haven't determined finalized block yet (returning 0)
-		if upBlock > 0 {
-			if !initialized || upBlock < minBlock {
-				minBlock = upBlock
-				initialized = true
-			}
-		}
-	}
-
-	span.SetAttributes(attribute.Int64("lowest_finalized_block", minBlock))
-	return minBlock
 }
 
 func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *networkExecutor {
@@ -2768,58 +2736,38 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 		return finality
 	}
 
-	if blockNumber > 0 {
-		// Try response's upstream first (direct upstream responses)
-		if resp != nil {
-			upstream := resp.Upstream()
-			if upstream != nil {
-				if ups, ok := upstream.(common.EvmUpstream); ok {
-					if isFinalized, err := ups.EvmIsBlockFinalized(ctx, blockNumber, false); err == nil {
-						if isFinalized {
-							finality = common.DataFinalityStateFinalized
-						} else {
-							finality = common.DataFinalityStateUnfinalized
-						}
-						return finality
-					}
-				}
-			}
-		}
-
-		// Try LastUpstream from the request (retries or subsequent attempts)
-		if upstream := req.LastUpstream(); upstream != nil {
-			if ups, ok := upstream.(common.EvmUpstream); ok {
-				if isFinalized, err := ups.EvmIsBlockFinalized(ctx, blockNumber, false); err == nil {
-					if isFinalized {
-						finality = common.DataFinalityStateFinalized
-					} else {
-						finality = common.DataFinalityStateUnfinalized
-					}
-					return finality
-				}
-			}
-		}
-
-		// Fallback: use the network's lowest finalized block as a heuristic.
-		// This is the primary path for cache hits where no upstream is available.
-		if n.upstreamsRegistry != nil {
-			lowestFinalized := n.EvmLowestFinalizedBlockNumber(ctx)
-			if lowestFinalized > 0 {
-				if blockNumber <= lowestFinalized {
-					finality = common.DataFinalityStateFinalized
-				} else {
-					finality = common.DataFinalityStateUnfinalized
-				}
-				span.SetAttributes(
-					attribute.Bool("used_network_finalized_heuristic", true),
-					attribute.Int64("lowest_finalized", lowestFinalized),
-				)
-			}
-		}
-		// If we still can't determine, it remains unknown
+	if blockNumber <= 0 {
+		return finality
 	}
-
-	return finality
+	// Reads decide on the request's Head.Finalized (spec §6.4). An answer
+	// from an upstream is final only when that upstream has finalized the
+	// block too (#90) and is not on a minority fork (§6.3), so neither
+	// makes a permanent cache entry.
+	fin := n.EvmHead(ctx, req).Finalized
+	span.SetAttributes(attribute.Int64("head.finalized", fin))
+	if blockNumber > fin {
+		// A fresher finalized may cover the block: a read above it
+		// refreshes the voters' finalized, at most once per finalized
+		// debounce (§6.8 #1265).
+		n.EvmRefreshHead(ctx, true)
+		if fin <= 0 {
+			return finality
+		}
+		return common.DataFinalityStateUnfinalized
+	}
+	if resp != nil {
+		if u := resp.Upstream(); u != nil {
+			if n.isForkDemoted(u) {
+				return common.DataFinalityStateUnfinalized
+			}
+			if ups, ok := u.(common.EvmUpstream); ok {
+				if final, err := ups.EvmIsBlockFinalized(ctx, blockNumber, false); err != nil || !final {
+					return common.DataFinalityStateUnfinalized
+				}
+			}
+		}
+	}
+	return common.DataFinalityStateFinalized
 }
 
 func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req *common.NormalizedRequest, skipCacheRead, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
@@ -3453,38 +3401,24 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 	case common.ArchitectureEvm:
 		// TODO Move the logic to evm package as a post-forward hook?
 		if method == "eth_getBlockByNumber" {
-			// Prefer the original block reference preserved by normalization.
-			// This stays "latest"/"finalized" even if params were interpolated to hex.
-			var blkTag string
-			if ref := req.EvmBlockRef(); ref != nil {
-				if s, ok := ref.(string); ok && (s == "latest" || s == "finalized") {
-					blkTag = s
+			// sentTag is the tag the upstream resolved itself; blkTag the
+			// request's own, which normalization keeps when it interpolates
+			// the params to Head's number.
+			jrq, err := req.JsonRpcRequest(ctx)
+			if err != nil {
+				return
+			}
+			var sentTag string
+			jrq.RLock()
+			if len(jrq.Params) > 0 {
+				if s, ok := jrq.Params[0].(string); ok && (s == "latest" || s == "finalized") {
+					sentTag = s
 				}
 			}
-			if lg := n.logger; lg != nil && lg.GetLevel() <= zerolog.TraceLevel {
-				lg.Trace().
-					Str("blkTagFromEvmBlockRef", blkTag).
-					Interface("evmBlockRefRaw", req.EvmBlockRef()).
-					Msg("enrichStatePoller: resolved block tag from request EvmBlockRef")
-			}
-			// Fallback to inspecting the request param only if we couldn't resolve from EvmBlockRef
-			if blkTag == "" {
-				jrq, err := req.JsonRpcRequest(ctx)
-				if err != nil {
-					return
-				}
-				jrq.RLock()
-				if len(jrq.Params) > 0 {
-					if s, ok := jrq.Params[0].(string); ok && (s == "latest" || s == "finalized") {
-						blkTag = s
-					}
-				}
-				jrq.RUnlock()
-				if lg := n.logger; lg != nil {
-					lg.Trace().
-						Str("blkTagFromParams", blkTag).
-						Msg("enrichStatePoller: resolved block tag from request params")
-				}
+			jrq.RUnlock()
+			blkTag := sentTag
+			if s, ok := req.EvmBlockRef().(string); ok && (s == "latest" || s == "finalized") {
+				blkTag = s
 			}
 			if blkTag == "" {
 				return
@@ -3510,7 +3444,14 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 					// These methods are non-blocking and handle async updates internally
 					switch blkTag {
 					case "finalized":
-						ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
+						// Only the upstream's own answer to the tag is its
+						// finalized: an interpolated request asked for
+						// Head.Finalized, eRPC's number, and serving that block
+						// says nothing of what this upstream finalized (spec
+						// §6.4, #90).
+						if sentTag == "finalized" {
+							ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
+						}
 					case "latest":
 						ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
 						// An answer, never a vote: held by the tracker of

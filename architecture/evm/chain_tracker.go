@@ -2618,20 +2618,19 @@ type blockAnchorLite struct {
 }
 
 // observeNarrowView feeds finalized anchors from a narrow response
-// (receipts/tx), judged against the serving upstream's finalized height.
+// (receipts/tx), judged against the lane's Head.Finalized (spec §6.5).
 func observeNarrowView(ctx context.Context, t *ChainTracker, u common.Upstream, rs *common.NormalizedResponse) {
 	if t == nil || rs == nil {
 		return
 	}
-	eu, ok := u.(common.EvmUpstream)
-	if !ok {
+	if _, ok := u.(common.EvmUpstream); !ok {
 		return
 	}
 	jrr, err := rs.JsonRpcResponse(ctx)
 	if err != nil || jrr == nil {
 		return
 	}
-	t.observeNarrowAnchors(eu.EvmEffectiveFinalizedBlock(), vendorKey(u), jrr.GetResultBytes())
+	t.observeNarrowAnchors(t.finalizedHead(), vendorKey(u), jrr.GetResultBytes())
 }
 
 // observeNarrowAnchors records number→hash anchors from vendor's narrow
