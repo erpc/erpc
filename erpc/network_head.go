@@ -386,7 +386,7 @@ func (n *Network) EvmAskStale(ctx context.Context, selector string) (ceiling int
 			}
 		}
 	}
-	n.awaitPolls(ctx, n.ask(selector, stale))
+	n.awaitPolls(ctx, n.ask(selector, stale), bt)
 	return n.laneCeiling(selector)
 }
 
@@ -471,18 +471,19 @@ func (n *Network) recoverAskPanic(sel string) {
 }
 
 // awaitBandAsk joins the band's Ask of selector sel's lane for block
-// (askBand) and waits for its polls (awaitPolls), so the band's retry
-// orders upstreams on the heads it brings (spec §6.4).
+// (askBand) and waits for its polls until they answer, at most W (spec
+// §6.4): a poll over a slow link takes longer than 1 bt, and the band's
+// retry orders upstreams on the heads it brings.
 func (n *Network) awaitBandAsk(ctx context.Context, sel string, block int64) {
-	n.awaitPolls(ctx, n.askBand(sel, block))
+	n.awaitPolls(ctx, n.askBand(sel, block), health.FreshnessWindow(n.EvmBlockTime()))
 }
 
-// awaitPolls waits for polls, at most 1 bt or until ctx ends.
-func (n *Network) awaitPolls(ctx context.Context, polls []<-chan struct{}) {
+// awaitPolls waits for polls, at most limit or until ctx ends.
+func (n *Network) awaitPolls(ctx context.Context, polls []<-chan struct{}, limit time.Duration) {
 	if len(polls) == 0 {
 		return
 	}
-	timer := time.NewTimer(n.blockTimeOrCold())
+	timer := time.NewTimer(limit)
 	defer timer.Stop()
 	for _, p := range polls {
 		select {

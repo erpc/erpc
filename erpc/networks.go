@@ -947,7 +947,7 @@ func (n *Network) countRefusal(ctx context.Context, req *common.NormalizedReques
 		} else {
 			n.countHeadRefusal("served")
 		}
-	case err != nil && !common.HasErrorCode(err, common.ErrCodeEndpointMissingData):
+	case err != nil && !missingDataErr(err):
 	case v.Rule == common.HeadBand:
 		n.countHeadRefusal("retried_missing")
 	case v.Rule == common.HeadFuture:
@@ -957,6 +957,12 @@ func (n *Network) countRefusal(ctx context.Context, req *common.NormalizedReques
 
 func (n *Network) countHeadRefusal(rule string) {
 	telemetry.CounterHandle(telemetry.MetricHeadRefusalTotal, n.projectId, n.Label(), rule).Inc()
+}
+
+// missingDataErr reports whether err says an upstream lacks the block
+// (spec §6.4): a missing-data error, or a range refused per upstream.
+func missingDataErr(err error) bool {
+	return common.HasErrorCode(err, common.ErrCodeEndpointMissingData, common.ErrCodeUpstreamBlockUnavailable)
 }
 
 // guardServedTipRegression returns the tip to serve for `pick`, substituting the
@@ -2225,14 +2231,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// client as the upstream gave it.
 				refusal := effectiveReq.HeadRefusal()
 				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && isEmptyNetworkResult(method, r)
-				missing := emptyAnswer || common.HasErrorCode(err, common.ErrCodeEndpointMissingData)
+				missing := emptyAnswer || missingDataErr(err)
 				finalEmpty := false
 				if refusal.AboveLatest() && missing {
 					switch refusal.Miss(leg) {
 					case common.MissRetry:
 						if refusal.Rule == common.HeadBand {
-							// The retry waits for the band's Ask, at most
-							// 1 bt, and orders on the heads it brings.
+							// The retry waits for the band's Ask until it
+							// answers, at most W, and orders on the heads
+							// it brings.
 							sel := ""
 							if d := effectiveReq.Directives(); d != nil {
 								sel = d.UseUpstream
