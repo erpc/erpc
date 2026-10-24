@@ -10,6 +10,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/util"
 	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -608,9 +609,17 @@ func TestEvmJsonRpcCache_FanOut_MissReasonLabel(t *testing.T) {
 			name:     "StaleEntryTripsFreshnessGuard",
 			policies: realtimeFanOutPolicies,
 			request: func(t *testing.T, network *Network, cache common.CacheDAL) *common.NormalizedRequest {
+				// A "latest" tag is keyed on the number its Head interpolates
+				// it to, never on the word (spec §7), so the method
+				// translates the tag, and the request carries the Head
+				// Network.Forward takes before the cache read.
+				getBlock := *common.FindDefaultCacheMethodConfig("eth_getBlockByNumber")
+				getBlock.TranslateLatestTag = util.BoolPtr(true)
+				network.cfg.Methods = &common.MethodsConfig{Definitions: map[string]*common.CacheMethodConfig{"eth_getBlockByNumber": &getBlock}}
 				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
 				req.SetNetwork(network)
 				req.SetCacheDal(cache)
+				req.TakeEvmHead(&common.EvmHead{Latest: 15, Finalized: 10})
 				return req
 			},
 			arrange: func(t *testing.T, conns []*data.MockConnector, _ *common.NormalizedRequest) {
