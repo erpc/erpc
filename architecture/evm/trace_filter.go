@@ -89,9 +89,12 @@ func projectPreForward_trace_filter(ctx context.Context, n common.Network, nq *c
 	tbStr, _ := filter["toBlock"].(string)
 	jrq.RUnlock()
 
-	// Reuse the getLogs tag resolver since trace_filter uses the same fromBlock/toBlock semantics.
-	_, fromBlock := resolveBlockTagForGetLogs(ctx, n, fbStr)
-	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tbStr)
+	// Reuse the getLogs tag resolver since trace_filter uses the same
+	// fromBlock/toBlock semantics, on the Head the request takes from its
+	// lane, as projectPreForward_eth_getLogs does.
+	headCtx := context.WithValue(ctx, common.RequestContextKey, nq)
+	_, fromBlock := resolveBlockTagForGetLogs(headCtx, n, fbStr)
+	_, toBlock := resolveBlockTagForGetLogs(headCtx, n, tbStr)
 
 	if fromBlock > 0 && toBlock >= fromBlock {
 		rangeSize := float64(toBlock - fromBlock + 1)
