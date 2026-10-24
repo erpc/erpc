@@ -365,7 +365,7 @@ One `Head` per (network, lane). It is computed when an upstream head changes (lo
 | `Latest` | q-th highest voter number; caps, regression guard (1024 blocks, 60s, per instance) and guarantees (`servedTip.guaranteedFor`, `guaranteedMethods`) apply as today |
 | `Finalized` | the same ballot over voters' finalized numbers; a voter without a finalized tag reports latest − the derived depth (at least 30 min of chain, #1079) |
 | `Leader` | the highest voter within `Latest + maxRetryableBlockDistance` |
-| ceiling | raw max of the reports of the lane's registered upstreams, minus upstreams cordoned for chain identity or whose polls are failing (§6.1); `OldestReportAt` = the local receive time of the oldest of those reports |
+| ceiling | raw max of the reports of the lane's registered upstreams, minus upstreams cordoned for chain identity or whose polls are failing (§6.1); `OldestReportAt` = the oldest time at which those reports' evidence was taken: a poll's request send time (its answer can show no later head than the node had then), a push's receive time |
 
 - A lane is one use-upstream group, at most 16 per network. A selector without a lane (`partitionKeyFor` returns `""`) keeps the stateless pick: the same rules, computed for that request.
 - Nothing is persisted or shared as a served value: a rogue value cannot spread to every instance or freeze `Latest` (#924).
@@ -1091,6 +1091,7 @@ One home per fact:
 - `eth_getBlockByNumber("finalized")` answers block `Finalized`, which trails up to 5% of the finality window.
 - A request just above `Latest` costs one extra upstream call for an empty answer. Above the ceiling, every upstream whose report is older than 1 bt is Asked first: head+1 polling polls slow upstreams up to once per bt per instance, only while clients ask above the head.
 - `eth_blockNumber` on another instance may trail a sent head by one poll; the block itself loads.
+- Without shared state, a lane whose voters all push over links slower than another instance's by more than 1 bt can call a block that instance sent "future": a push carries no send time to age it by.
 - A by-hash lookup of a block above `Latest` waits up to 1 bt.
 - Absent block params read as `latest`: the JSON-RPC default; now cacheable and consistent across upstreams.
 - A voter benched by number age can step `Latest` back by one block; the block itself still loads.
