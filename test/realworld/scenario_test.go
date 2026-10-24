@@ -1,12 +1,12 @@
 package realworld
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/test/chainsim"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -786,26 +787,48 @@ func (s *scenario) finish() {
 }
 
 // finalHead is the last head a client on use-upstream selector sel can get
-// after the halt at tip: the network-wide lane's is tip; a lane's is the
-// highest head its vendors serve (§6.5: a lane sends no block above its
-// Latest), so a lane whose vendors all lag stops below tip.
+// after the halt at tip: the network-wide lane's is tip; a lane's is its
+// Latest, the q-th highest head of the vendors behind the upstreams its
+// selector matches (§6.4; §6.5: a lane sends no block above its Latest),
+// so a lane whose vendors lag stops below tip.
 func (s *scenario) finalHead(sel string, tip *chainsim.Block) *chainsim.Block {
 	if sel == "" {
 		return tip
 	}
-	var final *chainsim.Block
+	var heads []*chainsim.Block
 	for key, v := range s.vendors {
-		if ok, _ := path.Match(sel, s.upstream(key)); !ok {
-			continue
+		ok, err := common.MatchesSelector(sel, s.upstream(key), s.tags[key])
+		if err != nil {
+			s.t.Fatalf("selector %q of %s: %v", sel, s.name, err)
 		}
-		if h := v.Head(); h != nil && (final == nil || h.Number > final.Number) {
-			final = h
+		if h := v.Head(); ok && h != nil {
+			heads = append(heads, h)
 		}
 	}
-	if final == nil {
+	if len(heads) == 0 {
 		s.t.Fatalf("selector %q matches no vendor of %s", sel, s.name)
 	}
-	return final
+	slices.SortFunc(heads, func(a, b *chainsim.Block) int { return cmp.Compare(b.Number, a.Number) })
+	return heads[s.servedTipQuorum().Of(len(heads))-1]
+}
+
+// servedTipQuorum is the scenario network's servedTip.quorum, parsed as
+// eRPC parses it.
+func (s *scenario) servedTipQuorum() common.ServedTipQuorum {
+	var evm struct {
+		ServedTip *common.EvmServedTipConfig `json:"servedTip"`
+	}
+	raw, err := json.Marshal(s.net.evm)
+	if err == nil {
+		err = json.Unmarshal(raw, &evm)
+	}
+	if err != nil {
+		s.t.Fatalf("servedTip of %s: %v", s.name, err)
+	}
+	if evm.ServedTip == nil {
+		return 0
+	}
+	return evm.ServedTip.Quorum
 }
 
 // judge applies the end-of-run oracle and fails the scenario with its
