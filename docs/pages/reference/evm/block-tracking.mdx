@@ -205,7 +205,7 @@ With a `use-upstream` selector, `EvmRoutableUpstreams` narrows the candidates to
 **`IsBlockFinalized` decision tree:**
 1. Both `finalizedBlock == 0` and `latestBlock == 0` → `ErrFinalizedBlockUnavailable`.
 2. `finalizedBlock > 0` → `blockNumber ≤ finalizedBlock`.
-3. `finalizedBlock == 0` and `latestBlock > 0` → infer `finalizedBlock = latestBlock − FallbackFinalityDepth` (default 1024) and compare.
+3. `finalizedBlock == 0` and `latestBlock > 0` → infer `finalizedBlock = latestBlock − depth`, the deeper of `FallbackFinalityDepth` (default 1024) and 30 minutes of chain, and compare. The 30 minutes count at the block time floor: the shorter of the EMA and what the blocks seen since start, or since the last halt, allow, so an estimate running long at a cold start never shortens them; 1s while the block time is unknown. `FinalizedBlock()` reports the same inferred value, so it is also the upstream's vote for `Head.Finalized`.
 
 **Earliest block detection.** When `blockAvailability.lower.earliestBlockPlus` is configured, `binarySearchEarliest` finds the first block in `[0, latestBlock]` where a probe RPC call returns data. Probe types: `blockHeader` (`eth_getBlockByNumber`), `eventLogs` (`eth_getLogs`, requires ≥1 log entry), `callState` (`eth_getBalance`), `traceData` (tries `trace_block`, `debug_traceBlockByHash`, `trace_replayBlockTransactions` in order). Results are stored in cross-pod shared counters. If `blockAvailability.*.updateRate` is set, a scheduler goroutine re-runs the search at that interval.
 

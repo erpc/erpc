@@ -139,6 +139,14 @@ type NetworkMetadata struct {
 	// evmBlockTimeSpanStart: prev is a timestamp change, so a sample may
 	// span from it.
 	evmBlockTimeSpanStart bool
+	// evmBlockTimeFloor is the shortest average block time the blocks fed
+	// since the anchor allow, in nanoseconds: integer timestamps truncate
+	// each end by under 1s, so (Δts − 1s) / Δblocks. 0 until the span
+	// covers 2s. The anchor is the timestamp change the spans start from,
+	// set again after a rollback or a halt.
+	evmBlockTimeFloor           atomic.Int64
+	evmBlockTimeAnchorBlock     int64
+	evmBlockTimeAnchorTimestamp int64
 }
 
 type Timer struct {
@@ -2237,12 +2245,12 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 }
 
 // sampleBlockTime feeds a block's on-chain timestamp (integer seconds) into
-// m's block time EMA and reports whether it stored a new evmBlockTime (spec
-// §6.7). A sample spans two observations whose timestamps differ: seconds
-// elapsed over blocks elapsed. Blocks that share a timestamp extend the
-// span, so integer-second timestamps need no special case. The first block
-// seen may sit anywhere in its second, so spans start at the first
-// timestamp change after it; the first sample seeds the EMA.
+// m's block time EMA and floor, and reports whether it stored a new
+// evmBlockTime (spec §6.7). A sample spans two observations whose
+// timestamps differ: seconds elapsed over blocks elapsed. Blocks that share
+// a timestamp extend the span, so integer-second timestamps need no special
+// case. The first block seen may sit anywhere in its second, so spans start
+// at the first timestamp change after it; the first sample seeds the EMA.
 func (m *NetworkMetadata) sampleBlockTime(blockNumber int64, blockTimestamp int64) bool {
 	m.evmBlockTimeMu.Lock()
 	defer m.evmBlockTimeMu.Unlock()
@@ -2272,6 +2280,7 @@ func (m *NetworkMetadata) sampleBlockTime(blockNumber int64, blockTimestamp int6
 	m.evmBlockTimePrevBlock, m.evmBlockTimePrevTimestamp = blockNumber, blockTimestamp
 	m.evmBlockTimeSpanStart = true
 	if !spanned {
+		m.evmBlockTimeAnchorBlock, m.evmBlockTimeAnchorTimestamp = blockNumber, blockTimestamp
 		return false
 	}
 
@@ -2280,11 +2289,19 @@ func (m *NetworkMetadata) sampleBlockTime(blockNumber int64, blockTimestamp int6
 		m.evmBlockTimeEmaNs = sampleNs
 	} else {
 		// One span across a halt counts as 3× the EMA, so it never sets W
-		// to its cap (spec §6.7).
-		sampleNs = min(sampleNs, blockTimeSampleCap*m.evmBlockTimeEmaNs)
+		// to its cap (spec §6.7). The floor restarts at its end: a pause
+		// adds seconds without blocks, so an average across it overstates
+		// the block time while blocks are made.
+		if halt := blockTimeSampleCap * m.evmBlockTimeEmaNs; sampleNs > halt {
+			sampleNs = halt
+			m.evmBlockTimeAnchorBlock, m.evmBlockTimeAnchorTimestamp = blockNumber, blockTimestamp
+		}
 		m.evmBlockTimeEmaNs = blockTimeEmaAlpha*sampleNs + (1-blockTimeEmaAlpha)*m.evmBlockTimeEmaNs
 	}
 	m.evmBlockTimeSamples++
+	if dts, dn := blockTimestamp-m.evmBlockTimeAnchorTimestamp, blockNumber-m.evmBlockTimeAnchorBlock; dts >= 2 && dn > 0 {
+		m.evmBlockTimeFloor.Store((dts - 1) * int64(time.Second) / dn)
+	}
 
 	if !m.storeBlockTime(int64(m.evmBlockTimeEmaNs)) {
 		// Reset the internal EMA to the last published value so that recovery
@@ -2320,6 +2337,19 @@ func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 	}
 
 	return 0
+}
+
+// GetNetworkBlockTimeFloor returns the shorter of the network's block time
+// EMA and its floor (evmBlockTimeFloor): a block time the evidence says the
+// chain's average is at least, for a reader that must never overestimate
+// it, as the derived finality depth (spec §6.4). 0 while both are unknown.
+func (t *Tracker) GetNetworkBlockTimeFloor(networkId string) time.Duration {
+	m := t.getMetadata(metadataKey{nil, networkId})
+	ema, floor := m.evmBlockTime.Load(), m.evmBlockTimeFloor.Load()
+	if floor > 0 && (ema <= 0 || floor < ema) {
+		return time.Duration(floor)
+	}
+	return time.Duration(ema)
 }
 
 // GetNetworkFinalizedBlock returns the network's corroborated finalized block

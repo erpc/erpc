@@ -1671,7 +1671,7 @@ func (e *EvmStatePoller) runPeriodicEarliestBlockBoundUpdateLoop(probe common.Ev
 	}
 }
 
-// fallbackFinalityMinAge is the minimum WALL-CLOCK age a block must reach
+// fallbackFinalityMinAge is the minimum age, in chain time, a block must reach
 // before the SYNTHETIC finalized head can cover it. It applies only on the
 // fallback path — when an upstream reports no finalized block at all — and only
 // ever DEEPENS the configured block depth, never shortens it.
@@ -1694,7 +1694,11 @@ const fallbackFinalityMinAge = 30 * time.Minute
 // chain progress. Taking the deeper of the two is what makes this safe to ship
 // unconditionally — the synthetic finalized head can only ever move further
 // from the tip, never closer, so no block becomes "final" earlier than it does
-// today. While the block time is unknown the configured count stands alone.
+// today. The age is counted at the network's block time floor, never above
+// the EMA, so an estimate running long, as one does at a cold start, cannot
+// make the depth shorter than fallbackFinalityMinAge (spec §6.4, §6.7). While
+// the block time is unknown the cold block time stands in, as for every
+// reader.
 func (e *EvmStatePoller) fallbackFinalityDepth() int64 {
 	e.stateMu.RLock()
 	depth := int64(common.DefaultEvmFinalityDepth)
@@ -1703,10 +1707,12 @@ func (e *EvmStatePoller) fallbackFinalityDepth() int64 {
 	}
 	e.stateMu.RUnlock()
 
-	if blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId()); blockTime > 0 {
-		if byAge := int64(fallbackFinalityMinAge / blockTime); byAge > depth {
-			depth = byAge
-		}
+	blockTime := e.tracker.GetNetworkBlockTimeFloor(e.upstream.NetworkId())
+	if blockTime <= 0 {
+		blockTime = health.ColdBlockTime
+	}
+	if byAge := int64((fallbackFinalityMinAge + blockTime - 1) / blockTime); byAge > depth {
+		depth = byAge
 	}
 	return depth
 }

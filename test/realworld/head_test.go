@@ -25,9 +25,10 @@ const (
 	// finalityMinAge: a voter without a finalized tag reports latest − the
 	// derived depth, at least 30 min of chain (§6.4 Finality, #1079).
 	finalityMinAge = 30 * time.Minute
-	// c13History covers finalityMinAge at 0.2s blocks even when the block
-	// time estimate runs 25% short (§6.7).
-	c13History = 12000
+	// c13History covers the derived depth at C13's first check, 5s into
+	// a pod's life: 30 min at the block time floor, (5s − 1s) / 25 blocks
+	// = 0.16s, is 11,250 blocks (§6.4, §6.7).
+	c13History = 15000
 	// c9BlockTime and coldHeaders: C9's chain, and the headers by which a
 	// cold instance's first block time sample lands: it spans the first two
 	// timestamp changes (§6.7; §19 C9). c9WatchHeaders: how long C9 checks
