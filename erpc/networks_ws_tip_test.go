@@ -768,13 +768,13 @@ func TestNetworkIntake_ReconnectOnHaltedChainRenewsVote(t *testing.T) {
 		return ok && v.Number == 1001
 	}, 5*time.Second, 10*time.Millisecond, "a-ws votes 1001")
 
-	network.intake.disconnected("a-ws")
+	aVendor.dropConns()
 	require.Eventually(t, func() bool {
 		s := network.hashStale.Load()
 		return s != nil && slices.Contains(*s, "a-ws")
-	}, 2*time.Second, 10*time.Millisecond, "a closed socket goes last in routing")
+	}, 5*time.Second, 10*time.Millisecond, "a closed socket goes last in routing")
 
-	network.intake.Polled("a-ws", head, evm.HeaderStreamed)
+	pushIntake{network.intake}.Header("a-ws", head)
 	require.Eventually(t, func() bool {
 		v, _ := network.intake.hashVote(byId["a-ws"])
 		return !v.Expired && network.hashStale.Load() == nil

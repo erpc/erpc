@@ -2378,6 +2378,16 @@ type mockWsVendor struct {
 	pendingSubscribes atomic.Int32
 	pendingMu         sync.Mutex
 	pendingSubs       map[string]*websocket.Conn // live newPendingTransactions subscriptions
+	conns             map[*websocket.Conn]struct{}
+}
+
+// dropConns closes every open socket of the vendor.
+func (v *mockWsVendor) dropConns() {
+	v.pendingMu.Lock()
+	defer v.pendingMu.Unlock()
+	for c := range v.conns {
+		_ = c.Close()
+	}
 }
 
 // pendingLive counts the vendor's live newPendingTransactions subscriptions.
@@ -2403,7 +2413,7 @@ func (v *mockWsVendor) pushTx(hash string) {
 
 func newMockWsVendor(t *testing.T, chain *mockChain, configure func(v *mockWsVendor)) (*mockWsVendor, string) {
 	t.Helper()
-	v := &mockWsVendor{chain: chain, pendingSubs: make(map[string]*websocket.Conn)}
+	v := &mockWsVendor{chain: chain, pendingSubs: make(map[string]*websocket.Conn), conns: make(map[*websocket.Conn]struct{})}
 	v.pushing.Store(true)
 	if configure != nil {
 		configure(v)
@@ -2412,8 +2422,12 @@ func newMockWsVendor(t *testing.T, chain *mockChain, configure func(v *mockWsVen
 	srv := mockWsUpstream(t, func(conn *websocket.Conn) {
 		done := make(chan struct{})
 		defer close(done)
+		v.pendingMu.Lock()
+		v.conns[conn] = struct{}{}
+		v.pendingMu.Unlock()
 		defer func() {
 			v.pendingMu.Lock()
+			delete(v.conns, conn)
 			for id, c := range v.pendingSubs {
 				if c == conn {
 					delete(v.pendingSubs, id)
@@ -2936,9 +2950,9 @@ func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 	// W is 3s: 3 × the mock's 1s block time.
 	w := 3 * time.Second
 	require.Eventually(t, func() bool { return fallback.latestPolls.Load() > stalled }, w+time.Second, 10*time.Millisecond,
-		"the fallback polls again once the primary is no hash voter")
+		"the fallback polls again once the primary stops streaming")
 	require.Eventually(t, pendingOn(1, 1), 10*time.Second, 10*time.Millisecond,
-		"the fallback subscribes newPendingTransactions again once the primary is no hash voter")
+		"the fallback subscribes newPendingTransactions again once the primary stops streaming")
 
 	chain.setGated(true)
 	chain.setPaused(false)
