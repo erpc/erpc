@@ -730,9 +730,12 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 		}
 		if n.cache {
 			network := fmt.Sprintf("evm:%d", n.chainID)
+			// eth_call(latest) is realtime (#560); its key is the number the
+			// request ran at, so P6 can hit it by that number.
 			policies = append(policies,
 				m{"network": network, "method": "*", "finality": "finalized", "connector": cacheFinal},
-				m{"network": network, "method": "*", "finality": "unfinalized", "connector": cacheRecent, "ttl": "1m"})
+				m{"network": network, "method": "*", "finality": "unfinalized", "connector": cacheRecent, "ttl": "1m"},
+				m{"network": network, "method": "eth_call", "finality": "realtime", "connector": cacheRecent, "ttl": "1m"})
 		}
 		for _, u := range n.ups {
 			up := m{"id": u.id, "endpoint": u.endpoint}

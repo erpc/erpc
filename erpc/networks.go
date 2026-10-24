@@ -2607,18 +2607,6 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	blockRef, blockNumber, _ := evm.ExtractBlockReferenceFromRequest(ctx, req)
-	// A latest/finalized tag the request's Head interpolates names that block
-	// (spec §7): its finality is the block's. A tag that reaches upstreams as
-	// is stays realtime.
-	interpolated := false
-	if blockRef == "latest" || blockRef == "finalized" {
-		if n := evm.TagBlockNumber(ctx, req, blockRef); n > 0 {
-			interpolated = true
-			if blockNumber <= 0 {
-				blockNumber = n
-			}
-		}
-	}
 
 	// When the request alone doesn't carry a block number (e.g. tx-hash lookups
 	// like eth_getTransactionReceipt, or block-hash lookups like eth_getBlockByHash),
@@ -2636,7 +2624,7 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 		return finality // unknown
 	}
 
-	if !interpolated && blockRef != "" && blockRef != "*" && (blockRef[0] < '0' || blockRef[0] > '9') {
+	if blockRef != "" && blockRef != "*" && (blockRef[0] < '0' || blockRef[0] > '9') {
 		finality = common.DataFinalityStateRealtime
 		return finality
 	}
