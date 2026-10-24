@@ -75,11 +75,10 @@ func EmptyResultBeyondConfidence(ctx context.Context, rq *common.NormalizedReque
 	if cfg == nil || cfg.Evm == nil {
 		return false
 	}
-	var head int64
+	h := common.EvmHeadOf(nw, ctx, rq)
+	head := h.Latest
 	if cfg.Evm.EmptyResultConfidence == common.AvailbilityConfidenceFinalized {
-		head = common.EvmHighestFinalizedBlockNumber(nw, ctx)
-	} else {
-		head = common.EvmHighestLatestBlockNumber(nw, ctx)
+		head = h.Finalized
 	}
 	if head <= 0 {
 		// Fail open: without a known head we cannot tell beyond-confidence from behind.

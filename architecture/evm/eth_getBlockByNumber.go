@@ -66,7 +66,7 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 
 					// Calculate block number lag
 					if common.IsTracingDetailed && bnErr == nil && respBlockNumber > 0 {
-						highestBlock := common.EvmHighestLatestBlockNumber(network, ctx)
+						highestBlock := common.EvmHeadOf(network, ctx, nq).Latest
 						blockNumberLag := highestBlock - respBlockNumber
 						if blockNumberLag < 0 {
 							blockNumberLag = 0
@@ -147,15 +147,13 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 		return nr, re
 	}
 
-	// Resolve tips with the request bound to the context so a use-upstream
-	// selector scopes the tip to the targeted subset (the selector-scoped
-	// served-tip semantics): a request pinned to a lagging group must not be
-	// re-forwarded towards a block that group cannot serve.
-	tipCtx := context.WithValue(ctx, common.RequestContextKey, nq)
+	// The request's own Head: a request pinned to a lagging group must not
+	// be re-forwarded towards a block that group cannot serve.
+	head := common.EvmHeadOf(network, ctx, nq)
 
 	switch bnp {
 	case "latest":
-		highestBlockNumber := common.EvmHighestLatestBlockNumber(network, tipCtx)
+		highestBlockNumber := head.Latest
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err
@@ -187,7 +185,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 		// it is requesting a very high non-existent block number.
 		return pickHighestBlock(ctx, nnr, nr, err)
 	case "finalized":
-		highestBlockNumber := common.EvmHighestFinalizedBlockNumber(network, tipCtx)
+		highestBlockNumber := head.Finalized
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err

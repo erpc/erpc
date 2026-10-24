@@ -53,16 +53,8 @@ func (t *testNetwork) Logger() *zerolog.Logger {
 	return &logger
 }
 
-func (t *testNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
-	return t.highestLatest
-}
-
-func (t *testNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
-	return 0
-}
-
-func (t *testNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream {
-	return nil
+func (t *testNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
+	return common.EvmHead{Latest: t.highestLatest}
 }
 
 func (t *testNetwork) EvmRefreshLatestBlock(ctx context.Context) {}
@@ -205,8 +197,8 @@ type tipFetchNetwork struct {
 	finalizedTip int64
 }
 
-func (n *tipFetchNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
-	return n.finalizedTip
+func (n *tipFetchNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
+	return common.EvmHead{Latest: n.highestLatest, Finalized: n.finalizedTip}
 }
 
 func (n *tipFetchNetwork) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -272,11 +264,14 @@ type refetchNetwork struct {
 	forwarded []string
 }
 
-func (n *refetchNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
-	if req, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest); ok && req.Directives().UseUpstream != "" {
-		return n.scopedTip
+func (n *refetchNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
+	if req == nil {
+		req, _ = ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
 	}
-	return n.highestLatest
+	if req != nil && req.Directives() != nil && req.Directives().UseUpstream != "" {
+		return common.EvmHead{Latest: n.scopedTip}
+	}
+	return common.EvmHead{Latest: n.highestLatest}
 }
 
 func (n *refetchNetwork) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {

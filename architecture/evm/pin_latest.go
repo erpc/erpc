@@ -83,13 +83,10 @@ func PinBlockTagInBody(body []byte, idx int, height int64) ([]byte, bool) {
 
 // PinLatestTag resolves what upstream u must receive for r when u sets
 // evm.pinLatestTag and r asks a pinnable method for latest: r's params with
-// the block selector set to height, the network head that "latest"
-// translation would use (resolveBlockTagToHex). pinned is false when u does
-// not pin r. pinned with height 0 means the head is unknown, and u must not be
-// sent "latest" at all.
-//
-// ctx must carry the request (common.RequestContextKey) so the head is the one
-// of the request's use-upstream group, as in translation.
+// the block selector set to height, r's Head.Latest, the number every attempt
+// and hedge of r uses (spec §7). pinned is false when u does not pin r.
+// pinned with height 0 means the head is unknown, and u must not be sent
+// "latest" at all.
 func PinLatestTag(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest) (params []interface{}, height int64, pinned bool) {
 	cfg := u.Config()
 	if cfg == nil || cfg.Evm == nil || cfg.Evm.PinLatestTag == nil || !*cfg.Evm.PinLatestTag {
@@ -106,7 +103,7 @@ func PinLatestTag(ctx context.Context, n common.Network, u common.Upstream, r *c
 	if !ok {
 		return nil, 0, false
 	}
-	height = common.EvmHighestLatestBlockNumber(n, ctx)
+	height = common.EvmHeadOf(n, ctx, r).Latest
 	if height <= 0 {
 		return nil, 0, true
 	}

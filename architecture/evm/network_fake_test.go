@@ -32,11 +32,9 @@ func (n *queryTestNetwork) Forward(ctx context.Context, req *common.NormalizedRe
 func (n *queryTestNetwork) GetFinality(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) common.DataFinalityState {
 	return common.DataFinalityStateFinalized
 }
-func (n *queryTestNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 { return n.latest }
-func (n *queryTestNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
-	return n.finalized
+func (n *queryTestNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
+	return common.EvmHead{Latest: n.latest, Finalized: n.finalized}
 }
-func (n *queryTestNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream { return nil }
 func (n *queryTestNetwork) EvmRefreshLatestBlock(ctx context.Context)             {}
 
 // queryTestConfigUpstream is a minimal common.Upstream with a given config.

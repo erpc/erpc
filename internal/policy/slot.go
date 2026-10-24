@@ -346,6 +346,9 @@ func (s *Slot) tickOnce() {
 	s.cache.Store(&ordered2)
 	excludedUps := materializeExcluded(ups, excluded)
 	s.excludedCache.Store(&excludedUps)
+	if len(decision.Diff.Added) > 0 || len(decision.Diff.Removed) > 0 {
+		s.engine.eligibleChanged(s.networkID)
+	}
 
 	// 6b. Reconcile this network's probe subsystem against the
 	// eval-emitted `__probeConfig`. Non-nil → create/update Prober;

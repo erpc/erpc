@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
-	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
 )
@@ -35,7 +34,7 @@ func (e wsWriteError) Error() string { return e.err.Error() }
 // error restart it after the head, so the client sees a jump in numbers,
 // as with geth, and never a silent subscription. lane, when set, holds
 // blocks above the connection's lane's Latest.
-func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane *common.NormalizedRequest) {
+func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane string) {
 	tracker := nw.chainTracker
 	window := uint64(tracker.ReorgWindow())
 	var feed *cutFeed

@@ -317,6 +317,8 @@ type Tracker struct {
 	metadata   sync.Map // map[common.Upstream]*NetworkMetadata
 	upsMetrics sync.Map // map[upsKey]*TrackedMetrics
 	ntwMetrics sync.Map // map[ntwKey]*TrackedMetrics
+	// benchHooks are the networks' bench-change callbacks (OnHeadBenchChange).
+	benchHooks sync.Map // map[networkId]func()
 
 	upstreamsByNetwork map[string][]upstreamKey // Track which upstreams belong to each network
 	mu                 sync.RWMutex             // Protect the map
@@ -1777,6 +1779,13 @@ func benchPlausibleLead(u *NetworkMetadata, now time.Time, blockTime time.Durati
 	return lead
 }
 
+// OnHeadBenchChange registers fn to run when an upstream of networkId is
+// benched or rejoins. fn runs under the network's head lock: it must not
+// block. One per network; a later one replaces it.
+func (t *Tracker) OnHeadBenchChange(networkId string, fn func()) {
+	t.benchHooks.Store(networkId, fn)
+}
+
 // IsHeadBenched reports whether the upstream's latest head is benched: it
 // stayed behind peers that kept advancing, and has not caught up since.
 // Benched heads are left out of the network lag reference and of the served-tip
@@ -2057,6 +2066,9 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	if membershipChanged {
 		// Bench membership also decides the finalized lag reference.
 		t.rederiveNetworkFinalized(ntwMeta, net, netLabel, &lg)
+		if fn, ok := t.benchHooks.Load(net); ok {
+			fn.(func())()
+		}
 	}
 
 	oldNtwVal := ntwMeta.evmLatestBlockNumber.Load()

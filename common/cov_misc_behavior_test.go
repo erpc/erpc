@@ -309,16 +309,15 @@ func TestCovMiscStaticResponse_ValueEquality(t *testing.T) {
 func TestCovMiscNetwork_EvmHelpersDegradeForNonEvm(t *testing.T) {
 	ctx := context.Background()
 	plain := &covMiscNetwork{id: "svm:mainnet-beta"}
-	assert.Zero(t, EvmHighestLatestBlockNumber(plain, ctx))
-	assert.Zero(t, EvmHighestFinalizedBlockNumber(plain, ctx))
-	assert.Nil(t, EvmLeaderUpstream(plain, ctx))
+	assert.Zero(t, EvmHeadOf(plain, ctx, nil))
 	EvmRefreshLatestBlock(plain, ctx) // must not panic
 
 	leader := NewFakeUpstream("leader")
 	evm := &covMiscEvmNetwork{covMiscNetwork: &covMiscNetwork{id: "evm:1"}, latest: 100, finalized: 90, leader: leader}
-	assert.Equal(t, int64(100), EvmHighestLatestBlockNumber(evm, ctx))
-	assert.Equal(t, int64(90), EvmHighestFinalizedBlockNumber(evm, ctx))
-	assert.Same(t, leader, EvmLeaderUpstream(evm, ctx))
+	head := EvmHeadOf(evm, ctx, nil)
+	assert.Equal(t, int64(100), head.Latest)
+	assert.Equal(t, int64(90), head.Finalized)
+	assert.Same(t, leader, head.Leader)
 	EvmRefreshLatestBlock(evm, ctx)
 	assert.Equal(t, int32(1), evm.refreshed.Load())
 }

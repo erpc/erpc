@@ -118,8 +118,8 @@ func TestHttpServer_GetBlockByNumberLatest_RefetchReachesTipUpstream(t *testing.
 	leader.EvmStatePoller().SuggestLatestBlock(tip)
 
 	require.Equal(t, tip, leader.EvmStatePoller().LatestBlock())
-	require.Equal(t, "rpc2", nw.EvmLeaderUpstream(context.Background()).Id())
-	require.Equal(t, tip, nw.EvmHighestLatestBlockNumber(context.Background()))
+	require.Equal(t, "rpc2", servedHead(nw, context.Background()).Leader.Id())
+	require.Equal(t, tip, servedHead(nw, context.Background()).Latest)
 
 	statusCode, _, body := sendRequest(`{
 		"jsonrpc": "2.0",
@@ -192,7 +192,7 @@ func TestHttpServer_GetBlockByNumber_NearTipPrefersTipUpstream(t *testing.T) {
 	// A major head jump applies only after an async chain-identity check.
 	leader.EvmStatePoller().SuggestLatestBlock(tip)
 	require.Eventually(t, func() bool { return leader.EvmStatePoller().LatestBlock() == tip }, 5*time.Second, 5*time.Millisecond)
-	require.Equal(t, "rpc2", nw.EvmLeaderUpstream(context.Background()).Id())
+	require.Equal(t, "rpc2", servedHead(nw, context.Background()).Leader.Id())
 
 	statusCode, _, body := sendRequest(`{
 		"jsonrpc": "2.0",

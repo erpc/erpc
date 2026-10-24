@@ -52,17 +52,16 @@ type ChainTracker struct {
 	ctx     context.Context
 	network common.Network
 	// selector is the use-upstream selector of a group tracker, "" for the
-	// network-wide one; group is its lane label.
+	// network-wide one; group is its lane label and groupKey its lane key.
 	selector string
 	group    string
+	groupKey string
 	window   int
 	// backfill is the chain time the network-wide tracker holds above its
 	// floor of window blocks (spec §8); 0 for group trackers.
-	backfill  time.Duration
-	finalized func() int64
-	// lane is a request carrying a group tracker's selector, for the
-	// network's head code to read the lane from; nil network-wide.
-	lane *common.NormalizedRequest
+	backfill time.Duration
+	// laneHead reads the lane's published Head; nil when the network has none.
+	laneHead func() common.EvmHead
 
 	mb    mailbox
 	state atomic.Pointer[feedState]
@@ -380,24 +379,21 @@ func (m *mailbox) take() []trackerMsg {
 	return q
 }
 
-func newChainTracker(ctx context.Context, n common.Network, window int, backfill time.Duration, selector, group string, finalized func() int64, fetch *fetchScheduler) *ChainTracker {
+func newChainTracker(ctx context.Context, n common.Network, window int, backfill time.Duration, selector, groupKey, group string, laneHead func() common.EvmHead, fetch *fetchScheduler) *ChainTracker {
 	t := &ChainTracker{
 		ctx:           ctx,
 		network:       n,
 		selector:      selector,
 		group:         group,
+		groupKey:      groupKey,
 		window:        window,
 		backfill:      backfill,
-		finalized:     finalized,
 		fetch:         fetch,
 		mb:            mailbox{wake: make(chan struct{}, 1)},
 		wants:         make(map[uint64]indexer.ReadOpts),
 		reconfirmedAt: make(map[int64]time.Time),
 	}
-	if selector != "" {
-		t.lane = common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
-		t.lane.SetDirectives(&common.RequestDirectives{UseUpstream: selector})
-	}
+	t.laneHead = laneHead
 	t.clear()
 	s := &feedState{changed: make(chan struct{}), backing: &pinBacking{}}
 	t.state.Store(s)
@@ -1263,11 +1259,11 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 		telemetry.MetricChainTrackerReorgDepth.WithLabelValues(t.projectId(), t.networkLabel(), t.group).
 			Observe(float64(reverted))
 	}
-	if fork == len(old)-1 || t.finalized == nil {
+	if fork == len(old)-1 {
 		return
 	}
 	lowest := old[fork+1].number
-	if fin := t.finalized(); fin > 0 && int64(lowest) <= fin {
+	if fin := t.finalizedHead(); fin > 0 && int64(lowest) <= fin {
 		log.Error().Str("network", t.networkLabel()).Str("group", t.group).
 			Uint64("revertedFrom", lowest).Int64("finalized", fin).Uint64("head", head.number).
 			Msg("chain tracker followed a majority branch that reverts a finalized block")
@@ -1535,9 +1531,9 @@ func (t *ChainTracker) gate(path []*node) *pinBacking {
 	t.catchUpAt = now.Add(min(t.BlockTime(), catchUpMax))
 	if capped {
 		if r, ok := t.network.(interface {
-			EvmRefreshHeadsBelow(context.Context, int64)
+			EvmRefreshHeadsBelow(string, int64)
 		}); ok {
-			t.callNetwork("catch-up", func() { r.EvmRefreshHeadsBelow(t.laneCtx(), int64(pin)) })
+			t.callNetwork("catch-up", func() { r.EvmRefreshHeadsBelow(t.selector, int64(pin)) })
 		}
 		return b
 	}
@@ -1565,22 +1561,21 @@ func maxTime(a, b time.Time) time.Time {
 // and one source alone never moves either (spec §6.5). Latest unknown, no
 // voter yet, holds every send (§7).
 func (t *ChainTracker) sendCeiling() (ceiling uint64) {
-	latest := networkLatest(t.network)
-	if latest == nil {
+	if t.laneHead == nil {
 		return math.MaxUint64
 	}
-	t.callNetwork("send-ceiling", func() { ceiling = uint64(max(latest(t.laneCtx()), 0)) })
+	t.callNetwork("send-ceiling", func() { ceiling = uint64(max(t.laneHead().Latest, 0)) })
 	return ceiling
 }
 
-// laneCtx is the context the network's head code reads this tracker's lane
-// from: a request with the group's use-upstream selector, none for the
-// network-wide tracker.
-func (t *ChainTracker) laneCtx() context.Context {
-	if t.lane == nil {
-		return t.ctx
+// finalizedHead is the lane's Head.Finalized, 0 while unknown or when the
+// network has no Head.
+func (t *ChainTracker) finalizedHead() (fin int64) {
+	if t.laneHead == nil {
+		return 0
 	}
-	return context.WithValue(t.ctx, common.RequestContextKey, t.lane)
+	t.callNetwork("finalized", func() { fin = t.laneHead().Finalized })
+	return fin
 }
 
 // callNetwork runs a call into the network's head code from the tracker's
@@ -2387,10 +2382,10 @@ func (t *ChainTracker) fetchClassAt(number int64, near fetchClass) fetchClass {
 // finalityLabel classifies a fetched block against the group's finalized
 // height.
 func (t *ChainTracker) finalityLabel(number int64) string {
-	if number < 0 || t.finalized == nil {
+	if number < 0 {
 		return "unknown"
 	}
-	fin := t.finalized()
+	fin := t.finalizedHead()
 	if fin <= 0 {
 		return "unknown"
 	}
@@ -2472,14 +2467,11 @@ func (t *ChainTracker) fetchHeader(ctx context.Context, class fetchClass, method
 // atOrBelowFinalized reports whether a hex block number is at or below the
 // network's finalized height, where the block can no longer change.
 func (t *ChainTracker) atOrBelowFinalized(blockRef string) bool {
-	if t.finalized == nil {
-		return false
-	}
 	n, err := common.HexToInt64(blockRef)
 	if err != nil {
 		return false
 	}
-	fin := t.finalized()
+	fin := t.finalizedHead()
 	return fin > 0 && n <= fin
 }
 
@@ -2788,7 +2780,11 @@ func (nt *networkTrackers) get(n common.Network, groupKey, selector, lane string
 	if selector == "" {
 		backfill = nt.backfill
 	}
-	t := newChainTracker(nt.ctx, n, nt.window, backfill, selector, lane, networkFinalized(n), nt.fetch)
+	var head func() common.EvmHead
+	if ln, ok := n.(laneHeads); ok {
+		head = func() common.EvmHead { return ln.EvmLaneHead(groupKey, selector) }
+	}
+	t := newChainTracker(nt.ctx, n, nt.window, backfill, selector, groupKey, lane, head, nt.fetch)
 	nt.groups[groupKey] = t
 	if cfg := n.Config(); cfg != nil && cfg.Integrity != nil && cfg.Integrity.Follow.IsEnabled() {
 		// The state prober rides on the follow tap: its pinned headers are
@@ -2854,9 +2850,21 @@ func ObserveSourceHeader(n common.Network, u common.Upstream, sh SourceHeader) {
 // VotersChanged makes every tracker of n read its voters again.
 func VotersChanged(n common.Network) { tickTrackers(n) }
 
-// LatestChanged makes every tracker of n gate its sends on its lane's
-// Latest again: a group tracker's taps stop at its lane's. It never blocks.
-func LatestChanged(n common.Network) { tickTrackers(n) }
+// LatestChanged makes the tracker of n's lane groupKey ("" network-wide)
+// gate its sends on the lane's Latest again (spec §6.5); the other lanes'
+// trackers did not move. It never blocks.
+func LatestChanged(n common.Network, groupKey string) {
+	nt := registeredTrackers(n)
+	if nt == nil {
+		return
+	}
+	nt.mu.Lock()
+	t := nt.groups[groupKey]
+	nt.mu.Unlock()
+	if t != nil {
+		t.VotersChanged()
+	}
+}
 
 // DemandChanged makes every tracker of n check whether it asks for latest
 // with no hash voter (§6 rule 6). It never blocks.
@@ -2890,24 +2898,9 @@ func tickTrackers(n common.Network) {
 	}
 }
 
-// networkLatest returns the network's head-height getter, or nil.
-func networkLatest(n common.Network) func(context.Context) int64 {
-	if fn, ok := n.(interface {
-		EvmHighestLatestBlockNumber(context.Context) int64
-	}); ok {
-		return fn.EvmHighestLatestBlockNumber
-	}
-	return nil
-}
-
-// networkFinalized returns a best-effort finalized-height getter, or nil.
-func networkFinalized(n common.Network) func() int64 {
-	if fn, ok := n.(interface {
-		EvmHighestFinalizedBlockNumber(context.Context) int64
-	}); ok {
-		return func() int64 { return fn.EvmHighestFinalizedBlockNumber(context.Background()) }
-	}
-	return nil
+// laneHeads is the network's published Head per lane.
+type laneHeads interface {
+	EvmLaneHead(groupKey, selector string) common.EvmHead
 }
 
 var (

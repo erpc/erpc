@@ -226,7 +226,7 @@ func bniBoot(t *testing.T, cfg *common.Config) (
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		return ntw.EvmHighestLatestBlockNumber(context.Background()) == bniHealthyHead
+		return servedHead(ntw, context.Background()).Latest == bniHealthyHead
 	}, 5*time.Second, 50*time.Millisecond,
 		"pollers must learn the healthy head (tip=0x1000) before the scenario starts")
 

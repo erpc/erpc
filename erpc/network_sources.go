@@ -66,12 +66,7 @@ type sourceReconciler struct {
 	// Owned by the run goroutine.
 	sources    map[string]*source
 	demandSeen time.Time
-	// watched holds the pollers whose head counter wakes the network's
-	// tracker; a poller's callbacks cannot be removed, so an upstream that
-	// leaves and comes back is not watched twice.
-	watched map[*evm.EvmStatePoller]struct{}
-
-	mu sync.Mutex
+	mu         sync.Mutex
 	// heads: some upstream is a subscription source; push: some push
 	// source can carry pending transactions.
 	heads, push bool
@@ -178,7 +173,6 @@ func newSourceReconciler(nw *Network) *sourceReconciler {
 		wakeCh:  make(chan struct{}, 1),
 		syncCh:  make(chan chan struct{}),
 		sources: make(map[string]*source),
-		watched: make(map[*evm.EvmStatePoller]struct{}),
 		pending: make(map[indexer.Topic]*pendingTopic),
 	}
 }
@@ -621,14 +615,8 @@ func (r *sourceReconciler) pushSource(upstreamId string) bool {
 func (r *sourceReconciler) newSource(u *upstream.Upstream) *source {
 	cfg := u.Config()
 	s := &source{id: u.Id(), isSource: cfg.IsSubscriptionSource()}
-	// Every move of its head counter, by a poll, a push or another instance,
-	// may move the network's latest block, which caps every send (spec §6.5).
 	p, ok := u.EvmStatePoller().(*evm.EvmStatePoller)
 	if ok && !p.IsObjectNull() {
-		if _, seen := r.watched[p]; !seen {
-			r.watched[p] = struct{}{}
-			p.OnLatestBlock(func(int64) { evm.LatestChanged(r.nw) })
-		}
 		p.BindIntake(r.nw.intake)
 		if s.isSource {
 			s.poll = p

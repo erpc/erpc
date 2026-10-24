@@ -194,7 +194,7 @@ func TestNetworksPaths_UpstreamOrderingHelpers(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				assert.Equal(t, tc.want, pathsIds(preferTipLeaderForNearTipGetBlock(tc.ups, tc.method, tc.bn)))
+				assert.Equal(t, tc.want, pathsIds(preferTipLeaderForNearTipGetBlock(tc.ups, tc.method, tc.bn, highestOf(tc.ups))))
 			})
 		}
 	})
@@ -294,11 +294,11 @@ func TestNetworksPaths_BareNetworkAccessors(t *testing.T) {
 		assert.Nil(t, n.AllUpstreams())
 		assert.Empty(t, n.EvmAllUpstreams(ctx))
 		assert.Nil(t, n.GetMethodMetrics(""))
-		head, known := n.futureBlockCeiling(ctx)
+		head, known := laneCeilingOf(n)
 		assert.False(t, known)
 		assert.Equal(t, int64(0), head)
 		var visited int
-		n.walkTipCandidates(ctx, func(common.Upstream) bool { visited++; return true })
+		n.walkTipCandidates("", func(common.Upstream) bool { visited++; return true })
 		assert.Equal(t, 0, visited)
 		key, ids := n.partitionKeyFor(ctx, "primary-*")
 		assert.Equal(t, "", key)
@@ -310,13 +310,13 @@ func TestNetworksPaths_BareNetworkAccessors(t *testing.T) {
 
 	t.Run("ServedTipLaneForWithoutSelectorIsNetworkWide", func(t *testing.T) {
 		n := pathsBareNetwork(nil)
-		assert.Same(t, &n.servedTipAll, n.servedTipLaneFor(ctx))
+		assert.Same(t, &n.servedTipAll, n.laneFor(requestSelector(ctx)))
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 		req.SetDirectives(&common.RequestDirectives{UseUpstream: "primary-*"})
 		rctx := context.WithValue(ctx, common.RequestContextKey, req)
 		assert.Equal(t, "primary-*", requestSelector(rctx))
-		assert.Nil(t, n.servedTipLaneFor(rctx), "a selector that forms no group gets no lane")
+		assert.Nil(t, n.laneFor(requestSelector(rctx)), "a selector that forms no group gets no lane")
 	})
 
 	t.Run("RetryDistanceAndRegressionDefaults", func(t *testing.T) {
@@ -793,7 +793,7 @@ func TestNetworksPaths_ForwardOnLiveNetwork(t *testing.T) {
 	cache := &pathsCache{}
 	network.cacheDal = cache
 
-	head, known := network.futureBlockCeiling(ctx)
+	head, known := laneCeilingOf(network)
 	require.True(t, known, "the single upstream's head is known")
 	require.Greater(t, head, int64(0))
 
@@ -809,12 +809,12 @@ func TestNetworksPaths_ForwardOnLiveNetwork(t *testing.T) {
 		assert.Equal(t, "test", all[0].Id())
 		assert.Equal(t, []string{"test"}, pathsIds(network.EvmAllUpstreams(ctx)))
 		assert.Empty(t, network.ShadowUpstreams())
-		leader := network.EvmLeaderUpstream(ctx)
+		leader := servedHead(network, ctx).Leader
 		require.NotNil(t, leader)
 		assert.Equal(t, "test", leader.Id())
 		assert.NotNil(t, network.MetricsTracker())
 		network.EvmRefreshLatestBlock(ctx)
-		assert.Equal(t, head, network.EvmHighestLatestBlockNumber(ctx), "one voter: the served tip is its head")
+		assert.Equal(t, head, servedHead(network, ctx).Latest, "one voter: the served tip is its head")
 	})
 
 	t.Run("FinalityHeuristicFromRegistry", func(t *testing.T) {
@@ -943,16 +943,16 @@ func TestNetworksPaths_PolicyAccessorsAndGroupLanes(t *testing.T) {
 			req.SetDirectives(&common.RequestDirectives{UseUpstream: sel})
 			return context.WithValue(ctx, common.RequestContextKey, req)
 		}
-		first := network.servedTipLaneFor(laneCtx("primary-*"))
+		first := network.laneFor(requestSelector(laneCtx("primary-*")))
 		require.NotNil(t, first)
 		assert.Equal(t, "primary", first.label)
-		assert.Same(t, first, network.servedTipLaneFor(laneCtx("primary-*")), "a group reuses its lane")
-		assert.Nil(t, network.servedTipLaneFor(laneCtx("primary-1")), "a single upstream is no group")
+		assert.Same(t, first, network.laneFor(requestSelector(laneCtx("primary-*"))), "a group reuses its lane")
+		assert.Nil(t, network.laneFor(requestSelector(laneCtx("primary-1"))), "a single upstream is no group")
 
 		count := network.servedTipLaneCount.Load()
 		network.servedTipLaneCount.Store(maxServedTipLanes)
-		assert.Nil(t, network.servedTipLaneFor(laneCtx("fallback-*")), "beyond the cap a new group gets no lane")
-		assert.Same(t, first, network.servedTipLaneFor(laneCtx("primary-*")), "existing lanes still resolve at the cap")
+		assert.Nil(t, network.laneFor(requestSelector(laneCtx("fallback-*"))), "beyond the cap a new group gets no lane")
+		assert.Same(t, first, network.laneFor(requestSelector(laneCtx("primary-*"))), "existing lanes still resolve at the cap")
 		network.servedTipLaneCount.Store(count)
 	})
 }

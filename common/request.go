@@ -312,6 +312,8 @@ type NormalizedRequest struct {
 	lastUpstream        atomic.Value
 	evmBlockRef         atomic.Value
 	evmBlockNumber      atomic.Value
+	// evmHead is the lane's Head this request took once (spec §7).
+	evmHead atomic.Pointer[EvmHead]
 
 	compositeType   atomic.Value // Type of composite request (e.g., "logs-split")
 	parentRequestId atomic.Value // ID of the parent request (for sub-requests)
@@ -1180,6 +1182,23 @@ func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {
 	}
 
 	return nil, nil
+}
+
+// EvmHead is the Head r took, nil before it took one.
+func (r *NormalizedRequest) EvmHead() *EvmHead {
+	if r == nil {
+		return nil
+	}
+	return r.evmHead.Load()
+}
+
+// TakeEvmHead makes h r's Head unless r took one already, and returns r's
+// Head: concurrent first readers of one request all get the same value.
+func (r *NormalizedRequest) TakeEvmHead(h *EvmHead) *EvmHead {
+	if r.evmHead.CompareAndSwap(nil, h) {
+		return h
+	}
+	return r.evmHead.Load()
 }
 
 func (r *NormalizedRequest) CacheHash(ctx ...context.Context) (string, error) {

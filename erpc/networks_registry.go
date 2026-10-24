@@ -172,6 +172,13 @@ func NewNetwork(
 		initializer:       util.NewInitializer(appCtx, &lg, nil),
 	}
 	network.servedTipAll.label = "all"
+	network.headWake = make(chan struct{}, 1)
+	if metricsTracker != nil {
+		metricsTracker.OnHeadBenchChange(network.networkId, network.headsChanged)
+	}
+	if policyEngine != nil {
+		policyEngine.OnEligibleChanged(network.networkId, network.headsChanged)
+	}
 
 	if nwCfg.Architecture == "" {
 		nwCfg.Architecture = common.ArchitectureEvm
@@ -302,7 +309,6 @@ func (nr *NetworksRegistry) buildNetworkBootstrapTask(networkId string) *util.Bo
 			if err != nil {
 				return err
 			}
-			network.startServedTipRefresh()
 			nr.logger.Debug().Str("networkId", networkId).Msg("network bootstrap completed")
 			return nil
 		},

@@ -28,19 +28,34 @@ type Network interface {
 	GetFinality(ctx context.Context, req *NormalizedRequest, resp *NormalizedResponse) DataFinalityState
 }
 
-// EvmNetwork is the EVM-specific view of a Network. Callers that need
-// block-number accessors or leader-upstream selection should go through the
-// EvmHighestLatestBlockNumber / EvmHighestFinalizedBlockNumber / EvmLeaderUpstream
-// helpers below, which type-assert and degrade to zero-value on mismatch.
+// EvmNetwork is the EVM-specific view of a Network. Callers read the head
+// through EvmHeadOf, which type-asserts and degrades to the zero Head.
 type EvmNetwork interface {
 	Network
-	EvmHighestLatestBlockNumber(ctx context.Context) int64
-	EvmHighestFinalizedBlockNumber(ctx context.Context) int64
-	EvmLeaderUpstream(ctx context.Context) Upstream
+	// EvmHead is the head a request serves (spec §6.4, §7): req's, taken
+	// once per request from its lane, else the request bound to ctx, else
+	// the network-wide lane's. It never computes a ballot for a lane.
+	EvmHead(ctx context.Context, req *NormalizedRequest) EvmHead
 	// EvmRefreshLatestBlock asks the pollers of the request's latest-head
 	// ballot for a fresh head in the background (see
 	// EvmStatePoller.RefreshLatestBlock); it never blocks.
 	EvmRefreshLatestBlock(ctx context.Context)
+}
+
+// EvmHead is one lane's head (spec §6.4), published as one value. The zero
+// Head is an unknown one.
+type EvmHead struct {
+	// Latest is the q-th highest voter number, guarded and clamped to the
+	// guarantees.
+	Latest int64
+	// Finalized is the same ballot over the voters' finalized numbers.
+	Finalized int64
+	// Leader is the highest voter within Latest + maxRetryableBlockDistance.
+	Leader Upstream
+	// Ceiling is the raw max head of the lane's registered upstreams, 0 while
+	// any of them has none; CeilingAt is when this instance saw it.
+	Ceiling   int64
+	CeilingAt time.Time
 }
 
 // SvmNetwork is the SVM-specific view of a Network. Production Network
@@ -60,33 +75,13 @@ type SvmNetwork interface {
 	SvmEnforceBlockAvailability() bool
 }
 
-// EvmHighestLatestBlockNumber returns the highest observed "latest" block
-// across EVM upstreams of n, or 0 if n is not an EVM network or no upstream
-// has reported a block yet. Use in place of a direct method call so callers
-// don't need to type-assert inline.
-func EvmHighestLatestBlockNumber(n Network, ctx context.Context) int64 {
+// EvmHeadOf returns n.EvmHead(ctx, req), or the zero Head when n is not an
+// EVM network.
+func EvmHeadOf(n Network, ctx context.Context, req *NormalizedRequest) EvmHead {
 	if e, ok := n.(EvmNetwork); ok {
-		return e.EvmHighestLatestBlockNumber(ctx)
+		return e.EvmHead(ctx, req)
 	}
-	return 0
-}
-
-// EvmHighestFinalizedBlockNumber mirrors EvmHighestLatestBlockNumber for the
-// finalized tip.
-func EvmHighestFinalizedBlockNumber(n Network, ctx context.Context) int64 {
-	if e, ok := n.(EvmNetwork); ok {
-		return e.EvmHighestFinalizedBlockNumber(ctx)
-	}
-	return 0
-}
-
-// EvmLeaderUpstream returns the currently-elected leader EVM upstream for n,
-// or nil if n is not EVM-shaped or no leader has been elected.
-func EvmLeaderUpstream(n Network, ctx context.Context) Upstream {
-	if e, ok := n.(EvmNetwork); ok {
-		return e.EvmLeaderUpstream(ctx)
-	}
-	return nil
+	return EvmHead{}
 }
 
 // EvmRefreshLatestBlock calls EvmNetwork.EvmRefreshLatestBlock when n is an

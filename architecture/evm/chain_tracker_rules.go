@@ -711,7 +711,6 @@ func (t *ChainTracker) follow(ctx context.Context) {
 		t.following.Store(false)
 		t.mb.put(trackerMsg{kind: msgTick})
 	}()
-	latest := networkLatest(t.network)
 	for ctx.Err() == nil {
 		err := taps.RunChain(ctx, key, "integrity", "follow", t, nil, indexer.ReadOpts{}, func(b indexer.Batch) error {
 			if len(b.Applied) == 0 {
@@ -720,8 +719,8 @@ func (t *ChainTracker) follow(ctx context.Context) {
 			if p := stateProberFor(t.network.Id()); p != nil {
 				p.onNewHead(int64(b.Next.Number))
 			}
-			if latest != nil {
-				if served := latest(ctx); served > 0 {
+			if t.laneHead != nil {
+				if served := t.laneHead().Latest; served > 0 {
 					telemetry.MetricChainTrackerLag.WithLabelValues(t.projectId(), t.networkLabel(), t.group).
 						Set(float64(max(0, served-int64(b.Next.Number))))
 				}

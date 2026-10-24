@@ -87,9 +87,12 @@ type covIntegHeadNet struct {
 	latest, finalized int64
 }
 
-func (n *covIntegHeadNet) EvmHighestLatestBlockNumber(ctx context.Context) int64 { return n.latest }
-func (n *covIntegHeadNet) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
-	return n.finalized
+func (n *covIntegHeadNet) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
+	return common.EvmHead{Latest: n.latest, Finalized: n.finalized}
+}
+
+func (n *covIntegHeadNet) EvmLaneHead(groupKey, selector string) common.EvmHead {
+	return common.EvmHead{Latest: n.latest, Finalized: n.finalized}
 }
 
 // covIntegPlainUp hides every EVM capability of the wrapped upstream.
@@ -150,7 +153,7 @@ func covIntegStreak(p *stateProber, id string) int64 {
 
 func TestCovInteg_ChainTrackerHeldData(t *testing.T) {
 	t.Run("CachedReceipts serves only warm blocks", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
 		putReceipts(c, testHash("b", 1), []integrity.Receipt{{TransactionHash: "0x1"}})
 		got, ok := c.CachedReceipts(testHash("b", 1))
 		require.True(t, ok)
@@ -160,7 +163,7 @@ func TestCovInteg_ChainTrackerHeldData(t *testing.T) {
 	})
 
 	t.Run("finality unknown when the getter reports no finalized height", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", func() int64 { return 0 }, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", func() common.EvmHead { return common.EvmHead{Finalized: 0} }, newFetchScheduler(t.Context(), nil))
 		assert.Equal(t, "unknown", c.finalityLabel(5))
 	})
 }
@@ -172,7 +175,7 @@ func TestCovInteg_ResolveAnchors(t *testing.T) {
 		net := &covIntegSweepNet{newCovIntegNet("cov-integ-anchor", nil, func(req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			return covIntegResp(string(testHeader(0x11, testHash("e", 0x11), testHash("e", 0x10)))), nil
 		})}
-		c := newChainTracker(t.Context(), net, 8, 0, "", "", nil, newFetchScheduler(t.Context(), net))
+		c := newChainTracker(t.Context(), net, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
 		h, ok := c.headerByNumber(ctx, 0x10, "0x10")
 		assert.False(t, ok)
 		assert.Nil(t, h)
@@ -195,7 +198,7 @@ func TestCovInteg_ResolveAnchors(t *testing.T) {
 			net := &covIntegSweepNet{newCovIntegNet("cov-integ-rcpt", nil, func(req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 				return covIntegResp(tc.body), nil
 			})}
-			c := newChainTracker(t.Context(), net, 8, 0, "", "", nil, newFetchScheduler(t.Context(), net))
+			c := newChainTracker(t.Context(), net, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
 			got, ok := c.receiptsByHash(ctx, want, -1)
 			assert.False(t, ok)
 			assert.Nil(t, got)
@@ -267,7 +270,7 @@ func TestCovInteg_ChainTrackerOf(t *testing.T) {
 		assert.Same(t, wide, ChainTrackerOf(ctx, net, "not-a-group"), "a non-group selector falls back to the network-wide tracker")
 		assert.Same(t, g, ChainTrackerOf(ctx, net, "grp"), "trackers are created once")
 		assert.Equal(t, 32, g.ReorgWindow())
-		assert.Nil(t, g.finalized)
+		assert.Nil(t, g.laneHead)
 	})
 
 	t.Run("chainTracker config sizes the window; integrity follow starts the prober", func(t *testing.T) {
@@ -289,12 +292,12 @@ func TestCovInteg_ChainTrackerOf(t *testing.T) {
 		assert.Equal(t, "unfinalized", v.finalityLabel(43))
 	})
 
-	t.Run("network without a head getter yields no latest func", func(t *testing.T) {
-		assert.Nil(t, networkLatest(newCovIntegNet("x", nil, nil)))
+	t.Run("network without a lane Head reads no head", func(t *testing.T) {
+		assert.Nil(t, StartChainTrackers(ctx, newCovIntegNet("x", nil, nil)).laneHead)
 		hn := &covIntegHeadNet{covIntegNet: newCovIntegNet("y", nil, nil), latest: 9}
-		fn := networkLatest(hn)
-		require.NotNil(t, fn)
-		assert.Equal(t, int64(9), fn(ctx))
+		tr := StartChainTrackers(ctx, hn)
+		require.NotNil(t, tr.laneHead)
+		assert.Equal(t, uint64(9), tr.sendCeiling())
 	})
 }
 
@@ -302,7 +305,7 @@ func TestCovInteg_ObserveViews(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("observeBlockView ignores nil inputs and non-header results", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
 		observeBlockView(ctx, nil, nil, covIntegResp(string(testHeader(1, testHash("a", 1), testHash("a", 0)))))
 		observeBlockView(ctx, c, nil, nil)
 		observeBlockView(ctx, c, nil, covIntegResp(`"0x1"`))
@@ -318,7 +321,7 @@ func TestCovInteg_ObserveViews(t *testing.T) {
 		anchor := covIntegResp(fmt.Sprintf(`{"blockNumber":"0x10","blockHash":"%s"}`, hash))
 		evmUp := common.NewFakeUpstream("u", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(0x30, 0x20)))
 
-		c := newChainTracker(t.Context(), nil, 32, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
 		observeNarrowView(ctx, nil, evmUp, anchor)
 		observeNarrowView(ctx, c, evmUp, nil)
 		observeNarrowView(ctx, c, covIntegPlainUp{evmUp}, anchor)
@@ -379,7 +382,7 @@ func TestCovInteg_StateProber(t *testing.T) {
 	// The prober's view pins the head only: probes judge the upstreams, never
 	// fetch through the tracker.
 	mkProber := func(net common.Network, interval time.Duration) *stateProber {
-		v := newChainTracker(t.Context(), nil, 32, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
+		v := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
 		voteChain(t, v, "a", "e", uint64(head), uint64(head), testHash("f", uint64(head-1)))
 		return &stateProber{
 			network: net, view: v, interval: interval,
@@ -545,8 +548,8 @@ func TestCovInteg_StartStateProber(t *testing.T) {
 
 	cfg := &common.NetworkConfig{Evm: &common.EvmNetworkConfig{ChainId: 42161}}
 	net := newCovIntegNet("cov-integ-start", cfg, nil)
-	v1 := newChainTracker(ctx, nil, 8, 0, "", "", nil, newFetchScheduler(ctx, nil))
-	v2 := newChainTracker(ctx, nil, 8, 0, "", "", nil, newFetchScheduler(ctx, nil))
+	v1 := newChainTracker(ctx, nil, 8, 0, "", "", "", nil, newFetchScheduler(ctx, nil))
+	v2 := newChainTracker(ctx, nil, 8, 0, "", "", "", nil, newFetchScheduler(ctx, nil))
 	startStateProber(ctx, net, v1, &common.IntegrityStateProbeConfig{Interval: common.Duration(3 * time.Second)})
 	p := stateProberFor(net.Id())
 	require.NotNil(t, p)
@@ -618,7 +621,7 @@ func TestCovInteg_Resolver(t *testing.T) {
 			}
 			return covIntegResp("null"), nil
 		})}
-		view := newChainTracker(t.Context(), net, 64, 0, "", "", nil, newFetchScheduler(t.Context(), net))
+		view := newChainTracker(t.Context(), net, 64, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
 		r := &integrityResolver{network: net, view: view}
 
 		h, ok := r.CanonicalHeader(ctx, hash)

@@ -53,7 +53,7 @@ type covBlocksPanicNetwork struct {
 	queryTestNetwork
 }
 
-func (n *covBlocksPanicNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
+func (n *covBlocksPanicNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
 	panic("state poller not initialized")
 }
 

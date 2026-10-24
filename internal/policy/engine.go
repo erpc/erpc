@@ -86,8 +86,26 @@ type Engine struct {
 	proberMu sync.RWMutex
 	probers  map[string]*Prober
 
+	// eligibleHooks are the networks' eligible-set callbacks
+	// (OnEligibleChanged).
+	eligibleHooks sync.Map // map[networkID]func()
+
 	appCtx context.Context
 	cancel context.CancelFunc
+}
+
+// OnEligibleChanged registers fn to run when a slot of networkID publishes
+// an eligible set whose members differ from its previous one. fn runs on
+// the slot's tick: it must not block. One per network; a later one
+// replaces it.
+func (e *Engine) OnEligibleChanged(networkID string, fn func()) {
+	e.eligibleHooks.Store(networkID, fn)
+}
+
+func (e *Engine) eligibleChanged(networkID string) {
+	if fn, ok := e.eligibleHooks.Load(networkID); ok {
+		fn.(func())()
+	}
 }
 
 // DefaultEngineIdleEvictionAfter is the conservative idle threshold the

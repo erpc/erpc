@@ -115,10 +115,12 @@ func ExtractBlockReferenceFromRequest(ctx context.Context, r *common.NormalizedR
 }
 
 // ResolveCacheBlockRef is ExtractBlockReferenceFromRequest for cache keys: a
-// "latest" or "finalized" tag resolves to a concrete block so each tip advance
-// gets its own key. It uses the response's block number when given (SET), else
-// the network's current tip for the tag (GET). Other refs, including "safe",
-// are returned unchanged.
+// "latest" or "finalized" tag resolves to a concrete block so each head
+// advance gets its own key. It uses the response's block number when given
+// (SET), else the number the request's Head interpolates the tag to (spec
+// §7), so GET and SET key on the number the request ran at. A tag that
+// reaches upstreams as is gets no key: "" is never cached. Other refs,
+// including "safe", are returned unchanged.
 func ResolveCacheBlockRef(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (string, int64, error) {
 	blockRef, blockNumber, err := ExtractBlockReferenceFromRequest(ctx, req)
 	if err != nil {
@@ -137,32 +139,16 @@ func ResolveCacheBlockRef(ctx context.Context, req *common.NormalizedRequest, re
 		}
 	}
 
-	// Without a known tip, fall back to the tag-literal key.
-	net := req.Network()
-	if net == nil {
-		return blockRef, blockNumber, nil
+	num := blockNumber
+	if num <= 0 {
+		num = TagBlockNumber(ctx, req, blockRef)
 	}
-	var num int64
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				num = 0
-			}
-		}()
-		switch blockRef {
-		case "latest":
-			num = common.EvmHighestLatestBlockNumber(net, ctx)
-		case "finalized":
-			num = common.EvmHighestFinalizedBlockNumber(net, ctx)
-		}
-	}()
 	if num > 0 {
 		if hex, herr := common.NormalizeHex(num); herr == nil {
 			return hex, num, nil
 		}
 	}
-
-	return blockRef, blockNumber, nil
+	return "", 0, nil
 }
 
 func ExtractBlockReferenceFromResponse(ctx context.Context, r *common.NormalizedResponse) (string, int64, error) {

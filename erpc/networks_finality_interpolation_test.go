@@ -203,7 +203,7 @@ func TestInterpolation_InstantFinalityLatestStaysRealtime(t *testing.T) {
 			defer cancel()
 
 			network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-			require.Equal(t, network.EvmHighestLatestBlockNumber(ctx), network.EvmHighestFinalizedBlockNumber(ctx))
+			require.Equal(t, servedHead(network, ctx).Latest, servedHead(network, ctx).Finalized)
 
 			cacheCfg := &common.CacheConfig{
 				Connectors: []*common.ConnectorConfig{{

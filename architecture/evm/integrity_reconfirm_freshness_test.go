@@ -100,7 +100,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 	// pinnedOnOrphan pins the losing fork at height and height+1 by a source
 	// vote, then lets every source stop counting (none live).
 	pinnedOnOrphan := func(t *testing.T, net *capturingNetwork) *ChainTracker {
-		c := newChainTracker(t.Context(), net, 32, 0, "", "", nil, newFetchScheduler(t.Context(), net))
+		c := newChainTracker(t.Context(), net, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
 		voteChain(t, c, "a", "0", uint64(height), uint64(height)+1, testHash("f", uint64(height-1)))
 		net.sourcesVote.Store(false)
 		return c
@@ -146,7 +146,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 
 	t.Run("a pin the counted votes of 2 sources back answers without a fetch", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
-		c := newChainTracker(t.Context(), net, 32, 0, "", "", nil, newFetchScheduler(t.Context(), net))
+		c := newChainTracker(t.Context(), net, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
 		// From genesis, so fill has nothing to fetch: any fetch is the
 		// re-confirmation's.
 		voteChain(t, c, "a", "0", 0, uint64(height), testHash("f", 0))
@@ -163,7 +163,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 	// settles first.
 	t.Run("a pin one source's vote backs settles before it is fresh", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
-		c := newChainTracker(t.Context(), net, 32, 0, "", "", nil, newFetchScheduler(t.Context(), net))
+		c := newChainTracker(t.Context(), net, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
 		voteChain(t, c, "a", "0", 0, uint64(height), testHash("f", 0))
 
 		_, status := c.ReconfirmPin(context.Background(), height)
@@ -177,7 +177,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 	// cache hit-rate.
 	byNumber := func(t *testing.T, finalized int64) *common.RequestDirectives {
 		net := newCapturingNetwork(t, height, canonical)
-		c := newChainTracker(t.Context(), net, 32, 0, "", "", func() int64 { return finalized }, newFetchScheduler(t.Context(), net))
+		c := newChainTracker(t.Context(), net, 32, 0, "", "", "", func() common.EvmHead { return common.EvmHead{Finalized: finalized} }, newFetchScheduler(t.Context(), net))
 		_, ok := c.headerByNumber(context.Background(), height, fmt.Sprintf("0x%x", height))
 		require.True(t, ok)
 		d := net.directivesFor(fmt.Sprintf("0x%x", height))
@@ -195,7 +195,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 
 	t.Run("a re-confirmation at a finalized height still bypasses the cache", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
-		c := newChainTracker(t.Context(), net, 32, 0, "", "", func() int64 { return height }, newFetchScheduler(t.Context(), net))
+		c := newChainTracker(t.Context(), net, 32, 0, "", "", "", func() common.EvmHead { return common.EvmHead{Finalized: height} }, newFetchScheduler(t.Context(), net))
 		voteChain(t, c, "a", "0", uint64(height), uint64(height)+1, testHash("f", uint64(height-1)))
 		net.sourcesVote.Store(false)
 
@@ -208,7 +208,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 
 	t.Run("by-hash header fetches still use the cache", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
-		c := newChainTracker(t.Context(), net, 32, 0, "", "", nil, newFetchScheduler(t.Context(), net))
+		c := newChainTracker(t.Context(), net, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
 
 		_, _ = c.headerByHash(context.Background(), canonical)
 		if d := net.directivesFor(canonical); d != nil {

@@ -93,13 +93,13 @@ func TestPreferTipLeaderForNearTipGetBlock(t *testing.T) {
 	const method = "eth_getBlockByNumber"
 
 	tied := []common.Upstream{upWithLatest("c", 1000), upWithLatest("b", 1000), upWithLatest("a", 1000)}
-	assert.Equal(t, []string{"c", "b", "a"}, ids(preferTipLeaderForNearTipGetBlock(tied, method, 1000)),
+	assert.Equal(t, []string{"c", "b", "a"}, ids(preferTipLeaderForNearTipGetBlock(tied, method, 1000, highestOf(tied))),
 		"tied heads keep the selection policy's order")
 
 	ahead := []common.Upstream{upWithLatest("c", 999), upWithLatest("b", 999), upWithLatest("a", 1000)}
-	assert.Equal(t, []string{"a", "c", "b"}, ids(preferTipLeaderForNearTipGetBlock(ahead, method, 1001)),
+	assert.Equal(t, []string{"a", "c", "b"}, ids(preferTipLeaderForNearTipGetBlock(ahead, method, 1001, highestOf(ahead))),
 		"a strict leader goes first for its next block")
-	assert.Equal(t, []string{"c", "b", "a"}, ids(preferTipLeaderForNearTipGetBlock(ahead, method, 998)),
+	assert.Equal(t, []string{"c", "b", "a"}, ids(preferTipLeaderForNearTipGetBlock(ahead, method, 998, highestOf(ahead))),
 		"blocks every candidate has keep the policy order")
-	assert.Equal(t, []string{"c", "b", "a"}, ids(preferTipLeaderForNearTipGetBlock(ahead, "eth_call", 1000)))
+	assert.Equal(t, []string{"c", "b", "a"}, ids(preferTipLeaderForNearTipGetBlock(ahead, "eth_call", 1000, highestOf(ahead))))
 }

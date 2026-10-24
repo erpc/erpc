@@ -11387,7 +11387,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		syncedUpstream.EvmStatePoller().SetSyncingState(common.EvmSyncingStateNotSyncing)
 
 		// Should return the highest block from non-syncing nodes only
-		highest := common.EvmHighestLatestBlockNumber(network, ctx)
+		highest := servedHead(network, ctx).Latest
 
 		assert.Equal(t, int64(1000), highest, "Should exclude syncing node and return highest from synced nodes only")
 	})
@@ -11542,7 +11542,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		time.Sleep(150 * time.Millisecond)
 
 		// Should return the highest block from policy-included nodes only
-		highest := common.EvmHighestLatestBlockNumber(network, ctx)
+		highest := servedHead(network, ctx).Latest
 
 		assert.Equal(t, int64(2000), highest, "Should exclude policy-excluded node and return highest from included nodes only")
 	})
@@ -11692,7 +11692,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// Second-highest of effective blocks {1900, 1950} = 1900
-		highest := common.EvmHighestLatestBlockNumber(network, ctx)
+		highest := servedHead(network, ctx).Latest
 
 		assert.Equal(t, int64(1900), highest, "Should use effective (clamped) block values when upper bound is configured")
 	})
@@ -11803,7 +11803,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// Since upper bound (5000) > latest (2000), should return raw latest (2000)
-		highest := common.EvmHighestLatestBlockNumber(network, ctx)
+		highest := servedHead(network, ctx).Latest
 
 		assert.Equal(t, int64(2000), highest, "Should return raw latest block when upper bound exceeds latest")
 	})
@@ -11958,7 +11958,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// Second-highest of effective finalized blocks {1800, 1850} = 1800
-		highest := common.EvmHighestFinalizedBlockNumber(network, ctx)
+		highest := servedHead(network, ctx).Finalized
 
 		assert.Equal(t, int64(1800), highest, "Should use effective (clamped) finalized block values when upper bound is configured")
 	})
@@ -12070,7 +12070,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// Since upper bound (5000) > finalized (2000), should return raw finalized (2000)
-		highest := common.EvmHighestFinalizedBlockNumber(network, ctx)
+		highest := servedHead(network, ctx).Finalized
 
 		assert.Equal(t, int64(2000), highest, "Should return raw finalized block when upper bound exceeds finalized")
 	})
@@ -12220,7 +12220,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 		syncedUpstream.EvmStatePoller().SetSyncingState(common.EvmSyncingStateNotSyncing)
 
 		// Should exclude syncing node and return synced node's finalized (1800)
-		highest := common.EvmHighestFinalizedBlockNumber(network, ctx)
+		highest := servedHead(network, ctx).Finalized
 
 		assert.Equal(t, int64(1800), highest, "Should exclude syncing nodes even when they have upper bounds configured")
 	})

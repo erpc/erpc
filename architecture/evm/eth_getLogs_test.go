@@ -108,21 +108,26 @@ func (m *mockNetwork) EvmStatePoller() common.EvmStatePoller {
 	return args.Get(0).(common.EvmStatePoller)
 }
 
-func (m *mockNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
-	args := m.Called(ctx)
-	return args.Get(0).(int64)
+// EvmHead reads the stubbed "EvmHighestLatestBlockNumber" and
+// "EvmHighestFinalizedBlockNumber" calls, each with the request bound to
+// ctx; an axis a test does not stub is unknown (0).
+func (m *mockNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
+	if req != nil {
+		ctx = context.WithValue(ctx, common.RequestContextKey, req)
+	}
+	return common.EvmHead{
+		Latest:    m.headAxis("EvmHighestLatestBlockNumber", ctx),
+		Finalized: m.headAxis("EvmHighestFinalizedBlockNumber", ctx),
+	}
 }
 
-func (m *mockNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
-	args := m.Called(ctx)
-	return args.Get(0).(int64)
-}
-
-// EvmLeaderUpstream is required by common.EvmNetwork. Tests that don't
-// exercise leader selection leave this unstubbed — returning nil is safe
-// because the helpers only use the leader where it's explicitly configured.
-func (m *mockNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream {
-	return nil
+func (m *mockNetwork) headAxis(method string, ctx context.Context) (v int64) {
+	defer func() {
+		if recover() != nil {
+			v = 0
+		}
+	}()
+	return m.MethodCalled(method, ctx).Get(0).(int64)
 }
 
 func (m *mockNetwork) EvmRefreshLatestBlock(ctx context.Context) {}

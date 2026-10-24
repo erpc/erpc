@@ -997,6 +997,13 @@ func (e *EvmStatePoller) OnLatestBlock(cb func(int64)) {
 	}
 }
 
+// OnFinalizedBlock is OnLatestBlock for the finalized block number.
+func (e *EvmStatePoller) OnFinalizedBlock(cb func(int64)) {
+	if e.finalizedBlockShared != nil {
+		e.finalizedBlockShared.OnValue(cb)
+	}
+}
+
 // verifyChainIdOnMajorHeadMove gates a polled head sample that moved beyond
 // the shared rollback tolerance (in either direction) behind a fresh chain
 // identity check. Such moves are exactly what a cross-wired endpoint — a DNS
@@ -1133,6 +1140,17 @@ func (e *EvmStatePoller) cordonForChainIdMismatch(tag string, current, polled in
 			e.chainIdRecheck = nil
 		}
 	})
+}
+
+// ChainIdCordoned reports whether the upstream is cordoned because it
+// answers for another chain: the cordon this poller set is still in place.
+func (e *EvmStatePoller) ChainIdCordoned() bool {
+	reason, _ := e.chainIdCordonReason.Load().(string)
+	if reason == "" || e.tracker == nil {
+		return false
+	}
+	current, cordoned := e.tracker.CordonedReason(e.upstream, "*")
+	return cordoned && current == reason
 }
 
 // recheckChainIdCordon lifts the chain-identity cordon once eth_chainId

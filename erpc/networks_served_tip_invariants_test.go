@@ -71,7 +71,7 @@ func TestServedTipInvariant_StaleInheritedCounter_RecoversAndTracks(t *testing.T
 		for _, u := range ups {
 			u.EvmStatePoller().SuggestLatestBlock(liveHead + r)
 		}
-		served = network.EvmHighestLatestBlockNumber(ctx)
+		served = servedHead(network, ctx).Latest
 	}
 
 	finalHead := liveHead + 20
@@ -104,7 +104,7 @@ func TestServedTipInvariant_ProcessRestart_KeepsTracking(t *testing.T) {
 		for _, u := range ups {
 			u.EvmStatePoller().SuggestLatestBlock(liveHead + r)
 		}
-		_ = network.EvmHighestLatestBlockNumber(ctx)
+		_ = servedHead(network, ctx).Latest
 	}
 
 	// Simulate a process restart: ALL in-process served-tip state is lost; the
@@ -118,7 +118,7 @@ func TestServedTipInvariant_ProcessRestart_KeepsTracking(t *testing.T) {
 		for _, u := range ups {
 			u.EvmStatePoller().SuggestLatestBlock(liveHead + r)
 		}
-		served = network.EvmHighestLatestBlockNumber(ctx)
+		served = servedHead(network, ctx).Latest
 	}
 
 	finalHead := liveHead + 110
@@ -160,7 +160,7 @@ func TestServedTipInvariant_PoisonedCounter_NeverServed(t *testing.T) {
 		for _, u := range ups[1:] { // the rogue upstream stays rogue
 			u.EvmStatePoller().SuggestLatestBlock(liveHead + r)
 		}
-		served = network.EvmHighestLatestBlockNumber(ctx)
+		served = servedHead(network, ctx).Latest
 	}
 
 	finalHead := liveHead + 10
@@ -194,7 +194,7 @@ func TestServedTipInvariant_SteadyState_NeverStalls(t *testing.T) {
 		for i, u := range ups {
 			u.EvmStatePoller().SuggestLatestBlock(liveHead + r - int64(i%2)) // 1-block jitter
 		}
-		served := network.EvmHighestLatestBlockNumber(ctx)
+		served := servedHead(network, ctx).Latest
 		if served <= lastServed {
 			stalls++
 		} else {
@@ -230,7 +230,7 @@ func TestServedTipInvariant_Fixture_ServedTipModeActive(t *testing.T) {
 		{id: "w2", chainID: 123, latestBlock: 100},
 		{id: "w3", chainID: 123, latestBlock: 99},
 	})
-	require.Equal(t, int64(100), network2.EvmHighestLatestBlockNumber(ctx),
+	require.Equal(t, int64(100), servedHead(network2, ctx).Latest,
 		"served-tip mode must be live (max mode would return 200)")
 }
 
@@ -268,7 +268,7 @@ func TestServedTipInvariant_AvailabilityBoundNeverDefinesTheHead(t *testing.T) {
 		{id: "legacy-2", chainID: 123, latestBlock: liveHead, upperExactBlock: legacyCap},
 	})
 
-	served := network.EvmHighestLatestBlockNumber(ctx)
+	served := servedHead(network, ctx).Latest
 	require.Greater(t, served, legacyCap,
 		"with the full fleet eligible the served tip must be a live head, not the legacy serving bound")
 
@@ -276,7 +276,7 @@ func TestServedTipInvariant_AvailabilityBoundNeverDefinesTheHead(t *testing.T) {
 	// lag. This is the ballot that pulls the tip down to the cap.
 	network.PinUpstreamOrderForTest("peer-a", "peer-b", "legacy-1", "legacy-2")
 
-	served = network.EvmHighestLatestBlockNumber(ctx)
+	served = servedHead(network, ctx).Latest
 	require.Greater(t, served, legacyCap,
 		"losing one live upstream must not hand the tip to the availability bounds: "+
 			"served %d, the legacy cap is %d — clients would read historical state (eth_getBalance = 0x0 on funded accounts)",

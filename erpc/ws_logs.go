@@ -55,7 +55,7 @@ func parseLogsSubscribe(params []interface{}) (*logfilter.LogsFilter, error) {
 // after a random delay within logsCloseSpread, so the client reconnects
 // knowing it may have missed logs. lane, when set, holds blocks above the
 // connection's lane's Latest.
-func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane *common.NormalizedRequest, f *logfilter.LogsFilter) {
+func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane string, f *logfilter.LogsFilter) {
 	tracker := nw.chainTracker
 	feed := &cutFeed{ChainFeed: gated(logsFeed{tracker}, nw, lane)}
 	window := uint64(tracker.ReorgWindow())

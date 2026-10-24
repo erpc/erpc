@@ -10,9 +10,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// networkPreForward_eth_blockNumber answers eth_blockNumber from the served
-// head without dispatching whenever enforce-highest-block is on and the head is
-// known: the post-forward hook below pins every response to that head EXACTLY,
+// networkPreForward_eth_blockNumber answers eth_blockNumber with the
+// request's Head.Latest (spec §7 family 1) without dispatching whenever
+// enforce-highest-block is on and the head is known: the post-forward hook
+// below pins every response to that same value EXACTLY,
 // so an upstream's answer is always discarded and the call buys nothing but
 // vendor cost and latency. Each answer also asks the ballot's pollers for a
 // debounced background refresh, so on a quiet network the head a client polls
@@ -23,7 +24,7 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 		return false, nil, nil
 	}
 	ctx = context.WithValue(ctx, common.RequestContextKey, nq)
-	tip := common.EvmHighestLatestBlockNumber(network, ctx)
+	tip := common.EvmHeadOf(network, ctx, nq).Latest
 	if tip <= 0 {
 		return false, nil, nil
 	}
@@ -45,7 +46,7 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 // cache. The correction is a pure in-memory synthesis (poller state), never an
 // extra upstream call.
 //
-// Exact, not floor-only, because "latest" interpolation (resolveBlockTagToHex)
+// Exact, not floor-only, because "latest" interpolation (TagBlockNumber)
 // anchors block-tagged methods (eth_call, eth_getLogs, ...) to that same served
 // head: a fresher upstream answer, or a cache entry written from one, would
 // show clients an eth_blockNumber AHEAD of the block "latest" actually executes
@@ -78,11 +79,10 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 		return nil, err
 	}
 
-	// Resolve the tip with the request bound to the context so a
-	// use-upstream selector scopes the tip to the targeted subset (the
-	// selector-scoped served-tip semantics): a request pinned to a lagging
-	// group must not be promised a block that group cannot serve.
-	highestBlock := common.EvmHighestLatestBlockNumber(network, context.WithValue(ctx, common.RequestContextKey, nq))
+	// The request's own Head, the one its pre-forward and its interpolation
+	// read: a request pinned to a lagging group is never promised a block
+	// that group cannot serve.
+	highestBlock := common.EvmHeadOf(network, ctx, nq).Latest
 	if common.IsTracingDetailed {
 		blockNumberLag := highestBlock - blockNumber
 		if blockNumberLag < 0 {
@@ -98,7 +98,7 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 
 	if highestBlock <= 0 {
 		// Unknown tip (pollers cold, all upstreams syncing): fail open like
-		// resolveBlockTagToHex — never synthesize a block number from nothing.
+		// interpolation — never synthesize a block number from nothing.
 		return nr, re
 	}
 

@@ -51,9 +51,9 @@ func bniServedTipBoot(t *testing.T, cfg *common.Config, order ...string) (
 
 	require.Eventually(t, func() bool {
 		ctx := context.Background()
-		ceiling, known := ntw.futureBlockCeiling(ctx)
+		ceiling, known := laneCeilingOf(ntw)
 		return known && ceiling == bniHealthyHead &&
-			ntw.EvmHighestLatestBlockNumber(ctx) == bniLaggingHead
+			servedHead(ntw, ctx).Latest == bniLaggingHead
 	}, 5*time.Second, 50*time.Millisecond,
 		"pollers must learn both heads (served=0x800, max=0x1000) before the scenario starts")
 

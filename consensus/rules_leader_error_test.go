@@ -35,12 +35,10 @@ type leaderNetwork struct {
 func (n *leaderNetwork) Architecture() common.NetworkArchitecture {
 	return common.ArchitectureEvm
 }
-func (n *leaderNetwork) EvmHighestLatestBlockNumber(context.Context) int64 { return 0 }
-func (n *leaderNetwork) EvmHighestFinalizedBlockNumber(context.Context) int64 {
-	return 0
+func (n *leaderNetwork) EvmHead(context.Context, *common.NormalizedRequest) common.EvmHead {
+	return common.EvmHead{Leader: n.leader}
 }
-func (n *leaderNetwork) EvmLeaderUpstream(context.Context) common.Upstream { return n.leader }
-func (n *leaderNetwork) EvmRefreshLatestBlock(context.Context)             {}
+func (n *leaderNetwork) EvmRefreshLatestBlock(context.Context) {}
 
 // Without this, a new EvmNetwork method makes the fake silently stop being an
 // EvmNetwork and the leader lookup returns nil.

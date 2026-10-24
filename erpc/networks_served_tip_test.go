@@ -239,7 +239,7 @@ func TestServedTip_ThreeUpstreams_AllClose_ReturnsMajority(t *testing.T) {
 		{id: "u3", chainID: 123, latestBlock: 98},
 	})
 
-	served := network.EvmHighestLatestBlockNumber(ctx)
+	served := servedHead(network, ctx).Latest
 	assert.Equal(t, int64(99), served,
 		"served tip must be the majority head (2 of 3 have 99), not MAX(100)")
 }
@@ -260,7 +260,7 @@ func TestServedTip_OneLeader_TwoLaggers_ReturnsMajority(t *testing.T) {
 		{id: "lagger2", chainID: 123, latestBlock: 49},
 	})
 
-	served := network.EvmHighestLatestBlockNumber(ctx)
+	served := servedHead(network, ctx).Latest
 	assert.Equal(t, int64(50), served,
 		"with 1 leader vs 2 laggers the majority head (50) is served; "+
 			"MAX semantics would return the leader's 100")
@@ -284,7 +284,7 @@ func TestServedTip_FiveUpstreams_ThreeClose_TwoBehind(t *testing.T) {
 		{id: "u5", chainID: 123, latestBlock: 49},
 	})
 
-	served := network.EvmHighestLatestBlockNumber(ctx)
+	served := servedHead(network, ctx).Latest
 	assert.Equal(t, int64(98), served,
 		"majority head (3 of 5 have 98) is served; MAX semantics would return 100")
 }
@@ -308,7 +308,7 @@ func TestServedTip_NoRegressionOnUpstreamRetreat(t *testing.T) {
 		{id: "u3", chainID: 123, latestBlock: 99},
 	})
 
-	served1 := network.EvmHighestLatestBlockNumber(ctx)
+	served1 := servedHead(network, ctx).Latest
 	require.Equal(t, int64(100), served1,
 		"first call: majority of [100,100,99] = 100")
 
@@ -319,7 +319,7 @@ func TestServedTip_NoRegressionOnUpstreamRetreat(t *testing.T) {
 	ups[2].EvmStatePoller().SuggestLatestBlock(78)
 	time.Sleep(50 * time.Millisecond)
 
-	served2 := network.EvmHighestLatestBlockNumber(ctx)
+	served2 := servedHead(network, ctx).Latest
 	// The per-upstream poller is monotonic via CounterInt64: its TryUpdate
 	// rejects the small retreat, so the majority over the (clamped) poller
 	// state cannot regress either.
@@ -341,7 +341,7 @@ func TestServedTip_NoUpstreamsHaveBlock_ReturnsZero(t *testing.T) {
 		{id: "u2", chainID: 123, latestBlock: 0},
 	})
 
-	served := network.EvmHighestLatestBlockNumber(ctx)
+	served := servedHead(network, ctx).Latest
 	assert.Equal(t, int64(0), served, "no upstream observations yet → 0")
 }
 
@@ -359,7 +359,7 @@ func TestServedTip_AllSyncing_ReturnsZero(t *testing.T) {
 		{id: "u2", chainID: 123, latestBlock: 200, syncing: true},
 	})
 
-	served := network.EvmHighestLatestBlockNumber(ctx)
+	served := servedHead(network, ctx).Latest
 	assert.Equal(t, int64(0), served, "all upstreams syncing → no candidates → 0")
 }
 
@@ -381,7 +381,7 @@ func TestServedTip_DefaultQuorum_ServesSecondHighest(t *testing.T) {
 		{id: "u3", chainID: 123, latestBlock: 98},
 	}, nil)
 
-	served := network.EvmHighestLatestBlockNumber(ctx)
+	served := servedHead(network, ctx).Latest
 	assert.Equal(t, int64(99), served,
 		"the default quorum serves the second-highest head, not MAX(tips)=100")
 }
@@ -403,9 +403,9 @@ func TestServedTip_DefaultQuorum_LoneFarAheadUpstreamDoesNotDefineHead(t *testin
 		{id: "rogue", chainID: 123, latestBlock: 62_381_379},
 	}, nil)
 
-	assert.Equal(t, int64(32_610_710), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(32_610_710), servedHead(network, ctx).Latest,
 		"the rogue's head is not corroborated")
-	ceiling, known := network.futureBlockCeiling(ctx)
+	ceiling, known := laneCeilingOf(network)
 	assert.True(t, known)
 	assert.Equal(t, int64(62_381_379), ceiling,
 		"the raw max stays visible for the future-block short-circuit")
@@ -431,10 +431,10 @@ func TestServedTip_ExcludedUpstreamDropsOutOfTip(t *testing.T) {
 
 	// Warm the policy slot (lazy-created on first GetOrdered), then restrict the
 	// eligible set so u3 is excluded.
-	_ = network.EvmHighestLatestBlockNumber(ctx)
+	_ = servedHead(network, ctx).Latest
 	network.PinUpstreamOrderForTest("u1", "u2")
 
-	served := network.EvmHighestLatestBlockNumber(ctx)
+	served := servedHead(network, ctx).Latest
 	assert.Equal(t, int64(99), served,
 		"served tip must ignore policy-excluded u3 (block 98); eligible {100,99} → min 99")
 }
@@ -460,14 +460,14 @@ func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 	}
 
 	nwA, _ := setupServedTipNetwork(t, ctx, fixtures)
-	assert.Equal(t, int64(99), nwA.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(99), servedHead(nwA, ctx).Latest,
 		"without a guaranteed method, served = dominant cluster min 99 (u3=90 is an outlier)")
 
 	nwB, _ := setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{
 		Quorum:            common.ServedTipQuorumMajority,
 		GuaranteedMethods: []string{"trace_block"},
 	})
-	assert.Equal(t, int64(90), nwB.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(90), servedHead(nwB, ctx).Latest,
 		"trace_block supported only by u3 (90) clamps served down to 90")
 }
 
@@ -499,14 +499,14 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 		// Empty ServedTip config => default MAX mode.
 		nw, _ := setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{})
 
-		assert.Equal(t, int64(2000), nw.EvmHighestLatestBlockNumber(ctx),
+		assert.Equal(t, int64(2000), servedHead(nw, ctx).Latest,
 			"no selector: network-wide MAX across both families")
-		assert.Equal(t, int64(1000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "family:slow")),
+		assert.Equal(t, int64(1000), servedHead(nw, withSel(ctx, "family:slow")).Latest,
 			"family:slow: MAX within the slow family only, NOT the fast family's 2000")
-		assert.Equal(t, int64(2000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "family:fast")),
+		assert.Equal(t, int64(2000), servedHead(nw, withSel(ctx, "family:fast")).Latest,
 			"family:fast: MAX within the fast family")
 		// An id-based selector must work too (use-upstream was always id-aware).
-		assert.Equal(t, int64(1000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "slow-*")),
+		assert.Equal(t, int64(1000), servedHead(nw, withSel(ctx, "slow-*")).Latest,
 			"id glob selector also scopes the tip")
 	})
 
@@ -522,12 +522,12 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 		// have 2000, so the strict majority (3 of 4) head is 1000. Deliberate
 		// semantics: never advertise a block the routed-to upstream may lack.
 		// (The old cluster tie-break advertised 2000 here.)
-		assert.Equal(t, int64(1000), nw.EvmHighestLatestBlockNumber(ctx),
+		assert.Equal(t, int64(1000), servedHead(nw, ctx).Latest,
 			"no selector: strict-majority head across both families")
 		// family:slow: majority over the slow subset only.
-		assert.Equal(t, int64(1000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "family:slow")),
+		assert.Equal(t, int64(1000), servedHead(nw, withSel(ctx, "family:slow")).Latest,
 			"family:slow: majority within the slow family")
-		assert.Equal(t, int64(2000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "family:fast")),
+		assert.Equal(t, int64(2000), servedHead(nw, withSel(ctx, "family:fast")).Latest,
 			"family:fast: majority within the fast family — the fast pair both have 2000")
 	})
 
@@ -544,9 +544,9 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 
 		// A pattern and its negation form the two groups — each tracked among
 		// its own upstreams (this is the flashblocks* / !flashblocks* shape).
-		assert.Equal(t, int64(2000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "fast*")),
+		assert.Equal(t, int64(2000), servedHead(nw, withSel(ctx, "fast*")).Latest,
 			"fast* -> the fast group's own tip")
-		assert.Equal(t, int64(1000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "!fast*")),
+		assert.Equal(t, int64(1000), servedHead(nw, withSel(ctx, "!fast*")).Latest,
 			"!fast* -> the complement (slow) group's own tip")
 		assert.Equal(t, int32(2), nw.servedTipLaneCount.Load(),
 			"a pattern and its negation create exactly two lanes")
@@ -566,7 +566,7 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 		// partition (keyed by matched set, not text): fast*/fast-*/family:fast
 		// all = {fast-1,fast-2}; slow*/!fast*/family:slow all = {slow-1,slow-2}.
 		for _, sel := range []string{"fast-*", "family:fast", "slow*", "family:slow", "!fast*"} {
-			nw.EvmHighestLatestBlockNumber(withSel(ctx, sel))
+			servedHead(nw, withSel(ctx, sel))
 		}
 		assert.Equal(t, int32(2), nw.servedTipLaneCount.Load(),
 			"equivalent selectors (same matched set) must dedup, not create new lanes")
@@ -574,7 +574,7 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 		// Non-group selectors NEVER materialize: match-all, single-node,
 		// no-match, or a boolean expression.
 		for _, sel := range []string{"*", "fast-1", "slow-1", "ghost*", "does-not-exist", "(fast*|slow*)"} {
-			nw.EvmHighestLatestBlockNumber(withSel(ctx, sel))
+			servedHead(nw, withSel(ctx, sel))
 		}
 		assert.Equal(t, int32(2), nw.servedTipLaneCount.Load(),
 			"match-all / single-node / no-match / boolean selectors must not create state (DDoS-safe)")
@@ -599,14 +599,14 @@ func TestServedTip_AnchorStampsOnServedValueChange(t *testing.T) {
 		{id: "u3", chainID: 123, latestBlock: 99},
 	})
 
-	require.Equal(t, int64(100), network.EvmHighestLatestBlockNumber(ctx))
+	require.Equal(t, int64(100), servedHead(network, ctx).Latest)
 	require.Negative(t, network.servedTipAll.latest.age(),
 		"first observation alone must not stamp the watchdog")
 
 	for _, u := range ups {
 		u.EvmStatePoller().SuggestLatestBlock(105)
 	}
-	require.Equal(t, int64(105), network.EvmHighestLatestBlockNumber(ctx))
+	require.Equal(t, int64(105), servedHead(network, ctx).Latest)
 	age := network.servedTipAll.latest.age()
 	require.GreaterOrEqual(t, age, time.Duration(0),
 		"watchdog must stamp once the served value moves")
@@ -635,14 +635,14 @@ func TestServedTip_EligibleSetChurn_DipBoundedBySpread(t *testing.T) {
 		{id: "u4", chainID: 123, latestBlock: 100},
 	})
 
-	served1 := network.EvmHighestLatestBlockNumber(ctx)
+	served1 := servedHead(network, ctx).Latest
 	require.Equal(t, int64(101), served1, "majority of [103,102,101,100] = 3rd highest")
 
 	// The two freshest upstreams get excluded (cordon / policy decision) —
 	// the worst-case churn direction.
 	network.PinUpstreamOrderForTest("u3", "u4")
 
-	served2 := network.EvmHighestLatestBlockNumber(ctx)
+	served2 := servedHead(network, ctx).Latest
 	assert.Equal(t, int64(100), served2, "majority of the remaining [101,100]")
 	assert.GreaterOrEqual(t, served2, served1-3,
 		"a set-churn dip must stay within the pre-churn head spread")
@@ -669,11 +669,11 @@ func TestServedTip_NoNetworkLevelStickiness(t *testing.T) {
 		{id: "u2", chainID: 123, latestBlock: 10_000},
 		{id: "u3", chainID: 123, latestBlock: 9_000},
 	})
-	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest)
 
 	// The fresh pair drops out (cordon/policy); only the 9_000 view remains.
 	network.PinUpstreamOrderForTest("u3")
-	assert.Equal(t, int64(9_000), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(9_000), servedHead(network, ctx).Latest,
 		"the pick must reflect current heads with no memory of the prior 10_000")
 
 	// And no downward stickiness either: the moment the remaining head
@@ -682,7 +682,7 @@ func TestServedTip_NoNetworkLevelStickiness(t *testing.T) {
 	// chain-identity check — mocked eth_chainId matches — before it applies.)
 	ups[2].EvmStatePoller().SuggestLatestBlock(11_000)
 	require.Eventually(t, func() bool {
-		return network.EvmHighestLatestBlockNumber(ctx) == 11_000
+		return servedHead(network, ctx).Latest == 11_000
 	}, 2*time.Second, 10*time.Millisecond,
 		"the pick must follow the verified major forward jump with no stickiness")
 }
@@ -707,14 +707,14 @@ func TestServedTip_HaltedChainResume_CatchesUpImmediately(t *testing.T) {
 	})
 
 	// Halted: repeated picks over frozen heads hold the same honest value.
-	require.Equal(t, int64(100), network.EvmHighestLatestBlockNumber(ctx))
-	require.Equal(t, int64(100), network.EvmHighestLatestBlockNumber(ctx))
+	require.Equal(t, int64(100), servedHead(network, ctx).Latest)
+	require.Equal(t, int64(100), servedHead(network, ctx).Latest)
 
 	// Resume with a 500-block burst.
 	for _, u := range ups {
 		u.EvmStatePoller().SuggestLatestBlock(600)
 	}
-	assert.Equal(t, int64(600), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(600), servedHead(network, ctx).Latest,
 		"the post-halt burst must be served on the first pick that sees it")
 }
 
@@ -742,7 +742,7 @@ func TestServedTip_BoundCappedUpstreamsDoNotVote(t *testing.T) {
 
 	// Ballot without the caps: [10000, 9998] → the lower live head.
 	// With them it would be [10000, 9998, 5000, 5000] → 3rd highest = 5000.
-	assert.Equal(t, int64(9_998), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(9_998), servedHead(network, ctx).Latest,
 		"a bound-capped upstream declares what it SERVES, not where the head is; "+
 			"it must not vote a cap onto the ballot while live heads exist")
 }
@@ -770,7 +770,7 @@ func TestServedTip_LatestBlockMinusUpstreamsStillVote(t *testing.T) {
 		{id: "u4", chainID: 123, latestBlock: 10_000, upperLatestMinus: &minus},
 	})
 
-	served := network.EvmHighestLatestBlockNumber(ctx)
+	served := servedHead(network, ctx).Latest
 	assert.Equal(t, int64(9_995), served,
 		"the ballot is [10000, 9995, 9995, 9995]: a lagging-but-live bound is a head observation")
 
@@ -813,13 +813,13 @@ func TestServedTip_GuaranteedMethodFloorCannotReadmitTheCap(t *testing.T) {
 		GuaranteedMethods: []string{"eth_getLogs"},
 	})
 
-	require.Greater(t, network.EvmHighestLatestBlockNumber(ctx), legacyCap,
+	require.Greater(t, servedHead(network, ctx).Latest, legacyCap,
 		"precondition: with the full fleet eligible the tip is a live head")
 
 	// The failing ballot: one live upstream lag-excluded.
 	network.PinUpstreamOrderForTest("peer-a", "peer-b", "legacy-1", "legacy-2")
 
-	assert.Greater(t, network.EvmHighestLatestBlockNumber(ctx), legacyCap,
+	assert.Greater(t, servedHead(network, ctx).Latest, legacyCap,
 		"the guaranteed-method floor must not re-admit the serving range the ballot filter removed")
 }
 
@@ -854,7 +854,7 @@ func TestServedTip_GuaranteedMethodFloor_DoesNotUndoTheGuardsHold(t *testing.T) 
 		GuaranteedMethods: []string{"eth_getLogs"},
 	})
 
-	healthy := network.EvmHighestLatestBlockNumber(ctx)
+	healthy := servedHead(network, ctx).Latest
 	require.Greater(t, healthy, legacyCap, "precondition: the live heads carry the ballot")
 
 	// Every live upstream drops out of the ballot at once; only the two
@@ -863,14 +863,14 @@ func TestServedTip_GuaranteedMethodFloor_DoesNotUndoTheGuardsHold(t *testing.T) 
 		u.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
 	}
 
-	assert.Equal(t, healthy, network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, healthy, servedHead(network, ctx).Latest,
 		"the floor must not undo the guard's hold: live upstreams serve eth_getLogs, "+
 			"they are merely absent, so the cap-only floor is a transient lie")
-	assert.Zero(t, network.guaranteedFloor(ctx, false),
+	assert.Zero(t, network.guaranteedFloor("", false),
 		"and the method must contribute no floor at all while that is true")
 
 	advance(servedTipRegressionTTL + time.Second)
-	assert.Equal(t, legacyCap, network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, legacyCap, servedHead(network, ctx).Latest,
 		"past the guard's TTL the cap is served — bounded fail-open, not a wedge")
 }
 
@@ -895,7 +895,7 @@ func TestServedTip_GuaranteedMethodFloor_CapsStillSetTheFloorWhenAloneOnAMethod(
 		GuaranteedMethods: []string{"trace_block"},
 	})
 
-	assert.Equal(t, int64(5_000), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(5_000), servedHead(network, ctx).Latest,
 		"only the capped pair serves trace_block, so their range IS the guarantee")
 
 	// And it stays the guarantee when the live upstreams leave the ballot: no
@@ -904,7 +904,7 @@ func TestServedTip_GuaranteedMethodFloor_CapsStillSetTheFloorWhenAloneOnAMethod(
 	for _, u := range ups[:2] {
 		u.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
 	}
-	assert.Equal(t, int64(5_000), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(5_000), servedHead(network, ctx).Latest,
 		"a permanently cap-only method must keep flooring the tip")
 }
 
@@ -928,7 +928,7 @@ func TestServedTip_CapFilterMayShrinkTheBallotToOneLiveUpstream(t *testing.T) {
 		{id: "capped-2", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
 	})
 
-	assert.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
 		"one live head beats two serving ranges; the ballot is [10000], not [10000,5000,5000]")
 }
 
@@ -949,7 +949,7 @@ func TestServedTip_AllCappedPool_ServesTheCap(t *testing.T) {
 		{id: "capped-3", chainID: 123, latestBlock: 10_000, upperExactBlock: 4_000},
 	})
 
-	assert.Equal(t, int64(5_000), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(5_000), servedHead(network, ctx).Latest,
 		"with no live head on the ballot the caps are the only observations there are; "+
 			"the majority of [5000,5000,4000] must still be served")
 }
@@ -974,14 +974,14 @@ func TestServedTip_AllInputsFiltered_FailsOpenToZero(t *testing.T) {
 		{id: "u2", chainID: 123, latestBlock: 10_000},
 		{id: "u3", chainID: 123, latestBlock: 10_000},
 	})
-	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
 		"healthy pick first, so the guard has a corroborated value to (not) serve")
 
 	for _, u := range ups {
 		u.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
 	}
 
-	assert.Equal(t, int64(0), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(0), servedHead(network, ctx).Latest,
 		"no eligible observations → unknown tip (0), never a remembered one")
 }
 
@@ -1037,7 +1037,7 @@ func TestServedTip_RegressionGuard_HoldsLastCorroboratedPick(t *testing.T) {
 		{id: "stuck-2", chainID: 123, latestBlock: 5},
 	})
 
-	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
 		"majority of [10000,10000,10000,5,5] = 10000, corroborated by the live heads")
 	before := servedTipRegressionCount(network, "latest", "held")
 
@@ -1045,7 +1045,7 @@ func TestServedTip_RegressionGuard_HoldsLastCorroboratedPick(t *testing.T) {
 	// becomes [10000, 5, 5] and the majority pick collapses to 5.
 	network.PinUpstreamOrderForTest("live-1", "stuck-1", "stuck-2")
 
-	assert.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
 		"a pick 9995 blocks below the live head is a poisoned ballot; "+
 			"the last corroborated pick must be served instead")
 	assert.Equal(t, before+1, servedTipRegressionCount(network, "latest", "held"),
@@ -1072,15 +1072,15 @@ func TestServedTip_RegressionGuard_FailsOpenAfterTTL(t *testing.T) {
 		{id: "stuck-1", chainID: 123, latestBlock: 5},
 		{id: "stuck-2", chainID: 123, latestBlock: 5},
 	})
-	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest)
 	network.PinUpstreamOrderForTest("live-1", "stuck-1", "stuck-2")
-	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
 		"inside the window the guard holds")
 
 	before := servedTipRegressionCount(network, "latest", "failed_open")
 	advance(servedTipRegressionTTL + time.Second)
 
-	assert.Equal(t, int64(5), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(5), servedHead(network, ctx).Latest,
 		"past the guard window the pick must be served as computed (fail open)")
 	assert.Equal(t, before+1, servedTipRegressionCount(network, "latest", "failed_open"),
 		"failing open is still worth counting")
@@ -1105,13 +1105,13 @@ func TestServedTip_RegressionGuard_SmallReorgPassesThrough(t *testing.T) {
 		{id: "behind-1", chainID: 123, latestBlock: 9_500},
 		{id: "behind-2", chainID: 123, latestBlock: 9_500},
 	})
-	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest)
 	before := servedTipRegressionCount(network, "latest", "held")
 
 	// [10000, 9500, 9500] → 9500: 500 blocks back, inside the 1024 tolerance.
 	network.PinUpstreamOrderForTest("live-1", "behind-1", "behind-2")
 
-	assert.Equal(t, int64(9_500), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(9_500), servedHead(network, ctx).Latest,
 		"a regression inside the tolerance is reality and must pass through")
 	assert.Equal(t, before, servedTipRegressionCount(network, "latest", "held"),
 		"a tolerated regression is not a guard trip")
@@ -1140,7 +1140,7 @@ func TestServedTip_RegressionGuard_SkippedWithoutLiveHead(t *testing.T) {
 	})
 	before := servedTipRegressionCount(network, "latest", "held")
 
-	assert.Equal(t, int64(5_000), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(5_000), servedHead(network, ctx).Latest,
 		"no live head → no reference → the guard must not interfere")
 	assert.Equal(t, before, servedTipRegressionCount(network, "latest", "held"),
 		"the guard cannot trip without a live head to compare against")
@@ -1173,7 +1173,7 @@ func TestServedTip_RegressionGuard_HoldsWhenEveryLiveUpstreamLeaves(t *testing.T
 		{id: "legacy-2", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
 	}, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority})
 
-	healthy := network.EvmHighestLatestBlockNumber(ctx)
+	healthy := servedHead(network, ctx).Latest
 	require.Greater(t, healthy, legacyCap, "precondition: the live heads carry the ballot")
 	beforeHeld := servedTipRegressionCount(network, "latest", "held")
 	beforeOpen := servedTipRegressionCount(network, "latest", "failed_open")
@@ -1182,13 +1182,13 @@ func TestServedTip_RegressionGuard_HoldsWhenEveryLiveUpstreamLeaves(t *testing.T
 	// exclusion sweep): only the two capped ones remain eligible.
 	network.PinUpstreamOrderForTest("legacy-1", "legacy-2")
 
-	assert.Equal(t, healthy, network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, healthy, servedHead(network, ctx).Latest,
 		"with no live head left the guard must hold its last corroborated pick, "+
 			"not hand `latest` to a historical serving range")
 	assert.Equal(t, beforeHeld+1, servedTipRegressionCount(network, "latest", "held"))
 
 	advance(servedTipRegressionTTL + time.Second)
-	assert.Equal(t, legacyCap, network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, legacyCap, servedHead(network, ctx).Latest,
 		"and past the TTL it must still fail open: a guard that can hold forever is the wedge")
 	assert.Equal(t, beforeOpen+1, servedTipRegressionCount(network, "latest", "failed_open"))
 }
@@ -1216,14 +1216,14 @@ func TestServedTip_RegressionGuard_SingleRogueUpstreamDoesNotDisarmIt(t *testing
 		{id: "stuck-2", chainID: 123, latestBlock: 5},
 	})
 
-	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
 		"the majority pick ignores the rogue, as it always did")
 	require.Equal(t, int64(10_000), network.servedTipAll.latest.lastGoodValue.Load(),
 		"and the guard must be ARMED by that honest pick, not silently disabled by the rogue")
 
 	// Armed means it still protects: lose the honest majority to a stuck pair.
 	network.PinUpstreamOrderForTest("rogue", "live-1", "stuck-1", "stuck-2")
-	assert.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
 		"the armed guard holds the corroborated pick when the ballot collapses")
 }
 
@@ -1277,7 +1277,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		for _, id := range []string{"h1", "h2", "h3"} {
 			eligible(id, true)
 		}
-		require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+		require.Equal(t, int64(10_000), servedHead(network, ctx).Latest)
 		require.Equal(t, int64(10_000), network.servedTipAll.latest.lastGoodValue.Load())
 
 		// Both rogues return, two honest upstreams drop out: the ballot is
@@ -1287,7 +1287,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		eligible("h2", false)
 		eligible("h3", false)
 		advance(time.Second)
-		require.Equal(t, int64(100_000_000), network.EvmHighestLatestBlockNumber(ctx),
+		require.Equal(t, int64(100_000_000), servedHead(network, ctx).Latest,
 			"precondition: the majority of this eligible set really is far-future")
 		assert.Equal(t, int64(10_000), network.servedTipAll.latest.lastGoodValue.Load(),
 			"an uncorroborated leap must never become the value the guard holds the network to")
@@ -1296,7 +1296,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		eligible("h3", true)
 		eligible("rogue-2", false)
 		advance(time.Second)
-		assert.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+		assert.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
 			"recovery must be immediate, not after the guard's TTL expires")
 	})
 
@@ -1316,7 +1316,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		for _, id := range []string{"h1", "h2", "h3"} {
 			eligible(id, true)
 		}
-		require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+		require.Equal(t, int64(10_000), servedHead(network, ctx).Latest)
 		require.Equal(t, int64(10_000), anchor.lastGoodValue.Load())
 
 		// 2. A poisoned ballot is held.
@@ -1324,12 +1324,12 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		eligible("h3", false)
 		eligible("stuck-1", true)
 		eligible("stuck-2", true)
-		require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+		require.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
 			"precondition: the guard is holding the poisoned ballot")
 
 		// 3. The hold outlasts its window: fail open, and disarm.
 		advance(servedTipRegressionTTL + time.Second)
-		require.Equal(t, int64(5), network.EvmHighestLatestBlockNumber(ctx))
+		require.Equal(t, int64(5), servedHead(network, ctx).Latest)
 		require.Zero(t, anchor.lastGoodValue.Load(), "precondition: failing open disarms the memory")
 
 		// 4. One majority-rogue evaluation. It must SERVE the rogue value — no
@@ -1341,7 +1341,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		eligible("rogue-1", true)
 		eligible("rogue-2", true)
 		advance(time.Second)
-		assert.Equal(t, int64(100_000_000), network.EvmHighestLatestBlockNumber(ctx),
+		assert.Equal(t, int64(100_000_000), servedHead(network, ctx).Latest,
 			"serving is never constrained by an arming rule: the pick is the pick")
 		assert.Zero(t, anchor.lastGoodValue.Load(),
 			"but an unarmed guard must not commit a value discontinuous with what it just served")
@@ -1353,7 +1353,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		eligible("rogue-1", false)
 		eligible("rogue-2", false)
 		advance(time.Second)
-		assert.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+		assert.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
 			"recovery on the very next evaluation, exactly as a guardless process behaves")
 		assert.Equal(t, int64(10_000), anchor.lastGoodValue.Load(),
 			"and the memory re-arms at the honest head")
@@ -1376,7 +1376,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		eligible("rogue-2", true)
 		eligible("h1", true)
 		require.Zero(t, anchor.seenValue.Load(), "precondition: nothing has ever been served")
-		require.Equal(t, int64(100_000_000), network.EvmHighestLatestBlockNumber(ctx))
+		require.Equal(t, int64(100_000_000), servedHead(network, ctx).Latest)
 		require.Equal(t, int64(100_000_000), anchor.lastGoodValue.Load(),
 			"with no history at all there is nothing to be continuous with")
 
@@ -1386,7 +1386,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		eligible("rogue-1", false)
 		eligible("rogue-2", false)
 		advance(time.Second)
-		assert.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+		assert.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
 			"a boot-time fantasy must not survive the first honest evaluation")
 	})
 }
@@ -1480,11 +1480,11 @@ func TestServedTip_RegressionGuard_DisabledByNegativeOne(t *testing.T) {
 		{id: "stuck-2", chainID: 123, latestBlock: 5},
 	}, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority, MaxRegressionBlocks: -1})
 
-	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest)
 	before := servedTipRegressionCount(network, "latest", "held")
 
 	network.PinUpstreamOrderForTest("live-1", "stuck-1", "stuck-2")
-	assert.Equal(t, int64(5), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(5), servedHead(network, ctx).Latest,
 		"maxRegressionBlocks: -1 means the operator gets the raw pick, poisoned or not")
 	assert.Equal(t, before, servedTipRegressionCount(network, "latest", "held"))
 	assert.Zero(t, network.servedTipAll.latest.lastGoodValue.Load(),
@@ -1509,10 +1509,10 @@ func TestServedTip_LagGaugeNeverReadsNegative(t *testing.T) {
 		{id: "stuck-1", chainID: 123, latestBlock: 5},
 		{id: "stuck-2", chainID: 123, latestBlock: 5},
 	})
-	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest)
 
 	network.PinUpstreamOrderForTest("live-1", "stuck-1", "stuck-2")
-	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
 		"precondition: the guard is holding above the ballot's freshest corroborated view")
 
 	lag := promUtil.ToFloat64(telemetry.MetricNetworkServedTipLagBlocks.
@@ -1610,7 +1610,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 	// served asserts every reader of "latest" agrees on `want`.
 	served := func(t *testing.T, n *Network, want int64, msg string) {
 		t.Helper()
-		require.Equal(t, want, n.EvmHighestLatestBlockNumber(ctx), "latest: %s", msg)
+		require.Equal(t, want, servedHead(n, ctx).Latest, "latest: %s", msg)
 		require.Equal(t, want, interpolatedLatest(n), "eth_call latest interpolation: %s", msg)
 		require.Equal(t, want, blockNumber(n), "eth_blockNumber: %s", msg)
 	}
@@ -1623,7 +1623,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		}, nil)
 		live, stalled := ups[0], ups[1]
 		tr := network.metricsTracker
-		finalizedOf := func() int64 { return network.EvmHighestFinalizedBlockNumber(ctx) }
+		finalizedOf := func() int64 { return servedHead(network, ctx).Finalized }
 
 		// Both report finalized heads; stalled's stays frozen with its head.
 		const stalledFinalized = int64(990)
@@ -1678,7 +1678,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 			live.EvmStatePoller().SuggestLatestBlock(head)
 			stalled.EvmStatePoller().SuggestLatestBlock(replay)
 			require.True(t, tr.IsHeadBenched(stalled), "a replaying head stays benched until it catches up (at %d, live %d)", replay, head)
-			got := network.EvmHighestLatestBlockNumber(ctx)
+			got := servedHead(network, ctx).Latest
 			require.GreaterOrEqual(t, got, last, "latest must never regress while a benched head replays")
 			last = got
 		}
@@ -1904,7 +1904,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		for polls := 0; tr.IsHeadBenched(replaying); polls++ {
 			require.Less(t, polls, 400, "a replaying head rejoins once it catches up")
 			poll(2 * time.Second)
-			got := network.EvmHighestLatestBlockNumber(ctx)
+			got := servedHead(network, ctx).Latest
 			require.GreaterOrEqual(t, got, last, "latest never regresses while it replays")
 			last = got
 		}
@@ -1996,7 +1996,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 			if wasBenched && (head-r)*2 >= 2*int64(window/time.Second) {
 				require.True(t, tr.IsHeadBenched(restored), "a benched head two stall windows behind the tip stays benched, even once it reaches a stale voter (restored %d, peer-replay %d, live %d)", r, p, head)
 			}
-			got := network.EvmHighestLatestBlockNumber(ctx)
+			got := servedHead(network, ctx).Latest
 			require.GreaterOrEqual(t, got, last, "latest never regresses (restored %d, peer-replay %d, live %d)", r, p, head)
 			last = got
 		}
@@ -2281,7 +2281,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		served(t, network, head, "precondition: live defines latest")
 
 		live.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
-		require.Equal(t, stalledAt, network.EvmHighestLatestBlockNumber(ctx),
+		require.Equal(t, stalledAt, servedHead(network, ctx).Latest,
 			"with no non-benched voter left, latest fails open to the benched head instead of 0")
 	})
 }
@@ -2329,7 +2329,7 @@ func TestServedTip_Finalized_BoundCappedUpstreamsDoNotVote(t *testing.T) {
 		setServedTipFinalized(t, u, fin)
 	}
 
-	assert.Equal(t, int64(9_898), network.EvmHighestFinalizedBlockNumber(ctx),
+	assert.Equal(t, int64(9_898), servedHead(network, ctx).Finalized,
 		"the capped pair's effective finalized is their 5000 bound, which is a serving range, not a finalized head")
 }
 
@@ -2358,12 +2358,12 @@ func TestServedTip_Finalized_RegressionGuardHolds(t *testing.T) {
 		}
 		setServedTipFinalized(t, u, fin)
 	}
-	require.Equal(t, int64(1_002_400), network.EvmHighestFinalizedBlockNumber(ctx),
+	require.Equal(t, int64(1_002_400), servedHead(network, ctx).Finalized,
 		"quorum 2: the fresh pair defines the finalized tip")
 
 	before := servedTipRegressionCount(network, "finalized", "held")
 	network.PinUpstreamOrderForTest("u1", "u3", "u4")
-	assert.Equal(t, int64(1_002_400), network.EvmHighestFinalizedBlockNumber(ctx),
+	assert.Equal(t, int64(1_002_400), servedHead(network, ctx).Finalized,
 		"the guard protects the finalized axis exactly as it protects latest")
 	assert.Equal(t, before+1, servedTipRegressionCount(network, "finalized", "held"))
 }
@@ -2389,7 +2389,7 @@ func TestServedTip_RegressionGuard_HeldValueIsClampedToTheLiveHead(t *testing.T)
 		{id: "stuck-1", chainID: 123, latestBlock: 5},
 		{id: "stuck-2", chainID: 123, latestBlock: 5},
 	})
-	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest)
 	require.Equal(t, int64(10_000), network.servedTipAll.latest.lastGoodValue.Load())
 
 	// Every upstream that had 10_000 drops out. The ballot is [9000, 5, 5] → 5,
@@ -2397,7 +2397,7 @@ func TestServedTip_RegressionGuard_HeldValueIsClampedToTheLiveHead(t *testing.T)
 	// either, because no live upstream has it any more.
 	network.PinUpstreamOrderForTest("low", "stuck-1", "stuck-2")
 
-	assert.Equal(t, int64(9_000), network.EvmHighestLatestBlockNumber(ctx),
+	assert.Equal(t, int64(9_000), servedHead(network, ctx).Latest,
 		"the held value must be clamped to the best live head, and must still suppress the poisoned pick")
 }
 
@@ -2421,7 +2421,7 @@ func TestServedTip_MetricsCountTransitionsNotEvaluations(t *testing.T) {
 		{id: "stuck-1", chainID: 123, latestBlock: 5},
 		{id: "stuck-2", chainID: 123, latestBlock: 5},
 	})
-	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest)
 
 	before := servedTipRegressionCount(network, "latest", "held")
 	network.PinUpstreamOrderForTest("live-1", "stuck-1", "stuck-2")
@@ -2429,7 +2429,7 @@ func TestServedTip_MetricsCountTransitionsNotEvaluations(t *testing.T) {
 	// One sustained regression, twenty evaluations of it — the shape of a few
 	// requests, not of twenty incidents.
 	for i := 0; i < 20; i++ {
-		require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+		require.Equal(t, int64(10_000), servedHead(network, ctx).Latest)
 	}
 	assert.Equal(t, before+1, servedTipRegressionCount(network, "latest", "held"),
 		"entering the hold is one event, however many times the tip is computed while it lasts")
@@ -2438,7 +2438,7 @@ func TestServedTip_MetricsCountTransitionsNotEvaluations(t *testing.T) {
 	beforeOpen := servedTipRegressionCount(network, "latest", "failed_open")
 	advance(servedTipRegressionTTL + time.Second)
 	for i := 0; i < 20; i++ {
-		network.EvmHighestLatestBlockNumber(ctx)
+		servedHead(network, ctx)
 	}
 	assert.Equal(t, beforeOpen+1, servedTipRegressionCount(network, "latest", "failed_open"))
 }

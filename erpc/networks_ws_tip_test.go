@@ -100,7 +100,7 @@ func tipHead(tag string, n uint64) json.RawMessage {
 
 func eventuallyLatest(t *testing.T, ctx context.Context, network *Network, want int64, msg string) {
 	t.Helper()
-	require.Eventually(t, func() bool { return network.EvmHighestLatestBlockNumber(ctx) == want },
+	require.Eventually(t, func() bool { return servedHead(network, ctx).Latest == want },
 		2*time.Second, 10*time.Millisecond, msg)
 }
 
@@ -377,15 +377,15 @@ func TestNetworkIntake_EligibleSourceLiftsLatest(t *testing.T) {
 	defer cancel()
 
 	network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{primaryLatest: "0x3e8", fallbackLatest: "0x3e8"})
-	require.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx))
+	require.Equal(t, int64(1000), servedHead(network, ctx).Latest)
 
 	network.intake.Polled("unknown", tipHead("a", 1020), evm.HeaderStreamed)
 	time.Sleep(100 * time.Millisecond)
-	assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx), "an unknown source must not lift latest")
+	assert.Equal(t, int64(1000), servedHead(network, ctx).Latest, "an unknown source must not lift latest")
 
 	network.intake.Polled("primary-1", tipHead("a", 1001), evm.HeaderStreamed)
 	eventuallyPinned(t, network, 1001, "an eligible source's head votes")
-	assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx), "one eligible source alone must not lift latest")
+	assert.Equal(t, int64(1000), servedHead(network, ctx).Latest, "one eligible source alone must not lift latest")
 	network.intake.Polled("primary-2", tipHead("a", 1001), evm.HeaderStreamed)
 	eventuallyLatest(t, ctx, network, 1001, "a quorum of eligible sources lifts latest")
 }
@@ -439,7 +439,7 @@ func TestNetworkIntake_PolicyExcludedUpstreamNeverReachesClients(t *testing.T) {
 		t.Fatalf("the client received block %d, which only the excluded upstream has", n)
 	case <-time.After(300 * time.Millisecond):
 	}
-	assert.Equal(t, int64(1002), network.EvmHighestLatestBlockNumber(ctx))
+	assert.Equal(t, int64(1002), servedHead(network, ctx).Latest)
 }
 
 // With failover on, a fallback's head votes only while no eligible primary
@@ -456,7 +456,7 @@ func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 			enableFailover: true,
 			noPolicy:       noPolicy,
 		})
-		require.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx))
+		require.Equal(t, int64(1000), servedHead(network, ctx).Latest)
 		byId := make(map[string]*upstream.Upstream, len(ups))
 		for _, u := range ups {
 			byId[u.Id()] = u
@@ -627,7 +627,7 @@ func TestNetworkIntake_GroupLaneConfirmsWhenLatestMovesWithoutHeader(t *testing.
 		hv := network.EvmHashVoters("g-*", group.W(), false)
 		return ok && tip.Number == 1001 && slices.Equal(hv.Hash, []string{"g-a"})
 	}, 10*time.Second, 10*time.Millisecond, "the lane pins 1001, and only g-a's vote is fresh once g-b's ages past W")
-	require.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(laneCtx), "g-b's counter holds the lane's Latest")
+	require.Equal(t, int64(1000), servedHead(network, laneCtx).Latest, "g-b's counter holds the lane's Latest")
 	time.Sleep(200 * time.Millisecond)
 	if c, ok := group.Confirmed(); ok {
 		require.Less(t, c.Number, uint64(1001), "the lane's Latest holds 1001 back")

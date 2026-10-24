@@ -159,7 +159,7 @@ func (sm *SubscriptionManager) Subscribe(
 		var opened <-chan struct{}
 		if opened, addErr = conn.AddSubscription(clientSubID, key, kind, maxSubs, stop); addErr == nil {
 			sub := wsclient.Subscription{ClientSubID: clientSubID, Kind: kind, NetworkID: key}
-			lane := laneRequest(nq)
+			lane := laneSelector(nq)
 			switch kind {
 			case wsclient.KindLog:
 				nw.bg.Go(func() { sm.runLogs(tapCtx, wsc, sub, opened, nw, lane, logsFilter) })

@@ -52,34 +52,38 @@ func deepCopyValue(val interface{}) interface{} {
 	}
 }
 
-// resolveBlockTagToHex resolves well-known tags to concrete hex numbers using highest known state.
-// IMPORTANT: Only translates tags we can accurately represent. "safe" and "pending" are passed
-// through unchanged as we don't have the necessary state information for accurate translation.
-func resolveBlockTagToHex(ctx context.Context, network common.Network, tag string) (string, bool) {
-	if network == nil {
-		return "", false
+// TagBlockNumber is the block number tag interpolates to for nrq (spec §7):
+// the request Head's Latest for "latest", its Finalized for "finalized". 0
+// when the tag reaches upstreams as is: another tag, the method's
+// translateLatestTag/translateFinalizedTag is off, the request skips
+// interpolation, or the Head is unknown. "safe" and "pending" are never
+// translated: eRPC tracks neither state.
+func TagBlockNumber(ctx context.Context, nrq *common.NormalizedRequest, tag string) int64 {
+	method, _ := nrq.Method()
+	return tagBlockNumber(ctx, nrq, getMethodConfig(method, nrq.Network()), tag)
+}
+
+func tagBlockNumber(ctx context.Context, nrq *common.NormalizedRequest, cfg *common.CacheMethodConfig, tag string) int64 {
+	network := nrq.Network()
+	if network == nil || cfg == nil {
+		return 0
+	}
+	if d := nrq.Directives(); d != nil && d.SkipInterpolation {
+		return 0
 	}
 	switch tag {
 	case "latest":
-		// Translate "latest" to the highest known latest block
-		if bn := common.EvmHighestLatestBlockNumber(network, ctx); bn > 0 {
-			if hx, err := common.NormalizeHex(bn); err == nil {
-				return hx, true
-			}
+		if cfg.TranslateLatestTag != nil && !*cfg.TranslateLatestTag {
+			return 0
 		}
+		return common.EvmHeadOf(network, ctx, nrq).Latest
 	case "finalized":
-		// Translate "finalized" to the highest known finalized block
-		if bn := common.EvmHighestFinalizedBlockNumber(network, ctx); bn > 0 {
-			if hx, err := common.NormalizeHex(bn); err == nil {
-				return hx, true
-			}
+		if cfg.TranslateFinalizedTag != nil && !*cfg.TranslateFinalizedTag {
+			return 0
 		}
-		// "safe" and "pending" are intentionally NOT translated here:
-		// - "safe": Represents a specific consensus state between finalized and latest that we don't track
-		// - "pending": Represents state including mempool transactions, which we don't have visibility into
-		// These tags should be passed through to the upstream unchanged
+		return common.EvmHeadOf(network, ctx, nrq).Finalized
 	}
-	return "", false
+	return 0
 }
 
 // NormalizeHttpJsonRpc normalizes and translates block parameters in JSON-RPC requests.
@@ -126,9 +130,6 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		return
 	}
 
-	// Config flags
-	translateLatest := methodCfg.TranslateLatestTag == nil || *methodCfg.TranslateLatestTag
-	translateFinalized := methodCfg.TranslateFinalizedTag == nil || *methodCfg.TranslateFinalizedTag
 	skipInterpolation := nrq.Directives() != nil && nrq.Directives().SkipInterpolation
 
 	// Aggregators
@@ -202,72 +203,32 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 			} else if blockRef != "" {
 				// Handle tags; do not mutate when blockRef is a hash.
 				switch blockRef {
-				case "latest":
-					seenLatest = true
-					if !skipInterpolation && translateLatest {
-						if hx, ok := resolveBlockTagToHex(ctx, network, blockRef); ok {
-							// Only replace when not a top-level object param
-							if !isTopLevelParamOfMap {
-								newVal = hx
-								changed = true
-							}
-							var resolvedNum int64
-							if n, herr := common.HexToInt64(hx); herr == nil {
-								resolvedNum = n
-								cacheBlockNumber(n)
-							}
-							// Debug log interpolation
-							if network != nil && network.Logger() != nil {
-								lg := network.Logger()
-								ev := lg.Debug().
-									Str("component", "evm").
-									Str("method", method).
-									Interface("requestId", reqId).
-									Str("tag", blockRef).
-									Str("resolvedHex", hx).
-									Int64("resolvedNumber", resolvedNum).
-									Interface("path", p.path).
-									Str("networkId", network.Id()).
-									Str("networkLabel", network.Label()).
-									Bool("translateLatest", translateLatest).
-									Bool("translateFinalized", translateFinalized).
-									Bool("skipInterpolation", skipInterpolation)
-								ev.Msg("interpolated block tag to concrete block number")
-							}
-						}
+				case "latest", "finalized":
+					if blockRef == "latest" {
+						seenLatest = true
+					} else {
+						seenFinalized = true
 					}
-				case "finalized":
-					seenFinalized = true
-					if !skipInterpolation && translateFinalized {
-						if hx, ok := resolveBlockTagToHex(ctx, network, blockRef); ok {
-							// Only replace when not a top-level object param
-							if !isTopLevelParamOfMap {
-								newVal = hx
-								changed = true
-							}
-							var resolvedNum int64
-							if n, herr := common.HexToInt64(hx); herr == nil {
-								resolvedNum = n
-								cacheBlockNumber(n)
-							}
-							// Debug log interpolation
-							if network != nil && network.Logger() != nil {
-								lg := network.Logger()
-								ev := lg.Debug().
-									Str("component", "evm").
-									Str("method", method).
-									Interface("requestId", reqId).
-									Str("tag", blockRef).
-									Str("resolvedHex", hx).
-									Int64("resolvedNumber", resolvedNum).
-									Interface("path", p.path).
-									Str("networkId", network.Id()).
-									Str("networkLabel", network.Label()).
-									Bool("translateLatest", translateLatest).
-									Bool("translateFinalized", translateFinalized).
-									Bool("skipInterpolation", skipInterpolation)
-								ev.Msg("interpolated block tag to concrete block number")
-							}
+					n := tagBlockNumber(ctx, nrq, methodCfg, blockRef)
+					if hx, herr := common.NormalizeHex(n); n > 0 && herr == nil {
+						// Only replace when not a top-level object param
+						if !isTopLevelParamOfMap {
+							newVal = hx
+							changed = true
+						}
+						cacheBlockNumber(n)
+						if network.Logger() != nil {
+							network.Logger().Debug().
+								Str("component", "evm").
+								Str("method", method).
+								Interface("requestId", reqId).
+								Str("tag", blockRef).
+								Str("resolvedHex", hx).
+								Int64("resolvedNumber", n).
+								Interface("path", p.path).
+								Str("networkId", network.Id()).
+								Str("networkLabel", network.Label()).
+								Msg("interpolated block tag to concrete block number")
 						}
 					}
 				default:

@@ -37,13 +37,16 @@ func resolveBlockTagForGetLogs(ctx context.Context, network common.Network, bloc
 		return blockValue, bn
 	}
 
-	// Try to resolve block tags using the network's state poller
-	if resolved, ok := resolveBlockTagToHex(ctx, network, blockValue); ok {
-		bn, err := common.HexToInt64(resolved)
-		if err != nil {
-			return "", 0
-		}
-		return resolved, bn
+	// Resolve latest/finalized to the Head of the request bound to ctx.
+	var bn int64
+	switch blockValue {
+	case "latest":
+		bn = common.EvmHeadOf(network, ctx, nil).Latest
+	case "finalized":
+		bn = common.EvmHeadOf(network, ctx, nil).Finalized
+	}
+	if hx, err := common.NormalizeHex(bn); bn > 0 && err == nil {
+		return hx, bn
 	}
 
 	// Tag could not be resolved (e.g., "safe", "pending", "earliest", or no state available)
