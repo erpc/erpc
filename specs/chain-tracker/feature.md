@@ -68,7 +68,7 @@ Decisions:
 | fork point | The highest pinned block two branches share; replay starts at fork point + 1 |
 | re-anchor | The pins move to another tree |
 | window | What the network-wide tracker holds: the last `maxBackfill` of chain time, at least `reorgWindow` blocks |
-| reorgWindow | Floor of the window; window of group trackers; walk depth; receipts depth; ws lag bound |
+| reorgWindow | Floor of the window; window of group trackers; walk depth; receipts depth; ws lag bound (`reorgWindow` × bt of delivery delay) |
 | logs head | The highest confirmed pin up to which every block's receipts are held or not needed |
 | scheduler | Per (network, instance) limit, classes and backoff for walks, receipts and fill (§8) |
 | mempool feed | Rings of deduplicated pending transactions, one per (network, variant) |
@@ -165,6 +165,10 @@ type Block struct {
     ParentHash [32]byte
     Header     json.RawMessage // verbatim, as first held
     Receipts   json.RawMessage // verbatim; set only for blocks ReadOpts asked for
+    // Ready is when the block became deliverable to this Read: when it
+    // first reached the confirmed head, or the logs head for a Read with
+    // MayMatch. ws taps measure lag from it (§10.2).
+    Ready time.Time
 }
 
 type Batch struct {
@@ -191,8 +195,6 @@ type ChainFeed interface {
     Read(ctx context.Context, c Cursor, o ReadOpts) (Batch, error)
     // Want registers a tap's ReadOpts until release.
     Want(o ReadOpts) (release func())
-    // LogsHead is the logs head (§1); ws logs taps measure lag from it.
-    LogsHead() Cursor
 }
 
 var ErrOutOfRange = errors.New("cursor out of range")
@@ -363,7 +365,7 @@ One `Head` per (network, lane). It is computed when an upstream head changes (lo
 | Field | Rule |
 |---|---|
 | `Latest` | q-th highest voter number; caps, regression guard (1024 blocks, 60s, per instance) and guarantees (`servedTip.guaranteedFor`, `guaranteedMethods`) apply as today |
-| `Finalized` | the same ballot over voters' finalized numbers; a voter without a finalized tag reports latest − the derived depth: 30 min of chain at the block time floor (§6.7), at least `fallbackFinalityDepth` (#1079) |
+| `Finalized` | the same ballot over voters' finalized numbers; a voter without a finalized tag (its tag refused 10 times in a row, never answered) reports latest − the derived depth: 30 min of chain at the block time floor (§6.7), at least `fallbackFinalityDepth` (#1079); until either is known, a voter has no finalized vote |
 | `Leader` | the highest voter within `Latest + maxRetryableBlockDistance` |
 | ceiling | raw max of the reports of the lane's registered upstreams, minus upstreams cordoned for chain identity or whose polls are failing (§6.1); `OldestReportAt` = the oldest time at which those reports' evidence was taken: for an answer, a poll's or a client request's, the time its request was sent (it can show no later head than the node had then); for a push, its receive time |
 
@@ -376,7 +378,7 @@ Refusal rule, for block N on a request:
 |---|---|
 | N ≤ `Latest` | serve |
 | `Latest` < N ≤ ceiling | refresh (Ask with a number need for the lane's upstreams below N that the ceiling counts, voters first, §6.8); an empty or null answer, or a missing-data error, a range refused per upstream included, is a retryable miss once per request, its hedges included; the retry waits for that Ask until it answers, at most W, then orders the request's routed upstreams by the head predicate, head ≥ N first, with no further I/O; the answer after it goes to the client as the upstream gave it |
-| above | future, only when every counted report is younger than 1 bt; the older ones are Asked first (one poll each, single-flight, at most once per bt) and N decided again, counted `future_after_refresh`; a report still older than 1 bt after the Ask keeps N in the band; an estimate of where a stale upstream is now never stands in for asking it |
+| above | future, only when every counted report is younger than 1 bt; the older ones are Asked first (one poll each, single-flight, at most once per bt) and N decided again, counted `future_after_refresh`; a report still older than 1 bt after the Ask keeps N in the band; an estimate of where a stale upstream is now never stands in for asking it; until the first block time sample, every report counts as older than 1 bt |
 
 - Sites: `tryShortCircuitFutureBlock` (with `shortCircuitFutureBlocks`, a future block gets `null` with no dispatch, #1238), `EmptyResultBeyondConfidence` (`enforceNonNullBlock`, empty-is-miss), the `eth_query` range check, and the `eth_getLogs` and `trace_filter` range check: a future `toBlock` is refused, never dispatched, since a node answers a range above its head with the part it has.
 - The availability gate checks configured bounds only (#934). One head predicate adds `headLagToleranceBlocks` to `latestBlockMinus` bounds in the gate and in upstream ordering (#1099); votes and the ceiling keep the bound.
@@ -425,7 +427,7 @@ Other rules:
 - A re-anchor is counted in `erpc_chain_tracker_reanchor_total`.
 - A message's changes are computed first and applied in one step. A panic drops the message and counts the header as `malformed` for its sender. 3 panics of one message kind (source votes count apart from client answers), with no message of that kind handled cleanly between them, reset the tracker to empty, counted in `erpc_chain_tracker_reset_total`; taps continue from their cursors (§10.1). Other kinds come between any two of one kind, so a state that breaks only source votes, or only fetch answers, still resets, while one vendor's bad header among clean ones never does.
 - Each change of the confirmed head wakes the taps.
-- A majority branch that reverts a block at or below `Finalized` is followed, and logged as an error (`final_hash_changed`): clients stay on the chain the upstreams serve.
+- A majority branch that reverts a block at or below `Finalized` is followed, and logged as an error (`final_hash_changed`): clients stay on the chain the upstreams serve. An instance that followed the revert reads such a block past its permanent cache entry, and the fresh answer rewrites the shared entry; an instance started after the revert reads the entry as stored.
 - By-number answers at or below `Finalized` feed integrity's finalized anchors below the window (`observeNarrowAnchors`), only with the evidence quorum. Inside the window, pins win.
 
 Reorg example, three voters:
@@ -462,7 +464,7 @@ Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, th
 
 - One schedule per upstream, with one backoff: the cadence, doubled per failure in a row, at most 60s. The bench reads this backoff (§6.1).
 - Periodic poll: a poll source is Asked once per cadence while `newHeads` is demanded and the upstream is admitted. Every upstream also keeps its full poll every `statePollerInterval` (30s) plus traffic.
-- Ask: single-flight per upstream; every waiter gets the one outcome. A number need is met by a shared counter fresher than the cadence; a hash need only by a local fetch with cache reads skipped.
+- Ask: single-flight per upstream; it joins a fetch in flight, and every waiter gets the one outcome: the answer, an error, or `backoff` when the upstream is backing off. A number need is met by a shared counter fresher than the cadence; a hash need only by a local fetch sent within the cadence, cache reads skipped. Only a fetch sent within the cadence debounces another. So an upstream gets at most one Ask fetch per cadence per instance, and Asks skip rate limits: client load at an upstream's budget never stalls its head (§19 D8).
 
 | Caller | Need |
 |---|---|
@@ -531,10 +533,10 @@ Owner: `architecture/evm/integrity_stateprobe.go`; the skip in `checkEvmUpstream
 
 | Family | Methods | Rule |
 |---|---|---|
-| 1. Head number | `eth_blockNumber`, `erigon_blockNumber` | answer `Latest` |
-| 2. Block by tag | `eth_getBlockByNumber`, `eth_getBlockReceipts`, `eth_getBlockTransactionCountByNumber`, `eth_getTransactionByBlockNumberAndIndex`, uncle-by-number, `trace_block`, `debug_traceBlockByNumber`, `trace_replayBlockTransactions`, `debug_getRaw*`, `erigon_getHeaderByNumber`, `arbtrace_block` | interpolate to `Latest`/`Finalized`; `latest` and `finalized` refresh heads before forward (§6.8); `null` for a numbered tag follows `enforceNonNullBlock` |
-| 3. State at a block | `eth_call`, `eth_estimateGas`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`, `eth_getProof`, `eth_getAccount`, `eth_createAccessList`, `eth_simulateV1`, `eth_callMany`, `debug_traceCall`, `trace_call`, `arbtrace_call*`, `debug_storageRangeAt` | interpolate every form: an absent param means `latest`; the EIP-1898 `blockNumber` leaf is rewritten; `eth_callMany` and `eth_createAccessList` get method config |
-| 4. Ranges | `eth_getLogs`, `trace_filter`, `arbtrace_filter`, `eth_query*` | an absent bound means `latest`, so `toBlock` is never above `Latest` and range limits apply |
+| 1. Head number | `eth_blockNumber`, `erigon_blockNumber` | answer `Latest`; `erigon_blockNumber` with a block param: `finalized` answers `Finalized`, any value but `latest` is forwarded as is |
+| 2. Block by tag | `eth_getBlockByNumber`, `eth_getBlockReceipts`, `eth_getBlockTransactionCountByNumber`, `eth_getTransactionByBlockNumberAndIndex`, uncle-by-number, `trace_block`, `debug_traceBlockByNumber`, `trace_replayBlockTransactions`, `debug_getRaw*`, `erigon_getHeaderByNumber` | interpolate to `Latest`/`Finalized`; `latest` and `finalized` refresh heads before forward (§6.8); `null` for a numbered tag follows `enforceNonNullBlock` |
+| 3. State at a block | `eth_call`, `eth_estimateGas`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`, `eth_getProof`, `eth_getAccount`, `eth_createAccessList`, `eth_simulateV1`, `eth_callMany`, `debug_traceCall`, `trace_call`, `debug_storageRangeAt` | interpolate every form: an absent param means `latest`; the EIP-1898 `blockNumber` leaf is rewritten; `eth_callMany` and `eth_createAccessList` get method config |
+| 4. Ranges | `eth_getLogs`, `trace_filter`, `eth_query*` | an absent bound means `latest`, so `toBlock` is never above `Latest` and range limits apply |
 | 5. By hash | `eth_getBlockByHash`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `trace_transaction`, `eth_getLogs` by `blockHash`; `debug_traceTransaction` too, but its answer names no block, so it is sent as is | sent as is; an answer from above `Latest` follows §6.4 |
 | 6. Pending | `pending` anywhere, `eth_sendRawTransaction`, pending-tx filters and subscriptions | unchanged: one node's mempool |
 | 7. Safe | `safe` tag | unchanged: routed to `evm.safeBlockSource` when set, tag verbatim (#1030) |
@@ -545,11 +547,13 @@ Owner: `architecture/evm/integrity_stateprobe.go`; the skip in `checkEvmUpstream
 
 | Switch | Rule |
 |---|---|
-| `translateLatestTag`, `translateFinalizedTag` | on for every method; off is the per-method opt-out and covers every form (plain tag, absent param, EIP-1898): the tag reaches upstreams as is, and that method leaves the promise |
-| `skip-interpolation` directive | per-request opt-out, unchanged |
+| `translateLatestTag`, `translateFinalizedTag` | on for every method but `arbtrace_*`; off is the per-method opt-out and covers every form (plain tag, absent param, EIP-1898): the tag reaches upstreams as is, an absent selector as the literal `latest`, and that method leaves the promise |
+| `skip-interpolation` directive | per-request opt-out: tags and absent selectors reach upstreams as the client sent them |
 | `evm.pinLatestTag` | pins a lagging upstream to the request's one number, on every attempt and hedge; must stay off for upstreams of a tag-only method |
 
 Chains whose state works only at the tag: on HyperEVM, HyperCore read precompiles (`0x…0800`–`0x…08ff`) fail at any explicit block number, even the exact head; a nested read fails silently. At `latest` they succeed. Such methods set `translateLatestTag: false`; the tag-state gate (§6.11) protects them.
+
+`arbtrace_*` default to `translateLatestTag: false`, absent params staying absent: Arbitrum classic nodes serve them, and their `latest` is not the network's.
 
 ## 8. Tracker fetches
 
@@ -605,11 +609,13 @@ From cursor `c`, first matching case:
 
 | Transport | Reads | Reorg on the wire | Out of range | Wait bounds |
 |---|---|---|---|---|
-| ws `newHeads` | headers | each new-branch head, oldest first | restart after the confirmed head | more than `reorgWindow` behind the confirmed head, nothing Reverted → restart |
-| ws `logs` | receipts where the filter bloom may match | `removed:true` logs of Reverted, newest first; then logs of Applied | close `1013`; closes from one event spread over 60s | more than `reorgWindow` behind the logs head → out of range; 60s on one block's receipts → out of range |
+| ws `newHeads` | headers | each new-branch head, oldest first | restart after the confirmed head | the block after its cursor reached the confirmed head more than `reorgWindow` × bt ago, nothing Reverted → restart |
+| ws `logs` | receipts where the filter bloom may match | `removed:true` logs of Reverted, newest first; then logs of Applied | close `1013`; closes from one event spread over 60s | the block after its cursor reached the logs head more than `reorgWindow` × bt ago → out of range; 60s on one block's receipts → out of range |
 | ws `newPendingTransactions` | mempool | none | skip to the newest | — |
 | gRPC `StreamBlocks` | headers | resend from the fork point | end, `OUT_OF_RANGE` | 60s of stalled Read → `UNAVAILABLE`; one `Send` 10s → `UNAVAILABLE` |
 | Kafka, later | headers, receipts | resend from the fork point | write a reset record, then restart after the confirmed head | — |
+
+A ws tap's lag is the age of the block after its cursor: how long that block has been deliverable. A client that stops reading for `reorgWindow` blocks crosses the bound (§19 D1); a burst never does, since its blocks just arrived and a tap that reads takes them in batches (§19 C7). Each pin is stamped once when it first reaches the confirmed head and once when it first reaches the logs head.
 
 - geth sends only the new head after a reorg; ws `newHeads` sends each new-branch head.
 - ws `newHeads` is lossy, as in geth: a restart shows as a jump in numbers.
@@ -753,7 +759,7 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | receipts | method auto-ignored | ignore entry | the entry expires | 10 min |
 | receipts | wrong bloom from one vendor | answer check | counted on it; refetch from another vendor | 1 fetch |
 | reconciler | panic, missed wake | `recover`, timer | restart; timer at W | W |
-| taps | slow client | lag | ws `logs` out of range and ws `newHeads` restart past `reorgWindow`; gRPC `UNAVAILABLE` after a 10s `Send` | `reorgWindow` blocks |
+| taps | slow client | lag | ws `logs` out of range and ws `newHeads` restart once the block after the cursor has waited `reorgWindow` × bt; gRPC `UNAVAILABLE` after a 10s `Send` | `reorgWindow` × bt |
 | gRPC | instance lags, restarted, or fill is slow | a stalled Read | 60s, then `UNAVAILABLE`; the client reconnects | 60s |
 | mempool | subscription silent | no message for 60s while blocks carry transactions | resubscribe, backing off to 30 min | 60s |
 | integrity follow tap | out of range | Read error | restart after the confirmed head | 1 Read |
@@ -832,6 +838,7 @@ networks:
 | `server.webSocket.subscriptionBufferSize` | deleted: no per-subscription queue |
 | `indexer` (`canonicalChainDepth`, `dedupWindowSize`) | deleted: the mempool bounds in §15.2 replace `dedupWindowSize` |
 | `translateLatestTag` default for `eth_getBlockByNumber` | now on, as for every method; `enforceHighestBlock` for it is deleted |
+| `translateLatestTag` default for `arbtrace_*` | off: classic nodes serve them (§7) |
 | `networks[].evm.fallbackStatePollerDebounce` | default removed (was 5s): unset, the cold-start cadence follows bt's 1s default (§6.7) |
 
 Strict decoding rejects the deleted keys and names the key: a breaking config change, no aliases. The head model adds no config key.
@@ -988,7 +995,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | D5 | 1k subscribe+unsubscribe/s; unsubscribe during a send | `erpc_taps` back to 0; no write after unsubscribe |
 | D6 | bad logs filter; `fromHash` without `fromBlock` | `-32602`; `INVALID_ARGUMENT` |
 | D7 | `maxSubscriptionsPerConnection: 3`; 4th subscribe | `-32005` |
-| D8 | 1 wss + 2 https non-sources; client load at every upstream budget for 30s | tracker Asks still get permits; no stall longer than W |
+| D8 | 1 wss + 2 https non-sources; client load at every upstream budget for 30s | head Asks keep fetching (`erpc_head_ask_total{outcome="fetched"}` rises on each instance), none refused by a budget; no stall longer than W |
 | D9 | pending stream silent with socket open | resubscribe after 60s |
 | X1 | no fault | the oracle holds for every block on both instances |
 | X2 | memory shared state; instance 2 serves only numbered calls | the oracle holds after at most 1 retry; never `future` for a sent block |
@@ -1112,12 +1119,12 @@ One home per fact:
 - A majority branch that reverts a finalized block is followed, and logged as an error.
 - Fallback-tier polls run while no primary has led for 60s: after a primary fails, seconds of head latency, no gap.
 - A polled header and a vendor push can differ in optional fields; the first held wins.
-- ws `logs` slow client: today a full 256-notification buffer closes it with `1013`; now `reorgWindow` blocks of lag behind the logs head do.
+- ws `logs` slow client: today a full 256-notification buffer closes it with `1013`; now a block that waited `reorgWindow` × bt behind the logs head does.
 - One block whose receipts fail for 60s closes every ws `logs` connection of the network with `1013`, spread over 60s.
 - gRPC slow client: today it skips forward past 256 blocks; now the stream ends with `OUT_OF_RANGE` past the window, or `UNAVAILABLE` after a 10s `Send`.
 - A gRPC client whose cursor is an orphan no upstream serves gets `OUT_OF_RANGE` and backfills, even after a 1-block reorg.
 - gRPC `StreamBlocks` stops sending `eth_getBlockByNumber` per block through the request path: per-block rate-limit counting ends, as for ws notifications.
-- Tracker fetches leave client rate limits. They share upstream permits with clients, except catch-up, which yields; when clients use a whole upstream budget, tracker fetches fail with them until load drops.
+- Tracker fetches leave client rate limits. They share upstream permits with clients, except catch-up, which yields; when clients use a whole upstream budget, tracker fetches fail with them until load drops. Head Asks skip rate limits (§6.8): at most one fetch per upstream per cadence per instance, outside the vendor budget an operator configured.
 - Expiring switches re-probe failing vendors: one request per method every 10 min, one `eth_chainId` per cordoned upstream every 5 min.
 - A check that no upstream passes is suspended after 2 heights; on a network with one vendor, that vendor alone can suspend it, and 8 truncated receipts answers in a row turn the bloom check off.
 - Breaking config and metric renames: dashboards and configs need updates in the same release.
