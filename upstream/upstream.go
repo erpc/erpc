@@ -1044,8 +1044,11 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 }
 
 // resolveAvailabilityBounds computes effective [min,max] based on BlockAvailabilityConfig.
-// Returns MinInt64/MaxInt64 when a side is unbounded.
-func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
+// Returns MinInt64/MaxInt64 when a side is unbounded. upperTolerance is added
+// to an upper bound relative to the head: the gate's head predicate
+// (common.EvmHeadReaches) passes the upstream's headLagToleranceBlocks; its
+// vote and the ceiling pass 0 and keep the configured bound (spec §6.4).
+func (u *Upstream) resolveAvailabilityBounds(upperTolerance int64) (int64, int64) {
 	cfg := u.Config()
 	if cfg == nil || cfg.Evm == nil {
 		return math.MinInt64, math.MaxInt64
@@ -1109,10 +1112,7 @@ func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
 			if latest > 0 {
 				val = latest - *bound.LatestBlockMinus
 				if !isLower {
-					// The one head predicate (common.EvmHeadReaches): an
-					// upper bound relative to the head moves with the
-					// upstream's headLagToleranceBlocks.
-					val += common.EvmHeadLagTolerance(u)
+					val += upperTolerance
 				}
 				u.logger.Debug().
 					Int64("latestBlock", latest).
@@ -1171,7 +1171,7 @@ func (u *Upstream) EvmEffectiveLatestBlock() int64 {
 		return 0
 	}
 
-	_, maxBound := u.resolveAvailabilityBounds()
+	_, maxBound := u.resolveAvailabilityBounds(0)
 	if maxBound != math.MaxInt64 && maxBound < latestBlock {
 		return maxBound
 	}
@@ -1189,7 +1189,7 @@ func (u *Upstream) EvmEffectiveFinalizedBlock() int64 {
 		return 0
 	}
 
-	_, maxBound := u.resolveAvailabilityBounds()
+	_, maxBound := u.resolveAvailabilityBounds(0)
 	if maxBound != math.MaxInt64 && maxBound < finalizedBlock {
 		return maxBound
 	}
@@ -1202,7 +1202,7 @@ func (u *Upstream) EvmEffectiveFinalizedBlock() int64 {
 // This is used post-forward to determine if an upstream's MissingData response
 // is expected (block outside configured range) vs. a genuine wrong-empty misbehavior.
 func (u *Upstream) EvmBlockAvailabilityBounds() (int64, int64) {
-	return u.resolveAvailabilityBounds()
+	return u.resolveAvailabilityBounds(common.EvmHeadLagTolerance(u))
 }
 
 // assertUpstreamLowerBound checks if a full node can handle a block based on its lower bound.

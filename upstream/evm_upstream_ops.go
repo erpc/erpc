@@ -141,7 +141,7 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 	}
 
 	// Resolve configured availability bounds (min/max) and enforce before legacy logic
-	minBound, maxBound := u.resolveAvailabilityBounds()
+	minBound, maxBound := u.EvmBlockAvailabilityBounds()
 	if minBound != math.MinInt64 && blockNumber < minBound {
 		telemetry.MetricUpstreamStaleLowerBound.WithLabelValues(
 			u.ProjectId,

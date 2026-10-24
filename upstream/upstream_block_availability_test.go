@@ -1255,4 +1255,20 @@ func TestEvmAssertBlockAvailability_HeadLagTolerance(t *testing.T) {
 		assert.NoError(t, err)
 		assert.False(t, canHandle)
 	})
+
+	// The tolerance moves a latestBlockMinus bound in the gate only; the
+	// upstream's vote and the ceiling keep the configured bound (spec §6.4).
+	t.Run("LatestBlockMinusToleratedInGateOnly", func(t *testing.T) {
+		upstream := newUpstream(2)
+		minus := int64(5)
+		upstream.config.Evm.BlockAvailability = &common.EvmBlockAvailabilityConfig{
+			Upper: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: &minus},
+		}
+		for block, want := range map[int64]bool{997: true, 998: false} {
+			canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, block)
+			assert.NoError(t, err)
+			assert.Equal(t, want, canHandle, "block %d against head-5 bound with tolerance 2", block)
+		}
+		assert.Equal(t, int64(995), upstream.EvmEffectiveLatestBlock(), "the vote keeps head-5")
+	})
 }
