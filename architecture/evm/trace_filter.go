@@ -350,7 +350,7 @@ func upstreamPreForward_trace_filter(ctx context.Context, n common.Network, u co
 		)
 	}
 
-	if err := CheckBlockRangeAvailability(ctx, up, nrq, method, fromBlock, toBlock); err != nil {
+	if err := CheckBlockRangeAvailability(ctx, up, method, fromBlock, toBlock); err != nil {
 		return true, nil, err
 	}
 

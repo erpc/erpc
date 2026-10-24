@@ -899,6 +899,32 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 	return resp, true
 }
 
+// refuseFutureRange refuses a range method (eth_getLogs, trace_filter)
+// whose toBlock the refusal rule calls future, before any dispatch (spec
+// §6.4): a node answers a range above its head with the part it has, so an
+// empty or short answer would pass for the whole range.
+func (n *Network) refuseFutureRange(ctx context.Context, req *common.NormalizedRequest, method string) error {
+	if n.cfg.Architecture != common.ArchitectureEvm || !methodHasDedicatedRangeAvailabilityHook(method) {
+		return nil
+	}
+	v := req.HeadRefusal()
+	if v == nil || v.Rule != common.HeadFuture {
+		return nil
+	}
+	n.countHeadRefusal(futureRule(v))
+	ceiling := common.EvmHeadOf(n, ctx, req).Ceiling
+	return &common.ErrUpstreamBlockUnavailable{
+		BaseError: common.BaseError{
+			Code:    common.ErrCodeUpstreamBlockUnavailable,
+			Message: fmt.Sprintf("block not found for %s, requested toBlock %d is above the highest known block %d", method, v.Block, ceiling),
+			Details: map[string]interface{}{
+				"blockNumber":  v.Block,
+				"highestBlock": ceiling,
+			},
+		},
+	}
+}
+
 // countRefusal counts the refusal rule's outcome for req (spec §17): data
 // is served, or retried_found after a miss; an empty or missing answer is
 // retried_missing in the band, future (future_after_refresh after an Ask)
@@ -1917,6 +1943,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			mlx.Close(ctx, resp, nil)
 		}
 		return resp, nil
+	}
+	if err := n.refuseFutureRange(ctx, req, method); err != nil {
+		common.SetTraceSpanError(forwardSpan, err)
+		if mlx != nil {
+			mlx.Close(ctx, nil, err)
+		}
+		return nil, err
 	}
 
 	// Feed the per-network probe-bus AFTER we know the request is
