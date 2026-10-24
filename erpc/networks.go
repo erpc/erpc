@@ -1742,7 +1742,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	// Route safe-tagged requests before multiplexing and cache lookup.
+	// Route safe-tagged requests before multiplexing and cache lookup; the
+	// project already did for its requests, this covers direct callers.
 	if n.cfg.Architecture == common.ArchitectureEvm {
 		if err := evm.ApplySafeBlockSource(ctx, n, req); err != nil {
 			common.SetTraceSpanError(forwardSpan, err)

@@ -152,6 +152,13 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
+	// The safe-block source picks the request's lane, so it routes before
+	// the first Head read (finality, the pre-forward hooks): a request takes
+	// its lane's Head once (spec §7).
+	if err := evm.ApplySafeBlockSource(ctx, network, nq); err != nil {
+		common.SetTraceSpanError(span, err)
+		return nil, err
+	}
 
 	method, _ := nq.Method()
 
