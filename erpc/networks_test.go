@@ -9303,13 +9303,22 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		}
 	})
 
-	t.Run("FailEvenAfterEnforceLatestBlockUpdateWhenRangeEndIsHigherThanLatestBlock", func(t *testing.T) {
+	// A range ending above every upstream's head (the refusal rule's future,
+	// spec §6.4) is not refused by the block-range guard: it is dispatched,
+	// and the upstream's empty answer is the answer.
+	t.Run("FutureRangeEndIsDispatchedNotRefused", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
 		// Mock eth_getLogs request with toBlock higher than latest block
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x11118899","address":"0x0000000000000000000000000000000000000000"}]}`)
-
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": []interface{}{}})
 		// Mock the eth_getBlockByNumber response for latest block force update
 		gock.New("http://rpc1.localhost").
 			Post("").
@@ -9360,10 +9369,9 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
-		assert.Error(t, err)
-		assert.Nil(t, resp)
-
-		assert.Contains(t, err.Error(), "block not found")
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.True(t, resp.IsResultEmptyish(), "the upstream's empty answer for a future range")
 	})
 
 	t.Run("AvoidLatestBlockUpdateWhenRangeEndIsLowerThanLatestBlock", func(t *testing.T) {

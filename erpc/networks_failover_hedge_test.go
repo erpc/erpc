@@ -105,7 +105,7 @@ func TestFailover_HedgeKeepsEscalatedSibling(t *testing.T) {
 	escape := telemetry.MetricNetworkFallbackEscapeTotal.WithLabelValues("main", "evm:999", "eth_call")
 	escapeBefore := promUtil.ToFloat64(escape)
 	for i := 0; i < 5; i++ {
-		result, err := forwardEthCall(t, ctx, network, i, "0x3ea")
+		result, err := forwardEthCall(t, ctx, network, i, "0x3e8")
 		require.NoError(t, err, "iter %d", i)
 		assert.Equal(t, "0x3333", result, "iter %d", i)
 	}
@@ -134,7 +134,7 @@ func TestFailover_HedgeKeepsSlowFallbackAfterFastFallbackMiss(t *testing.T) {
 	})
 
 	for i := 0; i < 5; i++ {
-		result, err := forwardEthCall(t, ctx, network, i, "0x3ea")
+		result, err := forwardEthCall(t, ctx, network, i, "0x3e8")
 		require.NoError(t, err, "iter %d", i)
 		assert.Equal(t, "0x4444", result, "iter %d", i)
 	}
