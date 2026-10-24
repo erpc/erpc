@@ -135,7 +135,7 @@ func (n *Network) startHeads() {
 		every = headRefreshInterval
 	}
 	n.headLoopOnce.Do(func() {
-		n.refreshHeadsRecovered()
+		n.refreshHeads()
 		n.bg.Go(func() {
 			ticker := time.NewTicker(every)
 			defer ticker.Stop()
@@ -146,25 +146,10 @@ func (n *Network) startHeads() {
 				case <-ticker.C:
 				case <-n.headWake:
 				}
-				n.refreshHeadsRecovered()
+				n.refreshHeads()
 			}
 		})
 	})
-}
-
-func (n *Network) refreshHeadsRecovered() {
-	defer func() {
-		if rec := recover(); rec != nil {
-			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
-				"network-head",
-				fmt.Sprintf("project:%s network:%s", n.projectId, n.networkId),
-				common.ErrorFingerprint(rec),
-			).Inc()
-			n.logger.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).
-				Msg("unexpected panic while computing the network's heads")
-		}
-	}()
-	n.refreshHeads()
 }
 
 // watchHeadCounters makes every move of ups's head counters, by a poll, a
@@ -181,16 +166,34 @@ func (n *Network) watchHeadCounters(ups *upstream.Upstream) {
 	n.headsChanged()
 }
 
-// refreshHeads computes and publishes every lane's Head.
+// refreshHeads computes and publishes every lane's Head. A panic on one
+// lane leaves the others computed, and the pass ends for its waiters.
 func (n *Network) refreshHeads() {
-	n.refreshLane(&n.servedTipAll)
+	defer func() {
+		if c := n.headPass.Swap(nil); c != nil {
+			close(*c)
+		}
+	}()
+	n.refreshLaneRecovered(&n.servedTipAll)
 	n.servedTipLanes.Range(func(_, v any) bool {
-		n.refreshLane(v.(*servedTipLane))
+		n.refreshLaneRecovered(v.(*servedTipLane))
 		return true
 	})
-	if c := n.headPass.Swap(nil); c != nil {
-		close(*c)
-	}
+}
+
+func (n *Network) refreshLaneRecovered(l *servedTipLane) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+				"network-head",
+				fmt.Sprintf("project:%s network:%s lane:%s", n.projectId, n.networkId, l.label),
+				common.ErrorFingerprint(rec),
+			).Inc()
+			n.logger.Error().Interface("panic", rec).Str("lane", l.label).Str("stack", string(debug.Stack())).
+				Msg("unexpected panic while computing a lane's head")
+		}
+	}()
+	n.refreshLane(l)
 }
 
 // refreshLane computes l's Head and publishes it in one step. A change of
