@@ -35,6 +35,10 @@ const (
 	// healthyDelivery bounds a block's first header on a pod → client
 	// receipt, and any wait between two receipts (spec §15.1, U3, X9).
 	healthyDelivery = liveBound + tapProcessingSlack
+	// otherInstanceWait: another instance answers a delivered block by
+	// number within W, plus the tracker's processing (§19 oracle): both
+	// follow the same voters, so they disagree on a branch for at most W.
+	otherInstanceWait = liveBound + tapProcessingSlack
 	// settleDelivery adds one settle round, itself within a live bound, for
 	// sources that disagree (§6 rule 5, §13.1 "sources disagree: 1 settle").
 	settleDelivery = healthyDelivery + liveBound

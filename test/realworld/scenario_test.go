@@ -706,9 +706,9 @@ func (s *scenario) blockAnswer(pod int, sel string, method string, args ...inter
 
 // checkHead applies the oracle to a newHeads delivery on pod, through the
 // client's use-upstream selector: the same pod's eth_blockNumber covers it
-// at once; by hash it is on every pod; by number it is on every pod, or a
-// later reorg tells the client otherwise. Numbered pods get the by-number
-// check only.
+// at once; by hash it is on every pod; by number it is on the same pod at
+// once and on another within otherInstanceWait, or a later reorg tells the
+// client otherwise. Numbered pods get the by-number check only.
 func (s *scenario) checkHead(c *headsClient, pod int, n uint64, h hash, delivered time.Time) {
 	s.checks.Add(1)
 	go func() {
@@ -732,8 +732,16 @@ func (s *scenario) checkHead(c *headsClient, pod int, n uint64, h hash, delivere
 				}
 			}
 			read := time.Now()
-			got := s.memoize(fmt.Sprintf("number/%d/%s/%d/%s", target, sel, n, h.Hex()), func() string {
-				return s.blockAnswer(target, sel, "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
+			got := s.memoize(fmt.Sprintf("number/%d/%s/%d/%s/from-%d", target, sel, n, h.Hex(), pod), func() string {
+				got := s.blockAnswer(target, sel, "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
+				if got != h.Hex() && target != pod {
+					// Another instance may still be on the branch the
+					// delivering one left, until it has followed the same
+					// voters.
+					time.Sleep(time.Until(delivered.Add(otherInstanceWait)))
+					got = s.blockAnswer(target, sel, "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
+				}
+				return got
 			})
 			if got != h.Hex() && !s.excused(target, start, time.Now()) && !s.minorityGrace(target, read, got) {
 				c.mismatch(pendingNumber{target: target, number: n, hash: h, got: got, delivered: delivered})
