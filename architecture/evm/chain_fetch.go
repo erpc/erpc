@@ -65,7 +65,6 @@ type fetchSpec struct {
 	method   string
 	params   string // JSON array
 	byHash   bool
-	final    bool // a by-number fetch at or below the network's finalized height
 	fresh    bool // a refetch after a wrong answer: never from the cache
 	client   bool // on a client request path: never waits out the key's backoff
 	decode   func(result []byte) (any, error)
@@ -82,10 +81,11 @@ func (s fetchSpec) key() fetchKey {
 
 // directives keep the integrity engine off the fetch and select the
 // tracker's upstream policies, which for fill yield rate permits to
-// clients. Only an answer that cannot change may come from the cache: one
-// addressed by hash, or a block at or below the finalized height. A tag
-// reaches the upstream as is: the tracker's "latest" is a report the Head
-// is computed from, never a number the Head already holds.
+// clients. Only an answer addressed by hash may come from the cache (spec
+// §8): a block by number, finalized included, can be reverted by the
+// majority (§6.5), and a cached one would hide that. A tag reaches the
+// upstream as is: the tracker's "latest" is a report the Head is computed
+// from, never a number the Head already holds.
 func (s fetchSpec) directives() *common.RequestDirectives {
 	d := &common.RequestDirectives{IsInternal: true, UpstreamPolicies: common.UpstreamPoliciesTracker, SkipInterpolation: true}
 	if s.class == classFill {
@@ -94,7 +94,7 @@ func (s fetchSpec) directives() *common.RequestDirectives {
 	if s.upstream == "" {
 		d.UseUpstream = s.selector
 	}
-	if !s.byHash && !s.final || s.fresh {
+	if !s.byHash || s.fresh {
 		d.SkipCacheRead = "true"
 	}
 	return d

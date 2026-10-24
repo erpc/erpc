@@ -76,6 +76,14 @@ type ChainTracker struct {
 	receipts sync.Map // lowercase block hash -> *heldReceipts
 	anchors  sync.Map // int64 -> *anchorEntry: finalized narrow anchors
 
+	// revertedFinal holds the spans of finalized blocks a followed
+	// majority branch reverted (recordMove), newest last, at most
+	// maxRevertedFinal; any goroutine reads it.
+	revertedFinal atomic.Pointer[[]heightSpan]
+	// unlinkedPins are the pins a re-anchor left below the new tree; only
+	// the tracker's goroutine reads or writes them (recordMove).
+	unlinkedPins []*chainHeader
+
 	wantMu      sync.Mutex
 	wants       map[uint64]indexer.ReadOpts
 	wantID      uint64
@@ -1238,7 +1246,10 @@ func (t *ChainTracker) apply(path []*node) {
 
 // recordMove counts a re-anchor, or the depth of a reorg, from old to path,
 // and sets the head gauge. A reverted block at or below the finalized
-// height is followed, and logged as an error.
+// height is followed, logged as an error (final_hash_changed) and kept in
+// revertedFinal, so no permanent cache entry serves the old branch (spec
+// §6.5). A re-anchor's old pins below the new tree are decided once fill
+// links that tree down to them (unlinkedPins).
 func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	head := path[len(path)-1].h
 	telemetry.MetricChainTrackerHead.WithLabelValues(t.projectId(), t.networkLabel(), t.group).Set(float64(head.number))
@@ -1246,12 +1257,15 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 		return
 	}
 	base := path[0].h.number
-	onPath := func(h *chainHeader) bool {
-		return h.number >= base && h.number-base < uint64(len(path)) && path[h.number-base].h == h
+	pathAt := func(n uint64) *chainHeader {
+		if n >= base && n-base < uint64(len(path)) {
+			return path[n-base].h
+		}
+		return nil
 	}
 	fork := -1
 	for i := len(old) - 1; i >= 0; i-- {
-		if onPath(old[i]) {
+		if pathAt(old[i].number) == old[i] {
 			fork = i
 			break
 		}
@@ -1266,15 +1280,73 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 		telemetry.MetricChainTrackerReorgDepth.WithLabelValues(t.projectId(), t.networkLabel(), t.group).
 			Observe(float64(reverted))
 	}
-	if fork == len(old)-1 {
-		return
+	var span heightSpan
+	replaced := func(hs []*chainHeader) {
+		for _, h := range hs {
+			if p := pathAt(h.number); p != nil && p != h {
+				if span.hi == 0 {
+					span.lo = int64(h.number)
+				}
+				span.lo, span.hi = min(span.lo, int64(h.number)), max(span.hi, int64(h.number))
+			}
+		}
 	}
-	lowest := old[fork+1].number
-	if fin := t.finalizedHead(); fin > 0 && int64(lowest) <= fin {
-		log.Error().Str("network", t.networkLabel()).Str("group", t.group).
-			Uint64("revertedFrom", lowest).Int64("finalized", fin).Uint64("head", head.number).
+	replaced(old)
+	if len(t.unlinkedPins) > 0 {
+		replaced(t.unlinkedPins)
+		if base <= t.unlinkedPins[0].number {
+			t.unlinkedPins = nil
+		}
+	}
+	if fork < 0 && base > old[0].number {
+		t.unlinkedPins = old
+	}
+	if fin := t.finalizedHead(); span.hi > 0 && fin > 0 && span.lo <= fin {
+		log.Error().Str("network", t.networkLabel()).Str("group", t.group).Str("invariant", "final_hash_changed").
+			Int64("revertedFrom", span.lo).Int64("finalized", fin).Uint64("head", head.number).
 			Msg("chain tracker followed a majority branch that reverts a finalized block")
+		t.addRevertedFinal(heightSpan{lo: span.lo, hi: min(span.hi, fin)})
 	}
+}
+
+// maxRevertedFinal bounds revertedFinal: a majority revert of finalized
+// blocks is a rare chain event.
+const maxRevertedFinal = 16
+
+// heightSpan is the block numbers lo through hi.
+type heightSpan struct{ lo, hi int64 }
+
+// addRevertedFinal publishes s in revertedFinal, the oldest span leaving
+// at the bound. Only the tracker's goroutine calls it.
+func (t *ChainTracker) addRevertedFinal(s heightSpan) {
+	var spans []heightSpan
+	if p := t.revertedFinal.Load(); p != nil {
+		spans = *p
+	}
+	if len(spans) >= maxRevertedFinal {
+		spans = spans[len(spans)-maxRevertedFinal+1:]
+	}
+	next := append(append(make([]heightSpan, 0, len(spans)+1), spans...), s)
+	t.revertedFinal.Store(&next)
+}
+
+// RevertedFinal reports whether a followed majority branch reverted block
+// n while it was at or below Finalized on this instance: a permanent
+// cache entry for n may hold the old branch.
+func (t *ChainTracker) RevertedFinal(n int64) bool {
+	if t == nil {
+		return false
+	}
+	p := t.revertedFinal.Load()
+	if p == nil {
+		return false
+	}
+	for _, s := range *p {
+		if n >= s.lo && n <= s.hi {
+			return true
+		}
+	}
+	return false
 }
 
 // evict drops every held header outside its tree's window (keeps), every
@@ -2425,7 +2497,6 @@ func (t *ChainTracker) headerSpec(class fetchClass, method, blockRef, upstream s
 		method:   method,
 		params:   `["` + blockRef + `",false]`,
 		byHash:   method == "eth_getBlockByHash",
-		final:    method == "eth_getBlockByNumber" && t.atOrBelowFinalized(blockRef),
 		client:   client,
 		decode: func(result []byte) (any, error) {
 			if r := bytes.TrimSpace(result); len(r) == 0 || bytes.Equal(r, []byte("null")) {
@@ -2469,17 +2540,6 @@ func (t *ChainTracker) fetchHeader(ctx context.Context, class fetchClass, method
 		return nil, res.err
 	}
 	return h, nil
-}
-
-// atOrBelowFinalized reports whether a hex block number is at or below the
-// network's finalized height, where the block can no longer change.
-func (t *ChainTracker) atOrBelowFinalized(blockRef string) bool {
-	n, err := common.HexToInt64(blockRef)
-	if err != nil {
-		return false
-	}
-	fin := t.finalizedHead()
-	return fin > 0 && n <= fin
 }
 
 // headerMatchesRef reports whether a fetched header is the block the request

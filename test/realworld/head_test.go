@@ -56,9 +56,10 @@ const (
 	// answer and the next request's arrival (§7: one Head read per
 	// request).
 	p6Advance = 1
-	// revertDepth reverts blocks below every vendor's finalized tag (§19
-	// C12).
-	revertDepth = chainsim.FinalizedLag + 6
+	// revertDepth reverts blocks below every vendor's finalized tag and
+	// below Head.Finalized, which trails the voters' finalized by up to W,
+	// liveBound / blockTime = 10 blocks (§6.8 #1265; §19 C12), by 6.
+	revertDepth = chainsim.FinalizedLag + 10 + 6
 	// p7FinalityDepth: http-b finalizes this deep, below Head.Finalized
 	// (§6.4: permanent writes need the serving upstream's finalized).
 	p7FinalityDepth = 200
@@ -366,9 +367,11 @@ func p6() spec {
 // 1, each pod logs final_hash_changed, and no permanent cache entry keeps
 // a reverted block: by-number reads before the revert do not survive it
 // (§6.5 "a majority branch that reverts a block at or below Finalized is
-// followed", §15.3).
+// followed", §15.3). The revert is deeper than reorgWindow, so newHeads
+// restarts after the reverted batch (a jump) and ws logs end 1013 within
+// their close spread (§10.2, §15.1), as in C3.
 func c12() spec {
-	return spec{name: "C12", cache: true, bound: deepReorgDelivery, allow: []string{"ws:logs-end"}, body: func(s *scenario) {
+	return spec{name: "C12", cache: true, bound: deepReorgDelivery, allow: []string{"ws:logs-end", "ws:jump"}, body: func(s *scenario) {
 		s.blocks(50)
 		revertFinalized(s)
 		s.blocks(25)
@@ -399,7 +402,7 @@ func revertFinalized(s *scenario) {
 	if replaced == 0 {
 		s.violate(s.name, "harness: no read height %d…%d was reverted (fork point %d)", heights[0], heights[len(heights)-1], r.old[0].Number-1)
 	}
-	time.Sleep(deepReorgDelivery + reconnectSlack)
+	time.Sleep(max(deepReorgDelivery, logsCloseSpread) + reconnectSlack)
 	for pod := range s.h.pods {
 		for _, n := range heights {
 			if got, want := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false), s.chain.CanonAt(n).Hash.Hex(); got != want {
@@ -444,7 +447,7 @@ func (s *scenario) podLogged(pod int, text string) bool {
 // reverts it; a permanent cache write needs the serving upstream to have
 // finalized the block (§6.4 Finality, #90).
 func p7() spec {
-	return spec{name: "P7", cache: true, bound: deepReorgDelivery, allow: []string{"ws:logs-end"},
+	return spec{name: "P7", cache: true, bound: deepReorgDelivery, allow: []string{"ws:logs-end", "ws:jump"},
 		faults: map[string]chainsim.Faults{"http-b": {FinalityDepth: p7FinalityDepth}},
 		body: func(s *scenario) {
 			s.blocks(50)

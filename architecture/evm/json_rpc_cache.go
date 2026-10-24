@@ -211,7 +211,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		policySpan.End()
 		return nil, err
 	}
-	if len(policies) == 0 {
+	if len(policies) == 0 || finState == common.DataFinalityStateFinalized && revertedFinal(ctx, req) {
 		telemetry.MetricCacheGetSkippedTotal.WithLabelValues(
 			c.projectId,
 			req.NetworkLabel(),
@@ -1228,6 +1228,15 @@ func shouldCacheResponse(
 	default:
 		return false, fmt.Errorf("unknown cache empty behavior: %s", policy.EmptyState())
 	}
+}
+
+// revertedFinal reports whether req's block is one a followed majority
+// branch reverted at or below Finalized (spec §6.5): a permanent entry
+// written before the revert may hold the old branch, so the read skips the
+// cache and the fresh answer replaces it.
+func revertedFinal(ctx context.Context, req *common.NormalizedRequest) bool {
+	_, bn, _ := ExtractBlockReferenceFromRequest(ctx, req)
+	return bn > 0 && ChainTrackerOf(ctx, req.Network(), "").RevertedFinal(bn)
 }
 
 // useUpstreamSelector returns the request's use-upstream directive, used to gate
