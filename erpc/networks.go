@@ -825,13 +825,18 @@ func (n *Network) EvmRefreshLatestBlock(ctx context.Context) {
 	}
 }
 
-// EvmRefreshHeadsBelow Asks, in the background, with a number need, every
-// upstream selector's lane ceiling counts whose head is below block (spec
-// §6.4 band, §6.5 catch-up), voters first: a syncing upstream votes for no
-// Latest yet may hold the block, and the band's retry orders upstreams by
-// these heads. It joins the lane's Ask in flight, if any.
+// EvmRefreshHeadsBelow Asks, in the background, with a number need, the
+// voters of selector's lane whose head is below block (spec §6.5 catch-up,
+// §6.4 by-hash hold): Latest is their ballot, so no other upstream moves
+// it. It joins an Ask in flight to an upstream, if any.
 func (n *Network) EvmRefreshHeadsBelow(selector string, block int64) {
-	n.askLane(selector, block)
+	var voters []common.EvmUpstream
+	for u := range n.tipCandidates(selector) {
+		if _, _, ok := tipVoterRank(u, false, n.metricsTracker); ok {
+			voters = append(voters, u.(common.EvmUpstream))
+		}
+	}
+	n.askBelow(selector, block, voters)
 }
 
 // EvmPollHeads polls the latest header of each upstream in ids for a hash
@@ -1821,6 +1826,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				lg.Debug().Object("response", resp).Msgf("response served from cache")
 			} else {
 				lg.Info().Msgf("response served from cache")
+			}
+			if n.cfg.Architecture == common.ArchitectureEvm {
+				resp, _ = n.holdByHash(ctx, req, resp)
 			}
 			if mlx != nil {
 				mlx.Close(ctx, resp, err)

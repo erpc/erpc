@@ -8,9 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -498,4 +500,109 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	assert.Contains(t, jrr.GetResultString(), "0x270f", "the answer after the future block's one miss")
 	assert.Positive(t, first.Load(), "the first upstream answered null")
 	assert.Equal(t, int64(1), second.Load(), "one retry")
+}
+
+// mockMethodAnswer makes every listed upstream answer method with result,
+// counting each dispatch.
+func mockMethodAnswer(method, result string, dispatched *atomic.Int64, ids ...string) {
+	for _, id := range ids {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				if !strings.Contains(util.SafeReadBody(r), `"`+method+`"`) {
+					return false
+				}
+				dispatched.Add(1)
+				return true
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":` + result + `}`))
+	}
+}
+
+// A by-hash answer from a block above Latest waits up to 1 bt, then is
+// null, from the cache as from an upstream (spec §6.4, §7 family 5): two
+// instances share a cache, and instance 1, one block ahead, cached a
+// receipt of its Latest. eth_getLogs by blockHash is of the family, and a
+// request that ends during the wait gets null too.
+func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cacheCfg := &common.CacheConfig{
+		Connectors: []*common.ConnectorConfig{{
+			Id:     "mem",
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		}},
+		Policies: []*common.CachePolicyConfig{{
+			Network:   "*",
+			Method:    "*",
+			Finality:  common.DataFinalityStateUnfinalized,
+			TTL:       common.FixedDuration(time.Hour),
+			Connector: "mem",
+		}},
+	}
+	require.NoError(t, cacheCfg.SetDefaults())
+	cache, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, cacheCfg)
+	require.NoError(t, err)
+
+	ahead, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "hc1", chainID: 123, latestBlock: 101},
+		{id: "hc2", chainID: 123, latestBlock: 101},
+	})
+	behind, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "hd1", chainID: 123, latestBlock: 100},
+		{id: "hd2", chainID: 123, latestBlock: 100},
+	})
+	ahead.cacheDal = cache.WithProjectId("test")
+	behind.cacheDal = cache.WithProjectId("test")
+	require.Equal(t, int64(101), servedHead(ahead, ctx).Latest)
+	require.Equal(t, int64(100), servedHead(behind, ctx).Latest)
+
+	const receipt = `{"blockNumber":"0x65","blockHash":"0x00000000000000000000000000000000000000000000000000000000000000b1","transactionHash":"0x00000000000000000000000000000000000000000000000000000000000000a1","status":"0x1"}`
+	var aheadCalls, behindCalls atomic.Int64
+	mockMethodAnswer("eth_getTransactionReceipt", receipt, &aheadCalls, "hc1", "hc2")
+	mockMethodAnswer("eth_getTransactionReceipt", receipt, &behindCalls, "hd1", "hd2")
+	const receiptReq = `{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0x00000000000000000000000000000000000000000000000000000000000000a1"]}`
+
+	req := common.NewNormalizedRequest([]byte(receiptReq))
+	resp, err := ahead.Forward(ctx, req)
+	require.NoError(t, err)
+	jrr, err := resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	require.Contains(t, jrr.GetResultString(), `"0x65"`, "instance 1's Latest includes the block")
+	require.Eventually(t, func() bool {
+		probe := common.NewNormalizedRequest([]byte(receiptReq))
+		probe.SetNetwork(behind)
+		got, err := cache.WithProjectId("test").Get(ctx, probe)
+		return err == nil && got != nil && !got.IsResultEmptyish(ctx)
+	}, 2*time.Second, 20*time.Millisecond, "instance 1 cached the receipt")
+
+	start := time.Now()
+	req = common.NewNormalizedRequest([]byte(receiptReq))
+	resp, err = behind.Forward(ctx, req)
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "null", jrr.GetResultString(), "a cached receipt above instance 2's Latest is null after the hold")
+	assert.GreaterOrEqual(t, time.Since(start), 500*time.Millisecond, "held up to 1 bt first")
+	assert.Zero(t, behindCalls.Load(), "served from the cache")
+
+	var logsCalls atomic.Int64
+	mockMethodAnswer("eth_getLogs", `[{"blockNumber":"0x65","blockHash":"0x00000000000000000000000000000000000000000000000000000000000000b1","logIndex":"0x0"}]`, &logsCalls, "hd1", "hd2")
+	reqCtx, reqCancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer reqCancel()
+	req = common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"blockHash":"0x00000000000000000000000000000000000000000000000000000000000000b1"}]}`))
+	resp, err = behind.Forward(reqCtx, req)
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "null", jrr.GetResultString(), "logs by hash above Latest, request ended during the hold")
+	assert.Positive(t, logsCalls.Load(), "dispatched to an upstream")
 }

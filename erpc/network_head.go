@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
-	"strings"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -373,47 +372,62 @@ func (n *Network) ceilingUpstreams(sel string) []*upstream.Upstream {
 	return out
 }
 
-// askLane Asks, with a number need, each upstream selector sel's lane
-// ceiling counts whose head is below block, voters first (spec §6.4,
-// §6.8): a poll debounced by this instance's last fetch of it, on the
-// network's context bounded by W, so no caller's end fails it for the
-// others. One poll per upstream is in flight at a time; a caller finding
-// one joins it. It returns a channel per asked upstream, closed when its
-// poll ends.
-func (n *Network) askLane(sel string, block int64) []<-chan struct{} {
+// EvmAskBand Asks, in the background, with a number need, each upstream
+// selector's lane ceiling counts whose head is below block, voters first
+// (spec §6.4 band): a syncing upstream votes for no Latest yet may hold
+// the block, and the band's retry orders upstreams by these heads.
+func (n *Network) EvmAskBand(selector string, block int64) {
+	n.askBand(selector, block)
+}
+
+// askBand is EvmAskBand, returning a channel per asked upstream, closed
+// when its poll ends.
+func (n *Network) askBand(sel string, block int64) []<-chan struct{} {
+	ups := n.ceilingUpstreams(sel)
+	targets := make([]common.EvmUpstream, 0, len(ups))
+	for _, voters := range [2]bool{true, false} {
+		for _, u := range ups {
+			if _, _, ok := tipVoterRank(u, false, n.metricsTracker); ok == voters {
+				targets = append(targets, u)
+			}
+		}
+	}
+	return n.askBelow(sel, block, targets)
+}
+
+// askBelow Asks each of targets whose head is below block, in order: a
+// poll debounced by this instance's last fetch of it, on the network's
+// context bounded by W, so no caller's end fails it for the others. One
+// poll per upstream is in flight at a time; a caller finding one joins it.
+// It returns a channel per asked upstream, closed when its poll ends.
+func (n *Network) askBelow(sel string, block int64, targets []common.EvmUpstream) []<-chan struct{} {
 	parent := n.appCtx
 	if parent == nil {
 		parent = context.Background()
 	}
 	var polls []<-chan struct{}
-	ups := n.ceilingUpstreams(sel)
-	for _, voters := range [2]bool{true, false} {
-		for _, u := range ups {
-			if _, _, ok := tipVoterRank(u, false, n.metricsTracker); ok != voters {
-				continue
-			}
-			sp := u.EvmStatePoller()
-			if sp == nil || sp.IsObjectNull() {
-				continue
-			}
-			if head, _ := evmTipObservation(u, false); head >= block {
-				continue
-			}
-			done := make(chan struct{})
-			if cur, inFlight := n.asks.LoadOrStore(u.Id(), (<-chan struct{})(done)); inFlight {
-				polls = append(polls, cur.(<-chan struct{}))
-				continue
-			}
-			polls = append(polls, done)
-			go func() {
-				defer close(done)
-				defer n.asks.Delete(u.Id())
-				defer n.recoverAskPanic(sel)
-				ctx, cancel := context.WithTimeout(parent, health.FreshnessWindow(n.EvmBlockTime()))
-				defer cancel()
-				_, _ = sp.PollLatestBlockNumber(ctx)
-			}()
+	for _, u := range targets {
+		sp := u.EvmStatePoller()
+		if sp == nil || sp.IsObjectNull() {
+			continue
 		}
+		if head, _ := evmTipObservation(u, false); head >= block {
+			continue
+		}
+		done := make(chan struct{})
+		if cur, inFlight := n.asks.LoadOrStore(u.Id(), (<-chan struct{})(done)); inFlight {
+			polls = append(polls, cur.(<-chan struct{}))
+			continue
+		}
+		polls = append(polls, done)
+		go func() {
+			defer close(done)
+			defer n.asks.Delete(u.Id())
+			defer n.recoverAskPanic(sel)
+			ctx, cancel := context.WithTimeout(parent, health.FreshnessWindow(n.EvmBlockTime()))
+			defer cancel()
+			_, _ = sp.PollLatestBlockNumber(ctx)
+		}()
 	}
 	return polls
 }
@@ -431,10 +445,10 @@ func (n *Network) recoverAskPanic(sel string) {
 }
 
 // awaitBandAsk joins the band's Ask of selector sel's lane for block
-// (askLane) and waits for its polls, at most 1 bt or until ctx ends, so the
+// (askBand) and waits for its polls, at most 1 bt or until ctx ends, so the
 // band's retry orders upstreams on the heads it brings (spec §6.4).
 func (n *Network) awaitBandAsk(ctx context.Context, sel string, block int64) {
-	polls := n.askLane(sel, block)
+	polls := n.askBand(sel, block)
 	if len(polls) == 0 {
 		return
 	}
@@ -455,17 +469,25 @@ func (n *Network) awaitBandAsk(ctx context.Context, sel string, block int64) {
 	}
 }
 
-// holdByHash returns the answer to send for resp, an answer to req, which
-// names a block or transaction by hash (spec §6.4): from a block above its
-// lane's Latest, it waits up to 1 bt while the voters below that block
-// refresh, then is sent if Latest includes the block, else it is null.
-// held: resp was replaced by null.
+// byHashFamily is the §7 by-hash family, eth_getLogs by blockHash included
+// (spec §6.4): each method's path to the block number in its answer.
+// debug_traceTransaction is not here: its answer names no block.
+var byHashFamily = map[string][]interface{}{
+	"eth_getBlockByHash":        {"number"},
+	"eth_getTransactionByHash":  {"blockNumber"},
+	"eth_getTransactionReceipt": {"blockNumber"},
+	"trace_transaction":         {0, "blockNumber"},
+	"eth_getLogs":               {0, "blockNumber"},
+}
+
+// holdByHash returns the answer to send for resp, an answer to req, from
+// an upstream or the cache (spec §6.4): a by-hash answer from a block
+// above its lane's Latest waits up to 1 bt while the voters below that
+// block refresh, then is sent if Latest includes the block, else it is
+// null, as it is when ctx ends first. held: resp was replaced by null.
 func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (out *common.NormalizedResponse, held bool) {
-	if resp == nil || resp.IsObjectNull(ctx) || resp.IsResultEmptyish(ctx) || !namesHash(ctx, req) {
-		return resp, false
-	}
-	_, bn, err := evm.ExtractBlockReferenceFromResponse(ctx, resp)
-	if err != nil || bn <= 0 {
+	bn := byHashBlock(ctx, req, resp)
+	if bn <= 0 {
 		return resp, false
 	}
 	sel := ""
@@ -495,31 +517,59 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 		select {
 		case <-moved:
 		case <-timer.C:
-			jrr, err := common.NewJsonRpcResponse(req.ID(), nil, nil)
-			if err != nil {
-				return resp, false
-			}
-			return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr), true
+			return nullAnswer(req, resp)
 		case <-ctx.Done():
-			return resp, false
+			return nullAnswer(req, resp)
 		}
 		at, moved = latest()
 	}
 	return resp, false
 }
 
-// namesHash reports whether req's first param is a 32-byte hash: a block
-// or transaction named by hash.
-func namesHash(ctx context.Context, req *common.NormalizedRequest) bool {
+// nullAnswer is a null answer to req, held instead of resp; resp itself
+// when the null cannot be built.
+func nullAnswer(req *common.NormalizedRequest, resp *common.NormalizedResponse) (*common.NormalizedResponse, bool) {
+	jrr, err := common.NewJsonRpcResponse(req.ID(), nil, nil)
+	if err != nil {
+		return resp, false
+	}
+	return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr), true
+}
+
+// byHashBlock is the block number resp names when req is of the by-hash
+// family (byHashFamily), else 0.
+func byHashBlock(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) int64 {
+	if resp == nil || resp.IsObjectNull(ctx) || resp.IsResultEmptyish(ctx) {
+		return 0
+	}
 	jrq, err := req.JsonRpcRequest(ctx)
 	if err != nil || jrq == nil {
-		return false
+		return 0
 	}
 	jrq.RLock()
-	defer jrq.RUnlock()
-	if len(jrq.Params) == 0 {
-		return false
+	path, ok := byHashFamily[jrq.Method]
+	if ok && jrq.Method == "eth_getLogs" {
+		var f map[string]interface{}
+		if len(jrq.Params) > 0 {
+			f, _ = jrq.Params[0].(map[string]interface{})
+		}
+		_, ok = f["blockHash"]
 	}
-	h, ok := jrq.Params[0].(string)
-	return ok && len(h) == 66 && strings.HasPrefix(h, "0x")
+	jrq.RUnlock()
+	if !ok {
+		return 0
+	}
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil || jrr == nil {
+		return 0
+	}
+	s, err := jrr.PeekStringByPath(ctx, path...)
+	if err != nil {
+		return 0
+	}
+	bn, err := common.HexToInt64(s)
+	if err != nil {
+		return 0
+	}
+	return bn
 }

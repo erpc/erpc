@@ -12,7 +12,7 @@ import (
 // its block time, and the band's Ask of the upstreams below a block.
 type headRefuser interface {
 	EvmBlockTime() time.Duration
-	EvmRefreshHeadsBelow(selector string, block int64)
+	EvmAskBand(selector string, block int64)
 }
 
 // HeadRefusalOf is the refusal verdict for rq's block, decided once: by the
@@ -54,7 +54,7 @@ func DecideHeadRefusal(nw common.Network, h common.EvmHead, sel string, n int64)
 	}
 	v := &common.HeadRefusal{Block: n, Rule: h.Rule(n, bt, time.Now())}
 	if v.Rule == common.HeadBand && net != nil {
-		net.EvmRefreshHeadsBelow(sel, n)
+		net.EvmAskBand(sel, n)
 	}
 	return v
 }
