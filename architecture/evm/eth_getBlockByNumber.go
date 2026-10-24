@@ -11,12 +11,31 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// networkPreForward_eth_getBlockByNumber asks the voters' pollers for a
-// debounced background refresh of the axis the request's "latest" or
-// "finalized" tag names (spec §7 family 2), as eth_blockNumber does: the
-// tag is interpolated to the request's Head, and the next request reads a
-// fresher one.
-func networkPreForward_eth_getBlockByNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
+// blockByTagFamily is spec §7 family 2, lower-cased: the methods that read
+// one block by number or tag.
+var blockByTagFamily = map[string]struct{}{
+	"eth_getblockbynumber":                    {},
+	"eth_getblockreceipts":                    {},
+	"eth_getblocktransactioncountbynumber":    {},
+	"eth_gettransactionbyblocknumberandindex": {},
+	"eth_getunclebyblocknumberandindex":       {},
+	"eth_getunclecountbyblocknumber":          {},
+	"trace_block":                             {},
+	"debug_traceblockbynumber":                {},
+	"trace_replayblocktransactions":           {},
+	"debug_getrawblock":                       {},
+	"debug_getrawheader":                      {},
+	"debug_getrawreceipts":                    {},
+	"erigon_getheaderbynumber":                {},
+	"arbtrace_block":                          {},
+}
+
+// networkPreForward_blockByTag asks the voters' pollers for a debounced
+// background refresh of the axis the request's "latest" or "finalized" tag
+// names (spec §7 family 2), as eth_blockNumber does: the tag is
+// interpolated to the request's Head, and the next request reads a fresher
+// one.
+func networkPreForward_blockByTag(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
 	switch requestBlockTag(ctx, nq) {
 	case "latest":
 		common.EvmRefreshHead(network, ctx, false)

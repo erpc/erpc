@@ -2160,12 +2160,17 @@ func TestInterpolation_EveryForm(t *testing.T) {
 		{name: "eth_getLogs absent bounds", method: "eth_getLogs", params: `[{"address":"0x0000000000000000000000000000000000000003"}]`, key: "0000000000000000000000000000000000000003",
 			want: []string{`"fromBlock":"latest"`, `"toBlock":"latest"`}},
 	}
+	// A family-2 method other than eth_getBlockByNumber (spec §7).
+	family2 := []*form{
+		{name: "eth_getBlockReceipts latest", method: "eth_getBlockReceipts", params: `["latest"]`, key: "0x11118888",
+			want: []string{`"params":["0x11118888"]`}},
+	}
 	// Every mock is registered before any network starts: gock's mocks are
 	// not safe to register while pollers match them.
-	for _, f := range append(slices.Clone(translated), off...) {
+	for _, f := range slices.Concat(translated, off, family2) {
 		f.sent.Store("")
 		var result interface{} = "0x1"
-		if f.method == "eth_getLogs" {
+		if f.method == "eth_getLogs" || f.method == "eth_getBlockReceipts" {
 			result = []interface{}{}
 		}
 		key := f.key
@@ -2211,6 +2216,14 @@ func TestInterpolation_EveryForm(t *testing.T) {
 	t.Run("Translated", func(t *testing.T) {
 		network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 		run(t, network, translated)
+
+		// A family-2 tag refreshes its axis's voters before forwarding:
+		// past one poll cadence, the request walks them again.
+		refreshed := &network.servedTipAll.latest.refreshedAtNs
+		time.Sleep(network.cfg.Evm.PollCadence(network.blockTimeOrCold()))
+		before := refreshed.Load()
+		run(t, network, family2)
+		assert.Greater(t, refreshed.Load(), before, "eth_getBlockReceipts(latest) refreshes the latest head before forwarding")
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
 		req.SetNetwork(network)

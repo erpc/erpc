@@ -52,18 +52,19 @@ func HandleNetworkPreForward(ctx context.Context, network common.Network, upstre
 		return false, nil, err
 	}
 
-	switch strings.ToLower(method) {
+	m := strings.ToLower(method)
+	switch m {
 	case "eth_getlogs":
 		return networkPreForward_eth_getLogs(ctx, network, upstreams, nq)
 	case "eth_blocknumber", "erigon_blocknumber":
 		return networkPreForward_eth_blockNumber(ctx, network, nq)
-	case "eth_getblockbynumber":
-		return networkPreForward_eth_getBlockByNumber(ctx, network, nq)
 	case "trace_filter", "arbtrace_filter":
 		return networkPreForward_trace_filter(ctx, network, upstreams, nq)
-	default:
-		return false, nil, nil
 	}
+	if _, ok := blockByTagFamily[m]; ok {
+		return networkPreForward_blockByTag(ctx, network, nq)
+	}
+	return false, nil, nil
 }
 
 // HandleNetworkPostForward checks if the request matches a known EVM method customization on network level,

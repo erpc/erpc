@@ -347,8 +347,11 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"eth_getProof": {
 		ReqRefs: ThirdParam,
 	},
+	// arbtrace_* keep their "latest": Arbitrum classic nodes serve them, and
+	// their latest is not the network's (spec §7).
 	"arbtrace_call": {
-		ReqRefs: ThirdParam,
+		ReqRefs:            ThirdParam,
+		TranslateLatestTag: util.BoolPtr(false),
 	},
 	"eth_feeHistory": {
 		ReqRefs: SecondParam,
@@ -363,7 +366,8 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		ReqRefs: SecondParam,
 	},
 	"arbtrace_callMany": {
-		ReqRefs: SecondParam,
+		ReqRefs:            SecondParam,
+		TranslateLatestTag: util.BoolPtr(false),
 	},
 	"eth_getBlockReceipts": {
 		ReqRefs: [][]interface{}{
@@ -394,6 +398,7 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		},
 		// architecture/evm/trace_filter.go hook enforces lower/upper-bound against per-upstream latest/finality.
 		EnforceBlockAvailability: util.BoolPtr(false),
+		TranslateLatestTag:       util.BoolPtr(false),
 	},
 	"debug_traceBlockByNumber": {
 		ReqRefs: FirstParam,
@@ -420,10 +425,12 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		ReqRefs: FirstParam,
 	},
 	"arbtrace_block": {
-		ReqRefs: FirstParam,
+		ReqRefs:            FirstParam,
+		TranslateLatestTag: util.BoolPtr(false),
 	},
 	"arbtrace_replayBlockTransactions": {
-		ReqRefs: FirstParam,
+		ReqRefs:            FirstParam,
+		TranslateLatestTag: util.BoolPtr(false),
 	},
 }
 
@@ -445,7 +452,8 @@ var DefaultSpecialCacheMethods = map[string]*CacheMethodConfig{
 		RespRefs: BlockNumberOrBlockHashParam,
 	},
 	"arbtrace_replayTransaction": {
-		ReqRefs: ArbitraryBlock,
+		ReqRefs:            ArbitraryBlock,
+		TranslateLatestTag: util.BoolPtr(false),
 	},
 	"trace_replayTransaction": {
 		ReqRefs: ArbitraryBlock,
