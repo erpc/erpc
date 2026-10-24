@@ -325,7 +325,7 @@ Each concept answers one question and has one home. W (§1) is the one freshness
   - Hash age reads the newest hash vote (§6.3): how long since another voter's first local header above U's vote, at or below the reference, arrived.
 - Number age decides the bench: an upstream is benched after `max(30s, 3 × its backed-off cadence)` (§6.8), and readmitted once its counter reaches the lag reference. A wss source's cadence is its poll cadence, so it benches at the 30s floor. A benched upstream is no voter.
 - #1263's stall rules stay beside number age: a head frozen above peers whose newest blocks are a stall window younger is benched by block age, so a frozen pair above the chain never benches the honest pair below it.
-- Hash age decides the hash voters: a voter is a hash voter while its hash age is at most W.
+- Hash age decides the hash voters: a voter is a hash voter while its hash age is at most W and its channel answers. A push source's channel is its socket; any other voter's is its polls: once its polls of `latest` have failed for W with no success, it is no hash voter until one succeeds. A halted chain still answers polls and keeps its hash voters; an instance cut from its vendors loses them, so its streams end (§10.2).
 - Routing hints, ordering only; every upstream stays eligible:
   - Reached N: for a request at block N, by number or by a block hash the tracker holds, the upstreams that reached N go first, the policy's order kept within each part. A push source (a wss upstream whose `newHeads` subscription is live) reached N when its hash vote on this instance did, since its requests ride that socket; any other upstream when its head counter did. Tracker fetches use the same rule (§8).
   - A request with no block: a push source whose hash age exceeds W, or whose socket closed, goes after the others until it reports again, so a half-open socket holds no client request. Hash age never reorders any other upstream: its freshness follows the poll schedule, which is no evidence of a fault. Being behind by less than W reorders nobody.
@@ -730,7 +730,7 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | any upstream | on a minority fork | hash vote off the pins | loses its number vote and goes last in routing | W |
 | any upstream | one ahead, peers stalled | number ages of the peers | `Latest` and taps wait until the peers are benched | 90s |
 | any source | the chain makes no blocks | no reference moves | nothing reconnects or resubscribes | — |
-| poll source | errors, 429 | failed polls | backoff up to 60s; never stops for good | 60s |
+| poll source | errors, 429 | failed polls | backoff up to 60s; never stops for good; after W of failures with no success its hash vote expires | 60s |
 | other upstreams | poller give-up | `skipLatestBlockCheck` | expires | 10 min |
 | intake | chain-identity cordon | cordon reason | `eth_chainId` every 5 min; uncordon after 2 matches | 10 min |
 | intake, integrity | a check no upstream passes | §6.9 | suspended; observe-only after 100 blocks; enforced after 2 passing heights | 2 heights |
@@ -961,7 +961,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | N1 | +300 ms constant latency to one vendor | delivery p99 within 2 bt; `Latest` from the faster voters |
 | N2 | 0–2 bt jitter on every vendor; pushes reordered | `newHeads` in order, parent-linked, no duplicate |
 | N3 | instance 1 cut from vendor X for 50 blocks | instance 1 flows on vendor Y's votes; no stall |
-| N4 | instance 1 cut from every vendor for 2 min; Redis up | instance 1 gRPC `UNAVAILABLE` within 60s; clients resume on instance 2 with no gap |
+| N4 | instance 1 cut from every vendor for 2 min; Redis up; also alone without Redis (N4-lone) | instance 1 gRPC `UNAVAILABLE` within 60s, whether its voters push or poll; clients resume on instance 2 with no gap |
 | N5 | vendor closes every socket every 2 blocks, for 30 blocks | jittered 1–30s backoff; no resubscribe flood; other vendors carry |
 | N6 | Redis down for 60s | instances fall back to their own polls; no wedge or frozen tip after |
 | N7 | 2 MB blocks; receipts link throttled to 1 Mbit | receipts timeouts → other vendor or fallback; logs complete |
