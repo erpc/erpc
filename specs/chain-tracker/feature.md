@@ -165,6 +165,10 @@ type Block struct {
     ParentHash [32]byte
     Header     json.RawMessage // verbatim, as first held
     Receipts   json.RawMessage // verbatim; set only for blocks ReadOpts asked for
+    // Ready is when the block became deliverable to this Read: when it
+    // first reached the confirmed head, or the logs head for a Read with
+    // MayMatch. ws taps measure lag from it (§10.2).
+    Ready time.Time
 }
 
 type Batch struct {
@@ -191,8 +195,6 @@ type ChainFeed interface {
     Read(ctx context.Context, c Cursor, o ReadOpts) (Batch, error)
     // Want registers a tap's ReadOpts until release.
     Want(o ReadOpts) (release func())
-    // LogsHead is the logs head (§1); ws logs taps measure lag from it.
-    LogsHead() Cursor
 }
 
 var ErrOutOfRange = errors.New("cursor out of range")
