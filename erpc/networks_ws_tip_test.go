@@ -1,12 +1,14 @@
 package erpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -779,4 +781,62 @@ func TestNetworkIntake_ReconnectOnHaltedChainRenewsVote(t *testing.T) {
 		v, _ := network.intake.hashVote(byId["a-ws"])
 		return !v.Expired && network.hashStale.Load() == nil
 	}, 2*time.Second, 10*time.Millisecond, "the reconnect's first header, the current vote, renews it on a halted chain")
+}
+
+// A polled voter is a hash voter until its node fails its polls of latest
+// for W (spec §6.1). eRPC's own refusals are no poll: client traffic that
+// uses up the upstream's rate-limit budget for 2·W leaves it a hash voter.
+func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) {
+	setupGock()
+	defer util.ResetGock()
+	ctx := context.Background()
+
+	chain := newMockChain(1000, false)
+	vendor, srv := newMockHttpVendor(t, chain)
+	up := pollerUpstream("p-http", srv.URL)
+	up.RateLimitBudget = "p-budget"
+	up.Failsafe = []*common.FailsafeConfig{{MatchMethod: "*"}}
+	up.JsonRpc = &common.JsonRpcUpstreamConfig{SupportsBatch: util.BoolPtr(false)}
+	cfg := sourcesConfig(nil, up)
+	cfg.RateLimiters.Budgets = []*common.RateLimitBudgetConfig{{Id: "p-budget",
+		Rules: []*common.RateLimitRuleConfig{{Method: "eth_getBlockByNumber", MaxCount: 5, Period: common.RateLimitPeriodSecond}}}}
+	network, byId, addr := sourcesNetwork(t, cfg)
+	poller := byId["p-http"].EvmStatePoller()
+	hashVoter := func() bool {
+		return slices.Contains(network.EvmHashVoters("", network.chainTracker.W(), false).Hash, "p-http")
+	}
+	require.Eventually(t, func() bool {
+		if !hashVoter() {
+			poller.RefreshLatestBlock()
+			return false
+		}
+		return true
+	}, 5*time.Second, 10*time.Millisecond, "the poller's head makes it a hash voter")
+
+	flood, stopFlood := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1",false]}`)
+			for flood.Err() == nil {
+				if resp, err := http.Post(fmt.Sprintf("http://%s/test_ws/evm/123", addr), "application/json", bytes.NewReader(body)); err == nil {
+					_ = resp.Body.Close()
+				}
+			}
+		})
+	}
+	polled := vendor.latestPolls.Load()
+	var refused []time.Time
+	for end := time.Now().Add(2 * network.chainTracker.W()); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
+		if _, err := poller.PollLatestBlockNumber(ctx); common.HasErrorCode(err, common.ErrCodeUpstreamRateLimitRuleExceeded) {
+			refused = append(refused, time.Now())
+		}
+	}
+	keptVote := hashVoter()
+	stopFlood()
+	wg.Wait()
+	require.Equal(t, polled, vendor.latestPolls.Load(), "client traffic uses up the budget: no poll reaches the node")
+	require.NotEmpty(t, refused)
+	require.GreaterOrEqual(t, refused[len(refused)-1].Sub(refused[0]), network.chainTracker.W(), "eRPC refused the polls for W")
+	require.True(t, keptVote, "polls eRPC refused itself never end a hash vote")
 }

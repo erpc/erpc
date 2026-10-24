@@ -611,12 +611,6 @@ func (e *EvmStatePoller) pollLatest(ctx context.Context, debounced bool, kind He
 		).Inc()
 		blockNum, blockTimestamp, header, err := e.fetchBlock(ctx, "latest")
 		if err != nil || blockNum == 0 {
-			if bound != nil {
-				bound.intake.PollFailed(e.upstream.Id())
-			}
-			if src != nil {
-				e.pollFailures.Add(1)
-			}
 			if err == nil ||
 				common.HasErrorCode(err,
 					common.ErrCodeUpstreamRequestSkipped,
@@ -639,17 +633,24 @@ func (e *EvmStatePoller) pollLatest(ctx context.Context, debounced bool, kind He
 				}
 				e.stateMu.Unlock()
 				return 0, nil
-			} else {
-				// An open circuit breaker short-circuits before tryForward
-				// records the failure, which would freeze the upstream's error
-				// rate; record it here. Other failures are already recorded.
-				if e.tracker != nil && common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
-					e.tracker.RecordUpstreamRequest(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateRealtime)
-					e.tracker.RecordUpstreamFailure(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateRealtime, err)
-				}
-				e.logger.Warn().Err(err).Msg("failed to get latest block number in evm state poller")
-				return 0, err
 			}
+			if nodeFailedPoll(err) {
+				if bound != nil {
+					bound.intake.PollFailed(e.upstream.Id())
+				}
+				if src != nil {
+					e.pollFailures.Add(1)
+				}
+			}
+			// An open circuit breaker short-circuits before tryForward
+			// records the failure, which would freeze the upstream's error
+			// rate; record it here. Other failures are already recorded.
+			if e.tracker != nil && common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
+				e.tracker.RecordUpstreamRequest(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateRealtime)
+				e.tracker.RecordUpstreamFailure(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateRealtime, err)
+			}
+			e.logger.Warn().Err(err).Msg("failed to get latest block number in evm state poller")
+			return 0, err
 		}
 
 		// Mark as successful and reset failure counter
@@ -693,6 +694,19 @@ func (e *EvmStatePoller) pollLatest(ctx context.Context, debounced bool, kind He
 			Msg("fetched latest block from upstream")
 		return blockNum, nil
 	})
+}
+
+// nodeFailedPoll reports whether err is the node failing a poll of latest
+// (spec §6.1): a transport error, a timeout, a 5xx or a 429. eRPC's own
+// refusals (local rate limit, open breaker, skip) are no poll.
+func nodeFailedPoll(err error) bool {
+	return common.HasErrorCode(err,
+		common.ErrCodeEndpointTransportFailure,
+		common.ErrCodeEndpointRequestTimeout,
+		common.ErrCodeFailsafeTimeoutExceeded,
+		common.ErrCodeEndpointServerSideException,
+		common.ErrCodeEndpointCapacityExceeded,
+	)
 }
 
 // RefreshLatestBlock starts a background latest-block poll when the stored
@@ -823,7 +837,7 @@ const (
 // PollIntake takes a bound poller's latest headers.
 type PollIntake interface {
 	Polled(upstreamId string, raw json.RawMessage, kind HeaderKind)
-	// PollFailed notes a poll of latest that fetched no header (spec §6.1).
+	// PollFailed notes a poll of latest that the node failed (spec §6.1).
 	PollFailed(upstreamId string)
 }
 
