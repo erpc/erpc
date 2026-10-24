@@ -406,3 +406,96 @@ func TestForward_FutureBlock_OptIn_ShortCircuitNotMirroredToExcluded(t *testing.
 	assert.Zero(t, dispatched.Load(),
 		"a short-circuited request must reach no upstream, mirrored probes included")
 }
+
+// A band block with hedging on (spec §6.4): the request takes one retryable
+// miss across its hedges. The leg that got it retries on the upstream whose
+// head reaches the block; a hedge leg whose upstream is below the block
+// stops instead of calling its empty answer final.
+func TestForward_BandBlock_HedgesShareOneMiss(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "bh1", chainID: 123, latestBlock: 100},
+		{id: "bh2", chainID: 123, latestBlock: 100},
+		{id: "bh3", chainID: 123, latestBlock: 100},
+		{id: "bh4", chainID: 123, latestBlock: 101},
+	})
+	ex, err := NewNetworkExecutor(&common.FailsafeConfig{
+		MatchMethod: "*",
+		Hedge:       &common.HedgePolicyConfig{Delay: common.NewStaticDuration(5 * time.Millisecond), MaxCount: 2},
+	}, network.logger, nil, nil)
+	require.NoError(t, err)
+	network.failsafeExecutors = []*networkExecutor{ex}
+
+	var below, holder atomic.Int64
+	for i, id := range []string{"bh1", "bh2", "bh3"} {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x65"`) {
+					return false
+				}
+				below.Add(1)
+				return true
+			}).
+			Reply(200).
+			Delay(time.Duration(i) * 15 * time.Millisecond).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":null}`))
+	}
+	gock.New("http://bh4.localhost").
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x65"`) {
+				return false
+			}
+			holder.Add(1)
+			return true
+		}).
+		Reply(200).
+		Delay(80 * time.Millisecond).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":` + futureBlockSentinel + `}`))
+
+	resp := forwardGetBlockByNumber(t, ctx, network, "0x65")
+	jrr, err := resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), "0x270f", "the band block from the upstream whose head reaches it, not a hedge's null")
+	assert.Equal(t, int64(1), holder.Load(), "one retry, on the upstream at the block")
+	assert.Positive(t, below.Load(), "a leg asked an upstream below the block first")
+}
+
+// A future block dispatched (shortCircuitFutureBlocks off) takes one
+// retryable miss too (spec §6.4): the first null is never final, and the
+// answer after it goes to the client as the upstream gave it.
+func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "fm1", chainID: 123, latestBlock: 100},
+		{id: "fm2", chainID: 123, latestBlock: 100},
+		{id: "fm3", chainID: 123, latestBlock: 100},
+	})
+	var first, second atomic.Int64
+	mockGetBlockByNumberAt("0x69", "null", &first, "fm1")
+	mockGetBlockByNumberAt("0x69", futureBlockSentinel, &second, "fm2", "fm3")
+
+	resp := forwardGetBlockByNumber(t, ctx, network, "0x69")
+	jrr, err := resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), "0x270f", "the answer after the future block's one miss")
+	assert.Positive(t, first.Load(), "the first upstream answered null")
+	assert.Equal(t, int64(1), second.Load(), "one retry")
+}

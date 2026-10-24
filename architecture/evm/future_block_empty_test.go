@@ -21,9 +21,9 @@ func blockReq(n common.Network, bn int64) *common.NormalizedRequest {
 }
 
 // TestEmptyResultBeyondConfidence pins the refusal rule's rows for empty results
-// (spec §6.4): at or below Latest an empty is a miss; in the band (up to the
-// ceiling) it is a miss once, then final; above a fresh ceiling it is final.
-// Tags / unknown blocks and an unknown head fail open (never final).
+// (spec §6.4): at or below Latest an empty is a miss; above it, in the band
+// or future, it is a miss once, then final. Tags / unknown blocks and an
+// unknown head fail open (never final).
 func TestEmptyResultBeyondConfidence(t *testing.T) {
 	ctx := context.Background()
 	nw := &queryTestNetwork{
@@ -38,9 +38,12 @@ func TestEmptyResultBeyondConfidence(t *testing.T) {
 	assert.False(t, EmptyResultBeyondConfidence(ctx, mk(nw, 1000)), "exactly head → not final")
 	band := mk(nw, 1003)
 	assert.False(t, EmptyResultBeyondConfidence(ctx, band), "band → a retryable miss first")
-	assert.True(t, HeadRefusalOf(ctx, band).Miss(), "the band's one miss")
+	assert.Equal(t, common.MissRetry, HeadRefusalOf(ctx, band).Miss(&common.RefusalLeg{}), "the band's one miss")
 	assert.True(t, EmptyResultBeyondConfidence(ctx, band), "band after its miss → final")
-	assert.True(t, EmptyResultBeyondConfidence(ctx, mk(nw, 9_000_000)), "above a fresh ceiling → final")
+	future := mk(nw, 9_000_000)
+	assert.False(t, EmptyResultBeyondConfidence(ctx, future), "future → a retryable miss first")
+	assert.Equal(t, common.MissRetry, HeadRefusalOf(ctx, future).Miss(&common.RefusalLeg{}), "the future block's one miss")
+	assert.True(t, EmptyResultBeyondConfidence(ctx, future), "future after its miss → final")
 	assert.False(t, EmptyResultBeyondConfidence(ctx, mk(nw, 0)), "no concrete block (tag/hash) → never final")
 
 	// Unknown head (0) → fail open.
@@ -71,10 +74,11 @@ func TestEmptyResultBeyondConfidence_Finalized(t *testing.T) {
 }
 
 // TestEnforceNonNullBlock_FutureBlockNotErrored pins the #6 fix under the refusal
-// rule: the network-level enforceNonNullBlock must NOT convert a numeric null into
-// a missing-data error when the block is future (above a fresh ceiling) — it
-// returns the truthful null, matching the upstream-level markUnexpectedEmpty
-// guard. A band block's first null and a behind-head numeric null still error.
+// rule: the network-level enforceNonNullBlock converts the first null for a
+// block above Latest, band or future, into a retryable miss; after the
+// request's one miss it returns the null as the upstream gave it, matching
+// the upstream-level markUnexpectedEmpty guard. A behind-head numeric null
+// still errors.
 func TestEnforceNonNullBlock_FutureBlockNotErrored(t *testing.T) {
 	ctx := context.Background()
 	nw := &queryTestNetwork{
@@ -88,17 +92,18 @@ func TestEnforceNonNullBlock_FutureBlockNotErrored(t *testing.T) {
 		return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 	}
 
-	// Future (above the ceiling): null is legitimate → returned as-is, no error.
-	resp := mkNullResp(1002)
-	got, err := enforceNonNullBlock(ctx, resp.Request(), resp)
-	assert.NoError(t, err, "future numeric block null must not be force-errored")
-	assert.NotNil(t, got)
-	assert.True(t, got.IsResultEmptyish())
-
-	// Band (head+1, at the ceiling): the first null is a retryable miss.
-	band := mkNullResp(1001)
-	_, err1 := enforceNonNullBlock(ctx, band.Request(), band)
-	assert.Error(t, err1, "a band block's first null is a retryable miss")
+	for _, c := range []struct {
+		name string
+		bn   int64
+	}{{"future", 1002}, {"band", 1001}} {
+		resp := mkNullResp(c.bn)
+		_, err := enforceNonNullBlock(ctx, resp.Request(), resp)
+		assert.Error(t, err, "a %s block's first null is a retryable miss", c.name)
+		assert.Equal(t, common.MissRetry, HeadRefusalOf(ctx, resp.Request()).Miss(&common.RefusalLeg{}))
+		got, err := enforceNonNullBlock(ctx, resp.Request(), resp)
+		assert.NoError(t, err, "a %s block's null after its miss is the answer", c.name)
+		assert.True(t, got.IsResultEmptyish())
+	}
 
 	// Behind head: null is genuinely missing/pruned → still errors (unchanged).
 	resp2 := mkNullResp(999)

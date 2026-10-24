@@ -100,54 +100,72 @@ func (h EvmHead) Rule(n int64, bt time.Duration, now time.Time) HeadRule {
 }
 
 // HeadRefusal is the refusal rule's verdict for one request's block, taken
-// once (spec §6.4), and the empty answers it got since.
+// once (spec §6.4), and the one retryable miss it got since.
 type HeadRefusal struct {
 	Rule  HeadRule // HeadServe, HeadBand or HeadFuture
 	Block int64
 	// Asked: the ceiling was stale and Asked before Rule was decided.
-	Asked  bool
-	misses atomic.Int32
+	Asked bool
+	// owner is the leg that took the request's one retryable miss.
+	owner atomic.Pointer[RefusalLeg]
+	// answered: a leg took its answer after the miss.
+	answered atomic.Bool
 }
+
+// RefusalLeg is one execution of a request: a hedge leg, or a retry
+// round's. End it when it returns.
+type RefusalLeg struct{ ended atomic.Bool }
+
+func (l *RefusalLeg) End() { l.ended.Store(true) }
+
+// MissVerdict is what an empty or missing answer above Latest is to the
+// leg that got it.
+type MissVerdict uint8
+
+const (
+	// MissRetry: the request's one retryable miss; the leg retries.
+	MissRetry MissVerdict = iota
+	// MissFinal: the answer after the miss, sent as the upstream gave it.
+	MissFinal
+	// MissSibling: a leg running beside this one holds the miss; this leg
+	// stops with a retryable miss.
+	MissSibling
+)
 
 // AboveLatest reports whether the request's block is above its Latest.
 func (r *HeadRefusal) AboveLatest() bool {
 	return r != nil && r.Rule != HeadServe
 }
 
-// Final reports whether an empty answer now is the request's answer: a
-// future block's, or a band block's after its one miss.
+// Final reports whether an empty answer now may be the request's answer:
+// its one miss is taken.
 func (r *HeadRefusal) Final() bool {
-	return r != nil && (r.Rule == HeadFuture || r.Rule == HeadBand && r.misses.Load() > 0)
+	return r.AboveLatest() && r.owner.Load() != nil
 }
 
-// Spent reports whether an empty or missing answer may no longer be
-// retried: a future block's after one, a band block's after two.
+// Spent reports whether the request took its answer after its miss, so an
+// empty or missing answer may no longer be retried.
 func (r *HeadRefusal) Spent() bool {
-	if r == nil {
-		return false
-	}
-	switch r.Rule {
-	case HeadFuture:
-		return r.misses.Load() > 0
-	case HeadBand:
-		return r.misses.Load() > 1
-	}
-	return false
+	return r != nil && r.answered.Load()
 }
 
-// Miss records an empty or missing answer; it reports true for the band's
-// one retryable miss.
-func (r *HeadRefusal) Miss() bool {
-	if r == nil || r.Rule == HeadServe {
-		return false
+// Miss records an empty or missing answer leg got for a block above
+// Latest: the first is the request's retryable miss; after it, the
+// answer of its leg, or of a leg that started after it ended, is final.
+func (r *HeadRefusal) Miss(leg *RefusalLeg) MissVerdict {
+	if r.owner.CompareAndSwap(nil, leg) {
+		return MissRetry
 	}
-	return r.misses.Add(1) == 1 && r.Rule == HeadBand
+	if o := r.owner.Load(); o != leg && !o.ended.Load() {
+		return MissSibling
+	}
+	r.answered.Store(true)
+	return MissFinal
 }
 
-// Retried reports whether the request got an empty or missing answer
-// before its last one.
+// Retried reports whether the request got its retryable miss.
 func (r *HeadRefusal) Retried() bool {
-	return r != nil && r.misses.Load() > 0
+	return r != nil && r.owner.Load() != nil
 }
 
 // SvmNetwork is the SVM-specific view of a Network. Production Network

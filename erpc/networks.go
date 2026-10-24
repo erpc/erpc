@@ -2095,6 +2095,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			maxLoopIterations = 1
 		}
 		attempted := make(map[string]struct{}, maxLoopIterations)
+		// leg is this execution to the refusal rule: a hedge leg running
+		// beside the one holding the request's miss stops, a later one
+		// takes its answer (spec §6.4).
+		leg := &common.RefusalLeg{}
+		defer leg.End()
 		// The fallback escape below swaps in its own picker, leaving the
 		// request's routed list untouched for later retries.
 		nextUpstream := effectiveReq.NextUpstream
@@ -2207,45 +2212,67 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				// The refusal rule (spec §6.4): an empty or missing answer for a
-				// block above Latest is a retryable miss once, in the band, and
-				// the retry asks the upstreams whose head reaches the block
-				// first. After it, and above the band, an empty answer is the
-				// answer and a missing one ends the request.
+				// block above Latest is the request's one retryable miss, its
+				// hedges included; the retry asks the upstreams whose head
+				// reaches the block first. The answer after it goes to the
+				// client as the upstream gave it.
 				refusal := effectiveReq.HeadRefusal()
 				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && isEmptyNetworkResult(method, r)
+				missing := emptyAnswer || common.HasErrorCode(err, common.ErrCodeEndpointMissingData)
 				finalEmpty := false
-				if refusal.AboveLatest() && (emptyAnswer || common.HasErrorCode(err, common.ErrCodeEndpointMissingData)) {
-					final := refusal.Final()
-					switch {
-					case refusal.Miss():
-						// The retry orders on the heads the band's Ask brings,
-						// waited for while the ceiling is below the block.
-						sel := ""
-						if d := effectiveReq.Directives(); d != nil {
-							sel = d.UseUpstream
+				if refusal.AboveLatest() && missing {
+					switch refusal.Miss(leg) {
+					case common.MissRetry:
+						if refusal.Rule == common.HeadBand {
+							// The retry orders on the heads the band's Ask
+							// brings, waited for while the ceiling is below
+							// the block.
+							sel := ""
+							if d := effectiveReq.Directives(); d != nil {
+								sel = d.UseUpstream
+							}
+							n.EvmAskCeiling(loopCtx, sel, refusal.Block)
 						}
-						n.EvmAskCeiling(loopCtx, sel, refusal.Block)
 						nextUpstream = n.headFirst(effectiveReq, attempted, refusal.Block)
-					case final && !emptyAnswer:
+						if err == nil {
+							err = common.NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish above Latest"), u)
+						}
+						lastErr = err
+						if r != nil {
+							bestResp = r
+						}
+						common.SetTraceSpanError(loopSpan, err)
+						loopSpan.End()
+						continue
+					case common.MissSibling:
+						if err == nil {
+							err = common.NewErrEndpointMissingData(fmt.Errorf("another hedge holds the retryable miss above Latest"), u)
+						}
 						common.SetTraceSpanError(loopSpan, err)
 						loopSpan.End()
 						return nil, err
+					case common.MissFinal:
+						if !emptyAnswer {
+							common.SetTraceSpanError(loopSpan, err)
+							loopSpan.End()
+							return nil, err
+						}
+						finalEmpty = true
 					}
-					finalEmpty = final && emptyAnswer
 				}
 
 				// Return immediately when the result is usable:
 				//  - Non-empty success always qualifies.
 				//  - Emptyish success qualifies when the refusal rule calls it
-				//    final, or when the method is in emptyResultAccept and
-				//    consensus is not required, because failsafe would accept
-				//    the empty result anyway so trying more upstreams just
-				//    wastes time on slow ones.
+				//    final, or, below Latest, when the method is in
+				//    emptyResultAccept and consensus is not required, because
+				//    failsafe would accept the empty result anyway so trying
+				//    more upstreams just wastes time on slow ones.
 				//  - Otherwise emptyish results continue to the next upstream.
 				if err == nil && r != nil && !r.IsObjectNull() {
 					emptyish := isEmptyNetworkResult(method, r)
 					acceptEmpty := !emptyish || finalEmpty ||
-						(!failsafeExecutor.HasConsensus() &&
+						(!refusal.AboveLatest() && !failsafeExecutor.HasConsensus() &&
 							failsafeExecutor.acceptsEmptyResult(method, r))
 					if acceptEmpty {
 						st := effectiveReq.ExecState()
