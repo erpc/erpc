@@ -332,11 +332,14 @@ func (e *EvmStatePoller) pollLoop(interval time.Duration) {
 
 		nctx, cancel := context.WithTimeout(e.appCtx, timeout)
 		var err error
+		if e.activePollSource() != nil {
+			// The poll source's own channel (spec §6.2); a full poll's latest
+			// fetch right after it is inside the debounce, so it is skipped.
+			_, err = e.pollLatest(nctx, true, HeaderStreamed)
+		}
 		if full {
 			lastFull = time.Now()
-			err = e.Poll(nctx)
-		} else {
-			_, err = e.PollLatestBlockNumber(nctx)
+			err = errors.Join(err, e.Poll(nctx))
 		}
 		subCtxErr := nctx.Err()
 		cancel()
@@ -567,12 +570,13 @@ func (e *EvmStatePoller) resolveFinalizedDebounce(cfg *common.EvmNetworkConfig, 
 // give-up after latest was refused as unsupported applies to a poll source
 // too: while it lasts, the reconciler polls other sources (LatestUnsupported).
 func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, error) {
-	return e.pollLatest(ctx, true)
+	return e.pollLatest(ctx, true, HeaderPolled)
 }
 
 // pollLatest is PollLatestBlockNumber; debounced: skip while this
-// instance's last fetch is within the debounce.
-func (e *EvmStatePoller) pollLatest(ctx context.Context, debounced bool) (int64, error) {
+// instance's last fetch is within the debounce. kind is what the fetched
+// header is to the bound intake.
+func (e *EvmStatePoller) pollLatest(ctx context.Context, debounced bool, kind HeaderKind) (int64, error) {
 	if e.shouldSkipLatestBlockCheck() {
 		e.logger.Trace().Msg("skipping latest block number poll as it is not supported by the upstream")
 		return 0, nil
@@ -657,7 +661,7 @@ func (e *EvmStatePoller) pollLatest(ctx context.Context, debounced bool) (int64,
 		if bound != nil {
 			// Intake parses, verifies a major jump and moves the counter
 			// through ObserveHead; the fetch itself must not move it.
-			bound.intake.Header(e.upstream.Id(), header)
+			bound.intake.Polled(e.upstream.Id(), header, kind)
 			counter := e.latestBlockShared.GetValue()
 			if counter >= blockNum {
 				e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
@@ -693,21 +697,26 @@ func (e *EvmStatePoller) pollLatest(ctx context.Context, debounced bool) (int64,
 // so a head read on the request path does not wait for the next ticker poll.
 // It never blocks and spawns at most one goroutine per poller at a time.
 func (e *EvmStatePoller) RefreshLatestBlock() {
-	e.refreshLatest(true)
+	e.refreshLatest(true, HeaderPolled)
 }
 
 // PollHead is RefreshLatestBlock for a hash vote (spec §6.3): it polls now,
 // however fresh the shared counter or this instance's last fetch is, since
 // another instance's fetch or a client response votes no hash here and a
 // vote from before a reorg is no evidence. Its callers pace their asks.
-func (e *EvmStatePoller) PollHead() {
-	e.refreshLatest(false)
+// fork: the poll asks a voter whose vote the pins moved off.
+func (e *EvmStatePoller) PollHead(fork bool) {
+	kind := HeaderPolled
+	if fork {
+		kind = HeaderForkPolled
+	}
+	e.refreshLatest(false, kind)
 }
 
 // refreshLatest: shared, poll only once the shared counter is older than
 // the debounce, and then only once this instance's last fetch is too;
 // otherwise poll now, as the caller paces its own asks.
-func (e *EvmStatePoller) refreshLatest(shared bool) {
+func (e *EvmStatePoller) refreshLatest(shared bool, kind HeaderKind) {
 	if e.IsObjectNull() || e.latestBlockShared == nil || e.shouldSkipLatestBlockCheck() {
 		return
 	}
@@ -726,7 +735,7 @@ func (e *EvmStatePoller) refreshLatest(shared bool) {
 		defer e.latestRefreshInFlight.Store(false)
 		ctx, cancel := context.WithTimeout(e.appCtx, 10*time.Second)
 		defer cancel()
-		if _, err := e.pollLatest(ctx, shared); err != nil {
+		if _, err := e.pollLatest(ctx, shared, kind); err != nil {
 			e.logger.Debug().Err(err).Msg("on-demand latest block refresh failed in evm state poller")
 		}
 	}()
@@ -790,12 +799,32 @@ func (e *EvmStatePoller) ObserveHead(raw json.RawMessage) (accepted bool) {
 
 // pollSource is where a poller's latest headers go.
 type pollSource struct {
-	intake indexer.Intake
+	intake PollIntake
+}
+
+// HeaderKind is what a polled header is to intake: which call polled it.
+type HeaderKind uint8
+
+const (
+	// HeaderPolled: a poll of latest that is not its source's own channel
+	// (a full poll, a refresh, a catch-up poll); it votes (spec §6.3).
+	HeaderPolled HeaderKind = iota
+	// HeaderStreamed: a header on its source's own channel (spec §6.2): a
+	// push, or a poll source's poll at its cadence.
+	HeaderStreamed
+	// HeaderForkPolled: the answer to a fork poll (spec §6.3), fresh
+	// evidence of the node's head whatever its earlier votes say.
+	HeaderForkPolled
+)
+
+// PollIntake takes a bound poller's latest headers.
+type PollIntake interface {
+	Polled(upstreamId string, raw json.RawMessage, kind HeaderKind)
 }
 
 // BindIntake sends this poller's latest headers to intake; Set makes it a
 // poll source, polled at its cadence.
-func (e *EvmStatePoller) BindIntake(intake indexer.Intake) {
+func (e *EvmStatePoller) BindIntake(intake PollIntake) {
 	e.pollSrc.Store(&pollSource{intake: intake})
 }
 
@@ -830,12 +859,6 @@ func (e *EvmStatePoller) activePollSource() *pollSource {
 		return nil
 	}
 	return e.pollSrc.Load()
-}
-
-// PollsHeads reports whether this poller is a poll source now: its latest
-// polls are its source's own channel (spec §6.2).
-func (e *EvmStatePoller) PollsHeads() bool {
-	return e.activePollSource() != nil
 }
 
 // pollCadence is the poller's debounce (resolveDebounce: the learned block

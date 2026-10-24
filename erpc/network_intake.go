@@ -83,10 +83,13 @@ func newNetworkIntake(nw *Network) *networkIntake {
 type pushIntake struct{ *networkIntake }
 
 func (p pushIntake) Header(upstreamId string, raw json.RawMessage) {
-	p.header(upstreamId, raw, false, true)
+	p.header(upstreamId, raw, evm.HeaderStreamed, false)
 }
 
-var _ indexer.Intake = (*networkIntake)(nil)
+var (
+	_ indexer.Intake = pushIntake{}
+	_ evm.PollIntake = (*networkIntake)(nil)
+)
 
 // Subscribed takes a push source's subscribe answer; the reconciler decides
 // what it changes.
@@ -107,16 +110,17 @@ func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessa
 	in.nw.mempool.Add(variant, raw)
 }
 
-// Header takes one source header that is no push: a poll's.
-func (in *networkIntake) Header(upstreamId string, raw json.RawMessage) {
-	in.header(upstreamId, raw, false, false)
+// Polled takes the header a poll of upstreamId's latest fetched.
+func (in *networkIntake) Polled(upstreamId string, raw json.RawMessage, kind evm.HeaderKind) {
+	in.header(upstreamId, raw, kind, false)
 }
 
-// header is Header; replay: raw is a header integrity held back before a
-// check was suspended, so it votes only when it is newer than its source's
-// newest accepted header: a replay never moves a vote back. pushed: raw
-// came on a push source's channel (pushIntake).
-func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay, pushed bool) {
+// header takes a source header that came as kind; replay: raw is a header
+// integrity held back before a check was suspended, so it votes only when
+// it is newer than its source's newest accepted header: a replay never
+// moves a vote back. A fork poll's answer moves the vote whatever the path
+// says: it is the node's head now.
+func (in *networkIntake) header(upstreamId string, raw json.RawMessage, kind evm.HeaderKind, replay bool) {
 	sh, err := evm.ParseSourceHeader(raw)
 	if err != nil {
 		in.count(upstreamId, "malformed")
@@ -127,10 +131,11 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay, 
 	if u == nil {
 		return
 	}
+	stream, fresh := kind == evm.HeaderStreamed && !replay, kind == evm.HeaderForkPolled
 	in.mu.Lock()
 	path := in.last[upstreamId]
-	behind := !path.moves(cur)
-	current := behind && len(path) > 0 && path[len(path)-1].cur == cur
+	current := len(path) > 0 && path[len(path)-1].cur == cur
+	behind := current || !fresh && !path.moves(cur, sh.Parent())
 	in.mu.Unlock()
 	if behind {
 		// After a reconnect the first header is the current vote; on a
@@ -140,7 +145,7 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay, 
 			in.nw.sources.wake()
 		}
 		// A poll often brings a push source's header first.
-		if current && (pushed || !replay && pollSourcePoll(u)) {
+		if current && stream {
 			in.noteHeader(upstreamId, int64(cur.Number), true)
 		}
 		in.count(upstreamId, "duplicate")
@@ -161,7 +166,7 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay, 
 		in.count(upstreamId, "gated_identity")
 		return
 	}
-	if !in.accept(upstreamId, sh, replay) {
+	if !in.accept(upstreamId, sh, replay, fresh) {
 		in.count(upstreamId, "duplicate")
 		return
 	}
@@ -170,20 +175,13 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay, 
 	if mt := in.nw.metricsTracker; mt != nil {
 		mt.RecordHashVote(u, int64(cur.Number), replay)
 	}
-	in.noteHeader(upstreamId, int64(cur.Number), pushed || !replay && pollSourcePoll(u))
+	in.noteHeader(upstreamId, int64(cur.Number), stream)
 	evm.ObserveSourceHeader(in.nw, u, sh)
 	if in.isVoter(upstreamId) {
 		in.count(upstreamId, "voted")
 	} else {
 		in.count(upstreamId, "gated_voter")
 	}
-}
-
-// pollSourcePoll reports whether a poll of u came on its source's own
-// channel: its poller is a poll source (spec §6.2).
-func pollSourcePoll(u *upstream.Upstream) bool {
-	p, ok := u.EvmStatePoller().(*evm.EvmStatePoller)
-	return ok && !p.IsObjectNull() && p.PollsHeads()
 }
 
 // noteHeader notes an accepted header of upstreamId at number: its
@@ -232,7 +230,7 @@ func (in *networkIntake) replayRejected() {
 			}
 		}()
 		for _, r := range held {
-			in.header(r.upstreamId, r.raw, true, false)
+			in.header(r.upstreamId, r.raw, evm.HeaderPolled, true)
 		}
 	}()
 }
@@ -309,12 +307,12 @@ const voteLinksKept = 64
 // proves no reorg below it.
 type votePath []voteLink
 
-// moves reports whether cur moves the vote: it is above the vote, or a
-// rewind, a lower header where the path holds another hash. Its vote or an
-// ancestor of it never moves the vote back (spec §6.5 rule 3), nor does a
-// lower header the path says nothing about, such as a lagging poll's
-// across a gap.
-func (p votePath) moves(cur indexer.Cursor) bool {
+// moves reports whether cur, child of parent, moves the vote: it is above
+// the vote, or a rewind, a lower header where the path holds another hash
+// or whose parent breaks the path's ancestry. Its vote or an ancestor of it
+// never moves the vote back (spec §6.5 rule 3), nor does a lower header the
+// path says nothing about, such as a lagging poll's across a gap.
+func (p votePath) moves(cur indexer.Cursor, parent [32]byte) bool {
 	if len(p) == 0 || cur.Number > p[len(p)-1].cur.Number {
 		return true
 	}
@@ -331,6 +329,8 @@ func (p votePath) moves(cur indexer.Cursor) bool {
 				return false
 			}
 			other = true
+		case l.cur.Number+1 == cur.Number:
+			other = other || l.cur.Hash != parent
 		}
 	}
 	return other
@@ -353,13 +353,17 @@ func (p votePath) with(cur indexer.Cursor, parent [32]byte) votePath {
 }
 
 // accept makes sh its upstream's hash vote when it moves it; onlyNewer:
-// only when it is above the vote. Compared and set in one section.
-func (in *networkIntake) accept(upstreamId string, sh evm.SourceHeader, onlyNewer bool) bool {
+// only when it is above the vote; fresh: whatever the path says, unless it
+// is the vote. Compared and set in one section.
+func (in *networkIntake) accept(upstreamId string, sh evm.SourceHeader, onlyNewer, fresh bool) bool {
 	cur := sh.Cursor()
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	path := in.last[upstreamId]
-	if !path.moves(cur) || onlyNewer && len(path) > 0 && cur.Number <= path[len(path)-1].cur.Number {
+	if n := len(path); n > 0 && (path[n-1].cur == cur || onlyNewer && cur.Number <= path[n-1].cur.Number) {
+		return false
+	}
+	if !fresh && !path.moves(cur, sh.Parent()) {
 		return false
 	}
 	in.last[upstreamId] = path.with(cur, sh.Parent())

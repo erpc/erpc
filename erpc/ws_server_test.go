@@ -2145,6 +2145,24 @@ func (c *mockChain) reorg(depth int64) int64 {
 	return c.advance()
 }
 
+// rewind reorgs the chain to a shorter branch whose head is to: every
+// height from to up is replaced, and to is pushed as the new head.
+func (c *mockChain) rewind(to int64) {
+	c.mu.Lock()
+	for n := to; n <= c.head; n++ {
+		c.branch[n]++
+	}
+	c.head = to
+	watchers := slices.Clone(c.watchers)
+	c.mu.Unlock()
+	for _, w := range watchers {
+		select {
+		case w <- to:
+		default:
+		}
+	}
+}
+
 func (c *mockChain) Head() int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()

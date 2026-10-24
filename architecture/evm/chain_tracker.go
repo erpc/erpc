@@ -852,8 +852,8 @@ func (t *ChainTracker) trackForks() {
 		}
 	}
 	if len(poll) > 0 {
-		if p, ok := t.network.(interface{ EvmPollHeads(ids []string) }); ok {
-			t.callNetwork("fork-poll", func() { p.EvmPollHeads(poll) })
+		if p, ok := t.network.(interface{ EvmPollForks(ids []string) }); ok {
+			t.callNetwork("fork-poll", func() { p.EvmPollForks(poll) })
 		}
 	}
 	slices.Sort(demoted)

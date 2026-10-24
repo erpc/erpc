@@ -815,10 +815,20 @@ func (n *Network) EvmRefreshHeadsBelow(ctx context.Context, block int64) {
 }
 
 // EvmPollHeads polls the latest header of each upstream in ids for a hash
-// vote (spec §6.3, §6.5): a voter whose vote the pins moved off, or that a
-// held vote need waits on. The tracker paces these asks; each poller keeps
-// one poll in flight.
+// vote: voters that a held vote need waits on (spec §6.5). Each poller
+// keeps one poll in flight.
 func (n *Network) EvmPollHeads(ids []string) {
+	n.pollHeads(ids, false)
+}
+
+// EvmPollForks polls the latest header of each voter in ids, whose vote the
+// pins moved off (spec §6.3); the tracker paces these asks. Each answer is
+// its voter's hash vote, whatever it voted before.
+func (n *Network) EvmPollForks(ids []string) {
+	n.pollHeads(ids, true)
+}
+
+func (n *Network) pollHeads(ids []string, fork bool) {
 	if n.upstreamsRegistry == nil {
 		return
 	}
@@ -827,7 +837,7 @@ func (n *Network) EvmPollHeads(ids []string) {
 			continue
 		}
 		if p := u.EvmStatePoller(); p != nil && !p.IsObjectNull() {
-			p.PollHead()
+			p.PollHead(fork)
 		}
 	}
 }

@@ -146,8 +146,9 @@ type EvmStatePoller interface {
 	// stored head is older than the poll debounce; non-blocking, one in flight.
 	RefreshLatestBlock()
 	// PollHead polls latest in the background now, for a hash vote, however
-	// fresh the stored head is; non-blocking, one in flight.
-	PollHead()
+	// fresh the stored head is; non-blocking, one in flight. fork: it asks
+	// a voter whose vote the pins moved off, so its answer is fresh evidence.
+	PollHead(fork bool)
 	SetNetworkConfig(cfg *NetworkConfig)
 	IsObjectNull() bool
 	EarliestBlock(probe EvmAvailabilityProbeType) int64
