@@ -47,16 +47,6 @@ func covBlocksBadBodyReq() *common.NormalizedRequest {
 	return common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":`))
 }
 
-// covBlocksPanicNetwork panics when asked for the latest tip, like a network
-// whose state poller has not been wired yet.
-type covBlocksPanicNetwork struct {
-	queryTestNetwork
-}
-
-func (n *covBlocksPanicNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
-	panic("state poller not initialized")
-}
-
 // covBlocksForwardUpstream is a config upstream with a pluggable Forward.
 type covBlocksForwardUpstream struct {
 	queryTestConfigUpstream
@@ -287,26 +277,29 @@ func TestCovBlocks_ExtractBlockTimestamp(t *testing.T) {
 	}
 }
 
+// Plan H2 deletes "the cache key on the word `latest`": a translated tag
+// keys on the number its Head gives it, an untranslated one gets no GET key.
 func TestCovBlocks_ResolveCacheBlockRef_TipFallbacks(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("finalized_tag_resolves_to_network_finalized_tip", func(t *testing.T) {
-		req := covBlocksReq("eth_getBlockByNumber", "finalized", false)
-		req.SetNetwork(&queryTestNetwork{finalized: 0x30})
+		req := covBlocksReq("eth_getBalance", "0xabc", "finalized")
+		req.SetNetwork(&queryTestNetwork{latest: 0x40, finalized: 0x30})
 		ref, bn, err := ResolveCacheBlockRef(ctx, req, nil)
 		require.NoError(t, err)
-		assert.Equal(t, "0x30", ref)
+		assert.Equal(t, "48", ref)
 		assert.Equal(t, int64(0x30), bn)
 	})
 
-	t.Run("panicking_tip_lookup_falls_back_to_tag_literal", func(t *testing.T) {
+	t.Run("untranslated_tag_gets_no_get_key", func(t *testing.T) {
+		// eth_getBlockByNumber keeps translateLatestTag off: its tag reaches
+		// upstreams as is, so no Head number names the answer.
 		req := covBlocksReq("eth_getBlockByNumber", "latest", false)
-		req.SetNetwork(&covBlocksPanicNetwork{})
-		var ref string
-		var err error
-		require.NotPanics(t, func() { ref, _, err = ResolveCacheBlockRef(ctx, req, nil) })
+		req.SetNetwork(&queryTestNetwork{latest: 0x40, finalized: 0x30})
+		ref, bn, err := ResolveCacheBlockRef(ctx, req, nil)
 		require.NoError(t, err)
-		assert.Equal(t, "latest", ref)
+		assert.Equal(t, "", ref)
+		assert.Equal(t, int64(0), bn)
 	})
 }
 
