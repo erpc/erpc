@@ -42,9 +42,9 @@ type networkIntake struct {
 	// admitted is the voters topic admission admits, as the last pass
 	// read them, for per-transaction checks that take no lock.
 	admitted atomic.Pointer[[]string]
-	// voterIds are the network-wide voters as the network-wide tracker
-	// last read them, for counting each header's outcome.
-	voterIds atomic.Pointer[[]string]
+	// voterIds are the network-wide voters as they were last read, and the
+	// eligible set they were read from, for counting each header's outcome.
+	voterIds atomic.Pointer[voterSnapshot]
 	// vendors is the network's upstreams' vendors, kept until the upstream
 	// set or a vendor changes.
 	vendors atomic.Pointer[upstreamVendors]
@@ -430,15 +430,34 @@ func (in *networkIntake) voters(selector string) (voters, cands []common.Upstrea
 	return voters, cands
 }
 
+// voterSnapshot is the network-wide voters read from one eligible set
+// (Network.eligibleSet).
+type voterSnapshot struct {
+	ids    []string
+	policy []common.Upstream
+	all    []*upstream.Upstream
+}
+
+func (s *voterSnapshot) of(policy []common.Upstream, all []*upstream.Upstream) bool {
+	return slices.Equal(s.policy, policy) && slices.Equal(s.all, all)
+}
+
 // isVoter reports whether upstreamId is a network-wide voter: in the set
-// the network-wide tracker last read, else, as that set lags a voter that
-// just joined, in the policy's set now.
+// last read, read again when the eligible set changed since, so a voter
+// that joined or left the policy's set counts at once.
 func (in *networkIntake) isVoter(upstreamId string) bool {
-	if ids := in.voterIds.Load(); ids != nil && slices.Contains(*ids, upstreamId) {
-		return true
+	policy, all := in.nw.eligibleSet(context.Background())
+	s := in.voterIds.Load()
+	if s == nil || !s.of(policy, all) {
+		vs, _ := in.voters("")
+		ids := make([]string, 0, len(vs))
+		for _, u := range vs {
+			ids = append(ids, u.Id())
+		}
+		s = &voterSnapshot{ids: ids, policy: policy, all: slices.Clone(all)}
+		in.voterIds.Store(s)
 	}
-	vs, _ := in.voters("")
-	return slices.ContainsFunc(vs, func(u common.Upstream) bool { return u.Id() == upstreamId })
+	return slices.Contains(s.ids, upstreamId)
 }
 
 // upstreamVendors is each upstream's vendor and the evidence quorum (spec
@@ -585,6 +604,7 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 	vs := n.intake.vendorsOf(n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId))
 	hv.Vendors, hv.Evidence = vs.vendors, vs.evidence
 	now := time.Now()
+	policy, all := n.eligibleSet(context.Background())
 	voters, cands := n.intake.voters(selector)
 	var stale []string
 	hv.Voters = make([]string, 0, len(voters))
@@ -606,8 +626,8 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 	}
 	if selector == "" {
 		n.setHashStale(stale)
-		if old := n.intake.voterIds.Load(); old == nil || !slices.Equal(*old, hv.Voters) {
-			n.intake.voterIds.Store(&hv.Voters)
+		if old := n.intake.voterIds.Load(); old == nil || !old.of(policy, all) || !slices.Equal(old.ids, hv.Voters) {
+			n.intake.voterIds.Store(&voterSnapshot{ids: hv.Voters, policy: policy, all: slices.Clone(all)})
 		}
 	}
 	if cold {

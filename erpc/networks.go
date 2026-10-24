@@ -600,26 +600,33 @@ func (n *Network) walkTipCandidates(ctx context.Context, yield func(common.Upstr
 		}
 		return yield(u)
 	}
-	if n.policyEngine != nil {
-		if eligible := n.policyEngine.GetOrdered(n.networkId, "*", "*"); len(eligible) > 0 {
-			for _, u := range eligible {
-				if !visit(u) {
-					return
-				}
-			}
-			return
-		}
-	}
-	// A partially-initialized network (cache-only paths, tests without a
-	// registry) has no candidates, so the head accessors fail open (0).
-	if n.upstreamsRegistry == nil {
-		return
-	}
-	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+	policy, all := n.eligibleSet(ctx)
+	for _, u := range policy {
 		if !visit(u) {
 			return
 		}
 	}
+	for _, u := range all {
+		if !visit(u) {
+			return
+		}
+	}
+}
+
+// eligibleSet is the policy's eligible set, or, while it has none, every
+// upstream of the network; the other is nil. A partially-initialized
+// network (cache-only paths, tests without a registry) has neither, so the
+// head accessors fail open (0).
+func (n *Network) eligibleSet(ctx context.Context) (policy []common.Upstream, all []*upstream.Upstream) {
+	if n.policyEngine != nil {
+		if eligible := n.policyEngine.GetOrdered(n.networkId, "*", "*"); len(eligible) > 0 {
+			return eligible, nil
+		}
+	}
+	if n.upstreamsRegistry == nil {
+		return nil, nil
+	}
+	return nil, n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
 }
 
 // requestSelector returns the use-upstream selector for the request bound to
