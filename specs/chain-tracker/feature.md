@@ -993,7 +993,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | D5 | 1k subscribe+unsubscribe/s; unsubscribe during a send | `erpc_taps` back to 0; no write after unsubscribe |
 | D6 | bad logs filter; `fromHash` without `fromBlock` | `-32602`; `INVALID_ARGUMENT` |
 | D7 | `maxSubscriptionsPerConnection: 3`; 4th subscribe | `-32005` |
-| D8 | 1 wss + 2 https non-sources; client load at every upstream budget for 30s | tracker Asks still get permits; no stall longer than W |
+| D8 | 1 wss + 2 https non-sources; client load at every upstream budget for 30s | head Asks keep fetching (`erpc_head_ask_total{outcome="fetched"}` rises on each instance), none refused by a budget; no stall longer than W |
 | D9 | pending stream silent with socket open | resubscribe after 60s |
 | X1 | no fault | the oracle holds for every block on both instances |
 | X2 | memory shared state; instance 2 serves only numbered calls | the oracle holds after at most 1 retry; never `future` for a sent block |
