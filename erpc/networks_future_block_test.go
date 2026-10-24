@@ -568,14 +568,22 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	cache, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, cacheCfg)
 	require.NoError(t, err)
 
-	ahead, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+	ahead, aheadUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
 		{id: "hc1", chainID: 123, latestBlock: 101},
 		{id: "hc2", chainID: 123, latestBlock: 101},
 	})
-	behind, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+	behind, behindUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
 		{id: "hd1", chainID: 123, latestBlock: 100},
 		{id: "hd2", chainID: 123, latestBlock: 100},
 	})
+	// The voters give Head.Finalized: the receipt's block is above it, so
+	// finality is known and the unfinalized policy caches it.
+	for _, u := range append(aheadUps, behindUps...) {
+		setServedTipFinalized(t, u, 90)
+	}
+	require.Eventually(t, func() bool {
+		return servedHead(ahead, ctx).Finalized == 90 && servedHead(behind, ctx).Finalized == 90
+	}, 2*time.Second, 10*time.Millisecond, "both instances' Head.Finalized is their voters'")
 	ahead.cacheDal = cache.WithProjectId("test")
 	behind.cacheDal = cache.WithProjectId("test")
 	require.Equal(t, int64(101), servedHead(ahead, ctx).Latest)

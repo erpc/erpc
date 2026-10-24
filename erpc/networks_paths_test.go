@@ -470,17 +470,23 @@ func TestNetworksPaths_GetFinalityWithoutRegistry(t *testing.T) {
 
 	numbered := `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x10",false]}`
 	assert.Equal(t, common.DataFinalityStateUnknown, n.GetFinality(ctx, newReq(numbered), nil),
-		"no upstream and no registry leaves it unknown")
+		"no registry: the Head is unknown, so is finality")
 
 	viaLast := newReq(numbered)
 	viaLast.SetLastUpstream(pathsFakeUpstream("last", 100, 90))
-	assert.Equal(t, common.DataFinalityStateUnfinalized, n.GetFinality(ctx, viaLast, nil),
-		"the last upstream's finality answer is used")
+	assert.Equal(t, common.DataFinalityStateUnknown, n.GetFinality(ctx, viaLast, nil),
+		"an upstream's own finalized never stands in for an unknown Head.Finalized")
+
+	// The voters give Head.Finalized 90 (spec §6.4).
+	n.servedTipAll.head.Store(&common.EvmHead{Latest: 100, Finalized: 90})
+	assert.Equal(t, common.DataFinalityStateFinalized, n.GetFinality(ctx, newReq(numbered), nil),
+		"a read at or below Head.Finalized is finalized")
 
 	viaResp := newReq(numbered)
 	resp := common.NewNormalizedResponse().WithRequest(viaResp)
 	resp.SetUpstream(pathsFakeUpstream("resp", 100, 90))
-	assert.Equal(t, common.DataFinalityStateUnfinalized, n.GetFinality(ctx, viaResp, resp))
+	assert.Equal(t, common.DataFinalityStateUnfinalized, n.GetFinality(ctx, viaResp, resp),
+		"an answer is final only when its upstream has finalized the block too")
 
 	svmNet := pathsBareNetwork(&common.NetworkConfig{Architecture: common.ArchitectureSvm, Svm: &common.SvmNetworkConfig{Cluster: "mainnet-beta"}})
 	assert.Equal(t, common.DataFinalityStateRealtime,
@@ -513,8 +519,15 @@ func TestNetworksPaths_EnrichStatePoller(t *testing.T) {
 		assert.Equal(t, int64(200), sp.LatestBlock())
 		assert.Equal(t, int64(90), sp.FinalizedBlock())
 	})
-	t.Run("FinalizedTagFromBlockRefSuggestsFinalized", func(t *testing.T) {
+	t.Run("InterpolatedFinalizedTagDoesNotSuggest", func(t *testing.T) {
+		// The request asked for Head.Finalized, eRPC's number: serving it
+		// says nothing of what this upstream finalized.
 		sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x5f",false]}`, "finalized", `{"number":"0x5f"}`)
+		assert.Equal(t, int64(90), sp.FinalizedBlock())
+		assert.Equal(t, int64(100), sp.LatestBlock())
+	})
+	t.Run("LiteralFinalizedTagSuggestsFinalized", func(t *testing.T) {
+		sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["finalized",false]}`, "finalized", `{"number":"0x5f"}`)
 		assert.Equal(t, int64(95), sp.FinalizedBlock())
 		assert.Equal(t, int64(100), sp.LatestBlock())
 	})

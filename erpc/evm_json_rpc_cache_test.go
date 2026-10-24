@@ -133,6 +133,8 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 		upstreams = append(upstreams, mockUpstream)
 	}
 
+	publishVotersHead(mockNetwork, upstreams...)
+
 	cacheCfg := &common.CacheConfig{}
 	cacheCfg.SetDefaults()
 	cache, err := evm.NewEvmJsonRpcCache(context.Background(), &logger, cacheCfg)
@@ -141,6 +143,22 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 	}
 
 	return []*data.MockConnector{mockConnector1, mockConnector2}, mockNetwork, upstreams, cache
+}
+
+// publishVotersHead publishes n's network-wide Head as its voters give it
+// (spec §6.4): the ballot over ups's latest and finalized blocks. A
+// hand-built network has no registry for the head loop to read.
+func publishVotersHead(n *Network, ups ...*upstream.Upstream) {
+	latests, finals := make([]int64, 0, len(ups)), make([]int64, 0, len(ups))
+	for _, u := range ups {
+		latests = append(latests, u.EvmStatePoller().LatestBlock())
+		finals = append(finals, u.EvmStatePoller().FinalizedBlock())
+	}
+	q := n.cfg.Evm.ServedTipQuorum()
+	n.servedTipAll.head.Store(&common.EvmHead{
+		Latest:    common.PickServedTip(latests, q).Tip,
+		Finalized: common.PickServedTip(finals, q).Tip,
+	})
 }
 
 func TestEvmJsonRpcCache_Set_UseUpstreamGating(t *testing.T) {
@@ -169,6 +187,9 @@ func TestEvmJsonRpcCache_Set_UseUpstreamGating(t *testing.T) {
 	req.SetCacheDal(cache)
 	// Caller pinned away from systx sources, so the systx-tagged cache must be skipped.
 	req.SetDirectives(&common.RequestDirectives{UseUpstream: "!systx*"})
+	// "!systx*" matches every fixture upstream, so its Head is the
+	// network-wide one; the registry-less fixture network cannot pick it.
+	req.TakeEvmHead(mockNetwork.servedTipAll.published())
 	resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xabc","number":"0x2"}}`))
 	resp.SetUpstream(mockUpstreams[0])
 	req.SetLastValidResponse(ctx, resp)
@@ -2128,6 +2149,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 
 	// Create test upstreams with different finalized blocks
 	mockUpstream := createMockUpstream(t, ctx, 123, "upsA", common.EvmSyncingStateNotSyncing, 10, 15)
+	publishVotersHead(mockNetwork, mockUpstream)
 
 	t.Run("BasicSetGet_WithMainIndex", func(t *testing.T) {
 		// Create a request for a finalized block
@@ -2498,6 +2520,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 
 	// Create test upstream with finalized blocks
 	mockUpstream := createMockUpstream(t, ctx, 123, "upsA", common.EvmSyncingStateNotSyncing, 10, 15)
+	publishVotersHead(mockNetwork, mockUpstream)
 
 	// Run test scenarios
 	t.Run("RequestHasBlockNumber_ResponseHasBoth", func(t *testing.T) {
@@ -3379,6 +3402,7 @@ func createCacheTestFixturesWithCompression(ctx context.Context, upstreamConfigs
 
 		upstreams = append(upstreams, mockUpstream)
 	}
+	publishVotersHead(mockNetwork, upstreams...)
 
 	cacheCfg := &common.CacheConfig{
 		Compression: compressionCfg,

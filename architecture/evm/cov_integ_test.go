@@ -318,18 +318,19 @@ func TestCovInteg_ObserveViews(t *testing.T) {
 		assert.Zero(t, covIntegHeldCount(c))
 	})
 
-	t.Run("observeNarrowView anchors only from EVM upstreams with known finality", func(t *testing.T) {
+	t.Run("observeNarrowView anchors only from EVM upstreams at or below the lane's Head.Finalized", func(t *testing.T) {
 		hash := testHash("b", 0x10)
 		anchor := covIntegResp(fmt.Sprintf(`{"blockNumber":"0x10","blockHash":"%s"}`, hash))
 		evmUp := common.NewFakeUpstream("u", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(0x30, 0x20)))
 
-		c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		laneHead := func() common.EvmHead { return common.EvmHead{Latest: 0x30, Finalized: 0x20} }
+		c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", laneHead, newFetchScheduler(t.Context(), nil))
 		observeNarrowView(ctx, nil, evmUp, anchor)
 		observeNarrowView(ctx, c, evmUp, nil)
 		observeNarrowView(ctx, c, covIntegPlainUp{evmUp}, anchor)
 		c.sync(ctx)
 		_, ok := c.HashAt(0x10)
-		assert.False(t, ok, "a non-EVM upstream has no finality to gate the anchor")
+		assert.False(t, ok, "a non-EVM upstream's answer anchors nothing")
 
 		observeNarrowView(ctx, c, evmUp, covIntegResp(`{"blockNumber":"0x11","blockHash":""}`))
 		c.sync(ctx)

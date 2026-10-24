@@ -172,9 +172,9 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 	})
 
 	// A by-number answer from the cache is not a fresh view of the chain at
-	// that height, unless the height is finalized: such a block cannot change,
-	// and forcing those reads to upstreams once collapsed the corroboration
-	// cache hit-rate.
+	// that height, finalized or not: a followed revert below Finalized
+	// (final_hash_changed) must see the upstreams' current block, so a
+	// by-number tracker fetch never reads the cache.
 	byNumber := func(t *testing.T, finalized int64) *common.RequestDirectives {
 		net := newCapturingNetwork(t, height, canonical)
 		c := newChainTracker(t.Context(), net, 32, 0, "", "", "", func() common.EvmHead { return common.EvmHead{Finalized: finalized} }, newFetchScheduler(t.Context(), net))
@@ -189,8 +189,8 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		assert.Equal(t, "true", byNumber(t, height-1).SkipCacheRead, "a by-number tracker fetch must reach upstreams")
 	})
 
-	t.Run("by-number corroboration fetches at the finalized height use the cache", func(t *testing.T) {
-		assert.Empty(t, byNumber(t, height).SkipCacheRead, "a finalized block cannot change, so the cache serves it")
+	t.Run("by-number corroboration fetches at the finalized height skip the cache too", func(t *testing.T) {
+		assert.Equal(t, "true", byNumber(t, height).SkipCacheRead, "a finalized height can still be reverted by a majority")
 	})
 
 	t.Run("a re-confirmation at a finalized height still bypasses the cache", func(t *testing.T) {
