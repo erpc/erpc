@@ -363,7 +363,7 @@ One `Head` per (network, lane). It is computed when an upstream head changes (lo
 | Field | Rule |
 |---|---|
 | `Latest` | q-th highest voter number; caps, regression guard (1024 blocks, 60s, per instance) and guarantees (`servedTip.guaranteedFor`, `guaranteedMethods`) apply as today |
-| `Finalized` | the same ballot over voters' finalized numbers; a voter without a finalized tag reports latest − the derived depth (at least 30 min of chain, #1079) |
+| `Finalized` | the same ballot over voters' finalized numbers; a voter without a finalized tag reports latest − the derived depth: 30 min of chain at the block time floor (§6.7), at least `fallbackFinalityDepth` (#1079) |
 | `Leader` | the highest voter within `Latest + maxRetryableBlockDistance` |
 | ceiling | raw max of the reports of the lane's registered upstreams, minus upstreams cordoned for chain identity or whose polls are failing (§6.1); `OldestReportAt` = the oldest time at which those reports' evidence was taken: for an answer, a poll's or a client request's, the time its request was sent (it can show no later head than the node had then); for a push, its receive time |
 
@@ -385,7 +385,7 @@ Refusal rule, for block N on a request:
 Finality:
 
 - Reads: N is final when N ≤ `Head.Finalized`. The `finalized` tag, cache hits, labels, integrity `IsFinalized`, narrow anchors and empty-result confidence read it.
-- Permanent cache writes: N ≤ `Head.Finalized` and N ≤ the serving upstream's own finalized (#90). An upstream on a minority fork cannot write a permanent entry.
+- Permanent cache writes: N ≤ `Head.Finalized` and N ≤ the serving upstream's own finalized (#90): its polls of the `finalized` tag and its answers to a tag it was sent, never an interpolated request it served. An upstream on a minority fork cannot write a permanent entry.
 - Per-upstream finality stays per upstream for routing (`upstream/evm_upstream_ops.go`, `EvmStatePoller`): a routing fact, not a head.
 - The cache write guard reads the network-wide lane's `Latest`, whatever lane the request used (#932).
 
@@ -453,9 +453,10 @@ Owner: `health/tracker.go`. Readers: freshness (§6.1), routing lag (`blockNumbe
 - The network EMA (`GetNetworkBlockTime`), sampled from poller timestamps and from the timestamps of source headers the confirmed head reached. Both are local samples (#1208). A sample above 3× the EMA counts as 3× the EMA, so one span across a halt never sets W to its 60s cap.
 - A sample spans two observations whose timestamps differ: seconds elapsed over blocks elapsed. Equal timestamps extend the span, so integer-second timestamps need no special case: on a 0.4s chain each sample spans 2 or 3 blocks; on a chain with blocks of 1s or more, each block is one sample.
 - Until the first sample, bt = 1s for every reader, the poll cadence included (0.7s); the first sample seeds the EMA. `fallbackStatePollerDebounce` has no default any more: set, it overrides that cold-start cadence.
+- The floor (`GetNetworkBlockTimeFloor`): the shorter of the EMA and (Δts − 1s) / Δblocks from the timestamp change the spans start at to the newest one, as integer timestamps truncate each end by under 1s; a span the halt cap clips restarts it. The derived finality depth reads it, since it promises at least 30 min of chain (§6.4): a cold seed one block late runs the EMA 25% long on a 0.2s chain.
 - The poll cadence is the poller's debounce: bt × `dynamicBlockTimeDebounceMultiplier` (0.7), at most 12s; `statePollerDebounce` overrides (#790).
 
-Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, the by-hash wait, the window. Bounds: on a halt or a restart the caps hold (cadence 12s, W 60s). Keeps: #790, #1208.
+Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, the by-hash wait, the window; the floor: the derived finality depth. Bounds: on a halt or a restart the caps hold (cadence 12s, W 60s). Keeps: #790, #1208.
 
 ### 6.8 Fetch schedule: when do we fetch U's head?
 
@@ -469,6 +470,7 @@ Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, th
 | catch-up (§6.5) | number |
 | refusal band and stale ceiling (§6.4) | number |
 | `eth_blockNumber`, `eth_getBlockByNumber(latest\|finalized)` pre-forward refresh | number |
+| a numbered read above `Head.Finalized` (§6.4 Finality), the finalized axis, at most once per finalized debounce | number |
 | settle: voters without a fresh hash vote, then non-voters, up to 3 | hash |
 | no hash voter, with demand (§6.5 rule 6) | hash |
 
