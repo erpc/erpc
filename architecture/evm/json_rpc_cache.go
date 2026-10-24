@@ -657,6 +657,10 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		common.SetTraceSpanError(span, err)
 		return err
 	}
+	if rpcResp == nil {
+		// No answer to store: the policy match must not reach the writers.
+		return nil
+	}
 
 	ntwId := req.NetworkId()
 	lg := c.logger.With().Str("networkId", ntwId).Str("method", rpcReq.Method).Interface("id", req.ID()).Logger()
@@ -673,14 +677,8 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	// Use response finality if available, otherwise fall back to request finality
-	var finState common.DataFinalityState
-	if resp != nil {
-		finState = resp.Finality(ctx)
-	} else {
-		finState = req.Finality(ctx)
-	}
-	isEmptyish := resp == nil || resp.IsResultEmptyish()
+	finState := resp.Finality(ctx)
+	isEmptyish := resp.IsResultEmptyish()
 	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState, isEmptyish)
 	span.SetAttributes(
 		attribute.String("block.finality", finState.String()),
@@ -1231,12 +1229,21 @@ func shouldCacheResponse(
 }
 
 // revertedFinal reports whether req's block is one a followed majority
-// branch reverted at or below Finalized (spec §6.5): a permanent entry
-// written before the revert may hold the old branch, so the read skips the
-// cache and the fresh answer replaces it.
+// branch reverted at or below Finalized (spec §6.5), on the network-wide
+// tracker or on the request's lane tracker: a permanent entry written
+// before the revert may hold the old branch, so the read skips the cache
+// and the fresh answer replaces it.
 func revertedFinal(ctx context.Context, req *common.NormalizedRequest) bool {
 	_, bn, _ := ExtractBlockReferenceFromRequest(ctx, req)
-	return bn > 0 && ChainTrackerOf(ctx, req.Network(), "").RevertedFinal(bn)
+	if bn <= 0 {
+		return false
+	}
+	n := req.Network()
+	if ChainTrackerOf(ctx, n, "").RevertedFinal(bn) {
+		return true
+	}
+	sel := useUpstreamSelector(req)
+	return sel != "" && ChainTrackerOf(ctx, n, sel).RevertedFinal(bn)
 }
 
 // useUpstreamSelector returns the request's use-upstream directive, used to gate
