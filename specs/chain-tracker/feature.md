@@ -707,7 +707,7 @@ Cost, measured 2026-10-14 on public RPCs, 5 consecutive blocks each:
 
 ## 14. Shared state
 
-- Per-upstream latest and finalized counters are max-only: a remote value higher than the local one is accepted whatever its timestamp.
+- Per-upstream latest and finalized counters are max-only: a remote value higher than the local one is accepted whatever its timestamp (#1243).
 - Timestamps decide only large rollbacks (more than 1024 blocks below the current value); smaller drops are noise (#222).
 - Freshness is the local receive time, never the writer's clock: `IsStale` and every number need read when this instance received the value.
 - A rejected remote state is counted in `erpc_shared_counter_remote_rejected_total{reason}`.
