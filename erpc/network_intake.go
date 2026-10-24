@@ -54,6 +54,9 @@ type networkIntake struct {
 	// heldPollAt is, per upstream, when the network last polled it for a
 	// held vote need (EvmPollHeads).
 	heldPollAt map[string]time.Time
+	// pollFailing is, per upstream whose latest polls fail, since when they
+	// have failed with no success (spec §6.1).
+	pollFailing map[string]time.Time
 }
 
 type rejectedHeader struct {
@@ -70,7 +73,7 @@ const rejectedKept = 64
 var primaryLeadAfter = util.NewDuration(60 * time.Second)
 
 func newNetworkIntake(nw *Network) *networkIntake {
-	return &networkIntake{nw: nw, last: make(map[string]votePath), streams: make(map[string]int64), streamingSince: make(map[string]time.Time), heldPollAt: make(map[string]time.Time)}
+	return &networkIntake{nw: nw, last: make(map[string]votePath), streams: make(map[string]int64), streamingSince: make(map[string]time.Time), heldPollAt: make(map[string]time.Time), pollFailing: make(map[string]time.Time)}
 }
 
 // pushIntake is a push source's channel into intake: its headers are the
@@ -107,7 +110,40 @@ func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessa
 
 // Polled takes the header a poll of upstreamId's latest fetched.
 func (in *networkIntake) Polled(upstreamId string, raw json.RawMessage, kind evm.HeaderKind) {
+	in.mu.Lock()
+	_, failed := in.pollFailing[upstreamId]
+	delete(in.pollFailing, upstreamId)
+	in.mu.Unlock()
+	if failed {
+		evm.VotersChanged(in.nw)
+		in.nw.sources.wake()
+	}
 	in.header(upstreamId, raw, kind, false)
+}
+
+// PollFailed notes a poll of upstreamId's latest that fetched no header. A
+// voter that is no push source is no hash voter once its polls have failed
+// for W with no success (spec §6.1), so the trackers read their voters
+// again at the first failure and learn when that comes (EvmHashVoters).
+func (in *networkIntake) PollFailed(upstreamId string) {
+	in.mu.Lock()
+	_, failing := in.pollFailing[upstreamId]
+	if !failing {
+		in.pollFailing[upstreamId] = time.Now()
+	}
+	in.mu.Unlock()
+	if !failing {
+		evm.VotersChanged(in.nw)
+	}
+}
+
+// pollFailingSince is since when upstreamId's latest polls have failed with
+// no success; false while they succeed.
+func (in *networkIntake) pollFailingSince(upstreamId string) (time.Time, bool) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	since, ok := in.pollFailing[upstreamId]
+	return since, ok
 }
 
 // header takes a source header that came as kind; replay: raw is a header
@@ -363,6 +399,7 @@ func (in *networkIntake) forget(upstreamId string) {
 	delete(in.streams, upstreamId)
 	delete(in.streamingSince, upstreamId)
 	delete(in.heldPollAt, upstreamId)
+	delete(in.pollFailing, upstreamId)
 }
 
 // heldPollDue reports whether a held vote-need poll of upstreamId may go
@@ -616,6 +653,15 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 			stale = append(stale, u.Id())
 		}
 		ok, at := freshVote(v, voted, w, now)
+		if since, failing := n.intake.pollFailingSince(u.Id()); ok && failing && !n.sources.pushSource(u.Id()) {
+			if end := since.Add(w); now.Before(end) {
+				if at.IsZero() || end.Before(at) {
+					at = end
+				}
+			} else {
+				ok = false
+			}
+		}
 		if !ok {
 			continue
 		}

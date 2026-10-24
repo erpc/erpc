@@ -631,9 +631,21 @@ func n4() spec {
 
 // N4-lone: N4 on a single-instance deployment (one pod, shared state in
 // memory): no peer tells the cut pod the chain moved on. Its streams still
-// end UNAVAILABLE within the read wait and resume on it once healed.
+// end UNAVAILABLE within the read wait and resume on it once healed. The
+// selection policy ranks http-a first, so a voter that polls is among the
+// cut pod's voters on every run.
 func n4Lone() spec {
-	return spec{name: "N4-lone", pods: 1, memory: true, bound: healthyDelivery, allow: []string{"grpc:Unavailable@pod-1", "ws:jump@pod-1", "ws:logs-end@pod-1"}, body: cutPod1}
+	return spec{name: "N4-lone", pods: 1, memory: true, bound: healthyDelivery, allow: []string{"grpc:Unavailable@pod-1", "ws:jump@pod-1", "ws:logs-end@pod-1"},
+		network: map[string]interface{}{"selectionPolicy": map[string]interface{}{
+			"evalFunc": `(upstreams, ctx) => upstreams.filter(u => true).sort((a, b) => (b.id.endsWith('-http-a') ? 1 : 0) - (a.id.endsWith('-http-a') ? 1 : 0))`,
+		}},
+		body: func(s *scenario) {
+			s.blocks(20)
+			if pos, ok := s.metric(0, "erpc_selection_position", map[string]string{"method": "*", "upstream": s.upstream("http-a")}); !ok || pos != 0 {
+				s.violate("harness", "http-a ranks %v (scraped %v), not first", pos, ok)
+			}
+			cutPod1(s)
+		}}
 }
 
 func cutPod1(s *scenario) {
