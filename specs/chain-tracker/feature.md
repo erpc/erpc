@@ -248,8 +248,9 @@ func (e *EvmStatePoller) ObserveHead(raw json.RawMessage) (accepted bool)
 type Head struct {
     Latest, Finalized int64
     Leader            string    // upstream id
-    Ceiling           int64
-    CeilingAt         time.Time // local receive time of the ceiling's newest report
+    Ceiling           int64     // raw max of the reports
+    ReachFrom         int64     // reach(t) = max(Ceiling, ReachFrom + (t − ReachAt) / bt), §6.4
+    ReachAt           time.Time
 }
 ```
 
@@ -365,7 +366,8 @@ One `Head` per (network, lane). It is computed when an upstream head changes (lo
 | `Latest` | q-th highest voter number; caps, regression guard (1024 blocks, 60s, per instance) and guarantees (`servedTip.guaranteedFor`, `guaranteedMethods`) apply as today |
 | `Finalized` | the same ballot over voters' finalized numbers; a voter without a finalized tag reports latest − the derived depth (at least 30 min of chain, #1079) |
 | `Leader` | the highest voter within `Latest + maxRetryableBlockDistance` |
-| ceiling | raw max of the lane's registered upstreams, minus upstreams cordoned for chain identity; `CeilingAt` = local receive time of its newest report |
+| ceiling | raw max of the lane's registered upstreams' reports, minus upstreams cordoned for chain identity |
+| reach | at time t, the highest of those reports plus (t − its local receive time) / bt, the age counted only while that upstream's newest poll succeeded: a stale report stands for the blocks the chain has made since |
 
 - A lane is one use-upstream group, at most 16 per network. A selector without a lane (`partitionKeyFor` returns `""`) keeps the stateless pick: the same rules, computed for that request.
 - Nothing is persisted or shared as a served value: a rogue value cannot spread to every instance or freeze `Latest` (#924).
@@ -375,8 +377,8 @@ Refusal rule, for block N on a request:
 | N | Action |
 |---|---|
 | N ≤ `Latest` | serve |
-| `Latest` < N ≤ ceiling + ceiling age / bt | refresh (Ask with a number need for the lane's upstreams below N that the ceiling counts, voters first, §6.8); an empty or null answer, or a missing-data error, is a retryable miss once per request, its hedges included; the retry orders the request's routed upstreams by the head predicate, head ≥ N first, with no I/O; the answer after it goes to the client as the upstream gave it |
-| above | future, only on a ceiling younger than 1 bt; an older ceiling is Asked first, until it reaches N or for at most 1 bt, and N decided again, counted `future_after_refresh`; an Ask that leaves the ceiling old keeps N in the band |
+| `Latest` < N ≤ reach | refresh (Ask with a number need for the lane's upstreams below N that the ceiling counts, voters first, §6.8); an empty or null answer, or a missing-data error, is a retryable miss once per request, its hedges included; the retry waits for that Ask, at most 1 bt, then orders the request's routed upstreams by the head predicate, head ≥ N first, with no further I/O; the answer after it goes to the client as the upstream gave it |
+| above | future: no counted upstream can have reached N at the chain's pace |
 
 - Sites: `tryShortCircuitFutureBlock` (with `shortCircuitFutureBlocks`, a future block gets `null` with no dispatch, #1238), `EmptyResultBeyondConfidence` (`enforceNonNullBlock`, empty-is-miss), the `eth_query` range check, and the `eth_getLogs` and `trace_filter` range check: a future `toBlock` is refused, never dispatched, since a node answers a range above its head with the part it has.
 - The availability gate checks configured bounds only (#934). One head predicate adds `headLagToleranceBlocks` to `latestBlockMinus` bounds in the gate and in upstream ordering (#1099); votes and the ceiling keep the bound.
@@ -738,7 +740,7 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | tracker | reorg deeper than `reorgWindow`, or a gap past it | the majority's tree is not the pinned one | re-anchor; fill joins the trees at the fork point while the window holds it; taps then get Reverted per §10.2 (ws `logs` more than `reorgWindow` behind end `1013`); a fork point outside the window ends taps with their transport's signal | `reorgWindow` blocks of walk |
 | tracker | a message panics | `recover` | the message drops; 3 panics of one message kind with no clean one of that kind between them reset the tracker to empty | 3 panics |
 | tracker | no hash voter | hash ages | one Ask with a hash need per cadence, a settle on conflict | 12s |
-| Head | ceiling stale | `CeilingAt` older than 1 bt | Ask before any "future" answer | 1 Ask |
+| Head | an upstream's report is stale | report age | the reach counts the age as blocks, so the band widens and its requests Ask that upstream | 1 Ask |
 | Head | cold start, or no voter (all syncing or excluded) | `Latest` unknown | tags pass through; taps wait for the first confirmed head | first voter report |
 | shared state | backend down | publish and watch errors | each instance runs on its own polls; no frozen tip after | backend back |
 | shared state | a writer's clock is skewed | — | higher values win whatever their timestamp; freshness by receive time | none needed |
@@ -839,7 +841,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | Metric | Change |
 |---|---|
 | `erpc_chain_tracker_invariant_violations_total{project,network,invariant}` | new; invariant: `sent_above_latest`, `sent_unconfirmed`, `tap_gap`, `removed_unsent`, `pins_unlinked`, `final_hash_changed`, `latest_regressed` (only a `Latest` below a block this instance sent); must stay 0 except `final_hash_changed`, which logs a followed majority |
-| `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `retried_found`, `retried_missing` (the promise broke on this instance), `future`, `future_after_refresh` |
+| `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `retried_found`, `retried_missing` (the promise broke on this instance), `future` |
 | `erpc_head_ask_total{project,network,reason,outcome}` | new; reason: the §6.8 caller (`poll`, `catch_up`, `refusal`, `refresh`, `settle`, `no_source`); outcome: `fetched`, `shared_fresh`, `inflight`, `backoff` |
 | `erpc_chain_tracker_confirm_lag_blocks{project,network}` | new: pins head − confirmed head |
 | `erpc_tap_delivery_seconds{transport,kind}` | new: confirmed-head change → write |
