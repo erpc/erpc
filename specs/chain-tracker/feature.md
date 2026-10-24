@@ -561,7 +561,7 @@ Every tracker fetch goes through one scheduler per (network, instance). Head fet
 
 | Class | Fetches | Share |
 |---|---|---|
-| 1 head | walks of voted headers and by-hash mismatches | at least 1 slot |
+| 1 head | walks of voted headers, by-hash mismatches, and integrity's canonical header fetches on the client path | at least 1 slot |
 | 2 tip receipts | receipts within `reorgWindow` of the head | at least 1 slot |
 | 3 fill | fill, cursor fetches, older receipts | at least 1 slot |
 
