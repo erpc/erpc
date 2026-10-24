@@ -200,7 +200,7 @@ type ChainFeed interface {
 var ErrOutOfRange = errors.New("cursor out of range")
 
 // OutOfRangeError is ErrOutOfRange with its reason: below_window,
-// fork_left_window, cursor_unknown, lag, receipts_timeout.
+// fork_left_window, cursor_unknown, lag, reorg_depth, receipts_timeout.
 type OutOfRangeError struct{ Reason string }
 
 // MempoolFeed is the reader side of one network's pending transactions.
@@ -610,12 +610,12 @@ From cursor `c`, first matching case:
 | Transport | Reads | Reorg on the wire | Out of range | Wait bounds |
 |---|---|---|---|---|
 | ws `newHeads` | headers | each new-branch head, oldest first | restart after the confirmed head | the block after its cursor reached the confirmed head more than `reorgWindow` × bt ago, nothing Reverted → restart |
-| ws `logs` | receipts where the filter bloom may match | `removed:true` logs of Reverted, newest first; then logs of Applied | close `1013`; closes from one event spread over 60s | the block after its cursor reached the logs head more than `reorgWindow` × bt ago → out of range; 60s on one block's receipts → out of range |
+| ws `logs` | receipts where the filter bloom may match | `removed:true` logs of Reverted, newest first; then logs of Applied | close `1013`; closes from one event spread over 60s | the block after its cursor reached the logs head more than `reorgWindow` × bt ago → out of range (`lag`); a batch that reverts more than `reorgWindow` blocks → out of range (`reorg_depth`); 60s on one block's receipts → out of range |
 | ws `newPendingTransactions` | mempool | none | skip to the newest | — |
 | gRPC `StreamBlocks` | headers | resend from the fork point | end, `OUT_OF_RANGE` | 60s of stalled Read → `UNAVAILABLE`; one `Send` 10s → `UNAVAILABLE` |
 | Kafka, later | headers, receipts | resend from the fork point | write a reset record, then restart after the confirmed head | — |
 
-A ws tap's lag is the age of the block after its cursor: how long that block has been deliverable. A client that stops reading for `reorgWindow` blocks crosses the bound (§19 D1); a burst never does, since its blocks just arrived and a tap that reads takes them in batches (§19 C7). Each pin is stamped once when it first reaches the confirmed head and once when it first reaches the logs head.
+A ws tap's lag is the age of the block after its cursor: how long that block has been deliverable. A client that stops reading for `reorgWindow` blocks crosses the bound (§19 D1); a burst never does, since its blocks just arrived and a tap that reads takes them in batches (§19 C7). Each pin is stamped once when it first reaches the confirmed head and once when it first reaches the logs head. Only ws `logs` also ends on a batch that reverts more than `reorgWindow` blocks: their `removed:true` logs need receipts the feed holds only `reorgWindow` deep, and an orphaned block may no longer be served; `newHeads` needs only headers, held for the window, so it sends the new branch from the fork point + 1 (§19 C3).
 
 - geth sends only the new head after a reorg; ws `newHeads` sends each new-branch head.
 - ws `newHeads` is lossy, as in geth: a restart shows as a jump in numbers.
@@ -871,7 +871,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_source_resubscribe_total{project,network,upstream,topic}` | new: silent pending-transaction topics (§5.2) |
 | `erpc_upstream_websocket_heads_stall_reconnects_total` | existing; counts silent-`newHeads` reconnects (§5.2) |
 | `erpc_taps{project,network,transport,kind}` | new gauge: open taps; replaces `erpc_websocket_subscriptions_active` |
-| `erpc_tap_out_of_range_total{project,network,transport,kind,reason}` | new; reason: `below_window`, `fork_left_window`, `cursor_unknown`, `receipts_timeout`, `lag`; replaces `erpc_websocket_subscription_notifications_dropped_total` |
+| `erpc_tap_out_of_range_total{project,network,transport,kind,reason}` | new; reason: `below_window`, `fork_left_window`, `cursor_unknown`, `receipts_timeout`, `lag`, `reorg_depth`; replaces `erpc_websocket_subscription_notifications_dropped_total` |
 | `erpc_network_subscription_last_head_timestamp_seconds` | existing; set on each confirmed-head change of the network-wide tracker |
 | `erpc_integrity_check_suspended_total{project,network,check}` | new |
 | `erpc_unexpected_panic_total` | existing; tracker, reconciler, Ask and tap loops report to it |
