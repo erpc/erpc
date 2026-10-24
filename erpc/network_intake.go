@@ -51,6 +51,9 @@ type networkIntake struct {
 	// rejected are the newest headers integrity held back, oldest first;
 	// a check suspended for the network lets them in again.
 	rejected []rejectedHeader
+	// heldPollAt is, per upstream, when the network last polled it for a
+	// held vote need (EvmPollHeads).
+	heldPollAt map[string]time.Time
 }
 
 type rejectedHeader struct {
@@ -67,7 +70,7 @@ const rejectedKept = 64
 var primaryLeadAfter = util.NewDuration(60 * time.Second)
 
 func newNetworkIntake(nw *Network) *networkIntake {
-	return &networkIntake{nw: nw, last: make(map[string]votePath), streams: make(map[string]int64), streamingSince: make(map[string]time.Time)}
+	return &networkIntake{nw: nw, last: make(map[string]votePath), streams: make(map[string]int64), streamingSince: make(map[string]time.Time), heldPollAt: make(map[string]time.Time)}
 }
 
 // pushIntake is a push source's channel into intake: its headers are the
@@ -359,6 +362,19 @@ func (in *networkIntake) forget(upstreamId string) {
 	delete(in.last, upstreamId)
 	delete(in.streams, upstreamId)
 	delete(in.streamingSince, upstreamId)
+	delete(in.heldPollAt, upstreamId)
+}
+
+// heldPollDue reports whether a held vote-need poll of upstreamId may go
+// now, and notes it: one per every per upstream, however many lanes ask.
+func (in *networkIntake) heldPollDue(upstreamId string, now time.Time, every time.Duration) bool {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if at, ok := in.heldPollAt[upstreamId]; ok && now.Sub(at) < every {
+		return false
+	}
+	in.heldPollAt[upstreamId] = now
+	return true
 }
 
 // reported reports whether a source header of upstreamId was accepted.

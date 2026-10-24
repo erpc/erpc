@@ -815,8 +815,9 @@ func (n *Network) EvmRefreshHeadsBelow(ctx context.Context, block int64) {
 }
 
 // EvmPollHeads polls the latest header of each upstream in ids for a hash
-// vote: voters that a held vote need waits on (spec §6.5). Each poller
-// keeps one poll in flight.
+// vote: voters that a held vote need waits on (spec §6.5). Every lane's
+// tracker asks; the network polls each upstream at most once per block
+// time, and each poller keeps one poll in flight.
 func (n *Network) EvmPollHeads(ids []string) {
 	n.pollHeads(ids, false)
 }
@@ -832,13 +833,20 @@ func (n *Network) pollHeads(ids []string, fork bool) {
 	if n.upstreamsRegistry == nil {
 		return
 	}
+	every := n.EvmBlockTime()
+	if every <= 0 {
+		every = health.ColdBlockTime
+	}
+	now := time.Now()
 	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
 		if !slices.Contains(ids, u.Id()) {
 			continue
 		}
-		if p := u.EvmStatePoller(); p != nil && !p.IsObjectNull() {
-			p.PollHead(fork)
+		p := u.EvmStatePoller()
+		if p == nil || p.IsObjectNull() || !fork && n.intake != nil && !n.intake.heldPollDue(u.Id(), now, every) {
+			continue
 		}
+		p.PollHead(fork)
 	}
 }
 
