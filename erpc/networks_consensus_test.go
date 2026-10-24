@@ -86,8 +86,9 @@ func TestConsensusPolicy(t *testing.T) {
 			expectedError: &expectedError{code: common.ErrCodeUpstreamRequest, contains: "leader error"},
 			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
 				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-				// upstream 1 is leader
-				ups[0].EvmStatePoller().SuggestLatestBlock(500)
+				// upstream 1 is leader: the highest head within Latest (100)
+				// + maxRetryableBlockDistance (128) (spec §6.4, #1154)
+				ups[0].EvmStatePoller().SuggestLatestBlock(150)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
 				time.Sleep(50 * time.Millisecond)
@@ -377,8 +378,9 @@ func TestConsensusPolicy(t *testing.T) {
 			expectedResult: &expectedResult{jsonRpcResult: `"0xleader"`},
 			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
 				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-				// Set unique leader: upstream 1 has highest latest block
-				ups[0].EvmStatePoller().SuggestLatestBlock(300)
+				// Set unique leader: upstream 1 has the highest latest block
+				// within reach of Latest (spec §6.4, #1154)
+				ups[0].EvmStatePoller().SuggestLatestBlock(150)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
 				time.Sleep(50 * time.Millisecond)
@@ -402,7 +404,7 @@ func TestConsensusPolicy(t *testing.T) {
 			expectedResult: &expectedResult{jsonRpcResult: `"0xleader"`},
 			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
 				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-				ups[0].EvmStatePoller().SuggestLatestBlock(300)
+				ups[0].EvmStatePoller().SuggestLatestBlock(150)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
 				time.Sleep(50 * time.Millisecond)
@@ -426,7 +428,7 @@ func TestConsensusPolicy(t *testing.T) {
 			expectedResult: &expectedResult{jsonRpcResult: `"0xagreed"`},
 			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
 				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-				ups[0].EvmStatePoller().SuggestLatestBlock(300)
+				ups[0].EvmStatePoller().SuggestLatestBlock(150)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
 				time.Sleep(50 * time.Millisecond)
@@ -449,7 +451,7 @@ func TestConsensusPolicy(t *testing.T) {
 			expectedResult: &expectedResult{jsonRpcResult: `"0xleader"`},
 			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
 				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-				ups[0].EvmStatePoller().SuggestLatestBlock(300)
+				ups[0].EvmStatePoller().SuggestLatestBlock(150)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				time.Sleep(50 * time.Millisecond)
 			},
@@ -471,7 +473,7 @@ func TestConsensusPolicy(t *testing.T) {
 			expectedError: &expectedError{code: common.ErrCodeConsensusLowParticipants, contains: "not enough participants"},
 			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
 				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-				ups[0].EvmStatePoller().SuggestLatestBlock(300)
+				ups[0].EvmStatePoller().SuggestLatestBlock(150)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				time.Sleep(50 * time.Millisecond)
 			},
@@ -2877,7 +2879,6 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 
 	// Allow background bootstrap to settle to avoid flakiness in tests
 	time.Sleep(200 * time.Millisecond)
-
 	// Make request
 	method := tc.requestMethod
 	if method == "" {
@@ -2999,6 +3000,9 @@ func setupNetworkForConsensusTest(t *testing.T, ctx context.Context, tc consensu
 	require.NoError(t, err)
 	// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upsReg)
 	upsReg.OverrideOrderForTest(util.EvmNetworkId(123))
+	// Bootstrap starts the head loop: the consensus leader is the Head's
+	// Leader (spec §6.4), which only the loop computes.
+	require.NoError(t, ntw.Bootstrap(ctx))
 	return ntw, upsReg
 }
 
