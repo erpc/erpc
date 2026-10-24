@@ -375,12 +375,12 @@ Refusal rule, for block N on a request:
 | N | Action |
 |---|---|
 | N ≤ `Latest` | serve |
-| `Latest` < N ≤ ceiling + ceiling age / bt | refresh (Ask with a number need for voters below N, §6.8); an empty or null answer is a retryable miss once; the retry orders upstreams by the head predicate, head ≥ N first, with no I/O |
-| above | future, only on a ceiling younger than 1 bt; an older ceiling is Asked first and N decided again, counted `future_after_refresh` |
+| `Latest` < N ≤ ceiling + ceiling age / bt | refresh (Ask with a number need for the lane's upstreams below N that the ceiling counts, voters first, §6.8); an empty or null answer, or a missing-data error, is a retryable miss once per request, its hedges included; the retry orders the request's routed upstreams by the head predicate, head ≥ N first, with no I/O; the answer after it goes to the client as the upstream gave it |
+| above | future, only on a ceiling younger than 1 bt; an older ceiling is Asked first, until it reaches N or for at most 1 bt, and N decided again, counted `future_after_refresh`; an Ask that leaves the ceiling old keeps N in the band |
 
-- Sites: `tryShortCircuitFutureBlock` (with `shortCircuitFutureBlocks`, a future block gets `null` with no dispatch, #1238), `EmptyResultBeyondConfidence` (`enforceNonNullBlock`, empty-is-miss), the `eth_query` range check.
-- The availability gate checks configured bounds only (#934). One head predicate adds `headLagToleranceBlocks` to `latestBlockMinus` bounds and to upstream ordering (#1099). Refreshes in the gate stay async (`handleBlockSkip`).
-- A by-hash answer from a block above `Latest` waits up to 1 bt while heads refresh; then it is sent if `Latest` includes its block, else `null`.
+- Sites: `tryShortCircuitFutureBlock` (with `shortCircuitFutureBlocks`, a future block gets `null` with no dispatch, #1238), `EmptyResultBeyondConfidence` (`enforceNonNullBlock`, empty-is-miss), the `eth_query` range check, and the `eth_getLogs` and `trace_filter` range check: a future `toBlock` is refused, never dispatched, since a node answers a range above its head with the part it has.
+- The availability gate checks configured bounds only (#934). One head predicate adds `headLagToleranceBlocks` to `latestBlockMinus` bounds in the gate and in upstream ordering (#1099); votes and the ceiling keep the bound.
+- A by-hash answer (the §7 by-hash family, `eth_getLogs` by `blockHash` included), from an upstream or from the cache, from a block above `Latest` waits up to 1 bt while heads refresh; then it is sent if `Latest` includes its block, else `null`. A request that ends during the wait gets `null`.
 
 Finality:
 
