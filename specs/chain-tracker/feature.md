@@ -376,7 +376,7 @@ Refusal rule, for block N on a request:
 |---|---|
 | N ≤ `Latest` | serve |
 | `Latest` < N ≤ ceiling | refresh (Ask with a number need for the lane's upstreams below N that the ceiling counts, voters first, §6.8); an empty or null answer, or a missing-data error, a range refused per upstream included, is a retryable miss once per request, its hedges included; the retry waits for that Ask until it answers, at most W, then orders the request's routed upstreams by the head predicate, head ≥ N first, with no further I/O; the answer after it goes to the client as the upstream gave it |
-| above | future, only when every counted report is younger than 1 bt; the older ones are Asked first (one poll each, single-flight, at most once per bt) and N decided again, counted `future_after_refresh`; a report still older than 1 bt after the Ask keeps N in the band; an estimate of where a stale upstream is now never stands in for asking it |
+| above | future, only when every counted report is younger than 1 bt; the older ones are Asked first (one poll each, single-flight, at most once per bt) and N decided again, counted `future_after_refresh`; a report still older than 1 bt after the Ask keeps N in the band; an estimate of where a stale upstream is now never stands in for asking it; until the first block time sample, every report counts as older than 1 bt |
 
 - Sites: `tryShortCircuitFutureBlock` (with `shortCircuitFutureBlocks`, a future block gets `null` with no dispatch, #1238), `EmptyResultBeyondConfidence` (`enforceNonNullBlock`, empty-is-miss), the `eth_query` range check, and the `eth_getLogs` and `trace_filter` range check: a future `toBlock` is refused, never dispatched, since a node answers a range above its head with the part it has.
 - The availability gate checks configured bounds only (#934). One head predicate adds `headLagToleranceBlocks` to `latestBlockMinus` bounds in the gate and in upstream ordering (#1099); votes and the ceiling keep the bound.
@@ -462,7 +462,7 @@ Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, th
 
 - One schedule per upstream, with one backoff: the cadence, doubled per failure in a row, at most 60s. The bench reads this backoff (§6.1).
 - Periodic poll: a poll source is Asked once per cadence while `newHeads` is demanded and the upstream is admitted. Every upstream also keeps its full poll every `statePollerInterval` (30s) plus traffic.
-- Ask: single-flight per upstream; every waiter gets the one outcome. A number need is met by a shared counter fresher than the cadence; a hash need only by a local fetch with cache reads skipped.
+- Ask: single-flight per upstream; it joins a fetch in flight, and every waiter gets the one outcome: the answer, an error, or `backoff` when the upstream is backing off. A number need is met by a shared counter fresher than the cadence; a hash need only by a local fetch sent within the cadence, cache reads skipped. Only a fetch sent within the cadence debounces another. So an upstream gets at most one Ask fetch per cadence per instance, and Asks skip rate limits: client load at an upstream's budget never stalls its head (§19 D8).
 
 | Caller | Need |
 |---|---|
