@@ -150,6 +150,8 @@ type EvmStatePoller struct {
 	chainIdRecheckUnwatch func() bool
 	chainIdMatches        int
 	chainIdCordonReason   atomic.Value // string
+	cordonHooksMu         sync.Mutex
+	cordonHooks           []func()
 
 	sharedStateRegistry data.SharedStateRegistry
 
@@ -1022,6 +1024,25 @@ func (e *EvmStatePoller) OnFinalizedBlock(cb func(int64)) {
 	}
 }
 
+// OnChainIdCordonChanged registers cb to fire each time this poller sets or
+// lifts its chain-identity cordon, which moves the upstream in or out of
+// its lanes' ceiling. Like OnLatestBlock, cb MUST NOT block, and it cannot
+// be unregistered.
+func (e *EvmStatePoller) OnChainIdCordonChanged(cb func()) {
+	e.cordonHooksMu.Lock()
+	defer e.cordonHooksMu.Unlock()
+	e.cordonHooks = append(e.cordonHooks, cb)
+}
+
+func (e *EvmStatePoller) chainIdCordonChanged() {
+	e.cordonHooksMu.Lock()
+	hooks := e.cordonHooks
+	e.cordonHooksMu.Unlock()
+	for _, cb := range hooks {
+		cb()
+	}
+}
+
 // verifyChainIdOnMajorHeadMove gates a polled head sample that moved beyond
 // the shared rollback tolerance (in either direction) behind a fresh chain
 // identity check. Such moves are exactly what a cross-wired endpoint — a DNS
@@ -1146,6 +1167,7 @@ func (e *EvmStatePoller) cordonForChainIdMismatch(tag string, current, polled in
 	e.chainIdCordonReason.Store(reason)
 	e.chainIdMatches = 0
 	e.upstream.Cordon("*", reason)
+	e.chainIdCordonChanged()
 	if e.chainIdRecheck != nil || e.appCtx.Err() != nil {
 		return
 	}
@@ -1196,6 +1218,7 @@ func (e *EvmStatePoller) recheckChainIdCordon() {
 		e.chainIdMatches = 0
 		if mismatch != nil && !cordoned {
 			e.upstream.Cordon("*", reason)
+			e.chainIdCordonChanged()
 			e.logger.Warn().Err(mismatch).Msg("upstream still answers for another chain after its cordon was lifted, cordoning it again")
 		}
 		e.logger.Warn().Err(errors.Join(mismatch, err)).Dur("retryIn", ChainIdCordonRecheck.Load()).
@@ -1214,6 +1237,7 @@ func (e *EvmStatePoller) recheckChainIdCordon() {
 	e.chainIdRecheckUnwatch()
 	if cordoned && current == reason {
 		e.upstream.Uncordon("*", reason)
+		e.chainIdCordonChanged()
 		e.logger.Info().Msg("upstream answers for its configured chain again, uncordoned")
 	}
 }

@@ -719,13 +719,15 @@ func (n *Network) setHashStale(ids []string) {
 
 // EvmForkDemoted takes the network-wide tracker's minority-fork set: the
 // voters whose hash vote stayed off the pins for longer than W (spec §6.3).
-// They lose their number vote and go last in routing.
+// They lose their number vote at once, so every lane's Head is computed
+// again, and go last in routing.
 func (n *Network) EvmForkDemoted(ids []string) {
 	if len(ids) == 0 {
 		n.forkDemoted.Store(nil)
 	} else {
 		n.forkDemoted.Store(&ids)
 	}
+	n.headsChanged()
 	if n.logger != nil {
 		n.logger.Info().Strs("upstreams", ids).Msg("minority-fork demotion changed: demoted voters lose their number vote and go last in routing")
 	}

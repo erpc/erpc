@@ -2454,3 +2454,29 @@ func TestServedTip_MetricsCountTransitionsNotEvaluations(t *testing.T) {
 	}
 	assert.Equal(t, beforeOpen+1, servedTipRegressionCount(network, "latest", "failed_open"))
 }
+
+// A minority-fork demotion takes the voter's number vote at once (spec
+// §6.3): the published Head moves on the demotion itself, not on the next
+// timer pass, which is off here.
+func TestServedTip_ForkDemotionMovesTheHeadAtOnce(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	network, _ := setupServedTipNetworkEvery(t, ctx, []servedTipFixture{
+		{id: "forked", chainID: 123, latestBlock: 10_010},
+		{id: "honest", chainID: 123, latestBlock: 10_000},
+	}, &common.EvmServedTipConfig{Quorum: 1}, time.Hour)
+	published := func() int64 { return network.EvmLaneHead("", "").Latest }
+	require.Eventually(t, func() bool { return published() == 10_010 }, 2*time.Second, 5*time.Millisecond,
+		"precondition: quorum 1 serves the highest voter; got %d", published())
+
+	network.EvmForkDemoted([]string{"forked"})
+	require.Eventually(t, func() bool { return published() == 10_000 }, 2*time.Second, 5*time.Millisecond,
+		"a demoted voter's number leaves the Head at once; got %d", published())
+
+	network.EvmForkDemoted(nil)
+	require.Eventually(t, func() bool { return published() == 10_010 }, 2*time.Second, 5*time.Millisecond,
+		"a voter back on the pins votes again at once; got %d", published())
+}

@@ -168,13 +168,15 @@ func (n *Network) refreshHeadsRecovered() {
 }
 
 // watchHeadCounters makes every move of ups's head counters, by a poll, a
-// push or another instance, wake the head loop (spec §6.4). The registry
-// calls it once per upstream as it joins the network, which is itself a
-// change of the voters.
+// push or another instance, and every change of its chain-identity cordon,
+// which moves it in or out of the ceiling, wake the head loop (spec §6.4).
+// The registry calls it once per upstream as it joins the network, which
+// is itself a change of the voters.
 func (n *Network) watchHeadCounters(ups *upstream.Upstream) {
 	if p, ok := ups.EvmStatePoller().(*evm.EvmStatePoller); ok && !p.IsObjectNull() {
 		p.OnLatestBlock(func(int64) { n.headsChanged() })
 		p.OnFinalizedBlock(func(int64) { n.headsChanged() })
+		p.OnChainIdCordonChanged(n.headsChanged)
 	}
 	n.headsChanged()
 }
