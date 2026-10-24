@@ -333,9 +333,11 @@ func (e *EvmStatePoller) pollLoop(interval time.Duration) {
 		nctx, cancel := context.WithTimeout(e.appCtx, timeout)
 		var err error
 		if e.activePollSource() != nil {
-			// The poll source's own channel (spec §6.2); a full poll's latest
-			// fetch right after it is inside the debounce, so it is skipped.
-			_, err = e.pollLatest(nctx, true, HeaderStreamed)
+			// The poll source's own channel (spec §6.2), its clock: it
+			// ignores the debounce, so held, fork and catch-up polls never
+			// skip a tick. A full poll's latest fetch right after it is
+			// inside the debounce, so it is skipped.
+			_, err = e.pollLatest(nctx, false, HeaderStreamed)
 		}
 		if full {
 			lastFull = time.Now()
@@ -946,8 +948,8 @@ func (e *EvmStatePoller) BackedOffCadence() time.Duration {
 }
 
 // latestDebounce is how fresh a latest poll keeps the counter: while a poll
-// source, its backed-off pollSourceDelay, so every scheduled poll fetches
-// and client traffic cannot poll faster.
+// source, its backed-off pollSourceDelay, so client traffic cannot poll
+// faster than its cadence.
 func (e *EvmStatePoller) latestDebounce(cfg *common.EvmNetworkConfig) time.Duration {
 	if e.activePollSource() != nil {
 		return e.pollSourceDelay()
