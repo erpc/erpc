@@ -184,6 +184,10 @@ func mockGetBlockByNumberAt(blockHex, result string, dispatched *atomic.Int64, i
 			Post("").
 			Persist().
 			Filter(func(r *http.Request) bool {
+				// gock runs every mock's filter on each request.
+				if r.URL.Host != id+".localhost" {
+					return false
+				}
 				body := util.SafeReadBody(r)
 				if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"`+blockHex+`"`) {
 					return false
@@ -410,9 +414,10 @@ func TestForward_FutureBlock_OptIn_ShortCircuitNotMirroredToExcluded(t *testing.
 }
 
 // A band block with hedging on (spec §6.4): the request takes one retryable
-// miss across its hedges. The leg that got it retries on the upstream whose
-// head reaches the block; a hedge leg whose upstream is below the block
-// stops instead of calling its empty answer final.
+// miss across its hedges. The first leg routes to the upstream whose head
+// reaches the block (slow); a hedge gets a null below it, takes the miss
+// and retries; a later hedge, beside that leg, stops without dispatching,
+// and no hedge's null wins over the block.
 func TestForward_BandBlock_HedgesShareOneMiss(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -429,17 +434,22 @@ func TestForward_BandBlock_HedgesShareOneMiss(t *testing.T) {
 	})
 	ex, err := NewNetworkExecutor(&common.FailsafeConfig{
 		MatchMethod: "*",
-		Hedge:       &common.HedgePolicyConfig{Delay: common.NewStaticDuration(5 * time.Millisecond), MaxCount: 2},
+		Hedge:       &common.HedgePolicyConfig{Delay: common.NewStaticDuration(20 * time.Millisecond), MaxCount: 2},
 	}, network.logger, nil, nil)
 	require.NoError(t, err)
 	network.failsafeExecutors = []*networkExecutor{ex}
 
 	var below, holder atomic.Int64
+	// bh1 answers at once, so the first hedge takes the miss; its retry
+	// lands on bh2 or bh3 and runs past the second hedge's start.
 	for i, id := range []string{"bh1", "bh2", "bh3"} {
 		gock.New("http://" + id + ".localhost").
 			Post("").
 			Persist().
 			Filter(func(r *http.Request) bool {
+				if r.URL.Host != id+".localhost" {
+					return false
+				}
 				body := util.SafeReadBody(r)
 				if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x65"`) {
 					return false
@@ -448,13 +458,16 @@ func TestForward_BandBlock_HedgesShareOneMiss(t *testing.T) {
 				return true
 			}).
 			Reply(200).
-			Delay(time.Duration(i) * 15 * time.Millisecond).
+			Delay(time.Duration(min(i, 1)) * 60 * time.Millisecond).
 			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":null}`))
 	}
 	gock.New("http://bh4.localhost").
 		Post("").
 		Persist().
 		Filter(func(r *http.Request) bool {
+			if r.URL.Host != "bh4.localhost" {
+				return false
+			}
 			body := util.SafeReadBody(r)
 			if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x65"`) {
 				return false
@@ -470,8 +483,8 @@ func TestForward_BandBlock_HedgesShareOneMiss(t *testing.T) {
 	jrr, err := resp.JsonRpcResponse(ctx)
 	require.NoError(t, err)
 	assert.Contains(t, jrr.GetResultString(), "0x270f", "the band block from the upstream whose head reaches it, not a hedge's null")
-	assert.Equal(t, int64(1), holder.Load(), "one retry, on the upstream at the block")
-	assert.Positive(t, below.Load(), "a leg asked an upstream below the block first")
+	assert.Equal(t, int64(1), holder.Load(), "the upstream at the block, asked once")
+	assert.Equal(t, int64(2), below.Load(), "the miss and its retry; the hedge beside them dispatched no more")
 }
 
 // A future block dispatched (shortCircuitFutureBlocks off) takes one
@@ -510,6 +523,9 @@ func mockMethodAnswer(method, result string, dispatched *atomic.Int64, ids ...st
 			Post("").
 			Persist().
 			Filter(func(r *http.Request) bool {
+				if r.URL.Host != id+".localhost" {
+					return false
+				}
 				if !strings.Contains(util.SafeReadBody(r), `"`+method+`"`) {
 					return false
 				}
