@@ -187,7 +187,13 @@ func TestHttpServer_GetBlockByNumber_NearTipPrefersTipUpstream(t *testing.T) {
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x33338889","hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","parentHash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","timestamp":"0x6702a8f1"}}`))
 
-	sendRequest, shutdown, nw, leader := setupTipLeaderServer(t, &common.EvmNetworkConfig{ChainId: 123}, 2)
+	// Quorum 1: rpc2's head alone is Latest, so rpc2 leads (the Leader is
+	// the highest voter within Latest + maxRetryableBlockDistance; with the
+	// default quorum one far-ahead upstream never leads, spec §6.4, U12).
+	sendRequest, shutdown, nw, leader := setupTipLeaderServer(t, &common.EvmNetworkConfig{
+		ChainId:   123,
+		ServedTip: &common.EvmServedTipConfig{Quorum: 1},
+	}, 2)
 	defer shutdown()
 	// A major head jump applies only after an async chain-identity check.
 	leader.EvmStatePoller().SuggestLatestBlock(tip)
