@@ -403,7 +403,7 @@ Fork choice:
 2. Fill: every root is extended downward (§9) until it joins another tree or reaches the window base.
 3. Vote: a voter's hash vote moves to its newest header once that header is held; until then its previous vote stays. An ancestor of the current vote does not move it back.
 4. Choose: take the tree with the most votes; a tie keeps the tree of the pins. In it, from the root, follow the child whose subtree holds the most votes; a tie keeps the pinned child; a block with no voted child follows its pinned child. Stop at a block with no child to follow, or at a tie with no pinned child. The last block followed is the head; the path from the root to it is the pins.
-5. Settle: a tie in rule 4, or a hash vote off the pins (§6.3), runs a settle (§6.8). Each answer is walked like a vote and, once held, adds one vote for this decision. No answer, or no target: the pins stay, and the settle runs again after backoff.
+5. Settle: a tie in rule 4, or a hash vote off the pins (§6.3), runs a settle (§6.8). Each answer is walked like a vote; once held, a voter's answer is its hash vote, and a non-voter's adds one vote for this decision. No answer, or no target: the pins stay, and the settle runs again after backoff.
 6. No hash voter, with demand: the tracker Asks the first voter in selection order with a hash need, once per cadence. That answer is the only vote until the next one; an answer that conflicts with the pins starts a settle.
 
 Settle rounds:
