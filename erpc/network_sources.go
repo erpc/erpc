@@ -661,6 +661,7 @@ func (r *sourceReconciler) dropSource(s *source) {
 	}
 	r.mu.Unlock()
 	delete(r.sources, s.id)
+	r.nw.intake.forget(s.id)
 	r.nw.logger.Debug().Str("upstreamId", s.id).Msg("subscription source left the network")
 }
 

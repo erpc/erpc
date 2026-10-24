@@ -304,6 +304,14 @@ func (in *networkIntake) accept(upstreamId string, sh evm.SourceHeader, onlyNewe
 	return true
 }
 
+// forget drops what intake holds of an upstream that left the network.
+func (in *networkIntake) forget(upstreamId string) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	delete(in.last, upstreamId)
+	delete(in.hashVoterSince, upstreamId)
+}
+
 // reported reports whether a source header of upstreamId was accepted.
 func (in *networkIntake) reported(upstreamId string) bool {
 	in.mu.Lock()
