@@ -133,6 +133,8 @@ type ChainTracker struct {
 	offPins map[string]offPin
 	demoted []string
 	forkAt  time.Time
+	// sampled is the confirmed head last fed to the block time.
+	sampled *chainHeader
 
 	receiptsOrder []receiptsEntry
 	jobs          map[[32]byte]*receiptsJob // receipts fetches by block hash
@@ -1219,6 +1221,7 @@ func (t *ChainTracker) apply(path []*node) {
 	}
 	old := t.state.Swap(s)
 	close(old.changed)
+	t.sampleConfirmed(s)
 
 	t.recordMove(pub.pins, path)
 	t.evict()
@@ -1320,6 +1323,21 @@ func (t *ChainTracker) publish() {
 	s.confirmed, s.backing = b.confirmed(), b
 	s.logs = t.logsHeadOf(s)
 	close(t.state.Swap(s).changed)
+	t.sampleConfirmed(s)
+}
+
+// sampleConfirmed feeds each new confirmed head of the network-wide tracker
+// into the network's block time (spec §6.7): only headers the confirmed
+// head reached are samples, so a lagging or bogus source header never is.
+func (t *ChainTracker) sampleConfirmed(s *feedState) {
+	h := s.confirmedHead()
+	if t.selector != "" || h == nil || h == t.sampled || h.timestamp == 0 {
+		return
+	}
+	t.sampled = h
+	if n, ok := t.network.(interface{ EvmSampleBlockTime(number, timestamp int64) }); ok {
+		t.callNetwork("block-time", func() { n.EvmSampleBlockTime(int64(h.number), int64(h.timestamp)) })
+	}
 }
 
 // pinBacking is the confirmed head's count over the pins (spec §6.5): for
@@ -1601,6 +1619,7 @@ func (t *ChainTracker) gateSend() {
 	s.changed = make(chan struct{})
 	s.logs = t.logsHeadOf(s)
 	close(t.state.Swap(s).changed)
+	t.sampleConfirmed(s)
 }
 
 // reset empties the tracker; a pending settle reports undecided.

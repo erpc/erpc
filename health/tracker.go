@@ -2151,15 +2151,17 @@ func FreshnessWindow(bt time.Duration) time.Duration {
 	return min(max(3*bt, 2*time.Second), 60*time.Second)
 }
 
-// SampleSourceHeaderTime feeds an accepted source header's timestamp into
-// the network block time EMA (spec §6.7): a local sample, as the poller's
-// are. Pushed heads carry no timestamp through the shared counter, so an
-// instance that polls rarely would otherwise learn the block time late.
-func (t *Tracker) SampleSourceHeaderTime(ups common.Upstream, number, timestamp int64) {
+// SampleConfirmedHeaderTime feeds the timestamp of a source header the
+// network's confirmed head reached into its block time EMA (spec §6.7): a
+// local sample, as the poller's are. Pushed heads carry no timestamp
+// through the shared counter, so an instance that polls rarely would
+// otherwise learn the block time late; a lagging or bogus header the
+// confirmed head never reached is no sample.
+func (t *Tracker) SampleConfirmedHeaderTime(networkId, networkLabel string, number, timestamp int64) {
 	if number <= 0 || timestamp <= 0 {
 		return
 	}
-	t.updateBlockTimeSample(t.getMetadata(metadataKey{nil, ups.NetworkId()}), ups.NetworkLabel(), number, timestamp)
+	t.updateBlockTimeSample(t.getMetadata(metadataKey{nil, networkId}), networkLabel, number, timestamp)
 }
 
 // updateBlockTimeSample feeds the network head's block into the network block

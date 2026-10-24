@@ -141,7 +141,6 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay b
 	// tracker that handles it counts its sender as a hash voter.
 	if mt := in.nw.metricsTracker; mt != nil {
 		mt.RecordHashVote(u, int64(cur.Number), replay)
-		mt.SampleSourceHeaderTime(u, int64(cur.Number), sh.Timestamp())
 	}
 	evm.ObserveSourceHeader(in.nw, u, sh)
 	if in.isVoter(upstreamId) {
@@ -526,6 +525,14 @@ func (n *Network) EvmForkDemoted(ids []string) {
 // voters changed: the reconciler rechecks topic admission (spec §5.2).
 func (n *Network) EvmHashVotersChanged() {
 	n.sources.wake()
+}
+
+// EvmSampleBlockTime takes the network-wide tracker's confirmed head, a
+// source header q hash voters back, as a block time sample (spec §6.7).
+func (n *Network) EvmSampleBlockTime(number, timestamp int64) {
+	if n.metricsTracker != nil {
+		n.metricsTracker.SampleConfirmedHeaderTime(n.networkId, n.Label(), number, timestamp)
+	}
 }
 
 // isForkDemoted reports whether u is on a minority fork (EvmForkDemoted).
