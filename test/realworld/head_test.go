@@ -188,9 +188,9 @@ func (s *scenario) dispatches(n uint64, from, to time.Time) int {
 // U14: every vendor serves u14Ahead behind a syncing archive (vendor-c,
 // https). eth_getBlockByNumber(Latest + 3) is served by the archive, in
 // the refusal band, not null (§6.4: the ceiling counts syncing upstreams;
-// the retry orders head ≥ N first). The archive is no source, so its head
-// reaches the ceiling by its state poll: every block here (harness), so
-// the band, not a sweep of every upstream, has to find it.
+// the retry orders head ≥ N first). The archive is no source, and its
+// state poll keeps the default interval, so its head reaches the ceiling
+// by the band's refresh, not a sweep of every upstream.
 func u14() spec {
 	lag := chainsim.Faults{Lag: u14Ahead}
 	return spec{name: "U14", bound: healthyDelivery + u14Ahead*blockTime,
@@ -199,7 +199,6 @@ func u14() spec {
 			{"http-a", "vendor-a", false}, {"http-b", "vendor-b", false},
 			{"archive", "vendor-c", false},
 		},
-		upEvm:  map[string]map[string]interface{}{"archive": {"statePollerInterval": blockTime.String()}},
 		faults: map[string]chainsim.Faults{"ws-a": lag, "ws-b": lag, "http-a": lag, "http-b": lag, "archive": {Syncing: true}},
 		body: func(s *scenario) {
 			s.blocks(25)

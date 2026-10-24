@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -327,22 +326,11 @@ func (n *Network) laneLeader(sel string, latest int64) common.Upstream {
 // treated, not whether an upstream can have the block. 0 (unknown) when the
 // lane has no upstream or any upstream's head is unknown.
 func (n *Network) laneCeiling(sel string) int64 {
-	if n.upstreamsRegistry == nil {
-		return 0
-	}
+	ups := n.ceilingUpstreams(sel)
 	var head int64
-	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
-		if sel != "" {
-			if m, _ := common.UpstreamMatchesSelector(sel, u); !m {
-				continue
-			}
-		}
-		sp := u.EvmStatePoller()
-		if sp == nil {
+	for _, u := range ups {
+		if sp := u.EvmStatePoller(); sp == nil {
 			return 0
-		}
-		if c, ok := sp.(interface{ ChainIdCordoned() bool }); ok && c.ChainIdCordoned() {
-			continue
 		}
 		blk, _ := evmTipObservation(u, false)
 		if blk <= 0 {
@@ -353,32 +341,104 @@ func (n *Network) laneCeiling(sel string) int64 {
 	return head
 }
 
-// EvmAskCeiling asks every registered upstream of selector sel's lane whose
-// head is below block for its latest head, waits up to W for the answers,
-// and returns the lane's ceiling after them: a stale ceiling is Asked
-// before any "future" answer (spec §6.4, §6.8 number need). Each poll is
-// debounced, so a fresh shared counter meets the need with no fetch.
-func (n *Network) EvmAskCeiling(ctx context.Context, sel string, block int64) int64 {
+// ceilingUpstreams are the upstreams selector sel's lane ceiling counts:
+// every registered one within sel, minus those cordoned for answering for
+// another chain.
+func (n *Network) ceilingUpstreams(sel string) []*upstream.Upstream {
 	if n.upstreamsRegistry == nil {
-		return 0
+		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
-	defer cancel()
-	var wg sync.WaitGroup
-	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+	var out []*upstream.Upstream
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
 		if sel != "" {
 			if m, _ := common.UpstreamMatchesSelector(sel, u); !m {
 				continue
 			}
 		}
-		sp := u.EvmStatePoller()
-		if sp == nil || sp.IsObjectNull() || sp.LatestBlock() >= block {
+		if c, ok := u.EvmStatePoller().(interface{ ChainIdCordoned() bool }); ok && c.ChainIdCordoned() {
 			continue
 		}
-		wg.Go(func() { _, _ = sp.PollLatestBlockNumber(ctx) })
+		out = append(out, u)
 	}
-	wg.Wait()
-	return n.laneCeiling(sel)
+	return out
+}
+
+// askLane Asks, with a number need, each upstream selector sel's lane
+// ceiling counts whose head is below block, voters first (spec §6.4,
+// §6.8): a poll debounced by this instance's last fetch of it, on the
+// network's context bounded by W, so no caller's end fails it for the
+// others. One poll per upstream is in flight at a time; a caller finding
+// one joins it.
+func (n *Network) askLane(sel string, block int64) {
+	parent := n.appCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ups := n.ceilingUpstreams(sel)
+	for _, voters := range [2]bool{true, false} {
+		for _, u := range ups {
+			if _, _, ok := tipVoterRank(u, false, n.metricsTracker); ok != voters {
+				continue
+			}
+			sp := u.EvmStatePoller()
+			if sp == nil || sp.IsObjectNull() {
+				continue
+			}
+			if head, _ := evmTipObservation(u, false); head >= block {
+				continue
+			}
+			if _, inFlight := n.asks.LoadOrStore(u.Id(), struct{}{}); inFlight {
+				continue
+			}
+			go func() {
+				defer n.asks.Delete(u.Id())
+				defer n.recoverAskPanic(sel)
+				ctx, cancel := context.WithTimeout(parent, health.FreshnessWindow(n.EvmBlockTime()))
+				defer cancel()
+				_, _ = sp.PollLatestBlockNumber(ctx)
+			}()
+		}
+	}
+}
+
+func (n *Network) recoverAskPanic(sel string) {
+	if rec := recover(); rec != nil {
+		telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+			"network-ask",
+			fmt.Sprintf("project:%s network:%s selector:%s", n.projectId, n.networkId, sel),
+			common.ErrorFingerprint(rec),
+		).Inc()
+		n.logger.Error().Interface("panic", rec).Str("selector", sel).Str("stack", string(debug.Stack())).
+			Msg("unexpected panic while asking a lane's heads")
+	}
+}
+
+// EvmAskCeiling Asks selector sel's lane for block (askLane) and waits
+// until its ceiling reaches block, 1 bt passes or ctx ends, re-reading it
+// at each head pass, then returns the lane's ceiling: a stale ceiling is
+// Asked before any "future" answer, and the band's retry orders upstreams
+// on the Ask's heads (spec §6.4).
+func (n *Network) EvmAskCeiling(ctx context.Context, sel string, block int64) int64 {
+	n.askLane(sel, block)
+	bt := n.EvmBlockTime()
+	if bt <= 0 {
+		bt = health.ColdBlockTime
+	}
+	timer := time.NewTimer(bt)
+	defer timer.Stop()
+	for {
+		pass := n.headsComputed()
+		if c := n.laneCeiling(sel); c >= block {
+			return c
+		}
+		select {
+		case <-pass:
+		case <-timer.C:
+			return n.laneCeiling(sel)
+		case <-ctx.Done():
+			return n.laneCeiling(sel)
+		}
+	}
 }
 
 // holdByHash returns the answer to send for resp, an answer to req, which

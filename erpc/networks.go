@@ -62,6 +62,9 @@ type Network struct {
 	// closed (setHashStale): tried after the rest, before forkDemoted. nil
 	// while none is.
 	hashStale atomic.Pointer[[]string]
+	// asks holds the upstream ids with an Ask poll in flight (askLane):
+	// one per upstream at a time (spec §6.4, §6.8).
+	asks sync.Map
 
 	// servedTipAll is the network-wide lane. A lane publishes its Head and
 	// holds the advance-age watchdog and the regression guard's memory; the
@@ -822,17 +825,13 @@ func (n *Network) EvmRefreshLatestBlock(ctx context.Context) {
 	}
 }
 
-// EvmRefreshHeadsBelow asks every voter whose head is below block n for a
-// background refresh (spec §6.5 catch-up): the network's latest block holds
-// n back from subscribers until enough of them report it, guarantee subsets
-// included, so a voter already at n is never polled for it. Each poller
-// skips a refresh inside its debounce and keeps one in flight.
+// EvmRefreshHeadsBelow Asks, in the background, with a number need, every
+// upstream selector's lane ceiling counts whose head is below block (spec
+// §6.4 band, §6.5 catch-up), voters first: a syncing upstream votes for no
+// Latest yet may hold the block, and the band's retry orders upstreams by
+// these heads. It joins the lane's Ask in flight, if any.
 func (n *Network) EvmRefreshHeadsBelow(selector string, block int64) {
-	for u := range n.tipCandidates(selector) {
-		if head, _, ok := tipVoterRank(u, false, n.metricsTracker); ok && head < block {
-			u.(common.EvmUpstream).EvmStatePoller().RefreshLatestBlock()
-		}
-	}
+	n.askLane(selector, block)
 }
 
 // EvmPollHeads polls the latest header of each upstream in ids for a hash
@@ -2219,6 +2218,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					final := refusal.Final()
 					switch {
 					case refusal.Miss():
+						// The retry orders on the heads the band's Ask brings,
+						// waited for while the ceiling is below the block.
+						sel := ""
+						if d := effectiveReq.Directives(); d != nil {
+							sel = d.UseUpstream
+						}
+						n.EvmAskCeiling(loopCtx, sel, refusal.Block)
 						nextUpstream = n.headFirst(effectiveReq, attempted, refusal.Block)
 					case final && !emptyAnswer:
 						common.SetTraceSpanError(loopSpan, err)
