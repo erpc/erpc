@@ -372,6 +372,7 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 
 	fbStr := rangeBound(filter, "fromBlock")
 	tbStr := rangeBound(filter, "toBlock")
+	sentAsTag := rangeSentAsTag(filter)
 	addrCount, topicCount := getLogsFilterCounts(filter)
 	jrq.RUnlock()
 
@@ -413,7 +414,7 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	}
 
 	// Proactive split if needed
-	if requestRange > 0 && effectiveThreshold > 0 && requestRange > effectiveThreshold {
+	if !sentAsTag && requestRange > 0 && effectiveThreshold > 0 && requestRange > effectiveThreshold {
 		// Build contiguous block sub-requests
 		subRequests := make([]ethGetLogsSubRequest, 0)
 		sb := fromBlock

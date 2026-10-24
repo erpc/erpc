@@ -150,6 +150,7 @@ func networkPreForward_trace_filter(ctx context.Context, n common.Network, ups [
 
 	fbStr := rangeBound(filter, "fromBlock")
 	tbStr := rangeBound(filter, "toBlock")
+	sentAsTag := rangeSentAsTag(filter)
 	jrq.RUnlock()
 
 	// If either block can't be resolved to a number, pass through to upstream
@@ -189,7 +190,7 @@ func networkPreForward_trace_filter(ctx context.Context, n common.Network, ups [
 		}
 	}
 
-	if requestRange > 0 && effectiveThreshold > 0 && requestRange > effectiveThreshold {
+	if !sentAsTag && requestRange > 0 && effectiveThreshold > 0 && requestRange > effectiveThreshold {
 		subRequests := make([]traceFilterSubRequest, 0)
 		sb := fromBlock
 		for sb <= toBlock {

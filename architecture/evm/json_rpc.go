@@ -90,7 +90,9 @@ func tagBlockNumber(ctx context.Context, nrq *common.NormalizedRequest, cfg *com
 // methods whose nodes read an absent or null selector as "latest" (geth's
 // blockNrOrHashOrLatest, erigon's trace_call): absent, it is interpolated
 // like "latest". eth_callMany is not here: its selector is a required
-// object, whose blockNumber leaf is rewritten like any EIP-1898 one.
+// object, whose blockNumber leaf is rewritten like any EIP-1898 one. Nor
+// are arbtrace_*: Arbitrum classic nodes serve them, and their latest is
+// not the network's, so an absent param stays absent.
 var stateBlockParam = map[string]int{
 	"eth_call":                1,
 	"eth_estimateGas":         1,
@@ -104,8 +106,6 @@ var stateBlockParam = map[string]int{
 	"eth_simulateV1":          1,
 	"debug_traceCall":         1,
 	"trace_call":              2,
-	"arbtrace_call":           2,
-	"arbtrace_callMany":       1,
 }
 
 // stateBlockParamAbsent reports whether params end right before idx or hold
@@ -135,6 +135,44 @@ func rangeBound(filter map[string]interface{}, key string) string {
 	return s
 }
 
+// rangeSentAsTag reports whether either bound of an interpolated range
+// filter still reaches upstreams as a tag: absent, or "latest"/"finalized"
+// left as the word (translate off, skip-interpolation). Such a range is
+// never split proactively: its sub-requests would carry numbers (spec §7).
+func rangeSentAsTag(filter map[string]interface{}) bool {
+	for _, key := range [...]string{"fromBlock", "toBlock"} {
+		if rangeBoundAbsent(filter, key) {
+			return true
+		}
+		if s, _ := filter[key].(string); s == "latest" || s == "finalized" {
+			return true
+		}
+	}
+	return false
+}
+
+// absentRangeFilter is the filter of a range method whose absent bounds
+// mean "latest" (spec §7 family 4; not arbtrace_filter, see
+// stateBlockParam), else nil.
+func absentRangeFilter(method string, params []interface{}) map[string]interface{} {
+	if method != "eth_getLogs" && method != "trace_filter" || len(params) == 0 {
+		return nil
+	}
+	filter, _ := params[0].(map[string]interface{})
+	return filter
+}
+
+// hasAbsentSelector reports whether params hold a selector that is absent
+// and means "latest" for method, without allocating: absentLatestPaths'
+// pre-check before any ReqRef is read.
+func hasAbsentSelector(method string, params []interface{}) bool {
+	if idx, ok := stateBlockParam[method]; ok {
+		return stateBlockParamAbsent(params, idx)
+	}
+	filter := absentRangeFilter(method, params)
+	return filter != nil && (rangeBoundAbsent(filter, "fromBlock") || rangeBoundAbsent(filter, "toBlock"))
+}
+
 // absentLatestPaths are the block selectors of params that are absent and
 // mean "latest" for method; selectorSeen: a ReqRef already holds one.
 func absentLatestPaths(method string, params []interface{}, selectorSeen bool) [][]interface{} {
@@ -144,20 +182,12 @@ func absentLatestPaths(method string, params []interface{}, selectorSeen bool) [
 		}
 		return nil
 	}
-	switch method {
-	case "eth_getLogs", "trace_filter", "arbtrace_filter":
-	default:
-		return nil
-	}
-	if len(params) == 0 {
-		return nil
-	}
-	filter, ok := params[0].(map[string]interface{})
-	if !ok {
+	filter := absentRangeFilter(method, params)
+	if filter == nil {
 		return nil
 	}
 	var paths [][]interface{}
-	for _, key := range []string{"fromBlock", "toBlock"} {
+	for _, key := range [...]string{"fromBlock", "toBlock"} {
 		if rangeBoundAbsent(filter, key) {
 			paths = append(paths, []interface{}{0, key})
 		}
@@ -206,7 +236,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 			value: val,
 		})
 	}
-	anyAbsent = len(absentLatestPaths(method, jrq.Params, false)) > 0
+	anyAbsent = hasAbsentSelector(method, jrq.Params)
 	jrq.RUnlock()
 
 	if len(paramsToProcess) == 0 && !anyAbsent {
@@ -349,9 +379,12 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		}
 	}
 
-	jrq.RLock()
-	absent := absentLatestPaths(method, jrq.Params, selectorSeen)
-	jrq.RUnlock()
+	var absent [][]interface{}
+	if anyAbsent {
+		jrq.RLock()
+		absent = absentLatestPaths(method, jrq.Params, selectorSeen)
+		jrq.RUnlock()
+	}
 	// An absent selector is "latest" spelled out: interpolated when the tag
 	// is, else sent as the word, so no node applies its own default block (a
 	// vendor answered a bare eth_estimateGas from state far behind its head).

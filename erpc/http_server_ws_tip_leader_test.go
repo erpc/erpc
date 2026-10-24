@@ -79,9 +79,10 @@ func setupTipLeaderServer(t *testing.T, evmCfg *common.EvmNetworkConfig, maxAtte
 	return sendRequest, shutdown, nw, leader
 }
 
-// EnforceHighestBlock's tip re-fetch must reach the upstream whose poller has
-// the tip, not settle for the lagging sibling that answered "latest" first.
-func TestHttpServer_GetBlockByNumberLatest_RefetchReachesTipUpstream(t *testing.T) {
+// "latest" is interpolated to the Head, a number only the upstream whose
+// poller has the tip can serve: the request must reach it, not settle for
+// the lagging sibling preferred by selection order.
+func TestHttpServer_GetBlockByNumberLatest_InterpolatedReachesTipUpstream(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -104,8 +105,8 @@ func TestHttpServer_GetBlockByNumberLatest_RefetchReachesTipUpstream(t *testing.
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x22228889","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f1"}}`))
 
-	// rpc1 lags, so the initial "latest" comes from it and triggers the
-	// EnforceHighestBlock re-fetch. Quorum 1: rpc2's head alone is the tip.
+	// rpc1 lags; "latest" becomes the tip's number. Quorum 1: rpc2's head
+	// alone is the tip.
 	sendRequest, shutdown, nw, leader := setupTipLeaderServer(t, &common.EvmNetworkConfig{
 		ChainId: 123,
 		Integrity: &common.EvmIntegrityConfig{
@@ -137,7 +138,7 @@ func TestHttpServer_GetBlockByNumberLatest_RefetchReachesTipUpstream(t *testing.
 	assert.Equal(t, tipHex, result["number"])
 	assert.Equal(t, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", result["hash"])
 	assert.GreaterOrEqual(t, leaderHits.Load(), int64(1),
-		"the tip re-fetch must reach the upstream that has the tip")
+		"the interpolated request must reach the upstream that has the tip")
 }
 
 // Direct eth_getBlockByNumber(tip) goes first to the upstream that has the

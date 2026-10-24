@@ -488,12 +488,6 @@ var (
 		Help:      "Total number of times an upstream returned a stale (vs others) latest block number.",
 	}, []string{"project", "vendor", "network", "upstream", "category"})
 
-	MetricUpstreamStaleFinalizedBlock = DefineCounter(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "upstream_stale_finalized_block_total",
-		Help:      "Total number of times an upstream returned a stale (vs others) finalized block number.",
-	}, []string{"project", "vendor", "network", "upstream"})
-
 	MetricUpstreamStaleUpperBound = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_stale_upper_bound_total",

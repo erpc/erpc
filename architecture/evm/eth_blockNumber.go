@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -10,25 +11,66 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// headNumberAxis is the Head axis a head-number request asks for (spec §7
+// family 1): eth_blockNumber, and erigon_blockNumber with no param or
+// "latest", ask for Latest; erigon_blockNumber("finalized") for Finalized.
+// ok is false for any other erigon_blockNumber param: it is forwarded as
+// is and its answer is not pinned.
+func headNumberAxis(ctx context.Context, nq *common.NormalizedRequest) (finalized, ok bool) {
+	if method, _ := nq.Method(); !strings.EqualFold(method, "erigon_blockNumber") {
+		return false, true
+	}
+	jrq, err := nq.JsonRpcRequest(ctx)
+	if err != nil {
+		return false, false
+	}
+	jrq.RLock()
+	defer jrq.RUnlock()
+	if len(jrq.Params) == 0 {
+		return false, true
+	}
+	switch jrq.Params[0] {
+	case "latest":
+		return false, true
+	case "finalized":
+		return true, true
+	}
+	return false, false
+}
+
+// headNumber is the request's Head on axis finalized.
+func headNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest, finalized bool) int64 {
+	head := common.EvmHeadOf(network, ctx, nq)
+	if finalized {
+		return head.Finalized
+	}
+	return head.Latest
+}
+
 // networkPreForward_eth_blockNumber answers eth_blockNumber and
-// erigon_blockNumber with the request's Head.Latest (spec §7 family 1) without dispatching whenever
-// enforce-highest-block is on and the head is known: the post-forward hook
-// below pins every response to that same value EXACTLY,
-// so an upstream's answer is always discarded and the call buys nothing but
-// vendor cost and latency. Each answer also asks the ballot's pollers for a
-// debounced background refresh, so on a quiet network the head a client polls
-// for is not held at the ticker interval. An unknown head (cold pollers) and
-// enforce-highest-block=false keep forwarding.
+// erigon_blockNumber with the request's Head on the axis it asks for
+// (headNumberAxis) without dispatching whenever enforce-highest-block is on
+// and the head is known: the post-forward hook below pins every response to
+// that same value EXACTLY, so an upstream's answer is always discarded and
+// the call buys nothing but vendor cost and latency. Each answer also asks
+// the ballot's pollers for a debounced background refresh, so on a quiet
+// network the head a client polls for is not held at the ticker interval.
+// An unknown head (cold pollers) and enforce-highest-block=false keep
+// forwarding.
 func networkPreForward_eth_blockNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
 	if dirs := nq.Directives(); dirs == nil || !dirs.EnforceHighestBlock {
 		return false, nil, nil
 	}
+	finalized, ok := headNumberAxis(ctx, nq)
+	if !ok {
+		return false, nil, nil
+	}
 	ctx = context.WithValue(ctx, common.RequestContextKey, nq)
-	tip := common.EvmHeadOf(network, ctx, nq).Latest
+	tip := headNumber(ctx, network, nq, finalized)
 	if tip <= 0 {
 		return false, nil, nil
 	}
-	common.EvmRefreshHead(network, ctx, false)
+	common.EvmRefreshHead(network, ctx, finalized)
 	hex, err := common.NormalizeHex(tip)
 	if err != nil {
 		return true, nil, err
@@ -66,6 +108,10 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 	if dirs == nil || !dirs.EnforceHighestBlock {
 		return nr, re
 	}
+	finalized, ok := headNumberAxis(ctx, nq)
+	if !ok {
+		return nr, re
+	}
 
 	method, _ := nq.Method()
 	ctx, span := common.StartDetailSpan(ctx, "Network.PostForward."+method, trace.WithAttributes(
@@ -83,7 +129,7 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 	// The request's own Head, the one its pre-forward and its interpolation
 	// read: a request pinned to a lagging group is never promised a block
 	// that group cannot serve.
-	highestBlock := common.EvmHeadOf(network, ctx, nq).Latest
+	highestBlock := headNumber(ctx, network, nq, finalized)
 	if common.IsTracingDetailed {
 		blockNumberLag := highestBlock - blockNumber
 		if blockNumberLag < 0 {
