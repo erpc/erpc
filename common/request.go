@@ -314,6 +314,8 @@ type NormalizedRequest struct {
 	evmBlockNumber      atomic.Value
 	// evmHead is the lane's Head this request took once (spec §7).
 	evmHead atomic.Pointer[EvmHead]
+	// headRefusal is the refusal rule's verdict for its block (spec §6.4).
+	headRefusal atomic.Pointer[HeadRefusal]
 
 	compositeType   atomic.Value // Type of composite request (e.g., "logs-split")
 	parentRequestId atomic.Value // ID of the parent request (for sub-requests)
@@ -1199,6 +1201,23 @@ func (r *NormalizedRequest) TakeEvmHead(h *EvmHead) *EvmHead {
 		return h
 	}
 	return r.evmHead.Load()
+}
+
+// HeadRefusal is the refusal verdict r took, nil before it took one.
+func (r *NormalizedRequest) HeadRefusal() *HeadRefusal {
+	if r == nil {
+		return nil
+	}
+	return r.headRefusal.Load()
+}
+
+// TakeHeadRefusal makes v r's verdict unless r took one already, and
+// returns r's verdict.
+func (r *NormalizedRequest) TakeHeadRefusal(v *HeadRefusal) *HeadRefusal {
+	if r.headRefusal.CompareAndSwap(nil, v) {
+		return v
+	}
+	return r.headRefusal.Load()
 }
 
 func (r *NormalizedRequest) CacheHash(ctx ...context.Context) (string, error) {

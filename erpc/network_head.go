@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 )
@@ -339,4 +341,32 @@ func (n *Network) laneCeiling(sel string) int64 {
 		head = max(head, blk)
 	}
 	return head
+}
+
+// EvmAskCeiling asks every registered upstream of selector sel's lane whose
+// head is below block for its latest head, waits up to W for the answers,
+// and returns the lane's ceiling after them: a stale ceiling is Asked
+// before any "future" answer (spec §6.4, §6.8 number need). Each poll is
+// debounced, so a fresh shared counter meets the need with no fetch.
+func (n *Network) EvmAskCeiling(ctx context.Context, sel string, block int64) int64 {
+	if n.upstreamsRegistry == nil {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
+	defer cancel()
+	var wg sync.WaitGroup
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+		if sel != "" {
+			if m, _ := common.UpstreamMatchesSelector(sel, u); !m {
+				continue
+			}
+		}
+		sp := u.EvmStatePoller()
+		if sp == nil || sp.IsObjectNull() || sp.LatestBlock() >= block {
+			continue
+		}
+		wg.Go(func() { _, _ = sp.PollLatestBlockNumber(ctx) })
+	}
+	wg.Wait()
+	return n.laneCeiling(sel)
 }

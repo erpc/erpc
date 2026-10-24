@@ -13,6 +13,7 @@ import (
 
 	bdscommon "github.com/blockchain-data-standards/manifesto/common"
 	"github.com/blockchain-data-standards/manifesto/evm"
+	archevm "github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -353,16 +354,26 @@ func servesAll(u common.Upstream, sets [][]string) bool {
 }
 
 // checkAvailability fails with -32001 when a block of the resolved range is
-// above the network's highest known block, or outside the union of the
-// availability windows of the upstreams that can serve the method (natively
-// or through the shim sub-requests).
+// one the refusal rule calls future (spec §6.4: above the ceiling plus its
+// age in blocks, the ceiling Asked first when stale), or outside the union
+// of the availability windows of the upstreams that can serve the method
+// (natively or through the shim sub-requests).
 func (qe *EvmQueryExecutor) checkAvailability(ctx context.Context, p *queryPlan, natives []common.Upstream, shimEnabled bool) error {
 	lo, hi := p.from, p.to
 	if p.desc {
 		lo, hi = p.to, p.from
 	}
-	if latest := p.head.Latest; latest > 0 && hi > uint64(latest) {
-		return queryRangeUnavailable("block %#x is above the highest known block %#x", hi, latest)
+	if hi <= math.MaxInt64 {
+		sel := ""
+		if rq, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest); rq != nil {
+			if d := rq.Directives(); d != nil {
+				sel = d.UseUpstream
+			}
+		}
+		if v := archevm.DecideHeadRefusal(ctx, qe.network, p.head, sel, int64(hi)); v.Rule == common.HeadFuture {
+			qe.network.countHeadRefusal(futureRule(v))
+			return queryRangeUnavailable("block %#x is above the highest known block %#x", hi, p.head.Ceiling)
+		}
 	}
 
 	type window struct{ lo, hi int64 }

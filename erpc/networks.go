@@ -869,25 +869,13 @@ func (n *Network) pollHeads(ids []string, kind evm.HeaderKind) {
 	}
 }
 
-// tryShortCircuitFutureBlock returns a truthful null response (ok=true) when
-// `req` is a concrete-numbered eth_getBlockByNumber lookup whose target block is
-// beyond every upstream's latest head.
-// No upstream can serve such a block yet, so dispatching + hedging across all of
-// them only burns latency and load before they each return empty — returning the
-// null here skips that fan-out entirely.
-//
-// Safety: it compares against the request's Head ceiling, the highest
-// effective latest head across the lane's registered upstreams, static caps
-// included, unknown while any of them has no observed head (laneCeiling), so
-// it never nulls out a block at or below a head an upstream has reported. A
-// block an
-// upstream produced after its last observed head can still get null until the
-// poller or a head subscription reports it. It runs only when the network sets
-// evm.shortCircuitFutureBlocks (EvmNetworkConfig.ShortCircuitFutureBlocksEnabled),
-// and the synthesized response is returned directly from Forward, so it is
-// never written to cache
-// (the block will exist later). The post-forward empty guard remains as
-// defense-in-depth for the in-flight case where an upstream advances mid-request.
+// tryShortCircuitFutureBlock returns a truthful null response (ok=true) for
+// a numbered eth_getBlockByNumber the refusal rule calls future (spec §6.4,
+// #1238): above the ceiling plus its age in blocks, on a ceiling younger
+// than 1 bt or Asked again. No upstream can serve it yet, so dispatching
+// and hedging across all of them only burns latency and load. It runs only
+// when the network sets evm.shortCircuitFutureBlocks, and the synthesized
+// response is returned directly from Forward, so it is never cached.
 func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.NormalizedRequest, method string) (*common.NormalizedResponse, bool) {
 	if n.cfg == nil || !n.cfg.Evm.ShortCircuitFutureBlocksEnabled() {
 		return nil, false
@@ -895,15 +883,8 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 	if !strings.EqualFold(method, "eth_getBlockByNumber") {
 		return nil, false
 	}
-	_, bn, err := evm.ExtractBlockReferenceFromRequest(ctx, req)
-	if err != nil || bn <= 0 {
-		// Tags ("latest"/"pending"/...), block-hash lookups, or unparseable
-		// params carry no concrete future number — never short-circuit.
-		return nil, false
-	}
-	ceiling := n.requestHead(req).Ceiling
-	if ceiling <= 0 || bn <= ceiling {
-		// Unknown head (fail open) or block within reach of some upstream.
+	v := evm.HeadRefusalOf(ctx, req)
+	if v == nil || v.Rule != common.HeadFuture {
 		return nil, false
 	}
 	jrr, err := common.NewJsonRpcResponse(req.ID(), nil, nil)
@@ -911,8 +892,47 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 		return nil, false
 	}
 	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
-	resp.SetEvmBlockNumber(bn)
+	resp.SetEvmBlockNumber(v.Block)
 	return resp, true
+}
+
+// countRefusal counts the refusal rule's outcome for req (spec §17): data
+// is served, or retried_found after a miss; an empty or missing answer is
+// retried_missing in the band, future (future_after_refresh after an Ask)
+// above it. Requests naming no block, and empty answers at or below
+// Latest, are no refusal.
+func (n *Network) countRefusal(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse, err error) {
+	v := req.HeadRefusal()
+	if v == nil || v.Block <= 0 {
+		return
+	}
+	method, _ := req.Method()
+	switch {
+	case err == nil && resp != nil && !resp.IsObjectNull(ctx) && !isEmptyNetworkResult(method, resp):
+		if v.Retried() {
+			n.countHeadRefusal("retried_found")
+		} else {
+			n.countHeadRefusal("served")
+		}
+	case err != nil && !common.HasErrorCode(err, common.ErrCodeEndpointMissingData):
+	case v.Rule == common.HeadBand:
+		n.countHeadRefusal("retried_missing")
+	case v.Rule == common.HeadFuture:
+		n.countHeadRefusal(futureRule(v))
+	}
+}
+
+// futureRule is the refusal counter's rule for a future block: Asked
+// first when its ceiling was stale.
+func futureRule(v *common.HeadRefusal) string {
+	if v.Asked {
+		return "future_after_refresh"
+	}
+	return "future"
+}
+
+func (n *Network) countHeadRefusal(rule string) {
+	telemetry.CounterHandle(telemetry.MetricHeadRefusalTotal, n.projectId, n.Label(), rule).Inc()
 }
 
 // guardServedTipRegression returns the tip to serve for `pick`, substituting the
@@ -1877,13 +1897,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// Set upstreams on the request
 	req.SetUpstreams(upsList)
 
-	// Future-block short-circuit: a concrete block number beyond every
-	// upstream's head cannot be served yet — return the truthful null instead of
-	// dispatching + hedging across upstreams that will all return empty. Runs
-	// before rate limiting so a non-dispatched request consumes no permit, and
-	// before the probe-bus publish so it is never mirrored to excluded upstreams.
+	// The refusal rule decides the request's block once, before dispatch
+	// (spec §6.4): a stale ceiling is Asked here, a band block refreshes
+	// the voters below it. A future block, with shortCircuitFutureBlocks,
+	// gets the truthful null with no dispatch; it runs before rate limiting
+	// so it consumes no permit, and before the probe-bus publish so it is
+	// never mirrored to excluded upstreams.
+	if n.cfg.Architecture == common.ArchitectureEvm {
+		evm.HeadRefusalOf(ctx, req)
+	}
 	if resp, ok := n.tryShortCircuitFutureBlock(ctx, req, method); ok {
 		forwardSpan.SetAttributes(attribute.Bool("future_block.short_circuit", true))
+		n.countRefusal(ctx, req, resp, nil)
 		if mlx != nil {
 			mlx.Close(ctx, resp, nil)
 		}
@@ -2038,8 +2063,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// request's routed list untouched for later retries.
 		nextUpstream := effectiveReq.NextUpstream
 		// An empty result is a miss (rather than a legitimate answer, like a
-		// pending tx's null receipt) only for a concrete block the network
-		// is confident about.
+		// pending tx's null receipt) only for a concrete block whose empty
+		// answer the refusal rule does not call final.
 		emptyIsMiss := func(ctx context.Context) bool {
 			return requestBlockNumber(ctx, effectiveReq) > 0 && !evm.EmptyResultBeyondConfidence(ctx, effectiveReq)
 		}
@@ -2145,16 +2170,38 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					r.WithRequest(effectiveReq)
 				}
 
+				// The refusal rule (spec §6.4): an empty or missing answer for a
+				// block above Latest is a retryable miss once, in the band, and
+				// the retry asks the upstreams whose head reaches the block
+				// first. After it, and above the band, an empty answer is the
+				// answer and a missing one ends the request.
+				refusal := effectiveReq.HeadRefusal()
+				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && isEmptyNetworkResult(method, r)
+				finalEmpty := false
+				if refusal.AboveLatest() && (emptyAnswer || common.HasErrorCode(err, common.ErrCodeEndpointMissingData)) {
+					final := refusal.Final()
+					switch {
+					case refusal.Miss():
+						nextUpstream = n.headFirst(effectiveReq, attempted, refusal.Block)
+					case final && !emptyAnswer:
+						common.SetTraceSpanError(loopSpan, err)
+						loopSpan.End()
+						return nil, err
+					}
+					finalEmpty = final && emptyAnswer
+				}
+
 				// Return immediately when the result is usable:
 				//  - Non-empty success always qualifies.
-				//  - Emptyish success qualifies when the method is in
-				//    emptyResultAccept and consensus is not required,
-				//    because failsafe would accept the empty result anyway
-				//    so trying more upstreams just wastes time on slow ones.
+				//  - Emptyish success qualifies when the refusal rule calls it
+				//    final, or when the method is in emptyResultAccept and
+				//    consensus is not required, because failsafe would accept
+				//    the empty result anyway so trying more upstreams just
+				//    wastes time on slow ones.
 				//  - Otherwise emptyish results continue to the next upstream.
 				if err == nil && r != nil && !r.IsObjectNull() {
 					emptyish := isEmptyNetworkResult(method, r)
-					acceptEmpty := !emptyish ||
+					acceptEmpty := !emptyish || finalEmpty ||
 						(!failsafeExecutor.HasConsensus() &&
 							failsafeExecutor.acceptsEmptyResult(method, r))
 					if acceptEmpty {
@@ -2374,6 +2421,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			// LVR is a borrowed pointer — consensus executor owns releasing all participant
 			// responses (winners and losers). Just drop our reference to avoid dangling pointer.
 			req.ClearLastValidResponse()
+			n.countRefusal(ctx, req, nil, translatedErr)
 			return nil, translatedErr
 		}
 
@@ -2395,6 +2443,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			if mlx != nil {
 				mlx.Close(ctx, nil, translatedErr)
 			}
+			n.countRefusal(ctx, req, nil, translatedErr)
 			return nil, translatedErr
 		}
 	}
@@ -2489,6 +2538,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		req.ClearLastValidResponse()
 	}
 
+	n.countRefusal(ctx, req, resp, nil)
 	return resp, nil
 }
 
@@ -3490,6 +3540,50 @@ func tierUpstreamsByGroup(ups []common.Upstream) []common.Upstream {
 // isFallbackTier reports whether u is tagged tier:fallback.
 func isFallbackTier(u common.Upstream) bool {
 	return u.Config() != nil && u.Config().HasTag(common.TagTierFallback)
+}
+
+// headFirst picks req's band retry (spec §6.4): the upstreams of its lane
+// not yet attempted, routed ones in routing order, then every other
+// registered one within its use-upstream selector, since the ceiling that
+// put the block in the band counts them all (syncing, excluded or fallback
+// upstreams included); ordered by their heads as they are now, those
+// reaching bn first, with no I/O.
+func (n *Network) headFirst(req *common.NormalizedRequest, attempted map[string]struct{}, bn int64) func() (common.Upstream, error) {
+	sel := ""
+	if d := req.Directives(); d != nil {
+		sel = d.UseUpstream
+	}
+	var rest []common.Upstream
+	add := func(u common.Upstream) {
+		if _, seen := attempted[u.Id()]; seen || slices.Contains(rest, u) {
+			return
+		}
+		if sel != "" {
+			if m, _ := common.UpstreamMatchesSelector(sel, u); !m {
+				return
+			}
+		}
+		rest = append(rest, u)
+	}
+	for _, u := range req.Upstreams() {
+		add(u)
+	}
+	if n.upstreamsRegistry != nil {
+		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
+			add(u)
+		}
+	}
+	rest = n.partitionUpstreamsByLatestBlock(rest, bn)
+	return func() (common.Upstream, error) {
+		for len(rest) > 0 {
+			u := rest[0]
+			rest = rest[1:]
+			if _, loaded := req.ConsumedUpstreams.LoadOrStore(u, true); !loaded {
+				return u, nil
+			}
+		}
+		return nil, common.NewErrNoUpstreamsLeftToSelect(req, "no upstream left for the refusal band's retry")
+	}
 }
 
 // partitionUpstreamsByLatestBlock moves the upstreams known not to have

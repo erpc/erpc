@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -56,6 +57,93 @@ type EvmHead struct {
 	// any of them has none; CeilingAt is when this instance saw it.
 	Ceiling   int64
 	CeilingAt time.Time
+}
+
+// HeadRule is the refusal rule's row for block N on a request (spec §6.4).
+type HeadRule uint8
+
+const (
+	// HeadServe: N ≤ Latest, or Latest unknown (tags and numbers reach
+	// upstreams unchanged).
+	HeadServe HeadRule = iota
+	// HeadBand: Latest < N ≤ ceiling + ceiling age / bt, or the ceiling is
+	// unknown: an empty answer is a retryable miss once.
+	HeadBand
+	// HeadFuture: above the band on a ceiling younger than 1 bt: an empty
+	// answer is final.
+	HeadFuture
+	// HeadStale: above the band on an older ceiling: Ask it, then decide
+	// again.
+	HeadStale
+)
+
+// Rule is the refusal rule's row for block n at now, bt the block time (> 0).
+func (h EvmHead) Rule(n int64, bt time.Duration, now time.Time) HeadRule {
+	if h.Latest <= 0 || n <= h.Latest {
+		return HeadServe
+	}
+	if h.Ceiling <= 0 {
+		return HeadBand
+	}
+	age := max(now.Sub(h.CeilingAt), 0)
+	switch {
+	case n <= h.Ceiling+int64(age/bt):
+		return HeadBand
+	case age < bt:
+		return HeadFuture
+	}
+	return HeadStale
+}
+
+// HeadRefusal is the refusal rule's verdict for one request's block, taken
+// once (spec §6.4), and the empty answers it got since.
+type HeadRefusal struct {
+	Rule  HeadRule // HeadServe, HeadBand or HeadFuture
+	Block int64
+	// Asked: the ceiling was stale and Asked before Rule was decided.
+	Asked  bool
+	misses atomic.Int32
+}
+
+// AboveLatest reports whether the request's block is above its Latest.
+func (r *HeadRefusal) AboveLatest() bool {
+	return r != nil && r.Rule != HeadServe
+}
+
+// Final reports whether an empty answer now is the request's answer: a
+// future block's, or a band block's after its one miss.
+func (r *HeadRefusal) Final() bool {
+	return r != nil && (r.Rule == HeadFuture || r.Rule == HeadBand && r.misses.Load() > 0)
+}
+
+// Spent reports whether an empty or missing answer may no longer be
+// retried: a future block's after one, a band block's after two.
+func (r *HeadRefusal) Spent() bool {
+	if r == nil {
+		return false
+	}
+	switch r.Rule {
+	case HeadFuture:
+		return r.misses.Load() > 0
+	case HeadBand:
+		return r.misses.Load() > 1
+	}
+	return false
+}
+
+// Miss records an empty or missing answer; it reports true for the band's
+// one retryable miss.
+func (r *HeadRefusal) Miss() bool {
+	if r == nil || r.Rule == HeadServe {
+		return false
+	}
+	return r.misses.Add(1) == 1 && r.Rule == HeadBand
+}
+
+// Retried reports whether the request got an empty or missing answer
+// before its last one.
+func (r *HeadRefusal) Retried() bool {
+	return r != nil && r.misses.Load() > 0
 }
 
 // SvmNetwork is the SVM-specific view of a Network. Production Network

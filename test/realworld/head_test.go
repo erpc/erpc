@@ -42,6 +42,9 @@ const (
 	// and far below that report.
 	u12Ahead = 30_000_000
 	u12Probe = 50
+	// u12ReportWait is harness, not spec: a non-source upstream's head
+	// reaches a pod by its state poll, every 30s (§6.8), plus slack.
+	u12ReportWait = 40 * time.Second
 	// u14Ahead: the syncing archive leads the other vendors by 5; the
 	// probe asks Latest + 3 (§19 U14).
 	u14Ahead = 5
@@ -121,6 +124,12 @@ func u12() spec {
 			})
 			hb.Update(func(f *chainsim.Faults) { f.Ahead = u12Ahead })
 			s.logf("%s reports %d above its head", up, u12Ahead)
+			// http-b is no source: its report reaches a pod by its next
+			// state poll (u12ReportWait), not by a block. The scenario
+			// judges a ceiling the report raised, so it waits for it.
+			for pod := range s.h.pods {
+				s.awaitUpstreamHead(pod, up, float64(u12Ahead), u12ReportWait)
+			}
 			s.blocks(25)
 			for pod := range s.h.pods {
 				for _, key := range []string{"ws-a", "ws-b", "http-a"} {
@@ -132,8 +141,11 @@ func u12() spec {
 				n := s.chain.Tip().Number + u12Probe
 				from := time.Now()
 				got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
-				if d := s.dispatches(n, from, time.Now()); d == 0 {
+				switch d := s.dispatches(n, from, time.Now()); {
+				case d == 0:
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered %s with no dispatch, below the ceiling %s raised", pod+1, n, got, up)
+				case d > refusalDispatches:
+					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), in the band, reached upstreams %d times (at most %d)", pod+1, n, d, refusalDispatches)
 				}
 				if got != "null" {
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), a block no vendor has, answered %s", pod+1, n, got)
@@ -144,6 +156,23 @@ func u12() spec {
 			hb.Update(func(f *chainsim.Faults) { f.Ahead = 0 })
 			s.blocks(25)
 		}}
+}
+
+// awaitUpstreamHead waits until pod exports a latest block of at least min
+// for upstream up, or violates after within.
+func (s *scenario) awaitUpstreamHead(pod int, up string, min float64, within time.Duration) {
+	for deadline := time.Now().Add(within); ; time.Sleep(scrapeEvery) {
+		if ss, err := s.h.pods[pod].scrape(); err == nil {
+			if v, ok := sumOf(ss, "erpc_upstream_latest_block_number", map[string]string{"project": s.project, "upstream": up}); ok && v >= min {
+				s.logf("pod-%d: %s reports %v", pod+1, up, v)
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			s.violate(s.name, "pod-%d: %s's report never arrived within %s", pod+1, up, within)
+			return
+		}
+	}
 }
 
 // dispatches counts the eth_getBlockByNumber(n) calls every vendor
@@ -159,7 +188,9 @@ func (s *scenario) dispatches(n uint64, from, to time.Time) int {
 // U14: every vendor serves u14Ahead behind a syncing archive (vendor-c,
 // https). eth_getBlockByNumber(Latest + 3) is served by the archive, in
 // the refusal band, not null (§6.4: the ceiling counts syncing upstreams;
-// the retry orders head ≥ N first).
+// the retry orders head ≥ N first). The archive is no source, so its head
+// reaches the ceiling by its state poll: every block here (harness), so
+// the band, not a sweep of every upstream, has to find it.
 func u14() spec {
 	lag := chainsim.Faults{Lag: u14Ahead}
 	return spec{name: "U14", bound: healthyDelivery + u14Ahead*blockTime,
@@ -168,6 +199,7 @@ func u14() spec {
 			{"http-a", "vendor-a", false}, {"http-b", "vendor-b", false},
 			{"archive", "vendor-c", false},
 		},
+		upEvm:  map[string]map[string]interface{}{"archive": {"statePollerInterval": blockTime.String()}},
 		faults: map[string]chainsim.Faults{"ws-a": lag, "ws-b": lag, "http-a": lag, "http-b": lag, "archive": {Syncing: true}},
 		body: func(s *scenario) {
 			s.blocks(25)
@@ -191,6 +223,8 @@ func u14() spec {
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), Latest %d + %d, answered %s, not the archive's %s", pod+1, n, bn, u14Probe, got, short(want.Hash))
 				case archive.NumberCalls(n, from, to) == 0:
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered without asking the archive", pod+1, n)
+				case s.dispatches(n, from, to) > refusalDispatches:
+					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d)", pod+1, n, s.dispatches(n, from, to), refusalDispatches)
 				}
 				s.blocks(5)
 			}

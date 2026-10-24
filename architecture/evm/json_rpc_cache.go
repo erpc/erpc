@@ -1207,12 +1207,15 @@ func shouldCacheResponse(
 	result := rpcResp.GetResultBytes()
 	// Check if we should cache empty results
 	isEmpty := resp == nil || rpcResp == nil || result == nil || resp.IsObjectNull() || resp.IsResultEmptyish()
-	// Never cache an empty result for a not-yet-produced (future) block: the block
-	// will exist later, so a cached null would be served as a wrong answer until the
-	// TTL expires. This holds regardless of the policy's empty behavior.
-	if isEmpty && resp != nil && EmptyResultBeyondConfidence(ctx, resp.Request()) {
-		lg.Debug().Msg("skip caching empty result for a not-yet-produced (future) block")
-		return false, nil
+	// Never cache an empty result for a block above Latest, or one the
+	// refusal rule calls final: the block will exist later, so a cached null
+	// would be served as a wrong answer until the TTL expires. This holds
+	// regardless of the policy's empty behavior.
+	if isEmpty && resp != nil {
+		if rq := resp.Request(); EmptyResultBeyondConfidence(ctx, rq) || HeadRefusalOf(ctx, rq).AboveLatest() {
+			lg.Debug().Msg("skip caching empty result for a block above Latest")
+			return false, nil
+		}
 	}
 	switch policy.EmptyState() {
 	case common.CacheEmptyBehaviorIgnore:

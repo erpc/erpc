@@ -246,9 +246,8 @@ func enforceNonNullBlock(ctx context.Context, nq *common.NormalizedRequest, nr *
 		}
 	}
 
-	// A block beyond the network's confidence head (latest by default, or finalized)
-	// isn't produced/confirmed yet and legitimately returns null on every upstream —
-	// it isn't missing/pruned data, so don't convert it to an error and churn retries.
+	// A null the refusal rule calls final (a future block, or a band block
+	// after its one miss) is the truthful answer, not missing data.
 	// Mirrors the upstream-level markUnexpectedEmpty guard so the two layers agree.
 	if EmptyResultBeyondConfidence(ctx, nq) {
 		return nr, nil

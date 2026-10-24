@@ -443,6 +443,12 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 	if req != nil && req.IsCompositeRequest() {
 		return ""
 	}
+	// The refusal rule allows one retryable miss for a band block and none
+	// for a future one (spec §6.4); a spent request's empty or missing
+	// answer is its answer.
+	if req != nil && req.HeadRefusal().Spent() && (err == nil || common.HasErrorCode(err, common.ErrCodeEndpointMissingData)) {
+		return ""
+	}
 	if err != nil {
 		if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 			if se, ok := err.(common.StandardError); ok {

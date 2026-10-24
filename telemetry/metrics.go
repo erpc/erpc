@@ -900,6 +900,16 @@ var (
 		Help:      "Total number of times the per-request fallback escape hatch fired because the primary upstream set was exhausted with retryable errors.",
 	}, []string{"project", "network", "category"})
 
+	// MetricHeadRefusalTotal counts the refusal rule's outcomes for requests
+	// naming a block (spec §6.4, §17): served, retried_found,
+	// retried_missing (the promise broke on this instance), future,
+	// future_after_refresh.
+	MetricHeadRefusalTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "head_refusal_total",
+		Help:      "Total requests naming a block, by the refusal rule's outcome: served, retried_found, retried_missing, future, future_after_refresh.",
+	}, []string{"project", "network", "rule"})
+
 	// MetricCacheExecutorAttempt counts every attempt a cache-connector
 	// failsafe executor governs, keyed by the executor's identity (the
 	// matchMethod / matchFinality it was configured with) and the outcome
