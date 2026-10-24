@@ -237,8 +237,11 @@ func halfOpenWsA(s *scenario) {
 	acc := px.accepts(p1)
 	px.set(p1, linkFaults{BlackHole: true})
 	cut := time.Now()
-	if _, ok := s.waitMetric(0, "erpc_upstream_report_age_seconds", hashAge(up), liveBound+blockTime+scrapeEvery, func(v float64) bool { return v > liveBound.Seconds() }); !ok {
-		s.violate(s.name, "pod-1: %s still a hash voter %s after its socket went half-open", up, liveBound+blockTime+scrapeEvery)
+	// §19 U3: the vote expires W after another voter's next header, about
+	// a block after the cut; the gauge shows it at its next refresh.
+	expiry := liveBound + blockTime + ageGaugeEvery + scrapeEvery
+	if _, ok := s.waitMetric(0, "erpc_upstream_report_age_seconds", hashAge(up), expiry, func(v float64) bool { return v > liveBound.Seconds() }); !ok {
+		s.violate(s.name, "pod-1: %s still a hash voter %s after its socket went half-open", up, expiry)
 	}
 	for px.accepts(p1) == acc && time.Since(cut) < silentReconnect+reconnectSlack {
 		time.Sleep(100 * time.Millisecond)

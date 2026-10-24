@@ -53,6 +53,10 @@ const (
 	silentReconnect = 30 * time.Second
 	// minReconnectBackoff: wss reconnects back off 1–30s, jittered (§13.1).
 	minReconnectBackoff = time.Second
+	// ageGaugeEvery: eRPC sets every report-age gauge once a second
+	// (health/tracker.go reportAgesEvery), so a scrape reads an age up to
+	// this much old; the spec bounds the age, not the gauge (§17).
+	ageGaugeEvery = time.Second
 
 	// Harness slack, not spec: one metrics scrape interval, and the time a
 	// client needs to notice an end and dial again.
