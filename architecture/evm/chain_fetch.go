@@ -124,6 +124,9 @@ type fetchRequest struct {
 type fetchBackoff struct {
 	next  time.Time
 	delay time.Duration
+	// capacity: the last failure was a refusal for capacity everywhere,
+	// whose backoff ends at the network's next successful fetch.
+	capacity bool
 }
 
 // fetchScheduler runs every tracker fetch of one network on this pod:
@@ -390,6 +393,10 @@ func (s *fetchScheduler) run(r *fetchRequest) {
 	switch outcome {
 	case "ok":
 		delete(s.backoff, r.key)
+		// A cached answer is no evidence that vendors have capacity again.
+		if res.upstream != "" {
+			s.endCapacityBackoffsLocked()
+		}
 		s.streak[c]++
 		if s.streak[c] >= fetchSlotRecovery {
 			s.streak[c] = 0
@@ -400,11 +407,11 @@ func (s *fetchScheduler) run(r *fetchRequest) {
 		}
 	case "capacity":
 		s.streak[c] = 0
-		s.backOffLocked(r.key)
+		s.backOffLocked(r.key, true)
 		s.halveLowestBusyLocked(r.halvings)
 	default:
 		s.streak[c] = 0
-		s.backOffLocked(r.key)
+		s.backOffLocked(r.key, false)
 	}
 	s.inflight[c]--
 	if s.pending[r.key] == r {
@@ -503,7 +510,7 @@ func fetchOutcome(err error) string {
 
 // backOffLocked spaces the key's next attempt: 200 ms, doubling to 5 s. A
 // failure long after the last one starts over.
-func (s *fetchScheduler) backOffLocked(key fetchKey) {
+func (s *fetchScheduler) backOffLocked(key fetchKey, capacity bool) {
 	now := time.Now()
 	b := s.backoff[key]
 	if b.delay == 0 || now.Sub(b.next) > fetchBackoffMax {
@@ -512,12 +519,27 @@ func (s *fetchScheduler) backOffLocked(key fetchKey) {
 		b.delay = min(2*b.delay, fetchBackoffMax)
 	}
 	b.next = now.Add(b.delay)
+	b.capacity = capacity
 	s.backoff[key] = b
 	if len(s.backoff) > fetchBackoffPrune {
 		for k, o := range s.backoff {
 			if now.Sub(o.next) > fetchBackoffMax {
 				delete(s.backoff, k)
 			}
+		}
+	}
+}
+
+// endCapacityBackoffsLocked ends every capacity backoff, queued requests'
+// included: a vendor answered, so capacity is back (spec §8).
+func (s *fetchScheduler) endCapacityBackoffsLocked() {
+	for k, b := range s.backoff {
+		if !b.capacity {
+			continue
+		}
+		delete(s.backoff, k)
+		if r := s.pending[k]; r != nil && !r.started {
+			r.notBefore = time.Time{}
 		}
 	}
 }
