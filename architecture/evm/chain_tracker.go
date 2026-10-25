@@ -1429,7 +1429,9 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 // rewindVoters is the rollback write (spec §14), on a re-anchor or a move
 // to a lower head: each voter whose own hash vote is on the new pins has
 // its latest counter lowered to that vote's height where the counter is
-// above it, so Latest follows the rewound chain on every instance.
+// above it, so Latest follows the rewound chain on every instance. A voter
+// whose vote is off the pins, or whose newest vote still waits on its walk,
+// is owed the rewind once its vote reaches the pins (rewindLate).
 func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) {
 	votes := make(map[string]int64, len(t.votes))
 	t.rewindDue = make(map[string]bool)
@@ -1437,6 +1439,11 @@ func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) {
 		if p := pathAt(nd.h.number); p != nil && p.hash == nd.h.hash {
 			votes[u] = int64(nd.h.number)
 		} else {
+			t.rewindDue[u] = true
+		}
+	}
+	for u := range t.pending {
+		if _, written := votes[u]; !written {
 			t.rewindDue[u] = true
 		}
 	}
