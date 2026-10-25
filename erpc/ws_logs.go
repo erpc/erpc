@@ -133,7 +133,8 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 			}
 		}
 		for i, blk := range b.Applied {
-			if !tracker.Pinned(indexer.Cursor{Number: blk.Number, Hash: blk.Hash}) || !sends.sendable(blk) {
+			snap, sendable := sends.gate(blk)
+			if !sendable {
 				return i, nil
 			}
 			if !sent || blk.Number < sentFrom {
@@ -150,7 +151,7 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 			if len(logs) == 0 {
 				continue
 			}
-			if err := sends.write(blk, func() error {
+			if err := sends.write(blk, snap, func() error {
 				for _, log := range logs {
 					if err := write(log); err != nil {
 						return err

@@ -2439,6 +2439,16 @@ func (t *ChainTracker) wantFill(c [32]byte) (release func()) {
 	}
 }
 
+// SendState reads one published state for a tap about to write c: whether
+// c is pinned, and the confirmed head (ok false while none is).
+func (t *ChainTracker) SendState(c indexer.Cursor) (pinned bool, confirmed indexer.Cursor, ok bool) {
+	s := t.state.Load()
+	if h := s.confirmedHead(); h != nil {
+		confirmed, ok = h.cursor(), true
+	}
+	return s.pinned(c) != nil, confirmed, ok
+}
+
 // Tip returns the head now, without waiting.
 func (t *ChainTracker) Tip() (indexer.Cursor, bool) {
 	if h := t.state.Load().head(); h != nil {

@@ -42,22 +42,33 @@ func (s *tapSends) latest() uint64 {
 	return s.batchLatest
 }
 
-// sendable reports whether blk is at or below the tracker's confirmed head
-// now. A block a Read returned can lose its confirmation before its write,
-// as when hash voters arrive and raise the votes a pin needs; the tap ends
-// its batch there, and its next Read waits for the confirmed head. (The
-// tracker caps the confirmed head at the lane's Latest, so a block above
-// Latest is caught there.)
-func (s *tapSends) sendable(blk indexer.Block) bool {
-	conf, ok := s.nw.chainTracker.Confirmed()
-	return ok && blk.Number <= conf.Number
+// sendSnapshot is one decision to write a block: the tracker's state and
+// the lane's Latest, each read once.
+type sendSnapshot struct {
+	pinned      bool
+	confirmed   indexer.Cursor
+	confirmedOK bool
+	latest      uint64
 }
 
-// write writes blk with fn. A block above the lane's Latest or above the
-// tracker's confirmed head at write time is a violation; a written one
-// raises the lane's highest sent block (latest_regressed).
-func (s *tapSends) write(blk indexer.Block, fn func() error) error {
-	s.check(blk)
+// gate reads blk's snapshot and reports whether blk may be written: pinned,
+// at or below the tracker's confirmed head and at or below the lane's
+// Latest. A block a Read returned can leave any of them before its write,
+// as when hash voters arrive and raise the votes a pin needs, or a lane's
+// Latest falls before the tracker caps its confirmed head; the tap ends its
+// batch there, and its next Read waits.
+func (s *tapSends) gate(blk indexer.Block) (sendSnapshot, bool) {
+	var snap sendSnapshot
+	snap.pinned, snap.confirmed, snap.confirmedOK = s.nw.chainTracker.SendState(indexer.Cursor{Number: blk.Number, Hash: blk.Hash})
+	snap.latest = s.latest()
+	return snap, snap.pinned && snap.confirmedOK && blk.Number <= snap.confirmed.Number && blk.Number <= snap.latest
+}
+
+// write writes blk, gated on snap, with fn. A block above the snapshot's
+// Latest or confirmed head is a violation; a written one raises the lane's
+// highest sent block (latest_regressed).
+func (s *tapSends) write(blk indexer.Block, snap sendSnapshot, fn func() error) error {
+	s.check(blk, snap)
 	if err := fn(); err != nil {
 		return err
 	}
@@ -70,13 +81,13 @@ func (s *tapSends) write(blk indexer.Block, fn func() error) error {
 	return nil
 }
 
-func (s *tapSends) check(blk indexer.Block) {
-	if latest := s.latest(); blk.Number > latest {
-		s.violate(common.InvariantSentAboveLatest, blk).Uint64("latest", latest).
+func (s *tapSends) check(blk indexer.Block, snap sendSnapshot) {
+	if blk.Number > snap.latest {
+		s.violate(common.InvariantSentAboveLatest, blk).Uint64("latest", snap.latest).
 			Msg("tap writes a block above its lane's Latest")
 	}
-	if conf, ok := s.nw.chainTracker.Confirmed(); !ok || blk.Number > conf.Number {
-		s.violate(common.InvariantSentUnconfirmed, blk).Uint64("confirmed", conf.Number).Hex("confirmedHash", conf.Hash[:]).
+	if !snap.confirmedOK || blk.Number > snap.confirmed.Number {
+		s.violate(common.InvariantSentUnconfirmed, blk).Uint64("confirmed", snap.confirmed.Number).Hex("confirmedHash", snap.confirmed.Hash[:]).
 			Msg("tap writes a block above the chain tracker's confirmed head")
 	}
 }

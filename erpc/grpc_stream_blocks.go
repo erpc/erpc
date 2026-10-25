@@ -86,13 +86,14 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 		sends.batch()
 		for i, blk := range b.Applied {
 			resp, pinned, err := streamBlocksEncoding.Of(tracker, blk)
-			if !pinned || !sends.sendable(blk) {
+			snap, sendable := sends.gate(blk)
+			if !pinned || !sendable {
 				return i, nil
 			}
 			if err != nil {
 				return i, streamEncodeError{blk.Number, err}
 			}
-			if err := sends.write(blk, func() error { return sender.send(resp, sendWait) }); err != nil {
+			if err := sends.write(blk, snap, func() error { return sender.send(resp, sendWait) }); err != nil {
 				return i, err
 			}
 		}
