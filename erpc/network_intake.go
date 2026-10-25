@@ -72,6 +72,7 @@ type pollRecord struct {
 type rejectedHeader struct {
 	upstreamId string
 	raw        json.RawMessage
+	at         time.Time
 }
 
 // rejectedKept bounds the headers integrity held back that intake keeps.
@@ -91,7 +92,7 @@ func newNetworkIntake(nw *Network) *networkIntake {
 type pushIntake struct{ *networkIntake }
 
 func (p pushIntake) Header(upstreamId string, raw json.RawMessage) {
-	p.header(upstreamId, raw, evm.HeaderStreamed, false)
+	p.header(upstreamId, raw, evm.HeaderStreamed, false, time.Now())
 }
 
 var (
@@ -118,18 +119,18 @@ func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessa
 	in.nw.mempool.Add(variant, raw)
 }
 
-// Polled takes the header a poll of upstreamId's latest fetched. A success
-// renews a vote its failed polls expired (PollFailed).
-func (in *networkIntake) Polled(upstreamId string, raw json.RawMessage, kind evm.HeaderKind) {
+// Polled takes the header a poll of upstreamId's latest, sent at sent,
+// fetched. A success renews a vote its failed polls expired (PollFailed).
+func (in *networkIntake) Polled(upstreamId string, raw json.RawMessage, kind evm.HeaderKind, sent time.Time) {
 	in.mu.Lock()
 	expired := in.polls[upstreamId].expired
-	in.polls[upstreamId] = pollRecord{ok: time.Now()}
+	in.polls[upstreamId] = pollRecord{ok: sent}
 	in.mu.Unlock()
 	if u := in.upstream(upstreamId); expired && u != nil && in.nw.metricsTracker != nil && in.nw.metricsTracker.RenewHashVote(u) {
 		evm.VotersChanged(in.nw)
 		in.nw.sources.wake()
 	}
-	in.header(upstreamId, raw, kind, false)
+	in.header(upstreamId, raw, kind, false, sent)
 }
 
 // PollFailed notes a poll of upstreamId's latest, sent at started, that its
@@ -170,7 +171,7 @@ func (in *networkIntake) w() time.Duration {
 // it is newer than its source's newest accepted header: a replay never
 // moves a vote back. A fork poll's answer moves the vote whatever the path
 // says: it is the node's head now.
-func (in *networkIntake) header(upstreamId string, raw json.RawMessage, kind evm.HeaderKind, replay bool) {
+func (in *networkIntake) header(upstreamId string, raw json.RawMessage, kind evm.HeaderKind, replay bool, at time.Time) {
 	sh, err := evm.ParseSourceHeader(raw)
 	if err != nil {
 		in.count(upstreamId, "malformed")
@@ -203,7 +204,7 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, kind evm
 	}
 	if !evm.CheckSourceHeader(in.nw, u, sh) {
 		in.mu.Lock()
-		in.rejected = append(in.rejected, rejectedHeader{upstreamId, raw})
+		in.rejected = append(in.rejected, rejectedHeader{upstreamId, raw, at})
 		if over := len(in.rejected) - rejectedKept; over > 0 {
 			in.rejected = slices.Delete(in.rejected, 0, over)
 		}
@@ -212,7 +213,7 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, kind evm
 		return
 	}
 	poller := u.EvmStatePoller()
-	if poller == nil || poller.IsObjectNull() || !poller.ObserveHead(raw) {
+	if poller == nil || poller.IsObjectNull() || !poller.ObserveHead(raw, at) {
 		in.count(upstreamId, "gated_identity")
 		return
 	}
@@ -270,7 +271,7 @@ func (in *networkIntake) replayRejected() {
 			}
 		}()
 		for _, r := range held {
-			in.header(r.upstreamId, r.raw, evm.HeaderPolled, true)
+			in.header(r.upstreamId, r.raw, evm.HeaderPolled, true, r.at)
 		}
 	}()
 }
@@ -760,14 +761,14 @@ func (n *Network) EvmHeadsDemanded() bool {
 
 // ObserveFetchedHead moves an upstream's head counter to a latest header
 // the chain tracker fetched from it, as a source header moves its source's;
-// ObserveHead verifies a major jump first.
-func (n *Network) ObserveFetchedHead(upstreamId string, raw json.RawMessage) {
+// ObserveHead verifies a major jump first. sent is the fetch's send time.
+func (n *Network) ObserveFetchedHead(upstreamId string, raw json.RawMessage, sent time.Time) {
 	if n.intake == nil {
 		return
 	}
 	if u := n.intake.upstream(upstreamId); u != nil {
 		if p := u.EvmStatePoller(); p != nil && !p.IsObjectNull() {
-			p.ObserveHead(raw)
+			p.ObserveHead(raw, sent)
 		}
 	}
 }

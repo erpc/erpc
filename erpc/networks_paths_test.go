@@ -509,6 +509,7 @@ func TestNetworksPaths_EnrichStatePoller(t *testing.T) {
 		resp := common.NewNormalizedResponse().WithRequest(req).
 			WithJsonRpcResponse(common.MustNewJsonRpcResponseFromBytes([]byte(`1`), []byte(result), nil))
 		resp.SetUpstream(u)
+		resp.SetSentAt(time.Now())
 		method, _ := req.Method()
 		n.enrichStatePoller(ctx, method, req, resp)
 		return u.(common.EvmUpstream).EvmStatePoller()

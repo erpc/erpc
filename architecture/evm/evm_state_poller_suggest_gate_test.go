@@ -133,10 +133,10 @@ func TestSuggestLatestBlock_SmallAdvanceAppliesInline(t *testing.T) {
 	up := newSuggestGateUpstream(123, "123", nil)
 	p := newGateTestPoller(t, up)
 
-	p.SuggestLatestBlock(1000) // from 0 → inline (cold start)
+	p.SuggestLatestBlock(1000, time.Now()) // from 0 → inline (cold start)
 	require.Equal(t, int64(1000), p.LatestBlock())
 
-	p.SuggestLatestBlock(1000 + gateTolerance) // small (== tolerance, not major)
+	p.SuggestLatestBlock(1000+gateTolerance, time.Now()) // small (== tolerance, not major)
 	require.Equal(t, int64(1000+gateTolerance), p.LatestBlock(), "small advance applies inline & synchronously")
 	require.False(t, up.isCordoned())
 }
@@ -145,10 +145,10 @@ func TestSuggestLatestBlock_MajorJumpMatchingChainIdApplies(t *testing.T) {
 	up := newSuggestGateUpstream(123, "123", nil) // detected == configured
 	p := newGateTestPoller(t, up)
 
-	p.SuggestLatestBlock(1000)
+	p.SuggestLatestBlock(1000, time.Now())
 	require.Equal(t, int64(1000), p.LatestBlock())
 
-	p.SuggestLatestBlock(1000 + gateTolerance + 1000) // MAJOR forward jump
+	p.SuggestLatestBlock(1000+gateTolerance+1000, time.Now()) // MAJOR forward jump
 	require.Eventually(t, func() bool {
 		return p.LatestBlock() == 1000+gateTolerance+1000
 	}, 2*time.Second, 10*time.Millisecond, "verified major jump must be applied")
@@ -159,10 +159,10 @@ func TestSuggestLatestBlock_MajorJumpChainIdMismatchDroppedAndCordoned(t *testin
 	up := newSuggestGateUpstream(123, "999", nil) // detected != configured
 	p := newGateTestPoller(t, up)
 
-	p.SuggestLatestBlock(1000)
+	p.SuggestLatestBlock(1000, time.Now())
 	require.Equal(t, int64(1000), p.LatestBlock())
 
-	p.SuggestLatestBlock(5_000_000) // MAJOR (another chain's height)
+	p.SuggestLatestBlock(5_000_000, time.Now()) // MAJOR (another chain's height)
 	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond, "a proven cross-wired endpoint must be cordoned")
 	assert.Equal(t, int64(1000), p.LatestBlock(), "the bogus major jump must NOT enter the shared counter")
 }
@@ -173,10 +173,10 @@ func TestSuggestLatestBlock_MajorJumpChainIdErrorDroppedNotCordoned(t *testing.T
 	up := newSuggestGateUpstream(123, "", assert.AnError)
 	p := newGateTestPoller(t, up)
 
-	p.SuggestLatestBlock(1000)
+	p.SuggestLatestBlock(1000, time.Now())
 	require.Equal(t, int64(1000), p.LatestBlock())
 
-	p.SuggestLatestBlock(5_000_000) // MAJOR
+	p.SuggestLatestBlock(5_000_000, time.Now()) // MAJOR
 	require.Never(t, func() bool {
 		return p.LatestBlock() != 1000
 	}, 300*time.Millisecond, 20*time.Millisecond, "unverifiable major jump must be dropped")
@@ -189,10 +189,10 @@ func TestSuggestLatestBlock_MajorJumpTypedMismatchErrorCordons(t *testing.T) {
 	up := newSuggestGateUpstream(123, "", common.NewErrEndpointChainIdMismatch(999, 123))
 	p := newGateTestPoller(t, up)
 
-	p.SuggestLatestBlock(1000)
+	p.SuggestLatestBlock(1000, time.Now())
 	require.Equal(t, int64(1000), p.LatestBlock())
 
-	p.SuggestLatestBlock(5_000_000)
+	p.SuggestLatestBlock(5_000_000, time.Now())
 	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond, "typed chainId-mismatch error must cordon")
 	assert.Equal(t, int64(1000), p.LatestBlock())
 }
@@ -203,10 +203,10 @@ func TestSuggestLatestBlock_UnpinnedChainIdSkipsGate(t *testing.T) {
 	up := newSuggestGateUpstream(0, "", assert.AnError)
 	p := newGateTestPoller(t, up)
 
-	p.SuggestLatestBlock(1000)
+	p.SuggestLatestBlock(1000, time.Now())
 	require.Equal(t, int64(1000), p.LatestBlock())
 
-	p.SuggestLatestBlock(5_000_000) // major, but chainId not pinned → not gated
+	p.SuggestLatestBlock(5_000_000, time.Now()) // major, but chainId not pinned → not gated
 	require.Eventually(t, func() bool {
 		return p.LatestBlock() == 5_000_000
 	}, 2*time.Second, 10*time.Millisecond)

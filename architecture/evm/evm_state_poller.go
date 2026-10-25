@@ -813,7 +813,7 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (json.Ra
 	// Directly update tracker with the correct timestamp for this locally-fetched block
 	// This happens BEFORE the OnValue callback is triggered, ensuring only the fetching node emits the metric
 	e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
-	e.latestBlockShared.TryUpdate(ctx, blockNum)
+	e.latestBlockShared.TryUpdate(ctx, blockNum, f.sent)
 
 	e.logger.Debug().
 		Int64("blockNumber", blockNum).
@@ -835,7 +835,7 @@ func (e *EvmStatePoller) deliverFetched(bound *pollSource, f *headFetch, header 
 		kind = HeaderForkPolled
 	}
 	e.headAsk.mu.Unlock()
-	bound.intake.Polled(e.upstream.Id(), header, kind)
+	bound.intake.Polled(e.upstream.Id(), header, kind, f.sent)
 }
 
 // backoffDelay is how long after a fetch's send the next one may start:
@@ -936,7 +936,10 @@ func (e *EvmStatePoller) RefreshFinalizedBlock() {
 	}()
 }
 
-func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
+// SuggestLatestBlock reports blockNumber as the upstream's latest, its
+// evidence taken at at (spec §6.4): an answer's request send time, a
+// push's receive time. A report of the counter's own value dates it anew.
+func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64, at time.Time) {
 	// Best-effort, non-blocking update.
 	//
 	// IMPORTANT:
@@ -944,11 +947,11 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 	// - TryUpdate is local-only and schedules remote propagation asynchronously via the shared variable's
 	//   deduped publish-first background push.
 	currentValue := e.latestBlockShared.GetValue()
-	if blockNumber <= currentValue {
+	if blockNumber < currentValue {
 		e.logger.Trace().
 			Int64("blockNumber", blockNumber).
 			Int64("currentValue", currentValue).
-			Msg("skipping latest block suggestion as it's not newer")
+			Msg("skipping latest block suggestion as it's older")
 		return
 	}
 
@@ -962,11 +965,11 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 	// non-blocking. Small advances (the common keep-fresh case) still apply
 	// inline with zero added latency, exactly as before.
 	if currentValue > 0 && blockNumber-currentValue > e.majorHeadMoveThreshold() {
-		e.verifyThenSuggestLatestBlock(blockNumber)
+		e.verifyThenSuggestLatestBlock(blockNumber, at)
 		return
 	}
 
-	newValue := e.latestBlockShared.TryUpdate(e.appCtx, blockNumber)
+	newValue := e.latestBlockShared.TryUpdate(e.appCtx, blockNumber, at)
 	e.logger.Trace().
 		Int64("blockNumber", blockNumber).
 		Int64("previousValue", currentValue).
@@ -974,10 +977,11 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 		Msg("latest block suggestion applied")
 }
 
-// ObserveHead is the per-upstream part of intake for a source header: the
-// height goes through SuggestLatestBlock, so a major jump is verified before
-// it moves the counter. accepted: the counter holds the header's height now.
-func (e *EvmStatePoller) ObserveHead(raw json.RawMessage) (accepted bool) {
+// ObserveHead is the per-upstream part of intake for a source header, its
+// evidence taken at at: the height goes through SuggestLatestBlock, so a
+// major jump is verified before it moves the counter. accepted: the
+// counter holds the header's height now.
+func (e *EvmStatePoller) ObserveHead(raw json.RawMessage, at time.Time) (accepted bool) {
 	var h struct {
 		Number string `json:"number"`
 	}
@@ -988,7 +992,7 @@ func (e *EvmStatePoller) ObserveHead(raw json.RawMessage) (accepted bool) {
 	if err != nil || n < 0 {
 		return false
 	}
-	e.SuggestLatestBlock(n)
+	e.SuggestLatestBlock(n, at)
 	return e.LatestBlock() >= n
 }
 
@@ -1014,7 +1018,8 @@ const (
 
 // PollIntake takes a bound poller's latest headers.
 type PollIntake interface {
-	Polled(upstreamId string, raw json.RawMessage, kind HeaderKind)
+	// Polled takes the header a poll of latest, sent at sent, fetched.
+	Polled(upstreamId string, raw json.RawMessage, kind HeaderKind, sent time.Time)
 	// PollFailed notes a poll of latest, sent at started, that the node
 	// failed (spec §6.1).
 	PollFailed(upstreamId string, started time.Time)
@@ -1118,8 +1123,9 @@ func (e *EvmStatePoller) BackedOffCadence() time.Duration {
 // unverifiable one (a transient eth_chainId failure) drops the suggestion for
 // now and it is re-observed on the next suggestion or verified poll. Runs in
 // its own goroutine so the caller (response enrichment) never blocks, and at
-// most one verification is in flight per poller.
-func (e *EvmStatePoller) verifyThenSuggestLatestBlock(blockNumber int64) {
+// most one verification is in flight per poller. at is the suggestion's
+// evidence time.
+func (e *EvmStatePoller) verifyThenSuggestLatestBlock(blockNumber int64, at time.Time) {
 	if !e.latestMajorVerifyInProgress.TryLock() {
 		return
 	}
@@ -1143,7 +1149,7 @@ func (e *EvmStatePoller) verifyThenSuggestLatestBlock(blockNumber int64) {
 				Msg("dropping major latest block suggestion: chain-identity check did not pass")
 			return
 		}
-		newValue := e.latestBlockShared.TryUpdate(e.appCtx, blockNumber)
+		newValue := e.latestBlockShared.TryUpdate(e.appCtx, blockNumber, at)
 		e.logger.Debug().
 			Int64("blockNumber", blockNumber).
 			Int64("previousValue", currentValue).
@@ -1543,7 +1549,7 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 			return
 		}
 
-		e.finalizedBlockShared.TryUpdate(ctx, blockNumber)
+		e.finalizedBlockShared.TryUpdate(ctx, blockNumber, time.Now())
 		e.logger.Trace().
 			Int64("blockNumber", blockNumber).
 			Msg("finalized block suggestion applied")

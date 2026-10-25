@@ -383,14 +383,14 @@ func TestNetworkIntake_EligibleSourceLiftsLatest(t *testing.T) {
 	network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{primaryLatest: "0x3e8", fallbackLatest: "0x3e8"})
 	require.Equal(t, int64(1000), servedHead(network, ctx).Latest)
 
-	network.intake.Polled("unknown", tipHead("a", 1020), evm.HeaderStreamed)
+	network.intake.Polled("unknown", tipHead("a", 1020), evm.HeaderStreamed, time.Now())
 	time.Sleep(100 * time.Millisecond)
 	assert.Equal(t, int64(1000), servedHead(network, ctx).Latest, "an unknown source must not lift latest")
 
-	network.intake.Polled("primary-1", tipHead("a", 1001), evm.HeaderStreamed)
+	network.intake.Polled("primary-1", tipHead("a", 1001), evm.HeaderStreamed, time.Now())
 	eventuallyPinned(t, network, 1001, "an eligible source's head votes")
 	assert.Equal(t, int64(1000), servedHead(network, ctx).Latest, "one eligible source alone must not lift latest")
-	network.intake.Polled("primary-2", tipHead("a", 1001), evm.HeaderStreamed)
+	network.intake.Polled("primary-2", tipHead("a", 1001), evm.HeaderStreamed, time.Now())
 	eventuallyLatest(t, ctx, network, 1001, "a quorum of eligible sources lifts latest")
 }
 
@@ -423,11 +423,11 @@ func TestNetworkIntake_PolicyExcludedUpstreamNeverReachesClients(t *testing.T) {
 			})
 	}()
 
-	network.intake.Polled("fallback-1", tipHead("b", 1010), evm.HeaderStreamed)
+	network.intake.Polled("fallback-1", tipHead("b", 1010), evm.HeaderStreamed, time.Now())
 	assert.Equal(t, int64(1010), byId["fallback-1"].EvmStatePoller().LatestBlock(), "its own poller still sees the head")
 	for _, id := range []string{"primary-1", "primary-2"} {
-		network.intake.Polled(id, tipHead("a", 1001), evm.HeaderStreamed)
-		network.intake.Polled(id, tipHead("a", 1002), evm.HeaderStreamed)
+		network.intake.Polled(id, tipHead("a", 1001), evm.HeaderStreamed, time.Now())
+		network.intake.Polled(id, tipHead("a", 1002), evm.HeaderStreamed, time.Now())
 	}
 
 	for _, want := range []uint64{1001, 1002} {
@@ -474,14 +474,14 @@ func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 		defer cancel()
 		network, ups := setup(t, ctx, true)
 
-		network.intake.Polled("primary-2", tipHead("a", 1000), evm.HeaderStreamed)
-		network.intake.Polled("fallback-1", tipHead("b", 1010), evm.HeaderStreamed)
+		network.intake.Polled("primary-2", tipHead("a", 1000), evm.HeaderStreamed, time.Now())
+		network.intake.Polled("fallback-1", tipHead("b", 1010), evm.HeaderStreamed, time.Now())
 		assert.Equal(t, int64(1010), ups["fallback-1"].EvmStatePoller().LatestBlock(),
 			"the fallback's poller still sees its head")
 		time.Sleep(100 * time.Millisecond)
 		assert.Less(t, pinned(network), int64(1010), "a held head must not vote")
 
-		network.intake.Polled("primary-2", tipHead("a", 1001), evm.HeaderStreamed)
+		network.intake.Polled("primary-2", tipHead("a", 1001), evm.HeaderStreamed, time.Now())
 		eventuallyLatest(t, ctx, network, 1001, "the primary's head lifts latest")
 	})
 
@@ -491,7 +491,7 @@ func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 		defer cancel()
 		network, _ := setup(t, ctx, true)
 
-		network.intake.Polled("fallback-1", tipHead("b", 1010), evm.HeaderStreamed)
+		network.intake.Polled("fallback-1", tipHead("b", 1010), evm.HeaderStreamed, time.Now())
 		eventuallyPinned(t, network, 1010, "with no primary source, the fallback votes")
 	})
 
@@ -501,9 +501,9 @@ func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 		defer cancel()
 		network, ups := setup(t, ctx, false)
 
-		network.intake.Polled("primary-1", tipHead("a", 1000), evm.HeaderStreamed)
-		network.intake.Polled("primary-2", tipHead("a", 1000), evm.HeaderStreamed)
-		network.intake.Polled("fallback-1", tipHead("b", 1010), evm.HeaderStreamed)
+		network.intake.Polled("primary-1", tipHead("a", 1000), evm.HeaderStreamed, time.Now())
+		network.intake.Polled("primary-2", tipHead("a", 1000), evm.HeaderStreamed, time.Now())
+		network.intake.Polled("fallback-1", tipHead("b", 1010), evm.HeaderStreamed, time.Now())
 		time.Sleep(100 * time.Millisecond)
 		require.Less(t, pinned(network), int64(1010))
 
@@ -511,7 +511,7 @@ func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 		ups["primary-2"].Cordon("*", "test")
 		policy.TickForTest(network.policyEngine, network.networkId, "*")
 
-		network.intake.Polled("fallback-1", tipHead("b", 1011), evm.HeaderStreamed)
+		network.intake.Polled("fallback-1", tipHead("b", 1011), evm.HeaderStreamed, time.Now())
 		eventuallyPinned(t, network, 1011, "excluded primaries no longer hold the fallback back")
 	})
 
@@ -525,8 +525,8 @@ func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 			noPolicy:       true,
 		})
 
-		network.intake.Polled("primary-1", tipHead("a", 1000), evm.HeaderStreamed)
-		network.intake.Polled("fallback-1", tipHead("a", 1001), evm.HeaderStreamed)
+		network.intake.Polled("primary-1", tipHead("a", 1000), evm.HeaderStreamed, time.Now())
+		network.intake.Polled("fallback-1", tipHead("a", 1001), evm.HeaderStreamed, time.Now())
 		eventuallyPinned(t, network, 1001, "without failover every eligible source votes")
 	})
 }
@@ -541,7 +541,7 @@ func TestNetworkIntake_WithholdsUnacceptedMajorJump(t *testing.T) {
 	defer cancel()
 
 	network, u := setupWsTipNetwork(t, ctx, "rpc2", "http://rpc2.localhost")
-	u.EvmStatePoller().SuggestLatestBlock(1000)
+	u.EvmStatePoller().SuggestLatestBlock(1000, time.Now())
 	require.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
 
 	// From here the endpoint answers for another chain.
@@ -550,12 +550,12 @@ func TestNetworkIntake_WithholdsUnacceptedMajorJump(t *testing.T) {
 		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), `eth_chainId`) }).
 		Reply(200).JSON([]byte(`{"result":"0x1"}`))
 
-	network.intake.Polled("rpc2", tipHead("e", 5_000_000), evm.HeaderStreamed)
+	network.intake.Polled("rpc2", tipHead("e", 5_000_000), evm.HeaderStreamed, time.Now())
 	time.Sleep(300 * time.Millisecond) // let the async verification finish (and fail)
 	assert.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
 	assert.Less(t, pinned(network), int64(5_000_000))
-	network.intake.Polled("rpc2", tipHead("a", 1001), evm.HeaderStreamed)
-	network.intake.Polled("rpc2", tipHead("a", 1002), evm.HeaderStreamed)
+	network.intake.Polled("rpc2", tipHead("a", 1001), evm.HeaderStreamed, time.Now())
+	network.intake.Polled("rpc2", tipHead("a", 1002), evm.HeaderStreamed, time.Now())
 	eventuallyPinned(t, network, 1002, "the next heads of the right chain vote")
 }
 
@@ -570,7 +570,7 @@ func TestNetworkIntake_WithholdsUnverifiableSource(t *testing.T) {
 	network, _ := setupWsTipNetwork(t, ctx, "rpc3", "http://rpc3.localhost")
 	before := pinned(network)
 
-	network.intake.Polled("not-in-this-network", tipHead("a", 5_000_000), evm.HeaderStreamed)
+	network.intake.Polled("not-in-this-network", tipHead("a", 5_000_000), evm.HeaderStreamed, time.Now())
 	time.Sleep(100 * time.Millisecond)
 	assert.Equal(t, before, pinned(network))
 }
@@ -637,7 +637,7 @@ func TestNetworkIntake_GroupLaneConfirmsWhenLatestMovesWithoutHeader(t *testing.
 		require.Less(t, c.Number, uint64(1001), "the lane's Latest holds 1001 back")
 	}
 
-	byId["g-b"].EvmStatePoller().SuggestLatestBlock(1001)
+	byId["g-b"].EvmStatePoller().SuggestLatestBlock(1001, time.Now())
 	require.Eventually(t, func() bool {
 		c, ok := group.Confirmed()
 		return ok && c.Number == 1001
@@ -677,7 +677,7 @@ func TestNetworkIntake_HeldHashVoteNeedPollsVotersBelowThePin(t *testing.T) {
 
 	polled := bVendor.latestPolls.Load() + cVendor.latestPolls.Load()
 	for _, id := range []string{"b-http", "c-http"} {
-		byId[id].EvmStatePoller().SuggestLatestBlock(1001)
+		byId[id].EvmStatePoller().SuggestLatestBlock(1001, time.Now())
 	}
 	eventuallyLatest(t, ctx, network, 1001, "the pollers' counters move Latest to 1001")
 	chain.advance()

@@ -217,7 +217,7 @@ func setupServedTipNetworkEvery(t *testing.T, ctx context.Context, fixtures []se
 	// Push each upstream's poller to the requested state.
 	for i, f := range fixtures {
 		if f.latestBlock > 0 {
-			ordered[i].EvmStatePoller().SuggestLatestBlock(f.latestBlock)
+			ordered[i].EvmStatePoller().SuggestLatestBlock(f.latestBlock, time.Now())
 		}
 		if f.syncing {
 			ordered[i].EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
@@ -322,9 +322,9 @@ func TestServedTip_NoRegressionOnUpstreamRetreat(t *testing.T) {
 
 	// All upstreams retreat (e.g., transient outage causing pollers to lose
 	// state, or a partial chain reorg perceived by some upstreams).
-	ups[0].EvmStatePoller().SuggestLatestBlock(80)
-	ups[1].EvmStatePoller().SuggestLatestBlock(79)
-	ups[2].EvmStatePoller().SuggestLatestBlock(78)
+	ups[0].EvmStatePoller().SuggestLatestBlock(80, time.Now())
+	ups[1].EvmStatePoller().SuggestLatestBlock(79, time.Now())
+	ups[2].EvmStatePoller().SuggestLatestBlock(78, time.Now())
 	time.Sleep(50 * time.Millisecond)
 
 	served2 := servedHead(network, ctx).Latest
@@ -612,7 +612,7 @@ func TestServedTip_AnchorStampsOnServedValueChange(t *testing.T) {
 		"first observation alone must not stamp the watchdog")
 
 	for _, u := range ups {
-		u.EvmStatePoller().SuggestLatestBlock(105)
+		u.EvmStatePoller().SuggestLatestBlock(105, time.Now())
 	}
 	require.Equal(t, int64(105), servedHead(network, ctx).Latest)
 	age := network.servedTipAll.latest.age()
@@ -688,7 +688,7 @@ func TestServedTip_NoNetworkLevelStickiness(t *testing.T) {
 	// advances, the pick follows it up.
 	// (9_000 → 11_000 is a MAJOR jump, so it passes the poller's off-hot-path
 	// chain-identity check — mocked eth_chainId matches — before it applies.)
-	ups[2].EvmStatePoller().SuggestLatestBlock(11_000)
+	ups[2].EvmStatePoller().SuggestLatestBlock(11_000, time.Now())
 	require.Eventually(t, func() bool {
 		return servedHead(network, ctx).Latest == 11_000
 	}, 2*time.Second, 10*time.Millisecond,
@@ -720,7 +720,7 @@ func TestServedTip_HaltedChainResume_CatchesUpImmediately(t *testing.T) {
 
 	// Resume with a 500-block burst.
 	for _, u := range ups {
-		u.EvmStatePoller().SuggestLatestBlock(600)
+		u.EvmStatePoller().SuggestLatestBlock(600, time.Now())
 	}
 	assert.Equal(t, int64(600), servedHead(network, ctx).Latest,
 		"the post-halt burst must be served on the first pick that sees it")
@@ -1547,7 +1547,7 @@ func suggestServedTipHead(u *upstream.Upstream, head int64) {
 		if head-current > common.DefaultToleratedBlockHeadRollback {
 			next = current + common.DefaultToleratedBlockHeadRollback
 		}
-		u.EvmStatePoller().SuggestLatestBlock(next)
+		u.EvmStatePoller().SuggestLatestBlock(next, time.Now())
 		if u.EvmStatePoller().LatestBlock() < next {
 			return // the poller refused it; let the assertion report the state
 		}
@@ -1590,7 +1590,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 	report := func(tr *health.Tracker, u *upstream.Upstream, head, ts int64) {
 		tr.SetLatestBlockNumber(u, head, ts)
 		for b := u.EvmStatePoller().LatestBlock() + 1; b <= head; b++ {
-			u.EvmStatePoller().SuggestLatestBlock(b)
+			u.EvmStatePoller().SuggestLatestBlock(b, time.Now())
 		}
 	}
 	lagOf := func(n *Network, u *upstream.Upstream) int64 {
@@ -1647,8 +1647,8 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		for range 5 {
 			advance(2 * time.Second)
 			head += 2
-			live.EvmStatePoller().SuggestLatestBlock(head)
-			stalled.EvmStatePoller().SuggestLatestBlock(head)
+			live.EvmStatePoller().SuggestLatestBlock(head, time.Now())
+			stalled.EvmStatePoller().SuggestLatestBlock(head, time.Now())
 		}
 		served(t, network, head, "a healthy pair")
 		stalledAt := head
@@ -1660,7 +1660,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
 			advance(2 * time.Second)
 			head += 2
-			live.EvmStatePoller().SuggestLatestBlock(head)
+			live.EvmStatePoller().SuggestLatestBlock(head, time.Now())
 			setServedTipFinalized(t, live, head-10)
 		}
 		require.False(t, tr.IsHeadBenched(stalled), "a peer below for less than its stall window is not benched")
@@ -1671,7 +1671,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		// Past the stall window, the next head live reports benches stalled.
 		advance(4 * time.Second)
 		head += 2
-		live.EvmStatePoller().SuggestLatestBlock(head)
+		live.EvmStatePoller().SuggestLatestBlock(head, time.Now())
 		setServedTipFinalized(t, live, head-10)
 		require.True(t, tr.IsHeadBenched(stalled), "a head below a moving peer for its stall window is benched")
 		require.False(t, tr.IsHeadBenched(live))
@@ -1687,8 +1687,8 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		for replay := stalledAt; replay < head-10; replay += 20 {
 			advance(time.Second)
 			head++
-			live.EvmStatePoller().SuggestLatestBlock(head)
-			stalled.EvmStatePoller().SuggestLatestBlock(replay)
+			live.EvmStatePoller().SuggestLatestBlock(head, time.Now())
+			stalled.EvmStatePoller().SuggestLatestBlock(replay, time.Now())
 			require.True(t, tr.IsHeadBenched(stalled), "a replaying head stays benched until it catches up (at %d, live %d)", replay, head)
 			got := servedHead(network, ctx).Latest
 			require.GreaterOrEqual(t, got, last, "latest must never regress while a benched head replays")
@@ -1698,7 +1698,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 
 		// stalled catches up on both axes: it rejoins and its lag is 0 again.
 		advance(time.Second)
-		stalled.EvmStatePoller().SuggestLatestBlock(head)
+		stalled.EvmStatePoller().SuggestLatestBlock(head, time.Now())
 		require.False(t, tr.IsHeadBenched(stalled), "a benched head that caught up rejoins")
 		require.Zero(t, lagOf(network, stalled))
 		served(t, network, head, "after the rejoin")
@@ -1746,8 +1746,8 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		for range 60 {
 			advance(10 * time.Second)
 			head++
-			a.EvmStatePoller().SuggestLatestBlock(head)
-			b.EvmStatePoller().SuggestLatestBlock(head)
+			a.EvmStatePoller().SuggestLatestBlock(head, time.Now())
+			b.EvmStatePoller().SuggestLatestBlock(head, time.Now())
 			tr.SetLatestBlockNumber(rogue, 103_000, 0)
 			require.False(t, tr.IsHeadBenched(a), "a static head above never benches the moving ones")
 			require.False(t, tr.IsHeadBenched(b), "a static head above never benches the moving ones")
@@ -1760,7 +1760,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		for elapsed := time.Duration(0); elapsed <= stallAfter(b, 0); elapsed += 10 * time.Second {
 			advance(10 * time.Second)
 			head++
-			a.EvmStatePoller().SuggestLatestBlock(head)
+			a.EvmStatePoller().SuggestLatestBlock(head, time.Now())
 		}
 		require.True(t, tr.IsHeadBenched(b))
 		served(t, network, head, "quorum 2 over {a, rogue} still serves the honest head")
@@ -1768,7 +1768,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		// b catches up with a. The rogue's head is out of anyone's reach, so it
 		// must not be the rejoin bar.
 		advance(time.Second)
-		b.EvmStatePoller().SuggestLatestBlock(head)
+		b.EvmStatePoller().SuggestLatestBlock(head, time.Now())
 		require.False(t, tr.IsHeadBenched(b), "a caught-up head rejoins even with a far-future voter above it")
 		require.Zero(t, lagOf(network, b))
 		served(t, network, head, "after the rejoin")
@@ -2231,7 +2231,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 			advance(2 * time.Second)
 			head += 2
 			for _, u := range ups {
-				u.EvmStatePoller().SuggestLatestBlock(head)
+				u.EvmStatePoller().SuggestLatestBlock(head, time.Now())
 			}
 		}
 		served(t, network, head, "a healthy fleet")
@@ -2242,7 +2242,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 			advance(2 * time.Second)
 			head += 2
 			for _, u := range lives {
-				u.EvmStatePoller().SuggestLatestBlock(head)
+				u.EvmStatePoller().SuggestLatestBlock(head, time.Now())
 			}
 		}
 		for _, u := range stalls {
@@ -2253,7 +2253,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		advance(4 * time.Second)
 		head += 2
 		for _, u := range lives {
-			u.EvmStatePoller().SuggestLatestBlock(head)
+			u.EvmStatePoller().SuggestLatestBlock(head, time.Now())
 		}
 		for _, u := range stalls {
 			require.True(t, tr.IsHeadBenched(u), "%s: benched after its stall window", u.Id())
@@ -2265,7 +2265,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		served(t, network, head, "the live pair is the majority of the non-benched voters")
 
 		advance(time.Second)
-		stalls[0].EvmStatePoller().SuggestLatestBlock(head)
+		stalls[0].EvmStatePoller().SuggestLatestBlock(head, time.Now())
 		require.False(t, tr.IsHeadBenched(stalls[0]), "a stalled head that caught up rejoins")
 		require.Zero(t, lagOf(network, stalls[0]))
 		for _, u := range stalls[1:] {
@@ -2287,7 +2287,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		for elapsed := time.Duration(0); elapsed <= stallAfter(stalled, 0); elapsed += 2 * time.Second {
 			advance(2 * time.Second)
 			head += 2
-			live.EvmStatePoller().SuggestLatestBlock(head)
+			live.EvmStatePoller().SuggestLatestBlock(head, time.Now())
 		}
 		require.True(t, tr.IsHeadBenched(stalled), "precondition: stalled is benched")
 		served(t, network, head, "precondition: live defines latest")

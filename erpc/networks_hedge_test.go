@@ -1962,7 +1962,7 @@ func setupTestNetworkWithScoring(
 	for _, ups := range upsList {
 		err = ups.Bootstrap(ctx)
 		require.NoError(t, err)
-		ups.EvmStatePoller().SuggestLatestBlock(1000)
+		ups.EvmStatePoller().SuggestLatestBlock(1000, time.Now())
 		ups.EvmStatePoller().SuggestFinalizedBlock(900)
 	}
 	time.Sleep(50 * time.Millisecond)

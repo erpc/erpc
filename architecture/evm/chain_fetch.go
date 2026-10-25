@@ -102,8 +102,11 @@ func (s fetchSpec) directives() *common.RequestDirectives {
 
 type fetchResult struct {
 	upstream string
-	val      any
-	err      error
+	// sent is when the sweep began, at or before its answer's request
+	// was sent.
+	sent time.Time
+	val  any
+	err  error
 }
 
 type fetchRequest struct {
@@ -439,6 +442,7 @@ func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, fetchTimeout)
 	defer cancel()
+	sent := time.Now()
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + r.spec.method + `","params":` + r.spec.params + `}`))
 	req.SetDirectives(r.spec.directives())
 	var (
@@ -464,9 +468,9 @@ func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 		return err
 	})
 	if err != nil {
-		return fetchResult{upstream: upstreamId, err: err}
+		return fetchResult{upstream: upstreamId, sent: sent, err: err}
 	}
-	return fetchResult{upstream: upstreamId, val: val}
+	return fetchResult{upstream: upstreamId, sent: sent, val: val}
 }
 
 // fetchOutcome is capacity when every upstream the sweep tried refused for

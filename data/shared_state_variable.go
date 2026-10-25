@@ -24,13 +24,15 @@ type CounterInt64SharedVariable interface {
 	SharedVariable
 	GetValue() int64
 	TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) (int64, error)
-	TryUpdate(ctx context.Context, newValue int64) int64
+	// TryUpdate reports newValue, its evidence taken at at (ReportAt).
+	TryUpdate(ctx context.Context, newValue int64, at time.Time) int64
 	OnValue(callback func(int64))
 	OnLargeRollback(callback func(currentVal, newVal int64))
 	// ReportAt is when the evidence for the counter's newest report was
-	// taken, by this instance's clock (spec §6.4, §14): a refresh's start,
-	// since its answer can show no later value than the source had then;
-	// any other report's receive time. Zero before any.
+	// taken, by this instance's clock (spec §6.4, §14): a fetch's or a
+	// refresh's send time, since its answer can show no later value than
+	// the source had then; a push's or a remote value's receive time. A
+	// later report never dates it back. Zero before any.
 	ReportAt() time.Time
 }
 
@@ -138,8 +140,16 @@ func (c *counterInt64) ReportAt() time.Time {
 	return time.Time{}
 }
 
+// markReported dates the counter's report at at, unless it already has a
+// newer one: heads only move on, so newer evidence stands.
 func (c *counterInt64) markReported(at time.Time) {
-	c.reportAtUnixMs.Store(at.UnixMilli())
+	ms := at.UnixMilli()
+	for {
+		cur := c.reportAtUnixMs.Load()
+		if ms <= cur || c.reportAtUnixMs.CompareAndSwap(cur, ms) {
+			return
+		}
+	}
 }
 
 func (c *counterInt64) processNewState(source string, st CounterInt64State) bool {
@@ -428,7 +438,7 @@ func (c *counterInt64) triggerValueCallback(val int64) {
 	}
 }
 
-func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
+func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64, at time.Time) int64 {
 	ctx, span := common.StartSpan(ctx, "CounterInt64.TryUpdate",
 		trace.WithAttributes(
 			attribute.String("key", c.key),
@@ -443,7 +453,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	// IMPORTANT: TryUpdate must never wait on updateMu.
 	// updateMu exists to coordinate expensive refresh execution in TryUpdateIfStale (thundering herd control),
 	// but local counter advancement must remain fast even if a refresh is in-flight.
-	updated := c.processNewValue(UpdateSourceTryUpdate, newValue, time.Now())
+	updated := c.processNewValue(UpdateSourceTryUpdate, newValue, at)
 
 	// Schedule background push when value was actually updated (increase OR decrease).
 	// With unified semantics, all value changes are propagated to remote.

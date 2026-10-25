@@ -639,7 +639,7 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	// latest each block time: the pins follow the network head.
 	latestNum.Store(0x3ea)
 	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
-		u.EvmStatePoller().SuggestLatestBlock(0x3ea)
+		u.EvmStatePoller().SuggestLatestBlock(0x3ea, time.Now())
 	}
 	require.Eventually(t, func() bool {
 		_, ok := evm.ChainTrackerOf(ctx, n, "").HashAt(0x3ea)
@@ -665,7 +665,7 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	t.Logf("known nonempty traceCalls=%d", traceCalls.Load()-beforeNonempty)
 	latestNum.Store(0x3eb)
 	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
-		u.EvmStatePoller().SuggestLatestBlock(0x3eb)
+		u.EvmStatePoller().SuggestLatestBlock(0x3eb, time.Now())
 	}
 	require.Eventually(t, func() bool {
 		_, ok := evm.ChainTrackerOf(ctx, n, "").HashAt(0x3eb)

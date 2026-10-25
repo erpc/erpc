@@ -267,7 +267,7 @@ func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
 		method, ref, upstream = "eth_getBlockByHash", fmt.Sprintf("0x%x", want), e.sender
 	}
 	e.busy = true
-	t.submitHeader(t.headerSpec(class, method, ref, upstream, false), func(h *chainHeader, _ string, err error) {
+	t.submitHeader(t.headerSpec(class, method, ref, upstream, false), func(h *chainHeader, _ string, _ time.Time, err error) {
 		if t.exts[r] != e {
 			return
 		}
@@ -310,7 +310,7 @@ func (t *ChainTracker) extended(r *node, e *extension, h *chainHeader) {
 
 // submitHeader queues a tracker-owned header fetch; the tracker waits on it
 // and done runs on the tracker's goroutine with the answer.
-func (t *ChainTracker) submitHeader(spec fetchSpec, done func(h *chainHeader, from string, err error)) {
+func (t *ChainTracker) submitHeader(spec fetchSpec, done func(h *chainHeader, from string, sent time.Time, err error)) {
 	w := t.fetch.submit(nil, spec)
 	t.fetch.bg.Go(func() {
 		res := w.wait(t.ctx)
@@ -319,7 +319,7 @@ func (t *ChainTracker) submitHeader(spec fetchSpec, done func(h *chainHeader, fr
 		if err == nil && h == nil {
 			err = errFetchUndecoded
 		}
-		t.mb.put(trackerMsg{kind: msgCall, fn: func() { done(h, res.upstream, err) }})
+		t.mb.put(trackerMsg{kind: msgCall, fn: func() { done(h, res.upstream, res.sent, err) }})
 	})
 }
 
@@ -391,7 +391,7 @@ func (t *ChainTracker) startSettle(key string, waiter chan settleOutcome, client
 	for _, u := range ups {
 		spec := t.headerSpec(classHead, "eth_getBlockByNumber", "latest", u, client)
 		s.out[u] = spec
-		t.submitHeader(spec, func(h *chainHeader, from string, err error) {
+		t.submitHeader(spec, func(h *chainHeader, from string, sent time.Time, err error) {
 			if t.settle != s {
 				return
 			}
@@ -404,7 +404,7 @@ func (t *ChainTracker) startSettle(key string, waiter chan settleOutcome, client
 			if who == "" {
 				who = from
 			}
-			t.noteHead(from, h)
+			t.noteHead(from, h, sent)
 			nd := t.heldOrHold(h)
 			s.answers[who] = nd
 			t.walkFrom(nd, who)
@@ -593,7 +593,7 @@ func (t *ChainTracker) maybeAsk() {
 // names the ask: an answer to an ask from before a reset is dropped.
 func (t *ChainTracker) askNext(seq uint64, targets []string) {
 	target := targets[0]
-	t.submitHeader(t.headerSpec(classHead, "eth_getBlockByNumber", "latest", target, false), func(h *chainHeader, from string, err error) {
+	t.submitHeader(t.headerSpec(classHead, "eth_getBlockByNumber", "latest", target, false), func(h *chainHeader, from string, sent time.Time, err error) {
 		if seq != t.askSeq {
 			return
 		}
@@ -609,7 +609,7 @@ func (t *ChainTracker) askNext(seq uint64, targets []string) {
 		if who == "" {
 			who = from
 		}
-		t.noteHead(from, h)
+		t.noteHead(from, h, sent)
 		nd := t.heldOrHold(h)
 		t.ask.pending, t.ask.pendingVoter = nd, who
 		t.walkFrom(nd, who)
@@ -620,12 +620,12 @@ func (t *ChainTracker) askNext(seq uint64, targets []string) {
 // fetch (from; empty for a cached answer), as a source header moves its
 // source's (spec §6.3). Every send stops at Latest (§6.5), so an asked head
 // becomes sendable once enough upstreams have it, not at their next poll.
-func (t *ChainTracker) noteHead(from string, h *chainHeader) {
+func (t *ChainTracker) noteHead(from string, h *chainHeader, sent time.Time) {
 	n, ok := t.network.(interface {
-		ObserveFetchedHead(upstreamId string, raw json.RawMessage)
+		ObserveFetchedHead(upstreamId string, raw json.RawMessage, sent time.Time)
 	})
 	if ok && from != "" {
-		t.callNetwork("note-head", func() { n.ObserveFetchedHead(from, h.raw) })
+		t.callNetwork("note-head", func() { n.ObserveFetchedHead(from, h.raw, sent) })
 	}
 }
 

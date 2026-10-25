@@ -155,7 +155,7 @@ func TestHttpServer_SafeGetLogsTakesTheSafeLaneHead(t *testing.T) {
 	for _, u := range nw.upstreamsRegistry.GetNetworkUpstreams(context.Background(), "evm:123") {
 		require.Eventually(t, func() bool { return u.EvmStatePoller().LatestBlock() == sourceHead }, 5*time.Second, 5*time.Millisecond)
 		if u.Id() == "other" {
-			u.EvmStatePoller().SuggestLatestBlock(sourceHead + 5)
+			u.EvmStatePoller().SuggestLatestBlock(sourceHead+5, time.Now())
 		}
 	}
 	require.Eventually(t, func() bool { return servedHead(nw, context.Background()).Latest == sourceHead+5 }, 5*time.Second, 5*time.Millisecond,

@@ -62,7 +62,7 @@ func TestSharedStateRegistry_UpdateCounter_Success(t *testing.T) {
 	}
 	counter.value.Store(5)
 
-	result := counter.TryUpdate(ctx, 10)
+	result := counter.TryUpdate(ctx, 10, time.Now())
 	assert.Equal(t, int64(10), result)
 
 	// Wait for background push goroutine to complete all operations (Lock, Get, Set, Unlock)
@@ -88,7 +88,7 @@ func TestSharedStateRegistry_UpdateCounter_LockFailure(t *testing.T) {
 	}
 	counter.value.Store(5)
 
-	result := counter.TryUpdate(ctx, 10)
+	result := counter.TryUpdate(ctx, 10, time.Now())
 	assert.Equal(t, int64(10), result) // Should fall back to local update
 
 	// Remote push happens asynchronously.
@@ -116,7 +116,7 @@ func TestSharedStateRegistry_UpdateCounter_GetFailure(t *testing.T) {
 	}
 	counter.value.Store(5)
 
-	result := counter.TryUpdate(ctx, 10)
+	result := counter.TryUpdate(ctx, 10, time.Now())
 	assert.Equal(t, int64(10), result) // Should fall back to local update
 
 	// Remote push happens asynchronously.
@@ -147,7 +147,7 @@ func TestSharedStateRegistry_UpdateCounter_SetFailure(t *testing.T) {
 	}
 	counter.value.Store(5)
 
-	result := counter.TryUpdate(ctx, 10)
+	result := counter.TryUpdate(ctx, 10, time.Now())
 	assert.Equal(t, int64(10), result) // Should fall back to local update
 
 	time.Sleep(10 * time.Millisecond)
@@ -176,7 +176,7 @@ func TestSharedStateRegistry_UpdateCounter_PublishFailure(t *testing.T) {
 	}
 	counter.value.Store(5)
 
-	result := counter.TryUpdate(ctx, 10)
+	result := counter.TryUpdate(ctx, 10, time.Now())
 	assert.Equal(t, int64(10), result) // Should fall back to local update
 
 	time.Sleep(10 * time.Millisecond)
@@ -205,7 +205,7 @@ func TestSharedStateRegistry_UpdateCounter_RemoteHigherValue(t *testing.T) {
 	}
 	counter.value.Store(5)
 
-	result := counter.TryUpdate(ctx, 10)
+	result := counter.TryUpdate(ctx, 10, time.Now())
 	// Foreground path is local-only; remote reconciliation happens in background.
 	assert.Equal(t, int64(10), result)
 
@@ -245,7 +245,7 @@ func TestSharedStateRegistry_UpdateCounter_ConcurrentUpdates(t *testing.T) {
 		wg.Add(1)
 		go func(val int64) {
 			defer wg.Done()
-			counter.TryUpdate(ctx, val)
+			counter.TryUpdate(ctx, val, time.Now())
 		}(int64(i + 10))
 	}
 
@@ -291,6 +291,6 @@ func TestSharedStateRegistry_GetCounterInt64_WatchFailure(t *testing.T) {
 
 	counter := registry.GetCounterInt64("test", 1024)
 	assert.NotNil(t, counter)
-	counter.TryUpdate(context.Background(), 42)
+	counter.TryUpdate(context.Background(), 42, time.Now())
 	assert.Equal(t, int64(42), counter.GetValue()) // Should still work with local value
 }

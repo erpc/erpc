@@ -3408,6 +3408,12 @@ func filterMethodEligible(ups []common.Upstream, method string) ([]common.Upstre
 func (n *Network) enrichStatePoller(ctx context.Context, method string, req *common.NormalizedRequest, resp *common.NormalizedResponse) {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EnrichStatePoller")
 	defer span.End()
+	// A client answer is dated by its request's send time (spec §6.4); an
+	// answer no upstream sent now carries no evidence of a head.
+	sentAt := resp.SentAt()
+	if sentAt.IsZero() {
+		return
+	}
 
 	switch n.Architecture() {
 	case common.ArchitectureEvm:
@@ -3465,7 +3471,7 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 							ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
 						}
 					case "latest":
-						ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
+						ups.EvmStatePoller().SuggestLatestBlock(blockNumber, sentAt)
 						// An answer, never a vote: held by the tracker of
 						// the request's group.
 						selector := ""
@@ -3487,7 +3493,7 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 					if ups := resp.Upstream(); ups != nil {
 						if ups, ok := ups.(common.EvmUpstream); ok {
 							// This method is non-blocking and handles async updates internally
-							ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
+							ups.EvmStatePoller().SuggestLatestBlock(blockNumber, sentAt)
 						}
 					}
 				}

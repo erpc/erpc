@@ -45,7 +45,7 @@ func TestConcurrentOperationsNoDeadlock(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < 10; j++ {
-				result := ctr.TryUpdate(ctx, int64(id*100+j))
+				result := ctr.TryUpdate(ctx, int64(id*100+j), time.Now())
 				if result > 0 {
 					completed.Add(1)
 				}

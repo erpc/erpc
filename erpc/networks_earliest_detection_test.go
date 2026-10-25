@@ -284,7 +284,7 @@ func TestEarliestDetection_InitialDetectionAlwaysRunsOnBootstrap(t *testing.T) {
 	// The key format matches what evm_state_poller uses (version-namespaced)
 	presetKey := data.CounterValueSchemaVersion + "/earliestBlock/evm:123:rpc1/blockHeader"
 	presetCounter := ssr.GetCounterInt64(presetKey, 0)
-	presetCounter.TryUpdate(ctx, 50) // Pre-set to 50
+	presetCounter.TryUpdate(ctx, 50, time.Now()) // Pre-set to 50
 
 	// Now bootstrap - detection should still run despite existing shared state value
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, nil)
@@ -626,7 +626,7 @@ func TestEarliestDetection_StaleHighValueInSharedState(t *testing.T) {
 	// Simulate Redis having 46M (latest block mistakenly stored as earliest)
 	// This is the exact bug scenario from production
 	staleCounter := ssr.GetCounterInt64(presetKey, 0)
-	staleCounter.TryUpdate(ctx, 46_000_000) // WRONG: 46M is the latest, not earliest!
+	staleCounter.TryUpdate(ctx, 46_000_000, time.Now()) // WRONG: 46M is the latest, not earliest!
 	require.Equal(t, int64(46_000_000), staleCounter.GetValue(), "stale value should be set before bootstrap")
 	t.Logf("Set stale value BEFORE bootstrap: %d", staleCounter.GetValue())
 
@@ -685,10 +685,10 @@ func TestEarliestDetection_DecreaseNotAllowedWithHighRollbackThreshold(t *testin
 
 	// Counter with ignoreRollbackOf = 1024 (like latestBlock/finalizedBlock)
 	counter := ssr.GetCounterInt64("test-counter", 1024)
-	counter.TryUpdate(ctx, 100)
+	counter.TryUpdate(ctx, 100, time.Now())
 
 	// Try to decrease - should be REJECTED (existing behavior preserved)
-	counter.TryUpdate(ctx, 50)
+	counter.TryUpdate(ctx, 50, time.Now())
 
 	assert.Equal(t, int64(100), counter.GetValue(),
 		"counters with ignoreRollbackOf > 0 should still reject decreases")
@@ -711,10 +711,10 @@ func TestEarliestDetection_DecreaseAllowedWithZeroRollbackThreshold(t *testing.T
 
 	// Counter with ignoreRollbackOf = 0 (like earliestBlock)
 	counter := ssr.GetCounterInt64("test-counter", 0)
-	counter.TryUpdate(ctx, 100)
+	counter.TryUpdate(ctx, 100, time.Now())
 
 	// Try to decrease - should be ACCEPTED with ignoreRollbackOf = 0
-	counter.TryUpdate(ctx, 50)
+	counter.TryUpdate(ctx, 50, time.Now())
 
 	assert.Equal(t, int64(50), counter.GetValue(),
 		"counters with ignoreRollbackOf = 0 should accept decreases")

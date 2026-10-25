@@ -218,12 +218,14 @@ type EvmStatePoller interface {
 	FinalizedBlock() int64
 	IsBlockFinalized(blockNumber int64) (bool, error)
 	SuggestFinalizedBlock(blockNumber int64)
-	SuggestLatestBlock(blockNumber int64)
+	// SuggestLatestBlock reports blockNumber, its evidence taken at at: an
+	// answer's request send time, a push's receive time (spec §6.4).
+	SuggestLatestBlock(blockNumber int64, at time.Time)
 	// ObserveHead runs a source header through the upstream's part of
 	// intake: the chain-identity gate and the head counter, as
 	// SuggestLatestBlock does for heights. accepted: the counter holds the
 	// header's height now.
-	ObserveHead(raw json.RawMessage) (accepted bool)
+	ObserveHead(raw json.RawMessage, at time.Time) (accepted bool)
 	// Ask is the upstream's head Ask (spec §6.8): single-flight, its
 	// outcome to every waiter; it waits for the answer or ctx's end.
 	Ask(ctx context.Context, need HeadNeed, reason AskReason) HeadAnswer

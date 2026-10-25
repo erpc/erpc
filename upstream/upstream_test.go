@@ -296,9 +296,9 @@ func (m *mockEvmStatePoller) FinalizedBlock() int64                        { ret
 func (m *mockEvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 	return blockNumber <= m.finalizedBlock, nil
 }
-func (m *mockEvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {}
-func (m *mockEvmStatePoller) SuggestLatestBlock(blockNumber int64)    {}
-func (m *mockEvmStatePoller) ObserveHead(json.RawMessage) bool        { return false }
+func (m *mockEvmStatePoller) SuggestFinalizedBlock(blockNumber int64)           {}
+func (m *mockEvmStatePoller) SuggestLatestBlock(blockNumber int64, _ time.Time) {}
+func (m *mockEvmStatePoller) ObserveHead(json.RawMessage, time.Time) bool       { return false }
 func (m *mockEvmStatePoller) Ask(context.Context, common.HeadNeed, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
@@ -622,9 +622,9 @@ func (m *mockEvmStatePollerWithUpdate) FinalizedBlock() int64 { return m.LatestB
 func (m *mockEvmStatePollerWithUpdate) IsBlockFinalized(blockNumber int64) (bool, error) {
 	return blockNumber <= m.FinalizedBlock(), nil
 }
-func (m *mockEvmStatePollerWithUpdate) SuggestFinalizedBlock(blockNumber int64) {}
-func (m *mockEvmStatePollerWithUpdate) SuggestLatestBlock(blockNumber int64)    {}
-func (m *mockEvmStatePollerWithUpdate) ObserveHead(json.RawMessage) bool        { return false }
+func (m *mockEvmStatePollerWithUpdate) SuggestFinalizedBlock(blockNumber int64)           {}
+func (m *mockEvmStatePollerWithUpdate) SuggestLatestBlock(blockNumber int64, _ time.Time) {}
+func (m *mockEvmStatePollerWithUpdate) ObserveHead(json.RawMessage, time.Time) bool       { return false }
 func (m *mockEvmStatePollerWithUpdate) Ask(context.Context, common.HeadNeed, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }

@@ -186,6 +186,7 @@ func TestEnrichment_AfterInterpolation_UsesOriginalLatestTagIntent(t *testing.T)
 	// it should call SuggestLatestBlock and update the poller's latest block to 0x22222222.
 	jrr := common.MustNewJsonRpcResponse(1, map[string]interface{}{"number": "0x22222222"}, nil)
 	resp2 := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr).SetUpstream(ups)
+	resp2.SetSentAt(time.Now())
 	// Retry a few times to avoid racing with background poller updates that may hold the Suggest lock
 	for i := 0; i < 10; i++ {
 		network.enrichStatePoller(ctx, "eth_getBlockByNumber", req, resp2)

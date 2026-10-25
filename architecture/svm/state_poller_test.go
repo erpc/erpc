@@ -437,7 +437,7 @@ func TestSvmStatePoller_FirstAvailableSlot_KnownFromCounterPropagation(t *testin
 
 	// Stands in for a peer's value arriving via cross-instance propagation:
 	// both paths land on the counter's accepted-value callback.
-	p.firstAvailableSlotShared.TryUpdate(context.Background(), 200000)
+	p.firstAvailableSlotShared.TryUpdate(context.Background(), 200000, time.Now())
 
 	floor, known := p.FirstAvailableSlot()
 	require.True(t, known, "an accepted floor value must mark the floor known, whatever produced it")
@@ -461,7 +461,7 @@ func TestSvmStatePoller_FirstAvailableSlot_KnownWithoutLocalFetch(t *testing.T) 
 	p := newPollerWithUpstream(t, up)
 	// Seed the counter the way the shared-state registry does before this
 	// instance's first tick, which also marks it fresh.
-	p.firstAvailableSlotShared.TryUpdate(context.Background(), 200000)
+	p.firstAvailableSlotShared.TryUpdate(context.Background(), 200000, time.Now())
 
 	require.NoError(t, p.Poll(context.Background()))
 
@@ -490,7 +490,7 @@ func TestSvmStatePoller_FirstAvailableSlot_PropagatedZeroBecomesKnownOnTick(t *t
 	p := newPollerWithUpstream(t, up)
 	// Stands in for a peer's 0 arriving via propagation: value unchanged
 	// (0 -> 0), no callback, but the counter is now fresh.
-	p.firstAvailableSlotShared.TryUpdate(context.Background(), 0)
+	p.firstAvailableSlotShared.TryUpdate(context.Background(), 0, time.Now())
 
 	_, known := p.FirstAvailableSlot()
 	require.False(t, known, "a no-change propagation fires no callback, so nothing is known yet")
@@ -521,7 +521,7 @@ func TestSvmStatePoller_FirstAvailableSlot_GaugeSetWithoutLocalFetch(t *testing.
 	up.script("oldestBlock", []byte(`[200000]`))
 
 	p := newPollerWithUpstream(t, up)
-	p.firstAvailableSlotShared.TryUpdate(context.Background(), 200000)
+	p.firstAvailableSlotShared.TryUpdate(context.Background(), 200000, time.Now())
 
 	require.NoError(t, p.Poll(context.Background()))
 	require.Zero(t, up.callCount("oldestBlock"),

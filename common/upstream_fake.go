@@ -304,11 +304,11 @@ func (p *FakeEvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 	p.finalizedBlockNumber = blockNumber
 }
 
-func (p *FakeEvmStatePoller) SuggestLatestBlock(blockNumber int64) {
+func (p *FakeEvmStatePoller) SuggestLatestBlock(blockNumber int64, _ time.Time) {
 	p.latestBlockNumber = blockNumber
 }
 
-func (p *FakeEvmStatePoller) ObserveHead(raw json.RawMessage) bool {
+func (p *FakeEvmStatePoller) ObserveHead(raw json.RawMessage, _ time.Time) bool {
 	var h struct {
 		Number string `json:"number"`
 	}

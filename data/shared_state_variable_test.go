@@ -358,7 +358,7 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 			}
 			counter.value.Store(tt.initialValue)
 
-			result := counter.TryUpdate(ctx, tt.updateValue)
+			result := counter.TryUpdate(ctx, tt.updateValue, time.Now())
 			assert.Equal(t, tt.expectedValue, result)
 			time.Sleep(50 * time.Millisecond)
 			if tt.eventual {
@@ -542,7 +542,7 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 		wg.Add(1)
 		go func(val int64) {
 			defer wg.Done()
-			counter.TryUpdate(ctx, val)
+			counter.TryUpdate(ctx, val, time.Now())
 		}(int64(i + 10))
 	}
 
@@ -748,7 +748,7 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 			}
 			counter.value.Store(tt.initialValue)
 
-			actualValue := counter.TryUpdate(ctx, tt.updateValue)
+			actualValue := counter.TryUpdate(ctx, tt.updateValue, time.Now())
 			assert.Equal(t, tt.expectedValue, actualValue,
 				"After TryUpdate(%d) with ignoreRollbackOf=%d, value should be %d",
 				tt.updateValue, tt.ignoreRollbackOf, tt.expectedValue,
@@ -1192,7 +1192,7 @@ func TestSharedVariableTimeoutHandling(t *testing.T) {
 		defer operationCancel()
 
 		start := time.Now()
-		value := counter.TryUpdate(operationCtx, 100)
+		value := counter.TryUpdate(operationCtx, 100, time.Now())
 		elapsed := time.Since(start)
 
 		assert.Equal(t, int64(100), value)
@@ -1651,7 +1651,7 @@ func TestCounterInt64_BackgroundPushCoalescing(t *testing.T) {
 
 		// Rapidly fire 100 updates
 		for i := 1; i <= 100; i++ {
-			counter.TryUpdate(ctx, int64(i))
+			counter.TryUpdate(ctx, int64(i), time.Now())
 		}
 
 		// Wait for background pushes to complete
@@ -1846,8 +1846,8 @@ func TestCounterInt64_TryUpdate_NoRemoteWriteWithoutAdvance(t *testing.T) {
 	counter.value.Store(100)
 	counter.updatedAtUnixMs.Store(time.Now().UnixMilli())
 
-	assert.Equal(t, int64(100), counter.TryUpdate(ctx, 100))
-	assert.Equal(t, int64(100), counter.TryUpdate(ctx, 99))
+	assert.Equal(t, int64(100), counter.TryUpdate(ctx, 100, time.Now()))
+	assert.Equal(t, int64(100), counter.TryUpdate(ctx, 99, time.Now()))
 	time.Sleep(50 * time.Millisecond)
 	connector.AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	connector.AssertNotCalled(t, "PublishCounterInt64", mock.Anything, mock.Anything, mock.Anything)
@@ -1874,7 +1874,7 @@ func TestCounterInt64_BackgroundPush_DoesNotRegressHigherRemote(t *testing.T) {
 	counter.value.Store(100)
 	counter.updatedAtUnixMs.Store(time.Now().UnixMilli())
 
-	counter.TryUpdate(ctx, 101)
+	counter.TryUpdate(ctx, 101, time.Now())
 	assert.Eventually(t, func() bool { return counter.GetValue() == 105 }, time.Second, 10*time.Millisecond,
 		"local counter should adopt the higher remote value")
 	connector.AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)

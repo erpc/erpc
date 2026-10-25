@@ -142,7 +142,7 @@ func setupSelectionPolicyNetwork(t *testing.T, ctx context.Context, upstreamConf
 	upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	for _, ups := range upsList {
 		require.NoError(t, ups.Bootstrap(ctx))
-		ups.EvmStatePoller().SuggestLatestBlock(1000)
+		ups.EvmStatePoller().SuggestLatestBlock(1000, time.Now())
 		ups.EvmStatePoller().SuggestFinalizedBlock(900)
 	}
 	expectedCount := len(upstreamConfigs)
@@ -985,7 +985,7 @@ func setupSelectionPolicyNetworkWithEval(t *testing.T, ctx context.Context, upst
 	upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	for _, ups := range upsList {
 		require.NoError(t, ups.Bootstrap(ctx))
-		ups.EvmStatePoller().SuggestLatestBlock(1000)
+		ups.EvmStatePoller().SuggestLatestBlock(1000, time.Now())
 		ups.EvmStatePoller().SuggestFinalizedBlock(900)
 	}
 	time.Sleep(50 * time.Millisecond)

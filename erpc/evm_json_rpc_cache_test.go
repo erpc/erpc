@@ -124,7 +124,7 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 		poller := mockUpstream.EvmStatePoller()
 		time.Sleep(20 * time.Millisecond)
 		poller.SuggestFinalizedBlock(cfg.finBn)
-		poller.SuggestLatestBlock(cfg.lstBn)
+		poller.SuggestLatestBlock(cfg.lstBn, time.Now())
 		// Wait until async suggestions are applied to counters to avoid races with test assertions
 		waitUntilAtLeastNoT(func() int64 { return poller.FinalizedBlock() }, cfg.finBn, 200*time.Millisecond)
 		waitUntilAtLeastNoT(func() int64 { return poller.LatestBlock() }, cfg.lstBn, 200*time.Millisecond)
@@ -2768,7 +2768,7 @@ func createMockUpstream(t *testing.T, ctx context.Context, chainId int64, upstre
 	poller := mockUpstream.EvmStatePoller()
 	time.Sleep(20 * time.Millisecond)
 	poller.SuggestFinalizedBlock(finalizedBlock)
-	poller.SuggestLatestBlock(latestBlock)
+	poller.SuggestLatestBlock(latestBlock, time.Now())
 	// Wait until async suggestions are applied to counters
 	waitUntilAtLeastNoT(func() int64 { return poller.FinalizedBlock() }, finalizedBlock, 200*time.Millisecond)
 	waitUntilAtLeastNoT(func() int64 { return poller.LatestBlock() }, latestBlock, 200*time.Millisecond)
@@ -3396,7 +3396,7 @@ func createCacheTestFixturesWithCompression(ctx context.Context, upstreamConfigs
 		poller := mockUpstream.EvmStatePoller()
 		time.Sleep(50 * time.Millisecond)
 		poller.SuggestFinalizedBlock(cfg.finBn)
-		poller.SuggestLatestBlock(cfg.lstBn)
+		poller.SuggestLatestBlock(cfg.lstBn, time.Now())
 		time.Sleep(50 * time.Millisecond)
 		poller.SetSyncingState(cfg.syncing)
 

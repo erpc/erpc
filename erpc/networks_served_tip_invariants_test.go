@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -108,7 +109,7 @@ func TestServedTipInvariant_StaleInheritedCounter_RecoversAndTracks(t *testing.T
 		served := int64(0)
 		for r := int64(1); r <= 20; r++ {
 			for _, u := range ups {
-				u.EvmStatePoller().SuggestLatestBlock(liveHead + r)
+				u.EvmStatePoller().SuggestLatestBlock(liveHead+r, time.Now())
 			}
 			served = servedHead(network, ctx).Latest
 		}
@@ -136,7 +137,7 @@ func TestServedTipInvariant_ProcessRestart_KeepsTracking(t *testing.T) {
 		// Healthy steady state first.
 		for r := int64(1); r <= 5; r++ {
 			for _, u := range ups {
-				u.EvmStatePoller().SuggestLatestBlock(liveHead + r)
+				u.EvmStatePoller().SuggestLatestBlock(liveHead+r, time.Now())
 			}
 			_ = servedHead(network, ctx).Latest
 		}
@@ -150,7 +151,7 @@ func TestServedTipInvariant_ProcessRestart_KeepsTracking(t *testing.T) {
 		served := int64(0)
 		for r := int64(100); r <= 110; r++ { // jump: deploy downtime ≫ gate bound
 			for _, u := range ups {
-				u.EvmStatePoller().SuggestLatestBlock(liveHead + r)
+				u.EvmStatePoller().SuggestLatestBlock(liveHead+r, time.Now())
 			}
 			served = servedHead(network, ctx).Latest
 		}
@@ -182,12 +183,12 @@ func TestServedTipInvariant_PoisonedCounter_NeverServed(t *testing.T) {
 		// only remaining served-tip inputs are the per-upstream poller heads, so
 		// the rogue value enters there instead: one upstream starts reporting a
 		// fantasy-future tip (a wrong-chain or garbage endpoint).
-		ups[0].EvmStatePoller().SuggestLatestBlock(10_000_000)
+		ups[0].EvmStatePoller().SuggestLatestBlock(10_000_000, time.Now())
 
 		served := int64(0)
 		for r := int64(1); r <= 10; r++ {
 			for _, u := range ups[1:] { // the rogue upstream stays rogue
-				u.EvmStatePoller().SuggestLatestBlock(liveHead + r)
+				u.EvmStatePoller().SuggestLatestBlock(liveHead+r, time.Now())
 			}
 			served = servedHead(network, ctx).Latest
 		}
@@ -216,7 +217,7 @@ func TestServedTipInvariant_SteadyState_NeverStalls(t *testing.T) {
 		stalls := 0
 		for r := int64(1); r <= 100; r++ {
 			for i, u := range ups {
-				u.EvmStatePoller().SuggestLatestBlock(liveHead + r - int64(i%2)) // 1-block jitter
+				u.EvmStatePoller().SuggestLatestBlock(liveHead+r-int64(i%2), time.Now()) // 1-block jitter
 			}
 			served := servedHead(network, ctx).Latest
 			if served <= lastServed {

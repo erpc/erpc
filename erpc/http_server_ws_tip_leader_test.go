@@ -116,7 +116,7 @@ func TestHttpServer_GetBlockByNumberLatest_InterpolatedReachesTipUpstream(t *tes
 	}, 3)
 	defer shutdown()
 
-	leader.EvmStatePoller().SuggestLatestBlock(tip)
+	leader.EvmStatePoller().SuggestLatestBlock(tip, time.Now())
 
 	require.Equal(t, tip, leader.EvmStatePoller().LatestBlock())
 	require.Equal(t, "rpc2", servedHead(nw, context.Background()).Leader.Id())
@@ -197,7 +197,7 @@ func TestHttpServer_GetBlockByNumber_NearTipPrefersTipUpstream(t *testing.T) {
 	}, 2)
 	defer shutdown()
 	// A major head jump applies only after an async chain-identity check.
-	leader.EvmStatePoller().SuggestLatestBlock(tip)
+	leader.EvmStatePoller().SuggestLatestBlock(tip, time.Now())
 	require.Eventually(t, func() bool { return leader.EvmStatePoller().LatestBlock() == tip }, 5*time.Second, 5*time.Millisecond)
 	require.Equal(t, "rpc2", servedHead(nw, context.Background()).Leader.Id())
 

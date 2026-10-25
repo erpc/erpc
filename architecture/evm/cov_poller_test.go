@@ -373,7 +373,7 @@ func TestCovPoller_PollLatest_IsMonotonicAndIgnoresSmallRollbacks(t *testing.T) 
 	}, 5*time.Second, 2*time.Millisecond)
 	assert.Equal(t, int64(100), p.LatestBlock(), "small rollback must be ignored")
 
-	p.SuggestLatestBlock(50)
+	p.SuggestLatestBlock(50, time.Now())
 	assert.Equal(t, int64(100), p.LatestBlock(), "lower suggestion must be ignored")
 
 	up.setHandler(covPollerBlocks(120, 90))
@@ -388,7 +388,7 @@ func TestCovPoller_PollLatest_MajorMoveChainIdGate(t *testing.T) {
 	t.Run("forward jump from another chain is rejected and cordons", func(t *testing.T) {
 		p, up, ctx := covPollerNew(t, "cov-latest-gate-fwd", covPollerBlocks(5_000_000, 90))
 		up.chainId = "999"
-		p.latestBlockShared.TryUpdate(ctx, 1000)
+		p.latestBlockShared.TryUpdate(ctx, 1000, time.Now())
 
 		// The seed made the counter fresh: a hash need still fetches.
 		_, err := covPollerFetch(p, ctx)
@@ -401,7 +401,7 @@ func TestCovPoller_PollLatest_MajorMoveChainIdGate(t *testing.T) {
 	t.Run("large rollback from another chain is rejected and cordons", func(t *testing.T) {
 		p, up, ctx := covPollerNew(t, "cov-latest-gate-back", covPollerBlocks(1000, 90))
 		up.chainId = "999"
-		p.latestBlockShared.TryUpdate(ctx, 5_000_000)
+		p.latestBlockShared.TryUpdate(ctx, 5_000_000, time.Now())
 
 		_, err := covPollerFetch(p, ctx)
 		require.NoError(t, err)
@@ -411,7 +411,7 @@ func TestCovPoller_PollLatest_MajorMoveChainIdGate(t *testing.T) {
 
 	t.Run("verified major jump is accepted", func(t *testing.T) {
 		p, up, ctx := covPollerNew(t, "cov-latest-gate-ok", covPollerBlocks(5_000_000, 90))
-		p.latestBlockShared.TryUpdate(ctx, 1000)
+		p.latestBlockShared.TryUpdate(ctx, 1000, time.Now())
 
 		v, err := covPollerFetch(p, ctx)
 		require.NoError(t, err)
@@ -524,7 +524,7 @@ func TestCovPoller_PollFinalized_MajorJumpFromAnotherChainIsRejected(t *testing.
 	p, up, ctx := covPollerNew(t, "cov-fin-gate", covPollerBlocks(5_000_100, 5_000_000))
 	up.chainId = "999"
 	covPollerFastDebounce(p)
-	p.finalizedBlockShared.TryUpdate(ctx, 1000) // marks the shared value fresh
+	p.finalizedBlockShared.TryUpdate(ctx, 1000, time.Now()) // marks the shared value fresh
 
 	require.Eventually(t, func() bool {
 		v, err := p.PollFinalizedBlockNumber(ctx)
@@ -562,8 +562,8 @@ func TestCovPoller_ResolveFinalizedDebounce(t *testing.T) {
 	newPoller := func(t *testing.T) (*EvmStatePoller, *covPollerUpstream, context.Context) {
 		p, up, ctx := covPollerNew(t, "cov-fin-debounce", covPollerBlocks(1, 1))
 		feedBlockTime(t, p, up, 1, 12)
-		p.finalizedBlockShared.TryUpdate(ctx, 1_000_000)
-		p.latestBlockShared.TryUpdate(ctx, 1_000_100)
+		p.finalizedBlockShared.TryUpdate(ctx, 1_000_000, time.Now())
+		p.latestBlockShared.TryUpdate(ctx, 1_000_100, time.Now())
 		return p, up, ctx
 	}
 
@@ -607,26 +607,26 @@ func TestCovPoller_ResolveFinalizedDebounce(t *testing.T) {
 
 func TestCovPoller_SuggestLatestBlock_MajorJumpWhileVerificationInFlightIsDropped(t *testing.T) {
 	p, up, ctx := covPollerNew(t, "cov-suggest-inflight", covPollerBlocks(1, 1))
-	p.latestBlockShared.TryUpdate(ctx, 1000)
+	p.latestBlockShared.TryUpdate(ctx, 1000, time.Now())
 
 	p.latestMajorVerifyInProgress.Lock()
-	p.SuggestLatestBlock(5_000_000)
+	p.SuggestLatestBlock(5_000_000, time.Now())
 	// The busy path returns synchronously without spawning any verification.
 	assert.Equal(t, int64(1000), p.LatestBlock())
 	assert.Zero(t, up.getChainIdCalls())
 	p.latestMajorVerifyInProgress.Unlock()
 
-	p.SuggestLatestBlock(5_000_000)
+	p.SuggestLatestBlock(5_000_000, time.Now())
 	require.Eventually(t, func() bool { return p.LatestBlock() == 5_000_000 }, 5*time.Second, 5*time.Millisecond)
 	assert.Equal(t, 1, up.getChainIdCalls())
 }
 
 func TestCovPoller_VerifyThenSuggest_StaleSuggestionIsDiscarded(t *testing.T) {
 	p, up, ctx := covPollerNew(t, "cov-suggest-stale", covPollerBlocks(1, 1))
-	p.latestBlockShared.TryUpdate(ctx, 1000)
+	p.latestBlockShared.TryUpdate(ctx, 1000, time.Now())
 
 	// Queued major suggestion that another path already overtook.
-	p.verifyThenSuggestLatestBlock(500)
+	p.verifyThenSuggestLatestBlock(500, time.Now())
 	require.Eventually(t, func() bool {
 		if p.latestMajorVerifyInProgress.TryLock() {
 			p.latestMajorVerifyInProgress.Unlock()
@@ -665,7 +665,7 @@ func TestCovPoller_OnLatestBlock_FiresForEveryAdvance(t *testing.T) {
 	got := make(chan int64, 8)
 	p.OnLatestBlock(func(v int64) { got <- v })
 
-	p.SuggestLatestBlock(200)
+	p.SuggestLatestBlock(200, time.Now())
 	assert.Equal(t, int64(200), <-got)
 
 	// The suggestion made the counter fresh, which meets a number need;
@@ -674,7 +674,7 @@ func TestCovPoller_OnLatestBlock_FiresForEveryAdvance(t *testing.T) {
 	assert.Equal(t, int64(300), <-got, "polled advances fire the same callback")
 	assert.Equal(t, 1, up.callCount("eth_getBlockByNumber"))
 
-	p.SuggestLatestBlock(250)
+	p.SuggestLatestBlock(250, time.Now())
 	select {
 	case v := <-got:
 		t.Fatalf("callback fired for a non-advance: %d", v)
@@ -841,7 +841,7 @@ func TestCovPoller_AskHashNeedSamplesThroughFreshCounter(t *testing.T) {
 		mu.Lock()
 		head = n
 		mu.Unlock()
-		p.latestBlockShared.TryUpdate(ctx, n)
+		p.latestBlockShared.TryUpdate(ctx, n, time.Now())
 		calls := up.callCount("eth_getBlockByNumber")
 		require.Equal(t, common.AskSharedFresh, p.Ask(ctx, common.HeadNeedNumber, common.AskRefresh).Outcome)
 		require.Equal(t, calls, up.callCount("eth_getBlockByNumber"), "a fresh counter meets a number need")
@@ -858,10 +858,10 @@ func TestCovPoller_AskHashNeedSamplesThroughFreshCounter(t *testing.T) {
 func TestCovPoller_LargeRollbackIsReportedToTracker(t *testing.T) {
 	p, up, ctx := covPollerNew(t, "cov-rollback-gauge", covPollerBlocks(1, 1))
 
-	p.latestBlockShared.TryUpdate(ctx, 10_000)
-	p.latestBlockShared.TryUpdate(ctx, 3_000) // beyond tolerance: a real reorg/correction
-	p.finalizedBlockShared.TryUpdate(ctx, 9_000)
-	p.finalizedBlockShared.TryUpdate(ctx, 2_000)
+	p.latestBlockShared.TryUpdate(ctx, 10_000, time.Now())
+	p.latestBlockShared.TryUpdate(ctx, 3_000, time.Now()) // beyond tolerance: a real reorg/correction
+	p.finalizedBlockShared.TryUpdate(ctx, 9_000, time.Now())
+	p.finalizedBlockShared.TryUpdate(ctx, 2_000, time.Now())
 
 	assert.Equal(t, int64(3_000), p.LatestBlock())
 	assert.Equal(t, int64(2_000), p.FinalizedBlock())

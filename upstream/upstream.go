@@ -807,11 +807,13 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					attribute.String("client.type", string(clientType)),
 				),
 			)
+			sentAt := time.Now()
 			nrs, errCall := u.Client.SendRequest(ctx, nrq)
 			sendSpan.End()
 			isSuccess := false
 			if errCall == nil && nrs != nil {
 				nrs.SetUpstream(u)
+				nrs.SetSentAt(sentAt)
 				jrr, _ := nrs.JsonRpcResponse()
 				if jrr != nil && jrr.Error == nil {
 					nrq.SetLastValidResponse(ctx, nrs)
@@ -1588,7 +1590,7 @@ func (u *Upstream) CordonAdmin(ctx context.Context, reason string) {
 	u.operatorCordonReason.Store(reason)
 	defer u.operatorCordonReason.Store("")
 	if v := u.operatorCordonVar(); v.GetValue() == 0 {
-		v.TryUpdate(ctx, time.Now().UnixMilli())
+		v.TryUpdate(ctx, time.Now().UnixMilli(), time.Now())
 	} else {
 		u.metricsTracker.Cordon(u, "*", reason)
 	}
@@ -1600,7 +1602,7 @@ func (u *Upstream) CordonAdmin(ctx context.Context, reason string) {
 func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
 	u.operatorCordonReason.Store(reason)
 	defer u.operatorCordonReason.Store("")
-	u.operatorCordonVar().TryUpdate(ctx, 0)
+	u.operatorCordonVar().TryUpdate(ctx, 0, time.Now())
 	u.metricsTracker.Uncordon(u, "*", reason)
 }
 
