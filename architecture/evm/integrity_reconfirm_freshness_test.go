@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -194,6 +195,19 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		c.sync(context.Background())
 		assert.Zero(t, net.calls())
 		assert.Empty(t, net.askedNeeds())
+	})
+
+	t.Run("a chain whose first block names the all-zero parentHash fills nothing below it", func(t *testing.T) {
+		net := newCapturingNetwork(t, height, canonical)
+		c := newChainTracker(t.Context(), net, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		// The chain starts at 5: its first block's parent is the zero hash,
+		// a final root (spec §6.5 rule 2), never fetched by number or hash.
+		zero := "0x" + strings.Repeat("0", 64)
+		voteChain(t, c, "a", "0", 5, uint64(height), zero)
+		voteChain(t, c, "b", "0", 5, uint64(height), zero)
+		time.Sleep(300 * time.Millisecond)
+		c.sync(context.Background())
+		assert.Zero(t, net.calls())
 	})
 
 	// One source's vote alone never licenses a hard reject: the pin it backs
