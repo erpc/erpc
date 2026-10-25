@@ -1230,6 +1230,7 @@ func (t *ChainTracker) apply(path []*node) {
 	s.confirmed, s.backing = b.confirmed(), b
 	t.pins, t.treesDirty, t.receiptsDirty = path, true, true
 	s.logs = t.logsHeadOf(s)
+	t.stamp(s)
 	if t.selector == "" && pub.head() != head {
 		telemetry.GaugeHandle(telemetry.MetricNetworkSubscriptionLastHeadTimestamp, t.projectId(), t.networkLabel()).SetToCurrentTime()
 	}
@@ -1405,11 +1406,33 @@ func newFeedState(pins []*node) *feedState {
 	return s
 }
 
+// stamp marks each pin that first stands at or below s's confirmed head
+// or logs head with the time it got there (Block.Ready). Every pin is
+// looked at, since fill and a reset bring pins below stamped ones. Only
+// the network-wide tracker stamps: trackers share parsed headers, and
+// taps read only that one.
+func (t *ChainTracker) stamp(s *feedState) {
+	if t.selector != "" {
+		return
+	}
+	now := time.Now().UnixNano()
+	for i, p := range s.pins {
+		if i > s.confirmed { // the logs head is never above the confirmed head
+			break
+		}
+		p.confirmedAt.CompareAndSwap(0, now)
+		if p.number <= s.logs.Number {
+			p.logsAt.CompareAndSwap(0, now)
+		}
+	}
+}
+
 func (t *ChainTracker) publish() {
 	s := newFeedState(t.pins)
 	b := t.gate(t.pins)
 	s.confirmed, s.backing = b.confirmed(), b
 	s.logs = t.logsHeadOf(s)
+	t.stamp(s)
 	close(t.state.Swap(s).changed)
 	t.sampleConfirmed(s)
 }
@@ -1705,6 +1728,7 @@ func (t *ChainTracker) gateSend() {
 	}
 	s.changed = make(chan struct{})
 	s.logs = t.logsHeadOf(s)
+	t.stamp(s)
 	close(t.state.Swap(s).changed)
 	t.sampleConfirmed(s)
 }
@@ -2000,6 +2024,7 @@ func (t *ChainTracker) applied(s *feedState, from uint64, rr *readReceipts) inde
 	for n := from; n <= last; n++ {
 		p := s.pinAt(n)
 		blk := p.block()
+		blk.Ready = p.ready(rr.o.MayMatch != nil)
 		if rr.lacks(t, p, &blk) {
 			if len(b.Applied) == 0 {
 				rr.missing = p

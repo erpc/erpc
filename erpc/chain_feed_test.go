@@ -297,7 +297,7 @@ type tapEnds map[string]float64
 const tapPanic = "panic"
 
 var tapEndReasons = []string{indexer.OutOfRangeLag, indexer.OutOfRangeBelowWindow, indexer.OutOfRangeForkLeftWindow,
-	indexer.OutOfRangeCursorUnknown, indexer.OutOfRangeReceiptsTimeout}
+	indexer.OutOfRangeCursorUnknown, indexer.OutOfRangeReorgDepth, indexer.OutOfRangeReceiptsTimeout}
 
 func tapEndsOf(kind string) tapEnds {
 	out := make(tapEnds, len(tapEndReasons)+1)
@@ -1333,12 +1333,15 @@ func (s *chaosSeed) aheadFork() {
 	s.occur(fAheadFork, fmt.Sprintf("%s led the canonical head by %d blocks on its fork", v.ID, lead))
 }
 
-// deepReorg: the logs taps' fork may leave the window, so they end with
-// their transport's signal, 1013 (spec §13.1); new ones replace them. In
-// the gRPC seed the window holds the fork point, so the streams get the
-// new branch resent from the fork point + 1 (spec §10.1).
+// deepReorg: every logs tap reverts more than reorgWindow blocks, or its
+// fork point leaves the window, so each ends with 1013 (spec §10.2,
+// §13.1); new ones replace them once all have closed, so no close lands
+// after the next fault looks for open clients. In the gRPC seed the window
+// holds the fork point, so the streams get the new branch resent from the
+// fork point + 1 (spec §10.1).
 func (s *chaosSeed) deepReorg() {
 	depth := chaosReorgWindow + 4
+	open := s.openLogs()
 	from := time.Now()
 	tip := s.reorg(depth)
 	caught := s.caughtUp()
@@ -1347,13 +1350,8 @@ func (s *chaosSeed) deepReorg() {
 	if s.opts.grpc {
 		resent = "; " + s.awaitResend(tip.Number-uint64(depth), from)
 	}
-	// Closes spread over logsCloseSpread: count them once it has passed.
-	time.Sleep(time.Until(caught.Add(logsCloseBound())))
-	closed := s.closed1013(from)
-	if closed > 0 {
-		s.dialLogs("after-deep-reorg")
-	}
-	s.occur(fDeepReorg, fmt.Sprintf("depth %d > reorgWindow %d, new head %d; %d logs clients closed with 1013%s", depth, chaosReorgWindow, tip.Number, closed, resent))
+	s.awaitCloses(open, "after-deep-reorg")
+	s.occur(fDeepReorg, fmt.Sprintf("depth %d > reorgWindow %d, new head %d; %d logs clients closed with 1013%s", depth, chaosReorgWindow, tip.Number, len(open), resent))
 }
 
 // caughtUp waits until the tracker may send the chain's head as of now: a

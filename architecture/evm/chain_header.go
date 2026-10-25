@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/bytedance/sonic"
@@ -37,6 +38,12 @@ type chainHeader struct {
 	// intakePassed: this header passed intake's header checks, so a source
 	// that sends the same hash is not validated again.
 	intakePassed atomic.Bool
+
+	// confirmedAt and logsAt are when the header, as a pin, first stood at
+	// or below the confirmed head and the logs head (Block.Ready), in unix
+	// nanoseconds; 0 until then. The tracker writes them before it
+	// publishes the state that holds them there.
+	confirmedAt, logsAt atomic.Int64
 
 	// encodings holds each transport's encoding of the header (a
 	// *HeaderEncoding key), so it is dropped with the header.
@@ -122,6 +129,16 @@ func (h *chainHeader) cursor() indexer.Cursor {
 
 func (h *chainHeader) block() indexer.Block {
 	return indexer.Block{Number: h.number, Hash: h.hash, ParentHash: h.parentHash, Header: h.raw}
+}
+
+// ready is when h became deliverable to a Read: when it reached the logs
+// head for a Read with receipts, else, or until then, the confirmed head.
+func (h *chainHeader) ready(logs bool) time.Time {
+	at := h.confirmedAt.Load()
+	if l := h.logsAt.Load(); logs && l != 0 {
+		at = l
+	}
+	return time.Unix(0, at)
 }
 
 // hashRecomputes reports whether the header's JSON hashes to its hash

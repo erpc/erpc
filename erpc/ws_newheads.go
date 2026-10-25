@@ -10,9 +10,16 @@ import (
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
 )
 
-// errNewHeadsLag ends a newHeads tap that fell more than reorgWindow blocks
-// behind the head with nothing to revert; it restarts after the head.
+// errNewHeadsLag ends a newHeads tap whose next block has waited longer
+// than the lag bound with nothing to revert; it restarts after the head.
 var errNewHeadsLag = indexer.OutOfRangeError{Reason: indexer.OutOfRangeLag}
+
+// lagging reports whether a ws tap is behind (spec §10.2): its next block
+// has been deliverable for longer than reorgWindow blocks of chain time.
+// A burst never is, since its blocks just arrived.
+func lagging(tracker *evm.ChainTracker, next indexer.Block) bool {
+	return time.Since(next.Ready) > time.Duration(tracker.ReorgWindow())*tracker.BlockTime()
+}
 
 // newHeadsRestartDelay spaces restarts of a tap that keeps failing.
 var newHeadsRestartDelay = 100 * time.Millisecond
@@ -36,7 +43,6 @@ func (e wsWriteError) Error() string { return e.err.Error() }
 // blocks above the connection's lane's Latest.
 func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane string) {
 	tracker := nw.chainTracker
-	window := uint64(tracker.ReorgWindow())
 	var feed *cutFeed
 	emit := func(b indexer.Batch) error {
 		select {
@@ -44,12 +50,8 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		// Lag counts from the confirmed head: Latest holding the tracker
-		// head back is not the tap falling behind.
-		if len(b.Reverted) == 0 && len(b.Applied) > 0 {
-			if send, ok := tracker.Confirmed(); ok && send.Number > b.Applied[0].Number-1+window {
-				return errNewHeadsLag
-			}
+		if len(b.Reverted) == 0 && len(b.Applied) > 0 && lagging(tracker, b.Applied[0]) {
+			return errNewHeadsLag
 		}
 		for _, blk := range b.Applied {
 			payload, pinned, err := newHeadsEncoding.Of(tracker, blk)
