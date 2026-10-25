@@ -1942,6 +1942,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 		return nil, err
 	}
+	// The tag-state decision (spec §6.11) is made once, from the routed
+	// upstreams, before the first attempt: every retry and hedge reads it.
+	if n.cfg.Architecture == common.ArchitectureEvm {
+		if err := evm.DecideTagState(ctx, n, req); err != nil {
+			common.SetTraceSpanError(forwardSpan, err)
+			if mlx != nil {
+				mlx.Close(ctx, nil, err)
+			}
+			return nil, err
+		}
+	}
 
 	// Feed the per-network probe-bus AFTER we know the request is
 	// actually going to dispatch to an upstream (i.e. not a
@@ -3011,6 +3022,11 @@ func (n *Network) checkSvmUpstreamSlotAvailability(ctx context.Context, u common
 // FAIL-OPEN BEHAVIOR: If we cannot determine the bounds or block number (e.g. state
 // poller not ready), we allow the request to proceed rather than blocking traffic.
 func (n *Network) checkEvmUpstreamBlockAvailability(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) (error, bool) {
+	// A tag request whose tag-state decision says u's "latest" state is
+	// stale (spec §6.11): its own error, so it never reads as -32014.
+	if evm.TagStateSkip(n, u, req) {
+		return common.NewErrUpstreamTagStateStale(u.Id()), false
+	}
 	// Range methods (eth_getLogs, trace_filter, arbtrace_filter) enforce block
 	// availability via their own range-aware pre-forward hooks; gating them here on a
 	// single extracted block number would conflict with that.
@@ -3200,6 +3216,12 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 	// A non-retryable write (e.g. creating a filter) must reach an upstream
 	// once per call, so it is never shared with a concurrent identical call.
 	if method, _ := req.Method(); evm.IsNonRetryableWriteMethod(method) || svm.IsNonRetryableWriteMethod(method) {
+		return nil, nil, nil
+	}
+	// A request pinned to one upstream (Use-Upstream, the state prober's
+	// probes) asks that upstream: it never takes another's answer, nor
+	// gives its own to requests routed elsewhere.
+	if d := req.Directives(); d != nil && d.UseUpstream != "" {
 		return nil, nil, nil
 	}
 

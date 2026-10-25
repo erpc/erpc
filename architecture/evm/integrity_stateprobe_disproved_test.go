@@ -289,7 +289,7 @@ func TestStateProber_StaleLatestTag(t *testing.T) {
 		_, w := p.tagTiming()
 		p.recordTagSample("split", head, head, time.Now())
 		require.Equal(t, tagStale, p.tagHead("split", time.Now()).state)
-		assert.Equal(t, tagNoEvidence, p.tagHead("split", time.Now().Add(w+time.Second)).state,
+		assert.Equal(t, tagNoEvidence, p.tagHead("split", time.Now().Add(tagStateProbeFloor+w+time.Second)).state,
 			"a W without stale evidence admits")
 		assert.Equal(t, 0.0, gauge("split"))
 	})

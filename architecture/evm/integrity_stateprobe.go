@@ -48,7 +48,7 @@ import (
 //     both with a current head. Its answers are the tag-state heads the
 //     tag-state gate reads (spec §6.11, tagStateHead); it needs no follower,
 //     runs from network start on each change of Latest, and probes only
-//     upstreams that get tag requests (getsTagRequests).
+//     upstreams that get tag requests (probeTagStates).
 //
 // The prober PUBLISHES evidence; it holds no routing authority of its own.
 // A success advances the upstream's state-proven head (monotonic) — pure
@@ -346,8 +346,11 @@ func (p *stateProber) tagTiming() (bt, w time.Duration) {
 	return bt, health.FreshnessWindow(bt)
 }
 
-// tagHeadLocked returns u's tag-state head, past W of no stale sample
-// readmitted with no evidence; p.tagMu held.
+// tagHeadLocked returns u's tag-state head, readmitted with no evidence once
+// a W passed with no stale sample; p.tagMu held. The W runs from when the
+// next sample was due (lastStale + tagStateProbeFloor): W is 2s at least and
+// so is the floor, so a W from the last stale sample alone would readmit a
+// still-stale upstream between every two of its probes.
 func (p *stateProber) tagHeadLocked(id string, now time.Time, w time.Duration) *tagStateHead {
 	if p.tagHeads == nil {
 		p.tagHeads = map[string]*tagStateHead{}
@@ -357,7 +360,7 @@ func (p *stateProber) tagHeadLocked(id string, now time.Time, w time.Duration) *
 		h = &tagStateHead{}
 		p.tagHeads[id] = h
 	}
-	if h.state == tagStale && now.Sub(h.lastStale) > w {
+	if h.state == tagStale && now.Sub(h.lastStale) > tagStateProbeFloor+w {
 		h.state, h.streak = tagNoEvidence, 0
 		p.setTagGauge(id, false)
 	}
@@ -549,6 +552,106 @@ func (p *stateProber) probeLatest(ctx context.Context, u common.Upstream) {
 	p.count(u, "latest", "match")
 }
 
+// DecideTagState makes r's tag-state decision (spec §6.11), once, before its
+// first attempt, from its routed upstreams: each one that r's "latest"
+// reaches as the tag and whose tag-state head is stale is skipped. With
+// every routed upstream stale, the one with the highest credited head is
+// kept and the request counted routed; when that head is more than
+// tagStateRefuseBehind of chain below Latest, r is refused with -32603,
+// counted refused. r keeps its tag either way. Requests outside family 3,
+// numbered ones, those while Head is unknown and internal ones (probes,
+// tracker fetches) are not gated.
+func DecideTagState(ctx context.Context, n common.Network, r *common.NormalizedRequest) error {
+	d := r.Directives()
+	if d != nil && d.IsInternal {
+		return nil
+	}
+	p := stateProberFor(n)
+	if p == nil {
+		return nil
+	}
+	jrq, err := r.JsonRpcRequest(ctx)
+	if err != nil || jrq == nil {
+		return nil
+	}
+	jrq.RLock()
+	_, tag := latestStateSelector(jrq.Method, jrq.Params)
+	jrq.RUnlock()
+	if !tag {
+		return nil
+	}
+	latest := common.EvmHeadOf(n, ctx, r).Latest
+	if latest <= 0 {
+		return nil
+	}
+	var sel string
+	if d != nil {
+		sel = d.UseUpstream
+	}
+	now := time.Now()
+	bt, _ := p.tagTiming()
+	skips := map[string]bool{}
+	routed := 0
+	var best string
+	var bestHead int64
+	for _, u := range r.Upstreams() {
+		if sel != "" {
+			if m, _ := common.UpstreamMatchesSelector(sel, u); !m {
+				continue
+			}
+		}
+		routed++
+		if pinsLatestTag(u) {
+			continue // sent a number, never the tag
+		}
+		h := p.tagHead(u.Id(), now)
+		if h.state != tagStale {
+			continue
+		}
+		skips[u.Id()] = true
+		if c := h.credited(now, bt); best == "" || c > bestHead {
+			best, bestHead = u.Id(), c
+		}
+	}
+	if routed > 0 && len(skips) == routed {
+		delete(skips, best)
+		if time.Duration(latest-bestHead)*bt > tagStateRefuseBehind {
+			telemetry.MetricUpstreamTagStateAllStaleTotal.WithLabelValues(n.ProjectId(), n.Label(), "refused").Inc()
+			return common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorServerSideException,
+				"every upstream executes \"latest\" in state more than 60s of chain behind the served tip", nil,
+				map[string]interface{}{"data": map[string]interface{}{
+					"executedBlock": fmt.Sprintf("0x%x", bestHead),
+					"servedTip":     fmt.Sprintf("0x%x", latest),
+				}})
+		}
+		telemetry.MetricUpstreamTagStateAllStaleTotal.WithLabelValues(n.ProjectId(), n.Label(), "routed").Inc()
+	}
+	r.TakeTagStateSkips(skips)
+	return nil
+}
+
+// TagStateSkip reports whether r's tag-state decision skips u, and asks a
+// re-probe of u when it does. A skip-interpolation request that reaches u
+// as the tag keeps u probed for tagStateReachedFor (probeTagStates).
+func TagStateSkip(n common.Network, u common.Upstream, r *common.NormalizedRequest) bool {
+	skips := r.TagStateSkips()
+	if skips == nil {
+		return false
+	}
+	p := stateProberFor(n)
+	if p == nil {
+		return false
+	}
+	if skips[u.Id()] {
+		p.tagSkipped(u.Id())
+		return true
+	}
+	if d := r.Directives(); d != nil && d.SkipInterpolation && !pinsLatestTag(u) {
+		p.tagReachedBy(u.Id())
+	}
+	return false
+}
+
 // executedBlock sends the context probe call at blockParam and returns the
 // block the upstream's EVM executed it in. ok is false when the answer is no
 // evidence; that outcome is already counted under probe.
@@ -639,9 +742,8 @@ func (p *stateProber) probeProof(ctx context.Context, u common.Upstream, n int64
 // cache would answer instead of the node — the circular-evidence trap), marked
 // internal so the integrity engine does not recurse into validating the
 // probe's own response, timeout-only: no upstream retry, hedge or breaker,
-// and with interpolation skipped, so a "latest" reaches u as the tag. An
-// answer another upstream gave (a multiplexed identical client request) is
-// no evidence about u.
+// and with interpolation skipped, so a "latest" reaches u as the tag. A
+// Use-Upstream request is never multiplexed, so the answer is u's own.
 func (p *stateProber) forwardTo(ctx context.Context, u common.Upstream, body string) (string, error) {
 	req := common.NewNormalizedRequest([]byte(body))
 	req.SetDirectives(&common.RequestDirectives{
@@ -658,9 +760,6 @@ func (p *stateProber) forwardTo(ctx context.Context, u common.Upstream, body str
 	}
 	if resp == nil {
 		return "", fmt.Errorf("nil response")
-	}
-	if from := resp.Upstream(); from != nil && from.Id() != u.Id() {
-		return "", fmt.Errorf("answered by %s, not %s", from.Id(), u.Id())
 	}
 	jrr, err := resp.JsonRpcResponse(ctx)
 	if err != nil || jrr == nil {
