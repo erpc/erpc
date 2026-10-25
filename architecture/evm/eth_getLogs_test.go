@@ -108,16 +108,16 @@ func (m *mockNetwork) EvmStatePoller() common.EvmStatePoller {
 	return args.Get(0).(common.EvmStatePoller)
 }
 
-// EvmHead reads the stubbed "EvmHighestLatestBlockNumber" and
-// "EvmHighestFinalizedBlockNumber" calls, each with the request bound to
+// EvmHead reads the stubbed "HeadLatest" and
+// "HeadFinalized" calls, each with the request bound to
 // ctx; an axis a test does not stub is unknown (0).
 func (m *mockNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
 	if req != nil {
 		ctx = context.WithValue(ctx, common.RequestContextKey, req)
 	}
 	return common.EvmHead{
-		Latest:    m.headAxis("EvmHighestLatestBlockNumber", ctx),
-		Finalized: m.headAxis("EvmHighestFinalizedBlockNumber", ctx),
+		Latest:    m.headAxis("HeadLatest", ctx),
+		Finalized: m.headAxis("HeadFinalized", ctx),
 	}
 }
 func (m *mockNetwork) EvmLaneHead(string, string) common.EvmHead {
@@ -1446,8 +1446,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 	// Tests for block tag resolution before validation (fixes bypass when using "latest", "finalized", etc.)
 	t.Run("latest_toBlock_resolved_before_max_range_validation", func(t *testing.T) {
 		n := new(mockNetwork)
-		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1000))
-		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(990)).Maybe()
+		n.On("HeadLatest", mock.Anything).Return(int64(1000))
+		n.On("HeadFinalized", mock.Anything).Return(int64(990)).Maybe()
 		n.On("Config").Return(&common.NetworkConfig{
 			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10}, // max 10 blocks
 		})
@@ -1468,8 +1468,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 
 	t.Run("finalized_toBlock_resolved_before_max_range_validation", func(t *testing.T) {
 		n := new(mockNetwork)
-		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1000)).Maybe()
-		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(990))
+		n.On("HeadLatest", mock.Anything).Return(int64(1000)).Maybe()
+		n.On("HeadFinalized", mock.Anything).Return(int64(990))
 		n.On("Config").Return(&common.NetworkConfig{
 			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10}, // max 10 blocks
 		})
@@ -1490,8 +1490,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 
 	t.Run("latest_toBlock_passes_when_within_range", func(t *testing.T) {
 		n := new(mockNetwork)
-		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(10))
-		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(5)).Maybe()
+		n.On("HeadLatest", mock.Anything).Return(int64(10))
+		n.On("HeadFinalized", mock.Anything).Return(int64(5)).Maybe()
 		n.On("Config").Return(&common.NetworkConfig{
 			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 100}, // max 100 blocks
 		})
@@ -1533,8 +1533,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 
 	t.Run("latest_fromBlock_and_latest_toBlock_resolved_correctly", func(t *testing.T) {
 		n := new(mockNetwork)
-		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1000))
-		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(990)).Maybe()
+		n.On("HeadLatest", mock.Anything).Return(int64(1000))
+		n.On("HeadFinalized", mock.Anything).Return(int64(990)).Maybe()
 		n.On("Config").Return(&common.NetworkConfig{
 			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 100},
 		})
@@ -1564,12 +1564,12 @@ func TestProjectPreForward_eth_getLogs_UseUpstreamTip(t *testing.T) {
 		})
 		n.On("ProjectId").Return("test")
 		if selected > 0 {
-			n.On("EvmHighestLatestBlockNumber", mock.MatchedBy(func(ctx context.Context) bool {
+			n.On("HeadLatest", mock.MatchedBy(func(ctx context.Context) bool {
 				req, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
 				return ok && req != nil && req.Directives() != nil && req.Directives().UseUpstream == "slow"
 			})).Return(selected)
 		}
-		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(2000)).Maybe()
+		n.On("HeadLatest", mock.Anything).Return(int64(2000)).Maybe()
 		return n
 	}
 	req := func(useUpstream string) *common.NormalizedRequest {

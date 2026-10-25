@@ -23,7 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// These tests pin the semantics of Network.EvmHighestLatestBlockNumber: the
+// These tests pin the semantics of the network Head's Latest: the
 // quorum order statistic — the freshest block at least servedTip.quorum
 // eligible, non-benched upstreams already have (common.PickServedTip). Most
 // cases run quorum "majority" and are designed so MAX(tips) != the pick to

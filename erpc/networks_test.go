@@ -11278,7 +11278,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 	return network
 }
 func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
-	t.Run("EvmHighestLatestBlockNumber_ExcludesSyncingNodeFromHighestBlock", func(t *testing.T) {
+	t.Run("HeadLatest_ExcludesSyncingNodeFromHighestBlock", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -11417,7 +11417,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		assert.Equal(t, int64(1000), highest, "Should exclude syncing node and return highest from synced nodes only")
 	})
 
-	t.Run("EvmHighestLatestBlockNumber_ExcludesSelectionPolicyExcludedNodeFromHighestBlock", func(t *testing.T) {
+	t.Run("HeadLatest_ExcludesSelectionPolicyExcludedNodeFromHighestBlock", func(t *testing.T) {
 		t.Skip("TODO(phase-10): rewrite against new policy engine; legacy EvalFunction + Resample* gone")
 		util.ResetGock()
 		defer util.ResetGock()
@@ -11572,7 +11572,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		assert.Equal(t, int64(2000), highest, "Should exclude policy-excluded node and return highest from included nodes only")
 	})
 
-	t.Run("EvmHighestLatestBlockNumber_UsesEffectiveBlockWhenUpperBoundConfigured", func(t *testing.T) {
+	t.Run("HeadLatest_UsesEffectiveBlockWhenUpperBoundConfigured", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
@@ -11722,7 +11722,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		assert.Equal(t, int64(1900), highest, "Should use effective (clamped) block values when upper bound is configured")
 	})
 
-	t.Run("EvmHighestLatestBlockNumber_ReturnsRawValueWhenUpperBoundExceedsLatest", func(t *testing.T) {
+	t.Run("HeadLatest_ReturnsRawValueWhenUpperBoundExceedsLatest", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -11835,7 +11835,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 }
 
 func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
-	t.Run("EvmHighestFinalizedBlockNumber_UsesEffectiveBlockWhenUpperBoundConfigured", func(t *testing.T) {
+	t.Run("HeadFinalized_UsesEffectiveBlockWhenUpperBoundConfigured", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
@@ -11988,7 +11988,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 		assert.Equal(t, int64(1800), highest, "Should use effective (clamped) finalized block values when upper bound is configured")
 	})
 
-	t.Run("EvmHighestFinalizedBlockNumber_ReturnsRawValueWhenUpperBoundExceedsFinalizedBlock", func(t *testing.T) {
+	t.Run("HeadFinalized_ReturnsRawValueWhenUpperBoundExceedsFinalizedBlock", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -12100,7 +12100,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 		assert.Equal(t, int64(2000), highest, "Should return raw finalized block when upper bound exceeds finalized")
 	})
 
-	t.Run("EvmHighestFinalizedBlockNumber_ExcludesSyncingNodesEvenWithUpperBound", func(t *testing.T) {
+	t.Run("HeadFinalized_ExcludesSyncingNodesEvenWithUpperBound", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 

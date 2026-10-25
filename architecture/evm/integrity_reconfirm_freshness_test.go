@@ -93,7 +93,7 @@ func newCapturingNetwork(t *testing.T, number int64, hash string) *capturingNetw
 	n.On("Id").Return("evm:1").Maybe()
 	n.On("ProjectId").Return("test").Maybe() // aux metric labels
 	// No served tip here: latest never caps the delivery gate.
-	n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1) << 62).Maybe()
+	n.On("HeadLatest", mock.Anything).Return(int64(1) << 62).Maybe()
 	return n
 }
 
