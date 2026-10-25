@@ -793,16 +793,23 @@ func (e *EvmStatePoller) runFetch(f *headFetch) {
 			go e.runFetch(next)
 		}
 	}()
-	ctx, span := common.StartDetailSpan(trace.ContextWithSpanContext(e.appCtx, f.parent), "EvmStatePoller.AskFetch",
-		trace.WithAttributes(attribute.String("upstream.id", e.upstream.Id()), attribute.Bool("fork", f.fork)))
-	defer span.End()
+	ctx := e.appCtx
+	// A background Ask has no caller span: its fetch starts no root trace.
+	if f.parent.IsValid() {
+		var span trace.Span
+		ctx, span = common.StartDetailSpan(trace.ContextWithSpanContext(ctx, f.parent), "EvmStatePoller.AskFetch",
+			trace.WithAttributes(attribute.String("upstream.id", e.upstream.Id()), attribute.Bool("fork", f.fork)))
+		defer func() {
+			if err != nil {
+				span.SetStatus(codes.Error, err.Error())
+			}
+			span.SetAttributes(attribute.Bool("header", header != nil))
+			span.End()
+		}()
+	}
 	ctx, cancel := context.WithTimeout(ctx, askTimeout)
 	defer cancel()
 	header, err = e.fetchLatest(ctx, f)
-	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
-	}
-	span.SetAttributes(attribute.Bool("header", header != nil))
 }
 
 // fetchLatest fetches latest for f. With an intake bound, the header goes
