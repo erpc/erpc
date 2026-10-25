@@ -3,6 +3,7 @@ package evm
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -179,6 +180,35 @@ func TestExtractJsonRpcError_MonadReserveBalanceViolation(t *testing.T) {
 	}
 	if common.IsRetryableTowardNetwork(err) {
 		t.Fatalf("eth_call reserve balance violation must not be retried toward the network")
+	}
+}
+
+// TestExtractJsonRpcError_GasRequiredExceedsAllowance verifies that the
+// eth_estimateGas verdict of go-ethereum's gas estimator for a call that runs
+// out of gas at its cap — -32000 "gas required exceeds allowance (N)", as an
+// Arbitrum nitro node returns it for a sender whose balance buys only N gas —
+// is an execution outcome returned to the caller, not a server-side exception
+// that sends the same estimate to every upstream.
+func TestExtractJsonRpcError_GasRequiredExceedsAllowance(t *testing.T) {
+	t.Parallel()
+
+	req := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","method":"eth_estimateGas","params":[],"id":1}`))
+	nr := common.NewNormalizedResponse().WithRequest(req)
+
+	r := &http.Response{StatusCode: 200, Header: http.Header{}}
+	jrErr := common.NewErrJsonRpcExceptionExternal(-32000, "gas required exceeds allowance (6691)", "")
+	jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+	err := ExtractJsonRpcError(r, nr, jr, nil)
+	if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+		t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+	}
+	if common.IsRetryableTowardNetwork(err) {
+		t.Fatalf("eth_estimateGas gas required exceeds allowance must not be retried toward the network")
+	}
+	if !strings.Contains(err.Error(), "gas required exceeds allowance (6691)") {
+		t.Fatalf("expected the node's message to be kept, got: %v", err)
 	}
 }
 

@@ -581,11 +581,20 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		//----------------------------------------------------------------
 		// "Transaction rejected" or "out of gas" errors
 		// Note: This comes AFTER nonce/duplicate detection to avoid masking those errors.
+		//
+		// "gas required exceeds allowance (N)" is the eth_estimateGas verdict of
+		// go-ethereum's gas estimator (eth/gasestimator) when the call still runs
+		// out of gas at its cap N (for a sender with a tiny balance, the gas its
+		// balance can buy). Seen from Arbitrum nitro nodes, which carry that
+		// estimator in their go-ethereum fork. As a server-side exception every
+		// upstream was asked and answered the same, and the caller saw
+		// ErrUpstreamsExhausted instead of the node's reason.
 		//----------------------------------------------------------------
 
 		if code == common.JsonRpcErrorTransactionRejected ||
 			strings.Contains(msg, "out of gas") ||
 			strings.Contains(msg, "gas too low") ||
+			strings.Contains(msg, "gas required exceeds allowance") ||
 			strings.Contains(msg, "IntrinsicGas") {
 
 			execErr := common.NewErrEndpointExecutionException(
