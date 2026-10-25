@@ -56,21 +56,23 @@ const (
 	u13PollInterval = time.Second
 )
 
-// U2: a network of 2 https vendors, http-a ranked first and http-b clean,
-// both poll sources. http-a's answers are cut half way (FIN, then RST):
-// first every receipts body, over blocks that all carry logs so every
-// block's receipts are fetched, then every header answer, with time to
-// recover between, since the header cuts demote http-a in routing. Each
-// sweep tries http-a first and fails over to http-b at once, no header of
-// http-a is voted malformed, and every client's logs equal the canonical
-// logs within the delivery bound (§19 U2; §5.3 check 0; §8 one sweep).
+// U2: a network of 3 https vendors, http-a ranked first, http-b and
+// http-c clean, all poll sources, so a cut voter never holds Latest by
+// quorum. http-a's answers are cut half way (FIN, then RST): first every
+// receipts body, over blocks that all carry logs so every block's
+// receipts are fetched, then every header answer, with time to recover
+// between, since the header cuts demote http-a in routing. Each sweep
+// tries http-a first and fails over at once, no header of http-a is voted
+// malformed, and every client's logs equal the canonical logs within the
+// delivery bound (§19 U2; §5.3 check 0; §8 one sweep).
 func u2() spec {
 	return spec{name: "U2", bound: healthyDelivery,
-		vendors: []vendorSpec{{"http-a", "vendor-a", false}, {"http-b", "vendor-b", false}},
+		vendors: []vendorSpec{{"http-a", "vendor-a", false}, {"http-b", "vendor-b", false}, {"http-c", "vendor-c", false}},
 		network: map[string]interface{}{"selectionPolicy": rankFirst("http-a")},
 		upEvm: map[string]map[string]interface{}{
 			"http-a": {"subscriptionSource": true},
 			"http-b": {"subscriptionSource": true},
+			"http-c": {"subscriptionSource": true},
 		},
 		body: func(s *scenario) {
 			s.blocks(25)
