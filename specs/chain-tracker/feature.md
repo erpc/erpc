@@ -463,7 +463,7 @@ Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, th
 ### 6.8 Fetch schedule: when do we fetch U's head?
 
 - One schedule per upstream, with one backoff: the cadence, doubled per failure in a row, at most 60s. The bench reads this backoff (§6.1).
-- Periodic poll: a poll source is Asked once per cadence while `newHeads` is demanded and the upstream is admitted. Every upstream also keeps its full poll every `statePollerInterval` (30s) plus traffic.
+- Periodic poll: a poll source is Asked once per cadence while `newHeads` is demanded and the upstream is admitted. Every upstream also keeps its full poll every `statePollerInterval` (30s) plus traffic; its `latest` part is a number need, so a counter another instance keeps fresh saves the fetch (#1256).
 - Ask: single-flight per upstream; it joins a fetch in flight, and every waiter gets the one outcome: the answer, an error, or `backoff` when the upstream is backing off. A number need is met by a shared counter fresher than the cadence; a hash need only by a local fetch sent within the cadence, cache reads skipped. Only a fetch sent within the cadence debounces another. So an upstream gets at most one Ask fetch per cadence per instance, and Asks skip rate limits: client load at an upstream's budget never stalls its head (§19 D8).
 
 | Caller | Need |
@@ -743,7 +743,7 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | intake | chain-identity cordon | cordon reason | `eth_chainId` every 5 min; uncordon after 2 matches | 10 min |
 | intake, integrity | a check no upstream passes | §6.9 | suspended; observe-only after 100 blocks; enforced after 2 passing heights | 2 heights |
 | tracker | voters disagree | split votes | the branch with the most votes; ties settle | 1 settle |
-| tracker | reorg deeper than `reorgWindow`, or a gap past it | the majority's tree is not the pinned one | re-anchor; fill joins the trees at the fork point while the window holds it; taps then get Reverted per §10.2 (ws `logs` more than `reorgWindow` behind end `1013`); a fork point outside the window ends taps with their transport's signal | `reorgWindow` blocks of walk |
+| tracker | reorg deeper than `reorgWindow`, or a gap past it | the majority's tree is not the pinned one | re-anchor; fill joins the trees at the fork point while the window holds it; taps then get Reverted per §10.2 (a ws `logs` tap that sent more than `reorgWindow` of the reverted blocks ends `1013`, `reorg_depth`); a fork point outside the window ends taps with their transport's signal | `reorgWindow` blocks of walk |
 | tracker | a message panics | `recover` | the message drops; 3 panics of one message kind with no clean one of that kind between them reset the tracker to empty | 3 panics |
 | tracker | no hash voter | hash ages | one Ask with a hash need per cadence, a settle on conflict | 12s |
 | Head | an upstream's report is older than 1 bt | `OldestReportAt` | Asked before any "future" answer | 1 Ask |
