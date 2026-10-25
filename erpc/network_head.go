@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
+	"github.com/rs/zerolog"
 )
 
 // headRefreshInterval is the longest a lane's Head goes without being
@@ -209,6 +211,8 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	defer l.mu.Unlock()
 	old := l.published()
 	h := n.computeHead(l, l.selector)
+	left := leftBallot(l.voters, l.ballot)
+	l.voters, l.ballot = l.ballot, l.voters
 	if h == *old {
 		return
 	}
@@ -220,22 +224,42 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	if h.Latest != old.Latest {
 		// Latest 0 is unknown, not a served number: eth_blockNumber then
 		// errors. A fall through unknown counts at its first known value.
-		switch sent := l.sent.Load(); {
-		case h.Latest > 0 && uint64(h.Latest) < sent:
-			if !l.fallen {
-				l.fallen = true
-				common.ViolateInvariant(n.logger, n.projectId, n.Label(), common.InvariantLatestRegressed).
-					Str("lane", l.label).Int64("latest", h.Latest).Int64("previous", old.Latest).Uint64("sent", sent).
-					Msg("lane's Latest fell below a block this instance sent")
+		sent := l.sent.Load()
+		switch below := h.Latest > 0 && uint64(h.Latest) < sent; {
+		case !below:
+			if h.Latest > 0 {
+				l.fallen = false
 			}
-		case h.Latest > 0:
-			l.fallen = false
+		case l.fallen || old.Latest > 0 && h.Latest > old.Latest:
+		case left != "":
+			// A counted voter that left lowers the q-th highest number with
+			// no upstream's head falling: the ballot changed, the chain did
+			// not (spec §6.4, §17).
+			common.TransitionLog(n.logger, zerolog.InfoLevel, n.Label(), "ballot").
+				Str("lane", l.label).Str("left", left).Int64("latest", h.Latest).Int64("previous", old.Latest).Uint64("sent", sent).
+				Msg("lane's Latest fell below a block this instance sent as a voter left its ballot")
+		default:
+			l.fallen = true
+			common.ViolateInvariant(n.logger, n.projectId, n.Label(), common.InvariantLatestRegressed).
+				Str("lane", l.label).Int64("latest", h.Latest).Int64("previous", old.Latest).Uint64("sent", sent).
+				Msg("lane's Latest fell below a block this instance sent")
 		}
 		if c := l.moved.Swap(nil); c != nil {
 			close(*c)
 		}
 		evm.LatestChanged(n, l.key)
 	}
+}
+
+// leftBallot is the first voter of prev that cur no longer counts, "" when
+// every one still is.
+func leftBallot(prev, cur []string) string {
+	for _, id := range prev {
+		if !slices.Contains(cur, id) {
+			return id
+		}
+	}
+	return ""
 }
 
 // computeHead computes the Head of selector sel (spec §6.4); l is its lane,
@@ -271,7 +295,11 @@ func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool) int64 {
 	if n.cfg != nil {
 		q = n.cfg.Evm.ServedTipQuorum()
 	}
-	pick, live, ranks := n.evmTipBallot(sel, finalized, q, nil)
+	var voters *[]string
+	if l != nil && !finalized {
+		voters = &l.ballot
+	}
+	pick, live, ranks := n.evmTipBallot(sel, finalized, q, nil, voters)
 	tip := pick.Tip
 
 	// Regression guard: "latest" cannot drop far below the corroborated live
