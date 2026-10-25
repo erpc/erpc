@@ -170,6 +170,17 @@ func (s *scenario) requireNoInvariantViolation(pod int, bandMisses float64) {
 	}
 }
 
+// requireClean applies requireNoInvariantViolation on every running pod,
+// with no band probes of the scenario's own (§19: every scenario asserts
+// both counters unless its row says otherwise).
+func (s *scenario) requireClean() {
+	for _, p := range s.h.pods {
+		if p.running() {
+			s.requireNoInvariantViolation(p.idx, 0)
+		}
+	}
+}
+
 // X8: a canary instance writes http-b's latest counter at the tip +
 // x8Bogus (§18 rollout stage 4: the canary writes the counters control
 // reads). On both control pods Latest and the other upstreams' lag stay as

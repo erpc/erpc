@@ -16,6 +16,7 @@ import (
 )
 
 var realworldVars = map[string]*util.Duration{
+	"evm.ChainIdCordonRecheck":      evm.ChainIdCordonRecheck,
 	"evm.LatestBlockSkipExpiry":     evm.LatestBlockSkipExpiry,
 	"wsupstream.HeadsReaskInterval": wsupstream.HeadsReaskInterval,
 }

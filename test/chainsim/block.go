@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"math/rand/v2"
 	"strings"
+	"sync"
 	"time"
 
 	gethcommon "github.com/ethereum/go-ethereum/common"
@@ -122,6 +123,10 @@ type Block struct {
 	tag      string
 	txs      [][]logSpec
 	raw      json.RawMessage
+	// logs are computed once (Logs): a client checks a big block's every
+	// log against them.
+	logsOnce sync.Once
+	logs     []Log
 }
 
 // ParentHash is the header's parentHash.
@@ -147,20 +152,22 @@ func (b *Block) Receipts() []map[string]interface{} { return b.receipts(false, f
 // JSON is the header as eth_getBlockByNumber(n, false) answers it.
 func (b *Block) JSON() json.RawMessage { return b.raw }
 
-// Logs are the block's logs, in logIndex order.
+// Logs are the block's logs, in logIndex order; callers must not modify
+// them.
 func (b *Block) Logs() []Log {
-	var out []Log
-	i := 0
-	for tx, logs := range b.txs {
-		for _, l := range logs {
-			out = append(out, Log{
-				BlockHash: b.Hash, BlockNumber: b.Number, TxHash: txHash(b.Hash, tx), TxIndex: tx, LogIndex: i,
-				Address: Addrs[l.addr], Topics: []Hash{Topics[l.topic], txTopic(b.tag, tx)},
-			})
-			i++
+	b.logsOnce.Do(func() {
+		i := 0
+		for tx, logs := range b.txs {
+			for _, l := range logs {
+				b.logs = append(b.logs, Log{
+					BlockHash: b.Hash, BlockNumber: b.Number, TxHash: txHash(b.Hash, tx), TxIndex: tx, LogIndex: i,
+					Address: Addrs[l.addr], Topics: []Hash{Topics[l.topic], txTopic(b.tag, tx)},
+				})
+				i++
+			}
 		}
-	}
-	return out
+	})
+	return b.logs
 }
 
 // receipts are the block's receipts as a vendor answers them: badBloom
@@ -226,24 +233,29 @@ func (b *Block) lastLogCovered() bool {
 // ForgedData is the data of a forged log: no block of any chain holds it.
 const ForgedData = "0xbad0"
 
-func content(r *rand.Rand, k Kind) [][]logSpec {
+// content is a block's transactions and their logs; txs > 0 sets how many
+// transactions a non-empty block holds.
+func content(r *rand.Rand, k Kind, txs int) [][]logSpec {
 	if k == KindEmpty {
 		return nil
 	}
-	txs := make([][]logSpec, 12+r.IntN(5))
-	for i := range txs {
+	if txs == 0 {
+		txs = 12 + r.IntN(5)
+	}
+	out := make([][]logSpec, txs)
+	for i := range out {
 		for range 1 + r.IntN(2) {
 			l := logSpec{addr: r.IntN(len(Addrs)), topic: r.IntN(len(Topics))}
 			if k == KindQuiet {
 				l = logSpec{addr: 2 + r.IntN(2), topic: []int{0, 2}[r.IntN(2)]}
 			}
-			txs[i] = append(txs[i], l)
+			out[i] = append(out[i], l)
 		}
 	}
 	if k == KindMatching {
-		txs[0][0] = logSpec{addr: 0, topic: 1}
+		out[0][0] = logSpec{addr: 0, topic: 1}
 	}
-	return txs
+	return out
 }
 
 // addTxBloom adds a transaction's logs to bloom. Every log carries a second

@@ -42,6 +42,8 @@ type harness struct {
 	// vars are the eRPC duration variables the pods run with, by name
 	// (testdata/realworld_vars.go).
 	vars map[string]time.Duration
+	// webSocket is merged into every pod's server.webSocket config.
+	webSocket map[string]interface{}
 	// lookups time how long the proxies take to tell pods apart.
 	lookups *lookups
 	// series ends the per-second record of the pods' vote gauges;
@@ -54,32 +56,45 @@ type harness struct {
 	proxies []*proxy
 
 	// headers is when each block header first reached each pod, by pod
-	// index (headerScan); latests, when it first reached the pod as an
+	// index (headerScan); lasts, when a push of it last did (N2: pushes
+	// reordered); latests, when it first reached the pod as an
 	// eth_getBlockByNumber("latest") answer.
 	headersMu sync.Mutex
 	headers   map[int]map[hash]time.Time
+	lasts     map[int]map[hash]time.Time
 	latests   map[int]map[hash]time.Time
 }
 
 // sawHeader notes that a header of block bh reached pod at at, as a latest
-// answer or not; the first sighting stays.
-func (h *harness) sawHeader(pod int, bh hash, at time.Time, latest bool) {
+// answer, a push, or neither; the first sighting stays, and a push's last.
+func (h *harness) sawHeader(pod int, bh hash, at time.Time, latest, push bool) {
 	h.headersMu.Lock()
 	defer h.headersMu.Unlock()
-	first := func(byPod map[int]map[hash]time.Time) {
+	note := func(byPod map[int]map[hash]time.Time, keep bool) {
 		m := byPod[pod]
 		if m == nil {
 			m = make(map[hash]time.Time)
 			byPod[pod] = m
 		}
-		if _, ok := m[bh]; !ok {
+		if _, ok := m[bh]; !ok || !keep {
 			m[bh] = at
 		}
 	}
-	first(h.headers)
-	if latest {
-		first(h.latests)
+	note(h.headers, true)
+	if push {
+		note(h.lasts, false)
 	}
+	if latest {
+		note(h.latests, true)
+	}
+}
+
+// headerLastAt is when a push of block bh last reached pod.
+func (h *harness) headerLastAt(pod int, bh hash) (time.Time, bool) {
+	h.headersMu.Lock()
+	defer h.headersMu.Unlock()
+	at, ok := h.lasts[pod][bh]
+	return at, ok
 }
 
 // headerAt is when a header of block bh first reached pod.
@@ -103,7 +118,8 @@ func newHarness(t *testing.T, dir string, withRedis bool) *harness {
 		t.Fatal(err)
 	}
 	h := &harness{t: t, dir: dir, pids: make(map[int]*pod), dumped: make(map[int]bool), start: time.Now(), cpu0: selfCPU(), lookups: &lookups{},
-		series: make(chan struct{}), headers: make(map[int]map[hash]time.Time), latests: make(map[int]map[hash]time.Time)}
+		series: make(chan struct{}), headers: make(map[int]map[hash]time.Time), lasts: make(map[int]map[hash]time.Time),
+		latests: make(map[int]map[hash]time.Time)}
 	if withRedis {
 		h.redis = startRedis(t, dir)
 	}
@@ -189,13 +205,31 @@ func (h *harness) claimDump(pod int) bool {
 	return true
 }
 
+// freePort is a port no socket holds on any address: pods bind some
+// listeners (metrics) on every interface.
 func freePort(t *testing.T) int {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ln.Close()
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// bootAttempts: a pod whose port another process took between freePort
+// and its boot is booted again on new ports (harness).
+const bootAttempts = 3
+
+// bindFailed reports whether the pod's last boot failed on a port another
+// process holds.
+func (p *pod) bindFailed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.logs) == 0 {
+		return false
+	}
+	b, err := os.ReadFile(p.logs[len(p.logs)-1])
+	return err == nil && strings.Contains(string(b), "address already in use")
 }
 
 // scanFatal returns the lines of a pod log that fail a run: a data race
@@ -239,25 +273,38 @@ type pod struct {
 	exited chan struct{}
 }
 
-// startPods writes each pod's config and boots it; pods in old run the old
-// image.
-func (h *harness) startPods(n int, old []int, nets []*netSpec) {
+// startPods writes each pod's config and boots it, except cold pods, which
+// a scenario boots later (pod.start); pods in old run the old image.
+func (h *harness) startPods(n int, old, cold []int, nets []*netSpec) {
 	for i := range n {
-		p := &pod{h: h, idx: i, name: fmt.Sprintf("pod-%d", i+1), old: slices.Contains(old, i),
-			httpPort: freePort(h.t), grpcPort: freePort(h.t), metricsPort: freePort(h.t)}
+		p := &pod{h: h, idx: i, name: fmt.Sprintf("pod-%d", i+1), old: slices.Contains(old, i)}
 		p.cfgPath = filepath.Join(h.dir, p.name+".yaml")
-		if err := os.WriteFile(p.cfgPath, podConfig(p, h.redis, nets), 0o644); err != nil {
-			h.t.Fatal(err)
-		}
 		h.pods = append(h.pods, p)
+	}
+	configure := func(p *pod) {
+		p.httpPort, p.grpcPort, p.metricsPort = freePort(h.t), freePort(h.t), freePort(h.t)
+		if err := os.WriteFile(p.cfgPath, podConfig(p, h.redis, nets), 0o644); err != nil {
+			h.t.Error(err)
+		}
+	}
+	for _, p := range h.pods {
+		configure(p)
 	}
 	var wg sync.WaitGroup
 	errs := make([]error, n)
 	for i, p := range h.pods {
+		if slices.Contains(cold, i) {
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs[i] = p.start()
+			for attempt := 1; ; attempt++ {
+				if errs[i] = p.start(); errs[i] == nil || attempt == bootAttempts || !p.bindFailed() {
+					return
+				}
+				configure(p)
+			}
 		}()
 	}
 	wg.Wait()
@@ -866,7 +913,7 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 		"server": m{
 			"listenV4": true, "httpHostV4": "127.0.0.1", "httpPortV4": p.httpPort,
 			"grpcEnabled": true, "grpcHostV4": "127.0.0.1", "grpcPortV4": p.grpcPort,
-			"webSocket": m{"enabled": true},
+			"webSocket": webSocketConfig(p.h.webSocket),
 		},
 		"metrics":  m{"enabled": true, "listenV4": true, "hostV4": "127.0.0.1", "port": p.metricsPort},
 		"projects": prs,
@@ -901,4 +948,13 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 		panic(err)
 	}
 	return out
+}
+
+// webSocketConfig is server.webSocket: enabled, plus extra keys.
+func webSocketConfig(extra map[string]interface{}) map[string]interface{} {
+	ws := map[string]interface{}{"enabled": true}
+	for k, v := range extra {
+		ws[k] = v
+	}
+	return ws
 }

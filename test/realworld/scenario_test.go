@@ -52,11 +52,15 @@ type spec struct {
 	// serves on every pod; their heads vote from the first one.
 	late []string
 	// pods is how many pods the phase boots (0 is 2); memory: no redis,
-	// each pod keeps its shared state in memory; oldPods run the old image
-	// (X7). A phase reads its first spec's.
-	pods    int
-	memory  bool
-	oldPods []int
+	// each pod keeps its shared state in memory; oldPods run the old
+	// image (X7); cold pods boot only when the body starts them (X3);
+	// webSocket is merged into every pod's server.webSocket (D7). A phase
+	// reads its first spec's.
+	pods      int
+	memory    bool
+	oldPods   []int
+	cold      []int
+	webSocket map[string]interface{}
 	// sim configures the chain; ChainID and Seed come from the phase, a
 	// zero BlockTime is blockTime.
 	sim chainsim.Config
@@ -285,7 +289,8 @@ func (r *run) phase(t *testing.T, name string, firstChain int64, specs []spec) {
 		if pods == 0 {
 			pods = 2
 		}
-		h.startPods(pods, specs[0].oldPods, nets)
+		h.webSocket = specs[0].webSocket
+		h.startPods(pods, specs[0].oldPods, specs[0].cold, nets)
 		for _, sc := range scs {
 			t.Run(sc.name, func(t *testing.T) {
 				t.Parallel()
@@ -324,7 +329,9 @@ func (s *scenario) execute(t *testing.T) {
 	defer s.cancel()
 	s.httpc = &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 64}, Timeout: httpCheckWait}
 	for _, p := range s.h.pods {
-		s.waitServing(p.idx)
+		if p.running() {
+			s.waitServing(p.idx)
+		}
 	}
 	for _, key := range s.late {
 		s.vendors[key].Update(func(f *chainsim.Faults) { f.ChainIDHeld = false })
@@ -471,15 +478,19 @@ func (s *scenario) call(pod int, result interface{}, method string, args ...inte
 }
 
 // callAs calls method on pod through use-upstream selector sel. eRPC's own
-// rate-limit refusal (-32005) says nothing about the chain, so the call is
-// tried again until httpCheckWait (D8 spends every upstream budget).
+// rate-limit refusal (-32005, over HTTP status 429 too) says nothing about
+// the chain, so the call is tried again until httpCheckWait (D8 spends
+// every upstream budget; U5 throttles every vendor).
 func (s *scenario) callAs(pod int, sel string, result interface{}, method string, args ...interface{}) error {
 	ctx, cancel := context.WithTimeout(context.Background(), httpCheckWait)
 	defer cancel()
 	for {
 		err := s.client(pod, sel).CallContext(ctx, result, method, args...)
 		var re rpc.Error
-		if !errors.As(err, &re) || re.ErrorCode() != rateLimitedCode || ctx.Err() != nil {
+		var he rpc.HTTPError
+		limited := errors.As(err, &re) && re.ErrorCode() == rateLimitedCode ||
+			errors.As(err, &he) && he.StatusCode == http.StatusTooManyRequests
+		if !limited || ctx.Err() != nil {
 			return err
 		}
 		sleepCtx(ctx, rateLimitedRetry)
@@ -726,7 +737,13 @@ func (s *scenario) first(key string) bool {
 // blockAnswer is a block answer's hash, "null", or the error.
 func (s *scenario) blockAnswer(pod int, sel string, method string, args ...interface{}) string {
 	var raw json.RawMessage
-	if err := s.callAs(pod, sel, &raw, method, args...); err != nil {
+	err := s.callAs(pod, sel, &raw, method, args...)
+	return answerHash(raw, err)
+}
+
+// answerHash is a block answer's hash, "null", or the error.
+func answerHash(raw json.RawMessage, err error) string {
+	if err != nil {
 		return "error: " + err.Error()
 	}
 	if len(raw) == 0 || string(raw) == "null" {

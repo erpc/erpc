@@ -18,7 +18,10 @@ type linkFaults struct {
 	Latency   time.Duration
 	Jitter    time.Duration // extra latency per chunk, up to this; bytes keep their order
 	Bandwidth int           // bytes per second each way; 0 is unlimited
-	RSTAfter  int64         // reset a connection once it carried this many vendor→pod bytes
+	// RSTMid: once a pod request names this method, the vendor→pod chunk
+	// that follows is cut half way and the connection reset, so the
+	// answer's body ends mid-way.
+	RSTMid    string
 	BlackHole bool          // forward nothing either way; sockets stay open (half-open)
 	Refuse    bool          // reset new connections at once
 }
@@ -47,12 +50,16 @@ type link struct {
 	f       linkFaults
 	conns   map[*pconn]bool
 	accepts int64
+	resets  int64 // connections RSTMid reset
 }
 
 type pconn struct {
 	client, server net.Conn
 	once           sync.Once
 	done           chan struct{}
+	// held: black-holed on its own (holdOpen), whatever the link's faults;
+	// armed: a request naming the link's RSTMid method went out.
+	held, armed atomic.Bool
 }
 
 // headerScan finds the block headers in one connection's vendor→pod bytes
@@ -189,7 +196,7 @@ scan:
 				break scan
 			}
 			if hx := buf[start : start+64]; isHex(hx) {
-				sc.h.sawHeader(sc.pod, gethcommon.HexToHash(string(hx)), at, sc.answers(sc.cur))
+				sc.h.sawHeader(sc.pod, gethcommon.HexToHash(string(hx)), at, sc.answers(sc.cur), sc.cur == "")
 			}
 			i = start
 		}
@@ -282,6 +289,27 @@ func (px *proxy) accepts(p *pod) int64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.accepts
+}
+
+// resets counts p's connections that RSTMid reset.
+func (px *proxy) resets(p *pod) int64 {
+	l := px.link(p)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.resets
+}
+
+// holdOpen black-holes every connection p's link has open now, and keeps
+// their sockets, as a keep-alive pool whose path died; connections opened
+// later pass. It returns how many it held.
+func (px *proxy) holdOpen(p *pod) int {
+	l := px.link(p)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for c := range l.conns {
+		c.held.Store(true)
+	}
+	return len(l.conns)
 }
 
 // closeAll closes every open connection of p's link.
@@ -411,9 +439,10 @@ func (l *link) faults() linkFaults {
 	return l.f
 }
 
-// waitOpen waits while the link is black-holed; false once pc closed.
+// waitOpen waits while the link or the connection is black-holed; false
+// once pc closed.
 func (l *link) waitOpen(pc *pconn) bool {
-	for l.faults().BlackHole {
+	for l.faults().BlackHole || pc.held.Load() {
 		select {
 		case <-pc.done:
 			return false
@@ -441,7 +470,6 @@ func (l *link) pipe(pc *pconn, src, dst net.Conn, down, up *headerScan) {
 	ch := make(chan chunk, 256)
 	go func() {
 		defer pc.close()
-		var sent int64
 		for ck := range ch {
 			if d := time.Until(ck.due); d > 0 {
 				select {
@@ -455,10 +483,16 @@ func (l *link) pipe(pc *pconn, src, dst net.Conn, down, up *headerScan) {
 			}
 			f := l.faults()
 			b := ck.b
-			if down != nil && f.RSTAfter > 0 && sent+int64(len(b)) >= f.RSTAfter {
-				_, _ = dst.Write(b[:max(0, f.RSTAfter-sent)])
+			if down != nil && f.RSTMid != "" && pc.armed.Load() {
+				_, _ = dst.Write(b[:len(b)/2])
+				l.mu.Lock()
+				l.resets++
+				l.mu.Unlock()
 				pc.reset()
 				return
+			}
+			if up != nil && f.RSTMid != "" && bytes.Contains(b, []byte(f.RSTMid)) {
+				pc.armed.Store(true)
 			}
 			if _, err := dst.Write(b); err != nil {
 				return
@@ -469,7 +503,6 @@ func (l *link) pipe(pc *pconn, src, dst net.Conn, down, up *headerScan) {
 			if up != nil {
 				up.request(b)
 			}
-			sent += int64(len(b))
 			if f.Bandwidth > 0 {
 				select {
 				case <-pc.done:
