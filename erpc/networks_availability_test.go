@@ -1759,6 +1759,10 @@ func TestHandleBlockSkip_NonRetryableDoesNotTriggerRefresh(t *testing.T) {
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 	network.PinUpstreamOrderForTest()
+	// Past the cold start, a block far above fresh reports is future: no
+	// Ask, so every poll after baseline would be handleBlockSkip's. Cold,
+	// the refusal rule Asks the stale report, then the band (spec §6.4).
+	sampleBlockTime(t, network)
 
 	time.Sleep(100 * time.Millisecond)
 	pollBaseline.Store(latestPollCount.Load())
