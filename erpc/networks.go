@@ -146,6 +146,10 @@ type servedTipLane struct {
 	// sent is the highest block this instance's taps of the lane wrote,
 	// on any transport: a Latest below it is latest_regressed.
 	sent atomic.Uint64
+	// fallen: Latest is below sent and its fall was counted; it re-arms
+	// once Latest reaches sent again (spec §17: once per fall). Guarded
+	// by mu.
+	fallen bool
 }
 
 func (l *servedTipLane) noteSent(n uint64) {
