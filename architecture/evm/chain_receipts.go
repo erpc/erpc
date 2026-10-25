@@ -981,16 +981,21 @@ func (t *ChainTracker) refetchJobs() {
 	}
 }
 
-// receiptsUpstreams are the upstreams of the tracker's group, in the
-// network's order.
-func (t *ChainTracker) receiptsUpstreams() []common.Upstream {
+// networkUpstreams are every upstream of the network, in its order.
+func (t *ChainTracker) networkUpstreams() []common.Upstream {
 	n, ok := t.network.(interface {
 		EvmAllUpstreams(context.Context) []common.Upstream
 	})
 	if !ok {
 		return nil
 	}
-	ups := n.EvmAllUpstreams(t.ctx)
+	return n.EvmAllUpstreams(t.ctx)
+}
+
+// receiptsUpstreams are the upstreams of the tracker's group, in the
+// network's order.
+func (t *ChainTracker) receiptsUpstreams() []common.Upstream {
+	ups := t.networkUpstreams()
 	if t.selector == "" {
 		return ups
 	}
@@ -1033,10 +1038,11 @@ func (t *ChainTracker) vendorOf(upstreamId string) string {
 	return upstreamId
 }
 
-// networkVendors is how many vendors the group's upstreams name, which the
-// evidence quorum reads.
+// networkVendors is how many vendors the network's upstreams name, which
+// the evidence quorum reads: a group's own vendors do not lower it (spec
+// §6.10).
 func (t *ChainTracker) networkVendors() int {
-	return vendorsOf(t.receiptsUpstreams())
+	return vendorsOf(t.networkUpstreams())
 }
 
 // wantsSnapshot are the registered MayMatch tests.
