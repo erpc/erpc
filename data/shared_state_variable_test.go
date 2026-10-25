@@ -483,7 +483,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 				ignoreRollbackOf: 1024,
 			}
 			counter.value.Store(tt.initialValue)
-			counter.updatedAtUnixMs.Store(tt.lastProcessed.UnixMilli())
+			counter.reportAtUnixMs.Store(tt.lastProcessed.UnixMilli())
 
 			getNewValue := func(ctx context.Context) (int64, error) {
 				if tt.expectedError != nil {
@@ -591,10 +591,33 @@ func TestCounterInt64_IsStale(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			counter := &counterInt64{}
-			counter.updatedAtUnixMs.Store(tt.lastProcessed.UnixMilli())
+			counter.reportAtUnixMs.Store(tt.lastProcessed.UnixMilli())
 			assert.Equal(t, tt.expected, counter.IsStale(tt.staleness))
 		})
 	}
+
+	// Freshness is this instance's clock (spec §14): a remote value
+	// stamped 5 min ahead is as fresh as its receipt, no longer.
+	t.Run("skewed writer's clock does not keep a counter fresh", func(t *testing.T) {
+		counter := &counterInt64{
+			ignoreRollbackOf: 1024,
+			registry:         &sharedStateRegistry{logger: &log.Logger, instanceId: "test"},
+		}
+		counter.value.Store(100)
+		assert.True(t, counter.processNewState(UpdateSourceRemoteSync, CounterInt64State{
+			Value: 110, UpdatedAt: time.Now().Add(5 * time.Minute).UnixMilli(), UpdatedBy: "skewed",
+		}))
+		assert.False(t, counter.IsStale(50*time.Millisecond))
+		time.Sleep(60 * time.Millisecond)
+		assert.True(t, counter.IsStale(50*time.Millisecond), "a writer's clock 5 min ahead must not keep the counter fresh")
+
+		// A rejected small drop stamped ahead moves only the order key.
+		counter.reportAtUnixMs.Store(time.Now().Add(-time.Second).UnixMilli())
+		assert.False(t, counter.processNewState(UpdateSourceRemoteSync, CounterInt64State{
+			Value: 105, UpdatedAt: time.Now().Add(6 * time.Minute).UnixMilli(), UpdatedBy: "skewed",
+		}))
+		assert.True(t, counter.IsStale(50*time.Millisecond))
+	})
 }
 
 // Test that calling setValue directly (as done by remote update watchers or initial value fetch) refreshes the
@@ -780,7 +803,7 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) 
 	}
 	counter.value.Store(5) // Initialize with value 5
 	// Force it to look stale.
-	counter.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli())
+	counter.reportAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli())
 
 	var calls int32
 	refreshFn := func(ctx context.Context) (int64, error) {
@@ -814,7 +837,7 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 		ignoreRollbackOf: 1024,
 	}
 	counter.value.Store(5)                                                      // Initialize with value 5
-	counter.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli()) // force stale
+	counter.reportAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli()) // force stale
 
 	var calls int32
 	refreshErr := errors.New("upstream failure")
@@ -856,7 +879,7 @@ func TestCounterInt64_TryUpdateIfStale_FnTimeoutFromCtxDeadline(t *testing.T) {
 			ignoreRollbackOf: 1024,
 		}
 		c.value.Store(5)
-		c.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli())
+		c.reportAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli())
 		return c
 	}
 
@@ -936,7 +959,7 @@ func TestCounterInt64_ReaderStarvation(t *testing.T) {
 		counter := &counterInt64{
 			ignoreRollbackOf: 1024,
 		}
-		counter.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli()) // Make it stale
+		counter.reportAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli()) // Make it stale
 		counter.value.Store(42)
 
 		// Track timing of GetValue calls
@@ -1463,6 +1486,9 @@ func TestCounterInt64_RemoteRollbackCallback(t *testing.T) {
 		// And the higher local value WILL be pushed back to remote.
 		localTs := counter.updatedAtMs()
 		assert.Greater(t, localTs, int64(100), "timestamp should be advanced past remote's when small rollback is rejected")
+		// The order key moved; freshness did not (spec §14).
+		assert.True(t, counter.ReportAt().IsZero(), "a rejected remote state is no report")
+		assert.True(t, counter.IsStale(time.Hour))
 	})
 
 	t.Run("large rollback accepted DOES update timestamp", func(t *testing.T) {
@@ -2084,4 +2110,42 @@ func TestCounterInt64_BackgroundPush_AdoptsFarAheadRemote(t *testing.T) {
 	assert.Eventually(t, func() bool { return counter.GetValue() == 5100 }, 2*time.Second, 20*time.Millisecond,
 		"background reconcile must adopt a far-ahead remote instead of keeping the lagging local value")
 	assert.Equal(t, int32(0), setCount.Load(), "must not overwrite remote with the lower local value")
+}
+
+// A head counter is max-only on the pubsub path too (spec §14): after a
+// peer stamped the counter 5 min ahead, honest higher values with older
+// timestamps still land; an older large drop does not, a newer one does.
+func TestCounterInt64_PubsubHeadCounterIsMaxOnly(t *testing.T) {
+	registry, connector, _ := setupTest("my-dev")
+	updates := make(chan CounterInt64State, 1)
+	skewed := time.Now().Add(5 * time.Minute).UnixMilli()
+	connector.On("WatchCounterInt64", mock.Anything, "my-dev/latest").Return(updates, func() {}, nil)
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/latest", "value", nil).
+		Return([]byte(fmt.Sprintf(`{"v":5000,"t":%d,"b":"skewed-peer"}`, skewed)), nil)
+
+	counter := registry.GetCounterInt64("latest", 1024).(*counterInt64)
+	var rollbacks atomic.Int32
+	counter.OnLargeRollback(func(int64, int64) { rollbacks.Add(1) })
+	assert.Eventually(t, func() bool { return counter.GetValue() == 5000 }, time.Second, 5*time.Millisecond)
+
+	send := func(v, ts int64) {
+		updates <- CounterInt64State{Value: v, UpdatedAt: ts, UpdatedBy: "honest-peer"}
+	}
+	send(5001, time.Now().UnixMilli())
+	assert.Eventually(t, func() bool { return counter.GetValue() == 5001 }, time.Second, 5*time.Millisecond,
+		"a higher value is taken whatever its timestamp")
+	send(5002, time.Now().UnixMilli())
+	assert.Eventually(t, func() bool { return counter.GetValue() == 5002 }, time.Second, 5*time.Millisecond)
+
+	send(1000, time.Now().UnixMilli())
+	send(5002, skewed) // a marker: once it is handled, the drop before it was
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, int64(5002), counter.GetValue(), "a large drop older than the local state is rejected")
+	assert.Equal(t, int32(0), rollbacks.Load())
+
+	send(1000, skewed+1)
+	assert.Eventually(t, func() bool { return counter.GetValue() == 1000 }, time.Second, 5*time.Millisecond,
+		"a newer large drop is a rollback")
+	assert.Equal(t, int32(1), rollbacks.Load())
+	connector.AssertExpectations(t)
 }

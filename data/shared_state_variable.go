@@ -37,19 +37,12 @@ type CounterInt64SharedVariable interface {
 }
 
 type baseSharedVariable struct {
-	// updatedAtUnixMs tracks the last-known update timestamp for this shared variable.
-	// It is used for staleness checks (TryUpdateIfStale debouncing).
+	// updatedAtUnixMs is the reconcile order key: the newest state's
+	// UpdatedAt, by its writer's clock. It never decides freshness (spec
+	// §14), since a writer's clock may run ahead of this instance's.
 	//
 	// Semantics: unix milliseconds, monotonic increasing within a process.
 	updatedAtUnixMs atomic.Int64
-}
-
-func (v *baseSharedVariable) IsStale(staleness time.Duration) bool {
-	updatedAt := v.updatedAtUnixMs.Load()
-	if updatedAt <= 0 {
-		return true
-	}
-	return time.Since(time.UnixMilli(updatedAt)) > staleness
 }
 
 func (v *baseSharedVariable) updatedAtMs() int64 {
@@ -109,10 +102,27 @@ func (v *baseSharedVariable) advanceTimestampPast(remoteTs int64) {
 	}
 }
 
+// dropKind is how a head counter's value last moved down; any rise clears it.
+type dropKind int32
+
+const (
+	dropNone dropKind = iota
+	// dropRollback: a rollback larger than ignoreRollbackOf was applied.
+	dropRollback
+)
+
 type counterInt64 struct {
 	baseSharedVariable
 	// reportAtUnixMs is ReportAt.
-	reportAtUnixMs         atomic.Int64
+	reportAtUnixMs atomic.Int64
+	// attemptAtUnixMs is this instance's clock at its last refresh attempt
+	// that brought no report (an error or a timeout): it debounces the next
+	// refresh as a report does.
+	attemptAtUnixMs atomic.Int64
+	// drop is a dropKind. While set, a higher state stamped no later than
+	// the local one predates the drop: it is the branch the drop left, so
+	// it wins neither over pubsub nor in reconcile.
+	drop                   atomic.Int32
 	registry               *sharedStateRegistry
 	key                    string
 	value                  atomic.Int64
@@ -131,6 +141,16 @@ type counterInt64 struct {
 
 func (c *counterInt64) GetValue() int64 {
 	return c.value.Load()
+}
+
+// IsStale: no report and no refresh attempt within staleness, by this
+// instance's clock (spec §14).
+func (c *counterInt64) IsStale(staleness time.Duration) bool {
+	at := max(c.reportAtUnixMs.Load(), c.attemptAtUnixMs.Load())
+	if at <= 0 {
+		return true
+	}
+	return time.Since(time.UnixMilli(at)) > staleness
 }
 
 func (c *counterInt64) ReportAt() time.Time {
@@ -152,40 +172,34 @@ func (c *counterInt64) markReported(at time.Time) {
 	}
 }
 
+func (c *counterInt64) dropped() bool { return dropKind(c.drop.Load()) != dropNone }
+
+// setDrop records how the value moves: a drop before its CAS, so no
+// snapshot pairs the lower value with dropNone; dropNone after a rise's.
+func (c *counterInt64) setDrop(k dropKind) { c.drop.Store(int32(k)) }
+
+// processNewState applies a remote state (pubsub, initial fetch, reconcile).
+// Head counters (ignoreRollbackOf > 0: latest, finalized) are max-only on
+// every path: a higher value wins whatever its timestamp, a drop of up to
+// ignoreRollbackOf is noise, and timestamps decide only larger drops (spec
+// §14, #1243, #222). Other counters (earliest, cordon, floors) take any
+// change, in timestamp order.
+//
+// A rejected drop with a newer timestamp moves the order key past it, so
+// the higher local value wins the next reconcile and goes back to remote.
 func (c *counterInt64) processNewState(source string, st CounterInt64State) bool {
-	// processNewState handles updates from remote sources (WatchCounterInt64, reconciliation).
-	// It applies the SAME rollback handling as processNewValue for consistency:
-	// - ignoreRollbackOf = 0: Accept all changes (for earliest block)
-	// - ignoreRollbackOf > 0: Ignore small rollbacks (for latest/finalized - avoids noise)
-	//
-	// This ensures consistent "only-increasing" semantics for latest/finalized across
-	// all instances, preventing noise from propagating via shared state.
-
-	// Track if this is a remote update (with external timestamp) vs local update.
-	// For remote updates, we only CHECK timestamp ordering here - we DON'T update our local
-	// timestamp until we know we're going to accept the value change (forward progress or large rollback).
-	//
-	// SPECIAL CASE - Small rollback rejection: When we reject a small rollback from a remote update
-	// with a newer timestamp, we advance our local timestamp past the remote's timestamp. This ensures
-	// our higher local value will "win" reconciliation in scheduleBackgroundPushCurrent and get pushed
-	// to remote, since local.UpdatedAt will be > remote.UpdatedAt.
 	isRemoteUpdate := st.UpdatedAt > 0
-
+	newer := !isRemoteUpdate || st.UpdatedAt > c.updatedAtMs()
 	if !isRemoteUpdate {
-		// For local updates, allow UpdatedAt=0 and allocate a unique timestamp.
 		st.UpdatedAt = c.allocateUpdatedAtMs()
-	} else {
-		// For remote updates, just check timestamp ordering - don't update local timestamp yet.
-		currentTs := c.updatedAtMs()
-		if st.UpdatedAt <= currentTs {
-			// Reject stale/out-of-order states by UpdatedAt ordering.
-			// This provides idempotency and prevents stale remote values from overriding fresh local detections.
-			return false
-		}
 	}
 
 	currentValue := c.value.Load()
 	newVal := st.Value
+
+	if c.ignoreRollbackOf == 0 && !newer && newVal != currentValue {
+		return false
+	}
 
 	if newVal == currentValue {
 		// Values appear equal - no value change needed.
@@ -211,10 +225,12 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 	}
 
 	if newVal > currentValue {
-		// Forward progress: always accept
+		if !newer && c.dropped() {
+			return false
+		}
 		for {
 			if c.value.CompareAndSwap(currentValue, newVal) {
-				// Update timestamp AFTER accepting the value (for remote updates)
+				c.setDrop(dropNone)
 				if isRemoteUpdate {
 					c.updateUpdatedAtMs(st.UpdatedAt)
 				}
@@ -288,7 +304,14 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 		return false
 	}
 
+	// Timestamps decide large drops: an older one is a state this instance
+	// already moved past.
+	if !newer {
+		return false
+	}
+
 	// Large rollback exceeds threshold - apply it and trigger callback
+	c.setDrop(dropRollback)
 	for {
 		if c.value.CompareAndSwap(currentValue, newVal) {
 			// Update timestamp AFTER accepting the value (for remote updates)
@@ -344,6 +367,7 @@ func (c *counterInt64) processNewValue(source string, newVal int64, at time.Time
 		// Forward progress: always accept
 		for {
 			if c.value.CompareAndSwap(currentValue, newVal) {
+				c.setDrop(dropNone)
 				c.allocateUpdatedAtMs() // Mark as fresh
 				c.markReported(at)
 				c.registry.logger.Trace().
@@ -393,6 +417,7 @@ func (c *counterInt64) processNewValue(source string, newVal int64, at time.Time
 	}
 
 	// Large rollback exceeds threshold - apply it and trigger callback
+	c.setDrop(dropRollback)
 	for {
 		if c.value.CompareAndSwap(currentValue, newVal) {
 			c.allocateUpdatedAtMs() // Mark as fresh
@@ -584,7 +609,7 @@ func (c *counterInt64) OnLargeRollback(cb func(currentVal, newVal int64)) {
 }
 
 func (c *counterInt64) markFreshAttempt() {
-	c.allocateUpdatedAtMs()
+	c.attemptAtUnixMs.Store(time.Now().UnixMilli())
 }
 
 type refreshResult struct {
@@ -800,7 +825,9 @@ func (c *counterInt64) scheduleBackgroundPushCurrent() {
 				// adoption by that threshold let a newer-timestamp lagging
 				// writer push a regression that peers then treated as a
 				// large rollback.
-				if remoteOk && remote.Value > local.Value {
+				// Only head counters are max-only; the others keep timestamp
+				// order, and a drop outranks the older states it left.
+				if remoteOk && c.ignoreRollbackOf > 0 && !c.dropped() && remote.Value > local.Value {
 					c.processNewValue(UpdateSourceRemoteCheck, remote.Value, time.Now())
 					return
 				}
