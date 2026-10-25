@@ -108,7 +108,7 @@ func buildIntegrityNetwork(t *testing.T, ctx context.Context) *Network {
 	// intrinsic-check tests, which don't consult finality.
 	for _, ups := range upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123)) {
 		if sp := ups.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-			sp.SuggestFinalizedBlock(0x11117FFF)
+			sp.SuggestFinalizedBlock(0x11117FFF, time.Now())
 		}
 	}
 	return ntw

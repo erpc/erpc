@@ -300,7 +300,7 @@ func (p *FakeEvmStatePoller) SetSyncingState(state EvmSyncingState) {
 	// No-op for testing
 }
 
-func (p *FakeEvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
+func (p *FakeEvmStatePoller) SuggestFinalizedBlock(blockNumber int64, _ time.Time) {
 	p.finalizedBlockNumber = blockNumber
 }
 
@@ -330,6 +330,10 @@ func (p *FakeEvmStatePoller) Ask(context.Context, HeadNeed, AskReason) HeadAnswe
 }
 
 func (p *FakeEvmStatePoller) AskBackground(HeadNeed, AskReason) {}
+
+func (p *FakeEvmStatePoller) AskReaching(context.Context, int64, AskReason) HeadAnswer {
+	return HeadAnswer{Outcome: AskSharedFresh, Block: p.latestBlockNumber}
+}
 
 func (p *FakeEvmStatePoller) RefreshFinalizedBlock() {}
 

@@ -1764,6 +1764,9 @@ type fixedPoller struct {
 
 func (p *fixedPoller) LatestBlock() int64                                   { return p.latest }
 func (p *fixedPoller) PollLatestBlockNumber(context.Context) (int64, error) { return p.latest, nil }
+func (p *fixedPoller) AskReaching(context.Context, int64, common.AskReason) common.HeadAnswer {
+	return common.HeadAnswer{Block: p.latest}
+}
 func (p *fixedPoller) Ask(context.Context, common.HeadNeed, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }

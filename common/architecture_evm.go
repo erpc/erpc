@@ -217,7 +217,7 @@ type EvmStatePoller interface {
 	// to have no finalized tag reports latest − the derived finality depth (#1079).
 	FinalizedBlock() int64
 	IsBlockFinalized(blockNumber int64) (bool, error)
-	SuggestFinalizedBlock(blockNumber int64)
+	SuggestFinalizedBlock(blockNumber int64, at time.Time)
 	// SuggestLatestBlock reports blockNumber, its evidence taken at at: an
 	// answer's request send time, a push's receive time (spec §6.4).
 	SuggestLatestBlock(blockNumber int64, at time.Time)
@@ -229,6 +229,10 @@ type EvmStatePoller interface {
 	// Ask is the upstream's head Ask (spec §6.8): single-flight, its
 	// outcome to every waiter; it waits for the answer or ctx's end.
 	Ask(ctx context.Context, need HeadNeed, reason AskReason) HeadAnswer
+	// AskReaching is a number-need Ask for a caller that needs block: a
+	// joined fetch that answers below it is followed by one more Ask; at
+	// most W in all.
+	AskReaching(ctx context.Context, block int64, reason AskReason) HeadAnswer
 	// AskBackground is Ask without waiting for the answer.
 	AskBackground(need HeadNeed, reason AskReason)
 	// RefreshFinalizedBlock polls the finalized block in the background

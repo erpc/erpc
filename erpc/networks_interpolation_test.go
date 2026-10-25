@@ -138,11 +138,10 @@ func TestInterpolation_LatestTag_ToHex(t *testing.T) {
 	}
 }
 
-// After tag interpolation to hex, enrichStatePoller must still enrich using the original tag intent.
-// This test forces a forwarded eth_getBlockByNumber (latest) call to return a higher block number than the poller's background value,
-// and expects the poller's LatestBlock to be updated to that higher number via enrichment.
-// With the current bug (checking mutated params instead of original tag), enrichment won't run and the value won't update.
-func TestEnrichment_AfterInterpolation_UsesOriginalLatestTagIntent(t *testing.T) {
+// After tag interpolation to hex, the upstream was asked for eRPC's number,
+// not its own latest: its answer shows it has that block, not that its head
+// is there, so enrichStatePoller never moves its latest counter (spec §6.4).
+func TestEnrichment_AfterInterpolation_NeverMovesTheCounter(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -181,24 +180,14 @@ func TestEnrichment_AfterInterpolation_UsesOriginalLatestTagIntent(t *testing.T)
 	poller := eups.EvmStatePoller()
 	require.NotNil(t, poller)
 
-	// Now directly invoke enrichStatePoller with a synthetic response that has a higher block number (0x22222222).
-	// If enrichment uses the original tag intent (from req.EvmBlockRef) rather than mutated params,
-	// it should call SuggestLatestBlock and update the poller's latest block to 0x22222222.
+	// Enrich with a synthetic answer far above the poller's head: a head
+	// this answer would claim, were it read as the upstream's latest.
 	jrr := common.MustNewJsonRpcResponse(1, map[string]interface{}{"number": "0x22222222"}, nil)
 	resp2 := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr).SetUpstream(ups)
 	resp2.SetSentAt(time.Now())
-	// Retry a few times to avoid racing with background poller updates that may hold the Suggest lock
-	for i := 0; i < 10; i++ {
-		network.enrichStatePoller(ctx, "eth_getBlockByNumber", req, resp2)
-		time.Sleep(50 * time.Millisecond)
-		if poller.LatestBlock() >= int64(0x22222222) {
-			break
-		}
-	}
-
-	latest := poller.LatestBlock()
-	// Expect enrichment to have updated to 0x22222222 (572662306)
-	assert.Equal(t, int64(0x22222222), latest, "LatestBlock should be enriched to the block from response when original tag was 'latest'")
+	network.enrichStatePoller(ctx, "eth_getBlockByNumber", req, resp2)
+	time.Sleep(100 * time.Millisecond)
+	assert.Less(t, poller.LatestBlock(), int64(0x22222222), "an interpolated answer never moves the upstream's latest counter")
 }
 
 // When using EIP-1898 object params for eth_getBlockReceipts, we must preserve the object

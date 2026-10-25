@@ -841,6 +841,7 @@ func TestNetworksPaths_ForwardOnLiveNetwork(t *testing.T) {
 	})
 
 	t.Run("FutureBlockShortCircuitsToNull", func(t *testing.T) {
+		sampleBlockTime(t, network)
 		resp, err := forward(fmt.Sprintf(`{"jsonrpc":"2.0","id":7,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, head+100000))
 		require.NoError(t, err)
 		assert.Equal(t, "null", pathsResult(t, resp), "a block beyond every head is null without dispatch")

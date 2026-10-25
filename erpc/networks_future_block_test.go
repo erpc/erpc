@@ -346,7 +346,7 @@ func TestForward_FutureBlock_OptIn_FinalizedConfidence_UnfinalizedBlock_Dispatch
 	network.cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
 	network.cfg.Evm.EmptyResultConfidence = common.AvailbilityConfidenceFinalized
 	for _, u := range ups {
-		u.EvmStatePoller().SuggestFinalizedBlock(90)
+		u.EvmStatePoller().SuggestFinalizedBlock(90, time.Now())
 	}
 
 	// block 95 (0x5f) is above every finalized head (90) but below the latest ones.

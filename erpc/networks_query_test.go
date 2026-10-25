@@ -261,7 +261,7 @@ func setupQueryTestNetwork(t *testing.T, ctx context.Context, queryShim *common.
 	// The mocked chain's head: the range checks need a known latest block.
 	for _, u := range upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123)) {
 		u.EvmStatePoller().SuggestLatestBlock(qtLastNo, time.Now())
-		u.EvmStatePoller().SuggestFinalizedBlock(qtLastNo)
+		u.EvmStatePoller().SuggestFinalizedBlock(qtLastNo, time.Now())
 	}
 	return ntw
 }

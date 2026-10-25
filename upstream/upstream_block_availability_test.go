@@ -62,14 +62,17 @@ func (m *mockEvmStatePollerEnhanced) IsBlockFinalized(blockNumber int64) (bool, 
 	}
 	return blockNumber <= m.finalizedBlock, nil
 }
-func (m *mockEvmStatePollerEnhanced) SuggestFinalizedBlock(blockNumber int64)           {}
-func (m *mockEvmStatePollerEnhanced) SuggestLatestBlock(blockNumber int64, _ time.Time) {}
-func (m *mockEvmStatePollerEnhanced) ObserveHead(json.RawMessage, time.Time) bool       { return false }
+func (m *mockEvmStatePollerEnhanced) SuggestFinalizedBlock(blockNumber int64, _ time.Time) {}
+func (m *mockEvmStatePollerEnhanced) SuggestLatestBlock(blockNumber int64, _ time.Time)    {}
+func (m *mockEvmStatePollerEnhanced) ObserveHead(json.RawMessage, time.Time) bool          { return false }
 func (m *mockEvmStatePollerEnhanced) Ask(context.Context, common.HeadNeed, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
 func (m *mockEvmStatePollerEnhanced) AskBackground(common.HeadNeed, common.AskReason) {}
-func (m *mockEvmStatePollerEnhanced) RefreshFinalizedBlock()                          {}
+func (m *mockEvmStatePollerEnhanced) AskReaching(context.Context, int64, common.AskReason) common.HeadAnswer {
+	return common.HeadAnswer{}
+}
+func (m *mockEvmStatePollerEnhanced) RefreshFinalizedBlock() {}
 func (m *mockEvmStatePollerEnhanced) LatestReport() (int64, time.Time, bool) {
 	return 0, time.Time{}, false
 }
@@ -633,7 +636,8 @@ func (m *mockEvmStatePollerWithCustomBehavior) EarliestBlock(probe common.EvmAva
 func (m *mockEvmStatePollerWithCustomBehavior) IsBlockFinalized(blockNumber int64) (bool, error) {
 	return blockNumber <= m.finalizedBlock, nil
 }
-func (m *mockEvmStatePollerWithCustomBehavior) SuggestFinalizedBlock(blockNumber int64)           {}
+func (m *mockEvmStatePollerWithCustomBehavior) SuggestFinalizedBlock(blockNumber int64, _ time.Time) {
+}
 func (m *mockEvmStatePollerWithCustomBehavior) SuggestLatestBlock(blockNumber int64, _ time.Time) {}
 func (m *mockEvmStatePollerWithCustomBehavior) ObserveHead(json.RawMessage, time.Time) bool {
 	return false
@@ -642,7 +646,10 @@ func (m *mockEvmStatePollerWithCustomBehavior) Ask(context.Context, common.HeadN
 	return common.HeadAnswer{}
 }
 func (m *mockEvmStatePollerWithCustomBehavior) AskBackground(common.HeadNeed, common.AskReason) {}
-func (m *mockEvmStatePollerWithCustomBehavior) RefreshFinalizedBlock()                          {}
+func (m *mockEvmStatePollerWithCustomBehavior) AskReaching(context.Context, int64, common.AskReason) common.HeadAnswer {
+	return common.HeadAnswer{}
+}
+func (m *mockEvmStatePollerWithCustomBehavior) RefreshFinalizedBlock() {}
 func (m *mockEvmStatePollerWithCustomBehavior) LatestReport() (int64, time.Time, bool) {
 	return 0, time.Time{}, false
 }

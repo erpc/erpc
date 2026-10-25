@@ -3468,10 +3468,14 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 						// says nothing of what this upstream finalized (spec
 						// §6.4, #90).
 						if sentTag == "finalized" {
-							ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
+							ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber, sentAt)
 						}
 					case "latest":
-						ups.EvmStatePoller().SuggestLatestBlock(blockNumber, sentAt)
+						// As finalized: an interpolated answer shows the
+						// upstream has block N, not that its head is N.
+						if sentTag == "latest" {
+							ups.EvmStatePoller().SuggestLatestBlock(blockNumber, sentAt)
+						}
 						// An answer, never a vote: held by the tracker of
 						// the request's group.
 						selector := ""

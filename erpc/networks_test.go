@@ -1904,7 +1904,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		poller := pup1.EvmStatePoller()
 		poller.SuggestLatestBlock(9, time.Now())
-		poller.SuggestFinalizedBlock(8)
+		poller.SuggestFinalizedBlock(8, time.Now())
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
 		upr.OverrideOrderForTest(util.EvmNetworkId(123))
@@ -2104,11 +2104,11 @@ func TestNetwork_Forward(t *testing.T) {
 
 		poller1 := pup1.EvmStatePoller()
 		poller1.SuggestLatestBlock(9, time.Now())
-		poller1.SuggestFinalizedBlock(8)
+		poller1.SuggestFinalizedBlock(8, time.Now())
 
 		poller2 := pup2.EvmStatePoller()
 		poller2.SuggestLatestBlock(9, time.Now())
-		poller2.SuggestFinalizedBlock(8)
+		poller2.SuggestFinalizedBlock(8, time.Now())
 
 		pup1.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
 
@@ -2312,11 +2312,11 @@ func TestNetwork_Forward(t *testing.T) {
 
 		poller1 := pup1.EvmStatePoller()
 		poller1.SuggestLatestBlock(9, time.Now())
-		poller1.SuggestFinalizedBlock(8)
+		poller1.SuggestFinalizedBlock(8, time.Now())
 
 		poller2 := pup2.EvmStatePoller()
 		poller2.SuggestLatestBlock(9, time.Now())
-		poller2.SuggestFinalizedBlock(8)
+		poller2.SuggestFinalizedBlock(8, time.Now())
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
 		upr.OverrideOrderForTest(util.EvmNetworkId(123))
@@ -2504,11 +2504,11 @@ func TestNetwork_Forward(t *testing.T) {
 
 		poller1 := pup1.EvmStatePoller()
 		poller1.SuggestLatestBlock(9, time.Now())
-		poller1.SuggestFinalizedBlock(8)
+		poller1.SuggestFinalizedBlock(8, time.Now())
 
 		poller2 := pup2.EvmStatePoller()
 		poller2.SuggestLatestBlock(9, time.Now())
-		poller2.SuggestFinalizedBlock(8)
+		poller2.SuggestFinalizedBlock(8, time.Now())
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
 		upr.OverrideOrderForTest(util.EvmNetworkId(123))
@@ -2862,11 +2862,11 @@ func TestNetwork_Forward(t *testing.T) {
 
 		poller1 := pup1.EvmStatePoller()
 		poller1.SuggestLatestBlock(9, time.Now())
-		poller1.SuggestFinalizedBlock(8)
+		poller1.SuggestFinalizedBlock(8, time.Now())
 
 		poller2 := pup2.EvmStatePoller()
 		poller2.SuggestLatestBlock(9, time.Now())
-		poller2.SuggestFinalizedBlock(8)
+		poller2.SuggestFinalizedBlock(8, time.Now())
 
 		time.Sleep(100 * time.Millisecond)
 
@@ -8423,7 +8423,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ups := network.upstreamsRegistry.GetNetworkUpstreams(ctx, "evm:123")[0]
 		poller := ups.EvmStatePoller()
 		poller.SuggestLatestBlock(9, time.Now())
-		poller.SuggestFinalizedBlock(8)
+		poller.SuggestFinalizedBlock(8, time.Now())
 
 		// prepare the JSON‑RPC request
 		reqBody := []byte(`{
@@ -11136,7 +11136,7 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 		if err != nil {
 			t.Fatal(err)
 		}
-		upsList[0].EvmStatePoller().SuggestFinalizedBlock(h)
+		upsList[0].EvmStatePoller().SuggestFinalizedBlock(h, time.Now())
 		upsList[0].EvmStatePoller().SuggestLatestBlock(h, time.Now())
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -11263,13 +11263,13 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 	if err != nil {
 		t.Fatal(err)
 	}
-	upsList[0].EvmStatePoller().SuggestFinalizedBlock(fb1)
+	upsList[0].EvmStatePoller().SuggestFinalizedBlock(fb1, time.Now())
 	lb1, _ := common.HexToInt64("0x11118888")
 	upsList[0].EvmStatePoller().SuggestLatestBlock(lb1, time.Now())
 
 	if len(upsList) > 1 && upsList[1] != nil {
 		fb2, _ := common.HexToInt64("0x22227777")
-		upsList[1].EvmStatePoller().SuggestFinalizedBlock(fb2)
+		upsList[1].EvmStatePoller().SuggestFinalizedBlock(fb2, time.Now())
 		lb2, _ := common.HexToInt64("0x22228888")
 		upsList[1].EvmStatePoller().SuggestLatestBlock(lb2, time.Now())
 	}
@@ -11976,10 +11976,10 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 		// Clamped node: latest = 2000, finalized = 1900, upper bound = 2000 - 200 = 1800
 		// So effective finalized = min(1900, 1800) = 1800
 		clampedUpstream.EvmStatePoller().SuggestLatestBlock(2000, time.Now())
-		clampedUpstream.EvmStatePoller().SuggestFinalizedBlock(1900)
+		clampedUpstream.EvmStatePoller().SuggestFinalizedBlock(1900, time.Now())
 		// Unclamped node: latest = 1950, finalized = 1850, no upper bound
 		unclampedUpstream.EvmStatePoller().SuggestLatestBlock(1950, time.Now())
-		unclampedUpstream.EvmStatePoller().SuggestFinalizedBlock(1850)
+		unclampedUpstream.EvmStatePoller().SuggestFinalizedBlock(1850, time.Now())
 		time.Sleep(50 * time.Millisecond)
 
 		// Second-highest of effective finalized blocks {1800, 1850} = 1800
@@ -12091,7 +12091,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 
 		// Set blocks: latest = 3000, finalized = 2000 (both less than upper bound of 5000)
 		upsList[0].EvmStatePoller().SuggestLatestBlock(3000, time.Now())
-		upsList[0].EvmStatePoller().SuggestFinalizedBlock(2000)
+		upsList[0].EvmStatePoller().SuggestFinalizedBlock(2000, time.Now())
 		time.Sleep(50 * time.Millisecond)
 
 		// Since upper bound (5000) > finalized (2000), should return raw finalized (2000)
@@ -12234,10 +12234,10 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 		// Syncing node has higher effective finalized: latest = 3000, finalized = 2900, upper = 3000 - 50 = 2950
 		// effective finalized = min(2900, 2950) = 2900
 		syncingUpstream.EvmStatePoller().SuggestLatestBlock(3000, time.Now())
-		syncingUpstream.EvmStatePoller().SuggestFinalizedBlock(2900)
+		syncingUpstream.EvmStatePoller().SuggestFinalizedBlock(2900, time.Now())
 		// Synced node has lower finalized: latest = 2000, finalized = 1800
 		syncedUpstream.EvmStatePoller().SuggestLatestBlock(2000, time.Now())
-		syncedUpstream.EvmStatePoller().SuggestFinalizedBlock(1800)
+		syncedUpstream.EvmStatePoller().SuggestFinalizedBlock(1800, time.Now())
 		time.Sleep(50 * time.Millisecond)
 
 		// Mark one as syncing

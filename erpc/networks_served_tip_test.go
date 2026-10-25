@@ -2312,7 +2312,7 @@ func setServedTipFinalized(t *testing.T, u *upstream.Upstream, head int64) {
 		if u.EvmStatePoller().FinalizedBlock() >= head {
 			return true
 		}
-		u.EvmStatePoller().SuggestFinalizedBlock(head)
+		u.EvmStatePoller().SuggestFinalizedBlock(head, time.Now())
 		return u.EvmStatePoller().FinalizedBlock() >= head
 	}, 5*time.Second, time.Millisecond, "finalized head %d never applied on %s", head, u.Id())
 }

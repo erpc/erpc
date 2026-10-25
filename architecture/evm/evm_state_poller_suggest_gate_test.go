@@ -219,14 +219,14 @@ func TestSuggestFinalizedBlock_MajorJumpMatchingApplies(t *testing.T) {
 	up := newSuggestGateUpstream(123, "123", nil)
 	p := newGateTestPoller(t, up)
 
-	p.SuggestFinalizedBlock(1000)
+	p.SuggestFinalizedBlock(1000, time.Now())
 	require.Eventually(t, func() bool { return p.FinalizedBlock() == 1000 }, 2*time.Second, 10*time.Millisecond)
 
 	// The first suggestion's goroutine publishes the value before it releases
 	// the in-progress lock, so a single follow-up suggestion can be skipped.
 	// Re-suggest until it is taken.
 	require.Eventually(t, func() bool {
-		p.SuggestFinalizedBlock(1000 + gateTolerance + 1000) // MAJOR
+		p.SuggestFinalizedBlock(1000+gateTolerance+1000, time.Now()) // MAJOR
 		return p.FinalizedBlock() == 1000+gateTolerance+1000
 	}, 2*time.Second, 10*time.Millisecond, "verified major finalized jump must be applied")
 	require.False(t, up.isCordoned())
@@ -236,12 +236,12 @@ func TestSuggestFinalizedBlock_MajorJumpChainIdMismatchDroppedAndCordoned(t *tes
 	up := newSuggestGateUpstream(123, "999", nil)
 	p := newGateTestPoller(t, up)
 
-	p.SuggestFinalizedBlock(1000)
+	p.SuggestFinalizedBlock(1000, time.Now())
 	require.Eventually(t, func() bool { return p.FinalizedBlock() == 1000 }, 2*time.Second, 10*time.Millisecond)
 
 	// Re-suggest until taken: see TestSuggestFinalizedBlock_MajorJumpMatchingApplies.
 	require.Eventually(t, func() bool {
-		p.SuggestFinalizedBlock(5_000_000) // MAJOR wrong-chain height
+		p.SuggestFinalizedBlock(5_000_000, time.Now()) // MAJOR wrong-chain height
 		return up.isCordoned()
 	}, 2*time.Second, 10*time.Millisecond)
 	assert.Equal(t, int64(1000), p.FinalizedBlock(), "bogus major finalized jump must not enter the shared counter")

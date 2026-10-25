@@ -450,7 +450,7 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 		b.Fatal(err)
 	}
 	upsList[0].EvmStatePoller().SuggestLatestBlock(0x11118000, time.Now())
-	upsList[0].EvmStatePoller().SuggestFinalizedBlock(0x11117FFF)
+	upsList[0].EvmStatePoller().SuggestFinalizedBlock(0x11117FFF, time.Now())
 
 	time.Sleep(1*time.Second + 10*time.Millisecond)
 

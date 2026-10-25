@@ -844,6 +844,11 @@ func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) 
 	require.False(t, hashVoter(), "failed polls spanning W end the vote")
 	vendor.failLatest.Store(0)
 	restored("a success ends the failures")
+	// Failed polls whose requests started before that success, reported
+	// now and W apart, do not count: they say nothing of the node since.
+	network.intake.PollFailed("p-http", first.Add(-w))
+	network.intake.PollFailed("p-http", first)
+	require.True(t, hashVoter(), "a failure whose request started before the last success does not count")
 
 	time.Sleep(150 * time.Millisecond)
 	polled = vendor.latestPolls.Load()

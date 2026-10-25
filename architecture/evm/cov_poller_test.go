@@ -2,11 +2,13 @@ package evm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -642,14 +644,14 @@ func TestCovPoller_SuggestFinalizedBlock_SkippedWhileUpdateInProgress(t *testing
 	p, _, _ := covPollerNew(t, "cov-suggest-fin-busy", covPollerBlocks(1, 1))
 
 	p.finalizedUpdateInProgress.Lock()
-	p.SuggestFinalizedBlock(500)
+	p.SuggestFinalizedBlock(500, time.Now())
 	assert.Zero(t, p.FinalizedBlock(), "a concurrent suggestion is dropped synchronously")
 	p.finalizedUpdateInProgress.Unlock()
 
-	p.SuggestFinalizedBlock(500)
+	p.SuggestFinalizedBlock(500, time.Now())
 	require.Eventually(t, func() bool { return p.FinalizedBlock() == 500 }, 5*time.Second, 5*time.Millisecond)
 
-	p.SuggestFinalizedBlock(400)
+	p.SuggestFinalizedBlock(400, time.Now())
 	require.Eventually(t, func() bool {
 		if p.finalizedUpdateInProgress.TryLock() {
 			p.finalizedUpdateInProgress.Unlock()
@@ -690,9 +692,9 @@ func covPollerDebounce(p *EvmStatePoller, d time.Duration) {
 }
 
 // TestCovPoller_Ask holds the Ask's contract (spec §6.8): one fetch per
-// upstream in flight, its outcome to every waiter; only an answer sent
-// within the cadence debounces; node failures back off; a panic fails
-// every waiter.
+// upstream in flight, its outcome to every waiter; any fetch sent within
+// the cadence debounces, whatever its outcome; only node failures back off
+// further; a panic fails every waiter.
 func TestCovPoller_Ask(t *testing.T) {
 	t.Run("unusable pollers fetch nothing", func(t *testing.T) {
 		var nilPoller *EvmStatePoller
@@ -768,21 +770,25 @@ func TestCovPoller_Ask(t *testing.T) {
 		assert.Equal(t, common.AskFetched, a.Outcome)
 		assert.Equal(t, 2*cadence, p.BackedOffCadence(), "the bench reads the backoff")
 		b := p.Ask(ctx, common.HeadNeedNumber, common.AskRefresh)
-		assert.Equal(t, common.AskBackoff, b.Outcome)
-		assert.NoError(t, b.Err, "a backoff fetches nothing and fails nothing")
+		assert.Equal(t, common.AskInflight, b.Outcome, "within the cadence the failure is the outcome")
+		assert.Error(t, b.Err)
+		time.Sleep(cadence)
+		c := p.Ask(ctx, common.HeadNeedNumber, common.AskRefresh)
+		assert.Equal(t, common.AskBackoff, c.Outcome)
+		assert.NoError(t, c.Err, "a backoff fetches nothing and fails nothing")
 		assert.Equal(t, 1, up.callCount("eth_getBlockByNumber"))
-		time.Sleep(2 * cadence)
+		time.Sleep(cadence)
 		failing.Lock()
 		fail = false
 		failing.Unlock()
-		c := p.Ask(ctx, common.HeadNeedNumber, common.AskRefresh)
-		require.NoError(t, c.Err)
-		assert.Equal(t, common.AskFetched, c.Outcome)
-		assert.Equal(t, int64(9), c.Block)
+		d := p.Ask(ctx, common.HeadNeedNumber, common.AskRefresh)
+		require.NoError(t, d.Err)
+		assert.Equal(t, common.AskFetched, d.Outcome)
+		assert.Equal(t, int64(9), d.Block)
 		assert.Equal(t, cadence, p.backoff())
 	})
 
-	t.Run("a panic fails every waiter and never debounces", func(t *testing.T) {
+	t.Run("a panic fails every waiter, debounces one cadence, never backs off", func(t *testing.T) {
 		release := make(chan struct{})
 		var panicking sync.Mutex
 		explode := true
@@ -796,7 +802,8 @@ func TestCovPoller_Ask(t *testing.T) {
 			}
 			return covPollerBlocks(5, 1)(method, params)
 		})
-		covPollerDebounce(p, time.Hour)
+		const cadence = 300 * time.Millisecond
+		covPollerDebounce(p, cadence)
 		panics := telemetry.MetricUnexpectedPanicTotal.WithLabelValues("head-ask",
 			"project:test network:n/a upstream:cov-ask-panic where:fetch", common.ErrorFingerprint("vendor client bug"))
 		before := promUtil.ToFloat64(panics)
@@ -816,12 +823,40 @@ func TestCovPoller_Ask(t *testing.T) {
 		panicking.Lock()
 		explode = false
 		panicking.Unlock()
+		again := p.Ask(ctx, common.HeadNeedHash, common.AskRefresh)
+		assert.Equal(t, common.AskInflight, again.Outcome, "a failed fetch debounces for its cadence")
+		require.ErrorContains(t, again.Err, "panicked")
+		assert.Equal(t, cadence, p.backoff(), "only node failures back off")
+		time.Sleep(cadence)
 		a := p.Ask(ctx, common.HeadNeedHash, common.AskRefresh)
 		require.NoError(t, a.Err)
-		assert.Equal(t, common.AskFetched, a.Outcome, "a failed fetch never debounces")
+		assert.Equal(t, common.AskFetched, a.Outcome)
 		assert.Equal(t, int64(5), a.Block)
 	})
+
+	t.Run("eRPC's own refusals are no failed poll and never back off", func(t *testing.T) {
+		p, up, ctx := covPollerNew(t, "cov-ask-refused", func(string, []interface{}) (*common.NormalizedResponse, error) {
+			return nil, common.NewErrFailsafeCircuitBreakerOpen(common.ScopeUpstream, nil, nil)
+		})
+		in := &covPollerIntake{}
+		p.BindIntake(in)
+		const cadence = 20 * time.Millisecond
+		covPollerDebounce(p, cadence)
+		for range 3 {
+			require.Error(t, p.Ask(ctx, common.HeadNeedHash, common.AskRefresh).Err)
+			time.Sleep(cadence)
+		}
+		assert.Equal(t, 3, up.callCount("eth_getBlockByNumber"))
+		assert.Zero(t, in.failed.Load(), "an open breaker is no node failure: the vote never expires on it")
+		assert.Equal(t, cadence, p.backoff())
+	})
 }
+
+// covPollerIntake counts the poller's intake calls.
+type covPollerIntake struct{ polled, failed atomic.Int32 }
+
+func (i *covPollerIntake) Polled(string, json.RawMessage, HeaderKind, time.Time) { i.polled.Add(1) }
+func (i *covPollerIntake) PollFailed(string, time.Time)                          { i.failed.Add(1) }
 
 // A counter another path keeps fresh meets a number need, but never a hash
 // need: its local fetch still runs, so this instance keeps sampling block

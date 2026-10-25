@@ -356,7 +356,7 @@ func (e *EvmStatePoller) pollPass(full bool) {
 	var err error
 	if e.activePollSource() != nil {
 		// The poll source's own channel (spec §6.2); a full poll's
-		// number need right after it is met by the counter it moved.
+		// hash need right after it is met by the fetch it sent.
 		err = e.Ask(nctx, common.HeadNeedHash, common.AskPoll).Err
 	}
 	if full {
@@ -393,11 +393,12 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	var errs []error
 	ermu := &sync.Mutex{}
 
-	// Latest: an Ask with a number need (spec §6.8).
+	// Latest: an Ask with a hash need, a local fetch (spec §6.3, §6.8):
+	// a hash vote, and the block time sample of a poll-only network.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		err := e.Ask(ctx, common.HeadNeedNumber, common.AskPoll).Err
+		err := e.Ask(ctx, common.HeadNeedHash, common.AskPoll).Err
 		if err != nil {
 			e.logger.Debug().Err(err).Msg("failed to get latest block number in evm state poller")
 			ermu.Lock()
@@ -592,26 +593,31 @@ type headAsk struct {
 	failures int
 }
 
-// headFetch is one fetch of latest. answered, fork and the answer are
+// headFetch is one fetch of latest. answered, next and the answer are
 // guarded by headAsk.mu; header and err are final once done is closed.
 type headFetch struct {
 	sent time.Time
 	done chan struct{}
-	// fork: a fork Ask waits on it, so its header goes to intake as
-	// HeaderForkPolled.
+	// fork: a fork Ask started it, so its header goes to intake as
+	// HeaderForkPolled; set before it starts, never after.
 	fork     bool
 	answered bool
-	header   json.RawMessage
-	err      error
+	// next is the fork fetch queued while this one was in flight: it
+	// starts once this one ends.
+	next   *headFetch
+	header json.RawMessage
+	err    error
 }
 
 // Ask is the upstream's head Ask (spec §6.8). A number need is met by a
-// shared counter whose report is younger than the cadence; any need by
-// this instance's fetch in flight, a number or hash need also by an
-// answer sent within the cadence; else it fetches latest, cache reads
-// skipped and no rate permit taken, its header to intake as a hash vote.
-// It waits for that fetch's answer or ctx's end. While the upstream backs
-// off it fetches nothing and returns AskBackoff at once.
+// shared counter whose report is younger than the cadence; a number or
+// hash need by this instance's fetch in flight, or one sent within the
+// cadence whatever its outcome; a fork need only by a fetch sent after it,
+// since a header from before the pins moved is no evidence of the fork
+// (spec §6.3). Else it fetches latest, cache reads skipped and no rate
+// permit taken, its header to intake as a hash vote. It waits for that
+// fetch's answer, ctx's end or W, whichever comes first. While the
+// upstream backs off it fetches nothing and returns AskBackoff at once.
 func (e *EvmStatePoller) Ask(ctx context.Context, need common.HeadNeed, reason common.AskReason) common.HeadAnswer {
 	if !e.askable() {
 		return common.HeadAnswer{Outcome: common.AskBackoff}
@@ -627,15 +633,45 @@ func (e *EvmStatePoller) Ask(ctx context.Context, need common.HeadNeed, reason c
 	span.SetAttributes(attribute.String("outcome", string(outcome)))
 	a := common.HeadAnswer{Outcome: outcome}
 	if f != nil {
+		w := time.NewTimer(e.freshnessWindow())
+		defer w.Stop()
 		select {
 		case <-f.done:
 			a.Header, a.Err = f.header, f.err
 		case <-ctx.Done():
 			a.Err = ctx.Err()
+		case <-w.C:
+			a.Err = context.DeadlineExceeded
 		}
 	}
 	a.Block = e.LatestBlock()
 	return a
+}
+
+// AskReaching is an Ask with a number need for a caller that needs block
+// (spec §6.4 band): when the fetch it joined, sent before the caller came,
+// answers below block, it Asks once more, so the answer is no older than
+// the caller's need. Both waits together end at most W after it starts.
+func (e *EvmStatePoller) AskReaching(ctx context.Context, block int64, reason common.AskReason) common.HeadAnswer {
+	if !e.askable() {
+		return common.HeadAnswer{Outcome: common.AskBackoff}
+	}
+	ctx, cancel := context.WithTimeout(ctx, e.freshnessWindow())
+	defer cancel()
+	a := e.Ask(ctx, common.HeadNeedNumber, reason)
+	if a.Outcome == common.AskInflight && a.Err == nil && a.Block < block {
+		a = e.Ask(ctx, common.HeadNeedNumber, reason)
+	}
+	return a
+}
+
+// freshnessWindow is W of the upstream's network (health.FreshnessWindow).
+func (e *EvmStatePoller) freshnessWindow() time.Duration {
+	var bt time.Duration
+	if e.tracker != nil {
+		bt = e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
+	}
+	return health.FreshnessWindow(bt)
 }
 
 // AskBackground is Ask without waiting for the answer.
@@ -675,14 +711,19 @@ func (e *EvmStatePoller) askFetch(need common.HeadNeed) (*headFetch, common.AskO
 	a.mu.Lock()
 	f := a.last
 	switch {
+	case f != nil && !f.answered && need == common.HeadNeedFork:
+		if f.next == nil {
+			f.next = &headFetch{fork: true, done: make(chan struct{})}
+		}
+		next := f.next
+		a.mu.Unlock()
+		return next, common.AskFetched
 	case f != nil && !f.answered:
-		f.fork = f.fork || need == common.HeadNeedFork
 		a.mu.Unlock()
 		return f, common.AskInflight
-	// Only an answer debounces, never a failed fetch; nor does an answer
-	// a fork need: a header from before the pins moved is no evidence of
-	// the fork (spec §6.3).
-	case f != nil && f.header != nil && need != common.HeadNeedFork && now.Sub(f.sent) < cadence:
+	// Any outcome debounces for one cadence; only node failures back off
+	// further.
+	case f != nil && need != common.HeadNeedFork && now.Sub(f.sent) < cadence:
 		a.mu.Unlock()
 		return f, common.AskInflight
 	case f != nil && a.failures > 0 && now.Sub(f.sent) < backoffDelay(cadence, a.failures):
@@ -715,8 +756,15 @@ func (e *EvmStatePoller) runFetch(f *headFetch) {
 		case header != nil:
 			a.failures = 0
 		}
+		next := f.next
+		if next != nil {
+			next.sent, a.last = time.Now(), next
+		}
 		a.mu.Unlock()
 		close(f.done)
+		if next != nil {
+			go e.runFetch(next)
+		}
 	}()
 	ctx, cancel := context.WithTimeout(e.appCtx, askTimeout)
 	defer cancel()
@@ -1502,7 +1550,9 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	})
 }
 
-func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
+// SuggestFinalizedBlock reports blockNumber as the upstream's finalized
+// block, its evidence taken at at (a request's send time).
+func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64, at time.Time) {
 	// Best-effort, non-blocking update to avoid goroutine pile-up
 	// If an update is already in progress, skip this one
 	if !e.finalizedUpdateInProgress.TryLock() {
@@ -1549,7 +1599,7 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 			return
 		}
 
-		e.finalizedBlockShared.TryUpdate(ctx, blockNumber, time.Now())
+		e.finalizedBlockShared.TryUpdate(ctx, blockNumber, at)
 		e.logger.Trace().
 			Int64("blockNumber", blockNumber).
 			Msg("finalized block suggestion applied")
