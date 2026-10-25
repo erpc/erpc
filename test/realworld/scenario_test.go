@@ -405,6 +405,9 @@ func (s *scenario) watchStalls() {
 				continue
 			}
 			p := s.h.pods[pod]
+			if err := p.carryCounters(); err != nil {
+				s.violate("harness", "pod-%d: scrape before the restart: %v", pod+1, err)
+			}
 			log := p.quit()
 			s.logf("%s silent %s on pod-%d: SIGQUIT goroutine dump in %s; restarting pod-%d", c.name, since.Round(time.Second), pod+1, log, pod+1)
 			if err := p.start(); err != nil {

@@ -259,10 +259,14 @@ func scanFatal(path string) []string {
 // pod is one eRPC process: the -race binary with its own YAML config, or
 // the old image (X7).
 type pod struct {
-	h                               *harness
-	name                            string
-	idx                             int
-	old                             bool
+	h    *harness
+	name string
+	idx  int
+	old  bool
+	// carried are the invariant and refusal series scraped before each
+	// restart a stall dump forced; the end-of-scenario check adds them.
+	carriedMu                       sync.Mutex
+	carried                         []series
 	httpPort, grpcPort, metricsPort int
 	cfgPath                         string
 	logs                            []string

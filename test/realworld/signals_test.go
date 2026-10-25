@@ -141,13 +141,18 @@ next:
 // erpc_head_refusal_total{rule=retried_missing} is bandMisses: the
 // scenario's own probes of blocks no vendor has inside the refusal band,
 // each a retried miss by definition (§6.4, §17, §19). The harness runs it
-// on every new-image pod after each scenario.
+// on every new-image pod after each scenario; series from before a stall
+// restart count too (carryCounters).
 func (s *scenario) requireNoInvariantViolation(pod int, bandMisses float64) {
-	ss, err := s.h.pods[pod].scrape()
+	p := s.h.pods[pod]
+	ss, err := p.scrape()
 	if err != nil {
 		s.violate(s.name, "pod-%d: scrape: %v", pod+1, err)
 		return
 	}
+	p.carriedMu.Lock()
+	ss = append(ss, p.carried...)
+	p.carriedMu.Unlock()
 	exported := false
 	for _, x := range ss {
 		if x.name != "erpc_chain_tracker_invariant_violations_total" || x.labels["project"] != s.project || x.labels["network"] != s.network() {
@@ -214,4 +219,21 @@ func x8() spec {
 		stop()
 		s.blocks(25)
 	}}
+}
+
+// carryCounters keeps p's invariant and refusal series before a restart
+// resets them, so the end-of-scenario check still counts them.
+func (p *pod) carryCounters() error {
+	ss, err := p.scrape()
+	if err != nil {
+		return err
+	}
+	p.carriedMu.Lock()
+	defer p.carriedMu.Unlock()
+	for _, x := range ss {
+		if x.name == "erpc_chain_tracker_invariant_violations_total" || x.name == "erpc_head_refusal_total" {
+			p.carried = append(p.carried, x)
+		}
+	}
+	return nil
 }
