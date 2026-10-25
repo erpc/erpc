@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -88,14 +89,24 @@ func countRejected(reason string) {
 	telemetry.CounterHandle(telemetry.MetricSharedCounterRemoteRejectedTotal, reason).Inc()
 }
 
-// parseCounterState parses a stored or published counter state. A parse
-// error or t<=0 is malformed: counted, and read as missing (no v1 fallback,
-// #956).
-func parseCounterState(raw []byte) (CounterInt64State, bool) {
+// malformedPayloads holds, per counter key, the malformed payload last
+// counted for it: polls and resubscribes read one stored record again and
+// again, and it is one rejected state.
+var malformedPayloads sync.Map
+
+// parseCounterState parses key's stored or published counter state. A
+// parse error or t<=0 is malformed: counted once per distinct payload in a
+// row, and read as missing (no v1 fallback, #956).
+func parseCounterState(key string, raw []byte) (CounterInt64State, bool) {
 	var st CounterInt64State
 	if err := common.SonicCfg.Unmarshal(raw, &st); err != nil || st.UpdatedAt <= 0 {
-		countRejected(rejectMalformed)
+		if prev, seen := malformedPayloads.Swap(key, string(raw)); !seen || prev.(string) != string(raw) {
+			countRejected(rejectMalformed)
+		}
 		return CounterInt64State{}, false
+	}
+	if _, seen := malformedPayloads.Load(key); seen {
+		malformedPayloads.Delete(key)
 	}
 	return st, true
 }

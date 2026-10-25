@@ -167,7 +167,7 @@ func (r *sharedStateRegistry) buildInitialValueTask(counter *counterInt64) *util
 				return err
 			}
 
-			st, ok := parseCounterState(raw)
+			st, ok := parseCounterState(counter.key, raw)
 			if !ok {
 				r.logger.Debug().Str("key", counter.key).Msg("initial counter value is not a valid JSON state; treating as missing")
 				return nil

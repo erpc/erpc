@@ -904,7 +904,7 @@ func (p *PostgreSQLConnector) getOrCreateListener(ctx context.Context, key strin
 			p.logger.Trace().Str("key", key).Interface("payload", notification).Msg("received postgres notification")
 
 			// Parse and broadcast state
-			if st, ok := parseCounterState([]byte(notification.Payload)); ok {
+			if st, ok := parseCounterState(key, []byte(notification.Payload)); ok {
 				listener.mu.Lock()
 				for _, ch := range listener.watchers {
 					select {
@@ -1017,7 +1017,7 @@ func (p *PostgreSQLConnector) getCurrentValue(ctx context.Context, key string) (
 		return CounterInt64State{}, false, err
 	}
 
-	st, ok := parseCounterState(val)
+	st, ok := parseCounterState(key, val)
 	if !ok {
 		return CounterInt64State{}, false, nil
 	}

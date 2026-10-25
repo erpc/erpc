@@ -323,7 +323,7 @@ func (m *RedisPubSubManager) runMessageLoop() error {
 
 			if msg != nil && strings.HasPrefix(msg.Channel, "counter:") {
 				key := strings.TrimPrefix(msg.Channel, "counter:")
-				if st, ok := parseCounterState([]byte(msg.Payload)); ok {
+				if st, ok := parseCounterState(key, []byte(msg.Payload)); ok {
 					m.logger.Debug().
 						Str("key", key).
 						Int64("value", st.Value).
@@ -402,7 +402,7 @@ func (m *RedisPubSubManager) getCurrentValue(ctx context.Context, key string) (C
 		return CounterInt64State{}, false, err
 	}
 
-	st, ok := parseCounterState(val)
+	st, ok := parseCounterState(key, val)
 	return st, ok, nil
 }
 

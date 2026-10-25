@@ -761,7 +761,7 @@ func (c *counterInt64) tryGetRemoteState(ctx context.Context) (CounterInt64State
 		}
 		return CounterInt64State{}, false
 	}
-	st, ok := parseCounterState(remoteVal)
+	st, ok := parseCounterState(c.key, remoteVal)
 	if !ok {
 		c.registry.logger.Debug().Str("key", c.key).Msg("failed to parse remote counter state (treating as missing)")
 	}

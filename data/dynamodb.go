@@ -813,11 +813,10 @@ func (d *DynamoDBConnector) getSimpleValue(ctx context.Context, key string) (Cou
 	case v.N != nil:
 		raw = []byte(*v.N)
 	default:
-		countRejected(rejectMalformed)
 		return CounterInt64State{}, false, nil
 	}
 
-	st, ok := parseCounterState(raw)
+	st, ok := parseCounterState(key, raw)
 	if !ok {
 		return CounterInt64State{}, false, nil
 	}
