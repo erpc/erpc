@@ -208,8 +208,13 @@ completed attempt from its (response, error) pair:
 - **OutcomeSuccess**: all non-error, non-syncing-empty responses.
 
 **What bypasses the breaker entirely.** Hedge attempts (`isHedge == true`), internal
-state-poller probes (`req.IsInternal()`), and composite batch fan-out sub-requests
-(`req.IsCompositeRequest()`) all skip `TryAcquirePermit` and `Record`.
+state-poller, chain-id and state probes and subscription calls (`req.IsInternal()`), and
+composite batch fan-out sub-requests (`req.IsCompositeRequest()`) all skip
+`TryAcquirePermit` and `Record`.
+
+**Chain tracker fetches.** The headers, receipts and logs the chain tracker fetches skip
+upstreams whose breaker is open, and their outcomes never feed any breaker: a tracker
+fetch neither probes a half-open upstream nor opens a breaker on a failure.
 <SourceLink file="upstream/upstream_executor.go" lines="368-385" />
 
 **Interaction with routing.** When the breaker refuses a permit, it returns
@@ -537,7 +542,7 @@ window and require a high success ratio. This pairs well with the fast-trip brea
    intentional to avoid penalizing upstreams for aggressive hedging.
 5. **Internal probe calls bypass the breaker in both directions.** State-poller probes
    (`req.IsInternal()`) neither block on an open breaker nor record outcomes. An Open upstream
-   will receive internal probes but no user traffic.
+   will receive internal probes but no user traffic and no chain tracker fetches.
 6. **`circuitBreaker` at network scope causes startup failure.** Even `circuitBreaker: {}` in
    a network `failsafe` block causes `NewNetworkExecutor` to return an error and eRPC will not
    start. <SourceLink file="erpc/network_executor.go" lines="68-73" />
