@@ -494,13 +494,14 @@ One mechanism; each check has its own parameters:
 
 - Suspension reads the pins, never a single upstream's tip; `offAt` is the head of the pins.
 - "Bloom trusted for skipping" is separate state: it allows the receipts skip (§11), and suspension does not touch it.
+- While a check is suspended, a failing verdict only restarts the count to re-arm it: it does not count against the upstream, and nothing is fetched again.
 - `erpc_integrity_check_suspended_total{check}` counts each suspension.
 
 Owner: `architecture/evm/integrity_suspend.go`. Readers: integrity hooks, the receipts path.
 
 ### 6.10 Evidence quorum: is content corroborated?
 
-- 2 distinct vendors (`Upstream.VendorName`) when the network has 2 or more; else 1.
+- 2 distinct vendors (`Upstream.VendorName`) when the network has 2 or more; else 1. An upstream without a vendor name is a vendor of its own.
 - One predicate, read by: finalized anchors, suspension, the integrity-on `eth_getLogs` fallback, the bloom suspension, `PinFresh`.
 
 Owner: `architecture/evm/chain_tracker_rules.go`.
@@ -663,7 +664,7 @@ A ws tap's lag is the age of the block after its cursor: how long that block has
   - Both skips apply only to headers whose hash recomputes: `blockHashRecompute` runs for this decision with integrity off too.
   - Chain profiles can turn the bloom check and both skips off.
   - Checked 2026-10-14, one block each: bloom equal on eth, sepolia, hoodi, monad.
-- Fallback: receipts that fail on every upstream for 5s switch that block to `eth_getLogs` by `blockHash`. Its logs must name the block hash and pass the bloom check. With integrity on, the fallback also needs log-index contiguity and the evidence quorum agreeing on the logs; it proves less than `receiptsRoot`.
+- Fallback: a block switches to `eth_getLogs` by `blockHash` when its receipts have failed on every upstream for 5s, or when no receipts fetch on the network has succeeded for 5s: on a fast chain a block leaves the window sooner. A receipts success ends the network-wide switch. Its logs must name the block hash and pass the bloom check. With integrity on, the fallback also needs log-index contiguity and the evidence quorum agreeing on the logs; it proves less than `receiptsRoot`.
 - A `logs` subscribe is refused with `ErrNoSubscriptionSource` when no upstream serves a usable method, or while every fetch of each usable method has failed for 60s. During that refusal, the feed fetches the head block's receipts once per cadence; the first success ends it.
 - Auto-ignored methods (`IgnoreMethod`) expire after 10 min, so a vendor that answered "unsupported" during a deploy serves again.
 - Logs travel as verbatim JSON. Receipt logs carry `blockTimestamp`; `integrity.Log` does not model it.
