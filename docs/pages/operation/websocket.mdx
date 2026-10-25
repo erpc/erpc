@@ -222,6 +222,32 @@ Every out-of-range end counts in `erpc_tap_out_of_range_total{reason}`.
 | one block's receipts not served | other upstreams, then `eth_getLogs`; then `logs` connections close `1013` | 60s |
 | chain makes no blocks | nothing reconnects or resubscribes | — |
 
+## gRPC StreamBlocks
+
+With [`server.grpcEnabled`](/config/server), the `StreamService.StreamBlocks` RPC ([`evm/stream.proto`](https://github.com/blockchain-data-standards/manifesto)) streams block headers from the same chain feed as ws `newHeads`. Auth runs once when the stream opens, as for `eth_getBlockByNumber`; rate limits count once at open, as for a ws subscription.
+
+**Resume.** `StreamBlocksRequest` takes `fromBlock` and `fromHash`: the number and hash of the last header the client applied.
+
+| Request | Stream starts |
+|---|---|
+| neither set | after the confirmed head |
+| both set, cursor on the canonical chain | at `fromBlock + 1`, replaying every block up to the confirmed head |
+| both set, cursor on a dropped branch | at the fork point + 1 |
+| both set, cursor older than `chainTracker.maxBackfill` or a hash no upstream serves | ends with `OUT_OF_RANGE` |
+| only one set | `INVALID_ARGUMENT` |
+
+**Reorgs.** Headers are ascending; after a reorg the stream resends from the fork point + 1. A header whose number is at or below the last one received replaces that number and every number above it. Each header carries `hash` and `parentHash`, so a client can check the linkage itself.
+
+**End codes.**
+
+| Code | Cause | Client action |
+|---|---|---|
+| `UNAVAILABLE` | 60s with no block while the confirmed head stands above the cursor, or one `Send` blocked for 10s | reconnect with the last applied cursor |
+| `OUT_OF_RANGE` | the cursor left the window, or no upstream serves it | backfill with unary calls, then reopen |
+| `INVALID_ARGUMENT` | only one of `fromBlock`, `fromHash`, or a `fromHash` not 32 bytes | fix the request |
+
+A stream at the head of a chain that makes no blocks waits without end.
+
 ## WebSocket upstreams
 
 To support subscriptions, configure at least one upstream with a `ws://` or `wss://` endpoint:
