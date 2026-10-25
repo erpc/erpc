@@ -19,10 +19,12 @@ import (
 
 // TestRealWorld runs the catalogue scenarios (review §3): network-scoped
 // ones concurrently on shared pods, pod-scoped ones each in their own phase
-// with fresh pods and redis. REALWORLD_ALONE=C1,X4 instead runs only the
-// named scenarios, each alone in its own phase; REALWORLD_PHASES=shared,n4
-// runs only the named phases.
+// with fresh pods and redis (selectedPhases).
 func TestRealWorld(t *testing.T) {
+	phases, err := selectedPhases()
+	if err != nil {
+		t.Fatal(err)
+	}
 	root, err := os.MkdirTemp("", "erpc-realworld-run-")
 	if err != nil {
 		t.Fatal(err)
@@ -37,12 +39,23 @@ func TestRealWorld(t *testing.T) {
 		}
 		_ = os.RemoveAll(root)
 	})
-	phases := []struct {
-		name  string
-		chain int64
-		specs []spec
-	}{
-		{"shared", 9101, []spec{x1(), c1(), c3(), u3(), u8(false), u8(true), u9(), n5(), k2(), d1(), d2()}},
+	for _, ph := range phases {
+		r.phase(t, ph.name, ph.chain, ph.specs)
+	}
+}
+
+// phaseSpec is one phase: its scenarios share fresh pods and redis, each on
+// its own chain id from chain.
+type phaseSpec struct {
+	name  string
+	chain int64
+	specs []spec
+}
+
+// catalogue is every phase of the suite, in run order.
+func catalogue() []phaseSpec {
+	return []phaseSpec{
+		{"shared", 9101, []spec{x1(), c1(), c3(), u3(), n5(), k2(), d1(), d2()}},
 		{"n4", 9201, []spec{n4()}},
 		{"x4", 9301, []spec{x4()}},
 		{"u3-lone", 9501, []spec{u3Lone()}},
@@ -56,29 +69,40 @@ func TestRealWorld(t *testing.T) {
 		{"c9", 10301, []spec{c9()}},
 		{"fetch", 10401, []spec{u1(), c4(), c7(), d8()}},
 		{"fetch-vars", 10501, []spec{u16(), u17()}},
+		{"integrity", 10601, []spec{u8(false), u8(true), u9(), u9Trunc(1), u9Trunc(2), u9Bloom(1), u9Bloom(2), k5()}},
 	}
+}
+
+// selectedPhases are the phases this run runs: REALWORLD_ALONE=C1,X4 runs
+// only the named scenarios, each alone in its own phase;
+// REALWORLD_PHASES=shared,n4 runs only the named phases; else every phase.
+func selectedPhases() ([]phaseSpec, error) {
+	all := catalogue()
 	if alone := os.Getenv("REALWORLD_ALONE"); alone != "" {
 		known := map[string]spec{}
-		for _, ph := range phases {
+		for _, ph := range all {
 			for _, sp := range ph.specs {
 				known[sp.name] = sp
 			}
 		}
+		var out []phaseSpec
 		for i, name := range strings.Split(alone, ",") {
 			sp, ok := known[name]
 			if !ok {
-				t.Fatalf("REALWORLD_ALONE names %q, no scenario", name)
+				return nil, fmt.Errorf("REALWORLD_ALONE names %q, no scenario", name)
 			}
-			r.phase(t, "alone-"+name, 9401+int64(i), []spec{sp})
+			out = append(out, phaseSpec{"alone-" + name, 9401 + int64(i), []spec{sp}})
 		}
-		return
+		return out, nil
 	}
 	only := os.Getenv("REALWORLD_PHASES")
-	for _, ph := range phases {
+	var out []phaseSpec
+	for _, ph := range all {
 		if only == "" || slices.Contains(strings.Split(only, ","), ph.name) {
-			r.phase(t, ph.name, ph.chain, ph.specs)
+			out = append(out, ph)
 		}
 	}
+	return out, nil
 }
 
 // reconnectSlack is harness time, not spec: a scrape, a dial, a backoff
@@ -259,116 +283,6 @@ func halfOpenWsA(s *scenario) {
 		s.violate(s.name, "pod-1: %s not a hash voter again within %s of the path healing", up, silentReconnect+reconnectSlack)
 	}
 	s.blocks(25)
-}
-
-// U8: ws-a pushes headers whose hash the header does not hash to, for 100
-// blocks. No client ever receives one (the oracle rejects unknown hashes).
-// With integrity on, intake drops them and counts the violations on ws-a
-// only. With integrity off, ws-b registers after the network started: its
-// heads vote from the first one, so ws-a's never stand alone.
-func u8(integrity bool) spec {
-	name := "U8-off"
-	var late []string
-	if integrity {
-		name = "U8-on"
-	} else {
-		late = []string{"ws-b"}
-	}
-	return spec{name: name, integrity: integrity, late: late, bound: settleDelivery, body: func(s *scenario) {
-		s.blocks(25)
-		ws := s.vendors["ws-a"]
-		ws.Update(func(f *chainsim.Faults) { f.WrongHashes = true })
-		s.blocks(100)
-		ws.Update(func(f *chainsim.Faults) { f.WrongHashes = false })
-		s.blocks(25)
-		if !integrity {
-			return
-		}
-		up := s.upstream("ws-a")
-		for pod := range s.h.pods {
-			if v, _ := s.metric(pod, "erpc_chain_tracker_source_heads_total", map[string]string{"upstream": up, "outcome": "gated_integrity"}); v == 0 {
-				s.violate(name, "pod-%d: no %s header counted gated_integrity", pod+1, up)
-			}
-			mine, _ := s.metric(pod, "erpc_integrity_violation_total", map[string]string{"upstream": up})
-			all, _ := s.metric(pod, "erpc_integrity_violation_total", nil)
-			if mine == 0 {
-				s.violate(name, "pod-%d: erpc_integrity_violation_total counts nothing on %s", pod+1, up)
-			}
-			if all > mine {
-				s.violate(name, "pod-%d: erpc_integrity_violation_total counts %v on upstreams other than %s", pod+1, all-mine, up)
-			}
-		}
-	}}
-}
-
-// u9VendorBLatency is harness, not spec: enough for the selection policy
-// to rank vendor-b's upstreams below vendor-a's.
-const u9VendorBLatency = 100 * time.Millisecond
-
-// U9: vendor-a (ws-a and http-a) serves truncated receipts, then a forged
-// log, then a zero bloom, 50 blocks each, integrity on. Receipts are
-// refetched from vendor-b: every client's logs equal the canonical logs,
-// no forged log reaches a client, and violations count on vendor-a only.
-// vendor-b's links run u9VendorBLatency slower throughout, so the
-// selection policy asks vendor-a first and its faults are exercised.
-func u9() spec {
-	return spec{name: "U9", integrity: true, bound: healthyDelivery, body: func(s *scenario) {
-		for _, key := range []string{"ws-b", "http-b"} {
-			for _, p := range s.h.pods {
-				s.proxies[key].set(p, linkFaults{Latency: u9VendorBLatency})
-			}
-		}
-		s.blocks(25)
-		va := []*chainsim.Vendor{s.vendors["ws-a"], s.vendors["http-a"]}
-		vb := []*chainsim.Vendor{s.vendors["ws-b"], s.vendors["http-b"]}
-		calls := func(vs []*chainsim.Vendor) (n int64) {
-			for _, v := range vs {
-				st := v.Stats()
-				n += st.ReceiptsCalls + st.LogsCalls
-			}
-			return n
-		}
-		var during, duringB int64
-		for _, fault := range []func(*chainsim.Faults, bool){
-			func(f *chainsim.Faults, on bool) { f.TruncReceipts = on },
-			func(f *chainsim.Faults, on bool) { f.ForgedLog = on },
-			func(f *chainsim.Faults, on bool) { f.WrongBloom = on },
-		} {
-			c0, b0 := calls(va), calls(vb)
-			for _, v := range va {
-				v.Update(func(f *chainsim.Faults) { fault(f, true) })
-			}
-			s.blocks(50)
-			for _, v := range va {
-				v.Update(func(f *chainsim.Faults) { fault(f, false) })
-			}
-			during += calls(va) - c0
-			duringB += calls(vb) - b0
-			s.blocks(10)
-		}
-		s.logf("under vendor-a's faults, vendor-a answered %d receipts calls, vendor-b %d", during, duringB)
-		if during == 0 {
-			s.violate("U9", "no receipts call reached vendor-a during its faults: nothing exercised them")
-		}
-		var mine, other float64
-		for pod := range s.h.pods {
-			for _, key := range []string{"ws-a", "http-a"} {
-				v, _ := s.metric(pod, "erpc_integrity_violation_total", map[string]string{"upstream": s.upstream(key)})
-				mine += v
-			}
-			for _, key := range []string{"ws-b", "http-b"} {
-				v, _ := s.metric(pod, "erpc_integrity_violation_total", map[string]string{"upstream": s.upstream(key)})
-				other += v
-			}
-		}
-		if during > 0 && mine == 0 {
-			s.violate("U9", "vendor-a answered %d faulty receipts calls; erpc_integrity_violation_total counts none on its upstreams", during)
-		}
-		if other > 0 {
-			s.violate("U9", "erpc_integrity_violation_total counts %v on vendor-b, which served no fault", other)
-		}
-		s.blocks(25)
-	}}
 }
 
 // N5: the network closes every socket to ws-a every 2 blocks, for 30

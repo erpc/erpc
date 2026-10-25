@@ -34,6 +34,7 @@ type Faults struct {
 	TruncReceipts bool          // receipts without their last 10
 	ForgedLog     bool          // receipts whose first log's data is forged
 	WrongBloom    bool          // receipts whose logsBloom is zero
+	OffBloom      bool          // receipts whose logsBloom is set but not the header's (bloomMatch)
 	NoReceipts    bool          // eth_getBlockReceipts answers -32601
 	Throttled     bool          // HTTP 429; -32005 over ws
 	Capacity      bool          // -32005 compute units exceeded, on every method
@@ -47,6 +48,7 @@ type Faults struct {
 	Ahead         uint64        // eth_blockNumber and the latest tag claim a head this far above its own
 	Syncing       bool          // eth_syncing answers in progress; still serves what it holds
 	FinalityDepth uint64        // finalized tag this far below its head; 0 is FinalizedLag
+	StaleState    uint64        // eth_call at latest (or no block) executes this far below its head; numbered calls are right
 }
 
 // Stats are what a vendor counted since it started.
@@ -720,10 +722,10 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		if f.TruncReceipts {
 			drop = 10
 		}
-		if drop == 0 && !f.WrongBloom && !f.ForgedLog {
+		if drop == 0 && !f.WrongBloom && !f.OffBloom && !f.ForgedLog {
 			v.served[h] = true
 		}
-		return b.receipts(f.WrongBloom, drop, f.ForgedLog), nil
+		return b.receipts(f.WrongBloom, f.OffBloom, drop, f.ForgedLog), nil
 	case "eth_getLogs":
 		v.logsCalls.Add(1)
 		if f.LogsDown {
@@ -794,7 +796,7 @@ func (v *Vendor) trapped(params []interface{}) (interface{}, bool) {
 	tr.AnsweredAt = time.Now()
 	v.receipts[h]++
 	v.receiptsCalls.Add(1)
-	return b.receipts(true, 0, false), true
+	return b.receipts(true, false, 0, false), true
 }
 
 // Multicall3 and its getBlockNumber() selector: the call returns the
@@ -821,6 +823,9 @@ func (v *Vendor) callLocked(params []interface{}) (interface{}, *rpcError) {
 		return "0x0", nil
 	}
 	at := v.tip
+	if s := v.faults.StaleState; s > 0 {
+		at = v.byNumberLocked(max(v.tip.Number, v.chain.canon[0].Number+s) - s)
+	}
 	if len(params) > 1 {
 		switch ref := params[1].(type) {
 		case string:

@@ -2,7 +2,10 @@ package realworld
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -10,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/data"
 	"gopkg.in/yaml.v3"
 )
 
@@ -217,11 +222,13 @@ func scanFatal(path string) []string {
 // --- pods ---
 //
 
-// pod is one eRPC process: the -race binary with its own YAML config.
+// pod is one eRPC process: the -race binary with its own YAML config, or
+// the old image (X7).
 type pod struct {
 	h                               *harness
 	name                            string
 	idx                             int
+	old                             bool
 	httpPort, grpcPort, metricsPort int
 	cfgPath                         string
 	logs                            []string
@@ -232,10 +239,11 @@ type pod struct {
 	exited chan struct{}
 }
 
-// startPods writes each pod's config and boots it.
-func (h *harness) startPods(n int, nets []*netSpec) {
+// startPods writes each pod's config and boots it; pods in old run the old
+// image.
+func (h *harness) startPods(n int, old []int, nets []*netSpec) {
 	for i := range n {
-		p := &pod{h: h, idx: i, name: fmt.Sprintf("pod-%d", i+1),
+		p := &pod{h: h, idx: i, name: fmt.Sprintf("pod-%d", i+1), old: slices.Contains(old, i),
 			httpPort: freePort(h.t), grpcPort: freePort(h.t), metricsPort: freePort(h.t)}
 		p.cfgPath = filepath.Join(h.dir, p.name+".yaml")
 		if err := os.WriteFile(p.cfgPath, podConfig(p, h.redis, nets), 0o644); err != nil {
@@ -327,11 +335,16 @@ func (p *pod) start() error {
 		return err
 	}
 	p.logs = append(p.logs, stdout.Name(), stderr.Name())
-	cmd := exec.Command(erpcBin, p.cfgPath)
+	bin := erpcBin
+	if p.old {
+		bin = oldBin
+	}
+	cmd := exec.Command(bin, p.cfgPath)
 	cmd.Dir = p.h.dir
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if len(p.h.vars) > 0 {
+	// The old image has no realworld_vars.go to read them.
+	if len(p.h.vars) > 0 && !p.old {
 		var kvs []string
 		for name, d := range p.h.vars {
 			kvs = append(kvs, name+"="+d.String())
@@ -569,37 +582,57 @@ func sumOf(ss []series, name string, match map[string]string) (float64, bool) {
 
 type redisServer struct {
 	port   int
+	dir    string
 	cmd    *exec.Cmd
 	exited chan struct{}
 }
 
 func startRedis(t *testing.T, dir string) *redisServer {
-	r := &redisServer{port: freePort(t)}
-	log, err := os.Create(filepath.Join(dir, "redis.log"))
+	r := &redisServer{port: freePort(t), dir: dir}
+	if err := r.launch(); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// launch starts redis-server on r's port, with no data, and waits until it
+// answers PING.
+func (r *redisServer) launch() error {
+	log, err := os.OpenFile(filepath.Join(r.dir, "redis.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
-	r.cmd = exec.Command("redis-server", "--port", strconv.Itoa(r.port), "--bind", "127.0.0.1", "--save", "", "--appendonly", "no", "--dir", dir, "--protected-mode", "no")
-	r.cmd.Stdout, r.cmd.Stderr = log, log
-	r.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := r.cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	r.exited = make(chan struct{})
-	go func() {
-		_ = r.cmd.Wait()
+	cmd := exec.Command("redis-server", "--port", strconv.Itoa(r.port), "--bind", "127.0.0.1", "--save", "", "--appendonly", "no", "--dir", r.dir, "--protected-mode", "no")
+	cmd.Stdout, cmd.Stderr = log, log
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
 		_ = log.Close()
-		close(r.exited)
+		return err
+	}
+	exited := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		_ = log.Close()
+		close(exited)
 	}()
+	r.cmd, r.exited = cmd, exited
 	deadline := time.Now().Add(10 * time.Second)
 	for !r.ping() {
 		if time.Now().After(deadline) {
 			r.stop()
-			t.Fatalf("redis-server on %d does not answer PING; see %s", r.port, log.Name())
+			return fmt.Errorf("redis-server on %d does not answer PING; see %s", r.port, log.Name())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return r
+	return nil
+}
+
+// down stops redis-server for d, then starts it again on its port with no
+// data, as a redis without persistence comes back (§19 N6).
+func (r *redisServer) down(d time.Duration) error {
+	r.stop()
+	time.Sleep(d)
+	return r.launch()
 }
 
 func (r *redisServer) ping() bool {
@@ -607,7 +640,11 @@ func (r *redisServer) ping() bool {
 	return err == nil && reply == "+PONG"
 }
 
-// do sends one command and returns the first line of its reply.
+// errRedisNil is a GET of a key redis does not hold.
+var errRedisNil = errors.New("redis: nil")
+
+// do sends one command and returns its reply's first line, or a bulk
+// reply's value.
 func (r *redisServer) do(args ...string) (string, error) {
 	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", r.port), time.Second)
 	if err != nil {
@@ -623,24 +660,58 @@ func (r *redisServer) do(args ...string) (string, error) {
 	if _, err := io.WriteString(c, b.String()); err != nil {
 		return "", err
 	}
-	line, err := bufio.NewReader(c).ReadString('\n')
+	rd := bufio.NewReader(c)
+	line, err := rd.ReadString('\n')
 	if err != nil {
 		return "", err
 	}
 	line = strings.TrimRight(line, "\r\n")
-	if strings.HasPrefix(line, "-") {
+	switch {
+	case strings.HasPrefix(line, "-"):
 		return "", fmt.Errorf("redis %s: %s", args[0], line[1:])
+	case line == "$-1":
+		return "", errRedisNil
+	case strings.HasPrefix(line, "$"):
+		n, err := strconv.Atoi(line[1:])
+		if err != nil {
+			return "", fmt.Errorf("redis %s: bulk reply %q", args[0], line)
+		}
+		body := make([]byte, n+2)
+		if _, err := io.ReadFull(rd, body); err != nil {
+			return "", err
+		}
+		return string(body[:n]), nil
 	}
 	return line, nil
 }
 
-// skewCounter writes shared counter key (without the cluster key) as a
-// peer whose clock runs skew ahead would: its state with UpdatedAt now +
-// skew, stored and published as data/shared_state_variable.go and
-// data/redis.go do ("<cluster>/<key>:value", channel "counter:<cluster>/<key>").
-func (r *redisServer) skewCounter(key string, value int64, skew time.Duration) error {
+// upstreamCounterKey is upstream u's shared counter of kind (latestBlock,
+// finalizedBlock), without the cluster key, as
+// architecture/evm/evm_state_poller.go names it from
+// common.UniqueUpstreamKey: <schema>/<kind>/<id>/sha256(id, endpoint).
+func upstreamCounterKey(u upSpec, kind string) string {
+	sum := sha256.Sum256([]byte(u.id + u.endpoint))
+	return fmt.Sprintf("%s/%s/%s/%s", data.CounterValueSchemaVersion, kind, u.id, hex.EncodeToString(sum[:]))
+}
+
+// counter is the state shared counter key (without the cluster key) holds,
+// as data/shared_state_variable.go stores it at "<cluster>/<key>:value".
+func (r *redisServer) counter(key string) (data.CounterInt64State, error) {
+	var st data.CounterInt64State
+	raw, err := r.do("GET", clusterKey+"/"+key+":value")
+	if err == nil {
+		err = json.Unmarshal([]byte(raw), &st)
+	}
+	return st, err
+}
+
+// writeCounter stores and publishes shared counter key (without the cluster
+// key) as another instance does (data/shared_state_variable.go
+// updateRemoteState, data/redis.go): value with UpdatedAt at, by writer,
+// at "<cluster>/<key>:value" and on channel "counter:<cluster>/<key>".
+func (r *redisServer) writeCounter(key string, value int64, at time.Time, writer string) error {
 	full := clusterKey + "/" + key
-	st, err := json.Marshal(map[string]interface{}{"v": value, "t": time.Now().Add(skew).UnixMilli(), "b": "skewed-peer"})
+	st, err := json.Marshal(data.CounterInt64State{Value: value, UpdatedAt: at.UnixMilli(), UpdatedBy: writer})
 	if err != nil {
 		return err
 	}
@@ -649,12 +720,6 @@ func (r *redisServer) skewCounter(key string, value int64, skew time.Duration) e
 	}
 	_, err = r.do("PUBLISH", "counter:"+full, string(st))
 	return err
-}
-
-// networkHeadKey is the network's delivered-head counter
-// (erpc/networks_registry.go).
-func networkHeadKey(project, network string) string {
-	return fmt.Sprintf("network/%s/%s/latestBlock", project, network)
 }
 
 func (r *redisServer) stop() {
@@ -685,6 +750,10 @@ type netSpec struct {
 	// cacheFinal (no expiry), unfinalized ones in cacheRecent.
 	cache bool
 	ups   []upSpec
+	// integrityOff are pods whose config leaves integrity off (K5);
+	// checks are integrity checks enabled beyond the level's.
+	integrityOff []int
+	checks       []string
 }
 
 // upSpec is one upstream; every pod names the same endpoint, as pods of
@@ -726,16 +795,26 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 			order = append(order, n.project)
 		}
 		if !n.minimal {
-			evm := m{
-				"chainId":      n.chainID,
-				"chainTracker": m{"reorgWindow": reorgWindow, "maxBackfill": maxBackfill.String()},
+			evm := m{"chainId": n.chainID}
+			// The old image decodes config strictly and has no chainTracker
+			// (§18 rollout: new keys only after the old image is gone).
+			if !p.old {
+				evm["chainTracker"] = m{"reorgWindow": reorgWindow, "maxBackfill": maxBackfill.String()}
 			}
 			for k, v := range n.evm {
 				evm[k] = v
 			}
 			nw := m{"architecture": "evm", "evm": evm}
-			if n.integrity {
-				nw["integrity"] = m{"level": "authoritative"}
+			if n.integrity && !slices.Contains(n.integrityOff, p.idx) {
+				integ := m{"level": "authoritative"}
+				if len(n.checks) > 0 {
+					cs := m{}
+					for _, id := range n.checks {
+						cs[id] = m{"enabled": true}
+					}
+					integ["checks"] = cs
+				}
+				nw["integrity"] = integ
 			}
 			for k, v := range n.extra {
 				nw[k] = v

@@ -397,6 +397,21 @@ func (c *Chain) Reorg(depth int) (old []*Block, tip *Block) {
 	return old, tip
 }
 
+// Rewind drops the top depth canonical blocks, as a chain whose nodes roll
+// their head back does; the next blocks mint on the shortened chain. The
+// dropped blocks become orphans that vendors still serve by hash. It
+// returns the dropped blocks, oldest first, and the new head.
+func (c *Chain) Rewind(depth int) (old []*Block, tip *Block) {
+	c.mu.Lock()
+	keep := len(c.canon) - depth
+	old = slices.Clone(c.canon[keep:])
+	c.canon = c.canon[:keep]
+	tip = c.tipLocked()
+	c.mu.Unlock()
+	c.refresh()
+	return old, tip
+}
+
 // StartFork moves vs onto a minority branch that leaves the canonical chain
 // depth blocks below its head and runs length blocks from there; it grows
 // every tick until EndFork.
