@@ -21,42 +21,9 @@ type linkFaults struct {
 	// RSTMid: once a pod request names this method, the vendor→pod chunk
 	// that follows is cut half way (FIN, then RST), so the answer's body
 	// ends mid-way.
-	RSTMid string
-	// RSTFirst, when set, is shared by every link of one pod: only the
-	// first request with given params is cut, on whichever link carries
-	// it, so each fetch's first attempt is cut and its failover is not.
-	RSTFirst  *firstCuts
+	RSTMid    string
 	BlackHole bool // forward nothing either way; sockets stay open (half-open)
 	Refuse    bool // reset new connections at once
-}
-
-// firstCuts records the request params a cut already took.
-type firstCuts struct {
-	mu   sync.Mutex
-	seen map[string]bool
-}
-
-// first reports whether request b is the first with its params; true for
-// every request when f is nil.
-func (f *firstCuts) first(b []byte) bool {
-	if f == nil {
-		return true
-	}
-	i := bytes.Index(b, []byte(`"params"`))
-	if i < 0 {
-		return true
-	}
-	key := string(b[i:])
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.seen == nil {
-		f.seen = make(map[string]bool)
-	}
-	if f.seen[key] {
-		return false
-	}
-	f.seen[key] = true
-	return true
 }
 
 // proxy stands between every pod and one vendor. Pods share its address,
@@ -543,7 +510,7 @@ func (l *link) pipe(pc *pconn, src, dst net.Conn, down, up *headerScan) {
 				pc.reset()
 				return
 			}
-			if up != nil && f.RSTMid != "" && bytes.Contains(b, []byte(f.RSTMid)) && f.RSTFirst.first(b) {
+			if up != nil && f.RSTMid != "" && bytes.Contains(b, []byte(f.RSTMid)) {
 				pc.armed.Store(true)
 			}
 			if _, err := dst.Write(b); err != nil {

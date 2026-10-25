@@ -56,49 +56,63 @@ const (
 	u13PollInterval = time.Second
 )
 
-// U2: every pod's connections to vendor-a (ws-a, and http-a, ranked first
-// and a poll source) get an RST half way into an answer: first into each
-// receipts body, then into each header answer, with time to recover
-// between, since the header cuts demote vendor-a in routing. Each fetch
-// fails over to another upstream, no header of vendor-a is voted
-// malformed, and every client's logs equal the canonical logs (§19 U2;
-// §5.3 check 0; §8 one sweep).
+// U2: a network of 2 https vendors, http-a ranked first and http-b clean,
+// both poll sources. http-a's answers are cut half way (FIN, then RST):
+// first every receipts body, over blocks that all carry logs so every
+// block's receipts are fetched, then every header answer, with time to
+// recover between, since the header cuts demote http-a in routing. Each
+// sweep tries http-a first and fails over to http-b at once, no header of
+// http-a is voted malformed, and every client's logs equal the canonical
+// logs within the delivery bound (§19 U2; §5.3 check 0; §8 one sweep).
 func u2() spec {
 	return spec{name: "U2", bound: healthyDelivery,
+		vendors: []vendorSpec{{"http-a", "vendor-a", false}, {"http-b", "vendor-b", false}},
 		network: map[string]interface{}{"selectionPolicy": rankFirst("http-a")},
-		upEvm:   map[string]map[string]interface{}{"http-a": {"subscriptionSource": true}},
+		upEvm: map[string]map[string]interface{}{
+			"http-a": {"subscriptionSource": true},
+			"http-b": {"subscriptionSource": true},
+		},
 		body: func(s *scenario) {
 			s.blocks(25)
-			for _, cut := range []struct{ what, method string }{
-				{"a receipts body", "eth_getBlockReceipts"},
-				{"a header answer", "eth_getBlockByNumber"},
+			for _, cut := range []struct {
+				what, method string
+				logs         bool // every block of the cut carries logs
+			}{
+				{"a receipts body", "eth_getBlockReceipts", true},
+				{"a header answer", "eth_getBlockByNumber", false},
 			} {
+				px := s.proxies["http-a"]
 				resets := make([]int64, len(s.h.pods))
 				for i, p := range s.h.pods {
-					for _, key := range vendorA {
-						resets[i] += s.proxies[key].resets(p)
-						s.proxies[key].set(p, linkFaults{RSTMid: cut.method})
-					}
+					resets[i] = px.resets(p)
+					px.set(p, linkFaults{RSTMid: cut.method})
 				}
-				s.logf("vendor-a: RST half way into %s", cut.what)
+				if cut.logs {
+					kinds := make([]chainsim.Kind, u2FaultBlocks+1)
+					for i := range kinds {
+						kinds[i] = chainsim.KindMatching
+					}
+					s.chain.Plan(kinds...)
+				}
+				s.logf("http-a: cut half way into %s", cut.what)
 				s.blocks(u2FaultBlocks)
 				for i, p := range s.h.pods {
-					var n int64
-					for _, key := range vendorA {
-						s.proxies[key].set(p, linkFaults{})
-						n += s.proxies[key].resets(p)
-					}
-					if n == resets[i] {
-						s.violate("harness", "pod-%d: no connection to vendor-a was reset half way into %s", i+1, cut.what)
-					} else {
-						s.logf("pod-%d: %d connections to vendor-a reset half way into %s", i+1, n-resets[i], cut.what)
+					px.set(p, linkFaults{})
+					n := px.resets(p) - resets[i]
+					switch {
+					case cut.logs && n < u2FaultBlocks/2:
+						s.violate("harness", "pod-%d: %d connections to http-a cut half way into %s over %d blocks that all carry logs", i+1, n, cut.what, u2FaultBlocks)
+					case n == 0:
+						s.violate("harness", "pod-%d: no connection to http-a was cut half way into %s", i+1, cut.what)
+					default:
+						s.logf("pod-%d: %d connections to http-a cut half way into %s", i+1, n, cut.what)
 					}
 				}
 				s.blocks(25)
 			}
 			s.blocks(25)
 			for pod := range s.h.pods {
-				for _, key := range vendorA {
+				for _, key := range []string{"http-a"} {
 					up := s.upstream(key)
 					heads := func(outcome string) (float64, bool) {
 						return s.metric(pod, "erpc_chain_tracker_source_heads_total", map[string]string{"upstream": up, "outcome": outcome})
