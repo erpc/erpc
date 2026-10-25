@@ -518,11 +518,12 @@ A vendor can answer `eth_call(latest)` from old state while its header head is c
 | Reference | `Latest`, not the upstream's own head |
 | Tolerance | W in time: a sample is stale when `Latest` at its send time is more than W of chain above its block; so the sample's age is credited, as #1296 credits lag |
 | Skip | Positive stale evidence skips that upstream for tag requests only, decided once per request before its first attempt; no evidence admits it (#934) |
-| Readmit | 3 fresh samples in a row, or a W with no stale evidence; nothing is permanent |
-| All stale | Route to the upstream with the highest tag-state head and count it; `-32603` with `executedBlock` and `servedTip` only when that head is more than 60s behind `Latest`; never `-32014`, never a pinned number |
+| Readmit | 3 fresh samples in a row, or the probe interval plus W with no stale sample (W alone can fall between two probes); nothing is permanent |
+| All stale | Route to the upstream with the highest tag-state head, credited by its sample's age, and count it; `-32603` with `executedBlock` (that credited head) and `servedTip` only when that head is more than 60s behind `Latest`; never `-32014`, never a pinned number |
 | Probe | Every upstream that gets tag requests (a family-3 method keeps the tag on it, or a `skip-interpolation` state request reached it in the last 10 min), from network start, without integrity `follow`: on each change of `Latest`, at most every 2s per upstream, a packed sample counting as one; re-probe on each skip. Probes send the tag, keep the timeout-only bypass (no retry, hedge or breaker), and the gate never skips them |
 
 - `pinLatestTag`, the shadow pin and the gate read one family-3 map, so a pinned upstream never gets a state method as the tag, `eth_estimateGas` included.
+- The multiplexer merges only requests that route alike: its key includes the `UseUpstream` directive, so a probe never shares an answer with a client request routed elsewhere.
 
 Owner: `architecture/evm/integrity_stateprobe.go`; the skip in `checkEvmUpstreamBlockAvailability` (`erpc/networks.go`). Keeps: #1109 (the prober publishes evidence; disproof feeds misbehavior), #1274, #1303 (probe and metric kept; its misbehavior record is replaced by the gate), #1443 (`translateLatestTag: false` stays).
 
@@ -1025,7 +1026,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | P8 | reorg after a by-number read | the orphan is not served from cache after the reorg notice |
 | P9 | head+1 polling | as K7 |
 | P10 | `flashblocks*` + normal groups; use-upstream client fetches a delivered block | lane-consistent result; no `retried_missing` |
-| P11 | `translateLatestTag: false` method; one stale-state vendor | stale vendor skipped; all stale → highest tag-state head, not `-32603` |
+| P11 | `translateLatestTag: false` method; one stale-state vendor, then all stale, then all more than 60s stale | stale vendor skipped; all stale → highest tag-state head, not `-32603`; all past 60s → `-32603` with `executedBlock` and `servedTip`, counted `refused` |
 
 - The in-process chaos test `TestChainFeed_ConvergesUnderFaults` (`erpc/chain_feed_test.go`) stays as the fast CI test and uses the `test/chainsim` simulator. Panic recovery (`TrackerMessageHook`) is tested only there: no black-box trigger exists.
 
