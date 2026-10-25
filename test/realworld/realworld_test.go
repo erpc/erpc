@@ -82,6 +82,8 @@ func catalogue() []phaseSpec {
 		{"clients", 11601, []spec{d3(), d5(), d6(), d9()}},
 		{"d4", 11701, []spec{d4()}},
 		{"d7", 11801, []spec{d7()}},
+		{"x3", 11901, []spec{x3()}},
+		{"x6", 12001, []spec{x6()}},
 	}
 }
 
