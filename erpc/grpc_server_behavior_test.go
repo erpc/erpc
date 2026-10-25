@@ -743,6 +743,19 @@ func TestGrpcServerBehavior_StreamBlocks(t *testing.T) {
 			recv(want)
 		}
 
+		// A poll of the upstream outside rule 6, such as a catch-up poll,
+		// votes too; the upstream is still no source, so rule 6 goes on.
+		nw, err := fx.erpc.GetNetwork(bctx, "main", "evm:123")
+		require.NoError(t, err)
+		poller := nw.upstreamsRegistry.GetNetworkUpstreams(bctx, nw.networkId)[0].EvmStatePoller()
+		fx.up.head.Store(uint64(head + 3))
+		require.NoError(t, poller.Ask(bctx, common.HeadNeedFork, common.AskCatchUp).Err)
+		recv(head + 3)
+		fx.up.head.Store(uint64(head + 5))
+		for _, want := range []int64{head + 4, head + 5} {
+			recv(want)
+		}
+
 		scancel()
 		_, err = s.Recv()
 		assert.Equal(t, codes.Canceled, status.Code(err))

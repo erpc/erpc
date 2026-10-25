@@ -797,6 +797,9 @@ type HashVoters struct {
 	// Others are the lane's eligible upstreams that are no voters, in
 	// selection order: a tie's settle Asks them after the voters.
 	Others []string
+	// Sources are the voters that are push sources or active poll sources:
+	// their votes keep coming on a schedule (spec §6.5 rule 6).
+	Sources []string
 	// Hash are the hash voters: voters whose hash age is at most W, and,
 	// within the cold window, voters that are sources and never reported.
 	// Need is q.Of(len(Hash)).

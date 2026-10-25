@@ -62,6 +62,9 @@ type sourceReconciler struct {
 	// pushes are the push sources by upstream id, as the last pass set them
 	// up; read without a lock by routing and intake (pushSource).
 	pushes atomic.Pointer[map[string]*wsupstream.Adapter]
+	// polls are the poll sources the last pass turned on; read without a
+	// lock by intake (source).
+	polls atomic.Pointer[map[string]bool]
 
 	// Owned by the run goroutine.
 	sources    map[string]*source
@@ -463,6 +466,7 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 
 	heads, push := false, false
 	pushes := make(map[string]*wsupstream.Adapter)
+	polls := make(map[string]bool)
 	for _, s := range r.sources {
 		heads = heads || s.isSource
 		if s.push != nil && s.isSource {
@@ -479,9 +483,15 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 			s.pollOn = pollOn
 			r.nw.logger.Debug().Str("upstreamId", s.id).Bool("polling", pollOn).Msg("poll source changed")
 		}
+		if pollOn {
+			polls[s.id] = true
+		}
 	}
 	if old := r.pushes.Load(); old == nil || !maps.Equal(*old, pushes) {
 		r.pushes.Store(&pushes)
+	}
+	if old := r.polls.Load(); old == nil || !maps.Equal(*old, polls) {
+		r.polls.Store(&polls)
 	}
 	r.mu.Lock()
 	r.heads, r.push = heads, push
@@ -607,6 +617,19 @@ func (r *sourceReconciler) pushSource(upstreamId string) bool {
 	}
 	a := (*ps)[upstreamId]
 	return a != nil && !a.HeadsRefused()
+}
+
+// source reports whether upstreamId's headers come as a source's: a push
+// source, or a poll source the last pass turned on (spec §6.5 rule 6).
+// Another voter's latest polls vote too, but keep no schedule.
+func (r *sourceReconciler) source(upstreamId string) bool {
+	if r == nil {
+		return false
+	}
+	if ps := r.polls.Load(); ps != nil && (*ps)[upstreamId] {
+		return true
+	}
+	return r.pushSource(upstreamId)
 }
 
 // newSource sets up u's transports: its WebSocket client as a push source
