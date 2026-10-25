@@ -80,7 +80,6 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 	// (spec §10.2).
 	var floor time.Time
 	emit := func(b indexer.Batch) (int, error) {
-		sends.batch()
 		// Nothing is written before the client has the subscription id.
 		select {
 		case <-opened:

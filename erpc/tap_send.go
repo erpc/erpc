@@ -11,35 +11,16 @@ import (
 
 // tapSends checks each block one tap writes against the transport
 // invariants (spec §15.3) and times its delivery (§17). lane is the tap's
-// lane, nil for a selector that forms none; such a tap picks its Latest
-// once per batch (batchLatest, set by batch), not per write. One tap's
-// emit owns it.
+// lane, nil for a selector that forms none.
 type tapSends struct {
 	nw              *Network
 	selector        string
 	lane            *servedTipLane
 	transport, kind string
-	batchLatest     uint64
-	batchPicked     bool
 }
 
 func newTapSends(nw *Network, selector, transport, kind string) *tapSends {
 	return &tapSends{nw: nw, selector: selector, lane: nw.laneFor(selector), transport: transport, kind: kind}
-}
-
-// batch starts the checks of a new batch.
-func (s *tapSends) batch() { s.batchPicked = false }
-
-// latest is the lane's Latest: read at each write for a lane, picked once
-// per batch without one.
-func (s *tapSends) latest() uint64 {
-	if s.lane != nil {
-		return s.nw.laneLatest(s.lane, s.selector)
-	}
-	if !s.batchPicked {
-		s.batchLatest, s.batchPicked = s.nw.laneLatest(nil, s.selector), true
-	}
-	return s.batchLatest
 }
 
 // sendSnapshot is one decision to write a block: the tracker's state and
@@ -60,7 +41,7 @@ type sendSnapshot struct {
 func (s *tapSends) gate(blk indexer.Block) (sendSnapshot, bool) {
 	var snap sendSnapshot
 	snap.pinned, snap.confirmed, snap.confirmedOK = s.nw.chainTracker.SendState(indexer.Cursor{Number: blk.Number, Hash: blk.Hash})
-	snap.latest = s.latest()
+	snap.latest = s.nw.laneLatest(s.lane, s.selector)
 	return snap, snap.pinned && snap.confirmedOK && blk.Number <= snap.confirmed.Number && blk.Number <= snap.latest
 }
 

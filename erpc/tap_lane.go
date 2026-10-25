@@ -102,12 +102,18 @@ func gated(f indexer.ChainFeed, nw *Network, selector string) indexer.ChainFeed 
 }
 
 // laneLatest is the Latest of selector sel, whose lane is l: nil for a
-// selector that forms none, picked statelessly.
+// selector that forms none, picked statelessly once per head pass
+// (refreshHeads clears statelessHeads).
 func (n *Network) laneLatest(l *servedTipLane, sel string) uint64 {
 	if l != nil {
 		return uint64(max(l.published().Latest, 0))
 	}
-	return uint64(max(n.computeHead(nil, sel).Latest, 0))
+	if v, ok := n.statelessHeads.Load(sel); ok {
+		return v.(uint64)
+	}
+	latest := uint64(max(n.computeHead(nil, sel).Latest, 0))
+	n.statelessHeads.Store(sel, latest)
+	return latest
 }
 
 // latest is the lane's Latest and a channel closed once it may have moved:

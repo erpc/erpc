@@ -166,9 +166,12 @@ func (n *Network) watchHeadCounters(ups *upstream.Upstream) {
 }
 
 // refreshHeads computes and publishes every lane's Head. A panic on one
-// lane leaves the others computed, and the pass ends for its waiters.
+// lane leaves the others computed, and the pass ends for its waiters. The
+// stateless heads of selectors that form no lane are picked again after
+// each pass.
 func (n *Network) refreshHeads() {
 	defer func() {
+		n.statelessHeads.Clear()
 		if c := n.headPass.Swap(nil); c != nil {
 			close(*c)
 		}
