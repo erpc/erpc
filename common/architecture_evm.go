@@ -229,6 +229,10 @@ type EvmStatePoller interface {
 	// SuggestLatestBlock reports blockNumber, its evidence taken at at: an
 	// answer's request send time, a push's receive time (spec §6.4).
 	SuggestLatestBlock(blockNumber int64, at time.Time)
+	// RewindLatestBlock writes blockNumber, a height the upstream's own
+	// hash vote holds on the chain tracker's new branch, to the latest
+	// counter when the counter is above it (spec §14 rollback write).
+	RewindLatestBlock(blockNumber int64)
 	// ObserveHead runs a source header through the upstream's part of
 	// intake: the chain-identity gate and the head counter, as
 	// SuggestLatestBlock does for heights. accepted: the counter holds the

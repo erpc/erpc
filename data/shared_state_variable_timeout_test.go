@@ -84,7 +84,7 @@ func TestTryUpdateIfStale_UpdateFnBudgetExceeded(t *testing.T) {
 	c.On("PublishCounterInt64", mock.Anything, "test/stale", mock.Anything).Return(nil).Maybe()
 
 	ctr := &counterInt64{registry: r, key: "test/stale", ignoreRollbackOf: 1024}
-	ctr.value.Store(1)
+	ctr.storeValue(1)
 
 	start := time.Now()
 	val, err := ctr.TryUpdateIfStale(context.Background(), 1*time.Millisecond, func(ctx context.Context) (int64, error) {
@@ -126,7 +126,7 @@ func TestBackgroundReconcileUsesMax(t *testing.T) {
 	c.On("PublishCounterInt64", mock.Anything, "test/recon", mock.Anything).Return(nil).Maybe()
 
 	ctr := &counterInt64{registry: r, key: "test/recon", ignoreRollbackOf: 1024}
-	ctr.value.Store(5)
+	ctr.storeValue(5)
 	val := ctr.TryUpdate(context.Background(), 10, time.Now())
 	assert.Equal(t, int64(10), val)
 
@@ -154,7 +154,7 @@ func TestTryUpdate_RemoteAhead_IsAdoptedInBackground(t *testing.T) {
 	c.On("PublishCounterInt64", mock.Anything, "test/fg", mock.Anything).Return(nil).Maybe()
 
 	ctr := &counterInt64{registry: r, key: "test/fg", ignoreRollbackOf: 1024}
-	ctr.value.Store(5)
+	ctr.storeValue(5)
 	val := ctr.TryUpdate(context.Background(), 10, time.Now())
 	assert.Equal(t, int64(10), val)
 	assert.Eventually(t, func() bool { return ctr.GetValue() == int64(20) }, 500*time.Millisecond, 10*time.Millisecond)
@@ -181,7 +181,7 @@ func TestTryUpdateIfStale_SlowFn_BackgroundPush(t *testing.T) {
 	c.On("PublishCounterInt64", mock.Anything, "test/slow", mock.Anything).Return(nil).Maybe()
 
 	ctr := &counterInt64{registry: r, key: "test/slow", ignoreRollbackOf: 1024}
-	ctr.value.Store(1)
+	ctr.storeValue(1)
 
 	start := time.Now()
 	val, err := ctr.TryUpdateIfStale(context.Background(), 1*time.Millisecond, func(ctx context.Context) (int64, error) {
@@ -220,7 +220,7 @@ func TestBackgroundPushIsDeduped(t *testing.T) {
 	c.On("PublishCounterInt64", mock.Anything, "test/dedupe", mock.Anything).Return(nil).Maybe()
 
 	ctr := &counterInt64{registry: r, key: "test/dedupe", ignoreRollbackOf: 1024}
-	ctr.value.Store(5)
+	ctr.storeValue(5)
 
 	// Two quick updates that will schedule background push; dedupe should ensure a single remote write
 	ctr.TryUpdate(context.Background(), 20, time.Now())
@@ -254,7 +254,7 @@ func TestContinueAsyncRefresh_DoesNotLeakOnStuckWorker(t *testing.T) {
 	c.On("PublishCounterInt64", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	ctr := &counterInt64{registry: r, key: "test/stuck", ignoreRollbackOf: 1024}
-	ctr.value.Store(1)
+	ctr.storeValue(1)
 
 	// Worker that ignores its context and only unblocks when we say so.
 	release := make(chan struct{})

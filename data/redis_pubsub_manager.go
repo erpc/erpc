@@ -323,8 +323,7 @@ func (m *RedisPubSubManager) runMessageLoop() error {
 
 			if msg != nil && strings.HasPrefix(msg.Channel, "counter:") {
 				key := strings.TrimPrefix(msg.Channel, "counter:")
-				var st CounterInt64State
-				if err := common.SonicCfg.Unmarshal([]byte(msg.Payload), &st); err == nil && st.UpdatedAt > 0 {
+				if st, ok := parseCounterState(key, []byte(msg.Payload)); ok {
 					m.logger.Debug().
 						Str("key", key).
 						Int64("value", st.Value).
@@ -403,15 +402,8 @@ func (m *RedisPubSubManager) getCurrentValue(ctx context.Context, key string) (C
 		return CounterInt64State{}, false, err
 	}
 
-	var st CounterInt64State
-	if err := common.SonicCfg.Unmarshal(val, &st); err != nil {
-		// No backward compatibility: treat parse errors as missing
-		return CounterInt64State{}, false, nil
-	}
-	if st.UpdatedAt <= 0 {
-		return CounterInt64State{}, false, nil
-	}
-	return st, true, nil
+	st, ok := parseCounterState(key, val)
+	return st, ok, nil
 }
 
 // addSubscriber adds a channel to the subscribers for a key

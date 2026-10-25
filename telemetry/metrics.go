@@ -223,6 +223,12 @@ var (
 		Help:      "Pending-transaction topics a push source subscribed again after 60s without a message while heads carried transactions.",
 	}, []string{"project", "network", "upstream", "topic"})
 
+	MetricSharedCounterRemoteRejectedTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "shared_counter_remote_rejected_total",
+		Help:      "Remote shared counter states this instance rejected, by reason (non_positive, small_rollback, stale_timestamp, malformed).",
+	}, []string{"reason"})
+
 	MetricChainTrackerReanchorTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "chain_tracker_reanchor_total",

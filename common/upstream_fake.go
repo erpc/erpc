@@ -308,6 +308,12 @@ func (p *FakeEvmStatePoller) SuggestLatestBlock(blockNumber int64, _ time.Time) 
 	p.latestBlockNumber = blockNumber
 }
 
+func (p *FakeEvmStatePoller) RewindLatestBlock(blockNumber int64) {
+	if blockNumber > 0 && blockNumber < p.latestBlockNumber {
+		p.latestBlockNumber = blockNumber
+	}
+}
+
 func (p *FakeEvmStatePoller) ObserveHead(raw json.RawMessage, _ time.Time) bool {
 	var h struct {
 		Number string `json:"number"`
