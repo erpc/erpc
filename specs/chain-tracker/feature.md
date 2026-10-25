@@ -718,11 +718,11 @@ Cost, measured 2026-10-14 on public RPCs, 5 consecutive blocks each:
 ## 14. Shared state
 
 - Per-upstream latest and finalized counters are max-only on every path (pubsub, initial fetch, reconcile, background push): a remote value higher than the local one is accepted whatever its timestamp (#1243). Earliest, cordon and SVM floor counters keep timestamp order.
-- Timestamps decide only large rollbacks (more than 1024 blocks below the current value); smaller drops are noise (#222).
-- Freshness is this instance's clock, never the writer's: `IsStale` and every number need read the report time (a local report's send time, a remote value's receive time).
+- Timestamps decide only large rollbacks (more than 1024 blocks below the current value); smaller drops are noise (#222). While a counter holds a value from such a drop or a rewind, a higher state is accepted only when it is newer than that value, so an older higher state never undoes it.
+- Freshness is this instance's clock, never the writer's: `IsStale` and every number need read the report time (a local report's send time, a remote value's receive time); a failed refresh attempt also counts, so failures are debounced.
 - Connectors deliver every change of a counter's value or timestamp, and the counter decides; the DynamoDB watch no longer drops an older timestamp.
 - A rejected remote state is counted in `erpc_shared_counter_remote_rejected_total{reason}`.
-- Rollback write: when the pins re-anchor below a voter's counter, and that voter's own hash vote is on the new branch, its lower number is written with a rewind mark. Another instance accepts a marked value newer than its own, as a large rollback, without counting it against the upstream; the health tracker's head follows it. So `Latest`, `eth_call(latest)` and `getBlockByNumber(latest)` follow a rewound chain within 2 bt on every instance.
+- Rollback write: when the pins re-anchor below a voter's counter, and that voter's own hash vote is on the new branch (at the switch, or later when its vote reaches the pins), its lower number is written with a rewind mark. Another instance accepts a marked value newer than its own, as a large rollback, without counting it against the upstream; the health tracker's head follows it. So `Latest`, `eth_call(latest)` and `getBlockByNumber(latest)` follow a rewound chain within 2 bt on every instance.
 - Counters reject 0 and negative values, except `earliest` (#258, #1084); a v1 integer and a v2 JSON value on one key never collide (#956); the local value updates synchronously and the remote publish is async and deduped (#544, #658).
 - No network-level served value is shared (#924).
 
