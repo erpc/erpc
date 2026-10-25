@@ -28,10 +28,11 @@ var invariants = []Invariant{
 }
 
 // ExportInvariants creates every invariant series of a network at 0, so a
-// network that never violated one still shows it holds.
+// network that never violated one still shows it holds. The series bypass
+// the counter handle cache, whose idle sweep would delete them.
 func ExportInvariants(projectId, network string) {
 	for _, inv := range invariants {
-		telemetry.CounterHandle(telemetry.MetricChainTrackerInvariantViolationsTotal, projectId, network, string(inv))
+		telemetry.MetricChainTrackerInvariantViolationsTotal.WithLabelValues(projectId, network, string(inv))
 	}
 }
 
@@ -39,7 +40,7 @@ func ExportInvariants(projectId, network string) {
 // rate limited like every transition; the caller adds the numbers and
 // hashes, then sends it.
 func ViolateInvariant(l *zerolog.Logger, projectId, network string, inv Invariant) *zerolog.Event {
-	telemetry.CounterHandle(telemetry.MetricChainTrackerInvariantViolationsTotal, projectId, network, string(inv)).Inc()
+	telemetry.MetricChainTrackerInvariantViolationsTotal.WithLabelValues(projectId, network, string(inv)).Inc()
 	return TransitionLog(l, zerolog.ErrorLevel, network, "invariant_violation").Str("invariant", string(inv))
 }
 
