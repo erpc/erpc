@@ -69,8 +69,9 @@ const (
 	// (§6.4: permanent writes need the serving upstream's finalized).
 	p7FinalityDepth = 200
 	// p10NormalLag: the normal group serves this far behind the
-	// flashblocks group.
-	p10NormalLag = 2
+	// flashblocks group: more than reorgWindow blocks, so a lane tap that
+	// measured lag from the network-wide stamp would restart (§10.2).
+	p10NormalLag = reorgWindow + 4
 	// probeMethod is read by the cache probes only, so its cache writes are
 	// theirs.
 	probeMethod = "eth_getBlockTransactionCountByNumber"
@@ -747,7 +748,10 @@ func pollNext(s *scenario, farFuture bool) {
 // (vendor-b) p10NormalLag behind, each a use-upstream lane. A newHeads
 // client on a lane gets blocks its lane holds, and fetches each over HTTP
 // on the same lane on every pod (§6.4 lanes, §6.5 a use-upstream
-// connection gates on its lane); no retry misses (retried_missing 0).
+// connection gates on its lane); no retry misses (retried_missing 0). The
+// normal lane trails by more than reorgWindow blocks, yet its taps never
+// restart: a lane tap's block is ready when its lane's Latest reached it
+// (§10.2).
 func p10() spec {
 	lag := chainsim.Faults{Lag: p10NormalLag}
 	return spec{name: "P10", bound: healthyDelivery + p10NormalLag*blockTime,

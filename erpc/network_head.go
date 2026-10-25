@@ -208,6 +208,7 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	}
 	l.head.Store(&h)
 	if h.Latest != old.Latest {
+		l.reached.note(h.Latest, time.Now(), n.latestReachedKept())
 		if c := l.moved.Swap(nil); c != nil {
 			close(*c)
 		}

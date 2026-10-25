@@ -135,6 +135,8 @@ type servedTipLane struct {
 	head atomic.Pointer[common.EvmHead]
 	// moved is closed and replaced when Latest changes.
 	moved atomic.Pointer[chan struct{}]
+	// reached is when Latest first reached each recent number.
+	reached latestReached
 }
 
 func (l *servedTipLane) anchor(finalized bool) *servedTipAnchor {
