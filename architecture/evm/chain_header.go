@@ -41,8 +41,9 @@ type chainHeader struct {
 
 	// confirmedAt and logsAt are when the header, as a pin, first stood at
 	// or below the confirmed head and the logs head (Block.Ready), in unix
-	// nanoseconds; 0 until then. The tracker writes them before it
-	// publishes the state that holds them there.
+	// nanoseconds; 0 until then, and again once a revert removes the pin.
+	// The tracker writes them before it publishes the state that holds
+	// them there; a Read that returns the block first sets logsAt (ready).
 	confirmedAt, logsAt atomic.Int64
 
 	// encodings holds each transport's encoding of the header (a
@@ -132,11 +133,26 @@ func (h *chainHeader) block() indexer.Block {
 }
 
 // ready is when h became deliverable to a Read: when it reached the logs
-// head for a Read with receipts, else, or until then, the confirmed head.
+// head for a Read with receipts, else the confirmed head. A Read can
+// return a block before the tracker stamps it: its receipts held before
+// the logs head moves, or a pin a revert unstamped after the Read loaded
+// its state; then it is deliverable now, and a logs Read stamps that so
+// every logs tap measures from it.
 func (h *chainHeader) ready(logs bool) time.Time {
-	at := h.confirmedAt.Load()
-	if l := h.logsAt.Load(); logs && l != 0 {
-		at = l
+	if !logs {
+		if at := h.confirmedAt.Load(); at != 0 {
+			return time.Unix(0, at)
+		}
+		return time.Now()
+	}
+	at := h.logsAt.Load()
+	if at == 0 {
+		at = time.Now().UnixNano()
+		if !h.logsAt.CompareAndSwap(0, at) {
+			if l := h.logsAt.Load(); l != 0 {
+				at = l
+			}
+		}
 	}
 	return time.Unix(0, at)
 }

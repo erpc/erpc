@@ -498,9 +498,12 @@ type chaosLogsClient struct {
 	why       string  // what may explain a close: tap ends, tracker, faults
 	byTest    bool    // the test closed it
 	taps      tapEnds // logs tap ends as it opened
-	notes     int     // notifications received
-	noteBytes int     // their message lengths
-	problems  []string
+	// subscribedTip is the chain's tip once the subscribe was answered: the
+	// tap starts at or below it, so it sends from at most subscribedTip+1.
+	subscribedTip uint64
+	notes         int // notifications received
+	noteBytes     int // their message lengths
+	problems      []string
 }
 
 // subscribeLogs dials a ws connection and subscribes chainsim.Filters[filter]; on
@@ -534,7 +537,7 @@ func (s *chaosSeed) dialLogs(name string) {
 			return conn != nil
 		}, 15*time.Second, chaosBlock, "logs subscribe on filter %d is accepted", f)
 		cl := &chaosLogsClient{name: fmt.Sprintf("%s/%d", name, f), filter: f, conn: conn, held: make(map[chainsim.LogKey]uint64),
-			taps: tapEndsOf(indexer.SubTypeLogs)}
+			taps: tapEndsOf(indexer.SubTypeLogs), subscribedTip: s.chain.Tip().Number}
 		s.mu.Lock()
 		s.logs = append(s.logs, cl)
 		s.mu.Unlock()
@@ -1333,15 +1336,21 @@ func (s *chaosSeed) aheadFork() {
 	s.occur(fAheadFork, fmt.Sprintf("%s led the canonical head by %d blocks on its fork", v.ID, lead))
 }
 
-// deepReorg: every logs tap reverts more than reorgWindow blocks, or its
-// fork point leaves the window, so each ends with 1013 (spec §10.2,
-// §13.1); new ones replace them once all have closed, so no close lands
-// after the next fault looks for open clients. In the gRPC seed the window
-// holds the fork point, so the streams get the new branch resent from the
-// fork point + 1 (spec §10.1).
+// deepReorg: a logs tap whose sent blocks the reorg reverts more than
+// reorgWindow deep ends with 1013 (spec §10.2); others may end so too when
+// their fork point leaves the window (§13.1). New ones are dialed once the
+// sure closes landed, so the next fault finds open clients. In the gRPC
+// seed the window holds the fork point, so the streams get the new branch
+// resent from the fork point + 1 (spec §10.1).
 func (s *chaosSeed) deepReorg() {
 	depth := chaosReorgWindow + 4
-	open := s.openLogs()
+	oldTip := s.chain.Tip().Number
+	var deep []*chaosLogsClient
+	for _, cl := range s.openLogs() {
+		if cl.subscribedTip+uint64(chaosReorgWindow) < oldTip {
+			deep = append(deep, cl)
+		}
+	}
 	from := time.Now()
 	tip := s.reorg(depth)
 	caught := s.caughtUp()
@@ -1350,8 +1359,9 @@ func (s *chaosSeed) deepReorg() {
 	if s.opts.grpc {
 		resent = "; " + s.awaitResend(tip.Number-uint64(depth), from)
 	}
-	s.awaitCloses(open, "after-deep-reorg")
-	s.occur(fDeepReorg, fmt.Sprintf("depth %d > reorgWindow %d, new head %d; %d logs clients closed with 1013%s", depth, chaosReorgWindow, tip.Number, len(open), resent))
+	s.awaitCloses(deep, "after-deep-reorg")
+	s.occur(fDeepReorg, fmt.Sprintf("depth %d > reorgWindow %d, new head %d; %d logs clients sent more than the window closed with 1013, %d closed in all%s",
+		depth, chaosReorgWindow, tip.Number, len(deep), s.closed1013(from), resent))
 }
 
 // caughtUp waits until the tracker may send the chain's head as of now: a

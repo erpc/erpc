@@ -78,10 +78,18 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		// removed:true logs need the Reverted blocks' receipts, which the
-		// feed holds only reorgWindow deep.
-		if len(b.Reverted) > window {
-			return errLogsReorgDepth
+		// removed:true logs need the sent Reverted blocks' receipts, which
+		// the feed holds only reorgWindow deep.
+		if sent {
+			n := 0
+			for _, blk := range b.Reverted {
+				if blk.Number >= sentFrom {
+					n++
+				}
+			}
+			if n > window {
+				return errLogsReorgDepth
+			}
 		}
 		if len(b.Applied) > 0 && lagging(tracker, b.Applied[0]) {
 			return errLogsLag
