@@ -74,6 +74,11 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 	// within the window below the newest.
 	sentFrom, sent := uint64(0), false
 	sentHashes := make(map[uint64][32]byte, window+1)
+	// floor is the latest Ready of the blocks this tap sent: a block is
+	// deliverable to the tap no sooner than the blocks before it, so a
+	// receipts hole it waited on is never lag for the blocks after it
+	// (spec §10.2).
+	var floor time.Time
 	emit := func(b indexer.Batch) (int, error) {
 		// Nothing is written before the client has the subscription id.
 		select {
@@ -94,8 +99,14 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 				return 0, errLogsReorgDepth
 			}
 		}
-		if len(b.Applied) > 0 && lagging(tracker, b.Applied[0]) {
-			return 0, errLogsLag
+		if len(b.Applied) > 0 {
+			next := b.Applied[0]
+			if next.Ready.Before(floor) {
+				next.Ready = floor
+			}
+			if lagging(tracker, next) {
+				return 0, errLogsLag
+			}
 		}
 		for _, blk := range b.Reverted {
 			if !sent || blk.Number < sentFrom {
@@ -130,6 +141,9 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 			sentHashes[blk.Number] = blk.Hash
 			if blk.Number > uint64(window) {
 				delete(sentHashes, blk.Number-uint64(window)-1)
+			}
+			if blk.Ready.After(floor) {
+				floor = blk.Ready
 			}
 			logs := tracker.MatchedLogs(blk, f)
 			if len(logs) == 0 {

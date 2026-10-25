@@ -580,8 +580,13 @@ func (t *ChainTracker) receiptsSpec(class fetchClass, hash [32]byte, h *chainHea
 // its block lies within reorgWindow of the head, orphans included; older
 // receipts leave at once, and at most receiptsCap whose number is unknown
 // stay. Its bloom verdict counts once for trust, and for the network's
-// bloom check against upstreamId's vendor.
+// bloom check against upstreamId's vendor. A receipts answer from an
+// upstream, by a job, the outage probe or a fetch's mailbox result, ends
+// the network-wide switch to eth_getLogs (receiptsDown).
 func (t *ChainTracker) holdReceipts(r *heldReceipts, upstreamId string) {
+	if !r.fromLogs && upstreamId != "" {
+		t.receiptsDown = time.Time{}
+	}
 	key := hexHash(r.hash)
 	if _, seen := t.receipts.Load(key); !seen {
 		t.receiptsOrder = append(t.receiptsOrder, receiptsEntry{key: key, number: r.number})
@@ -632,8 +637,10 @@ type receiptsJob struct {
 	attempt uint64
 	logs    bool // switched to the eth_getLogs fallback
 	fresh   bool // a cached answer failed the checks: never read the cache again
-	// started is when the job's first attempt was submitted.
-	started    time.Time
+	// failingSince is when the job's receipts sweeps began failing, set by
+	// the first failed one while the job asks for receipts; zero again once
+	// it leaves the logs stand-in, so time on logs never counts.
+	failingSince time.Time
 	mismatched map[string]bool // vendors whose answer mismatched, this round
 	tried      map[string]bool // upstreams asked by name, this round
 	agree      []logsVote      // the logs digests vendors answered, this round
@@ -677,21 +684,20 @@ func (t *ChainTracker) runJob(j *receiptsJob) {
 	if j.cancel != nil {
 		j.cancel()
 	}
-	if j.started.IsZero() {
-		j.started = time.Now()
-	}
-	// A job's first attempt asks for receipts whatever the clock says, so
-	// receipts that work again end the stand-in.
+	// A job's first attempt asks for receipts whatever the network-wide
+	// clock says, so receipts that work again end the stand-in.
 	after := LogsFallbackAfter.Load()
-	failedLong := time.Since(j.started) >= after || j.attempt > 0 && !t.receiptsDown.IsZero() && time.Since(t.receiptsDown) >= after
+	jobDown := !j.failingSince.IsZero() && time.Since(j.failingSince) >= after
+	netDown := !t.receiptsDown.IsZero() && time.Since(t.receiptsDown) >= after
 	switch receipts, logs := t.usableMethods(); {
-	case !j.logs && logs && (!receipts || failedLong):
+	case !j.logs && logs && (!receipts || jobDown || j.attempt > 0 && netDown):
 		j.logs = true
 		j.newRound()
-	case j.logs && receipts && (!logs || !failedLong):
-		// Receipts are served again, or logs no longer may stand in: receipts
+	case j.logs && receipts && (!logs || t.receiptsDown.IsZero()):
+		// Receipts are served again and a receipts answer ended the
+		// network-wide switch, or logs no longer may stand in: receipts
 		// prove the logs, so the job leaves the stand-in.
-		j.logs = false
+		j.logs, j.failingSince = false, time.Time{}
 		j.newRound()
 	}
 	spec := t.receiptsSpec(t.fetchClassAt(int64(j.h.number), classTipReceipts), j.h.hash, j.h, j.logs)
@@ -771,6 +777,9 @@ func (t *ChainTracker) logsAgreed(j *receiptsJob, upstreamId string, r *heldRece
 	}
 	j.tried[upstreamId] = true
 	vendor := t.vendorOf(upstreamId)
+	if vendor == "" {
+		return false
+	}
 	i := slices.IndexFunc(j.agree, func(v logsVote) bool { return v.digest == r.digest })
 	if i < 0 {
 		j.agree = append(j.agree, logsVote{digest: r.digest})
@@ -794,9 +803,6 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 			t.runJob(j)
 			return
 		}
-		if !r.fromLogs {
-			t.receiptsDown = time.Time{}
-		}
 		t.holdReceipts(r, res.upstream)
 		t.endJob(j, r)
 	case errors.Is(res.err, errSchedulerClosed) || t.ctx.Err() != nil:
@@ -808,12 +814,19 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 		t.runJob(j)
 	default:
 		t.noteReceiptsFetch(false)
-		if spec.upstream == "" && !j.logs && t.receiptsDown.IsZero() {
-			t.receiptsDown = time.Now()
+		if spec.upstream == "" && !j.logs {
+			if j.failingSince.IsZero() {
+				j.failingSince = time.Now()
+			}
+			if t.receiptsDown.IsZero() {
+				t.receiptsDown = time.Now()
+			}
 		}
 		if errors.Is(res.err, errBloomMismatch) {
 			t.countBloomMismatch(res.upstream, spec.method, j.h)
-			j.mismatched[t.vendorOf(res.upstream)] = true
+			if v := t.vendorOf(res.upstream); v != "" {
+				j.mismatched[v] = true
+			}
 		}
 		for _, u := range []string{spec.upstream, res.upstream} {
 			if u != "" {
@@ -981,16 +994,21 @@ func (t *ChainTracker) refetchJobs() {
 	}
 }
 
-// receiptsUpstreams are the upstreams of the tracker's group, in the
-// network's order.
-func (t *ChainTracker) receiptsUpstreams() []common.Upstream {
+// networkUpstreams are every upstream of the network, in its order.
+func (t *ChainTracker) networkUpstreams() []common.Upstream {
 	n, ok := t.network.(interface {
 		EvmAllUpstreams(context.Context) []common.Upstream
 	})
 	if !ok {
 		return nil
 	}
-	ups := n.EvmAllUpstreams(t.ctx)
+	return n.EvmAllUpstreams(t.ctx)
+}
+
+// receiptsUpstreams are the upstreams of the tracker's group, in the
+// network's order.
+func (t *ChainTracker) receiptsUpstreams() []common.Upstream {
+	ups := t.networkUpstreams()
 	if t.selector == "" {
 		return ups
 	}
@@ -1024,19 +1042,23 @@ func (t *ChainTracker) upstreamOf(id string) common.Upstream {
 	return nil
 }
 
-// vendorOf is the VendorKey of upstreamId, the id itself when the group
-// no longer holds it.
+// vendorOf is the VendorKey of upstreamId among every upstream of the
+// network; "" once it left the network, so its answer counts for no
+// vendor.
 func (t *ChainTracker) vendorOf(upstreamId string) string {
-	if u := t.upstreamOf(upstreamId); u != nil {
-		return VendorKey(u)
+	for _, u := range t.networkUpstreams() {
+		if u.Id() == upstreamId {
+			return VendorKey(u)
+		}
 	}
-	return upstreamId
+	return ""
 }
 
-// networkVendors is how many vendors the group's upstreams name, which the
-// evidence quorum reads.
+// networkVendors is how many vendors the network's upstreams name, which
+// the evidence quorum reads: a group's own vendors do not lower it (spec
+// §6.10).
 func (t *ChainTracker) networkVendors() int {
-	return vendorsOf(t.receiptsUpstreams())
+	return vendorsOf(t.networkUpstreams())
 }
 
 // wantsSnapshot are the registered MayMatch tests.
