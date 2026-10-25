@@ -200,7 +200,7 @@ type ChainFeed interface {
 var ErrOutOfRange = errors.New("cursor out of range")
 
 // OutOfRangeError is ErrOutOfRange with its reason: below_window,
-// fork_left_window, cursor_unknown, lag, receipts_timeout.
+// fork_left_window, cursor_unknown, lag, reorg_depth, receipts_timeout.
 type OutOfRangeError struct{ Reason string }
 
 // MempoolFeed is the reader side of one network's pending transactions.
@@ -354,7 +354,7 @@ Owner: `erpc/network_intake.go`. Readers: `Head`, the confirmed head, settle tar
 
 - Numbers are shared: each upstream's latest and finalized live in shared counters (§14), and every instance's `Head` reads them. Every `latest` header this instance fetches from an upstream, by poll, Ask or settle, also moves that upstream's counter.
 - A hash vote comes only from this instance's tracker or poller: a push, a poll-source poll, an Ask answer, or any other poll of the upstream's `latest` (full poll, refresh, catch-up), each fetched with cache reads skipped. So an upstream that is no source votes too, as fresh as its last poll. Client answers and cached answers never vote (#1001).
-- Minority fork: when the pins move off a voter's hash vote, the tracker polls that voter at once, and at most once per W while its vote stays off; a voter whose newest hash vote is still off the pins W after the first such poll loses its number vote and goes last in routing, until its hash vote is on the pins again. A vote from before a reorg is no evidence of a fork: a healthy upstream polled every 30s answers on the new branch.
+- Minority fork: a hash vote off the pins, at a height the pins hold, first refreshes the votes behind the pins: the tracker Asks, with a hash need, the voters that back the pins there with a vote older than it, oldest first, up to 3 (a settle, §6.8). A vote from before a reorg is no evidence of a fork: those voters answer on the new branch, and the pins move (§19 P1). If the pins still hold after their answers, the tracker polls the off voter at once, and at most once per W while its vote stays off; a voter whose newest hash vote is still off the pins W after the first such poll loses its number vote and goes last in routing, until its hash vote is on the pins again.
 
 Owner: `erpc/network_intake.go` (hash votes), `EvmStatePoller.ObserveHead` (numbers). Readers: `Head`, trackers, routing. Keeps: #1001, #450, #1256 (a fresh shared counter saves a fetch).
 
@@ -403,7 +403,7 @@ Fork choice:
 2. Fill: every root is extended downward (§9) until it joins another tree or reaches the window base.
 3. Vote: a voter's hash vote moves to its newest header once that header is held; until then its previous vote stays. An ancestor of the current vote does not move it back.
 4. Choose: take the tree with the most votes; a tie keeps the tree of the pins. In it, from the root, follow the child whose subtree holds the most votes; a tie keeps the pinned child; a block with no voted child follows its pinned child. Stop at a block with no child to follow, or at a tie with no pinned child. The last block followed is the head; the path from the root to it is the pins.
-5. Settle: a tie in rule 4 runs a settle (§6.8). Each answer is walked like a vote and, once held, adds one vote for this decision. No answer, or no target: the pins stay, and the settle runs again after backoff.
+5. Settle: a tie in rule 4, or a hash vote off the pins (§6.3), runs a settle (§6.8). Each answer is walked like a vote; once held, a voter's answer is its hash vote, and a non-voter's adds one vote for this decision. No answer, or no target: the pins stay, and the settle runs again after backoff.
 6. No hash voter, with demand: the tracker Asks the first voter in selection order with a hash need, once per cadence. That answer is the only vote until the next one; an answer that conflicts with the pins starts a settle.
 
 Settle rounds:
@@ -473,7 +473,7 @@ Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, th
 | refusal band and stale ceiling (§6.4) | number |
 | `eth_blockNumber`, `eth_getBlockByNumber(latest\|finalized)` pre-forward refresh | number |
 | a numbered read above `Head.Finalized` (§6.4 Finality), the finalized axis, at most once per finalized debounce | number |
-| settle: voters without a fresh hash vote, then non-voters, up to 3 | hash |
+| settle: for a tie, voters without a fresh hash vote, then non-voters, up to 3; for a vote off the pins (§6.3), the voters that back the pins with an older vote, oldest first, up to 3 | hash |
 | no hash voter, with demand (§6.5 rule 6) | hash |
 
 - An upstream that rejects `latest` 10 times stops being a poll source until the 10-min re-check.
@@ -561,7 +561,7 @@ Every tracker fetch goes through one scheduler per (network, instance). Head fet
 
 | Class | Fetches | Share |
 |---|---|---|
-| 1 head | walks of voted headers and by-hash mismatches | at least 1 slot |
+| 1 head | walks of voted headers, by-hash mismatches, and integrity's canonical header fetches on the client path | at least 1 slot |
 | 2 tip receipts | receipts within `reorgWindow` of the head | at least 1 slot |
 | 3 fill | fill, cursor fetches, older receipts | at least 1 slot |
 
@@ -610,12 +610,12 @@ From cursor `c`, first matching case:
 | Transport | Reads | Reorg on the wire | Out of range | Wait bounds |
 |---|---|---|---|---|
 | ws `newHeads` | headers | each new-branch head, oldest first | restart after the confirmed head | the block after its cursor reached the confirmed head more than `reorgWindow` × bt ago, nothing Reverted → restart |
-| ws `logs` | receipts where the filter bloom may match | `removed:true` logs of Reverted, newest first; then logs of Applied | close `1013`; closes from one event spread over 60s | the block after its cursor reached the logs head more than `reorgWindow` × bt ago → out of range; 60s on one block's receipts → out of range |
+| ws `logs` | receipts where the filter bloom may match | `removed:true` logs of Reverted, newest first; then logs of Applied | close `1013`; closes from one event spread over 60s | the block after its cursor reached the logs head more than `reorgWindow` × bt ago → out of range (`lag`); a batch that reverts more than `reorgWindow` of the blocks the tap sent → out of range (`reorg_depth`); 60s on one block's receipts → out of range |
 | ws `newPendingTransactions` | mempool | none | skip to the newest | — |
 | gRPC `StreamBlocks` | headers | resend from the fork point | end, `OUT_OF_RANGE` | 60s of stalled Read → `UNAVAILABLE`; one `Send` 10s → `UNAVAILABLE` |
 | Kafka, later | headers, receipts | resend from the fork point | write a reset record, then restart after the confirmed head | — |
 
-A ws tap's lag is the age of the block after its cursor: how long that block has been deliverable. A client that stops reading for `reorgWindow` blocks crosses the bound (§19 D1); a burst never does, since its blocks just arrived and a tap that reads takes them in batches (§19 C7). Each pin is stamped once when it first reaches the confirmed head and once when it first reaches the logs head.
+A ws tap's lag is the age of the block after its cursor: how long that block has been deliverable. A client that stops reading for `reorgWindow` blocks crosses the bound (§19 D1); a burst never does, since its blocks just arrived and a tap that reads takes them in batches (§19 C7). Each pin is stamped once when it first reaches the confirmed head and once when it first reaches the logs head; a block a revert removes loses its stamps, and a logs Read stamps a block whose receipts it fetched when it returns it. A lane tap's block is deliverable from the later of that stamp and the first time the lane's `Latest` reached it, so a lane that trails the network-wide head is not lag. Only ws `logs` also ends on a batch that reverts more than `reorgWindow` of the blocks it sent: their `removed:true` logs need receipts the feed holds only `reorgWindow` deep, and an orphaned block may no longer be served; `newHeads` needs only headers, held for the window, so it sends the new branch from the fork point + 1 (§19 C3).
 
 - geth sends only the new head after a reorg; ws `newHeads` sends each new-branch head.
 - ws `newHeads` is lossy, as in geth: a restart shows as a jump in numbers.
@@ -871,7 +871,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_source_resubscribe_total{project,network,upstream,topic}` | new: silent pending-transaction topics (§5.2) |
 | `erpc_upstream_websocket_heads_stall_reconnects_total` | existing; counts silent-`newHeads` reconnects (§5.2) |
 | `erpc_taps{project,network,transport,kind}` | new gauge: open taps; replaces `erpc_websocket_subscriptions_active` |
-| `erpc_tap_out_of_range_total{project,network,transport,kind,reason}` | new; reason: `below_window`, `fork_left_window`, `cursor_unknown`, `receipts_timeout`, `lag`; replaces `erpc_websocket_subscription_notifications_dropped_total` |
+| `erpc_tap_out_of_range_total{project,network,transport,kind,reason}` | new; reason: `below_window`, `fork_left_window`, `cursor_unknown`, `receipts_timeout`, `lag`, `reorg_depth`; replaces `erpc_websocket_subscription_notifications_dropped_total` |
 | `erpc_network_subscription_last_head_timestamp_seconds` | existing; set on each confirmed-head change of the network-wide tracker |
 | `erpc_integrity_check_suspended_total{project,network,check}` | new |
 | `erpc_unexpected_panic_total` | existing; tracker, reconciler, Ask and tap loops report to it |
@@ -959,7 +959,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | U8 | vendor pushes headers with wrong hashes; integrity off and on | never pinned or sent; integrity on: counted on that upstream only |
 | U9 | truncated receipts, forged log, wrong bloom from one vendor | refetched from the other vendor; logs equal canonical |
 | U10 | primary 40 behind, still advancing | `Latest` unchanged; its hash vote expires; benched after 30s or more |
-| U11 | 2 upstreams only; one head frozen, still answering | taps and `latest` wait for the bench (at most 90s), then flow; a wait longer than `reorgWindow` blocks ends as §10.2 states: one `newHeads` restart, ws `logs` close `1013` within the spread; gRPC resumes at most once |
+| U11 | 2 upstreams only; one head frozen, still answering | taps and `latest` wait for the bench (at most 90s), then flow: the held blocks were not deliverable during the wait, so they arrive in batches of at most `reorgWindow`, no gap, no `newHeads` restart and no `1013` (§10.2, as C7); gRPC resumes at most once |
 | U12 | one upstream reports +30M, same chainId | `Latest`, `Leader`, lag unchanged; ceiling raised, no short-circuit |
 | U13 | one endpoint answers another chainId | cordoned, out of ceiling; uncordoned after 2 matches 5 min apart |
 | U14 | archive syncing at head+5; `eth_getBlockByNumber(head+3)` | served by the archive in the refusal band, not `null` |
@@ -995,7 +995,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | D5 | 1k subscribe+unsubscribe/s; unsubscribe during a send | `erpc_taps` back to 0; no write after unsubscribe |
 | D6 | bad logs filter; `fromHash` without `fromBlock` | `-32602`; `INVALID_ARGUMENT` |
 | D7 | `maxSubscriptionsPerConnection: 3`; 4th subscribe | `-32005` |
-| D8 | 1 wss + 2 https non-sources; client load at every upstream budget for 30s | head Asks keep fetching (`erpc_head_ask_total{outcome="fetched"}` rises on each instance), none refused by a budget; no stall longer than W |
+| D8 | 1 wss + 2 https non-sources; client load at every upstream budget for 30s | head Asks keep fetching (`erpc_head_ask_total{outcome="fetched"}` rises on each instance): they take no permit (§6.8); no stall longer than W |
 | D9 | pending stream silent with socket open | resubscribe after 60s |
 | X1 | no fault | the oracle holds for every block on both instances |
 | X2 | memory shared state; instance 2 serves only numbered calls | the oracle holds after at most 1 retry; never `future` for a sent block |
@@ -1004,7 +1004,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | X5 | one writer publishes counters with `UpdatedAt` +5 min | numbers keep flowing between honest instances |
 | X6 | breaker open only on instance 1 for vendor X | `Latest` may differ by instance; the oracle holds |
 | X7 | old-image instance + new-image instance, one Redis | no client sees `latest` regress across instances by more than 1 bt; counters agree |
-| X8 | canary instance writes a bogus +1000 head to a counter | `Latest` unchanged on control; only the ceiling rises |
+| X8 | canary instance writes a bogus +1000 head to a counter | `Latest` unchanged on control; only the ceiling rises: a probe above `Latest`, inside it, is dispatched and counts one `retried_missing` |
 | X9 | 1 wss + 2 https non-sources, 3 instances, Redis; `eth_blockNumber` traffic on instance 2 only | taps on instance 1 never wait longer than W after the block's first header there: only voters that sent instance 1 a header within W count toward its hash quorum |
 | K1 | YAML and TS configs with each deleted key | boot refuses and names the key |
 | K2 | minimal YAML: 1 wss + 1 https, no `evm` block | wss is a source, https is not; q = 2; subscriptions work |
@@ -1094,7 +1094,7 @@ One home per fact:
 ## 21. Risks and behaviour changes
 
 - Subscribers get a pushed head once q upstreams report it: one poll round trip with one wss vendor (70–160 ms measured on eth, sepolia, hoodi, monad); none with two.
-- One vendor ahead with its peers stalled: subscribers and `latest` wait up to 90s (the bench); gRPC reconnects at most once.
+- One vendor ahead with its peers stalled: subscribers and `latest` wait up to 90s (the bench), then get the held blocks in batches; gRPC reconnects at most once. A wait longer than `maxBackfill` leaves the taps' cursors below the window, and they end as §10.2 states.
 - Catch-up refreshes while a subscriber is open: at most one per upstream per cadence per instance, only for voters below the pin.
 - `eth_getBlockByNumber(latest)` answers block `Latest`: up to one poll behind a vendor's newest block; it now equals `eth_blockNumber`.
 - `eth_getBlockByNumber("finalized")` answers block `Finalized`, which trails up to 5% of the finality window.
