@@ -183,7 +183,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	)
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 		)
@@ -637,7 +637,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	))
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 		)
@@ -685,7 +685,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		attribute.Int("cache.policies_matched", len(policies)),
 		attribute.Bool("response.emptyish", isEmptyish),
 	)
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("block.ref", blockRef),
 			attribute.Int64("block.number", blockNumber),

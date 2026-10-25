@@ -1662,7 +1662,7 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 		var laneIDs []string
 		if n.policyEngine.PerBoundaryEnabled(n.networkId) {
 			laneIDs = n.eligibleUpstreamIDsForBoundary(ctx, method, req)
-			if common.IsTracingDetailed && len(laneIDs) > 0 {
+			if common.IsTracingDetailed() && len(laneIDs) > 0 {
 				upstreamSpan.SetAttributes(attribute.Int("upstreams.lane_size", len(laneIDs)))
 			}
 		}
@@ -1690,7 +1690,7 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 		upsList = eligible
 	}
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		ids := make([]string, len(upsList))
 		for i, u := range upsList {
 			ids[i] = u.Id()
@@ -1782,7 +1782,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// for its own readers.
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		forwardSpan.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 			attribute.String("user.id", req.UserId()),
@@ -2120,7 +2120,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		)
 		defer execSpan.End()
 
-		if common.IsTracingDetailed {
+		if common.IsTracingDetailed() {
 			execSpan.SetAttributes(
 				attribute.String("request.id", fmt.Sprintf("%v", effectiveReq.ID())),
 			)

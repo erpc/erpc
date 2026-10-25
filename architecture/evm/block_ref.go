@@ -35,7 +35,7 @@ func ExtractBlockReferenceFromRequest(ctx context.Context, r *common.NormalizedR
 	}
 
 	if blockRef != "" && blockNumber != 0 {
-		if common.IsTracingDetailed {
+		if common.IsTracingDetailed() {
 			span.SetAttributes(
 				attribute.String("block.ref", blockRef),
 				attribute.Int64("block.number", blockNumber),
@@ -91,7 +91,7 @@ func ExtractBlockReferenceFromRequest(ctx context.Context, r *common.NormalizedR
 		}
 	}
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("block.ref", blockRef),
 			attribute.Int64("block.number", blockNumber),
@@ -214,7 +214,7 @@ func ExtractBlockReferenceFromResponse(ctx context.Context, r *common.Normalized
 		return blockRef, blockNumber, err
 	}
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("block.ref", blockRef),
 			attribute.Int64("block.number", blockNumber),
@@ -273,7 +273,7 @@ func ExtractBlockTimestampFromResponse(ctx context.Context, r *common.Normalized
 		return 0, err
 	}
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.Int64("block.timestamp", blockTimestamp),
 		)

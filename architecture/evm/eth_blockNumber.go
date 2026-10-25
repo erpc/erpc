@@ -130,7 +130,7 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 	// read: a request pinned to a lagging group is never promised a block
 	// that group cannot serve.
 	highestBlock := headNumber(ctx, network, nq, finalized)
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		blockNumberLag := highestBlock - blockNumber
 		if blockNumberLag < 0 {
 			blockNumberLag = 0

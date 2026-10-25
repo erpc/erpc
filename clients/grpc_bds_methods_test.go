@@ -614,10 +614,10 @@ func TestGrpcBdsClient_DetailedTracingRecordsResponseMetadata(t *testing.T) {
 	exp := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp), sdktrace.WithSampler(sdktrace.AlwaysSample()))
 	common.SetTracerProviderForTest(tp)
-	common.IsTracingDetailed = true
+	common.SetTracingDetailed(true)
 	t.Cleanup(func() {
-		common.IsTracingDetailed = false
-		common.IsTracingEnabled = false
+		common.SetTracingDetailed(false)
+		common.SetTracingEnabled(false)
 	})
 
 	s := &scriptedBdsServer{

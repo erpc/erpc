@@ -375,9 +375,9 @@ func TestCovBlocks_CreateNormalizedNonceTooLowError(t *testing.T) {
 // TestCovBlocks_DetailedTracing toggles the process-wide detailed-tracing flag,
 // so it must stay sequential (no t.Parallel), like integrity_tracing_test.go.
 func TestCovBlocks_DetailedTracing(t *testing.T) {
-	prev := common.IsTracingDetailed
-	common.IsTracingDetailed = true
-	t.Cleanup(func() { common.IsTracingDetailed = prev })
+	prev := common.IsTracingDetailed()
+	common.SetTracingDetailed(true)
+	t.Cleanup(func() { common.SetTracingDetailed(prev) })
 	ctx := context.Background()
 
 	t.Run("latest_block_records_timestamp_distance", func(t *testing.T) {

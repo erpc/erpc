@@ -583,7 +583,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 	)
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", nrq.ID())),
 		)

@@ -62,7 +62,7 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 		_, respBlockNumber, bnErr := ExtractBlockReferenceFromResponse(ctx, nr)
 		blockTimestamp, tsErr := ExtractBlockTimestampFromResponse(ctx, nr)
 
-		if common.IsTracingDetailed && bnErr == nil && respBlockNumber > 0 {
+		if common.IsTracingDetailed() && bnErr == nil && respBlockNumber > 0 {
 			highestBlock := common.EvmHeadOf(network, ctx, nq).Latest
 			blockNumberLag := highestBlock - respBlockNumber
 			if blockNumberLag < 0 {
@@ -78,7 +78,7 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 		if tsErr == nil && blockTimestamp > 0 {
 			currentTime := time.Now().Unix()
 			timestampLag := currentTime - blockTimestamp
-			if common.IsTracingDetailed {
+			if common.IsTracingDetailed() {
 				span.SetAttributes(
 					attribute.Int64("block.timestamp", blockTimestamp),
 					attribute.Int64("current.timestamp", currentTime),

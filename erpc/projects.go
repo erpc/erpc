@@ -236,7 +236,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			// Reliable here (IntegrityCaught is set, the outcome is known) unlike the
 			// racy hedged pass. The IsTracingDetailed gate short-circuits before any
 			// body copy, so it's zero-cost when tracing is off.
-			if common.IsTracingDetailed {
+			if common.IsTracingDetailed() {
 				if jrr, jerr := resp.JsonRpcResponse(ctx); jerr == nil && jrr != nil {
 					body := jrr.GetResultBytes()
 					if len(body) > maxIntegrityTraceResponseBytes {

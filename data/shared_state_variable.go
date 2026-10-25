@@ -445,7 +445,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64, at time.Ti
 		),
 	)
 	defer span.End()
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.Int64("new_value", newValue),
 		)

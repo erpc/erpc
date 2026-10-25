@@ -355,7 +355,7 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey stri
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Set")
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("partition_key", partitionKey),
 			attribute.String("range_key", rangeKey),
@@ -414,7 +414,7 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Get")
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("index", index),
 			attribute.String("partition_key", partitionKey),
@@ -566,7 +566,7 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 		}
 	}
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.Int("value_size", len(value)),
 		)
@@ -833,7 +833,7 @@ func (d *DynamoDBConnector) Delete(ctx context.Context, partitionKey, rangeKey s
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Delete")
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("partition_key", partitionKey),
 			attribute.String("range_key", rangeKey),
@@ -874,7 +874,7 @@ func (d *DynamoDBConnector) List(ctx context.Context, index string, limit int, p
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.List")
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("index", index),
 			attribute.Int("limit", limit),

@@ -78,7 +78,7 @@ func runIntegrity(ctx context.Context, n common.Network, u common.Upstream, rq *
 	// attempt's span, for a by-hand sanity check. The IsTracingDetailed gate
 	// short-circuits before any body copy, so it's zero-cost when tracing is
 	// off.
-	if common.IsTracingDetailed && (res.Err != nil || len(res.Recorded) > 0) {
+	if common.IsTracingDetailed() && (res.Err != nil || len(res.Recorded) > 0) {
 		if jrr, jerr := rs.JsonRpcResponse(vctx); jerr == nil && jrr != nil {
 			body := jrr.GetResultBytes()
 			if len(body) > maxTraceResponseBytes {

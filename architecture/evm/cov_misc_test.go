@@ -714,8 +714,8 @@ func TestCovMisc_Integrity_DetailedTracingCapsRecordedBodies(t *testing.T) {
 	exp := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp), sdktrace.WithSampler(sdktrace.AlwaysSample()))
 	common.SetTracerProviderForTest(tp)
-	t.Cleanup(func() { common.IsTracingEnabled = false; common.IsTracingDetailed = false })
-	common.IsTracingDetailed = true
+	t.Cleanup(func() { common.SetTracingEnabled(false); common.SetTracingDetailed(false) })
+	common.SetTracingDetailed(true)
 
 	dir := t.TempDir()
 	n := covMiscIndexNetwork("evm:covmisc-trace", dir, func(s *common.IntegritySettings) {

@@ -30,7 +30,7 @@ var defaultNoopSpan = noopSpan{nil}
 
 // Create simple spans only for major operations such as external interactions (cache, upstreams, etc) with low-cardinality tags
 func StartSpan(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
-	if !IsTracingEnabled {
+	if !IsTracingEnabled() {
 		return ctx, defaultNoopSpan
 	}
 
@@ -39,7 +39,7 @@ func StartSpan(ctx context.Context, name string, opts ...trace.SpanStartOption) 
 
 // Create detailed spans for erpc internal operations as well as high-cardinality tags such as request params verbatim
 func StartDetailSpan(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
-	if !IsTracingEnabled || !IsTracingDetailed {
+	if !IsTracingEnabled() || !IsTracingDetailed() {
 		return ctx, defaultNoopSpan
 	}
 
@@ -47,7 +47,7 @@ func StartDetailSpan(ctx context.Context, name string, opts ...trace.SpanStartOp
 }
 
 func ExtractHTTPRequestTraceContext(r *http.Request) context.Context {
-	if !IsTracingEnabled {
+	if !IsTracingEnabled() {
 		return r.Context()
 	}
 
@@ -56,7 +56,7 @@ func ExtractHTTPRequestTraceContext(r *http.Request) context.Context {
 }
 
 func InjectHTTPResponseTraceContext(ctx context.Context, w http.ResponseWriter) {
-	if !IsTracingEnabled {
+	if !IsTracingEnabled() {
 		return
 	}
 
@@ -65,7 +65,7 @@ func InjectHTTPResponseTraceContext(ctx context.Context, w http.ResponseWriter) 
 }
 
 func StartHTTPServerSpan(ctx context.Context, r *http.Request) (context.Context, trace.Span) {
-	if !IsTracingEnabled {
+	if !IsTracingEnabled() {
 		return ctx, trace.SpanFromContext(ctx)
 	}
 
@@ -138,7 +138,7 @@ func EnrichHTTPServerSpan(ctx context.Context, statusCode int, err error) {
 }
 
 func StartRequestSpan(ctx context.Context, req *NormalizedRequest) context.Context {
-	if !IsTracingEnabled {
+	if !IsTracingEnabled() {
 		return ctx
 	}
 
@@ -169,7 +169,7 @@ func StartRequestSpan(ctx context.Context, req *NormalizedRequest) context.Conte
 		span.SetAttributes(attribute.String("erpc.forced_trace_reason", forceTraceReason))
 	}
 
-	if IsTracingDetailed {
+	if IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 		)
@@ -188,7 +188,7 @@ func StartRequestSpan(ctx context.Context, req *NormalizedRequest) context.Conte
 }
 
 func EndRequestSpan(ctx context.Context, resp *NormalizedResponse, err interface{}) {
-	if !IsTracingEnabled {
+	if !IsTracingEnabled() {
 		return
 	}
 
@@ -207,7 +207,7 @@ func EndRequestSpan(ctx context.Context, resp *NormalizedResponse, err interface
 		if ups := resp.Upstream(); ups != nil {
 			span.SetAttributes(attribute.String("upstream.id", ups.Id()))
 		}
-		if IsTracingDetailed {
+		if IsTracingDetailed() {
 			if jrpcResp, err := resp.JsonRpcResponse(); err == nil && jrpcResp != nil {
 				span.SetAttributes(attribute.Int("response.result_size", jrpcResp.ResultLength()))
 			}
@@ -236,7 +236,7 @@ func EndRequestSpan(ctx context.Context, resp *NormalizedResponse, err interface
 // ForceFlushTraces forces the tracer provider to export all pending spans
 // Use sparingly for critical traces that must be delivered
 func ForceFlushTraces(ctx context.Context) error {
-	if !IsTracingEnabled || tracerProvider == nil {
+	if !IsTracingEnabled() || tracerProvider == nil {
 		return nil
 	}
 

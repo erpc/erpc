@@ -298,7 +298,7 @@ func annotateIntegritySpan(span trace.Span, res integrity.Result) {
 	if res.RejectedCheckID != "" {
 		span.SetAttributes(attribute.String("integrity.rejected_check", res.RejectedCheckID))
 	}
-	if !common.IsTracingDetailed {
+	if !common.IsTracingDetailed() {
 		return
 	}
 	for _, rec := range res.Recorded {
