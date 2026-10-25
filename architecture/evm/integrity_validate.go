@@ -90,11 +90,19 @@ func runIntegrity(ctx context.Context, n common.Network, u common.Upstream, rq *
 	}
 	span.End()
 
-	if sus != nil && isBlockMethod(r.method) {
-		if r.header != nil {
+	if sus != nil {
+		switch {
+		case !isBlockMethod(r.method) && r.method != "eth_getblockreceipts":
+		case r.header != nil:
 			sus.recordOutcomes(r.header.number, u.VendorName(), res.Outcomes)
-		} else if height, ok := responseBlockNumber(ctx, rs); ok {
-			sus.recordOutcomes(height, u.VendorName(), res.Outcomes)
+		case isBlockMethod(r.method):
+			if height, ok := responseBlockNumber(ctx, rs, "number"); ok {
+				sus.recordOutcomes(height, u.VendorName(), res.Outcomes)
+			}
+		default:
+			if height, ok := responseBlockNumber(ctx, rs, 0, "blockNumber"); ok {
+				sus.recordOutcomes(height, u.VendorName(), res.Outcomes)
+			}
 		}
 	}
 	// Per-check attempts/outcomes — sum = total attempts. "pass" means an
@@ -152,13 +160,13 @@ func runIntegrity(ctx context.Context, n common.Network, u common.Upstream, rq *
 	return res
 }
 
-// responseBlockNumber is the number of the block a block response carries.
-func responseBlockNumber(ctx context.Context, rs *common.NormalizedResponse) (uint64, bool) {
+// responseBlockNumber is the block number a response carries at path.
+func responseBlockNumber(ctx context.Context, rs *common.NormalizedResponse, path ...interface{}) (uint64, bool) {
 	jrr, err := rs.JsonRpcResponse(ctx)
 	if err != nil || jrr == nil {
 		return 0, false
 	}
-	s, err := jrr.PeekStringByPath(ctx, "number")
+	s, err := jrr.PeekStringByPath(ctx, path...)
 	if err != nil {
 		return 0, false
 	}

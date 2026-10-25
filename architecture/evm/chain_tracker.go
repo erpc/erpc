@@ -111,20 +111,25 @@ type ChainTracker struct {
 	receiptsFailing atomic.Int64
 
 	// Owned by the tracker's goroutine.
-	nodes    map[[32]byte]*node
-	waiting  map[[32]byte][]*node // held roots by the parent hash they lack
-	heights  map[uint64][]*node   // held headers per height, oldest first
-	exts     map[*node]*extension // every held root: its walk or fill
-	votes    map[string]*node     // source upstream id -> its vote
-	pending  map[string]*node     // source upstream id -> a vote its walk holds back
-	ask      askState             // §6 rule 6
-	askSeq   uint64               // names the latest ask; a reset moves it on
-	settle   *settleState         // §6 rule 5; nil until the first tie
-	settleIn time.Duration        // the next undecided settle's backoff
-	pins     []*node              // root..head, parentHash-linked
-	maxHeld  *chainHeader
-	wakeAt   time.Time
-	wake     *time.Timer
+	// receiptsDown is when receipts sweeps, which ask every upstream, began
+	// failing in a row; zero after a receipts answer is held. A block
+	// leaves reorgWindow, and its job, sooner than LogsFallbackAfter on a
+	// fast chain, so the fallback reads this clock as well as the job's.
+	receiptsDown time.Time
+	nodes        map[[32]byte]*node
+	waiting      map[[32]byte][]*node // held roots by the parent hash they lack
+	heights      map[uint64][]*node   // held headers per height, oldest first
+	exts         map[*node]*extension // every held root: its walk or fill
+	votes        map[string]*node     // source upstream id -> its vote
+	pending      map[string]*node     // source upstream id -> a vote its walk holds back
+	ask          askState             // §6 rule 6
+	askSeq       uint64               // names the latest ask; a reset moves it on
+	settle       *settleState         // §6 rule 5; nil until the first tie
+	settleIn     time.Duration        // the next undecided settle's backoff
+	pins         []*node              // root..head, parentHash-linked
+	maxHeld      *chainHeader
+	wakeAt       time.Time
+	wake         *time.Timer
 	// catchUpAt is when the next catch-up may ask while the network's latest
 	// block holds back a backed pin, or, while the vote need holds one, when
 	// the tracker asks again (the network paces those polls); zero while
@@ -567,7 +572,7 @@ func (t *ChainTracker) receive(msg trackerMsg) {
 	case msgAnchors:
 		t.handleAnchors(msg.anchors)
 	case msgReceipts:
-		t.holdReceipts(msg.held)
+		t.holdReceipts(msg.held, msg.upstream)
 	case msgCall:
 		msg.fn()
 	case msgSettle:
@@ -2575,7 +2580,7 @@ func (t *ChainTracker) fetched(res fetchResult) {
 	case *chainHeader:
 		t.observeFetched(res.upstream, v)
 	case *heldReceipts:
-		t.mb.put(trackerMsg{kind: msgReceipts, held: v})
+		t.mb.put(trackerMsg{kind: msgReceipts, held: v, upstream: res.upstream})
 	}
 }
 
@@ -2796,7 +2801,7 @@ type networkTrackers struct {
 	window   int
 	backfill time.Duration
 	fetch    *fetchScheduler
-	// suspend is the network's unanimous-failure state of header checks.
+	// suspend is the network's suspension of integrity checks (spec §6.9).
 	suspend *checkSuspensions
 	// checks is the network's compiled header checks.
 	checks atomic.Pointer[headerChecks]
@@ -2842,6 +2847,17 @@ func lookupChainTracker(n common.Network, groupKey string) *ChainTracker {
 	nt.mu.Lock()
 	defer nt.mu.Unlock()
 	return nt.groups[groupKey]
+}
+
+// trackers are the network's trackers, network-wide and per group.
+func (nt *networkTrackers) trackers() []*ChainTracker {
+	nt.mu.Lock()
+	defer nt.mu.Unlock()
+	out := make([]*ChainTracker, 0, len(nt.groups))
+	for _, t := range nt.groups {
+		out = append(out, t)
+	}
+	return out
 }
 
 func (nt *networkTrackers) get(n common.Network, groupKey, selector, lane string) *ChainTracker {
