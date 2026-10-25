@@ -850,7 +850,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 
 | Metric | Change |
 |---|---|
-| `erpc_chain_tracker_invariant_violations_total{project,network,invariant}` | new; invariant: `sent_above_latest`, `sent_unconfirmed`, `tap_gap`, `removed_unsent`, `pins_unlinked`, `final_hash_changed`, `latest_regressed` (only a `Latest` below a block this instance sent, counted once per fall and re-armed when `Latest` reaches that block again); must stay 0 except `final_hash_changed`, which logs a followed majority, and `latest_regressed` when every upstream rewinds (§14) |
+| `erpc_chain_tracker_invariant_violations_total{project,network,invariant}` | new; invariant: `sent_above_latest`, `sent_unconfirmed`, `tap_gap`, `removed_unsent`, `pins_unlinked`, `final_hash_changed`, `latest_regressed` (only a `Latest` below a block this instance sent while every voter the lane's previous ballot counted is still counted; a fall with a counted voter gone is a membership change, logged, not counted; counted once per fall and re-armed when `Latest` reaches that block again); must stay 0 except `final_hash_changed`, which logs a followed majority, and `latest_regressed` when every upstream rewinds (§14) |
 | `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `retried_found`, `retried_missing` (the promise broke on this instance), `future`, `future_after_refresh` |
 | `erpc_head_ask_total{project,network,reason,outcome}` | new; reason: the §6.8 caller (`poll`, `catch_up`, `refusal`, `refresh`, `settle`, `no_source`); outcome: `fetched`, `shared_fresh`, `inflight`, `backoff` |
 | `erpc_chain_tracker_confirm_lag_blocks{project,network}` | new: pins head − confirmed head; with no confirmed pin, the number of pins |
@@ -1107,7 +1107,7 @@ One home per fact:
 - Without shared state, a lane whose voters all push over links slower than another instance's by more than 1 bt can call a block that instance sent "future": a push carries no send time to age it by.
 - A by-hash lookup of a block above `Latest` waits up to 1 bt.
 - Absent block params read as `latest`: the JSON-RPC default; now cacheable and consistent across upstreams.
-- A voter benched by number age can step `Latest` back by one block; the block itself still loads.
+- A voter that leaves the ballot (bench, exclusion by the selection policy, cordon, failed polls) can step `Latest` back to the next voter's number until catch-up or the next pre-forward refresh Asks it; the block itself still loads.
 - Permanent cache writes need the serving upstream's finalized too.
 - An upstream on a minority fork loses its number vote after W and goes last in routing.
 - A tag-only method whose upstreams all have stale state gets the freshest of them, not an error, until 60s behind.
