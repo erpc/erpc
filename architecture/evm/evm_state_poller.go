@@ -648,10 +648,13 @@ func (e *EvmStatePoller) Ask(ctx context.Context, need common.HeadNeed, reason c
 	return a
 }
 
-// AskReaching is an Ask with a number need for a caller that needs block
-// (spec §6.4 band): when the fetch it joined, sent before the caller came,
-// answers below block, it Asks once more, so the answer is no older than
-// the caller's need. Both waits together end at most W after it starts.
+// AskReaching is an Ask for a caller that needs block (spec §6.4 band):
+// a number need first; when that answer is below block and came from no
+// fetch of the caller's own (the shared counter, or a fetch sent before
+// the caller came), it Asks once more with a fork need, a fetch sent after
+// the caller came, fresh evidence of the node's head: a counter a push
+// keeps fresh over a slow link is no evidence the node lacks the block
+// (spec §21). Both waits end at most W after it starts.
 func (e *EvmStatePoller) AskReaching(ctx context.Context, block int64, reason common.AskReason) common.HeadAnswer {
 	if !e.askable() {
 		return common.HeadAnswer{Outcome: common.AskBackoff}
@@ -659,8 +662,8 @@ func (e *EvmStatePoller) AskReaching(ctx context.Context, block int64, reason co
 	ctx, cancel := context.WithTimeout(ctx, e.freshnessWindow())
 	defer cancel()
 	a := e.Ask(ctx, common.HeadNeedNumber, reason)
-	if a.Outcome == common.AskInflight && a.Err == nil && a.Block < block {
-		a = e.Ask(ctx, common.HeadNeedNumber, reason)
+	if a.Err == nil && a.Block < block && (a.Outcome == common.AskInflight || a.Outcome == common.AskSharedFresh) {
+		a = e.Ask(ctx, common.HeadNeedFork, reason)
 	}
 	return a
 }

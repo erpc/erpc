@@ -405,13 +405,17 @@ func (n *Network) EvmAskBand(selector string, block int64) {
 }
 
 // awaitBandAsk joins the band's Ask of selector sel's lane for block
-// (EvmAskBand) and waits for its answers, at most W (spec §6.4): a poll
-// over a slow link takes longer than 1 bt, and the band's retry orders
-// upstreams on the heads it brings.
+// (EvmAskBand, AskReaching) and waits for its answers, at most W (spec
+// §6.4): a poll over a slow link takes longer than 1 bt, and the band's
+// retry orders upstreams on the heads it brings.
 func (n *Network) awaitBandAsk(ctx context.Context, sel string, block int64) {
 	ctx, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
 	defer cancel()
-	askAll(ctx, n.bandPollers(sel, block), common.AskRefusal)
+	var wg sync.WaitGroup
+	for _, sp := range n.bandPollers(sel, block) {
+		wg.Go(func() { sp.AskReaching(ctx, block, common.AskRefusal) })
+	}
+	wg.Wait()
 }
 
 // bandPollers are the pollers of the upstreams sel's lane ceiling counts
