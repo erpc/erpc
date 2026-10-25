@@ -2856,19 +2856,18 @@ func (t *ChainTracker) fetchHeader(ctx context.Context, class fetchClass, method
 }
 
 // headerMatchesRef reports whether a fetched header is the block the request
-// anchored on: same hash by hash, same number by number (tags have no
-// anchor).
+// anchored on: same hash by hash, same number by number. Tracker header
+// fetches name no tag.
 func headerMatchesRef(h *chainHeader, method, blockRef string) bool {
 	switch method {
 	case "eth_getBlockByHash":
 		key, ok := hashKey(blockRef)
 		return ok && key == h.hashHex
 	case "eth_getBlockByNumber":
-		if want, err := common.HexToInt64(blockRef); err == nil {
-			return int64(h.number) == want
-		}
+		want, err := common.HexToInt64(blockRef)
+		return err == nil && int64(h.number) == want
 	}
-	return true
+	return false
 }
 
 // fetched hands a tracker fetch's answer to the mailbox, where it is never

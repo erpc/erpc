@@ -380,10 +380,6 @@ func TestHeaderMatchesRef(t *testing.T) {
 		assert.True(t, headerMatchesRef(h, "eth_getBlockByNumber", "0x10"))
 		assert.False(t, headerMatchesRef(h, "eth_getBlockByNumber", "0x11"))
 	})
-	t.Run("tag refs have no anchor to enforce", func(t *testing.T) {
-		h := parse(0x10, testHash("ab", 0x10))
-		assert.True(t, headerMatchesRef(h, "eth_getBlockByNumber", "latest"))
-	})
 }
 
 // ReconfirmPin must report WHY it is answering, not just what the pin is.

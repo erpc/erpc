@@ -295,7 +295,7 @@ func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
 		method, ref, upstream = "eth_getBlockByHash", fmt.Sprintf("0x%x", want), e.sender
 	}
 	e.busy = true
-	t.submitHeader(t.headerSpec(class, method, ref, upstream, false), func(h *chainHeader, _ string, _ time.Time, err error) {
+	t.submitHeader(t.headerSpec(class, method, ref, upstream, false), func(h *chainHeader, err error) {
 		if t.exts[r] != e {
 			return
 		}
@@ -338,7 +338,7 @@ func (t *ChainTracker) extended(r *node, e *extension, h *chainHeader) {
 
 // submitHeader queues a tracker-owned header fetch; the tracker waits on it
 // and done runs on the tracker's goroutine with the answer.
-func (t *ChainTracker) submitHeader(spec fetchSpec, done func(h *chainHeader, from string, sent time.Time, err error)) {
+func (t *ChainTracker) submitHeader(spec fetchSpec, done func(h *chainHeader, err error)) {
 	w := t.fetch.submit(nil, spec)
 	t.fetch.bg.Go(func() {
 		res := w.wait(t.ctx)
@@ -347,7 +347,7 @@ func (t *ChainTracker) submitHeader(spec fetchSpec, done func(h *chainHeader, fr
 		if err == nil && h == nil {
 			err = errFetchUndecoded
 		}
-		t.mb.put(trackerMsg{kind: msgCall, fn: func() { done(h, res.upstream, res.sent, err) }})
+		t.mb.put(trackerMsg{kind: msgCall, fn: func() { done(h, err) }})
 	})
 }
 
