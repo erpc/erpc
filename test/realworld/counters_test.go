@@ -121,6 +121,9 @@ func c5() spec {
 			}
 			s.blocks(1)
 		}
+		// Logs taps close 1013 over logsCloseSpread; the logs oracle reads
+		// their clients after the closes and reconnects, as C3 does.
+		time.Sleep(time.Until(r.at.Add(max(deepReorgDelivery, logsCloseSpread) + reconnectSlack)))
 		s.blocks(25)
 	}}
 }
