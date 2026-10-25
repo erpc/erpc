@@ -11,7 +11,7 @@ import (
 )
 
 func add(a *Adapter, id string, kind EventKind) error {
-	_, err := a.AddSubscription(id, "evm:1", kind, 10, func() {})
+	_, _, err := a.AddSubscription(id, "evm:1", kind, 10, func() {})
 	return err
 }
 
