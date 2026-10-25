@@ -1621,6 +1621,9 @@ func TestHandleBlockSkip_RetryableTriggersStatePollerRefresh(t *testing.T) {
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 	network.PinUpstreamOrderForTest()
+	// Past the cold start, a block this far above fresh reports is future:
+	// no Ask (spec §6.4).
+	sampleBlockTime(t, network)
 
 	time.Sleep(100 * time.Millisecond)
 	pollBaseline.Store(latestPollCount.Load())

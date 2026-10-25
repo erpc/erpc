@@ -451,6 +451,7 @@ func TestNetworkQuery_Shim(t *testing.T) {
 	})
 
 	t.Run("errors carry the MIP-16 codes", func(t *testing.T) {
+		sampleBlockTime(t, ntw)
 		for _, tc := range []struct {
 			name, method, params string
 			code                 int
