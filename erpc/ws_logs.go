@@ -28,6 +28,7 @@ var (
 
 var (
 	errLogsLag             = indexer.OutOfRangeError{Reason: indexer.OutOfRangeLag}
+	errLogsReorgDepth      = indexer.OutOfRangeError{Reason: indexer.OutOfRangeReorgDepth}
 	errLogsReceiptsTimeout = indexer.OutOfRangeError{Reason: indexer.OutOfRangeReceiptsTimeout}
 )
 
@@ -58,7 +59,7 @@ func parseLogsSubscribe(params []interface{}) (*logfilter.LogsFilter, error) {
 func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane string, f *logfilter.LogsFilter) {
 	tracker := nw.chainTracker
 	feed := &cutFeed{ChainFeed: gated(logsFeed{tracker}, nw, lane)}
-	window := uint64(tracker.ReorgWindow())
+	window := tracker.ReorgWindow()
 	write := func(log json.RawMessage) error {
 		if err := wsc.WriteSubscriptionNotification(sub, log); err != nil {
 			return wsWriteError{err}
@@ -77,10 +78,21 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		if len(b.Applied) > 0 {
-			if lh := tracker.LogsHead(); lh.Number > b.Applied[0].Number-1+window {
-				return errLogsLag
+		// removed:true logs need the sent Reverted blocks' receipts, which
+		// the feed holds only reorgWindow deep.
+		if sent {
+			n := 0
+			for _, blk := range b.Reverted {
+				if blk.Number >= sentFrom {
+					n++
+				}
 			}
+			if n > window {
+				return errLogsReorgDepth
+			}
+		}
+		if len(b.Applied) > 0 && lagging(tracker, b.Applied[0]) {
+			return errLogsLag
 		}
 		for _, blk := range b.Reverted {
 			if !sent || blk.Number < sentFrom {

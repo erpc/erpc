@@ -1235,6 +1235,8 @@ func (t *ChainTracker) apply(path []*node) {
 	s.confirmed, s.backing = b.confirmed(), b
 	t.pins, t.treesDirty, t.receiptsDirty = path, true, true
 	s.logs = t.logsHeadOf(s)
+	t.unstamp(pub.pins, s)
+	t.stamp(s)
 	if t.selector == "" && pub.head() != head {
 		telemetry.GaugeHandle(telemetry.MetricNetworkSubscriptionLastHeadTimestamp, t.projectId(), t.networkLabel()).SetToCurrentTime()
 	}
@@ -1410,11 +1412,56 @@ func newFeedState(pins []*node) *feedState {
 	return s
 }
 
+// stamp marks each pin that first stands at or below s's confirmed head
+// or logs head with the time it got there (Block.Ready). Stamped pins are
+// one run that grows at both ends: new heads above it, fill below it, and
+// a revert unstamps what it removes (unstamp). Only the network-wide
+// tracker stamps: trackers share parsed headers, and taps read only that
+// one.
+func (t *ChainTracker) stamp(s *feedState) {
+	if t.selector != "" || s.confirmed < 0 {
+		return
+	}
+	now := time.Now().UnixNano()
+	stampRun(s.pins[:s.confirmed+1], now, func(h *chainHeader) *atomic.Int64 { return &h.confirmedAt })
+	if l := s.pinAt(s.logs.Number); l != nil && l.hash == s.logs.Hash {
+		stampRun(s.pins[:l.number-s.base+1], now, func(h *chainHeader) *atomic.Int64 { return &h.logsAt })
+	}
+}
+
+// stampRun stamps the pins of ps above the highest stamped one and below
+// the lowest.
+func stampRun(ps []*chainHeader, now int64, at func(*chainHeader) *atomic.Int64) {
+	i := len(ps) - 1
+	for i >= 0 && at(ps[i]).CompareAndSwap(0, now) {
+		i--
+	}
+	for j := 0; j < i && at(ps[j]).CompareAndSwap(0, now); j++ {
+	}
+}
+
+// unstamp clears the stamps of the old pins s no longer holds at their
+// number, so a block a reorg removes and brings back is stamped afresh.
+func (t *ChainTracker) unstamp(old []*chainHeader, s *feedState) {
+	if t.selector != "" {
+		return
+	}
+	for i := len(old) - 1; i >= 0; i-- {
+		p := old[i]
+		if p.number < s.base || s.pinAt(p.number) == p {
+			return
+		}
+		p.confirmedAt.Store(0)
+		p.logsAt.Store(0)
+	}
+}
+
 func (t *ChainTracker) publish() {
 	s := newFeedState(t.pins)
 	b := t.gate(t.pins)
 	s.confirmed, s.backing = b.confirmed(), b
 	s.logs = t.logsHeadOf(s)
+	t.stamp(s)
 	close(t.state.Swap(s).changed)
 	t.sampleConfirmed(s)
 }
@@ -1710,6 +1757,7 @@ func (t *ChainTracker) gateSend() {
 	}
 	s.changed = make(chan struct{})
 	s.logs = t.logsHeadOf(s)
+	t.stamp(s)
 	close(t.state.Swap(s).changed)
 	t.sampleConfirmed(s)
 }
@@ -2014,6 +2062,7 @@ func (t *ChainTracker) applied(s *feedState, from uint64, rr *readReceipts) inde
 			}
 			break
 		}
+		blk.Ready = p.ready(rr.o.MayMatch != nil)
 		b.Applied = append(b.Applied, blk)
 	}
 	if len(b.Applied) == 0 {

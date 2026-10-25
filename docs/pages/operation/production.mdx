@@ -430,7 +430,7 @@ If you serve [`eth_subscribe`](/operation/websocket) traffic, a few additional n
 
 - **One upstream subscription per (network, filter, upstream)** — eRPC de-duplicates across clients. 1,000 clients subscribed to the same `logs` filter on a network with N WebSocket upstreams consume N upstream subscriptions, not 1,000 × N.
 - **Instance-local subscriptions** — a client WS connection lives on one eRPC instance; its subscriptions end when that connection closes, so clients must re-subscribe after reconnecting.
-- **Slow-client policy** — each subscription gets a buffer of `server.webSocket.subscriptionBufferSize` notifications (default 256). `newHeads` / `newPendingTransactions` drop their own oldest notifications on overflow; `logs` subscriptions close the connection with `1013`. Watch `erpc_websocket_subscription_notifications_dropped_total`.
+- **Slow-client policy** — a subscription whose next block has waited more than `chainTracker.reorgWindow` × the block time: `newHeads` restarts after the head (a jump in numbers), `logs` closes the connection with `1013`. Watch `erpc_tap_out_of_range_total{reason="lag"}`.
 - **Shutdown** — new WS work is refused as soon as shutdown begins; active connections send `1001` after in-flight requests finish or `waitBeforeShutdown` expires, so clients reconnect to another instance while the load balancer drains this one.
 
 ### Observability
