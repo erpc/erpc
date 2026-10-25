@@ -401,9 +401,10 @@ func c7() spec {
 // D8: one wss source and two https non-sources, each with a budget of
 // d8Budget requests per second on every pod. For d8Load, client reads run
 // at d8LoadFactor times the sum of the budgets on each pod, so every
-// budget is spent. The tracker's Asks still get permits: no head fetch of
-// eRPC's own is refused by a budget, and no tap waits more than W (§19 D8;
-// §6.8 Ask).
+// budget is spent. Head Asks keep fetching on each pod
+// (erpc_head_ask_total{outcome="fetched"} rises), no head fetch of eRPC's
+// own is refused by a budget, and no tap waits more than W (§19 D8; §6.8
+// Ask).
 func d8() spec {
 	vendors := []vendorSpec{{"ws-a", "vendor-a", true}, {"http-a", "vendor-a", false}, {"http-b", "vendor-b", false}}
 	budgets := map[string]uint32{}
@@ -417,11 +418,18 @@ func d8() spec {
 			n, _ := s.metric(pod, "erpc_rate_limits_total", map[string]string{"upstream": s.upstream(key), "category": d8Method})
 			return n
 		}
+		fetched := func(pod int) (float64, bool) {
+			return s.metric(pod, "erpc_head_ask_total", map[string]string{"outcome": "fetched"})
+		}
 		for _, v := range vendors {
 			limited[v.key], refused[v.key] = make([]float64, len(s.h.pods)), make([]float64, len(s.h.pods))
 			for pod := range s.h.pods {
 				limited[v.key][pod], refused[v.key][pod] = spent(pod, v.key), s.asksRefused(pod, v.key)
 			}
+		}
+		asked := make([]float64, len(s.h.pods))
+		for pod := range s.h.pods {
+			asked[pod], _ = fetched(pod)
 		}
 		ctx, cancel := context.WithTimeout(s.ctx, d8Load)
 		defer cancel()
@@ -436,6 +444,14 @@ func d8() spec {
 		}
 		wg.Wait()
 		s.logf("client load: %d reads in %s, %d failed", sent.Load(), d8Load, failed.Load())
+		for pod := range s.h.pods {
+			switch n, found := fetched(pod); {
+			case !found:
+				s.violate(s.name, "pod-%d does not export erpc_head_ask_total{outcome=\"fetched\"}", pod+1)
+			case n <= asked[pod]:
+				s.violate(s.name, "pod-%d: no head Ask fetched under client load (erpc_head_ask_total{outcome=\"fetched\"} %v)", pod+1, n)
+			}
+		}
 		for _, v := range vendors {
 			for pod := range s.h.pods {
 				if n := spent(pod, v.key); n <= limited[v.key][pod] {

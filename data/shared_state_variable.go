@@ -3,12 +3,15 @@ package data
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -523,6 +526,21 @@ func (c *counterInt64) tryUpdateIfStale(ctx context.Context, staleness time.Dura
 			),
 		)
 		started := time.Now()
+		// A panic in the refresh fails it, so its caller and the async
+		// helper get an error instead of the process crashing.
+		defer func() {
+			if rec := recover(); rec != nil {
+				telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+					"shared-state-refresh",
+					"key:"+c.key,
+					common.ErrorFingerprint(rec),
+				).Inc()
+				c.registry.logger.Error().Interface("panic", rec).Str("key", c.key).Str("stack", string(debug.Stack())).
+					Msg("unexpected panic in a shared counter refresh")
+				fnSpan.End()
+				resultCh <- refreshResult{err: fmt.Errorf("shared counter refresh of %s panicked: %v", c.key, rec), started: started}
+			}
+		}()
 		value, err := executeNewValueFn(fnCtx)
 		if err != nil {
 			fnSpan.SetAttributes(attribute.String("error", err.Error()))

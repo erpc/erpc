@@ -240,6 +240,10 @@ const (
 	// UpstreamPoliciesTracker, and they take an upstream rate permit only
 	// while the budget stays more than half free, so they yield to clients.
 	UpstreamPoliciesTrackerFill
+	// UpstreamPoliciesHeadAsk: a head Ask's fetch of latest. As
+	// UpstreamPoliciesTimeoutOnly, and it takes no upstream rate permit:
+	// client load at a budget never stalls a head (spec §6.8).
+	UpstreamPoliciesHeadAsk
 )
 
 // NewProbeRequest is a request an upstream's own state poller or chainId

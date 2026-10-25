@@ -390,7 +390,8 @@ func TestCovPoller_PollLatest_MajorMoveChainIdGate(t *testing.T) {
 		up.chainId = "999"
 		p.latestBlockShared.TryUpdate(ctx, 1000)
 
-		_, err := p.PollLatestBlockNumber(ctx)
+		// The seed made the counter fresh: a hash need still fetches.
+		_, err := covPollerFetch(p, ctx)
 		require.NoError(t, err)
 		assert.Equal(t, int64(1000), p.LatestBlock())
 		assert.True(t, up.isCordoned())
@@ -402,7 +403,7 @@ func TestCovPoller_PollLatest_MajorMoveChainIdGate(t *testing.T) {
 		up.chainId = "999"
 		p.latestBlockShared.TryUpdate(ctx, 5_000_000)
 
-		_, err := p.PollLatestBlockNumber(ctx)
+		_, err := covPollerFetch(p, ctx)
 		require.NoError(t, err)
 		assert.Equal(t, int64(5_000_000), p.LatestBlock())
 		assert.True(t, up.isCordoned(), "a major backward move is gated just like a forward one")
@@ -412,7 +413,7 @@ func TestCovPoller_PollLatest_MajorMoveChainIdGate(t *testing.T) {
 		p, up, ctx := covPollerNew(t, "cov-latest-gate-ok", covPollerBlocks(5_000_000, 90))
 		p.latestBlockShared.TryUpdate(ctx, 1000)
 
-		v, err := p.PollLatestBlockNumber(ctx)
+		v, err := covPollerFetch(p, ctx)
 		require.NoError(t, err)
 		assert.Equal(t, int64(5_000_000), v)
 		assert.Equal(t, 1, up.getChainIdCalls())
@@ -433,6 +434,13 @@ func TestCovPoller_PollLatest_MajorMoveChainIdGate(t *testing.T) {
 		p := NewEvmStatePoller("test", context.Background(), &lg, cu, base.tracker, base.sharedStateRegistry)
 		assert.True(t, p.verifyChainIdOnMajorHeadMove(context.Background(), "latest", 1000, 5_000_000))
 	})
+}
+
+// covPollerFetch is an Ask with a hash need, which fetches however fresh
+// the counter is: the counter after it and its error.
+func covPollerFetch(p *EvmStatePoller, ctx context.Context) (int64, error) {
+	a := p.Ask(ctx, common.HeadNeedHash, common.AskRefresh)
+	return a.Block, a.Err
 }
 
 // ---------------------------------------------------------------------------
@@ -660,8 +668,9 @@ func TestCovPoller_OnLatestBlock_FiresForEveryAdvance(t *testing.T) {
 	p.SuggestLatestBlock(200)
 	assert.Equal(t, int64(200), <-got)
 
-	_, err := p.PollLatestBlockNumber(ctx)
-	require.NoError(t, err)
+	// The suggestion made the counter fresh, which meets a number need;
+	// a hash need fetches.
+	require.NoError(t, p.Ask(ctx, common.HeadNeedHash, common.AskRefresh).Err)
 	assert.Equal(t, int64(300), <-got, "polled advances fire the same callback")
 	assert.Equal(t, 1, up.callCount("eth_getBlockByNumber"))
 
@@ -673,44 +682,144 @@ func TestCovPoller_OnLatestBlock_FiresForEveryAdvance(t *testing.T) {
 	}
 }
 
-func TestCovPoller_RefreshLatestBlock(t *testing.T) {
-	t.Run("nil-safe on unusable pollers", func(t *testing.T) {
+// covPollerDebounce sets the poller's cadence to d.
+func covPollerDebounce(p *EvmStatePoller, d time.Duration) {
+	p.stateMu.Lock()
+	p.debounceInterval = d
+	p.stateMu.Unlock()
+}
+
+// TestCovPoller_Ask holds the Ask's contract (spec §6.8): one fetch per
+// upstream in flight, its outcome to every waiter; only an answer sent
+// within the cadence debounces; node failures back off; a panic fails
+// every waiter.
+func TestCovPoller_Ask(t *testing.T) {
+	t.Run("unusable pollers fetch nothing", func(t *testing.T) {
 		var nilPoller *EvmStatePoller
 		assert.True(t, nilPoller.IsObjectNull())
-		nilPoller.RefreshLatestBlock()
+		assert.Equal(t, common.AskBackoff, nilPoller.Ask(context.Background(), common.HeadNeedHash, common.AskRefresh).Outcome)
 		assert.Nil(t, nilPoller.GetDiagnostics())
 
 		up := &covPollerUpstream{cfg: &common.UpstreamConfig{Id: "x"}, calls: map[string]int{}}
 		bare := &EvmStatePoller{upstream: up}
 		assert.False(t, bare.IsObjectNull())
-		bare.RefreshLatestBlock()
+		bare.AskBackground(common.HeadNeedNumber, common.AskRefresh)
 		bare.OnLatestBlock(func(int64) {})
 		assert.Zero(t, up.callCount("eth_getBlockByNumber"), "no shared counter, nothing to refresh")
 	})
 
-	t.Run("skips while another refresh is in flight", func(t *testing.T) {
-		p, up, _ := covPollerNew(t, "cov-refresh-inflight", covPollerBlocks(10, 1))
-		p.latestRefreshInFlight.Store(true)
-		p.RefreshLatestBlock()
-		assert.False(t, p.latestRefreshInFlight.CompareAndSwap(false, true), "flag untouched by the skipped call")
-		assert.Zero(t, up.callCount("eth_getBlockByNumber"))
-	})
-
-	t.Run("failed refresh releases the in-flight flag", func(t *testing.T) {
-		p, up, _ := covPollerNew(t, "cov-refresh-fail", func(string, []interface{}) (*common.NormalizedResponse, error) {
-			return nil, common.NewErrEndpointServerSideException(errors.New("boom"), nil, 500)
+	t.Run("every waiter gets the one fetch's answer", func(t *testing.T) {
+		release := make(chan struct{})
+		p, up, ctx := covPollerNew(t, "cov-ask-join", func(method string, params []interface{}) (*common.NormalizedResponse, error) {
+			<-release
+			return covPollerBlocks(77, 1)(method, params)
 		})
-		p.RefreshLatestBlock()
-		require.Eventually(t, func() bool {
-			return up.callCount("eth_getBlockByNumber") == 1 && !p.latestRefreshInFlight.Load()
-		}, 5*time.Second, 5*time.Millisecond)
-		assert.Zero(t, p.LatestBlock())
+		// A cadence far shorter than the fetch: a fetch in flight is
+		// joined however old it is.
+		covPollerDebounce(p, time.Millisecond)
+		const waiters = 20
+		answers := make(chan common.HeadAnswer, waiters)
+		for range waiters {
+			go func() { answers <- p.Ask(ctx, common.HeadNeedHash, common.AskRefresh) }()
+		}
+		require.Eventually(t, func() bool { return up.callCount("eth_getBlockByNumber") == 1 }, 5*time.Second, time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
+		close(release)
+		outcomes := map[common.AskOutcome]int{}
+		for range waiters {
+			a := <-answers
+			require.NoError(t, a.Err)
+			assert.Equal(t, int64(77), a.Block)
+			assert.Contains(t, string(a.Header), `"number":"0x4d"`)
+			outcomes[a.Outcome]++
+		}
+		assert.Equal(t, map[common.AskOutcome]int{common.AskFetched: 1, common.AskInflight: waiters - 1}, outcomes)
+		assert.Equal(t, 1, up.callCount("eth_getBlockByNumber"), "one fetch for every waiter")
 	})
 
-	t.Run("successful refresh advances the head", func(t *testing.T) {
-		p, _, _ := covPollerNew(t, "cov-refresh-ok", covPollerBlocks(77, 1))
-		p.RefreshLatestBlock()
-		require.Eventually(t, func() bool { return p.LatestBlock() == 77 }, 5*time.Second, 5*time.Millisecond)
+	t.Run("an answer within the cadence debounces; the counter meets a number need", func(t *testing.T) {
+		p, up, ctx := covPollerNew(t, "cov-ask-debounce", covPollerBlocks(42, 1))
+		covPollerDebounce(p, time.Hour)
+		first := p.Ask(ctx, common.HeadNeedHash, common.AskRefresh)
+		require.NoError(t, first.Err)
+		assert.Equal(t, common.AskFetched, first.Outcome)
+		again := p.Ask(ctx, common.HeadNeedHash, common.AskRefresh)
+		assert.Equal(t, common.AskInflight, again.Outcome)
+		assert.Equal(t, first.Header, again.Header)
+		assert.Equal(t, common.AskSharedFresh, p.Ask(ctx, common.HeadNeedNumber, common.AskRefresh).Outcome)
+		assert.Equal(t, 1, up.callCount("eth_getBlockByNumber"))
+	})
+
+	t.Run("node failures back off; the backoff ends with the next answer", func(t *testing.T) {
+		var failing sync.Mutex
+		fail := true
+		p, up, ctx := covPollerNew(t, "cov-ask-backoff", func(method string, params []interface{}) (*common.NormalizedResponse, error) {
+			failing.Lock()
+			defer failing.Unlock()
+			if fail {
+				return nil, common.NewErrEndpointServerSideException(errors.New("boom"), nil, 500)
+			}
+			return covPollerBlocks(9, 1)(method, params)
+		})
+		const cadence = 50 * time.Millisecond
+		covPollerDebounce(p, cadence)
+		a := p.Ask(ctx, common.HeadNeedNumber, common.AskRefresh)
+		require.Error(t, a.Err)
+		assert.Equal(t, common.AskFetched, a.Outcome)
+		assert.Equal(t, 2*cadence, p.BackedOffCadence(), "the bench reads the backoff")
+		b := p.Ask(ctx, common.HeadNeedNumber, common.AskRefresh)
+		assert.Equal(t, common.AskBackoff, b.Outcome)
+		assert.NoError(t, b.Err, "a backoff fetches nothing and fails nothing")
+		assert.Equal(t, 1, up.callCount("eth_getBlockByNumber"))
+		time.Sleep(2 * cadence)
+		failing.Lock()
+		fail = false
+		failing.Unlock()
+		c := p.Ask(ctx, common.HeadNeedNumber, common.AskRefresh)
+		require.NoError(t, c.Err)
+		assert.Equal(t, common.AskFetched, c.Outcome)
+		assert.Equal(t, int64(9), c.Block)
+		assert.Equal(t, cadence, p.backoff())
+	})
+
+	t.Run("a panic fails every waiter and never debounces", func(t *testing.T) {
+		release := make(chan struct{})
+		var panicking sync.Mutex
+		explode := true
+		p, up, ctx := covPollerNew(t, "cov-ask-panic", func(method string, params []interface{}) (*common.NormalizedResponse, error) {
+			panicking.Lock()
+			boom := explode
+			panicking.Unlock()
+			if boom {
+				<-release
+				panic("vendor client bug")
+			}
+			return covPollerBlocks(5, 1)(method, params)
+		})
+		covPollerDebounce(p, time.Hour)
+		panics := telemetry.MetricUnexpectedPanicTotal.WithLabelValues("head-ask",
+			"project:test network:n/a upstream:cov-ask-panic where:fetch", common.ErrorFingerprint("vendor client bug"))
+		before := promUtil.ToFloat64(panics)
+		answers := make(chan common.HeadAnswer, 3)
+		for range 3 {
+			go func() { answers <- p.Ask(ctx, common.HeadNeedHash, common.AskRefresh) }()
+		}
+		require.Eventually(t, func() bool { return up.callCount("eth_getBlockByNumber") == 1 }, 5*time.Second, time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
+		close(release)
+		for range 3 {
+			a := <-answers
+			require.ErrorContains(t, a.Err, "panicked")
+			assert.Nil(t, a.Header)
+		}
+		assert.Equal(t, before+1, promUtil.ToFloat64(panics))
+		panicking.Lock()
+		explode = false
+		panicking.Unlock()
+		a := p.Ask(ctx, common.HeadNeedHash, common.AskRefresh)
+		require.NoError(t, a.Err)
+		assert.Equal(t, common.AskFetched, a.Outcome, "a failed fetch never debounces")
+		assert.Equal(t, int64(5), a.Block)
 	})
 }
 

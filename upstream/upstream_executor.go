@@ -126,7 +126,7 @@ func (e *upstreamExecutor) Run(
 	startTime := time.Now()
 
 	switch req.UpstreamPolicies() {
-	case common.UpstreamPoliciesTimeoutOnly:
+	case common.UpstreamPoliciesTimeoutOnly, common.UpstreamPoliciesHeadAsk:
 		resp, err := e.callWithTimeout(ctx, req, inner, false)
 		return resp, e.wrapTimeout(err, startTime)
 	case common.UpstreamPoliciesTracker, common.UpstreamPoliciesTrackerFill:

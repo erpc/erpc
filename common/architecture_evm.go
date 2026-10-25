@@ -12,6 +12,59 @@ const (
 	UpstreamTypeEvm UpstreamType = "evm"
 )
 
+// HeadNeed is what a head Ask must produce (spec §6.8).
+type HeadNeed uint8
+
+const (
+	// HeadNeedNumber: a fresh number; a shared counter whose report is
+	// younger than the cadence meets it.
+	HeadNeedNumber HeadNeed = iota
+	// HeadNeedHash: a hash vote; only a local fetch sent within the
+	// cadence meets it.
+	HeadNeedHash
+	// HeadNeedFork: a hash need whose answer is fresh evidence of the
+	// node's head, whatever its earlier votes say (spec §6.3 fork poll).
+	HeadNeedFork
+)
+
+// AskReason is a head Ask's caller, the reason label of
+// erpc_head_ask_total (spec §6.8, §17).
+type AskReason string
+
+const (
+	AskPoll    AskReason = "poll"
+	AskCatchUp AskReason = "catch_up"
+	AskRefusal AskReason = "refusal"
+	AskRefresh AskReason = "refresh"
+)
+
+// AskOutcome is how a head Ask was met, the outcome label of
+// erpc_head_ask_total (spec §17).
+type AskOutcome string
+
+const (
+	// AskFetched: the Ask started a fetch.
+	AskFetched AskOutcome = "fetched"
+	// AskSharedFresh: the shared counter met a number need.
+	AskSharedFresh AskOutcome = "shared_fresh"
+	// AskInflight: a local fetch sent within the cadence met it, in
+	// flight or answered.
+	AskInflight AskOutcome = "inflight"
+	// AskBackoff: the upstream backs off; nothing was fetched.
+	AskBackoff AskOutcome = "backoff"
+)
+
+// HeadAnswer is what a head Ask gives its caller: the fetch's one
+// outcome, the same for every waiter.
+type HeadAnswer struct {
+	Outcome AskOutcome
+	// Block is the upstream's latest counter after the outcome.
+	Block int64
+	// Header is the fetched latest header; nil with no fetch answer.
+	Header json.RawMessage
+	Err    error
+}
+
 // EvmHeadReaches is the one head predicate (spec §6.4, #1099): u, with head
 // as its latest, reaches block bn when head plus its
 // headLagToleranceBlocks is at least bn. The availability gate's

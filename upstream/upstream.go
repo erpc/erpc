@@ -627,7 +627,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 
 	lg := u.logger.With().Str("method", method).Str("networkId", u.NetworkId()).Interface("id", nrq.ID()).Logger()
 
-	if limitersBudget != nil {
+	if limitersBudget != nil && nrq.UpstreamPolicies() != common.UpstreamPoliciesHeadAsk {
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
 		rules, err := limitersBudget.GetRulesByMethod(method)
 		if err != nil {

@@ -2656,11 +2656,11 @@ func pollsSettle(t *testing.T, polls *atomic.Int64, window time.Duration, msg st
 func TestWebSocket_HttpSourcePolledHeads(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
-	prevBackoff, prevExpiry := evm.PollSourceMaxBackoff.Load(), evm.LatestBlockSkipExpiry.Load()
-	evm.PollSourceMaxBackoff.Store(200 * time.Millisecond)
+	prevBackoff, prevExpiry := evm.AskMaxBackoff.Load(), evm.LatestBlockSkipExpiry.Load()
+	evm.AskMaxBackoff.Store(200 * time.Millisecond)
 	evm.LatestBlockSkipExpiry.Store(3 * time.Second)
 	defer func() {
-		evm.PollSourceMaxBackoff.Store(prevBackoff)
+		evm.AskMaxBackoff.Store(prevBackoff)
 		evm.LatestBlockSkipExpiry.Store(prevExpiry)
 	}()
 

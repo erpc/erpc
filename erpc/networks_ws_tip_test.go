@@ -789,10 +789,10 @@ func TestNetworkIntake_ReconnectOnHaltedChainRenewsVote(t *testing.T) {
 // span W, first to last, with no success since (spec §6.1):
 //  1. Two 429s W/2 apart, read W after the first, keep the vote; a third
 //     past W ends it; a success brings it back.
-//  2. A slow poll the node fails after a later poll succeeded started before
-//     that success, so it does not count: a 429 W after it keeps the vote.
-//  3. Client traffic uses up the upstream's daily rate-limit budget: eRPC's
-//     own refusals for 2·W are no poll, so the vote holds.
+//  2. A poll asked while a slow one is in flight joins it (spec §6.8 Ask):
+//     the node sees one poll, and both callers get its failure.
+//  3. Client traffic uses up the upstream's daily rate-limit budget: the
+//     Asks take no permit, so they reach the node and the vote holds.
 func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -845,22 +845,16 @@ func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) 
 	vendor.failLatest.Store(0)
 	restored("a success ends the failures")
 
+	time.Sleep(150 * time.Millisecond)
 	polled = vendor.latestPolls.Load()
 	vendor.slowFail.Store(int64(time.Second))
 	poller.PollHead(false)
 	require.Eventually(t, func() bool { return vendor.latestPolls.Load() > polled }, 2*time.Second, 5*time.Millisecond, "the slow poll reaches the node")
 	time.Sleep(200 * time.Millisecond)
 	_, err := poller.PollLatestBlockNumber(ctx)
-	require.NoError(t, err)
-	require.Equal(t, polled+2, vendor.latestPolls.Load(), "a poll after the slow one succeeds while it is in flight")
-	require.Eventually(t, func() bool { return vendor.slowFailed.Load() == 1 }, 3*time.Second, 5*time.Millisecond, "the node fails the slow poll")
-	time.Sleep(100 * time.Millisecond)
-	slowFailedAt := time.Now()
-	vendor.failLatest.Store(http.StatusTooManyRequests)
-	time.Sleep(time.Until(slowFailedAt.Add(w + 300*time.Millisecond)))
-	pollFails("a 429 W after the slow poll failed")
-	require.True(t, hashVoter(), "a failure whose request started before the last success does not count")
-	vendor.failLatest.Store(0)
+	require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException), "a poll asked during the slow one gets its failure: got %v", err)
+	require.Equal(t, polled+1, vendor.latestPolls.Load(), "a poll asked during the slow one joins it")
+	require.Equal(t, int32(1), vendor.slowFailed.Load(), "the node failed the slow poll")
 	restored("a success ends the failures")
 
 	flood, stopFlood := context.WithCancel(ctx)
@@ -879,25 +873,23 @@ func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) 
 			}
 		})
 	}
-	var lastErr error
-	for end := time.Now().Add(5 * time.Second); time.Now().Before(end) && !common.HasErrorCode(lastErr, common.ErrCodeUpstreamRateLimitRuleExceeded); {
-		time.Sleep(150 * time.Millisecond)
-		_, lastErr = poller.PollLatestBlockNumber(ctx)
+	clientRefused := func() bool {
+		s, _ := answer.Load().(string)
+		s = strings.ToLower(s)
+		return strings.Contains(s, "ratelimit") || strings.Contains(s, "rate limit")
 	}
-	require.True(t, common.HasErrorCode(lastErr, common.ErrCodeUpstreamRateLimitRuleExceeded),
-		"client traffic uses up the upstream's budget: last poll %v, last client answer %.600v", lastErr, answer.Load())
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end) && !clientRefused(); {
+		time.Sleep(50 * time.Millisecond)
+	}
+	require.True(t, clientRefused(), "client traffic uses up the upstream's budget: last client answer %.600v", answer.Load())
 	polled = vendor.latestPolls.Load()
-	var refused []time.Time
 	for end := time.Now().Add(2 * network.chainTracker.W()); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
-		if _, err := poller.PollLatestBlockNumber(ctx); common.HasErrorCode(err, common.ErrCodeUpstreamRateLimitRuleExceeded) {
-			refused = append(refused, time.Now())
-		}
+		_, err := poller.PollLatestBlockNumber(ctx)
+		require.NoError(t, err, "an Ask takes no rate permit")
 	}
 	keptVote := hashVoter()
 	stopFlood()
 	wg.Wait()
-	require.Equal(t, polled, vendor.latestPolls.Load(), "client traffic uses up the budget: no poll reaches the node")
-	require.NotEmpty(t, refused)
-	require.GreaterOrEqual(t, refused[len(refused)-1].Sub(refused[0]), network.chainTracker.W(), "eRPC refused the polls for W")
-	require.True(t, keptVote, "polls eRPC refused itself never end a hash vote")
+	require.Greater(t, vendor.latestPolls.Load(), polled, "client traffic uses up the budget: the Asks still reach the node")
+	require.True(t, keptVote, "the vote holds while clients use up the budget")
 }

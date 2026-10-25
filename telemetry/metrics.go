@@ -904,6 +904,14 @@ var (
 		Help:      "Total requests naming a block, by the refusal rule's outcome: served, retried_found, retried_missing, future, future_after_refresh.",
 	}, []string{"project", "network", "rule"})
 
+	// MetricHeadAskTotal counts every head Ask (spec §6.8, §17) by its
+	// caller and how it was met.
+	MetricHeadAskTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "head_ask_total",
+		Help:      "Total head Asks, by caller (poll, catch_up, refusal, refresh, settle, no_source) and outcome (fetched, shared_fresh, inflight, backoff).",
+	}, []string{"project", "network", "reason", "outcome"})
+
 	// MetricCacheExecutorAttempt counts every attempt a cache-connector
 	// failsafe executor governs, keyed by the executor's identity (the
 	// matchMethod / matchFinality it was configured with) and the outcome
