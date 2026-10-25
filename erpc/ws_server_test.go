@@ -2800,9 +2800,9 @@ func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
 // the client once. A 2-block reorg on both vendors then reaches the client
 // as each head of the new branch, oldest first, and the client's chain
 // ends equal to the vendors'. A jump of more than reorgWindow blocks then
-// restarts the client's tap after the head, counted as lag, and heads go
-// on from there. One tap is open while the client is subscribed, none
-// after it leaves.
+// reaches the client as every block of it, in order, with no lag restart:
+// the jump's blocks just arrived (spec §10.2). One tap is open while the
+// client is subscribed, none after it leaves.
 func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -2881,7 +2881,8 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 
 	// The sources stall, then return more than reorgWindow (default 32)
 	// blocks ahead: the tracker re-anchors there and fills back down to the
-	// client's cursor, so the client's next batch starts too far behind.
+	// client's cursor. The filled blocks are fresh, so the client reads them
+	// all, in batches, and never restarts.
 	lagBefore := testutil.ToFloat64(lagged)
 	chain.setPaused(true)
 	time.Sleep(300 * time.Millisecond)
@@ -2889,18 +2890,16 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 		next("heads must arrive once each, in order")
 	}
 	jumped := chain.jump(40)
-	require.Eventually(t, func() bool { return testutil.ToFloat64(lagged) == lagBefore+1 }, 15*time.Second, 10*time.Millisecond,
-		"a client more than reorgWindow behind restarts once, as lag")
-	chain.setPaused(false)
-	n, head := nextNewHead(t, conn, 10*time.Second)
-	require.Equal(t, jumped+1, n, "the restarted client continues after the head")
-	require.Equal(t, chain.Hash(n), head["hash"])
-	last = n
-	for range 2 {
-		next("heads continue in order after the restart")
+	for last < jumped {
+		next("every block of a jump arrives once, in order")
 	}
-	assert.Equal(t, lagBefore+1, testutil.ToFloat64(lagged), "one lag restart")
-	assert.Equal(t, 1.0, openTaps(), "the restarted tap is the subscription's one tap")
+	require.Equal(t, chain.Hash(jumped), client[jumped], "the client's head is the vendors' after the jump")
+	chain.setPaused(false)
+	for range 2 {
+		next("heads continue in order after the jump")
+	}
+	assert.Equal(t, lagBefore, testutil.ToFloat64(lagged), "a jump is no lag")
+	assert.Equal(t, 1.0, openTaps(), "the subscription keeps its one tap")
 
 	require.NoError(t, conn.Close())
 	require.Eventually(t, func() bool { return openTaps() == 0 }, 5*time.Second, 10*time.Millisecond, "the tap closes with the client")

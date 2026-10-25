@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 )
 
 // Cursor is the number and hash of the last block a tap applied.
@@ -20,6 +21,10 @@ type Block struct {
 	ParentHash [32]byte
 	Header     json.RawMessage // verbatim, as first held
 	Receipts   json.RawMessage // verbatim; set only for blocks ReadOpts asked for
+	// Ready is when the block became deliverable to this Read: when it
+	// first reached the confirmed head, or the logs head for a Read with
+	// MayMatch. ws taps measure lag from it (spec §10.2).
+	Ready time.Time
 }
 
 // Batch is what one Read returns.
@@ -52,9 +57,6 @@ type ChainFeed interface {
 	// receipts when a block is pinned and any registered MayMatch wants it,
 	// and fills the whole window while any registered tap is Resumable.
 	Want(o ReadOpts) (release func())
-	// LogsHead is the highest pin up to which every block's receipts are
-	// held or not needed; ws logs taps measure lag from it.
-	LogsHead() Cursor
 }
 
 var ErrOutOfRange = errors.New("cursor out of range")
@@ -64,6 +66,9 @@ const (
 	OutOfRangeBelowWindow    = "below_window"
 	OutOfRangeForkLeftWindow = "fork_left_window"
 	OutOfRangeCursorUnknown  = "cursor_unknown"
+	// OutOfRangeReorgDepth: a ws logs batch reverts more than reorgWindow
+	// blocks, deeper than the feed holds receipts for (spec §10.2).
+	OutOfRangeReorgDepth = "reorg_depth"
 	// OutOfRangeLag: a transport's wait bound ended the tap (spec §9.2).
 	OutOfRangeLag = "lag"
 	// OutOfRangeReceiptsTimeout: a logs tap waited too long on one block's

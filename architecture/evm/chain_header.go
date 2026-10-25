@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/bytedance/sonic"
@@ -37,6 +38,13 @@ type chainHeader struct {
 	// intakePassed: this header passed intake's header checks, so a source
 	// that sends the same hash is not validated again.
 	intakePassed atomic.Bool
+
+	// confirmedAt and logsAt are when the header, as a pin, first stood at
+	// or below the confirmed head and the logs head (Block.Ready), in unix
+	// nanoseconds; 0 until then, and again once a revert removes the pin.
+	// The tracker writes them before it publishes the state that holds
+	// them there; a Read that returns the block first sets logsAt (ready).
+	confirmedAt, logsAt atomic.Int64
 
 	// encodings holds each transport's encoding of the header (a
 	// *HeaderEncoding key), so it is dropped with the header.
@@ -122,6 +130,31 @@ func (h *chainHeader) cursor() indexer.Cursor {
 
 func (h *chainHeader) block() indexer.Block {
 	return indexer.Block{Number: h.number, Hash: h.hash, ParentHash: h.parentHash, Header: h.raw}
+}
+
+// ready is when h became deliverable to a Read: when it reached the logs
+// head for a Read with receipts, else the confirmed head. A Read can
+// return a block before the tracker stamps it: its receipts held before
+// the logs head moves, or a pin a revert unstamped after the Read loaded
+// its state; then it is deliverable now, and a logs Read stamps that so
+// every logs tap measures from it.
+func (h *chainHeader) ready(logs bool) time.Time {
+	if !logs {
+		if at := h.confirmedAt.Load(); at != 0 {
+			return time.Unix(0, at)
+		}
+		return time.Now()
+	}
+	at := h.logsAt.Load()
+	if at == 0 {
+		at = time.Now().UnixNano()
+		if !h.logsAt.CompareAndSwap(0, at) {
+			if l := h.logsAt.Load(); l != 0 {
+				at = l
+			}
+		}
+	}
+	return time.Unix(0, at)
 }
 
 // hashRecomputes reports whether the header's JSON hashes to its hash

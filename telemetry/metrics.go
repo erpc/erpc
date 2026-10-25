@@ -262,7 +262,7 @@ var (
 	MetricTapOutOfRangeTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "tap_out_of_range_total",
-		Help:      "Taps ended because their cursor went out of range, by reason (below_window, fork_left_window, cursor_unknown, receipts_timeout, lag).",
+		Help:      "Taps ended because their cursor went out of range, by reason (below_window, fork_left_window, cursor_unknown, reorg_depth, receipts_timeout, lag).",
 	}, []string{"project", "network", "transport", "kind", "reason"})
 
 	// MetricNetworkServedTipBlockNumber is the block number the network actually

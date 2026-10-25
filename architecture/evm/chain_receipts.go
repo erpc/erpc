@@ -1207,13 +1207,8 @@ func (t *ChainTracker) publishLogsHead() {
 	}
 	s := *pub
 	s.logs, s.changed = logs, make(chan struct{})
+	t.stamp(&s)
 	close(t.state.Swap(&s).changed)
-}
-
-// LogsHead is the highest pin up to which every block's receipts are held
-// or not needed (spec §1); ws logs taps measure lag from it.
-func (t *ChainTracker) LogsHead() indexer.Cursor {
-	return t.state.Load().logs
 }
 
 // joinJob makes a Read wait on block h's receipts: the job that fetches

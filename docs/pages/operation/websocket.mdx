@@ -141,7 +141,7 @@ ws.send(JSON.stringify({
 - **No surprise disconnects** — upstream reconnects, scoring changes and brief outages never close your connection; eRPC re-subscribes upstream behind the scenes. eRPC closes a connection only on shutdown (`1001`), when the client stops answering pings, or with `1013` when a `logs` subscription cannot continue (see below).
 - **Deduplication** — even though multiple upstreams are subscribed in parallel, you only receive each block or pending tx once.
 - **Shared subscriptions** — clients subscribing to the same event on the same network share one upstream subscription per upstream. Each client gets its own subscription ID and receives every notification independently.
-- **Slow-client safety** — a slow reader never blocks other clients or upstream delivery. A `logs` subscription more than `chainTracker.reorgWindow` blocks behind closes the connection with `1013`, so the client knows it may have missed logs and can re-subscribe and backfill with `eth_getLogs`.
+- **Slow-client safety** — a slow reader never blocks other clients or upstream delivery. A `logs` subscription whose next block has waited more than `chainTracker.reorgWindow` × the block time closes the connection with `1013`, so the client knows it may have missed logs and can re-subscribe and backfill with `eth_getLogs`; a `newHeads` subscription restarts after the head.
 - **Connection-scoped IDs** — eRPC issues its own subscription IDs, so they stay the same across upstream reconnects and upstream switches. They belong to the connection that created them: `eth_unsubscribe` only works on that connection, and subscriptions end when it closes.
 - **Rate limiting** — subscribe/unsubscribe calls count against the same project and network rate limits as regular RPC.
 
@@ -149,7 +149,7 @@ ws.send(JSON.stringify({
 
 eRPC builds `logs` notifications from each block's `eth_getBlockReceipts`, fetched once per block when the block's `logsBloom` may match a subscribed filter; no upstream `logs` subscription is made. The filter takes `address` and `topics` as geth does; `fromBlock` and `toBlock` are ignored. A filter that does not parse fails with `-32602`.
 
-When a reorg drops a block with matched logs, eRPC sends those logs again with `"removed": true`, newest first, then the logs of the new branch. A block whose receipts no upstream serves for 60s closes the connections of its `logs` subscriptions with `1013`, spread over 60s.
+When a reorg drops a block with matched logs, eRPC sends those logs again with `"removed": true`, newest first, then the logs of the new branch. A reorg that reverts more than `chainTracker.reorgWindow` of the blocks a subscription was sent, or a block whose receipts no upstream serves for 60s, closes the connections of its `logs` subscriptions with `1013`, spread over 60s.
 
 ```javascript
 ws.onmessage = (event) => {
