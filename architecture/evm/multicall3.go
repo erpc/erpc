@@ -5,19 +5,18 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"go.opentelemetry.io/otel/attribute"
 )
-
-// Multicall3 is deployed at this address on every chain that has it.
-const multicall3Address = "0xcA11bde05977b3631167028862bE2a173976CA11"
 
 // aggregate3((address,bool,bytes)[])
 var aggregate3Selector = []byte{0x82, 0xad, 0x56, 0xcb}
@@ -265,11 +264,24 @@ func (b *Multicall3Batcher) send(bt *multicall3Batch, n common.Network, u common
 }
 
 // aggregate sends the pack as one eth_call through the upstream, so its rate
-// limits, retries and credit accounting count it once.
+// limits, retries and credit accounting count it once. A pack at the
+// "latest" tag carries one more call, the per-architecture block-number call
+// (integrity.ChainStateContextProbe): free evidence of the block u executes
+// "latest" at, recorded as u's tag-state sample (spec §6.11) and stripped
+// before the results meet the entries.
 func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, bt *multicall3Batch, n common.Network, u common.Upstream) ([]aggregate3Result, bool) {
+	packed := entries
+	tag := bt.block == "latest"
+	if tag {
+		if probe := multicall3TagProbe(n); probe != nil {
+			packed = append(entries[:len(entries):len(entries)], probe)
+		} else {
+			tag = false
+		}
+	}
 	call := map[string]interface{}{
-		"to":   multicall3Address,
-		"data": "0x" + hex.EncodeToString(encodeAggregate3(entries)),
+		"to":   integrity.Multicall3Address,
+		"data": "0x" + hex.EncodeToString(encodeAggregate3(packed)),
 	}
 	if bt.gas != "" {
 		call["gas"] = bt.gas
@@ -298,6 +310,13 @@ func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, bt *multicall3
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, mrq)
 
+	// The tag-state reference is the network-wide Latest at send, not the
+	// entries' Head.
+	var latest int64
+	if tag {
+		latest = common.EvmHeadOf(n, context.Background(), nil).Latest
+	}
+	sentAt := time.Now()
 	resp, err := u.Forward(ctx, mrq, false, false)
 	if resp != nil {
 		defer resp.Release()
@@ -326,10 +345,53 @@ func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, bt *multicall3
 		return nil, false
 	}
 	results, ok := decodeAggregate3(raw)
-	if !ok || len(results) != len(entries) {
+	if !ok || len(results) != len(packed) {
 		return nil, false
 	}
-	return results, true
+	if tag {
+		if executed, ok := multicall3Word(results[len(entries)]); ok && latest > 0 {
+			if p := stateProberFor(n); p != nil {
+				p.recordTagSample(u.Id(), executed, latest, sentAt)
+			}
+		}
+	}
+	return results[:len(entries)], true
+}
+
+// multicall3TagProbe is the pack entry for n's per-architecture block-number
+// call; nil when its target cannot be encoded.
+func multicall3TagProbe(n common.Network) *multicall3Entry {
+	var chainId int64
+	if c := n.Config(); c != nil && c.Evm != nil {
+		chainId = c.Evm.ChainId
+	}
+	probe := integrity.ChainStateContextProbe(chainId)
+	target, err := common.HexToBytes(probe.To)
+	if err != nil || len(target) != 20 {
+		return nil
+	}
+	data, err := common.HexToBytes(probe.Data)
+	if err != nil {
+		return nil
+	}
+	return &multicall3Entry{target: target, data: data}
+}
+
+// multicall3Word decodes a successful call's single uint64 return word.
+func multicall3Word(r aggregate3Result) (int64, bool) {
+	if !r.success || len(r.data) != 32 {
+		return 0, false
+	}
+	for _, c := range r.data[:24] {
+		if c != 0 {
+			return 0, false
+		}
+	}
+	v := binary.BigEndian.Uint64(r.data[24:])
+	if v > math.MaxInt64 {
+		return 0, false
+	}
+	return int64(v), true
 }
 
 // multicall3Context outlives any one caller, so a caller that gives up costs

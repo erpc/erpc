@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
@@ -152,36 +153,66 @@ func covMiscResultString(t *testing.T, r *common.NormalizedResponse) string {
 	return s
 }
 
+// covMiscTagPack answers a tag pack: results for the clients' entries, then
+// the block-number entry the batcher adds.
+func covMiscTagPack(results ...aggregate3Result) []aggregate3Result {
+	return append(results, aggregate3Result{success: true, data: covMiscWord(1)})
+}
+
 func TestCovMisc_Multicall3_PacksFullBatchAndAnswersEachCaller(t *testing.T) {
-	n := &queryTestNetwork{}
+	const latest, executed = 100, 90
+	n := &queryTestNetwork{latest: latest}
+	tracker := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+	startStateProber(t.Context(), n, tracker, nil)
+	p := stateProberFor(n)
+	require.NotNil(t, p)
+	t.Cleanup(func() { stateProbers.CompareAndDelete(n, p) })
+	probeTarget, err := common.HexToBytes(integrity.Multicall3Address)
+	require.NoError(t, err)
+
 	addrA, addrB := covLogsAddr("a"), covLogsAddr("b")
 	var gotDeadline bool
+	var packed [][][]byte
 	u := covMiscMcNew(t, 2, time.Minute, nil)
 	u.forward = func(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		_, gotDeadline = ctx.Deadline()
 		assert.Equal(t, common.CompositeTypeMulticall3, nq.CompositeType())
 		to, targets := covMiscAgg3Targets(t, nq)
-		assert.Equal(t, multicall3Address, to)
+		assert.Equal(t, integrity.Multicall3Address, to)
+		packed = append(packed, targets)
 		res := make([]aggregate3Result, len(targets))
 		for i, tg := range targets {
 			res[i] = aggregate3Result{success: true, data: tg}
+			if string(tg) == string(probeTarget) {
+				res[i].data = covMiscWord(executed)
+			}
 		}
 		return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3(res)) + `"`), nil
 	}
 	before := covMiscMcCount(u, multicall3Packed)
 
-	reqs := []*common.NormalizedRequest{covMiscMcCall(1, addrA, "0x01", "0x10"), covMiscMcCall(2, addrB, "0x02", "0x10")}
-	outs := covMiscMcRun(covMiscBg(2), n, u, reqs)
-
-	for i, want := range []string{addrA, addrB} {
-		require.NoError(t, outs[i].err)
-		require.True(t, outs[i].handled, "call %d is answered from the pack", i)
-		assert.Equal(t, want, covMiscResultString(t, outs[i].resp), "each caller gets its own return data")
-		assert.Same(t, u, outs[i].resp.Upstream())
-		assert.Same(t, u, reqs[i].LastUpstream())
+	for _, block := range []string{"0x10", "latest"} {
+		reqs := []*common.NormalizedRequest{covMiscMcCall(1, addrA, "0x01", block), covMiscMcCall(2, addrB, "0x02", block)}
+		outs := covMiscMcRun(covMiscBg(2), n, u, reqs)
+		for i, want := range []string{addrA, addrB} {
+			require.NoError(t, outs[i].err)
+			require.True(t, outs[i].handled, "%s: call %d is answered from the pack", block, i)
+			assert.Equal(t, want, covMiscResultString(t, outs[i].resp), "%s: each caller gets only its own return data", block)
+			assert.Same(t, u, outs[i].resp.Upstream())
+			assert.Same(t, u, reqs[i].LastUpstream())
+		}
 	}
+	require.Len(t, packed, 2)
+	assert.Len(t, packed[0], 2, "a numbered pack carries the clients' calls only")
+	require.Len(t, packed[1], 3, "a tag pack carries one more call")
+	assert.Equal(t, probeTarget, packed[1][2], "the block-number call of the chain's architecture")
 	assert.False(t, gotDeadline, "callers without a deadline give the pack none")
-	assert.Equal(t, before+2, covMiscMcCount(u, multicall3Packed))
+	assert.Equal(t, before+4, covMiscMcCount(u, multicall3Packed))
+
+	h := p.tagHead(u.Id(), time.Now())
+	assert.EqualValues(t, executed, h.block, "the tag pack's answer is the upstream's tag-state sample")
+	assert.False(t, h.sentAt.IsZero())
+	assert.Equal(t, tagStale, h.state, "%d blocks below Latest at a 1s block time is past W", latest-executed)
 }
 
 func TestCovMisc_Multicall3_PackDeadlineIsLastCallers(t *testing.T) {
@@ -194,7 +225,7 @@ func TestCovMisc_Multicall3_PackDeadlineIsLastCallers(t *testing.T) {
 	var deadline time.Time
 	u := covMiscMcNew(t, 2, time.Minute, func(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		deadline, _ = ctx.Deadline()
-		return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3([]aggregate3Result{{true, []byte{1}}, {true, []byte{2}}})) + `"`), nil
+		return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3(covMiscTagPack(aggregate3Result{true, []byte{1}}, aggregate3Result{true, []byte{2}}))) + `"`), nil
 	})
 	outs := covMiscMcRun([]context.Context{ctx2, ctx1}, n, u, []*common.NormalizedRequest{
 		covMiscMcCall(1, covLogsAddr("a"), "0x01", "latest"),
@@ -221,6 +252,9 @@ func TestCovMisc_Multicall3_FailedPackSendsEveryCallAlone(t *testing.T) {
 		{"malformed aggregate3", func() (*common.NormalizedResponse, error) { return covMiscMcResult(`"0x01"`), nil }},
 		{"result count mismatch", func() (*common.NormalizedResponse, error) {
 			return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3([]aggregate3Result{{true, []byte{1}}})) + `"`), nil
+		}},
+		{"tag pack answered without its block-number entry", func() (*common.NormalizedResponse, error) {
+			return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3([]aggregate3Result{{true, []byte{1}}, {true, []byte{2}}})) + `"`), nil
 		}},
 	}
 	for _, tc := range cases {
@@ -272,7 +306,7 @@ func TestCovMisc_Multicall3_NoCodeMarksOlderBlocksIneligible(t *testing.T) {
 func TestCovMisc_Multicall3_RevertedInPackLearnsBypassOnlyOnCleanAloneSuccess(t *testing.T) {
 	addrA, addrB := covLogsAddr("a"), covLogsAddr("b")
 	u := covMiscMcNew(t, 2, time.Minute, func(context.Context, *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-		return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3([]aggregate3Result{{false, nil}, {false, nil}})) + `"`), nil
+		return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3(covMiscTagPack(aggregate3Result{false, nil}, aggregate3Result{false, nil}))) + `"`), nil
 	})
 	n := &queryTestNetwork{}
 	reqs := []*common.NormalizedRequest{covMiscMcCall(1, addrA, "0x01", "latest"), covMiscMcCall(2, addrB, "0x02", "latest")}
@@ -334,7 +368,7 @@ func TestCovMisc_Multicall3_PostForwardTransportErrorLearnsNothing(t *testing.T)
 
 func TestCovMisc_Multicall3_UnencodableCallerIdFallsBackAlone(t *testing.T) {
 	u := covMiscMcNew(t, 2, time.Minute, func(context.Context, *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-		return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3([]aggregate3Result{{true, []byte{1}}, {true, []byte{2}}})) + `"`), nil
+		return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3(covMiscTagPack(aggregate3Result{true, []byte{1}}, aggregate3Result{true, []byte{2}}))) + `"`), nil
 	})
 	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{map[string]interface{}{"to": covLogsAddr("a"), "data": "0x01"}, "latest"})
 	jrq.ID = make(chan int)

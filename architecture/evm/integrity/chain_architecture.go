@@ -44,10 +44,14 @@ type StateContextProbe struct {
 	Data string // calldata (4-byte selector)
 }
 
-// multicall3Context is the standard-EVM context probe: Multicall3 is deployed
-// at one address on 200+ chains and getBlockNumber() returns block.number.
+// Multicall3Address is where Multicall3 is deployed on every chain that has
+// it (200+).
+const Multicall3Address = "0xcA11bde05977b3631167028862bE2a173976CA11"
+
+// multicall3Context is the standard-EVM context probe: getBlockNumber()
+// returns block.number.
 var multicall3Context = &StateContextProbe{
-	To:   "0xcA11bde05977b3631167028862bE2a173976CA11",
+	To:   Multicall3Address,
 	Data: "0x42cbb15c", // getBlockNumber()
 }
 
