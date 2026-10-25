@@ -171,7 +171,10 @@ func (n *Network) watchHeadCounters(ups *upstream.Upstream) {
 // each pass.
 func (n *Network) refreshHeads() {
 	defer func() {
+		n.statelessMu.Lock()
+		n.statelessGen.Add(1)
 		n.statelessHeads.Clear()
+		n.statelessMu.Unlock()
 		if c := n.headPass.Swap(nil); c != nil {
 			close(*c)
 		}

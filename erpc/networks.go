@@ -85,8 +85,11 @@ type Network struct {
 	headWake chan struct{}
 	headPass atomic.Pointer[chan struct{}]
 	// statelessHeads is each laneless selector's Latest (uint64), picked
-	// once per head pass for its taps (laneLatest).
+	// once per head pass for its taps (laneLatest); statelessGen counts the
+	// passes' clears, and statelessMu orders a store after its check of it.
 	statelessHeads sync.Map
+	statelessGen   atomic.Uint64
+	statelessMu    sync.Mutex
 	// headRefresh is the head loop's timer, set before Bootstrap; 0 is
 	// headRefreshInterval.
 	headRefresh time.Duration

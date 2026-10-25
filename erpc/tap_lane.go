@@ -111,8 +111,15 @@ func (n *Network) laneLatest(l *servedTipLane, sel string) uint64 {
 	if v, ok := n.statelessHeads.Load(sel); ok {
 		return v.(uint64)
 	}
+	gen := n.statelessGen.Load()
 	latest := uint64(max(n.computeHead(nil, sel).Latest, 0))
-	n.statelessHeads.Store(sel, latest)
+	// A pick that a pass's clear overtook is from before that pass: kept,
+	// it would stand until the next one.
+	n.statelessMu.Lock()
+	if n.statelessGen.Load() == gen {
+		n.statelessHeads.Store(sel, latest)
+	}
+	n.statelessMu.Unlock()
 	return latest
 }
 
