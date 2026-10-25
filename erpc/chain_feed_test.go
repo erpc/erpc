@@ -1997,6 +1997,7 @@ func (s *chaosSeed) judge(end time.Time) {
 	t.Logf("pending-transaction client: %d transactions over %d subscriptions", p.received, p.sessions)
 	s.judgeIntegrity()
 	requireInvariantsHeld(t, "test_ws", "evm:123")
+	requireInvariantsHeld(t, "test_ws", "evm:123")
 	if s.opts.grpc {
 		s.judgeStreams()
 	}
@@ -2182,6 +2183,42 @@ func metricSum(c prometheus.Collector, match map[string]string) float64 {
 	}
 	return sum
 }
+// requireInvariantsHeld: the network exports every series of
+// erpc_chain_tracker_invariant_violations_total, and every one but
+// final_hash_changed (a followed majority revert) is 0 (spec §17).
+func requireInvariantsHeld(t *testing.T, project, network string) {
+	t.Helper()
+	ch := make(chan prometheus.Metric, 64)
+	go func() {
+		telemetry.MetricChainTrackerInvariantViolationsTotal.Collect(ch)
+		close(ch)
+	}()
+	got := map[string]float64{}
+	for m := range ch {
+		var pb dto.Metric
+		if m.Write(&pb) != nil {
+			continue
+		}
+		have := map[string]string{}
+		for _, l := range pb.GetLabel() {
+			have[l.GetName()] = l.GetValue()
+		}
+		if have["project"] == project && have["network"] == network {
+			got[have["invariant"]] = pb.GetCounter().GetValue()
+		}
+	}
+	for _, inv := range []common.Invariant{
+		common.InvariantSentAboveLatest, common.InvariantSentUnconfirmed, common.InvariantTapGap, common.InvariantRemovedUnsent,
+		common.InvariantPinsUnlinked, common.InvariantFinalHashChanged, common.InvariantLatestRegressed,
+	} {
+		v, ok := got[string(inv)]
+		require.True(t, ok, "%s/%s exports no erpc_chain_tracker_invariant_violations_total{invariant=%s}", project, network, inv)
+		if inv != common.InvariantFinalHashChanged {
+			require.Zero(t, v, "%s/%s: erpc_chain_tracker_invariant_violations_total{invariant=%s}", project, network, inv)
+		}
+	}
+}
+
 
 // requireInvariantsHeld: the network exports every series of
 // erpc_chain_tracker_invariant_violations_total, and every one but

@@ -23,6 +23,7 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -615,6 +616,9 @@ type headFetch struct {
 	next   *headFetch
 	header json.RawMessage
 	err    error
+	// parent is the span of the Ask that started the fetch: the fetch's
+	// span shows under it without taking its cancellation.
+	parent trace.SpanContext
 }
 
 // Ask is the upstream's head Ask (spec §6.8). A number need is met by a
@@ -627,7 +631,7 @@ type headFetch struct {
 // fetch's answer, ctx's end or W, whichever comes first. While the
 // upstream backs off it fetches nothing and returns AskBackoff at once.
 func (e *EvmStatePoller) Ask(ctx context.Context, need common.HeadNeed, reason common.AskReason) common.HeadAnswer {
-	if !e.askable() {
+	if e.IsObjectNull() {
 		return common.HeadAnswer{Outcome: common.AskBackoff}
 	}
 	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.Ask",
@@ -637,9 +641,12 @@ func (e *EvmStatePoller) Ask(ctx context.Context, need common.HeadNeed, reason c
 		),
 	)
 	defer span.End()
-	f, outcome := e.ask(need, reason)
+	f, outcome := e.ask(ctx, need, reason)
 	span.SetAttributes(attribute.String("outcome", string(outcome)))
 	a := common.HeadAnswer{Outcome: outcome}
+	if !e.askable() {
+		return a
+	}
 	if f != nil {
 		w := time.NewTimer(e.freshnessWindow())
 		defer w.Stop()
@@ -670,7 +677,7 @@ func (e *EvmStatePoller) Ask(ctx context.Context, need common.HeadNeed, reason c
 // keeps fresh over a slow link is no evidence the node lacks the block
 // (spec §21). Both waits end at most W after it starts.
 func (e *EvmStatePoller) AskReaching(ctx context.Context, block int64, reason common.AskReason) common.HeadAnswer {
-	if !e.askable() {
+	if e.IsObjectNull() {
 		return common.HeadAnswer{Outcome: common.AskBackoff}
 	}
 	ctx, cancel := context.WithTimeout(ctx, e.freshnessWindow())
@@ -693,26 +700,29 @@ func (e *EvmStatePoller) freshnessWindow() time.Duration {
 
 // AskBackground is Ask without waiting for the answer.
 func (e *EvmStatePoller) AskBackground(need common.HeadNeed, reason common.AskReason) {
-	if e.askable() {
-		e.ask(need, reason)
+	if !e.IsObjectNull() {
+		e.ask(context.Background(), need, reason)
 	}
 }
 
-// askable: the poller has an upstream and a latest counter to Ask for.
+// askable: the poller has a latest counter to Ask for.
 func (e *EvmStatePoller) askable() bool {
-	return !e.IsObjectNull() && e.latestBlockShared != nil
+	return e.latestBlockShared != nil
 }
 
 // ask counts an Ask and returns the fetch that meets need, started when
-// none does; nil when the shared counter meets it or the upstream backs
-// off.
-func (e *EvmStatePoller) ask(need common.HeadNeed, reason common.AskReason) (*headFetch, common.AskOutcome) {
-	f, outcome := e.askFetch(need)
+// none does, under ctx's span; nil when the shared counter meets it or the
+// upstream backs off, as it does while it has no latest counter to Ask for.
+func (e *EvmStatePoller) ask(ctx context.Context, need common.HeadNeed, reason common.AskReason) (*headFetch, common.AskOutcome) {
+	f, outcome := (*headFetch)(nil), common.AskBackoff
+	if e.askable() {
+		f, outcome = e.askFetch(trace.SpanContextFromContext(ctx), need)
+	}
 	telemetry.CounterHandle(telemetry.MetricHeadAskTotal, e.projectId, e.netLabel(), string(reason), string(outcome)).Inc()
 	return f, outcome
 }
 
-func (e *EvmStatePoller) askFetch(need common.HeadNeed) (*headFetch, common.AskOutcome) {
+func (e *EvmStatePoller) askFetch(parent trace.SpanContext, need common.HeadNeed) (*headFetch, common.AskOutcome) {
 	if e.shouldSkipLatestBlockCheck() {
 		// The give-up after latest was refused as unsupported backs off
 		// until its re-check.
@@ -730,7 +740,7 @@ func (e *EvmStatePoller) askFetch(need common.HeadNeed) (*headFetch, common.AskO
 	switch {
 	case f != nil && !f.answered && need == common.HeadNeedFork:
 		if f.next == nil {
-			f.next = &headFetch{fork: true, done: make(chan struct{})}
+			f.next = &headFetch{fork: true, done: make(chan struct{}), parent: parent}
 		}
 		next := f.next
 		a.mu.Unlock()
@@ -747,7 +757,7 @@ func (e *EvmStatePoller) askFetch(need common.HeadNeed) (*headFetch, common.AskO
 		a.mu.Unlock()
 		return nil, common.AskBackoff
 	}
-	f = &headFetch{sent: now, fork: need == common.HeadNeedFork, done: make(chan struct{})}
+	f = &headFetch{sent: now, fork: need == common.HeadNeedFork, done: make(chan struct{}), parent: parent}
 	a.last = f
 	a.mu.Unlock()
 	go e.runFetch(f)
@@ -783,9 +793,16 @@ func (e *EvmStatePoller) runFetch(f *headFetch) {
 			go e.runFetch(next)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(e.appCtx, askTimeout)
+	ctx, span := common.StartDetailSpan(trace.ContextWithSpanContext(e.appCtx, f.parent), "EvmStatePoller.AskFetch",
+		trace.WithAttributes(attribute.String("upstream.id", e.upstream.Id()), attribute.Bool("fork", f.fork)))
+	defer span.End()
+	ctx, cancel := context.WithTimeout(ctx, askTimeout)
 	defer cancel()
 	header, err = e.fetchLatest(ctx, f)
+	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.SetAttributes(attribute.Bool("header", header != nil))
 }
 
 // fetchLatest fetches latest for f. With an intake bound, the header goes

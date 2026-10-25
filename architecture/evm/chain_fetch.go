@@ -15,6 +15,9 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Scheduler bounds (spec §7, §13.2); variables so tests run fast.
@@ -444,7 +447,19 @@ func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 	if s.sweep == nil {
 		return fetchResult{err: errNoTrackerSweep}
 	}
-	ctx, cancel := context.WithTimeout(s.ctx, fetchTimeout)
+	ctx, span := common.StartDetailSpan(s.ctx, "ChainTracker.Fetch", trace.WithAttributes(
+		attribute.String("kind", r.spec.kind),
+		attribute.String("class", fetchClassLabels[r.spec.class]),
+		attribute.String("method", r.spec.method),
+	))
+	defer func() {
+		span.SetAttributes(attribute.String("upstream.id", res.upstream), attribute.String("outcome", fetchOutcome(res.err)))
+		if res.err != nil {
+			span.SetStatus(codes.Error, res.err.Error())
+		}
+		span.End()
+	}()
+	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 	sent := time.Now()
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + r.spec.method + `","params":` + r.spec.params + `}`))

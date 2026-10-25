@@ -57,21 +57,19 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 			payload, pinned, err := newHeadsEncoding.Of(tracker, blk)
 			if !pinned || !sends.sendable(blk) {
 				return i, nil
-			}
 			if err != nil {
 				sm.logger.Warn().Err(err).Uint64("block", blk.Number).Msg("cannot project a held header as newHeads")
 				continue
 			}
 			if err := sends.write(blk, func() error { return wsc.WriteSubscriptionNotification(sub, payload) }); err != nil {
+			if err := sends.write(blk, func() error { return wsc.WriteSubscriptionNotification(sub, payload) }); err != nil {
 				return i, wsWriteError{err}
-			}
 		}
 		return len(b.Applied), nil
-	}
+		return len(b.Applied), nil
 	for {
 		err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeNewHeads, gated(tracker, nw, lane), nil, indexer.ReadOpts{}, emit)
-		var writeErr wsWriteError
-		if ctx.Err() != nil || errors.As(err, &writeErr) {
+		err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeNewHeads, gated(tracker, nw, lane), nil, indexer.ReadOpts{}, emit)
 			return
 		}
 		if !errors.Is(err, indexer.ErrOutOfRange) {

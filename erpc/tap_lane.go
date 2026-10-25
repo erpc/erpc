@@ -110,7 +110,18 @@ func (n *Network) laneLatest(l *servedTipLane, sel string) uint64 {
 	return uint64(max(n.computeHead(nil, sel).Latest, 0))
 }
 
-// latest is the lane's Latest and a channel closed once it may have moved:
+// laneLatest is the Latest of selector sel, whose lane is l: nil for a
+// selector that forms none, picked statelessly.
+func (n *Network) laneLatest(l *servedTipLane, sel string) uint64 {
+	if l != nil {
+	l := f.nw.laneFor(f.selector)
+	var moved <-chan struct{}
+	if l != nil {
+		moved = l.latestMoved()
+	} else {
+		moved = f.nw.headsComputed()
+}
+	return f.nw.laneLatest(l, f.selector), moved
 // the lane's own change, or, for a selector that forms no lane, the next
 // pass over the network's lanes.
 func (f laneFeed) latest() (uint64, <-chan struct{}) {

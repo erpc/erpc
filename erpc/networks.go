@@ -149,6 +149,18 @@ func (l *servedTipLane) noteSent(n uint64) {
 			return
 		}
 	}
+	// sent is the highest block this instance's taps of the lane wrote,
+	// on any transport: a Latest below it is latest_regressed.
+	sent atomic.Uint64
+}
+
+func (l *servedTipLane) noteSent(n uint64) {
+	for {
+		cur := l.sent.Load()
+		if n <= cur || l.sent.CompareAndSwap(cur, n) {
+			return
+		}
+	}
 }
 
 func (l *servedTipLane) anchor(finalized bool) *servedTipAnchor {
@@ -515,7 +527,7 @@ func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (h
 // evmTipBallot builds the served-tip pick for an axis under quorum q from the
 // request's tip candidates (EvmRoutableUpstreams) that satisfy member (nil =
 // all of them): the heads of the best-ranked voters (tipVoterRank), minus
-// the voters on a minority fork, which have no number vote (spec §6.3). live
+func (n *Network) evmTipBallot(sel string, useFinalized bool, q common.ServedTipQuorum, member func(common.Upstream) bool) (pick common.ServedTipPick, live bool, ranks tipRanks) {
 // reports whether live, non-capped heads decided it (benched or not): a
 // cap-only ballot gives the regression guard no live reference.
 //
@@ -526,7 +538,11 @@ func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (h
 // legitimately serves its cap — that cap is the freshest block anyone in it can
 // serve — so it keeps voting. (No live head means no live reference for the
 // regression guard either; it falls back to its own last corroborated pick,
-// see guardServedTipRegression.)
+		if !ok {
+			continue
+		}
+		ranks[rank]++
+		if best >= 0 && rank > best {
 func (n *Network) evmTipBallot(sel string, useFinalized bool, q common.ServedTipQuorum, member func(common.Upstream) bool) (pick common.ServedTipPick, live bool, ranks tipRanks) {
 	// Typical pools fit the stack buffer, so the ballot stays off the heap;
 	// append moves a larger one there.
@@ -534,9 +550,15 @@ func (n *Network) evmTipBallot(sel string, useFinalized bool, q common.ServedTip
 	heads := buf[:0]
 	best := -1
 	for u := range n.tipCandidates(sel) {
-		if member != nil && !member(u) || n.isForkDemoted(u) {
+	return common.PickServedTip(heads, q), best >= 0 && best <= 1, ranks
 			continue
 		}
+// tipRanks counts a ballot's voters by tipVoterRank.
+type tipRanks [4]int
+
+// tipRankLabels name the ranks of tipVoterRank on erpc_served_tip_voters.
+var tipRankLabels = [4]string{"live", "live_benched", "capped", "capped_benched"}
+
 		head, rank, ok := tipVoterRank(u, useFinalized, n.metricsTracker)
 		if !ok {
 			continue
@@ -1505,7 +1527,7 @@ func (n *Network) guaranteedFloor(sel string, useFinalized bool) int64 {
 			return handle
 		}))
 	}
-	return floor
+	pick, live, _ := n.evmTipBallot(sel, useFinalized, common.ServedTipQuorumMajority, member)
 }
 
 // guaranteedSubsetTip is the majority tip of the guarantee subset `member`

@@ -13,6 +13,10 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+	"github.com/rs/zerolog/log"
 )
 
 // MempoolWakeEvery is the shortest time between two reads of a mempool
@@ -37,8 +41,11 @@ func NewTaps(projectId string, onDemandChange func(networkId string)) *Taps {
 }
 
 // RunChain runs one tap on f until ctx ends, emit fails, or f returns an
-// error. start nil starts at f.Head. transport and kind label metrics.
 // emit returns how many of the batch's Applied blocks it delivered: a tap
+// that delivered fewer, as when a block left the pins before its write,
+// continues after the last one it delivered.
+// error. start nil starts at f.Head. transport and kind label metrics.
+	f ChainFeed, start *Cursor, o ReadOpts, emit func(Batch) (delivered int, err error)) (err error) {
 // that delivered fewer, as when a block left the pins before its write,
 // continues after the last one it delivered.
 func (t *Taps) RunChain(ctx context.Context, networkId, transport, kind string,
@@ -75,15 +82,85 @@ func (t *Taps) RunChain(ctx context.Context, networkId, transport, kind string,
 		if c, err = f.Head(ctx); err != nil {
 			return err
 		}
-	} else {
+		b, err := t.read(ctx, transport, kind, f, c, o)
 		c = *start
 	}
 	for {
-		b, err := f.Read(ctx, c, o)
+		if !linked(c, b) {
+			t.gap(networkId, transport, kind, c, b)
+		}
+		n, err := emit(b)
+		if err != nil {
 		if err != nil {
 			return err
+		if n < len(b.Applied) {
+			blk := b.Applied[n]
+			c = Cursor{Number: blk.Number - min(blk.Number, 1), Hash: blk.ParentHash}
+		} else {
+			c = b.Next
 		}
+	}
+}
+
+// read is one Read of a tap, a span under detailed tracing.
+func (t *Taps) read(ctx context.Context, transport, kind string, f ChainFeed, c Cursor, o ReadOpts) (Batch, error) {
+	ctx, span := common.StartDetailSpan(ctx, "Tap.Read", trace.WithAttributes(
+		attribute.String("transport", transport),
+		attribute.String("kind", kind),
+		attribute.Int64("cursor", int64(c.Number)),
+	))
+	defer span.End()
+	b, err := f.Read(ctx, c, o)
+	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
+		return b, err
+	}
+	span.SetAttributes(attribute.Int("applied", len(b.Applied)), attribute.Int("reverted", len(b.Reverted)))
+	return b, nil
+}
+
+// linked reports whether b continues a tap at c (spec §15.3): its Applied
+// blocks extend c, or its Reverted blocks run from c down to a fork point
+// its Applied blocks extend.
+func linked(c Cursor, b Batch) bool {
+	at := c
+	if len(b.Reverted) > 0 {
+		if b.Reverted[0].Number != c.Number || b.Reverted[0].Hash != c.Hash {
+			return false
+		}
+		for i := 1; i < len(b.Reverted); i++ {
+			if up := b.Reverted[i-1]; up.ParentHash != b.Reverted[i].Hash || up.Number != b.Reverted[i].Number+1 {
+				return false
+			}
+		}
+		fork := b.Reverted[len(b.Reverted)-1]
+		at = Cursor{Number: fork.Number - min(fork.Number, 1), Hash: fork.ParentHash}
+	}
+	for _, blk := range b.Applied {
+		if blk.ParentHash != at.Hash || blk.Number != at.Number+1 {
+			return false
+		}
+		at = Cursor{Number: blk.Number, Hash: blk.Hash}
+	}
+	return true
+}
+
+// gap counts and logs a batch that does not continue the tap's cursor c.
+func (t *Taps) gap(networkId, transport, kind string, c Cursor, b Batch) {
+	ev := common.ViolateInvariant(&log.Logger, t.projectId, networkId, common.InvariantTapGap).
+		Str("tapTransport", transport).Str("tapKind", kind).
+		Uint64("cursor", c.Number).Hex("cursorHash", c.Hash[:]).
+		Int("reverted", len(b.Reverted)).Int("applied", len(b.Applied))
+	if len(b.Reverted) > 0 {
+		r := b.Reverted[len(b.Reverted)-1]
+		ev = ev.Uint64("revertedFirst", b.Reverted[0].Number).Hex("revertedFirstHash", b.Reverted[0].Hash[:]).
+			Uint64("revertedLast", r.Number).Hex("revertedLastParentHash", r.ParentHash[:])
+	}
+	if len(b.Applied) > 0 {
+		a := b.Applied[0]
+		ev = ev.Uint64("appliedFirst", a.Number).Hex("appliedFirstHash", a.Hash[:]).Hex("appliedFirstParentHash", a.ParentHash[:])
 		if !linked(c, b) {
+	ev.Msg("tap batch does not link to its cursor")
 			t.gap(networkId, transport, kind, c, b)
 		}
 		n, err := emit(b)

@@ -1904,6 +1904,24 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 			return true
 		}, 10*time.Second, 20*time.Millisecond, "both clients hold the canonical logs through the reorg")
 		requireInvariantsHeld(t, "test_ws", "evm:123")
+		requireInvariantsHeld(t, "test_ws", "evm:123")
+
+		// A 3-block reorg: each client drops the reverted logs it holds
+		// (removed:true) and gets the new branch's; no invariant breaks.
+		reorged := s.reorg(3)
+		s.blocks(3)
+		require.Eventually(t, func() bool {
+			for _, cl := range s.openLogs() {
+				cl.mu.Lock()
+				d := cl.logsDiffLocked(s, from, reorged.Number)
+				cl.mu.Unlock()
+				if d != "" {
+					return false
+				}
+			}
+			return true
+		}, 10*time.Second, 20*time.Millisecond, "both clients hold the canonical logs through the reorg")
+		requireInvariantsHeld(t, "test_ws", "evm:123")
 	})
 
 	// A cold instance pins ws-a's heads while the other sources, held,
@@ -2827,6 +2845,7 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 	defer util.ResetGock()
 
 	chain := newMockChain(0x100, false)
+	requireInvariantsHeld(t, "test_ws", "evm:123")
 	httpVendor, srv := newMockHttpVendor(t, chain)
 	_, wsURL := newMockWsVendor(t, chain, nil)
 	ctx, stop := context.WithCancel(context.Background())
@@ -2879,6 +2898,7 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 
 	// Hold the chain past one tick, so the client reaches its head before
 	// the reorg.
+	requireInvariantsHeld(t, "test_ws", "evm:123")
 	chain.setPaused(true)
 	time.Sleep(300 * time.Millisecond)
 	for last < chain.Head() {
