@@ -83,6 +83,7 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 	sends := newTapSends(nw, "", "grpc", indexer.SubTypeNewHeads)
 	sendWait := streamBlocksSendWait.Load()
 	emit := func(b indexer.Batch) (int, error) {
+		sends.batch()
 		for i, blk := range b.Applied {
 			resp, pinned, err := streamBlocksEncoding.Of(tracker, blk)
 			if !pinned || !sends.sendable(blk) {

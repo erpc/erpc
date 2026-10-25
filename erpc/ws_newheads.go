@@ -47,6 +47,7 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 	tracker := nw.chainTracker
 	sends := newTapSends(nw, lane, "ws", indexer.SubTypeNewHeads)
 	emit := func(b indexer.Batch) (int, error) {
+		sends.batch()
 		select {
 		case <-opened:
 		case <-ctx.Done():
