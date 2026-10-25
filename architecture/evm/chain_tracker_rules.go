@@ -636,25 +636,30 @@ func (t *ChainTracker) refreshed(u string, nd *node) bool {
 	return false
 }
 
-// askState is §6 rule 6: with demand and no counted vote, the tracker Asks
-// the first voter in selection order with a hash need, once per cadence:
-// the Ask's own debounce paces it (due, its answer's Next). That answer is
-// the only vote until the next.
+// askState is §6 rule 6: with demand and no counted vote from a source, the
+// tracker Asks the first voter in selection order with a hash need, once
+// per cadence: the Ask's own debounce paces it (due, its answer's Next).
+// That answer is the only vote until the next.
 type askState struct {
 	vote, pending       *node
 	voter, pendingVoter string
 	out                 bool      // an Ask is out
 	due                 time.Time // when the voter's Ask may fetch again
+	// from and sent are the last answered Ask's voter and send time: the
+	// answer also reaches intake as from's hash vote, which is no source's.
+	from string
+	sent time.Time
 }
 
-// noSourceWanted reports whether rule 6 Asks: demand, a voter, no counted
-// vote and no Ask out.
+// noSourceWanted reports whether rule 6 Asks: demand, a voter, no Ask out,
+// and no counted vote but those of its own Asks: a vote of the Asked voter
+// no newer than its last answer is that answer.
 func (t *ChainTracker) noSourceWanted() bool {
 	if t.ask.out || len(t.voters.Voters) == 0 || !t.demanded() {
 		return false
 	}
 	for u := range t.votes {
-		if t.counts(u) {
+		if t.counts(u) && (u != t.ask.from || t.voteAt[u].After(t.ask.sent)) {
 			return false
 		}
 	}
@@ -677,6 +682,7 @@ func (t *ChainTracker) askNoSource() {
 		}
 		if nd := t.heldAnswer(a); nd != nil {
 			t.ask.pending, t.ask.pendingVoter = nd, id
+			t.ask.from, t.ask.sent = id, a.Sent
 			t.walkFrom(nd, id)
 		}
 	})
