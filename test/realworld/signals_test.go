@@ -49,9 +49,9 @@ func x7() spec {
 			wg.Add(1)
 			go func() { defer wg.Done(); s.readAcross(ctx, i) }()
 		}
-		compared := map[string]int{}
+		compared, apart := map[string]int{}, map[string]bool{}
 		for end := time.Now().Add(x7Watch); time.Now().Before(end); time.Sleep(x7Agree) {
-			s.requireCountersAgree(compared)
+			s.requireCountersAgree(compared, apart)
 		}
 		for _, u := range s.net.ups {
 			if compared[u.id] == 0 {
@@ -105,10 +105,13 @@ func (s *scenario) readAcross(ctx context.Context, reader int) {
 }
 
 // requireCountersAgree: the pods' latest blocks of each upstream every pod
-// exports lie within x7CounterSlack; compared counts the upstreams
-// compared. An image exports an upstream only once it polled it, so the
-// old image may not export one yet.
-func (s *scenario) requireCountersAgree(compared map[string]int) {
+// exports lie within x7CounterSlack on two samples x7Agree apart in a row
+// (§19 X7 "counters agree"): the pods are scraped one after the other, so
+// one sample can straddle a poll and its publish, which the other pod takes
+// within milliseconds; apart holds the upstreams the last sample found
+// apart. compared counts the upstreams compared. An image exports an
+// upstream only once it polled it, so the old image may not export one yet.
+func (s *scenario) requireCountersAgree(compared map[string]int, apart map[string]bool) {
 	scrapes := make([][]series, len(s.h.pods))
 	for pod, p := range s.h.pods {
 		ss, err := p.scrape()
@@ -134,9 +137,14 @@ next:
 			}
 		}
 		compared[u.id]++
-		if hi-lo > x7CounterSlack {
-			s.violate(s.name, "the pods' latest blocks of %s lie %v apart (%v…%v), above %d", u.id, hi-lo, lo, hi, x7CounterSlack)
+		if hi-lo <= x7CounterSlack {
+			delete(apart, u.id)
+			continue
 		}
+		if apart[u.id] {
+			s.violate(s.name, "the pods' latest blocks of %s lie %v apart (%v…%v) on two samples %s apart, above %d", u.id, hi-lo, lo, hi, x7Agree, x7CounterSlack)
+		}
+		apart[u.id] = true
 	}
 }
 
