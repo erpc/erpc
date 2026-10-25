@@ -881,6 +881,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_websocket_send_queue_length` | deleted with the per-subscription buffers |
 | `erpc_subscription_withheld_heads_total` | deleted: `erpc_chain_tracker_source_heads_total{outcome="gated_*"}` counts the same heads per upstream and reason |
 | `erpc_subscription_undelivered_total` | deleted: taps read the feed, so no event goes undelivered |
+| `erpc_upstream_stale_finalized_block_total` | deleted with the post-forward raise (§20): `finalized` reads `Head.Finalized` |
 | `erpc_integrity_aux_request_total` | `kind="chain_follow"` disappears |
 | `erpc_upstream_subscriptions_active` | `kind="logs"` disappears |
 | `erpc_subscription_dedup_dropped_total` | `kind="logs"`, `kind="newHeads"` disappear; mempool only |
@@ -893,9 +894,9 @@ Tap metrics label `network` with the network label. Every other metric keeps its
 
 ## 18. Rollout
 
-1. Config first. Both images decode config strictly. For each deleted key, compare its configured value with its default; remove it while still on the old image, only where the value equals the default. Tuned values land with the first new-key change.
-2. New image with no new keys: development → staging → one canary instance per region → everywhere. Rollback is the previous image digest, valid while no new key exists.
-3. New keys (`subscriptionSource`, `evm.chainTracker.*`) only after the previous digest has left the rollback window: the old image rejects them.
+1. Config first. Both images decode config strictly. For each deleted key, compare its configured value with its default; remove it while still on the old image, only where the value equals the default.
+2. New image with no new keys: development → staging → one canary instance per region → everywhere. Rollback is the previous image digest, valid while no new key exists. A network with a tuned value of a moved key (`integrity.reorgWindow` → `evm.chainTracker.reorgWindow`) cannot run either image with the other's key: its key moves in the same deploy as its new image, and its rollback reverts both.
+3. Other new keys (`subscriptionSource`, `evm.chainTracker.*`) only after the previous digest has left the rollback window: the old image rejects them.
 4. The canary writes the same per-upstream counters the control instances read: gate each stage on canary-written vs control-polled counter agreement. While old and new images share one backend, old pods ignore the rewind mark (§14): a rewind of up to 1024 blocks reaches them only through their own polls, and a deeper one counts a large rollback against the upstream on old pods.
 5. Go/no-go per stage, in seconds and per subscriber:
    - invariant violations 0;
@@ -924,7 +925,7 @@ oracle            HTTP checks per delivered block, on the same and another insta
 ```
 
 - `test/chainsim`: a non-test package. Real listeners on free ports, a control API for every fault, per-vendor views. It imports neither `erpc` nor `architecture/evm`.
-- `test/realworld`: the fault proxy (latency, jitter, bandwidth, RST after N bytes, black-hole with the socket kept, close-all, refuse), instance lifecycle (start, `kill -9`, restart), Redis lifecycle (start, stop for N seconds), a clock-skew writer (publishes a counter state with `UpdatedAt` +5 min on a real key, as a peer would), config generation, client drivers, the oracle, `/metrics` scrape per instance, the scenario runner.
+- `test/realworld`: the fault proxy (latency, jitter, bandwidth, a cut after N bytes: FIN, then RST, since a host may drop the reset; black-hole with the socket kept, close-all, refuse), instance lifecycle (start, `kill -9`, restart), Redis lifecycle (start, stop for N seconds), a clock-skew writer (publishes a counter state with `UpdatedAt` +5 min on a real key, as a peer would), config generation, client drivers, the oracle, `/metrics` scrape per instance, the scenario runner.
 - `make test-realworld` runs `go test ./test/realworld/... -count=1 -v -timeout 60m`. `make test` excludes `test/`. No container runtime.
 - Each scenario runs on its own chain id. Network-scoped scenarios run concurrently on shared instances, so fixed wall-clock bounds (30s bench floor, 60s primary lead, 60s receipts and gRPC waits, 5 min cordon, 10 min re-ask) overlap; instance-scoped ones (`kill -9`, Redis down, partition, clock skew) run in their own phase with fresh instances.
 - Instance stderr with `WARNING: DATA RACE` or `panic:` fails the run. A failed run keeps its run directory (logs, config, client transcripts) and prints its path.
@@ -953,7 +954,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | ID | Setup and fault | Expected |
 |---|---|---|
 | U1 | one https vendor answers after 15s, for 30 blocks | no tap waits more than W; HTTP hedges; no breaker opened by a tracker fetch |
-| U2 | proxy sends RST after half of a header or receipts body | fetch fails over; no malformed vote; logs complete |
+| U2 | 3 https vendors; the proxy cuts the first one's connection (FIN, then RST) after half of a header or receipts body | fetch fails over at once; no malformed vote; logs complete |
 | U3 | wss TCP half-open: proxy stops forwarding, socket kept | hash vote expires within W; no tap waits more than W after another voter's first header for a block; reconnect within 15s after the counter passes; no gap past `reorgWindow` |
 | U4 | https keep-alive pool black-holed | one timeout, then new connections; `Latest` keeps moving |
 | U5 | 429 on every vendor for 4 blocks | nobody benched; delivery resumes within 2 bt |
