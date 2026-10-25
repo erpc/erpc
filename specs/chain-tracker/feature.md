@@ -995,7 +995,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | D5 | 1k subscribe+unsubscribe/s; unsubscribe during a send | `erpc_taps` back to 0; no write after unsubscribe |
 | D6 | bad logs filter; `fromHash` without `fromBlock` | `-32602`; `INVALID_ARGUMENT` |
 | D7 | `maxSubscriptionsPerConnection: 3`; 4th subscribe | `-32005` |
-| D8 | 1 wss + 2 https non-sources; client load at every upstream budget for 30s | head Asks keep fetching (`erpc_head_ask_total{outcome="fetched"}` rises on each instance), none refused by a budget; no stall longer than W |
+| D8 | 1 wss + 2 https non-sources; client load at every upstream budget for 30s | head Asks keep fetching (`erpc_head_ask_total{outcome="fetched"}` rises on each instance): they take no permit (§6.8); no stall longer than W |
 | D9 | pending stream silent with socket open | resubscribe after 60s |
 | X1 | no fault | the oracle holds for every block on both instances |
 | X2 | memory shared state; instance 2 serves only numbered calls | the oracle holds after at most 1 retry; never `future` for a sent block |
@@ -1004,7 +1004,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | X5 | one writer publishes counters with `UpdatedAt` +5 min | numbers keep flowing between honest instances |
 | X6 | breaker open only on instance 1 for vendor X | `Latest` may differ by instance; the oracle holds |
 | X7 | old-image instance + new-image instance, one Redis | no client sees `latest` regress across instances by more than 1 bt; counters agree |
-| X8 | canary instance writes a bogus +1000 head to a counter | `Latest` unchanged on control; only the ceiling rises |
+| X8 | canary instance writes a bogus +1000 head to a counter | `Latest` unchanged on control; only the ceiling rises: a probe above `Latest`, inside it, is dispatched and counts one `retried_missing` |
 | X9 | 1 wss + 2 https non-sources, 3 instances, Redis; `eth_blockNumber` traffic on instance 2 only | taps on instance 1 never wait longer than W after the block's first header there: only voters that sent instance 1 a header within W count toward its hash quorum |
 | K1 | YAML and TS configs with each deleted key | boot refuses and names the key |
 | K2 | minimal YAML: 1 wss + 1 https, no `evm` block | wss is a source, https is not; q = 2; subscriptions work |
