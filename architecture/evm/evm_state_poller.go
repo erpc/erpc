@@ -646,11 +646,17 @@ func (e *EvmStatePoller) Ask(ctx context.Context, need common.HeadNeed, reason c
 		select {
 		case <-f.done:
 			a.Header, a.Err = f.header, f.err
+			if f.header != nil {
+				a.Sent = f.sent
+			}
 		case <-ctx.Done():
 			a.Err = ctx.Err()
 		case <-w.C:
 			a.Err = context.DeadlineExceeded
 		}
+	}
+	if due := e.askDue(); due > 0 {
+		a.Next = time.Now().Add(due)
 	}
 	a.Block = e.LatestBlock()
 	return a

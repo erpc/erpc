@@ -608,9 +608,9 @@ func TestCovInteg_Resolver(t *testing.T) {
 	})
 
 	// Only votes move pins (spec §16): a fetched header is held, never pinned.
-	t.Run("refs route by hash, number, or tag", func(t *testing.T) {
+	t.Run("refs route by hash or number", func(t *testing.T) {
 		hash := testHash("abc", 0x20)
-		n10, latest := testHash("a", 0x10), testHash("a", 0x30)
+		n10 := testHash("a", 0x10)
 		net := &covIntegSweepNet{newCovIntegNet("cov-integ-resolver", nil, func(req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			jrq, _ := req.JsonRpcRequest()
 			ref := jrq.Params[0].(string)
@@ -619,8 +619,6 @@ func TestCovInteg_Resolver(t *testing.T) {
 				return covIntegResp(string(testHeader(0x20, hash, testHash("abc", 0x1f)))), nil
 			case jrq.Method == "eth_getBlockByNumber" && ref == "0x10":
 				return covIntegResp(string(testHeader(0x10, n10, testHash("a", 0xf)))), nil
-			case jrq.Method == "eth_getBlockByNumber" && ref == "latest":
-				return covIntegResp(string(testHeader(0x30, latest, testHash("a", 0x2f)))), nil
 			}
 			return covIntegResp("null"), nil
 		})}
@@ -638,12 +636,6 @@ func TestCovInteg_Resolver(t *testing.T) {
 		assert.Equal(t, n10, h.Hash)
 		_, pinned = view.HashAt(0x10)
 		assert.False(t, pinned, "a by-number lookup never pins")
-
-		h, ok = r.CanonicalHeader(ctx, "latest")
-		require.True(t, ok)
-		assert.Equal(t, latest, h.Hash)
-		_, pinned = view.HashAt(0x30)
-		assert.False(t, pinned, "a tag lookup never pins")
 	})
 }
 

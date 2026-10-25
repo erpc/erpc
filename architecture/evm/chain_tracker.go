@@ -111,20 +111,23 @@ type ChainTracker struct {
 	receiptsFailing atomic.Int64
 
 	// Owned by the tracker's goroutine.
-	nodes    map[[32]byte]*node
-	waiting  map[[32]byte][]*node // held roots by the parent hash they lack
-	heights  map[uint64][]*node   // held headers per height, oldest first
-	exts     map[*node]*extension // every held root: its walk or fill
-	votes    map[string]*node     // source upstream id -> its vote
-	pending  map[string]*node     // source upstream id -> a vote its walk holds back
-	ask      askState             // §6 rule 6
-	askSeq   uint64               // names the latest ask; a reset moves it on
-	settle   *settleState         // §6 rule 5; nil until the first tie
-	settleIn time.Duration        // the next undecided settle's backoff
-	pins     []*node              // root..head, parentHash-linked
-	maxHeld  *chainHeader
-	wakeAt   time.Time
-	wake     *time.Timer
+	nodes   map[[32]byte]*node
+	waiting map[[32]byte][]*node // held roots by the parent hash they lack
+	heights map[uint64][]*node   // held headers per height, oldest first
+	exts    map[*node]*extension // every held root: its walk or fill
+	votes   map[string]*node     // source upstream id -> its vote
+	pending map[string]*node     // source upstream id -> a vote its walk holds back
+	// voteAt and pendingAt are the evidence times of votes and pending
+	// votes: a poll's send time, a push's receive time (spec §6.4).
+	voteAt    map[string]time.Time
+	pendingAt map[string]time.Time
+	ask       askState     // §6 rule 6
+	askSeq    uint64       // names the latest ask; a reset moves it on
+	settle    *settleState // §6 rule 5; nil until the first round
+	pins      []*node      // root..head, parentHash-linked
+	maxHeld   *chainHeader
+	wakeAt    time.Time
+	wake      *time.Timer
 	// catchUpAt is when the next catch-up may ask while the network's latest
 	// block holds back a backed pin, or, while the vote need holds one, when
 	// the tracker asks again (the network paces those polls); zero while
@@ -276,11 +279,13 @@ type trackerMsg struct {
 	vote     voteKind
 	raw      json.RawMessage
 	hdr      *chainHeader // set when the sender already parsed raw
+	at       time.Time    // a source vote's evidence time
 	anchors  []anchor
 	held     *heldReceipts
 	done     chan struct{}
 	fn       func()
 	settled  chan settleOutcome
+	number   int64 // the height a msgSettle re-checks
 }
 
 type anchor struct {
@@ -425,9 +430,11 @@ func (t *ChainTracker) clear() {
 	t.exts = make(map[*node]*extension)
 	t.votes = make(map[string]*node)
 	t.pending = make(map[string]*node)
+	t.voteAt = make(map[string]time.Time)
+	t.pendingAt = make(map[string]time.Time)
 	t.ask = askState{}
 	t.askSeq++
-	t.settle, t.settleIn = nil, 0
+	t.settle = nil
 	t.pins, t.maxHeld = nil, nil
 	t.coldUntil = time.Now().Add(t.W())
 	t.offPins = make(map[string]offPin)
@@ -447,7 +454,7 @@ func (t *ChainTracker) Observe(upstreamId string, raw json.RawMessage, vote bool
 	if vote {
 		v = voteSource
 	}
-	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: v, raw: raw})
+	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: v, raw: raw, at: time.Now()})
 }
 
 // VotersChanged makes the tracker read its voters again: the policy's
@@ -460,9 +467,10 @@ func (t *ChainTracker) observeAnswer(upstreamId string, h *chainHeader) {
 	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteNone, hdr: h})
 }
 
-// observeSource is Observe for a source header intake already parsed.
-func (t *ChainTracker) observeSource(upstreamId string, h *chainHeader) {
-	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteSource, hdr: h})
+// observeSource is Observe for a source header intake already parsed,
+// with its evidence time.
+func (t *ChainTracker) observeSource(upstreamId string, h *chainHeader, at time.Time) {
+	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteSource, hdr: h, at: at})
 }
 
 func (t *ChainTracker) observeFetched(upstreamId string, h *chainHeader) {
@@ -571,7 +579,7 @@ func (t *ChainTracker) receive(msg trackerMsg) {
 	case msgCall:
 		msg.fn()
 	case msgSettle:
-		t.requestSettle(msg.settled)
+		t.requestSettle(msg.settled, msg.number)
 	case msgTick, msgSync:
 	}
 }
@@ -605,14 +613,15 @@ func (t *ChainTracker) guard(step string, fn func(), onPanic func()) (ok bool) {
 
 // update runs after every message: walks that nothing waits on end, votes
 // whose walks ended move (rule 3), a settle whose answers are in ends
-// (rule 5), the pins follow the votes (rule 4), roots extend (rules 1, 2),
-// the no-source ask runs (rule 6), the next deadline is armed and the
+// (rule 5), the pins follow the votes (rule 4), a vote off the pins is
+// refreshed before its voter is polled (§6.3), roots extend (rules 1, 2),
+// the no-source Ask runs (rule 6), the next deadline is armed and the
 // trees are published for Reads outside the pins.
 func (t *ChainTracker) update() bool {
 	ok := t.guard("choose", func() {
 		t.endWalks()
 		t.promote()
-		if s := t.settle; s != nil && s.inflight && len(s.out) == 0 && !t.anyWalking(s.answers) {
+		if s := t.settle; s != nil && s.inflight && s.out == 0 && !t.anyWalking(s.answers) {
 			t.endSettle(s)
 		} else {
 			t.choose()
@@ -620,7 +629,7 @@ func (t *ChainTracker) update() bool {
 	}, nil)
 	ok = t.guard("forks", t.trackForks, nil) && ok
 	ok = t.guard("fill", t.extendRoots, nil) && ok
-	ok = t.guard("ask", t.maybeAsk, nil) && ok
+	ok = t.guard("ask", t.askNoSource, nil) && ok
 	ok = t.guard("send", t.gateSend, nil) && ok
 	ok = t.guard("trees", t.publishTrees, nil) && ok
 	ok = t.guard("receipts", t.planReceipts, nil) && ok
@@ -681,7 +690,7 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 	}
 	// Rule 3: the vote moves once its walk ends; until then the previous
 	// one stays.
-	t.pending[msg.upstream] = nd
+	t.pending[msg.upstream], t.pendingAt[msg.upstream] = nd, msg.at
 	t.walkFrom(nd, msg.upstream)
 }
 
@@ -691,21 +700,26 @@ func (t *ChainTracker) promote() {
 	for u, nd := range t.pending {
 		if !t.alive(nd) {
 			delete(t.pending, u)
+			delete(t.pendingAt, u)
 			continue
 		}
 		if t.walking(nd) {
 			continue
 		}
+		at := t.pendingAt[u]
 		delete(t.pending, u)
-		if cur := t.votes[u]; cur == nil || !t.alive(cur) || !isAncestor(nd, cur) {
-			t.votes[u] = nd
+		delete(t.pendingAt, u)
+		switch cur := t.votes[u]; {
+		case cur == nd:
+			t.voteAt[u] = maxTime(t.voteAt[u], at)
+		case cur == nil || !t.alive(cur) || !isAncestor(nd, cur):
+			t.votes[u], t.voteAt[u] = nd, at
 		}
 	}
 	if nd := t.ask.pending; nd != nil && (!t.alive(nd) || !t.walking(nd)) {
 		t.ask.pending = nil
 		if t.alive(nd) {
 			t.ask.vote, t.ask.voter = nd, t.ask.pendingVoter
-			t.ask.conflict = t.conflicts(nd)
 		}
 	}
 }
@@ -762,8 +776,11 @@ func (t *ChainTracker) farAhead(h *chainHeader) bool {
 // §6.2, §6.5), read once per tracker message.
 type HashVoters struct {
 	// Voters are the lane's voters in selection order; settles and
-	// no-source asks go to them.
+	// no-source Asks go to them.
 	Voters []string
+	// Others are the lane's eligible upstreams that are no voters, in
+	// selection order: a tie's settle Asks them after the voters.
+	Others []string
 	// Hash are the hash voters: voters whose hash age is at most W, and,
 	// within the cold window, voters that are sources and never reported.
 	// Need is q.Of(len(Hash)).
@@ -818,17 +835,16 @@ func (t *ChainTracker) counts(upstreamId string) bool {
 // it for its head, and when last.
 type offPin struct{ since, polled time.Time }
 
-// trackForks is spec §6.3's minority fork, for the network-wide tracker.
-// When the pins move off a voter's vote, the tracker polls that voter at
-// once, and again each W while its vote stays off: a vote from before a
+// trackForks is spec §6.3's minority fork. A vote off the pins first
+// refreshes the votes behind the pins (refreshed): a vote from before a
 // reorg is no evidence of a fork, as a healthy upstream answers on the new
-// branch. A voter still off W after the first poll loses its number vote
-// and goes last in routing, until its vote is on the branch again. The
-// network reads the demoted set; forkAt is the next poll or demotion.
+// branch. Only if the pins still hold after those answers does the
+// network-wide tracker poll the off voter, at once and again each W while
+// its vote stays off. A voter still off W after the first poll loses its
+// number vote and goes last in routing, until its vote is on the branch
+// again. The network reads the demoted set; forkAt is the next poll or
+// demotion.
 func (t *ChainTracker) trackForks() {
-	if t.selector != "" {
-		return
-	}
 	now, w := time.Now(), t.W()
 	for u := range t.offPins {
 		if _, ok := t.votes[u]; !ok {
@@ -848,10 +864,13 @@ func (t *ChainTracker) trackForks() {
 			continue
 		}
 		op, ok := t.offPins[u]
-		if !ok || !now.Before(op.polled.Add(w)) {
-			if !ok {
-				op.since = now
+		if !ok {
+			if !t.refreshed(u, nd) || t.selector != "" {
+				continue
 			}
+			op.since = now
+		}
+		if !ok || !now.Before(op.polled.Add(w)) {
 			op.polled = now
 			t.offPins[u] = op
 			poll = append(poll, u)
@@ -862,6 +881,9 @@ func (t *ChainTracker) trackForks() {
 		} else {
 			soonest(at)
 		}
+	}
+	if t.selector != "" {
+		return
 	}
 	if len(poll) > 0 {
 		if p, ok := t.network.(interface{ EvmPollForks(ids []string) }); ok {
@@ -971,6 +993,7 @@ func (t *ChainTracker) drop(n *node, base bool) {
 	for u, v := range t.votes {
 		if v == n {
 			delete(t.votes, u)
+			delete(t.voteAt, u)
 		}
 	}
 }
@@ -1032,91 +1055,162 @@ func (t *ChainTracker) baseVotes() []voter {
 	return out
 }
 
-// voteKey names a set of votes.
-func voteKey(vs []voter) string {
-	parts := make([]string, len(vs))
-	for i, v := range vs {
-		parts[i] = v.who + "=" + v.n.h.hashHex
-	}
-	slices.Sort(parts)
-	return strings.Join(parts, ";")
+// roundKey is what a settle round weighs (spec §6.5 Settle rounds): the
+// pin it disputes and the conflicting branches, each named by its first
+// block off the pins, so new heads on either side keep it. pinned is nil
+// for a tie with no pinned side; branch is empty for a client's re-check of
+// the pin at a height.
+type roundKey struct {
+	name   string
+	pinned *node
+	branch []*node
 }
 
-// settleKey names the decision a settle is asked for, so its answers count
-// only while that decision stands: the tied branches, so new heads on them
-// keep it, or the votes when nothing ties.
-func settleKey(base []voter, tie []*node) string {
-	if len(tie) == 0 {
-		return "votes:" + voteKey(base)
-	}
-	parts := make([]string, len(tie))
-	for i, n := range tie {
+func keyOf(pinned *node, branch []*node) roundKey {
+	parts := make([]string, len(branch))
+	for i, n := range branch {
 		parts[i] = n.h.hashHex
 	}
 	slices.Sort(parts)
-	return "tie:" + strings.Join(parts, ";")
+	name := "|" + strings.Join(parts, ";")
+	if pinned != nil {
+		name = pinned.h.hashHex + name
+	}
+	return roundKey{name: name, pinned: pinned, branch: branch}
 }
 
-// decide is rule 4 over the counted votes: the source votes, plus the
-// answers of a settle asked for this decision. It returns no path while
-// that settle's answers are out: the pins stay. tied reports a tie rule 4
-// still meets; conflict a no-source answer off the pins.
-func (t *ChainTracker) decide() (path []*node, key string, tied, conflict bool) {
+// disputed: the round weighs a branch against the pins, which stay while
+// it is out.
+func (k roundKey) disputed() bool { return len(k.branch) > 0 }
+
+// stands reports whether k still names the pins and branches it was taken
+// on: its pin is pinned and its branches are held.
+func (t *ChainTracker) stands(k roundKey) bool {
+	if k.pinned != nil && !t.pinned(k.pinned) {
+		return false
+	}
+	for _, b := range k.branch {
+		if !t.alive(b) {
+			return false
+		}
+	}
+	return true
+}
+
+// pinNode is the pin at height n, nil when none is.
+func (t *ChainTracker) pinNode(n uint64) *node {
+	if len(t.pins) == 0 || n < t.pins[0].h.number || n-t.pins[0].h.number >= uint64(len(t.pins)) {
+		return nil
+	}
+	return t.pins[n-t.pins[0].h.number]
+}
+
+// branchOf is the first block of nd's branch off the pins: its oldest
+// ancestor that is not pinned.
+func (t *ChainTracker) branchOf(nd *node) *node {
+	for nd.parent != nil && !t.pinned(nd.parent) {
+		nd = nd.parent
+	}
+	return nd
+}
+
+// disputeOf is the round key of a vote nd off the pins: the pin at its
+// branch's height against that branch.
+func (t *ChainTracker) disputeOf(nd *node) roundKey {
+	b := t.branchOf(nd)
+	return keyOf(t.pinNode(b.h.number), []*node{b})
+}
+
+// tieKey is the round key of a rule 4 tie: its pinned block, if any,
+// against the others.
+func (t *ChainTracker) tieKey(tie []*node) roundKey {
+	var pinned *node
+	var branch []*node
+	for _, n := range tie {
+		if t.pinned(n) {
+			pinned = n
+		} else {
+			branch = append(branch, n)
+		}
+	}
+	return keyOf(pinned, branch)
+}
+
+// rekey is k once its round moved the pins: a client's re-check names the
+// pin now at its height; a dispute, the block of k now pinned against the
+// rest.
+func (t *ChainTracker) rekey(k roundKey) roundKey {
+	switch {
+	case k.disputed() && k.pinned != nil:
+		return t.tieKey(append([]*node{k.pinned}, k.branch...))
+	case k.disputed():
+		return t.tieKey(k.branch)
+	case k.pinned != nil:
+		return keyOf(t.pinNode(k.pinned.h.number), nil)
+	}
+	return k
+}
+
+// decide is rule 4 over the counted votes, plus the answers of the last
+// settle round once it ended, while its key stands. It returns no path
+// while a disputed round is out: the pins stay. tie is a tie rule 4 still
+// meets; conflict a no-source answer off the pins.
+func (t *ChainTracker) decide() (path, tie []*node, conflict bool) {
 	base := t.baseVotes()
-	var tie []*node
+	conflict = len(base) == 1 && base[0].n == t.ask.vote && t.conflicts(t.ask.vote)
+	if s := t.settle; s != nil && t.stands(s.key) {
+		switch {
+		case s.inflight && s.key.disputed():
+			return nil, nil, false
+		case !s.inflight:
+			base = append(base, t.settleAnswers(s, base)...)
+		}
+	}
 	if len(base) > 0 {
 		path, tie = t.pick(base)
 	}
-	key = settleKey(base, tie)
-	if s := t.settle; s != nil && s.key == key {
-		if s.inflight {
-			return nil, key, false, false
-		}
-		if answers := t.settleAnswers(s); len(answers) > 0 {
-			path, tie = t.pick(append(base, answers...))
-		}
-	}
-	conflict = len(base) == 1 && base[0].n == t.ask.vote && t.ask.conflict
-	return path, key, len(tie) > 0, conflict
+	return path, tie, conflict
 }
 
-// settleAnswers are the answers of s that count: held, and walked.
-func (t *ChainTracker) settleAnswers(s *settleState) []voter {
+// settleAnswers are the answers of s that count over the counted votes
+// base: held, walked, and from a target without a vote in base. A voter's
+// answer that became its vote counts as that vote, once.
+func (t *ChainTracker) settleAnswers(s *settleState, base []voter) []voter {
 	var out []voter
 	for who, a := range s.answers {
-		if t.alive(a) && !t.walking(a) {
+		if t.alive(a) && !t.walking(a) && !slices.ContainsFunc(base, func(v voter) bool { return v.who == who }) {
 			out = append(out, voter{who, a})
 		}
 	}
 	return out
 }
 
-// decidedAnswers are the answers of the decided settle while the decision
-// it was asked for stands, over the counted votes base; none otherwise.
+// decidedAnswers are the answers of the decided round while its key
+// stands, over the counted votes base; none otherwise.
 func (t *ChainTracker) decidedAnswers(base []voter) []voter {
 	s := t.settle
-	if s == nil || !s.decided {
+	if s == nil || s.inflight || !s.decided || !t.stands(s.key) {
 		return nil
 	}
-	var tie []*node
-	if len(base) > 0 {
-		_, tie = t.pick(base)
-	}
-	if settleKey(base, tie) != s.key {
-		return nil
-	}
-	return t.settleAnswers(s)
+	return t.settleAnswers(s, base)
 }
 
 // choose moves the pins to rule 4's path; a tie, or a no-source answer
-// that conflicts with the pins, starts a settle when one may start.
+// that conflicts with the pins, starts a settle round when one may start.
 func (t *ChainTracker) choose() {
-	path, key, tied, conflict := t.decide()
+	path, tie, conflict := t.decide()
 	if path == nil {
 		return
 	}
-	if (tied || conflict) && t.maySettle(key) && t.startSettle(key, nil, false) {
-		return
+	switch {
+	case len(tie) > 0:
+		if t.startDispute(t.tieKey(tie), "") {
+			return
+		}
+	case conflict:
+		if t.startDispute(t.disputeOf(t.ask.vote), t.ask.voter) {
+			return
+		}
 	}
 	t.apply(path)
 }
@@ -2399,18 +2493,19 @@ var (
 // vendors, and no counted vote, walking or not, lies off its branch, so
 // neither a pin resting on one vendor nor one a reorg may yet replace
 // licenses a hard reject. Otherwise the tracker settles first (§6 rule 5)
-// and the pin it leaves is returned: PinFresh only when the settle decided
-// and no walking vote lies off the pin's branch, so never for a hash the
-// tracker did not pin.
+// and the pin it leaves is returned: PinFresh when it is fresh now, or the
+// round decided and no walking vote lies off the pin's branch, so never
+// for a hash the tracker did not pin.
 //
-// Within reconfirmCooldown, and whenever the settle did not decide (its
-// answers tie, it would wait on a backoff, or no upstream answered), it
-// returns the current pin as PinRateLimited, which carries no new
-// evidence, so the engine degrades the verdict instead of rejecting on a
-// pin it could not re-check. Its settle asks are client fetches. A
-// finalized anchor below the pins never settles: it is PinFresh only while
-// 2 or more vendors agree on it. Only a number with neither pin nor anchor
-// is PinUnverifiable.
+// Within reconfirmCooldown, and whenever the round did not decide (its
+// answers tie, no target answered, the pins moved under it, or it waits on
+// an Ask's backoff), it returns the current pin as PinRateLimited, which
+// carries no new evidence, so the engine degrades the verdict instead of
+// rejecting on a pin it could not re-check. A deferred re-check, one that
+// waits on a backoff or whose ctx ended with answers pending, starts no
+// cooldown and is never PinUnverifiable. A finalized anchor below the pins
+// never settles: it is PinFresh only while 2 or more vendors agree on it.
+// Only a number with neither pin nor anchor is PinUnverifiable.
 func (t *ChainTracker) ReconfirmPin(ctx context.Context, number int64) (string, integrity.PinConfirmation) {
 	if number < 0 {
 		return "", integrity.PinUnverifiable
@@ -2432,38 +2527,43 @@ func (t *ChainTracker) ReconfirmPin(ctx context.Context, number int64) (string, 
 	if recent && p != nil && time.Since(at) < reconfirmCooldown {
 		return p.hashHex, integrity.PinRateLimited
 	}
-	outcome := t.settleNow(ctx)
-	t.reconfirmMu.Lock()
-	t.reconfirmedAt[number] = time.Now()
-	for k := range t.reconfirmedAt {
-		if k < number-int64(t.window) {
-			delete(t.reconfirmedAt, k)
+	outcome := t.settleNow(ctx, number)
+	if outcome != settleDeferred {
+		t.reconfirmMu.Lock()
+		t.reconfirmedAt[number] = time.Now()
+		for k := range t.reconfirmedAt {
+			if k < number-int64(t.window) {
+				delete(t.reconfirmedAt, k)
+			}
 		}
+		t.reconfirmMu.Unlock()
 	}
-	t.reconfirmMu.Unlock()
 	s = t.state.Load()
 	if p = s.pinAt(n); p == nil {
 		if e := t.anchorBelow(s, number); e != nil {
 			return e.hash, e.confirmation()
 		}
+		if outcome == settleDeferred {
+			return "", integrity.PinRateLimited
+		}
 		return "", integrity.PinUnverifiable
 	}
-	if outcome == settleDecided && n-s.base < uint64(s.backing.undisputed) {
+	if s.backing.confirms(n) || outcome == settleDecided && n-s.base < uint64(s.backing.undisputed) {
 		return p.hashHex, integrity.PinFresh
 	}
 	return p.hashHex, integrity.PinRateLimited
 }
 
-// settleNow asks the tracker for a settle and waits for its outcome,
-// bounded by ctx.
-func (t *ChainTracker) settleNow(ctx context.Context) settleOutcome {
+// settleNow asks the tracker for a settle round over the pin at number and
+// waits for its outcome; a ctx that ends first defers it.
+func (t *ChainTracker) settleNow(ctx context.Context, number int64) settleOutcome {
 	settled := make(chan settleOutcome, 1)
-	t.mb.put(trackerMsg{kind: msgSettle, settled: settled})
+	t.mb.put(trackerMsg{kind: msgSettle, settled: settled, number: number})
 	select {
 	case o := <-settled:
 		return o
 	case <-ctx.Done():
-		return settleUnanswered
+		return settleDeferred
 	}
 }
 
@@ -2532,15 +2632,6 @@ func (t *ChainTracker) finalityLabel(number int64) string {
 
 // auxKindHeader labels an integrity check's header fetch.
 const auxKindHeader = "canonical_header"
-
-// resolveTag fetches the header a block tag names, such as "finalized".
-func (t *ChainTracker) resolveTag(ctx context.Context, tag string) (*integrity.Header, bool) {
-	h, err := t.fetchHeader(ctx, classHead, "eth_getBlockByNumber", tag)
-	if err != nil {
-		return nil, false
-	}
-	return h.parsed, true
-}
 
 // headerSpec is one header fetch, group-scoped. client: on a client request
 // path, so it never waits out the key's backoff.
@@ -2950,7 +3041,7 @@ func ChainTrackerOf(ctx context.Context, n common.Network, selector string) *Cha
 // ObserveSourceHeader hands an accepted source header to the network-wide
 // tracker and to every group tracker whose selector matches u, as u's vote.
 // Each tracker drops it unless u is one of its lane's voters.
-func ObserveSourceHeader(n common.Network, u common.Upstream, sh SourceHeader) {
+func ObserveSourceHeader(n common.Network, u common.Upstream, sh SourceHeader, at time.Time) {
 	nt := registeredTrackers(n)
 	if nt == nil {
 		return
@@ -2959,11 +3050,11 @@ func ObserveSourceHeader(n common.Network, u common.Upstream, sh SourceHeader) {
 	nt.mu.Lock()
 	for _, t := range nt.groups {
 		if t.selector == "" {
-			t.observeSource(id, sh.h)
+			t.observeSource(id, sh.h, at)
 			continue
 		}
 		if m, _ := common.UpstreamMatchesSelector(t.selector, u); m {
-			t.observeSource(id, sh.h)
+			t.observeSource(id, sh.h, at)
 		}
 	}
 	nt.mu.Unlock()

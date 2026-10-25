@@ -32,10 +32,12 @@ const (
 type AskReason string
 
 const (
-	AskPoll    AskReason = "poll"
-	AskCatchUp AskReason = "catch_up"
-	AskRefusal AskReason = "refusal"
-	AskRefresh AskReason = "refresh"
+	AskPoll     AskReason = "poll"
+	AskCatchUp  AskReason = "catch_up"
+	AskRefusal  AskReason = "refusal"
+	AskRefresh  AskReason = "refresh"
+	AskSettle   AskReason = "settle"
+	AskNoSource AskReason = "no_source"
 )
 
 // AskOutcome is how a head Ask was met, the outcome label of
@@ -62,7 +64,13 @@ type HeadAnswer struct {
 	Block int64
 	// Header is the fetched latest header; nil with no fetch answer.
 	Header json.RawMessage
-	Err    error
+	// Sent is when the fetch that answered was sent: the header's
+	// evidence time; zero with no fetch answer.
+	Sent time.Time
+	// Next is when the upstream's Ask may fetch again: its last fetch's
+	// send plus its backed-off cadence; zero when it may now.
+	Next time.Time
+	Err  error
 }
 
 // EvmHeadReaches is the one head predicate (spec §6.4, #1099): u, with head

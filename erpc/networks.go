@@ -900,6 +900,24 @@ func (n *Network) pollHeads(ids []string, need common.HeadNeed, reason common.As
 	}
 }
 
+// EvmAskHead is the Ask of upstreamId's head for a chain tracker's settle
+// or no-source Ask (spec §6.5 rules 5 and 6, §6.8); AskBackoff when the
+// network has no such upstream with a poller.
+func (n *Network) EvmAskHead(ctx context.Context, upstreamId string, need common.HeadNeed, reason common.AskReason) common.HeadAnswer {
+	if n.upstreamsRegistry != nil {
+		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+			if u.Id() != upstreamId {
+				continue
+			}
+			if p := u.EvmStatePoller(); p != nil && !p.IsObjectNull() {
+				return p.Ask(ctx, need, reason)
+			}
+			break
+		}
+	}
+	return common.HeadAnswer{Outcome: common.AskBackoff}
+}
+
 // tryShortCircuitFutureBlock returns a truthful null response (ok=true) for
 // a numbered eth_getBlockByNumber the refusal rule calls future (spec §6.4,
 // #1238): above the ceiling plus its age in blocks, on a ceiling younger

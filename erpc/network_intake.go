@@ -229,7 +229,7 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, kind evm
 	if stream {
 		in.noteStream(upstreamId, int64(cur.Number))
 	}
-	evm.ObserveSourceHeader(in.nw, u, sh)
+	evm.ObserveSourceHeader(in.nw, u, sh, at)
 	if in.isVoter(upstreamId) {
 		in.count(upstreamId, "voted")
 	} else {
@@ -649,7 +649,8 @@ func (in *networkIntake) admits(upstreamId string) bool {
 
 // EvmHashVoters is the voter set of the tracker of selector ("" network
 // wide), read once per tracker message (spec §6.2, §6.5): the lane's voters
-// in selection order; the hash voters, those whose hash age is at most w,
+// in selection order; the eligible non-voters with a poller, which a
+// settle may Ask; the hash voters, those whose hash age is at most w,
 // and, while cold, the eligible sources that have not reported a header
 // yet, so a cold instance's first header waits for a second; q.Of of them;
 // each upstream's vendor and the evidence quorum.
@@ -692,11 +693,14 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 			n.intake.voterIds.Store(&voterSnapshot{ids: hv.Voters, policy: policy, all: slices.Clone(all)})
 		}
 	}
-	if cold {
-		for _, u := range cands {
-			if u.Config().IsSubscriptionSource() && !n.intake.reported(u.Id()) && !slices.Contains(hv.Hash, u.Id()) {
-				hv.Hash = append(hv.Hash, u.Id())
+	for _, u := range cands {
+		if !slices.Contains(hv.Voters, u.Id()) {
+			if eu, ok := u.(common.EvmUpstream); ok && eu.EvmStatePoller() != nil && !eu.EvmStatePoller().IsObjectNull() {
+				hv.Others = append(hv.Others, u.Id())
 			}
+		}
+		if cold && u.Config().IsSubscriptionSource() && !n.intake.reported(u.Id()) && !slices.Contains(hv.Hash, u.Id()) {
+			hv.Hash = append(hv.Hash, u.Id())
 		}
 	}
 	hv.Need = q.Of(len(hv.Hash))
@@ -757,20 +761,6 @@ func (n *Network) isForkDemoted(u common.Upstream) bool {
 // EvmHeadsDemanded reports whether an open tap needs newHeads.
 func (n *Network) EvmHeadsDemanded() bool {
 	return n.taps != nil && slices.Contains(n.taps.Demand(n.Label()), indexer.TopicNewHeads)
-}
-
-// ObserveFetchedHead moves an upstream's head counter to a latest header
-// the chain tracker fetched from it, as a source header moves its source's;
-// ObserveHead verifies a major jump first. sent is the fetch's send time.
-func (n *Network) ObserveFetchedHead(upstreamId string, raw json.RawMessage, sent time.Time) {
-	if n.intake == nil {
-		return
-	}
-	if u := n.intake.upstream(upstreamId); u != nil {
-		if p := u.EvmStatePoller(); p != nil && !p.IsObjectNull() {
-			p.ObserveHead(raw, sent)
-		}
-	}
 }
 
 // EvmTaps is the network's taps and the key its demand is counted under:

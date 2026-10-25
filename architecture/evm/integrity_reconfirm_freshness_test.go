@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,16 +17,21 @@ import (
 )
 
 // capturingNetwork records the directives of every forwarded fetch by its
-// block ref and answers with a fixed block header.
+// block ref and answers with a fixed block header; its head Asks answer
+// with the same header, the way a node's latest would.
 type capturingNetwork struct {
 	mockNetwork
 	mu   sync.Mutex
 	dirs map[string][]*common.RequestDirectives // block ref -> directives, in order
+	asks []common.HeadNeed                      // every head Ask's need, in order
 	hash string
 	num  string
 	// sourcesVote is the intake's predicate: while false no source is a
 	// hash voter; the voters are sources a and b, of two vendors.
 	sourcesVote atomic.Bool
+	// backoff: every head Ask backs off until an hour from now; hold: every
+	// head Ask waits for its ctx.
+	backoff, hold atomic.Bool
 }
 
 func (n *capturingNetwork) EvmHashVoters(string, time.Duration, bool) HashVoters {
@@ -35,6 +41,34 @@ func (n *capturingNetwork) EvmHashVoters(string, time.Duration, bool) HashVoters
 		hv.Hash, hv.Need = []string{"a", "b"}, 2
 	}
 	return hv
+}
+
+func (n *capturingNetwork) EvmAskHead(ctx context.Context, _ string, need common.HeadNeed, _ common.AskReason) common.HeadAnswer {
+	n.mu.Lock()
+	n.asks = append(n.asks, need)
+	n.mu.Unlock()
+	switch {
+	case n.backoff.Load():
+		return common.HeadAnswer{Outcome: common.AskBackoff, Next: time.Now().Add(time.Hour)}
+	case n.hold.Load():
+		<-ctx.Done()
+		return common.HeadAnswer{Outcome: common.AskFetched, Err: ctx.Err()}
+	}
+	sent := time.Now()
+	return common.HeadAnswer{Outcome: common.AskFetched, Sent: sent, Next: sent.Add(time.Hour),
+		Header: []byte(fmt.Sprintf(`{"number":"%s","hash":"%s","parentHash":"%s"}`, n.num, n.hash, testHash("f", n.number()-1)))}
+}
+
+func (n *capturingNetwork) number() uint64 {
+	v, _ := common.HexToInt64(n.num)
+	return uint64(v)
+}
+
+// askedNeeds is the need of every head Ask so far.
+func (n *capturingNetwork) askedNeeds() []common.HeadNeed {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return slices.Clone(n.asks)
 }
 
 func newCapturingNetwork(t *testing.T, number int64, hash string) *capturingNetwork {
@@ -106,7 +140,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		return c
 	}
 
-	t.Run("the re-confirmation bypasses the cache", func(t *testing.T) {
+	t.Run("the re-confirmation Asks for a fresh fetch", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
 		c := pinnedOnOrphan(t, net)
 
@@ -114,10 +148,12 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 
 		require.Equal(t, integrity.PinFresh, status)
 		assert.Equal(t, canonical, hash, "must report what the chain says now, not the pin")
-		d := net.directivesFor("latest")
-		require.NotNil(t, d)
-		assert.Equal(t, "true", d.SkipCacheRead,
-			"a pin re-confirmation that reads the cache is an echo of the disputed value, not corroboration")
+		asked := net.askedNeeds()
+		require.NotEmpty(t, asked)
+		for _, need := range asked {
+			assert.Equal(t, common.HeadNeedHash, need,
+				"only a local fetch, cache reads skipped, meets a hash need: a cached answer is an echo of the disputed value, not corroboration")
+		}
 	})
 
 	t.Run("with no counted source, the settle answer moves the pin", func(t *testing.T) {
@@ -157,6 +193,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		assert.Equal(t, orphan, hash)
 		c.sync(context.Background())
 		assert.Zero(t, net.calls())
+		assert.Empty(t, net.askedNeeds())
 	})
 
 	// One source's vote alone never licenses a hard reject: the pin it backs
@@ -168,7 +205,45 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 
 		_, status := c.ReconfirmPin(context.Background(), height)
 		assert.Equal(t, integrity.PinRateLimited, status, "a settle answer for another hash ties with the one vote")
-		assert.NotNil(t, net.directivesFor("latest"), "the re-confirmation settled")
+		assert.NotEmpty(t, net.askedNeeds(), "the re-confirmation settled")
+	})
+
+	t.Run("a re-check deferred by a backoff starts no cooldown", func(t *testing.T) {
+		net := newCapturingNetwork(t, height, canonical)
+		c := pinnedOnOrphan(t, net)
+		net.backoff.Store(true)
+
+		hash, status := c.ReconfirmPin(context.Background(), height)
+		assert.Equal(t, integrity.PinRateLimited, status, "no target answered")
+		assert.Equal(t, orphan, hash)
+		before := time.Now().Add(-2 * reconfirmCooldown)
+		c.reconfirmMu.Lock()
+		c.reconfirmedAt[height] = before
+		c.reconfirmMu.Unlock()
+
+		_, status = c.ReconfirmPin(context.Background(), height)
+		assert.Equal(t, integrity.PinRateLimited, status, "the round waits on its targets' backoff")
+		c.reconfirmMu.Lock()
+		at := c.reconfirmedAt[height]
+		c.reconfirmMu.Unlock()
+		assert.Equal(t, before, at, "a deferred re-check starts no cooldown")
+		assert.Len(t, net.askedNeeds(), 2, "the deferred re-check Asked nothing")
+	})
+
+	t.Run("a client that leaves with answers pending is rate-limited, never unverifiable", func(t *testing.T) {
+		net := newCapturingNetwork(t, height, canonical)
+		c := pinnedOnOrphan(t, net)
+		net.hold.Store(true)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		hash, status := c.ReconfirmPin(ctx, height)
+		assert.Equal(t, integrity.PinRateLimited, status)
+		assert.Equal(t, orphan, hash)
+		c.reconfirmMu.Lock()
+		_, cooled := c.reconfirmedAt[height]
+		c.reconfirmMu.Unlock()
+		assert.False(t, cooled, "a re-check whose client left starts no cooldown")
 	})
 
 	// A by-number answer from the cache is not a fresh view of the chain at
@@ -193,7 +268,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		assert.Equal(t, "true", byNumber(t, height).SkipCacheRead, "a finalized height can still be reverted by a majority")
 	})
 
-	t.Run("a re-confirmation at a finalized height still bypasses the cache", func(t *testing.T) {
+	t.Run("a re-confirmation at a finalized height still Asks for a fresh fetch", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
 		c := newChainTracker(t.Context(), net, 32, 0, "", "", "", func() common.EvmHead { return common.EvmHead{Finalized: height} }, newFetchScheduler(t.Context(), net))
 		voteChain(t, c, "a", "0", uint64(height), uint64(height)+1, testHash("f", uint64(height-1)))
@@ -201,9 +276,9 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 
 		_, status := c.ReconfirmPin(context.Background(), height)
 		require.Equal(t, integrity.PinFresh, status)
-		d := net.directivesFor("latest")
-		require.NotNil(t, d)
-		assert.Equal(t, "true", d.SkipCacheRead)
+		asked := net.askedNeeds()
+		require.NotEmpty(t, asked)
+		assert.NotContains(t, asked, common.HeadNeedNumber, "a shared counter is no fresh view of the block")
 	})
 
 	t.Run("by-hash header fetches still use the cache", func(t *testing.T) {

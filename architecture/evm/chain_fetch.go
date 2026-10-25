@@ -43,7 +43,7 @@ var TrackerFetchHook atomic.Pointer[func(method, params string)]
 type fetchClass uint8
 
 const (
-	classHead        fetchClass = iota // walks, settles, no-source asks
+	classHead        fetchClass = iota // walks, by-hash mismatches, integrity's client-path header fetches
 	classTipReceipts                   // receipts within reorgWindow of the head
 	classFill                          // fill, cursor fetches, older receipts
 	fetchClasses
@@ -221,15 +221,6 @@ func (s *fetchScheduler) doneWaiter(key fetchKey, spec fetchSpec, err error) *fe
 	r := &fetchRequest{key: key, spec: spec, res: fetchResult{err: err}, done: make(chan struct{})}
 	close(r.done)
 	return &fetchWaiter{s: s, r: r}
-}
-
-// waitsBackoff reports whether a fetch of spec would wait out its key's
-// backoff before it starts.
-func (s *fetchScheduler) waitsBackoff(spec fetchSpec) bool {
-	key := spec.key()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.waitsLocked(key, s.pending[key])
 }
 
 // backoffEnd is when spec's key may be fetched again; zero when it may now.

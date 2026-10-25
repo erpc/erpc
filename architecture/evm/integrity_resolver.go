@@ -53,8 +53,9 @@ func (r *integrityResolver) CanonicalReceipts(ctx context.Context, blockHash str
 }
 
 // CanonicalHeader serves a header from the tracker. A 32-byte hash (0x + 64
-// hex) resolves by hash; a hex number resolves through the pin; a tag
-// resolves directly. Held: only held headers, and no tag.
+// hex) resolves by hash; a hex number resolves through the pin. Integrity
+// passes only hashes and numbers (integrity.BlockRef): a tag is not ok.
+// Held: only held headers.
 func (r *integrityResolver) CanonicalHeader(ctx context.Context, blockRef string) (*integrity.Header, bool) {
 	if r.view == nil {
 		return nil, false
@@ -65,14 +66,12 @@ func (r *integrityResolver) CanonicalHeader(ctx context.Context, blockRef string
 		}
 		return r.view.headerByHash(ctx, blockRef)
 	}
-	if n, err := common.HexToInt64(blockRef); err == nil {
-		if r.held {
-			return r.view.HeaderAt(n)
-		}
-		return r.view.headerByNumber(ctx, n, blockRef)
-	}
-	if r.held {
+	n, err := common.HexToInt64(blockRef)
+	if err != nil {
 		return nil, false
 	}
-	return r.view.resolveTag(ctx, blockRef)
+	if r.held {
+		return r.view.HeaderAt(n)
+	}
+	return r.view.headerByNumber(ctx, n, blockRef)
 }
