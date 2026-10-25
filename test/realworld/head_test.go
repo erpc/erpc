@@ -68,10 +68,13 @@ const (
 	// p7FinalityDepth: http-b finalizes this deep, below Head.Finalized
 	// (§6.4: permanent writes need the serving upstream's finalized).
 	p7FinalityDepth = 200
-	// p10NormalLag: the normal group serves this far behind the
-	// flashblocks group: more than reorgWindow blocks, so a lane tap that
-	// measured lag from the network-wide stamp would restart (§10.2).
-	p10NormalLag = reorgWindow + 4
+	// p10ReorgWindow and p10NormalLag: the normal group serves
+	// p10NormalLag blocks behind the flashblocks group, more than P10's
+	// reorgWindow, so a lane tap that measured lag from the network-wide
+	// stamp would restart (§10.2); and fewer than the default selection
+	// policy's 10-block lag, which would remove the whole lane.
+	p10ReorgWindow = 4
+	p10NormalLag   = p10ReorgWindow + 4
 	// probeMethod is read by the cache probes only, so its cache writes are
 	// theirs.
 	probeMethod = "eth_getBlockTransactionCountByNumber"
@@ -755,6 +758,7 @@ func pollNext(s *scenario, farFuture bool) {
 func p10() spec {
 	lag := chainsim.Faults{Lag: p10NormalLag}
 	return spec{name: "P10", bound: healthyDelivery + p10NormalLag*blockTime,
+		evm: map[string]interface{}{"chainTracker": map[string]interface{}{"reorgWindow": p10ReorgWindow, "maxBackfill": maxBackfill.String()}},
 		vendors: []vendorSpec{
 			{"flashblocks-ws", "vendor-a", true}, {"flashblocks-http", "vendor-a", false},
 			{"normal-ws", "vendor-b", true}, {"normal-http", "vendor-b", false},
