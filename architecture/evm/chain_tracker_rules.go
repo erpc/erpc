@@ -680,17 +680,30 @@ func (t *ChainTracker) decides(k roundKey, n *node) bool {
 }
 
 // refreshTargets are §6.3's refresh for voter off's vote nd off the pins:
-// the voters whose counted vote backs the pins at nd's branch with
-// evidence older than nd's, oldest first, up to settleAsks.
-func (t *ChainTracker) refreshTargets(off string, nd *node) []string {
-	from, at := t.branchOf(nd).h.number, t.voteAt[off]
+// the voters, other than off, that are on no conflicting branch and whose
+// evidence is older than nd's, oldest first, up to settleAsks. A voter
+// without a counted vote has the oldest evidence: left out, a refresh
+// heard only the backers of the pins and moved them on a majority of the
+// voters that happened to be fresh (§19 C14).
+func (t *ChainTracker) refreshTargets(off string) []string {
+	at := t.voteAt[off]
+	evidence := func(u string) (time.Time, bool) {
+		if v := t.votes[u]; t.counts(u) && t.alive(v) {
+			return t.voteAt[u], !t.conflicts(v)
+		}
+		return time.Time{}, true
+	}
 	var out []string
-	for u, v := range t.votes {
-		if u != off && t.counts(u) && t.alive(v) && !t.conflicts(v) && v.h.number >= from && t.voteAt[u].Before(at) {
+	for _, u := range t.voters.Voters {
+		if e, behind := evidence(u); u != off && behind && e.Before(at) {
 			out = append(out, u)
 		}
 	}
-	slices.SortFunc(out, func(a, b string) int { return t.voteAt[a].Compare(t.voteAt[b]) })
+	slices.SortStableFunc(out, func(a, b string) int {
+		ea, _ := evidence(a)
+		eb, _ := evidence(b)
+		return ea.Compare(eb)
+	})
 	return out[:min(len(out), settleAsks)]
 }
 
@@ -719,7 +732,7 @@ func (t *ChainTracker) refreshed(u string, nd *node) bool {
 		t.refreshedAt[u] = fork
 		return true
 	}
-	targets := t.refreshTargets(u, nd)
+	targets := t.refreshTargets(u)
 	if len(targets) == 0 {
 		t.refreshedAt[u] = fork
 		return true
