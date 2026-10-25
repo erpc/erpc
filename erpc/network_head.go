@@ -373,16 +373,17 @@ func (n *Network) countedUpstreams(sel string) []*upstream.Upstream {
 }
 
 // EvmAskStale Asks, with a number need, each of selector's counted
-// upstreams whose report is 1 bt old or older, waits for their answers, at
-// most 1 bt or until ctx ends, and returns the lane's ceiling and oldest
-// report after them (spec §6.4: no future on a stale report).
+// upstreams whose report is 1 bt old or older, every one before the first
+// block time sample, waits for their answers, at most 1 bt or until ctx
+// ends, and returns the lane's ceiling and oldest report after them (spec
+// §6.4: no future on a stale report).
 func (n *Network) EvmAskStale(ctx context.Context, selector string) (ceiling int64, oldestReportAt time.Time) {
-	bt := n.blockTimeOrCold()
+	bt, cold := n.blockTimeOrCold(), n.EvmBlockTime() <= 0
 	now := time.Now()
 	var stale []common.EvmStatePoller
 	for _, u := range n.countedUpstreams(selector) {
 		if sp := u.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-			if _, at, _ := sp.LatestReport(); now.Sub(at) >= bt {
+			if _, at, _ := sp.LatestReport(); cold || now.Sub(at) >= bt {
 				stale = append(stale, sp)
 			}
 		}

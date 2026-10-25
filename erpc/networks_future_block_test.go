@@ -53,6 +53,7 @@ func TestForward_FutureBlock_ShortCircuitsToNull(t *testing.T) {
 		{id: "fb3", chainID: 123, latestBlock: 98},
 	})
 	network.cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
+	sampleBlockTime(t, network)
 	mockGetBlockByNumberNonNull("fb1", "fb2", "fb3")
 
 	// max observed head = 100; block 105 (0x69) is beyond every upstream.
@@ -230,6 +231,7 @@ func TestForward_FutureBlock_OptInWithoutServedTip_ShortCircuitsToNull(t *testin
 		{id: "fb3", chainID: 123, latestBlock: 98},
 	}, nil)
 	network.cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
+	sampleBlockTime(t, network)
 
 	// max head = 100; block 105 (0x69) is beyond every upstream.
 	resp := forwardGetBlockByNumber(t, ctx, network, "0x69")
@@ -402,6 +404,7 @@ func TestForward_FutureBlock_OptIn_ShortCircuitNotMirroredToExcluded(t *testing.
 			cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
 		},
 	})
+	sampleBlockTime(t, network)
 
 	for i := 0; i < 5; i++ {
 		resp := forwardGetBlockByNumber(t, ctx, network, "0x69")
@@ -629,4 +632,14 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "null", jrr.GetResultString(), "logs by hash above Latest, request ended during the hold")
 	assert.Positive(t, logsCalls.Load(), "dispatched to an upstream")
+}
+
+// sampleBlockTime gives network its first block time sample: before it,
+// every report counts as older than 1 bt, so no block is future (spec §6.4).
+func sampleBlockTime(t *testing.T, network *Network) {
+	t.Helper()
+	for i := int64(0); i < 3; i++ {
+		network.metricsTracker.SampleConfirmedHeaderTime(network.networkId, network.Label(), 1000+i, time.Now().Unix()+100+i)
+	}
+	require.Positive(t, network.EvmBlockTime())
 }

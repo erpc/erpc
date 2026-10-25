@@ -46,19 +46,26 @@ func HeadRefusalOf(ctx context.Context, rq *common.NormalizedRequest) *common.He
 // DecideHeadRefusal applies the refusal rule to block n on head h of
 // selector sel's lane: above the ceiling with a report 1 bt old or older,
 // those reports are Asked first and n decided again; still stale after
-// the Ask, n is in the band, the cheaper way to be wrong. A band block
-// Asks the upstreams below it, in the background.
+// the Ask, n is in the band, the cheaper way to be wrong. Until the first
+// block time sample, every report counts as older than 1 bt (spec §6.4).
+// A band block Asks the upstreams below it, in the background.
 func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead, sel string, n int64) *common.HeadRefusal {
 	net, _ := nw.(headRefuser)
-	bt := health.ColdBlockTime
+	bt, cold := health.ColdBlockTime, true
 	if net != nil {
 		if b := net.EvmBlockTime(); b > 0 {
-			bt = b
+			bt, cold = b, false
 		}
+	}
+	if cold {
+		h.OldestReportAt = time.Time{}
 	}
 	v := &common.HeadRefusal{Block: n, Rule: h.Rule(n, bt, time.Now())}
 	if v.Rule == common.HeadStale && net != nil {
 		h.Ceiling, h.OldestReportAt = net.EvmAskStale(ctx, sel)
+		if cold {
+			h.OldestReportAt = time.Time{}
+		}
 		v.Rule, v.Refreshed = h.Rule(n, bt, time.Now()), true
 	}
 	if v.Rule == common.HeadStale {
