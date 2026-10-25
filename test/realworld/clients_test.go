@@ -524,8 +524,13 @@ type liveLog struct {
 	conn   int
 }
 
-// logsConn is one subscription's covered range: from the first block minted
-// after it opened to the last block it surely received in full.
+// logsConn is one subscription's covered range, from the tap's first block
+// to the last block it surely received in full. A tap opened while its pod
+// has a confirmed head starts after it, so at or below the first block
+// minted after the subscribe; one opened before the pod's first confirmed
+// head starts at that head (spec §4 Head, §15.1 cold start), which the
+// client cannot see: its range starts at its first log's block (from 0
+// until then).
 type logsConn struct {
 	from, to uint64
 	highest  uint64
@@ -548,6 +553,7 @@ type logJSON struct {
 func (c *logsClient) run(ctx context.Context) {
 	for ctx.Err() == nil {
 		pod := c.currentPod()
+		warm := c.s.confirmedHeadSeen(pod)
 		url := c.s.h.pods[pod].wsURL(c.s.project, c.s.chain.ID())
 		dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		cl, err := rpc.DialOptions(dctx, url)
@@ -571,9 +577,13 @@ func (c *logsClient) run(ctx context.Context) {
 		}
 		c.mu.Lock()
 		conn := len(c.conns)
-		c.conns = append(c.conns, &logsConn{from: c.s.chain.Tip().Number + 1, open: true, opened: time.Now()})
+		lc := &logsConn{open: true, opened: time.Now()}
+		if warm {
+			lc.from = c.s.chain.Tip().Number + 1
+		}
+		c.conns = append(c.conns, lc)
 		c.mu.Unlock()
-		c.tr.logf("subscribed pod=%d conn=%d", pod+1, conn)
+		c.tr.logf("subscribed pod=%d conn=%d from=%d", pod+1, conn, lc.from)
 		server := false
 	loop:
 		for {
@@ -608,7 +618,8 @@ func (c *logsClient) run(ctx context.Context) {
 // covers up to its lane's final head (finalHead); a client-side close covers up to the block
 // before its last log. A server-side end (1013, a dead pod) tells the client
 // nothing about how deep its logs went stale, so it covers nothing and its
-// logs leave the live set: the client resubscribes and starts over.
+// logs leave the live set: the client resubscribes and starts over. A range
+// whose start the client never learned covers nothing.
 func (c *logsClient) closeConn(conn int, server, final bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -616,7 +627,7 @@ func (c *logsClient) closeConn(conn int, server, final bool) {
 	lc.open = false
 	lc.closed = time.Now()
 	switch {
-	case final:
+	case final && lc.from > 0:
 		lc.to = c.s.finalHead(c.selector).Number
 	case server:
 		lc.to = 0
@@ -672,6 +683,9 @@ func (c *logsClient) onLog(pod, conn int, raw json.RawMessage) {
 	c.live[key] = liveLog{number: b.Number, conn: conn}
 	c.ever[key] = true
 	lc := c.conns[conn]
+	if lc.from == 0 {
+		lc.from = b.Number
+	}
 	if b.Number > lc.highest {
 		lc.highest = b.Number
 	}

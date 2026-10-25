@@ -418,8 +418,10 @@ func (s *scenario) watchStalls() {
 }
 
 // waitServing waits until pod idx serves the scenario network's head: 5
-// blocks below the second-highest vendor view, as quorum 2 serves; a
-// headless pod is asked that block by number.
+// blocks below the second-highest vendor view, as quorum 2 serves, and, on
+// a new-image pod, a confirmed head, so the scenario's subscriptions start
+// at the subscribe and their logs ranges are known (logsConn); a headless
+// pod is asked that block by number.
 func (s *scenario) waitServing(idx int) {
 	want := s.vendorHead(1) - 5
 	deadline := time.Now().Add(podBootWait)
@@ -436,10 +438,14 @@ func (s *scenario) waitServing(idx int) {
 			var bn hexutil.Uint64
 			err = s.call(idx, &bn, "eth_blockNumber")
 			if err == nil && uint64(bn) >= want {
-				s.tr.logf("pod-%d serves %d", idx+1, bn)
-				return
+				if s.h.pods[idx].old || s.confirmedHeadSeen(idx) {
+					s.tr.logf("pod-%d serves %d", idx+1, bn)
+					return
+				}
+				got = fmt.Sprintf("%d and no confirmed head", uint64(bn))
+			} else {
+				got = fmt.Sprint(uint64(bn))
 			}
-			got = fmt.Sprint(uint64(bn))
 		}
 		if time.Now().After(deadline) {
 			s.t.Fatalf("pod-%d does not serve %s: wants %d, got %s, err %v", idx+1, s.network(), want, got, err)
@@ -702,6 +708,16 @@ func (s *scenario) metric(pod int, name string, labels map[string]string) (float
 		match[k] = v
 	}
 	return sumOf(ss, name, match)
+}
+
+// confirmedHeadSeen reports whether pod's network-wide tracker has had a
+// confirmed head (spec §17: the gauge is set on each confirmed-head change),
+// false when the scrape fails. A tracker keeps its pins once it has one
+// (spec §9 floor), so a tap opened after it starts at or below the next
+// block.
+func (s *scenario) confirmedHeadSeen(pod int) bool {
+	v, ok := s.metric(pod, "erpc_network_subscription_last_head_timestamp_seconds", nil)
+	return ok && v > 0
 }
 
 // waitMetric scrapes pod until the metric exists and cond holds, or within
