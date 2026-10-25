@@ -896,7 +896,7 @@ Tap metrics label `network` with the network label. Every other metric keeps its
 1. Config first. Both images decode config strictly. For each deleted key, compare its configured value with its default; remove it while still on the old image, only where the value equals the default. Tuned values land with the first new-key change.
 2. New image with no new keys: development → staging → one canary instance per region → everywhere. Rollback is the previous image digest, valid while no new key exists.
 3. New keys (`subscriptionSource`, `evm.chainTracker.*`) only after the previous digest has left the rollback window: the old image rejects them.
-4. The canary writes the same per-upstream counters the control instances read: gate each stage on canary-written vs control-polled counter agreement.
+4. The canary writes the same per-upstream counters the control instances read: gate each stage on canary-written vs control-polled counter agreement. While old and new images share one backend, old pods ignore the rewind mark (§14): a rewind of up to 1024 blocks reaches them only through their own polls, and a deeper one counts a large rollback against the upstream on old pods.
 5. Go/no-go per stage, in seconds and per subscriber:
    - invariant violations 0;
    - `retried_missing` 0;
