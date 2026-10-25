@@ -10,6 +10,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -369,6 +370,21 @@ const (
 	settleDecided
 )
 
+var settleOutcomeNames = [...]string{"unanswered", "tied", "deferred", "moved", "decided"}
+
+// logSettle logs the end of round s (spec §17).
+func (t *ChainTracker) logSettle(s *settleState, o settleOutcome) {
+	ev := t.transition(zerolog.InfoLevel, "settle").Str("outcome", settleOutcomeNames[o]).Int("answers", len(s.answers))
+	if p := s.key.pinned; p != nil {
+		ev = ev.Uint64("pinned", p.h.number).Str("pinnedHash", p.h.hashHex)
+	}
+	if len(s.key.branch) > 0 {
+		b := s.key.branch[0].h
+		ev = ev.Uint64("branch", b.number).Str("branchHash", b.hashHex)
+	}
+	ev.Msg("chain tracker settle ended")
+}
+
 // settleState is one settle round (§6 rule 5, Settle rounds): an Ask with a
 // hash need of each of up to settleAsks targets for one key. Each answer,
 // once its walk ended, is its voter's hash vote, or, from a target without
@@ -514,6 +530,7 @@ func (t *ChainTracker) endSettle(s *settleState) {
 		// side, so its answers count while that stands.
 		s.decided, s.key = true, t.rekey(s.key)
 		telemetry.CounterHandle(telemetry.MetricChainTrackerSettleTotal, t.projectId(), t.networkLabel(), "decided").Inc()
+		t.logSettle(s, settleDecided)
 		// The decided answers back their branch now: waiters read that.
 		t.gateSend()
 		s.notify(settleDecided)
@@ -529,6 +546,7 @@ func (t *ChainTracker) undecided(s *settleState, o settleOutcome) {
 		s.retryAt = time.Now().Add(t.BlockTime())
 	}
 	telemetry.CounterHandle(telemetry.MetricChainTrackerSettleTotal, t.projectId(), t.networkLabel(), "undecided").Inc()
+	t.logSettle(s, o)
 	s.notify(o)
 }
 
@@ -784,7 +802,12 @@ func (t *ChainTracker) follow(ctx context.Context) {
 			}
 			return len(b.Applied), nil
 		})
-		if ctx.Err() != nil || errors.Is(err, indexer.ErrOutOfRange) {
+		if ctx.Err() != nil {
+			continue
+		}
+		if errors.Is(err, indexer.ErrOutOfRange) {
+			t.transition(zerolog.InfoLevel, "out_of_range:integrity:follow").Err(err).
+				Msg("integrity follow tap out of range; restarting after the head")
 			continue
 		}
 		log.Warn().Err(err).Str("network", t.networkLabel()).Str("group", t.group).

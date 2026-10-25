@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -615,6 +616,9 @@ type headFetch struct {
 	// next is the fork fetch queued while this one was in flight: it
 	// starts once this one ends.
 	next   *headFetch
+	// parent is the span of the Ask that started the fetch: the fetch's
+	// span shows under it without taking its cancellation.
+	parent trace.SpanContext
 	header json.RawMessage
 	// parent is the span of the Ask that started the fetch: the fetch's
 	// span shows under it without taking its cancellation.
@@ -627,7 +631,7 @@ type headFetch struct {
 
 // Ask is the upstream's head Ask (spec §6.8). A number need is met by a
 // shared counter whose report is younger than the cadence; a number or
-// hash need by this instance's fetch in flight, or one sent within the
+	if e.IsObjectNull() {
 // cadence whatever its outcome; a fork need only by a fetch sent after it,
 // since a header from before the pins moved is no evidence of the fork
 // (spec §6.3). Else it fetches latest, cache reads skipped and no rate
@@ -637,9 +641,12 @@ type headFetch struct {
 func (e *EvmStatePoller) Ask(ctx context.Context, need common.HeadNeed, reason common.AskReason) common.HeadAnswer {
 	if e.IsObjectNull() {
 		return common.HeadAnswer{Outcome: common.AskBackoff}
-	}
+	f, outcome := e.ask(ctx, need, reason)
 	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.Ask",
 		trace.WithAttributes(
+	if !e.askable() {
+		return a
+	}
 			attribute.String("upstream.id", e.upstream.Id()),
 	f, outcome := e.ask(ctx, need, reason)
 		),
@@ -670,7 +677,7 @@ func (e *EvmStatePoller) Ask(ctx context.Context, need common.HeadNeed, reason c
 		}
 	}
 	if due := e.askDue(); due > 0 {
-		a.Next = time.Now().Add(due)
+	if e.IsObjectNull() {
 	}
 	a.Block = e.LatestBlock()
 	return a
@@ -693,26 +700,29 @@ func (e *EvmStatePoller) AskReaching(ctx context.Context, block int64, reason co
 	if a.Err == nil && a.Block < block && (a.Outcome == common.AskInflight || a.Outcome == common.AskSharedFresh) {
 		a = e.Ask(ctx, common.HeadNeedFork, reason)
 	}
-	return a
-}
+	if !e.IsObjectNull() {
+		e.ask(context.Background(), need, reason)
 
 // freshnessWindow is W of the upstream's network (health.FreshnessWindow).
 func (e *EvmStatePoller) freshnessWindow() time.Duration {
-	var bt time.Duration
+// askable: the poller has a latest counter to Ask for.
 	if e.tracker != nil {
-	if !e.IsObjectNull() {
+	return e.latestBlockShared != nil
 		e.ask(context.Background(), need, reason)
 	return health.FreshnessWindow(bt)
 }
-
-// askable: the poller has a latest counter to Ask for.
-func (e *EvmStatePoller) AskBackground(need common.HeadNeed, reason common.AskReason) {
-	return e.latestBlockShared != nil
+// none does, under ctx's span; nil when the shared counter meets it or the
+// upstream backs off, as it does while it has no latest counter to Ask for.
+func (e *EvmStatePoller) ask(ctx context.Context, need common.HeadNeed, reason common.AskReason) (*headFetch, common.AskOutcome) {
+	f, outcome := (*headFetch)(nil), common.AskBackoff
+	if e.askable() {
+		f, outcome = e.askFetch(trace.SpanContextFromContext(ctx), need)
+	}
 		e.ask(context.Background(), need, reason)
 	}
 }
 // none does, under ctx's span; nil when the shared counter meets it or the
-// upstream backs off, as it does while it has no latest counter to Ask for.
+func (e *EvmStatePoller) askFetch(parent trace.SpanContext, need common.HeadNeed) (*headFetch, common.AskOutcome) {
 func (e *EvmStatePoller) ask(ctx context.Context, need common.HeadNeed, reason common.AskReason) (*headFetch, common.AskOutcome) {
 	f, outcome := (*headFetch)(nil), common.AskBackoff
 	if e.askable() {
@@ -730,7 +740,7 @@ func (e *EvmStatePoller) ask(ctx context.Context, need common.HeadNeed, reason c
 	}
 	telemetry.CounterHandle(telemetry.MetricHeadAskTotal, e.projectId, e.netLabel(), string(reason), string(outcome)).Inc()
 	return f, outcome
-}
+			f.next = &headFetch{fork: true, done: make(chan struct{}), parent: parent}
 
 func (e *EvmStatePoller) askFetch(parent trace.SpanContext, need common.HeadNeed) (*headFetch, common.AskOutcome) {
 	if e.shouldSkipLatestBlockCheck() {
@@ -747,7 +757,7 @@ func (e *EvmStatePoller) askFetch(parent trace.SpanContext, need common.HeadNeed
 	a := &e.headAsk
 	a.mu.Lock()
 	f := a.last
-	switch {
+	f = &headFetch{sent: now, fork: need == common.HeadNeedFork, done: make(chan struct{}), parent: parent}
 	case f != nil && !f.answered && need == common.HeadNeedFork:
 		if f.next == nil {
 			f.next = &headFetch{fork: true, done: make(chan struct{}), parent: parent}
@@ -783,9 +793,16 @@ func (e *EvmStatePoller) runFetch(f *headFetch) {
 		if rec := recover(); rec != nil {
 			e.countHeadPanic("fetch", rec)
 			header, err = nil, fmt.Errorf("head ask of upstream %s panicked: %v", e.upstream.Id(), rec)
-		}
+	ctx, span := common.StartDetailSpan(trace.ContextWithSpanContext(e.appCtx, f.parent), "EvmStatePoller.AskFetch",
+		trace.WithAttributes(attribute.String("upstream.id", e.upstream.Id()), attribute.Bool("fork", f.fork)))
+	defer span.End()
+	ctx, cancel := context.WithTimeout(ctx, askTimeout)
 		a := &e.headAsk
 		a.mu.Lock()
+	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.SetAttributes(attribute.Bool("header", header != nil))
 		f.answered, f.header, f.err = true, header, err
 		switch {
 		case nodeFailedPoll(err):

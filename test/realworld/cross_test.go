@@ -41,7 +41,6 @@ func x3() spec {
 			s.podClients(0, 0)
 			s.podClients(1, 0)
 			s.blocks(50)
-		}}
 }
 
 // X6: pod-1's link to http-a, ranked first with a breaker that opens on 2
@@ -92,4 +91,3 @@ func x6() spec {
 				s.violate("harness", "pod-2: %s's breaker opened, though only pod-1's link failed", up)
 			}
 		}}
-}

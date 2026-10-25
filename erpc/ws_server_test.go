@@ -1940,6 +1940,24 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 			return true
 		}, 10*time.Second, 20*time.Millisecond, "both clients hold the canonical logs through the reorg")
 		requireInvariantsHeld(t, "test_ws", "evm:123")
+		requireInvariantsHeld(t, "test_ws", "evm:123")
+
+		// A 3-block reorg: each client drops the reverted logs it holds
+		// (removed:true) and gets the new branch's; no invariant breaks.
+		reorged := s.reorg(3)
+		s.blocks(3)
+		require.Eventually(t, func() bool {
+			for _, cl := range s.openLogs() {
+				cl.mu.Lock()
+				d := cl.logsDiffLocked(s, from, reorged.Number)
+				cl.mu.Unlock()
+				if d != "" {
+					return false
+				}
+			}
+			return true
+		}, 10*time.Second, 20*time.Millisecond, "both clients hold the canonical logs through the reorg")
+		requireInvariantsHeld(t, "test_ws", "evm:123")
 	})
 
 	// A cold instance pins ws-a's heads while the other sources, held,
@@ -2827,6 +2845,7 @@ func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
 	require.NotNil(t, up)
 	cordoned := func() bool { return nw.metricsTracker.IsCordoned(up, "eth_getBlockByNumber") }
 	conn := dialWs(t, addr)
+	requireInvariantsHeld(t, "test_ws", "evm:123")
 	defer conn.Close()
 	subscribeNewHeads(t, conn)
 	last := requireContiguous(t, conn, 3, 0)
@@ -2879,6 +2898,7 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 	conn := dialWs(t, addr)
 	defer conn.Close()
 	subscribeNewHeads(t, conn)
+	requireInvariantsHeld(t, "test_ws", "evm:123")
 	tapLabels := []string{"test_ws", "evm:123", "ws", indexer.SubTypeNewHeads}
 	openTaps := func() float64 { return testutil.ToFloat64(telemetry.MetricTaps.WithLabelValues(tapLabels...)) }
 	lagged := telemetry.MetricTapOutOfRangeTotal.WithLabelValues(append(tapLabels, indexer.OutOfRangeLag)...)

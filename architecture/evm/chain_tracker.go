@@ -22,6 +22,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -546,6 +547,8 @@ func (t *ChainTracker) handle(msg trackerMsg) {
 	}
 	t.panics[slot]++
 	if t.panics[slot] >= trackerPanicsToReset {
+		t.transition(zerolog.ErrorLevel, "reset").Int("panics", trackerPanicsToReset).Int("slot", slot).
+			Msg("chain tracker reset to empty after panics in a row")
 		t.panics = [panicSlots]int{}
 		t.reset()
 		telemetry.CounterHandle(telemetry.MetricChainTrackerResetTotal, t.projectId(), t.networkLabel()).Inc()
@@ -825,6 +828,8 @@ func (t *ChainTracker) readVoters() {
 	cold := time.Now().Before(t.coldUntil)
 	old := t.voters.Hash
 	t.callNetwork("voters", func() { t.voters = n.EvmHashVoters(t.selector, w, cold) })
+	t.transition(zerolog.InfoLevel, "hash_voters").Strs("from", old).Strs("to", t.voters.Hash).Int("need", t.voters.Need).
+		Msg("chain tracker hash voters changed")
 	if t.selector != "" || slices.Equal(old, t.voters.Hash) {
 		return
 	}
@@ -900,6 +905,17 @@ func (t *ChainTracker) trackForks() {
 	}
 	slices.Sort(demoted)
 	if slices.Equal(demoted, t.demoted) {
+	votes := zerolog.Arr()
+	for _, u := range demoted {
+		if nd := t.votes[u]; nd != nil {
+			votes.Dict(zerolog.Dict().Str("upstream", u).Uint64("block", nd.h.number).Str("hash", nd.h.hashHex))
+		}
+	}
+	ev := t.transition(zerolog.InfoLevel, "fork_demotion").Strs("upstreams", demoted).Array("votes", votes)
+	if h := t.head(); h != nil {
+		ev = ev.Uint64("head", h.number).Str("headHash", h.hashHex)
+	}
+	ev.Msg("minority-fork demotion changed: demoted voters lose their number vote and go last in routing")
 		return
 	}
 	t.demoted = demoted
@@ -1331,15 +1347,12 @@ func (t *ChainTracker) apply(path []*node) {
 	b := t.gate(path)
 	s.confirmed, s.backing = b.confirmed(), b
 	t.pins, t.treesDirty, t.receiptsDirty = path, true, true
-	s.logs = t.logsHeadOf(s)
-	close(old.changed)
-	t.published(old, s, true)
 
 	t.published(old, s, true)
 	t.evict()
 	t.published(old, s, true)
 
-// recordMove counts a re-anchor, or the depth of a reorg, from old to path,
+	t.published(old, s, true)
 // and sets the head gauge. A reverted block at or below the finalized
 // height is followed, logged as an error (final_hash_changed) and kept in
 // revertedFinal, so no permanent cache entry serves the old branch (spec
@@ -1379,18 +1392,23 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	}
 	var span heightSpan
 	var oldLo, newLo *chainHeader
+		was := old[len(old)-1]
+		t.transition(zerolog.WarnLevel, "reanchor").Uint64("oldHead", was.number).Str("oldHeadHash", was.hashHex).
+			Uint64("head", head.number).Str("headHash", head.hashHex).Uint64("base", path[0].h.number).Str("baseHash", path[0].h.hashHex).
+			Msg("chain tracker pins moved to another tree of held headers")
 	replaced := func(hs []*chainHeader) {
 	var oldLo, newLo *chainHeader
 		for _, h := range hs {
 	var oldLo, newLo *chainHeader
 			if p := pathAt(h.number); p != nil && p.hash != h.hash {
+	var oldLo, newLo *chainHeader
+				if span.hi == 0 || int64(h.number) < span.lo {
 				if span.hi == 0 || int64(h.number) < span.lo {
 				if span.hi == 0 || int64(h.number) < span.lo {
 				if span.hi == 0 || int64(h.number) < span.lo {
 					span.lo, oldLo, newLo = int64(h.number), h, p
 				span.hi = max(span.hi, int64(h.number))
 				span.hi = max(span.hi, int64(h.number))
-	}
 	replaced(old)
 	replaced(t.unlinkedPins)
 	var unlinked []*chainHeader
@@ -1410,8 +1428,15 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 		var ev *zerolog.Event
 		var ev *zerolog.Event
 		var ev *zerolog.Event
+		var ev *zerolog.Event
 		if t.selector == "" {
 			ev = common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantFinalHashChanged)
+		} else {
+			ev = common.TransitionLog(&log.Logger, zerolog.ErrorLevel, t.networkLabel(), "invariant_"+string(common.InvariantFinalHashChanged)+":"+t.group).
+				Str("invariant", string(common.InvariantFinalHashChanged))
+		}
+		ev.Str("group", t.group).Int64("revertedFrom", span.lo).Str("oldHash", hexHash(oldLo.hash)).Str("newHash", hexHash(newLo.hash)).
+			Int64("finalized", fin).Uint64("head", head.number).Str("headHash", hexHash(head.hash)).
 		} else {
 			ev = common.TransitionLog(&log.Logger, zerolog.ErrorLevel, t.networkLabel(), "invariant_"+string(common.InvariantFinalHashChanged)+":"+t.group).
 				Str("invariant", string(common.InvariantFinalHashChanged))
@@ -1577,7 +1602,37 @@ func stampRun(ps []*chainHeader, now int64, stop func(*chainHeader) bool, at fun
 // number, so a block a reorg removes and brings back is stamped afresh.
 func (t *ChainTracker) unstamp(old []*chainHeader, s *feedState) {
 	if t.selector != "" {
+	old := t.state.Swap(s)
+	close(old.changed)
+	t.published(old, s, true)
+}
+
+// published records the signals of a state swap from old to s (spec §15.3,
+// §17) and feeds the block time. pinsMoved: s holds new pins, checked for
+// parentHash linkage.
+func (t *ChainTracker) published(old, s *feedState, pinsMoved bool) {
+	if pinsMoved {
+		for i := 1; i < len(s.pins); i++ {
+			if below, p := s.pins[i-1], s.pins[i]; p.parentHash != below.hash {
+				common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantPinsUnlinked).
+					Str("group", t.group).Uint64("block", p.number).Str("blockHash", hexHash(p.hash)).
+					Str("parentHash", hexHash(p.parentHash)).Uint64("below", below.number).Str("belowHash", hexHash(below.hash)).
+					Msg("chain tracker published pins that are not one parentHash chain")
+				break
+			}
+		}
+	}
+	}
+	if t.selector != "" {
 		return
+	}
+	lag := 0
+	if len(s.pins) > 0 {
+		lag = len(s.pins) - 1 - s.confirmed
+	}
+	telemetry.GaugeHandle(telemetry.MetricChainTrackerConfirmLagBlocks, t.projectId(), t.networkLabel()).Set(float64(lag))
+	if c := s.confirmedHead(); c != nil && c != old.confirmedHead() {
+		telemetry.GaugeHandle(telemetry.MetricNetworkSubscriptionLastHeadTimestamp, t.projectId(), t.networkLabel()).SetToCurrentTime()
 	}
 	for i := len(old) - 1; i >= 0; i-- {
 		p := old[i]
@@ -1873,8 +1928,9 @@ func (t *ChainTracker) gate(path []*node) *pinBacking {
 	case !holding:
 		t.heldSince = time.Time{}
 	case t.heldSince.IsZero():
-		t.heldSince = now
-	}
+	old := t.state.Swap(s)
+	close(old.changed)
+	t.published(old, s, false)
 	if !capped && !holding || !t.demanded() {
 		t.catchUpAt = time.Time{}
 		return b
@@ -2842,6 +2898,12 @@ func (t *ChainTracker) fetchHeader(ctx context.Context, class fetchClass, method
 	res := t.fetch.fetch(ctx, t, t.headerSpec(class, method, blockRef, "", true))
 	if errors.Is(res.err, errFetchBackoff) {
 		return nil, res.err
+// transition is the log line of one state transition of the tracker,
+// rate limited per network and kind (spec §17).
+func (t *ChainTracker) transition(level zerolog.Level, kind string) *zerolog.Event {
+	return common.TransitionLog(&log.Logger, level, t.networkLabel(), kind).Str("group", t.group)
+}
+
 	}
 	h, _ := res.val.(*chainHeader)
 	num := int64(-1)
@@ -3016,6 +3078,7 @@ func (t *ChainTracker) observeNarrowAnchors(fin int64, vendor string, result []b
 	if t == nil || fin <= 0 || len(result) == 0 {
 		return
 	}
+		common.ExportInvariants(n.ProjectId(), n.Label())
 	var as []anchor
 	add := func(numHex, hash string) {
 		key, ok := hashKey(hash)

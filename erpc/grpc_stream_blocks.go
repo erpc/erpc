@@ -13,6 +13,7 @@ import (
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -111,6 +112,11 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 	case tapCtx.Err() != nil:
 		return status.Error(codes.Unavailable, "network is stopping")
 	case errors.Is(err, indexer.ErrOutOfRange):
+		ev := common.TransitionLog(gs.logger, zerolog.InfoLevel, nw.Label(), "out_of_range:grpc:newHeads").Err(err)
+		if start != nil {
+			ev = ev.Uint64("fromBlock", start.Number).Hex("fromHash", start.Hash[:])
+		}
+		ev.Msg("StreamBlocks out of range")
 		return status.Error(codes.OutOfRange, err.Error())
 	case errors.As(err, &encErr):
 		gs.logger.Error().Err(err).Str("network", nw.Label()).Msg("StreamBlocks cannot encode a held header")

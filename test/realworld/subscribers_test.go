@@ -201,7 +201,6 @@ func d3() spec {
 			}()
 		}
 		wg.Wait()
-	}}
 }
 
 // subscriber is one logs subscription of a pool connection.
@@ -364,7 +363,6 @@ func d4() spec {
 			s.violate(s.name, "pod-1: log delivery p99 %s over %d deliveries to %d subscriptions, above 2 bt (%s)", p99.Round(time.Millisecond), len(lat), d4Subs, d4P99)
 		}
 	}}
-}
 
 // wsMsg is one ws JSON-RPC message: an answer (id) or a notification.
 type wsMsg struct {
@@ -508,7 +506,6 @@ func d5() spec {
 		}
 	}}
 }
-
 // D6: a logs subscribe with a malformed filter is refused -32602 before
 // any tap opens; StreamBlocks with fromHash and no fromBlock, or the
 // reverse, ends INVALID_ARGUMENT (§19 D6; §10.3).
@@ -552,7 +549,6 @@ func d6() spec {
 	}}
 }
 
-// D7: server.webSocket.maxSubscriptionsPerConnection is d7Limit. On one
 // connection d7Limit subscribes succeed and the next is refused -32005;
 // another connection still subscribes (§19 D7; §15.2).
 func d7() spec {
@@ -590,7 +586,6 @@ func d7() spec {
 }
 
 // D9: each pod has a newPendingTransactions subscriber; ws-a's pending
-// stream then goes silent with its socket open. No pod resubscribes it
 // before d9Silent; every pod resubscribes it within d9Silent plus slack
 // (erpc_source_resubscribe_total rises, ws-a gets a new subscribe), and
 // subscribers keep getting transactions from ws-b (§19 D9; §12; §15.1

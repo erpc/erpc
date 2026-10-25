@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
+	"github.com/rs/zerolog"
 )
 
 // errNewHeadsLag ends a newHeads tap whose next block has waited longer
@@ -57,9 +59,9 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 			payload, pinned, err := newHeadsEncoding.Of(tracker, blk)
 			if !pinned || !sends.sendable(blk) {
 				return i, nil
-				sm.logger.Warn().Err(err).Uint64("block", blk.Number).Msg("cannot project a held header as newHeads")
 				continue
 			}
+			if err := sends.write(blk, func() error { return wsc.WriteSubscriptionNotification(sub, payload) }); err != nil {
 			if err := sends.write(blk, func() error { return wsc.WriteSubscriptionNotification(sub, payload) }); err != nil {
 			if err := sends.write(blk, func() error { return wsc.WriteSubscriptionNotification(sub, payload) }); err != nil {
 			if err := sends.write(blk, func() error { return wsc.WriteSubscriptionNotification(sub, payload) }); err != nil {
@@ -70,13 +72,17 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 		err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeNewHeads, gated(tracker, nw, lane), nil, indexer.ReadOpts{}, emit)
 		err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeNewHeads, gated(tracker, nw, lane), nil, indexer.ReadOpts{}, emit)
 		err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeNewHeads, gated(tracker, nw, lane), nil, indexer.ReadOpts{}, emit)
-		if !errors.Is(err, indexer.ErrOutOfRange) {
-			sm.logger.Warn().Err(err).Str("clientSubId", sub.ClientSubID).Msg("newHeads tap ended, restarting after the head")
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(newHeadsRestartDelay):
-			}
+		if errors.Is(err, indexer.ErrOutOfRange) {
+			common.TransitionLog(sm.logger, zerolog.InfoLevel, nw.Label(), "out_of_range:ws:newHeads").Err(err).
+				Str("clientSubId", sub.ClientSubID).Msg("newHeads tap out of range, restarting after the head")
+			continue
 		}
-	}
-}
+		sm.logger.Warn().Err(err).Str("clientSubId", sub.ClientSubID).Msg("newHeads tap ended, restarting after the head")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(newHeadsRestartDelay):

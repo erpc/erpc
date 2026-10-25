@@ -14,6 +14,7 @@ import (
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
 	"github.com/erpc/erpc/util"
 	"github.com/gorilla/websocket"
+	"github.com/rs/zerolog"
 )
 
 // ws logs wait bounds (spec §9.2); variables so tests run fast.
@@ -79,6 +80,8 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 	sentHashes := make(map[uint64][32]byte, window+1)
 	emit := func(b indexer.Batch) (int, error) {
 			return 0, ctx.Err()
+	emit := func(b indexer.Batch) (int, error) {
+			return 0, ctx.Err()
 		select {
 			return 0, ctx.Err()
 		case <-ctx.Done():
@@ -88,16 +91,23 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 		// the feed holds only reorgWindow deep.
 		if sent {
 			n := 0
-			for _, blk := range b.Reverted {
+				return 0, errLogsReorgDepth
 				if blk.Number >= sentFrom {
 				return 0, errLogsReorgDepth
 				}
-				return 0, errLogsReorgDepth
+			return 0, errLogsLag
 			if n > window {
 			return 0, errLogsLag
 			}
 			return 0, errLogsLag
 		if len(b.Applied) > 0 && lagging(tracker, b.Applied[0]) {
+			if h, ok := sentHashes[blk.Number]; !ok || h != blk.Hash {
+				common.ViolateInvariant(nw.logger, nw.projectId, nw.Label(), common.InvariantRemovedUnsent).
+					Str("lane", lane).Uint64("block", blk.Number).Hex("blockHash", blk.Hash[:]).Hex("sentHash", h[:]).
+					Msg("logs tap reverts a block it never applied; it sends no removed:true for it")
+				continue
+			}
+			delete(sentHashes, blk.Number)
 			return 0, errLogsLag
 		}
 			if h, ok := sentHashes[blk.Number]; !ok || h != blk.Hash {
@@ -106,26 +116,17 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 					Msg("logs tap reverts a block it never applied; it sends no removed:true for it")
 				continue
 			}
-			delete(sentHashes, blk.Number)
+					return 0, err
 		for _, blk := range b.Reverted {
 			if !sent || blk.Number < sentFrom {
-			if h, ok := sentHashes[blk.Number]; !ok || h != blk.Hash {
-				common.ViolateInvariant(nw.logger, nw.projectId, nw.Label(), common.InvariantRemovedUnsent).
-					Str("lane", lane).Uint64("block", blk.Number).Hex("blockHash", blk.Hash[:]).Hex("sentHash", h[:]).
-					Msg("logs tap reverts a block it never applied; it sends no removed:true for it")
-				continue
-			}
-					return 0, err
-				continue
-			}
 			if h, ok := sentHashes[blk.Number]; !ok || h != blk.Hash {
 		for i, blk := range b.Applied {
 			if !tracker.Pinned(indexer.Cursor{Number: blk.Number, Hash: blk.Hash}) || !sends.sendable(blk) {
 				return i, nil
 			}
 					return 0, err
-			logs := tracker.MatchedLogs(blk, f)
-			for i := len(logs) - 1; i >= 0; i-- {
+				continue
+			}
 			sentHashes[blk.Number] = blk.Hash
 			if blk.Number > uint64(window) {
 				delete(sentHashes, blk.Number-uint64(window)-1)
@@ -133,6 +134,29 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 			logs := tracker.MatchedLogs(blk, f)
 			if len(logs) == 0 {
 				continue
+			}
+			if err := sends.write(blk, func() error {
+				for _, log := range logs {
+					if err := write(log); err != nil {
+						return err
+					}
+				return i, nil
+				return nil
+			}); err != nil {
+				return i, err
+			}
+					return 0, err
+		return len(b.Applied), nil
+			for i := len(logs) - 1; i >= 0; i-- {
+	err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeLogs, gated(logsFeed{tracker}, nw, lane), nil,
+			if blk.Number > uint64(window) {
+				delete(sentHashes, blk.Number-uint64(window)-1)
+			}
+			logs := tracker.MatchedLogs(blk, f)
+			if len(logs) == 0 {
+	common.TransitionLog(sm.logger, zerolog.WarnLevel, nw.Label(), "out_of_range:ws:logs").Err(err).
+		Bool("outOfRange", errors.Is(err, indexer.ErrOutOfRange)).Str("clientSubId", sub.ClientSubID).
+		Msg("logs tap ended, closing the connection with 1013")
 			}
 			if err := sends.write(blk, func() error {
 				for _, log := range logs {

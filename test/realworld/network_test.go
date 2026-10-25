@@ -82,7 +82,6 @@ func n1() spec {
 			s.violate(s.name, "header delivery p99 %s over %d deliveries, above 2 bt (%s), with only %s slow", p99.Round(time.Millisecond), len(lat), n1P99, s.upstream("ws-a"))
 		}
 		s.blocks(25)
-	}}
 }
 
 // headerLatencies are the sorted latencies, from the block's first header
@@ -150,7 +149,6 @@ func n2() spec {
 		}
 		s.blocks(25)
 	}}
-}
 
 // N7: for n7Blocks every non-empty block holds n7Txs transactions, a
 // receipts body of at least n7ReceiptsBytes, while every pod's links to

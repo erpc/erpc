@@ -96,6 +96,10 @@ type spec struct {
 	// probes of blocks no vendor has inside the refusal band cause on each
 	// pod (requireNoInvariantViolation).
 	bandMisses float64
+	// bandMisses is how many retried_missing refusals the scenario's own
+	// probes of blocks no vendor has inside the refusal band cause on each
+	// pod (requireNoInvariantViolation).
+	bandMisses float64
 	// clients opens the scenario's clients; nil opens baseline B's.
 	clients func(s *scenario)
 	body    func(s *scenario)
@@ -346,6 +350,12 @@ func (s *scenario) execute(t *testing.T) {
 		s.clients(s)
 	} else {
 		s.baseClients()
+	}
+	// §19: every scenario asserts the invariants on every new-image pod.
+	for _, p := range s.h.pods {
+		if p.running() && !p.old {
+			s.requireNoInvariantViolation(p.idx, s.bandMisses)
+		}
 	}
 	s.wg.Add(1)
 	go func() { defer s.wg.Done(); s.watchStalls() }()

@@ -173,6 +173,18 @@ func (l *servedTipLane) noteSent(n uint64) {
 			return
 		}
 	}
+	// sent is the highest block this instance's taps of the lane wrote,
+	// on any transport: a Latest below it is latest_regressed.
+	sent atomic.Uint64
+}
+
+func (l *servedTipLane) noteSent(n uint64) {
+	for {
+		cur := l.sent.Load()
+		if n <= cur || l.sent.CompareAndSwap(cur, n) {
+			return
+		}
+	}
 }
 
 func (l *servedTipLane) anchor(finalized bool) *servedTipAnchor {
@@ -515,7 +527,7 @@ func (n *Network) Logger() *zerolog.Logger {
 // (health.Tracker.IsHeadBenched), so one stalled node cannot hold
 // "latest" at its height. A live head always outranks a cap, benched or not:
 // a stalled live node is still closer to the chain than a serving range.
-func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (head int64, rank int, ok bool) {
+func (n *Network) evmTipBallot(sel string, useFinalized bool, q common.ServedTipQuorum, member func(common.Upstream) bool) (pick common.ServedTipPick, live bool, ranks tipRanks) {
 	eu, isEvm := u.(common.EvmUpstream)
 	if !isEvm {
 		return 0, 0, false
@@ -526,7 +538,11 @@ func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (h
 	head, capped := evmTipObservation(eu, finalized)
 	if head <= 0 {
 		return 0, 0, false
-	}
+		if !ok {
+			continue
+		}
+		ranks[rank]++
+		if best >= 0 && rank > best {
 func (n *Network) evmTipBallot(sel string, useFinalized bool, q common.ServedTipQuorum, member func(common.Upstream) bool) (pick common.ServedTipPick, live bool, ranks tipRanks) {
 		rank = 2
 	}
@@ -534,9 +550,15 @@ func (n *Network) evmTipBallot(sel string, useFinalized bool, q common.ServedTip
 		rank++
 	}
 	return head, rank, true
-}
+	return common.PickServedTip(heads, q), best >= 0 && best <= 1, ranks
 
 // evmTipBallot builds the served-tip pick for an axis under quorum q from the
+// tipRanks counts a ballot's voters by tipVoterRank.
+type tipRanks [4]int
+
+// tipRankLabels name the ranks of tipVoterRank on erpc_served_tip_voters.
+var tipRankLabels = [4]string{"live", "live_benched", "capped", "capped_benched"}
+
 // request's tip candidates (EvmRoutableUpstreams) that satisfy member (nil =
 		if !ok {
 			continue
@@ -1505,7 +1527,7 @@ func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []i
 		}
 		if slot <= 0 {
 			continue
-		}
+	pick, live, _ := n.evmTipBallot(sel, useFinalized, common.ServedTipQuorumMajority, member)
 		out = append(out, slot)
 	}
 	return out

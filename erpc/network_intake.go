@@ -732,9 +732,6 @@ func (n *Network) EvmForkDemoted(ids []string) {
 		n.forkDemoted.Store(&ids)
 	}
 	n.headsChanged()
-	if n.logger != nil {
-		n.logger.Info().Strs("upstreams", ids).Msg("minority-fork demotion changed: demoted voters lose their number vote and go last in routing")
-	}
 }
 
 // EvmHashVotersChanged is the network-wide tracker's note that its hash

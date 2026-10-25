@@ -1638,8 +1638,8 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 		u.meta.headBenchRef = 0 // taken below, once the bar excludes it
 		membershipChanged = true
 		telemetry.MetricUpstreamHeadBenchedTotal.WithLabelValues(t.projectId, u.ups.VendorName(), u.ups.NetworkLabel(), u.ups.Id()).Inc()
-		u.ups.Logger().Warn().
-			Str("networkId", u.ups.NetworkId()).
+		common.TransitionLog(u.ups.Logger(), zerolog.WarnLevel, u.ups.NetworkLabel(), "bench").
+			Str("upstreamId", u.ups.Id()).
 			Int64("head", u.meta.evmLatestBlockNumber.Load()).
 			Dur("stallAfter", u.stallAfter).
 			Msg("benched upstream head: it stayed behind peers that kept advancing; it leaves the served-tip ballots and the lag reference until it catches up")
@@ -1667,9 +1667,9 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 		u.meta.headBehindSince = time.Time{}
 		u.meta.headStale = false
 		membershipChanged = true
-		u.ups.Logger().Info().
-			Str("networkId", u.ups.NetworkId()).
-			Int64("head", uHead).
+		common.TransitionLog(u.ups.Logger(), zerolog.InfoLevel, u.ups.NetworkLabel(), "bench_rejoin").
+			Str("upstreamId", u.ups.Id()).
+			Int64("head", uHead).Int64("bar", bar).
 			Msg("upstream head rejoined: it caught up with its non-benched peers")
 	}
 	return membershipChanged

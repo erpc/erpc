@@ -105,7 +105,6 @@ func u2() spec {
 					}
 				}
 			}
-		}}
 }
 
 // U4: http-a, a poll source, has its keep-alive pool black-holed on every
@@ -142,7 +141,6 @@ func u4() spec {
 			stop()
 			s.blocks(25)
 		}}
-}
 
 // U5: every vendor answers 429 (-32005 over ws) for u5Blocks blocks. No
 // upstream is benched, and delivery resumes within u5ResumeBlocks block
@@ -154,7 +152,6 @@ func u5() spec {
 		s.blocks(25)
 	}}
 }
-
 // throttleAll runs U5's fault and checks: every vendor throttled for
 // u5Blocks blocks, which the chain plans as matching blocks so every logs
 // client is owed a log of each; afterwards no upstream was benched, every
@@ -312,7 +309,6 @@ func u6() spec {
 		}}
 }
 
-// U7: http-a, ranked first, answers null for every block by number and by
 // hash, at or below its own head, which keeps moving. A read of a block
 // below Latest that skips cache reads (the tracker's own fetches cache
 // every recent block) reaches http-a, is retried on another upstream and
@@ -370,7 +366,6 @@ func u7() spec {
 }
 
 // U13: http-b reports a head u13Ahead above its own and answers another
-// chain id, with shortCircuitFutureBlocks on. The jump's identity check
 // cordons it: it leaves the ceiling, so a block above Latest inside its
 // claim is short-circuited. Its chain id then matches again; it stays
 // cordoned through the first matching re-check and is uncordoned by the
@@ -382,7 +377,7 @@ func u13() spec {
 		upEvm: map[string]map[string]interface{}{"http-b": {"statePollerInterval": u13PollInterval.String()}},
 		vars:  map[string]time.Duration{"evm.ChainIdCordonRecheck": u13Recheck},
 		body: func(s *scenario) {
-			s.blocks(25)
+	return spec{name: "U13", bound: healthyDelivery, bandMisses: 1,
 			up, hb := s.upstream("http-b"), s.vendors["http-b"]
 			cordon := map[string]string{"upstream": up, "category": "*"}
 			hb.Update(func(f *chainsim.Faults) { f.Ahead, f.WrongChainID = u13Ahead, true })
@@ -425,9 +420,6 @@ func u13() spec {
 
 // requireCeiling probes the tip + u13Probe, a block no vendor has, on
 // every pod: inside the ceiling (in) it is dispatched, at most
-// refusalDispatches times; outside it is short-circuited with no
-// dispatch. Either way it answers null.
-func (s *scenario) requireCeiling(in bool, when string) {
 	for pod := range s.h.pods {
 		n := s.chain.Tip().Number + u13Probe
 		from := time.Now()

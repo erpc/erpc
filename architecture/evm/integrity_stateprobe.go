@@ -14,6 +14,7 @@ import (
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	gethcrypto "github.com/ethereum/go-ethereum/crypto"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -366,6 +367,7 @@ func (p *stateProber) tagHeadLocked(id string, now time.Time, w time.Duration) *
 	if h.state == tagStale && now.Sub(h.lastStale) > tagStateProbeFloor+w {
 		h.state, h.streak = tagNoEvidence, 0
 		p.setTagGauge(id, false)
+		p.logTagState(id, false, h.block, 0)
 	}
 	return h
 }
@@ -376,6 +378,18 @@ func (p *stateProber) setTagGauge(id string, stale bool) {
 		v = 1
 	}
 	telemetry.MetricUpstreamTagStateStale.WithLabelValues(p.projectId(), p.network.Label(), id).Set(v)
+}
+
+// logTagState logs u entering or leaving the tag-state skip (spec §17):
+// its newest sample executed "latest" at block while Latest was latest (0
+// for a readmission with no evidence).
+func (p *stateProber) logTagState(id string, stale bool, block, latest int64) {
+	msg := "tag-state gate readmits upstream for tag requests"
+	if stale {
+		msg = "tag-state gate skips upstream for tag requests: its \"latest\" state is stale"
+	}
+	common.TransitionLog(&log.Logger, zerolog.InfoLevel, p.network.Label(), "tag_state").Str("upstream", id).
+		Bool("stale", stale).Int64("block", block).Int64("latest", latest).Msg(msg)
 }
 
 // recordTagSample folds one sample into u's tag-state head: u executed
@@ -398,6 +412,7 @@ func (p *stateProber) recordTagSample(id string, block, latest int64, sentAt tim
 		return stale
 	}
 	h.block, h.sentAt = block, sentAt
+	was := h.state == tagStale
 	if stale {
 		h.state, h.streak, h.lastStale = tagStale, 0, sentAt
 	} else {
@@ -407,6 +422,9 @@ func (p *stateProber) recordTagSample(id string, block, latest int64, sentAt tim
 		}
 	}
 	p.setTagGauge(id, h.state == tagStale)
+	if now := h.state == tagStale; now != was {
+		p.logTagState(id, now, block, latest)
+	}
 	return stale
 }
 
