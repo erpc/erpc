@@ -2793,7 +2793,7 @@ func observeNarrowView(ctx context.Context, t *ChainTracker, u common.Upstream, 
 	if err != nil || jrr == nil {
 		return
 	}
-	t.observeNarrowAnchors(t.finalizedHead(), u.VendorName(), jrr.GetResultBytes())
+	t.observeNarrowAnchors(t.finalizedHead(), VendorKey(u), jrr.GetResultBytes())
 }
 
 // observeNarrowAnchors records number→hash anchors from vendor's narrow

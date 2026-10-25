@@ -31,11 +31,21 @@ func meetsEvidence(answering, networkVendors int) bool {
 	return answering >= 2 || answering == 1 && networkVendors == 1
 }
 
-// vendorsOf is how many distinct vendors (Upstream.VendorName) ups name.
+// VendorKey is the vendor the evidence quorum counts u under: its
+// VendorName, or, unnamed, its own id, so unnamed nodes never pool into
+// one vendor that a single bad node could speak for.
+func VendorKey(u common.Upstream) string {
+	if v := u.VendorName(); v != "" {
+		return v
+	}
+	return u.Id()
+}
+
+// vendorsOf is how many distinct vendors (VendorKey) ups name.
 func vendorsOf(ups []common.Upstream) int {
 	var seen []string
 	for _, u := range ups {
-		if v := u.VendorName(); !slices.Contains(seen, v) {
+		if v := VendorKey(u); !slices.Contains(seen, v) {
 			seen = append(seen, v)
 		}
 	}

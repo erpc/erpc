@@ -723,10 +723,10 @@ func (t *ChainTracker) runJob(j *receiptsJob) {
 
 // nextVendorUpstream is the first upstream serving method of a vendor that
 // has not mismatched on the job's block this round, and that was not asked
-// yet. An upstream that names no vendor is skipped only once asked.
+// yet.
 func (t *ChainTracker) nextVendorUpstream(j *receiptsJob, method string) string {
 	for _, u := range t.methodUpstreams(method) {
-		if v := u.VendorName(); (v == "" || !j.mismatched[v]) && !j.tried[u.Id()] {
+		if !j.mismatched[VendorKey(u)] && !j.tried[u.Id()] {
 			return u.Id()
 		}
 	}
@@ -737,7 +737,7 @@ func (t *ChainTracker) nextVendorUpstream(j *receiptsJob, method string) string 
 // that has not answered the job's logs this round, not asked yet.
 func (t *ChainTracker) nextAgreeUpstream(j *receiptsJob) string {
 	for _, u := range t.methodUpstreams("eth_getLogs") {
-		if !j.answered(u.VendorName()) && !j.tried[u.Id()] {
+		if !j.answered(VendorKey(u)) && !j.tried[u.Id()] {
 			return u.Id()
 		}
 	}
@@ -943,7 +943,7 @@ func (t *ChainTracker) countBloomMismatch(upstreamId, method string, h *chainHea
 		vendor = u.VendorName()
 	}
 	if s := suspensionsOf(t.network); s != nil {
-		s.recordBloom(h.number, vendor, false)
+		s.recordBloom(h.number, t.vendorOf(upstreamId), false)
 	}
 	telemetry.MetricIntegrityViolation.WithLabelValues(
 		t.projectId(), vendor, t.networkLabel(), upstreamId, strings.ToLower(method), "bloomMatch", "reject", t.finalityLabel(int64(h.number)),
@@ -1024,11 +1024,13 @@ func (t *ChainTracker) upstreamOf(id string) common.Upstream {
 	return nil
 }
 
+// vendorOf is the VendorKey of upstreamId, the id itself when the group
+// no longer holds it.
 func (t *ChainTracker) vendorOf(upstreamId string) string {
 	if u := t.upstreamOf(upstreamId); u != nil {
-		return u.VendorName()
+		return VendorKey(u)
 	}
-	return ""
+	return upstreamId
 }
 
 // networkVendors is how many vendors the group's upstreams name, which the

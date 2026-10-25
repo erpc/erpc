@@ -539,8 +539,9 @@ func (in *networkIntake) vendorsOf(ups []*upstream.Upstream) *upstreamVendors {
 	c := &upstreamVendors{ups: slices.Clone(ups), vendors: make(map[string]string, len(ups))}
 	distinct := make(map[string]struct{}, len(ups))
 	for _, u := range ups {
-		c.vendors[u.Id()] = u.VendorName()
-		distinct[u.VendorName()] = struct{}{}
+		v := evm.VendorKey(u)
+		c.vendors[u.Id()] = v
+		distinct[v] = struct{}{}
 	}
 	c.distinct = len(distinct)
 	in.vendors.Store(c)
@@ -552,7 +553,7 @@ func (c *upstreamVendors) of(ups []*upstream.Upstream) bool {
 		return false
 	}
 	for i, u := range ups {
-		if c.ups[i] != u || c.vendors[u.Id()] != u.VendorName() {
+		if c.ups[i] != u || c.vendors[u.Id()] != evm.VendorKey(u) {
 			return false
 		}
 	}

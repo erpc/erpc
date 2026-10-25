@@ -94,14 +94,14 @@ func runIntegrity(ctx context.Context, n common.Network, u common.Upstream, rq *
 		switch {
 		case !isBlockMethod(r.method) && r.method != "eth_getblockreceipts":
 		case r.header != nil:
-			sus.recordOutcomes(r.header.number, u.VendorName(), res.Outcomes)
+			sus.recordOutcomes(r.header.number, VendorKey(u), res.Outcomes)
 		case isBlockMethod(r.method):
 			if height, ok := responseBlockNumber(ctx, rs, "number"); ok {
-				sus.recordOutcomes(height, u.VendorName(), res.Outcomes)
+				sus.recordOutcomes(height, VendorKey(u), res.Outcomes)
 			}
 		default:
 			if height, ok := responseBlockNumber(ctx, rs, 0, "blockNumber"); ok {
-				sus.recordOutcomes(height, u.VendorName(), res.Outcomes)
+				sus.recordOutcomes(height, VendorKey(u), res.Outcomes)
 			}
 		}
 	}
