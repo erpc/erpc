@@ -909,20 +909,6 @@ func nodeFailedPoll(err error) bool {
 	)
 }
 
-// RefreshLatestBlock Asks, in the background, with a number need.
-func (e *EvmStatePoller) RefreshLatestBlock() {
-	e.AskBackground(common.HeadNeedNumber, common.AskRefresh)
-}
-
-// PollHead Asks, in the background, with a hash need; fork: a fork need.
-func (e *EvmStatePoller) PollHead(fork bool) {
-	need := common.HeadNeedHash
-	if fork {
-		need = common.HeadNeedFork
-	}
-	e.AskBackground(need, common.AskCatchUp)
-}
-
 // RefreshFinalizedBlock starts a background finalized-block poll when the
 // stored one is older than the finalized poll's debounce and no refresh is
 // already in flight; it never blocks.

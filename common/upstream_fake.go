@@ -325,11 +325,13 @@ func (p *FakeEvmStatePoller) ObserveHead(raw json.RawMessage) bool {
 	return true
 }
 
-func (p *FakeEvmStatePoller) RefreshLatestBlock() {}
+func (p *FakeEvmStatePoller) Ask(context.Context, HeadNeed, AskReason) HeadAnswer {
+	return HeadAnswer{Outcome: AskSharedFresh, Block: p.latestBlockNumber}
+}
+
+func (p *FakeEvmStatePoller) AskBackground(HeadNeed, AskReason) {}
 
 func (p *FakeEvmStatePoller) RefreshFinalizedBlock() {}
-
-func (p *FakeEvmStatePoller) PollHead(bool) {}
 
 func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown

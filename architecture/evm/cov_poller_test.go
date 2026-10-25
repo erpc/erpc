@@ -224,12 +224,12 @@ func covPollerHistory(latest, earliest int64) covPollerHandler {
 func covPollerUnsupportedErrors() map[string]error {
 	cause := errors.New("the method eth_getBlockByNumber does not exist/is not available")
 	return map[string]error{
-		"EndpointUnsupported":  common.NewErrEndpointUnsupported(cause),
-		"UpstreamSkipped":      common.NewErrUpstreamRequestSkipped(cause, "u"),
-		"MethodIgnored":        common.NewErrUpstreamMethodIgnored("eth_getBlockByNumber", "u"),
-		"EndpointMissingData":  common.NewErrEndpointMissingData(cause, nil),
-		"ClientSideException":  common.NewErrEndpointClientSideException(cause),
-		"EmptyResult(no err)":  nil,
+		"EndpointUnsupported": common.NewErrEndpointUnsupported(cause),
+		"UpstreamSkipped":     common.NewErrUpstreamRequestSkipped(cause, "u"),
+		"MethodIgnored":       common.NewErrUpstreamMethodIgnored("eth_getBlockByNumber", "u"),
+		"EndpointMissingData": common.NewErrEndpointMissingData(cause, nil),
+		"ClientSideException": common.NewErrEndpointClientSideException(cause),
+		"EmptyResult(no err)": nil,
 	}
 }
 
@@ -821,6 +821,34 @@ func TestCovPoller_Ask(t *testing.T) {
 		assert.Equal(t, common.AskFetched, a.Outcome, "a failed fetch never debounces")
 		assert.Equal(t, int64(5), a.Block)
 	})
+}
+
+// A counter another path keeps fresh meets a number need, but never a hash
+// need: its local fetch still runs, so this instance keeps sampling block
+// time from its own polls (spec §6.7, §6.8).
+func TestCovPoller_AskHashNeedSamplesThroughFreshCounter(t *testing.T) {
+	var mu sync.Mutex
+	head := int64(100)
+	p, up, ctx := covPollerNew(t, "cov-ask-sample", func(string, []interface{}) (*common.NormalizedResponse, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return covPollerBlock(head), nil
+	})
+	const cadence = 20 * time.Millisecond
+	covPollerDebounce(p, cadence)
+	for n := int64(100); n < 110; n++ {
+		time.Sleep(cadence + 5*time.Millisecond)
+		mu.Lock()
+		head = n
+		mu.Unlock()
+		p.latestBlockShared.TryUpdate(ctx, n)
+		calls := up.callCount("eth_getBlockByNumber")
+		require.Equal(t, common.AskSharedFresh, p.Ask(ctx, common.HeadNeedNumber, common.AskRefresh).Outcome)
+		require.Equal(t, calls, up.callCount("eth_getBlockByNumber"), "a fresh counter meets a number need")
+		require.Equal(t, common.AskFetched, p.Ask(ctx, common.HeadNeedHash, common.AskRefresh).Outcome)
+		require.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"), "a fresh counter never meets a hash need")
+	}
+	assert.Equal(t, time.Second, p.tracker.GetNetworkBlockTime(up.NetworkId()), "block time sampled from the local fetches")
 }
 
 // ---------------------------------------------------------------------------

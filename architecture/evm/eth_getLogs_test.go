@@ -1716,7 +1716,7 @@ func TestUpstreamPreForward_eth_getLogs_BlockHeadTolerance(t *testing.T) {
 		// toBlock=101, upstream says not available
 		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(101)).
 			Return(false, nil).
-			Once()
+			Twice() // before and after the Ask
 
 		r := createTestRequest(map[string]interface{}{
 			"fromBlock": "0x65", // 101
@@ -1741,7 +1741,7 @@ func TestUpstreamPreForward_eth_getLogs_BlockHeadTolerance(t *testing.T) {
 		// toBlock=301 (0x12d), upstream says not available
 		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(301)).
 			Return(false, nil).
-			Once()
+			Twice() // before and after the Ask
 
 		r := createTestRequest(map[string]interface{}{
 			"fromBlock": "0x12d",
@@ -1762,10 +1762,14 @@ type fixedPoller struct {
 	finalized int64
 }
 
-func (p *fixedPoller) LatestBlock() int64                     { return p.latest }
-func (p *fixedPoller) RefreshLatestBlock()                    {}
-func (p *fixedPoller) RefreshFinalizedBlock()                 {}
-func (p *fixedPoller) LatestReport() (int64, time.Time, bool) { return 0, time.Time{}, false }
+func (p *fixedPoller) LatestBlock() int64                                   { return p.latest }
+func (p *fixedPoller) PollLatestBlockNumber(context.Context) (int64, error) { return p.latest, nil }
+func (p *fixedPoller) Ask(context.Context, common.HeadNeed, common.AskReason) common.HeadAnswer {
+	return common.HeadAnswer{}
+}
+func (p *fixedPoller) AskBackground(common.HeadNeed, common.AskReason) {}
+func (p *fixedPoller) RefreshFinalizedBlock()                          {}
+func (p *fixedPoller) LatestReport() (int64, time.Time, bool)          { return 0, time.Time{}, false }
 
 func (p *fixedPoller) FinalizedBlock() int64 { return p.finalized }
 

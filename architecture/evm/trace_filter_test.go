@@ -124,7 +124,7 @@ func TestUpstreamPreForward_trace_filter(t *testing.T) {
 		u.On("EvmStatePoller").Return(poller).Maybe()
 		// toBlock=100 is not available
 		u.On("EvmAssertBlockAvailability", mock.Anything, "trace_filter", common.AvailbilityConfidenceBlockHead, false, int64(100)).
-			Return(false, nil).Once()
+			Return(false, nil).Twice() // before and after the Ask
 
 		r := createTraceFilterRequest(map[string]interface{}{
 			"fromBlock": "0x1",

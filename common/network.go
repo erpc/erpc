@@ -43,7 +43,7 @@ type EvmNetwork interface {
 	EvmLaneHead(groupKey, selector string) EvmHead
 	// EvmRefreshHead asks the pollers of the request's head ballot, its
 	// finalized axis when finalized is set, for a fresh head in the
-	// background (see EvmStatePoller.RefreshLatestBlock); it never blocks.
+	// background (an Ask, EvmStatePoller.AskBackground); it never blocks.
 	EvmRefreshHead(ctx context.Context, finalized bool)
 }
 

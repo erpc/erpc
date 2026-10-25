@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -371,22 +372,24 @@ func (n *Network) countedUpstreams(sel string) []*upstream.Upstream {
 	return out
 }
 
-// EvmAskStale Asks each of selector's counted upstreams whose report is
-// 1 bt old or older, waits for those polls, at most 1 bt or until ctx
-// ends, and returns the lane's ceiling and oldest report after them (spec
-// §6.4: no future on a stale report).
+// EvmAskStale Asks, with a number need, each of selector's counted
+// upstreams whose report is 1 bt old or older, waits for their answers, at
+// most 1 bt or until ctx ends, and returns the lane's ceiling and oldest
+// report after them (spec §6.4: no future on a stale report).
 func (n *Network) EvmAskStale(ctx context.Context, selector string) (ceiling int64, oldestReportAt time.Time) {
 	bt := n.blockTimeOrCold()
 	now := time.Now()
-	var stale []common.EvmUpstream
+	var stale []common.EvmStatePoller
 	for _, u := range n.countedUpstreams(selector) {
 		if sp := u.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 			if _, at, _ := sp.LatestReport(); now.Sub(at) >= bt {
-				stale = append(stale, u)
+				stale = append(stale, sp)
 			}
 		}
 	}
-	n.awaitPolls(ctx, n.ask(selector, stale), bt)
+	ctx, cancel := context.WithTimeout(ctx, bt)
+	defer cancel()
+	askAll(ctx, stale, common.AskRefusal)
 	return n.laneCeiling(selector)
 }
 
@@ -395,105 +398,50 @@ func (n *Network) EvmAskStale(ctx context.Context, selector string) (ceiling int
 // (spec §6.4 band): a syncing upstream votes for no Latest yet may hold
 // the block, and the band's retry orders upstreams by these heads.
 func (n *Network) EvmAskBand(selector string, block int64) {
-	n.askBand(selector, block)
-}
-
-// askBand is EvmAskBand, returning a channel per asked upstream, closed
-// when its poll ends.
-func (n *Network) askBand(sel string, block int64) []<-chan struct{} {
-	ups := n.countedUpstreams(sel)
-	targets := make([]common.EvmUpstream, 0, len(ups))
-	for _, voters := range [2]bool{true, false} {
-		for _, u := range ups {
-			if _, _, ok := tipVoterRank(u, false, n.metricsTracker); ok == voters {
-				targets = append(targets, u)
-			}
-		}
-	}
-	return n.askBelow(sel, block, targets)
-}
-
-// askBelow Asks each of targets whose head is below block, in order (ask).
-func (n *Network) askBelow(sel string, block int64, targets []common.EvmUpstream) []<-chan struct{} {
-	below := targets[:0:0]
-	for _, u := range targets {
-		if head, _ := evmTipObservation(u, false); head < block {
-			below = append(below, u)
-		}
-	}
-	return n.ask(sel, below)
-}
-
-// ask polls each of targets, in order: a poll debounced by this
-// instance's last fetch of it, on the network's context bounded by W, so
-// no caller's end fails it for the others. One poll per upstream is in
-// flight at a time; a caller finding one joins it. It returns a channel
-// per asked upstream, closed when its poll ends.
-func (n *Network) ask(sel string, targets []common.EvmUpstream) []<-chan struct{} {
-	parent := n.appCtx
-	if parent == nil {
-		parent = context.Background()
-	}
-	var polls []<-chan struct{}
-	for _, u := range targets {
-		sp := u.EvmStatePoller()
-		if sp == nil || sp.IsObjectNull() {
-			continue
-		}
-		done := make(chan struct{})
-		if cur, inFlight := n.asks.LoadOrStore(u.Id(), (<-chan struct{})(done)); inFlight {
-			polls = append(polls, cur.(<-chan struct{}))
-			continue
-		}
-		polls = append(polls, done)
-		go func() {
-			defer close(done)
-			defer n.asks.Delete(u.Id())
-			defer n.recoverAskPanic(sel)
-			ctx, cancel := context.WithTimeout(parent, health.FreshnessWindow(n.EvmBlockTime()))
-			defer cancel()
-			_, _ = sp.PollLatestBlockNumber(ctx)
-		}()
-	}
-	return polls
-}
-
-func (n *Network) recoverAskPanic(sel string) {
-	if rec := recover(); rec != nil {
-		telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
-			"network-ask",
-			fmt.Sprintf("project:%s network:%s selector:%s", n.projectId, n.networkId, sel),
-			common.ErrorFingerprint(rec),
-		).Inc()
-		n.logger.Error().Interface("panic", rec).Str("selector", sel).Str("stack", string(debug.Stack())).
-			Msg("unexpected panic while asking a lane's heads")
+	for _, sp := range n.bandPollers(selector, block) {
+		sp.AskBackground(common.HeadNeedNumber, common.AskRefusal)
 	}
 }
 
 // awaitBandAsk joins the band's Ask of selector sel's lane for block
-// (askBand) and waits for its polls until they answer, at most W (spec
-// §6.4): a poll over a slow link takes longer than 1 bt, and the band's
-// retry orders upstreams on the heads it brings.
+// (EvmAskBand) and waits for its answers, at most W (spec §6.4): a poll
+// over a slow link takes longer than 1 bt, and the band's retry orders
+// upstreams on the heads it brings.
 func (n *Network) awaitBandAsk(ctx context.Context, sel string, block int64) {
-	n.awaitPolls(ctx, n.askBand(sel, block), health.FreshnessWindow(n.EvmBlockTime()))
+	ctx, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
+	defer cancel()
+	askAll(ctx, n.bandPollers(sel, block), common.AskRefusal)
 }
 
-// awaitPolls waits for polls, at most limit or until ctx ends.
-func (n *Network) awaitPolls(ctx context.Context, polls []<-chan struct{}, limit time.Duration) {
-	if len(polls) == 0 {
-		return
-	}
-	timer := time.NewTimer(limit)
-	defer timer.Stop()
-	for _, p := range polls {
-		select {
-		case <-p:
-		case <-timer.C:
-			return
-		case <-ctx.Done():
-			return
+// bandPollers are the pollers of the upstreams sel's lane ceiling counts
+// whose head is below block, voters first.
+func (n *Network) bandPollers(sel string, block int64) []common.EvmStatePoller {
+	ups := n.countedUpstreams(sel)
+	out := make([]common.EvmStatePoller, 0, len(ups))
+	for _, voters := range [2]bool{true, false} {
+		for _, u := range ups {
+			if _, _, ok := tipVoterRank(u, false, n.metricsTracker); ok != voters {
+				continue
+			}
+			if head, _ := evmTipObservation(u, false); head >= block {
+				continue
+			}
+			if sp := u.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+				out = append(out, sp)
+			}
 		}
 	}
+	return out
+}
+
+// askAll Asks each of pollers with a number need for reason, at once, and
+// waits for every answer or ctx's end.
+func askAll(ctx context.Context, pollers []common.EvmStatePoller, reason common.AskReason) {
+	var wg sync.WaitGroup
+	for _, sp := range pollers {
+		wg.Go(func() { sp.Ask(ctx, common.HeadNeedNumber, reason) })
+	}
+	wg.Wait()
 }
 
 // blockTimeOrCold is the network's block time, or the cold-start one

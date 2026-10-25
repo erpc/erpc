@@ -201,6 +201,8 @@ func (s EvmSyncingState) String() string {
 type EvmStatePoller interface {
 	Bootstrap(ctx context.Context) error
 	Poll(ctx context.Context) error
+	// PollLatestBlockNumber is the latest block number after an Ask with a
+	// number need; the error is the Ask's.
 	PollLatestBlockNumber(ctx context.Context) (int64, error)
 	PollFinalizedBlockNumber(ctx context.Context) (int64, error)
 	PollEarliestBlockNumber(ctx context.Context, probe EvmAvailabilityProbeType, staleness time.Duration) (int64, error)
@@ -222,16 +224,15 @@ type EvmStatePoller interface {
 	// SuggestLatestBlock does for heights. accepted: the counter holds the
 	// header's height now.
 	ObserveHead(raw json.RawMessage) (accepted bool)
-	// RefreshLatestBlock polls the latest block in the background when the
-	// stored head is older than the poll debounce; non-blocking, one in flight.
-	RefreshLatestBlock()
-	// RefreshFinalizedBlock is RefreshLatestBlock for the finalized block,
-	// against the finalized poll's debounce.
+	// Ask is the upstream's head Ask (spec §6.8): single-flight, its
+	// outcome to every waiter; it waits for the answer or ctx's end.
+	Ask(ctx context.Context, need HeadNeed, reason AskReason) HeadAnswer
+	// AskBackground is Ask without waiting for the answer.
+	AskBackground(need HeadNeed, reason AskReason)
+	// RefreshFinalizedBlock polls the finalized block in the background
+	// when the stored one is older than the finalized poll's debounce;
+	// non-blocking, one in flight.
 	RefreshFinalizedBlock()
-	// PollHead polls latest in the background now, for a hash vote, however
-	// fresh the stored head is; non-blocking, one in flight. fork: it asks
-	// a voter whose vote the pins moved off, so its answer is fresh evidence.
-	PollHead(fork bool)
 	SetNetworkConfig(cfg *NetworkConfig)
 	IsObjectNull() bool
 	EarliestBlock(probe EvmAvailabilityProbeType) int64

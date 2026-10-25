@@ -62,9 +62,6 @@ type Network struct {
 	// closed (setHashStale): tried after the rest, before forkDemoted. nil
 	// while none is.
 	hashStale atomic.Pointer[[]string]
-	// asks holds the upstream ids with an Ask poll in flight (askLane):
-	// one per upstream at a time (spec §6.4, §6.8).
-	asks sync.Map
 
 	// servedTipAll is the network-wide lane. A lane publishes its Head and
 	// holds the advance-age watchdog and the regression guard's memory; the
@@ -836,7 +833,7 @@ func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 			if sp := u.(common.EvmUpstream).EvmStatePoller(); finalized {
 				sp.RefreshFinalizedBlock()
 			} else {
-				sp.RefreshLatestBlock()
+				sp.AskBackground(common.HeadNeedNumber, common.AskRefresh)
 			}
 			if need--; need == 0 {
 				return
@@ -848,36 +845,43 @@ func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 // EvmRefreshHeadsBelow Asks, in the background, with a number need, the
 // voters of selector's lane whose head is below block (spec §6.5 catch-up,
 // §6.4 by-hash hold): Latest is their ballot, so no other upstream moves
-// it. It joins an Ask in flight to an upstream, if any.
+// it.
 func (n *Network) EvmRefreshHeadsBelow(selector string, block int64) {
-	var voters []common.EvmUpstream
 	for u := range n.tipCandidates(selector) {
-		if _, _, ok := tipVoterRank(u, false, n.metricsTracker); ok {
-			voters = append(voters, u.(common.EvmUpstream))
+		if _, _, ok := tipVoterRank(u, false, n.metricsTracker); !ok {
+			continue
+		}
+		eu := u.(common.EvmUpstream)
+		if head, _ := evmTipObservation(eu, false); head < block {
+			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+				sp.AskBackground(common.HeadNeedNumber, common.AskCatchUp)
+			}
 		}
 	}
-	n.askBelow(selector, block, voters)
 }
 
-// EvmPollHeads polls the latest header of each upstream in ids for a hash
-// vote: voters that a held vote need waits on (spec §6.5). Every lane's
-// tracker asks at each publish; the network polls each upstream at most
-// once per block time, and each poller keeps one poll in flight.
+// EvmPollHeads Asks, with a hash need, each upstream in ids: voters that a
+// held vote need waits on (spec §6.5). Every lane's tracker asks at each
+// publish; the network Asks each upstream at most once per block time.
 func (n *Network) EvmPollHeads(ids []string) {
-	n.pollHeads(ids, evm.HeaderPolled)
+	n.pollHeads(ids, common.HeadNeedHash, common.AskCatchUp)
 }
 
-// EvmPollForks polls the latest header of each voter in ids, whose vote the
+// EvmPollForks Asks, with a fork need, each voter in ids whose vote the
 // pins moved off (spec §6.3), at most once per block time per upstream as
 // EvmPollHeads. Each answer is its voter's hash vote, whatever it voted
 // before.
 func (n *Network) EvmPollForks(ids []string) {
-	n.pollHeads(ids, evm.HeaderForkPolled)
+	n.pollHeads(ids, common.HeadNeedFork, common.AskRefresh)
 }
 
-func (n *Network) pollHeads(ids []string, kind evm.HeaderKind) {
+func (n *Network) pollHeads(ids []string, need common.HeadNeed, reason common.AskReason) {
 	if n.upstreamsRegistry == nil {
 		return
+	}
+	kind := evm.HeaderPolled
+	if need == common.HeadNeedFork {
+		kind = evm.HeaderForkPolled
 	}
 	every := n.EvmBlockTime()
 	if every <= 0 {
@@ -892,7 +896,7 @@ func (n *Network) pollHeads(ids []string, kind evm.HeaderKind) {
 		if p == nil || p.IsObjectNull() || n.intake != nil && !n.intake.pollDue(u.Id(), kind, now, every) {
 			continue
 		}
-		p.PollHead(kind == evm.HeaderForkPolled)
+		p.AskBackground(need, reason)
 	}
 }
 
@@ -2901,20 +2905,13 @@ func (n *Network) handleBlockSkip(
 	}
 	req.MarkUpstreamCompleted(ctx, u, nil, errToStore)
 
-	// When the block is slightly ahead (retryable), trigger an async poll so the
-	// state poller fetches the latest block number before the next retry fires.
-	// Without this the retry loop sleeps for blockUnavailableDelay but the cached
-	// latestBlock stays stale until the background ticker fires (often 10s+).
-	// PollLatestBlockNumber respects its own debounce interval so concurrent
-	// triggers from multiple upstreams/requests are coalesced safely.
+	// When the block is slightly ahead (retryable), Ask the upstream with a
+	// number need and wait for the answer (spec §6.8), so the retry after
+	// blockUnavailableDelay sees its head; concurrent skips join one fetch.
 	if isRetryable {
 		if eu, ok := u.(common.EvmUpstream); ok {
 			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-				go func() { // #nosec G118 -- fire-and-forget poll; must not share request lifetime
-					pollCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer cancel()
-					_, _ = sp.PollLatestBlockNumber(pollCtx)
-				}()
+				_, _ = sp.PollLatestBlockNumber(ctx)
 			}
 		}
 	}

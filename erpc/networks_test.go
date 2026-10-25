@@ -9577,7 +9577,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			},
 		})
 
-		t.Run("BestEffortFallback_WhenLatestUpdateSlow_ReturnsError", func(t *testing.T) {
+		t.Run("SlowLatestUpdate_RangeCheckWaitsForTheAsk", func(t *testing.T) {
 			util.ResetGock()
 			defer util.ResetGock()
 
@@ -9596,7 +9596,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 					"result":  "0x7b",
 				})
 
-			// Mock latest block with artificial delay so foreground best-effort returns stale
+			// Mock latest block with artificial delay: a slow Ask answer
 			gock.New("http://rpc1.localhost").
 				Post("").
 				Filter(func(request *http.Request) bool {
@@ -9674,12 +9674,21 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			network.PinUpstreamOrderForTest()
 			time.Sleep(50 * time.Millisecond)
 
-			// toBlock is higher than initial latest, but latest update is delayed beyond best-effort budget
+			getLogs := gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				})
+			getLogs.Reply(200).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": []interface{}{}})
+
+			// toBlock is above the head this instance knew; the range check
+			// waits for its Ask's slow answer, which reaches it (spec §6.8).
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x11118899","address":"0x0000000000000000000000000000000000000000"}]}`))
 			resp, err := network.Forward(ctx, req)
-			assert.Error(t, err)
-			assert.Nil(t, resp)
-			assert.Contains(t, err.Error(), "block not found")
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			assert.True(t, getLogs.Mock.Done(), "eth_getLogs reached the upstream")
 		})
 
 		// Re-seed standard poller mocks and rpc2 getLogs mock cleared by the nested subtest

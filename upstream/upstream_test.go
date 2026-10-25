@@ -296,15 +296,17 @@ func (m *mockEvmStatePoller) FinalizedBlock() int64                        { ret
 func (m *mockEvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 	return blockNumber <= m.finalizedBlock, nil
 }
-func (m *mockEvmStatePoller) SuggestFinalizedBlock(blockNumber int64)    {}
-func (m *mockEvmStatePoller) SuggestLatestBlock(blockNumber int64)       {}
-func (m *mockEvmStatePoller) ObserveHead(json.RawMessage) bool           { return false }
-func (m *mockEvmStatePoller) RefreshLatestBlock()                        {}
-func (m *mockEvmStatePoller) RefreshFinalizedBlock()                     {}
-func (m *mockEvmStatePoller) LatestReport() (int64, time.Time, bool)     { return 0, time.Time{}, false }
-func (m *mockEvmStatePoller) PollHead(bool)                              {}
-func (m *mockEvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {}
-func (m *mockEvmStatePoller) IsObjectNull() bool                         { return m.isNull }
+func (m *mockEvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {}
+func (m *mockEvmStatePoller) SuggestLatestBlock(blockNumber int64)    {}
+func (m *mockEvmStatePoller) ObserveHead(json.RawMessage) bool        { return false }
+func (m *mockEvmStatePoller) Ask(context.Context, common.HeadNeed, common.AskReason) common.HeadAnswer {
+	return common.HeadAnswer{}
+}
+func (m *mockEvmStatePoller) AskBackground(common.HeadNeed, common.AskReason) {}
+func (m *mockEvmStatePoller) RefreshFinalizedBlock()                          {}
+func (m *mockEvmStatePoller) LatestReport() (int64, time.Time, bool)          { return 0, time.Time{}, false }
+func (m *mockEvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig)      {}
+func (m *mockEvmStatePoller) IsObjectNull() bool                              { return m.isNull }
 
 func (m *mockEvmStatePoller) EarliestBlock(probe common.EvmAvailabilityProbeType) int64 {
 	return 0
@@ -623,12 +625,14 @@ func (m *mockEvmStatePollerWithUpdate) IsBlockFinalized(blockNumber int64) (bool
 func (m *mockEvmStatePollerWithUpdate) SuggestFinalizedBlock(blockNumber int64) {}
 func (m *mockEvmStatePollerWithUpdate) SuggestLatestBlock(blockNumber int64)    {}
 func (m *mockEvmStatePollerWithUpdate) ObserveHead(json.RawMessage) bool        { return false }
-func (m *mockEvmStatePollerWithUpdate) RefreshLatestBlock()                     {}
-func (m *mockEvmStatePollerWithUpdate) RefreshFinalizedBlock()                  {}
+func (m *mockEvmStatePollerWithUpdate) Ask(context.Context, common.HeadNeed, common.AskReason) common.HeadAnswer {
+	return common.HeadAnswer{}
+}
+func (m *mockEvmStatePollerWithUpdate) AskBackground(common.HeadNeed, common.AskReason) {}
+func (m *mockEvmStatePollerWithUpdate) RefreshFinalizedBlock()                          {}
 func (m *mockEvmStatePollerWithUpdate) LatestReport() (int64, time.Time, bool) {
 	return 0, time.Time{}, false
 }
-func (m *mockEvmStatePollerWithUpdate) PollHead(bool)                              {}
 func (m *mockEvmStatePollerWithUpdate) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerWithUpdate) IsObjectNull() bool                         { return false }
 
