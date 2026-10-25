@@ -43,35 +43,33 @@ func (e wsWriteError) Error() string { return e.err.Error() }
 // blocks above the connection's lane's Latest.
 func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane string) {
 	tracker := nw.chainTracker
-	var feed *cutFeed
-	emit := func(b indexer.Batch) error {
+	sends := newTapSends(nw, lane, "ws", indexer.SubTypeNewHeads)
+	emit := func(b indexer.Batch) (int, error) {
 		select {
 		case <-opened:
 		case <-ctx.Done():
-			return ctx.Err()
+			return 0, ctx.Err()
 		}
 		if len(b.Reverted) == 0 && len(b.Applied) > 0 && lagging(tracker, b.Applied[0]) {
-			return errNewHeadsLag
+			return 0, errNewHeadsLag
 		}
-		for _, blk := range b.Applied {
+		for i, blk := range b.Applied {
 			payload, pinned, err := newHeadsEncoding.Of(tracker, blk)
-			if !pinned {
-				feed.cut(blk)
-				return nil
+			if !pinned || !sends.sendable(blk) {
+				return i, nil
 			}
 			if err != nil {
 				sm.logger.Warn().Err(err).Uint64("block", blk.Number).Msg("cannot project a held header as newHeads")
 				continue
 			}
-			if err := wsc.WriteSubscriptionNotification(sub, payload); err != nil {
-				return wsWriteError{err}
+			if err := sends.write(blk, func() error { return wsc.WriteSubscriptionNotification(sub, payload) }); err != nil {
+				return i, wsWriteError{err}
 			}
 		}
-		return nil
+		return len(b.Applied), nil
 	}
 	for {
-		feed = &cutFeed{ChainFeed: gated(tracker, nw, lane)}
-		err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeNewHeads, feed, nil, indexer.ReadOpts{}, emit)
+		err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeNewHeads, gated(tracker, nw, lane), nil, indexer.ReadOpts{}, emit)
 		var writeErr wsWriteError
 		if ctx.Err() != nil || errors.As(err, &writeErr) {
 			return

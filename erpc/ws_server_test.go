@@ -1886,6 +1886,24 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 			return notes > 0 && float64(notes) == testutil.ToFloat64(sent)-sentBefore && float64(size) == testutil.ToFloat64(sentBytes)-bytesBefore
 		}, 5*time.Second, 20*time.Millisecond, "logs notifications sent and their bytes equal what the clients received")
 		t.Logf("planned blocks %d..%d, head %d", from, from+uint64(len(plan))-1, tip.Number)
+		requireInvariantsHeld(t, "test_ws", "evm:123")
+
+		// A 3-block reorg: each client drops the reverted logs it holds
+		// (removed:true) and gets the new branch's; no invariant breaks.
+		reorged := s.reorg(3)
+		s.blocks(3)
+		require.Eventually(t, func() bool {
+			for _, cl := range s.openLogs() {
+				cl.mu.Lock()
+				d := cl.logsDiffLocked(s, from, reorged.Number)
+				cl.mu.Unlock()
+				if d != "" {
+					return false
+				}
+			}
+			return true
+		}, 10*time.Second, 20*time.Millisecond, "both clients hold the canonical logs through the reorg")
+		requireInvariantsHeld(t, "test_ws", "evm:123")
 	})
 
 	// A cold instance pins ws-a's heads while the other sources, held,
@@ -2827,6 +2845,7 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 	openTaps := func() float64 { return testutil.ToFloat64(telemetry.MetricTaps.WithLabelValues(tapLabels...)) }
 	lagged := telemetry.MetricTapOutOfRangeTotal.WithLabelValues(append(tapLabels, indexer.OutOfRangeLag)...)
 	require.Eventually(t, func() bool { return openTaps() == 1 }, 5*time.Second, 10*time.Millisecond, "one tap per subscription")
+	requireInvariantsHeld(t, "test_ws", "evm:123")
 
 	// The client applies each head as a geth client does: a number it
 	// already has replaces that number and every number above it.
@@ -2879,6 +2898,7 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 	for n := first; n <= last; n++ {
 		require.Equal(t, chain.Hash(n), client[n], "the client's block %d is the vendors' canonical one", n)
 	}
+	requireInvariantsHeld(t, "test_ws", "evm:123")
 
 	// The sources stall, then return more than reorgWindow (default 32)
 	// blocks ahead: the tracker re-anchors there and fills back down to the

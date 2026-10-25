@@ -208,6 +208,13 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	}
 	l.head.Store(&h)
 	if h.Latest != old.Latest {
+		// Latest 0 is unknown, not a served number: eth_blockNumber then
+		// errors.
+		if sent := l.sent.Load(); h.Latest > 0 && h.Latest < old.Latest && uint64(h.Latest) < sent {
+			common.ViolateInvariant(n.logger, n.projectId, n.Label(), common.InvariantLatestRegressed).
+				Str("lane", l.label).Int64("latest", h.Latest).Int64("previous", old.Latest).Uint64("sent", sent).
+				Msg("lane's Latest fell below a block this instance sent")
+		}
 		l.reached.note(h.Latest, time.Now(), n.latestReachedKept())
 		if c := l.moved.Swap(nil); c != nil {
 			close(*c)
@@ -249,7 +256,7 @@ func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool) int64 {
 	if n.cfg != nil {
 		q = n.cfg.Evm.ServedTipQuorum()
 	}
-	pick, live := n.evmTipBallot(sel, finalized, q, nil)
+	pick, live, ranks := n.evmTipBallot(sel, finalized, q, nil)
 	tip := pick.Tip
 
 	// Regression guard: "latest" cannot drop far below the corroborated live
@@ -279,6 +286,16 @@ func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool) int64 {
 			anchor.observe(tip)
 		}
 		n.observeServedTipMetrics(axis, l.label, tip, pick.Freshest, anchor.age())
+		if !finalized {
+			for rank, voters := range ranks {
+				telemetry.GaugeHandle(telemetry.MetricServedTipVoters, n.projectId, n.Label(), l.label, tipRankLabels[rank]).Set(float64(voters))
+			}
+			quorum := 0
+			if pick.Inputs > 0 {
+				quorum = q.Of(pick.Inputs)
+			}
+			telemetry.GaugeHandle(telemetry.MetricServedTipQuorum, n.projectId, n.Label(), l.label).Set(float64(quorum))
+		}
 	}
 	return tip
 }

@@ -265,6 +265,30 @@ var (
 		Help:      "Taps ended because their cursor went out of range, by reason (below_window, fork_left_window, cursor_unknown, reorg_depth, receipts_timeout, lag).",
 	}, []string{"project", "network", "transport", "kind", "reason"})
 
+	MetricChainTrackerInvariantViolationsTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "chain_tracker_invariant_violations_total",
+		Help:      "Chain-tracking invariant violations, by invariant; every one but final_hash_changed (a followed majority revert of a finalized block) must stay 0.",
+	}, []string{"project", "network", "invariant"})
+
+	MetricChainTrackerConfirmLagBlocks = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "chain_tracker_confirm_lag_blocks",
+		Help:      "Blocks between the network-wide chain tracker's head (highest pin) and its confirmed head.",
+	}, []string{"project", "network"})
+
+	MetricServedTipVoters = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "served_tip_voters",
+		Help:      "Upstreams on a lane's latest served-tip ballot, by rank (live, live_benched, capped, capped_benched); only the best rank votes.",
+	}, []string{"project", "network", "lane", "rank"})
+
+	MetricServedTipQuorum = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "served_tip_quorum",
+		Help:      "Effective quorum of a lane's latest served-tip pick: the configured quorum capped at its voters.",
+	}, []string{"project", "network", "lane"})
+
 	// MetricNetworkServedTipBlockNumber is the block number the network actually
 	// advertises/serves as the tip for a block tag (axis=latest|finalized): the
 	// freshest block at least servedTip.quorum eligible upstreams already have
@@ -591,6 +615,16 @@ var (
 		Help:      "Depth (pinned blocks reverted) of each reorg a chain tracker followed.",
 		Buckets:   []float64{1, 2, 3, 5, 8, 13, 21, 34, 64, 128, 256},
 	}, []string{"project", "network", "group"})
+
+	// MetricTapDeliverySeconds observes, per block a tap writes, the time
+	// from when the block became deliverable (it reached the confirmed
+	// head, or the logs head for a logs tap) to its write.
+	MetricTapDeliverySeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "tap_delivery_seconds",
+		Help:      "Seconds from a block's confirmed-head change to a tap's write of it.",
+		Buckets:   []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60},
+	}, []string{"transport", "kind"})
 
 	// MetricIntegrityCheck counts EVERY integrity check evaluation by outcome:
 	// pass (ran, no violation), skip (could not evaluate — unmodeled field /

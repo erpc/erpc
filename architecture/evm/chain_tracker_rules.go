@@ -769,9 +769,9 @@ func (t *ChainTracker) follow(ctx context.Context) {
 		t.mb.put(trackerMsg{kind: msgTick})
 	}()
 	for ctx.Err() == nil {
-		err := taps.RunChain(ctx, key, "integrity", "follow", t, nil, indexer.ReadOpts{}, func(b indexer.Batch) error {
+		err := taps.RunChain(ctx, key, "integrity", "follow", t, nil, indexer.ReadOpts{}, func(b indexer.Batch) (int, error) {
 			if len(b.Applied) == 0 {
-				return nil
+				return 0, nil
 			}
 			if p := stateProberFor(t.network); p != nil {
 				p.onNewHead(int64(b.Next.Number))
@@ -782,7 +782,7 @@ func (t *ChainTracker) follow(ctx context.Context) {
 						Set(float64(max(0, served-int64(b.Next.Number))))
 				}
 			}
-			return nil
+			return len(b.Applied), nil
 		})
 		if ctx.Err() != nil || errors.Is(err, indexer.ErrOutOfRange) {
 			continue

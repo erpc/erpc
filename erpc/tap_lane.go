@@ -101,16 +101,27 @@ func gated(f indexer.ChainFeed, nw *Network, selector string) indexer.ChainFeed 
 	return laneFeed{ChainFeed: f, nw: nw, selector: selector}
 }
 
+// laneLatest is the Latest of selector sel, whose lane is l: nil for a
+// selector that forms none, picked statelessly.
+func (n *Network) laneLatest(l *servedTipLane, sel string) uint64 {
+	if l != nil {
+		return uint64(max(l.published().Latest, 0))
+	}
+	return uint64(max(n.computeHead(nil, sel).Latest, 0))
+}
+
 // latest is the lane's Latest and a channel closed once it may have moved:
 // the lane's own change, or, for a selector that forms no lane, the next
 // pass over the network's lanes.
 func (f laneFeed) latest() (uint64, <-chan struct{}) {
-	if l := f.nw.laneFor(f.selector); l != nil {
-		moved := l.latestMoved()
-		return uint64(max(l.published().Latest, 0)), moved
+	l := f.nw.laneFor(f.selector)
+	var moved <-chan struct{}
+	if l != nil {
+		moved = l.latestMoved()
+	} else {
+		moved = f.nw.headsComputed()
 	}
-	moved := f.nw.headsComputed()
-	return uint64(max(f.nw.computeHead(nil, f.selector).Latest, 0)), moved
+	return f.nw.laneLatest(l, f.selector), moved
 }
 
 // Read returns the next batch from c up to the lane's Latest: Applied

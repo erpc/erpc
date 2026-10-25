@@ -19,6 +19,7 @@ import (
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -1331,15 +1332,12 @@ func (t *ChainTracker) apply(path []*node) {
 	s.logs = t.logsHeadOf(s)
 	t.unstamp(pub.pins, s)
 	t.stamp(s)
-	if t.selector == "" && pub.head() != head {
-		telemetry.GaugeHandle(telemetry.MetricNetworkSubscriptionLastHeadTimestamp, t.projectId(), t.networkLabel()).SetToCurrentTime()
-	}
 	if pub.head() != head && !head.emptyTxs {
 		t.txHeadAt.Store(time.Now().UnixNano())
 	}
 	old := t.state.Swap(s)
 	close(old.changed)
-	t.sampleConfirmed(s)
+	t.published(old, s, true)
 
 	t.recordMove(pub.pins, path)
 	t.evict()
@@ -1384,13 +1382,14 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 			Observe(float64(reverted))
 	}
 	var span heightSpan
+	var oldLo, newLo *chainHeader
 	replaced := func(hs []*chainHeader) {
 		for _, h := range hs {
 			if p := pathAt(h.number); p != nil && p.hash != h.hash {
-				if span.hi == 0 {
-					span.lo = int64(h.number)
+				if span.hi == 0 || int64(h.number) < span.lo {
+					span.lo, oldLo, newLo = int64(h.number), h, p
 				}
-				span.lo, span.hi = min(span.lo, int64(h.number)), max(span.hi, int64(h.number))
+				span.hi = max(span.hi, int64(h.number))
 			}
 		}
 	}
@@ -1410,8 +1409,15 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	}
 	t.unlinkedPins = unlinked
 	if fin := t.finalizedHead(); span.hi > 0 && fin > 0 && span.lo <= fin {
-		log.Error().Str("network", t.networkLabel()).Str("group", t.group).Str("invariant", "final_hash_changed").
-			Int64("revertedFrom", span.lo).Int64("finalized", fin).Uint64("head", head.number).
+		var ev *zerolog.Event
+		if t.selector == "" {
+			ev = common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantFinalHashChanged)
+		} else {
+			ev = common.TransitionLog(&log.Logger, zerolog.ErrorLevel, t.networkLabel(), "invariant_"+string(common.InvariantFinalHashChanged)+":"+t.group).
+				Str("invariant", string(common.InvariantFinalHashChanged))
+		}
+		ev.Str("group", t.group).Int64("revertedFrom", span.lo).Str("oldHash", hexHash(oldLo.hash)).Str("newHash", hexHash(newLo.hash)).
+			Int64("finalized", fin).Uint64("head", head.number).Str("headHash", hexHash(head.hash)).
 			Msg("chain tracker followed a majority branch that reverts a finalized block")
 		t.addRevertedFinal(heightSpan{lo: span.lo, hi: min(span.hi, fin)})
 	}
@@ -1577,8 +1583,38 @@ func (t *ChainTracker) publish() {
 	s.confirmed, s.backing = b.confirmed(), b
 	s.logs = t.logsHeadOf(s)
 	t.stamp(s)
-	close(t.state.Swap(s).changed)
+	old := t.state.Swap(s)
+	close(old.changed)
+	t.published(old, s, true)
+}
+
+// published records the signals of a state swap from old to s (spec §15.3,
+// §17) and feeds the block time. pinsMoved: s holds new pins, checked for
+// parentHash linkage.
+func (t *ChainTracker) published(old, s *feedState, pinsMoved bool) {
+	if pinsMoved {
+		for i := 1; i < len(s.pins); i++ {
+			if below, p := s.pins[i-1], s.pins[i]; p.parentHash != below.hash {
+				common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantPinsUnlinked).
+					Str("group", t.group).Uint64("block", p.number).Str("blockHash", hexHash(p.hash)).
+					Str("parentHash", hexHash(p.parentHash)).Uint64("below", below.number).Str("belowHash", hexHash(below.hash)).
+					Msg("chain tracker published pins that are not one parentHash chain")
+				break
+			}
+		}
+	}
 	t.sampleConfirmed(s)
+	if t.selector != "" {
+		return
+	}
+	lag := 0
+	if len(s.pins) > 0 {
+		lag = len(s.pins) - 1 - s.confirmed
+	}
+	telemetry.GaugeHandle(telemetry.MetricChainTrackerConfirmLagBlocks, t.projectId(), t.networkLabel()).Set(float64(lag))
+	if c := s.confirmedHead(); c != nil && c != old.confirmedHead() {
+		telemetry.GaugeHandle(telemetry.MetricNetworkSubscriptionLastHeadTimestamp, t.projectId(), t.networkLabel()).SetToCurrentTime()
+	}
 }
 
 // sampleConfirmed feeds each new confirmed head of the network-wide tracker
@@ -1873,8 +1909,9 @@ func (t *ChainTracker) gateSend() {
 	s.changed = make(chan struct{})
 	s.logs = t.logsHeadOf(s)
 	t.stamp(s)
-	close(t.state.Swap(s).changed)
-	t.sampleConfirmed(s)
+	old := t.state.Swap(s)
+	close(old.changed)
+	t.published(old, s, false)
 }
 
 // reset empties the tracker; a pending settle reports undecided.
@@ -3016,6 +3053,7 @@ func StartChainTrackers(ctx context.Context, n common.Network) *ChainTracker {
 		nt = v.(*networkTrackers)
 	} else {
 		context.AfterFunc(ctx, func() { chainTrackers.CompareAndDelete(n, nt) })
+		common.ExportInvariants(n.ProjectId(), n.Label())
 	}
 	t := nt.get(n, "", "", "")
 	nt.suspend.tracker.CompareAndSwap(nil, t)

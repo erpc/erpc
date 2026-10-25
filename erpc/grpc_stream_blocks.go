@@ -78,23 +78,23 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 	sender := newStreamSender(stream)
 	defer sender.stop()
 	tracker := nw.chainTracker
-	feed := &cutFeed{ChainFeed: waitBoundedFeed{ChainTracker: tracker, wait: streamBlocksReadWait.Load(), lastVote: nw.newestHashVoteAt}}
+	feed := waitBoundedFeed{ChainTracker: tracker, wait: streamBlocksReadWait.Load(), lastVote: nw.newestHashVoteAt}
+	sends := newTapSends(nw, "", "grpc", indexer.SubTypeNewHeads)
 	sendWait := streamBlocksSendWait.Load()
-	emit := func(b indexer.Batch) error {
-		for _, blk := range b.Applied {
+	emit := func(b indexer.Batch) (int, error) {
+		for i, blk := range b.Applied {
 			resp, pinned, err := streamBlocksEncoding.Of(tracker, blk)
-			if !pinned {
-				feed.cut(blk)
-				return nil
+			if !pinned || !sends.sendable(blk) {
+				return i, nil
 			}
 			if err != nil {
-				return streamEncodeError{blk.Number, err}
+				return i, streamEncodeError{blk.Number, err}
 			}
-			if err := sender.send(resp, sendWait); err != nil {
-				return err
+			if err := sends.write(blk, func() error { return sender.send(resp, sendWait) }); err != nil {
+				return i, err
 			}
 		}
-		return nil
+		return len(b.Applied), nil
 	}
 	done := make(chan error, 1)
 	if !nw.bg.Go(func() {
