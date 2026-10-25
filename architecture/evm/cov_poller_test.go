@@ -904,6 +904,14 @@ func TestCovPoller_LargeRollbackIsReportedToTracker(t *testing.T) {
 	finalizedGauge := telemetry.MetricUpstreamBlockHeadLargeRollback.WithLabelValues("test", up.VendorName(), up.NetworkLabel(), up.Id(), "finalized")
 	assert.Equal(t, float64(7_000), promUtil.ToFloat64(latestGauge))
 	assert.Equal(t, float64(7_000), promUtil.ToFloat64(finalizedGauge))
+
+	// The rollback write (spec §14): a 50-block rewind, inside the noise
+	// tolerance, moves the counter and the tracker's head, and is no
+	// rollback misbehaviour.
+	p.RewindLatestBlock(2_950)
+	assert.Equal(t, int64(2_950), p.LatestBlock())
+	assert.Equal(t, float64(7_000), promUtil.ToFloat64(latestGauge), "a rewind records no large rollback")
+	assert.Equal(t, float64(2_950), promUtil.ToFloat64(telemetry.MetricUpstreamLatestBlockNumber.WithLabelValues("test", up.VendorName(), up.NetworkLabel(), up.Id())))
 }
 
 func TestCovPoller_SetNetworkConfig(t *testing.T) {

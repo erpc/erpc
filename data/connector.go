@@ -70,6 +70,10 @@ type CounterInt64State struct {
 	Value     int64  `json:"v"`
 	UpdatedAt int64  `json:"t"`
 	UpdatedBy string `json:"b,omitempty"`
+	// Rewind marks a head counter's hash-proven rollback write (spec §14):
+	// a lower value newer than the receiver's is taken whatever the drop,
+	// and counted against no upstream. Older readers ignore it.
+	Rewind bool `json:"r,omitempty"`
 }
 
 // Reasons of erpc_shared_counter_remote_rejected_total.

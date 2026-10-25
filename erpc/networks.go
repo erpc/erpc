@@ -877,6 +877,24 @@ func (n *Network) EvmPollForks(ids []string) {
 	n.pollHeads(ids, common.HeadNeedFork, common.AskRefresh)
 }
 
+// EvmRewindHeads is the network-wide tracker's rollback write (spec §14):
+// votes holds, per upstream id, the height of its own hash vote on the
+// tracker's new branch; each counter above it is rewound to it.
+func (n *Network) EvmRewindHeads(votes map[string]int64) {
+	if n.upstreamsRegistry == nil {
+		return
+	}
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
+		bn, ok := votes[u.Id()]
+		if !ok {
+			continue
+		}
+		if p := u.EvmStatePoller(); p != nil && !p.IsObjectNull() {
+			p.RewindLatestBlock(bn)
+		}
+	}
+}
+
 func (n *Network) pollHeads(ids []string, need common.HeadNeed, reason common.AskReason) {
 	if n.upstreamsRegistry == nil {
 		return

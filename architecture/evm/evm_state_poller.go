@@ -235,6 +235,9 @@ func NewEvmStatePoller(
 		e.tracker.SetFinalizedBlockNumber(e.upstream, value)
 	})
 
+	lbs.OnRewind(func(value int64) {
+		e.tracker.RewindLatestBlockNumber(e.upstream, value)
+	})
 	lbs.OnLargeRollback(func(currentVal, newVal int64) {
 		e.tracker.RecordBlockHeadLargeRollback(e.upstream, "latest", currentVal, newVal)
 	})
@@ -1040,6 +1043,20 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64, at time.Time) {
 		Int64("previousValue", currentValue).
 		Int64("newValue", newValue).
 		Msg("latest block suggestion applied")
+}
+
+// RewindLatestBlock is the rollback write (spec §14): the counter takes
+// blockNumber, published with a rewind mark, and no misbehaviour is
+// counted against the upstream.
+func (e *EvmStatePoller) RewindLatestBlock(blockNumber int64) {
+	if e.IsObjectNull() || e.latestBlockShared == nil {
+		return
+	}
+	from := e.latestBlockShared.GetValue()
+	if e.latestBlockShared.Rewind(blockNumber) {
+		e.logger.Info().Int64("from", from).Int64("to", blockNumber).
+			Msg("rewound the latest block counter to the upstream's hash vote on the tracker's new branch")
+	}
 }
 
 // ObserveHead is the per-upstream part of intake for a source header, its

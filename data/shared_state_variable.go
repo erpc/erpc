@@ -28,6 +28,12 @@ type CounterInt64SharedVariable interface {
 	TryUpdate(ctx context.Context, newValue int64, at time.Time) int64
 	OnValue(callback func(int64))
 	OnLargeRollback(callback func(currentVal, newVal int64))
+	// Rewind lowers a head counter to newValue, a hash-proven height (spec
+	// §14 rollback write): any drop, no OnLargeRollback, published with a
+	// rewind mark. It reports whether the value moved.
+	Rewind(newValue int64) bool
+	// OnRewind fires on a rewind, local or remote, before OnValue.
+	OnRewind(callback func(newVal int64))
 	// ReportAt is when the evidence for the counter's newest report was
 	// taken, by this instance's clock (spec §6.4, §14): a fetch's or a
 	// refresh's send time, since its answer can show no later value than
@@ -109,6 +115,9 @@ const (
 	dropNone dropKind = iota
 	// dropRollback: a rollback larger than ignoreRollbackOf was applied.
 	dropRollback
+	// dropRewind: a rollback write (Rewind), local or remote; the state
+	// carries the rewind mark.
+	dropRewind
 )
 
 type counterInt64 struct {
@@ -130,6 +139,7 @@ type counterInt64 struct {
 	valueCallbacks         []func(int64)
 	ignoreRollbackOf       int64
 	largeRollbackCallbacks []func(localVal, newVal int64)
+	rewindCallbacks        []func(newVal int64)
 	callbackMu             sync.RWMutex
 	// bgPushInProgress dedupes best-effort remote reconciliation/push operations.
 	// It MUST NOT be held while waiting on updateMu; remote sync should never block request flow.
@@ -281,6 +291,17 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 			Int64("newVal", newVal).
 			Msg("rejected non-positive value for a head counter (remote)")
 		return false
+	}
+
+	// A rewind-marked drop newer than the local state is another instance's
+	// rollback write: taken whatever its size, never pushed back, counted
+	// against no upstream.
+	if st.Rewind && c.ignoreRollbackOf > 0 {
+		if !newer {
+			countRejected(rejectStaleTimestamp)
+			return false
+		}
+		return c.applyRewind(source, currentValue, newVal, st.UpdatedAt)
 	}
 
 	// Rollback handling: only accept rollbacks where gap exceeds the threshold.
@@ -613,6 +634,63 @@ func (c *counterInt64) OnLargeRollback(cb func(currentVal, newVal int64)) {
 	c.largeRollbackCallbacks = append(c.largeRollbackCallbacks, cb)
 }
 
+func (c *counterInt64) OnRewind(cb func(newVal int64)) {
+	c.callbackMu.Lock()
+	defer c.callbackMu.Unlock()
+	c.rewindCallbacks = append(c.rewindCallbacks, cb)
+}
+
+func (c *counterInt64) Rewind(newValue int64) bool {
+	current := c.value.Load()
+	if c.ignoreRollbackOf <= 0 || newValue <= 0 || newValue >= current {
+		return false
+	}
+	if !c.applyRewind(UpdateSourceRewind, current, newValue, 0) {
+		return false
+	}
+	c.scheduleBackgroundPushCurrent()
+	return true
+}
+
+// applyRewind moves the value down to newVal as a rewind; remoteTs is the
+// remote state's order key, 0 for a local rewind, which takes a fresh one.
+// OnRewind fires before OnValue, so the health tracker holds the rewound
+// head when OnValue's readers wake.
+func (c *counterInt64) applyRewind(source string, currentValue, newVal, remoteTs int64) bool {
+	c.setDrop(dropRewind)
+	for {
+		if c.value.CompareAndSwap(currentValue, newVal) {
+			if remoteTs > 0 {
+				c.updateUpdatedAtMs(remoteTs)
+			} else {
+				c.allocateUpdatedAtMs()
+			}
+			c.markReported(time.Now())
+			c.registry.logger.Debug().
+				Str("source", source).
+				Str("key", c.key).
+				Int64("from", currentValue).
+				Int64("to", newVal).
+				Msg("counter rewound")
+			c.callbackMu.RLock()
+			callbacks := make([]func(int64), len(c.rewindCallbacks))
+			copy(callbacks, c.rewindCallbacks)
+			c.callbackMu.RUnlock()
+			for _, cb := range callbacks {
+				if cb != nil {
+					cb(newVal)
+				}
+			}
+			c.triggerValueCallback(newVal)
+			return true
+		}
+		currentValue = c.value.Load()
+		if newVal >= currentValue {
+			return false
+		}
+	}
+}
+
 func (c *counterInt64) markFreshAttempt() {
 	c.attemptAtUnixMs.Store(time.Now().UnixMilli())
 }
@@ -695,10 +773,12 @@ func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
 }
 
 func (c *counterInt64) localState() CounterInt64State {
+	v := c.value.Load()
 	return CounterInt64State{
-		Value:     c.value.Load(),
+		Value:     v,
 		UpdatedAt: c.updatedAtMs(),
 		UpdatedBy: c.registry.instanceId,
+		Rewind:    dropKind(c.drop.Load()) == dropRewind,
 	}
 }
 

@@ -838,7 +838,7 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 		key:              "test",
 		ignoreRollbackOf: 1024,
 	}
-	counter.value.Store(5)                                                      // Initialize with value 5
+	counter.value.Store(5)                                                     // Initialize with value 5
 	counter.reportAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli()) // force stale
 
 	var calls int32
@@ -2158,4 +2158,84 @@ func TestCounterInt64_PubsubHeadCounterIsMaxOnly(t *testing.T) {
 
 func rejectedTotal(reason string) float64 {
 	return testutil.ToFloat64(telemetry.MetricSharedCounterRemoteRejectedTotal.WithLabelValues(reason))
+}
+
+// The rollback write (spec §14): a local rewind takes any drop without
+// OnLargeRollback and reaches remote with the rewind mark, over an older
+// higher remote; another instance takes a marked drop newer than its own
+// state, while an unmarked one stays noise and an older marked one stale.
+func TestCounterInt64_RewindMark(t *testing.T) {
+	t.Run("local rewind is published marked and outranks the older higher remote", func(t *testing.T) {
+		registry, connector, _ := setupTest("my-dev")
+		lock := &MockLock{}
+		lock.On("Unlock", mock.Anything).Return(nil)
+		connector.On("Lock", mock.Anything, "rw", mock.Anything).Return(lock, nil)
+		connector.On("PublishCounterInt64", mock.Anything, "rw", mock.Anything).Return(nil)
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "rw", "value", nil).
+			Return([]byte(`{"v":5000,"t":1,"b":"peer"}`), nil)
+		var stored atomic.Value
+		connector.On("Set", mock.Anything, "rw", "value", mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) { stored.Store(string(args.Get(3).([]byte))) }).Return(nil)
+
+		counter := &counterInt64{registry: registry, key: "rw", ignoreRollbackOf: 1024}
+		counter.value.Store(5000)
+		counter.updatedAtUnixMs.Store(1)
+		var events []string
+		var mu sync.Mutex
+		record := func(e string) { mu.Lock(); events = append(events, e); mu.Unlock() }
+		counter.OnRewind(func(v int64) { record(fmt.Sprintf("rewind %d", v)) })
+		counter.OnValue(func(v int64) { record(fmt.Sprintf("value %d", v)) })
+		counter.OnLargeRollback(func(int64, int64) { record("large rollback") })
+
+		assert.False(t, counter.Rewind(5000), "not below the counter")
+		assert.True(t, counter.Rewind(4950))
+		assert.Equal(t, int64(4950), counter.GetValue())
+		assert.Eventually(t, func() bool { s, _ := stored.Load().(string); return s != "" }, time.Second, 5*time.Millisecond)
+		var st CounterInt64State
+		assert.NoError(t, common.SonicCfg.Unmarshal([]byte(stored.Load().(string)), &st))
+		assert.Equal(t, int64(4950), st.Value)
+		assert.True(t, st.Rewind, "the stored state carries the rewind mark")
+		assert.Greater(t, st.UpdatedAt, int64(1))
+		assert.Equal(t, int64(4950), counter.GetValue(), "the older higher remote does not undo the rewind")
+		mu.Lock()
+		assert.Equal(t, []string{"rewind 4950", "value 4950"}, events)
+		mu.Unlock()
+	})
+
+	t.Run("remote marked drop newer than local is taken; unmarked is noise; older is stale", func(t *testing.T) {
+		counter := &counterInt64{
+			ignoreRollbackOf: 1024,
+			registry:         &sharedStateRegistry{logger: &log.Logger, instanceId: "test"},
+		}
+		counter.value.Store(5000)
+		now := time.Now().UnixMilli()
+		counter.updatedAtUnixMs.Store(now)
+		var rewinds, rollbacks atomic.Int32
+		counter.OnRewind(func(int64) { rewinds.Add(1) })
+		counter.OnLargeRollback(func(int64, int64) { rollbacks.Add(1) })
+
+		small, stale := rejectedTotal(rejectSmallRollback), rejectedTotal(rejectStaleTimestamp)
+		assert.False(t, counter.processNewState(UpdateSourceRemoteSync, CounterInt64State{Value: 4950, UpdatedAt: now + 100_000}))
+		assert.Equal(t, int64(5000), counter.GetValue(), "an unmarked small drop is noise")
+		assert.Equal(t, 1.0, rejectedTotal(rejectSmallRollback)-small)
+
+		assert.False(t, counter.processNewState(UpdateSourceRemoteSync, CounterInt64State{Value: 4950, UpdatedAt: now + 50_000, Rewind: true}))
+		assert.Equal(t, int64(5000), counter.GetValue(), "a marked drop older than the local state is stale")
+		assert.Equal(t, 1.0, rejectedTotal(rejectStaleTimestamp)-stale)
+
+		small = rejectedTotal(rejectSmallRollback)
+		assert.True(t, counter.processNewState(UpdateSourceRemoteSync, CounterInt64State{Value: 4950, UpdatedAt: now + 300_000, Rewind: true}))
+		assert.Equal(t, int64(4950), counter.GetValue())
+		assert.Equal(t, now+300_000, counter.updatedAtMs(), "no push-back: the order key is the rewind's")
+		assert.Equal(t, int32(1), rewinds.Load())
+		assert.Equal(t, int32(0), rollbacks.Load(), "a rewind counts against no upstream")
+		assert.Equal(t, 0.0, rejectedTotal(rejectSmallRollback)-small)
+		assert.True(t, counter.localState().Rewind)
+
+		assert.False(t, counter.processNewState(UpdateSourceRemoteSync, CounterInt64State{Value: 5000, UpdatedAt: now + 250_000}),
+			"a higher state stamped before the rewind is the branch it left")
+		assert.True(t, counter.processNewState(UpdateSourceRemoteSync, CounterInt64State{Value: 4951, UpdatedAt: now + 400_000}),
+			"a higher state stamped after the rewind is taken")
+		assert.False(t, counter.localState().Rewind, "a rise clears the mark")
+	})
 }

@@ -1383,6 +1383,9 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 		telemetry.MetricChainTrackerReorgDepth.WithLabelValues(t.projectId(), t.networkLabel(), t.group).
 			Observe(float64(reverted))
 	}
+	if t.selector == "" && (fork < 0 || head.number < old[len(old)-1].number) {
+		t.rewindVoters(pathAt)
+	}
 	var span heightSpan
 	replaced := func(hs []*chainHeader) {
 		for _, h := range hs {
@@ -1414,6 +1417,22 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 			Int64("revertedFrom", span.lo).Int64("finalized", fin).Uint64("head", head.number).
 			Msg("chain tracker followed a majority branch that reverts a finalized block")
 		t.addRevertedFinal(heightSpan{lo: span.lo, hi: min(span.hi, fin)})
+	}
+}
+
+// rewindVoters is the rollback write (spec §14), on a re-anchor or a move
+// to a lower head: each voter whose own hash vote is on the new pins has
+// its latest counter lowered to that vote's height where the counter is
+// above it, so Latest follows the rewound chain on every instance.
+func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) {
+	votes := make(map[string]int64, len(t.votes))
+	for u, nd := range t.votes {
+		if p := pathAt(nd.h.number); p != nil && p.hash == nd.h.hash {
+			votes[u] = int64(nd.h.number)
+		}
+	}
+	if r, ok := t.network.(interface{ EvmRewindHeads(map[string]int64) }); ok && len(votes) > 0 {
+		t.callNetwork("rewind", func() { r.EvmRewindHeads(votes) })
 	}
 }
 

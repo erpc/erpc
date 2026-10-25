@@ -2014,6 +2014,18 @@ func (t *Tracker) reportAges(ups common.Upstream, m *NetworkMetadata, now time.T
 }
 
 func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64, blockTimestamp int64) {
+	t.setLatestBlockNumber(upstream, blockNumber, blockTimestamp, false)
+}
+
+// RewindLatestBlockNumber lowers upstream's head to blockNumber, a
+// hash-proven rollback write (spec §14), whatever the drop: the
+// tolerance SetLatestBlockNumber keeps for lagging reports does not apply,
+// and it is no misbehaviour.
+func (t *Tracker) RewindLatestBlockNumber(upstream common.Upstream, blockNumber int64) {
+	t.setLatestBlockNumber(upstream, blockNumber, 0, true)
+}
+
+func (t *Tracker) setLatestBlockNumber(upstream common.Upstream, blockNumber int64, blockTimestamp int64, rewind bool) {
 	id := upstream.Id()
 	net := upstream.NetworkId()
 	netLabel := upstream.NetworkLabel()
@@ -2039,12 +2051,13 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		g := t.getLatestBlockGauge(t.projectId, vendor, netLabel, id)
 		g.Set(float64(blockNumber))
 		headChanged = true
-	} else if oldUpsVal-blockNumber > common.DefaultToleratedBlockHeadRollback {
-		// The upstream reports a head far behind the one stored for it: treat it
-		// as a correction (a deep reorg, or a previously recorded bogus sample),
-		// mirroring the shared-state counter semantics. Max-only storage would
-		// pin the bad sample — and every lag-based routing decision derived
-		// from it — until process restart.
+	} else if blockNumber < oldUpsVal && (rewind || oldUpsVal-blockNumber > common.DefaultToleratedBlockHeadRollback) {
+		// The upstream reports a head far behind the one stored for it, or a
+		// rewind proves a lower one: treat it as a correction (a deep reorg,
+		// or a previously recorded bogus sample), mirroring the shared-state
+		// counter semantics. Max-only storage would pin the bad sample — and
+		// every lag-based routing decision derived from it — until process
+		// restart.
 		upsMeta.evmLatestBlockNumber.Store(blockNumber)
 		upsMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
 		g := t.getLatestBlockGauge(t.projectId, vendor, netLabel, id)
@@ -2052,7 +2065,8 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		lg.Warn().
 			Int64("previousValue", oldUpsVal).
 			Int64("newValue", blockNumber).
-			Msg("applied large latest block rollback for upstream in tracker")
+			Bool("rewind", rewind).
+			Msg("applied latest block rollback for upstream in tracker")
 		upsMeta.headTsFloor = 0
 		headChanged = true
 	} else if blockNumber == oldUpsVal && blockTimestamp > 0 && upsMeta.evmLatestBlockTimestamp.Load() == 0 {
