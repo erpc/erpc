@@ -281,8 +281,9 @@ func receiptsRoot(tag string, txs [][]logSpec) Hash {
 }
 
 // header builds a block whose header hashes to its hash (blockHashRecompute)
-// and whose logsBloom is the OR of its receipts' blooms.
-func header(chainID int64, parent *Block, number uint64, ts uint64, tag string, txs [][]logSpec, pad int, baseFee int64) (Hash, json.RawMessage) {
+// and whose logsBloom is the OR of its receipts' blooms, or with offBloom
+// and transactions that OR with one more value added (OffHeaderBloom).
+func header(chainID int64, parent *Block, number uint64, ts uint64, tag string, txs [][]logSpec, pad int, baseFee int64, offBloom bool) (Hash, json.RawMessage) {
 	var ph Hash
 	if parent != nil {
 		ph = parent.Hash
@@ -290,6 +291,9 @@ func header(chainID int64, parent *Block, number uint64, ts uint64, tag string, 
 	var bloom gethtypes.Bloom
 	for i, tx := range txs {
 		addTxBloom(&bloom, tag, i, tx)
+	}
+	if offBloom && len(txs) > 0 {
+		bloom.Add([]byte("chainsim/header-bloom-off"))
 	}
 	hdr := &gethtypes.Header{
 		ParentHash:  ph,

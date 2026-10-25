@@ -169,15 +169,15 @@ func u9Trunc(vendors int) spec {
 	}}
 }
 
-// U9-bloom1, U9-bloom2: a logsBloom that is set but not the header's
-// (bloomMatch, §11) in receipts from vendor-a, then from both vendors,
-// integrity on. With one vendor, receipts are refetched from vendor-b,
-// violations count bloomMatch on vendor-a only, and the bloom check is
-// never suspended (§6.10). With both, the check is suspended after
-// bloomSuspendRun blocks in a row and the blocks are fetched again, so
-// every client's logs equal the canonical logs; after bloomRearmRun
-// matching blocks it is re-armed: vendor-a's wrong bloom alone counts
-// against vendor-a again, with no new suspension (§6.9).
+// U9-bloom1, U9-bloom2: receipts whose logsBloom is set but not the
+// header's (bloomMatch, §11) from vendor-a, integrity on: refetched from
+// vendor-b, violations count bloomMatch on vendor-a only, and the bloom
+// check is never suspended (§6.10). U9-bloom2 first mints a chain whose
+// header bloom is not its receipts' OR, on every vendor: the check is
+// suspended after bloomSuspendRun blocks in a row and the blocks are
+// fetched again, so every client's logs equal the canonical logs; after
+// bloomRearmRun matching blocks it is re-armed, and vendor-a's wrong bloom
+// alone counts against vendor-a again, with no new suspension (§6.9).
 func u9Bloom(vendors int) spec {
 	bloom := func(f *chainsim.Faults, on bool) { f.OffBloom = on }
 	check := map[string]string{"check": bloomCheck}
@@ -197,10 +197,12 @@ func u9Bloom(vendors int) spec {
 		s.slowVendorB()
 		s.blocks(25)
 		susp := s.suspensions(bloomCheck)
-		s.fault(append(vendorA, vendorB...), bloom, 3*bloomSuspendRun)
+		s.chain.OffHeaderBloom(true)
+		s.blocks(3 * bloomSuspendRun)
+		s.chain.OffHeaderBloom(false)
 		for pod, n := range s.suspensions(bloomCheck) {
 			if n <= susp[pod] {
-				s.violate(s.name, "pod-%d: erpc_integrity_check_suspended_total{check=%s} stayed %v while both vendors served a wrong bloom for %d blocks", pod+1, bloomCheck, n, 3*bloomSuspendRun)
+				s.violate(s.name, "pod-%d: erpc_integrity_check_suspended_total{check=%s} stayed %v while the chain's header bloom was not its receipts' for %d blocks", pod+1, bloomCheck, n, 3*bloomSuspendRun)
 			}
 		}
 		s.blocks(3 * bloomRearmRun)

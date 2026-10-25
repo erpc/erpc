@@ -157,6 +157,16 @@ func (h *chainHeader) ready(logs bool) time.Time {
 	return time.Unix(0, at)
 }
 
+// logsReady is ready(true) for a logs Read that needs none of h's
+// receipts: the logs-head stamp, or now while there is none, never set by
+// that Read, since a tap that needs the receipts may still wait on them.
+func (h *chainHeader) logsReady() time.Time {
+	if at := h.logsAt.Load(); at != 0 {
+		return time.Unix(0, at)
+	}
+	return time.Now()
+}
+
 // hashRecomputes reports whether the header's JSON hashes to its hash
 // (blockHashRecompute); computed once, on first use.
 func (h *chainHeader) hashRecomputes() bool {

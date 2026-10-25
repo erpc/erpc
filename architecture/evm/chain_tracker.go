@@ -1415,28 +1415,38 @@ func newFeedState(pins []*node) *feedState {
 // stamp marks each pin that first stands at or below s's confirmed head
 // or logs head with the time it got there (Block.Ready). Stamped pins are
 // one run that grows at both ends: new heads above it, fill below it, and
-// a revert unstamps what it removes (unstamp). Only the network-wide
-// tracker stamps: trackers share parsed headers, and taps read only that
-// one.
+// a revert unstamps what it removes (unstamp). A hole, a pin whose
+// receipts the feed needs and does not hold, is never logs-stamped, even
+// where the logs head passed it below the window: the Read that fetches
+// its receipts stamps it at delivery, so the receipts wait never counts as
+// a tap's lag. Only the network-wide tracker stamps: trackers share parsed
+// headers, and taps read only that one.
 func (t *ChainTracker) stamp(s *feedState) {
 	if t.selector != "" || s.confirmed < 0 {
 		return
 	}
 	now := time.Now().UnixNano()
-	stampRun(s.pins[:s.confirmed+1], now, func(h *chainHeader) *atomic.Int64 { return &h.confirmedAt })
+	stampRun(s.pins[:s.confirmed+1], now, func(*chainHeader) bool { return false }, func(h *chainHeader) *atomic.Int64 { return &h.confirmedAt })
 	if l := s.pinAt(s.logs.Number); l != nil && l.hash == s.logs.Hash {
-		stampRun(s.pins[:l.number-s.base+1], now, func(h *chainHeader) *atomic.Int64 { return &h.logsAt })
+		hole := func(h *chainHeader) bool { return t.feedNeeds(h) && t.heldReceiptsOf(h.hash) == nil }
+		stampRun(s.pins[:l.number-s.base+1], now, hole, func(h *chainHeader) *atomic.Int64 { return &h.logsAt })
 	}
 }
 
 // stampRun stamps the pins of ps above the highest stamped one and below
-// the lowest.
-func stampRun(ps []*chainHeader, now int64, at func(*chainHeader) *atomic.Int64) {
+// the lowest, passing over the pins skip names. A Read may stamp a pin at
+// the same time (chainHeader.ready); the first stamp stays.
+func stampRun(ps []*chainHeader, now int64, skip func(*chainHeader) bool, at func(*chainHeader) *atomic.Int64) {
 	i := len(ps) - 1
-	for i >= 0 && at(ps[i]).CompareAndSwap(0, now) {
-		i--
+	for ; i >= 0 && at(ps[i]).Load() == 0; i-- {
+		if !skip(ps[i]) {
+			at(ps[i]).CompareAndSwap(0, now)
+		}
 	}
-	for j := 0; j < i && at(ps[j]).CompareAndSwap(0, now); j++ {
+	for j := 0; j < i && at(ps[j]).Load() == 0; j++ {
+		if !skip(ps[j]) {
+			at(ps[j]).CompareAndSwap(0, now)
+		}
 	}
 }
 
@@ -2045,11 +2055,27 @@ func (t *ChainTracker) readAt(s *feedState, tr *treeState, c indexer.Cursor, rr 
 // applied is the pins from number from to the confirmed head, at most
 // reorgWindow of them, ending before the first block whose receipts the tap
 // needs and lacks; empty while from is above the confirmed head. from is at
-// least the lowest pin.
+// least the lowest pin. A block is deliverable to a logs tap no sooner than
+// the blocks before it, back to the last whose receipts the tap needed, so
+// its Ready is at least theirs.
 func (t *ChainTracker) applied(s *feedState, from uint64, rr *readReceipts) indexer.Batch {
 	head := s.confirmedHead()
 	if head == nil || from > head.number {
 		return indexer.Batch{}
+	}
+	logs := rr.o.MayMatch != nil
+	var prev time.Time
+	for n := from - 1; logs && n+uint64(t.window) >= from; n-- {
+		c := s.pinAt(n)
+		if c == nil {
+			break
+		}
+		if at := c.logsAt.Load(); at != 0 && time.Unix(0, at).After(prev) {
+			prev = time.Unix(0, at)
+		}
+		if n == 0 || t.tapNeeds(rr.o, c) {
+			break
+		}
 	}
 	last := min(head.number, from+uint64(t.window)-1)
 	b := indexer.Batch{Applied: make([]indexer.Block, 0, last-from+1)}
@@ -2062,7 +2088,20 @@ func (t *ChainTracker) applied(s *feedState, from uint64, rr *readReceipts) inde
 			}
 			break
 		}
-		blk.Ready = p.ready(rr.o.MayMatch != nil)
+		// Only a tap that read p's receipts stamps when they became
+		// deliverable, so another tap waiting on them is not measured from
+		// this one's pass.
+		if !logs {
+			blk.Ready = p.ready(false)
+		} else if t.tapNeeds(rr.o, p) {
+			blk.Ready = p.ready(true)
+		} else {
+			blk.Ready = p.logsReady()
+		}
+		if blk.Ready.Before(prev) {
+			blk.Ready = prev
+		}
+		prev = blk.Ready
 		b.Applied = append(b.Applied, blk)
 	}
 	if len(b.Applied) == 0 {
