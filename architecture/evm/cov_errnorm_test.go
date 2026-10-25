@@ -216,6 +216,10 @@ func TestCovErrNorm_MessageClassification(t *testing.T) {
 			wantCode: common.ErrCodeEndpointCapacityExceeded, wantNormalized: common.JsonRpcErrorCapacityExceeded, wantRetryNw: true},
 		{name: "429 status with generic message", status: 429, code: -32000, message: "slow down",
 			wantCode: common.ErrCodeEndpointCapacityExceeded, wantNormalized: common.JsonRpcErrorCapacityExceeded, wantRetryNw: true},
+		{name: "-32005 with HTTP 200 is capacity", status: 200, code: -32005, message: "request refused",
+			wantCode: common.ErrCodeEndpointCapacityExceeded, wantNormalized: common.JsonRpcErrorCapacityExceeded, wantRetryNw: true},
+		{name: "compute units with HTTP 200 is capacity", status: 200, code: -32000, message: "compute units per second capacity used up",
+			wantCode: common.ErrCodeEndpointCapacityExceeded, wantNormalized: common.JsonRpcErrorCapacityExceeded, wantRetryNw: true},
 
 		// Block tags.
 		{name: "pending block not available", code: -32000, message: "pending block is not available",

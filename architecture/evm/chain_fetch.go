@@ -545,16 +545,16 @@ func (s *fetchScheduler) endCapacityBackoffsLocked() {
 }
 
 // halveLowestBusyLocked halves the share of the lowest class with work,
-// never below one slot. Sweeps that fail together halve once: only a sweep
-// that started after the last halving (seen) halves, and only while the
-// class fills at least half its share, so the share is what binds.
+// never below one slot, whatever its fetches in flight. Sweeps that fail
+// together halve once: only a sweep that started after the last halving
+// (seen) halves.
 func (s *fetchScheduler) halveLowestBusyLocked(seen uint64) {
 	if seen != s.halvings {
 		return
 	}
 	for c := fetchClasses - 1; ; c-- {
 		if s.inflight[c] > 0 || len(s.queues[c]) > 0 {
-			if s.share[c] > 1 && 2*s.inflight[c] >= s.share[c] {
+			if s.share[c] > 1 {
 				s.share[c] = max(1, s.share[c]/2)
 				s.halvings++
 				s.setSlotsGaugeLocked(c)

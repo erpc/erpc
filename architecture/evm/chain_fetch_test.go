@@ -60,8 +60,9 @@ func (n *capacityNet) SweepUpstreams(ctx context.Context, req *common.Normalized
 	return resp, check(resp)
 }
 
-// A vendor's answer ends every capacity backoff at once and keeps other
-// failures' backoff (spec §8, §19 U5).
+// A sweep refused for capacity everywhere halves the lowest busy class
+// with one fetch in flight; a vendor's answer ends every capacity backoff
+// at once and keeps other failures' backoff (spec §8, §19 U5, U6).
 func TestFetchScheduler_CapacityRefusals(t *testing.T) {
 	min0 := fetchBackoffMin
 	fetchBackoffMin = time.Minute
@@ -72,6 +73,11 @@ func TestFetchScheduler_CapacityRefusals(t *testing.T) {
 	spec := func(class fetchClass, param string) fetchSpec {
 		return fetchSpec{class: class, kind: "header", method: "eth_getBlockByNumber", params: `["` + param + `",false]`,
 			decode: func(b []byte) (any, error) { return string(b), nil }}
+	}
+	share := func(c fetchClass) int {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.share[c]
 	}
 	fetch := func(class fetchClass, param string, within time.Duration) (fetchResult, bool) {
 		ctx, cancel := context.WithTimeout(t.Context(), within)
@@ -85,6 +91,8 @@ func TestFetchScheduler_CapacityRefusals(t *testing.T) {
 	res, done := fetch(classFill, "0x1", time.Second)
 	require.True(t, done)
 	require.Equal(t, "capacity", fetchOutcome(res.err))
+	require.Equal(t, fetchSlots/2, share(classFill), "one refused sweep in flight halves its class")
+	require.Equal(t, fetchSlots, share(classTipReceipts), "a busier class keeps its share")
 
 	res, done = fetch(classHead, "0x3", time.Second)
 	require.True(t, done)
