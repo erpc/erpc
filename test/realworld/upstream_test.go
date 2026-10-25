@@ -54,10 +54,11 @@ const (
 
 // U2: every pod's connections to vendor-a (ws-a, and http-a, ranked first
 // and a poll source) get an RST half way into an answer: first into each
-// header answer, then into each receipts body. Each fetch fails over to
-// another upstream, no header of vendor-a is voted malformed, and every
-// client's logs equal the canonical logs (§19 U2; §5.3 check 0; §8 one
-// sweep).
+// receipts body, then into each header answer, with time to recover
+// between, since the header cuts demote vendor-a in routing. Each fetch
+// fails over to another upstream, no header of vendor-a is voted
+// malformed, and every client's logs equal the canonical logs (§19 U2;
+// §5.3 check 0; §8 one sweep).
 func u2() spec {
 	return spec{name: "U2", bound: healthyDelivery,
 		network: map[string]interface{}{"selectionPolicy": rankFirst("http-a")},
@@ -65,8 +66,8 @@ func u2() spec {
 		body: func(s *scenario) {
 			s.blocks(25)
 			for _, cut := range []struct{ what, method string }{
-				{"a header answer", "eth_getBlockByNumber"},
 				{"a receipts body", "eth_getBlockReceipts"},
+				{"a header answer", "eth_getBlockByNumber"},
 			} {
 				resets := make([]int64, len(s.h.pods))
 				for i, p := range s.h.pods {
@@ -89,6 +90,7 @@ func u2() spec {
 						s.logf("pod-%d: %d connections to vendor-a reset half way into %s", i+1, n-resets[i], cut.what)
 					}
 				}
+				s.blocks(25)
 			}
 			s.blocks(25)
 			for pod := range s.h.pods {

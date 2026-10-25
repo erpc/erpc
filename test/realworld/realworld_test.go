@@ -108,7 +108,8 @@ func selectedPhases() ([]phaseSpec, error) {
 			if !ok {
 				return nil, fmt.Errorf("REALWORLD_ALONE names %q, no scenario", name)
 			}
-			out = append(out, phaseSpec{"alone-" + name, 9401 + int64(i), []spec{sp}})
+			// The index keeps a scenario named twice in its own run dir.
+			out = append(out, phaseSpec{fmt.Sprintf("alone-%d-%s", i+1, name), 9401 + int64(i), []spec{sp}})
 		}
 		return out, nil
 	}
