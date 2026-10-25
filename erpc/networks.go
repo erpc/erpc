@@ -3201,11 +3201,25 @@ func eligibleLane(bounds []upstreamBlockBounds, bn int64) []string {
 // cache derive its own key (architecture/svm.RequestKey); multiplexing needs
 // the identical guarantee because it hands the leader's response to followers
 // verbatim.
+//
+// The Use-Upstream directive is part of the key, so identical requests share
+// only when they route alike: a state probe pinned to one upstream never
+// shares with a client request routed elsewhere.
 func (n *Network) multiplexKey(ctx context.Context, req *common.NormalizedRequest) (string, error) {
+	var key string
+	var err error
 	if n.cfg != nil && n.cfg.Architecture == common.ArchitectureSvm {
-		return svm.RequestKey(ctx, req)
+		key, err = svm.RequestKey(ctx, req)
+	} else {
+		key, err = req.CacheHash()
 	}
-	return req.CacheHash()
+	if err != nil || key == "" {
+		return key, err
+	}
+	if d := req.Directives(); d != nil && d.UseUpstream != "" {
+		key += "|use-upstream:" + d.UseUpstream
+	}
+	return key, nil
 }
 
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
@@ -3216,12 +3230,6 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 	// A non-retryable write (e.g. creating a filter) must reach an upstream
 	// once per call, so it is never shared with a concurrent identical call.
 	if method, _ := req.Method(); evm.IsNonRetryableWriteMethod(method) || svm.IsNonRetryableWriteMethod(method) {
-		return nil, nil, nil
-	}
-	// A request pinned to one upstream (Use-Upstream, the state prober's
-	// probes) asks that upstream: it never takes another's answer, nor
-	// gives its own to requests routed elsewhere.
-	if d := req.Directives(); d != nil && d.UseUpstream != "" {
 		return nil, nil, nil
 	}
 

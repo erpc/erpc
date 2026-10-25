@@ -743,7 +743,7 @@ func (p *stateProber) probeProof(ctx context.Context, u common.Upstream, n int64
 // internal so the integrity engine does not recurse into validating the
 // probe's own response, timeout-only: no upstream retry, hedge or breaker,
 // and with interpolation skipped, so a "latest" reaches u as the tag. A
-// Use-Upstream request is never multiplexed, so the answer is u's own.
+// Use-Upstream request shares a multiplexer only with requests pinned to u.
 func (p *stateProber) forwardTo(ctx context.Context, u common.Upstream, body string) (string, error) {
 	req := common.NewNormalizedRequest([]byte(body))
 	req.SetDirectives(&common.RequestDirectives{

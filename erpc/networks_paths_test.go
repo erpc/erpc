@@ -613,6 +613,23 @@ func TestNetworksPaths_MultiplexKey(t *testing.T) {
 	ek2, err := evmNet.multiplexKey(ctx, upper)
 	require.NoError(t, err)
 	assert.Equal(t, ek1, ek2, "EVM keeps the case-insensitive cache hash")
+
+	call := func(use string) *common.NormalizedRequest {
+		r := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xca11bde05977b3631167028862be2a173976ca11","data":"0x42cbb15c"},"latest"]}`))
+		if use != "" {
+			r.SetDirectives(&common.RequestDirectives{UseUpstream: use})
+		}
+		return r
+	}
+	keyOf := func(r *common.NormalizedRequest) string {
+		k, err := evmNet.multiplexKey(ctx, r)
+		require.NoError(t, err)
+		return k
+	}
+	routed, pinnedA, pinnedA2, pinnedB := keyOf(call("")), keyOf(call("rpc-a")), keyOf(call("rpc-a")), keyOf(call("rpc-b"))
+	assert.NotEqual(t, routed, pinnedA, "a request pinned to one upstream never shares with one routed by policy")
+	assert.NotEqual(t, pinnedA, pinnedB, "requests pinned to different upstreams never share")
+	assert.Equal(t, pinnedA, pinnedA2, "requests pinned alike still share")
 }
 
 func TestNetworksPaths_Multiplexing(t *testing.T) {
