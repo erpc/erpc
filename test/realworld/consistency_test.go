@@ -92,6 +92,7 @@ func p2() spec {
 	return spec{name: "P2", cache: true, bound: healthyDelivery, body: func(s *scenario) {
 		reorgLoop(s, nil)
 		s.requireDelivered(false)
+	}}
 }
 
 // P3: C1's reorgs, cache on. After the run, eth_getBlockByHash of every
@@ -102,6 +103,7 @@ func p3() spec {
 		reorgLoop(s, nil)
 		s.requireDelivered(true)
 	}}
+}
 
 // P4: C1's reorgs, and U9's receipts faults on vendor-a in turn before
 // each, integrity on. After the run, eth_getLogs(N, N) with each logs
@@ -123,6 +125,7 @@ func p4() spec {
 		s.requireLogsServed()
 	}}
 }
+
 // requireLogsServed: for each logs client and each block N it holds live
 // logs of, eth_getLogs(N, N) with its filter on every pod returns exactly
 // those logs (§19 P4).

@@ -51,6 +51,7 @@ func c2() spec {
 				s.violate(s.name, "pod-%d: %v taps out of range on a %d-deep reorg, inside reorgWindow %d", pod+1, v-oor[pod], reorgWindow-1, reorgWindow)
 			}
 		}
+	}}
 }
 
 // C6: the chain makes no block for c6Halt while every client stays
@@ -107,6 +108,7 @@ func c6() spec {
 		s.logf("blocks again after %s", time.Since(at).Round(time.Second))
 		s.blocks(25)
 	}}
+}
 
 // C8: U5 and C1 at twice the rate: 100 ms blocks, every vendor answering
 // 429 for u5Blocks, then 1–3 deep reorgs. The results are theirs: nobody
@@ -125,6 +127,7 @@ func c8() spec {
 		s.requireReorgsTold()
 	}}
 }
+
 // C10: c10Blocks empty blocks in a row. No vendor gets a receipts call for
 // any of them, and every header client gets every one (§19 C10; §11: an
 // empty bloom needs no receipts).
@@ -160,6 +163,7 @@ func c10() spec {
 	}}
 }
 
+// requireGot: every header client received every block of bs.
 func (s *scenario) requireGot(bs []*chainsim.Block) {
 	var cs []*clientBase
 	for _, c := range s.heads {
@@ -229,6 +233,7 @@ func c11() spec {
 }
 
 // C14: vendor-b (ws-b, http-b), 2 of 4 voters, moves to a branch at the
+// canonical heights that links to no block of the chain, for c14Blocks.
 // The canonical chain stays: no client gets a block of that branch, and
 // Latest never stalls or leaves the canonical heights (§19 C14; §6.5).
 func c14() spec {

@@ -60,6 +60,11 @@ func x7() spec {
 		}
 		cancel()
 		wg.Wait()
+		s.blocks(25)
+	}}
+}
+
+// image names the image pod runs.
 func (s *scenario) image(pod int) string {
 	if s.h.pods[pod].old {
 		return "old"
@@ -140,8 +145,7 @@ next:
 func (s *scenario) requireNoInvariantViolation(pod int, bandMisses float64) {
 	ss, err := s.h.pods[pod].scrape()
 	if err != nil {
-// each a retried miss by definition (§6.4, §17, §19). The harness runs it
-// on every new-image pod after each scenario.
+		s.violate(s.name, "pod-%d: scrape: %v", pod+1, err)
 		return
 	}
 	exported := false
@@ -166,13 +170,24 @@ func (s *scenario) requireNoInvariantViolation(pod int, bandMisses float64) {
 // x8Bogus (§18 rollout stage 4: the canary writes the counters control
 // reads). On both control pods Latest and the other upstreams' lag stay as
 // they were, and only the ceiling rises: a block above Latest is
+// dispatched, not short-circuited (§6.4). No invariant is violated (§17).
+func x8() spec {
+	return spec{name: "X8", bound: healthyDelivery, bandMisses: 1, evm: map[string]interface{}{"shortCircuitFutureBlocks": true}, body: func(s *scenario) {
+		s.blocks(25)
+		u := s.upSpec("http-b")
+		key := upstreamCounterKey(u, "latestBlock")
+		if _, err := s.h.redis.counter(key); err != nil {
+			s.violate("harness", "redis holds no counter %s for %s: %v", key, u.id, err)
+		}
+		stop := s.watchLatest(func(pod int, bn, tip uint64) {
+			s.violate(s.name, "pod-%d: eth_blockNumber %d against the tip %d after a canary wrote %s's counter +%d", pod+1, bn, tip, u.id, x8Bogus)
 		})
 		bogus := int64(s.chain.Tip().Number) + x8Bogus
 		if err := s.h.redis.writeCounter(key, bogus, time.Now(), "canary"); err != nil {
 			s.t.Fatal(err)
 		}
 		s.logf("a canary wrote %s's latest counter %d, %d above the tip", u.id, bogus, x8Bogus)
-	return spec{name: "X8", bound: healthyDelivery, bandMisses: 1, evm: map[string]interface{}{"shortCircuitFutureBlocks": true}, body: func(s *scenario) {
+		for pod := range s.h.pods {
 			s.awaitUpstreamHead(pod, u.id, float64(bogus), x8ReportWait)
 		}
 		s.blocks(25)

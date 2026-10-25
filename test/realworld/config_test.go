@@ -91,6 +91,7 @@ func k1() spec {
 				}
 			}
 		}
+	}}
 }
 
 // lastLine is the last non-empty line of out.
@@ -196,6 +197,7 @@ func k3(window int) spec {
 		}
 		s.requireReorgsTold()
 	}
+	return sp
 }
 
 // K4: http-a sets subscriptionSource true, ws-a false. http-a is polled

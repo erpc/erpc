@@ -18,12 +18,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // Scheduler bounds (spec §7, §13.2); variables so tests run fast.
@@ -447,34 +441,10 @@ func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 			).Inc()
 			log.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).
 				Str("network", s.networkLabel()).Str("method", r.spec.method).Msg("chain tracker fetch panicked")
-	ctx, span := common.StartDetailSpan(s.ctx, "ChainTracker.Fetch", trace.WithAttributes(
-		attribute.String("kind", r.spec.kind),
-		attribute.String("class", fetchClassLabels[r.spec.class]),
-		attribute.String("method", r.spec.method),
-	))
-	defer func() {
-		span.SetAttributes(attribute.String("upstream.id", res.upstream), attribute.String("outcome", fetchOutcome(res.err)))
-		if res.err != nil {
-			span.SetStatus(codes.Error, res.err.Error())
-		}
-		span.End()
-	}()
-	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+			res = fetchResult{err: fmt.Errorf("chain tracker fetch panicked: %v", rec)}
 		}
 	}()
-	ctx, span := common.StartDetailSpan(s.ctx, "ChainTracker.Fetch", trace.WithAttributes(
-		attribute.String("kind", r.spec.kind),
-		attribute.String("class", fetchClassLabels[r.spec.class]),
-		attribute.String("method", r.spec.method),
-	))
-	defer func() {
-		span.SetAttributes(attribute.String("upstream.id", res.upstream), attribute.String("outcome", fetchOutcome(res.err)))
-		if res.err != nil {
-			span.SetStatus(codes.Error, res.err.Error())
-		}
-		span.End()
-	}()
-	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	if s.sweep == nil {
 		return fetchResult{err: errNoTrackerSweep}
 	}
 	ctx, span := common.StartDetailSpan(s.ctx, "ChainTracker.Fetch", trace.WithAttributes(

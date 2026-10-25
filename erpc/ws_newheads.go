@@ -59,23 +59,23 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 			payload, pinned, err := newHeadsEncoding.Of(tracker, blk)
 			if !pinned || !sends.sendable(blk) {
 				return i, nil
+			}
+			if err != nil {
+				sm.logger.Warn().Err(err).Uint64("block", blk.Number).Msg("cannot project a held header as newHeads")
 				continue
 			}
 			if err := sends.write(blk, func() error { return wsc.WriteSubscriptionNotification(sub, payload) }); err != nil {
-			if err := sends.write(blk, func() error { return wsc.WriteSubscriptionNotification(sub, payload) }); err != nil {
-			if err := sends.write(blk, func() error { return wsc.WriteSubscriptionNotification(sub, payload) }); err != nil {
-			if err := sends.write(blk, func() error { return wsc.WriteSubscriptionNotification(sub, payload) }); err != nil {
 				return i, wsWriteError{err}
+			}
+		}
 		return len(b.Applied), nil
-		return len(b.Applied), nil
-		return len(b.Applied), nil
+	}
+	for {
 		err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeNewHeads, gated(tracker, nw, lane), nil, indexer.ReadOpts{}, emit)
-		err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeNewHeads, gated(tracker, nw, lane), nil, indexer.ReadOpts{}, emit)
-		err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeNewHeads, gated(tracker, nw, lane), nil, indexer.ReadOpts{}, emit)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(newHeadsRestartDelay):
+		var writeErr wsWriteError
+		if ctx.Err() != nil || errors.As(err, &writeErr) {
+			return
+		}
 		if errors.Is(err, indexer.ErrOutOfRange) {
 			common.TransitionLog(sm.logger, zerolog.InfoLevel, nw.Label(), "out_of_range:ws:newHeads").Err(err).
 				Str("clientSubId", sub.ClientSubID).Msg("newHeads tap out of range, restarting after the head")
@@ -86,3 +86,6 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 		case <-ctx.Done():
 			return
 		case <-time.After(newHeadsRestartDelay):
+		}
+	}
+}

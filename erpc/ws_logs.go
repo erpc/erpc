@@ -59,7 +59,7 @@ func parseLogsSubscribe(params []interface{}) (*logfilter.LogsFilter, error) {
 // connection's lane's Latest.
 func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane string, f *logfilter.LogsFilter) {
 	tracker := nw.chainTracker
-	sends := newTapSends(nw, lane, "ws", indexer.SubTypeLogs)
+	window := tracker.ReorgWindow()
 	sends := newTapSends(nw, lane, "ws", indexer.SubTypeLogs)
 	write := func(log json.RawMessage) error {
 		if err := wsc.WriteSubscriptionNotification(sub, log); err != nil {
@@ -72,18 +72,12 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 	// sends no removed:true for them (spec §13.3: every removed log is a
 	// sent log). sentHashes is the hash the tap applied at each number,
 	// within the window below the newest.
-	// within the window below the newest.
+	sentFrom, sent := uint64(0), false
 	sentHashes := make(map[uint64][32]byte, window+1)
 	emit := func(b indexer.Batch) (int, error) {
-	sentHashes := make(map[uint64][32]byte, window+1)
-	emit := func(b indexer.Batch) (int, error) {
-	sentHashes := make(map[uint64][32]byte, window+1)
-	emit := func(b indexer.Batch) (int, error) {
-			return 0, ctx.Err()
-	emit := func(b indexer.Batch) (int, error) {
-			return 0, ctx.Err()
+		// Nothing is written before the client has the subscription id.
 		select {
-			return 0, ctx.Err()
+		case <-opened:
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		}
@@ -91,16 +85,22 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 		// the feed holds only reorgWindow deep.
 		if sent {
 			n := 0
-				return 0, errLogsReorgDepth
+			for _, blk := range b.Reverted {
 				if blk.Number >= sentFrom {
-				return 0, errLogsReorgDepth
+					n++
 				}
-			return 0, errLogsLag
-			if n > window {
-			return 0, errLogsLag
 			}
-			return 0, errLogsLag
+			if n > window {
+				return 0, errLogsReorgDepth
+			}
+		}
 		if len(b.Applied) > 0 && lagging(tracker, b.Applied[0]) {
+			return 0, errLogsLag
+		}
+		for _, blk := range b.Reverted {
+			if !sent || blk.Number < sentFrom {
+				continue
+			}
 			if h, ok := sentHashes[blk.Number]; !ok || h != blk.Hash {
 				common.ViolateInvariant(nw.logger, nw.projectId, nw.Label(), common.InvariantRemovedUnsent).
 					Str("lane", lane).Uint64("block", blk.Number).Hex("blockHash", blk.Hash[:]).Hex("sentHash", h[:]).
@@ -108,91 +108,26 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 				continue
 			}
 			delete(sentHashes, blk.Number)
-			return 0, errLogsLag
-		}
-			if h, ok := sentHashes[blk.Number]; !ok || h != blk.Hash {
-				common.ViolateInvariant(nw.logger, nw.projectId, nw.Label(), common.InvariantRemovedUnsent).
-					Str("lane", lane).Uint64("block", blk.Number).Hex("blockHash", blk.Hash[:]).Hex("sentHash", h[:]).
-					Msg("logs tap reverts a block it never applied; it sends no removed:true for it")
-				continue
-			}
+			logs := tracker.MatchedLogs(blk, f)
+			for i := len(logs) - 1; i >= 0; i-- {
+				removed, err := removedLog(logs[i])
+				if err != nil {
+					sm.logger.Warn().Err(err).Uint64("block", blk.Number).Msg("cannot mark a held log removed")
+					continue
+				}
+				if err := write(removed); err != nil {
 					return 0, err
-		for _, blk := range b.Reverted {
-			if !sent || blk.Number < sentFrom {
-			if h, ok := sentHashes[blk.Number]; !ok || h != blk.Hash {
+				}
+			}
+		}
 		for i, blk := range b.Applied {
 			if !tracker.Pinned(indexer.Cursor{Number: blk.Number, Hash: blk.Hash}) || !sends.sendable(blk) {
 				return i, nil
 			}
-					return 0, err
-				continue
+			if !sent || blk.Number < sentFrom {
+				sentFrom, sent = blk.Number, true
 			}
 			sentHashes[blk.Number] = blk.Hash
-			if blk.Number > uint64(window) {
-				delete(sentHashes, blk.Number-uint64(window)-1)
-			}
-			logs := tracker.MatchedLogs(blk, f)
-			if len(logs) == 0 {
-				continue
-			}
-			if err := sends.write(blk, func() error {
-				for _, log := range logs {
-					if err := write(log); err != nil {
-						return err
-					}
-				return i, nil
-				return nil
-			}); err != nil {
-				return i, err
-			}
-					return 0, err
-		return len(b.Applied), nil
-			for i := len(logs) - 1; i >= 0; i-- {
-	err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeLogs, gated(logsFeed{tracker}, nw, lane), nil,
-			if blk.Number > uint64(window) {
-				delete(sentHashes, blk.Number-uint64(window)-1)
-			}
-			logs := tracker.MatchedLogs(blk, f)
-			if len(logs) == 0 {
-	common.TransitionLog(sm.logger, zerolog.WarnLevel, nw.Label(), "out_of_range:ws:logs").Err(err).
-		Bool("outOfRange", errors.Is(err, indexer.ErrOutOfRange)).Str("clientSubId", sub.ClientSubID).
-		Msg("logs tap ended, closing the connection with 1013")
-			}
-			if err := sends.write(blk, func() error {
-				for _, log := range logs {
-					if err := write(log); err != nil {
-						return err
-					}
-				return i, nil
-				return nil
-			}); err != nil {
-				return i, err
-				if err := write(removed); err != nil {
-					return 0, err
-		return len(b.Applied), nil
-			}
-	err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeLogs, gated(logsFeed{tracker}, nw, lane), nil,
-			if blk.Number > uint64(window) {
-				delete(sentHashes, blk.Number-uint64(window)-1)
-			}
-			logs := tracker.MatchedLogs(blk, f)
-			if len(logs) == 0 {
-				continue
-			}
-			if err := sends.write(blk, func() error {
-				for _, log := range logs {
-					if err := write(log); err != nil {
-						return err
-					}
-				return i, nil
-				return nil
-			}); err != nil {
-				return i, err
-			}
-			if !sent || blk.Number < sentFrom {
-		return len(b.Applied), nil
-			}
-	err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeLogs, gated(logsFeed{tracker}, nw, lane), nil,
 			if blk.Number > uint64(window) {
 				delete(sentHashes, blk.Number-uint64(window)-1)
 			}
@@ -219,7 +154,9 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 	if ctx.Err() != nil || errors.As(err, &writeErr) {
 		return
 	}
-	sm.logger.Warn().Err(err).Str("clientSubId", sub.ClientSubID).Msg("logs tap ended, closing the connection with 1013")
+	common.TransitionLog(sm.logger, zerolog.WarnLevel, nw.Label(), "out_of_range:ws:logs").Err(err).
+		Bool("outOfRange", errors.Is(err, indexer.ErrOutOfRange)).Str("clientSubId", sub.ClientSubID).
+		Msg("logs tap ended, closing the connection with 1013")
 	if spread := logsCloseSpread.Load(); spread > 0 {
 		select {
 		case <-ctx.Done():
