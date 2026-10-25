@@ -2509,6 +2509,12 @@ func (s *chaosSeed) receiptsDown13() {
 	s.setAll(func(f *chainsim.Faults) { f.ReceiptsDown = false })
 	require.Positive(s.t, calls, "receipts failing past %s on every vendor switch blocks to eth_getLogs", evm.LogsFallbackAfter.Load())
 	s.blocks(4)
+	// A receipts answer ends the network-wide switch, and a job's clock
+	// counts only its receipts failures: once receipts work again, no block
+	// is fetched from eth_getLogs.
+	settled := s.getLogsCalls()
+	s.blocks(4)
+	require.Equal(s.t, settled, s.getLogsCalls(), "blocks after receipts recovered are fetched by receipts, not eth_getLogs")
 	s.path(pathFallback, fmt.Sprintf("%d eth_getLogs calls by blockHash", calls))
 	s.occur(fReceiptsDown13, fmt.Sprintf("receipts failed on every vendor for %s; %d eth_getLogs calls", until.Sub(from).Round(time.Millisecond), calls))
 }
