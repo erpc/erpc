@@ -6,6 +6,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 )
 
@@ -17,10 +18,12 @@ type tapSends struct {
 	selector        string
 	lane            *servedTipLane
 	transport, kind string
+	delivery        prometheus.Observer
 }
 
 func newTapSends(nw *Network, selector, transport, kind string) *tapSends {
-	return &tapSends{nw: nw, selector: selector, lane: nw.laneFor(selector), transport: transport, kind: kind}
+	return &tapSends{nw: nw, selector: selector, lane: nw.laneFor(selector), transport: transport, kind: kind,
+		delivery: telemetry.ObserverHandle(telemetry.MetricTapDeliverySeconds, transport, kind)}
 }
 
 // sendSnapshot is one decision to write a block: the tracker's state and
@@ -54,7 +57,7 @@ func (s *tapSends) write(blk indexer.Block, snap sendSnapshot, fn func() error) 
 		return err
 	}
 	if !blk.Ready.IsZero() {
-		telemetry.ObserverHandle(telemetry.MetricTapDeliverySeconds, s.transport, s.kind).Observe(time.Since(blk.Ready).Seconds())
+		s.delivery.Observe(time.Since(blk.Ready).Seconds())
 	}
 	if s.lane != nil {
 		s.lane.noteSent(blk.Number)
