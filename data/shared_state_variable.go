@@ -124,9 +124,10 @@ type counterInt64 struct {
 	baseSharedVariable
 	// reportAtUnixMs is ReportAt.
 	reportAtUnixMs atomic.Int64
-	// attemptAtUnixMs is this instance's clock at its last refresh attempt
-	// that brought no report (an error or a timeout): it debounces the next
-	// refresh as a report does.
+	// attemptAtUnixMs is this instance's clock when its last refresh ended
+	// (an answer, an error or the foreground timeout): it debounces the
+	// next refresh, since a report dated by a slow fetch's send time can
+	// be older than the debounce at once.
 	attemptAtUnixMs atomic.Int64
 	// drop is a dropKind. While set, a higher state stamped no later than
 	// the local one predates the drop: it is the branch the drop left, so
@@ -702,8 +703,8 @@ type refreshResult struct {
 }
 
 func (c *counterInt64) applyRefreshResult(initialVal int64, r refreshResult) (int64, error) {
+	c.markFreshAttempt()
 	if r.err != nil {
-		c.markFreshAttempt()
 		return initialVal, r.err
 	}
 	updated := c.processNewValue(UpdateSourceTryUpdateIfStale, r.val, r.started)
