@@ -184,8 +184,8 @@ func (c *counterInt64) markReported(at time.Time) {
 
 func (c *counterInt64) dropped() bool { return dropKind(c.drop.Load()) != dropNone }
 
-// setDrop records how the value moves: a drop before its CAS, so no
-// snapshot pairs the lower value with dropNone; dropNone after a rise's.
+// setDrop records how the value moved, right after the CAS that moved it,
+// so a CAS that gives up leaves the mark of the value it kept.
 func (c *counterInt64) setDrop(k dropKind) { c.drop.Store(int32(k)) }
 
 // processNewState applies a remote state (pubsub, initial fetch, reconcile).
@@ -337,9 +337,9 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 	}
 
 	// Large rollback exceeds threshold - apply it and trigger callback
-	c.setDrop(dropRollback)
 	for {
 		if c.value.CompareAndSwap(currentValue, newVal) {
+			c.setDrop(dropRollback)
 			// Update timestamp AFTER accepting the value (for remote updates)
 			if isRemoteUpdate {
 				c.updateUpdatedAtMs(st.UpdatedAt)
@@ -443,9 +443,9 @@ func (c *counterInt64) processNewValue(source string, newVal int64, at time.Time
 	}
 
 	// Large rollback exceeds threshold - apply it and trigger callback
-	c.setDrop(dropRollback)
 	for {
 		if c.value.CompareAndSwap(currentValue, newVal) {
+			c.setDrop(dropRollback)
 			c.allocateUpdatedAtMs() // Mark as fresh
 			c.markReported(at)
 			c.registry.logger.Trace().
@@ -657,9 +657,9 @@ func (c *counterInt64) Rewind(newValue int64) bool {
 // OnRewind fires before OnValue, so the health tracker holds the rewound
 // head when OnValue's readers wake.
 func (c *counterInt64) applyRewind(source string, currentValue, newVal, remoteTs int64) bool {
-	c.setDrop(dropRewind)
 	for {
 		if c.value.CompareAndSwap(currentValue, newVal) {
+			c.setDrop(dropRewind)
 			if remoteTs > 0 {
 				c.updateUpdatedAtMs(remoteTs)
 			} else {

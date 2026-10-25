@@ -121,7 +121,11 @@ type ChainTracker struct {
 	heights      map[uint64][]*node   // held headers per height, oldest first
 	exts         map[*node]*extension // every held root: its walk or fill
 	votes        map[string]*node     // source upstream id -> its vote
-	pending      map[string]*node     // source upstream id -> a vote its walk holds back
+	// rewindDue holds the voters whose hash vote was off the new pins at
+	// the last re-anchor or move to a lower head: each is owed one rewind
+	// once its vote reaches the pins (spec §14).
+	rewindDue map[string]bool
+	pending   map[string]*node // source upstream id -> a vote its walk holds back
 	// voteAt and pendingAt are the evidence times of votes and pending
 	// votes: a poll's send time, a push's receive time (spec §6.4).
 	voteAt    map[string]time.Time
@@ -434,6 +438,7 @@ func (t *ChainTracker) clear() {
 	t.heights = make(map[uint64][]*node)
 	t.exts = make(map[*node]*extension)
 	t.votes = make(map[string]*node)
+	t.rewindDue = nil
 	t.pending = make(map[string]*node)
 	t.voteAt = make(map[string]time.Time)
 	t.pendingAt = make(map[string]time.Time)
@@ -631,6 +636,7 @@ func (t *ChainTracker) update() bool {
 		} else {
 			t.choose()
 		}
+		t.rewindLate()
 	}, nil)
 	ok = t.guard("forks", t.trackForks, nil) && ok
 	ok = t.guard("fill", t.extendRoots, nil) && ok
@@ -1426,11 +1432,34 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 // above it, so Latest follows the rewound chain on every instance.
 func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) {
 	votes := make(map[string]int64, len(t.votes))
+	t.rewindDue = make(map[string]bool)
 	for u, nd := range t.votes {
 		if p := pathAt(nd.h.number); p != nil && p.hash == nd.h.hash {
 			votes[u] = int64(nd.h.number)
+		} else {
+			t.rewindDue[u] = true
 		}
 	}
+	t.rewindHeads(votes)
+}
+
+// rewindLate writes the rewind owed to a voter whose hash vote reached the
+// pins after the switch, once per voter per switch.
+func (t *ChainTracker) rewindLate() {
+	if len(t.rewindDue) == 0 {
+		return
+	}
+	votes := make(map[string]int64)
+	for u := range t.rewindDue {
+		if nd := t.votes[u]; nd != nil && t.alive(nd) && t.pinned(nd) {
+			votes[u] = int64(nd.h.number)
+			delete(t.rewindDue, u)
+		}
+	}
+	t.rewindHeads(votes)
+}
+
+func (t *ChainTracker) rewindHeads(votes map[string]int64) {
 	if r, ok := t.network.(interface{ EvmRewindHeads(map[string]int64) }); ok && len(votes) > 0 {
 		t.callNetwork("rewind", func() { r.EvmRewindHeads(votes) })
 	}
