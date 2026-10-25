@@ -580,8 +580,13 @@ func (t *ChainTracker) receiptsSpec(class fetchClass, hash [32]byte, h *chainHea
 // its block lies within reorgWindow of the head, orphans included; older
 // receipts leave at once, and at most receiptsCap whose number is unknown
 // stay. Its bloom verdict counts once for trust, and for the network's
-// bloom check against upstreamId's vendor.
+// bloom check against upstreamId's vendor. A receipts answer from an
+// upstream, by a job, the outage probe or a fetch's mailbox result, ends
+// the network-wide switch to eth_getLogs (receiptsDown).
 func (t *ChainTracker) holdReceipts(r *heldReceipts, upstreamId string) {
+	if !r.fromLogs && upstreamId != "" {
+		t.receiptsDown = time.Time{}
+	}
 	key := hexHash(r.hash)
 	if _, seen := t.receipts.Load(key); !seen {
 		t.receiptsOrder = append(t.receiptsOrder, receiptsEntry{key: key, number: r.number})
@@ -797,9 +802,6 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 		if r.fromLogs && t.fetch.bloom.prof().agreeLogs && !t.logsAgreed(j, res.upstream, r) {
 			t.runJob(j)
 			return
-		}
-		if !r.fromLogs {
-			t.receiptsDown = time.Time{}
 		}
 		t.holdReceipts(r, res.upstream)
 		t.endJob(j, r)
