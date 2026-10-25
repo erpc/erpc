@@ -150,17 +150,27 @@ func latestStateSelector(method string, params []interface{}) ([]interface{}, bo
 	if len(params) <= idx {
 		return nil, false
 	}
-	switch v := params[idx].(type) {
-	case string:
-		if v == "latest" {
-			return []interface{}{idx}, true
-		}
-	case map[string]interface{}:
-		if s, _ := v["blockNumber"].(string); s == "latest" && v["blockHash"] == nil {
-			return []interface{}{idx, "blockNumber"}, true
-		}
+	leaf, ok := selectsLatest(params[idx])
+	switch {
+	case !ok:
+		return nil, false
+	case leaf:
+		return []interface{}{idx, "blockNumber"}, true
 	}
-	return nil, false
+	return []interface{}{idx}, true
+}
+
+// selectsLatest reports whether a present block selector means "latest":
+// the tag, or an EIP-1898 object whose blockNumber leaf is the tag (leaf).
+func selectsLatest(v interface{}) (leaf, ok bool) {
+	switch v := v.(type) {
+	case string:
+		return false, v == "latest"
+	case map[string]interface{}:
+		s, _ := v["blockNumber"].(string)
+		return true, s == "latest" && v["blockHash"] == nil
+	}
+	return false, false
 }
 
 // rangeBoundAbsent reports whether a range filter's bound key (fromBlock,

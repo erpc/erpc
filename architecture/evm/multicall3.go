@@ -264,14 +264,15 @@ func (b *Multicall3Batcher) send(bt *multicall3Batch, n common.Network, u common
 }
 
 // aggregate sends the pack as one eth_call through the upstream, so its rate
-// limits, retries and credit accounting count it once. A pack at the
-// "latest" tag carries one more call, the per-architecture block-number call
+// limits, retries and credit accounting count it once. A pack whose block
+// selector means "latest" (the tag or an EIP-1898 latest leaf) carries one
+// more call, the per-architecture block-number call
 // (integrity.ChainStateContextProbe): free evidence of the block u executes
 // "latest" at, recorded as u's tag-state sample (spec §6.11) and stripped
 // before the results meet the entries.
 func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, bt *multicall3Batch, n common.Network, u common.Upstream) ([]aggregate3Result, bool) {
 	packed := entries
-	tag := bt.block == "latest"
+	_, tag := selectsLatest(bt.block)
 	if tag {
 		if probe := multicall3TagProbe(n); probe != nil {
 			packed = append(entries[:len(entries):len(entries)], probe)
@@ -348,8 +349,11 @@ func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, bt *multicall3
 	if !ok || len(results) != len(packed) {
 		return nil, false
 	}
-	if tag {
-		if executed, ok := multicall3Word(results[len(entries)]); ok && latest > 0 {
+	// The sample is dated from the send of the attempt that answered; only a
+	// first attempt's send time is known here (permits never wait), so a
+	// retried or hedged pack gives no sample.
+	if s := mrq.ExecState().Snapshot(); tag && latest > 0 && s.UpstreamRetries == 0 && s.UpstreamHedges == 0 {
+		if executed, ok := multicall3Word(results[len(entries)]); ok {
 			if p := stateProberFor(n); p != nil {
 				p.recordTagSample(u.Id(), executed, latest, sentAt)
 			}
