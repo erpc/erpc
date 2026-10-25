@@ -59,6 +59,7 @@ type Stats struct {
 	SlowAnswers                                                             int64 // answers a Slow fault delayed
 	ForgedHeads                                                             int64 // heads pushed with a wrong hash, once per head
 	CappedLogs                                                              int64 // eth_getLogs answers CapLogs cut short
+	CapacityRefused                                                         int64 // calls a Capacity fault refused
 }
 
 // Vendor is one simulated node of a chain, on its own listener.
@@ -94,6 +95,7 @@ type Vendor struct {
 
 	connects, headsSubs, pendingSubs, logsSubs, throttled, receiptsCalls  atomic.Int64
 	logsCalls, slowAnswers, forgedHeads, cappedLogs, subSeq, headsRefused atomic.Int64
+	capacityRefused                                                       atomic.Int64
 }
 
 // LatestCall is one eth_getBlockByNumber(latest) call a vendor answered.
@@ -281,7 +283,8 @@ func (v *Vendor) NumberCalls(n uint64, from, to time.Time) int {
 func (v *Vendor) Stats() Stats {
 	return Stats{Connects: v.connects.Load(), HeadsSubscribes: v.headsSubs.Load(), PendingSubscribes: v.pendingSubs.Load(),
 		LogsSubscribes: v.logsSubs.Load(), Throttled: v.throttled.Load(), HeadsRefused: v.headsRefused.Load(), ReceiptsCalls: v.receiptsCalls.Load(),
-		LogsCalls: v.logsCalls.Load(), SlowAnswers: v.slowAnswers.Load(), ForgedHeads: v.forgedHeads.Load(), CappedLogs: v.cappedLogs.Load()}
+		LogsCalls: v.logsCalls.Load(), SlowAnswers: v.slowAnswers.Load(), ForgedHeads: v.forgedHeads.Load(), CappedLogs: v.cappedLogs.Load(),
+		CapacityRefused: v.capacityRefused.Load()}
 }
 
 // ReceiptsOf are the eth_getBlockReceipts calls the vendor got for block h,
@@ -626,6 +629,7 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 	defer c.mu.Unlock()
 	f := v.faults
 	if f.Capacity {
+		v.capacityRefused.Add(1)
 		return nil, &rpcError{-32005, "compute units exceeded"}
 	}
 	switch method {

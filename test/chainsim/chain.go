@@ -74,6 +74,9 @@ type Chain struct {
 	// headerBloomOff, while set, mints headers whose logsBloom is a
 	// superset of the OR of their receipts' blooms (OffHeaderBloom).
 	headerBloomOff bool
+	// bigTxs, while set, is how many transactions each non-empty block
+	// minted holds (BigBlocks).
+	bigTxs int
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -199,7 +202,7 @@ func (c *Chain) mintLocked(parent *Block, number uint64, at time.Time, minority 
 			k = KindMatching
 		}
 	}
-	txs := content(c.rng, k)
+	txs := content(c.rng, k, c.bigTxs)
 	if c.cfg.MatchLast && k == KindMatching {
 		last := len(txs) - 1
 		txs[last] = append(txs[last][:1], logSpec{addr: 0, topic: 1})
@@ -249,6 +252,20 @@ func (c *Chain) CanonAt(n uint64) *Block {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.canonAtLocked(n)
+}
+
+// MintedBetween are the canonical blocks minted in [from, to], oldest
+// first.
+func (c *Chain) MintedBetween(from, to time.Time) []*Block {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []*Block
+	for _, b := range c.canon {
+		if !b.MintedAt.Before(from) && !b.MintedAt.After(to) {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // Block is the minted block with hash h, canonical or not; nil if none.
@@ -451,6 +468,28 @@ func (c *Chain) forkLocked(base *Block, length int, vs []*Vendor) *Fork {
 		v.fork = f
 	}
 	return f
+}
+
+// StartDetached moves vs onto a minority branch that links to no block of
+// the chain: its root, one below the canonical tip, has a zero parentHash.
+// The branch runs at the canonical heights and grows every tick until
+// EndFork.
+func (c *Chain) StartDetached(vs ...*Vendor) *Fork {
+	c.mu.Lock()
+	tip := c.tipLocked()
+	root := c.mintLocked(nil, tip.Number-1, time.Unix(int64(tip.Time), 0), true)
+	f := c.forkLocked(root, 1, vs)
+	c.mu.Unlock()
+	c.refresh()
+	return f
+}
+
+// BigBlocks makes each non-empty block minted from now hold txs
+// transactions, receipts and logs scaled with them; 0 ends it.
+func (c *Chain) BigBlocks(txs int) {
+	c.mu.Lock()
+	c.bigTxs = txs
+	c.mu.Unlock()
 }
 
 // EndFork returns the fork's vendors to the canonical chain.
