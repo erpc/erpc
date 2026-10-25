@@ -354,7 +354,7 @@ Owner: `erpc/network_intake.go`. Readers: `Head`, the confirmed head, settle tar
 
 - Numbers are shared: each upstream's latest and finalized live in shared counters (§14), and every instance's `Head` reads them. Every `latest` header this instance fetches from an upstream, by poll, Ask or settle, also moves that upstream's counter.
 - A hash vote comes only from this instance's tracker or poller: a push, a poll-source poll, an Ask answer, or any other poll of the upstream's `latest` (full poll, refresh, catch-up), each fetched with cache reads skipped. So an upstream that is no source votes too, as fresh as its last poll. Client answers and cached answers never vote (#1001).
-- Minority fork: a hash vote off the pins, at a height the pins hold, first refreshes the votes behind the pins: the tracker Asks, with a hash need, the voters that back the pins there with a vote older than it, oldest first, up to 3 (a settle, §6.8). A vote from before a reorg is no evidence of a fork: those voters answer on the new branch, and the pins move (§19 P1). If the pins still hold after their answers, the tracker polls the off voter at once, and at most once per W while its vote stays off; a voter whose newest hash vote is still off the pins W after the first such poll loses its number vote and goes last in routing, until its hash vote is on the pins again.
+- Minority fork: a hash vote off the pins, at a height the pins hold, first refreshes the votes behind the pins: the tracker Asks, with a fork need (§6.8: only a fetch sent after the pins moved meets it), the voters that back the pins there with a vote older than it, oldest first, up to 3 (a settle, §6.8). A vote from before a reorg is no evidence of a fork: those voters answer on the new branch, and the pins move (§19 P1). If the pins still hold after their answers, the tracker polls the off voter at once, and at most once per W while its vote stays off; a voter whose newest hash vote is still off the pins W after the first such poll loses its number vote and goes last in routing, until its hash vote is on the pins again.
 
 Owner: `erpc/network_intake.go` (hash votes), `EvmStatePoller.ObserveHead` (numbers). Readers: `Head`, trackers, routing. Keeps: #1001, #450, #1256 (a fresh shared counter saves a fetch).
 
@@ -403,12 +403,12 @@ Fork choice:
 2. Fill: every root is extended downward (§9) until it joins another tree or reaches the window base.
 3. Vote: a voter's hash vote moves to its newest header once that header is held; until then its previous vote stays. An ancestor of the current vote does not move it back.
 4. Choose: take the tree with the most votes; a tie keeps the tree of the pins. In it, from the root, follow the child whose subtree holds the most votes; a tie keeps the pinned child; a block with no voted child follows its pinned child. Stop at a block with no child to follow, or at a tie with no pinned child. The last block followed is the head; the path from the root to it is the pins.
-5. Settle: a tie in rule 4, or a hash vote off the pins (§6.3), runs a settle (§6.8). Each answer is walked like a vote; once held, a voter's answer is its hash vote, and a non-voter's adds one vote for this decision. No answer, or no target: the pins stay, and the settle runs again after backoff.
-6. No hash voter, with demand: the tracker Asks the first voter in selection order with a hash need, once per cadence. That answer is the only vote until the next one; an answer that conflicts with the pins starts a settle.
+5. Settle: a tie in rule 4, or a hash vote off the pins (§6.3), runs a settle (§6.8). Each answer is walked like a vote; once held, a voter's answer is its hash vote, and a non-voter's adds one vote for this decision. The pins stay while a round is out, at most W. No answer: the settle runs again after the Ask's backoff; no target: after one block time.
+6. No hash voter, with demand: the tracker Asks the first voter in selection order with a hash need, once per cadence. That answer is the only vote until the next one: the asked voter's votes no newer than its last answer count as that answer, not as a source. An answer that conflicts with the pins starts a settle.
 
 Settle rounds:
 
-- A round is keyed on the pinned head and the conflicting branch, never on a vote that changes each block.
+- A round is keyed on the pin the conflicting branch disputes (the pin at its fork height) and that branch's hash, never on the top pin or a vote that changes each block. A decided round re-keys on the block it pinned.
 - A round whose key changed never reports `decided` from votes alone.
 - A client that joins a round whose answers are still walking waits for them; a client ctx that ends with answers pending gets `PinRateLimited`, never `PinUnverifiable`.
 - A deferred re-check does not start the 1s reconfirm cooldown.
@@ -473,7 +473,7 @@ Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, th
 | refusal band and stale ceiling (§6.4) | number |
 | `eth_blockNumber`, `eth_getBlockByNumber(latest\|finalized)` pre-forward refresh | number |
 | a numbered read above `Head.Finalized` (§6.4 Finality), the finalized axis, at most once per finalized debounce | number |
-| settle: for a tie, voters without a fresh hash vote, then non-voters, up to 3; for a vote off the pins (§6.3), the voters that back the pins with an older vote, oldest first, up to 3 | hash |
+| settle: for a tie, voters without a fresh hash vote, then non-voters, up to 3 (hash); for a vote off the pins (§6.3), the voters that back the pins with an older vote, oldest first, up to 3 (fork) | hash, fork |
 | no hash voter, with demand (§6.5 rule 6) | hash |
 
 - An upstream that rejects `latest` 10 times stops being a poll source until the 10-min re-check.
