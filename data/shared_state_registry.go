@@ -39,6 +39,7 @@ type SharedStateRegistry interface {
 	GetCounterInt64(key string, ignoreRollbackOf int64) CounterInt64SharedVariable
 	GetLockTtl() time.Duration
 	GetFallbackTimeout() time.Duration
+	GetUpdateMaxWait() time.Duration
 }
 
 type sharedStateRegistry struct {
@@ -271,4 +272,10 @@ func (r *sharedStateRegistry) GetLockTtl() time.Duration {
 
 func (r *sharedStateRegistry) GetFallbackTimeout() time.Duration {
 	return r.fallbackTimeout
+}
+
+// GetUpdateMaxWait is how long a foreground caller waits for a refresh
+// before it goes on with the value it has.
+func (r *sharedStateRegistry) GetUpdateMaxWait() time.Duration {
+	return r.updateMaxWait
 }

@@ -394,11 +394,19 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	ermu := &sync.Mutex{}
 
 	// Latest: an Ask with a hash need, a local fetch (spec §6.3, §6.8):
-	// a hash vote, and the block time sample of a poll-only network.
+	// a hash vote, and the block time sample of a poll-only network. The
+	// poll waits for it as long as for the finalized counter's refresh, and
+	// the fetch goes on without it: a node that holds its answer must not
+	// hold the upstream's registration past the tracker's cold window.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		err := e.Ask(ctx, common.HeadNeedHash, common.AskPoll).Err
+		actx, cancel := context.WithTimeout(ctx, e.sharedStateRegistry.GetUpdateMaxWait())
+		defer cancel()
+		err := e.Ask(actx, common.HeadNeedHash, common.AskPoll).Err
+		if err != nil && actx.Err() != nil && ctx.Err() == nil {
+			return
+		}
 		if err != nil {
 			e.logger.Debug().Err(err).Msg("failed to get latest block number in evm state poller")
 			ermu.Lock()
