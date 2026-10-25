@@ -308,6 +308,9 @@ var (
 	// tagStateRefuseBehind: an all-stale request is refused when the highest
 	// credited tag-state head is more than this much chain below Latest.
 	tagStateRefuseBehind = 60 * time.Second
+	// tagStateSweepEvery: how often the probe loop readmits heads with no
+	// traffic and no change of Latest.
+	tagStateSweepEvery = time.Second
 )
 
 // tagStateFreshStreak fresh samples in a row readmit a stale upstream.
@@ -452,14 +455,19 @@ func (p *stateProber) wakeTagStates() {
 	}
 }
 
+// runTagStates runs a pass on each wake, and every tagStateSweepEvery so a
+// head with no traffic and no change of Latest is still readmitted.
 func (p *stateProber) runTagStates(ctx context.Context) {
+	sweep := time.NewTicker(tagStateSweepEvery)
+	defer sweep.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-p.tagWake:
-			p.probeTagStates(ctx)
+		case <-sweep.C:
 		}
+		p.probeTagStates(ctx)
 	}
 }
 
@@ -479,8 +487,11 @@ func (p *stateProber) familyKeepsTag() bool {
 
 // probeTagStates starts the latest probe of every upstream due one: on a
 // change of Latest each upstream that gets tag requests, and each one a skip
-// asked for, at most every tagStateProbeFloor. Each probe runs on its own,
-// so a slow upstream delays no other.
+// asked for, at most every tagStateProbeFloor; an ask the floor or a running
+// probe holds back stays, and the pass wakes again when it can run. Each
+// probe runs on its own, so a slow upstream delays no other. Upstreams that
+// do not serve eth_call are never probed. The pass also readmits every head
+// whose W without stale evidence ran out, so the gauge drops without traffic.
 func (p *stateProber) probeTagStates(ctx context.Context) {
 	enum, ok := p.network.(interface {
 		EvmAllUpstreams(context.Context) []common.Upstream
@@ -490,11 +501,20 @@ func (p *stateProber) probeTagStates(ctx context.Context) {
 	}
 	keeps := p.familyKeepsTag()
 	ups := enum.EvmAllUpstreams(ctx)
+	serves := make(map[string]bool, len(ups))
+	for _, u := range ups {
+		serves[u.Id()], _ = u.ShouldHandleMethod("eth_call")
+	}
+	_, w := p.tagTiming()
 	now := time.Now()
 	var due []common.Upstream
+	var wakeIn time.Duration
 	p.tagMu.Lock()
-	moved, asked := p.tagMoved, p.tagAsked
-	p.tagMoved, p.tagAsked = false, nil
+	for id := range p.tagHeads {
+		p.tagHeadLocked(id, now, w)
+	}
+	moved := p.tagMoved
+	p.tagMoved = false
 	if p.tagInflight == nil {
 		p.tagInflight = map[string]bool{}
 	}
@@ -503,20 +523,39 @@ func (p *stateProber) probeTagStates(ctx context.Context) {
 	}
 	for _, u := range ups {
 		id := u.Id()
-		gets := !pinsLatestTag(u) && (keeps || now.Sub(p.tagReached[id]) < tagStateReachedFor)
-		if !(moved && gets || asked[id]) || p.tagInflight[id] || now.Sub(p.tagSent[id]) < tagStateProbeFloor {
+		if !serves[id] {
+			delete(p.tagAsked, id)
 			continue
 		}
+		gets := !pinsLatestTag(u) && (keeps || now.Sub(p.tagReached[id]) < tagStateReachedFor)
+		asked := p.tagAsked[id]
+		if !(moved && gets || asked) || p.tagInflight[id] {
+			continue // a running probe's end wakes the pass for an ask
+		}
+		if wait := tagStateProbeFloor - now.Sub(p.tagSent[id]); wait > 0 {
+			if asked && (wakeIn == 0 || wait < wakeIn) {
+				wakeIn = wait
+			}
+			continue
+		}
+		delete(p.tagAsked, id)
 		p.tagInflight[id] = true
 		p.tagSent[id] = now
 		due = append(due, u)
 	}
 	p.tagMu.Unlock()
+	if wakeIn > 0 {
+		time.AfterFunc(wakeIn, p.wakeTagStates)
+	}
 	for _, u := range due {
 		done := func() {
 			p.tagMu.Lock()
 			delete(p.tagInflight, u.Id())
+			asked := p.tagAsked[u.Id()]
 			p.tagMu.Unlock()
+			if asked {
+				p.wakeTagStates()
+			}
 		}
 		if !p.view.fetch.bg.Go(func() {
 			defer done()
@@ -575,7 +614,8 @@ func DecideTagState(ctx context.Context, n common.Network, r *common.NormalizedR
 		return nil
 	}
 	jrq.RLock()
-	_, tag := latestStateSelector(jrq.Method, jrq.Params)
+	method := jrq.Method
+	_, tag := latestStateSelector(method, jrq.Params)
 	jrq.RUnlock()
 	if !tag {
 		return nil
@@ -591,7 +631,10 @@ func DecideTagState(ctx context.Context, n common.Network, r *common.NormalizedR
 	now := time.Now()
 	bt, _ := p.tagTiming()
 	skips := map[string]bool{}
-	routed := 0
+	// able: routed upstreams that can take the attempt. One that does not
+	// serve the method, or pins latest while lagging below the number it
+	// would be sent, is no fresh alternative to a stale one.
+	able := 0
 	var best string
 	var bestHead int64
 	for _, u := range r.Upstreams() {
@@ -600,10 +643,16 @@ func DecideTagState(ctx context.Context, n common.Network, r *common.NormalizedR
 				continue
 			}
 		}
-		routed++
-		if pinsLatestTag(u) {
-			continue // sent a number, never the tag
+		if ok, _ := u.ShouldHandleMethod(method); !ok {
+			continue
 		}
+		if pinsLatestTag(u) {
+			if eu, ok := u.(common.EvmUpstream); ok && eu.EvmEffectiveLatestBlock() >= latest {
+				able++ // sent the number, never the tag
+			}
+			continue
+		}
+		able++
 		h := p.tagHead(u.Id(), now)
 		if h.state != tagStale {
 			continue
@@ -613,12 +662,12 @@ func DecideTagState(ctx context.Context, n common.Network, r *common.NormalizedR
 			best, bestHead = u.Id(), c
 		}
 	}
-	if routed > 0 && len(skips) == routed {
+	if able > 0 && len(skips) == able {
 		delete(skips, best)
 		if time.Duration(latest-bestHead)*bt > tagStateRefuseBehind {
 			telemetry.MetricUpstreamTagStateAllStaleTotal.WithLabelValues(n.ProjectId(), n.Label(), "refused").Inc()
 			return common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorServerSideException,
-				"every upstream executes \"latest\" in state more than 60s of chain behind the served tip", nil,
+				fmt.Sprintf("every upstream executes \"latest\" in state more than %s of chain behind the served tip", tagStateRefuseBehind), nil,
 				map[string]interface{}{"data": map[string]interface{}{
 					"executedBlock": fmt.Sprintf("0x%x", bestHead),
 					"servedTip":     fmt.Sprintf("0x%x", latest),
