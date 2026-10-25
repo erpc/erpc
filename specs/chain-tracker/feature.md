@@ -853,7 +853,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_chain_tracker_invariant_violations_total{project,network,invariant}` | new; invariant: `sent_above_latest`, `sent_unconfirmed`, `tap_gap`, `removed_unsent`, `pins_unlinked`, `final_hash_changed`, `latest_regressed` (only a `Latest` below a block this instance sent); must stay 0 except `final_hash_changed`, which logs a followed majority |
 | `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `retried_found`, `retried_missing` (the promise broke on this instance), `future`, `future_after_refresh` |
 | `erpc_head_ask_total{project,network,reason,outcome}` | new; reason: the §6.8 caller (`poll`, `catch_up`, `refusal`, `refresh`, `settle`, `no_source`); outcome: `fetched`, `shared_fresh`, `inflight`, `backoff` |
-| `erpc_chain_tracker_confirm_lag_blocks{project,network}` | new: pins head − confirmed head |
+| `erpc_chain_tracker_confirm_lag_blocks{project,network}` | new: pins head − confirmed head; with no confirmed pin, the number of pins |
 | `erpc_tap_delivery_seconds{transport,kind}` | new: confirmed-head change → write |
 | `erpc_served_tip_voters{project,network,lane,rank}` | new gauge: voters per rank |
 | `erpc_served_tip_quorum{project,network,lane}` | new gauge: effective q |
@@ -928,7 +928,7 @@ oracle            HTTP checks per delivered block, on the same and another insta
 - `make test-realworld` runs `go test ./test/realworld/... -count=1 -v -timeout 60m`. `make test` excludes `test/`. No container runtime.
 - Each scenario runs on its own chain id. Network-scoped scenarios run concurrently on shared instances, so fixed wall-clock bounds (30s bench floor, 60s primary lead, 60s receipts and gRPC waits, 5 min cordon, 10 min re-ask) overlap; instance-scoped ones (`kill -9`, Redis down, partition, clock skew) run in their own phase with fresh instances.
 - Instance stderr with `WARNING: DATA RACE` or `panic:` fails the run. A failed run keeps its run directory (logs, config, client transcripts) and prints its path.
-- Every scenario asserts `erpc_chain_tracker_invariant_violations_total` = 0 and `retried_missing` = 0 on every instance, unless the row says otherwise. Each tolerance is a named constant citing its spec section.
+- Every scenario asserts `erpc_chain_tracker_invariant_violations_total` = 0 and `retried_missing` = 0 on every instance, unless the row says otherwise; the invariant series are exported at 0 from network start and never swept as idle. Each tolerance is a named constant citing its spec section.
 
 Oracle, for every block any subscriber receives, on the same instance and on another:
 
