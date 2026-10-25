@@ -151,8 +151,8 @@ type servedTipLane struct {
 	// by mu.
 	fallen bool
 	// voters are the ids the last latest ballot counted, ballot the
-	// current evaluation's (buffers swapped each refresh): a fall with a
-	// counted voter gone is a membership change, no latest_regressed
+	// current evaluation's (buffers swapped each refresh): a fall while
+	// the counted set changed is a membership change, no latest_regressed
 	// (spec §17). Guarded by mu.
 	voters, ballot []string
 }

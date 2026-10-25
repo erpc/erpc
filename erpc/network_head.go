@@ -211,7 +211,7 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	defer l.mu.Unlock()
 	old := l.published()
 	h := n.computeHead(l, l.selector)
-	left := leftBallot(l.voters, l.ballot)
+	left, joined := ballotChange(l.voters, l.ballot)
 	l.voters, l.ballot = l.ballot, l.voters
 	if h == *old {
 		return
@@ -231,13 +231,14 @@ func (n *Network) refreshLane(l *servedTipLane) {
 				l.fallen = false
 			}
 		case l.fallen || old.Latest > 0 && h.Latest > old.Latest:
-		case left != "":
-			// A counted voter that left lowers the q-th highest number with
-			// no upstream's head falling: the ballot changed, the chain did
-			// not (spec §6.4, §17).
+		case left != "" || joined != "":
+			// A voter that left lowers the q-th highest number, and one
+			// that joined raises q under a majority quorum, with no
+			// upstream's head falling: the ballot changed, the chain did not
+			// (spec §6.4, §17).
 			common.TransitionLog(n.logger, zerolog.InfoLevel, n.Label(), "ballot").
-				Str("lane", l.label).Str("left", left).Int64("latest", h.Latest).Int64("previous", old.Latest).Uint64("sent", sent).
-				Msg("lane's Latest fell below a block this instance sent as a voter left its ballot")
+				Str("lane", l.label).Str("left", left).Str("joined", joined).Int64("latest", h.Latest).Int64("previous", old.Latest).Uint64("sent", sent).
+				Msg("lane's Latest fell below a block this instance sent as its ballot's voters changed")
 		default:
 			l.fallen = true
 			common.ViolateInvariant(n.logger, n.projectId, n.Label(), common.InvariantLatestRegressed).
@@ -251,15 +252,22 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	}
 }
 
-// leftBallot is the first voter of prev that cur no longer counts, "" when
-// every one still is.
-func leftBallot(prev, cur []string) string {
+// ballotChange is the first voter of prev that cur no longer counts and
+// the first of cur that prev did not, "" each when there is none.
+func ballotChange(prev, cur []string) (left, joined string) {
 	for _, id := range prev {
 		if !slices.Contains(cur, id) {
-			return id
+			left = id
+			break
 		}
 	}
-	return ""
+	for _, id := range cur {
+		if !slices.Contains(prev, id) {
+			joined = id
+			break
+		}
+	}
+	return left, joined
 }
 
 // computeHead computes the Head of selector sel (spec §6.4); l is its lane,
