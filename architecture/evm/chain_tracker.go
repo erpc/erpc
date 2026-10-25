@@ -769,11 +769,11 @@ type HashVoters struct {
 	// Need is q.Of(len(Hash)).
 	Hash []string
 	Need int
-	// Vendors names the vendor of each upstream of the network; Evidence is
-	// the evidence quorum (spec §6.10): 2 distinct vendors when the network
-	// has 2 or more, else 1.
-	Vendors  map[string]string
-	Evidence int
+	// Vendors names the vendor of each upstream of the network;
+	// NetworkVendors is how many distinct vendors they name, which the
+	// evidence quorum reads (meetsEvidence).
+	Vendors        map[string]string
+	NetworkVendors int
 	// Next is when the soonest hash voter's hash age passes W; zero while
 	// none will without a new vote.
 	Next time.Time
@@ -793,7 +793,7 @@ func (t *ChainTracker) readVoters() {
 	if !ok {
 		// Without intake the vendors are unknown: no vote alone is evidence
 		// enough for PinFresh, which then needs a settle.
-		t.voters = HashVoters{Need: 1, Evidence: 2, all: true}
+		t.voters = HashVoters{Need: 1, all: true}
 		return
 	}
 	w := t.W()
@@ -1436,8 +1436,8 @@ type pinBacking struct {
 	base  uint64
 	backs []pinBack // by index, ascending
 	// need is q.Of(hash voters); voters is how many hash voters there are;
-	// evidence is the evidence quorum (spec §6.10).
-	need, voters, evidence int
+	// vendors is how many vendors the network's upstreams name.
+	need, voters, vendors int
 	// ceiling is the highest number taps may send: the lane's Latest.
 	ceiling uint64
 	// undisputed is how many pins, from the lowest, every counted vote
@@ -1514,13 +1514,13 @@ func (b *pinBacking) confirms(n uint64) bool {
 			vendors = append(vendors, p.vendor)
 		}
 	}
-	return len(vendors) >= b.evidence
+	return meetsEvidence(len(vendors), b.vendors)
 }
 
 // same reports whether b and o confirm the same pins and count the same
 // hash voters.
 func (b *pinBacking) same(o *pinBacking) bool {
-	return o != nil && b.base == o.base && b.need == o.need && b.voters == o.voters && b.evidence == o.evidence &&
+	return o != nil && b.base == o.base && b.need == o.need && b.voters == o.voters && b.vendors == o.vendors &&
 		b.undisputed == o.undisputed && b.ceiling == o.ceiling && slices.Equal(b.backs, o.backs)
 }
 
@@ -1528,7 +1528,7 @@ func (b *pinBacking) same(o *pinBacking) bool {
 // answer on the pinned branch backs the whole branch the settle chose, so
 // a split the settle decided flows at once.
 func (t *ChainTracker) backingOf(path []*node) *pinBacking {
-	b := &pinBacking{need: t.voters.Need, voters: len(t.voters.Hash), evidence: t.voters.Evidence, ceiling: t.sendCeiling()}
+	b := &pinBacking{need: t.voters.Need, voters: len(t.voters.Hash), vendors: t.voters.NetworkVendors, ceiling: t.sendCeiling()}
 	if t.voters.all {
 		b.voters = 1
 	}
@@ -1744,7 +1744,7 @@ func (t *ChainTracker) handleAnchors(as []anchor) {
 			votes[i].vendors = append(votes[i].vendors, a.vendor)
 		}
 		t.anchorVotes[a.number] = votes
-		t.anchors.Store(a.number, anchorOf(votes))
+		t.anchors.Store(a.number, anchorOf(votes, t.voters.NetworkVendors))
 	}
 	for len(t.anchorNumbers) > t.window {
 		t.anchors.Delete(t.anchorNumbers[0])
@@ -1753,7 +1753,10 @@ func (t *ChainTracker) handleAnchors(as []anchor) {
 	}
 }
 
-func anchorOf(votes []anchorVote) *anchorEntry {
+// anchorOf is the hash most vendors answered for one finalized number:
+// agreed once its vendors meet the evidence quorum and outnumber any other
+// hash's.
+func anchorOf(votes []anchorVote, networkVendors int) *anchorEntry {
 	best, second := 0, 0
 	for i, v := range votes {
 		switch n := len(v.vendors); {
@@ -1764,7 +1767,7 @@ func anchorOf(votes []anchorVote) *anchorEntry {
 		}
 	}
 	n := len(votes[best].vendors)
-	return &anchorEntry{hash: votes[best].hash, agreed: n >= 2 && n > second}
+	return &anchorEntry{hash: votes[best].hash, agreed: meetsEvidence(n, networkVendors) && n > second}
 }
 
 // receiptsCap bounds held receipts when their blocks name no number: every
@@ -2697,7 +2700,7 @@ func observeNarrowView(ctx context.Context, t *ChainTracker, u common.Upstream, 
 	if err != nil || jrr == nil {
 		return
 	}
-	t.observeNarrowAnchors(t.finalizedHead(), vendorKey(u), jrr.GetResultBytes())
+	t.observeNarrowAnchors(t.finalizedHead(), u.VendorName(), jrr.GetResultBytes())
 }
 
 // observeNarrowAnchors records number→hash anchors from vendor's narrow

@@ -33,7 +33,7 @@ var (
 // Receipts timings (spec §10); exported so end-to-end tests can scale them.
 var (
 	// LogsFallbackAfter: receipts failing this long on every upstream switch
-	// a block to eth_getLogs while integrity is off.
+	// a block to eth_getLogs by blockHash.
 	LogsFallbackAfter = util.NewDuration(5 * time.Second)
 	// ReceiptsOutageAfter: every receipts and logs fetch failing this long
 	// refuses new logs subscribes until one succeeds.
@@ -90,11 +90,10 @@ type bloomProfile struct {
 	// emptyOff: the chain profile disables transactionsRootRecompute, so
 	// the root may miss committed system transactions and their receipts.
 	emptyOff bool
-	// logsFallback: integrity is off, so eth_getLogs by blockHash may
-	// stand in for receipts that keep failing. With integrity on it stands
-	// in only while no upstream serves eth_getBlockReceipts, and only logs
-	// 2 vendors agree on are held.
-	logsFallback bool
+	// agreeLogs: integrity is on, so logs from eth_getLogs by blockHash,
+	// which stand in for receipts that keep failing, are held only once
+	// vendors that meet the evidence quorum answered the same logs.
+	agreeLogs bool
 	// logIndexes: integrity checks logIndexContiguity, so logs from
 	// eth_getLogs by blockHash must run 0..N-1 as receipts' do.
 	logIndexes bool
@@ -125,7 +124,7 @@ func (g *bloomGate) prof() *bloomProfile {
 			}
 		}
 		cs, _, _, _ := resolveIntegrity(n, nil)
-		g.profile.logsFallback = len(cs) == 0
+		g.profile.agreeLogs = len(cs) > 0
 		g.profile.logIndexes = cs.For("logIndexContiguity").Enabled
 	})
 	return &g.profile
@@ -652,7 +651,7 @@ func (t *ChainTracker) holdReceipts(r *heldReceipts) {
 	case bloomMatch:
 		t.fetch.bloom.matched(r.h)
 	case bloomMismatch:
-		t.fetch.bloom.mismatched(r.h, 1, t.vendorCount(r.method()))
+		t.fetch.bloom.mismatched(r.h, 1, vendorsOf(t.methodUpstreams(r.method())))
 	}
 	t.receiptsDirty = true
 }
@@ -677,9 +676,9 @@ func (t *ChainTracker) evictReceipts() {
 // receiptsJob fetches one block's receipts until they are held: at pin time
 // for the feed (keep), or for the Reads that wait on it. A bloom mismatch
 // moves the next attempt to an upstream of another vendor; receipts that
-// keep failing switch to eth_getLogs while integrity is off. With integrity
-// on, logs from eth_getLogs are held only once 2 vendors answered the same
-// logsDigest.
+// keep failing switch to eth_getLogs. With integrity on, logs from
+// eth_getLogs are held only once vendors that meet the evidence quorum
+// answered the same logsDigest.
 type receiptsJob struct {
 	h       *chainHeader
 	keep    bool // the feed wants this pinned block's receipts held
@@ -735,20 +734,17 @@ func (t *ChainTracker) runJob(j *receiptsJob) {
 	if j.cancel != nil {
 		j.cancel()
 	}
-	fallback := t.fetch.bloom.prof().logsFallback
 	if j.started.IsZero() {
 		j.started = time.Now()
-	} else if !j.logs && fallback && time.Since(j.started) >= LogsFallbackAfter.Load() {
-		j.logs = true
-		j.newRound()
 	}
+	failedLong := time.Since(j.started) >= LogsFallbackAfter.Load()
 	switch receipts, logs := t.usableMethods(); {
-	case !j.logs && !receipts && logs:
+	case !j.logs && logs && (!receipts || failedLong):
 		j.logs = true
 		j.newRound()
-	case j.logs && receipts && !fallback:
-		// Receipts are served again: they prove the logs, so the job leaves
-		// the stand-in.
+	case j.logs && receipts && (!logs || !failedLong):
+		// Receipts are served again, or logs no longer may stand in: receipts
+		// prove the logs, so the job leaves the stand-in.
 		j.logs = false
 		j.newRound()
 	}
@@ -758,7 +754,7 @@ func (t *ChainTracker) runJob(j *receiptsJob) {
 		// A wrong answer may sit in the cache under this key.
 		spec.fresh = true
 		if spec.upstream = t.nextVendorUpstream(j, spec.method); spec.upstream == "" {
-			t.fetch.bloom.mismatched(j.h, len(j.mismatched), t.vendorCount(spec.method))
+			t.fetch.bloom.mismatched(j.h, len(j.mismatched), vendorsOf(t.methodUpstreams(spec.method)))
 			j.newRound()
 		}
 	} else if len(j.agree) > 0 {
@@ -820,9 +816,9 @@ func (t *ChainTracker) runJobLater(j *receiptsJob) {
 }
 
 // logsAgreed notes that upstreamId answered r, logs from eth_getLogs, and
-// reports whether 2 vendors have answered its digest this round. A cached
-// answer names no vendor: it counts for none, and the cache is not read
-// again.
+// reports whether the vendors that answered its digest this round meet the
+// evidence quorum. A cached answer names no vendor: it counts for none,
+// and the cache is not read again.
 func (t *ChainTracker) logsAgreed(j *receiptsJob, upstreamId string, r *heldReceipts) bool {
 	if upstreamId == "" {
 		j.fresh = true
@@ -838,7 +834,7 @@ func (t *ChainTracker) logsAgreed(j *receiptsJob, upstreamId string, r *heldRece
 	if !slices.Contains(j.agree[i].vendors, vendor) {
 		j.agree[i].vendors = append(j.agree[i].vendors, vendor)
 	}
-	return len(j.agree[i].vendors) >= 2
+	return meetsEvidence(len(j.agree[i].vendors), t.networkVendors())
 }
 
 func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec, res fetchResult) {
@@ -849,7 +845,7 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 	case res.err == nil:
 		r := res.val.(*heldReceipts)
 		t.noteReceiptsFetch(true)
-		if r.fromLogs && !t.fetch.bloom.prof().logsFallback && !t.logsAgreed(j, res.upstream, r) {
+		if r.fromLogs && t.fetch.bloom.prof().agreeLogs && !t.logsAgreed(j, res.upstream, r) {
 			t.runJob(j)
 			return
 		}
@@ -908,11 +904,11 @@ func (t *ChainTracker) armProbe(after time.Duration) {
 }
 
 // runProbe is one fetch of the head block's receipts during an outage
-// (spec §10), or its logs when no upstream serves receipts or, with
-// integrity off, once receipts have failed for LogsFallbackAfter, as a job
-// switches; the next one follows a block time later, at most
-// ReceiptsProbeCeiling, until one succeeds. With integrity on, the logs it
-// fetched end the outage but are not held: one vendor's logs prove nothing.
+// (spec §10), or its logs when no upstream serves receipts or once
+// receipts have failed for LogsFallbackAfter, as a job switches; the next
+// one follows a block time later, at most ReceiptsProbeCeiling, until one
+// succeeds. With integrity on, the logs it fetched end the outage but are
+// not held: one upstream's logs never meet the evidence quorum's agreement.
 func (t *ChainTracker) runProbe() {
 	since := t.receiptsFailing.Load()
 	if since == 0 {
@@ -934,7 +930,7 @@ func (t *ChainTracker) runProbe() {
 			switch {
 			case res.err == nil:
 				t.noteReceiptsFetch(true)
-				if r := res.val.(*heldReceipts); !r.fromLogs || t.fetch.bloom.prof().logsFallback {
+				if r := res.val.(*heldReceipts); !r.fromLogs || !t.fetch.bloom.prof().agreeLogs {
 					t.holdReceipts(r)
 				}
 			case t.ctx.Err() == nil:
@@ -946,17 +942,18 @@ func (t *ChainTracker) runProbe() {
 
 // usableMethods reports whether an upstream of the group serves
 // eth_getBlockReceipts, and whether eth_getLogs by blockHash may stand in:
-// with integrity off, or with integrity on while no upstream serves
-// receipts and upstreams of 2 or more vendors serve eth_getLogs, so their
-// answers can be compared. That stand-in proves less than receipts: logs
-// carry no receiptsRoot to check, only the header's bloom, their
-// logIndexes and, with integrity on, the agreement of 2 vendors.
+// with integrity off when an upstream serves it, with integrity on when
+// the vendors serving it can meet the evidence quorum, so their answers
+// can be compared. That stand-in proves less than receipts: logs carry no
+// receiptsRoot to check, only the header's bloom, their logIndexes and,
+// with integrity on, the evidence quorum's agreement.
 func (t *ChainTracker) usableMethods() (receipts, logs bool) {
 	receipts = len(t.methodUpstreams("eth_getBlockReceipts")) > 0
-	if t.fetch.bloom.prof().logsFallback {
-		return receipts, len(t.methodUpstreams("eth_getLogs")) > 0
+	getLogs := t.methodUpstreams("eth_getLogs")
+	if !t.fetch.bloom.prof().agreeLogs {
+		return receipts, len(getLogs) > 0
 	}
-	return receipts, !receipts && t.vendorCount("eth_getLogs") >= 2
+	return receipts, meetsEvidence(vendorsOf(getLogs), t.networkVendors())
 }
 
 // ServesLogs reports whether logs subscribes may start (spec §10): an
@@ -1053,14 +1050,10 @@ func (t *ChainTracker) vendorOf(upstreamId string) string {
 	return ""
 }
 
-// vendorCount is how many vendors the group's upstreams that serve method
-// belong to.
-func (t *ChainTracker) vendorCount(method string) int {
-	vendors := make(map[string]struct{})
-	for _, u := range t.methodUpstreams(method) {
-		vendors[u.VendorName()] = struct{}{}
-	}
-	return len(vendors)
+// networkVendors is how many vendors the group's upstreams name, which the
+// evidence quorum reads.
+func (t *ChainTracker) networkVendors() int {
+	return vendorsOf(t.receiptsUpstreams())
 }
 
 // wantsSnapshot are the registered MayMatch tests.

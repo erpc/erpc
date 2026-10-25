@@ -67,11 +67,10 @@ type checkHealth struct {
 // check (spec §12): a check no header passes at 2 heights in a row, within
 // the live bound and from any upstream, is wrong for this chain, so it is
 // suspended. After CheckSuspendBlocks it runs observe-only, and it
-// enforces again once it passes at 2 heights in a row. With 2 or more
-// vendors on the network, a height fails only when headers of 2 vendors
-// failed there, as the bloom rule (§10): one vendor alone never suspends a
-// check. Every validation of a header records its outcomes here; the modes
-// are a snapshot every validation reads without a lock.
+// enforces again once it passes at 2 heights in a row. A height fails only
+// when the vendors whose headers failed there meet the evidence quorum
+// (meetsEvidence). Every validation of a header records its outcomes here;
+// the modes are a snapshot every validation reads without a lock.
 type checkSuspensions struct {
 	network common.Network
 	// tracker is the network-wide tracker: head, live bound, window and
@@ -103,32 +102,13 @@ func (s *checkSuspensions) mode(id string) integrity.CheckMode {
 	return integrity.CheckEnforced
 }
 
-// vendorKey names u's vendor; an upstream without one is its own vendor.
-func vendorKey(u common.Upstream) string {
-	if v := u.VendorName(); v != "" {
-		return v
+// networkVendors is how many vendors the network's upstreams name; 0 while
+// the tracker has not started.
+func (s *checkSuspensions) networkVendors() int {
+	if t := s.tracker.Load(); t != nil {
+		return vendorsOf(t.receiptsUpstreams())
 	}
-	return u.Id()
-}
-
-// failVendorsNeeded is how many vendors' headers must fail a check at a
-// height: 2 on a network of 2 or more vendors, else 1, so a one-vendor
-// network's upstream alone decides.
-func (s *checkSuspensions) failVendorsNeeded() int {
-	t := s.tracker.Load()
-	if t == nil {
-		return 1
-	}
-	first := ""
-	for _, u := range t.receiptsUpstreams() {
-		switch v := vendorKey(u); {
-		case first == "":
-			first = v
-		case v != first:
-			return 2
-		}
-	}
-	return 1
+	return 0
 }
 
 // outcomeVerdict maps a header check's outcome to passed or failed; judged
@@ -151,10 +131,10 @@ func outcomeVerdict(outcome string) (passed, judged bool) {
 // heights above a head that stopped, while one vendor's headers far ahead
 // count for nothing.
 func (s *checkSuspensions) recordOutcomes(height uint64, vendor string, outcomes []integrity.CheckOutcome) {
-	need := 0
+	vendors := -1
 	for _, oc := range outcomes {
 		if passed, judged := outcomeVerdict(oc.Outcome); judged && !passed {
-			need = s.failVendorsNeeded()
+			vendors = s.networkVendors()
 			break
 		}
 	}
@@ -180,7 +160,7 @@ func (s *checkSuspensions) recordOutcomes(height uint64, vendor string, outcomes
 			if !refKnown {
 				ref = height
 			}
-			changed = s.recordLocked(oc.CheckID, h, height, vendor, passed, need, ref, refKnown, now) || changed
+			changed = s.recordLocked(oc.CheckID, h, height, vendor, passed, vendors, ref, refKnown, now) || changed
 		}
 	}
 	for id, h := range s.checks {
@@ -222,7 +202,7 @@ func (s *checkSuspensions) refLocked(head uint64, headKnown bool) (uint64, bool)
 // recordLocked notes one verdict and reports whether the check's mode
 // changed: an observed check passing at 2 judged heights in a row
 // enforces again.
-func (s *checkSuspensions) recordLocked(id string, h *checkHealth, height uint64, vendor string, passed bool, need int, ref uint64, refKnown bool, now time.Time) bool {
+func (s *checkSuspensions) recordLocked(id string, h *checkHealth, height uint64, vendor string, passed bool, networkVendors int, ref uint64, refKnown bool, now time.Time) bool {
 	if h.state == checkOff {
 		return false
 	}
@@ -257,7 +237,7 @@ func (s *checkSuspensions) recordLocked(id string, h *checkHealth, height uint64
 	case v.failVendors == 1 && vendor != v.failVendor:
 		v.failVendors = 2
 	}
-	if v.failVendors < need {
+	if !meetsEvidence(v.failVendors, networkVendors) {
 		return false
 	}
 	v.failedAt = now

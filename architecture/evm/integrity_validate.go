@@ -92,9 +92,9 @@ func runIntegrity(ctx context.Context, n common.Network, u common.Upstream, rq *
 
 	if sus != nil && isBlockMethod(r.method) {
 		if r.header != nil {
-			sus.recordOutcomes(r.header.number, vendorKey(u), res.Outcomes)
+			sus.recordOutcomes(r.header.number, u.VendorName(), res.Outcomes)
 		} else if height, ok := responseBlockNumber(ctx, rs); ok {
-			sus.recordOutcomes(height, vendorKey(u), res.Outcomes)
+			sus.recordOutcomes(height, u.VendorName(), res.Outcomes)
 		}
 	}
 	// Per-check attempts/outcomes — sum = total attempts. "pass" means an

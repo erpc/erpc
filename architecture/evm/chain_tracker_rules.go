@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog/log"
@@ -21,6 +22,25 @@ var (
 	catchUpMax       = time.Second      // longest gap between catch-ups while latest caps the sends
 	followTapPause   = time.Second      // before a follow tap that failed restarts
 )
+
+// meetsEvidence is the evidence quorum (spec §6.10): content answered by
+// answering distinct vendors is corroborated on a network whose upstreams
+// name networkVendors vendors when they are 2, or 1 on a one-vendor
+// network. A network whose vendors are unknown (0) needs 2.
+func meetsEvidence(answering, networkVendors int) bool {
+	return answering >= 2 || answering == 1 && networkVendors == 1
+}
+
+// vendorsOf is how many distinct vendors (Upstream.VendorName) ups name.
+func vendorsOf(ups []common.Upstream) int {
+	var seen []string
+	for _, u := range ups {
+		if v := u.VendorName(); !slices.Contains(seen, v) {
+			seen = append(seen, v)
+		}
+	}
+	return len(seen)
+}
 
 // extension walks or fills one held root downward (§6 rules 1 and 2, §8):
 // by number, each answer checked against the parentHash of the block above,

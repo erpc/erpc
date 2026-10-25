@@ -522,12 +522,12 @@ func (in *networkIntake) isVoter(upstreamId string) bool {
 	return slices.Contains(s.ids, upstreamId)
 }
 
-// upstreamVendors is each upstream's vendor and the evidence quorum (spec
-// §6.10) for one upstream set.
+// upstreamVendors is each upstream's vendor and how many distinct vendors
+// one upstream set names, which the evidence quorum reads (spec §6.10).
 type upstreamVendors struct {
 	ups      []*upstream.Upstream
 	vendors  map[string]string
-	evidence int
+	distinct int
 }
 
 // vendorsOf is the vendors of ups, computed again only when the set or a
@@ -536,15 +536,13 @@ func (in *networkIntake) vendorsOf(ups []*upstream.Upstream) *upstreamVendors {
 	if c := in.vendors.Load(); c != nil && c.of(ups) {
 		return c
 	}
-	c := &upstreamVendors{ups: slices.Clone(ups), vendors: make(map[string]string, len(ups)), evidence: 1}
+	c := &upstreamVendors{ups: slices.Clone(ups), vendors: make(map[string]string, len(ups))}
 	distinct := make(map[string]struct{}, len(ups))
 	for _, u := range ups {
 		c.vendors[u.Id()] = u.VendorName()
 		distinct[u.VendorName()] = struct{}{}
 	}
-	if len(distinct) >= 2 {
-		c.evidence = 2
-	}
+	c.distinct = len(distinct)
 	in.vendors.Store(c)
 	return c
 }
@@ -652,19 +650,19 @@ func (in *networkIntake) admits(upstreamId string) bool {
 // in selection order; the hash voters, those whose hash age is at most w,
 // and, while cold, the eligible sources that have not reported a header
 // yet, so a cold instance's first header waits for a second; q.Of of them;
-// each upstream's vendor and the evidence quorum.
+// each upstream's vendor and how many vendors they name.
 func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm.HashVoters {
 	var q common.ServedTipQuorum
 	if n.cfg != nil {
 		q = n.cfg.Evm.ServedTipQuorum()
 	}
-	hv := evm.HashVoters{Evidence: 1}
+	var hv evm.HashVoters
 	if n.intake == nil || n.upstreamsRegistry == nil {
 		hv.Need = q.Of(0)
 		return hv
 	}
 	vs := n.intake.vendorsOf(n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId))
-	hv.Vendors, hv.Evidence = vs.vendors, vs.evidence
+	hv.Vendors, hv.NetworkVendors = vs.vendors, vs.distinct
 	now := time.Now()
 	policy, all := n.eligibleSet(context.Background())
 	voters, cands := n.intake.voters(selector)
