@@ -144,14 +144,14 @@ next:
 }
 
 // requireNoInvariantViolation: pod exports
-// erpc_chain_tracker_invariant_violations_total for the network, with
-// every invariant but final_hash_changed at 0, and
-// erpc_head_refusal_total{rule=retried_missing} is bandMisses: the
-// scenario's own probes of blocks no vendor has inside the refusal band,
-// each a retried miss by definition (§6.4, §17, §19). The harness runs it
-// on every new-image pod after each scenario; series from before a stall
-// restart count too (carryCounters).
-func (s *scenario) requireNoInvariantViolation(pod int, bandMisses float64) {
+// erpc_chain_tracker_invariant_violations_total for the network, every
+// invariant but final_hash_changed at what the scenario owes it (0 unless
+// its row says otherwise), and
+// erpc_head_refusal_total{rule=retried_missing} at the scenario's own band
+// probes, each a retried miss by definition (§6.4, §17, §19; owe). The
+// harness runs it on every new-image pod after each scenario; series from
+// before a stall restart count too (carryCounters).
+func (s *scenario) requireNoInvariantViolation(pod int) {
 	p := s.h.pods[pod]
 	ss, err := p.scrape()
 	if err != nil {
@@ -161,21 +161,23 @@ func (s *scenario) requireNoInvariantViolation(pod int, bandMisses float64) {
 	p.carriedMu.Lock()
 	ss = append(ss, p.carried...)
 	p.carriedMu.Unlock()
-	exported := false
+	counts := map[string]float64{}
 	for _, x := range ss {
-		if x.name != "erpc_chain_tracker_invariant_violations_total" || x.labels["project"] != s.project || x.labels["network"] != s.network() {
-			continue
-		}
-		exported = true
-		if x.labels["invariant"] != "final_hash_changed" && x.value > 0 {
-			s.violate(s.name, "pod-%d: erpc_chain_tracker_invariant_violations_total{invariant=%s} = %v, not 0", pod+1, x.labels["invariant"], x.value)
+		if x.name == "erpc_chain_tracker_invariant_violations_total" && x.labels["project"] == s.project && x.labels["network"] == s.network() {
+			counts[x.labels["invariant"]] += x.value
 		}
 	}
-	if !exported {
+	if len(counts) == 0 {
 		s.violate(s.name, "pod-%d does not export erpc_chain_tracker_invariant_violations_total for %s (§17)", pod+1, s.network())
 	}
-	if v, _ := sumOf(ss, "erpc_head_refusal_total", map[string]string{"project": s.project, "network": s.network(), "rule": "retried_missing"}); v != bandMisses {
-		s.violate(s.name, "pod-%d: erpc_head_refusal_total{rule=retried_missing} = %v, not %v (the scenario's own band probes)", pod+1, v, bandMisses)
+	for inv, v := range counts {
+		if want := s.owedOn(pod, inv); inv != "final_hash_changed" && v != want {
+			s.violate(s.name, "pod-%d: erpc_chain_tracker_invariant_violations_total{invariant=%s} = %v, not %v", pod+1, inv, v, want)
+		}
+	}
+	want := s.owedOn(pod, "retried_missing")
+	if v, _ := sumOf(ss, "erpc_head_refusal_total", map[string]string{"project": s.project, "network": s.network(), "rule": "retried_missing"}); v != want {
+		s.violate(s.name, "pod-%d: erpc_head_refusal_total{rule=retried_missing} = %v, not %v (the scenario's own band probes)", pod+1, v, want)
 	}
 }
 
@@ -185,7 +187,7 @@ func (s *scenario) requireNoInvariantViolation(pod int, bandMisses float64) {
 // they were, and only the ceiling rises: a block above Latest is
 // dispatched, not short-circuited (§6.4). No invariant is violated (§17).
 func x8() spec {
-	return spec{name: "X8", bound: healthyDelivery, bandMisses: 1, evm: map[string]interface{}{"shortCircuitFutureBlocks": true}, body: func(s *scenario) {
+	return spec{name: "X8", bound: healthyDelivery, evm: map[string]interface{}{"shortCircuitFutureBlocks": true}, body: func(s *scenario) {
 		s.blocks(25)
 		u := s.upSpec("http-b")
 		key := upstreamCounterKey(u, "latestBlock")
@@ -214,6 +216,7 @@ func x8() spec {
 			n := s.chain.Tip().Number + x8Probe
 			from := time.Now()
 			got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
+			s.owe(pod, "retried_missing", 1)
 			switch d := s.dispatches(n, from, time.Now()); {
 			case d == 0:
 				s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered %s with no dispatch, below the ceiling the canary's head raised", pod+1, n, got)

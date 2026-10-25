@@ -92,10 +92,6 @@ type spec struct {
 	bound time.Duration
 	// allow names the ends and jumps the scenario's faults may cause.
 	allow []string
-	// bandMisses is how many retried_missing refusals the scenario's own
-	// probes of blocks no vendor has inside the refusal band cause on each
-	// pod (requireNoInvariantViolation).
-	bandMisses float64
 	// clients opens the scenario's clients; nil opens baseline B's.
 	clients func(s *scenario)
 	body    func(s *scenario)
@@ -142,6 +138,33 @@ type scenario struct {
 	// pod as a latest answer, the forked upstream's hash vote (spec §6.3,
 	// row U18).
 	fork *chainsim.Block
+	// owed are, per pod, the §17 must-stay-0 series the scenario's own
+	// probes and faults move by their spec row, by invariant or refusal
+	// rule (owe); requireNoInvariantViolation expects exactly these.
+	owed map[int]map[string]float64
+}
+
+// owe records that the scenario's own probe or fault moves series
+// (an invariant or a refusal rule) by n on pod: each band probe of a block
+// no vendor has is one retried_missing (§6.4, rows U12, X8, U13, K7), a
+// rewind of every upstream one latest_regressed (§17, row C5).
+func (s *scenario) owe(pod int, series string, n float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.owed == nil {
+		s.owed = map[int]map[string]float64{}
+	}
+	if s.owed[pod] == nil {
+		s.owed[pod] = map[string]float64{}
+	}
+	s.owed[pod][series] += n
+}
+
+// owedOn is what the scenario owes pod for series.
+func (s *scenario) owedOn(pod int, series string) float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.owed[pod][series]
 }
 
 // minorityGrace reports whether an HTTP read on pod that started at start
@@ -354,7 +377,7 @@ func (s *scenario) execute(t *testing.T) {
 	// §19: every scenario asserts the invariants on every new-image pod.
 	for _, p := range s.h.pods {
 		if p.running() && !p.old {
-			s.requireNoInvariantViolation(p.idx, s.bandMisses)
+			s.requireNoInvariantViolation(p.idx)
 		}
 	}
 	if s.after != nil {
