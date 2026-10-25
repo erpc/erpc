@@ -71,6 +71,9 @@ type Chain struct {
 	failHold  time.Duration
 	failing   *Block
 	failUntil time.Time
+	// headerBloomOff, while set, mints headers whose logsBloom is a
+	// superset of the OR of their receipts' blooms (OffHeaderBloom).
+	headerBloomOff bool
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -206,7 +209,7 @@ func (c *Chain) mintLocked(parent *Block, number uint64, at time.Time, minority 
 	if c.cfg.BadBaseFee {
 		baseFee = 1000 + int64(number)
 	}
-	hash, raw := header(c.cfg.ChainID, parent, number, ts, tag, txs, c.cfg.HeaderPad, baseFee)
+	hash, raw := header(c.cfg.ChainID, parent, number, ts, tag, txs, c.cfg.HeaderPad, baseFee, c.headerBloomOff)
 	b := &Block{Number: number, Hash: hash, Parent: parent, Time: ts, MintedAt: time.Now(), minority: minority, kind: k, tag: tag, txs: txs, raw: raw}
 	c.byHash[hash] = b
 	if c.failHold > 0 && k == KindMatching && !minority {
@@ -491,6 +494,18 @@ func (c *Chain) Traps() map[Hash]Trap {
 func (c *Chain) FailNextMatching(hold time.Duration) {
 	c.mu.Lock()
 	c.failHold, c.failing = hold, nil
+	c.mu.Unlock()
+}
+
+// OffHeaderBloom, while on, mints a chain whose header bloom is not its
+// receipts' OR: every block with transactions carries a logsBloom with one
+// more value added, on every vendor, with receipts and
+// receiptsRoot consistent, as a chain whose bloom rule differs from
+// Ethereum's would serve. bloomMatch fails on every answer from every
+// vendor, so the network suspends it (spec §6.9).
+func (c *Chain) OffHeaderBloom(on bool) {
+	c.mu.Lock()
+	c.headerBloomOff = on
 	c.mu.Unlock()
 }
 

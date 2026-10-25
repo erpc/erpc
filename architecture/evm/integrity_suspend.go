@@ -14,19 +14,42 @@ import (
 )
 
 // CheckSuspendBlocks is how many blocks a suspended header check stays off
-// before it runs observe-only (spec §12).
+// before it runs observe-only (spec §6.9).
 var CheckSuspendBlocks atomic.Uint64
 
 func init() { CheckSuspendBlocks.Store(100) }
 
+// Bloom check suspension (spec §6.9); variables so tests run fast.
+var (
+	bloomSuspendRun = 8 // mismatching blocks in a row that suspend the bloom check
+	bloomRearmRun   = 8 // matching blocks in a row that re-arm it
+)
+
+// bloomCheckID is the §13 id of the receipts bloom check.
+const bloomCheckID = "bloomMatch"
+
 // heightsKept bounds the judged heights each check remembers below the
-// newest one while the tracker has no head.
+// newest one while nothing is pinned.
 const heightsKept = 64
 
-// failAhead is how far above the tracker head a header still counts for a
-// check's suspension: headers further ahead, which one vendor can forge at
-// will, are no evidence about the chain.
-const failAhead = 2
+// suspendRule is one check's suspension parameters (spec §6.9).
+type suspendRule struct {
+	failRun int  // failing judged heights in a row that suspend the check
+	live    bool // the run must have failed for W first
+	// offFirst: a suspended check is off until the pins moved
+	// CheckSuspendBlocks, then observe-only; else observe-only at once.
+	offFirst bool
+	passRun  int // passing judged heights in a row that enforce an observed check
+}
+
+// ruleOf is check id's suspension rule: the bloom check's, or the header
+// checks'.
+func ruleOf(id string) suspendRule {
+	if id == bloomCheckID {
+		return suspendRule{failRun: bloomSuspendRun, passRun: bloomRearmRun}
+	}
+	return suspendRule{failRun: 2, live: true, offFirst: true, passRun: 2}
+}
 
 type checkState uint8
 
@@ -36,45 +59,45 @@ const (
 	checkObserve
 )
 
-// heightVerdict is what the headers at one height did against one check.
+// heightVerdict is what the answers at one height did against one check.
 type heightVerdict struct {
-	failVendor  string    // the first vendor whose header failed
-	failVendors int       // distinct vendors whose headers failed, at most 2
-	failedAt    time.Time // when enough vendors had failed; zero until then
+	failVendors []string  // distinct vendors whose answers failed here
+	failedAt    time.Time // when they met the evidence quorum; zero until then
 	passed      bool
 }
 
-// failing: enough vendors' headers failed the check here, and none passed.
+// failing: vendors meeting the evidence quorum failed the check here, and
+// no answer passed.
 func (v *heightVerdict) failing() bool { return !v.passed && !v.failedAt.IsZero() }
 
+func (v *heightVerdict) judged() bool { return v.passed || !v.failedAt.IsZero() }
+
 type checkHealth struct {
+	rule    suspendRule
 	state   checkState
 	heights map[uint64]*heightVerdict
-	// pair: the failing heights pairLo < pairHi are judged heights in a
-	// row (no height between them passed), both failing since pairAt; the
-	// run a suspension waits a live bound on.
-	pair   bool
-	pairLo uint64
-	pairHi uint64
-	pairAt time.Time
-	offAt  uint64 // the tracker head when the check was suspended
-	// offKnown is false while the tracker had no head at suspension; the
-	// first head known sets offAt.
+	// run: rule.failRun judged heights in a row are failing, all of them
+	// since runAt; the run a suspension waits on.
+	run   bool
+	runAt time.Time
+	offAt uint64 // the pins' head when the check was suspended
+	// offKnown is false while nothing was pinned at suspension; the first
+	// head pinned sets offAt.
 	offKnown bool
 }
 
-// checkSuspensions is one network's unanimous-failure state per header
-// check (spec §12): a check no header passes at 2 heights in a row, within
-// the live bound and from any upstream, is wrong for this chain, so it is
-// suspended. After CheckSuspendBlocks it runs observe-only, and it
-// enforces again once it passes at 2 heights in a row. With 2 or more
-// vendors on the network, a height fails only when headers of 2 vendors
-// failed there, as the bloom rule (§10): one vendor alone never suspends a
-// check. Every validation of a header records its outcomes here; the modes
-// are a snapshot every validation reads without a lock.
+// checkSuspensions is one network's suspension of integrity checks (spec
+// §6.9): one mechanism, each check with its own suspendRule. A check whose
+// answers fail at rule.failRun judged heights in a row, with none passing
+// there, is wrong for this chain, so it is suspended; it is enforced again
+// once it passes at rule.passRun heights in a row. A height fails only when
+// the vendors whose answers failed there meet the evidence quorum
+// (meetsEvidence). Heights count within reorgWindow of the pins' head, and
+// offAt is that head: no upstream's own tip moves either. The modes are a
+// snapshot every validation reads without a lock.
 type checkSuspensions struct {
 	network common.Network
-	// tracker is the network-wide tracker: head, live bound, window and
+	// tracker is the network-wide tracker: pins, live bound, window and
 	// upstreams. Set once it starts.
 	tracker atomic.Pointer[ChainTracker]
 	// modes holds the checks not enforced now; nil while every check is.
@@ -82,15 +105,13 @@ type checkSuspensions struct {
 	// modeFn is mode, bound once, for integrity.Input.Modes.
 	modeFn func(string) integrity.CheckMode
 
-	mu     sync.Mutex
-	checks map[string]*checkHealth
-	// tops is the highest height each vendor's judged headers reached.
-	tops      map[string]uint64
+	mu        sync.Mutex
+	checks    map[string]*checkHealth
 	onSuspend []func()
 }
 
 func newCheckSuspensions(n common.Network) *checkSuspensions {
-	s := &checkSuspensions{network: n, checks: make(map[string]*checkHealth), tops: make(map[string]uint64)}
+	s := &checkSuspensions{network: n, checks: make(map[string]*checkHealth)}
 	s.modeFn = s.mode
 	return s
 }
@@ -103,32 +124,13 @@ func (s *checkSuspensions) mode(id string) integrity.CheckMode {
 	return integrity.CheckEnforced
 }
 
-// vendorKey names u's vendor; an upstream without one is its own vendor.
-func vendorKey(u common.Upstream) string {
-	if v := u.VendorName(); v != "" {
-		return v
+// networkVendors is how many vendors the network's upstreams name; 0 while
+// the tracker has not started.
+func (s *checkSuspensions) networkVendors() int {
+	if t := s.tracker.Load(); t != nil {
+		return t.networkVendors()
 	}
-	return u.Id()
-}
-
-// failVendorsNeeded is how many vendors' headers must fail a check at a
-// height: 2 on a network of 2 or more vendors, else 1, so a one-vendor
-// network's upstream alone decides.
-func (s *checkSuspensions) failVendorsNeeded() int {
-	t := s.tracker.Load()
-	if t == nil {
-		return 1
-	}
-	first := ""
-	for _, u := range t.receiptsUpstreams() {
-		switch v := vendorKey(u); {
-		case first == "":
-			first = v
-		case v != first:
-			return 2
-		}
-	}
-	return 1
+	return 0
 }
 
 // outcomeVerdict maps a header check's outcome to passed or failed; judged
@@ -143,86 +145,77 @@ func outcomeVerdict(outcome string) (passed, judged bool) {
 	return false, false
 }
 
-// recordOutcomes notes each header check's verdict on vendor's header at
-// height, then moves every check on with time. A verdict counts only at
-// or below the reference plus failAhead: the higher of the tracker head
-// and the height the headers of 2 vendors reached (the one vendor's on a
-// one-vendor network), so a check every vendor fails still meets the
-// heights above a head that stopped, while one vendor's headers far ahead
-// count for nothing.
+// recordOutcomes notes each header check's verdict on vendor's answer at
+// height, and a bloomMatch failure of its receipts: a receipt's bloom that
+// matches its own logs says nothing of the header's, so a bloom pass comes
+// only from the receipts path (recordBloom).
 func (s *checkSuspensions) recordOutcomes(height uint64, vendor string, outcomes []integrity.CheckOutcome) {
-	need := 0
+	vendors := -1
 	for _, oc := range outcomes {
 		if passed, judged := outcomeVerdict(oc.Outcome); judged && !passed {
-			need = s.failVendorsNeeded()
+			vendors = s.networkVendors()
 			break
 		}
 	}
-	head, headKnown := s.head()
-	now := time.Now()
-	changed, suspended := false, false
-	s.mu.Lock()
-	if height > s.tops[vendor] {
-		s.tops[vendor] = height
-	}
-	ref, refKnown := s.refLocked(head, headKnown)
-	if !refKnown || height <= ref+failAhead {
+	s.record(height, vendor, vendors, func(yield func(id string, passed bool)) {
 		for _, oc := range outcomes {
 			passed, judged := outcomeVerdict(oc.Outcome)
-			if !judged || !slices.Contains(integrity.HeaderChecks, oc.CheckID) {
-				continue
+			if judged && (slices.Contains(integrity.HeaderChecks, oc.CheckID) || oc.CheckID == bloomCheckID && !passed) {
+				yield(oc.CheckID, passed)
 			}
-			h := s.checks[oc.CheckID]
-			if h == nil {
-				h = &checkHealth{heights: make(map[uint64]*heightVerdict)}
-				s.checks[oc.CheckID] = h
-			}
-			if !refKnown {
-				ref = height
-			}
-			changed = s.recordLocked(oc.CheckID, h, height, vendor, passed, need, ref, refKnown, now) || changed
 		}
+	})
+}
+
+// recordBloom notes the bloom check's verdict on vendor's receipts of the
+// block at height.
+func (s *checkSuspensions) recordBloom(height uint64, vendor string, matched bool) {
+	vendors := -1
+	if !matched {
+		vendors = s.networkVendors()
+	}
+	s.record(height, vendor, vendors, func(yield func(string, bool)) { yield(bloomCheckID, matched) })
+}
+
+// record notes the verdicts of vendor's answer at height, then moves every
+// check on with time. networkVendors is read only by failing verdicts.
+func (s *checkSuspensions) record(height uint64, vendor string, networkVendors int, verdicts func(yield func(id string, passed bool))) {
+	head, headKnown := s.head()
+	window := s.window()
+	now := time.Now()
+	var suspendedIds []string
+	changed := false
+	s.mu.Lock()
+	if !headKnown || height+window >= head && height <= head+window {
+		verdicts(func(id string, passed bool) {
+			h := s.checks[id]
+			if h == nil {
+				h = &checkHealth{rule: ruleOf(id), heights: make(map[uint64]*heightVerdict)}
+				s.checks[id] = h
+			}
+			changed = s.recordLocked(id, h, height, vendor, passed, networkVendors, head, headKnown, window, now) || changed
+		})
 	}
 	for id, h := range s.checks {
 		c, sus := s.stepLocked(id, h, head, headKnown, now)
-		changed, suspended = changed || c, suspended || sus
+		changed = changed || c
+		if sus {
+			suspendedIds = append(suspendedIds, id)
+		}
 	}
 	if changed {
 		s.publishModesLocked()
 	}
 	s.mu.Unlock()
-	if suspended {
-		s.suspended()
+	for _, id := range suspendedIds {
+		s.suspended(id)
 	}
-}
-
-// refLocked is the height verdicts are judged against: the higher of the
-// tracker head and the second-highest height any vendor's header reached,
-// or the highest while only one vendor's headers were judged.
-func (s *checkSuspensions) refLocked(head uint64, headKnown bool) (uint64, bool) {
-	var first, second uint64
-	for _, top := range s.tops {
-		switch {
-		case top > first:
-			first, second = top, first
-		case top > second:
-			second = top
-		}
-	}
-	quorum := second
-	if len(s.tops) == 1 {
-		quorum = first
-	}
-	if !headKnown && quorum == 0 {
-		return 0, false
-	}
-	return max(head, quorum), true
 }
 
 // recordLocked notes one verdict and reports whether the check's mode
-// changed: an observed check passing at 2 judged heights in a row
-// enforces again.
-func (s *checkSuspensions) recordLocked(id string, h *checkHealth, height uint64, vendor string, passed bool, need int, ref uint64, refKnown bool, now time.Time) bool {
+// changed: an observed check passing at rule.passRun judged heights in a
+// row enforces again.
+func (s *checkSuspensions) recordLocked(id string, h *checkHealth, height uint64, vendor string, passed bool, networkVendors int, head uint64, headKnown bool, window uint64, now time.Time) bool {
 	if h.state == checkOff {
 		return false
 	}
@@ -230,105 +223,106 @@ func (s *checkSuspensions) recordLocked(id string, h *checkHealth, height uint64
 	if v == nil {
 		v = &heightVerdict{}
 		h.heights[height] = v
-		s.pruneLocked(h, ref, refKnown)
+		pruneLocked(h, height, head, headKnown, window)
 	}
 	if passed {
 		if v.passed {
 			return false
 		}
 		v.passed = true
-		if h.pair && height >= h.pairLo && height <= h.pairHi {
-			repairLocked(h)
+		if h.run {
+			runLocked(h)
 		}
-		if h.state != checkObserve || !passedNextTo(h, height) {
+		if h.state != checkObserve || passRunAt(h, height) < h.rule.passRun {
 			return false
 		}
-		h.state, h.heights, h.pair = checkEnforced, make(map[uint64]*heightVerdict), false
+		h.state, h.heights, h.run = checkEnforced, make(map[uint64]*heightVerdict), false
 		log.Warn().Str("project", s.network.ProjectId()).Str("network", s.network.Label()).Str("check", id).
-			Uint64("height", height).Msg("integrity: check passes again at 2 heights in a row; enforcing it")
+			Uint64("height", height).Int("heights", h.rule.passRun).Msg("integrity: check passes again at heights in a row; enforcing it")
 		return true
 	}
 	if v.passed || !v.failedAt.IsZero() {
 		return false
 	}
-	switch {
-	case v.failVendors == 0:
-		v.failVendor, v.failVendors = vendor, 1
-	case v.failVendors == 1 && vendor != v.failVendor:
-		v.failVendors = 2
+	if !slices.Contains(v.failVendors, vendor) {
+		v.failVendors = append(v.failVendors, vendor)
 	}
-	if v.failVendors < need {
+	if !meetsEvidence(len(v.failVendors), networkVendors) {
 		return false
 	}
 	v.failedAt = now
-	if !h.pair {
-		repairLocked(h)
-	}
+	runLocked(h)
 	return false
 }
 
-// passedNextTo reports whether the judged height next to height, below or
-// above, passed: 2 judged heights in a row pass.
-func passedNextTo(h *checkHealth, height uint64) bool {
-	var below, above *heightVerdict
-	var belowAt, aboveAt uint64
+// judgedHeights are h's judged heights, ascending.
+func judgedHeights(h *checkHealth) []uint64 {
+	ks := make([]uint64, 0, len(h.heights))
 	for k, v := range h.heights {
-		if !v.passed && v.failedAt.IsZero() {
-			continue // not judged yet: no vendor's verdict counts here
-		}
-		switch {
-		case k < height && (below == nil || k > belowAt):
-			below, belowAt = v, k
-		case k > height && (above == nil || k < aboveAt):
-			above, aboveAt = v, k
+		if v.judged() {
+			ks = append(ks, k)
 		}
 	}
-	return below != nil && below.passed || above != nil && above.passed
+	slices.Sort(ks)
+	return ks
 }
 
-// pruneLocked drops the heights that left the window below ref, and, once
-// ref is known, those more than failAhead above it.
-func (s *checkSuspensions) pruneLocked(h *checkHealth, ref uint64, refKnown bool) {
-	window := uint64(heightsKept)
-	if t := s.tracker.Load(); t != nil && refKnown {
-		window = uint64(t.ReorgWindow())
+// passRunAt is how many passing judged heights in a row hold height.
+func passRunAt(h *checkHealth, height uint64) int {
+	ks := judgedHeights(h)
+	i, ok := slices.BinarySearch(ks, height)
+	if !ok {
+		return 0
 	}
-	repair := false
+	lo, hi := i, i
+	for lo > 0 && h.heights[ks[lo-1]].passed {
+		lo--
+	}
+	for hi+1 < len(ks) && h.heights[ks[hi+1]].passed {
+		hi++
+	}
+	return hi - lo + 1
+}
+
+// runLocked finds, among judged heights, the rule.failRun in a row all
+// failing that have failed longest. It runs when a height starts failing,
+// or, while a run exists, a height passed or left: never per passing
+// answer otherwise.
+func runLocked(h *checkHealth) {
+	h.run = false
+	ks := judgedHeights(h)
+	n := max(h.rule.failRun, 1)
+	streak := 0
+	for i, k := range ks {
+		if !h.heights[k].failing() {
+			streak = 0
+			continue
+		}
+		if streak++; streak < n {
+			continue
+		}
+		var at time.Time
+		for _, kk := range ks[i-n+1 : i+1] {
+			at = later(at, h.heights[kk].failedAt)
+		}
+		if !h.run || at.Before(h.runAt) {
+			h.run, h.runAt = true, at
+		}
+	}
+}
+
+// pruneLocked drops the heights more than window from the pins' head, or,
+// while nothing is pinned, more than heightsKept below newest.
+func pruneLocked(h *checkHealth, newest, head uint64, headKnown bool, window uint64) {
+	gone := false
 	for k := range h.heights {
-		if k+window < ref || refKnown && k > ref+failAhead {
+		if headKnown && (k+window < head || k > head+window) || !headKnown && k+heightsKept < newest {
 			delete(h.heights, k)
-			repair = repair || h.pair && (k == h.pairLo || k == h.pairHi)
+			gone = true
 		}
 	}
-	if repair {
-		repairLocked(h)
-	}
-}
-
-// repairLocked finds, among failing heights, the 2 judged in a row that
-// have failed longest. It runs only when a height starts failing, or a
-// height of the pair passed or left: never per passing header.
-func repairLocked(h *checkHealth) {
-	h.pair = false
-	for lo, a := range h.heights {
-		if !a.failing() {
-			continue
-		}
-		// next: the lowest height above lo that passed or fails.
-		var next *heightVerdict
-		var hi uint64
-		for k, v := range h.heights {
-			if k > lo && (v.passed || v.failing()) && (next == nil || k < hi) {
-				next, hi = v, k
-			}
-		}
-		if next == nil || next.passed {
-			continue
-		}
-		at := later(a.failedAt, next.failedAt)
-		if !h.pair || at.Before(h.pairAt) {
-			h.pair, h.pairLo, h.pairHi, h.pairAt = true, lo, hi, at
-		}
+	if gone && h.run {
+		runLocked(h)
 	}
 }
 
@@ -340,10 +334,10 @@ func later(a, b time.Time) time.Time {
 }
 
 // stepLocked moves h on with time and reports whether its mode changed and
-// whether it was suspended now: an enforced check whose headers failed at
-// 2 judged heights in a row, with none passing there, for a live bound, is
-// suspended at the tracker head; a suspended one runs observe-only once the
-// head has moved CheckSuspendBlocks past that head.
+// whether it was suspended now: an enforced check with a failing run, for
+// a live bound when its rule waits one, is suspended at the pins' head:
+// off, or observe-only at once; an off check runs observe-only once the
+// pins' head has moved CheckSuspendBlocks past that head.
 func (s *checkSuspensions) stepLocked(id string, h *checkHealth, head uint64, headKnown bool, now time.Time) (changed, suspended bool) {
 	switch h.state {
 	case checkOff:
@@ -354,7 +348,7 @@ func (s *checkSuspensions) stepLocked(id string, h *checkHealth, head uint64, he
 			h.offAt, h.offKnown = head, true
 		}
 		if head >= h.offAt+CheckSuspendBlocks.Load() {
-			h.state, h.heights, h.pair = checkObserve, make(map[uint64]*heightVerdict), false
+			h.state, h.heights, h.run = checkObserve, make(map[uint64]*heightVerdict), false
 			log.Warn().Str("project", s.network.ProjectId()).Str("network", s.network.Label()).Str("check", id).
 				Uint64("head", head).Msg("integrity: suspended check runs observe-only")
 			return true, false
@@ -363,15 +357,17 @@ func (s *checkSuspensions) stepLocked(id string, h *checkHealth, head uint64, he
 	case checkObserve:
 		return false, false
 	}
-	if !h.pair || now.Sub(h.pairAt) < s.bound() {
+	if !h.run || h.rule.live && now.Sub(h.runAt) < s.bound() {
 		return false, false
 	}
-	lo := h.pairLo
-	h.state, h.heights, h.pair = checkOff, make(map[uint64]*heightVerdict), false
+	h.state, h.heights, h.run = checkObserve, make(map[uint64]*heightVerdict), false
+	if h.rule.offFirst {
+		h.state = checkOff
+	}
 	h.offAt, h.offKnown = head, headKnown
 	telemetry.MetricIntegrityCheckSuspendedTotal.WithLabelValues(s.network.ProjectId(), s.network.Label(), id).Inc()
 	log.Error().Str("project", s.network.ProjectId()).Str("network", s.network.Label()).Str("check", id).
-		Uint64("height", lo).Uint64("head", head).Msg("integrity: no upstream's header passes this check at 2 heights in a row; suspending it for the network")
+		Uint64("head", head).Int("heights", h.rule.failRun).Msg("integrity: no answer passes this check at heights in a row; suspending it for the network")
 	return true, true
 }
 
@@ -401,6 +397,7 @@ func (s *checkSuspensions) publishModesLocked() {
 	s.modes.Store(&m)
 }
 
+// head is the pins' head of the network-wide tracker.
 func (s *checkSuspensions) head() (uint64, bool) {
 	if t := s.tracker.Load(); t != nil {
 		if c, ok := t.Tip(); ok {
@@ -410,6 +407,13 @@ func (s *checkSuspensions) head() (uint64, bool) {
 	return 0, false
 }
 
+func (s *checkSuspensions) window() uint64 {
+	if t := s.tracker.Load(); t != nil {
+		return uint64(t.ReorgWindow())
+	}
+	return heightsKept
+}
+
 func (s *checkSuspensions) bound() time.Duration {
 	if t := s.tracker.Load(); t != nil {
 		return t.W()
@@ -417,7 +421,18 @@ func (s *checkSuspensions) bound() time.Duration {
 	return health.FreshnessWindow(0)
 }
 
-func (s *checkSuspensions) suspended() {
+// suspended runs what follows a suspension of check id: a header check
+// keeps the headers it held back; the bloom check has its blocks fetched
+// again.
+func (s *checkSuspensions) suspended(id string) {
+	if id == bloomCheckID {
+		if nt := registeredTrackers(s.network); nt != nil {
+			for _, t := range nt.trackers() {
+				t.mb.put(trackerMsg{kind: msgCall, fn: t.refetchJobs})
+			}
+		}
+		return
+	}
 	s.mu.Lock()
 	fns := slices.Clone(s.onSuspend)
 	s.mu.Unlock()

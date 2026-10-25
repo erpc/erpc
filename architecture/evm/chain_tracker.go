@@ -111,12 +111,17 @@ type ChainTracker struct {
 	receiptsFailing atomic.Int64
 
 	// Owned by the tracker's goroutine.
-	nodes   map[[32]byte]*node
-	waiting map[[32]byte][]*node // held roots by the parent hash they lack
-	heights map[uint64][]*node   // held headers per height, oldest first
-	exts    map[*node]*extension // every held root: its walk or fill
-	votes   map[string]*node     // source upstream id -> its vote
-	pending map[string]*node     // source upstream id -> a vote its walk holds back
+	// receiptsDown is when receipts sweeps, which ask every upstream, began
+	// failing in a row; zero after a receipts answer is held. A block
+	// leaves reorgWindow, and its job, sooner than LogsFallbackAfter on a
+	// fast chain, so the fallback reads this clock as well as the job's.
+	receiptsDown time.Time
+	nodes        map[[32]byte]*node
+	waiting      map[[32]byte][]*node // held roots by the parent hash they lack
+	heights      map[uint64][]*node   // held headers per height, oldest first
+	exts         map[*node]*extension // every held root: its walk or fill
+	votes        map[string]*node     // source upstream id -> its vote
+	pending      map[string]*node     // source upstream id -> a vote its walk holds back
 	// voteAt and pendingAt are the evidence times of votes and pending
 	// votes: a poll's send time, a push's receive time (spec §6.4).
 	voteAt    map[string]time.Time
@@ -575,7 +580,7 @@ func (t *ChainTracker) receive(msg trackerMsg) {
 	case msgAnchors:
 		t.handleAnchors(msg.anchors)
 	case msgReceipts:
-		t.holdReceipts(msg.held)
+		t.holdReceipts(msg.held, msg.upstream)
 	case msgCall:
 		msg.fn()
 	case msgSettle:
@@ -786,11 +791,11 @@ type HashVoters struct {
 	// Need is q.Of(len(Hash)).
 	Hash []string
 	Need int
-	// Vendors names the vendor of each upstream of the network; Evidence is
-	// the evidence quorum (spec §6.10): 2 distinct vendors when the network
-	// has 2 or more, else 1.
-	Vendors  map[string]string
-	Evidence int
+	// Vendors names the vendor of each upstream of the network;
+	// NetworkVendors is how many distinct vendors they name, which the
+	// evidence quorum reads (meetsEvidence).
+	Vendors        map[string]string
+	NetworkVendors int
 	// Next is when the soonest hash voter's hash age passes W; zero while
 	// none will without a new vote.
 	Next time.Time
@@ -810,7 +815,7 @@ func (t *ChainTracker) readVoters() {
 	if !ok {
 		// Without intake the vendors are unknown: no vote alone is evidence
 		// enough for PinFresh, which then needs a settle.
-		t.voters = HashVoters{Need: 1, Evidence: 2, all: true}
+		t.voters = HashVoters{Need: 1, all: true}
 		return
 	}
 	w := t.W()
@@ -1419,17 +1424,28 @@ const maxRevertedFinal = 16
 // heightSpan is the block numbers lo through hi.
 type heightSpan struct{ lo, hi int64 }
 
-// addRevertedFinal publishes s in revertedFinal, the oldest span leaving
-// at the bound. Only the tracker's goroutine calls it.
+// addRevertedFinal publishes s in revertedFinal, merged with every span it
+// overlaps or touches, the oldest span leaving at the bound. A deep revert
+// is followed one height at a time, each a span of its own: unmerged, its
+// first heights would leave the bound while their permanent entries still
+// hold the old branch. Only the tracker's goroutine calls it.
 func (t *ChainTracker) addRevertedFinal(s heightSpan) {
 	var spans []heightSpan
 	if p := t.revertedFinal.Load(); p != nil {
 		spans = *p
 	}
-	if len(spans) >= maxRevertedFinal {
-		spans = spans[len(spans)-maxRevertedFinal+1:]
+	next := make([]heightSpan, 0, len(spans)+1)
+	for _, o := range spans {
+		if o.lo <= s.hi+1 && s.lo <= o.hi+1 {
+			s = heightSpan{lo: min(s.lo, o.lo), hi: max(s.hi, o.hi)}
+			continue
+		}
+		next = append(next, o)
 	}
-	next := append(append(make([]heightSpan, 0, len(spans)+1), spans...), s)
+	if len(next) >= maxRevertedFinal {
+		next = next[len(next)-maxRevertedFinal+1:]
+	}
+	next = append(next, s)
 	t.revertedFinal.Store(&next)
 }
 
@@ -1504,28 +1520,38 @@ func newFeedState(pins []*node) *feedState {
 // stamp marks each pin that first stands at or below s's confirmed head
 // or logs head with the time it got there (Block.Ready). Stamped pins are
 // one run that grows at both ends: new heads above it, fill below it, and
-// a revert unstamps what it removes (unstamp). Only the network-wide
-// tracker stamps: trackers share parsed headers, and taps read only that
-// one.
+// a revert unstamps what it removes (unstamp). The logs run never grows
+// past a hole, a pin whose receipts the feed needs and does not hold, even
+// where the logs head passed it below the window: no block from the hole
+// up is deliverable to a tap that needs the hole, so the Read that
+// returns the hole stamps it, and the run then grows past it. Only the
+// network-wide tracker stamps: trackers share parsed headers, and taps
+// read only that one.
 func (t *ChainTracker) stamp(s *feedState) {
 	if t.selector != "" || s.confirmed < 0 {
 		return
 	}
 	now := time.Now().UnixNano()
-	stampRun(s.pins[:s.confirmed+1], now, func(h *chainHeader) *atomic.Int64 { return &h.confirmedAt })
+	stampRun(s.pins[:s.confirmed+1], now, func(*chainHeader) bool { return false }, func(h *chainHeader) *atomic.Int64 { return &h.confirmedAt })
 	if l := s.pinAt(s.logs.Number); l != nil && l.hash == s.logs.Hash {
-		stampRun(s.pins[:l.number-s.base+1], now, func(h *chainHeader) *atomic.Int64 { return &h.logsAt })
+		hole := func(h *chainHeader) bool { return t.feedNeeds(h) && t.heldReceiptsOf(h.hash) == nil }
+		stampRun(s.pins[:l.number-s.base+1], now, hole, func(h *chainHeader) *atomic.Int64 { return &h.logsAt })
 	}
 }
 
-// stampRun stamps the pins of ps above the highest stamped one and below
-// the lowest.
-func stampRun(ps []*chainHeader, now int64, at func(*chainHeader) *atomic.Int64) {
+// stampRun grows the stamped run of ps at both ends, up to the first pin
+// stop names. A Read may stamp a pin at the same time (chainHeader.ready);
+// the first stamp stays.
+func stampRun(ps []*chainHeader, now int64, stop func(*chainHeader) bool, at func(*chainHeader) *atomic.Int64) {
 	i := len(ps) - 1
-	for i >= 0 && at(ps[i]).CompareAndSwap(0, now) {
+	for i >= 0 && at(ps[i]).Load() == 0 {
 		i--
 	}
-	for j := 0; j < i && at(ps[j]).CompareAndSwap(0, now); j++ {
+	for k := i + 1; k < len(ps) && !stop(ps[k]); k++ {
+		at(ps[k]).CompareAndSwap(0, now)
+	}
+	for j := 0; j < i && at(ps[j]).Load() == 0 && !stop(ps[j]); j++ {
+		at(ps[j]).CompareAndSwap(0, now)
 	}
 }
 
@@ -1577,8 +1603,8 @@ type pinBacking struct {
 	base  uint64
 	backs []pinBack // by index, ascending
 	// need is q.Of(hash voters); voters is how many hash voters there are;
-	// evidence is the evidence quorum (spec §6.10).
-	need, voters, evidence int
+	// vendors is how many vendors the network's upstreams name.
+	need, voters, vendors int
 	// ceiling is the highest number taps may send: the lane's Latest.
 	ceiling uint64
 	// undisputed is how many pins, from the lowest, every counted vote
@@ -1655,13 +1681,13 @@ func (b *pinBacking) confirms(n uint64) bool {
 			vendors = append(vendors, p.vendor)
 		}
 	}
-	return len(vendors) >= b.evidence
+	return meetsEvidence(len(vendors), b.vendors)
 }
 
 // same reports whether b and o confirm the same pins and count the same
 // hash voters.
 func (b *pinBacking) same(o *pinBacking) bool {
-	return o != nil && b.base == o.base && b.need == o.need && b.voters == o.voters && b.evidence == o.evidence &&
+	return o != nil && b.base == o.base && b.need == o.need && b.voters == o.voters && b.vendors == o.vendors &&
 		b.undisputed == o.undisputed && b.ceiling == o.ceiling && slices.Equal(b.backs, o.backs)
 }
 
@@ -1669,7 +1695,7 @@ func (b *pinBacking) same(o *pinBacking) bool {
 // answer on the pinned branch backs the whole branch the settle chose, so
 // a split the settle decided flows at once.
 func (t *ChainTracker) backingOf(path []*node) *pinBacking {
-	b := &pinBacking{need: t.voters.Need, voters: len(t.voters.Hash), evidence: t.voters.Evidence, ceiling: t.sendCeiling()}
+	b := &pinBacking{need: t.voters.Need, voters: len(t.voters.Hash), vendors: t.voters.NetworkVendors, ceiling: t.sendCeiling()}
 	if t.voters.all {
 		b.voters = 1
 	}
@@ -1886,7 +1912,7 @@ func (t *ChainTracker) handleAnchors(as []anchor) {
 			votes[i].vendors = append(votes[i].vendors, a.vendor)
 		}
 		t.anchorVotes[a.number] = votes
-		t.anchors.Store(a.number, anchorOf(votes))
+		t.anchors.Store(a.number, anchorOf(votes, t.voters.NetworkVendors))
 	}
 	for len(t.anchorNumbers) > t.window {
 		t.anchors.Delete(t.anchorNumbers[0])
@@ -1895,7 +1921,10 @@ func (t *ChainTracker) handleAnchors(as []anchor) {
 	}
 }
 
-func anchorOf(votes []anchorVote) *anchorEntry {
+// anchorOf is the hash most vendors answered for one finalized number:
+// agreed once its vendors meet the evidence quorum and outnumber any other
+// hash's.
+func anchorOf(votes []anchorVote, networkVendors int) *anchorEntry {
 	best, second := 0, 0
 	for i, v := range votes {
 		switch n := len(v.vendors); {
@@ -1906,7 +1935,7 @@ func anchorOf(votes []anchorVote) *anchorEntry {
 		}
 	}
 	n := len(votes[best].vendors)
-	return &anchorEntry{hash: votes[best].hash, agreed: n >= 2 && n > second}
+	return &anchorEntry{hash: votes[best].hash, agreed: meetsEvidence(n, networkVendors) && n > second}
 }
 
 // receiptsCap bounds held receipts when their blocks name no number: every
@@ -2131,11 +2160,27 @@ func (t *ChainTracker) readAt(s *feedState, tr *treeState, c indexer.Cursor, rr 
 // applied is the pins from number from to the confirmed head, at most
 // reorgWindow of them, ending before the first block whose receipts the tap
 // needs and lacks; empty while from is above the confirmed head. from is at
-// least the lowest pin.
+// least the lowest pin. A block is deliverable to a logs tap no sooner than
+// the blocks before it, back to the last whose receipts the tap needed, so
+// its Ready is at least theirs.
 func (t *ChainTracker) applied(s *feedState, from uint64, rr *readReceipts) indexer.Batch {
 	head := s.confirmedHead()
 	if head == nil || from > head.number {
 		return indexer.Batch{}
+	}
+	logs := rr.o.MayMatch != nil
+	var prev time.Time
+	for n := from - 1; logs && n+uint64(t.window) >= from; n-- {
+		c := s.pinAt(n)
+		if c == nil {
+			break
+		}
+		if at := c.logsAt.Load(); at != 0 && time.Unix(0, at).After(prev) {
+			prev = time.Unix(0, at)
+		}
+		if n == 0 || t.tapNeeds(rr.o, c) {
+			break
+		}
 	}
 	last := min(head.number, from+uint64(t.window)-1)
 	b := indexer.Batch{Applied: make([]indexer.Block, 0, last-from+1)}
@@ -2148,7 +2193,20 @@ func (t *ChainTracker) applied(s *feedState, from uint64, rr *readReceipts) inde
 			}
 			break
 		}
-		blk.Ready = p.ready(rr.o.MayMatch != nil)
+		// Only a tap that read p's receipts stamps when they became
+		// deliverable, so another tap waiting on them is not measured from
+		// this one's pass.
+		if !logs {
+			blk.Ready = p.ready(false)
+		} else if t.tapNeeds(rr.o, p) {
+			blk.Ready = p.ready(true)
+		} else {
+			blk.Ready = p.logsReady()
+		}
+		if blk.Ready.Before(prev) {
+			blk.Ready = prev
+		}
+		prev = blk.Ready
 		b.Applied = append(b.Applied, blk)
 	}
 	if len(b.Applied) == 0 {
@@ -2410,7 +2468,7 @@ func (t *ChainTracker) anchorBelow(s *feedState, number int64) *anchorEntry {
 }
 
 // confirmation is how ReconfirmPin reports an anchor: PinFresh only while
-// the by-number answers of 2 or more vendors agree on it.
+// the by-number answers of vendors meeting the evidence quorum agree on it.
 func (e *anchorEntry) confirmation() integrity.PinConfirmation {
 	if e.agreed {
 		return integrity.PinFresh
@@ -2712,7 +2770,7 @@ func (t *ChainTracker) fetched(res fetchResult) {
 	case *chainHeader:
 		t.observeFetched(res.upstream, v)
 	case *heldReceipts:
-		t.mb.put(trackerMsg{kind: msgReceipts, held: v})
+		t.mb.put(trackerMsg{kind: msgReceipts, held: v, upstream: res.upstream})
 	}
 }
 
@@ -2837,7 +2895,7 @@ func observeNarrowView(ctx context.Context, t *ChainTracker, u common.Upstream, 
 	if err != nil || jrr == nil {
 		return
 	}
-	t.observeNarrowAnchors(t.finalizedHead(), vendorKey(u), jrr.GetResultBytes())
+	t.observeNarrowAnchors(t.finalizedHead(), VendorKey(u), jrr.GetResultBytes())
 }
 
 // observeNarrowAnchors records number→hash anchors from vendor's narrow
@@ -2933,7 +2991,7 @@ type networkTrackers struct {
 	window   int
 	backfill time.Duration
 	fetch    *fetchScheduler
-	// suspend is the network's unanimous-failure state of header checks.
+	// suspend is the network's suspension of integrity checks (spec §6.9).
 	suspend *checkSuspensions
 	// checks is the network's compiled header checks.
 	checks atomic.Pointer[headerChecks]
@@ -2979,6 +3037,17 @@ func lookupChainTracker(n common.Network, groupKey string) *ChainTracker {
 	nt.mu.Lock()
 	defer nt.mu.Unlock()
 	return nt.groups[groupKey]
+}
+
+// trackers are the network's trackers, network-wide and per group.
+func (nt *networkTrackers) trackers() []*ChainTracker {
+	nt.mu.Lock()
+	defer nt.mu.Unlock()
+	out := make([]*ChainTracker, 0, len(nt.groups))
+	for _, t := range nt.groups {
+		out = append(out, t)
+	}
+	return out
 }
 
 func (nt *networkTrackers) get(n common.Network, groupKey, selector, lane string) *ChainTracker {

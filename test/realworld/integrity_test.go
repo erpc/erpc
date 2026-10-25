@@ -55,6 +55,7 @@ func u8(integrity bool) spec {
 	}
 	return spec{name: name, integrity: integrity, late: late, bound: settleDelivery, body: func(s *scenario) {
 		s.blocks(25)
+		susp := s.suspensions("")
 		ws := s.vendors["ws-a"]
 		from := s.chain.Tip().Number + 1
 		ws.Update(func(f *chainsim.Faults) { f.WrongHashes = true })
@@ -79,6 +80,7 @@ func u8(integrity bool) spec {
 		if !integrity {
 			return
 		}
+		s.requireNotSuspended(susp, "")
 		up := s.upstream("ws-a")
 		for pod := range s.h.pods {
 			if v, _ := s.metric(pod, "erpc_chain_tracker_source_heads_total", map[string]string{"upstream": up, "outcome": "gated_integrity"}); v == 0 {
@@ -104,6 +106,7 @@ func u9() spec {
 	return spec{name: "U9", integrity: true, bound: healthyDelivery, body: func(s *scenario) {
 		s.slowVendorB()
 		s.blocks(25)
+		susp := s.suspensions("")
 		var during, duringB int64
 		for _, fault := range []func(*chainsim.Faults, bool){
 			func(f *chainsim.Faults, on bool) { f.TruncReceipts = on },
@@ -118,6 +121,7 @@ func u9() spec {
 		}
 		s.logf("under vendor-a's faults, vendor-a answered %d receipts calls, vendor-b %d", during, duringB)
 		s.requireOnVendorA(during, nil)
+		s.requireNotSuspended(susp, "")
 		s.blocks(25)
 	}}
 }
@@ -165,15 +169,15 @@ func u9Trunc(vendors int) spec {
 	}}
 }
 
-// U9-bloom1, U9-bloom2: a logsBloom that is set but not the header's
-// (bloomMatch, §11) in receipts from vendor-a, then from both vendors,
-// integrity on. With one vendor, receipts are refetched from vendor-b,
-// violations count bloomMatch on vendor-a only, and the bloom check is
-// never suspended (§6.10). With both, the check is suspended after
-// bloomSuspendRun blocks in a row and the blocks are fetched again, so
-// every client's logs equal the canonical logs; after bloomRearmRun
-// matching blocks it is re-armed: vendor-a's wrong bloom alone counts
-// against vendor-a again, with no new suspension (§6.9).
+// U9-bloom1, U9-bloom2: receipts whose logsBloom is set but not the
+// header's (bloomMatch, §11) from vendor-a, integrity on: refetched from
+// vendor-b, violations count bloomMatch on vendor-a only, and the bloom
+// check is never suspended (§6.10). U9-bloom2 first mints a chain whose
+// header bloom is not its receipts' OR, on every vendor: the check is
+// suspended after bloomSuspendRun blocks in a row and the blocks are
+// fetched again, so every client's logs equal the canonical logs; after
+// bloomRearmRun matching blocks it is re-armed, and vendor-a's wrong bloom
+// alone counts against vendor-a again, with no new suspension (§6.9).
 func u9Bloom(vendors int) spec {
 	bloom := func(f *chainsim.Faults, on bool) { f.OffBloom = on }
 	check := map[string]string{"check": bloomCheck}
@@ -193,10 +197,12 @@ func u9Bloom(vendors int) spec {
 		s.slowVendorB()
 		s.blocks(25)
 		susp := s.suspensions(bloomCheck)
-		s.fault(append(vendorA, vendorB...), bloom, 3*bloomSuspendRun)
+		s.chain.OffHeaderBloom(true)
+		s.blocks(3 * bloomSuspendRun)
+		s.chain.OffHeaderBloom(false)
 		for pod, n := range s.suspensions(bloomCheck) {
 			if n <= susp[pod] {
-				s.violate(s.name, "pod-%d: erpc_integrity_check_suspended_total{check=%s} stayed %v while both vendors served a wrong bloom for %d blocks", pod+1, bloomCheck, n, 3*bloomSuspendRun)
+				s.violate(s.name, "pod-%d: erpc_integrity_check_suspended_total{check=%s} stayed %v while the chain's header bloom was not its receipts' for %d blocks", pod+1, bloomCheck, n, 3*bloomSuspendRun)
 			}
 		}
 		s.blocks(3 * bloomRearmRun)
@@ -306,14 +312,12 @@ func (s *scenario) requireNotSuspended(before []float64, check string) {
 
 // K5: one chain and one plan (1–3 deep reorgs, then a reorgWindow − 1 deep
 // one), integrity on on pod-1 and off on pod-2, each pod with its own
-// baseline clients that never move. Integrity runs baseFeeDerivation, as
-// TestChainFeed_ConvergesUnderFaults does for the simulated chain, whose
-// base fee is not the one its parents derive: integrity on must suspend
-// the check network-wide (§6.9: no header passes at 2 heights in a row)
-// and serve on. Every pod-1 client ends with the same chain and the same
-// live logs as its pod-2 twin (§19 K5).
+// baseline clients that never move. Integrity also runs baseFeeDerivation,
+// which every simulated header passes, as a node's headers do: nothing is
+// suspended on either pod. Every pod-1 client ends with the same chain and
+// the same live logs as its pod-2 twin (§19 K5).
 func k5() spec {
-	return spec{name: "K5", integrity: true, integrityOff: []int{1}, checks: []string{baseFeeCheck}, sim: chainsim.Config{BadBaseFee: true}, bound: healthyDelivery,
+	return spec{name: "K5", integrity: true, integrityOff: []int{1}, checks: []string{baseFeeCheck}, bound: healthyDelivery,
 		clients: func(s *scenario) {
 			for _, p := range s.h.pods {
 				s.podClients(p.idx, 0)
@@ -328,8 +332,8 @@ func k5() spec {
 			s.blocks(25)
 			s.reorg(reorgWindow - 1)
 			s.blocks(25)
-			if v := s.suspensions(baseFeeCheck); v[0] == 0 || v[1] > 0 {
-				s.violate("harness", "erpc_integrity_check_suspended_total{check=%s}: pod-1 (integrity on) %v, pod-2 (off) %v: the plan did not set integrity on apart from off", baseFeeCheck, v[0], v[1])
+			if v := s.suspensions(""); v[0] > 0 || v[1] > 0 {
+				s.violate(s.name, "erpc_integrity_check_suspended_total: pod-1 (integrity on) %v, pod-2 (off) %v on a chain whose every header a node would serve", v[0], v[1])
 			}
 		},
 		after: requireSameOnAndOff,

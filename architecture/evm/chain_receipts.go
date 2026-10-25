@@ -21,19 +21,16 @@ import (
 	"github.com/erpc/erpc/util"
 )
 
-// Bloom check and receipts bounds (spec §10); variables so tests run fast.
+// Receipts skip bounds (spec §11); variables so tests run fast.
 var (
-	bloomTrustRun        = 8 // matching blocks with transactions in a row before the bloom skip
-	bloomOnRun           = 8 // matching blocks in a row that turn the check on again
-	bloomOneVendorOffRun = 8 // mismatching blocks in a row that turn it off on a one-vendor network
-	bloomVendorsOffRun   = 2 // blocks in a row that 2 or more vendors mismatch, and none matches
-	bloomSeenCap         = 1024
+	bloomTrustRun = 8 // matching blocks with transactions in a row before the bloom skip
+	bloomSeenCap  = 1024
 )
 
 // Receipts timings (spec §10); exported so end-to-end tests can scale them.
 var (
 	// LogsFallbackAfter: receipts failing this long on every upstream switch
-	// a block to eth_getLogs while integrity is off.
+	// a block to eth_getLogs by blockHash.
 	LogsFallbackAfter = util.NewDuration(5 * time.Second)
 	// ReceiptsOutageAfter: every receipts and logs fetch failing this long
 	// refuses new logs subscribes until one succeeds.
@@ -56,31 +53,22 @@ const (
 	bloomMismatch                     // it is not
 )
 
-// bloomGate is the network's bloom check (spec §10), shared by its
-// trackers: on while answers' blooms match their headers', off once
-// vendors agree the chain's bloom differs, on again after bloomOnRun
-// matching blocks. It also decides both receipts skips.
+// bloomGate is the network's receipts profile and its "bloom trusted for
+// skipping" (spec §6.9, §11), shared by its trackers. Trust allows the
+// bloom skip: set after bloomTrustRun matching blocks with transactions
+// in a row, cleared by any mismatch. The bloom check's suspension is the
+// network's checkSuspensions, which never touches trust.
 type bloomGate struct {
 	network common.Network
 	once    sync.Once
 	profile bloomProfile // read from the network's config on first use
 
-	on      atomic.Bool
-	trusted atomic.Bool // on, after bloomTrustRun matching blocks with transactions in a row
+	trusted atomic.Bool
 
-	mu     sync.Mutex
-	txRun  int
-	onRun  int
-	misses []bloomMiss // per mismatching block in a row
-	seen   map[[32]byte]bloomVerdict
-	order  [][32]byte
-}
-
-// bloomMiss is one mismatching block of a run: the most vendors seen
-// mismatching on it.
-type bloomMiss struct {
-	hash    [32]byte
-	vendors int
+	mu    sync.Mutex
+	txRun int
+	seen  map[[32]byte]bloomVerdict
+	order [][32]byte
 }
 
 // bloomProfile is what the network's config says of the check.
@@ -90,20 +78,17 @@ type bloomProfile struct {
 	// emptyOff: the chain profile disables transactionsRootRecompute, so
 	// the root may miss committed system transactions and their receipts.
 	emptyOff bool
-	// logsFallback: integrity is off, so eth_getLogs by blockHash may
-	// stand in for receipts that keep failing. With integrity on it stands
-	// in only while no upstream serves eth_getBlockReceipts, and only logs
-	// 2 vendors agree on are held.
-	logsFallback bool
+	// agreeLogs: integrity is on, so logs from eth_getLogs by blockHash,
+	// which stand in for receipts that keep failing, are held only once
+	// vendors that meet the evidence quorum answered the same logs.
+	agreeLogs bool
 	// logIndexes: integrity checks logIndexContiguity, so logs from
 	// eth_getLogs by blockHash must run 0..N-1 as receipts' do.
 	logIndexes bool
 }
 
 func newBloomGate(n common.Network) *bloomGate {
-	g := &bloomGate{network: n, seen: make(map[[32]byte]bloomVerdict)}
-	g.on.Store(true)
-	return g
+	return &bloomGate{network: n, seen: make(map[[32]byte]bloomVerdict)}
 }
 
 func (g *bloomGate) prof() *bloomProfile {
@@ -125,14 +110,21 @@ func (g *bloomGate) prof() *bloomProfile {
 			}
 		}
 		cs, _, _, _ := resolveIntegrity(n, nil)
-		g.profile.logsFallback = len(cs) == 0
+		g.profile.agreeLogs = len(cs) > 0
 		g.profile.logIndexes = cs.For("logIndexContiguity").Enabled
 	})
 	return &g.profile
 }
 
-// checking reports whether a mismatching answer fails its fetch.
-func (g *bloomGate) checking() bool { return !g.prof().checkOff && g.on.Load() }
+// checking reports whether a mismatching answer fails its fetch: the chain
+// profile keeps the check and the network has not suspended it.
+func (g *bloomGate) checking() bool {
+	if g.prof().checkOff {
+		return false
+	}
+	s := suspensionsOf(g.network)
+	return s == nil || s.mode(bloomCheckID) == integrity.CheckEnforced
+}
 
 // bloomSkips: a block no registered MayMatch wants need not be fetched.
 // Only for a header whose hash recomputes, so its bloom is the block's.
@@ -165,72 +157,23 @@ func (g *bloomGate) newLocked(h [32]byte, v bloomVerdict) bool {
 	return true
 }
 
-// matched records a block whose answer's bloom matched its header's.
-func (g *bloomGate) matched(h *chainHeader) {
+// noted records block h's bloom verdict for trust, once per block and
+// verdict.
+func (g *bloomGate) noted(h *chainHeader, v bloomVerdict) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if !g.newLocked(h.hash, bloomMatch) {
+	if !g.newLocked(h.hash, v) {
 		return
 	}
-	g.misses = g.misses[:0]
-	if !g.on.Load() {
-		g.onRun++
-		if g.onRun >= bloomOnRun {
-			g.on.Store(true)
-			g.onRun, g.txRun = 0, 0
-		}
-		return
-	}
-	if !h.emptyTxs {
-		g.txRun++
-		if g.txRun >= bloomTrustRun {
+	switch {
+	case v == bloomMismatch:
+		g.txRun = 0
+		g.trusted.Store(false)
+	case !h.emptyTxs:
+		if g.txRun++; g.txRun >= bloomTrustRun {
 			g.trusted.Store(true)
 		}
 	}
-}
-
-// mismatched records a block no answer matched: vendors of the network's
-// networkVendors mismatched on it. A repeat verdict on a block of the run
-// keeps the most vendors seen. It reports whether the check turned off: on
-// a network of 2 or more vendors once 2 or more vendors mismatch on
-// bloomVendorsOffRun blocks in a row, on a one-vendor network after
-// bloomOneVendorOffRun blocks in a row.
-func (g *bloomGate) mismatched(h *chainHeader, vendors, networkVendors int) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if !g.newLocked(h.hash, bloomMismatch) {
-		i := slices.IndexFunc(g.misses, func(m bloomMiss) bool { return m.hash == h.hash })
-		if i < 0 || g.misses[i].vendors >= vendors {
-			return false
-		}
-		g.misses[i].vendors = vendors
-	} else {
-		g.txRun = 0
-		g.trusted.Store(false)
-		if !g.on.Load() {
-			g.onRun = 0
-			return false
-		}
-		g.misses = append(g.misses, bloomMiss{hash: h.hash, vendors: vendors})
-		if len(g.misses) > bloomOneVendorOffRun {
-			g.misses = g.misses[1:]
-		}
-	}
-	off := false
-	if networkVendors <= 1 {
-		off = len(g.misses) >= bloomOneVendorOffRun
-	} else {
-		run := 0
-		for i := len(g.misses) - 1; i >= 0 && g.misses[i].vendors >= 2; i-- {
-			run++
-		}
-		off = run >= bloomVendorsOffRun
-	}
-	if off {
-		g.on.Store(false)
-		g.misses, g.onRun = g.misses[:0], 0
-	}
-	return off
 }
 
 // heldReceipts is one block's receipts as the feed holds them: verbatim,
@@ -633,11 +576,12 @@ func (t *ChainTracker) receiptsSpec(class fetchClass, hash [32]byte, h *chainHea
 	return spec
 }
 
-// holdReceipts holds r while its block lies within reorgWindow of the head,
-// orphans included; older receipts leave at once, and at most receiptsCap
-// whose number is unknown stay. Its bloom verdict counts once for the
-// network's check.
-func (t *ChainTracker) holdReceipts(r *heldReceipts) {
+// holdReceipts holds r, answered by upstreamId ("" from the cache), while
+// its block lies within reorgWindow of the head, orphans included; older
+// receipts leave at once, and at most receiptsCap whose number is unknown
+// stay. Its bloom verdict counts once for trust, and for the network's
+// bloom check against upstreamId's vendor.
+func (t *ChainTracker) holdReceipts(r *heldReceipts, upstreamId string) {
 	key := hexHash(r.hash)
 	if _, seen := t.receipts.Load(key); !seen {
 		t.receiptsOrder = append(t.receiptsOrder, receiptsEntry{key: key, number: r.number})
@@ -648,11 +592,9 @@ func (t *ChainTracker) holdReceipts(r *heldReceipts) {
 		t.receipts.Delete(t.receiptsOrder[0].key)
 		t.receiptsOrder = t.receiptsOrder[1:]
 	}
-	switch r.bloom {
-	case bloomMatch:
-		t.fetch.bloom.matched(r.h)
-	case bloomMismatch:
-		t.fetch.bloom.mismatched(r.h, 1, t.vendorCount(r.method()))
+	if r.bloom != bloomUnknown {
+		t.fetch.bloom.noted(r.h, r.bloom)
+		t.recordBloom(upstreamId, r.h, r.bloom == bloomMatch)
 	}
 	t.receiptsDirty = true
 }
@@ -677,9 +619,9 @@ func (t *ChainTracker) evictReceipts() {
 // receiptsJob fetches one block's receipts until they are held: at pin time
 // for the feed (keep), or for the Reads that wait on it. A bloom mismatch
 // moves the next attempt to an upstream of another vendor; receipts that
-// keep failing switch to eth_getLogs while integrity is off. With integrity
-// on, logs from eth_getLogs are held only once 2 vendors answered the same
-// logsDigest.
+// keep failing switch to eth_getLogs. With integrity on, logs from
+// eth_getLogs are held only once vendors that meet the evidence quorum
+// answered the same logsDigest.
 type receiptsJob struct {
 	h       *chainHeader
 	keep    bool // the feed wants this pinned block's receipts held
@@ -727,28 +669,28 @@ func (j *receiptsJob) answered(vendor string) bool {
 
 // runJob makes the job's next attempt: a sweep, or after a mismatch an
 // upstream of a vendor not yet asked this round. With every vendor asked,
-// the block counts as mismatched for the network, and a new round sweeps
-// once the key's backoff ends; a check that turned off accepts it. Logs
-// waiting for agreement ask a vendor that has not answered them; with
-// every vendor asked, a new round starts a block time later.
+// a new round sweeps once the key's backoff ends; a bloom check the
+// network suspended meanwhile accepts it. Logs waiting for agreement ask a
+// vendor that has not answered them; with every vendor asked, a new round
+// starts a block time later.
 func (t *ChainTracker) runJob(j *receiptsJob) {
 	if j.cancel != nil {
 		j.cancel()
 	}
-	fallback := t.fetch.bloom.prof().logsFallback
 	if j.started.IsZero() {
 		j.started = time.Now()
-	} else if !j.logs && fallback && time.Since(j.started) >= LogsFallbackAfter.Load() {
-		j.logs = true
-		j.newRound()
 	}
+	// A job's first attempt asks for receipts whatever the clock says, so
+	// receipts that work again end the stand-in.
+	after := LogsFallbackAfter.Load()
+	failedLong := time.Since(j.started) >= after || j.attempt > 0 && !t.receiptsDown.IsZero() && time.Since(t.receiptsDown) >= after
 	switch receipts, logs := t.usableMethods(); {
-	case !j.logs && !receipts && logs:
+	case !j.logs && logs && (!receipts || failedLong):
 		j.logs = true
 		j.newRound()
-	case j.logs && receipts && !fallback:
-		// Receipts are served again: they prove the logs, so the job leaves
-		// the stand-in.
+	case j.logs && receipts && (!logs || !failedLong):
+		// Receipts are served again, or logs no longer may stand in: receipts
+		// prove the logs, so the job leaves the stand-in.
 		j.logs = false
 		j.newRound()
 	}
@@ -758,7 +700,6 @@ func (t *ChainTracker) runJob(j *receiptsJob) {
 		// A wrong answer may sit in the cache under this key.
 		spec.fresh = true
 		if spec.upstream = t.nextVendorUpstream(j, spec.method); spec.upstream == "" {
-			t.fetch.bloom.mismatched(j.h, len(j.mismatched), t.vendorCount(spec.method))
 			j.newRound()
 		}
 	} else if len(j.agree) > 0 {
@@ -782,10 +723,10 @@ func (t *ChainTracker) runJob(j *receiptsJob) {
 
 // nextVendorUpstream is the first upstream serving method of a vendor that
 // has not mismatched on the job's block this round, and that was not asked
-// yet. An upstream that names no vendor is skipped only once asked.
+// yet.
 func (t *ChainTracker) nextVendorUpstream(j *receiptsJob, method string) string {
 	for _, u := range t.methodUpstreams(method) {
-		if v := u.VendorName(); (v == "" || !j.mismatched[v]) && !j.tried[u.Id()] {
+		if !j.mismatched[VendorKey(u)] && !j.tried[u.Id()] {
 			return u.Id()
 		}
 	}
@@ -796,7 +737,7 @@ func (t *ChainTracker) nextVendorUpstream(j *receiptsJob, method string) string 
 // that has not answered the job's logs this round, not asked yet.
 func (t *ChainTracker) nextAgreeUpstream(j *receiptsJob) string {
 	for _, u := range t.methodUpstreams("eth_getLogs") {
-		if !j.answered(u.VendorName()) && !j.tried[u.Id()] {
+		if !j.answered(VendorKey(u)) && !j.tried[u.Id()] {
 			return u.Id()
 		}
 	}
@@ -820,9 +761,9 @@ func (t *ChainTracker) runJobLater(j *receiptsJob) {
 }
 
 // logsAgreed notes that upstreamId answered r, logs from eth_getLogs, and
-// reports whether 2 vendors have answered its digest this round. A cached
-// answer names no vendor: it counts for none, and the cache is not read
-// again.
+// reports whether the vendors that answered its digest this round meet the
+// evidence quorum. A cached answer names no vendor: it counts for none,
+// and the cache is not read again.
 func (t *ChainTracker) logsAgreed(j *receiptsJob, upstreamId string, r *heldReceipts) bool {
 	if upstreamId == "" {
 		j.fresh = true
@@ -838,7 +779,7 @@ func (t *ChainTracker) logsAgreed(j *receiptsJob, upstreamId string, r *heldRece
 	if !slices.Contains(j.agree[i].vendors, vendor) {
 		j.agree[i].vendors = append(j.agree[i].vendors, vendor)
 	}
-	return len(j.agree[i].vendors) >= 2
+	return meetsEvidence(len(j.agree[i].vendors), t.networkVendors())
 }
 
 func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec, res fetchResult) {
@@ -849,11 +790,14 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 	case res.err == nil:
 		r := res.val.(*heldReceipts)
 		t.noteReceiptsFetch(true)
-		if r.fromLogs && !t.fetch.bloom.prof().logsFallback && !t.logsAgreed(j, res.upstream, r) {
+		if r.fromLogs && t.fetch.bloom.prof().agreeLogs && !t.logsAgreed(j, res.upstream, r) {
 			t.runJob(j)
 			return
 		}
-		t.holdReceipts(r)
+		if !r.fromLogs {
+			t.receiptsDown = time.Time{}
+		}
+		t.holdReceipts(r, res.upstream)
 		t.endJob(j, r)
 	case errors.Is(res.err, errSchedulerClosed) || t.ctx.Err() != nil:
 		t.endJob(j, nil)
@@ -864,6 +808,9 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 		t.runJob(j)
 	default:
 		t.noteReceiptsFetch(false)
+		if spec.upstream == "" && !j.logs && t.receiptsDown.IsZero() {
+			t.receiptsDown = time.Now()
+		}
 		if errors.Is(res.err, errBloomMismatch) {
 			t.countBloomMismatch(res.upstream, spec.method, j.h)
 			j.mismatched[t.vendorOf(res.upstream)] = true
@@ -908,11 +855,11 @@ func (t *ChainTracker) armProbe(after time.Duration) {
 }
 
 // runProbe is one fetch of the head block's receipts during an outage
-// (spec §10), or its logs when no upstream serves receipts or, with
-// integrity off, once receipts have failed for LogsFallbackAfter, as a job
-// switches; the next one follows a block time later, at most
-// ReceiptsProbeCeiling, until one succeeds. With integrity on, the logs it
-// fetched end the outage but are not held: one vendor's logs prove nothing.
+// (spec §10), or its logs when no upstream serves receipts or once
+// receipts have failed for LogsFallbackAfter, as a job switches; the next
+// one follows a block time later, at most ReceiptsProbeCeiling, until one
+// succeeds. With integrity on, the logs it fetched end the outage but are
+// not held: one upstream's logs never meet the evidence quorum's agreement.
 func (t *ChainTracker) runProbe() {
 	since := t.receiptsFailing.Load()
 	if since == 0 {
@@ -934,8 +881,8 @@ func (t *ChainTracker) runProbe() {
 			switch {
 			case res.err == nil:
 				t.noteReceiptsFetch(true)
-				if r := res.val.(*heldReceipts); !r.fromLogs || t.fetch.bloom.prof().logsFallback {
-					t.holdReceipts(r)
+				if r := res.val.(*heldReceipts); !r.fromLogs || !t.fetch.bloom.prof().agreeLogs {
+					t.holdReceipts(r, res.upstream)
 				}
 			case t.ctx.Err() == nil:
 				t.armProbe(next)
@@ -946,17 +893,18 @@ func (t *ChainTracker) runProbe() {
 
 // usableMethods reports whether an upstream of the group serves
 // eth_getBlockReceipts, and whether eth_getLogs by blockHash may stand in:
-// with integrity off, or with integrity on while no upstream serves
-// receipts and upstreams of 2 or more vendors serve eth_getLogs, so their
-// answers can be compared. That stand-in proves less than receipts: logs
-// carry no receiptsRoot to check, only the header's bloom, their
-// logIndexes and, with integrity on, the agreement of 2 vendors.
+// with integrity off when an upstream serves it, with integrity on when
+// the vendors serving it can meet the evidence quorum, so their answers
+// can be compared. That stand-in proves less than receipts: logs carry no
+// receiptsRoot to check, only the header's bloom, their logIndexes and,
+// with integrity on, the evidence quorum's agreement.
 func (t *ChainTracker) usableMethods() (receipts, logs bool) {
 	receipts = len(t.methodUpstreams("eth_getBlockReceipts")) > 0
-	if t.fetch.bloom.prof().logsFallback {
-		return receipts, len(t.methodUpstreams("eth_getLogs")) > 0
+	getLogs := t.methodUpstreams("eth_getLogs")
+	if !t.fetch.bloom.prof().agreeLogs {
+		return receipts, len(getLogs) > 0
 	}
-	return receipts, !receipts && t.vendorCount("eth_getLogs") >= 2
+	return receipts, meetsEvidence(vendorsOf(getLogs), t.networkVendors())
 }
 
 // ServesLogs reports whether logs subscribes may start (spec §10): an
@@ -982,8 +930,9 @@ func (t *ChainTracker) endJob(j *receiptsJob, r *heldReceipts) {
 }
 
 // countBloomMismatch counts a mismatching answer against its upstream, as
-// integrity counts a bloomMatch violation, and in its misbehavior score. A
-// cached answer names no upstream, and counts against none.
+// integrity counts a bloomMatch violation, in its misbehavior score, and
+// for the network's bloom check. A cached answer names no upstream, and
+// counts against none.
 func (t *ChainTracker) countBloomMismatch(upstreamId, method string, h *chainHeader) {
 	if upstreamId == "" {
 		return
@@ -993,6 +942,9 @@ func (t *ChainTracker) countBloomMismatch(upstreamId, method string, h *chainHea
 	if u != nil {
 		vendor = u.VendorName()
 	}
+	if s := suspensionsOf(t.network); s != nil {
+		s.recordBloom(h.number, t.vendorOf(upstreamId), false)
+	}
 	telemetry.MetricIntegrityViolation.WithLabelValues(
 		t.projectId(), vendor, t.networkLabel(), upstreamId, strings.ToLower(method), "bloomMatch", "reject", t.finalityLabel(int64(h.number)),
 	).Inc()
@@ -1000,6 +952,32 @@ func (t *ChainTracker) countBloomMismatch(upstreamId, method string, h *chainHea
 		if ht := u.Tracker(); ht != nil {
 			ht.RecordUpstreamMisbehavior(u, strings.ToLower(method), common.DataFinalityStateUnfinalized)
 		}
+	}
+}
+
+// recordBloom notes for the network's bloom check that upstreamId's
+// answer for block h matched its header's bloom, or not; a cached answer
+// ("") names no vendor and counts for none.
+func (t *ChainTracker) recordBloom(upstreamId string, h *chainHeader, matched bool) {
+	if upstreamId == "" {
+		return
+	}
+	if s := suspensionsOf(t.network); s != nil {
+		s.recordBloom(h.number, t.vendorOf(upstreamId), matched)
+	}
+}
+
+// refetchJobs makes every job's next attempt now, from the network rather
+// than the cache and past its key's backoff: the bloom check was
+// suspended, so the blocks its mismatches held back are fetched again.
+func (t *ChainTracker) refetchJobs() {
+	for _, j := range t.jobs {
+		for _, logs := range []bool{false, true} {
+			t.fetch.forgive(t.receiptsSpec(classTipReceipts, j.h.hash, j.h, logs))
+		}
+		j.fresh = true
+		j.newRound()
+		t.runJob(j)
 	}
 }
 
@@ -1046,21 +1024,19 @@ func (t *ChainTracker) upstreamOf(id string) common.Upstream {
 	return nil
 }
 
+// vendorOf is the VendorKey of upstreamId, the id itself when the group
+// no longer holds it.
 func (t *ChainTracker) vendorOf(upstreamId string) string {
 	if u := t.upstreamOf(upstreamId); u != nil {
-		return u.VendorName()
+		return VendorKey(u)
 	}
-	return ""
+	return upstreamId
 }
 
-// vendorCount is how many vendors the group's upstreams that serve method
-// belong to.
-func (t *ChainTracker) vendorCount(method string) int {
-	vendors := make(map[string]struct{})
-	for _, u := range t.methodUpstreams(method) {
-		vendors[u.VendorName()] = struct{}{}
-	}
-	return len(vendors)
+// networkVendors is how many vendors the group's upstreams name, which the
+// evidence quorum reads.
+func (t *ChainTracker) networkVendors() int {
+	return vendorsOf(t.receiptsUpstreams())
 }
 
 // wantsSnapshot are the registered MayMatch tests.

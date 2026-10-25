@@ -20,6 +20,35 @@ var (
 	followTapPause = time.Second // before a follow tap that failed restarts
 )
 
+// meetsEvidence is the evidence quorum (spec §6.10): content answered by
+// answering distinct vendors is corroborated on a network whose upstreams
+// name networkVendors vendors when they are 2, or 1 on a one-vendor
+// network. A network whose vendors are unknown (0) needs 2.
+func meetsEvidence(answering, networkVendors int) bool {
+	return answering >= 2 || answering == 1 && networkVendors == 1
+}
+
+// VendorKey is the vendor the evidence quorum counts u under: its
+// VendorName, or, unnamed, its own id, so unnamed nodes never pool into
+// one vendor that a single bad node could speak for.
+func VendorKey(u common.Upstream) string {
+	if v := u.VendorName(); v != "" {
+		return v
+	}
+	return u.Id()
+}
+
+// vendorsOf is how many distinct vendors (VendorKey) ups name.
+func vendorsOf(ups []common.Upstream) int {
+	var seen []string
+	for _, u := range ups {
+		if v := VendorKey(u); !slices.Contains(seen, v) {
+			seen = append(seen, v)
+		}
+	}
+	return len(seen)
+}
+
 // extension walks or fills one held root downward (§6 rules 1 and 2, §8):
 // by number, each answer checked against the parentHash of the block above,
 // and a mismatch fetched by hash. A walk takes class 1 and at most

@@ -231,6 +231,19 @@ func (s *fetchScheduler) backoffEnd(spec fetchSpec) time.Time {
 	return s.backoff[key].next
 }
 
+// forgive ends the backoff of spec's key, so a request queued for it may
+// start now: what failed it changed.
+func (s *fetchScheduler) forgive(spec fetchSpec) {
+	key := spec.key()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.backoff, key)
+	if r := s.pending[key]; r != nil && !r.started {
+		r.notBefore = time.Time{}
+	}
+	s.pumpLocked()
+}
+
 // waitsLocked: r, the request queued for key if any, has not started and
 // the key's backoff runs past now.
 func (s *fetchScheduler) waitsLocked(key fetchKey, r *fetchRequest) bool {

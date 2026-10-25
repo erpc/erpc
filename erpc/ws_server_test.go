@@ -1990,10 +1990,11 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		defer s.stopERPC()
 		s.blocks(3)
 		conn, rerr := s.subscribeLogs(0)
-		require.Nil(t, conn)
-		require.NotNil(t, rerr, "logs subscribe is refused: one vendor's logs cannot be compared")
-		assert.EqualValues(t, common.JsonRpcErrorUnsupportedException, rerr["code"], "ErrNoSubscriptionSource maps to -32601: %v", rerr)
-		assert.Zero(t, receiptsAndLogsCalls(s), "no receipts or eth_getLogs fetch")
+		require.Nil(t, rerr, "on a one-vendor network the evidence quorum is that vendor: its eth_getLogs stand in")
+		require.NotNil(t, conn)
+		defer conn.Close()
+		s.blocks(5)
+		assert.Positive(t, receiptsAndLogsCalls(s), "logs fetched by eth_getLogs")
 	})
 }
 
