@@ -206,6 +206,10 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	if h == *old {
 		return
 	}
+	// A Read that sees the new Latest finds when it reached each block.
+	if h.Latest != old.Latest {
+		l.reached.note(h.Latest, time.Now(), n.latestReachedKept())
+	}
 	l.head.Store(&h)
 	if h.Latest != old.Latest {
 		// Latest 0 is unknown, not a served number: eth_blockNumber then
@@ -215,7 +219,6 @@ func (n *Network) refreshLane(l *servedTipLane) {
 				Str("lane", l.label).Int64("latest", h.Latest).Int64("previous", old.Latest).Uint64("sent", sent).
 				Msg("lane's Latest fell below a block this instance sent")
 		}
-		l.reached.note(h.Latest, time.Now(), n.latestReachedKept())
 		if c := l.moved.Swap(nil); c != nil {
 			close(*c)
 		}

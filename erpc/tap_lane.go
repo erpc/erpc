@@ -32,7 +32,8 @@ type latestStep struct {
 }
 
 // note records latest at at when it is the highest yet; kept bounds the
-// steps.
+// steps. A Latest that fell drops the reached times above it: a block it
+// reaches again is deliverable from then.
 func (r *latestReached) note(latest int64, at time.Time, kept int) {
 	if latest <= 0 {
 		return
@@ -40,7 +41,12 @@ func (r *latestReached) note(latest int64, at time.Time, kept int) {
 	n := uint64(latest)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if k := len(r.steps); n <= r.floor || k > 0 && r.steps[k-1].number >= n {
+	if n <= r.floor {
+		r.floor, r.steps = n, r.steps[:0]
+		return
+	}
+	if i, _ := slices.BinarySearchFunc(r.steps, n, func(s latestStep, n uint64) int { return cmp.Compare(s.number, n) }); i < len(r.steps) {
+		r.steps[i].number, r.steps = n, r.steps[:i+1]
 		return
 	}
 	r.steps = append(r.steps, latestStep{n, at})
