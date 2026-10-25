@@ -109,8 +109,8 @@ T   the rest of the real-world catalogue
 
 ## HS: shared counters
 
-- Change (spec §14): a higher remote value wins whatever its timestamp (#1243, open on `main`: merge it, never rewrite it); timestamps decide only rollbacks past 1024 blocks; freshness = local receive time; `erpc_shared_counter_remote_rejected_total`.
-- Add: rollback write when the pins re-anchor below a voter's counter and its hash vote is on the new branch.
+- Change (spec §14): a higher remote value wins whatever its timestamp on every path, for head counters only (#1243, open on `main`: merge its branch, never rewrite it); timestamps decide only rollbacks past 1024 blocks; freshness = this instance's report time; connectors deliver every change; `erpc_shared_counter_remote_rejected_total`.
+- Add: rollback write with a rewind mark when the pins re-anchor below a voter's counter and its hash vote is on the new branch; other instances and the health tracker follow it.
 - Tests, real-world: X5, C5, N6.
 
 ## T: the rest of the catalogue
