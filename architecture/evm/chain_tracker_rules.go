@@ -489,7 +489,7 @@ func (t *ChainTracker) startSettle(s *settleState, targets []string, need common
 // startDispute starts a round over k, a tie or a conflicting no-source
 // answer, when one may start; skip is the voter whose answer k disputes.
 func (t *ChainTracker) startDispute(k roundKey, skip string) bool {
-	return t.maySettle(k) && t.startSettle(&settleState{key: k}, t.tieTargets(skip), common.HeadNeedHash, nil)
+	return t.maySettle(k) && t.startSettle(&settleState{key: k}, t.tieTargets(k, skip), common.HeadNeedHash, nil)
 }
 
 // settleAnswered takes target id's answer to round s. A failed Ask, a
@@ -644,18 +644,20 @@ func (t *ChainTracker) requestSettle(settled chan settleOutcome, number int64) {
 	case t.waits(k), s != nil && s.key.name != k.name && t.keepsPlace(s):
 		report(settled, settleDeferred)
 	default:
-		t.startSettle(&settleState{key: k}, t.tieTargets(skip), common.HeadNeedHash, settled)
+		t.startSettle(&settleState{key: k}, t.tieTargets(k, skip), common.HeadNeedHash, settled)
 	}
 }
 
-// tieTargets are the targets of a round over a tie, a conflicting
+// tieTargets are the targets of a round over k, a tie, a conflicting
 // no-source answer or a client's re-check (spec §6.8): the voters without a
-// counted vote here, then the non-voters, in selection order, up to
-// settleAsks; never skip, the voter whose answer is disputed.
-func (t *ChainTracker) tieTargets(skip string) []string {
+// counted vote that decides k, then the non-voters, in selection order, up
+// to settleAsks; never skip, the voter whose answer is disputed. A vote
+// below k's blocks, or in another tree, has no say in k: only its answer
+// can break the tie.
+func (t *ChainTracker) tieTargets(k roundKey, skip string) []string {
 	var out []string
 	for _, id := range t.voters.Voters {
-		if id != skip && !(t.counts(id) && t.alive(t.votes[id])) && len(out) < settleAsks {
+		if v := t.votes[id]; id != skip && !(t.counts(id) && t.alive(v) && t.decides(k, v)) && len(out) < settleAsks {
 			out = append(out, id)
 		}
 	}
@@ -665,6 +667,16 @@ func (t *ChainTracker) tieTargets(skip string) []string {
 		}
 	}
 	return out
+}
+
+// decides reports whether vote n takes part in round k: it is, or descends
+// from, one of k's blocks. A key that names no block takes every vote.
+func (t *ChainTracker) decides(k roundKey, n *node) bool {
+	if k.pinned == nil && len(k.branch) == 0 {
+		return true
+	}
+	in := func(b *node) bool { return b != nil && (b == n || isAncestor(b, n)) }
+	return in(k.pinned) || slices.ContainsFunc(k.branch, in)
 }
 
 // refreshTargets are §6.3's refresh for voter off's vote nd off the pins:
