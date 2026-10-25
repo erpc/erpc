@@ -62,7 +62,7 @@ func x7() spec {
 		wg.Wait()
 		for pod, p := range s.h.pods {
 			if !p.old {
-				s.requireNoInvariantViolation(pod)
+				s.requireNoInvariantViolation(pod, 0)
 			}
 		}
 		s.blocks(25)
@@ -143,8 +143,10 @@ next:
 // requireNoInvariantViolation: pod exports
 // erpc_chain_tracker_invariant_violations_total for the network, with
 // every invariant but final_hash_changed at 0, and
-// erpc_head_refusal_total{rule=retried_missing} is 0 (§17, §19).
-func (s *scenario) requireNoInvariantViolation(pod int) {
+// erpc_head_refusal_total{rule=retried_missing} is bandMisses: the
+// scenario's own probes of blocks no vendor has inside the refusal band,
+// each a retried miss by definition (§6.4, §17, §19).
+func (s *scenario) requireNoInvariantViolation(pod int, bandMisses float64) {
 	ss, err := s.h.pods[pod].scrape()
 	if err != nil {
 		s.violate(s.name, "pod-%d: scrape: %v", pod+1, err)
@@ -163,8 +165,8 @@ func (s *scenario) requireNoInvariantViolation(pod int) {
 	if !exported {
 		s.violate(s.name, "pod-%d does not export erpc_chain_tracker_invariant_violations_total for %s (§17)", pod+1, s.network())
 	}
-	if v, _ := sumOf(ss, "erpc_head_refusal_total", map[string]string{"project": s.project, "network": s.network(), "rule": "retried_missing"}); v > 0 {
-		s.violate(s.name, "pod-%d: erpc_head_refusal_total{rule=retried_missing} = %v, not 0", pod+1, v)
+	if v, _ := sumOf(ss, "erpc_head_refusal_total", map[string]string{"project": s.project, "network": s.network(), "rule": "retried_missing"}); v != bandMisses {
+		s.violate(s.name, "pod-%d: erpc_head_refusal_total{rule=retried_missing} = %v, not %v (the scenario's own band probes)", pod+1, v, bandMisses)
 	}
 }
 
@@ -215,7 +217,7 @@ func x8() spec {
 		}
 		stop()
 		for pod := range s.h.pods {
-			s.requireNoInvariantViolation(pod)
+			s.requireNoInvariantViolation(pod, 1)
 		}
 		s.blocks(25)
 	}}
