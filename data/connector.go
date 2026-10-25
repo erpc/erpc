@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
@@ -69,6 +70,30 @@ type CounterInt64State struct {
 	Value     int64  `json:"v"`
 	UpdatedAt int64  `json:"t"`
 	UpdatedBy string `json:"b,omitempty"`
+}
+
+// Reasons of erpc_shared_counter_remote_rejected_total.
+const (
+	rejectNonPositive    = "non_positive"
+	rejectSmallRollback  = "small_rollback"
+	rejectStaleTimestamp = "stale_timestamp"
+	rejectMalformed      = "malformed"
+)
+
+func countRejected(reason string) {
+	telemetry.CounterHandle(telemetry.MetricSharedCounterRemoteRejectedTotal, reason).Inc()
+}
+
+// parseCounterState parses a stored or published counter state. A parse
+// error or t<=0 is malformed: counted, and read as missing (no v1 fallback,
+// #956).
+func parseCounterState(raw []byte) (CounterInt64State, bool) {
+	var st CounterInt64State
+	if err := common.SonicCfg.Unmarshal(raw, &st); err != nil || st.UpdatedAt <= 0 {
+		countRejected(rejectMalformed)
+		return CounterInt64State{}, false
+	}
+	return st, true
 }
 
 type Connector interface {

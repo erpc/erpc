@@ -904,8 +904,7 @@ func (p *PostgreSQLConnector) getOrCreateListener(ctx context.Context, key strin
 			p.logger.Trace().Str("key", key).Interface("payload", notification).Msg("received postgres notification")
 
 			// Parse and broadcast state
-			var st CounterInt64State
-			if err := common.SonicCfg.Unmarshal([]byte(notification.Payload), &st); err == nil && st.UpdatedAt > 0 {
+			if st, ok := parseCounterState([]byte(notification.Payload)); ok {
 				listener.mu.Lock()
 				for _, ch := range listener.watchers {
 					select {
@@ -1018,9 +1017,8 @@ func (p *PostgreSQLConnector) getCurrentValue(ctx context.Context, key string) (
 		return CounterInt64State{}, false, err
 	}
 
-	var st CounterInt64State
-	if err := common.SonicCfg.Unmarshal(val, &st); err != nil || st.UpdatedAt <= 0 {
-		// No backward compatibility: treat parse errors as missing
+	st, ok := parseCounterState(val)
+	if !ok {
 		return CounterInt64State{}, false, nil
 	}
 

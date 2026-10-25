@@ -198,6 +198,7 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 	newVal := st.Value
 
 	if c.ignoreRollbackOf == 0 && !newer && newVal != currentValue {
+		countRejected(rejectStaleTimestamp)
 		return false
 	}
 
@@ -226,6 +227,7 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 
 	if newVal > currentValue {
 		if !newer && c.dropped() {
+			countRejected(rejectStaleTimestamp)
 			return false
 		}
 		for {
@@ -270,6 +272,7 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 		// to us on the next tick and the counter flaps.
 		if isRemoteUpdate {
 			c.advanceTimestampPast(st.UpdatedAt)
+			countRejected(rejectNonPositive)
 		}
 		c.registry.logger.Warn().
 			Str("source", source).
@@ -292,6 +295,7 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 		// since local.UpdatedAt will now be > remote.UpdatedAt.
 		if isRemoteUpdate {
 			c.advanceTimestampPast(st.UpdatedAt)
+			countRejected(rejectSmallRollback)
 		}
 		c.registry.logger.Trace().
 			Str("source", source).
@@ -307,6 +311,7 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 	// Timestamps decide large drops: an older one is a state this instance
 	// already moved past.
 	if !newer {
+		countRejected(rejectStaleTimestamp)
 		return false
 	}
 
@@ -707,16 +712,11 @@ func (c *counterInt64) tryGetRemoteState(ctx context.Context) (CounterInt64State
 		}
 		return CounterInt64State{}, false
 	}
-	var st CounterInt64State
-	if err := common.SonicCfg.Unmarshal(remoteVal, &st); err != nil {
-		// No backward compatibility: treat parse errors as missing
-		c.registry.logger.Debug().Err(err).Str("key", c.key).Msg("failed to parse remote counter state (treating as missing)")
-		return CounterInt64State{}, false
+	st, ok := parseCounterState(remoteVal)
+	if !ok {
+		c.registry.logger.Debug().Str("key", c.key).Msg("failed to parse remote counter state (treating as missing)")
 	}
-	if st.UpdatedAt <= 0 {
-		return CounterInt64State{}, false
-	}
-	return st, true
+	return st, ok
 }
 
 func (c *counterInt64) updateRemoteState(ctx context.Context, st CounterInt64State) {

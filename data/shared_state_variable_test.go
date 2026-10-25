@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -2137,15 +2139,23 @@ func TestCounterInt64_PubsubHeadCounterIsMaxOnly(t *testing.T) {
 	send(5002, time.Now().UnixMilli())
 	assert.Eventually(t, func() bool { return counter.GetValue() == 5002 }, time.Second, 5*time.Millisecond)
 
+	stale, small := rejectedTotal(rejectStaleTimestamp), rejectedTotal(rejectSmallRollback)
 	send(1000, time.Now().UnixMilli())
-	send(5002, skewed) // a marker: once it is handled, the drop before it was
+	send(4990, time.Now().UnixMilli())
+	send(5002, skewed) // a marker: once it is handled, the drops before it were
 	time.Sleep(50 * time.Millisecond)
-	assert.Equal(t, int64(5002), counter.GetValue(), "a large drop older than the local state is rejected")
+	assert.Equal(t, int64(5002), counter.GetValue(), "a large drop older than the local state is rejected; a small one is noise")
 	assert.Equal(t, int32(0), rollbacks.Load())
+	assert.Equal(t, 1.0, rejectedTotal(rejectStaleTimestamp)-stale)
+	assert.Equal(t, 1.0, rejectedTotal(rejectSmallRollback)-small)
 
 	send(1000, skewed+1)
 	assert.Eventually(t, func() bool { return counter.GetValue() == 1000 }, time.Second, 5*time.Millisecond,
 		"a newer large drop is a rollback")
 	assert.Equal(t, int32(1), rollbacks.Load())
 	connector.AssertExpectations(t)
+}
+
+func rejectedTotal(reason string) float64 {
+	return testutil.ToFloat64(telemetry.MetricSharedCounterRemoteRejectedTotal.WithLabelValues(reason))
 }
