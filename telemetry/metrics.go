@@ -550,6 +550,23 @@ var (
 		Help:      "Total state-trie probes by kind (context/proof/latest) and outcome (match/stale/pin_ignored/mismatch/unsupported/error).",
 	}, []string{"project", "vendor", "network", "upstream", "probe", "outcome"})
 
+	// MetricUpstreamTagStateStale is 1 while the tag-state gate skips the
+	// upstream for tag requests: its "latest" state is stale (spec §6.11).
+	MetricUpstreamTagStateStale = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_tag_state_stale",
+		Help:      "1 while the upstream's \"latest\" state is stale and the tag-state gate skips it for tag requests.",
+	}, []string{"project", "network", "upstream"})
+
+	// MetricUpstreamTagStateAllStaleTotal counts tag requests whose every
+	// routed upstream was stale: routed to the highest tag-state head, or
+	// refused when that head is more than 60s behind Latest.
+	MetricUpstreamTagStateAllStaleTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_tag_state_all_stale_total",
+		Help:      "Tag requests whose every routed upstream had stale \"latest\" state, by outcome (routed/refused).",
+	}, []string{"project", "network", "outcome"})
+
 	// MetricChainTrackerHead is the head of a chain tracker: the highest pin.
 	MetricChainTrackerHead = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",

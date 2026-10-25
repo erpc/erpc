@@ -67,7 +67,8 @@ type IntegritySettings struct {
 	// misbehaviorRateAbove predicate); absence of proof has no effect at all,
 	// and ObserveOnly suppresses the misbehavior recording like every other
 	// integrity effect. Requires follow to be enabled (the verified header is
-	// the trust anchor). Off by default.
+	// the trust anchor). Off by default. The "latest" tag-state probe behind
+	// the tag-state gate runs on every network whatever this says.
 	StateProbe *IntegrityStateProbeConfig `yaml:"stateProbe,omitempty" json:"stateProbe,omitempty"`
 	// Follow opens one integrity follow tap per chain tracker: it holds
 	// demand, so source polls run without clients, and it drives the state

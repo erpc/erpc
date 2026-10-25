@@ -1574,6 +1574,29 @@ func (e *ErrUpstreamBlockUnavailable) ErrorStatusCode() int {
 	return http.StatusServiceUnavailable
 }
 
+// ErrUpstreamTagStateStale: the tag-state gate skipped the upstream for a
+// tag request, its "latest" state being stale (spec §6.11). Its own code,
+// never ErrUpstreamBlockUnavailable, so it never makes an answer -32014.
+type ErrUpstreamTagStateStale struct{ BaseError }
+
+const ErrCodeUpstreamTagStateStale ErrorCode = "ErrUpstreamTagStateStale"
+
+var NewErrUpstreamTagStateStale = func(upstreamId string) error {
+	return &ErrUpstreamTagStateStale{
+		BaseError{
+			Code:    ErrCodeUpstreamTagStateStale,
+			Message: "upstream executes \"latest\" in stale state",
+			Details: map[string]interface{}{
+				"upstreamId": upstreamId,
+			},
+		},
+	}
+}
+
+func (e *ErrUpstreamTagStateStale) ErrorStatusCode() int {
+	return http.StatusServiceUnavailable
+}
+
 type ErrUpstreamMethodIgnored struct{ BaseError }
 
 const ErrCodeUpstreamMethodIgnored ErrorCode = "ErrUpstreamMethodIgnored"

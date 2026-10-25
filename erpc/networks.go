@@ -1962,6 +1962,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 		return nil, err
 	}
+	// The tag-state decision (spec §6.11) is made once, from the routed
+	// upstreams, before the first attempt: every retry and hedge reads it.
+	if n.cfg.Architecture == common.ArchitectureEvm {
+		if err := evm.DecideTagState(ctx, n, req); err != nil {
+			common.SetTraceSpanError(forwardSpan, err)
+			if mlx != nil {
+				mlx.Close(ctx, nil, err)
+			}
+			return nil, err
+		}
+	}
 
 	// Feed the per-network probe-bus AFTER we know the request is
 	// actually going to dispatch to an upstream (i.e. not a
@@ -3031,6 +3042,11 @@ func (n *Network) checkSvmUpstreamSlotAvailability(ctx context.Context, u common
 // FAIL-OPEN BEHAVIOR: If we cannot determine the bounds or block number (e.g. state
 // poller not ready), we allow the request to proceed rather than blocking traffic.
 func (n *Network) checkEvmUpstreamBlockAvailability(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) (error, bool) {
+	// A tag request whose tag-state decision says u's "latest" state is
+	// stale (spec §6.11): its own error, so it never reads as -32014.
+	if evm.TagStateSkip(n, u, req) {
+		return common.NewErrUpstreamTagStateStale(u.Id()), false
+	}
 	// Range methods (eth_getLogs, trace_filter, arbtrace_filter) enforce block
 	// availability via their own range-aware pre-forward hooks; gating them here on a
 	// single extracted block number would conflict with that.
@@ -3205,11 +3221,25 @@ func eligibleLane(bounds []upstreamBlockBounds, bn int64) []string {
 // cache derive its own key (architecture/svm.RequestKey); multiplexing needs
 // the identical guarantee because it hands the leader's response to followers
 // verbatim.
+//
+// The Use-Upstream directive is part of the key, so identical requests share
+// only when they route alike: a state probe pinned to one upstream never
+// shares with a client request routed elsewhere.
 func (n *Network) multiplexKey(ctx context.Context, req *common.NormalizedRequest) (string, error) {
+	var key string
+	var err error
 	if n.cfg != nil && n.cfg.Architecture == common.ArchitectureSvm {
-		return svm.RequestKey(ctx, req)
+		key, err = svm.RequestKey(ctx, req)
+	} else {
+		key, err = req.CacheHash()
 	}
-	return req.CacheHash()
+	if err != nil || key == "" {
+		return key, err
+	}
+	if d := req.Directives(); d != nil && d.UseUpstream != "" {
+		key += "|use-upstream:" + d.UseUpstream
+	}
+	return key, nil
 }
 
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {

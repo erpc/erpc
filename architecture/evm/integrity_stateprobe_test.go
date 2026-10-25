@@ -229,8 +229,8 @@ func TestStateBoundary_TipChosenFromClaimedHeadsMustRoute(t *testing.T) {
 	// heads, misbehavior), never routing refusals.
 	n := &mockNetwork{}
 	n.On("Id").Return("evm:42161").Maybe()
-	stateProbers.Store("evm:42161", &stateProber{network: &fleetNetwork{ups: ups}})
-	defer stateProbers.Delete("evm:42161")
+	stateProbers.Store(n, &stateProber{network: &fleetNetwork{ups: ups}})
+	defer stateProbers.Delete(n)
 
 	req := func() *common.NormalizedRequest {
 		return common.NewNormalizedRequest([]byte(fmt.Sprintf(

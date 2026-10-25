@@ -1,11 +1,13 @@
 package realworld
 
 import (
+	"errors"
 	"math/big"
 	"time"
 
 	"github.com/erpc/erpc/test/chainsim"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 // Bounds of the tag-state gate (spec §6.11; §19 P11).
@@ -23,6 +25,12 @@ const (
 	// p11Gap: the all-stale depths lie this far apart, so an answer of the
 	// highest tag-state head tells from the next one's (harness).
 	p11Gap = 10
+	// p11Refused: in P11's refusal phase every vendor executes latest this
+	// far below its head, past the 60s after which an all-stale request is
+	// refused (§6.11), by 2 gaps.
+	p11Refused = uint64(60*time.Second/blockTime) + 2*p11Gap
+	// p11RefusedCode: the JSON-RPC code of that refusal.
+	p11RefusedCode = -32603
 )
 
 // p11Depths: in P11's all-stale phase every vendor executes latest this far
@@ -37,9 +45,14 @@ var p11Depths = map[string]uint64{"ws-a": 20, "http-b": 20 + p11Gap, "ws-b": 20 
 // getBlockNumber() executes within W of Latest, and every pod shows http-a
 // stale. Then every vendor runs stale, by p11Depths: each call is routed
 // to ws-a, the highest tag-state head, and counted; none fails, -32603
-// least of all (§6.11 Skip, All stale).
+// least of all. Then every vendor runs p11Refused stale, past 60s: each
+// call is refused with -32603, naming the executed block and the served
+// tip, and counted refused (§6.11 Skip, All stale).
 func p11() spec {
 	return spec{name: "P11", bound: healthyDelivery,
+		// The chain holds p11Refused blocks below every head from its start:
+		// a stale vendor executes no lower than the first block.
+		sim: chainsim.Config{History: int(p11Refused) + chainsim.HistoryBlocks},
 		network: map[string]interface{}{
 			"selectionPolicy": rankFirst("http-a"),
 			"methods": map[string]interface{}{"preserveDefaultMethods": true, "definitions": map[string]interface{}{
@@ -93,6 +106,36 @@ func p11() spec {
 				}
 			}
 			for key := range p11Depths {
+				s.vendors[key].Update(func(f *chainsim.Faults) { f.StaleState = p11Refused })
+			}
+			s.logf("every vendor executes latest %d blocks stale, past 60s", p11Refused)
+			time.Sleep(p11Evidence)
+			for i := range p11Reads {
+				pod := i % len(s.h.pods)
+				_, _, err := s.latestCall(pod)
+				var re rpc.Error
+				var de rpc.DataError
+				switch {
+				case !errors.As(err, &re) || re.ErrorCode() != p11RefusedCode:
+					s.violate(s.name, "pod-%d: eth_call(latest) with every upstream %d blocks stale: got %v, not a %d refusal", pod+1, p11Refused, err, p11RefusedCode)
+				case !errors.As(err, &de):
+					s.violate(s.name, "pod-%d: the %d refusal carries no error data", pod+1, p11RefusedCode)
+				default:
+					data, _ := de.ErrorData().(map[string]interface{})
+					executed, errE := hexutil.DecodeUint64(fmtString(data["executedBlock"]))
+					tip, errT := hexutil.DecodeUint64(fmtString(data["servedTip"]))
+					if errE != nil || errT != nil || executed+p11Refused-p11Gap > tip {
+						s.violate(s.name, "pod-%d: the %d refusal's data %v does not name an executed block %d below the served tip", pod+1, p11RefusedCode, de.ErrorData(), p11Refused)
+					}
+				}
+				s.blocks(2)
+			}
+			for pod := range s.h.pods {
+				if v, _ := s.metric(pod, "erpc_upstream_tag_state_all_stale_total", map[string]string{"outcome": "refused"}); v <= 0 {
+					s.violate(s.name, "pod-%d: erpc_upstream_tag_state_all_stale_total{outcome=refused} stayed %v while every upstream was past 60s stale", pod+1, v)
+				}
+			}
+			for key := range p11Depths {
 				s.vendors[key].Update(func(f *chainsim.Faults) { f.StaleState = 0 })
 			}
 			s.blocks(25)
@@ -112,4 +155,10 @@ func (s *scenario) latestCall(pod int) (latest, at uint64, err error) {
 		return uint64(bn), 0, err
 	}
 	return uint64(bn), new(big.Int).SetBytes(res).Uint64(), nil
+}
+
+// fmtString is v when it is a string, else "".
+func fmtString(v interface{}) string {
+	s, _ := v.(string)
+	return s
 }

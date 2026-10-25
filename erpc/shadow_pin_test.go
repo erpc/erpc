@@ -25,7 +25,7 @@ import (
 func TestPinBlockTagInBody(t *testing.T) {
 	t.Run("PinsLatestForEthCall", func(t *testing.T) {
 		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc","data":"0x1"},"latest"]}`)
-		out, changed := evm.PinBlockTagInBody(body, 1, 0x189cbe5)
+		out, changed := evm.PinBlockTagInBody(body, 0x189cbe5)
 		assert.True(t, changed)
 		assert.Contains(t, string(out), `"0x189cbe5"`)
 		assert.NotContains(t, string(out), `"latest"`)
@@ -33,40 +33,49 @@ func TestPinBlockTagInBody(t *testing.T) {
 
 	t.Run("PinsStorageSlotIndexTwo", func(t *testing.T) {
 		body := []byte(`{"jsonrpc":"2.0","id":7,"method":"eth_getStorageAt","params":["0xabc","0x0","latest"]}`)
-		out, changed := evm.PinBlockTagInBody(body, 2, 100)
+		out, changed := evm.PinBlockTagInBody(body, 100)
+		assert.True(t, changed)
+		assert.Contains(t, string(out), `"0x64"`)
+	})
+
+	t.Run("PinsEstimateGas", func(t *testing.T) {
+		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_estimateGas","params":[{"to":"0xabc"},"latest"]}`)
+		out, changed := evm.PinBlockTagInBody(body, 100)
 		assert.True(t, changed)
 		assert.Contains(t, string(out), `"0x64"`)
 	})
 
 	t.Run("ConcreteHeightUntouched", func(t *testing.T) {
 		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc"},"0x1234"]}`)
-		out, changed := evm.PinBlockTagInBody(body, 1, 100)
+		out, changed := evm.PinBlockTagInBody(body, 100)
 		assert.False(t, changed)
 		assert.Equal(t, body, out)
 	})
 
 	t.Run("PendingUntouched", func(t *testing.T) {
 		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc"},"pending"]}`)
-		_, changed := evm.PinBlockTagInBody(body, 1, 100)
+		_, changed := evm.PinBlockTagInBody(body, 100)
 		assert.False(t, changed)
 	})
 
-	t.Run("MissingParamUntouched", func(t *testing.T) {
+	t.Run("MissingParamPinned", func(t *testing.T) {
 		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc"}]}`)
-		_, changed := evm.PinBlockTagInBody(body, 1, 100)
-		assert.False(t, changed)
+		out, changed := evm.PinBlockTagInBody(body, 100)
+		assert.True(t, changed, "an absent selector means latest, so it pins as interpolation fills it")
+		assert.Contains(t, string(out), `"0x64"`)
 	})
 
 	t.Run("GarbageUntouched", func(t *testing.T) {
 		body := []byte(`{not json`)
-		out, changed := evm.PinBlockTagInBody(body, 1, 100)
+		out, changed := evm.PinBlockTagInBody(body, 100)
 		assert.False(t, changed)
 		assert.Equal(t, []byte(`{not json`), out)
 	})
 }
 
-// ethCallTags records the block selector (params[1]) of every eth_call one
-// mocked upstream host receives. gock runs a mock's filters before its host
+// ethCallTags records the block selector (params[1]) of every client eth_call
+// one mocked upstream host receives; the state prober's own calls to
+// Multicall3 are not clients'. gock runs a mock's filters before its host
 // matcher, so the filter checks the host itself.
 type ethCallTags struct {
 	host string
@@ -79,7 +88,7 @@ func (c *ethCallTags) filter(r *http.Request) bool {
 		return false
 	}
 	body := util.SafeReadBody(r)
-	if !strings.Contains(body, `"eth_call"`) {
+	if !strings.Contains(body, `"eth_call"`) || strings.Contains(strings.ToLower(body), "0xca11bde05977b3631167028862be2a173976ca11") {
 		return false
 	}
 	var rq struct {

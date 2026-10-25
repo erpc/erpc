@@ -320,6 +320,9 @@ type NormalizedRequest struct {
 	evmHead atomic.Pointer[EvmHead]
 	// headRefusal is the refusal rule's verdict for its block (spec §6.4).
 	headRefusal atomic.Pointer[HeadRefusal]
+	// tagStateSkips are the upstreams the tag-state gate skips for this
+	// request (spec §6.11); nil unless it is a family-3 tag request.
+	tagStateSkips atomic.Pointer[map[string]bool]
 
 	compositeType   atomic.Value // Type of composite request (e.g., "logs-split")
 	parentRequestId atomic.Value // ID of the parent request (for sub-requests)
@@ -1222,6 +1225,29 @@ func (r *NormalizedRequest) TakeHeadRefusal(v *HeadRefusal) *HeadRefusal {
 		return v
 	}
 	return r.headRefusal.Load()
+}
+
+// TagStateSkips is r's tag-state decision: the upstream ids the gate skips,
+// nil unless r is a family-3 request whose "latest" reaches upstreams as the
+// tag (spec §6.11).
+func (r *NormalizedRequest) TagStateSkips() map[string]bool {
+	if r == nil {
+		return nil
+	}
+	if m := r.tagStateSkips.Load(); m != nil {
+		return *m
+	}
+	return nil
+}
+
+// TakeTagStateSkips makes skips r's tag-state decision unless r took one
+// already, and returns r's decision: one per request, every attempt and
+// hedge reads it.
+func (r *NormalizedRequest) TakeTagStateSkips(skips map[string]bool) map[string]bool {
+	if r.tagStateSkips.CompareAndSwap(nil, &skips) {
+		return skips
+	}
+	return *r.tagStateSkips.Load()
 }
 
 func (r *NormalizedRequest) CacheHash(ctx ...context.Context) (string, error) {
