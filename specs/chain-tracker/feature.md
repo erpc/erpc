@@ -400,7 +400,7 @@ Each tracker runs one goroutine. It holds headers by hash; a header whose parent
 Fork choice:
 
 1. Hold: an empty tracker holds the first vote as a root. A vote more than `maxBackfill` after the head, by header time, becomes a root at once. Any other vote whose parent is not held is walked (§8, class 1): missing heights by number, each checked against the parentHash of the block above, and a mismatch fetched by hash from its sender. The walk stops at a held header, or after `reorgWindow` blocks, where its lowest header becomes a root. Client and integrity answers inside the window are held; they never walk.
-2. Fill: every root is extended downward (§9) until it joins another tree or reaches the window base.
+2. Fill: every root is extended downward (§9) until it joins another tree, reaches the window base, or names the all-zero parentHash (the chain's first block): that root is final, never fetched below.
 3. Vote: a voter's hash vote moves to its newest header once that header is held; until then its previous vote stays. An ancestor of the current vote does not move it back.
 4. Choose: take the tree with the most votes; a tie keeps the tree of the pins. In it, from the root, follow the child whose subtree holds the most votes; a tie keeps the pinned child; a block with no voted child follows its pinned child. Stop at a block with no child to follow, or at a tie with no pinned child. The last block followed is the head; the path from the root to it is the pins.
 5. Settle: a tie in rule 4, or a hash vote off the pins (§6.3), runs a settle (§6.8). Each answer is walked like a vote; once held, a voter's answer is its hash vote, and a non-voter's adds one vote for this decision only: it counts while the votes alone still meet that tie or dispute, and backs no head above the one decided. The pins stay while a round is out, at most W from its start; walks still out then count as no answer. No answer: the settle runs again after the Ask's backoff; no target: after one block time. A refresh (§6.3) runs once per voter and fork point.
@@ -567,7 +567,7 @@ Every tracker fetch goes through one scheduler per (network, instance). Head fet
 | 2 tip receipts | receipts within `reorgWindow` of the head | at least 1 slot |
 | 3 fill | fill, cursor fetches, older receipts | at least 1 slot |
 
-- Limit: 16 fetches in flight per (network, instance). A sweep that ends in capacity errors on every upstream it tried (HTTP 429, `-32005`, compute units, a denied upstream permit) halves the share of the lowest busy class, never below 1 slot; 10 successes in a row in a class add 1 slot back. One throttled upstream is the selection policy's job (`ThrottledRate`).
+- Limit: 16 fetches in flight per (network, instance). A sweep that ends in capacity errors on every upstream it tried (HTTP 429, `-32005` or compute units in any HTTP status, a denied upstream permit) halves the share of the lowest busy class, never below 1 slot, whatever its fetches in flight; 10 successes in a row in a class add 1 slot back. A capacity backoff ends at the network's next successful fetch, so tip fetches resume within 2 bt once capacity returns. One throttled upstream is the selection policy's job (`ThrottledRate`).
 - One fetch makes one sweep over the upstreams the selection policy orders, or the one upstream it names: no hedge, no network retry, timeout 10s. Failsafe config does not apply to it, an `internal` consensus policy included. A fetch for block N orders them by the reached-N hint (§6.1), so a half-open socket never makes the tip's receipts wait out its attempt share, and HTTP upstreams keep their share of tracker load.
 - A sweep skips an upstream whose breaker is open, and tracker fetches never feed a breaker: tracker load, such as slow receipts of large blocks, must not open a breaker that blocks clients. Subscription calls bypass the breaker entirely.
 - Tracker fetches skip project and network rate limits, which budget clients. Classes 1 and 2 take upstream rate permits as client requests do. Class 3 takes one only when one is free, so catch-up never crowds out clients; a denied permit counts as a capacity error. Upstream scores count every tracker fetch.
@@ -957,7 +957,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | U3 | wss TCP half-open: proxy stops forwarding, socket kept | hash vote expires within W; no tap waits more than W after another voter's first header for a block; reconnect within 15s after the counter passes; no gap past `reorgWindow` |
 | U4 | https keep-alive pool black-holed | one timeout, then new connections; `Latest` keeps moving |
 | U5 | 429 on every vendor for 4 blocks | nobody benched; delivery resumes within 2 bt |
-| U6 | one vendor `-32005` / compute units for 60s | throttled vendor bypassed; scheduler share unchanged |
+| U6 | one vendor `-32005` / compute units for 60s; then every vendor for 10s | one vendor: bypassed, scheduler share unchanged; every vendor: the lowest busy class's share halves (`erpc_chain_tracker_fetch_slots`), then grows back by 10 successes per slot |
 | U7 | vendor answers `null` for a block at or below its own head | retried on another upstream, never cached; client gets the block |
 | U8 | vendor pushes headers with wrong hashes; integrity off and on | never pinned or sent; integrity on: counted on that upstream only |
 | U9 | truncated receipts, forged log, wrong bloom from one vendor | refetched from the other vendor; logs equal canonical |
@@ -970,7 +970,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | U16 | wss refuses `newHeads` as unsupported | polled at cadence; asked again on reconnect and every 10 min |
 | U17 | https refuses `latest` 10 times | give-up; re-probed after 10 min; never a stuck poll source |
 | U18 | one HTTP vendor that is no source on a minority fork at the same heights, 20 blocks | taps never send its blocks; HTTP never serves them once W has passed since this instance first polled a fork header from it (its hash vote, §6.3) |
-| N1 | +300 ms constant latency to one vendor | delivery p99 within 2 bt; `Latest` from the faster voters |
+| N1 | +300 ms constant latency to one vendor | delivery p99 within 2 bt; `Latest` never held at the slowed vendor's number while q other voters report higher |
 | N2 | 0–2 bt jitter on every vendor; pushes reordered | `newHeads` in order, parent-linked, no duplicate |
 | N3 | instance 1 cut from vendor X for 50 blocks | instance 1 flows on vendor Y's votes; no stall |
 | N4 | instance 1 cut from every vendor for 2 min; Redis up; also alone without Redis (N4-lone) | instance 1 gRPC `UNAVAILABLE` within 60s, whether its voters push or poll; clients resume on instance 2 with no gap |
