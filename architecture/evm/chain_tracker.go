@@ -1520,11 +1520,10 @@ func newFeedState(pins []*node) *feedState {
 // stamp marks each pin that first stands at or below s's confirmed head
 // or logs head with the time it got there (Block.Ready). Stamped pins are
 // one run that grows at both ends: new heads above it, fill below it, and
-// a revert unstamps what it removes (unstamp). The logs run never grows
-// past a hole, a pin whose receipts the feed needs and does not hold, even
-// where the logs head passed it below the window: no block from the hole
-// up is deliverable to a tap that needs the hole, so the Read that
-// returns the hole stamps it, and the run then grows past it. Only the
+// a revert unstamps what it removes (unstamp). A hole, a pin whose
+// receipts the feed needs and does not hold, gets no logs stamp, even where
+// the logs head passed it below the window; the run stamps the pins above
+// it, and the Read that returns the hole stamps it (spec §10.2). Only the
 // network-wide tracker stamps: trackers share parsed headers, and taps
 // read only that one.
 func (t *ChainTracker) stamp(s *feedState) {
@@ -1539,19 +1538,20 @@ func (t *ChainTracker) stamp(s *feedState) {
 	}
 }
 
-// stampRun grows the stamped run of ps at both ends, up to the first pin
-// stop names. A Read may stamp a pin at the same time (chainHeader.ready);
-// the first stamp stays.
-func stampRun(ps []*chainHeader, now int64, stop func(*chainHeader) bool, at func(*chainHeader) *atomic.Int64) {
+// stampRun stamps the pins of ps above the highest stamped one and below
+// the lowest, passing over the pins skip names. A Read may stamp a pin at
+// the same time (chainHeader.ready); the first stamp stays.
+func stampRun(ps []*chainHeader, now int64, skip func(*chainHeader) bool, at func(*chainHeader) *atomic.Int64) {
 	i := len(ps) - 1
-	for i >= 0 && at(ps[i]).Load() == 0 {
-		i--
+	for ; i >= 0 && at(ps[i]).Load() == 0; i-- {
+		if !skip(ps[i]) {
+			at(ps[i]).CompareAndSwap(0, now)
+		}
 	}
-	for k := i + 1; k < len(ps) && !stop(ps[k]); k++ {
-		at(ps[k]).CompareAndSwap(0, now)
-	}
-	for j := 0; j < i && at(ps[j]).Load() == 0 && !stop(ps[j]); j++ {
-		at(ps[j]).CompareAndSwap(0, now)
+	for j := 0; j < i && at(ps[j]).Load() == 0; j++ {
+		if !skip(ps[j]) {
+			at(ps[j]).CompareAndSwap(0, now)
+		}
 	}
 }
 
@@ -2161,8 +2161,10 @@ func (t *ChainTracker) readAt(s *feedState, tr *treeState, c indexer.Cursor, rr 
 // reorgWindow of them, ending before the first block whose receipts the tap
 // needs and lacks; empty while from is above the confirmed head. from is at
 // least the lowest pin. A block is deliverable to a logs tap no sooner than
-// the blocks before it, back to the last whose receipts the tap needed, so
-// its Ready is at least theirs.
+// the blocks before it whose receipts the tap needs: a hole the tap waited
+// on carries its Read's stamp to every block after it, here up to
+// reorgWindow back and through the batch, while a tap that needs no hole
+// measures from the stamps alone.
 func (t *ChainTracker) applied(s *feedState, from uint64, rr *readReceipts) indexer.Batch {
 	head := s.confirmedHead()
 	if head == nil || from > head.number {
@@ -2175,10 +2177,10 @@ func (t *ChainTracker) applied(s *feedState, from uint64, rr *readReceipts) inde
 		if c == nil {
 			break
 		}
-		if at := c.logsAt.Load(); at != 0 && time.Unix(0, at).After(prev) {
+		if at := c.logsAt.Load(); at != 0 && time.Unix(0, at).After(prev) && t.tapNeeds(rr.o, c) {
 			prev = time.Unix(0, at)
 		}
-		if n == 0 || t.tapNeeds(rr.o, c) {
+		if n == 0 {
 			break
 		}
 	}

@@ -71,6 +71,11 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 	// sends no removed:true for them (spec §13.3: every removed log is a
 	// sent log).
 	sentFrom, sent := uint64(0), false
+	// floor is the latest Ready of the blocks this tap sent: a block is
+	// deliverable to the tap no sooner than the blocks before it, so a
+	// receipts hole it waited on is never lag for the blocks after it
+	// (spec §10.2).
+	var floor time.Time
 	emit := func(b indexer.Batch) error {
 		// Nothing is written before the client has the subscription id.
 		select {
@@ -91,8 +96,14 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 				return errLogsReorgDepth
 			}
 		}
-		if len(b.Applied) > 0 && lagging(tracker, b.Applied[0]) {
-			return errLogsLag
+		if len(b.Applied) > 0 {
+			next := b.Applied[0]
+			if next.Ready.Before(floor) {
+				next.Ready = floor
+			}
+			if lagging(tracker, next) {
+				return errLogsLag
+			}
 		}
 		for _, blk := range b.Reverted {
 			if !sent || blk.Number < sentFrom {
@@ -117,6 +128,9 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 			}
 			if !sent || blk.Number < sentFrom {
 				sentFrom, sent = blk.Number, true
+			}
+			if blk.Ready.After(floor) {
+				floor = blk.Ready
 			}
 			for _, log := range tracker.MatchedLogs(blk, f) {
 				if err := write(log); err != nil {
