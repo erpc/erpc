@@ -632,8 +632,10 @@ type receiptsJob struct {
 	attempt uint64
 	logs    bool // switched to the eth_getLogs fallback
 	fresh   bool // a cached answer failed the checks: never read the cache again
-	// started is when the job's first attempt was submitted.
-	started    time.Time
+	// failingSince is when the job's receipts sweeps began failing, set by
+	// the first failed one while the job asks for receipts; zero again once
+	// it leaves the logs stand-in, so time on logs never counts.
+	failingSince time.Time
 	mismatched map[string]bool // vendors whose answer mismatched, this round
 	tried      map[string]bool // upstreams asked by name, this round
 	agree      []logsVote      // the logs digests vendors answered, this round
@@ -677,21 +679,20 @@ func (t *ChainTracker) runJob(j *receiptsJob) {
 	if j.cancel != nil {
 		j.cancel()
 	}
-	if j.started.IsZero() {
-		j.started = time.Now()
-	}
-	// A job's first attempt asks for receipts whatever the clock says, so
-	// receipts that work again end the stand-in.
+	// A job's first attempt asks for receipts whatever the network-wide
+	// clock says, so receipts that work again end the stand-in.
 	after := LogsFallbackAfter.Load()
-	failedLong := time.Since(j.started) >= after || j.attempt > 0 && !t.receiptsDown.IsZero() && time.Since(t.receiptsDown) >= after
+	jobDown := !j.failingSince.IsZero() && time.Since(j.failingSince) >= after
+	netDown := !t.receiptsDown.IsZero() && time.Since(t.receiptsDown) >= after
 	switch receipts, logs := t.usableMethods(); {
-	case !j.logs && logs && (!receipts || failedLong):
+	case !j.logs && logs && (!receipts || jobDown || j.attempt > 0 && netDown):
 		j.logs = true
 		j.newRound()
-	case j.logs && receipts && (!logs || !failedLong):
-		// Receipts are served again, or logs no longer may stand in: receipts
+	case j.logs && receipts && (!logs || t.receiptsDown.IsZero()):
+		// Receipts are served again and a receipts answer ended the
+		// network-wide switch, or logs no longer may stand in: receipts
 		// prove the logs, so the job leaves the stand-in.
-		j.logs = false
+		j.logs, j.failingSince = false, time.Time{}
 		j.newRound()
 	}
 	spec := t.receiptsSpec(t.fetchClassAt(int64(j.h.number), classTipReceipts), j.h.hash, j.h, j.logs)
@@ -811,8 +812,13 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 		t.runJob(j)
 	default:
 		t.noteReceiptsFetch(false)
-		if spec.upstream == "" && !j.logs && t.receiptsDown.IsZero() {
-			t.receiptsDown = time.Now()
+		if spec.upstream == "" && !j.logs {
+			if j.failingSince.IsZero() {
+				j.failingSince = time.Now()
+			}
+			if t.receiptsDown.IsZero() {
+				t.receiptsDown = time.Now()
+			}
 		}
 		if errors.Is(res.err, errBloomMismatch) {
 			t.countBloomMismatch(res.upstream, spec.method, j.h)
