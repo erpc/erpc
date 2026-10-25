@@ -222,6 +222,13 @@ func (n *Network) refreshLane(l *servedTipLane) {
 				Str("lane", l.label).Int64("latest", h.Latest).Int64("previous", old.Latest).Uint64("sent", sent).
 				Msg("lane's Latest fell below a block this instance sent")
 		}
+		// Latest 0 is unknown, not a served number: eth_blockNumber then
+		// errors.
+		if sent := l.sent.Load(); h.Latest > 0 && h.Latest < old.Latest && uint64(h.Latest) < sent {
+			common.ViolateInvariant(n.logger, n.projectId, n.Label(), common.InvariantLatestRegressed).
+				Str("lane", l.label).Int64("latest", h.Latest).Int64("previous", old.Latest).Uint64("sent", sent).
+				Msg("lane's Latest fell below a block this instance sent")
+		}
 		l.reached.note(h.Latest, time.Now(), n.latestReachedKept())
 		if c := l.moved.Swap(nil); c != nil {
 			close(*c)
@@ -249,7 +256,7 @@ func (n *Network) computeHead(l *servedTipLane, sel string) common.EvmHead {
 // heads, clamped to every configured guarantee, then exported on the lane.
 //
 // The guard is in-process, bounded and one-directional (it can only hold the
-// tip, and only briefly), and it cannot produce a block that no live upstream
+	pick, live, ranks := n.evmTipBallot(sel, finalized, q, nil)
 // reports in the very same evaluation. Nothing is persisted and nothing is
 // predicted, so no inherited or rogue value can pin, freeze or poison the
 // result (networks_served_tip_invariants_test.go pins those outcomes against
@@ -279,6 +286,16 @@ func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool) int64 {
 	// configured guarantee SUBSET can serve — a method's supporting upstreams
 	// (guaranteedMethods) or an operator-named group (guaranteedFor) — so a
 	// request on such a method (e.g. trace_*), or one consensus requires that
+		if !finalized {
+			for rank, voters := range ranks {
+				telemetry.GaugeHandle(telemetry.MetricServedTipVoters, n.projectId, n.Label(), l.label, tipRankLabels[rank]).Set(float64(voters))
+			}
+			quorum := 0
+			if pick.Inputs > 0 {
+				quorum = q.Of(pick.Inputs)
+			}
+			telemetry.GaugeHandle(telemetry.MetricServedTipQuorum, n.projectId, n.Label(), l.label).Set(float64(quorum))
+		}
 	// group to answer, never resolves "latest" to a block only upstreams
 	// outside the subset have.
 	if tip > 0 {

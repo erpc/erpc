@@ -60,11 +60,6 @@ func x7() spec {
 		}
 		cancel()
 		wg.Wait()
-		for pod, p := range s.h.pods {
-			if !p.old {
-				s.requireNoInvariantViolation(pod, 0)
-			}
-		}
 		s.blocks(25)
 	}}
 }
@@ -145,7 +140,8 @@ next:
 // every invariant but final_hash_changed at 0, and
 // erpc_head_refusal_total{rule=retried_missing} is bandMisses: the
 // scenario's own probes of blocks no vendor has inside the refusal band,
-// each a retried miss by definition (§6.4, §17, §19).
+// each a retried miss by definition (§6.4, §17, §19). The harness runs it
+// on every new-image pod after each scenario.
 func (s *scenario) requireNoInvariantViolation(pod int, bandMisses float64) {
 	ss, err := s.h.pods[pod].scrape()
 	if err != nil {
@@ -170,24 +166,13 @@ func (s *scenario) requireNoInvariantViolation(pod int, bandMisses float64) {
 	}
 }
 
-// requireClean applies requireNoInvariantViolation on every running pod,
-// with no band probes of the scenario's own (§19: every scenario asserts
-// both counters unless its row says otherwise).
-func (s *scenario) requireClean() {
-	for _, p := range s.h.pods {
-		if p.running() {
-			s.requireNoInvariantViolation(p.idx, 0)
-		}
-	}
-}
-
 // X8: a canary instance writes http-b's latest counter at the tip +
 // x8Bogus (§18 rollout stage 4: the canary writes the counters control
 // reads). On both control pods Latest and the other upstreams' lag stay as
 // they were, and only the ceiling rises: a block above Latest is
 // dispatched, not short-circuited (§6.4). No invariant is violated (§17).
 func x8() spec {
-	return spec{name: "X8", bound: healthyDelivery, evm: map[string]interface{}{"shortCircuitFutureBlocks": true}, body: func(s *scenario) {
+	return spec{name: "X8", bound: healthyDelivery, bandMisses: 1, evm: map[string]interface{}{"shortCircuitFutureBlocks": true}, body: func(s *scenario) {
 		s.blocks(25)
 		u := s.upSpec("http-b")
 		key := upstreamCounterKey(u, "latestBlock")
@@ -227,9 +212,6 @@ func x8() spec {
 			}
 		}
 		stop()
-		for pod := range s.h.pods {
-			s.requireNoInvariantViolation(pod, 1)
-		}
 		s.blocks(25)
 	}}
 }

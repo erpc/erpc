@@ -41,7 +41,6 @@ func x3() spec {
 			s.podClients(0, 0)
 			s.podClients(1, 0)
 			s.blocks(50)
-			s.requireClean()
 		}}
 }
 
@@ -92,6 +91,5 @@ func x6() spec {
 			if v, _ := s.projectMetric(1, "erpc_upstream_breaker_state_change_total", opened); v > 0 {
 				s.violate("harness", "pod-2: %s's breaker opened, though only pod-1's link failed", up)
 			}
-			s.requireClean()
 		}}
 }

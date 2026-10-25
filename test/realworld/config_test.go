@@ -91,7 +91,6 @@ func k1() spec {
 				}
 			}
 		}
-		s.requireClean()
 	}}
 }
 
@@ -197,7 +196,6 @@ func k3(window int) spec {
 			}
 		}
 		s.requireReorgsTold()
-		s.requireClean()
 	}
 	return sp
 }
@@ -215,6 +213,5 @@ func k4() spec {
 				s.violate(s.name, "%s, subscriptionSource false, got %d newHeads subscribes: a source", s.upstream("ws-a"), n)
 			}
 			s.blocks(25)
-			s.requireClean()
 		}}
 }

@@ -76,7 +76,9 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 	emit := func(b indexer.Batch) (int, error) {
 	sentHashes := make(map[uint64][32]byte, window+1)
 	emit := func(b indexer.Batch) (int, error) {
-		// Nothing is written before the client has the subscription id.
+	sentHashes := make(map[uint64][32]byte, window+1)
+	emit := func(b indexer.Batch) (int, error) {
+			return 0, ctx.Err()
 		select {
 			return 0, ctx.Err()
 		case <-ctx.Done():
@@ -88,16 +90,23 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 			n := 0
 			for _, blk := range b.Reverted {
 				if blk.Number >= sentFrom {
-					n++
+				return 0, errLogsReorgDepth
 				}
 				return 0, errLogsReorgDepth
 			if n > window {
-				return 0, errLogsReorgDepth
+			return 0, errLogsLag
 			}
 			return 0, errLogsLag
 		if len(b.Applied) > 0 && lagging(tracker, b.Applied[0]) {
 			return 0, errLogsLag
 		}
+			if h, ok := sentHashes[blk.Number]; !ok || h != blk.Hash {
+				common.ViolateInvariant(nw.logger, nw.projectId, nw.Label(), common.InvariantRemovedUnsent).
+					Str("lane", lane).Uint64("block", blk.Number).Hex("blockHash", blk.Hash[:]).Hex("sentHash", h[:]).
+					Msg("logs tap reverts a block it never applied; it sends no removed:true for it")
+				continue
+			}
+			delete(sentHashes, blk.Number)
 		for _, blk := range b.Reverted {
 			if !sent || blk.Number < sentFrom {
 			if h, ok := sentHashes[blk.Number]; !ok || h != blk.Hash {
@@ -106,27 +115,39 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 					Msg("logs tap reverts a block it never applied; it sends no removed:true for it")
 				continue
 			}
-			delete(sentHashes, blk.Number)
+					return 0, err
 				continue
 			}
 			if h, ok := sentHashes[blk.Number]; !ok || h != blk.Hash {
-				common.ViolateInvariant(nw.logger, nw.projectId, nw.Label(), common.InvariantRemovedUnsent).
-					Str("lane", lane).Uint64("block", blk.Number).Hex("blockHash", blk.Hash[:]).Hex("sentHash", h[:]).
-					Msg("logs tap reverts a block it never applied; it sends no removed:true for it")
-				continue
+		for i, blk := range b.Applied {
+			if !tracker.Pinned(indexer.Cursor{Number: blk.Number, Hash: blk.Hash}) || !sends.sendable(blk) {
+				return i, nil
 			}
 					return 0, err
 			logs := tracker.MatchedLogs(blk, f)
 			for i := len(logs) - 1; i >= 0; i-- {
-				removed, err := removedLog(logs[i])
-		for i, blk := range b.Applied {
-			if !tracker.Pinned(indexer.Cursor{Number: blk.Number, Hash: blk.Hash}) || !sends.sendable(blk) {
+			sentHashes[blk.Number] = blk.Hash
+			if blk.Number > uint64(window) {
+				delete(sentHashes, blk.Number-uint64(window)-1)
+			}
+			logs := tracker.MatchedLogs(blk, f)
+			if len(logs) == 0 {
+				continue
+			}
+			if err := sends.write(blk, func() error {
+				for _, log := range logs {
+					if err := write(log); err != nil {
+						return err
+					}
 				return i, nil
+				return nil
+			}); err != nil {
+				return i, err
 				if err := write(removed); err != nil {
 					return 0, err
-				}
+		return len(b.Applied), nil
 			}
-			sentHashes[blk.Number] = blk.Hash
+	err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeLogs, gated(logsFeed{tracker}, nw, lane), nil,
 			if blk.Number > uint64(window) {
 				delete(sentHashes, blk.Number-uint64(window)-1)
 			}

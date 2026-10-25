@@ -51,7 +51,6 @@ func c2() spec {
 				s.violate(s.name, "pod-%d: %v taps out of range on a %d-deep reorg, inside reorgWindow %d", pod+1, v-oor[pod], reorgWindow-1, reorgWindow)
 			}
 		}
-		s.requireClean()
 	}}
 }
 
@@ -108,7 +107,6 @@ func c6() spec {
 		s.chain.Halt(false)
 		s.logf("blocks again after %s", time.Since(at).Round(time.Second))
 		s.blocks(25)
-		s.requireClean()
 	}}
 }
 
@@ -127,7 +125,6 @@ func c8() spec {
 		}
 		s.blocks(25)
 		s.requireReorgsTold()
-		s.requireClean()
 	}}
 }
 
@@ -163,7 +160,6 @@ func c10() spec {
 			}
 		}
 		s.requireGot(empty)
-		s.requireClean()
 	}}
 }
 
@@ -233,7 +229,6 @@ func c11() spec {
 				}
 			}
 		}
-		s.requireClean()
 	}}
 }
 
@@ -259,6 +254,5 @@ func c14() spec {
 		s.logf("vendor-b back on the canonical chain")
 		s.blocks(25)
 		s.requireNoMinorityDelivered()
-		s.requireClean()
 	}}
 }

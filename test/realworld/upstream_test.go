@@ -105,7 +105,6 @@ func u2() spec {
 					}
 				}
 			}
-			s.requireClean()
 		}}
 }
 
@@ -142,7 +141,6 @@ func u4() spec {
 			s.requirePolledAtCadence("http-a")
 			stop()
 			s.blocks(25)
-			s.requireClean()
 		}}
 }
 
@@ -154,7 +152,6 @@ func u5() spec {
 		s.blocks(25)
 		throttleAll(s)
 		s.blocks(25)
-		s.requireClean()
 	}}
 }
 
@@ -312,7 +309,6 @@ func u6() spec {
 			}
 			s.logf("vendor-a refused %d calls for capacity", refused-refused0)
 			s.blocks(25)
-			s.requireClean()
 		}}
 }
 
@@ -370,7 +366,6 @@ func u7() spec {
 				s.violate("harness", "no read reached %s while it answered null (every vendor: %d): nothing exercised the retry", s.upstream("http-a"), dispatched)
 			}
 			s.blocks(25)
-			s.requireClean()
 		}}
 }
 
@@ -382,7 +377,7 @@ func u7() spec {
 // second, back in the ceiling: the same block is dispatched (§19 U13;
 // §5.3; §6.4 ceiling; §15.1 chain-identity cordon).
 func u13() spec {
-	return spec{name: "U13", bound: healthyDelivery,
+	return spec{name: "U13", bound: healthyDelivery, bandMisses: 1,
 		evm:   map[string]interface{}{"shortCircuitFutureBlocks": true},
 		upEvm: map[string]map[string]interface{}{"http-b": {"statePollerInterval": u13PollInterval.String()}},
 		vars:  map[string]time.Duration{"evm.ChainIdCordonRecheck": u13Recheck},
@@ -425,9 +420,6 @@ func u13() spec {
 			s.requireCeiling(true, "once "+up+" is uncordoned")
 			hb.Update(func(f *chainsim.Faults) { f.Ahead = 0 })
 			s.blocks(25)
-			for pod := range s.h.pods {
-				s.requireNoInvariantViolation(pod, 1)
-			}
 		}}
 }
 
@@ -474,6 +466,5 @@ func u15() spec {
 			if s.receiptsCalls([]string{"http-a"})+s.receiptsCalls([]string{"ws-a"}) == 0 {
 				s.violate("harness", "no receipts or logs call reached vendor-a: its missing method was never exercised")
 			}
-			s.requireClean()
 		}}
 }

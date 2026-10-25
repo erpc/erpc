@@ -92,7 +92,6 @@ func p2() spec {
 	return spec{name: "P2", cache: true, bound: healthyDelivery, body: func(s *scenario) {
 		reorgLoop(s, nil)
 		s.requireDelivered(false)
-		s.requireClean()
 	}}
 }
 
@@ -103,7 +102,6 @@ func p3() spec {
 	return spec{name: "P3", cache: true, bound: healthyDelivery, body: func(s *scenario) {
 		reorgLoop(s, nil)
 		s.requireDelivered(true)
-		s.requireClean()
 	}}
 }
 
@@ -125,7 +123,6 @@ func p4() spec {
 			s.violate("harness", "no receipts call reached vendor-a during its faults")
 		}
 		s.requireLogsServed()
-		s.requireClean()
 	}}
 }
 
@@ -221,6 +218,5 @@ func p8() spec {
 			}
 		}
 		s.blocks(25)
-		s.requireClean()
 	}}
 }

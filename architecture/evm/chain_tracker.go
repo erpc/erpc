@@ -21,6 +21,7 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -1331,15 +1332,12 @@ func (t *ChainTracker) apply(path []*node) {
 	s.confirmed, s.backing = b.confirmed(), b
 	t.pins, t.treesDirty, t.receiptsDirty = path, true, true
 	s.logs = t.logsHeadOf(s)
-	t.unstamp(pub.pins, s)
-	}
-	old := t.state.Swap(s)
 	close(old.changed)
 	t.published(old, s, true)
 
 	t.published(old, s, true)
 	t.evict()
-}
+	t.published(old, s, true)
 
 // recordMove counts a re-anchor, or the depth of a reorg, from old to path,
 // and sets the head gauge. A reverted block at or below the finalized
@@ -1384,13 +1382,14 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	replaced := func(hs []*chainHeader) {
 	var oldLo, newLo *chainHeader
 		for _, h := range hs {
+	var oldLo, newLo *chainHeader
 			if p := pathAt(h.number); p != nil && p.hash != h.hash {
+				if span.hi == 0 || int64(h.number) < span.lo {
 				if span.hi == 0 || int64(h.number) < span.lo {
 				if span.hi == 0 || int64(h.number) < span.lo {
 					span.lo, oldLo, newLo = int64(h.number), h, p
 				span.hi = max(span.hi, int64(h.number))
 				span.hi = max(span.hi, int64(h.number))
-		}
 	}
 	replaced(old)
 	replaced(t.unlinkedPins)
@@ -1410,8 +1409,15 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	if fin := t.finalizedHead(); span.hi > 0 && fin > 0 && span.lo <= fin {
 		var ev *zerolog.Event
 		var ev *zerolog.Event
+		var ev *zerolog.Event
 		if t.selector == "" {
 			ev = common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantFinalHashChanged)
+		} else {
+			ev = common.TransitionLog(&log.Logger, zerolog.ErrorLevel, t.networkLabel(), "invariant_"+string(common.InvariantFinalHashChanged)+":"+t.group).
+				Str("invariant", string(common.InvariantFinalHashChanged))
+		}
+		ev.Str("group", t.group).Int64("revertedFrom", span.lo).Str("oldHash", hexHash(oldLo.hash)).Str("newHash", hexHash(newLo.hash)).
+			Int64("finalized", fin).Uint64("head", head.number).Str("headHash", hexHash(head.hash)).
 		} else {
 			ev = common.TransitionLog(&log.Logger, zerolog.ErrorLevel, t.networkLabel(), "invariant_"+string(common.InvariantFinalHashChanged)+":"+t.group).
 				Str("invariant", string(common.InvariantFinalHashChanged))
@@ -1577,8 +1583,38 @@ func (t *ChainTracker) unstamp(old []*chainHeader, s *feedState) {
 		p := old[i]
 		if p.number < s.base || s.pinAt(p.number) == p {
 			return
+	old := t.state.Swap(s)
+	close(old.changed)
+	t.published(old, s, true)
+}
+
+// published records the signals of a state swap from old to s (spec §15.3,
+// §17) and feeds the block time. pinsMoved: s holds new pins, checked for
+// parentHash linkage.
+func (t *ChainTracker) published(old, s *feedState, pinsMoved bool) {
+	if pinsMoved {
+		for i := 1; i < len(s.pins); i++ {
+			if below, p := s.pins[i-1], s.pins[i]; p.parentHash != below.hash {
+				common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantPinsUnlinked).
+					Str("group", t.group).Uint64("block", p.number).Str("blockHash", hexHash(p.hash)).
+					Str("parentHash", hexHash(p.parentHash)).Uint64("below", below.number).Str("belowHash", hexHash(below.hash)).
+					Msg("chain tracker published pins that are not one parentHash chain")
+				break
+			}
 		}
+	}
 		p.confirmedAt.Store(0)
+	if t.selector != "" {
+		return
+	}
+	lag := 0
+	if len(s.pins) > 0 {
+		lag = len(s.pins) - 1 - s.confirmed
+	}
+	telemetry.GaugeHandle(telemetry.MetricChainTrackerConfirmLagBlocks, t.projectId(), t.networkLabel()).Set(float64(lag))
+	if c := s.confirmedHead(); c != nil && c != old.confirmedHead() {
+		telemetry.GaugeHandle(telemetry.MetricNetworkSubscriptionLastHeadTimestamp, t.projectId(), t.networkLabel()).SetToCurrentTime()
+	}
 		p.logsAt.Store(0)
 	}
 }
@@ -1873,8 +1909,9 @@ func (t *ChainTracker) gate(path []*node) *pinBacking {
 	}
 	return b
 }
-
-func maxTime(a, b time.Time) time.Time {
+	old := t.state.Swap(s)
+	close(old.changed)
+	t.published(old, s, false)
 	if a.After(b) {
 		return a
 	}
@@ -3016,6 +3053,7 @@ func HasVerifiedEmptyTraceBlock(req *common.NormalizedRequest) bool {
 	if req == nil || req.Network() == nil {
 		return false
 	}
+		common.ExportInvariants(n.ProjectId(), n.Label())
 	ctx := context.Background()
 	jrq, err := req.JsonRpcRequest(ctx)
 	if err != nil || jrq == nil {

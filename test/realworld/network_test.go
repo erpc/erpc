@@ -82,7 +82,6 @@ func n1() spec {
 			s.violate(s.name, "header delivery p99 %s over %d deliveries, above 2 bt (%s), with only %s slow", p99.Round(time.Millisecond), len(lat), n1P99, s.upstream("ws-a"))
 		}
 		s.blocks(25)
-		s.requireClean()
 	}}
 }
 
@@ -150,7 +149,6 @@ func n2() spec {
 			s.violate("harness", "no block's header reached a pod before every vendor's header of its parent: the jitter reordered nothing")
 		}
 		s.blocks(25)
-		s.requireClean()
 	}}
 }
 
@@ -207,6 +205,5 @@ func n7() spec {
 				s.violate(s.name, "%d of %d header deliveries of big blocks took longer than W after their first header (max %s): a receipts timeout held headers", late, n, lat[n-1].Round(time.Millisecond))
 			}
 			s.blocks(25)
-			s.requireClean()
 		}}
 }

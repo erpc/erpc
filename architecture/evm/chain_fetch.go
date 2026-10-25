@@ -18,6 +18,9 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Scheduler bounds (spec §7, §13.2); variables so tests run fast.
@@ -444,7 +447,19 @@ func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 			res = fetchResult{err: fmt.Errorf("chain tracker fetch panicked: %v", rec)}
 		}
 	}()
-	if s.sweep == nil {
+	ctx, span := common.StartDetailSpan(s.ctx, "ChainTracker.Fetch", trace.WithAttributes(
+		attribute.String("kind", r.spec.kind),
+		attribute.String("class", fetchClassLabels[r.spec.class]),
+		attribute.String("method", r.spec.method),
+	))
+	defer func() {
+		span.SetAttributes(attribute.String("upstream.id", res.upstream), attribute.String("outcome", fetchOutcome(res.err)))
+		if res.err != nil {
+			span.SetStatus(codes.Error, res.err.Error())
+		}
+		span.End()
+	}()
+	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 		return fetchResult{err: errNoTrackerSweep}
 	}
 	ctx, span := common.StartDetailSpan(s.ctx, "ChainTracker.Fetch", trace.WithAttributes(

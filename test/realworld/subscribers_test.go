@@ -201,7 +201,6 @@ func d3() spec {
 			}()
 		}
 		wg.Wait()
-		s.requireClean()
 	}}
 }
 
@@ -364,7 +363,6 @@ func d4() spec {
 		} else if p99 := lat[len(lat)*99/100]; p99 > d4P99 {
 			s.violate(s.name, "pod-1: log delivery p99 %s over %d deliveries to %d subscriptions, above 2 bt (%s)", p99.Round(time.Millisecond), len(lat), d4Subs, d4P99)
 		}
-		s.requireClean()
 	}}
 }
 
@@ -508,7 +506,6 @@ func d5() spec {
 			_, exported := s.metric(0, "erpc_taps", nil)
 			s.violate(s.name, "pod-1: erpc_taps %v (exported %v) %s after the last unsubscribe answered, not 0", v, exported, time.Since(last).Round(100*time.Millisecond))
 		}
-		s.requireClean()
 	}}
 }
 
@@ -552,7 +549,6 @@ func d6() spec {
 			}
 		}
 		s.blocks(10)
-		s.requireClean()
 	}}
 }
 
@@ -590,7 +586,6 @@ func d7() spec {
 			_ = conn.Close()
 		}
 		s.blocks(10)
-		s.requireClean()
 	}}
 }
 
@@ -663,6 +658,5 @@ func d9() spec {
 			s.violate(s.name, "no pending transaction reached a subscriber during %s's silence: ws-b carries none", up)
 		}
 		s.blocks(10)
-		s.requireClean()
 	}}
 }

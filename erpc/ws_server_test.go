@@ -1922,6 +1922,24 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 			return true
 		}, 10*time.Second, 20*time.Millisecond, "both clients hold the canonical logs through the reorg")
 		requireInvariantsHeld(t, "test_ws", "evm:123")
+		requireInvariantsHeld(t, "test_ws", "evm:123")
+
+		// A 3-block reorg: each client drops the reverted logs it holds
+		// (removed:true) and gets the new branch's; no invariant breaks.
+		reorged := s.reorg(3)
+		s.blocks(3)
+		require.Eventually(t, func() bool {
+			for _, cl := range s.openLogs() {
+				cl.mu.Lock()
+				d := cl.logsDiffLocked(s, from, reorged.Number)
+				cl.mu.Unlock()
+				if d != "" {
+					return false
+				}
+			}
+			return true
+		}, 10*time.Second, 20*time.Millisecond, "both clients hold the canonical logs through the reorg")
+		requireInvariantsHeld(t, "test_ws", "evm:123")
 	})
 
 	// A cold instance pins ws-a's heads while the other sources, held,
@@ -2827,6 +2845,7 @@ func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
 		"a second matching check lifts the cordon")
 	assert.GreaterOrEqual(t, crossed.chainIdAsks.Load(), asks+2, "lifted after 2 matching checks")
 
+	requireInvariantsHeld(t, "test_ws", "evm:123")
 	crossed.wrongChain.Store(true)
 	require.Eventually(t, cordoned, 5*time.Second, 10*time.Millisecond,
 		"a major move right after the lift goes through the chain-identity gate again")
@@ -2879,6 +2898,7 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 		client[n], _ = head["hash"].(string)
 		if first == 0 {
 			first = n
+	requireInvariantsHeld(t, "test_ws", "evm:123")
 		}
 		last = n
 	}
