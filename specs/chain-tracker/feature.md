@@ -850,7 +850,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 
 | Metric | Change |
 |---|---|
-| `erpc_chain_tracker_invariant_violations_total{project,network,invariant}` | new; invariant: `sent_above_latest`, `sent_unconfirmed`, `tap_gap`, `removed_unsent`, `pins_unlinked`, `final_hash_changed`, `latest_regressed` (only a `Latest` below a block this instance sent); must stay 0 except `final_hash_changed`, which logs a followed majority |
+| `erpc_chain_tracker_invariant_violations_total{project,network,invariant}` | new; invariant: `sent_above_latest`, `sent_unconfirmed`, `tap_gap`, `removed_unsent`, `pins_unlinked`, `final_hash_changed`, `latest_regressed` (only a `Latest` below a block this instance sent, counted once per fall and re-armed when `Latest` reaches that block again); must stay 0 except `final_hash_changed`, which logs a followed majority, and `latest_regressed` when every upstream rewinds (§14) |
 | `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `retried_found`, `retried_missing` (the promise broke on this instance), `future`, `future_after_refresh` |
 | `erpc_head_ask_total{project,network,reason,outcome}` | new; reason: the §6.8 caller (`poll`, `catch_up`, `refusal`, `refresh`, `settle`, `no_source`); outcome: `fetched`, `shared_fresh`, `inflight`, `backoff` |
 | `erpc_chain_tracker_confirm_lag_blocks{project,network}` | new: pins head − confirmed head; with no confirmed pin, the number of pins |
@@ -964,7 +964,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | U9 | truncated receipts, forged log, wrong bloom from one vendor | refetched from the other vendor; logs equal canonical |
 | U10 | primary 40 behind, still advancing | `Latest` unchanged; its hash vote expires; benched after 30s or more |
 | U11 | 2 upstreams only; one head frozen, still answering | taps and `latest` wait for the bench (at most 90s), then flow: the held blocks were not deliverable during the wait, so they arrive in batches of at most `reorgWindow`, no gap, no `newHeads` restart and no `1013` (§10.2, as C7); gRPC resumes at most once |
-| U12 | one upstream reports +30M, same chainId | `Latest`, `Leader`, lag unchanged; ceiling raised, no short-circuit |
+| U12 | one upstream reports +30M, same chainId | `Latest`, `Leader`, lag unchanged; ceiling raised, no short-circuit; its band probe counts one `retried_missing` |
 | U13 | one endpoint answers another chainId | cordoned, out of ceiling; uncordoned after 2 matches 5 min apart |
 | U14 | archive syncing at head+5; `eth_getBlockByNumber(head+3)` | served by the archive in the refusal band, not `null` |
 | U15 | one vendor lacks `eth_getBlockReceipts` | logs from the other vendor; subscribe accepted |
@@ -982,7 +982,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | C2 | reorg `reorgWindow` − 1 deep | as C1; no out of range |
 | C3 | reorg `reorgWindow` + 4 deep | re-anchor; `newHeads` and gRPC get the new branch from the fork point + 1; ws `logs` close `1013`, spread over 60s |
 | C4 | 2 wss voters + 1 https; 1-vs-1 tip split | only the settled hash is sent |
-| C5 | head rewinds 50 blocks on every upstream | `latest` reads succeed within 2 bt |
+| C5 | head rewinds 50 blocks on every upstream | `latest` reads succeed within 2 bt; `latest_regressed` counts the rewind once per instance |
 | C6 | no blocks for 3 min, with gRPC | nothing reconnects; gRPC not cut; `Latest` frozen |
 | C7 | halt, then 100 blocks in 1s | catch-up within `maxBackfill`; batches at most `reorgWindow`; no gap |
 | C8 | 100 ms blocks; U5 + C1 | same results at 2× rate |
@@ -1016,7 +1016,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | K4 | `subscriptionSource: true` on https, `false` on wss | https polled at cadence; wss no source |
 | K5 | same seed and plan, integrity on vs off | identical client chains and logs |
 | K6 | `servedTip.quorum: majority`, `guaranteedFor`, failover tiers | taps never above the guarantee-clamped `Latest`; no deadlock |
-| K7 | `shortCircuitFutureBlocks` on and off; head+1 polling | on: `null` with 0 dispatch above the ceiling, at most 1 retry in the band; off: at most 2 dispatches |
+| K7 | `shortCircuitFutureBlocks` on and off; head+1 polling | on: `null` with 0 dispatch above the ceiling, at most 1 retry in the band; off: at most 2 dispatches; each band probe counts one `retried_missing` |
 | P1 | U10, C1 | `eth_blockNumber` ≥ N on the same instance at delivery; on the other within 1 Ask |
 | P2 | C1 | `eth_getBlockByNumber(N).hash` = delivered hash, or a reorg the client was told about |
 | P3 | C1 | `eth_getBlockByHash(delivered)` not null on both instances until a reorg notice |
