@@ -501,7 +501,7 @@ Owner: `architecture/evm/integrity_suspend.go`. Readers: integrity hooks, the re
 
 ### 6.10 Evidence quorum: is content corroborated?
 
-- 2 distinct vendors (`Upstream.VendorName`) when the network has 2 or more; else 1. An upstream without a vendor name is a vendor of its own.
+- 2 distinct vendors (`Upstream.VendorName`) when the network has 2 or more; else 1. An upstream without a vendor name is a vendor of its own. A use-upstream group counts the network's vendors, not its own: a group of one vendor on a network of two never corroborates alone, and with integrity on its `eth_getLogs` fallback holds nothing. An answer counts for its upstream's vendor only while that upstream is on the network.
 - One predicate, read by: finalized anchors, suspension, the integrity-on `eth_getLogs` fallback, the bloom suspension, `PinFresh`.
 
 Owner: `architecture/evm/chain_tracker_rules.go`.
