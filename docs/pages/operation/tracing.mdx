@@ -523,6 +523,7 @@ only when `tracing.enabled && tracing.detailed`; "direct" = calls `tracer.Start`
 | `Cache.Get` | normal | `architecture/evm/json_rpc_cache.go:L153` |
 | `Cache.GetForPolicy` | detail | `architecture/evm/json_rpc_cache.go:L241` |
 | `Cache.Set` | normal | `architecture/evm/json_rpc_cache.go:L572` |
+| `ChainTracker.Fetch` | detail | `architecture/evm/chain_fetch.go:L452` |
 | `ConnectorFailsafe.Delete` | detail | `data/failsafe.go:L286` |
 | `ConnectorFailsafe.Get` | detail | `data/failsafe.go:L224` |
 | `ConnectorFailsafe.Set` | detail | `data/failsafe.go:L253` |
@@ -544,8 +545,8 @@ only when `tracing.enabled && tracing.detailed`; "direct" = calls `tracer.Start`
 | `Evm.ExtractBlockTimestampFromResponse` | detail | `architecture/evm/block_ref.go:L191` |
 | `Evm.extractRefFromJsonRpcRequest` | detail | `architecture/evm/block_ref.go:L240` |
 | `Evm.extractRefFromJsonRpcResponse` | detail | `architecture/evm/block_ref.go:L314` |
-| `EvmStatePoller.PollFinalizedBlockNumber` | detail | `architecture/evm/evm_state_poller.go:L491` |
-| `EvmStatePoller.PollLatestBlockNumber` | detail | `architecture/evm/evm_state_poller.go:L394` |
+| `EvmStatePoller.Ask` | detail | `architecture/evm/evm_state_poller.go:L640` |
+| `EvmStatePoller.PollFinalizedBlockNumber` | detail | `architecture/evm/evm_state_poller.go:L1532` |
 | `GrpcBdsClient.GetBlockByHash` | detail | `clients/grpc_bds_client.go:L365` |
 | `GrpcBdsClient.GetBlockByNumber` | detail | `clients/grpc_bds_client.go:L422` |
 | `GrpcBdsClient.GetLogs` | detail | `clients/grpc_bds_client.go:L632` |
@@ -568,8 +569,6 @@ only when `tracing.enabled && tracing.detailed`; "direct" = calls `tracer.Start`
 | `JsonRpcResponse.PeekStringByPath` | detail | `common/json_rpc.go:L464` |
 | `Multiplexer.Close` | detail | `erpc/multiplexer.go:L37` |
 | `Network.EnrichStatePoller` | detail | `erpc/networks.go:L2146` |
-| `Network.EvmHighestFinalizedBlockNumber` | detail | `erpc/networks.go:L679` |
-| `Network.EvmHighestLatestBlockNumber` | detail | `erpc/networks.go:L518` |
 | `Network.Forward` | normal | `erpc/networks.go:L943` |
 | `Network.GetFinality` | detail | `erpc/networks.go:L1646` |
 | `Network.NormalizeResponse` | detail | `erpc/networks.go:L2235` |
@@ -623,6 +622,7 @@ only when `tracing.enabled && tracing.detailed`; "direct" = calls `tracer.Start`
 | `Response.Lock` | detail | `common/response.go:L84` |
 | `Response.RLock` | detail | `common/response.go:L90` |
 | `Response.ResolveJsonRpc` | detail | `common/response.go:L293` |
+| `Tap.Read` | detail | `indexer/taps.go:L107` |
 | `Upstream.Forward` | normal | `upstream/upstream.go:L416` |
 | `Upstream.PostForwardHook` | detail | `architecture/evm/hooks.go:L110` |
 | `Upstream.PostForwardHook.eth_getBlockByNumber` | detail | `architecture/evm/eth_getBlockByNumber.go:L435` |

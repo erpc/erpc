@@ -134,7 +134,7 @@ On a 12 s Ethereum Mainnet chain this yields ~8.4 s debounce — fresh enough to
 
 #### Served tip
 
-Both axes, every config. `EvmHighestLatestBlockNumber` / `EvmHighestFinalizedBlockNumber` run one pipeline per evaluation (`servedTip`):
+Both axes, every config. `Network.EvmHead` returns one published `Head` per lane (`Latest`, `Finalized`, `Leader`, ceiling), computed by `computeHead` when an upstream head, a bench or the eligible set changes, and every 1s. Each axis runs one pipeline:
 
 1. **Candidates** (`EvmRoutableUpstreams`): the selection policy's eligible upstreams in routing order (all registered upstreams until the policy's first decision), narrowed to the request's `use-upstream` selector when present.
 2. **Voter rank** (`tipVoterRank`): each candidate with a head on the axis ranks live 0, benched 1, static cap 2, benched static cap 3. A static cap is a `blockAvailability.upper.exactBlock` the chain has passed: a serving range, not a head observation (`latestBlockMinus` upstreams are live). A candidate that is syncing per `eth_syncing`, has no state poller or has no head yet does not vote.
@@ -182,7 +182,7 @@ When a pick falls more than `maxRegressionBlocks` (0 = 1024) below the corrobora
 
 #### Subscriber delivery
 
-ws `newHeads`, ws `logs` and gRPC `StreamBlocks` send a block only once `servedTip.quorum` of the voting sources have voted for it and its number is at most the network-wide `latest`. A client never streams a block `eth_blockNumber` does not show, and one source alone moves neither: with sources at 1005, 1001 and 1000 and the default quorum, both stop at 1001 until a second source reaches 1005. Nothing lifts `latest` to a delivered head. While `latest` holds back a block the sources voted for and a client waits, eRPC refreshes the voters' pollers once per block time, at most 1s apart (each poller still skips a refresh inside its debounce), and every head-counter move wakes the delivery check: an upstream that is no source, polled every `statePollerInterval`, never holds subscribers until its next poll. A `use-upstream` subscription follows its group's tracker, which the vote need alone gates. Source: <SourceLink file="architecture/evm/chain_tracker.go" lines="1178-1310" />
+ws `newHeads`, ws `logs` and gRPC `StreamBlocks` send only up to the network chain tracker's confirmed head: the highest pinned block that `servedTip.quorum` of the hash voters have reached, with a number at most the network-wide `latest`. A client never streams a block `eth_blockNumber` does not show, and one source alone moves neither: with sources at 1005, 1001 and 1000 and the default quorum, both stop at 1001 until a second source reaches 1005. Nothing lifts `latest` to a delivered head. While `latest` holds back a block the sources voted for and a client waits, eRPC Asks the voters below it at most once per poll cadence (`erpc_head_ask_total{reason="catch_up"}`). A subscription on a `use-upstream` connection reads the same network-wide pins and waits for its lane's `latest`. Model, reorgs and wait bounds: [WebSocket](/operation/websocket#how-heads-reach-subscribers). Source: <SourceLink file="architecture/evm/chain_tracker.go" />
 
 #### eth_blockNumber
 
@@ -379,7 +379,7 @@ With a `use-upstream` selector, `EvmRoutableUpstreams` narrows the candidates to
 
 Served-tip and bench metrics (`erpc_network_served_tip_*`, `erpc_upstream_head_benched_total`): [metrics reference](/reference/metrics#area-3-block-number-and-tip-tracking).
 
-**OTel trace spans** (under detailed tracing): `EvmStatePoller.PollLatestBlockNumber`, `EvmStatePoller.PollFinalizedBlockNumber`, `Network.EvmHighestLatestBlockNumber`, `Network.EvmHighestFinalizedBlockNumber`, `Evm.ExtractBlockReferenceFromRequest`, `Evm.ExtractBlockReferenceFromResponse`. The network span includes attributes: `served_tip.axis`, `served_tip.tip`, `served_tip.freshest`, `served_tip.inputs`. Source: <SourceLink file="erpc/networks.go" lines="924-931" />
+**OTel trace spans** (under detailed tracing): `EvmStatePoller.Ask`, `EvmStatePoller.PollFinalizedBlockNumber`, `ChainTracker.Fetch`, `Tap.Read`, `Evm.ExtractBlockReferenceFromRequest`, `Evm.ExtractBlockReferenceFromResponse`.
 
 **Notable log messages:**
 
@@ -401,13 +401,10 @@ Served-tip and bench metrics (`erpc_network_served_tip_*`, `erpc_upstream_head_b
 
 ### Source code entry points
 
-- [`architecture/evm/evm_state_poller.go:L145-L204`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L145-L204) — `Bootstrap`, `Poll`, `PollLatestBlockNumber`, `PollFinalizedBlockNumber`; debounce resolution; syncing state machine
+- [`architecture/evm/evm_state_poller.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go) — `Bootstrap`, `Poll`, `Ask`, `PollLatestBlockNumber`, `PollFinalizedBlockNumber`; debounce resolution; syncing state machine
 - [`common/served_tip.go:L36-L157`](https://github.com/erpc/erpc/blob/main/common/served_tip.go#L36-L157) — `ServedTipQuorum`, `PickServedTip`
-- [`erpc/networks.go:L430-L506`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L430-L506) — `tipVoterRank`, `evmTipBallot`
-- [`erpc/networks.go:L564-L655`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L564-L655) — `EvmRoutableUpstreams`, `requestSelector`, `servedTipLaneFor`
-- [`erpc/networks.go:L796-L846`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L796-L846) — `EvmRefreshHead(ctx, finalized)`
-- [`erpc/networks.go:L870-L1102`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L870-L1102) — `servedTip`, `guardServedTipRegression`
-- [`erpc/networks.go:L1369-L1532`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1369-L1532) — `EvmHighestFinalizedBlockNumber`, `guaranteedFloor`, `guaranteedSubsetTip`, `anyRegisteredLiveHead`, `observeServedTipMetrics`
+- [`erpc/networks.go`](https://github.com/erpc/erpc/blob/main/erpc/networks.go) — `tipVoterRank`, `evmTipBallot`, `EvmRoutableUpstreams`, `requestSelector`, `laneFor`, `EvmRefreshHead`, `EvmAskHead`, `guardServedTipRegression`, `guaranteedFloor`, `guaranteedSubsetTip`, `anyRegisteredLiveHead`, `observeServedTipMetrics`
+- [`erpc/network_head.go`](https://github.com/erpc/erpc/blob/main/erpc/network_head.go) — `EvmHead`, `EvmLaneHead`, `computeHead`
 - [`architecture/evm/eth_blockNumber.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_blockNumber.go) — `eth_blockNumber` pre-forward answer and post-forward pin
 - [`health/tracker.go:L1428-L1664`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1428-L1664) — `corroboratedNetworkHead`, `headStallAfter`, `evaluateHeadBench`, `movedSinceBench`, `headIsBehind`, `benchPlausibleLead`, `IsHeadBenched`
 - [`health/tracker.go:L1666-L1918`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1666-L1918) — `SetLatestBlockNumber`, EMA update (`updateBlockTimeSample`, `sampleBlockTime`), `BlockHeadLag` computation
