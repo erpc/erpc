@@ -22,6 +22,10 @@ const (
 	// retryable miss once (§6.4), so a request reaches upstreams at most
 	// twice; with shortCircuitFutureBlocks off at most 2 as well (§19 K7).
 	refusalDispatches = 2
+	// peerBlockNumberWait: another instance's eth_blockNumber reaches a
+	// block delivered here within 1 bt, plus the tracker's processing
+	// (§19 oracle; P1 "on the other within 1 Ask").
+	peerBlockNumberWait = blockTime + tapProcessingSlack
 	// finalityMinAge: a voter without a finalized tag reports latest − the
 	// derived depth, at least 30 min of chain (§6.4 Finality, #1079).
 	finalityMinAge = 30 * time.Minute
@@ -240,8 +244,9 @@ func u14() spec {
 
 // P1: U10 (ws-a 40 behind, advancing) and C1 (1–3 deep reorgs). Every
 // block a client receives is at or below eth_blockNumber on its pod at
-// once (the oracle) and on every other pod in one call: one Ask (§6.4,
-// §6.8 pre-forward refresh with a number need).
+// once (the oracle) and on every other pod within peerBlockNumberWait: the
+// first call's pre-forward refresh is one Ask with a number need (§6.8),
+// and the answer does not wait for it (§21).
 func p1() spec {
 	return spec{name: "P1", bound: healthyDelivery, onHead: peerBlockNumber, body: func(s *scenario) {
 		s.blocks(25)
@@ -259,6 +264,7 @@ func p1() spec {
 }
 
 func peerBlockNumber(s *scenario, c *headsClient, pod int, n uint64, _ hash) {
+	delivered := time.Now()
 	s.checks.Add(1)
 	go func() {
 		defer s.checks.Done()
@@ -267,8 +273,12 @@ func peerBlockNumber(s *scenario, c *headsClient, pod int, n uint64, _ hash) {
 				continue
 			}
 			var bn hexutil.Uint64
+			if err := s.call(other, &bn, "eth_blockNumber"); err == nil && uint64(bn) >= n {
+				continue
+			}
+			time.Sleep(time.Until(delivered.Add(peerBlockNumberWait)))
 			if err := s.call(other, &bn, "eth_blockNumber"); err != nil || uint64(bn) < n {
-				s.violate(c.name, "pod-%d: eth_blockNumber %d (err %v) below block %d delivered on pod-%d, in one call", other+1, bn, err, n, pod+1)
+				s.violate(c.name, "pod-%d: eth_blockNumber %d (err %v) below block %d delivered on pod-%d %s before", other+1, bn, err, n, pod+1, peerBlockNumberWait)
 			}
 		}
 	}()
