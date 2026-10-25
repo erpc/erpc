@@ -59,7 +59,7 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 			payload, pinned, err := newHeadsEncoding.Of(tracker, blk)
 			snap, sendable := sends.gate(blk)
 			if !pinned || !sendable {
-				return i, nil
+				return i, sends.hold(ctx, blk, snap)
 			}
 			if err != nil {
 				sm.logger.Warn().Err(err).Uint64("block", blk.Number).Msg("cannot project a held header as newHeads")

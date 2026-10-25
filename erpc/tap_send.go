@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"context"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -27,12 +28,15 @@ func newTapSends(nw *Network, selector, transport, kind string) *tapSends {
 }
 
 // sendSnapshot is one decision to write a block: the tracker's state and
-// the lane's Latest, each read once.
+// the lane's Latest, each read once, and the channels closed once either
+// may have moved since.
 type sendSnapshot struct {
 	pinned      bool
 	confirmed   indexer.Cursor
 	confirmedOK bool
 	latest      uint64
+	changed     <-chan struct{} // the tracker published a newer state
+	latestMoved <-chan struct{} // the lane's Latest may have moved
 }
 
 // gate reads blk's snapshot and reports whether blk may be written: pinned,
@@ -40,12 +44,35 @@ type sendSnapshot struct {
 // Latest. A block a Read returned can leave any of them before its write,
 // as when hash voters arrive and raise the votes a pin needs, or a lane's
 // Latest falls before the tracker caps its confirmed head; the tap ends its
-// batch there, and its next Read waits.
+// batch there (hold), and its next Read waits.
 func (s *tapSends) gate(blk indexer.Block) (sendSnapshot, bool) {
 	var snap sendSnapshot
+	snap.changed = s.nw.chainTracker.Changed()
+	if s.lane != nil {
+		snap.latestMoved = s.lane.latestMoved()
+	} else {
+		snap.latestMoved = s.nw.headsComputed()
+	}
 	snap.pinned, snap.confirmed, snap.confirmedOK = s.nw.chainTracker.SendState(indexer.Cursor{Number: blk.Number, Hash: blk.Hash})
 	snap.latest = s.nw.laneLatest(s.lane, s.selector)
 	return snap, snap.pinned && snap.confirmedOK && blk.Number <= snap.confirmed.Number && blk.Number <= snap.latest
+}
+
+// hold is the end of a batch at blk, which gate held. A block held only by
+// the lane's Latest is still confirmed, so the tap's next Read would return
+// it at once: hold waits for Latest or the tracker's state to move first,
+// or ctx to end. Other holds return at once; the next Read waits.
+func (s *tapSends) hold(ctx context.Context, blk indexer.Block, snap sendSnapshot) error {
+	if !snap.pinned || !snap.confirmedOK || blk.Number > snap.confirmed.Number {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-snap.changed:
+	case <-snap.latestMoved:
+	}
+	return nil
 }
 
 // write writes blk, gated on snap, with fn. A block above the snapshot's

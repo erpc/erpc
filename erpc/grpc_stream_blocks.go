@@ -87,7 +87,7 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 			resp, pinned, err := streamBlocksEncoding.Of(tracker, blk)
 			snap, sendable := sends.gate(blk)
 			if !pinned || !sendable {
-				return i, nil
+				return i, sends.hold(tapCtx, blk, snap)
 			}
 			if err != nil {
 				return i, streamEncodeError{blk.Number, err}

@@ -134,7 +134,7 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 		for i, blk := range b.Applied {
 			snap, sendable := sends.gate(blk)
 			if !sendable {
-				return i, nil
+				return i, sends.hold(ctx, blk, snap)
 			}
 			if !sent || blk.Number < sentFrom {
 				sentFrom, sent = blk.Number, true
