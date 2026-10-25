@@ -177,24 +177,20 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 			// mismatch on every block boundary. No usable height means no pin
 			// (fail-open, like every other guard on this path).
 			if shadowCfg := ups.Config().Shadow; shadowCfg != nil && shadowCfg.PinBlockTag {
-				if idx, ok := evm.LatestTagParamIndex(method); ok {
-					height := int64(0)
-					if bn, ok2 := resp.EvmBlockNumber().(int64); ok2 && bn > 0 {
-						height = bn
-					} else if primaryHead > 0 {
-						height = primaryHead
+				height := int64(0)
+				if bn, ok := resp.EvmBlockNumber().(int64); ok && bn > 0 {
+					height = bn
+				} else if primaryHead > 0 {
+					height = primaryHead
+				}
+				if pinned, changed := evm.PinBlockTagInBody(shadowReq.Body(), height); changed {
+					repinned := common.NewNormalizedRequest(pinned)
+					if dirs := origReq.Directives(); dirs != nil {
+						repinned.SetDirectives(dirs.Clone())
 					}
-					if height > 0 {
-						if pinned, changed := evm.PinBlockTagInBody(shadowReq.Body(), idx, height); changed {
-							repinned := common.NewNormalizedRequest(pinned)
-							if dirs := origReq.Directives(); dirs != nil {
-								repinned.SetDirectives(dirs.Clone())
-							}
-							repinned.CopyHttpContextFrom(origReq)
-							repinned.SetNetwork(origReq.Network())
-							shadowReq = repinned
-						}
-					}
+					repinned.CopyHttpContextFrom(origReq)
+					repinned.SetNetwork(origReq.Network())
+					shadowReq = repinned
 				}
 			}
 

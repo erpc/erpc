@@ -294,7 +294,7 @@ func (p *stateProber) probeLatest(ctx context.Context, u common.Upstream) probeO
 		return probeUnknown
 	}
 	head := eu.EvmEffectiveLatestBlock()
-	if head <= 0 || !p.latestReachesUpstream(u) {
+	if head <= 0 || pinsLatestTag(u) || !keepsLatestTag(getMethodConfig("eth_call", p.network)) {
 		return probeUnknown // no head to judge against, or "latest" never reaches u
 	}
 	got, ok := p.executedBlock(ctx, u, "latest", "latest")
@@ -310,16 +310,6 @@ func (p *stateProber) probeLatest(ctx context.Context, u common.Upstream) probeO
 	}
 	p.count(u, "latest", "match")
 	return probeMatch
-}
-
-// latestReachesUpstream reports whether a client's eth_call at "latest" reaches
-// u as the tag rather than as a block number eRPC chose.
-func (p *stateProber) latestReachesUpstream(u common.Upstream) bool {
-	if cfg := u.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.PinLatestTag != nil && *cfg.Evm.PinLatestTag {
-		return false
-	}
-	m := getMethodConfig("eth_call", p.network)
-	return m != nil && m.TranslateLatestTag != nil && !*m.TranslateLatestTag
 }
 
 // executedBlock sends the context probe call at blockParam and returns the

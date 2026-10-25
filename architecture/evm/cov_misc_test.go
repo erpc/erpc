@@ -764,39 +764,45 @@ func TestCovMisc_ExportIntegrityCatch(t *testing.T) {
 // pin_latest
 // ---------------------------------------------------------------------------
 
-func TestCovMisc_LatestTagParamIndexAndPinParams(t *testing.T) {
-	for method, want := range map[string]int{"eth_call": 1, "eth_getStorageAt": 2} {
-		idx, ok := LatestTagParamIndex(method)
-		assert.True(t, ok)
-		assert.Equal(t, want, idx)
+func TestCovMisc_StateSelectorAndPinParams(t *testing.T) {
+	for method, want := range map[string]int{"eth_call": 1, "eth_getStorageAt": 2, "eth_estimateGas": 1, "eth_callMany": 1, "trace_call": 2} {
+		idx, ok := stateSelectorIndex(method)
+		assert.True(t, ok, method)
+		assert.Equal(t, want, idx, method)
 	}
-	_, ok := LatestTagParamIndex("eth_getBlockByNumber")
+	_, ok := stateSelectorIndex("eth_getBlockByNumber")
 	assert.False(t, ok, "block-by-number is never pinned")
 
 	cases := []struct {
 		name   string
+		method string
 		params []interface{}
-		idx    int
 		want   []interface{}
 		pinned bool
 	}{
-		{"absent selector means latest", []interface{}{"0xabc"}, 1, []interface{}{"0xabc", "0x64"}, true},
-		{"explicit latest", []interface{}{"0xabc", "latest"}, 1, []interface{}{"0xabc", "0x64"}, true},
-		{"params too short", []interface{}{"0xabc"}, 2, []interface{}{"0xabc"}, false},
-		{"concrete block", []interface{}{"0xabc", "0x10"}, 1, []interface{}{"0xabc", "0x10"}, false},
-		{"object selector", []interface{}{"0xabc", map[string]interface{}{"blockNumber": "0x1"}}, 1, nil, false},
+		{"absent selector means latest", "eth_getBalance", []interface{}{"0xabc"}, []interface{}{"0xabc", "0x64"}, true},
+		{"null selector means latest", "eth_getBalance", []interface{}{"0xabc", nil}, []interface{}{"0xabc", "0x64"}, true},
+		{"explicit latest", "eth_getBalance", []interface{}{"0xabc", "latest"}, []interface{}{"0xabc", "0x64"}, true},
+		{"eth_estimateGas latest", "eth_estimateGas", []interface{}{"0xabc", "latest"}, []interface{}{"0xabc", "0x64"}, true},
+		{"params too short", "eth_getStorageAt", []interface{}{"0xabc"}, []interface{}{"0xabc"}, false},
+		{"concrete block", "eth_getBalance", []interface{}{"0xabc", "0x10"}, []interface{}{"0xabc", "0x10"}, false},
+		{"EIP-1898 number", "eth_getBalance", []interface{}{"0xabc", map[string]interface{}{"blockNumber": "0x1"}}, nil, false},
+		{"EIP-1898 latest leaf", "eth_getBalance", []interface{}{"0xabc", map[string]interface{}{"blockNumber": "latest"}},
+			[]interface{}{"0xabc", map[string]interface{}{"blockNumber": "0x64"}}, true},
+		{"eth_callMany state context", "eth_callMany", []interface{}{[]interface{}{}, map[string]interface{}{"blockNumber": "latest", "transactionIndex": -1}},
+			[]interface{}{[]interface{}{}, map[string]interface{}{"blockNumber": "0x64", "transactionIndex": -1}}, true},
+		{"eth_callMany absent stays absent", "eth_callMany", []interface{}{[]interface{}{}}, []interface{}{[]interface{}{}}, false},
+		{"not family 3", "eth_getBlockByNumber", []interface{}{"latest", false}, []interface{}{"latest", false}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, pinned := PinLatestParams(tc.params, tc.idx, 100)
+			before := deepCopyParams(tc.params)
+			got, pinned := pinLatestParams(tc.method, tc.params, 100)
 			assert.Equal(t, tc.pinned, pinned)
 			if tc.want != nil {
 				assert.Equal(t, tc.want, got)
 			}
-			if pinned {
-				assert.NotSame(t, &tc.params[0], &got[0], "the input slice is never mutated")
-				assert.NotEqual(t, "0x64", tc.params[min(tc.idx, len(tc.params)-1)])
-			}
+			assert.Equal(t, before, tc.params, "the input params are never mutated")
 		})
 	}
 }
@@ -806,20 +812,20 @@ func TestCovMisc_PinBlockTagInBody(t *testing.T) {
 	cases := []struct {
 		name   string
 		body   []byte
-		idx    int
 		height int64
 		pinned bool
 	}{
-		{"empty body", nil, 1, 100, false},
-		{"unknown height", body, 1, 0, false},
-		{"not json", []byte(`{not json`), 1, 100, false},
-		{"selector index beyond params", body, 2, 100, false},
-		{"selector is not latest", []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","0x5"]}`), 1, 100, false},
-		{"latest is pinned", body, 1, 100, true},
+		{"empty body", nil, 100, false},
+		{"unknown height", body, 0, false},
+		{"not json", []byte(`{not json`), 100, false},
+		{"not family 3", []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`), 100, false},
+		{"selector is not latest", []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","0x5"]}`), 100, false},
+		{"latest is pinned", body, 100, true},
+		{"absent selector is pinned", []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc"]}`), 100, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out, pinned := PinBlockTagInBody(tc.body, tc.idx, tc.height)
+			out, pinned := PinBlockTagInBody(tc.body, tc.height)
 			assert.Equal(t, tc.pinned, pinned)
 			if !pinned {
 				assert.Equal(t, tc.body, out)

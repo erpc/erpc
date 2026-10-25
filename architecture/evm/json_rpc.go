@@ -73,7 +73,7 @@ func tagBlockNumber(ctx context.Context, nrq *common.NormalizedRequest, cfg *com
 	}
 	switch tag {
 	case "latest":
-		if cfg.TranslateLatestTag != nil && !*cfg.TranslateLatestTag {
+		if keepsLatestTag(cfg) {
 			return 0
 		}
 		return common.EvmHeadOf(network, ctx, nrq).Latest
@@ -86,13 +86,20 @@ func tagBlockNumber(ctx context.Context, nrq *common.NormalizedRequest, cfg *com
 	return 0
 }
 
+// keepsLatestTag reports whether a method's config sends "latest" to
+// upstreams as the tag: translateLatestTag off.
+func keepsLatestTag(cfg *common.CacheMethodConfig) bool {
+	return cfg != nil && cfg.TranslateLatestTag != nil && !*cfg.TranslateLatestTag
+}
+
 // stateBlockParam is the block selector's position for the §7 state-at-a-block
 // methods whose nodes read an absent or null selector as "latest" (geth's
 // blockNrOrHashOrLatest, erigon's trace_call): absent, it is interpolated
 // like "latest". eth_callMany is not here: its selector is a required
-// object, whose blockNumber leaf is rewritten like any EIP-1898 one. Nor
-// are arbtrace_*: Arbitrum classic nodes serve them, and their latest is
-// not the network's, so an absent param stays absent.
+// object, whose blockNumber leaf is rewritten like any EIP-1898 one (see
+// stateSelectorIndex). Nor are arbtrace_*: Arbitrum classic nodes serve
+// them, and their latest is not the network's, so an absent param stays
+// absent.
 var stateBlockParam = map[string]int{
 	"eth_call":                1,
 	"eth_estimateGas":         1,
@@ -112,6 +119,48 @@ var stateBlockParam = map[string]int{
 // null there.
 func stateBlockParamAbsent(params []interface{}, idx int) bool {
 	return len(params) == idx || (len(params) > idx && params[idx] == nil)
+}
+
+// stateSelectorIndex is the block selector's position of a §7 family-3
+// (state at a block) method: stateBlockParam's, or eth_callMany's state
+// context object: the one family-3 map pinLatestTag, the shadow pin, the
+// tag-state gate and the state prober read.
+func stateSelectorIndex(method string) (int, bool) {
+	if idx, ok := stateBlockParam[method]; ok {
+		return idx, true
+	}
+	if method == "eth_callMany" {
+		return 1, true
+	}
+	return 0, false
+}
+
+// latestStateSelector is the path in params of a family-3 request's block
+// selector when it means "latest", in every form interpolation rewrites: the
+// tag, an EIP-1898 object's blockNumber leaf, or an absent or null selector
+// of a stateBlockParam method. false for any other method or selector.
+func latestStateSelector(method string, params []interface{}) ([]interface{}, bool) {
+	idx, ok := stateSelectorIndex(method)
+	if !ok {
+		return nil, false
+	}
+	if _, absentIsLatest := stateBlockParam[method]; absentIsLatest && stateBlockParamAbsent(params, idx) {
+		return []interface{}{idx}, true
+	}
+	if len(params) <= idx {
+		return nil, false
+	}
+	switch v := params[idx].(type) {
+	case string:
+		if v == "latest" {
+			return []interface{}{idx}, true
+		}
+	case map[string]interface{}:
+		if s, _ := v["blockNumber"].(string); s == "latest" && v["blockHash"] == nil {
+			return []interface{}{idx, "blockNumber"}, true
+		}
+	}
+	return nil, false
 }
 
 // rangeBoundAbsent reports whether a range filter's bound key (fromBlock,
