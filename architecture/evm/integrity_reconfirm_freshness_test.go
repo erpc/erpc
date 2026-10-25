@@ -214,20 +214,24 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		net.backoff.Store(true)
 
 		hash, status := c.ReconfirmPin(context.Background(), height)
-		assert.Equal(t, integrity.PinRateLimited, status, "no target answered")
+		assert.Equal(t, integrity.PinRateLimited, status, "every target backed off")
 		assert.Equal(t, orphan, hash)
-		before := time.Now().Add(-2 * reconfirmCooldown)
 		c.reconfirmMu.Lock()
-		c.reconfirmedAt[height] = before
+		_, cooled := c.reconfirmedAt[height]
 		c.reconfirmMu.Unlock()
+		assert.False(t, cooled, "a round whose every Ask backed off is deferred: no cooldown")
+		assert.Len(t, net.askedNeeds(), 2, "both voters were Asked")
 
 		_, status = c.ReconfirmPin(context.Background(), height)
 		assert.Equal(t, integrity.PinRateLimited, status, "the round waits on its targets' backoff")
+		_, status = c.ReconfirmPin(context.Background(), height+1)
+		assert.Equal(t, integrity.PinRateLimited, status, "a re-check of another pin never displaces a round within its retry")
 		c.reconfirmMu.Lock()
-		at := c.reconfirmedAt[height]
+		_, cooled = c.reconfirmedAt[height]
+		_, cooledNext := c.reconfirmedAt[height+1]
 		c.reconfirmMu.Unlock()
-		assert.Equal(t, before, at, "a deferred re-check starts no cooldown")
-		assert.Len(t, net.askedNeeds(), 2, "the deferred re-check Asked nothing")
+		assert.False(t, cooled || cooledNext, "a deferred re-check starts no cooldown")
+		assert.Len(t, net.askedNeeds(), 2, "the deferred re-checks Asked nothing")
 	})
 
 	t.Run("a client that leaves with answers pending is rate-limited, never unverifiable", func(t *testing.T) {

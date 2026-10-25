@@ -153,6 +153,12 @@ type ChainTracker struct {
 	// still off W after that first poll, sorted, as last handed to the
 	// network (spec §6.3 minority fork). Network-wide only.
 	offPins map[string]offPin
+	// refreshedAt is, per voter whose vote is off the pins, the fork point
+	// its refresh ran for (spec §6.3); every tracker keeps it.
+	refreshedAt map[string]string
+	// retryAt is, per settle round key, when a round over it may run again
+	// after one that did not decide.
+	retryAt map[string]time.Time
 	demoted []string
 	forkAt  time.Time
 	// sampled is the confirmed head last fed to the block time.
@@ -444,6 +450,8 @@ func (t *ChainTracker) clear() {
 	t.pins, t.maxHeld = nil, nil
 	t.coldUntil = time.Now().Add(t.W())
 	t.offPins = make(map[string]offPin)
+	t.refreshedAt = make(map[string]string)
+	t.retryAt = make(map[string]time.Time)
 	t.treesDirty = true
 	for _, j := range t.jobs {
 		t.endJob(j, nil)
@@ -629,7 +637,7 @@ func (t *ChainTracker) update() bool {
 	ok := t.guard("choose", func() {
 		t.endWalks()
 		t.promote()
-		if s := t.settle; s != nil && s.inflight && s.out == 0 && !t.anyWalking(s.answers) {
+		if s := t.settle; s != nil && s.inflight && (s.out == 0 && !t.anyWalking(s.answers) || !time.Now().Before(s.ends)) {
 			t.endSettle(s)
 		} else {
 			t.choose()
@@ -861,6 +869,11 @@ func (t *ChainTracker) trackForks() {
 			delete(t.offPins, u)
 		}
 	}
+	for u := range t.refreshedAt {
+		if _, ok := t.votes[u]; !ok {
+			delete(t.refreshedAt, u)
+		}
+	}
 	var demoted, poll []string
 	t.forkAt = time.Time{}
 	soonest := func(at time.Time) {
@@ -871,6 +884,7 @@ func (t *ChainTracker) trackForks() {
 	for u, nd := range t.votes {
 		if !t.alive(nd) || !t.conflicts(nd) {
 			delete(t.offPins, u)
+			delete(t.refreshedAt, u)
 			continue
 		}
 		op, ok := t.offPins[u]
@@ -1183,7 +1197,7 @@ func (t *ChainTracker) decide() (path, tie []*node, conflict bool) {
 		switch {
 		case s.inflight && s.key.disputed():
 			return nil, nil, false
-		case !s.inflight:
+		case !s.inflight && t.meets(s.key, base):
 			base = append(base, t.settleAnswers(s, base)...)
 		}
 	}
@@ -1191,6 +1205,32 @@ func (t *ChainTracker) decide() (path, tie []*node, conflict bool) {
 		path, tie = t.pick(base)
 	}
 	return path, tie, conflict
+}
+
+// meets reports whether the counted votes base alone still meet k's
+// decision: a non-voter's answer adds one vote for this decision only
+// (spec §6.5 rule 5). That is k's tie, a vote off the pins on k's branch,
+// or, for a client's re-check, a path through its pin, or no vote at all.
+func (t *ChainTracker) meets(k roundKey, base []voter) bool {
+	if !k.disputed() {
+		if len(base) == 0 || k.pinned == nil {
+			return true
+		}
+		path, _ := t.pick(base)
+		return slices.Contains(path, k.pinned)
+	}
+	if len(base) == 0 {
+		return false
+	}
+	if _, tie := t.pick(base); len(tie) > 0 && t.tieKey(tie).name == k.name {
+		return true
+	}
+	for _, v := range base {
+		if t.conflicts(v.n) && t.disputeOf(v.n).name == k.name {
+			return true
+		}
+	}
+	return false
 }
 
 // settleAnswers are the answers of s that count over the counted votes
@@ -1207,10 +1247,11 @@ func (t *ChainTracker) settleAnswers(s *settleState, base []voter) []voter {
 }
 
 // decidedAnswers are the answers of the decided round while its key
-// stands, over the counted votes base; none otherwise.
+// stands and the votes base alone still meet its decision; none
+// otherwise.
 func (t *ChainTracker) decidedAnswers(base []voter) []voter {
 	s := t.settle
-	if s == nil || s.inflight || !s.decided || !t.stands(s.key) {
+	if s == nil || s.inflight || !s.decided || !t.stands(s.key) || !t.meets(s.key, base) {
 		return nil
 	}
 	return t.settleAnswers(s, base)
@@ -1768,27 +1809,33 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 		}
 		return -1
 	}
-	// backs adds the highest pin n backs; branch: n backs the whole path
-	// when it holds the pinned branch.
-	backs := func(v voter, branch bool) {
+	// backs adds the highest pin n backs, at most upTo; a decided answer
+	// that holds the pinned branch backs it up to the head it decided.
+	backs := func(v voter, answer bool, upTo int) {
 		i := pinUnder(v.n)
 		if i < 0 {
 			return
 		}
-		if branch && (path[i] == v.n || i == head) {
+		if answer && (path[i] == v.n || i == head) {
 			i = head
+		}
+		if i = min(i, upTo); i < 0 {
+			return
 		}
 		b.backs = append(b.backs, pinBack{i, t.voters.Vendors[v.who]})
 	}
 	votes := t.baseVotes()
 	for _, v := range votes {
-		backs(v, false)
+		backs(v, false, head)
 		if t.conflicts(v.n) {
 			b.undisputed = min(b.undisputed, pinUnder(v.n)+1)
 		}
 	}
-	for _, a := range t.decidedAnswers(votes) {
-		backs(a, true)
+	if answers := t.decidedAnswers(votes); len(answers) > 0 {
+		decided := pinUnder(t.settle.head)
+		for _, a := range answers {
+			backs(a, true, decided)
+		}
 	}
 	slices.SortFunc(b.backs, func(x, y pinBack) int { return x.i - y.i })
 	for u, nd := range t.pending {

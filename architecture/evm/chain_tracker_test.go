@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -445,4 +446,100 @@ func TestReconfirmPin_CooldownIsRateLimitedNotConfirmed(t *testing.T) {
 		_, status := c.ReconfirmPin(context.Background(), -1)
 		assert.Equal(t, integrity.PinUnverifiable, status)
 	})
+}
+
+// settleNetwork is capturingNetwork with a voter set of its own and each
+// head Ask answered with its target's latest header.
+type settleNetwork struct {
+	*capturingNetwork
+	hv     HashVoters
+	latest map[string]json.RawMessage // target -> its latest header
+	smu    sync.Mutex
+	forks  int // head Asks with a fork need
+}
+
+func newSettleNetwork(t *testing.T, hv HashVoters, latest map[string]json.RawMessage) *settleNetwork {
+	return &settleNetwork{capturingNetwork: newCapturingNetwork(t, 0, testHash("f", 0)), hv: hv, latest: latest}
+}
+
+func (n *settleNetwork) EvmHashVoters(string, time.Duration, bool) HashVoters { return n.hv }
+
+func (n *settleNetwork) EvmAskHead(_ context.Context, id string, need common.HeadNeed, _ common.AskReason) common.HeadAnswer {
+	n.smu.Lock()
+	if need == common.HeadNeedFork {
+		n.forks++
+	}
+	h := n.latest[id]
+	n.smu.Unlock()
+	sent := time.Now()
+	return common.HeadAnswer{Outcome: common.AskFetched, Sent: sent, Next: sent.Add(time.Hour), Header: h}
+}
+
+func (n *settleNetwork) forkAsks() int {
+	n.smu.Lock()
+	defer n.smu.Unlock()
+	return n.forks
+}
+
+// A non-voter's settle answer is one more vote for its decision only
+// (spec §6.5 rule 5): once the voters leave that tie for a branch that forks
+// below it, the answers no longer hold the pins on the old winner.
+func TestSettleAnswersCountForTheirDecisionOnly(t *testing.T) {
+	x := testHeader(11, testHash("aa", 11), testHash("0", 10))
+	net := newSettleNetwork(t, HashVoters{Voters: []string{"a", "b"}, Hash: []string{"a", "b"}, Need: 2, Others: []string{"c", "d", "e"},
+		Vendors: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "d": "vendor-d", "e": "vendor-e"}, NetworkVendors: 5},
+		map[string]json.RawMessage{"c": x, "d": x, "e": x})
+	c := newChainTracker(t.Context(), net, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+	voteChain(t, c, "a", "0", 0, 10, testHash("f", 0))
+	voteChain(t, c, "b", "0", 0, 10, testHash("f", 0))
+
+	c.Observe("a", x, true)
+	c.Observe("b", testHeader(11, testHash("bb", 11), testHash("0", 10)), true)
+	require.Eventually(t, func() bool {
+		c.sync(context.Background())
+		v, _ := c.HashAt(11)
+		return v == testHash("aa", 11)
+	}, 5*time.Second, 5*time.Millisecond, "3 non-voters' answers settle the 1-vs-1 tie")
+
+	z := testHeader(11, testHash("cc", 11), testHash("0", 10))
+	c.Observe("a", z, true)
+	c.Observe("b", z, true)
+	c.sync(context.Background())
+	v, _ := c.HashAt(11)
+	assert.Equal(t, testHash("cc", 11), v, "both voters left the tie: its answers no longer count")
+}
+
+// A group tracker refreshes the votes behind the pins once per off voter and
+// fork point (spec §6.3), however many other rounds run between.
+func TestSettleRefreshRunsOncePerForkPoint(t *testing.T) {
+	head := testHeader(10, testHash("0", 10), testHash("0", 9))
+	off := func(tag string) json.RawMessage { return testHeader(10, testHash(tag, 10), testHash("0", 9)) }
+	net := newSettleNetwork(t, HashVoters{Voters: []string{"a", "b", "c", "d"}, Hash: []string{"a", "b", "c", "d"}, Need: 3,
+		Vendors: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "d": "vendor-d"}, NetworkVendors: 4},
+		map[string]json.RawMessage{"a": head, "b": head, "c": off("dd"), "d": head})
+	c := newChainTracker(t.Context(), net, 32, 0, "group-*", "group", "group", nil, newFetchScheduler(t.Context(), net))
+	for _, u := range []string{"a", "b", "c", "d"} {
+		voteChain(t, c, u, "0", 0, 10, testHash("f", 0))
+	}
+
+	c.Observe("c", off("dd"), true)
+	require.Eventually(t, func() bool { c.sync(context.Background()); return net.forkAsks() == 3 }, 5*time.Second, 5*time.Millisecond,
+		"c's vote off the pins refreshes a, b and d first")
+	net.smu.Lock()
+	net.latest["d"] = off("ee")
+	net.smu.Unlock()
+	c.Observe("d", off("ee"), true)
+	require.Eventually(t, func() bool { c.sync(context.Background()); return net.forkAsks() == 5 }, 5*time.Second, 5*time.Millisecond,
+		"d's vote on another branch refreshes a and b")
+	// c's next head on its branch is newer evidence than every vote
+	// behind the pins, yet its fork point is the one refreshed.
+	c.Observe("c", testHeader(11, testHash("dd", 11), testHash("dd", 10)), true)
+	for range 10 {
+		c.VotersChanged()
+		c.sync(context.Background())
+		time.Sleep(5 * time.Millisecond)
+	}
+	assert.Equal(t, 5, net.forkAsks(), "c's refresh at its fork point already ran")
+	v, _ := c.HashAt(10)
+	assert.Equal(t, testHash("0", 10), v, "the refreshed votes keep the pins")
 }

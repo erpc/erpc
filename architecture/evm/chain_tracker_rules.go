@@ -386,19 +386,28 @@ func (t *ChainTracker) logSettle(s *settleState, o settleOutcome) {
 }
 
 // settleState is one settle round (§6 rule 5, Settle rounds): an Ask with a
-// hash need of each of up to settleAsks targets for one key. Each answer,
-// once its walk ended, is its voter's hash vote, or, from a target without
-// a counted vote, one more vote for this decision.
+// hash need of each of up to settleAsks targets for one key, for at most
+// W. Each answer, once its walk ended, is its voter's hash vote, or, from
+// a target without a counted vote, one more vote for this decision.
 type settleState struct {
 	key      roundKey
 	answers  map[string]*node // target id -> its answer
 	out      int              // Asks still out
 	inflight bool
 	decided  bool
+	// ends is W after the round started: walks still out then are no
+	// answer.
+	ends time.Time
+	// asked counts the targets Asked; deferred those whose Ask was refused
+	// or backed off.
+	asked, deferred int
 	// next is the soonest moment one of its targets' Asks may fetch again.
-	next    time.Time
-	retryAt time.Time
-	waiters []chan settleOutcome
+	next time.Time
+	// head is the head the round decided: its answers back no pin above.
+	head *node
+	// off and fork: the voter and fork point a refresh is for (§6.3).
+	off, fork string
+	waiters   []chan settleOutcome
 }
 
 func (s *settleState) notify(o settleOutcome) {
@@ -452,23 +461,26 @@ func (t *ChainTracker) heldAnswer(a common.HeadAnswer) *node {
 }
 
 // startSettle starts round s: an Ask of each target with need, reason
-// settle. With no target to Ask, s ends unanswered and false is returned.
+// settle. With no target, or every Ask refused, s ends at once and false
+// is returned.
 func (t *ChainTracker) startSettle(s *settleState, targets []string, need common.HeadNeed, waiter chan settleOutcome) bool {
-	s.answers, s.inflight = make(map[string]*node), true
+	s.answers, s.inflight, s.ends = make(map[string]*node), true, time.Now().Add(t.W())
 	if waiter != nil {
 		s.waiters = append(s.waiters, waiter)
 	}
 	t.settle = s
 	for _, id := range targets {
+		s.asked++
 		if t.askHead(id, need, common.AskSettle, func(a common.HeadAnswer) { t.settleAnswered(s, id, a) }) {
 			s.out++
+		} else {
+			s.deferred++
 		}
 	}
 	if s.out > 0 {
 		return true
 	}
-	s.inflight = false
-	t.undecided(s, settleUnanswered)
+	t.endSettle(s)
 	return false
 }
 
@@ -479,14 +491,18 @@ func (t *ChainTracker) startDispute(k roundKey, skip string) bool {
 }
 
 // settleAnswered takes target id's answer to round s. A failed Ask, a
-// panic or backoff included, ends that target's part of the round.
+// panic or backoff included, ends that target's part of the round; an
+// answer after the round ended is no answer.
 func (t *ChainTracker) settleAnswered(s *settleState, id string, a common.HeadAnswer) {
-	if t.settle != s {
+	if t.settle != s || !s.inflight {
 		return
 	}
 	s.out--
 	if !a.Next.IsZero() && (s.next.IsZero() || a.Next.Before(s.next)) {
 		s.next = a.Next
+	}
+	if a.Outcome == common.AskBackoff {
+		s.deferred++
 	}
 	nd := t.heldAnswer(a)
 	if nd == nil {
@@ -499,14 +515,18 @@ func (t *ChainTracker) settleAnswered(s *settleState, id string, a common.HeadAn
 	t.walkFrom(nd, id)
 }
 
-// endSettle decides once every answer is in and walked: rule 4 over the
-// votes and the answers. A round whose key no longer stands never reports
-// decided: its answers no longer count, and the path came from votes
-// alone. A tie, or no answer, allows the next round after the targets'
-// Ask backoff. The pins move before the waiters hear the outcome, so they
-// read the pins it left.
+// endSettle decides once every answer is in and walked, or W after the
+// round started: rule 4 over the votes and the walked answers. A round
+// whose key no longer stands never reports decided: its answers no longer
+// count, and the path came from votes alone. A round whose every Ask was
+// refused or backed off is deferred. A tie, or no answer, allows the next
+// round over its key after the targets' Ask backoff. The pins move before
+// the waiters hear the outcome, so they read the pins it left.
 func (t *ChainTracker) endSettle(s *settleState) {
 	s.inflight = false
+	if s.off != "" {
+		t.refreshedAt[s.off] = s.fork
+	}
 	stands := t.stands(s.key)
 	path, tie, _ := t.decide()
 	if path != nil {
@@ -514,13 +534,15 @@ func (t *ChainTracker) endSettle(s *settleState) {
 	}
 	answered := 0
 	for _, a := range s.answers {
-		if t.alive(a) {
+		if t.alive(a) && !t.walking(a) {
 			answered++
 		}
 	}
 	switch {
 	case !stands:
 		t.undecided(s, settleMoved)
+	case answered == 0 && s.asked > 0 && s.deferred == s.asked:
+		t.undecided(s, settleDeferred)
 	case answered == 0:
 		t.undecided(s, settleUnanswered)
 	case len(tie) > 0:
@@ -529,6 +551,10 @@ func (t *ChainTracker) endSettle(s *settleState) {
 		// The decision is the key now: the block it pinned is its pinned
 		// side, so its answers count while that stands.
 		s.decided, s.key = true, t.rekey(s.key)
+		if len(t.pins) > 0 {
+			s.head = t.pins[len(t.pins)-1]
+		}
+		delete(t.retryAt, s.key.name)
 		telemetry.CounterHandle(telemetry.MetricChainTrackerSettleTotal, t.projectId(), t.networkLabel(), "decided").Inc()
 		t.logSettle(s, settleDecided)
 		// The decided answers back their branch now: waiters read that.
@@ -538,42 +564,65 @@ func (t *ChainTracker) endSettle(s *settleState) {
 }
 
 // undecided ends s without a decision. The next round over its key waits
-// for the soonest of its targets' Ask backoffs; with no Ask answered, for
-// one block time.
+// for the soonest of its targets' Ask backoffs; with none, for one block
+// time.
 func (t *ChainTracker) undecided(s *settleState, o settleOutcome) {
-	s.retryAt = s.next
-	if s.retryAt.IsZero() {
-		s.retryAt = time.Now().Add(t.BlockTime())
+	now := time.Now()
+	for k, at := range t.retryAt {
+		if !at.After(now) {
+			delete(t.retryAt, k)
+		}
 	}
+	at := s.next
+	if !at.After(now) {
+		at = now.Add(t.BlockTime())
+	}
+	t.retryAt[s.key.name] = at
 	telemetry.CounterHandle(telemetry.MetricChainTrackerSettleTotal, t.projectId(), t.networkLabel(), "undecided").Inc()
 	t.logSettle(s, o)
 	s.notify(o)
 }
 
+// waits reports whether a round over k waits on its retry time.
+func (t *ChainTracker) waits(k roundKey) bool {
+	return time.Now().Before(t.retryAt[k.name])
+}
+
+// keepsPlace reports whether the last round still holds its place:
+// undecided and before its retry, or decided while its key stands and the
+// votes alone meet its decision. A client's re-check of another key never
+// displaces it.
+func (t *ChainTracker) keepsPlace(s *settleState) bool {
+	if s.decided {
+		return t.stands(s.key) && t.meets(s.key, t.baseVotes())
+	}
+	return t.waits(s.key)
+}
+
 // maySettle: one round at a time. A round over k waits for the round in
-// flight; after a decided round over k it does not run while that key
-// stands, after an undecided one not before its retry.
+// flight and for its own retry time; after a decided round over k it does
+// not run while that key stands.
 func (t *ChainTracker) maySettle(k roundKey) bool {
 	switch s := t.settle; {
-	case s == nil:
-		return true
-	case s.inflight:
+	case s != nil && s.inflight:
 		return false
-	case s.key.name != k.name:
-		return true
-	case s.decided:
+	case t.waits(k):
+		return false
+	case s != nil && s.decided && s.key.name == k.name:
 		return !t.stands(s.key)
 	default:
-		return !time.Now().Before(s.retryAt)
+		return true
 	}
 }
 
 // requestSettle is ReconfirmPin's settle: it joins the round in flight and
 // waits for its answers, or runs one over the dispute rule 4 meets, else
 // over the pin at number. A decided round over that key that still stands
-// reports decided at once; an undecided one before its retry, deferred.
+// reports decided at once. A round over that key before its retry, or a
+// last round over another key that still holds its place, defers it.
 func (t *ChainTracker) requestSettle(settled chan settleOutcome, number int64) {
-	if s := t.settle; s != nil && s.inflight {
+	s := t.settle
+	if s != nil && s.inflight {
 		s.waiters = append(s.waiters, settled)
 		return
 	}
@@ -587,17 +636,14 @@ func (t *ChainTracker) requestSettle(settled chan settleOutcome, number int64) {
 	case conflict:
 		k, skip = t.disputeOf(t.ask.vote), t.ask.voter
 	}
-	if s := t.settle; s != nil && s.key.name == k.name {
-		switch {
-		case s.decided && t.stands(s.key):
-			report(settled, settleDecided)
-			return
-		case !s.decided && time.Now().Before(s.retryAt):
-			report(settled, settleDeferred)
-			return
-		}
+	switch {
+	case s != nil && s.decided && s.key.name == k.name && t.stands(s.key):
+		report(settled, settleDecided)
+	case t.waits(k), s != nil && s.key.name != k.name && t.keepsPlace(s):
+		report(settled, settleDeferred)
+	default:
+		t.startSettle(&settleState{key: k}, t.tieTargets(skip), common.HeadNeedHash, settled)
 	}
-	t.startSettle(&settleState{key: k}, t.tieTargets(skip), common.HeadNeedHash, settled)
 }
 
 // tieTargets are the targets of a round over a tie, a conflicting
@@ -634,22 +680,38 @@ func (t *ChainTracker) refreshTargets(off string, nd *node) []string {
 	return out[:min(len(out), settleAsks)]
 }
 
+// forkPoint names where nd's branch leaves the pins: the pinned parent of
+// its first block off them; "" for a tree that does not join the pins.
+func (t *ChainTracker) forkPoint(nd *node) string {
+	if p := t.branchOf(nd).parent; p != nil {
+		return p.h.hashHex
+	}
+	return ""
+}
+
 // refreshed reports whether voter u's vote nd off the pins was refreshed
-// (spec §6.3): a round over its dispute ended, or no vote behind the pins
-// there is older. Otherwise it starts that round when one may start,
-// Asking each target with a fork need: a fetch sent before the round, as
-// old as the vote it would refresh, is no answer.
+// (spec §6.3) at its fork point: a round for it there ended, a decided
+// round over its dispute stands, or no vote behind the pins there is
+// older. Otherwise it starts that round when one may start, Asking each
+// target with a fork need: a fetch sent before the round, as old as the
+// vote it would refresh, is no answer.
 func (t *ChainTracker) refreshed(u string, nd *node) bool {
+	fork := t.forkPoint(nd)
+	if at, ok := t.refreshedAt[u]; ok && at == fork {
+		return true
+	}
 	k := t.disputeOf(nd)
-	if s := t.settle; s != nil && s.key.name == k.name {
-		return !s.inflight
+	if s := t.settle; s != nil && !s.inflight && s.decided && s.key.name == k.name && t.stands(s.key) {
+		t.refreshedAt[u] = fork
+		return true
 	}
 	targets := t.refreshTargets(u, nd)
 	if len(targets) == 0 {
+		t.refreshedAt[u] = fork
 		return true
 	}
 	if t.maySettle(k) {
-		t.startSettle(&settleState{key: k}, targets, common.HeadNeedFork, nil)
+		t.startSettle(&settleState{key: k, off: u, fork: fork}, targets, common.HeadNeedFork, nil)
 	}
 	return false
 }
@@ -727,19 +789,26 @@ func (t *ChainTracker) conflicts(nd *node) bool {
 }
 
 // rearm ticks the tracker at its next deadline: the no-source voter's next
-// Ask, the end of an undecided settle's backoff, the next catch-up while
-// the lane's Latest caps the sends, the end of the cold window, the moment
-// the soonest hash voter's hash age passes W, or the moment a vote off the
-// pins has been off for W (minority fork). It runs after every message, so
-// a deadline that fires never hides a later one.
+// Ask, the end of a settle round's W or of an undecided round's backoff,
+// the next catch-up while the lane's Latest caps the sends, the end of the
+// cold window, the moment the soonest hash voter's hash age passes W, or
+// the moment a vote off the pins has been off for W (minority fork). It
+// runs after every message, so a deadline that fires never hides a later
+// one.
 func (t *ChainTracker) rearm() {
 	now := time.Now()
 	var at time.Time
 	if t.noSourceWanted() && t.ask.due.After(now) {
 		at = t.ask.due
 	}
-	if s := t.settle; s != nil && !s.inflight && !s.decided && s.retryAt.After(now) && (at.IsZero() || s.retryAt.Before(at)) {
-		at = s.retryAt
+	if s := t.settle; s != nil {
+		due := t.retryAt[s.key.name]
+		if s.inflight {
+			due = s.ends
+		}
+		if due.After(now) && (at.IsZero() || due.Before(at)) {
+			at = due
+		}
 	}
 	if c := t.catchUpAt; c.After(now) && (at.IsZero() || c.Before(at)) {
 		at = c
