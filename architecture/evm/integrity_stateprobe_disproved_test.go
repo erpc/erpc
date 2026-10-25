@@ -221,10 +221,15 @@ func TestStateProber_StaleLatestTag(t *testing.T) {
 		net := &fleetNetwork{ups: list, latest: head, cfg: &common.NetworkConfig{Methods: methods}}
 		net.forward = func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			jrq, _ := req.JsonRpcRequest()
-			if jrq.Method != "eth_call" || jrq.Params[1] != "latest" || !req.Directives().SkipInterpolation {
-				return nil, fmt.Errorf("unexpected %s %v", jrq.Method, jrq.Params)
+			if jrq.Method != "eth_call" || !req.Directives().SkipInterpolation {
+				return nil, fmt.Errorf("method not found")
 			}
 			id := req.Directives().UseUpstream
+			if jrq.Params[1] != "latest" {
+				// every node runs pinned calls at the pin (#1109)
+				return common.NewNormalizedResponse().WithJsonRpcResponse(
+					common.MustNewJsonRpcResponseFromBytes([]byte(`"1"`), []byte(fmt.Sprintf(`"0x%064x"`, head)), nil)), nil
+			}
 			mu.Lock()
 			latestCalls[id]++
 			odd := latestCalls[id]%2 == 1
@@ -245,14 +250,16 @@ func TestStateProber_StaleLatestTag(t *testing.T) {
 				common.MustNewJsonRpcResponseFromBytes([]byte(`"1"`), []byte(ret), nil)), nil
 		}
 		v := newChainTracker(t.Context(), net, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		voteChain(t, v, "a", "e", uint64(head), uint64(head), testHash("f", uint64(head-1)))
 		p = &stateProber{
-			network: net, view: v,
+			network: net, view: v, pinnedProbes: true,
 			ctxProbe:  integrity.ChainStateContextProbe(999),
 			lastProbe: map[string]time.Time{}, work: make(chan int64, 1),
 		}
 		for range rounds {
 			p.latestChanged()
 			p.probeTagStates(t.Context())
+			p.probeAll(t.Context(), head)
 			require.Eventually(t, func() bool {
 				p.tagMu.Lock()
 				defer p.tagMu.Unlock()
@@ -276,6 +283,9 @@ func TestStateProber_StaleLatestTag(t *testing.T) {
 		assert.Equal(t, 1.0, gauge("split"), "a fleet half stale is stale: each stale answer resets its fresh streak")
 		assert.Equal(t, 0.0, gauge("healthy"))
 		assert.Equal(t, 0, latestCalls["pinned-stale"], "a pinLatestTag upstream never receives \"latest\"")
+		for id, u := range ups {
+			assert.EqualValues(t, head, u.EvmStateProvenBlock(), "%s holds state at the pin: a stale latest does not hide it (#1109)", id)
+		}
 
 		for i := 1; i <= tagStateFreshStreak; i++ {
 			p.recordTagSample("stale", head, head, time.Now())
@@ -299,6 +309,7 @@ func TestStateProber_StaleLatestTag(t *testing.T) {
 		assert.Empty(t, latestCalls)
 		for id, u := range ups {
 			assert.Equal(t, 0, fakeTrackerOf(t, u).MisbehaviorCount, id)
+			assert.EqualValues(t, head, u.EvmStateProvenBlock(), id)
 		}
 	})
 }
