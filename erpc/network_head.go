@@ -209,8 +209,8 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	l.head.Store(&h)
 	if h.Latest != old.Latest {
 		// Latest 0 is unknown, not a served number: eth_blockNumber then
-		// errors.
-		if sent := l.sent.Load(); h.Latest > 0 && h.Latest < old.Latest && uint64(h.Latest) < sent {
+		// errors. A fall through unknown counts at its first known value.
+		if sent := l.sent.Load(); h.Latest > 0 && uint64(h.Latest) < sent {
 			common.ViolateInvariant(n.logger, n.projectId, n.Label(), common.InvariantLatestRegressed).
 				Str("lane", l.label).Int64("latest", h.Latest).Int64("previous", old.Latest).Uint64("sent", sent).
 				Msg("lane's Latest fell below a block this instance sent")
