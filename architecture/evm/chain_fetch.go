@@ -86,11 +86,9 @@ func (s fetchSpec) key() fetchKey {
 // tracker's upstream policies, which for fill yield rate permits to
 // clients. Only an answer addressed by hash may come from the cache (spec
 // §8): a block by number, finalized included, can be reverted by the
-// majority (§6.5), and a cached one would hide that. A tag reaches the
-// upstream as is: the tracker's "latest" is a report the Head is computed
-// from, never a number the Head already holds.
+// majority (§6.5), and a cached one would hide that.
 func (s fetchSpec) directives() *common.RequestDirectives {
-	d := &common.RequestDirectives{IsInternal: true, UpstreamPolicies: common.UpstreamPoliciesTracker, SkipInterpolation: true}
+	d := &common.RequestDirectives{IsInternal: true, UpstreamPolicies: common.UpstreamPoliciesTracker}
 	if s.class == classFill {
 		d.UpstreamPolicies = common.UpstreamPoliciesTrackerFill
 	}
@@ -105,11 +103,8 @@ func (s fetchSpec) directives() *common.RequestDirectives {
 
 type fetchResult struct {
 	upstream string
-	// sent is when the sweep began, at or before its answer's request
-	// was sent.
-	sent time.Time
-	val  any
-	err  error
+	val      any
+	err      error
 }
 
 type fetchRequest struct {
@@ -461,7 +456,6 @@ func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 	}()
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
-	sent := time.Now()
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + r.spec.method + `","params":` + r.spec.params + `}`))
 	req.SetDirectives(r.spec.directives())
 	var (
@@ -487,9 +481,9 @@ func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 		return err
 	})
 	if err != nil {
-		return fetchResult{upstream: upstreamId, sent: sent, err: err}
+		return fetchResult{upstream: upstreamId, err: err}
 	}
-	return fetchResult{upstream: upstreamId, sent: sent, val: val}
+	return fetchResult{upstream: upstreamId, val: val}
 }
 
 // fetchOutcome is capacity when every upstream the sweep tried refused for

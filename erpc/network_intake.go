@@ -673,6 +673,9 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 	hv.Hash = make([]string, 0, len(voters))
 	for _, u := range voters {
 		hv.Voters = append(hv.Voters, u.Id())
+		if n.sources.source(u.Id()) {
+			hv.Sources = append(hv.Sources, u.Id())
+		}
 		v, voted := n.intake.hashVote(u)
 		if voted && (v.Expired || v.Age > w) && n.sources.pushSource(u.Id()) {
 			stale = append(stale, u.Id())
