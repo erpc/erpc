@@ -140,10 +140,12 @@ type ChainTracker struct {
 	// neither does (gate). heldSince is when the vote need began to hold one.
 	catchUpAt time.Time
 	heldSince time.Time
-	// coldUntil is W after the tracker started or last reset, W read then:
-	// until it, voters that are sources and never reported count as hash
-	// voters (spec §6.5 cold window). A W learned later neither ends nor
-	// reopens the window.
+	// coldUntil is W after the first read of the voters that found any,
+	// since the tracker started or last reset, W read then; zero before
+	// it. Until it, voters that are sources and never reported count as
+	// hash voters (spec §6.5 cold window): an instance whose upstreams
+	// register later than W after its start is cold still. A W learned
+	// later neither ends nor reopens the window.
 	coldUntil time.Time
 	// voters is the lane's voter set as the network's intake last read it,
 	// before the message being handled.
@@ -448,7 +450,7 @@ func (t *ChainTracker) clear() {
 	t.askSeq++
 	t.settle = nil
 	t.pins, t.maxHeld = nil, nil
-	t.coldUntil = time.Now().Add(t.W())
+	t.coldUntil = time.Time{}
 	t.offPins = make(map[string]offPin)
 	t.refreshedAt = make(map[string]string)
 	t.retryAt = make(map[string]time.Time)
@@ -832,10 +834,13 @@ func (t *ChainTracker) readVoters() {
 		t.voters = HashVoters{Need: 1, all: true}
 		return
 	}
-	w := t.W()
-	cold := time.Now().Before(t.coldUntil)
+	w, now := t.W(), time.Now()
+	cold := t.coldUntil.IsZero() || now.Before(t.coldUntil)
 	old := t.voters.Hash
 	t.callNetwork("voters", func() { t.voters = n.EvmHashVoters(t.selector, w, cold) })
+	if t.coldUntil.IsZero() && len(t.voters.Voters) > 0 {
+		t.coldUntil = now.Add(w)
+	}
 	if t.selector != "" || slices.Equal(old, t.voters.Hash) {
 		return
 	}

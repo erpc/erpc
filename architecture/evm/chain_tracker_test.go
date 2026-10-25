@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -538,4 +539,59 @@ func TestSettleRefreshRunsOncePerForkPoint(t *testing.T) {
 	assert.Equal(t, 5, net.forkAsks(), "c's refresh at its fork point already ran")
 	v, _ := c.HashAt(10)
 	assert.Equal(t, testHash("0", 10), v, "the refreshed votes keep the pins")
+}
+
+// coldNetwork's upstreams become voters only once ready, as an instance's
+// upstreams do after their registration; its taps demand newHeads.
+type coldNetwork struct {
+	*settleNetwork
+	ready atomic.Bool
+}
+
+func (n *coldNetwork) EvmHashVoters(_ string, _ time.Duration, cold bool) HashVoters {
+	if !n.ready.Load() {
+		return HashVoters{Need: 1}
+	}
+	hv := HashVoters{Voters: []string{"a", "b"}, Sources: []string{"a", "b"},
+		Vendors: map[string]string{"a": "vendor-a", "b": "vendor-b"}, NetworkVendors: 2}
+	if cold {
+		hv.Hash = []string{"a", "b"}
+	}
+	hv.Need = common.ServedTipQuorum(0).Of(len(hv.Hash))
+	return hv
+}
+
+func (n *coldNetwork) EvmHeadsDemanded() bool { return true }
+
+// A cold instance's first header waits for a second voter's (spec §6.5
+// cold window), even when its upstreams become voters more than W after the
+// tracker started: under load their registration takes that long, and a
+// window counted from the start would have let rule 6's one answer confirm
+// alone.
+func TestColdWindowStartsWithTheFirstVoters(t *testing.T) {
+	head := testHeader(10, testHash("0", 10), testHash("0", 9))
+	net := &coldNetwork{settleNetwork: newSettleNetwork(t, HashVoters{}, map[string]json.RawMessage{"a": head, "b": head})}
+	c := newChainTracker(t.Context(), net, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+	c.VotersChanged()
+	c.sync(context.Background())
+	time.Sleep(c.W() + 100*time.Millisecond)
+
+	net.ready.Store(true)
+	c.VotersChanged()
+	for range 20 {
+		c.sync(context.Background())
+		time.Sleep(10 * time.Millisecond)
+	}
+	_, ok := c.Confirmed()
+	assert.False(t, ok, "no source reported yet: both count as hash voters, so nothing is confirmed")
+
+	c.Observe("a", head, true)
+	c.sync(context.Background())
+	_, ok = c.Confirmed()
+	assert.False(t, ok, "the first header waits for a second voter's")
+	c.Observe("b", head, true)
+	c.sync(context.Background())
+	got, ok := c.Confirmed()
+	require.True(t, ok)
+	assert.Equal(t, uint64(10), got.Number)
 }
