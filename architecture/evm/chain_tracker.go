@@ -1415,12 +1415,13 @@ func newFeedState(pins []*node) *feedState {
 // stamp marks each pin that first stands at or below s's confirmed head
 // or logs head with the time it got there (Block.Ready). Stamped pins are
 // one run that grows at both ends: new heads above it, fill below it, and
-// a revert unstamps what it removes (unstamp). A hole, a pin whose
-// receipts the feed needs and does not hold, is never logs-stamped, even
-// where the logs head passed it below the window: the Read that fetches
-// its receipts stamps it at delivery, so the receipts wait never counts as
-// a tap's lag. Only the network-wide tracker stamps: trackers share parsed
-// headers, and taps read only that one.
+// a revert unstamps what it removes (unstamp). The logs run never grows
+// past a hole, a pin whose receipts the feed needs and does not hold, even
+// where the logs head passed it below the window: no block from the hole
+// up is deliverable to a tap that needs the hole, so the Read that
+// returns the hole stamps it, and the run then grows past it. Only the
+// network-wide tracker stamps: trackers share parsed headers, and taps
+// read only that one.
 func (t *ChainTracker) stamp(s *feedState) {
 	if t.selector != "" || s.confirmed < 0 {
 		return
@@ -1433,20 +1434,19 @@ func (t *ChainTracker) stamp(s *feedState) {
 	}
 }
 
-// stampRun stamps the pins of ps above the highest stamped one and below
-// the lowest, passing over the pins skip names. A Read may stamp a pin at
-// the same time (chainHeader.ready); the first stamp stays.
-func stampRun(ps []*chainHeader, now int64, skip func(*chainHeader) bool, at func(*chainHeader) *atomic.Int64) {
+// stampRun grows the stamped run of ps at both ends, up to the first pin
+// stop names. A Read may stamp a pin at the same time (chainHeader.ready);
+// the first stamp stays.
+func stampRun(ps []*chainHeader, now int64, stop func(*chainHeader) bool, at func(*chainHeader) *atomic.Int64) {
 	i := len(ps) - 1
-	for ; i >= 0 && at(ps[i]).Load() == 0; i-- {
-		if !skip(ps[i]) {
-			at(ps[i]).CompareAndSwap(0, now)
-		}
+	for i >= 0 && at(ps[i]).Load() == 0 {
+		i--
 	}
-	for j := 0; j < i && at(ps[j]).Load() == 0; j++ {
-		if !skip(ps[j]) {
-			at(ps[j]).CompareAndSwap(0, now)
-		}
+	for k := i + 1; k < len(ps) && !stop(ps[k]); k++ {
+		at(ps[k]).CompareAndSwap(0, now)
+	}
+	for j := 0; j < i && at(ps[j]).Load() == 0 && !stop(ps[j]); j++ {
+		at(ps[j]).CompareAndSwap(0, now)
 	}
 }
 
@@ -2363,7 +2363,7 @@ func (t *ChainTracker) anchorBelow(s *feedState, number int64) *anchorEntry {
 }
 
 // confirmation is how ReconfirmPin reports an anchor: PinFresh only while
-// the by-number answers of 2 or more vendors agree on it.
+// the by-number answers of vendors meeting the evidence quorum agree on it.
 func (e *anchorEntry) confirmation() integrity.PinConfirmation {
 	if e.agreed {
 		return integrity.PinFresh
