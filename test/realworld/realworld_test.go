@@ -70,6 +70,7 @@ func catalogue() []phaseSpec {
 		{"fetch", 10401, []spec{u1(), c4(), c7(), d8()}},
 		{"fetch-vars", 10501, []spec{u16(), u17()}},
 		{"integrity", 10601, []spec{u8(false), u8(true), u9(), u9Trunc(1), u9Trunc(2), u9Bloom(1), u9Bloom(2), k5()}},
+		{"tagstate", 10701, []spec{p11()}},
 	}
 }
 
