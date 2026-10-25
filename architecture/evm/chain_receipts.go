@@ -641,9 +641,9 @@ type receiptsJob struct {
 	// the first failed one while the job asks for receipts; zero again once
 	// it leaves the logs stand-in, so time on logs never counts.
 	failingSince time.Time
-	mismatched map[string]bool // vendors whose answer mismatched, this round
-	tried      map[string]bool // upstreams asked by name, this round
-	agree      []logsVote      // the logs digests vendors answered, this round
+	mismatched   map[string]bool // vendors whose answer mismatched, this round
+	tried        map[string]bool // upstreams asked by name, this round
+	agree        []logsVote      // the logs digests vendors answered, this round
 }
 
 // logsVote is one logsDigest and the vendors that answered it.
