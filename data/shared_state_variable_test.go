@@ -358,7 +358,7 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 				key:              "test",
 				ignoreRollbackOf: 1024,
 			}
-			counter.value.Store(tt.initialValue)
+			counter.storeValue(tt.initialValue)
 
 			result := counter.TryUpdate(ctx, tt.updateValue, time.Now())
 			assert.Equal(t, tt.expectedValue, result)
@@ -484,7 +484,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 				key:              "test",
 				ignoreRollbackOf: 1024,
 			}
-			counter.value.Store(tt.initialValue)
+			counter.storeValue(tt.initialValue)
 			counter.reportAtUnixMs.Store(tt.lastProcessed.UnixMilli())
 
 			getNewValue := func(ctx context.Context) (int64, error) {
@@ -536,7 +536,7 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 		key:              "test",
 		ignoreRollbackOf: 1024,
 	}
-	counter.value.Store(5)
+	counter.storeValue(5)
 
 	// Run multiple goroutines updating the counter
 	var wg sync.WaitGroup
@@ -558,7 +558,7 @@ func TestCounterInt64_GetValue(t *testing.T) {
 	counter := &counterInt64{
 		ignoreRollbackOf: 1024,
 	}
-	counter.value.Store(42)
+	counter.storeValue(42)
 
 	assert.Equal(t, int64(42), counter.GetValue())
 }
@@ -605,7 +605,7 @@ func TestCounterInt64_IsStale(t *testing.T) {
 			ignoreRollbackOf: 1024,
 			registry:         &sharedStateRegistry{logger: &log.Logger, instanceId: "test"},
 		}
-		counter.value.Store(100)
+		counter.storeValue(100)
 		assert.True(t, counter.processNewState(UpdateSourceRemoteSync, CounterInt64State{
 			Value: 110, UpdatedAt: time.Now().Add(5 * time.Minute).UnixMilli(), UpdatedBy: "skewed",
 		}))
@@ -771,7 +771,7 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 				key:              "test",
 				ignoreRollbackOf: tt.ignoreRollbackOf,
 			}
-			counter.value.Store(tt.initialValue)
+			counter.storeValue(tt.initialValue)
 
 			actualValue := counter.TryUpdate(ctx, tt.updateValue, time.Now())
 			assert.Equal(t, tt.expectedValue, actualValue,
@@ -803,7 +803,7 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) 
 		key:              "test",
 		ignoreRollbackOf: 1024,
 	}
-	counter.value.Store(5) // Initialize with value 5
+	counter.storeValue(5) // Initialize with value 5
 	// Force it to look stale.
 	counter.reportAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli())
 
@@ -838,7 +838,7 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 		key:              "test",
 		ignoreRollbackOf: 1024,
 	}
-	counter.value.Store(5)                                                     // Initialize with value 5
+	counter.storeValue(5)                                                     // Initialize with value 5
 	counter.reportAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli()) // force stale
 
 	var calls int32
@@ -880,7 +880,7 @@ func TestCounterInt64_TryUpdateIfStale_FnTimeoutFromCtxDeadline(t *testing.T) {
 			key:              key,
 			ignoreRollbackOf: 1024,
 		}
-		c.value.Store(5)
+		c.storeValue(5)
 		c.reportAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli())
 		return c
 	}
@@ -962,7 +962,7 @@ func TestCounterInt64_ReaderStarvation(t *testing.T) {
 			ignoreRollbackOf: 1024,
 		}
 		counter.reportAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli()) // Make it stale
-		counter.value.Store(42)
+		counter.storeValue(42)
 
 		// Track timing of GetValue calls
 		getValueDurations := make([]time.Duration, 0)
@@ -1001,7 +1001,7 @@ func TestCounterInt64_ReaderStarvation(t *testing.T) {
 
 			// Simulate long-running operation while holding the lock
 			time.Sleep(500 * time.Millisecond)
-			counter.value.Store(100)
+			counter.storeValue(100)
 		}()
 
 		// Wait for all operations to complete
@@ -1031,7 +1031,7 @@ func TestCounterInt64_ReaderStarvation(t *testing.T) {
 		counter := &counterInt64{
 			ignoreRollbackOf: 1024,
 		}
-		counter.value.Store(42)
+		counter.storeValue(42)
 
 		// Measure baseline GetValue performance (no contention)
 		start := time.Now()
@@ -1055,7 +1055,7 @@ func TestCounterInt64_ReaderStarvation(t *testing.T) {
 					default:
 						counter.updateMu.Lock()
 						// Simulate some work while holding lock
-						counter.value.Store(counter.value.Load() + 1)
+						counter.storeValue(counter.GetValue() + 1)
 						time.Sleep(1 * time.Millisecond)
 						counter.updateMu.Unlock()
 					}
@@ -1321,7 +1321,7 @@ func TestCounterInt64_EarliestBlockSemantics(t *testing.T) {
 				logger: &log.Logger,
 			},
 		}
-		counter.value.Store(1500) // Initial earliest block
+		counter.storeValue(1500) // Initial earliest block
 
 		// Simulate detection that earliest is actually lower (e.g., re-detection found earlier block)
 		// This is a DECREASE: 1500 → 1000
@@ -1343,7 +1343,7 @@ func TestCounterInt64_EarliestBlockSemantics(t *testing.T) {
 				instanceId: "test",
 			},
 		}
-		counter.value.Store(1500)
+		counter.storeValue(1500)
 		counter.updatedAtUnixMs.Store(1)
 
 		// Remote update with fresher timestamp and lower value
@@ -1365,7 +1365,7 @@ func TestCounterInt64_EarliestBlockSemantics(t *testing.T) {
 				instanceId: "test",
 			},
 		}
-		counter.value.Store(1000)
+		counter.storeValue(1000)
 		counter.updatedAtUnixMs.Store(10) // Local has timestamp 10
 
 		// Remote update with STALE timestamp (should be rejected regardless of value)
@@ -1390,7 +1390,7 @@ func TestCounterInt64_RemoteRollbackCallback(t *testing.T) {
 				instanceId: "test",
 			},
 		}
-		counter.value.Store(10000)
+		counter.storeValue(10000)
 		counter.updatedAtUnixMs.Store(1)
 
 		var callbackMu sync.Mutex
@@ -1430,7 +1430,7 @@ func TestCounterInt64_RemoteRollbackCallback(t *testing.T) {
 				instanceId: "test",
 			},
 		}
-		counter.value.Store(10000)
+		counter.storeValue(10000)
 		counter.updatedAtUnixMs.Store(1)
 
 		var callbackCalls []struct{ current, new int64 }
@@ -1464,7 +1464,7 @@ func TestCounterInt64_RemoteRollbackCallback(t *testing.T) {
 			},
 		}
 		// Local has value=10000 with timestamp=50
-		counter.value.Store(10000)
+		counter.storeValue(10000)
 		counter.updatedAtUnixMs.Store(50)
 
 		// Remote sends a small rollback with newer timestamp
@@ -1502,7 +1502,7 @@ func TestCounterInt64_RemoteRollbackCallback(t *testing.T) {
 			},
 		}
 		// Local has value=10000 with timestamp=50
-		counter.value.Store(10000)
+		counter.storeValue(10000)
 		counter.updatedAtUnixMs.Store(50)
 
 		// Remote sends a large rollback with newer timestamp
@@ -1534,7 +1534,7 @@ func TestCounterInt64_RemoteRollbackCallback(t *testing.T) {
 			},
 		}
 		// Local has value=10000 with timestamp=50
-		counter.value.Store(10000)
+		counter.storeValue(10000)
 		counter.updatedAtUnixMs.Store(50)
 
 		// Remote sends a higher value with newer timestamp
@@ -1564,7 +1564,7 @@ func TestCounterInt64_RemoteRollbackCallback(t *testing.T) {
 			},
 		}
 		// Local has value=10000 with timestamp=50
-		counter.value.Store(10000)
+		counter.storeValue(10000)
 		counter.updatedAtUnixMs.Store(50)
 
 		// Remote sends same value with newer timestamp
@@ -1764,7 +1764,7 @@ func TestCounterInt64_SmallRollbackReconciliation(t *testing.T) {
 			ignoreRollbackOf: 100, // Ignore rollbacks <= 100
 		}
 		// Local has higher value but older timestamp
-		counter.value.Store(10000)
+		counter.storeValue(10000)
 		counter.updatedAtUnixMs.Store(50) // Older than remote's 100
 
 		// Trigger background push - this should:
@@ -1845,7 +1845,7 @@ func TestCounterInt64_FresherLocalPushesToStaleRemote(t *testing.T) {
 			ignoreRollbackOf: 1024,
 		}
 		// Local has fresher state
-		counter.value.Store(100)
+		counter.storeValue(100)
 		counter.updatedAtUnixMs.Store(time.Now().UnixMilli()) // Much fresher than remote's t=1
 
 		// Trigger background push
@@ -1871,7 +1871,7 @@ func TestCounterInt64_TryUpdate_NoRemoteWriteWithoutAdvance(t *testing.T) {
 		key:              "test",
 		ignoreRollbackOf: 1024,
 	}
-	counter.value.Store(100)
+	counter.storeValue(100)
 	counter.updatedAtUnixMs.Store(time.Now().UnixMilli())
 
 	assert.Equal(t, int64(100), counter.TryUpdate(ctx, 100, time.Now()))
@@ -1899,7 +1899,7 @@ func TestCounterInt64_BackgroundPush_DoesNotRegressHigherRemote(t *testing.T) {
 		key:              "test",
 		ignoreRollbackOf: 1024,
 	}
-	counter.value.Store(100)
+	counter.storeValue(100)
 	counter.updatedAtUnixMs.Store(time.Now().UnixMilli())
 
 	counter.TryUpdate(ctx, 101, time.Now())
@@ -1932,7 +1932,7 @@ func TestCounterInt64_ZeroIsNotAHeadObservation(t *testing.T) {
 				instanceId: "test",
 			},
 		}
-		c.value.Store(current)
+		c.storeValue(current)
 		c.updatedAtUnixMs.Store(1)
 		return c
 	}
@@ -2018,7 +2018,7 @@ func TestCounterInt64_ZeroIsNotAHeadObservation(t *testing.T) {
 				instanceId: "test",
 			},
 		}
-		counter.value.Store(5_000_000)
+		counter.storeValue(5_000_000)
 		counter.updatedAtUnixMs.Store(1)
 
 		updated := counter.processNewValue(UpdateSourceTryUpdate, 0, time.Now())
@@ -2039,7 +2039,7 @@ func TestCounterInt64_TryUpdateIfStale_AsyncResultWithinExtendedTimeoutIsApplied
 	connector.On("Lock", mock.Anything, "my-dev/test-async-extended", mock.Anything).Return(nil, errors.New("not acquired")).Maybe()
 
 	counter := &counterInt64{registry: registry, key: "my-dev/test-async-extended", ignoreRollbackOf: 1024}
-	counter.value.Store(5)
+	counter.storeValue(5)
 	counter.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2104,7 +2104,7 @@ func TestCounterInt64_BackgroundPush_AdoptsFarAheadRemote(t *testing.T) {
 		ignoreRollbackOf: 1024,
 	}
 	// Local lagging value with a newer timestamp than remote.
-	counter.value.Store(100)
+	counter.storeValue(100)
 	counter.updatedAtUnixMs.Store(time.Now().UnixMilli() + 60_000)
 
 	counter.scheduleBackgroundPushCurrent()
@@ -2178,7 +2178,7 @@ func TestCounterInt64_RewindMark(t *testing.T) {
 			Run(func(args mock.Arguments) { stored.Store(string(args.Get(3).([]byte))) }).Return(nil)
 
 		counter := &counterInt64{registry: registry, key: "rw", ignoreRollbackOf: 1024}
-		counter.value.Store(5000)
+		counter.storeValue(5000)
 		counter.updatedAtUnixMs.Store(1)
 		var events []string
 		var mu sync.Mutex
@@ -2207,7 +2207,7 @@ func TestCounterInt64_RewindMark(t *testing.T) {
 			ignoreRollbackOf: 1024,
 			registry:         &sharedStateRegistry{logger: &log.Logger, instanceId: "test"},
 		}
-		counter.value.Store(5000)
+		counter.storeValue(5000)
 		now := time.Now().UnixMilli()
 		counter.updatedAtUnixMs.Store(now)
 		var rewinds, rollbacks atomic.Int32
@@ -2238,4 +2238,24 @@ func TestCounterInt64_RewindMark(t *testing.T) {
 			"a higher state stamped after the rewind is taken")
 		assert.False(t, counter.localState().Rewind, "a rise clears the mark")
 	})
+
+	t.Run("a poll sent before the rewind does not undo it", func(t *testing.T) {
+		registry, connector, _ := setupTest("my-dev")
+		connector.On("PublishCounterInt64", mock.Anything, "rw-inflight", mock.Anything).Return(nil).Maybe()
+		connector.On("Lock", mock.Anything, "rw-inflight", mock.Anything).Return(nil, errors.New("lock taken")).Maybe()
+		counter := &counterInt64{registry: registry, key: "rw-inflight", ignoreRollbackOf: 1024}
+		counter.storeValue(5000)
+		sent := time.Now().Add(-time.Second) // the poll left before the switch
+		assert.True(t, counter.Rewind(4950))
+
+		assert.Equal(t, int64(4950), counter.TryUpdate(context.Background(), 5000, sent),
+			"the old branch's height from a poll sent before the rewind is not a rise")
+		assert.True(t, counter.localState().Rewind)
+		assert.Equal(t, int64(4951), counter.TryUpdate(context.Background(), 4951, time.Now()),
+			"evidence taken after the rewind rises")
+		assert.False(t, counter.localState().Rewind)
+	})
 }
+
+// storeValue sets the counter's value with no drop, as a test's start.
+func (c *counterInt64) storeValue(v int64) { c.state.Store(&counterState{v: v}) }

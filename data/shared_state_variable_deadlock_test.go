@@ -33,7 +33,7 @@ func TestConcurrentOperationsNoDeadlock(t *testing.T) {
 	require.NoError(t, err)
 
 	ctr := ssr.GetCounterInt64("concurrent-test", 1024).(*counterInt64)
-	ctr.value.Store(10)
+	ctr.storeValue(10)
 
 	// Run many concurrent operations
 	var wg sync.WaitGroup
@@ -61,7 +61,7 @@ func TestConcurrentOperationsNoDeadlock(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 10; j++ {
 				result, _ := ctr.TryUpdateIfStale(ctx, 200*time.Millisecond, func(ctx context.Context) (int64, error) {
-					current := ctr.value.Load()
+					current := ctr.GetValue()
 					return current + int64(id+1), nil
 				})
 				if result > 0 {
@@ -112,7 +112,7 @@ func TestLockOrderSimulation_OldBuggyBehavior(t *testing.T) {
 	require.NoError(t, err)
 
 	ctr := ssr.GetCounterInt64("deadlock-test", 1024).(*counterInt64)
-	ctr.value.Store(10)
+	ctr.storeValue(10)
 
 	// Track completion
 	var completed atomic.Int32

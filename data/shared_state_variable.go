@@ -120,6 +120,28 @@ const (
 	dropRewind
 )
 
+// counterState is a counter's value with how it got there, swapped as one
+// pointer so the two never disagree (spec §14). While a head counter holds
+// a drop, a higher remote state stamped no later than the local one, or a
+// local rise whose evidence predates dropAt, is the branch the drop left.
+type counterState struct {
+	v    int64
+	drop dropKind
+	// dropAt is this instance's clock, unix ms, when the drop was applied.
+	dropAt int64
+}
+
+func (s *counterState) value() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.v
+}
+
+func (s *counterState) dropped() bool { return s != nil && s.drop != dropNone }
+
+func (s *counterState) rewound() bool { return s != nil && s.drop == dropRewind }
+
 type counterInt64 struct {
 	baseSharedVariable
 	// reportAtUnixMs is ReportAt.
@@ -129,13 +151,9 @@ type counterInt64 struct {
 	// next refresh, since a report dated by a slow fetch's send time can
 	// be older than the debounce at once.
 	attemptAtUnixMs atomic.Int64
-	// drop is a dropKind. While set, a higher state stamped no later than
-	// the local one predates the drop: it is the branch the drop left, so
-	// it wins neither over pubsub nor in reconcile.
-	drop                   atomic.Int32
 	registry               *sharedStateRegistry
 	key                    string
-	value                  atomic.Int64
+	state                  atomic.Pointer[counterState]
 	updateMu               sync.Mutex
 	valueCallbacks         []func(int64)
 	ignoreRollbackOf       int64
@@ -151,7 +169,16 @@ type counterInt64 struct {
 }
 
 func (c *counterInt64) GetValue() int64 {
-	return c.value.Load()
+	return c.state.Load().value()
+}
+
+// dropTo is the state of a head counter dropped to v; other counters keep
+// no drop, their decreases are ordinary (earliest, cordon, floors).
+func (c *counterInt64) dropTo(v int64, k dropKind) *counterState {
+	if c.ignoreRollbackOf <= 0 {
+		return &counterState{v: v}
+	}
+	return &counterState{v: v, drop: k, dropAt: time.Now().UnixMilli()}
 }
 
 // IsStale: no report and no refresh attempt within staleness, by this
@@ -183,165 +210,52 @@ func (c *counterInt64) markReported(at time.Time) {
 	}
 }
 
-func (c *counterInt64) dropped() bool { return dropKind(c.drop.Load()) != dropNone }
-
-// setDrop records how the value moved, right after the CAS that moved it,
-// so a CAS that gives up leaves the mark of the value it kept.
-func (c *counterInt64) setDrop(k dropKind) { c.drop.Store(int32(k)) }
-
 // processNewState applies a remote state (pubsub, initial fetch, reconcile).
 // Head counters (ignoreRollbackOf > 0: latest, finalized) are max-only on
 // every path: a higher value wins whatever its timestamp, a drop of up to
 // ignoreRollbackOf is noise, and timestamps decide only larger drops (spec
 // §14, #1243, #222). Other counters (earliest, cordon, floors) take any
-// change, in timestamp order.
+// change, in timestamp order. Each rule reads the state its CAS replaces.
 //
 // A rejected drop with a newer timestamp moves the order key past it, so
 // the higher local value wins the next reconcile and goes back to remote.
 func (c *counterInt64) processNewState(source string, st CounterInt64State) bool {
 	isRemoteUpdate := st.UpdatedAt > 0
-	newer := !isRemoteUpdate || st.UpdatedAt > c.updatedAtMs()
 	if !isRemoteUpdate {
 		st.UpdatedAt = c.allocateUpdatedAtMs()
 	}
-
-	currentValue := c.value.Load()
 	newVal := st.Value
+	for {
+		cur := c.state.Load()
+		currentValue := cur.value()
+		newer := !isRemoteUpdate || st.UpdatedAt > c.updatedAtMs()
 
-	if c.ignoreRollbackOf == 0 && !newer && newVal != currentValue {
-		countRejected(rejectStaleTimestamp)
-		return false
-	}
+		if c.ignoreRollbackOf == 0 && !newer && newVal != currentValue {
+			countRejected(rejectStaleTimestamp)
+			return false
+		}
 
-	if newVal == currentValue {
-		// Values appear equal - no value change needed.
-		// For remote updates, we want to update timestamp since remote is fresher.
-		// However, we must verify the value hasn't changed concurrently to avoid a TOCTOU race:
-		// a concurrent TryUpdate could change the value between our Load() and this check,
-		// causing us to incorrectly set the remote's stale timestamp for a different local value.
-		if isRemoteUpdate {
-			if c.updateUpdatedAtMs(st.UpdatedAt) {
+		if newVal == currentValue {
+			// A remote state of the same value only moves the order key. A
+			// concurrent change after the load takes a fresh key, so the key
+			// never dates a different local value by the remote's clock.
+			if isRemoteUpdate && c.updateUpdatedAtMs(st.UpdatedAt) {
 				c.markReported(time.Now())
-				// Timestamp was updated. Verify value is still what we expect.
-				// If a concurrent update changed the value after our initial Load(),
-				// we need to ensure our timestamp reflects that change, not the remote's stale state.
-				if c.value.Load() != newVal {
-					// Value changed concurrently - allocate fresh timestamp to ensure
-					// local state wins in reconciliation. This maintains the invariant that
-					// timestamps accurately reflect when values were last updated locally.
+				if c.GetValue() != newVal {
 					c.allocateUpdatedAtMs()
 				}
 			}
-		}
-		return false
-	}
-
-	if newVal > currentValue {
-		if !newer && c.dropped() {
-			countRejected(rejectStaleTimestamp)
 			return false
 		}
-		for {
-			if c.value.CompareAndSwap(currentValue, newVal) {
-				c.setDrop(dropNone)
-				if isRemoteUpdate {
-					c.updateUpdatedAtMs(st.UpdatedAt)
-				}
-				c.markReported(time.Now())
-				c.registry.logger.Trace().
-					Str("source", source).
-					Str("key", c.key).
-					Int64("from", currentValue).
-					Int64("to", newVal).
-					Int64("updatedAt", st.UpdatedAt).
-					Msg("counter value increased (remote)")
-				c.triggerValueCallback(newVal)
-				return true
-			}
-			currentValue = c.value.Load()
-			if newVal <= currentValue {
+
+		if newVal > currentValue {
+			if !newer && cur.dropped() {
+				countRejected(rejectStaleTimestamp)
 				return false
 			}
-		}
-	}
-
-	// A head counter never legitimately moves to zero or below. Zero is the zero
-	// VALUE of an unset CounterInt64State, not an observation of a chain, and it
-	// arrives here from ordinary sources: an instance that pushes its counter
-	// before its first poll, or a connector handing back an empty record with a
-	// live timestamp. Left alone it reads as a rollback the size of the whole
-	// chain, which is necessarily larger than ignoreRollbackOf, so the branch
-	// below -- whose entire job is to admit only real reorgs -- waves it through,
-	// and every instance that receives it drops its head to 0.
-	//
-	// The floor is scoped to counters that ignore small rollbacks. The
-	// earliest-block counter is created with ignoreRollbackOf=0 and legitimately
-	// sits at 0 on an archive node, so it keeps the old behaviour.
-	if newVal <= 0 && c.ignoreRollbackOf > 0 {
-		// Same bookkeeping as a rejected small rollback: our higher local value
-		// must out-rank the remote state, or reconciliation hands the zero back
-		// to us on the next tick and the counter flaps.
-		if isRemoteUpdate {
-			c.advanceTimestampPast(st.UpdatedAt)
-			countRejected(rejectNonPositive)
-		}
-		c.registry.logger.Warn().
-			Str("source", source).
-			Str("key", c.key).
-			Int64("currentValue", currentValue).
-			Int64("newVal", newVal).
-			Msg("rejected non-positive value for a head counter (remote)")
-		return false
-	}
-
-	// A rewind-marked drop newer than the local state is another instance's
-	// rollback write: taken whatever its size, never pushed back, counted
-	// against no upstream.
-	if st.Rewind && c.ignoreRollbackOf > 0 {
-		if !newer {
-			countRejected(rejectStaleTimestamp)
-			return false
-		}
-		return c.applyRewind(source, currentValue, newVal, st.UpdatedAt)
-	}
-
-	// Rollback handling: only accept rollbacks where gap exceeds the threshold.
-	// - ignoreRollbackOf=0 (earliest): gap > 0 is always true, so ALL rollbacks accepted
-	// - ignoreRollbackOf=1024 (latest/finalized): only accept large rollbacks (real reorgs)
-	gap := currentValue - newVal
-
-	if gap <= c.ignoreRollbackOf {
-		// Small rollback within threshold - ignore as noise.
-		// For remote updates with newer timestamps: advance our local timestamp past theirs.
-		// This ensures our higher local value will "win" reconciliation and get pushed to remote,
-		// since local.UpdatedAt will now be > remote.UpdatedAt.
-		if isRemoteUpdate {
-			c.advanceTimestampPast(st.UpdatedAt)
-			countRejected(rejectSmallRollback)
-		}
-		c.registry.logger.Trace().
-			Str("source", source).
-			Str("key", c.key).
-			Int64("currentValue", currentValue).
-			Int64("newVal", newVal).
-			Int64("gap", gap).
-			Int64("ignoreRollbackOf", c.ignoreRollbackOf).
-			Msg("small rollback ignored (remote)")
-		return false
-	}
-
-	// Timestamps decide large drops: an older one is a state this instance
-	// already moved past.
-	if !newer {
-		countRejected(rejectStaleTimestamp)
-		return false
-	}
-
-	// Large rollback exceeds threshold - apply it and trigger callback
-	for {
-		if c.value.CompareAndSwap(currentValue, newVal) {
-			c.setDrop(dropRollback)
-			// Update timestamp AFTER accepting the value (for remote updates)
+			if !c.state.CompareAndSwap(cur, &counterState{v: newVal}) {
+				continue
+			}
 			if isRemoteUpdate {
 				c.updateUpdatedAtMs(st.UpdatedAt)
 			}
@@ -351,128 +265,185 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 				Str("key", c.key).
 				Int64("from", currentValue).
 				Int64("to", newVal).
-				Int64("gap", gap).
 				Int64("updatedAt", st.UpdatedAt).
-				Msg("large rollback applied (remote)")
+				Msg("counter value increased (remote)")
 			c.triggerValueCallback(newVal)
-
-			// Trigger callback for observability
-			c.callbackMu.RLock()
-			callbacks := make([]func(localVal, newVal int64), len(c.largeRollbackCallbacks))
-			copy(callbacks, c.largeRollbackCallbacks)
-			c.callbackMu.RUnlock()
-			for _, cb := range callbacks {
-				if cb != nil {
-					cb(currentValue, newVal)
-				}
-			}
 			return true
 		}
-		currentValue = c.value.Load()
-		if newVal >= currentValue {
+
+		// A head counter never legitimately moves to zero or below: zero is
+		// the zero value of an unset state (an instance that pushes before
+		// its first poll, an empty record with a live timestamp), and as a
+		// rollback the size of the chain it would pass the large-rollback
+		// rule on every instance (#258, #1084). Earliest counters
+		// (ignoreRollbackOf 0) may hold 0 on an archive node. The order key
+		// moves past it as for a small rollback, so reconcile does not hand
+		// the zero back.
+		if newVal <= 0 && c.ignoreRollbackOf > 0 {
+			if isRemoteUpdate {
+				c.advanceTimestampPast(st.UpdatedAt)
+				countRejected(rejectNonPositive)
+			}
+			c.registry.logger.Warn().
+				Str("source", source).
+				Str("key", c.key).
+				Int64("currentValue", currentValue).
+				Int64("newVal", newVal).
+				Msg("rejected non-positive value for a head counter (remote)")
 			return false
 		}
-	}
-}
 
-// processNewValue handles local updates (TryUpdate, applyRefreshResult) where we don't have
-// an external timestamp; at is when the value's evidence was taken (ReportAt). The ignoreRollbackOf parameter controls rollback behavior:
-// - ignoreRollbackOf = 0: Accept all changes (used for earliest block - can decrease due to pruning)
-// - ignoreRollbackOf > 0: Ignore small rollbacks (noise from lagging RPCs), trigger callback for large ones
-//
-// This is different from processNewState which uses timestamp ordering for remote reconciliation.
-func (c *counterInt64) processNewValue(source string, newVal int64, at time.Time) bool {
-	currentValue := c.value.Load()
-	if newVal == currentValue {
-		// Value is the same, but mark as fresh to prevent repeated refresh attempts
-		c.allocateUpdatedAtMs()
-		c.markReported(at)
-		return false
-	}
-
-	if newVal > currentValue {
-		// Forward progress: always accept
-		for {
-			if c.value.CompareAndSwap(currentValue, newVal) {
-				c.setDrop(dropNone)
-				c.allocateUpdatedAtMs() // Mark as fresh
-				c.markReported(at)
-				c.registry.logger.Trace().
-					Str("source", source).
-					Str("key", c.key).
-					Int64("from", currentValue).
-					Int64("to", newVal).
-					Msg("counter value increased (local)")
-				c.triggerValueCallback(newVal)
-				return true
-			}
-			currentValue = c.value.Load()
-			if newVal <= currentValue {
+		// A rewind-marked drop newer than the local state is another
+		// instance's rollback write: taken whatever its size, never pushed
+		// back, counted against no upstream.
+		if st.Rewind && c.ignoreRollbackOf > 0 {
+			if !newer {
+				countRejected(rejectStaleTimestamp)
 				return false
 			}
+			if !c.state.CompareAndSwap(cur, c.dropTo(newVal, dropRewind)) {
+				continue
+			}
+			c.rewound(source, currentValue, newVal, st.UpdatedAt)
+			return true
 		}
-	}
 
-	// See processNewState: zero is an unset state, not a head. Same floor, same
-	// scoping to counters that ignore small rollbacks.
-	if newVal <= 0 && c.ignoreRollbackOf > 0 {
-		c.registry.logger.Warn().
-			Str("source", source).
-			Str("key", c.key).
-			Int64("currentValue", currentValue).
-			Int64("newVal", newVal).
-			Msg("rejected non-positive value for a head counter (local)")
-		return false
-	}
+		gap := currentValue - newVal
+		if gap <= c.ignoreRollbackOf {
+			if isRemoteUpdate {
+				c.advanceTimestampPast(st.UpdatedAt)
+				countRejected(rejectSmallRollback)
+			}
+			c.registry.logger.Trace().
+				Str("source", source).
+				Str("key", c.key).
+				Int64("currentValue", currentValue).
+				Int64("newVal", newVal).
+				Int64("gap", gap).
+				Int64("ignoreRollbackOf", c.ignoreRollbackOf).
+				Msg("small rollback ignored (remote)")
+			return false
+		}
 
-	// Rollback handling: only accept rollbacks where gap exceeds the threshold.
-	// - ignoreRollbackOf=0 (earliest): gap > 0 is always true, so ALL rollbacks accepted
-	// - ignoreRollbackOf=1024 (latest/finalized): only accept large rollbacks (real reorgs)
-	gap := currentValue - newVal
-
-	if gap <= c.ignoreRollbackOf {
-		// Small rollback within threshold - ignore as noise
+		// Timestamps decide large drops: an older one is a state this
+		// instance already moved past.
+		if !newer {
+			countRejected(rejectStaleTimestamp)
+			return false
+		}
+		if !c.state.CompareAndSwap(cur, c.dropTo(newVal, dropRollback)) {
+			continue
+		}
+		if isRemoteUpdate {
+			c.updateUpdatedAtMs(st.UpdatedAt)
+		}
+		c.markReported(time.Now())
 		c.registry.logger.Trace().
 			Str("source", source).
 			Str("key", c.key).
-			Int64("currentValue", currentValue).
-			Int64("newVal", newVal).
+			Int64("from", currentValue).
+			Int64("to", newVal).
 			Int64("gap", gap).
-			Int64("ignoreRollbackOf", c.ignoreRollbackOf).
-			Msg("small rollback ignored (local)")
-		return false
+			Int64("updatedAt", st.UpdatedAt).
+			Msg("large rollback applied (remote)")
+		c.triggerValueCallback(newVal)
+		c.triggerLargeRollback(currentValue, newVal)
+		return true
 	}
+}
 
-	// Large rollback exceeds threshold - apply it and trigger callback
+// processNewValue applies a local report (TryUpdate, a refresh, the
+// reconcile adopt); at is when its evidence was taken (ReportAt). Earliest
+// counters (ignoreRollbackOf 0) take any change; head counters ignore drops
+// of up to ignoreRollbackOf as noise from lagging nodes and take larger ones
+// as rollbacks. While a head counter holds a drop, a rise whose evidence
+// predates it (a poll sent before the switch) is the branch the drop left.
+func (c *counterInt64) processNewValue(source string, newVal int64, at time.Time) bool {
 	for {
-		if c.value.CompareAndSwap(currentValue, newVal) {
-			c.setDrop(dropRollback)
-			c.allocateUpdatedAtMs() // Mark as fresh
+		cur := c.state.Load()
+		currentValue := cur.value()
+		if newVal == currentValue {
+			// Same value: it is fresh evidence, which debounces refreshes.
+			c.allocateUpdatedAtMs()
+			c.markReported(at)
+			return false
+		}
+
+		if newVal > currentValue {
+			if cur.dropped() && at.UnixMilli() < cur.dropAt {
+				c.registry.logger.Trace().
+					Str("source", source).
+					Str("key", c.key).
+					Int64("currentValue", currentValue).
+					Int64("newVal", newVal).
+					Msg("rise from evidence older than the drop ignored (local)")
+				return false
+			}
+			if !c.state.CompareAndSwap(cur, &counterState{v: newVal}) {
+				continue
+			}
+			c.allocateUpdatedAtMs()
 			c.markReported(at)
 			c.registry.logger.Trace().
 				Str("source", source).
 				Str("key", c.key).
 				Int64("from", currentValue).
 				Int64("to", newVal).
-				Int64("gap", gap).
-				Msg("large rollback applied (local)")
+				Msg("counter value increased (local)")
 			c.triggerValueCallback(newVal)
-
-			// Trigger callback for observability
-			c.callbackMu.RLock()
-			callbacks := make([]func(localVal, newVal int64), len(c.largeRollbackCallbacks))
-			copy(callbacks, c.largeRollbackCallbacks)
-			c.callbackMu.RUnlock()
-			for _, cb := range callbacks {
-				if cb != nil {
-					cb(currentValue, newVal)
-				}
-			}
 			return true
 		}
-		currentValue = c.value.Load()
-		if newVal >= currentValue {
+
+		// See processNewState: zero is an unset state, not a head.
+		if newVal <= 0 && c.ignoreRollbackOf > 0 {
+			c.registry.logger.Warn().
+				Str("source", source).
+				Str("key", c.key).
+				Int64("currentValue", currentValue).
+				Int64("newVal", newVal).
+				Msg("rejected non-positive value for a head counter (local)")
 			return false
+		}
+
+		gap := currentValue - newVal
+		if gap <= c.ignoreRollbackOf {
+			c.registry.logger.Trace().
+				Str("source", source).
+				Str("key", c.key).
+				Int64("currentValue", currentValue).
+				Int64("newVal", newVal).
+				Int64("gap", gap).
+				Int64("ignoreRollbackOf", c.ignoreRollbackOf).
+				Msg("small rollback ignored (local)")
+			return false
+		}
+
+		if !c.state.CompareAndSwap(cur, c.dropTo(newVal, dropRollback)) {
+			continue
+		}
+		c.allocateUpdatedAtMs()
+		c.markReported(at)
+		c.registry.logger.Trace().
+			Str("source", source).
+			Str("key", c.key).
+			Int64("from", currentValue).
+			Int64("to", newVal).
+			Int64("gap", gap).
+			Msg("large rollback applied (local)")
+		c.triggerValueCallback(newVal)
+		c.triggerLargeRollback(currentValue, newVal)
+		return true
+	}
+}
+
+func (c *counterInt64) triggerLargeRollback(currentVal, newVal int64) {
+	c.callbackMu.RLock()
+	callbacks := make([]func(localVal, newVal int64), len(c.largeRollbackCallbacks))
+	copy(callbacks, c.largeRollbackCallbacks)
+	c.callbackMu.RUnlock()
+	for _, cb := range callbacks {
+		if cb != nil {
+			cb(currentVal, newVal)
 		}
 	}
 }
@@ -513,7 +484,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64, at time.Ti
 	if updated {
 		c.scheduleBackgroundPushCurrent()
 	}
-	return c.value.Load()
+	return c.GetValue()
 }
 
 func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Duration, executeNewValueFn func(ctx context.Context) (int64, error)) (int64, error) {
@@ -527,7 +498,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 	if !c.IsStale(staleness) {
 		span.SetAttributes(attribute.Bool("skipped_not_stale", true))
-		return c.value.Load(), nil
+		return c.GetValue(), nil
 	}
 
 	// Track time waiting for mutex
@@ -539,10 +510,10 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	// Double-check staleness after acquiring mutex
 	if !c.IsStale(staleness) {
 		span.SetAttributes(attribute.Bool("skipped_not_stale_after_mutex", true))
-		return c.value.Load(), nil
+		return c.GetValue(), nil
 	}
 
-	initialVal := c.value.Load()
+	initialVal := c.GetValue()
 	span.SetAttributes(attribute.Int64("initial_value", initialVal))
 	// IMPORTANT: Foreground path MUST be local-only and bounded by updateMaxWait.
 	// Do NOT acquire distributed locks or do any remote I/O here, otherwise degraded shared state
@@ -642,54 +613,51 @@ func (c *counterInt64) OnRewind(cb func(newVal int64)) {
 }
 
 func (c *counterInt64) Rewind(newValue int64) bool {
-	current := c.value.Load()
-	if c.ignoreRollbackOf <= 0 || newValue <= 0 || newValue >= current {
+	if c.ignoreRollbackOf <= 0 || newValue <= 0 {
 		return false
 	}
-	if !c.applyRewind(UpdateSourceRewind, current, newValue, 0) {
-		return false
+	for {
+		cur := c.state.Load()
+		current := cur.value()
+		if newValue >= current {
+			return false
+		}
+		if !c.state.CompareAndSwap(cur, c.dropTo(newValue, dropRewind)) {
+			continue
+		}
+		c.rewound(UpdateSourceRewind, current, newValue, 0)
+		c.scheduleBackgroundPushCurrent()
+		return true
 	}
-	c.scheduleBackgroundPushCurrent()
-	return true
 }
 
-// applyRewind moves the value down to newVal as a rewind; remoteTs is the
+// rewound is the bookkeeping of a rewind its CAS applied; remoteTs is the
 // remote state's order key, 0 for a local rewind, which takes a fresh one.
 // OnRewind fires before OnValue, so the health tracker holds the rewound
 // head when OnValue's readers wake.
-func (c *counterInt64) applyRewind(source string, currentValue, newVal, remoteTs int64) bool {
-	for {
-		if c.value.CompareAndSwap(currentValue, newVal) {
-			c.setDrop(dropRewind)
-			if remoteTs > 0 {
-				c.updateUpdatedAtMs(remoteTs)
-			} else {
-				c.allocateUpdatedAtMs()
-			}
-			c.markReported(time.Now())
-			c.registry.logger.Debug().
-				Str("source", source).
-				Str("key", c.key).
-				Int64("from", currentValue).
-				Int64("to", newVal).
-				Msg("counter rewound")
-			c.callbackMu.RLock()
-			callbacks := make([]func(int64), len(c.rewindCallbacks))
-			copy(callbacks, c.rewindCallbacks)
-			c.callbackMu.RUnlock()
-			for _, cb := range callbacks {
-				if cb != nil {
-					cb(newVal)
-				}
-			}
-			c.triggerValueCallback(newVal)
-			return true
-		}
-		currentValue = c.value.Load()
-		if newVal >= currentValue {
-			return false
+func (c *counterInt64) rewound(source string, currentValue, newVal, remoteTs int64) {
+	if remoteTs > 0 {
+		c.updateUpdatedAtMs(remoteTs)
+	} else {
+		c.allocateUpdatedAtMs()
+	}
+	c.markReported(time.Now())
+	c.registry.logger.Debug().
+		Str("source", source).
+		Str("key", c.key).
+		Int64("from", currentValue).
+		Int64("to", newVal).
+		Msg("counter rewound")
+	c.callbackMu.RLock()
+	callbacks := make([]func(int64), len(c.rewindCallbacks))
+	copy(callbacks, c.rewindCallbacks)
+	c.callbackMu.RUnlock()
+	for _, cb := range callbacks {
+		if cb != nil {
+			cb(newVal)
 		}
 	}
+	c.triggerValueCallback(newVal)
 }
 
 func (c *counterInt64) markFreshAttempt() {
@@ -711,7 +679,7 @@ func (c *counterInt64) applyRefreshResult(initialVal int64, r refreshResult) (in
 	if updated {
 		c.scheduleBackgroundPushCurrent()
 	}
-	return c.value.Load(), nil
+	return c.GetValue(), nil
 }
 
 func (c *counterInt64) continueAsyncRefresh(resultCh <-chan refreshResult, fnTimeout time.Duration) {
@@ -731,7 +699,7 @@ func (c *counterInt64) continueAsyncRefresh(resultCh <-chan refreshResult, fnTim
 			}
 			// Apply result locally; remote push is scheduled async and MUST NOT block request flow.
 			c.updateMu.Lock()
-			_, _ = c.applyRefreshResult(c.value.Load(), r)
+			_, _ = c.applyRefreshResult(c.GetValue(), r)
 			c.updateMu.Unlock()
 		case <-timer.C:
 			return
@@ -774,12 +742,12 @@ func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
 }
 
 func (c *counterInt64) localState() CounterInt64State {
-	v := c.value.Load()
+	s := c.state.Load()
 	return CounterInt64State{
-		Value:     v,
+		Value:     s.value(),
 		UpdatedAt: c.updatedAtMs(),
 		UpdatedBy: c.registry.instanceId,
-		Rewind:    dropKind(c.drop.Load()) == dropRewind,
+		Rewind:    s.rewound(),
 	}
 }
 
@@ -908,7 +876,7 @@ func (c *counterInt64) scheduleBackgroundPushCurrent() {
 				// large rollback.
 				// Only head counters are max-only; the others keep timestamp
 				// order, and a drop outranks the older states it left.
-				if remoteOk && c.ignoreRollbackOf > 0 && !c.dropped() && remote.Value > local.Value {
+				if remoteOk && c.ignoreRollbackOf > 0 && !c.state.Load().dropped() && remote.Value > local.Value {
 					c.processNewValue(UpdateSourceRemoteCheck, remote.Value, time.Now())
 					return
 				}
