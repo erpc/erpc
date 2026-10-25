@@ -74,6 +74,8 @@ func catalogue() []phaseSpec {
 		{"counters", 10801, []spec{c5()}},
 		{"x5", 10901, []spec{x5()}},
 		{"n6", 11001, []spec{n6()}},
+		{"x7", 11101, []spec{x7()}},
+		{"x8", 11201, []spec{x8()}},
 	}
 }
 
