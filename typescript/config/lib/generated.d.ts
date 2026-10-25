@@ -35,6 +35,83 @@ export interface AdaptiveDuration {
  */
 export type ArchitectureHandler = any;
 export declare const UpstreamTypeEvm: UpstreamType;
+/**
+ * HeadNeed is what a head Ask must produce (spec §6.8).
+ */
+export type HeadNeed = number;
+/**
+ * HeadNeedNumber: a fresh number; a shared counter whose report is
+ * younger than the cadence meets it.
+ */
+export declare const HeadNeedNumber: HeadNeed;
+/**
+ * HeadNeedHash: a hash vote; only a local fetch sent within the
+ * cadence meets it.
+ */
+export declare const HeadNeedHash: HeadNeed;
+/**
+ * HeadNeedFork: a hash need whose answer is fresh evidence of the
+ * node's head, whatever its earlier votes say (spec §6.3 fork poll).
+ */
+export declare const HeadNeedFork: HeadNeed;
+/**
+ * AskReason is a head Ask's caller, the reason label of
+ * erpc_head_ask_total (spec §6.8, §17).
+ */
+export type AskReason = string;
+export declare const AskPoll: AskReason;
+export declare const AskCatchUp: AskReason;
+export declare const AskRefusal: AskReason;
+export declare const AskRefresh: AskReason;
+export declare const AskSettle: AskReason;
+export declare const AskNoSource: AskReason;
+/**
+ * AskOutcome is how a head Ask was met, the outcome label of
+ * erpc_head_ask_total (spec §17).
+ */
+export type AskOutcome = string;
+/**
+ * AskFetched: the Ask started a fetch.
+ */
+export declare const AskFetched: AskOutcome;
+/**
+ * AskSharedFresh: the shared counter met a number need.
+ */
+export declare const AskSharedFresh: AskOutcome;
+/**
+ * AskInflight: a local fetch sent within the cadence met it, in
+ * flight or answered.
+ */
+export declare const AskInflight: AskOutcome;
+/**
+ * AskBackoff: the upstream backs off; nothing was fetched.
+ */
+export declare const AskBackoff: AskOutcome;
+/**
+ * HeadAnswer is what a head Ask gives its caller: the fetch's one
+ * outcome, the same for every waiter.
+ */
+export interface HeadAnswer {
+    outcome: AskOutcome;
+    /**
+     * Block is the upstream's latest counter after the outcome.
+     */
+    block: number;
+    /**
+     * Header is the fetched latest header; nil with no fetch answer.
+     */
+    header: any;
+    /**
+     * Sent is when the fetch that answered was sent: the header's
+     * evidence time; zero with no fetch answer.
+     */
+    sent: any;
+    /**
+     * Next is when the upstream's Ask may fetch again: its last fetch's
+     * send plus its backed-off cadence; zero when it may now.
+     */
+    next: any;
+}
 export type EvmUpstream = Upstream;
 /**
  * EvmStateProvenWriter is the OPTIONAL, separately-asserted surface the
@@ -1629,9 +1706,9 @@ export interface SvmUpstreamConfig {
     /**
      * BlockAvailability is an operator restriction on the slot window this
      * upstream may serve. Only what the operator declares is enforced; the
-     * upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed and
-     * used as a lower anchor solely when a bound uses firstAvailableSlotPlus,
-     * mirroring EVM's earliestBlockPlus. Unknown floor = unbounded.
+     * upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed for
+     * every upstream and anchors a firstAvailableSlotPlus bound, mirroring EVM's
+     * earliestBlockPlus. Unknown floor = unbounded.
      */
     blockAvailability?: SvmBlockAvailabilityConfig;
 }
@@ -1646,12 +1723,15 @@ export interface SvmBlockAvailabilityConfig {
 }
 /**
  * SvmAvailabilityBoundConfig is a single declared slot bound.
- * Exactly one field must be set.
+ * Exactly one of ExactSlot, LatestSlotMinus, FirstAvailableSlotPlus must be set.
+ * UpdateRate applies only to firstAvailableSlotPlus: how often the floor it
+ * anchors on is re-probed. 0 freezes it after the first observation, as EVM.
  */
 export interface SvmAvailabilityBoundConfig {
     exactSlot?: number;
     latestSlotMinus?: number;
     firstAvailableSlotPlus?: number;
+    updateRate?: Duration;
 }
 export interface EvmNetworkConfig {
     chainId: number;
@@ -1723,6 +1803,14 @@ export interface EvmNetworkConfig {
      * Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
      */
     markEmptyAsErrorMethods?: string[];
+    /**
+     * LocalAnswers turns off eRPC's own answer for a method on this network:
+     * `{net_peerCount: false}` routes net_peerCount to the upstreams. Every
+     * method in LocalAnswerMethods is answered by eRPC unless set false here.
+     */
+    localAnswers?: {
+        [key: string]: boolean;
+    };
     /**
      * DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
      * the debounce interval for block polling. A value of 0.7 means debounce = 70% of
@@ -2299,7 +2387,8 @@ export interface IntegritySettings {
      * misbehaviorRateAbove predicate); absence of proof has no effect at all,
      * and ObserveOnly suppresses the misbehavior recording like every other
      * integrity effect. Requires follow to be enabled (the verified header is
-     * the trust anchor). Off by default.
+     * the trust anchor). Off by default. The "latest" tag-state probe behind
+     * the tag-state gate runs on every network whatever this says.
      */
     stateProbe?: IntegrityStateProbeConfig;
     /**
@@ -2451,6 +2540,13 @@ export type JsonRpcErrorExtractor = any;
  * Similar to http.HandlerFunc style adapters.
  */
 export type JsonRpcErrorExtractorFunc = any;
+/**
+ * EvmRoutableUpstreamsProvider is the optional surface a network exposes its
+ * routable upstreams through: the selection policy's eligible set in routing
+ * order, narrowed to the request's use-upstream selector. Asserted narrowly,
+ * like EvmStateProvenWriter, so EvmNetwork implementations need not change.
+ */
+export type EvmRoutableUpstreamsProvider = any;
 /**
  * UpstreamAttemptOutcome enumerates the possible per-attempt outcomes
  * recorded against an upstream. The set is closed: every attempt ends
@@ -2607,12 +2703,100 @@ export declare const ArchitectureEvm: NetworkArchitecture;
 export declare const ArchitectureSvm: NetworkArchitecture;
 export type Network = any;
 /**
- * EvmNetwork is the EVM-specific view of a Network. Callers that need
- * block-number accessors or leader-upstream selection should go through the
- * EvmHighestLatestBlockNumber / EvmHighestFinalizedBlockNumber / EvmLeaderUpstream
- * helpers below, which type-assert and degrade to zero-value on mismatch.
+ * EvmNetwork is the EVM-specific view of a Network. Callers read the head
+ * through EvmHeadOf, which type-asserts and degrades to the zero Head.
  */
 export type EvmNetwork = Network;
+/**
+ * EvmHead is one lane's head (spec §6.4), published as one value. The zero
+ * Head is an unknown one.
+ */
+export interface EvmHead {
+    /**
+     * Latest is the q-th highest voter number, guarded and clamped to the
+     * guarantees.
+     */
+    latest: number;
+    /**
+     * Finalized is the same ballot over the voters' finalized numbers.
+     */
+    finalized: number;
+    /**
+     * Leader is the highest voter within Latest + maxRetryableBlockDistance.
+     */
+    leader: Upstream;
+    /**
+     * Ceiling is the raw max report of the lane's counted upstreams, 0
+     * while any of them has none.
+     */
+    ceiling: number;
+    /**
+     * OldestReportAt is when the oldest counted report's evidence was
+     * taken: a poll's send time, a push's receive time; zero while one has
+     * none.
+     */
+    oldestreportat: any;
+}
+/**
+ * HeadRule is the refusal rule's row for block N on a request (spec §6.4).
+ */
+export type HeadRule = number;
+/**
+ * HeadServe: N ≤ Latest, or Latest unknown (tags and numbers reach
+ * upstreams unchanged).
+ */
+export declare const HeadServe: HeadRule;
+/**
+ * HeadBand: Latest < N ≤ ceiling, or the ceiling is unknown.
+ */
+export declare const HeadBand: HeadRule;
+/**
+ * HeadFuture: above the ceiling, every counted report younger than
+ * 1 bt: no counted upstream has N yet.
+ */
+export declare const HeadFuture: HeadRule;
+/**
+ * HeadStale: above the ceiling, a counted report 1 bt old or older:
+ * those reports are Asked before N is decided again. Never a request's
+ * verdict.
+ */
+export declare const HeadStale: HeadRule;
+/**
+ * HeadRefusal is the refusal rule's verdict for one request's block, taken
+ * once (spec §6.4), and the one retryable miss it got since.
+ */
+export interface HeadRefusal {
+    rule: HeadRule;
+    block: number;
+    /**
+     * Refreshed: N was decided again after its stale reports were Asked.
+     */
+    refreshed: boolean;
+}
+/**
+ * RefusalLeg is one execution of a request: a hedge leg, or a retry
+ * round's. End it when it returns.
+ */
+export interface RefusalLeg {
+}
+/**
+ * MissVerdict is what an empty or missing answer above Latest is to the
+ * leg that got it.
+ */
+export type MissVerdict = number;
+/**
+ * MissRetry: the request's one retryable miss; the leg retries.
+ */
+export declare const MissRetry: MissVerdict;
+/**
+ * MissFinal: the answer after the miss, sent as the upstream gave it.
+ */
+export declare const MissFinal: MissVerdict;
+/**
+ * MissSibling: a leg running beside this one holds the miss; this leg
+ * stops with a retryable miss.
+ */
+export declare const MissSibling: MissVerdict;
 /**
  * SvmNetwork is the SVM-specific view of a Network. Production Network
  * implementations satisfy this automatically when the underlying network is
@@ -2664,6 +2848,18 @@ export type ServedTipQuorum = number;
  * ServedTipQuorumMajority requires a strict majority of the voters.
  */
 export declare const ServedTipQuorumMajority: ServedTipQuorum;
+/**
+ * Invariant is one chain-tracking invariant (spec §15.3) counted by
+ * erpc_chain_tracker_invariant_violations_total (§17).
+ */
+export type Invariant = string;
+export declare const InvariantSentAboveLatest: Invariant;
+export declare const InvariantSentUnconfirmed: Invariant;
+export declare const InvariantTapGap: Invariant;
+export declare const InvariantRemovedUnsent: Invariant;
+export declare const InvariantPinsUnlinked: Invariant;
+export declare const InvariantFinalHashChanged: Invariant;
+export declare const InvariantLatestRegressed: Invariant;
 /**
  * TimeoutFunc computes the timeout for a request. Returns nil when no
  * timeout applies (caller skips context.WithTimeout).

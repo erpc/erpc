@@ -62,6 +62,83 @@ export type ArchitectureHandler = any;
 // source: architecture_evm.go
 
 export const UpstreamTypeEvm: UpstreamType = "evm";
+/**
+ * HeadNeed is what a head Ask must produce (spec §6.8).
+ */
+export type HeadNeed = number /* uint8 */;
+/**
+ * HeadNeedNumber: a fresh number; a shared counter whose report is
+ * younger than the cadence meets it.
+ */
+export const HeadNeedNumber: HeadNeed = 0;
+/**
+ * HeadNeedHash: a hash vote; only a local fetch sent within the
+ * cadence meets it.
+ */
+export const HeadNeedHash: HeadNeed = 1;
+/**
+ * HeadNeedFork: a hash need whose answer is fresh evidence of the
+ * node's head, whatever its earlier votes say (spec §6.3 fork poll).
+ */
+export const HeadNeedFork: HeadNeed = 2;
+/**
+ * AskReason is a head Ask's caller, the reason label of
+ * erpc_head_ask_total (spec §6.8, §17).
+ */
+export type AskReason = string;
+export const AskPoll: AskReason = "poll";
+export const AskCatchUp: AskReason = "catch_up";
+export const AskRefusal: AskReason = "refusal";
+export const AskRefresh: AskReason = "refresh";
+export const AskSettle: AskReason = "settle";
+export const AskNoSource: AskReason = "no_source";
+/**
+ * AskOutcome is how a head Ask was met, the outcome label of
+ * erpc_head_ask_total (spec §17).
+ */
+export type AskOutcome = string;
+/**
+ * AskFetched: the Ask started a fetch.
+ */
+export const AskFetched: AskOutcome = "fetched";
+/**
+ * AskSharedFresh: the shared counter met a number need.
+ */
+export const AskSharedFresh: AskOutcome = "shared_fresh";
+/**
+ * AskInflight: a local fetch sent within the cadence met it, in
+ * flight or answered.
+ */
+export const AskInflight: AskOutcome = "inflight";
+/**
+ * AskBackoff: the upstream backs off; nothing was fetched.
+ */
+export const AskBackoff: AskOutcome = "backoff";
+/**
+ * HeadAnswer is what a head Ask gives its caller: the fetch's one
+ * outcome, the same for every waiter.
+ */
+export interface HeadAnswer {
+  outcome: AskOutcome;
+  /**
+   * Block is the upstream's latest counter after the outcome.
+   */
+  block: number /* int64 */;
+  /**
+   * Header is the fetched latest header; nil with no fetch answer.
+   */
+  header: any /* json.RawMessage */;
+  /**
+   * Sent is when the fetch that answered was sent: the header's
+   * evidence time; zero with no fetch answer.
+   */
+  sent: any /* time.Time */;
+  /**
+   * Next is when the upstream's Ask may fetch again: its last fetch's
+   * send plus its backed-off cadence; zero when it may now.
+   */
+  next: any /* time.Time */;
+}
 export type EvmUpstream = 
     Upstream;
 /**
@@ -2321,7 +2398,8 @@ export interface IntegritySettings {
    * misbehaviorRateAbove predicate); absence of proof has no effect at all,
    * and ObserveOnly suppresses the misbehavior recording like every other
    * integrity effect. Requires follow to be enabled (the verified header is
-   * the trust anchor). Off by default.
+   * the trust anchor). Off by default. The "latest" tag-state probe behind
+   * the tag-state gate runs on every network whatever this says.
    */
   stateProbe?: IntegrityStateProbeConfig;
   /**
@@ -2652,13 +2730,101 @@ export const ArchitectureEvm: NetworkArchitecture = "evm";
 export const ArchitectureSvm: NetworkArchitecture = "svm";
 export type Network = any;
 /**
- * EvmNetwork is the EVM-specific view of a Network. Callers that need
- * block-number accessors or leader-upstream selection should go through the
- * EvmHighestLatestBlockNumber / EvmHighestFinalizedBlockNumber / EvmLeaderUpstream
- * helpers below, which type-assert and degrade to zero-value on mismatch.
+ * EvmNetwork is the EVM-specific view of a Network. Callers read the head
+ * through EvmHeadOf, which type-asserts and degrades to the zero Head.
  */
 export type EvmNetwork = 
     Network;
+/**
+ * EvmHead is one lane's head (spec §6.4), published as one value. The zero
+ * Head is an unknown one.
+ */
+export interface EvmHead {
+  /**
+   * Latest is the q-th highest voter number, guarded and clamped to the
+   * guarantees.
+   */
+  latest: number /* int64 */;
+  /**
+   * Finalized is the same ballot over the voters' finalized numbers.
+   */
+  finalized: number /* int64 */;
+  /**
+   * Leader is the highest voter within Latest + maxRetryableBlockDistance.
+   */
+  leader: Upstream;
+  /**
+   * Ceiling is the raw max report of the lane's counted upstreams, 0
+   * while any of them has none.
+   */
+  ceiling: number /* int64 */;
+  /**
+   * OldestReportAt is when the oldest counted report's evidence was
+   * taken: a poll's send time, a push's receive time; zero while one has
+   * none.
+   */
+  oldestreportat: any /* time.Time */;
+}
+/**
+ * HeadRule is the refusal rule's row for block N on a request (spec §6.4).
+ */
+export type HeadRule = number /* uint8 */;
+/**
+ * HeadServe: N ≤ Latest, or Latest unknown (tags and numbers reach
+ * upstreams unchanged).
+ */
+export const HeadServe: HeadRule = 0;
+/**
+ * HeadBand: Latest < N ≤ ceiling, or the ceiling is unknown.
+ */
+export const HeadBand: HeadRule = 1;
+/**
+ * HeadFuture: above the ceiling, every counted report younger than
+ * 1 bt: no counted upstream has N yet.
+ */
+export const HeadFuture: HeadRule = 2;
+/**
+ * HeadStale: above the ceiling, a counted report 1 bt old or older:
+ * those reports are Asked before N is decided again. Never a request's
+ * verdict.
+ */
+export const HeadStale: HeadRule = 3;
+/**
+ * HeadRefusal is the refusal rule's verdict for one request's block, taken
+ * once (spec §6.4), and the one retryable miss it got since.
+ */
+export interface HeadRefusal {
+  rule: HeadRule;
+  block: number /* int64 */;
+  /**
+   * Refreshed: N was decided again after its stale reports were Asked.
+   */
+  refreshed: boolean;
+}
+/**
+ * RefusalLeg is one execution of a request: a hedge leg, or a retry
+ * round's. End it when it returns.
+ */
+export interface RefusalLeg {
+}
+/**
+ * MissVerdict is what an empty or missing answer above Latest is to the
+ * leg that got it.
+ */
+export type MissVerdict = number /* uint8 */;
+/**
+ * MissRetry: the request's one retryable miss; the leg retries.
+ */
+export const MissRetry: MissVerdict = 0;
+/**
+ * MissFinal: the answer after the miss, sent as the upstream gave it.
+ */
+export const MissFinal: MissVerdict = 1;
+/**
+ * MissSibling: a leg running beside this one holds the miss; this leg
+ * stops with a retryable miss.
+ */
+export const MissSibling: MissVerdict = 2;
 /**
  * SvmNetwork is the SVM-specific view of a Network. Production Network
  * implementations satisfy this automatically when the underlying network is
@@ -2715,6 +2881,22 @@ export type ServedTipQuorum = number /* int */;
  * ServedTipQuorumMajority requires a strict majority of the voters.
  */
 export const ServedTipQuorumMajority: ServedTipQuorum = -1;
+
+//////////
+// source: signals.go
+
+/**
+ * Invariant is one chain-tracking invariant (spec §15.3) counted by
+ * erpc_chain_tracker_invariant_violations_total (§17).
+ */
+export type Invariant = string;
+export const InvariantSentAboveLatest: Invariant = "sent_above_latest";
+export const InvariantSentUnconfirmed: Invariant = "sent_unconfirmed";
+export const InvariantTapGap: Invariant = "tap_gap";
+export const InvariantRemovedUnsent: Invariant = "removed_unsent";
+export const InvariantPinsUnlinked: Invariant = "pins_unlinked";
+export const InvariantFinalHashChanged: Invariant = "final_hash_changed";
+export const InvariantLatestRegressed: Invariant = "latest_regressed";
 
 //////////
 // source: timeout_func.go

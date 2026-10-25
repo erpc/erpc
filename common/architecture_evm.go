@@ -70,7 +70,7 @@ type HeadAnswer struct {
 	// Next is when the upstream's Ask may fetch again: its last fetch's
 	// send plus its backed-off cadence; zero when it may now.
 	Next time.Time
-	Err  error
+	Err  error `tstype:"-"`
 }
 
 // EvmHeadReaches is the one head predicate (spec §6.4, #1099): u, with head
