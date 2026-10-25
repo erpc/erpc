@@ -512,17 +512,17 @@ A vendor can answer `eth_call(latest)` from old state while its header head is c
 
 | Part | Rule |
 |---|---|
-| Fact | Tag-state head per upstream: the block it executes `latest` at, from Multicall3 `getBlockNumber()` at `latest`. It never moves `Latest` |
-| Free evidence | Every Multicall3 pack carries one `getBlockNumber()`, so each packed answer proves its own block |
-| Applies to | Requests whose block reaches the upstream as the tag: tag-only methods, `skip-interpolation`. Numbered requests are unaffected |
+| Fact | Tag-state head per upstream: the block it executes `latest` at, from Multicall3 `getBlockNumber()` at `latest` (ArbSys `arbBlockNumber()` on Nitro, where Multicall3 returns the L1 height). It never moves `Latest` |
+| Free evidence | Every Multicall3 pack sent with the tag carries one such call, stripped from the client's results, so each packed answer proves its own block |
+| Applies to | Family-3 requests (§7) whose block reaches the upstream as the tag: `translateLatestTag: false` methods, `skip-interpolation`. Numbered requests, other families (tracker fetches included) and requests while Head is unknown are unaffected |
 | Reference | `Latest`, not the upstream's own head |
-| Tolerance | W in time; the sample's age is credited, as #1296 credits lag |
-| Skip | Positive stale evidence skips that upstream for tag requests only; no evidence admits it (#934) |
+| Tolerance | W in time: a sample is stale when `Latest` at its send time is more than W of chain above its block; so the sample's age is credited, as #1296 credits lag |
+| Skip | Positive stale evidence skips that upstream for tag requests only, decided once per request before its first attempt; no evidence admits it (#934) |
 | Readmit | 3 fresh samples in a row, or a W with no stale evidence; nothing is permanent |
 | All stale | Route to the upstream with the highest tag-state head and count it; `-32603` with `executedBlock` and `servedTip` only when that head is more than 60s behind `Latest`; never `-32014`, never a pinned number |
-| Probe | Every upstream that gets tag requests, from network start, without integrity `follow`; at most every 2s per upstream; re-probe on each skip. Probes keep the timeout-only bypass: no retry, hedge or breaker |
+| Probe | Every upstream that gets tag requests (a family-3 method keeps the tag on it, or a `skip-interpolation` state request reached it in the last 10 min), from network start, without integrity `follow`: on each change of `Latest`, at most every 2s per upstream, a packed sample counting as one; re-probe on each skip. Probes send the tag, keep the timeout-only bypass (no retry, hedge or breaker), and the gate never skips them |
 
-- `eth_estimateGas` joins `latestTagParamIndex`, so a pinned upstream never gets it as the tag.
+- `pinLatestTag`, the shadow pin and the gate read one family-3 map, so a pinned upstream never gets a state method as the tag, `eth_estimateGas` included.
 
 Owner: `architecture/evm/integrity_stateprobe.go`; the skip in `checkEvmUpstreamBlockAvailability` (`erpc/networks.go`). Keeps: #1109 (the prober publishes evidence; disproof feeds misbehavior), #1274, #1303 (probe and metric kept; its misbehavior record is replaced by the gate), #1443 (`translateLatestTag: false` stays).
 

@@ -98,8 +98,8 @@ T   the rest of the real-world catalogue
 
 ## H5: tag-state head and gate
 
-- Add (spec §6.11): tag-state head per upstream from the state prober and Multicall3 evidence; skip in `checkEvmUpstreamBlockAvailability` for tag requests; tolerance W with sample age credited; readmit after 3 fresh samples or a W without stale evidence; all stale → highest tag-state head, counted; `-32603` only past 60s; probe from network start, at most every 2s per upstream, re-probe on each skip; `eth_estimateGas` in `latestTagParamIndex`.
-- Delete: #1303's misbehavior record for stale `latest` state.
+- Add (spec §6.11): tag-state head per upstream from the state prober and Multicall3 evidence; skip in `checkEvmUpstreamBlockAvailability` for family-3 tag requests, decided once per request; tolerance W with sample age credited; readmit after 3 fresh samples or a W without stale evidence; all stale → highest tag-state head, counted; `-32603` only past 60s; probe from network start without `follow`, at most every 2s per upstream, re-probe on each skip; one family-3 map for the pin, the shadow pin and the gate.
+- Delete: #1303's misbehavior record for stale `latest` state; `latestTagParamIndex` and the prober's own "tag reaches u" predicate.
 - Tests, real-world: P11.
 
 ## H6: signals
