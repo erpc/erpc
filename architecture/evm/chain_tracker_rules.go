@@ -806,7 +806,7 @@ func (t *ChainTracker) follow(ctx context.Context) {
 			continue
 		}
 		if errors.Is(err, indexer.ErrOutOfRange) {
-			t.transition(zerolog.InfoLevel, "out_of_range:integrity:follow").Err(err).
+			t.transition(zerolog.InfoLevel, "out_of_range").Err(err).
 				Msg("integrity follow tap out of range; restarting after the head")
 			continue
 		}

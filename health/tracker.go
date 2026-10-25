@@ -1667,7 +1667,7 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 		u.meta.headBehindSince = time.Time{}
 		u.meta.headStale = false
 		membershipChanged = true
-		common.TransitionLog(u.ups.Logger(), zerolog.InfoLevel, u.ups.NetworkLabel(), "bench_rejoin").
+		common.TransitionLog(u.ups.Logger(), zerolog.InfoLevel, u.ups.NetworkLabel(), "bench").
 			Str("upstreamId", u.ups.Id()).
 			Int64("head", uHead).Int64("bar", bar).
 			Msg("upstream head rejoined: it caught up with its non-benched peers")

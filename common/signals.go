@@ -40,7 +40,7 @@ func ExportInvariants(projectId, network string) {
 // hashes, then sends it.
 func ViolateInvariant(l *zerolog.Logger, projectId, network string, inv Invariant) *zerolog.Event {
 	telemetry.CounterHandle(telemetry.MetricChainTrackerInvariantViolationsTotal, projectId, network, string(inv)).Inc()
-	return TransitionLog(l, zerolog.ErrorLevel, network, "invariant_"+string(inv)).Str("invariant", string(inv))
+	return TransitionLog(l, zerolog.ErrorLevel, network, "invariant_violation").Str("invariant", string(inv))
 }
 
 // TransitionLogPeriod is how often one (network, kind) of transition logs

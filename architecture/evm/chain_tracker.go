@@ -1430,12 +1430,12 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	if fin := t.finalizedHead(); span.hi > 0 && fin > 0 && span.lo <= fin {
 		var ev *zerolog.Event
 		if t.selector == "" {
-			ev = common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantFinalHashChanged)
+			ev = common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantFinalHashChanged).Str("group", t.group)
 		} else {
-			ev = common.TransitionLog(&log.Logger, zerolog.ErrorLevel, t.networkLabel(), "invariant_"+string(common.InvariantFinalHashChanged)+":"+t.group).
+			ev = t.transition(zerolog.ErrorLevel, "invariant_violation").
 				Str("invariant", string(common.InvariantFinalHashChanged))
 		}
-		ev.Str("group", t.group).Int64("revertedFrom", span.lo).Str("oldHash", hexHash(oldLo.hash)).Str("newHash", hexHash(newLo.hash)).
+		ev.Int64("revertedFrom", span.lo).Str("oldHash", hexHash(oldLo.hash)).Str("newHash", hexHash(newLo.hash)).
 			Int64("finalized", fin).Uint64("head", head.number).Str("headHash", hexHash(head.hash)).
 			Msg("chain tracker followed a majority branch that reverts a finalized block")
 		t.addRevertedFinal(heightSpan{lo: span.lo, hi: min(span.hi, fin)})

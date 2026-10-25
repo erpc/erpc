@@ -241,7 +241,7 @@ func (s *checkSuspensions) recordLocked(id string, h *checkHealth, height uint64
 			return false
 		}
 		h.state, h.heights, h.run = checkEnforced, make(map[uint64]*heightVerdict), false
-		common.TransitionLog(&log.Logger, zerolog.WarnLevel, s.network.Label(), "check_enforced:"+id).Str("project", s.network.ProjectId()).Str("check", id).
+		common.TransitionLog(&log.Logger, zerolog.WarnLevel, s.network.Label(), "suspension").Str("project", s.network.ProjectId()).Str("check", id).
 			Uint64("height", height).Int("heights", h.rule.passRun).Msg("integrity: check passes again at heights in a row; enforcing it")
 		return true
 	}
@@ -353,7 +353,7 @@ func (s *checkSuspensions) stepLocked(id string, h *checkHealth, head uint64, he
 		}
 		if head >= h.offAt+CheckSuspendBlocks.Load() {
 			h.state, h.heights, h.run = checkObserve, make(map[uint64]*heightVerdict), false
-			common.TransitionLog(&log.Logger, zerolog.WarnLevel, s.network.Label(), "check_observe:"+id).Str("project", s.network.ProjectId()).Str("check", id).
+			common.TransitionLog(&log.Logger, zerolog.WarnLevel, s.network.Label(), "suspension").Str("project", s.network.ProjectId()).Str("check", id).
 				Uint64("head", head).Msg("integrity: suspended check runs observe-only")
 			return true, false
 		}
@@ -370,7 +370,7 @@ func (s *checkSuspensions) stepLocked(id string, h *checkHealth, head uint64, he
 	}
 	h.offAt, h.offKnown = head, headKnown
 	telemetry.MetricIntegrityCheckSuspendedTotal.WithLabelValues(s.network.ProjectId(), s.network.Label(), id).Inc()
-	common.TransitionLog(&log.Logger, zerolog.ErrorLevel, s.network.Label(), "check_suspended:"+id).Str("project", s.network.ProjectId()).Str("check", id).
+	common.TransitionLog(&log.Logger, zerolog.ErrorLevel, s.network.Label(), "suspension").Str("project", s.network.ProjectId()).Str("check", id).
 		Uint64("head", head).Int("heights", h.rule.failRun).Msg("integrity: no answer passes this check at heights in a row; suspending it for the network")
 	return true, true
 }

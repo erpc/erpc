@@ -77,7 +77,7 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 			return
 		}
 		if errors.Is(err, indexer.ErrOutOfRange) {
-			common.TransitionLog(sm.logger, zerolog.InfoLevel, nw.Label(), "out_of_range:ws:newHeads").Err(err).
+			common.TransitionLog(sm.logger, zerolog.InfoLevel, nw.Label(), "out_of_range").Err(err).
 				Str("clientSubId", sub.ClientSubID).Msg("newHeads tap out of range, restarting after the head")
 			continue
 		}

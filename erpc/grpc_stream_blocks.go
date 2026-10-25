@@ -112,7 +112,7 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 	case tapCtx.Err() != nil:
 		return status.Error(codes.Unavailable, "network is stopping")
 	case errors.Is(err, indexer.ErrOutOfRange):
-		ev := common.TransitionLog(gs.logger, zerolog.InfoLevel, nw.Label(), "out_of_range:grpc:newHeads").Err(err)
+		ev := common.TransitionLog(gs.logger, zerolog.InfoLevel, nw.Label(), "out_of_range").Err(err)
 		if start != nil {
 			ev = ev.Uint64("fromBlock", start.Number).Hex("fromHash", start.Hash[:])
 		}

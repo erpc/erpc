@@ -168,7 +168,7 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 	if ctx.Err() != nil || errors.As(err, &writeErr) {
 		return
 	}
-	common.TransitionLog(sm.logger, zerolog.WarnLevel, nw.Label(), "out_of_range:ws:logs").Err(err).
+	common.TransitionLog(sm.logger, zerolog.WarnLevel, nw.Label(), "out_of_range").Err(err).
 		Bool("outOfRange", errors.Is(err, indexer.ErrOutOfRange)).Str("clientSubId", sub.ClientSubID).
 		Msg("logs tap ended, closing the connection with 1013")
 	if spread := logsCloseSpread.Load(); spread > 0 {
