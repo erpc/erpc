@@ -794,9 +794,13 @@ func (c *counterInt64) scheduleBackgroundPushCurrent() {
 					local = c.localState()
 				}
 
-				// Remote ahead by no more than ignoreRollbackOf means we are
-				// lagging: adopt it instead of overwriting it with a lower value.
-				if remoteOk && remote.Value > local.Value && remote.Value-local.Value <= c.ignoreRollbackOf {
+				// Remote ahead is forward progress: adopt it instead of
+				// overwriting it with a lower local value. ignoreRollbackOf
+				// only applies to decreases (see processNewValue); capping
+				// adoption by that threshold let a newer-timestamp lagging
+				// writer push a regression that peers then treated as a
+				// large rollback.
+				if remoteOk && remote.Value > local.Value {
 					c.processNewValue(UpdateSourceRemoteCheck, remote.Value, time.Now())
 					return
 				}
