@@ -551,7 +551,10 @@ func (wsc *WsConnection) notificationCostBlock(sub wsclient.Subscription) []byte
 func (wsc *WsConnection) writeMessage(costs []byte, write func(w io.Writer) error) error {
 	wsc.writeMu.Lock()
 	defer wsc.writeMu.Unlock()
+	return wsc.writeMessageLocked(costs, write)
+}
 
+func (wsc *WsConnection) writeMessageLocked(costs []byte, write func(w io.Writer) error) error {
 	if wsc.closed.Load() {
 		return errWsConnClosed
 	}
@@ -717,16 +720,28 @@ func (wsc *WsConnection) WriteSubscriptionNotification(sub wsclient.Subscription
 		},
 	}
 	body := countingWriter{}
-	err := wsc.writeMessage(wsc.notificationCostBlock(sub), func(w io.Writer) error {
+	written, err := wsc.writeNotification(sub, wsc.notificationCostBlock(sub), func(w io.Writer) error {
 		body.w = w
 		return json.NewEncoder(&body).Encode(notification)
 	})
-	if err != nil {
+	if err != nil || !written {
 		return err
 	}
 	telemetry.CounterHandle(telemetry.MetricWebsocketNotificationsSentTotal, labels...).Inc()
 	telemetry.CounterHandle(telemetry.MetricWebsocketNotificationBytesTotal, labels...).Add(float64(body.n))
 	return nil
+}
+
+// writeNotification writes as writeMessage does, unless sub was removed.
+// Unsubscribe marks the subscription removed before its answer takes
+// writeMu, so no notification follows the answer.
+func (wsc *WsConnection) writeNotification(sub wsclient.Subscription, costs []byte, write func(w io.Writer) error) (written bool, err error) {
+	wsc.writeMu.Lock()
+	defer wsc.writeMu.Unlock()
+	if sub.Removed() {
+		return false, nil
+	}
+	return true, wsc.writeMessageLocked(costs, write)
 }
 
 type countingWriter struct {

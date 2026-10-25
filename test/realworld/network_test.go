@@ -2,9 +2,11 @@ package realworld
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -13,14 +15,12 @@ import (
 // Bounds of the network-fault scenarios (§19 N1, N2, N7).
 const (
 	// n1Latency: every pod hears ws-a this late (§19 N1); n1Blocks: for
-	// this many blocks. n1P99: delivery p99 within 2 bt. n1Behind: Latest
-	// from the faster voters stays within a block of the tip, and n1Below
-	// is the share of samples allowed below it, as p99 is (harness).
+	// this many blocks. n1P99: delivery p99 within 2 bt. n1Quorum: the
+	// served tip's q with no servedTip config (§6.2).
 	n1Latency = 300 * time.Millisecond
 	n1Blocks  = 100
 	n1P99     = 2 * blockTime
-	n1Behind  = 1
-	n1Below   = 0.01
+	n1Quorum  = 2
 
 	// n2Jitter: each chunk on every link waits 0 to 2 bt more (§19 N2),
 	// for n2Blocks.
@@ -41,8 +41,11 @@ const (
 
 // N1: every pod hears ws-a n1Latency late, for n1Blocks. Each block
 // reaches its clients within n1P99 of its first header at p99, and Latest
-// comes from the faster voters: eth_blockNumber stays within n1Behind
-// blocks of the tip on all but n1Below of the samples (§19 N1).
+// is never held at ws-a's number while n1Quorum other voters report
+// higher (§19 N1). Each sample reads the pod's per-upstream latest
+// blocks before and after its eth_blockNumber: Latest is held at ws-a's
+// number when it equals ws-a's in both, and the others report higher
+// when they did before the call.
 func n1() spec {
 	return spec{name: "N1", bound: healthyDelivery, body: func(s *scenario) {
 		s.blocks(25)
@@ -51,20 +54,53 @@ func n1() spec {
 			px.set(p, linkFaults{Latency: n1Latency})
 		}
 		from := time.Now()
-		s.logf("every pod hears %s %s late", s.upstream("ws-a"), n1Latency)
-		samples, below := 0, 0
+		slow := s.upstream("ws-a")
+		s.logf("every pod hears %s %s late", slow, n1Latency)
+		latest := func(pod int) (map[string]float64, bool) {
+			ss, err := s.h.pods[pod].scrape()
+			if err != nil {
+				s.violate(s.name, "pod-%d: scrape: %v", pod+1, err)
+				return nil, false
+			}
+			out := map[string]float64{}
+			for _, u := range s.net.ups {
+				if v, ok := sumOf(ss, "erpc_upstream_latest_block_number", map[string]string{"project": s.project, "network": s.network(), "upstream": u.id}); ok {
+					out[u.id] = v
+				}
+			}
+			return out, true
+		}
+		samples, held := 0, 0
 		for end := from.Add(n1Blocks * blockTime); time.Now().Before(end); time.Sleep(blockTime / 2) {
 			for pod := range s.h.pods {
-				tip := s.chain.Tip().Number
+				before, ok := latest(pod)
+				if !ok {
+					continue
+				}
 				var bn hexutil.Uint64
 				if err := s.call(pod, &bn, "eth_blockNumber"); err != nil {
 					s.violate(s.name, "pod-%d: eth_blockNumber: %v", pod+1, err)
 					continue
 				}
+				after, ok := latest(pod)
+				if !ok {
+					continue
+				}
 				samples++
-				if uint64(bn)+n1Behind < tip {
-					below++
-					s.tr.logf("pod-%d: eth_blockNumber %d, tip %d", pod+1, bn, tip)
+				slowAt, okBefore := before[slow]
+				if !okBefore || slowAt != float64(bn) || after[slow] != float64(bn) {
+					continue
+				}
+				var higher []string
+				for id, v := range before {
+					if id != slow && v > float64(bn) {
+						higher = append(higher, fmt.Sprintf("%s=%v", id, v))
+					}
+				}
+				if len(higher) >= n1Quorum {
+					held++
+					sort.Strings(higher)
+					s.violate(s.name, "pod-%d: eth_blockNumber %d held at %s's number while %d other voters report higher (%s)", pod+1, bn, slow, len(higher), strings.Join(higher, ", "))
 				}
 			}
 		}
@@ -72,9 +108,10 @@ func n1() spec {
 			px.set(p, linkFaults{})
 		}
 		to := time.Now()
-		if float64(below) > n1Below*float64(samples) {
-			s.violate(s.name, "eth_blockNumber more than %d below the tip on %d of %d samples (at most %.0f%%) with only %s slow", n1Behind, below, samples, 100*n1Below, s.upstream("ws-a"))
+		if samples == 0 {
+			s.violate("harness", "no eth_blockNumber sample with both scrapes while %s was slow", slow)
 		}
+		s.logf("Latest held at %s's number with q others higher on %d of %d samples", slow, held, samples)
 		lat := s.headerLatencies(from, to)
 		if len(lat) == 0 {
 			s.violate("harness", "no header delivered between %s and %s", from.Format("15:04:05"), to.Format("15:04:05"))

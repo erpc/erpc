@@ -19,11 +19,11 @@ type linkFaults struct {
 	Jitter    time.Duration // extra latency per chunk, up to this; bytes keep their order
 	Bandwidth int           // bytes per second each way; 0 is unlimited
 	// RSTMid: once a pod request names this method, the vendor→pod chunk
-	// that follows is cut half way and the connection reset, so the
-	// answer's body ends mid-way.
+	// that follows is cut half way (FIN, then RST), so the answer's body
+	// ends mid-way.
 	RSTMid    string
-	BlackHole bool          // forward nothing either way; sockets stay open (half-open)
-	Refuse    bool          // reset new connections at once
+	BlackHole bool // forward nothing either way; sockets stay open (half-open)
+	Refuse    bool // reset new connections at once
 }
 
 // proxy stands between every pod and one vendor. Pods share its address,
@@ -57,6 +57,10 @@ type pconn struct {
 	client, server net.Conn
 	once           sync.Once
 	done           chan struct{}
+	// clientGone is closed once a read from the pod fails: the pod closed
+	// its end.
+	clientGone chan struct{}
+	goneOnce   sync.Once
 	// held: black-holed on its own (holdOpen), whatever the link's faults;
 	// armed: a request naming the link's RSTMid method went out.
 	held, armed atomic.Bool
@@ -233,8 +237,19 @@ func (c *pconn) close() {
 	})
 }
 
-// reset closes both sides with RST.
+// reset cuts the connection: a FIN to the pod right after the half answer,
+// so it reads a truncated body and EOF at once, then RST on both sides once
+// the pod closed its end, or after cutGrace. The FIN carries the cut: a
+// host may drop the RST (macOS with net.inet.tcp.blackhole set leaves the
+// pod's socket ESTABLISHED), and a pod would then wait out its attempt.
 func (c *pconn) reset() {
+	if tc, ok := c.client.(*net.TCPConn); ok {
+		_ = tc.CloseWrite()
+	}
+	select {
+	case <-c.clientGone:
+	case <-time.After(cutGrace):
+	}
 	for _, s := range []net.Conn{c.client, c.server} {
 		if tc, ok := s.(*net.TCPConn); ok {
 			_ = tc.SetLinger(0)
@@ -242,6 +257,10 @@ func (c *pconn) reset() {
 	}
 	c.close()
 }
+
+// cutGrace bounds how long a cut waits for the pod to close its end
+// before the RST.
+const cutGrace = time.Second
 
 func (h *harness) newProxy(name, target string, ws bool) *proxy {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -384,7 +403,7 @@ func (px *proxy) handle(c net.Conn) {
 		_ = c.Close()
 		return
 	}
-	pc := &pconn{client: c, server: s, done: make(chan struct{})}
+	pc := &pconn{client: c, server: s, done: make(chan struct{}), clientGone: make(chan struct{})}
 	l.mu.Lock()
 	l.conns[pc] = true
 	l.mu.Unlock()
@@ -537,6 +556,9 @@ func (l *link) pipe(pc *pconn, src, dst net.Conn, down, up *headerScan) {
 			}
 		}
 		if err != nil {
+			if up != nil {
+				pc.goneOnce.Do(func() { close(pc.clientGone) })
+			}
 			return
 		}
 	}

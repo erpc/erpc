@@ -122,6 +122,9 @@ type fetchRequest struct {
 type fetchBackoff struct {
 	next  time.Time
 	delay time.Duration
+	// capacity: the last failure was a refusal for capacity everywhere,
+	// whose backoff ends at the network's next successful fetch.
+	capacity bool
 }
 
 // fetchScheduler runs every tracker fetch of one network on this pod:
@@ -388,6 +391,10 @@ func (s *fetchScheduler) run(r *fetchRequest) {
 	switch outcome {
 	case "ok":
 		delete(s.backoff, r.key)
+		// A cached answer is no evidence that vendors have capacity again.
+		if res.upstream != "" {
+			s.endCapacityBackoffsLocked()
+		}
 		s.streak[c]++
 		if s.streak[c] >= fetchSlotRecovery {
 			s.streak[c] = 0
@@ -398,11 +405,11 @@ func (s *fetchScheduler) run(r *fetchRequest) {
 		}
 	case "capacity":
 		s.streak[c] = 0
-		s.backOffLocked(r.key)
+		s.backOffLocked(r.key, true)
 		s.halveLowestBusyLocked(r.halvings)
 	default:
 		s.streak[c] = 0
-		s.backOffLocked(r.key)
+		s.backOffLocked(r.key, false)
 	}
 	s.inflight[c]--
 	if s.pending[r.key] == r {
@@ -512,7 +519,7 @@ func fetchOutcome(err error) string {
 
 // backOffLocked spaces the key's next attempt: 200 ms, doubling to 5 s. A
 // failure long after the last one starts over.
-func (s *fetchScheduler) backOffLocked(key fetchKey) {
+func (s *fetchScheduler) backOffLocked(key fetchKey, capacity bool) {
 	now := time.Now()
 	b := s.backoff[key]
 	if b.delay == 0 || now.Sub(b.next) > fetchBackoffMax {
@@ -521,6 +528,7 @@ func (s *fetchScheduler) backOffLocked(key fetchKey) {
 		b.delay = min(2*b.delay, fetchBackoffMax)
 	}
 	b.next = now.Add(b.delay)
+	b.capacity = capacity
 	s.backoff[key] = b
 	if len(s.backoff) > fetchBackoffPrune {
 		for k, o := range s.backoff {
@@ -531,17 +539,31 @@ func (s *fetchScheduler) backOffLocked(key fetchKey) {
 	}
 }
 
+// endCapacityBackoffsLocked ends every capacity backoff, queued requests'
+// included: a vendor answered, so capacity is back (spec §8).
+func (s *fetchScheduler) endCapacityBackoffsLocked() {
+	for k, b := range s.backoff {
+		if !b.capacity {
+			continue
+		}
+		delete(s.backoff, k)
+		if r := s.pending[k]; r != nil && !r.started {
+			r.notBefore = time.Time{}
+		}
+	}
+}
+
 // halveLowestBusyLocked halves the share of the lowest class with work,
-// never below one slot. Sweeps that fail together halve once: only a sweep
-// that started after the last halving (seen) halves, and only while the
-// class fills at least half its share, so the share is what binds.
+// never below one slot, whatever its fetches in flight. Sweeps that fail
+// together halve once: only a sweep that started after the last halving
+// (seen) halves.
 func (s *fetchScheduler) halveLowestBusyLocked(seen uint64) {
 	if seen != s.halvings {
 		return
 	}
 	for c := fetchClasses - 1; ; c-- {
 		if s.inflight[c] > 0 || len(s.queues[c]) > 0 {
-			if s.share[c] > 1 && 2*s.inflight[c] >= s.share[c] {
+			if s.share[c] > 1 {
 				s.share[c] = max(1, s.share[c]/2)
 				s.halvings++
 				s.setSlotsGaugeLocked(c)

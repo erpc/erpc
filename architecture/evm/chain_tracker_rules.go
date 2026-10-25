@@ -274,7 +274,9 @@ func (t *ChainTracker) windowRef() *chainHeader {
 }
 
 func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
-	if r.h.number == 0 {
+	// Block 0, or the chain's first block, which names the all-zero
+	// parentHash: the root is final (spec §6.5 rule 2).
+	if r.h.number == 0 || r.h.parentHash == ([32]byte{}) {
 		e.atBase, e.walk, t.treesDirty = true, 0, true
 		return
 	}

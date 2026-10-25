@@ -5,6 +5,7 @@ package wsclient
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 )
 
 // ErrClosed is returned by AddSubscription once the adapter was drained.
@@ -30,8 +31,15 @@ type clientSub struct {
 	// written before it, as geth sends the id first.
 	opened   chan struct{}
 	openOnce sync.Once
+	// removed is set before the unsubscribe answer is written; a
+	// notification written after that answer sees it and is dropped.
+	removed atomic.Bool
 	// stop ends the subscription's tap.
 	stop func()
+}
+
+func (s *clientSub) describe() Subscription {
+	return Subscription{ClientSubID: s.id, Kind: s.kind, NetworkID: s.networkID, removed: &s.removed}
 }
 
 // New creates the adapter of a client connection.
@@ -54,21 +62,22 @@ func (a *Adapter) Open(clientSubID string) {
 // is closed by Open; stop ends that tap when the subscription is removed.
 // It fails with ErrLimitExceeded when the connection already holds
 // maxSubs, and with ErrClosed once the adapter was drained.
-func (a *Adapter) AddSubscription(clientSubID, networkID string, kind EventKind, maxSubs int, stop func()) (opened <-chan struct{}, err error) {
+func (a *Adapter) AddSubscription(clientSubID, networkID string, kind EventKind, maxSubs int, stop func()) (Subscription, <-chan struct{}, error) {
 	sub := &clientSub{id: clientSubID, kind: kind, networkID: networkID, opened: make(chan struct{}), stop: stop}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.drained {
-		return nil, ErrClosed
+		return Subscription{}, nil, ErrClosed
 	}
 	if len(a.subs) >= maxSubs {
-		return nil, ErrLimitExceeded
+		return Subscription{}, nil, ErrLimitExceeded
 	}
 	a.subs[clientSubID] = sub
-	return sub.opened, nil
+	return sub.describe(), sub.opened, nil
 }
 
-// RemoveSubscription removes a subscription and stops its tap.
+// RemoveSubscription marks a subscription removed, removes it and stops
+// its tap.
 func (a *Adapter) RemoveSubscription(clientSubID string) (kind EventKind, existed bool) {
 	a.mu.Lock()
 	sub, ok := a.subs[clientSubID]
@@ -77,6 +86,7 @@ func (a *Adapter) RemoveSubscription(clientSubID string) (kind EventKind, existe
 	if !ok {
 		return 0, false
 	}
+	sub.removed.Store(true)
 	sub.stop()
 	return sub.kind, true
 }
@@ -93,8 +103,9 @@ func (a *Adapter) Drain() []Subscription {
 
 	out := make([]Subscription, 0, len(subs))
 	for _, sub := range subs {
+		sub.removed.Store(true)
 		sub.stop()
-		out = append(out, Subscription{ClientSubID: sub.id, Kind: sub.kind, NetworkID: sub.networkID})
+		out = append(out, sub.describe())
 	}
 	return out
 }
@@ -104,6 +115,14 @@ type Subscription struct {
 	ClientSubID string
 	Kind        EventKind
 	NetworkID   string
+
+	removed *atomic.Bool
+}
+
+// Removed reports whether the subscription was removed: its tap must not
+// write any more.
+func (s Subscription) Removed() bool {
+	return s.removed.Load()
 }
 
 // Count returns the number of active subscriptions.

@@ -157,8 +157,8 @@ func (sm *SubscriptionManager) Subscribe(
 		// once the network ended, bg refuses it and the tap is moot.
 		tapCtx, stop := context.WithCancel(nw.appCtx)
 		var opened <-chan struct{}
-		if opened, addErr = conn.AddSubscription(clientSubID, key, kind, maxSubs, stop); addErr == nil {
-			sub := wsclient.Subscription{ClientSubID: clientSubID, Kind: kind, NetworkID: key}
+		var sub wsclient.Subscription
+		if sub, opened, addErr = conn.AddSubscription(clientSubID, key, kind, maxSubs, stop); addErr == nil {
 			lane := laneSelector(nq)
 			switch kind {
 			case wsclient.KindLog:

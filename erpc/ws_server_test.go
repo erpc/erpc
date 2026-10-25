@@ -847,9 +847,55 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, clientSubId, params["subscription"], "notification should use client subscription ID")
 
-		// Unsubscribe
-		unsubResp := sendAndReceive(t, conn, fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"eth_unsubscribe","params":["%s"]}`, clientSubId))
-		assert.Equal(t, true, unsubResp["result"])
+		// More subscriptions, so taps are still writing a head when the
+		// unsubscribes arrive (§19 D5).
+		subs := []string{clientSubId}
+		for id := 3; id < 23; id++ {
+			require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_subscribe","params":["newHeads"]}`, id))))
+		}
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		for len(subs) < 21 {
+			_, msg, err := conn.ReadMessage()
+			require.NoError(t, err)
+			var m map[string]interface{}
+			require.NoError(t, json.Unmarshal(msg, &m))
+			if id, ok := m["result"].(string); ok && m["id"] != nil {
+				subs = append(subs, id)
+			}
+		}
+		select {
+		case <-notifCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for upstream to send notification")
+		}
+
+		// Unsubscribe every one as a head is written; no notification of a
+		// subscription follows its unsubscribe answer.
+		answerOf := map[float64]string{}
+		for i, sub := range subs {
+			id := 100 + i
+			answerOf[float64(id)] = sub
+			require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_unsubscribe","params":["%s"]}`, id, sub))))
+		}
+		removed := map[string]bool{}
+		conn.SetReadDeadline(time.Now().Add(time.Second))
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				break
+			}
+			var m map[string]interface{}
+			require.NoError(t, json.Unmarshal(msg, &m))
+			if id, ok := m["id"].(float64); ok {
+				assert.Equal(t, true, m["result"])
+				removed[answerOf[id]] = true
+				continue
+			}
+			params, _ := m["params"].(map[string]interface{})
+			sub, _ := params["subscription"].(string)
+			assert.False(t, removed[sub], "notification for %s after its unsubscribe answer", sub)
+		}
+		assert.Len(t, removed, len(subs), "every unsubscribe answered")
 	})
 
 	// With server.costHeaders on, a client that opts in with
