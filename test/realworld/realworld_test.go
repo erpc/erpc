@@ -78,6 +78,7 @@ func catalogue() []phaseSpec {
 		{"x8", 11201, []spec{x8()}},
 		{"upstream", 11301, []spec{u2(), u4(), u5(), u6(), u7(), u13(), u15()}},
 		{"network", 11401, []spec{n1(), n2(), n7()}},
+		{"chain", 11501, []spec{c2(), c6(), c8(), c10(), c11(), c14()}},
 	}
 }
 
