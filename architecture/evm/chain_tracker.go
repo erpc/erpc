@@ -1330,17 +1330,28 @@ const maxRevertedFinal = 16
 // heightSpan is the block numbers lo through hi.
 type heightSpan struct{ lo, hi int64 }
 
-// addRevertedFinal publishes s in revertedFinal, the oldest span leaving
-// at the bound. Only the tracker's goroutine calls it.
+// addRevertedFinal publishes s in revertedFinal, merged with every span it
+// overlaps or touches, the oldest span leaving at the bound. A deep revert
+// is followed one height at a time, each a span of its own: unmerged, its
+// first heights would leave the bound while their permanent entries still
+// hold the old branch. Only the tracker's goroutine calls it.
 func (t *ChainTracker) addRevertedFinal(s heightSpan) {
 	var spans []heightSpan
 	if p := t.revertedFinal.Load(); p != nil {
 		spans = *p
 	}
-	if len(spans) >= maxRevertedFinal {
-		spans = spans[len(spans)-maxRevertedFinal+1:]
+	next := make([]heightSpan, 0, len(spans)+1)
+	for _, o := range spans {
+		if o.lo <= s.hi+1 && s.lo <= o.hi+1 {
+			s = heightSpan{lo: min(s.lo, o.lo), hi: max(s.hi, o.hi)}
+			continue
+		}
+		next = append(next, o)
 	}
-	next := append(append(make([]heightSpan, 0, len(spans)+1), spans...), s)
+	if len(next) >= maxRevertedFinal {
+		next = next[len(next)-maxRevertedFinal+1:]
+	}
+	next = append(next, s)
 	t.revertedFinal.Store(&next)
 }
 
