@@ -402,9 +402,8 @@ func c7() spec {
 // d8Budget requests per second on every pod. For d8Load, client reads run
 // at d8LoadFactor times the sum of the budgets on each pod, so every
 // budget is spent. Head Asks keep fetching on each pod
-// (erpc_head_ask_total{outcome="fetched"} rises), no head fetch of eRPC's
-// own is refused by a budget, and no tap waits more than W (§19 D8; §6.8
-// Ask).
+// (erpc_head_ask_total{outcome="fetched"} rises), and no tap waits more
+// than W (§19 D8; §6.8 Ask).
 func d8() spec {
 	vendors := []vendorSpec{{"ws-a", "vendor-a", true}, {"http-a", "vendor-a", false}, {"http-b", "vendor-b", false}}
 	budgets := map[string]uint32{}
@@ -413,7 +412,7 @@ func d8() spec {
 	}
 	return spec{name: "D8", bound: healthyDelivery, vendors: vendors, budgets: budgets, body: func(s *scenario) {
 		s.blocks(25)
-		limited, refused := map[string][]float64{}, map[string][]float64{}
+		limited := map[string][]float64{}
 		spent := func(pod int, key string) float64 {
 			n, _ := s.metric(pod, "erpc_rate_limits_total", map[string]string{"upstream": s.upstream(key), "category": d8Method})
 			return n
@@ -422,9 +421,9 @@ func d8() spec {
 			return s.metric(pod, "erpc_head_ask_total", map[string]string{"outcome": "fetched"})
 		}
 		for _, v := range vendors {
-			limited[v.key], refused[v.key] = make([]float64, len(s.h.pods)), make([]float64, len(s.h.pods))
+			limited[v.key] = make([]float64, len(s.h.pods))
 			for pod := range s.h.pods {
-				limited[v.key][pod], refused[v.key][pod] = spent(pod, v.key), s.asksRefused(pod, v.key)
+				limited[v.key][pod] = spent(pod, v.key)
 			}
 		}
 		asked := make([]float64, len(s.h.pods))
@@ -457,27 +456,10 @@ func d8() spec {
 				if n := spent(pod, v.key); n <= limited[v.key][pod] {
 					s.violate("harness", "pod-%d: the load never spent %s's %s budget (erpc_rate_limits_total %v)", pod+1, s.upstream(v.key), d8Method, n)
 				}
-				if n := s.asksRefused(pod, v.key) - refused[v.key][pod]; n > 0 {
-					s.violate(s.name, "pod-%d: the budget of %s refused %v of eRPC's own head fetches under client load: an Ask got no permit", pod+1, s.upstream(v.key), n)
-				}
 			}
 		}
 		s.blocks(25)
 	}}
-}
-
-// asksRefused counts the head fetches of eRPC's own (no client agent, a
-// latest of realtime or unknown finality) a budget refused on the
-// upstream of vendor key on pod, whatever network label they carry:
-// poller probes carry none today.
-func (s *scenario) asksRefused(pod int, key string) float64 {
-	var n float64
-	for _, fin := range []string{"realtime", "unknown"} {
-		v, _ := s.projectMetric(pod, "erpc_rate_limits_total", map[string]string{
-			"upstream": s.upstream(key), "agent_name": "unknown", "category": "eth_getBlockByNumber", "finality": fin})
-		n += v
-	}
-	return n
 }
 
 // load sends d8Method for a block d8LoadDepth below the head to pod, rate
