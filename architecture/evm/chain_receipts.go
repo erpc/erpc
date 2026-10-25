@@ -771,6 +771,9 @@ func (t *ChainTracker) logsAgreed(j *receiptsJob, upstreamId string, r *heldRece
 	}
 	j.tried[upstreamId] = true
 	vendor := t.vendorOf(upstreamId)
+	if vendor == "" {
+		return false
+	}
 	i := slices.IndexFunc(j.agree, func(v logsVote) bool { return v.digest == r.digest })
 	if i < 0 {
 		j.agree = append(j.agree, logsVote{digest: r.digest})
@@ -813,7 +816,9 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 		}
 		if errors.Is(res.err, errBloomMismatch) {
 			t.countBloomMismatch(res.upstream, spec.method, j.h)
-			j.mismatched[t.vendorOf(res.upstream)] = true
+			if v := t.vendorOf(res.upstream); v != "" {
+				j.mismatched[v] = true
+			}
 		}
 		for _, u := range []string{spec.upstream, res.upstream} {
 			if u != "" {
@@ -1029,13 +1034,16 @@ func (t *ChainTracker) upstreamOf(id string) common.Upstream {
 	return nil
 }
 
-// vendorOf is the VendorKey of upstreamId, the id itself when the group
-// no longer holds it.
+// vendorOf is the VendorKey of upstreamId among every upstream of the
+// network; "" once it left the network, so its answer counts for no
+// vendor.
 func (t *ChainTracker) vendorOf(upstreamId string) string {
-	if u := t.upstreamOf(upstreamId); u != nil {
-		return VendorKey(u)
+	for _, u := range t.networkUpstreams() {
+		if u.Id() == upstreamId {
+			return VendorKey(u)
+		}
 	}
-	return upstreamId
+	return ""
 }
 
 // networkVendors is how many vendors the network's upstreams name, which

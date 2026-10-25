@@ -168,8 +168,11 @@ func (s *checkSuspensions) recordOutcomes(height uint64, vendor string, outcomes
 }
 
 // recordBloom notes the bloom check's verdict on vendor's receipts of the
-// block at height.
+// block at height; an answer of no vendor ("") counts for nothing.
 func (s *checkSuspensions) recordBloom(height uint64, vendor string, matched bool) {
+	if vendor == "" {
+		return
+	}
 	vendors := -1
 	if !matched {
 		vendors = s.networkVendors()
