@@ -42,15 +42,21 @@ type spec struct {
 	project   string // default "rw"
 	vendors   []vendorSpec
 	integrity bool
-	minimal   bool
+	// integrityOff are pods whose config leaves integrity off when
+	// integrity is on (K5: the same chain and plan, on vs off); checks are
+	// integrity checks enabled beyond the level's.
+	integrityOff []int
+	checks       []string
+	minimal      bool
 	// late: vendor keys whose upstreams register only once the network
 	// serves on every pod; their heads vote from the first one.
 	late []string
 	// pods is how many pods the phase boots (0 is 2); memory: no redis,
-	// each pod keeps its shared state in memory. A phase reads its first
-	// spec's.
-	pods   int
-	memory bool
+	// each pod keeps its shared state in memory; oldPods run the old image
+	// (X7). A phase reads its first spec's.
+	pods    int
+	memory  bool
+	oldPods []int
 	// sim configures the chain; ChainID and Seed come from the phase, a
 	// zero BlockTime is blockTime.
 	sim chainsim.Config
@@ -85,6 +91,9 @@ type spec struct {
 	// clients opens the scenario's clients; nil opens baseline B's.
 	clients func(s *scenario)
 	body    func(s *scenario)
+	// after runs once the clients stopped, before the verdict (K5
+	// compares them).
+	after func(s *scenario)
 }
 
 // scenario is one spec running on its own chain id.
@@ -199,8 +208,8 @@ func newScenario(h *harness, sp spec, chainID int64) *scenario {
 		cfg.BlockTime = blockTime
 	}
 	s.chain = chainsim.NewChain(cfg)
-	s.net = &netSpec{project: sp.project, chainID: chainID, integrity: sp.integrity, minimal: sp.minimal,
-		evm: sp.evm, extra: sp.network, cache: sp.cache}
+	s.net = &netSpec{project: sp.project, chainID: chainID, integrity: sp.integrity, integrityOff: sp.integrityOff, checks: sp.checks,
+		minimal: sp.minimal, evm: sp.evm, extra: sp.network, cache: sp.cache}
 	slug := strings.ToLower(strings.ReplaceAll(sp.name, "/", "-"))
 	for _, vs := range sp.vendors {
 		id := slug + "-" + vs.key
@@ -276,7 +285,7 @@ func (r *run) phase(t *testing.T, name string, firstChain int64, specs []spec) {
 		if pods == 0 {
 			pods = 2
 		}
-		h.startPods(pods, nets)
+		h.startPods(pods, specs[0].oldPods, nets)
 		for _, sc := range scs {
 			t.Run(sc.name, func(t *testing.T) {
 				t.Parallel()
@@ -331,6 +340,9 @@ func (s *scenario) execute(t *testing.T) {
 	go func() { defer s.wg.Done(); s.watchStalls() }()
 	s.body(s)
 	s.finish()
+	if s.after != nil {
+		s.after(s)
+	}
 	s.judge(time.Since(start))
 }
 
@@ -588,6 +600,31 @@ func (s *scenario) reorg(depth int) reorg {
 	s.mu.Unlock()
 	s.logf("reorg depth %d: fork point %d, new head %d %s", depth, old[0].Number-1, tip.Number, short(tip.Hash))
 	return r
+}
+
+// rewind drops the top depth canonical blocks on every vendor; the chain
+// goes on from the lower head. Clients that received a dropped block learn
+// of it as of a reorg.
+func (s *scenario) rewind(depth int) reorg {
+	old, tip := s.chain.Rewind(depth)
+	r := reorg{at: time.Now(), old: old, tip: tip}
+	s.mu.Lock()
+	s.reorgs = append(s.reorgs, r)
+	s.mu.Unlock()
+	s.logf("rewind depth %d: new head %d %s", depth, tip.Number, short(tip.Hash))
+	return r
+}
+
+// upSpec is the upstream of a vendor key as the pods' config declares it.
+func (s *scenario) upSpec(key string) upSpec {
+	id := s.upstream(key)
+	for _, u := range s.net.ups {
+		if u.id == id {
+			return u
+		}
+	}
+	s.t.Fatalf("%s has no upstream %s", s.name, id)
+	return upSpec{}
 }
 
 func (s *scenario) excuse(pod int, from time.Time) *excuse {

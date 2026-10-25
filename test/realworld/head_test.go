@@ -161,14 +161,14 @@ func u12() spec {
 }
 
 // awaitUpstreamHead waits until pod exports a latest block of at least min
-// for upstream up, or violates after within.
+// for upstream up on the scenario's network (pods also export a stale
+// network="n/a" series per upstream, which a sum would add), or violates
+// after within.
 func (s *scenario) awaitUpstreamHead(pod int, up string, min float64, within time.Duration) {
 	for deadline := time.Now().Add(within); ; time.Sleep(scrapeEvery) {
-		if ss, err := s.h.pods[pod].scrape(); err == nil {
-			if v, ok := sumOf(ss, "erpc_upstream_latest_block_number", map[string]string{"project": s.project, "upstream": up}); ok && v >= min {
-				s.logf("pod-%d: %s reports %v", pod+1, up, v)
-				return
-			}
+		if v, ok := s.metric(pod, "erpc_upstream_latest_block_number", map[string]string{"upstream": up}); ok && v >= min {
+			s.logf("pod-%d: %s reports %v", pod+1, up, v)
+			return
 		}
 		if time.Now().After(deadline) {
 			s.violate(s.name, "pod-%d: %s's report never arrived within %s", pod+1, up, within)

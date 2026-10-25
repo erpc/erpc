@@ -142,7 +142,7 @@ func (b *Block) Kind() Kind { return b.kind }
 func (b *Block) TxCount() int { return len(b.txs) }
 
 // Receipts are the block's receipts as an honest vendor answers them.
-func (b *Block) Receipts() []map[string]interface{} { return b.receipts(false, 0, false) }
+func (b *Block) Receipts() []map[string]interface{} { return b.receipts(false, false, 0, false) }
 
 // JSON is the header as eth_getBlockByNumber(n, false) answers it.
 func (b *Block) JSON() json.RawMessage { return b.raw }
@@ -164,9 +164,10 @@ func (b *Block) Logs() []Log {
 }
 
 // receipts are the block's receipts as a vendor answers them: badBloom
-// zeroes each receipt's logsBloom, drop leaves out the last receipts,
-// forge changes the first log's data.
-func (b *Block) receipts(badBloom bool, drop int, forge bool) []map[string]interface{} {
+// zeroes each receipt's logsBloom, offBloom adds a bit the block's logs do
+// not set, drop leaves out the last receipts, forge changes the first
+// log's data.
+func (b *Block) receipts(badBloom, offBloom bool, drop int, forge bool) []map[string]interface{} {
 	logs := b.Logs()
 	n := max(0, len(b.txs)-drop)
 	out := make([]map[string]interface{}, 0, n)
@@ -175,6 +176,9 @@ func (b *Block) receipts(badBloom bool, drop int, forge bool) []map[string]inter
 		var bloom gethtypes.Bloom
 		if !badBloom {
 			addTxBloom(&bloom, b.tag, i, b.txs[i])
+		}
+		if offBloom {
+			bloom.Add([]byte("off-bloom"))
 		}
 		rl := make([]map[string]interface{}, 0, len(b.txs[i]))
 		for range b.txs[i] {

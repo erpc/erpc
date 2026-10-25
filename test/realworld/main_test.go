@@ -73,8 +73,12 @@ const (
 )
 
 // erpcBin is the -race eRPC binary built from this worktree, with
-// testdata/realworld_vars.go added to cmd/erpc.
-var erpcBin string
+// testdata/realworld_vars.go added to cmd/erpc; oldBin, built only when a
+// selected phase runs old pods (X7), is oldImageRef's.
+var erpcBin, oldBin string
+
+// oldImageRef is the image the branch replaces (§18 rollout).
+const oldImageRef = "origin/main"
 
 func TestMain(m *testing.M) {
 	if _, err := exec.LookPath("redis-server"); err != nil {
@@ -111,9 +115,55 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "realworld: built %s in %s\n", erpcBin, time.Since(start).Round(time.Second))
+	if needsOldImage() {
+		oldBin = filepath.Join(dir, "erpc-old")
+		start := time.Now()
+		if err := buildOldImage(root, oldBin); err != nil {
+			fmt.Fprintln(os.Stderr, "realworld: building the old image failed:", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "realworld: built %s from %s in %s\n", oldBin, oldImageRef, time.Since(start).Round(time.Second))
+	}
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
+}
+
+// needsOldImage reports whether a phase this run selects runs old pods; a
+// selection error is TestRealWorld's to report.
+func needsOldImage() bool {
+	phases, _ := selectedPhases()
+	for _, ph := range phases {
+		if len(ph.specs[0].oldPods) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// buildOldImage builds oldImageRef's cmd/erpc into bin from a detached
+// temporary worktree, removed after. Without -race: a race in the old image
+// is not the branch's to find.
+func buildOldImage(root, bin string) error {
+	wt, err := os.MkdirTemp("", "erpc-realworld-old-")
+	if err != nil {
+		return err
+	}
+	run := func(dir string, args ...string) error {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+		return cmd.Run()
+	}
+	if err := run(root, "git", "worktree", "add", "--detach", wt, oldImageRef); err != nil {
+		_ = os.RemoveAll(wt)
+		return err
+	}
+	defer func() {
+		_ = run(root, "git", "worktree", "remove", "--force", wt)
+		_ = os.RemoveAll(wt)
+	}()
+	return run(wt, "go", "build", "-o", bin, "./cmd/erpc")
 }
 
 func repoRoot() (string, error) {
