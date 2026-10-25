@@ -407,9 +407,7 @@ type settleState struct {
 	next time.Time
 	// head is the head the round decided: its answers back no pin above.
 	head *node
-	// off and fork: the voter and fork point a refresh is for (§6.3).
-	off, fork string
-	waiters   []chan settleOutcome
+	waiters []chan settleOutcome
 }
 
 func (s *settleState) notify(o settleOutcome) {
@@ -526,9 +524,7 @@ func (t *ChainTracker) settleAnswered(s *settleState, id string, a common.HeadAn
 // the waiters hear the outcome, so they read the pins it left.
 func (t *ChainTracker) endSettle(s *settleState) {
 	s.inflight = false
-	if s.off != "" {
-		t.refreshedAt[s.off] = s.fork
-	}
+	t.markRefreshed(s.key)
 	stands := t.stands(s.key)
 	path, tie, _ := t.decide()
 	if path != nil {
@@ -717,11 +713,11 @@ func (t *ChainTracker) forkPoint(nd *node) string {
 }
 
 // refreshed reports whether voter u's vote nd off the pins was refreshed
-// (spec §6.3) at its fork point: a round for it there ended, a decided
-// round over its dispute stands, or no vote behind the pins there is
-// older. Otherwise it starts that round when one may start, Asking each
-// target with a fork need: a fetch sent before the round, as old as the
-// vote it would refresh, is no answer.
+// (spec §6.3) at its fork point: a round over its dispute ended there, a
+// decided round over it stands, or no vote behind the pins is older.
+// Otherwise it starts that round when one may start, Asking each target
+// with a fork need: a fetch sent before the round, as old as the vote it
+// would refresh, is no answer.
 func (t *ChainTracker) refreshed(u string, nd *node) bool {
 	fork := t.forkPoint(nd)
 	if at, ok := t.refreshedAt[u]; ok && at == fork {
@@ -738,9 +734,26 @@ func (t *ChainTracker) refreshed(u string, nd *node) bool {
 		return true
 	}
 	if t.maySettle(k) {
-		t.startSettle(&settleState{key: k, off: u, fork: fork}, targets, common.HeadNeedFork, nil)
+		t.startSettle(&settleState{key: k}, targets, common.HeadNeedFork, nil)
 	}
 	return false
+}
+
+// markRefreshed records a round over k as the refresh of every vote off
+// the pins that k disputes: a tie round over the same branch Asks the
+// voters without a fresh vote too, and one round per dispute is the
+// refresh (spec §6.5 rule 5). Waiting for a round of its own let the tie
+// rounds over that branch starve it, so the off voter was never polled
+// or demoted.
+func (t *ChainTracker) markRefreshed(k roundKey) {
+	if !k.disputed() {
+		return
+	}
+	for u, v := range t.votes {
+		if t.counts(u) && t.alive(v) && t.conflicts(v) && t.disputeOf(v).name == k.name {
+			t.refreshedAt[u] = t.forkPoint(v)
+		}
+	}
 }
 
 // askState is §6 rule 6: with demand and no source with a fresh hash vote,
