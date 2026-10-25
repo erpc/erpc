@@ -2908,12 +2908,19 @@ func (nt *networkTrackers) get(n common.Network, groupKey, selector, lane string
 	}
 	t := newChainTracker(nt.ctx, n, nt.window, backfill, selector, groupKey, lane, head, nt.fetch)
 	nt.groups[groupKey] = t
+	// Every network probes tag-state heads from its start (spec §6.11); the
+	// context and proof probes ride on the follow tap: its pinned headers are
+	// the anchor for judging an upstream's state claims.
+	var probeCfg *common.IntegrityStateProbeConfig
+	follow := false
 	if cfg := n.Config(); cfg != nil && cfg.Integrity != nil && cfg.Integrity.Follow.IsEnabled() {
-		// The state prober rides on the follow tap: its pinned headers are
-		// the anchor for judging an upstream's state claims.
+		follow = true
 		if cfg.Integrity.StateProbe.IsEnabled() {
-			startStateProber(nt.ctx, n, t, cfg.Integrity.StateProbe)
+			probeCfg = cfg.Integrity.StateProbe
 		}
+	}
+	startStateProber(nt.ctx, n, t, probeCfg)
+	if follow {
 		nt.fetch.bg.Go(func() { t.follow(nt.ctx) })
 	}
 	return t
@@ -2985,6 +2992,11 @@ func LatestChanged(n common.Network, groupKey string) {
 	nt.mu.Unlock()
 	if t != nil {
 		t.VotersChanged()
+	}
+	if groupKey == "" {
+		if p := stateProberFor(n); p != nil {
+			p.latestChanged()
+		}
 	}
 }
 

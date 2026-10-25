@@ -716,7 +716,7 @@ func (t *ChainTracker) follow(ctx context.Context) {
 			if len(b.Applied) == 0 {
 				return nil
 			}
-			if p := stateProberFor(t.network.Id()); p != nil {
+			if p := stateProberFor(t.network); p != nil {
 				p.onNewHead(int64(b.Next.Number))
 			}
 			if t.laneHead != nil {

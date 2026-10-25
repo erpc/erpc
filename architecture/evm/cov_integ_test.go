@@ -97,6 +97,20 @@ func (n *covIntegHeadNet) EvmLaneHead(groupKey, selector string) common.EvmHead 
 
 func (n *covIntegHeadNet) EvmRefreshHead(context.Context, bool) {}
 
+// covIntegFleetHeadNet is a fleet with a network-wide Latest.
+type covIntegFleetHeadNet struct {
+	*covIntegFleetNet
+	latest int64
+}
+
+func (n *covIntegFleetHeadNet) EvmHead(context.Context, *common.NormalizedRequest) common.EvmHead {
+	return common.EvmHead{Latest: n.latest}
+}
+func (n *covIntegFleetHeadNet) EvmLaneHead(string, string) common.EvmHead {
+	return common.EvmHead{Latest: n.latest}
+}
+func (n *covIntegFleetHeadNet) EvmRefreshHead(context.Context, bool) {}
+
 // covIntegPlainUp hides every EVM capability of the wrapped upstream.
 type covIntegPlainUp struct{ common.Upstream }
 
@@ -275,7 +289,7 @@ func TestCovInteg_ChainTrackerOf(t *testing.T) {
 		assert.Nil(t, g.laneHead)
 	})
 
-	t.Run("chainTracker config sizes the window; integrity follow starts the prober", func(t *testing.T) {
+	t.Run("chainTracker config sizes the window; integrity follow adds the pinned probes", func(t *testing.T) {
 		cfg := &common.NetworkConfig{
 			Evm: &common.EvmNetworkConfig{ChainId: 1, ChainTracker: &common.EvmChainTrackerConfig{ReorgWindow: 7}},
 			Integrity: &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{
@@ -285,13 +299,28 @@ func TestCovInteg_ChainTrackerOf(t *testing.T) {
 		}
 		net := &covIntegHeadNet{covIntegNet: newCovIntegNet("cov-integ-gcv-follow", cfg, nil), finalized: 42}
 		v := StartChainTrackers(ctx, net)
-		p := stateProberFor(net.Id())
+		p := stateProberFor(net)
 		assert.Equal(t, 7, v.ReorgWindow())
 		require.NotNil(t, p)
 		assert.Equal(t, 5*time.Second, p.interval)
+		assert.True(t, p.pinnedProbes)
 		assert.Same(t, v, p.view)
 		assert.Equal(t, "finalized", v.finalityLabel(42), "finality comes from the network")
 		assert.Equal(t, "unfinalized", v.finalityLabel(43))
+	})
+
+	t.Run("without follow the prober starts for the latest probe only", func(t *testing.T) {
+		cfg := &common.NetworkConfig{Evm: &common.EvmNetworkConfig{ChainId: 1}, Integrity: &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{
+			StateProbe: &common.IntegrityStateProbeConfig{Enabled: util.BoolPtr(true)},
+		}}}
+		net := &covIntegHeadNet{covIntegNet: newCovIntegNet("cov-integ-gcv-nofollow", cfg, nil)}
+		v := StartChainTrackers(ctx, net)
+		p := stateProberFor(net)
+		require.NotNil(t, p, "every network probes tag-state heads from its start")
+		assert.Same(t, v, p.view)
+		assert.False(t, p.pinnedProbes, "context and proof probes still need follow")
+		p.onNewHead(5)
+		assert.Empty(t, p.work, "a followed head starts no pinned pass")
 	})
 
 	t.Run("network without a lane Head reads no head", func(t *testing.T) {
@@ -388,7 +417,7 @@ func TestCovInteg_StateProber(t *testing.T) {
 		v := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
 		voteChain(t, v, "a", "e", uint64(head), uint64(head), testHash("f", uint64(head-1)))
 		return &stateProber{
-			network: net, view: v, interval: interval,
+			network: net, view: v, interval: interval, pinnedProbes: true,
 			ctxProbe:  integrity.ChainStateContextProbe(1),
 			lastProbe: map[string]time.Time{}, work: make(chan int64, 1),
 		}
@@ -491,14 +520,25 @@ func TestCovInteg_StateProber(t *testing.T) {
 
 	t.Run("latest probe without returndata is no evidence", func(t *testing.T) {
 		u := common.NewFakeUpstream("u1", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(head, head-10)))
-		net := mkNet("cov-integ-sp-latest", &script{callRes: `"0x"`}, u)
-		net.cfg = &common.NetworkConfig{Methods: &common.MethodsConfig{Definitions: map[string]*common.CacheMethodConfig{
+		fleet := mkNet("cov-integ-sp-latest", &script{callRes: `"0x"`}, u)
+		fleet.cfg = &common.NetworkConfig{Methods: &common.MethodsConfig{Definitions: map[string]*common.CacheMethodConfig{
 			"eth_call": {TranslateLatestTag: util.BoolPtr(false)},
 		}}}
+		net := &covIntegFleetHeadNet{covIntegFleetNet: fleet, latest: head}
 		p := mkProber(net, 0)
-		assert.Equal(t, probeUnknown, p.probeLatest(ctx, u))
-		assert.Equal(t, 1, net.callCount())
+		p.probeLatest(ctx, u)
+		assert.Equal(t, 1, fleet.callCount())
+		assert.True(t, fleet.lastDirs().SkipInterpolation, "the probe sends latest as the tag")
+		assert.Equal(t, tagNoEvidence, p.tagHead("u1", time.Now()).state)
 		assert.Zero(t, fakeTrackerOf(t, u).MisbehaviorCount)
+	})
+
+	t.Run("latest probe with the Head unknown sends nothing", func(t *testing.T) {
+		u := common.NewFakeUpstream("u1")
+		fleet := mkNet("cov-integ-sp-latest-cold", &script{callRes: atHead}, u)
+		p := mkProber(&covIntegFleetHeadNet{covIntegFleetNet: fleet}, 0)
+		p.probeLatest(ctx, u)
+		assert.Zero(t, fleet.callCount())
 	})
 
 	t.Run("probeAll needs an enumerable network", func(t *testing.T) {
@@ -545,29 +585,35 @@ func TestCovInteg_StateProber(t *testing.T) {
 }
 
 func TestCovInteg_StartStateProber(t *testing.T) {
-	assert.Nil(t, stateProberFor("cov-integ-no-such-network"))
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	cfg := &common.NetworkConfig{Evm: &common.EvmNetworkConfig{ChainId: 42161}}
 	net := newCovIntegNet("cov-integ-start", cfg, nil)
+	assert.Nil(t, stateProberFor(net))
 	v1 := newChainTracker(ctx, nil, 8, 0, "", "", "", nil, newFetchScheduler(ctx, nil))
 	v2 := newChainTracker(ctx, nil, 8, 0, "", "", "", nil, newFetchScheduler(ctx, nil))
 	startStateProber(ctx, net, v1, &common.IntegrityStateProbeConfig{Interval: common.Duration(3 * time.Second)})
-	p := stateProberFor(net.Id())
+	p := stateProberFor(net)
 	require.NotNil(t, p)
 	assert.Equal(t, 3*time.Second, p.interval)
+	assert.True(t, p.pinnedProbes)
 	assert.Equal(t, integrity.ChainStateContextProbe(42161), p.ctxProbe, "the probe target follows the chain architecture")
 
 	startStateProber(ctx, net, v2, nil)
-	assert.Same(t, p, stateProberFor(net.Id()), "one prober per network")
+	assert.Same(t, p, stateProberFor(net), "one prober per network")
 	assert.Same(t, v1, p.view)
 
 	net2 := newCovIntegNet("cov-integ-start-default", nil, nil)
 	startStateProber(ctx, net2, v1, nil)
-	p2 := stateProberFor(net2.Id())
+	p2 := stateProberFor(net2)
 	require.NotNil(t, p2)
 	assert.Equal(t, stateProbeMinInterval, p2.interval)
+	assert.False(t, p2.pinnedProbes, "without follow and stateProbe only the latest probe runs")
+
+	twin := newCovIntegNet("cov-integ-start", cfg, nil)
+	startStateProber(ctx, twin, v2, nil)
+	assert.NotSame(t, p, stateProberFor(twin), "another project's network of the same id has its own prober")
 }
 
 func TestCovInteg_IsMethodUnsupportedErr(t *testing.T) {

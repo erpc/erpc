@@ -73,8 +73,9 @@ func TestPinBlockTagInBody(t *testing.T) {
 	})
 }
 
-// ethCallTags records the block selector (params[1]) of every eth_call one
-// mocked upstream host receives. gock runs a mock's filters before its host
+// ethCallTags records the block selector (params[1]) of every client eth_call
+// one mocked upstream host receives; the state prober's own calls to
+// Multicall3 are not clients'. gock runs a mock's filters before its host
 // matcher, so the filter checks the host itself.
 type ethCallTags struct {
 	host string
@@ -87,7 +88,7 @@ func (c *ethCallTags) filter(r *http.Request) bool {
 		return false
 	}
 	body := util.SafeReadBody(r)
-	if !strings.Contains(body, `"eth_call"`) {
+	if !strings.Contains(body, `"eth_call"`) || strings.Contains(strings.ToLower(body), "0xca11bde05977b3631167028862be2a173976ca11") {
 		return false
 	}
 	var rq struct {
