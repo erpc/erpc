@@ -132,8 +132,9 @@ var chaosFaults = []string{
 // bounds while a vendor serves. Each ws logs client on one of 2 filters
 // applies its logs, removed:true included; its logs must end equal to the
 // canonical chain's matching logs, and only the 60s block, the 90s outage,
-// the 2-minute outage of every vendor and a reorg deeper than the window
-// may close it with 1013. In the gRPC seed a second eRPC instance runs, and
+// the 2-minute outage of every vendor, a reorg deeper than the window and
+// a tracker stall of the receipts wait or the window may close it with
+// 1013. In the gRPC seed a second eRPC instance runs, and
 // gRPC StreamBlocks clients apply headers by the gRPC client rule, resuming
 // on the other instance from their last header; each stream's chain must
 // end equal to the canonical chain, every header linked to the one below.
@@ -1704,17 +1705,20 @@ func (s *chaosSeed) mailboxBurst() {
 	handled := s.hook.countFrom(v.ID)
 	release()
 	s.addQuiet(interval{from, time.Now()})
-	stalledFor := s.chain.Tip().Number - fromTip
+	stalledFor, stall := s.chain.Tip().Number-fromTip, time.Since(from)
 	// A stall longer than the window leaves logs taps more than the window
 	// behind the head (spec §9.2); fill does not join the gap below the
-	// window for ws taps, so they may close.
-	if stalledFor > uint64(chaosReorgWindow) {
+	// window for ws taps, so they may close. A stalled tracker holds no
+	// receipts answer either, so a stall of the receipts wait, less the
+	// block time a tap may already wait on a fresh block's receipts when it
+	// begins, is 60s on one block's receipts: out of range (§10.2, §15.1).
+	if stalledFor > uint64(chaosReorgWindow) || stall >= logsReceiptsWait.Load()-chaosBlock {
 		s.allowCloses(from, time.Now(), 0)
 	}
 	s.blocks(3)
 	got := s.hook.countFrom(v.ID) - handled
 	require.Less(s.t, got, int64(pushed), "the mailbox sheds superseded headers once full")
-	s.occur(fMailbox, fmt.Sprintf("%s pushed %d headers while the tracker stalled %d blocks; it handled %d", v.ID, pushed, stalledFor, got))
+	s.occur(fMailbox, fmt.Sprintf("%s pushed %d headers while the tracker stalled %d blocks (%s); it handled %d", v.ID, pushed, stalledFor, stall.Round(time.Millisecond), got))
 }
 
 func trackerResets() float64 {
