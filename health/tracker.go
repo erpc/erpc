@@ -1331,7 +1331,7 @@ func (t *Tracker) updateNetworkLagMetrics(
 			upsMeta := t.getMetadata(metadataKey{k.ups, net})
 			upsValue := getUpstreamValue(k.ups, upsMeta)
 			if upsValue <= 0 {
-				lg.Debug().
+				lg.Debug().Str("networkId", net).
 					Str("upstreamId", k.ups.Id()).
 					Int64("value", upsValue).
 					Msg("ignoring lag tracking for non-positive value")
@@ -1358,7 +1358,7 @@ func (t *Tracker) updateNetworkLagMetrics(
 				upsMeta := t.getMetadata(metadataKey{k.ups, net})
 				upsValue := getUpstreamValue(k.ups, upsMeta)
 				if upsValue <= 0 {
-					lg.Debug().
+					lg.Debug().Str("networkId", net).
 						Str("upstreamId", k.ups.Id()).
 						Int64("value", upsValue).
 						Msg("ignoring lag tracking for non-positive value")
@@ -2030,11 +2030,13 @@ func (t *Tracker) setLatestBlockNumber(upstream common.Upstream, blockNumber int
 	net := upstream.NetworkId()
 	netLabel := upstream.NetworkLabel()
 	vendor := upstream.VendorName()
-	lg := upstream.Logger().With().Str("networkId", net).Logger()
+	// The network id goes on each event, not on a child logger built per
+	// report: most reports log nothing.
+	lg := upstream.Logger()
 
-	lg.Trace().Int64("value", blockNumber).Msg("updating latest block number in tracker")
+	lg.Trace().Str("networkId", net).Int64("value", blockNumber).Msg("updating latest block number in tracker")
 	if blockNumber <= 0 {
-		lg.Warn().Int64("value", blockNumber).Msg("ignoring setting non-positive latest block number in tracker")
+		lg.Warn().Str("networkId", net).Int64("value", blockNumber).Msg("ignoring setting non-positive latest block number in tracker")
 		return
 	}
 
@@ -2062,7 +2064,7 @@ func (t *Tracker) setLatestBlockNumber(upstream common.Upstream, blockNumber int
 		upsMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
 		g := t.getLatestBlockGauge(t.projectId, vendor, netLabel, id)
 		g.Set(float64(blockNumber))
-		lg.Warn().
+		lg.Warn().Str("networkId", net).
 			Int64("previousValue", oldUpsVal).
 			Int64("newValue", blockNumber).
 			Bool("rewind", rewind).
@@ -2087,7 +2089,7 @@ func (t *Tracker) setLatestBlockNumber(upstream common.Upstream, blockNumber int
 	membershipChanged := t.evaluateHeadBench(ntwMeta, changed)
 	if membershipChanged {
 		// Bench membership also decides the finalized lag reference.
-		t.rederiveNetworkFinalized(ntwMeta, net, netLabel, &lg)
+		t.rederiveNetworkFinalized(ntwMeta, net, netLabel, lg)
 		if fn, ok := t.benchHooks.Load(net); ok {
 			fn.(func())()
 		}
@@ -2098,7 +2100,7 @@ func (t *Tracker) setLatestBlockNumber(upstream common.Upstream, blockNumber int
 		return meta.evmLatestBlockNumber.Load()
 	})
 	if ntwBn <= 0 {
-		lg.Warn().Int64("value", ntwBn).Msg("ignoring block head lag tracking for non-positive block number in tracker")
+		lg.Warn().Str("networkId", net).Int64("value", ntwBn).Msg("ignoring block head lag tracking for non-positive block number in tracker")
 		return
 	}
 	needsGlobalUpdate := ntwBn != oldNtwVal
@@ -2110,7 +2112,7 @@ func (t *Tracker) setLatestBlockNumber(upstream common.Upstream, blockNumber int
 		g := t.getLatestBlockGauge(t.projectId, "*", netLabel, "*")
 		g.Set(float64(ntwBn))
 		if ntwBn < oldNtwVal {
-			lg.Warn().
+			lg.Warn().Str("networkId", net).
 				Int64("previousValue", oldNtwVal).
 				Int64("newValue", ntwBn).
 				Msg("re-derived network latest block from corroborated upstream heads in tracker")
@@ -2184,7 +2186,7 @@ func (t *Tracker) setLatestBlockNumber(upstream common.Upstream, blockNumber int
 			lagHead,
 			func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) },
 			t.getHeadLagGauge,
-			&lg,
+			lg,
 		)
 	} else {
 		// Only update items for this single upstream
@@ -2377,17 +2379,19 @@ func (t *Tracker) GetNetworkFinalizedBlock(networkId string) int64 {
 }
 
 func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber int64) {
-	lg := upstream.Logger().With().Str("networkId", upstream.NetworkId()).Logger()
+	// The network id goes on each event, not on a child logger built per
+	// report: most reports log nothing.
+	lg := upstream.Logger()
+	net := upstream.NetworkId()
 
-	lg.Trace().Int64("value", blockNumber).Msg("updating finalized block number in tracker")
+	lg.Trace().Str("networkId", net).Int64("value", blockNumber).Msg("updating finalized block number in tracker")
 
 	if blockNumber <= 0 {
-		lg.Warn().Int64("value", blockNumber).Msg("ignoring setting non-positive block number in finalized block tracker")
+		lg.Warn().Str("networkId", net).Int64("value", blockNumber).Msg("ignoring setting non-positive block number in finalized block tracker")
 		return
 	}
 
 	id := upstream.Id()
-	net := upstream.NetworkId()
 	netLabel := upstream.NetworkLabel()
 	vendor := upstream.VendorName()
 
@@ -2407,16 +2411,16 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 		upsMeta.evmFinalizedBlockNumber.Store(blockNumber)
 		g := t.getFinalizedBlockGauge(t.projectId, vendor, netLabel, id)
 		g.Set(float64(blockNumber))
-		lg.Warn().
+		lg.Warn().Str("networkId", net).
 			Int64("previousValue", oldUpsVal).
 			Int64("newValue", blockNumber).
 			Msg("applied large finalized block rollback for upstream in tracker")
 	}
 
 	t.addHeadReporter(ntwMeta, net, upstream)
-	ntwVal, _ := t.rederiveNetworkFinalized(ntwMeta, net, netLabel, &lg)
+	ntwVal, _ := t.rederiveNetworkFinalized(ntwMeta, net, netLabel, lg)
 	if ntwVal <= 0 {
-		lg.Warn().Int64("value", ntwVal).Msg("ignoring finalization lag tracking for negative block number in tracker")
+		lg.Warn().Str("networkId", net).Int64("value", ntwVal).Msg("ignoring finalization lag tracking for negative block number in tracker")
 		return
 	}
 
@@ -2457,7 +2461,7 @@ func (t *Tracker) rederiveNetworkFinalized(ntwMeta *NetworkMetadata, net, netLab
 	ntwMeta.evmFinalizedBlockNumber.Store(ntwVal)
 	t.getFinalizedBlockGauge(t.projectId, "*", netLabel, "*").Set(float64(ntwVal))
 	if ntwVal < oldNtwVal {
-		lg.Warn().
+		lg.Warn().Str("networkId", net).
 			Int64("previousValue", oldNtwVal).
 			Int64("newValue", ntwVal).
 			Msg("re-derived network finalized block from corroborated upstream heads in tracker")

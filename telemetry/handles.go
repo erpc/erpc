@@ -169,6 +169,35 @@ func (b *BoundCounter) Inc() { b.counter().Inc() }
 
 func (b *BoundCounter) Add(v float64) { b.counter().Add(v) }
 
+// CounterSet holds one BoundCounter per key, bound on first use, for hot
+// paths whose labels a small comparable key determines: a use hashes the
+// key and never builds the label key string CounterHandle builds. Its zero
+// value is ready to use.
+type CounterSet[K comparable] struct {
+	mu sync.RWMutex
+	m  map[K]*BoundCounter
+}
+
+// Inc increments k's counter, binding cv's child for labels(k) on k's
+// first use.
+func (s *CounterSet[K]) Inc(cv CounterIncrementable, k K, labels func(K) []string) {
+	s.mu.RLock()
+	c := s.m[k]
+	s.mu.RUnlock()
+	if c == nil {
+		s.mu.Lock()
+		if c = s.m[k]; c == nil {
+			if s.m == nil {
+				s.m = make(map[K]*BoundCounter)
+			}
+			c = BindCounter(cv, labels(k)...)
+			s.m[k] = c
+		}
+		s.mu.Unlock()
+	}
+	c.Inc()
+}
+
 // DefaultCounterIdleEvictionAfter is the conservative default idle threshold
 // for counter series eviction: long enough that only clearly-dead label
 // combinations are released. Overridden via metrics.counterIdleEvictionAfter

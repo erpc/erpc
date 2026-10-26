@@ -20,6 +20,7 @@ import (
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -91,6 +92,11 @@ type EvmStatePoller struct {
 	cfg          *common.EvmNetworkConfig
 	tracker      *health.Tracker
 	networkLabel string
+	// polledLatest and polledFinalized count this upstream's polls,
+	// bound with networkLabel (bindPolledLocked).
+	polledLatest, polledFinalized prometheus.Counter
+	// askCounts are the Ask counters, bound once each.
+	askCounts telemetry.CounterSet[askCount]
 
 	// When node is fully synced we don't need to query syncing state anymore.
 	// A number is used so that at least X times the upstream tells us it's synced.
@@ -207,7 +213,7 @@ func NewEvmStatePoller(
 		earliestInitialDetectionDone: make(map[common.EvmAvailabilityProbeType]bool),
 		pollWake:                     make(chan struct{}, 1),
 	}
-
+	e.bindPolledLocked()
 	lbs.OnValue(func(value int64) {
 		// Always pass 0 timestamp to avoid using stale/incorrect timestamps from remote updates
 		// Only nodes that fetch blocks directly will emit timestamp metrics (via direct tracker update)
@@ -371,6 +377,14 @@ func (e *EvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {
 	} else {
 		e.networkLabel = cfg.NetworkId()
 	}
+	e.bindPolledLocked()
+}
+
+// bindPolledLocked binds the poll counters to networkLabel; stateMu is
+// held, or e not yet shared.
+func (e *EvmStatePoller) bindPolledLocked() {
+	e.polledLatest = telemetry.MetricUpstreamLatestBlockPolled.WithLabelValues(e.projectId, e.upstream.VendorName(), e.networkLabel, e.upstream.Id())
+	e.polledFinalized = telemetry.MetricUpstreamFinalizedBlockPolled.WithLabelValues(e.projectId, e.upstream.VendorName(), e.networkLabel, e.upstream.Id())
 }
 
 func (e *EvmStatePoller) Poll(ctx context.Context) error {
@@ -681,8 +695,19 @@ func (e *EvmStatePoller) ask(ctx context.Context, need common.HeadNeed, reason c
 	if e.askable() {
 		f, outcome = e.askFetch(trace.SpanContextFromContext(ctx), need)
 	}
-	telemetry.CounterHandle(telemetry.MetricHeadAskTotal, e.projectId, e.netLabel(), string(reason), string(outcome)).Inc()
+	e.askCounts.Inc(telemetry.MetricHeadAskTotal, askCount{e.projectId, e.netLabel(), reason, outcome}, askCountLabels)
 	return f, outcome
+}
+
+// askCount is one series of erpc_head_ask_total.
+type askCount struct {
+	project, network string
+	reason           common.AskReason
+	outcome          common.AskOutcome
+}
+
+func askCountLabels(k askCount) []string {
+	return []string{k.project, k.network, string(k.reason), string(k.outcome)}
 }
 
 func (e *EvmStatePoller) askFetch(parent trace.SpanContext, need common.HeadNeed) (*headFetch, common.AskOutcome) {
@@ -788,12 +813,10 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header 
 	if e.logger.GetLevel() <= zerolog.TraceLevel {
 		e.logger.Trace().Str("ptr", fmt.Sprintf("%p", e)).Str("stack", string(debug.Stack())).Msg("fetching latest block number for evm state poller")
 	}
-	telemetry.MetricUpstreamLatestBlockPolled.WithLabelValues(
-		e.projectId,
-		e.upstream.VendorName(),
-		e.netLabel(),
-		e.upstream.Id(),
-	).Inc()
+	e.stateMu.RLock()
+	polled := e.polledLatest
+	e.stateMu.RUnlock()
+	polled.Inc()
 	bound := e.pollSrc.Load()
 	b, err := e.fetchBlock(ctx, "latest", common.UpstreamPoliciesHeadAsk)
 	if err != nil || b.number == 0 {
@@ -1479,19 +1502,14 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 
 	e.stateMu.RLock()
 	cfg := e.cfg
-	networkLabel := e.networkLabel
+	polled := e.polledFinalized
 	e.stateMu.RUnlock()
 
 	dbi := e.resolveFinalizedDebounce(cfg, e.resolveDebounce(cfg))
 
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
-		telemetry.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
-			e.projectId,
-			e.upstream.VendorName(),
-			networkLabel,
-			e.upstream.Id(),
-		).Inc()
+		polled.Inc()
 
 		// Actually fetch from upstream
 		b, err := e.fetchBlock(ctx, "finalized", common.UpstreamPoliciesTimeoutOnly)

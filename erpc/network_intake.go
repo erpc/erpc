@@ -57,6 +57,8 @@ type networkIntake struct {
 	// polls is, per polled upstream, its last successful latest poll and
 	// the failures its node gave since (spec §6.1).
 	polls map[string]pollRecord
+	// counts are the header outcome counters, bound once each.
+	counts telemetry.CounterSet[headCount]
 }
 
 // pollRecord is an upstream's last successful latest poll; since it, when
@@ -355,9 +357,16 @@ func (n *Network) newestHashVoteAt() (at time.Time) {
 	return at
 }
 
+// headCount is one series of erpc_chain_tracker_source_heads_total.
+type headCount struct{ project, network, upstream, outcome string }
+
+func headCountLabels(k headCount) []string {
+	return []string{k.project, k.network, k.upstream, k.outcome}
+}
+
 func (in *networkIntake) count(upstreamId, outcome string) {
-	telemetry.CounterHandle(telemetry.MetricChainTrackerSourceHeadsTotal,
-		in.nw.projectId, in.nw.Label(), upstreamId, outcome).Inc()
+	in.counts.Inc(telemetry.MetricChainTrackerSourceHeadsTotal,
+		headCount{in.nw.projectId, in.nw.Label(), upstreamId, outcome}, headCountLabels)
 }
 
 func (in *networkIntake) upstream(id string) *upstream.Upstream {

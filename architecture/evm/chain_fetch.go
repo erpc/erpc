@@ -153,6 +153,19 @@ type fetchScheduler struct {
 
 	// bloom is the network's receipts bloom check, shared by its trackers.
 	bloom *bloomGate
+	// counts are the fetch counters, bound once each.
+	counts telemetry.CounterSet[fetchCount]
+}
+
+// fetchCount is one series of erpc_chain_tracker_fetch_total.
+type fetchCount struct {
+	project, network, kind string
+	class                  fetchClass
+	outcome                string
+}
+
+func fetchCountLabels(k fetchCount) []string {
+	return []string{k.project, k.network, k.kind, fetchClassLabels[k.class], k.outcome}
 }
 
 func newFetchScheduler(ctx context.Context, n common.Network) *fetchScheduler {
@@ -419,8 +432,8 @@ func (s *fetchScheduler) run(r *fetchRequest) {
 	s.pumpLocked()
 	s.mu.Unlock()
 
-	telemetry.CounterHandle(telemetry.MetricChainTrackerFetchTotal,
-		s.projectId(), s.networkLabel(), r.spec.kind, fetchClassLabels[c], outcome).Inc()
+	s.counts.Inc(telemetry.MetricChainTrackerFetchTotal,
+		fetchCount{s.projectId(), s.networkLabel(), r.spec.kind, c, outcome}, fetchCountLabels)
 	if res.err == nil {
 		for _, t := range trackers {
 			t.fetched(res)
