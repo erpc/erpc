@@ -473,17 +473,18 @@ Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, th
 
 - One schedule per upstream, with one backoff: the cadence, doubled per failure in a row, at most 60s. The bench reads this backoff (§6.1).
 - Periodic poll: a poll source is Asked once per cadence while `newHeads` is demanded and the upstream is admitted. Every upstream also keeps its full poll every `statePollerInterval` (30s) plus traffic; its `latest` part is a hash need, a local fetch: it is the upstream's hash vote (§6.3) and, on a network no source pushes, the block-time sample (§6.7).
-- Ask: single-flight per upstream; it joins a fetch in flight, and every waiter gets the one outcome: the answer, an error, or `backoff` when the upstream is backing off. A number need is met by a shared counter fresher than the cadence; a hash need only by a local fetch sent within the cadence, cache reads skipped; a fork need (§6.3) only by a fetch sent after the pins moved. Only a fetch sent within the cadence debounces another, whatever its outcome; only node failures (transport, timeout, 5xx, 429) double the backoff. So an upstream gets at most one Ask fetch per cadence per instance, and Asks skip rate limits: client load at an upstream's budget never stalls its head (§19 D8).
+- Ask: single-flight per upstream; it joins a fetch in flight, and every waiter gets the one outcome: the answer, an error, or `backoff` when the upstream is backing off. Each Ask names its need and its pace (table below), the oldest evidence it accepts, never below the cadence. A number need is met by a shared counter fresher than the pace; a hash need only by a local fetch sent within the pace, cache reads skipped; a fork need (§6.3) only by a fetch sent after the pins moved. A fetch sent within an Ask's pace answers it, whatever that fetch's outcome, so callers keep no fetch pacer of their own; only node failures (transport, timeout, 5xx, 429) double the backoff. So an upstream gets at most one Ask fetch per cadence per instance, and Asks skip rate limits: client load at an upstream's budget never stalls its head (§19 D8).
 
-| Caller | Need |
-|---|---|
-| poll source | hash |
-| catch-up (§6.5) | number |
-| refusal band and stale ceiling (§6.4) | number |
-| `eth_blockNumber`, `eth_getBlockByNumber(latest\|finalized)` pre-forward refresh | number |
-| a numbered read above `Head.Finalized` (§6.4 Finality), the finalized axis, at most once per finalized debounce | number |
-| settle: for a tie, the voters whose vote decides neither tied block (no fresh hash vote, a vote below the split or in another tree), then non-voters, up to 3 (hash); for a vote off the pins (§6.3), the voters that back the pins with an older vote and the voters with no fresh hash vote, oldest evidence first, up to 3 (fork) | hash, fork |
-| no hash voter, with demand (§6.5 rule 6) | hash |
+| Caller | Need | Pace |
+|---|---|---|
+| poll source | hash | cadence |
+| catch-up (§6.5) | number; hash for voters without a fresh hash vote | bt, at most 1s; no faster than the demand's pace |
+| refusal band and stale ceiling (§6.4) | number | 1 bt |
+| `eth_blockNumber`, `eth_getBlockByNumber(latest\|finalized)` pre-forward refresh | number | cadence |
+| a numbered read above `Head.Finalized` (§6.4 Finality), the finalized axis | number | the finalized debounce |
+| settle: for a tie, the voters whose vote decides neither tied block (no fresh hash vote, a vote below the split or in another tree), then non-voters, up to 3 (hash); for a vote off the pins (§6.3), the voters that back the pins with an older vote and the voters with no fresh hash vote, oldest evidence first, up to 3 (fork) | hash, fork | cadence; a fork need: sent after the pins moved |
+| a vote still off the pins after its settle (§6.3) | hash | W |
+| no hash voter, with demand (§6.5 rule 6) | hash | cadence; no faster than the demand's pace |
 
 - A poller method (`latest`, `finalized`, the syncing check) refused 10 times before any success is given up for 10 min, then retried; an upstream given up on `latest` is no poll source meanwhile.
 - A panic in an Ask fails its waiters and is counted; no waiter hangs (#1060).
