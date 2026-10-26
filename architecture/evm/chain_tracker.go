@@ -951,7 +951,9 @@ func (t *ChainTracker) trackForks() {
 
 // hold adds h to the held trees: under its parent when held, and over every
 // held root that names it as parent. A header whose parent is not held is a
-// root, and fill extends it (rule 2).
+// root, and fill extends it (rule 2). A walk of a root h joins goes on from
+// the root of h's tree, so a client answer inside a walked branch never
+// ends the walk before it reaches the pins (rule 1).
 func (t *ChainTracker) hold(h *chainHeader) *node {
 	nd := &node{h: h}
 	if p := t.nodes[h.parentHash]; p != nil && p.h.number+1 == h.number {
@@ -962,6 +964,7 @@ func (t *ChainTracker) hold(h *chainHeader) *node {
 		t.exts[nd] = &extension{atBase: h.number == 0}
 	}
 	var kept []*node
+	var walk *extension
 	for _, c := range t.waiting[h.hash] {
 		if c.h.number != h.number+1 {
 			kept = append(kept, c)
@@ -969,6 +972,9 @@ func (t *ChainTracker) hold(h *chainHeader) *node {
 		}
 		c.parent = nd
 		nd.children = append(nd.children, c)
+		if e := t.exts[c]; e != nil && e.walk > 0 && !e.atBase && (walk == nil || e.walk > walk.walk) {
+			walk = e
+		}
 		delete(t.exts, c)
 	}
 	if len(kept) > 0 {
@@ -982,6 +988,13 @@ func (t *ChainTracker) hold(h *chainHeader) *node {
 	t.heights[h.number] = append(t.heights[h.number], nd)
 	if t.maxHeld == nil || h.number > t.maxHeld.number {
 		t.maxHeld = h
+	}
+	if walk != nil {
+		r := rootOf(nd)
+		if e := t.exts[r]; e != nil && !e.atBase && !e.capped && r != t.pinRoot() {
+			e.sender, e.walked = walk.sender, true
+			e.walk = max(e.walk, walk.walk-int(h.number+1-r.h.number))
+		}
 	}
 	t.capOrphans(h.number, nd)
 	return nd

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/erpc/erpc/test/chainsim"
@@ -14,7 +15,11 @@ import (
 // Bounds of the upstream-fault scenarios (spec §6.4, §8, §15.1; §19 U2,
 // U4–U7, U13, U15).
 const (
-	// u2FaultBlocks: how long each U2 cut lasts (harness).
+	// u2Cuts: the receipts cut stays on until every pod had this many
+	// connections to http-a cut half way, within u2CutBudget blocks that all
+	// carry logs. u2FaultBlocks: how long the header cut lasts (harness).
+	u2Cuts        = 15
+	u2CutBudget   = 60
 	u2FaultBlocks = 30
 
 	// fetchTimeout: one tracker fetch gives up after 10s (§8; §15.1
@@ -60,11 +65,12 @@ const (
 // http-c clean, all poll sources, so a cut voter never holds Latest by
 // quorum. http-a's answers are cut half way (FIN, then RST): first every
 // receipts body, over blocks that all carry logs so every block's
-// receipts are fetched, then every header answer, with time to recover
-// between, since the header cuts demote http-a in routing. Each sweep
-// tries http-a first and fails over at once, no header of http-a is voted
-// malformed, and every client's logs equal the canonical logs within the
-// delivery bound (§19 U2; §5.3 check 0; §8 one sweep).
+// receipts are fetched, until each pod had u2Cuts of them, then every
+// header answer, with time to recover between, since the header cuts
+// demote http-a in routing. Each sweep tries http-a first and fails over
+// at once, no header of http-a is voted malformed, and every client's logs
+// equal the canonical logs within the delivery bound (§19 U2; §5.3 check
+// 0; §8 one sweep).
 func u2() spec {
 	return spec{name: "U2", bound: healthyDelivery,
 		vendors: []vendorSpec{{"http-a", "vendor-a", false}, {"http-b", "vendor-b", false}, {"http-c", "vendor-c", false}},
@@ -75,44 +81,59 @@ func u2() spec {
 			"http-c": {"subscriptionSource": true},
 		},
 		body: func(s *scenario) {
-			s.blocks(25)
-			for _, cut := range []struct {
-				what, method string
-				logs         bool // every block of the cut carries logs
-			}{
-				{"a receipts body", "eth_getBlockReceipts", true},
-				{"a header answer", "eth_getBlockByNumber", false},
-			} {
-				px := s.proxies["http-a"]
-				resets := make([]int64, len(s.h.pods))
+			px := s.proxies["http-a"]
+			// cutA cuts every pod's http-a answers to method half way while
+			// hold runs, and returns how many connections each pod had cut.
+			cutA := func(what, method string, hold func(cuts func() []int64)) []int64 {
+				base := make([]int64, len(s.h.pods))
 				for i, p := range s.h.pods {
-					resets[i] = px.resets(p)
-					px.set(p, linkFaults{RSTMid: cut.method})
+					base[i] = px.resets(p)
+					px.set(p, linkFaults{RSTMid: method})
 				}
-				if cut.logs {
-					kinds := make([]chainsim.Kind, u2FaultBlocks+1)
-					for i := range kinds {
-						kinds[i] = chainsim.KindMatching
+				cuts := func() []int64 {
+					n := make([]int64, len(s.h.pods))
+					for i, p := range s.h.pods {
+						n[i] = px.resets(p) - base[i]
 					}
-					s.chain.Plan(kinds...)
+					return n
 				}
-				s.logf("http-a: cut half way into %s", cut.what)
-				s.blocks(u2FaultBlocks)
-				for i, p := range s.h.pods {
+				s.logf("http-a: cut half way into %s", what)
+				hold(cuts)
+				for _, p := range s.h.pods {
 					px.set(p, linkFaults{})
-					n := px.resets(p) - resets[i]
-					switch {
-					case cut.logs && n < u2FaultBlocks/2:
-						s.violate("harness", "pod-%d: %d connections to http-a cut half way into %s over %d blocks that all carry logs", i+1, n, cut.what, u2FaultBlocks)
-					case n == 0:
-						s.violate("harness", "pod-%d: no connection to http-a was cut half way into %s", i+1, cut.what)
-					default:
-						s.logf("pod-%d: %d connections to http-a cut half way into %s", i+1, n, cut.what)
-					}
 				}
-				s.blocks(25)
+				return cuts()
+			}
+
+			s.blocks(25)
+			// Each tick mints a planned block and plans one more, so every
+			// block of the cut carries logs and at most 2 planned outlive it.
+			s.chain.Plan(chainsim.KindMatching, chainsim.KindMatching)
+			blocks := 0
+			n := cutA("a receipts body", "eth_getBlockReceipts", func(cuts func() []int64) {
+				for ; blocks < u2CutBudget && slices.Min(cuts()) < u2Cuts; blocks++ {
+					s.chain.WaitTicks(1)
+					s.chain.Plan(chainsim.KindMatching)
+				}
+			})
+			for i, c := range n {
+				if c < u2Cuts {
+					s.violate("harness", "pod-%d: %d connections to http-a cut half way into a receipts body over %d blocks that all carry logs (want %d)", i+1, c, blocks, u2Cuts)
+				} else {
+					s.logf("pod-%d: %d connections to http-a cut half way into a receipts body over %d blocks", i+1, c, blocks)
+				}
 			}
 			s.blocks(25)
+
+			n = cutA("a header answer", "eth_getBlockByNumber", func(func() []int64) { s.blocks(u2FaultBlocks) })
+			for i, c := range n {
+				if c == 0 {
+					s.violate("harness", "pod-%d: no connection to http-a was cut half way into a header answer", i+1)
+				} else {
+					s.logf("pod-%d: %d connections to http-a cut half way into a header answer", i+1, c)
+				}
+			}
+			s.blocks(50)
 			for pod := range s.h.pods {
 				for _, key := range []string{"http-a"} {
 					up := s.upstream(key)

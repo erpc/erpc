@@ -2119,7 +2119,9 @@ func TestCounterInt64_BackgroundPush_AdoptsFarAheadRemote(t *testing.T) {
 // timestamps still land; an older large drop does not, a newer one does.
 func TestCounterInt64_PubsubHeadCounterIsMaxOnly(t *testing.T) {
 	registry, connector, _ := setupTest("my-dev")
-	updates := make(chan CounterInt64State, 1)
+	// Unbuffered: a send returns once the sync loop took the state, so every
+	// state sent before it has been fully handled.
+	updates := make(chan CounterInt64State)
 	skewed := time.Now().Add(5 * time.Minute).UnixMilli()
 	connector.On("WatchCounterInt64", mock.Anything, "my-dev/latest").Return(updates, func() {}, nil)
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/latest", "value", nil).
@@ -2142,17 +2144,17 @@ func TestCounterInt64_PubsubHeadCounterIsMaxOnly(t *testing.T) {
 	stale, small := rejectedTotal(rejectStaleTimestamp), rejectedTotal(rejectSmallRollback)
 	send(1000, time.Now().UnixMilli())
 	send(4990, time.Now().UnixMilli())
-	send(5002, skewed) // a marker: once it is handled, the drops before it were
-	time.Sleep(50 * time.Millisecond)
+	send(5002, skewed) // a no-op marker: once it is taken, the drops before it were handled
 	assert.Equal(t, int64(5002), counter.GetValue(), "a large drop older than the local state is rejected; a small one is noise")
 	assert.Equal(t, int32(0), rollbacks.Load())
 	assert.Equal(t, 1.0, rejectedTotal(rejectStaleTimestamp)-stale)
 	assert.Equal(t, 1.0, rejectedTotal(rejectSmallRollback)-small)
 
 	send(1000, skewed+1)
-	assert.Eventually(t, func() bool { return counter.GetValue() == 1000 }, time.Second, 5*time.Millisecond,
+	// The rollback callback runs after the value is stored; wait for it.
+	assert.Eventually(t, func() bool { return rollbacks.Load() == 1 }, time.Second, 5*time.Millisecond,
 		"a newer large drop is a rollback")
-	assert.Equal(t, int32(1), rollbacks.Load())
+	assert.Equal(t, int64(1000), counter.GetValue())
 	connector.AssertExpectations(t)
 }
 
