@@ -213,6 +213,9 @@ Streaming methods (`QueryBlocks`, `QueryTransactions`, `QueryLogs`, `QueryTraces
 | `GetTransactionByHash` | `eth_getTransactionByHash` | `null` → empty proto |
 | `GetTransactionReceipt` | `eth_getTransactionReceipt` | `null` → empty proto |
 | `GetBlockReceipts` | `eth_getBlockReceipts` | `codes.InvalidArgument` if neither `blockHash` nor `blockNumber` present |
+| `GetBalance` | `eth_getBalance` | Block number or hash only (tags and the default `latest` are skipped without a call); wei bytes → quantity, empty → `"0x0"` |
+| `TraceBlock` | `debug_traceBlockByNumber`, `debug_traceBlockByHash` | Block number or hash only; `tracer`, `tracerConfig` and remaining options passed through; result bytes returned verbatim |
+| `TraceTransaction` | `debug_traceTransaction` | Options passed through as above; result bytes returned verbatim |
 
 **Streaming method dispatch:**
 
@@ -283,6 +286,7 @@ Streaming methods (`QueryBlocks`, `QueryTransactions`, `QueryLogs`, `QueryTraces
 20. **`healthCheckService` names a service the server must register.** With it set, an address reporting `SERVICE_UNKNOWN` or `NOT_SERVING` gets no requests; if every resolved address is in that state, `waitForReady` queues calls until `bdsHardCallTimeout`. Only set it for servers that publish that name (a reader behind a gateway that proxies health would expose one reader's state for the whole gateway). <SourceLink file="clients/grpc_bds_client.go" lines="1636-1663" />
 21. **A URL path mounts every call, and was ignored before.** `grpc://host/boost` now calls `/boost/bds.evm.RPCQueryService/...`; earlier releases dropped the path and called the root. An endpoint that kept a stray path must drop it, or its server must serve under that path. <SourceLink file="clients/grpc_bds_resilience.go" lines="527-566" />
 22. **`healthCheckService` is refused on an endpoint with a URL path.** grpc-go opens the health `Watch` stream past every client interceptor, so it always calls the root `/grpc.health.v1.Health/Watch`, never the mount. Config validation rejects the pair instead of probing the wrong service. <SourceLink file="common/validation.go" lines="566-582" />
+23. **Trace and balance methods are served only by a reader that has them, opted in per upstream.** A block reader answers them `UNIMPLEMENTED` (→ `ErrEndpointUnsupported`, falls through; with `autoIgnoreUnsupportedMethods` the upstream then skips the method). Point a separate upstream at a trace reader and list the methods in `allowMethods`. Tags, malformed params and a server `INVALID_ARGUMENT` return `ErrUpstreamRequestSkipped` so a node answers instead, without teaching auto-ignore to drop the method. <SourceLink file="clients/grpc_bds_client.go" lines="1033-1060" />
 
 ### Observability
 
