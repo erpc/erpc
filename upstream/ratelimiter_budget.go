@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	pb_struct "github.com/envoyproxy/go-control-plane/envoy/extensions/common/ratelimit/v3"
@@ -18,6 +17,7 @@ import (
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 type RateLimiterBudget struct {
@@ -35,23 +35,17 @@ type RateLimiterBudget struct {
 	hasRuleCountMode bool
 
 	// admission is a buffered semaphore that bounds the number of concurrent
-	// in-flight remote (Redis) DoLimit calls per budget. It exists because the
-	// underlying envoyproxy/ratelimit + radix client does not honor context
-	// cancellation: a goroutine spawned in doLimitWithTimeout that has timed
-	// out will continue to live until Redis finally answers (which can be
-	// seconds when the connection pool is contended).
-	//
-	// Without this cap we observed 25k+ leaked goroutines per machine during
-	// a Redis-rate-limiter contention spike (root-caused 2026-05-07 cronos
-	// receipts incident), which then drove CPU/GC into a death spiral.
-	//
-	// When admission is full, doLimitWithTimeout fail-opens immediately
-	// without spawning a goroutine — increments
-	// MetricRateLimiterRemoteAdmissionSheddedTotal so we can alert on it.
-	//
-	// Nil when no remote cache is in use (e.g. memory cache); only allocated
-	// when maxTimeout > 0.
+	// in-flight remote (Redis) DoLimit calls per budget; see doLimit. When it
+	// is full the request is a store failure ("admission_full") and no
+	// goroutine is spawned. Nil when no remote cache is in use.
 	admission chan struct{}
+
+	// onFailure decides requests the remote store could not (see doLimit).
+	onFailure common.RateLimitStoreFailureMode
+	// local counts every request in-process at maxCount × localFactor, so
+	// onFailure: local decides with a warm counter. Nil unless that mode.
+	local       limiter.RateLimitCache
+	localFactor float64
 
 	// inflight gauge, kept here for fast hot-path access without a labels
 	// lookup on every call. Refreshed at registration time.
@@ -165,12 +159,6 @@ func (b *RateLimiterBudget) AdjustBudgetByFactor(rule *RateLimitRule, factor flo
 	return prev, next, true
 }
 
-// ruleResult holds the result of evaluating a single rule.
-type ruleResult struct {
-	rule    *RateLimitRule
-	allowed bool
-}
-
 // getCache returns the current cache from the registry (thread-safe)
 func (b *RateLimiterBudget) getCache() limiter.RateLimitCache {
 	return b.registry.GetCache()
@@ -188,8 +176,9 @@ type PermitCost struct {
 // requestPermit is the default cost: one request, request counting.
 var requestPermit = PermitCost{Hits: 1, Mode: common.RateLimitCountModeRequest}
 
-// TryAcquirePermit evaluates all matching rules for the given method using Envoy's DoLimit.
-// Rules are evaluated in parallel for lower latency. Returns true if allowed, false if rate limited.
+// TryAcquirePermit evaluates every rule matching method in one cache call, so a
+// request costs one Redis pipeline and one admission slot however many rules it
+// meets. Returns true if allowed, false if rate limited.
 //
 // cost is optional (only the first value is read; default one request hit). In
 // credit mode it carries the request's estimated vendor credit-unit cost, and
@@ -205,14 +194,31 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 	}
 	// Whole-budget shortcut, valid only when no rule overrides the mode;
 	// otherwise a request-counting rule would be skipped by a 0-credit caller.
-	// evaluateRule handles that case per rule.
+	// buildLimitRequest handles that case per rule.
 	if permit.Hits == 0 && !b.hasRuleCountMode {
 		return true, nil
 	}
 
-	cache := b.getCache()
-	if cache == nil {
-		return true, nil // Fail-open when no cache is available
+	rules, err := b.GetRulesByMethod(method)
+	if err != nil {
+		return false, err
+	}
+	if len(rules) == 0 {
+		return true, nil
+	}
+
+	var userLabel, agentName, networkLabel, finality, clientIP string
+	if req != nil {
+		userLabel = req.UserId()
+		agentName = req.AgentName()
+		networkLabel = req.NetworkId()
+		finality = req.Finality(ctx).String()
+		clientIP = req.ClientIP()
+	}
+	for _, rule := range rules {
+		if (rule.Config.PerIP || rule.Config.PerUser || rule.Config.PerNetwork) && req == nil {
+			return false, fmt.Errorf("request cannot be nil when ratelimiter rule has perIP/perUser/perNetwork")
+		}
 	}
 
 	ctx, span := common.StartDetailSpan(ctx, "RateLimiter.TryAcquirePermit",
@@ -223,82 +229,140 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 	)
 	defer span.End()
 
-	rules, err := b.GetRulesByMethod(method)
-	if err != nil {
-		return false, err
-	}
-	if len(rules) == 0 {
+	rlReq, limits, charged := b.buildLimitRequest(rules, method, clientIP, userLabel, networkLabel, permit)
+	if len(charged) == 0 {
 		return true, nil
 	}
 
-	// Extract request metadata once
-	var userLabel, agentName, networkLabel, finality, clientIP string
-	if req != nil {
-		userLabel = req.UserId()
-		agentName = req.AgentName()
-		networkLabel = req.NetworkId()
-		finality = req.Finality(ctx).String()
-		clientIP = req.ClientIP()
+	// The local limiter counts every request, so it is warm when the store fails.
+	var localStatuses []*pb.RateLimitResponse_DescriptorStatus
+	if b.local != nil {
+		localStatuses = b.local.DoLimit(ctx, rlReq, b.scaledLimits(rlReq, limits))
 	}
 
-	// Validate request context upfront
-	for _, rule := range rules {
-		if (rule.Config.PerIP || rule.Config.PerUser || rule.Config.PerNetwork) && req == nil {
-			return false, fmt.Errorf("request cannot be nil when ratelimiter rule has perIP/perUser/perNetwork")
-		}
+	statuses, failure := b.doLimit(ctx, rlReq, limits)
+	if failure != "" {
+		statuses = b.onStoreFailure(failure, localStatuses, method, userLabel, networkLabel)
 	}
 
-	// Single rule: evaluate directly without goroutine overhead
-	if len(rules) == 1 {
-		allowed := b.evaluateRule(ctx, rules[0], method, clientIP, userLabel, networkLabel, permit)
-		if !allowed {
-			telemetry.CounterHandle(
-				telemetry.MetricRateLimitsTotal,
-				projectId, networkLabel, vendor, upstreamId, method, finality,
-				userLabel, agentName, b.Id, rules[0].Config.ScopeString(), authLabel, origin,
-			).Inc()
-		}
-		return allowed, nil
+	blocking := overLimitIndex(statuses)
+	if blocking < 0 {
+		return true, nil
 	}
-
-	// Multiple rules: evaluate in parallel
-	resultCh := make(chan ruleResult, len(rules))
-	var blocked atomic.Bool
-
-	for _, rule := range rules {
-		go func(r *RateLimitRule) {
-			// Skip if already blocked
-			if blocked.Load() {
-				resultCh <- ruleResult{rule: r, allowed: true}
-				return
-			}
-			allowed := b.evaluateRule(ctx, r, method, clientIP, userLabel, networkLabel, permit)
-			if !allowed {
-				blocked.Store(true)
-			}
-			resultCh <- ruleResult{rule: r, allowed: allowed}
-		}(rule)
+	scope := ""
+	if blocking < len(charged) {
+		scope = charged[blocking].Config.ScopeString()
 	}
-
-	// Collect results
-	var blockingRule *RateLimitRule
-	for i := 0; i < len(rules); i++ {
-		result := <-resultCh
-		if !result.allowed && blockingRule == nil {
-			blockingRule = result.rule
-		}
-	}
-
-	if blockingRule != nil {
-		telemetry.CounterHandle(
-			telemetry.MetricRateLimitsTotal,
-			projectId, networkLabel, vendor, upstreamId, method, finality,
-			userLabel, agentName, b.Id, blockingRule.Config.ScopeString(), authLabel, origin,
-		).Inc()
-		return false, nil
-	}
-	return true, nil
+	telemetry.CounterHandle(
+		telemetry.MetricRateLimitsTotal,
+		projectId, networkLabel, vendor, upstreamId, method, finality,
+		userLabel, agentName, b.Id, scope, authLabel, origin,
+	).Inc()
+	return false, nil
 }
+
+// buildLimitRequest turns the matching rules into one envoy request with a
+// descriptor and a limit per charged rule. charged[i] is the rule behind
+// descriptor i; a credit rule pricing the call at 0 is left out.
+func (b *RateLimiterBudget) buildLimitRequest(rules []*RateLimitRule, method, clientIP, userLabel, networkLabel string, permit PermitCost) (*pb.RateLimitRequest, []*config.RateLimit, []*RateLimitRule) {
+	descriptors := make([]*pb_struct.RateLimitDescriptor, 0, len(rules))
+	limits := make([]*config.RateLimit, 0, len(rules))
+	charged := make([]*RateLimitRule, 0, len(rules))
+
+	b.rulesMu.RLock()
+	defer b.rulesMu.RUnlock()
+	for _, rule := range rules {
+		mode, hits := b.resolveCost(rule, method, permit)
+		if mode == common.RateLimitCountModeCredit && hits == 0 {
+			continue
+		}
+		// "rule" gives each rule its own counter; without it rules resolving to
+		// the same {method, scope} at the same period collide.
+		entries := []*pb_struct.RateLimitDescriptor_Entry{{Key: "rule", Value: rule.key}}
+		// Request counting is per method. Credit counting is not: the cost is
+		// already carried by the addend, so every method draws from one pool and
+		// the budget behaves as the provider wallet it is meant to model.
+		if mode != common.RateLimitCountModeCredit {
+			entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "method", Value: method})
+		}
+		if rule.Config.PerIP && clientIP != "" && clientIP != "n/a" {
+			entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "ip", Value: clientIP})
+		}
+		if rule.Config.PerUser && userLabel != "" && userLabel != "n/a" {
+			entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "user", Value: userLabel})
+		}
+		if rule.Config.PerNetwork && networkLabel != "" && networkLabel != "n/a" {
+			entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "network", Value: networkLabel})
+		}
+		descriptors = append(descriptors, &pb_struct.RateLimitDescriptor{
+			Entries:    entries,
+			HitsAddend: wrapperspb.UInt64(uint64(hits)),
+		})
+
+		rlStats := b.registry.statsManager.NewStats(b.Id + ".method_" + method + rule.statsKeySuffix())
+		limits = append(limits, config.NewRateLimit(rule.Config.MaxCount, rule.Config.Period.Unit(), rlStats, false, false, "", nil, false))
+		charged = append(charged, rule)
+	}
+	return &pb.RateLimitRequest{Domain: b.Id, Descriptors: descriptors}, limits, charged
+}
+
+// scaledLimits returns limits at maxCount × localFactor, raised to the
+// request's own hits so a credit rule never scales below one call's cost, and
+// capped at maxCount.
+func (b *RateLimiterBudget) scaledLimits(rlReq *pb.RateLimitRequest, limits []*config.RateLimit) []*config.RateLimit {
+	scaled := make([]*config.RateLimit, len(limits))
+	for i, l := range limits {
+		maxCount := l.Limit.RequestsPerUnit
+		n := uint32(math.Ceil(float64(maxCount) * b.localFactor))
+		n = min(max(n, uint32(rlReq.Descriptors[i].GetHitsAddend().GetValue()), 1), maxCount)
+		scaled[i] = config.NewRateLimit(n, l.Limit.Unit, l.Stats, false, false, "", nil, false)
+	}
+	return scaled
+}
+
+func overLimitIndex(statuses []*pb.RateLimitResponse_DescriptorStatus) int {
+	for i, s := range statuses {
+		if s != nil && s.Code == pb.RateLimitResponse_OVER_LIMIT {
+			return i
+		}
+	}
+	return -1
+}
+
+// onStoreFailure returns the statuses the budget's onFailure mode decides for a
+// request the store could not answer; no OVER_LIMIT status admits it.
+func (b *RateLimiterBudget) onStoreFailure(reason string, localStatuses []*pb.RateLimitResponse_DescriptorStatus, method, userLabel, networkLabel string) []*pb.RateLimitResponse_DescriptorStatus {
+	var statuses []*pb.RateLimitResponse_DescriptorStatus
+	decision := "allow"
+	switch b.onFailure {
+	case common.RateLimitStoreFailureDeny:
+		statuses, decision = deniedStatus, "deny"
+	case common.RateLimitStoreFailureLocal:
+		statuses = localStatuses
+		if overLimitIndex(localStatuses) >= 0 {
+			decision = "local_deny"
+		} else {
+			decision = "local_allow"
+		}
+	default:
+		telemetry.MetricRateLimiterFailopenTotal.WithLabelValues(
+			"", networkLabel, userLabel, "",
+			b.Id, method, reason,
+		).Inc()
+	}
+	telemetry.MetricRateLimiterStoreFailureTotal.WithLabelValues(b.Id, reason, decision).Inc()
+	return statuses
+}
+
+var deniedStatus = []*pb.RateLimitResponse_DescriptorStatus{{Code: pb.RateLimitResponse_OVER_LIMIT}}
+
+// Reasons the store could not decide a request.
+const (
+	storeUnavailable = "store_unavailable"
+	storeError       = "store_error"
+	admissionFull    = "admission_full"
+	limitTimeout     = "limit_timeout"
+)
 
 // resolveCost returns the mode and hits this rule charges for one call. The
 // rule's countMode wins and an unset one inherits the caller's, so a rule that
@@ -325,91 +389,6 @@ func (b *RateLimiterBudget) resolveCost(rule *RateLimitRule, method string, perm
 	return mode, uint32(units)
 }
 
-// evaluateRule checks a single rate limit rule against the cache.
-// Returns true if allowed, false if over limit.
-func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRule, method, clientIP, userLabel, networkLabel string, permit PermitCost) bool {
-	cache := b.getCache()
-	if cache == nil {
-		return true // Fail-open when no cache is available
-	}
-
-	mode, hits := b.resolveCost(rule, method, permit)
-	if mode == common.RateLimitCountModeCredit && hits == 0 {
-		// Skip rather than send a 0 addend: envoy GetHitsAddends coerces a
-		// request-level 0 to 1, which would charge a full hit.
-		return true
-	}
-
-	// Build descriptor entries. "rule" gives each rule its own counter; without it
-	// rules resolving to the same {method, scope} at the same period collide.
-	entries := []*pb_struct.RateLimitDescriptor_Entry{{Key: "rule", Value: rule.key}}
-	// Request counting is per method. Credit counting is not: the cost is already
-	// carried by the addend, so every method draws from one pool and the budget
-	// behaves as the provider wallet it is meant to model.
-	if mode != common.RateLimitCountModeCredit {
-		entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "method", Value: method})
-	}
-	if rule.Config.PerIP && clientIP != "" && clientIP != "n/a" {
-		entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "ip", Value: clientIP})
-	}
-	if rule.Config.PerUser && userLabel != "" && userLabel != "n/a" {
-		entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "user", Value: userLabel})
-	}
-	if rule.Config.PerNetwork && networkLabel != "" && networkLabel != "n/a" {
-		entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "network", Value: networkLabel})
-	}
-
-	rlReq := &pb.RateLimitRequest{
-		Domain:      b.Id,
-		Descriptors: []*pb_struct.RateLimitDescriptor{{Entries: entries}},
-		HitsAddend:  hits,
-	}
-
-	// Build stats key
-	statsKey := b.Id + ".method_" + method + rule.statsKeySuffix()
-
-	rlStats := b.registry.statsManager.NewStats(statsKey)
-	limit := config.NewRateLimit(rule.Config.MaxCount, rule.Config.Period.Unit(), rlStats, false, false, "", nil, false)
-	limits := []*config.RateLimit{limit}
-
-	_, doSpan := common.StartSpan(ctx, "RateLimiter.DoLimit",
-		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(
-			attribute.String("budget", b.Id),
-			attribute.String("method", method),
-			attribute.String("scope", rule.Config.ScopeString()),
-		),
-	)
-
-	var statuses []*pb.RateLimitResponse_DescriptorStatus
-	var timedOut bool
-	var failOpenReason string
-	if b.maxTimeout > 0 {
-		statuses, timedOut, failOpenReason = b.doLimitWithTimeout(ctx, cache, rlReq, limits, method, userLabel, networkLabel)
-	} else {
-		statuses = cache.DoLimit(ctx, rlReq, limits)
-	}
-
-	if timedOut {
-		doSpan.SetAttributes(
-			attribute.String("result", "fail_open"),
-			attribute.String("reason", failOpenReason),
-		)
-		doSpan.End()
-		return true // fail-open
-	}
-
-	isOverLimit := len(statuses) > 0 && statuses[0].Code == pb.RateLimitResponse_OVER_LIMIT
-	if isOverLimit {
-		doSpan.SetAttributes(attribute.String("result", "over_limit"))
-	} else {
-		doSpan.SetAttributes(attribute.String("result", "ok"))
-	}
-	doSpan.End()
-
-	return !isOverLimit
-}
-
 // statsKeySuffix returns the pre-computed suffix for stats key.
 func (r *RateLimitRule) statsKeySuffix() string {
 	suffix := ""
@@ -425,46 +404,57 @@ func (r *RateLimitRule) statsKeySuffix() string {
 	return suffix
 }
 
-// doLimitWithTimeout executes DoLimit with a timeout AND a per-budget admission cap.
+// doLimit asks the cache for one request's statuses. failure is empty when the
+// cache answered, else the reason it did not; onStoreFailure decides those.
 //
-// Returns (statuses, failOpen, reason).
-//
-// The admission semaphore is the critical resilience primitive: the underlying
-// envoyproxy/ratelimit cache + radix client do not honor context cancellation
-// for the actual Redis I/O. Without a cap, every timed-out call leaks a
-// goroutine that lives until Redis answers — which under contention spirals
-// into runaway goroutine/FD growth and CPU saturation. With the cap in place,
-// the in-flight count is bounded and the worst case is a brief load-shed
-// burst.
-//
-// We DO continue to spawn a goroutine for the actual DoLimit (so the response
-// can still complete and update Redis state correctly even after we've
-// fail-opened), but only when we have an admission slot available — and we
-// release the slot from inside that goroutine, so a slow Redis holds the slot
+// A remote (redis) cache runs under a timeout AND a per-budget admission cap.
+// The envoyproxy/ratelimit cache + radix client do not honor context
+// cancellation for the actual Redis I/O, so every timed-out call keeps a
+// goroutine until Redis answers; uncapped, that spiralled into runaway
+// goroutine growth (2026-05-07 cronos receipts incident). The goroutine still
+// finishes the call so Redis state stays correct, and holds its admission slot
 // for as long as the call truly takes, not just the local timeout.
-func (b *RateLimiterBudget) doLimitWithTimeout(
+func (b *RateLimiterBudget) doLimit(
 	ctx context.Context,
-	cache limiter.RateLimitCache,
 	rlReq *pb.RateLimitRequest,
 	limits []*config.RateLimit,
-	method, userLabel, networkLabel string,
-) ([]*pb.RateLimitResponse_DescriptorStatus, bool, string) {
+) (statuses []*pb.RateLimitResponse_DescriptorStatus, failure string) {
+	cache := b.getCache()
+	if cache == nil {
+		return nil, storeUnavailable
+	}
+	if b.maxTimeout <= 0 {
+		return cache.DoLimit(ctx, rlReq, limits), ""
+	}
+
+	_, span := common.StartSpan(ctx, "RateLimiter.DoLimit",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("budget", b.Id),
+			attribute.Int("descriptors", len(rlReq.Descriptors)),
+		),
+	)
+	defer func() {
+		switch {
+		case failure != "":
+			span.SetAttributes(attribute.String("result", "store_failure"), attribute.String("reason", failure))
+		case overLimitIndex(statuses) >= 0:
+			span.SetAttributes(attribute.String("result", "over_limit"))
+		default:
+			span.SetAttributes(attribute.String("result", "ok"))
+		}
+		span.End()
+	}()
+
 	if b.admission != nil {
 		select {
 		case b.admission <- struct{}{}:
-			// Got a slot — proceed.
 		default:
-			// Admission semaphore is full: too many in-flight Redis calls.
-			// Fail-open immediately without spawning a goroutine. This is
-			// the load-shedding path that prevents goroutine accumulation.
+			// Too many in-flight Redis calls: shed without spawning a goroutine.
 			if b.admissionShedded != nil {
 				b.admissionShedded.Inc()
 			}
-			telemetry.MetricRateLimiterFailopenTotal.WithLabelValues(
-				"", networkLabel, userLabel, "",
-				b.Id, method, "admission_full",
-			).Inc()
-			return nil, true, "admission_full"
+			return nil, admissionFull
 		}
 	}
 
@@ -477,7 +467,7 @@ func (b *RateLimiterBudget) doLimitWithTimeout(
 	go func() {
 		// Always release the admission slot and decrement the in-flight gauge,
 		// even if cache.DoLimit panics — checkError() in envoy/ratelimit panics
-		// on Redis errors, so this is a real concern.
+		// on Redis errors.
 		defer func() {
 			if rec := recover(); rec != nil {
 				telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
@@ -485,73 +475,47 @@ func (b *RateLimiterBudget) doLimitWithTimeout(
 					"budget:"+b.Id,
 					common.ErrorFingerprint(rec),
 				).Inc()
-				b.logger.Error().
-					Interface("panic", rec).
-					Str("method", method).
-					Msg("panic recovered during Redis DoLimit (rate limiting fails open for this request)")
-				// Closed-but-non-nil channel: signal that we got nothing back.
-				select {
-				case resultCh <- nil:
-				default:
+				if b.logger.GetLevel() <= zerolog.DebugLevel {
+					b.logger.Debug().Interface("panic", rec).Msg("redis DoLimit failed")
 				}
+				resultCh <- nil
 			}
 			if b.inflightGauge != nil {
 				b.inflightGauge.Dec()
 			}
 			if b.admission != nil {
-				select {
-				case <-b.admission:
-				default:
-				}
+				<-b.admission
 			}
 		}()
 		resultCh <- cache.DoLimit(ctx, rlReq, limits)
 	}()
 
 	timer := time.NewTimer(b.maxTimeout)
+	defer timer.Stop()
 	select {
-	case statuses := <-resultCh:
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-		// Observe duration only for non-timeout cases — timeouts are tracked
-		// by the timeout branch below to keep buckets clean.
+	case statuses = <-resultCh:
 		dur := time.Since(start).Seconds()
-		if statuses != nil {
-			isOverLimit := len(statuses) > 0 && statuses[0].Code == pb.RateLimitResponse_OVER_LIMIT
-			if isOverLimit && b.durationOverlimit != nil {
+		switch {
+		case statuses == nil:
+			if b.durationFailopen != nil {
+				b.durationFailopen.Observe(dur)
+			}
+			return nil, storeError
+		case overLimitIndex(statuses) >= 0:
+			if b.durationOverlimit != nil {
 				b.durationOverlimit.Observe(dur)
-			} else if !isOverLimit && b.durationOK != nil {
+			}
+		default:
+			if b.durationOK != nil {
 				b.durationOK.Observe(dur)
 			}
-		} else if b.durationFailopen != nil {
-			// Panic path — recovered above, count as fail-open.
-			b.durationFailopen.Observe(dur)
 		}
-		return statuses, false, ""
+		return statuses, ""
 
 	case <-timer.C:
 		if b.durationFailopen != nil {
 			b.durationFailopen.Observe(time.Since(start).Seconds())
 		}
-		// Sample the warn log; under sustained pressure this fires hundreds of
-		// times per second and dwarfs the rest of the log volume.
-		if b.logger.GetLevel() <= zerolog.DebugLevel {
-			b.logger.Debug().
-				Str("budget", b.Id).
-				Str("method", method).
-				Dur("timeout", b.maxTimeout).
-				Msg("rate limiter timeout exceeded, failing open")
-		}
-
-		telemetry.MetricRateLimiterFailopenTotal.WithLabelValues(
-			"", networkLabel, userLabel, "",
-			b.Id, method, "limit_timeout",
-		).Inc()
-
-		return nil, true, "limit_timeout"
+		return nil, limitTimeout
 	}
 }
