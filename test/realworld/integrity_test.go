@@ -117,7 +117,11 @@ func u8(integrity bool) spec {
 // and no empty block gets a receipts call (§11 prefetch, C10).
 func u9() spec {
 	tr := &tipReceipts{}
-	return spec{name: "U9", integrity: true, bound: healthyDelivery, onHead: tr.onHead, body: func(s *scenario) {
+	// vendor-a ranks first whatever its score, so the tracker asks it
+	// first: a tip receipt's wait then shows whether the check waited on
+	// vendor-b's refetch, not which vendor the policy put first.
+	return spec{name: "U9", integrity: true, bound: healthyDelivery, onHead: tr.onHead,
+		network: map[string]interface{}{"selectionPolicy": rankFirst("a")}, body: func(s *scenario) {
 		from := time.Now()
 		tr.reset()
 		s.slowVendorB()
