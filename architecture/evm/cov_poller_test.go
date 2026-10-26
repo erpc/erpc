@@ -265,13 +265,24 @@ func TestCovPoller_PollLatest_GivesUpAfterTenUnsupportedAnswers(t *testing.T) {
 			d = p.GetDiagnostics()
 			assert.Equal(t, 10, d.LatestBlockFailureCount)
 			assert.False(t, d.LatestBlockSuccessfulOnce)
-			assert.Contains(t, d.LatestBlockDetectionIssue, "latest block check disabled")
+			assert.Contains(t, d.LatestBlockDetectionIssue, "latest block check given up")
 
 			calls := up.callCount("eth_getBlockByNumber")
 			v, err = p.PollLatestBlockNumber(ctx)
 			require.NoError(t, err)
 			assert.Zero(t, v)
 			assert.Equal(t, calls, up.callCount("eth_getBlockByNumber"), "after giving up the upstream is not asked again")
+			assert.True(t, p.LatestUnsupported(), "no poll source while given up")
+
+			// PollerGiveUpExpiry later it is retried once; a refused retry
+			// gives it up again at once.
+			covPollerExpireGiveUp(p, &p.latestGiveUp)
+			assert.False(t, p.LatestUnsupported(), "the give-up expires")
+			_, _ = p.PollLatestBlockNumber(ctx)
+			assert.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"), "an expired give-up is retried")
+			assert.True(t, p.LatestUnsupported(), "a refused retry gives up again")
+			_, _ = p.PollLatestBlockNumber(ctx)
+			assert.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"))
 		})
 	}
 }
@@ -473,15 +484,34 @@ func TestCovPoller_PollFinalized_GivesUpAfterTenUnsupportedAnswers(t *testing.T)
 
 			d := p.GetDiagnostics()
 			assert.Equal(t, 10, d.FinalizedBlockFailureCount)
-			assert.Contains(t, d.FinalizedBlockDetectionIssue, "finalized block check disabled")
+			assert.Contains(t, d.FinalizedBlockDetectionIssue, "finalized block check given up")
 
 			calls := up.callCount("eth_getBlockByNumber")
 			v, err = p.PollFinalizedBlockNumber(ctx)
 			require.NoError(t, err)
 			assert.Zero(t, v)
 			assert.Equal(t, calls, up.callCount("eth_getBlockByNumber"))
+			_, derived := p.DerivedFinalized()
+			assert.True(t, derived, "a given-up finalized tag is derived from latest")
+
+			// PollerGiveUpExpiry later it is retried once; finality stays
+			// derived through the retry, and a refused retry gives up again.
+			covPollerExpireGiveUp(p, &p.finalizedGiveUp)
+			_, derived = p.DerivedFinalized()
+			assert.True(t, derived, "derived finality never flips off on a retry")
+			_, _ = p.PollFinalizedBlockNumber(ctx)
+			assert.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"), "an expired give-up is retried")
+			_, _ = p.PollFinalizedBlockNumber(ctx)
+			assert.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"), "a refused retry gives up again")
 		})
 	}
+}
+
+// covPollerExpireGiveUp backdates g's give-up by PollerGiveUpExpiry.
+func covPollerExpireGiveUp(p *EvmStatePoller, g *giveUp) {
+	p.stateMu.Lock()
+	g.at = time.Now().Add(-PollerGiveUpExpiry.Load())
+	p.stateMu.Unlock()
 }
 
 func TestCovPoller_PollFinalized_UnsupportedAfterSuccessNeverGivesUp(t *testing.T) {
@@ -963,7 +993,6 @@ func TestCovPoller_FetchSyncingState(t *testing.T) {
 		err     error
 		syncing bool
 		wantErr string
-		skip    bool
 	}{
 		{name: "bool true", resp: covPollerResult(`true`), syncing: true},
 		{name: "bool false", resp: covPollerResult(`false`)},
@@ -977,8 +1006,8 @@ func TestCovPoller_FetchSyncingState(t *testing.T) {
 		{name: "string result", resp: covPollerResult(`"yes"`), wantErr: "cannot parse syncing state"},
 		{name: "not json", resp: covPollerResult(`nope`), wantErr: "cannot parse syncing state"},
 		{name: "json-rpc error", resp: covPollerRpcError(-32601, "the method eth_syncing does not exist/is not available"), wantErr: "does not exist/is not available"},
-		{name: "unsupported marks skip", err: common.NewErrEndpointUnsupported(errors.New("no")), wantErr: "does not support", skip: true},
-		{name: "client error marks skip", err: common.NewErrEndpointClientSideException(errors.New("bad")), wantErr: "client-side", skip: true},
+		{name: "unsupported", err: common.NewErrEndpointUnsupported(errors.New("no")), wantErr: "does not support"},
+		{name: "client error", err: common.NewErrEndpointClientSideException(errors.New("bad")), wantErr: "client-side"},
 		{name: "server error keeps checking", err: common.NewErrEndpointServerSideException(errors.New("down"), nil, 503), wantErr: "internal error on remote endpoint"},
 	}
 	for _, tc := range cases {
@@ -994,7 +1023,7 @@ func TestCovPoller_FetchSyncingState(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, tc.syncing, syncing)
 			}
-			assert.Equal(t, tc.skip, p.GetDiagnostics().SkipSyncingCheck)
+			assert.False(t, p.GetDiagnostics().SkipSyncingCheck, "one refusal never gives the syncing check up")
 		})
 	}
 }

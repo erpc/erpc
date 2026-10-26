@@ -65,9 +65,9 @@ var askTimeout = 10 * time.Second
 // The Ask's backoff cap and expiries; exported so end-to-end tests can
 // shorten them.
 var (
-	AskMaxBackoff         = util.NewDuration(60 * time.Second)
-	LatestBlockSkipExpiry = util.NewDuration(10 * time.Minute)
-	ChainIdCordonRecheck  = util.NewDuration(5 * time.Minute)
+	AskMaxBackoff        = util.NewDuration(60 * time.Second)
+	PollerGiveUpExpiry   = util.NewDuration(10 * time.Minute)
+	ChainIdCordonRecheck = util.NewDuration(5 * time.Minute)
 )
 
 var (
@@ -107,34 +107,19 @@ type EvmStatePoller struct {
 	syncingState common.EvmSyncingState
 	syncMu       sync.Mutex
 
-	// Certain upstreams do not support calling such method, therefore we must avoid sending redundant requests.
-	// We will return "nil" as status for syncing which means we don't know for certain.
-	skipSyncingCheck bool
-
-	// Track consecutive failures when querying eth_syncing so we can automatically
-	// stop querying after a threshold (similar to latest/finalized block logic).
-	syncingFailureCount   int
-	syncingSuccessfulOnce bool
+	// syncingGiveUp, finalizedGiveUp and latestGiveUp are the give-ups of
+	// the three poller methods (giveUp); stateMu guards them.
+	syncingGiveUp, finalizedGiveUp, latestGiveUp giveUp
 
 	// Avoid making redundant calls based on a networks block time
 	// i.e. latest/finalized block is not going to change within the debounce interval
 	debounceInterval time.Duration
 
-	// Certain networks and nodes do not support "finalized" tag,
-	// therefore we must avoid sending redundant requests.
-	skipFinalizedCheck           bool
-	finalizedBlockFailureCount   int
-	finalizedBlockSuccessfulOnce bool
-	finalizedBlockShared         data.CounterInt64SharedVariable
+	finalizedBlockShared data.CounterInt64SharedVariable
 
 	// The reason to not use latestBlockTimestamp is to avoid thundering herd,
 	// when a node is actively syncing and timestamp is always way in the past.
-	// skipLatestBlockCheck expires LatestBlockSkipExpiry after skipLatestSince.
-	skipLatestBlockCheck      bool
-	skipLatestSince           time.Time
-	latestBlockFailureCount   int
-	latestBlockSuccessfulOnce bool
-	latestBlockShared         data.CounterInt64SharedVariable
+	latestBlockShared data.CounterInt64SharedVariable
 
 	// pollSrc is set once the network binds this poller as a poll source;
 	// while pollHeads is on, the poll loop Asks once per backed-off
@@ -437,10 +422,6 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 		e.syncMu.Lock()
 		defer e.syncMu.Unlock()
 
-		e.stateMu.RLock()
-		skip := e.skipSyncingCheck
-		e.stateMu.RUnlock()
-
 		upsCfg := e.upstream.Config()
 		if upsCfg.Evm != nil && upsCfg.Evm.SkipSyncingCheck != nil && *upsCfg.Evm.SkipSyncingCheck {
 			e.stateMu.Lock()
@@ -449,7 +430,7 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 			return
 		}
 
-		if e.synced >= FullySyncedThreshold || skip {
+		if e.synced >= FullySyncedThreshold || e.givenUp(&e.syncingGiveUp) {
 			return
 		}
 
@@ -457,36 +438,23 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 		defer syncCancel()
 		syncing, err := e.fetchSyncingState(syncCtx)
 		if err != nil {
-			// Handle consecutive failures to determine if we should stop querying eth_syncing
-			e.stateMu.Lock()
-			// Only apply the failure threshold logic if we have never had a successful response.
-			if !e.syncingSuccessfulOnce {
-				e.syncingFailureCount++
-				if e.syncingFailureCount >= 10 {
-					e.skipSyncingCheck = true
-					e.syncingState = common.EvmSyncingStateUnknown
-					e.logger.Warn().Err(err).
-						Msgf("upstream does not support fetching syncing state in evm state poller after %d consecutive failures, will give up", e.syncingFailureCount)
-				} else {
-					e.logger.Debug().Err(err).
-						Msgf("upstream does not seem to support fetching syncing state in evm state poller after %d consecutive failures, will retry again", e.syncingFailureCount)
-				}
+			// Any eth_syncing error counts as a refusal: a node that cannot
+			// answer it gives no syncing state to wait for.
+			if e.refused(&e.syncingGiveUp, "eth_syncing", err) {
+				e.stateMu.Lock()
+				e.syncingState = common.EvmSyncingStateUnknown
+				e.stateMu.Unlock()
 			}
-			e.stateMu.Unlock()
-
-			if !skip {
-				e.logger.Warn().Bool("syncingResult", syncing).Err(err).Msg("failed to get syncing state in evm state poller")
-				ermu.Lock()
-				errs = append(errs, err)
-				ermu.Unlock()
-			} else {
-				e.logger.Info().Bool("syncingResult", syncing).Err(err).Msg("upstream does not support eth_syncing method for evm state poller, will skip")
-			}
+			e.logger.Warn().Bool("syncingResult", syncing).Err(err).Msg("failed to get syncing state in evm state poller")
+			ermu.Lock()
+			errs = append(errs, err)
+			ermu.Unlock()
 			return
 		}
 
 		e.logger.Debug().Bool("syncingResult", syncing).Msg("fetched syncing state")
 
+		e.answered(&e.syncingGiveUp)
 		e.stateMu.Lock()
 		defer e.stateMu.Unlock()
 		if syncing {
@@ -512,10 +480,6 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 			// If we have received at least one response (syncing or not-syncing) we explicitly assume it's syncing.
 			e.logger.Debug().Bool("syncingResult", syncing).Msgf("node is marked as still syncing %d out of %d confirmations done so far", e.synced, FullySyncedThreshold)
 		}
-
-		// Mark as successful and reset failure counter
-		e.syncingSuccessfulOnce = true
-		e.syncingFailureCount = 0
 	}()
 
 	// Earliest per-probe updates (only if needed by upstream bound config)
@@ -723,7 +687,7 @@ func (e *EvmStatePoller) ask(ctx context.Context, need common.HeadNeed, reason c
 }
 
 func (e *EvmStatePoller) askFetch(parent trace.SpanContext, need common.HeadNeed) (*headFetch, common.AskOutcome) {
-	if e.shouldSkipLatestBlockCheck() {
+	if e.givenUp(&e.latestGiveUp) {
 		// The give-up after latest was refused as unsupported backs off
 		// until its re-check.
 		return nil, common.AskBackoff
@@ -819,8 +783,8 @@ func (e *EvmStatePoller) runFetch(f *headFetch) {
 // node answered with a block; header: that block past intake check 0. No
 // header and no error: latest was refused as unsupported, or the answer
 // did not pass; after 10 refusals before any success the Ask gives up
-// until LatestBlockSkipExpiry, and the reconciler polls other sources
-// (LatestUnsupported).
+// for PollerGiveUpExpiry (latestGiveUp), and the reconciler polls other
+// sources (LatestUnsupported).
 func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header common.EvmHeader, answered bool, err error) {
 	if e.logger.GetLevel() <= zerolog.TraceLevel {
 		e.logger.Trace().Str("ptr", fmt.Sprintf("%p", e)).Str("stack", string(debug.Stack())).Msg("fetching latest block number for evm state poller")
@@ -834,27 +798,8 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header 
 	bound := e.pollSrc.Load()
 	b, err := e.fetchBlock(ctx, "latest", common.UpstreamPoliciesHeadAsk)
 	if err != nil || b.number == 0 {
-		if err == nil ||
-			common.HasErrorCode(err,
-				common.ErrCodeUpstreamRequestSkipped,
-				common.ErrCodeUpstreamMethodIgnored,
-				common.ErrCodeEndpointUnsupported,
-				common.ErrCodeEndpointMissingData,
-			) ||
-			common.IsClientError(err) {
-			e.stateMu.Lock()
-			// Only skip after multiple consecutive failures if we've never had a success
-			if !e.latestBlockSuccessfulOnce {
-				e.latestBlockFailureCount++
-				if e.latestBlockFailureCount >= 10 {
-					e.skipLatestBlockCheck = true
-					e.skipLatestSince = time.Now()
-					e.logger.Warn().Err(err).Dur("retryIn", LatestBlockSkipExpiry.Load()).Msgf("upstream does not support fetching latest block number in evm state poller after %d consecutive failures, pausing latest polls", e.latestBlockFailureCount)
-				} else {
-					e.logger.Debug().Err(err).Msgf("upstream does not seem to support fetching latest block number in evm state poller after %d consecutive failures, will retry again", e.latestBlockFailureCount)
-				}
-			}
-			e.stateMu.Unlock()
+		if refusedPoll(err) {
+			e.refused(&e.latestGiveUp, "latest", err)
 			return nil, false, nil
 		}
 		if nodeFailedPoll(err) && bound != nil {
@@ -871,11 +816,7 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header 
 		return nil, false, err
 	}
 
-	// Mark as successful and reset failure counter
-	e.stateMu.Lock()
-	e.latestBlockSuccessfulOnce = true
-	e.latestBlockFailureCount = 0
-	e.stateMu.Unlock()
+	e.answered(&e.latestGiveUp)
 
 	if bound != nil {
 		// Intake checks the header once (spec §13), verifies a major jump
@@ -1009,7 +950,7 @@ func nodeFailedPoll(err error) bool {
 // stored one is older than the finalized poll's debounce and no refresh is
 // already in flight; it never blocks.
 func (e *EvmStatePoller) RefreshFinalizedBlock() {
-	if e.IsObjectNull() || e.finalizedBlockShared == nil || e.shouldSkipFinalizedCheck() {
+	if e.IsObjectNull() || e.finalizedBlockShared == nil || e.givenUp(&e.finalizedGiveUp) {
 		return
 	}
 	e.stateMu.RLock()
@@ -1139,9 +1080,9 @@ func (e *EvmStatePoller) BindIntake(intake PollIntake) {
 }
 
 // LatestUnsupported reports the give-up after latest was refused as
-// unsupported; it lapses LatestBlockSkipExpiry after it began.
+// unsupported; a retry follows PollerGiveUpExpiry after it began.
 func (e *EvmStatePoller) LatestUnsupported() bool {
-	return e.shouldSkipLatestBlockCheck()
+	return e.givenUp(&e.latestGiveUp)
 }
 
 // Set Asks with a hash need once per backed-off cadence while topics
@@ -1526,7 +1467,7 @@ func absInt64(v int64) int64 {
 }
 
 func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, error) {
-	if e.shouldSkipFinalizedCheck() {
+	if e.givenUp(&e.finalizedGiveUp) {
 		return 0, nil
 	}
 	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.PollFinalizedBlockNumber",
@@ -1556,25 +1497,8 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 		// Actually fetch from upstream
 		b, err := e.fetchBlock(ctx, "finalized", common.UpstreamPoliciesTimeoutOnly)
 		if err != nil || b.number == 0 {
-			if err == nil ||
-				common.HasErrorCode(err,
-					common.ErrCodeUpstreamRequestSkipped,
-					common.ErrCodeUpstreamMethodIgnored,
-					common.ErrCodeEndpointUnsupported,
-					common.ErrCodeEndpointMissingData,
-				) || common.IsClientError(err) {
-				e.stateMu.Lock()
-				// Only skip after multiple consecutive failures if we've never had a success
-				if !e.finalizedBlockSuccessfulOnce {
-					e.finalizedBlockFailureCount++
-					if e.finalizedBlockFailureCount >= 10 {
-						e.skipFinalizedCheck = true
-						e.logger.Warn().Err(err).Msgf("upstream does not support fetching finalized block number in evm state poller after %d consecutive failures, will give up", e.finalizedBlockFailureCount)
-					} else {
-						e.logger.Debug().Err(err).Msgf("upstream does not seem to support fetching finalized block number in evm state poller after %d consecutive failures, will retry again", e.finalizedBlockFailureCount)
-					}
-				}
-				e.stateMu.Unlock()
+			if refusedPoll(err) {
+				e.refused(&e.finalizedGiveUp, "finalized", err)
 				return 0, nil
 			} else {
 				// See PollLatestBlockNumber.
@@ -1587,11 +1511,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 			}
 		}
 
-		// Mark as successful and reset failure counter
-		e.stateMu.Lock()
-		e.finalizedBlockSuccessfulOnce = true
-		e.finalizedBlockFailureCount = 0
-		e.stateMu.Unlock()
+		e.answered(&e.finalizedGiveUp)
 
 		// Same chain-identity gate as the latest ratchet (see there).
 		if !e.verifyChainIdOnMajorHeadMove(ctx, "finalized", e.finalizedBlockShared.GetValue(), b.number) {
@@ -1670,7 +1590,7 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64, at time.Time) 
 }
 
 // FinalizedBlock is the upstream's finalized tag. Only an upstream known to
-// have no finalized tag (skipFinalizedCheck) reports latest −
+// have no finalized tag (finalizedGiveUp given) reports latest −
 // fallbackFinalityDepth instead: a tagged upstream reports 0 until its tag
 // first answers, so a derived guess never enters the Head.Finalized ballot
 // on a chain whose real finality is slower (#1079).
@@ -1678,7 +1598,7 @@ func (e *EvmStatePoller) FinalizedBlock() int64 {
 	if fin := e.finalizedBlockShared.GetValue(); fin > 0 {
 		return fin
 	}
-	if !e.shouldSkipFinalizedCheck() {
+	if !e.finalizedTagless() {
 		return 0
 	}
 	latest := e.latestBlockShared.GetValue()
@@ -1695,10 +1615,32 @@ func (e *EvmStatePoller) FinalizedBlock() int64 {
 // tag, latest − the derived finality depth (spec §6.4); ok false while it
 // has the tag.
 func (e *EvmStatePoller) DerivedFinalized() (number int64, ok bool) {
-	if !e.shouldSkipFinalizedCheck() {
+	if !e.finalizedTagless() {
 		return 0, false
 	}
 	return e.FinalizedBlock(), true
+}
+
+// finalizedTagless: finalized was given up and has not answered since,
+// through its retries, so derived finality never flips off on a retry.
+func (e *EvmStatePoller) finalizedTagless() bool {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
+	return e.finalizedGiveUp.given()
+}
+
+// refusedPoll reports whether a poll's outcome is the method refused, not
+// failed: an empty answer (no error), unsupported, skipped, ignored,
+// missing data or a client error. It counts towards the give-up.
+func refusedPoll(err error) bool {
+	return err == nil ||
+		common.HasErrorCode(err,
+			common.ErrCodeUpstreamRequestSkipped,
+			common.ErrCodeUpstreamMethodIgnored,
+			common.ErrCodeEndpointUnsupported,
+			common.ErrCodeEndpointMissingData,
+		) ||
+		common.IsClientError(err)
 }
 
 func (e *EvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {
@@ -2011,42 +1953,32 @@ func (e *EvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 		SyncingState:   e.syncingState.String(),
 
 		// Syncing check status
-		SkipSyncingCheck: e.skipSyncingCheck,
+		SkipSyncingCheck: e.syncingGiveUp.given(),
 
 		// Latest block detection status
-		SkipLatestBlockCheck:      e.skipLatestBlockCheck,
-		LatestBlockFailureCount:   e.latestBlockFailureCount,
-		LatestBlockSuccessfulOnce: e.latestBlockSuccessfulOnce,
+		SkipLatestBlockCheck:      e.latestGiveUp.given(),
+		LatestBlockFailureCount:   e.latestGiveUp.refusals,
+		LatestBlockSuccessfulOnce: e.latestGiveUp.succeeded,
 
 		// Finalized block detection status
-		SkipFinalizedCheck:           e.skipFinalizedCheck,
-		FinalizedBlockFailureCount:   e.finalizedBlockFailureCount,
-		FinalizedBlockSuccessfulOnce: e.finalizedBlockSuccessfulOnce,
+		SkipFinalizedCheck:           e.finalizedGiveUp.given(),
+		FinalizedBlockFailureCount:   e.finalizedGiveUp.refusals,
+		FinalizedBlockSuccessfulOnce: e.finalizedGiveUp.succeeded,
 	}
-
-	// Also reflect operator-configured skip in diagnostics.
-	upsCfg := e.upstream.Config()
-	if upsCfg.Evm != nil && upsCfg.Evm.SkipSyncingCheck != nil && *upsCfg.Evm.SkipSyncingCheck {
-		diag.SkipSyncingCheck = true
-	}
-
-	// Build detection issue messages
-	skipSyncingCheck := e.skipSyncingCheck || diag.SkipSyncingCheck
-	syncingSuccessfulOnce := e.syncingSuccessfulOnce
-	skipLatestBlockCheck := e.skipLatestBlockCheck
-	latestBlockSuccessfulOnce := e.latestBlockSuccessfulOnce
-	skipFinalizedCheck := e.skipFinalizedCheck
-	finalizedBlockSuccessfulOnce := e.finalizedBlockSuccessfulOnce
 	e.stateMu.RUnlock()
 
-	if skipSyncingCheck && !syncingSuccessfulOnce {
-		diag.SyncingCheckError = "syncing check disabled after consecutive failures (method may not be supported)"
+	if diag.SkipSyncingCheck {
+		diag.SyncingCheckError = "syncing check given up after consecutive refusals (method may not be supported); retried every " + PollerGiveUpExpiry.Load().String()
 	}
-	if skipLatestBlockCheck && !latestBlockSuccessfulOnce {
-		diag.LatestBlockDetectionIssue = "latest block check disabled after consecutive failures (method may not be supported)"
+	if diag.SkipLatestBlockCheck {
+		diag.LatestBlockDetectionIssue = "latest block check given up after consecutive refusals (method may not be supported); retried every " + PollerGiveUpExpiry.Load().String()
 	}
-	if skipFinalizedCheck && !finalizedBlockSuccessfulOnce {
-		diag.FinalizedBlockDetectionIssue = "finalized block check disabled after consecutive failures (method may not be supported)"
+	if diag.SkipFinalizedCheck {
+		diag.FinalizedBlockDetectionIssue = "finalized block check given up after consecutive refusals (method may not be supported); retried every " + PollerGiveUpExpiry.Load().String()
+	}
+	// Also reflect operator-configured skip in diagnostics.
+	if upsCfg := e.upstream.Config(); upsCfg.Evm != nil && upsCfg.Evm.SkipSyncingCheck != nil && *upsCfg.Evm.SkipSyncingCheck {
+		diag.SkipSyncingCheck = true
 	}
 
 	// Collect earliest block bounds per probe type (separate lock)
@@ -2067,31 +1999,64 @@ func (e *EvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	return diag
 }
 
-// shouldSkipLatestBlockCheck reports the give-up after failed latest polls;
-// it lapses LatestBlockSkipExpiry after it was set, with a fresh count.
-func (e *EvmStatePoller) shouldSkipLatestBlockCheck() bool {
-	e.stateMu.RLock()
-	skip, expired := e.skipLatestBlockCheck, e.skipLatestBlockCheck && time.Since(e.skipLatestSince) >= LatestBlockSkipExpiry.Load()
-	e.stateMu.RUnlock()
-	if !expired {
-		return skip
-	}
-	e.stateMu.Lock()
-	defer e.stateMu.Unlock()
-	// Another caller may have lifted it, or a new give-up started, meanwhile.
-	if e.skipLatestBlockCheck && time.Since(e.skipLatestSince) >= LatestBlockSkipExpiry.Load() {
-		e.skipLatestBlockCheck = false
-		e.latestBlockFailureCount = 0
-		e.logger.Info().Msg("retrying latest block polls after the give-up expired")
-	}
-	return e.skipLatestBlockCheck
+// giveUpRefusals is how many refusals before any success give a poller
+// method up (spec §6.8).
+const giveUpRefusals = 10
+
+// giveUp is one poller method's give-up (latest, finalized, the syncing
+// check; spec §6.8, §15.1): refused giveUpRefusals times before any
+// success, the method is given up for PollerGiveUpExpiry, then retried;
+// a refused retry gives it up again at once, an answer ends it for good.
+// The poller's stateMu guards it.
+type giveUp struct {
+	refusals  int
+	succeeded bool
+	// at is when the method was last given up; zero while it never was
+	// or once it answered.
+	at time.Time
 }
 
-func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
+// holds reports whether the method is given up at now: no poll is sent.
+func (g *giveUp) holds(now time.Time) bool {
+	return !g.at.IsZero() && now.Sub(g.at) < PollerGiveUpExpiry.Load()
+}
+
+// given reports whether the method was given up and has not answered
+// since, its retries included: what stands in for it (finality derived
+// from latest) stays on.
+func (g *giveUp) given() bool { return !g.at.IsZero() }
+
+// givenUp reports whether g holds now.
+func (e *EvmStatePoller) givenUp(g *giveUp) bool {
 	e.stateMu.RLock()
 	defer e.stateMu.RUnlock()
+	return g.holds(time.Now())
+}
 
-	return e.skipFinalizedCheck
+// refused counts a refusal of method against g; true when it gives the
+// method up now.
+func (e *EvmStatePoller) refused(g *giveUp, method string, err error) bool {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	if g.succeeded {
+		return false
+	}
+	g.refusals++
+	if g.refusals < giveUpRefusals {
+		e.logger.Debug().Err(err).Msgf("upstream refused %s in evm state poller %d times in a row, will retry", method, g.refusals)
+		return false
+	}
+	g.at = time.Now()
+	e.logger.Warn().Err(err).Dur("retryIn", PollerGiveUpExpiry.Load()).
+		Msgf("upstream refused %s in evm state poller %d times with no success, giving it up", method, g.refusals)
+	return true
+}
+
+// answered ends g for good: the method answered.
+func (e *EvmStatePoller) answered(g *giveUp) {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	g.refusals, g.succeeded, g.at = 0, true, time.Time{}
 }
 
 // polledBlock is a polled latest or finalized block, decoded once: its
@@ -2168,15 +2133,6 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		defer resp.Release()
 	}
 	if err != nil {
-		if common.HasErrorCode(err,
-			common.ErrCodeUpstreamRequestSkipped,
-			common.ErrCodeUpstreamMethodIgnored,
-			common.ErrCodeEndpointUnsupported,
-		) || common.IsClientError(err) {
-			e.stateMu.Lock()
-			e.skipSyncingCheck = true
-			e.stateMu.Unlock()
-		}
 		return false, err
 	}
 

@@ -17,7 +17,7 @@ import (
 
 var realworldVars = map[string]*util.Duration{
 	"evm.ChainIdCordonRecheck":      evm.ChainIdCordonRecheck,
-	"evm.LatestBlockSkipExpiry":     evm.LatestBlockSkipExpiry,
+	"evm.PollerGiveUpExpiry":        evm.PollerGiveUpExpiry,
 	"wsupstream.HeadsReaskInterval": wsupstream.HeadsReaskInterval,
 }
 
