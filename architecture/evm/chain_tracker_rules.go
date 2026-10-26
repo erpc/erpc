@@ -394,11 +394,24 @@ func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
 
 // againstNumber reports whether a by-number fetch's outcome is evidence
 // against the number path, so the extension asks by hash: an answer whose
-// hash is not the child's parentHash, no block, or an answer that does not
-// decode. A capacity refusal, timeout or transport failure is none: the
-// extension stays by number, and the key's backoff spaces its retries.
+// hash is not the child's parentHash, no block, an answer that does not
+// decode, or one an integrity check rejected. A capacity refusal, timeout
+// or transport failure is none: the extension stays by number, and the
+// key's backoff spaces its retries.
 func againstNumber(err error) bool {
-	return err == nil || errors.Is(err, errFetchNotFound) || errors.Is(err, errFetchUndecoded)
+	if err == nil || errors.Is(err, errFetchNotFound) || errors.Is(err, errFetchUndecoded) ||
+		common.HasErrorCode(err, common.ErrCodeEndpointContentValidation) {
+		return true
+	}
+	var ex *common.ErrUpstreamsExhausted
+	if errors.As(err, &ex) {
+		for _, e := range ex.Errors() {
+			if common.HasErrorCode(e, common.ErrCodeEndpointContentValidation) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // extended holds a root's fetched parent; the root joins under it, and the
