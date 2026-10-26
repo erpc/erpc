@@ -423,7 +423,7 @@ func (i *Indexer) Ingest(ev StreamEvent) {
 		ns.handle.HeadIndexed()
 	}
 
-	if !i.fanOut(IndexedEvent{StreamEvent: ev, Removed: removed}) {
+	if !i.fanOut(ns, IndexedEvent{StreamEvent: ev, Removed: removed}) {
 		ns.handle.Undelivered(ev.Kind)
 	}
 }
@@ -464,12 +464,15 @@ func (i *Indexer) dedupe(ns *networkState, ev *StreamEvent, removed bool) bool {
 }
 
 // fanOut delivers ev to every interested egress and reports whether there
-// was one.
-func (i *Indexer) fanOut(ev IndexedEvent) (delivered bool) {
+// was one. A head is reported to the network before its first delivery.
+func (i *Indexer) fanOut(ns *networkState, ev IndexedEvent) (delivered bool) {
 	i.egresses.Range(func(_, v any) bool {
 		eg := v.(EventEgress)
 		if !eg.InterestedIn(ev.Kind, ev.NetworkId, ev.FilterHash) {
 			return true
+		}
+		if !delivered && ev.Kind == KindNewHead && !ev.Block.Zero() {
+			ns.handle.DeliveringHead(ev.Block.Number)
 		}
 		eg.Deliver(ev)
 		delivered = true

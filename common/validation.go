@@ -1696,6 +1696,11 @@ func (e *EvmNetworkConfig) Validate() error {
 	if e.GetLogsMaxAllowedRange == 0 {
 		return fmt.Errorf("network.*.evm.getLogsMaxAllowedRange must be greater than 0")
 	}
+	for method := range e.LocalAnswers {
+		if !slices.Contains(LocalAnswerMethods(), method) {
+			return fmt.Errorf("network.*.evm.localAnswers.%s: eRPC has no local answer for this method; one of %v", method, LocalAnswerMethods())
+		}
+	}
 	if e.ServedTip != nil {
 		if q := e.ServedTip.Quorum; q < 0 && q != ServedTipQuorumMajority {
 			return fmt.Errorf("network.*.evm.servedTip.quorum must be an integer >= 1 or \"majority\"")
@@ -1857,6 +1862,12 @@ func (b *SvmAvailabilityBoundConfig) Validate() error {
 	}
 	if b.FirstAvailableSlotPlus != nil && *b.FirstAvailableSlotPlus < 0 {
 		return fmt.Errorf("bound.firstAvailableSlotPlus must be >= 0")
+	}
+	if b.UpdateRate < 0 {
+		return fmt.Errorf("bound.updateRate must be >= 0")
+	}
+	if b.UpdateRate != 0 && b.FirstAvailableSlotPlus == nil {
+		return fmt.Errorf("bound.updateRate applies only to firstAvailableSlotPlus")
 	}
 	return nil
 }

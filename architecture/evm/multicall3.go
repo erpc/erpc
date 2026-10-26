@@ -58,12 +58,14 @@ type Multicall3Batcher struct {
 	awaitingAlone sync.Map // *common.NormalizedRequest -> [20]byte
 }
 
-// A pack shares one block and one gas limit. With the callers' own gas limit on
-// the multicall, an inner call gets less gas than it would alone: one that runs
-// out fails inside the pack and is sent alone, so packing never adds gas.
+// A pack shares one block, one gas limit and one sender (none, or the zero
+// address). With the callers' own gas limit on the multicall, an inner call
+// gets less gas than it would alone: one that runs out fails inside the pack
+// and is sent alone, so packing never adds gas.
 type multicall3Batch struct {
 	block   interface{}
 	gas     string
+	from    string
 	entries []*multicall3Entry
 	timer   *time.Timer
 }
@@ -172,7 +174,7 @@ func upstreamPostForward_eth_call(u common.Upstream, rq *common.NormalizedReques
 // submit waits for the pack nrq joins and returns its return data when the pack
 // answered it, else the outcome that sends it alone.
 func (b *Multicall3Batcher) submit(ctx context.Context, n common.Network, u common.Upstream, nrq *common.NormalizedRequest) ([]byte, string) {
-	target, data, block, gas, ok := multicall3CallOf(ctx, nrq)
+	target, data, block, gas, from, ok := multicall3CallOf(ctx, nrq)
 	if !ok {
 		return nil, multicall3Ineligible
 	}
@@ -182,7 +184,7 @@ func (b *Multicall3Batcher) submit(ctx context.Context, n common.Network, u comm
 	if bn := multicall3BlockNumber(block); bn > 0 && bn <= b.absentAtOrBelow.Load() {
 		return nil, multicall3Ineligible
 	}
-	keyBytes, err := json.Marshal([]interface{}{block, gas})
+	keyBytes, err := json.Marshal([]interface{}{block, gas, from})
 	if err != nil {
 		return nil, multicall3Ineligible
 	}
@@ -192,7 +194,7 @@ func (b *Multicall3Batcher) submit(ctx context.Context, n common.Network, u comm
 	b.mu.Lock()
 	bt := b.open[key]
 	if bt == nil {
-		bt = &multicall3Batch{block: block, gas: gas}
+		bt = &multicall3Batch{block: block, gas: gas, from: from}
 		b.open[key] = bt
 		bt.timer = time.AfterFunc(b.maxWait, func() { b.flush(key, bt, n, u) })
 	}
@@ -272,6 +274,9 @@ func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, bt *multicall3
 	if bt.gas != "" {
 		call["gas"] = bt.gas
 	}
+	if bt.from != "" {
+		call["from"] = bt.from
+	}
 	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{call, bt.block})
 	if err := jrq.SetID(util.RandomID()); err != nil {
 		return nil, false
@@ -339,24 +344,28 @@ func multicall3Context(entries []*multicall3Entry) (context.Context, context.Can
 	return context.WithDeadline(base, last)
 }
 
-// multicall3CallOf returns the target, calldata, wire block and gas limit of an
-// eth_call that Multicall3 can run exactly: {to, data|input, gas?} with no
-// sender, value or state override, since Multicall3 cannot carry those.
-func multicall3CallOf(ctx context.Context, nrq *common.NormalizedRequest) (target, data []byte, block interface{}, gas string, ok bool) {
+// multicall3CallOf returns the target, calldata, wire block, gas limit and
+// sender of an eth_call that Multicall3 can run exactly: {to, data|input, gas?,
+// from?} with no value or state override, since Multicall3 cannot carry those.
+// The only sender allowed is the zero address, the one a node assumes when
+// none is given: any other sender is what msg.sender would be, and inside the
+// pack msg.sender is Multicall3. It is returned so the pack is sent from it
+// too, keeping tx.origin exact on nodes whose default sender differs.
+func multicall3CallOf(ctx context.Context, nrq *common.NormalizedRequest) (target, data []byte, block interface{}, gas, from string, ok bool) {
 	jrq, err := nrq.JsonRpcRequest(ctx)
 	if err != nil || jrq == nil {
-		return nil, nil, nil, "", false
+		return nil, nil, nil, "", "", false
 	}
 	jrq.RLock()
 	defer jrq.RUnlock()
 
 	params := common.WireParams(ctx, nrq, jrq.Params)
 	if len(params) != 2 || params[1] == nil {
-		return nil, nil, nil, "", false
+		return nil, nil, nil, "", "", false
 	}
 	call, isMap := params[0].(map[string]interface{})
 	if !isMap {
-		return nil, nil, nil, "", false
+		return nil, nil, nil, "", "", false
 	}
 	var to, input string
 	for k, v := range call {
@@ -365,32 +374,38 @@ func multicall3CallOf(ctx context.Context, nrq *common.NormalizedRequest) (targe
 		}
 		s, isStr := v.(string)
 		if !isStr {
-			return nil, nil, nil, "", false
+			return nil, nil, nil, "", "", false
 		}
 		switch k {
 		case "to":
 			to = s
 		case "gas":
 			gas = s
+		case "from":
+			sender, err := common.HexToBytes(s)
+			if err != nil || len(sender) != 20 || [20]byte(sender) != [20]byte{} {
+				return nil, nil, nil, "", "", false
+			}
+			from = "0x" + hex.EncodeToString(sender)
 		case "data", "input":
 			if input != "" && !strings.EqualFold(input, s) {
-				return nil, nil, nil, "", false
+				return nil, nil, nil, "", "", false
 			}
 			input = s
 		default:
-			return nil, nil, nil, "", false
+			return nil, nil, nil, "", "", false
 		}
 	}
 	target, err = common.HexToBytes(to)
 	if err != nil || len(target) != 20 {
-		return nil, nil, nil, "", false
+		return nil, nil, nil, "", "", false
 	}
 	if input != "" {
 		if data, err = common.HexToBytes(input); err != nil {
-			return nil, nil, nil, "", false
+			return nil, nil, nil, "", "", false
 		}
 	}
-	return target, data, params[1], gas, true
+	return target, data, params[1], gas, from, true
 }
 
 func multicall3BlockNumber(block interface{}) int64 {

@@ -1365,14 +1365,7 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 			if err := repositoryCfg.SetDefaults(p.UpstreamDefaults); err != nil {
 				return fmt.Errorf("failed to set defaults for repository provider: %w", err)
 			}
-			envioCfg := &ProviderConfig{
-				Id:     "envio",
-				Vendor: "envio",
-			}
-			if err := envioCfg.SetDefaults(p.UpstreamDefaults); err != nil {
-				return fmt.Errorf("failed to set defaults for envio provider: %w", err)
-			}
-			p.Providers = append(p.Providers, repositoryCfg, envioCfg)
+			p.Providers = append(p.Providers, repositoryCfg)
 		}
 	}
 	if p.Providers == nil {
@@ -2310,6 +2303,14 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			}
 			if n.Evm.StripSubscribeFromBlockZero == nil && defaults.Evm.StripSubscribeFromBlockZero != nil {
 				n.Evm.StripSubscribeFromBlockZero = defaults.Evm.StripSubscribeFromBlockZero
+			}
+			for method, on := range defaults.Evm.LocalAnswers {
+				if _, set := n.Evm.LocalAnswers[method]; !set {
+					if n.Evm.LocalAnswers == nil {
+						n.Evm.LocalAnswers = make(map[string]bool, len(defaults.Evm.LocalAnswers))
+					}
+					n.Evm.LocalAnswers[method] = on
+				}
 			}
 		} else if n.Evm == nil && defaults.Evm != nil && n.Svm == nil && n.Architecture != ArchitectureSvm {
 			// Copy EVM defaults only onto networks that are (or can become) EVM.

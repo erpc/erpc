@@ -496,12 +496,13 @@ var (
 	}, []string{"project", "vendor", "network", "upstream"})
 
 	// MetricUpstreamStateProbe counts probe outcomes, by probe kind
-	// (context = execution-context call, proof = eth_getProof) and outcome
-	// (match/mismatch/unsupported/error).
+	// (context = execution-context call at a pinned block, proof = eth_getProof,
+	// latest = execution-context call at the "latest" tag) and outcome
+	// (match/stale/pin_ignored/mismatch/unsupported/error).
 	MetricUpstreamStateProbe = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_state_probe_total",
-		Help:      "Total state-trie probes by kind (context/proof) and outcome (match/mismatch/unsupported/error).",
+		Help:      "Total state-trie probes by kind (context/proof/latest) and outcome (match/stale/pin_ignored/mismatch/unsupported/error).",
 	}, []string{"project", "vendor", "network", "upstream", "probe", "outcome"})
 
 	// MetricIntegrityFollowHead is the highest block of the CONTIGUOUS,

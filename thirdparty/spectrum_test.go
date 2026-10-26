@@ -71,3 +71,44 @@ func TestSpectrumVendor_GenerateConfigs(t *testing.T) {
 		assert.Error(t, err)
 	})
 }
+
+func TestSpectrumVendor_Name(t *testing.T) {
+	assert.Equal(t, "spectrum", CreateSpectrumVendor().Name())
+}
+
+func TestSpectrumVendor_SupportsNetwork(t *testing.T) {
+	svtCheckSupports(t, CreateSpectrumVendor(), common.VendorSettings{}, []svtSupportCase{
+		{"evm:1", true, false},
+		{"evm:686868", true, false},
+		{"evm:999999999", false, false},
+		{"solana:mainnet", false, false},
+		{"evm:abc", false, false}, // spectrum swallows parse errors
+	})
+}
+
+func TestSpectrumVendor_GenerateConfigsBranches(t *testing.T) {
+	key := common.VendorSettings{"apiKey": "KEY"}
+	svtCheckGenErrors(t, CreateSpectrumVendor, []svtErrCase{
+		{"nil evm", &common.UpstreamConfig{}, key, "spectrum vendor requires upstream.evm.chainId to be defined"},
+		{"zero chain", svtEvm(0), key, "spectrum vendor requires upstream.evm.chainId to be defined"},
+	})
+	svtCheckURLs(t, CreateSpectrumVendor, key, map[int64]string{
+		1: "https://spectrum-03.simplystaking.xyz/KEY/ethereum/mn/1/shared/archive/rpc/",
+	})
+	svtCheckPreset(t, CreateSpectrumVendor(), "https://spectrum-03.simplystaking.xyz/own/ethereum/mn/1/shared/archive/rpc/")
+}
+
+func TestSpectrumVendor_GetVendorSpecificErrorIfAny(t *testing.T) {
+	err, _ := vendorErr(t, CreateSpectrumVendor(), "eth_getLogs", 401, -32000, "unauthorized", "d")
+	assert.NoError(t, err, "spectrum defers every error to generic handling")
+}
+
+func TestSpectrumVendor_OwnsUpstream(t *testing.T) {
+	svtAssertOwns(t, CreateSpectrumVendor(), map[string]bool{
+		"spectrum://key":     true,
+		"evm+spectrum://key": true,
+		"https://spectrum-03.simplystaking.xyz/KEY/ethereum/mn/1/shared/archive/rpc/": true,
+		"https://simplystaking.xyz/":   false,
+		"https://rpc.ankr.com/eth/key": false,
+	})
+}
