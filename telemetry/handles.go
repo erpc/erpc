@@ -28,6 +28,9 @@ type cachedCounterHandle struct {
 	counter          prometheus.Counter
 	vals             []string
 	lastAccessedAtMs atomic.Int64
+	// evicted: the idle sweep released this series; a BoundCounter
+	// holding it binds again.
+	evicted atomic.Bool
 }
 
 type gaugeKey struct {
@@ -92,6 +95,12 @@ var counterHandleCreateMu sync.Mutex
 // after an idle sweep evicts the series, a held child mutates an object
 // that is no longer collected.
 func CounterHandle(cv CounterIncrementable, labels ...string) prometheus.Counter {
+	return counterHandle(cv, labels).counter
+}
+
+// counterHandle is CounterHandle's cache entry for labels, its idle stamp
+// refreshed.
+func counterHandle(cv CounterIncrementable, labels []string) *cachedCounterHandle {
 	// Key on the POST-projection labels. Under a label customization several
 	// full-schema tuples collapse onto one underlying series; keying on the
 	// full tuple would create one cache entry per tuple sharing that series,
@@ -106,7 +115,7 @@ func CounterHandle(cv CounterIncrementable, labels ...string) prometheus.Counter
 	if v, ok := counterHandleCache.Load(k); ok {
 		h := v.(*cachedCounterHandle)
 		h.lastAccessedAtMs.Store(nowMs)
-		return h.counter
+		return h
 	}
 	counterHandleCreateMu.Lock()
 	defer counterHandleCreateMu.Unlock()
@@ -117,7 +126,7 @@ func CounterHandle(cv CounterIncrementable, labels ...string) prometheus.Counter
 	if v, ok := counterHandleCache.Load(k); ok {
 		h := v.(*cachedCounterHandle)
 		h.lastAccessedAtMs.Store(nowMs)
-		return h.counter
+		return h
 	}
 	h := &cachedCounterHandle{
 		counter: cv.WithLabelValues(labels...),
@@ -125,8 +134,40 @@ func CounterHandle(cv CounterIncrementable, labels ...string) prometheus.Counter
 	}
 	h.lastAccessedAtMs.Store(nowMs)
 	counterHandleCache.Store(k, h)
+	return h
+}
+
+// BoundCounter is a counter bound once to its labels, for paths that would
+// otherwise build the label key on every use. Each use refreshes the idle
+// stamp as CounterHandle does, and a use after the idle sweep released the
+// series binds again, so it is safe to hold.
+type BoundCounter struct {
+	cv     CounterIncrementable
+	labels []string
+	h      atomic.Pointer[cachedCounterHandle]
+}
+
+// BindCounter binds cv's child for labels.
+func BindCounter(cv CounterIncrementable, labels ...string) *BoundCounter {
+	b := &BoundCounter{cv: cv, labels: append([]string(nil), labels...)}
+	b.h.Store(counterHandle(cv, b.labels))
+	return b
+}
+
+func (b *BoundCounter) counter() prometheus.Counter {
+	h := b.h.Load()
+	if h.evicted.Load() {
+		h = counterHandle(b.cv, b.labels)
+		b.h.Store(h)
+		return h.counter
+	}
+	h.lastAccessedAtMs.Store(time.Now().UnixMilli())
 	return h.counter
 }
+
+func (b *BoundCounter) Inc() { b.counter().Inc() }
+
+func (b *BoundCounter) Add(v float64) { b.counter().Add(v) }
 
 // DefaultCounterIdleEvictionAfter is the conservative default idle threshold
 // for counter series eviction: long enough that only clearly-dead label
@@ -187,6 +228,7 @@ func sweepIdleCounterHandlesBefore(cutoffMs int64) int {
 		}
 		k := key.(counterKey)
 		counterHandleCache.Delete(key)
+		v.(*cachedCounterHandle).evicted.Store(true)
 		k.vec.(CounterIncrementable).DeleteLabelValues(v.(*cachedCounterHandle).vals...)
 		counterHandleCreateMu.Unlock()
 		evicted++
@@ -228,6 +270,10 @@ func ObserverHandle(hv HistogramObservable, labels ...string) prometheus.Observe
 
 // ResetHandleCache clears all handle caches. Call this after re-creating metric Vecs.
 func ResetHandleCache() {
+	counterHandleCache.Range(func(_, v any) bool {
+		v.(*cachedCounterHandle).evicted.Store(true)
+		return true
+	})
 	counterHandleCache = sync.Map{}
 	gaugeHandleCache = sync.Map{}
 	observerHandleCache = sync.Map{}

@@ -33,18 +33,18 @@ import (
 )
 
 type Network struct {
-	networkId            string
-	networkLabel         string
-	projectId            string
-	logger               *zerolog.Logger
-	headLoopOnce         sync.Once
-	appCtx               context.Context
-	cfg                  *common.NetworkConfig
-	inFlightRequests     *sync.Map
-	failsafeExecutors    []*networkExecutor // main: failsafe rename FailsafeExecutor → networkExecutor
+	networkId         string
+	networkLabel      string
+	projectId         string
+	logger            *zerolog.Logger
+	headLoopOnce      sync.Once
+	appCtx            context.Context
+	cfg               *common.NetworkConfig
+	inFlightRequests  *sync.Map
+	failsafeExecutors []*networkExecutor // main: failsafe rename FailsafeExecutor → networkExecutor
 	// bareExecutor applies no network policy: timeout-only requests (state
 	// probes) take it, so they get no network retry or hedge (spec §6.11).
-	bareExecutor *networkExecutor
+	bareExecutor         *networkExecutor
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	cacheDal             common.CacheDAL
 	metricsTracker       *health.Tracker

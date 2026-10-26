@@ -2,7 +2,6 @@ package evm
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -890,8 +889,8 @@ func (i *covPollerIntake) Polled(string, SourceHeader, error, HeaderKind, time.T
 	i.polled.Add(1)
 	return true
 }
-func (i *covPollerIntake) PollFailed(string, time.Time)                             { i.failed.Add(1) }
-func (i *covPollerIntake) PolledFinalized(string, SourceHeader)                     {}
+func (i *covPollerIntake) PollFailed(string, time.Time)         { i.failed.Add(1) }
+func (i *covPollerIntake) PolledFinalized(string, SourceHeader) {}
 
 // A counter another path keeps fresh meets a number need, but never a hash
 // need: its local fetch still runs, so this instance keeps sampling block

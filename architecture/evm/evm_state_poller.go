@@ -3,7 +3,6 @@ package evm
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime/debug"

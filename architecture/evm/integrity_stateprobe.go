@@ -710,7 +710,7 @@ func DecideTagState(ctx context.Context, n common.Network, r *common.NormalizedR
 		return nil
 	}
 	var sel string
-	if d != nil {
+	if d := r.Directives(); d != nil {
 		sel = d.UseUpstream
 	}
 	now := time.Now()
