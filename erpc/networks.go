@@ -146,6 +146,15 @@ type servedTipLane struct {
 	// sent is the highest block this instance's taps of the lane wrote,
 	// on any transport: a Latest below it is latest_regressed.
 	sent atomic.Uint64
+	// fallen: Latest is below sent and its fall was counted; it re-arms
+	// once Latest reaches sent again (spec §17: once per fall). Guarded
+	// by mu.
+	fallen bool
+	// voters are the ids the last latest ballot counted, ballot the
+	// current evaluation's (buffers swapped each refresh): a fall while
+	// the counted set changed is a membership change, no latest_regressed
+	// (spec §17). Guarded by mu.
+	voters, ballot []string
 }
 
 func (l *servedTipLane) noteSent(n uint64) {
@@ -523,7 +532,8 @@ func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (h
 // all of them): the heads of the best-ranked voters (tipVoterRank), minus
 // the voters on a minority fork, which have no number vote (spec §6.3). live
 // reports whether live, non-capped heads decided it (benched or not): a
-// cap-only ballot gives the regression guard no live reference.
+// cap-only ballot gives the regression guard no live reference. voters,
+// when not nil, is reset to the ids of the voters the pick counted.
 //
 // MIXED POOL vs ALL-CAPPED POOL. The rule applies per candidate set, which is
 // what lets the same function build the network-wide ballot AND each
@@ -533,11 +543,14 @@ func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (h
 // serve — so it keeps voting. (No live head means no live reference for the
 // regression guard either; it falls back to its own last corroborated pick,
 // see guardServedTipRegression.)
-func (n *Network) evmTipBallot(sel string, useFinalized bool, q common.ServedTipQuorum, member func(common.Upstream) bool) (pick common.ServedTipPick, live bool, ranks tipRanks) {
+func (n *Network) evmTipBallot(sel string, useFinalized bool, q common.ServedTipQuorum, member func(common.Upstream) bool, voters *[]string) (pick common.ServedTipPick, live bool, ranks tipRanks) {
 	// Typical pools fit the stack buffer, so the ballot stays off the heap;
 	// append moves a larger one there.
 	var buf [16]int64
 	heads := buf[:0]
+	if voters != nil {
+		*voters = (*voters)[:0]
+	}
 	best := -1
 	for u := range n.tipCandidates(sel) {
 		if member != nil && !member(u) || n.isForkDemoted(u) {
@@ -553,8 +566,14 @@ func (n *Network) evmTipBallot(sel string, useFinalized bool, q common.ServedTip
 		}
 		if best < 0 || rank < best {
 			best, heads = rank, heads[:0]
+			if voters != nil {
+				*voters = (*voters)[:0]
+			}
 		}
 		heads = append(heads, head)
+		if voters != nil {
+			*voters = append(*voters, u.Id())
+		}
 	}
 	return common.PickServedTip(heads, q), best >= 0 && best <= 1, ranks
 }
@@ -1551,7 +1570,7 @@ func (n *Network) guaranteedFloor(sel string, useFinalized bool) int64 {
 // So a cap-only ballot floors only when the REGISTERED set, which eligibility
 // churn cannot change, has no live member (anyRegisteredLiveHead).
 func (n *Network) guaranteedSubsetTip(sel string, useFinalized bool, member func(common.Upstream) bool) int64 {
-	pick, live, _ := n.evmTipBallot(sel, useFinalized, common.ServedTipQuorumMajority, member)
+	pick, live, _ := n.evmTipBallot(sel, useFinalized, common.ServedTipQuorumMajority, member, nil)
 	if pick.Inputs == 0 || (!live && n.anyRegisteredLiveHead(member, useFinalized)) {
 		return 0
 	}

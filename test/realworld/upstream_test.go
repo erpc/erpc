@@ -456,7 +456,7 @@ func u7() spec {
 // second, back in the ceiling: the same block is dispatched (§19 U13;
 // §5.3; §6.4 ceiling; §15.1 chain-identity cordon).
 func u13() spec {
-	return spec{name: "U13", bound: healthyDelivery, bandMisses: 1,
+	return spec{name: "U13", bound: healthyDelivery,
 		evm:   map[string]interface{}{"shortCircuitFutureBlocks": true},
 		upEvm: map[string]map[string]interface{}{"http-b": {"statePollerInterval": u13PollInterval.String()}},
 		vars:  map[string]time.Duration{"evm.ChainIdCordonRecheck": u13Recheck},
@@ -511,6 +511,9 @@ func (s *scenario) requireCeiling(in bool, when string) {
 		n := s.chain.Tip().Number + u13Probe
 		from := time.Now()
 		got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
+		if in {
+			s.owe(pod, "retried_missing", 1)
+		}
 		d := s.dispatches(n, from, time.Now())
 		switch {
 		case in && d == 0:

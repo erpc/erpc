@@ -205,15 +205,35 @@ func (h *harness) claimDump(pod int) bool {
 	return true
 }
 
-// freePort is a port no socket holds on any address: pods bind some
-// listeners (metrics) on every interface.
+// freePort is a port no listener holds on any address: pods bind HTTP and
+// gRPC on 127.0.0.1 and metrics on every interface. On macOS a ":0" probe
+// (the IPv6 dual-stack wildcard) may return a port an IPv4 listener holds,
+// and the pod's wildcard bind then succeeds beside it while that listener
+// takes every 127.0.0.1 connection (N6: pod-1's scrapes got EOF all
+// phase), so the port is probed on the IPv4 addresses too.
 func freePort(t *testing.T) int {
-	ln, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatal(err)
+	for {
+		ln, err := net.Listen("tcp", ":0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		_ = ln.Close()
+		if ipv4Free(port) {
+			return port
+		}
 	}
-	defer ln.Close()
-	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func ipv4Free(port int) bool {
+	for _, host := range []string{"0.0.0.0", "127.0.0.1"} {
+		ln, err := net.Listen("tcp4", net.JoinHostPort(host, strconv.Itoa(port)))
+		if err != nil {
+			return false
+		}
+		_ = ln.Close()
+	}
+	return true
 }
 
 // bootAttempts: a pod whose port another process took between freePort

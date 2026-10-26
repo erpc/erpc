@@ -151,6 +151,7 @@ func u12() spec {
 				n := s.chain.Tip().Number + u12Probe
 				from := time.Now()
 				got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
+				s.owe(pod, "retried_missing", 1)
 				switch d := s.dispatches(n, from, time.Now()); {
 				case d == 0:
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered %s with no dispatch, below the ceiling %s raised", pod+1, n, got, up)
@@ -691,7 +692,8 @@ func c9() spec {
 // eth_getBlockByNumber(next) until it answers, pod by pod. Each request
 // reaches upstreams at most refusalDispatches times. With
 // shortCircuitFutureBlocks on, a block far above the ceiling is null with
-// no dispatch (§6.4 refusal rule, #1238).
+// no dispatch (§6.4 refusal rule, #1238). Each null poll in the band is a
+// band probe: one retried_missing (row K7).
 func k7(on bool) spec {
 	name := "K7-off"
 	if on {
@@ -716,6 +718,9 @@ func pollNext(s *scenario, farFuture bool) {
 		s.t.Fatalf("eth_blockNumber: %v", err)
 	}
 	next, polls := uint64(bn)+1, 0
+	// nulls counts each pod's null answers: each is one refusal, retried
+	// in the band or future above the ceiling (§6.4, §17).
+	nulls := make([]float64, len(s.h.pods))
 	for end := time.Now().Add(40 * time.Second); time.Now().Before(end); polls++ {
 		pod := int(next % uint64(len(s.h.pods)))
 		from := time.Now()
@@ -724,6 +729,7 @@ func pollNext(s *scenario, farFuture bool) {
 			s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d); answered %s", pod+1, next, d, refusalDispatches, got)
 		}
 		if got == "null" {
+			nulls[pod]++
 			time.Sleep(s.chain.BlockTime() / 4)
 			continue
 		}
@@ -733,17 +739,48 @@ func pollNext(s *scenario, farFuture bool) {
 		next++
 	}
 	s.logf("%d polls reached block %d", polls, next-1)
-	if !farFuture {
-		return
-	}
-	for i := range 10 {
-		pod := i % len(s.h.pods)
-		n := s.chain.Tip().Number + 1000 + uint64(i)
-		from := time.Now()
-		got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
-		if d := s.dispatches(n, from, time.Now()); got != "null" || d > 0 {
-			s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), above the ceiling, answered %s after %d dispatches", pod+1, n, got, d)
+	if farFuture {
+		for i := range 10 {
+			pod := i % len(s.h.pods)
+			n := s.chain.Tip().Number + 1000 + uint64(i)
+			from := time.Now()
+			got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
+			if got == "null" {
+				nulls[pod]++
+			}
+			if d := s.dispatches(n, from, time.Now()); got != "null" || d > 0 {
+				s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), above the ceiling, answered %s after %d dispatches", pod+1, n, got, d)
+			}
 		}
+	}
+	oweBandProbes(s, nulls)
+}
+
+// oweBandProbes owes each pod one retried_missing per band probe: whether a
+// null poll was in the band or above the ceiling is the pod's verdict at
+// that instant, which only its counters show, so the band probes are its
+// null answers less those it counted future. A null the pod counted as no
+// refusal at all (a block at or below Latest) leaves retried_missing short
+// of what is owed, and a retried_missing from anything but these polls
+// exceeds it.
+func oweBandProbes(s *scenario, nulls []float64) {
+	for pod, n := range nulls {
+		p := s.h.pods[pod]
+		ss, err := p.scrape()
+		if err != nil {
+			s.violate("harness", "pod-%d: scrape: %v", pod+1, err)
+			continue
+		}
+		p.carriedMu.Lock()
+		ss = append(ss, p.carried...)
+		p.carriedMu.Unlock()
+		future := 0.0
+		for _, rule := range []string{"future", "future_after_refresh"} {
+			v, _ := sumOf(ss, "erpc_head_refusal_total", map[string]string{"project": s.project, "network": s.network(), "rule": rule})
+			future += v
+		}
+		s.logf("pod-%d: %v null polls, %v counted future, %v band probes", pod+1, n, future, n-future)
+		s.owe(pod, "retried_missing", n-future)
 	}
 }
 
