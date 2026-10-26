@@ -380,12 +380,13 @@ func p6() spec {
 
 // C12: the majority (every vendor) reverts revertDepth blocks, below each
 // one's finalized tag. Clients follow the new branch from the fork point +
-// 1, each pod logs final_hash_changed, and no permanent cache entry keeps
-// a reverted block: by-number reads before the revert do not survive it
-// (§6.5 "a majority branch that reverts a block at or below Finalized is
-// followed", §15.3). The revert is deeper than reorgWindow, so newHeads
-// restarts after the reverted batch (a jump) and ws logs end 1013 within
-// their close spread (§10.2, §15.1), as in C3.
+// 1, no permanent cache entry keeps a reverted block on any pod: by-number
+// reads before the revert do not survive it (§6.5 "every reverted pin at
+// or below Finalized … is read past its permanent cache entry", §15.3).
+// At least one pod logs final_hash_changed: only a pod whose own finalized
+// polls covered a reverted pin does (§6.5). The revert is deeper than
+// reorgWindow, so newHeads restarts after the reverted batch (a jump) and
+// ws logs end 1013 within their close spread (§10.2, §15.1), as in C3.
 func c12() spec {
 	return spec{name: "C12", cache: true, bound: deepReorgDelivery, allow: []string{"ws:logs-end", "ws:jump"}, body: func(s *scenario) {
 		s.blocks(50)
@@ -419,15 +420,17 @@ func revertFinalized(s *scenario) {
 		s.violate(s.name, "harness: no read height %d…%d was reverted (fork point %d)", heights[0], heights[len(heights)-1], r.old[0].Number-1)
 	}
 	time.Sleep(max(deepReorgDelivery, logsCloseSpread) + reconnectSlack)
+	logged := false
 	for pod := range s.h.pods {
 		for _, n := range heights {
 			if got, want := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false), s.chain.CanonAt(n).Hash.Hex(); got != want {
 				s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) after the revert answered %s, not the new branch's %s: a permanent entry kept the reverted block", pod+1, n, got, want)
 			}
 		}
-		if !s.podLogged(pod, "final_hash_changed") {
-			s.violate(s.name, "pod-%d: logged no final_hash_changed after the majority reverted %d finalized blocks", pod+1, revertDepth-chainsim.FinalizedLag)
-		}
+		logged = logged || s.podLogged(pod, "final_hash_changed")
+	}
+	if !logged {
+		s.violate(s.name, "no pod logged final_hash_changed after the majority reverted %d finalized blocks", revertDepth-chainsim.FinalizedLag)
 	}
 	s.requireReorgsTold()
 }

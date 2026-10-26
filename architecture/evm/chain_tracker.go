@@ -77,13 +77,14 @@ type ChainTracker struct {
 	receipts sync.Map // lowercase block hash -> *heldReceipts
 	anchors  sync.Map // int64 -> *anchorEntry: finalized narrow anchors
 
-	// revertedFinal holds the spans of finalized blocks a followed
-	// majority branch reverted (recordMove), newest last, at most
-	// maxRevertedFinal; any goroutine reads it.
+	// revertedFinal holds the spans of blocks at or below Finalized a
+	// followed majority branch reverted (recordMove), final or not, newest
+	// last, at most maxRevertedFinal; any goroutine reads it.
 	revertedFinal atomic.Pointer[[]heightSpan]
-	// unlinkedPins are the pins a re-anchor left below the new tree; only
-	// the tracker's goroutine reads or writes them (recordMove).
-	unlinkedPins []*chainHeader
+	// unlinkedPins are the pins a re-anchor left below the new tree, with
+	// the finality they had on the path they were pinned on; only the
+	// tracker's goroutine reads or writes them (recordMove).
+	unlinkedPins []unlinkedPin
 
 	wantMu      sync.Mutex
 	wants       map[uint64]indexer.ReadOpts
@@ -1465,12 +1466,15 @@ func (t *ChainTracker) apply(path []*node) {
 }
 
 // recordMove counts a re-anchor, or the depth of a reorg, from old to path,
-// and sets the head gauge. A reverted final pin (finalThrough) is followed,
-// logged as an error (final_hash_changed) and kept in revertedFinal, so no
-// permanent cache entry serves the old branch (spec §6.5); any other revert
-// is a reorg. A re-anchor's old pins below the new tree are decided once
-// fill links that tree down to them (unlinkedPins), or dropped once they
-// leave the window. Headers compare by hash: fill can fetch an evicted
+// and sets the head gauge. Every reverted pin at or below Finalized is kept
+// in revertedFinal, so no permanent cache entry serves the old branch: a
+// permanent write needs only the serving upstream's finalized number. A
+// reverted final pin (finalThrough) is also logged as an error
+// (final_hash_changed); any other revert is a reorg (spec §6.5). A
+// re-anchor's old pins below the new tree are decided once fill links that
+// tree down to them (unlinkedPins), or dropped once they leave the window;
+// they keep the finality they had on the old path, which held the
+// finalized evidence. Headers compare by hash: fill can fetch an evicted
 // block again as a new header. A tracker that no history serves moves to a
 // new root without a re-anchor, and nothing links its old pins (spec §6.5
 // rule 1).
@@ -1514,37 +1518,45 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 		t.rewindVoters(pathAt)
 	}
 	fin := t.finalizedHead()
-	var span heightSpan
+	finalOld := t.finalThrough(old, fin)
+	var reverted, alarm heightSpan
 	var oldLo, newLo *chainHeader
-	replaced := func(hs []*chainHeader) {
-		through := t.finalThrough(hs, fin)
-		for _, h := range hs {
-			if p := pathAt(h.number); p != nil && p.hash != h.hash && h.number <= through {
-				if span.hi == 0 || int64(h.number) < span.lo {
-					span.lo, oldLo, newLo = int64(h.number), h, p
-				}
-				span.hi = max(span.hi, int64(h.number))
+	replaced := func(h *chainHeader, final bool) {
+		p := pathAt(h.number)
+		if fin <= 0 || p == nil || p.hash == h.hash || int64(h.number) > fin {
+			return
+		}
+		reverted = reverted.with(int64(h.number))
+		if final {
+			if alarm.hi == 0 || int64(h.number) < alarm.lo {
+				oldLo, newLo = h, p
 			}
+			alarm = alarm.with(int64(h.number))
 		}
 	}
-	replaced(old)
-	replaced(t.unlinkedPins)
-	var unlinked []*chainHeader
-	keepUnlinked := func(hs []*chainHeader) {
-		for _, h := range hs {
-			if h.number < base && t.holds(head, h) {
-				unlinked = append(unlinked, h)
-			}
-		}
+	for _, h := range old {
+		replaced(h, h.number <= finalOld)
 	}
+	for _, u := range t.unlinkedPins {
+		replaced(u.h, u.final)
+	}
+	var unlinked []unlinkedPin
 	if t.served {
-		keepUnlinked(t.unlinkedPins)
+		for _, u := range t.unlinkedPins {
+			if u.h.number < base && t.holds(head, u.h) {
+				unlinked = append(unlinked, u)
+			}
+		}
 		if fork < 0 {
-			keepUnlinked(old)
+			for _, h := range old {
+				if h.number < base && t.holds(head, h) {
+					unlinked = append(unlinked, unlinkedPin{h: h, final: h.number <= finalOld})
+				}
+			}
 		}
 	}
 	t.unlinkedPins = unlinked
-	if span.hi > 0 {
+	if alarm.hi > 0 {
 		var ev *zerolog.Event
 		if t.selector == "" {
 			ev = common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantFinalHashChanged).Str("group", t.group)
@@ -1552,11 +1564,20 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 			ev = t.transition(zerolog.ErrorLevel, "invariant_violation").
 				Str("invariant", string(common.InvariantFinalHashChanged))
 		}
-		ev.Int64("revertedFrom", span.lo).Str("oldHash", hexHash(oldLo.hash)).Str("newHash", hexHash(newLo.hash)).
+		ev.Int64("revertedFrom", alarm.lo).Str("oldHash", hexHash(oldLo.hash)).Str("newHash", hexHash(newLo.hash)).
 			Int64("finalized", fin).Uint64("head", head.number).Str("headHash", hexHash(head.hash)).
 			Msg("chain tracker followed a majority branch that reverts a finalized block")
-		t.addRevertedFinal(span)
 	}
+	if reverted.hi > 0 {
+		t.addRevertedFinal(reverted)
+	}
+}
+
+// unlinkedPin is a pin a re-anchor left below the new tree; final is
+// whether it was final (finalThrough) on the path it was pinned on.
+type unlinkedPin struct {
+	h     *chainHeader
+	final bool
 }
 
 // finalThrough is the number of the highest final pin of hs, pins oldest
@@ -1636,8 +1657,16 @@ func (t *ChainTracker) rewindHeads(votes map[string]int64) {
 // blocks is a rare chain event.
 const maxRevertedFinal = 16
 
-// heightSpan is the block numbers lo through hi.
+// heightSpan is the block numbers lo through hi; hi 0 is empty.
 type heightSpan struct{ lo, hi int64 }
+
+// with is s widened to hold n.
+func (s heightSpan) with(n int64) heightSpan {
+	if s.hi == 0 {
+		return heightSpan{lo: n, hi: n}
+	}
+	return heightSpan{lo: min(s.lo, n), hi: max(s.hi, n)}
+}
 
 // addRevertedFinal publishes s in revertedFinal, merged with every span it
 // overlaps or touches, the oldest span leaving at the bound. A deep revert
@@ -1665,8 +1694,8 @@ func (t *ChainTracker) addRevertedFinal(s heightSpan) {
 }
 
 // RevertedFinal reports whether a followed majority branch reverted block
-// n while it was at or below Finalized on this instance: a permanent
-// cache entry for n may hold the old branch.
+// n while it was at or below Finalized on this instance, final or not: a
+// permanent cache entry for n may hold the old branch.
 func (t *ChainTracker) RevertedFinal(n int64) bool {
 	if t == nil {
 		return false

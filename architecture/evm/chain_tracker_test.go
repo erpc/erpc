@@ -353,7 +353,8 @@ func TestChainTracker(t *testing.T) {
 	// moved to the canonical branch (dev: 19 final_hash_changed on three
 	// one-upstream parachains). Finality by number alone called the revert
 	// a final-hash change; only finalized evidence that covers the pin's
-	// hash makes it one (spec §6.5).
+	// hash makes it one. Either way the reverted block at or below
+	// Finalized is read past its permanent cache entry (spec §6.5).
 	t.Run("a revert counts as a final-hash change only when finalized evidence covered the pin", func(t *testing.T) {
 		ctx := context.Background()
 		const fin = 8
@@ -362,6 +363,9 @@ func TestChainTracker(t *testing.T) {
 			var h [32]byte
 			require.True(t, decodeHex32(hash, &h))
 			c.observeFinal("a", finalEvidence{number: n, hash: h})
+		}
+		alarms := func() float64 {
+			return testutil.ToFloat64(telemetry.MetricChainTrackerInvariantViolationsTotal.WithLabelValues("", "", string(common.InvariantFinalHashChanged)))
 		}
 		run := func(covered string) *ChainTracker {
 			c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", head, newFetchScheduler(t.Context(), nil))
@@ -374,12 +378,15 @@ func TestChainTracker(t *testing.T) {
 			c.sync(ctx)
 			return c
 		}
+		before := alarms()
 		c := run(testHash("c", fin))
-		assert.False(t, c.RevertedFinal(fin), "the finalized poll named the other branch: the pin was never final")
+		assert.Equal(t, before, alarms(), "the finalized poll named the other branch: the pin was never final")
+		assert.True(t, c.RevertedFinal(fin), "a reverted pin at Finalized skips its permanent cache entry, final or not")
 
 		c = run(testHash("a", fin))
-		assert.True(t, c.RevertedFinal(fin), "the finalized poll named the pin: its revert is a final-hash change")
-		assert.False(t, c.RevertedFinal(fin+1), "a pin above Finalized is never final")
+		assert.Equal(t, before+1, alarms(), "the finalized poll named the pin: its revert is a final-hash change")
+		assert.True(t, c.RevertedFinal(fin))
+		assert.False(t, c.RevertedFinal(fin+1), "a pin above Finalized keeps its cache entry")
 	})
 }
 
