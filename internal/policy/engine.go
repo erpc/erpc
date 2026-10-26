@@ -378,13 +378,13 @@ func (e *Engine) getOrdered(networkID, method, finality string, laneIDs []string
 	if slot != nil {
 		slot.lastAccessedAtMs.Store(nowMs)
 		if ordered := slot.cache.Load(); ordered != nil && len(*ordered) > 0 {
-			return *ordered
+			return slot.methodBlocks.Load().filter(*ordered, method)
 		}
 	}
 	if wildcard != nil {
 		wildcard.lastAccessedAtMs.Store(nowMs)
 		if ordered := wildcard.cache.Load(); ordered != nil {
-			return *ordered
+			return wildcard.methodBlocks.Load().filter(*ordered, method)
 		}
 	}
 	return nil
@@ -452,24 +452,46 @@ func (e *Engine) RecentDecisions(networkID, method, finality string, limit int) 
 // candidates."
 func (e *Engine) GetExcluded(networkID, method, finality string) []common.Upstream {
 	slot, wildcard := e.lookupSlotWithFallback(networkID, method, finality, nil)
-	if slot != nil {
-		// Honor the narrow slot whenever it has TICKED (non-nil pointer),
-		// even when its probe-candidate set is empty: with probe-blocking
-		// verdicts an empty set is a deliberate outcome ("everything
-		// excluded here is static"), not a cold start. Falling back to the
-		// wildcard on len==0 would resurrect probes the narrow eval
-		// suppressed. Pointer-nil (never ticked) is the only cold-start
-		// signal that defers to the wildcard slot.
-		if excluded := slot.excludedCache.Load(); excluded != nil {
-			return *excluded
+	// Honor the narrow slot whenever it has TICKED (non-nil pointer),
+	// even when its probe-candidate set is empty: with probe-blocking
+	// verdicts an empty set is a deliberate outcome ("everything
+	// excluded here is static"), not a cold start. Falling back to the
+	// wildcard on len==0 would resurrect probes the narrow eval
+	// suppressed. Pointer-nil (never ticked) is the only cold-start
+	// signal that defers to the wildcard slot.
+	for _, s := range []*Slot{slot, wildcard} {
+		if s == nil {
+			continue
 		}
-	}
-	if wildcard != nil {
-		if excluded := wildcard.excludedCache.Load(); excluded != nil {
-			return *excluded
+		if excluded := s.excludedCache.Load(); excluded != nil {
+			return withMethodBlocked(*excluded, s.methodBlocks.Load().probeCandidates(method))
 		}
 	}
 	return nil
+}
+
+// withMethodBlocked appends the upstreams blocked for one method to the
+// slot's excluded set, skipping duplicates. Returns `excluded` as-is when
+// nothing is added; never mutates it.
+func withMethodBlocked(excluded, blocked []common.Upstream) []common.Upstream {
+	if len(blocked) == 0 {
+		return excluded
+	}
+	out := make([]common.Upstream, 0, len(excluded)+len(blocked))
+	out = append(out, excluded...)
+	for _, b := range blocked {
+		dup := false
+		for _, x := range excluded {
+			if x.Id() == b.Id() {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // PublishRequest hands a freshly-served request to the network's
