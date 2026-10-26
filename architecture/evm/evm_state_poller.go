@@ -1978,6 +1978,7 @@ func (e *EvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	// Also reflect operator-configured skip in diagnostics.
 	if upsCfg := e.upstream.Config(); upsCfg.Evm != nil && upsCfg.Evm.SkipSyncingCheck != nil && *upsCfg.Evm.SkipSyncingCheck {
 		diag.SkipSyncingCheck = true
+		diag.SyncingCheckError = "syncing check disabled by upstream config (evm.skipSyncingCheck)"
 	}
 
 	// Collect earliest block bounds per probe type (separate lock)

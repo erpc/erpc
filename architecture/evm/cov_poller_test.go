@@ -277,9 +277,11 @@ func TestCovPoller_PollLatest_GivesUpAfterTenUnsupportedAnswers(t *testing.T) {
 			// gives it up again at once.
 			covPollerExpireGiveUp(p, &p.latestGiveUp)
 			assert.False(t, p.LatestUnsupported(), "the give-up expires")
+			time.Sleep(20 * time.Millisecond) // past the poll debounce
 			_, _ = p.PollLatestBlockNumber(ctx)
 			assert.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"), "an expired give-up is retried")
 			assert.True(t, p.LatestUnsupported(), "a refused retry gives up again")
+			time.Sleep(20 * time.Millisecond)
 			_, _ = p.PollLatestBlockNumber(ctx)
 			assert.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"))
 		})
@@ -498,8 +500,10 @@ func TestCovPoller_PollFinalized_GivesUpAfterTenUnsupportedAnswers(t *testing.T)
 			covPollerExpireGiveUp(p, &p.finalizedGiveUp)
 			_, derived = p.DerivedFinalized()
 			assert.True(t, derived, "derived finality never flips off on a retry")
+			time.Sleep(20 * time.Millisecond) // past the poll debounce
 			_, _ = p.PollFinalizedBlockNumber(ctx)
 			assert.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"), "an expired give-up is retried")
+			time.Sleep(20 * time.Millisecond)
 			_, _ = p.PollFinalizedBlockNumber(ctx)
 			assert.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"), "a refused retry gives up again")
 		})
