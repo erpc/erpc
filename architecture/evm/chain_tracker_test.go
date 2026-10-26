@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -12,7 +13,10 @@ import (
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,6 +40,83 @@ func voteChain(t *testing.T, c *ChainTracker, src, tag string, from, to uint64, 
 		parent = h
 	}
 	c.sync(context.Background())
+}
+
+// servedChain serves header fetches by number and by hash from the blocks
+// it was given; a fetch of a held ref waits until the ref is released.
+// Sources a and b, of two vendors, are its hash voters.
+type servedChain struct {
+	mockNetwork
+	mu     sync.Mutex
+	blocks map[string]json.RawMessage // number or hash -> header
+	gates  map[string]chan struct{}
+}
+
+func newServedChain(t *testing.T, id string) *servedChain {
+	n := &servedChain{blocks: map[string]json.RawMessage{}, gates: map[string]chan struct{}{}}
+	n.On("Forward", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			jrq, _ := req.JsonRpcRequest()
+			ref, _ := jrq.Params[0].(string)
+			n.mu.Lock()
+			gate := n.gates[ref]
+			n.mu.Unlock()
+			if gate != nil {
+				select {
+				case <-gate:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			n.mu.Lock()
+			body := n.blocks[ref]
+			n.mu.Unlock()
+			if body == nil {
+				return nil, errors.New("no block " + ref)
+			}
+			return common.NewNormalizedResponse().WithJsonRpcResponse(
+				common.MustNewJsonRpcResponseFromBytes([]byte(`"1"`), body, nil),
+			), nil
+		},
+		nil,
+	).Maybe()
+	n.On("Id").Return(id).Maybe()
+	n.On("ProjectId").Return("test").Maybe()
+	n.On("HeadLatest", mock.Anything).Return(int64(1) << 62).Maybe()
+	t.Cleanup(func() {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		for ref, g := range n.gates {
+			close(g)
+			delete(n.gates, ref)
+		}
+	})
+	return n
+}
+
+func (n *servedChain) EvmHashVoters(string, time.Duration, bool) HashVoters {
+	return HashVoters{Voters: []string{"a", "b"}, Hash: []string{"a", "b"}, Need: 2, NetworkVendors: 2,
+		Vendors: map[string]string{"a": "vendor-a", "b": "vendor-b"}}
+}
+
+// serve makes the chain answer block n, hash h, by number and by hash.
+func (n *servedChain) serve(number uint64, h string, header json.RawMessage) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.blocks[fmt.Sprintf("0x%x", number)], n.blocks[h] = header, header
+}
+
+func (n *servedChain) hold(ref string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.gates[ref] = make(chan struct{})
+}
+
+func (n *servedChain) release(ref string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	close(n.gates[ref])
+	delete(n.gates, ref)
 }
 
 func TestChainTracker(t *testing.T) {
@@ -133,6 +214,56 @@ func TestChainTracker(t *testing.T) {
 		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
 		_, ok := c.headerByHash(context.Background(), testHash("e", 1))
 		assert.False(t, ok)
+	})
+
+	// A client's read of a new branch is held without a walk; a vote's walk
+	// that a later answer joins from below goes on from that answer, so the
+	// votes wait until the branch links to the pins and the switch is a
+	// reorg at the fork point, not a re-anchor onto an unlinked tree (K5's
+	// reorgWindow − 1 deep reorg ended taps fork_left_window that way).
+	t.Run("a client answer inside a walked branch keeps the votes waiting for the walk", func(t *testing.T) {
+		ctx := context.Background()
+		net := newServedChain(t, "evm:walk-join")
+		c := newChainTracker(t.Context(), net, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		voteChain(t, c, "a", "a", 1, 10, testHash("f", 0))
+		voteChain(t, c, "b", "a", 1, 10, testHash("f", 0))
+		b := func(n uint64) json.RawMessage {
+			parent := testHash("b", n-1)
+			if n == 7 {
+				parent = testHash("a", 6)
+			}
+			return testHeader(n, testHash("b", n), parent)
+		}
+		for n := uint64(7); n <= 11; n++ {
+			net.serve(n, testHash("b", n), b(n))
+		}
+		net.hold("0x8")
+		net.hold("0x7")
+		reanchors := func() float64 {
+			return testutil.ToFloat64(telemetry.MetricChainTrackerReanchorTotal.WithLabelValues("test", "evm:walk-join"))
+		}
+		before := reanchors()
+
+		c.Observe("client", b(9), false)
+		c.Observe("client", b(10), false)
+		c.Observe("a", b(11), true)
+		c.Observe("b", b(11), true)
+		c.Observe("client", b(8), false)
+		c.sync(ctx)
+		v, _ := c.HashAt(10)
+		assert.Equal(t, testHash("a", 10), v, "the votes wait while their walk is out")
+
+		net.release("0x7")
+		require.Eventually(t, func() bool {
+			c.sync(ctx)
+			v, _ := c.HashAt(11)
+			return v == testHash("b", 11)
+		}, 5*time.Second, 5*time.Millisecond, "the walk links b7 to a6 and the votes move")
+		v, _ = c.HashAt(7)
+		assert.Equal(t, testHash("b", 7), v)
+		v, _ = c.HashAt(6)
+		assert.Equal(t, testHash("a", 6), v, "the branch hangs from the fork point")
+		assert.Equal(t, before, reanchors(), "a reorg inside the window is no re-anchor")
 	})
 }
 
