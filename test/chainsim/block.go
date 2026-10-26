@@ -146,8 +146,20 @@ func (b *Block) Kind() Kind { return b.kind }
 // TxCount is how many transactions the block holds.
 func (b *Block) TxCount() int { return len(b.txs) }
 
+// TxHash is the hash of the block's transaction i.
+func (b *Block) TxHash(i int) Hash { return txHash(b.Hash, i) }
+
 // Receipts are the block's receipts as an honest vendor answers them.
 func (b *Block) Receipts() []map[string]interface{} { return b.receipts(false, false, 0, false) }
+
+// Receipt is transaction i's receipt as an honest vendor answers it.
+func (b *Block) Receipt(i int) map[string]interface{} {
+	li := 0
+	for _, tx := range b.txs[:i] {
+		li += len(tx)
+	}
+	return b.receiptAt(i, li, false, false, false)
+}
 
 // JSON is the header as eth_getBlockByNumber(n, false) answers it.
 func (b *Block) JSON() json.RawMessage { return b.raw }
@@ -175,35 +187,41 @@ func (b *Block) Logs() []Log {
 // not set, drop leaves out the last receipts, forge changes the first
 // log's data.
 func (b *Block) receipts(badBloom, offBloom bool, drop int, forge bool) []map[string]interface{} {
-	logs := b.Logs()
 	n := max(0, len(b.txs)-drop)
 	out := make([]map[string]interface{}, 0, n)
 	li := 0
 	for i := range n {
-		var bloom gethtypes.Bloom
-		if !badBloom {
-			addTxBloom(&bloom, b.tag, i, b.txs[i])
-		}
-		if offBloom {
-			bloom.Add([]byte("off-bloom"))
-		}
-		rl := make([]map[string]interface{}, 0, len(b.txs[i]))
-		for range b.txs[i] {
-			j := logs[li].json()
-			if forge && li == 0 {
-				j["data"] = ForgedData
-			}
-			rl = append(rl, j)
-			li++
-		}
-		out = append(out, map[string]interface{}{
-			"blockHash": b.Hash.Hex(), "blockNumber": hexU(b.Number),
-			"transactionHash": txHash(b.Hash, i).Hex(), "transactionIndex": hexU(uint64(i)),
-			"status": "0x1", "cumulativeGasUsed": "0x5208", "gasUsed": "0x5208", "type": "0x0",
-			"logsBloom": "0x" + hex.EncodeToString(bloom[:]), "logs": rl,
-		})
+		out = append(out, b.receiptAt(i, li, badBloom, offBloom, forge))
+		li += len(b.txs[i])
 	}
 	return out
+}
+
+// receiptAt is transaction i's receipt, whose first log is the block's log
+// li, with receipts' faults.
+func (b *Block) receiptAt(i, li int, badBloom, offBloom, forge bool) map[string]interface{} {
+	logs := b.Logs()
+	var bloom gethtypes.Bloom
+	if !badBloom {
+		addTxBloom(&bloom, b.tag, i, b.txs[i])
+	}
+	if offBloom {
+		bloom.Add([]byte("off-bloom"))
+	}
+	rl := make([]map[string]interface{}, 0, len(b.txs[i]))
+	for k := range b.txs[i] {
+		j := logs[li+k].json()
+		if forge && li+k == 0 {
+			j["data"] = ForgedData
+		}
+		rl = append(rl, j)
+	}
+	return map[string]interface{}{
+		"blockHash": b.Hash.Hex(), "blockNumber": hexU(b.Number),
+		"transactionHash": txHash(b.Hash, i).Hex(), "transactionIndex": hexU(uint64(i)),
+		"status": "0x1", "cumulativeGasUsed": "0x5208", "gasUsed": "0x5208", "type": "0x0",
+		"logsBloom": "0x" + hex.EncodeToString(bloom[:]), "logs": rl,
+	}
 }
 
 // lastLogCovered reports whether the block's other logs carry its last

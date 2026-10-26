@@ -730,6 +730,17 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 			v.served[h] = true
 		}
 		return b.receipts(f.WrongBloom, f.OffBloom, drop, f.ForgedLog), nil
+	case "eth_getTransactionReceipt":
+		hs, _ := firstString(params)
+		h, ok := parseHash(hs)
+		if !ok {
+			return nil, &rpcError{-32602, "invalid transaction hash"}
+		}
+		tx, ok := c.byTx[h]
+		if !ok || f.NullHeld || v.byNumberLocked(tx.b.Number) != tx.b {
+			return nil, nil
+		}
+		return tx.b.Receipt(tx.i), nil
 	case "eth_getLogs":
 		v.logsCalls.Add(1)
 		if f.LogsDown {

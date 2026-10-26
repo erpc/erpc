@@ -1,9 +1,13 @@
 package realworld
 
 import (
+	"encoding/json"
 	"fmt"
+	"maps"
 	"math/rand/v2"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/test/chainsim"
@@ -18,6 +22,9 @@ const (
 	u9VendorBLatency = 100 * time.Millisecond
 	// u9FaultBlocks: how long each U9 receipts fault lasts (harness).
 	u9FaultBlocks = 50
+	// u9TipMin: fewer tip receipt answers under one fault exercise
+	// nothing (harness).
+	u9TipMin = 20
 	// bloomSuspendRun: blocks in a row whose bloom mismatches, from
 	// vendors that meet the evidence quorum, suspend the bloom check;
 	// bloomRearmRun matching blocks in a row re-arm it (§6.9).
@@ -101,29 +108,198 @@ func u8(integrity bool) spec {
 // U9: vendor-a serves truncated receipts, then a forged log, then a zero
 // bloom, u9FaultBlocks each, integrity on. Receipts are refetched from
 // vendor-b: every client's logs equal the canonical logs, no forged log
-// reaches a client, and violations count on vendor-a only.
+// reaches a client, and violations count on vendor-a only. A tip client
+// (tipReceipts) reads a receipt of each head it receives: every answer is
+// the chain's; under the forged log its check takes vendor-a's receipts as
+// they meet the answer rules and waits for no refetch, while the forged
+// ones are never held (§11); no empty block gets a receipts call while it
+// demands receipts (§11 prefetch, C10).
 func u9() spec {
-	return spec{name: "U9", integrity: true, bound: healthyDelivery, body: func(s *scenario) {
+	tr := &tipReceipts{}
+	return spec{name: "U9", integrity: true, bound: healthyDelivery, onHead: tr.onHead, body: func(s *scenario) {
+		from := time.Now()
+		tr.reset()
 		s.slowVendorB()
 		s.blocks(25)
 		susp := s.suspensions("")
 		var during, duringB int64
-		for _, fault := range []func(*chainsim.Faults, bool){
-			func(f *chainsim.Faults, on bool) { f.TruncReceipts = on },
-			func(f *chainsim.Faults, on bool) { f.ForgedLog = on },
-			func(f *chainsim.Faults, on bool) { f.WrongBloom = on },
+		for _, fault := range []struct {
+			name string
+			set  func(*chainsim.Faults, bool)
+		}{
+			{"truncated", func(f *chainsim.Faults, on bool) { f.TruncReceipts = on }},
+			{"forged", func(f *chainsim.Faults, on bool) { f.ForgedLog = on }},
+			{"wrong-bloom", func(f *chainsim.Faults, on bool) { f.WrongBloom = on }},
 		} {
 			a0, b0 := s.receiptsCalls(vendorA), s.receiptsCalls(vendorB)
-			s.fault(vendorA, fault, u9FaultBlocks)
+			tr.setPhase(fault.name)
+			s.fault(vendorA, fault.set, u9FaultBlocks)
 			during += s.receiptsCalls(vendorA) - a0
 			duringB += s.receiptsCalls(vendorB) - b0
+			tr.setPhase("recovery")
 			s.blocks(10)
 		}
 		s.logf("under vendor-a's faults, vendor-a answered %d receipts calls, vendor-b %d", during, duringB)
 		s.requireOnVendorA(during, nil)
 		s.requireNotSuspended(susp, "")
+		tr.setPhase("healthy")
+		healthy := time.Now()
 		s.blocks(25)
+		to := time.Now()
+		// The last blocks' receipts calls end after they are minted.
+		s.blocks(5)
+		tr.judge(s, from, healthy, to)
 	}}
+}
+
+// tipReceipts is a client that follows the tip: on each pod's first
+// newHeads delivery of a head with transactions it asks that pod for the
+// head's first transaction receipt, which integrity's receiptVsBlock
+// checks against the block's receipts (§11). waits are the answers' waits
+// by phase and block kind.
+type tipReceipts struct {
+	mu    sync.Mutex
+	phase string
+	waits map[string][]time.Duration
+	nulls int
+}
+
+func (tr *tipReceipts) setPhase(p string) {
+	tr.mu.Lock()
+	tr.phase = p
+	tr.mu.Unlock()
+}
+
+// reset starts a run: a spec's state outlives a run when REALWORLD_ALONE
+// names it twice.
+func (tr *tipReceipts) reset() {
+	tr.mu.Lock()
+	tr.phase, tr.waits, tr.nulls = "warmup", map[string][]time.Duration{}, 0
+	tr.mu.Unlock()
+}
+
+// receiptJSON is what tipReceipts checks of an eth_getTransactionReceipt
+// answer.
+type receiptJSON struct {
+	BlockHash hash      `json:"blockHash"`
+	TxHash    hash      `json:"transactionHash"`
+	Logs      []logJSON `json:"logs"`
+}
+
+func (tr *tipReceipts) onHead(s *scenario, c *headsClient, pod int, n uint64, h hash) {
+	b := s.chain.Block(h)
+	if b == nil || b.TxCount() == 0 || n+1 < s.chain.Tip().Number || !s.first(fmt.Sprintf("u9-receipt/%d/%s", pod, h.Hex())) {
+		return
+	}
+	tr.mu.Lock()
+	phase := tr.phase
+	tr.mu.Unlock()
+	if phase == "" {
+		// A head delivered before the body started its run.
+		return
+	}
+	key := phase + "/" + kindName(b.Kind())
+	s.checks.Add(1)
+	go func() {
+		defer s.checks.Done()
+		start := time.Now()
+		var raw json.RawMessage
+		err := s.call(pod, &raw, "eth_getTransactionReceipt", b.TxHash(0).Hex())
+		wait := time.Since(start)
+		var r receiptJSON
+		switch {
+		case err != nil:
+			s.violate(c.name, "pod-%d: eth_getTransactionReceipt of block %d's first transaction: %v", pod+1, n, err)
+			return
+		case len(raw) == 0 || string(raw) == "null":
+			tr.mu.Lock()
+			tr.nulls++
+			tr.mu.Unlock()
+			return
+		case json.Unmarshal(raw, &r) != nil:
+			s.violate(c.name, "pod-%d: receipt of block %d does not parse: %.300s", pod+1, n, raw)
+			return
+		}
+		var want []chainsim.Log
+		for _, l := range b.Logs() {
+			if l.TxIndex == 0 {
+				want = append(want, l)
+			}
+		}
+		ok := r.BlockHash == b.Hash && r.TxHash == b.TxHash(0) && len(r.Logs) == len(want)
+		for i := 0; ok && i < len(want); i++ {
+			ok = int(r.Logs[i].LogIndex) == want[i].LogIndex && r.Logs[i].Data == "0x"
+		}
+		if !ok {
+			s.violate(c.name, "pod-%d: receipt of block %d's first transaction differs from the chain's: %.300s", pod+1, n, raw)
+		}
+		tr.mu.Lock()
+		tr.waits[key] = append(tr.waits[key], wait)
+		tr.mu.Unlock()
+	}()
+}
+
+func kindName(k chainsim.Kind) string {
+	switch k {
+	case chainsim.KindMatching:
+		return "matching"
+	case chainsim.KindQuiet:
+		return "quiet"
+	}
+	return "empty"
+}
+
+// judge logs the waits and the receipts calls per block of the final
+// healthy blocks, minted in [healthy, to], and applies the tip client's
+// rules to the blocks minted in [from, to].
+func (tr *tipReceipts) judge(s *scenario, from, healthy, to time.Time) {
+	tr.mu.Lock()
+	waits, nulls := map[string][]time.Duration{}, tr.nulls
+	for k, w := range tr.waits {
+		waits[k] = slices.Clone(w)
+	}
+	tr.mu.Unlock()
+	keys := slices.Sorted(maps.Keys(waits))
+	for _, k := range keys {
+		w := waits[k]
+		slices.Sort(w)
+		s.logf("tip receipts %s: %d answers, wait p50 %s p90 %s max %s", k, len(w),
+			w[len(w)/2].Round(time.Millisecond), w[len(w)*9/10].Round(time.Millisecond), w[len(w)-1].Round(time.Millisecond))
+	}
+	s.logf("tip receipts: %d null answers", nulls)
+	var forged []time.Duration
+	for _, k := range keys {
+		if strings.HasPrefix(k, "forged/") {
+			forged = append(forged, waits[k]...)
+		}
+	}
+	slices.Sort(forged)
+	if len(forged) < u9TipMin {
+		s.violate("harness", "%d tip receipt answers under vendor-a's forged log, fewer than %d", len(forged), u9TipMin)
+	} else if p50 := forged[len(forged)/2]; p50 >= u9VendorBLatency {
+		s.violate(s.name, "tip receipt checks under vendor-a's forged log waited p50 %s, at least vendor-b's %s: they waited on the receipts checks and vendor-b's refetch, not on vendor-a's answer (§11)", p50.Round(time.Millisecond), u9VendorBLatency)
+	}
+	calls := map[chainsim.Kind][2]int{}
+	for _, b := range s.chain.MintedBetween(from, to) {
+		n := 0
+		for _, v := range s.vendors {
+			c, _ := v.ReceiptsOf(b.Hash)
+			n += c
+		}
+		if b.Kind() == chainsim.KindEmpty && n > 0 {
+			s.violate(s.name, "empty block %d got %d receipts calls while clients read receipts", b.Number, n)
+		}
+		if b.MintedAt.Before(healthy) {
+			continue
+		}
+		sum := calls[b.Kind()]
+		calls[b.Kind()] = [2]int{sum[0] + 1, sum[1] + n}
+	}
+	for _, k := range []chainsim.Kind{chainsim.KindMatching, chainsim.KindQuiet, chainsim.KindEmpty} {
+		if c := calls[k]; c[0] > 0 {
+			s.logf("healthy: receipts calls per %s block per pod: %.2f over %d blocks", kindName(k), float64(c[1])/float64(c[0]*len(s.h.pods)), c[0])
+		}
+	}
 }
 
 // U9-trunc1, U9-trunc2: truncated receipts from vendor-a, then from both

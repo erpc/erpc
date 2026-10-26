@@ -55,6 +55,7 @@ type Chain struct {
 	minted  uint64
 	canon   []*Block
 	byHash  map[Hash]*Block
+	byTx    map[Hash]txRef
 	halted  bool
 	vendors []*Vendor
 	forks   map[*Fork]bool
@@ -101,10 +102,16 @@ type Trap struct {
 	During     int       // other receipts calls for the block while it was held
 }
 
+// txRef is where a transaction of a minted block sits.
+type txRef struct {
+	b *Block
+	i int
+}
+
 // NewChain mints the history; Start makes blocks.
 func NewChain(cfg Config) *Chain {
 	c := &Chain{cfg: cfg, rng: rand.New(rand.NewPCG(cfg.Seed, uint64(cfg.ChainID))), noise: rand.New(rand.NewPCG(cfg.Seed, uint64(cfg.ChainID)+1)),
-		byHash: make(map[Hash]*Block), forks: make(map[*Fork]bool), pushed: make(map[Hash]bool), traps: make(map[Hash]*Trap),
+		byHash: make(map[Hash]*Block), byTx: make(map[Hash]txRef), forks: make(map[*Fork]bool), pushed: make(map[Hash]bool), traps: make(map[Hash]*Trap),
 		stop: make(chan struct{}), done: make(chan struct{}), tickCh: make(chan struct{})}
 	history := cfg.History
 	if history == 0 {
@@ -238,6 +245,9 @@ func (c *Chain) mintLocked(parent *Block, number uint64, at time.Time, minority 
 	hash, raw := header(c.cfg.ChainID, parent, number, ts, tag, txs, c.cfg.HeaderPad, baseFee, c.headerBloomOff)
 	b := &Block{Number: number, Hash: hash, Parent: parent, Time: ts, MintedAt: time.Now(), minority: minority, kind: k, tag: tag, txs: txs, raw: raw}
 	c.byHash[hash] = b
+	for i := range txs {
+		c.byTx[txHash(hash, i)] = txRef{b, i}
+	}
 	if c.failHold > 0 && k == KindMatching && !minority {
 		c.failing, c.failUntil, c.failHold = b, b.MintedAt.Add(c.failHold), 0
 	}
