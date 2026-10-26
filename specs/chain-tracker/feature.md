@@ -75,7 +75,7 @@ Decisions:
 | tap | One consumer of a feed: its cursor and its read loop |
 | cursor | Number and hash of the last block a tap applied |
 | out of range | A cursor the feed cannot continue: below the window, on a branch whose fork point left the window, or unknown to every upstream |
-| demand | Topics that open taps need; a topic is `newHeads` or `newPendingTransactions:<variant>` |
+| demand | Topics that open taps need, each at the fastest pace its taps need; a topic is `newHeads` or `newPendingTransactions:<variant>`. A client tap's pace is every block; the integrity follow tap's is `integrity.follow.interval` (1s) |
 | transport | Encodes a tap's reads for one wire: ws, gRPC; Kafka later |
 | resumable transport | One whose consumers reconnect from a cursor: gRPC, Kafka |
 
@@ -405,7 +405,7 @@ Fork choice:
 3. Vote: a voter's hash vote moves to its newest header once that header is held; until then its previous vote stays. An ancestor of the current vote does not move it back.
 4. Choose: take the tree with the most votes; a tie keeps the tree of the pins. In it, from the root, follow the child whose subtree holds the most votes; a tie keeps the pinned child; a block with no voted child follows its pinned child. Stop at a block with no child to follow, or at a tie with no pinned child. The last block followed is the head; the path from the root to it is the pins.
 5. Settle: a tie in rule 4, or a hash vote off the pins (§6.3), runs a settle (§6.8). Each answer is walked like a vote; once held, a voter's answer is its hash vote, and a non-voter's adds one vote for this decision only: it counts while the votes alone still meet that tie or dispute, and backs no head above the one decided. The pins stay while a round is out, at most W from its start; walks still out then count as no answer. No answer: the settle runs again after the Ask's backoff; no target: after one block time. A refresh (§6.3) runs once per voter and fork point; any round that ends over a dispute counts as the refresh of every vote it disputes.
-6. No source with a fresh hash vote, with demand: the tracker Asks the first voter in selection order with a hash need, once per cadence. That answer is the only vote until the next one: the asked voter's votes no newer than its last answer count as that answer, and a full or catch-up poll of a voter that is no source does not stop the Asks. An answer that conflicts with the pins starts a settle.
+6. No source with a fresh hash vote, with demand: the tracker Asks the first voter in selection order with a hash need, once per cadence and no faster than the demand's pace. That answer is the only vote until the next one: the asked voter's votes no newer than its last answer count as that answer, and a full or catch-up poll of a voter that is no source does not stop the Asks. An answer that conflicts with the pins starts a settle.
 
 Settle rounds:
 
@@ -419,7 +419,7 @@ Confirmed head:
 - The confirmed head is the highest pin with `q.Of(hash voters)` hash votes at or above it and a number at or below the lane's `Latest`. The second clause proves that q upstreams hold N.
 - Cold window: for W after a tracker starts or resets, a voter that is a source and has not reported yet counts as a hash voter, so a cold instance's first header waits for a second.
 - Every transport delivers only up to the confirmed head (§10). Tap lag is measured from it. A tap waits at most W after the block's first header on its instance, plus the tracker's processing (at most 50 ms): a silent hash voter stops counting exactly at W, and the next pass sends.
-- Catch-up: while a tap is open and `Latest` holds back a pin its hash votes back, the tracker Asks, with a number need, the voters whose number is below it, once per bt and at most 1s apart. When the hash-vote need holds a pin back for one bt, it polls the voters without a fresh hash vote; each poll is a hash vote (§6.3). Every move of an upstream's counter, from any path or instance, wakes the tracker, so the pin goes out as soon as `Latest` reaches it.
+- Catch-up: while a tap is open and `Latest` holds back a pin its hash votes back, the tracker Asks, with a number need, as many of the voters whose number is below it as `Latest` still lacks to reach it, oldest report first, once per bt and at most 1s apart, and no faster than the demand's pace. When the hash-vote need holds a pin back for one bt, it polls as many of the voters without a fresh hash vote as that need lacks, oldest evidence first; each poll is a hash vote (§6.3). Every move of an upstream's counter, from any path or instance, wakes the tracker, so the pin goes out as soon as `Latest` reaches it.
 - `PinFresh` = confirmed ∧ evidence quorum (§6.10) ∧ undisputed (no hash voter on another branch at that height). `ReconfirmPin(n)` returns `PinFresh` only then; otherwise it settles, or returns `PinRateLimited` when the settle cannot run.
 - A hash-proven rollback lowers the shared counters (§14).
 
@@ -428,8 +428,9 @@ Other rules:
 - A re-anchor is counted in `erpc_chain_tracker_reanchor_total`.
 - A message's changes are computed first and applied in one step. A panic drops the message and counts the header as `malformed` for its sender. 3 panics of one message kind (source votes count apart from client answers), with no message of that kind handled cleanly between them, reset the tracker to empty, counted in `erpc_chain_tracker_reset_total`; taps continue from their cursors (§10.1). Other kinds come between any two of one kind, so a state that breaks only source votes, or only fetch answers, still resets, while one vendor's bad header among clean ones never does.
 - Each change of the confirmed head wakes the taps.
-- A pin is final when it is at or below `Finalized` and the finalized evidence this instance holds covers it: a `finalized` poll this instance sent answered a header the pins hold at its height, and the pin is at or below that header on the pinned path; for a voter whose finality is the derived depth (no `finalized` tag), its derived number covers the pins below it. Where this instance holds no finalized header at or above a pin's height (another instance polled it, its shared counter being fresh), the pin is final when it is also below the confirmed head. A pin at or below `Finalized` that neither covers is not final: an upstream can still answer a sibling there before its next head, as single-upstream parachains do a few blocks behind their head, and its revert is a reorg.
-- A majority branch that reverts a final pin is followed, and logged as an error (`final_hash_changed`): clients stay on the chain the upstreams serve. An instance that followed the revert reads such a block past its permanent cache entry, and the fresh answer rewrites the shared entry; an instance started after the revert reads the entry as stored.
+- A pin is final when it is at or below `Finalized` and finalized evidence this instance holds covers its hash: a `finalized` poll this instance sent answered a header on the pinned path at or above the pin; for a voter whose finality is the derived depth (no `finalized` tag), its derived number covers the pins below it. A pin keeps the finality it had on the path it was pinned on, so a re-anchor's old pins that fill links later are judged as they were. A pin at or below `Finalized` that no such evidence covers is not final: an upstream can still answer a sibling there before its next head, as single-upstream parachains do a few blocks behind their head, and its revert is a reorg.
+- A majority branch that reverts a final pin is followed, and logged as an error (`final_hash_changed`): clients stay on the chain the upstreams serve. Only an instance whose own `finalized` polls covered the pin logs it: a poll another instance sent reaches this one as a number in the shared counter, without the header.
+- Every reverted pin at or below `Finalized`, final or not, is read past its permanent cache entry by each instance that followed the revert, and the fresh answer rewrites the shared entry: a permanent write needs only the serving upstream's finalized number (§6.4), so no hash evidence bounds what such an entry holds. An instance started after the revert reads the entry as stored.
 - By-number answers at or below `Finalized` feed integrity's finalized anchors below the window (`observeNarrowAnchors`), only with the evidence quorum. Inside the window, pins win.
 
 Reorg example, three voters:
@@ -575,6 +576,7 @@ Every tracker fetch goes through one scheduler per (network, instance). Head fet
 - Tracker fetches skip project and network rate limits, which budget clients. Classes 1 and 2 take upstream rate permits as client requests do. Class 3 takes one only when one is free, so catch-up never crowds out clients; a denied permit counts as a capacity error. Upstream scores count every tracker fetch.
 - By-hash fetches use the cache. Every other tracker fetch skips cache reads, tags included, because a cached answer is not a fresh view.
 - The scheduler's backoff is its only retry: 200 ms, doubling, capped at 5 s, per key.
+- A walk or fill step fetches by hash only on a mismatch: an answer whose hash is not the parentHash of the block above, no block, an answer that does not decode, or one an integrity check rejected. A capacity refusal, timeout or transport failure is none: the next attempt is by number again, after the key's backoff.
 - Single-flight per (selector, upstream, method, params); a fetch that names one upstream is keyed without the selector, so trackers share it. Every fetch the tracker submits keeps the tracker as a waiter. A Read's own fetch is dropped while queued when its last Read leaves. Submit never blocks: the queue holds at most one request per key. A panic in a fetch fails its waiters and is counted.
 - Tracker fetches run integrity checks. A check on a tracker fetch reads only held data and skips when it needs more, so validation never fetches recursively.
 
@@ -660,8 +662,9 @@ A ws tap's lag is the age of the block after its cursor: how long that block has
 5  ws transport    41 notifications for each subscription with this filter
 ```
 
-- Receipts are fetched when a block is pinned, not when a tap reaches it.
+- Receipts are fetched when a block is pinned, not when a tap reaches it, while they are demanded: a registered `MayMatch` wants the block, or a client check read receipts on the network within the last W, so the next client receipt finds its block's receipts held or in flight.
 - A receipts answer counts only when it is non-null, every receipt names the requested `blockHash`, and it is non-empty unless `transactionsRoot` is the empty-trie root. Anything else is a failed fetch, never "no logs".
+- A client check that waits on a block's receipts fetch (`receiptVsBlock`) gets the answer once it meets the rules above. The receipts checks that are on (§13) run right after; only receipts that pass them are held, so logs taps and later reads see checked receipts only. A failed check drops the answer and counts against its upstream, and the block is fetched again, as after a bloom mismatch.
 - Bloom check: the OR of the receipt blooms must equal the header's logsBloom, on every answer. A mismatch counts against that upstream (`bloomMatch`), and the block is fetched from an upstream of another vendor. Suspension follows §6.9.
 - Skip: after 8 matching blocks with transactions in a row, a block that no registered `MayMatch` wants is not fetched. Blocks whose `transactionsRoot` is the empty-trie root are never fetched.
   - Both skips apply only to headers whose hash recomputes: `blockHashRecompute` runs for this decision with integrity off too.
@@ -712,7 +715,7 @@ Cost, measured 2026-10-14 on public RPCs, 5 consecutive blocks each:
 - Suspension: §6.9. Anchors and the logs fallback need the evidence quorum (§6.10).
 - Tracker fetches run the checks (§8); `IsInternal` no longer skips them.
 - An empty numbered trace (`trace_block` and kin) is accepted only for a pinned block whose header has `transactionsRoot` = the empty-trie root and `gasUsed` = 0, with a hash that recomputes; no acceptance-time fetch (#1201).
-- `integrity.follow.enabled` opens one integrity follow tap per tracker. It holds demand, so polls run without clients, and it feeds `stateProberFor(...).onNewHead`. Out of range restarts it after the confirmed head.
+- `integrity.follow.enabled` opens one integrity follow tap per tracker at the network's first client request, as main's follower started, and keeps it open. It holds demand at the pace of `integrity.follow.interval` (1s), and feeds `stateProberFor(...).onNewHead`, so the state probes start with it. Out of range restarts it after the confirmed head.
 - Group trackers count the voters of their lane; their settles carry the group selector.
 - With integrity on, every delivered log is proven against `receiptsRoot` of a hash-linked header, except logs from the fallback (§11).
 - Chain profiles still apply: Kaia excludes `receiptsRootRecompute`.
@@ -830,7 +833,7 @@ networks:
         maxBackfill: 5m           # chain time, compared on header timestamps
     integrity:
       follow:
-        enabled: true             # an integrity follow tap: polls run without clients
+        enabled: true             # an integrity follow tap from the network's first client request
 ```
 
 | Key | Change |
@@ -838,7 +841,6 @@ networks:
 | `upstreams[].evm.subscriptionSource` | new |
 | `networks[].evm.chainTracker.reorgWindow` | moved from `integrity.reorgWindow` (project, network, profiles) |
 | `networks[].evm.chainTracker.maxBackfill` | new; replaces `integrity.follow.maxBlocksPerTick` |
-| `integrity.follow.interval` (project, network, profiles) | deleted: event-driven |
 | `networks[].evm.stripSubscribeFromBlockZero` | deleted: no upstream `logs` subscribe |
 | `server.webSocket.subscriptionBufferSize` | deleted: no per-subscription queue |
 | `indexer` (`canonicalChainDepth`, `dedupWindowSize`) | deleted: the mempool bounds in §15.2 replace `dedupWindowSize` |
@@ -1101,7 +1103,8 @@ One home per fact:
 
 - Subscribers get a pushed head once q upstreams report it: one poll round trip with one wss vendor (70–160 ms measured on eth, sepolia, hoodi, monad); none with two.
 - One vendor ahead with its peers stalled: subscribers and `latest` wait up to 90s (the bench), then get the held blocks in batches; gRPC reconnects at most once. A wait longer than `maxBackfill` leaves the taps' cursors below the window, and they end as §10.2 states.
-- Catch-up refreshes while a subscriber is open: at most one per upstream per cadence per instance, only for voters below the pin.
+- Catch-up refreshes while a subscriber is open: at most one per upstream per cadence per instance, only for voters below the pin, and only as many as `Latest` lacks to reach it.
+- With integrity on, a network whose client receipts are checked fetches each block's receipts when it is pinned, while such checks ran within W: at most one receipts call per block with transactions per instance.
 - `eth_getBlockByNumber(latest)` answers block `Latest`: up to one poll behind a vendor's newest block; it now equals `eth_blockNumber`.
 - `eth_getBlockByNumber("finalized")` answers block `Finalized`, which trails up to 5% of the finality window.
 - A request just above `Latest` costs one extra upstream call for an empty answer. Above the ceiling, every upstream whose report is older than 1 bt is Asked first: head+1 polling polls slow upstreams up to once per bt per instance, only while clients ask above the head.
