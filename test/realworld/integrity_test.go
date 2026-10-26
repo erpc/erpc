@@ -287,6 +287,17 @@ func (tr *tipReceipts) judge(s *scenario, from, healthy, to time.Time) {
 	} else if p50 := forged[len(forged)/2]; p50 >= u9VendorBLatency {
 		s.violate(s.name, "tip receipt checks under vendor-a's forged log waited p50 %s, at least vendor-b's %s: they waited on the receipts checks and vendor-b's refetch, not on vendor-a's answer (§11)", p50.Round(time.Millisecond), u9VendorBLatency)
 	}
+	// A fast wait that skipped the corroboration proves nothing: every
+	// receipt check corroborates, from vendor-b when vendor-a's receipts
+	// fail (§11 "the block is fetched again").
+	for pod := range s.h.pods {
+		skip, _ := s.metric(pod, "erpc_integrity_check_total", map[string]string{"check": "receiptVsBlock", "outcome": "skip"})
+		pass, _ := s.metric(pod, "erpc_integrity_check_total", map[string]string{"check": "receiptVsBlock", "outcome": "pass"})
+		s.logf("pod-%d: receiptVsBlock pass %v skip %v", pod+1, pass, skip)
+		if skip > 0 {
+			s.violate(s.name, "pod-%d: %v of %v tip receipt checks skipped receiptVsBlock: no canonical receipts while vendor-b served them", pod+1, skip, skip+pass)
+		}
+	}
 	type tally struct{ blocks, calls int }
 	calls := map[string]tally{}
 	for _, b := range s.chain.MintedBetween(from, to) {

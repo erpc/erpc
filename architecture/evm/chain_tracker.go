@@ -3095,6 +3095,10 @@ func (t *ChainTracker) fetched(res fetchResult) {
 // scheduler, group-scoped, with the answer and bloom checks of the feed's
 // own fetches; the scheduler hands them to the tracker. Only a block known
 // to lie within reorgWindow of the head is tip receipts; any other is fill.
+// When that fetch fails, or its key backs off after a failed one, a held
+// block's receipts are fetched again from another vendor (its job): the
+// check waits for them, as a sweep waited for its next upstream, for at
+// most one fetch's time.
 func (t *ChainTracker) resolveReceipts(ctx context.Context, blockHash string, number int64) ([]integrity.Receipt, bool) {
 	if t.network == nil {
 		return nil, false
@@ -3114,13 +3118,18 @@ func (t *ChainTracker) resolveReceipts(ctx context.Context, blockHash string, nu
 	spec := t.receiptsSpec(class, hash, h, false)
 	spec.client = true
 	res := t.fetch.fetch(ctx, t, spec)
-	if errors.Is(res.err, errFetchBackoff) {
-		return nil, false
-	}
 	if errors.Is(res.err, errBloomMismatch) && h != nil {
 		t.countBloomMismatch(res.upstream, spec.method, h)
 	}
 	r, ok := res.val.(*heldReceipts)
+	switch {
+	case ok:
+	case h != nil && ctx.Err() == nil:
+		r = t.refetchedReceipts(ctx, h)
+		ok = r != nil
+	case errors.Is(res.err, errFetchBackoff):
+		return nil, false
+	}
 	num := int64(-1)
 	if ok {
 		num = r.number
@@ -3130,6 +3139,24 @@ func (t *ChainTracker) resolveReceipts(ctx context.Context, blockHash string, nu
 		return nil, false
 	}
 	return r.integrityView(), true
+}
+
+// refetchedReceipts waits, for at most fetchTimeout, on held block h's
+// receipts job and returns the receipts it held; nil when it held none.
+func (t *ChainTracker) refetchedReceipts(ctx context.Context, h *chainHeader) *heldReceipts {
+	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
+	j := t.joinJob(ctx, h)
+	if j == nil {
+		return nil
+	}
+	defer t.leaveJob(j)
+	select {
+	case <-j.done:
+		return j.res
+	case <-ctx.Done():
+		return nil
+	}
 }
 
 // emitAux records an auxiliary fetch, labeled with the group, the method and
