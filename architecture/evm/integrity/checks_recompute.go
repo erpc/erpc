@@ -1,10 +1,14 @@
 package integrity
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"math/big"
+	"strconv"
+	"strings"
 
+	"github.com/erpc/erpc/common"
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/trie"
@@ -49,7 +53,9 @@ func deriveKnownBlockFields() map[string]struct{} {
 
 // RecomputeBlockHash is keccak(RLP(header)) of a block's JSON, as 0x hex. ok
 // is false when the header is not fully understood: not an object, a
-// custom field, or a required field missing.
+// custom field, or a required field missing. A timestamp counts in any
+// form ParseTimestamp reads, so a node that sends it as an integer is
+// still judged.
 func RecomputeBlockHash(raw []byte) (hash string, ok bool) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
@@ -60,11 +66,30 @@ func RecomputeBlockHash(raw []byte) (hash string, ok bool) {
 			return "", false
 		}
 	}
+	if ts := fields["timestamp"]; len(ts) > 2 && !bytes.HasPrefix(ts, []byte(`"0x`)) {
+		v, err := ParseTimestamp(string(bytes.Trim(ts, `"`)))
+		if err != nil || v < 0 {
+			return "", false
+		}
+		fields["timestamp"] = json.RawMessage(`"0x` + strconv.FormatInt(v, 16) + `"`)
+		if raw, err = json.Marshal(fields); err != nil {
+			return "", false
+		}
+	}
 	var gh gethtypes.Header
 	if err := gh.UnmarshalJSON(raw); err != nil {
 		return "", false
 	}
 	return gh.Hash().Hex(), true
+}
+
+// ParseTimestamp parses a block timestamp as eRPC has always read it: hex
+// (0x...) or decimal.
+func ParseTimestamp(s string) (int64, error) {
+	if strings.HasPrefix(s, "0x") {
+		return common.HexToInt64(s)
+	}
+	return strconv.ParseInt(s, 10, 64)
 }
 
 func init() {

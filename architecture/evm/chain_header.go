@@ -112,7 +112,7 @@ func jsonTimestamp(raw json.RawMessage) (uint64, bool) {
 	if !ok {
 		s = string(raw)
 	}
-	ts, err := parseBlockTimestamp(s)
+	ts, err := integrity.ParseTimestamp(s)
 	if err != nil || ts < 0 {
 		return 0, false
 	}

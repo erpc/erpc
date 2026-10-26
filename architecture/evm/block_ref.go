@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"go.opentelemetry.io/otel/attribute"
@@ -260,7 +261,7 @@ func ExtractBlockTimestampFromResponse(ctx context.Context, r *common.Normalized
 	// Force-copy the small string to avoid any potential reference to backing buffers
 	timestampStr = string(append([]byte(nil), timestampStr...))
 
-	blockTimestamp, err := parseBlockTimestamp(timestampStr)
+	blockTimestamp, err := integrity.ParseTimestamp(timestampStr)
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return 0, err
@@ -273,14 +274,6 @@ func ExtractBlockTimestampFromResponse(ctx context.Context, r *common.Normalized
 	}
 
 	return blockTimestamp, nil
-}
-
-// parseBlockTimestamp parses a block timestamp: hex (0x...) or decimal.
-func parseBlockTimestamp(s string) (int64, error) {
-	if strings.HasPrefix(s, "0x") {
-		return common.HexToInt64(s)
-	}
-	return strconv.ParseInt(s, 10, 64)
 }
 
 func extractRefFromJsonRpcRequest(ctx context.Context, req *common.NormalizedRequest, r *common.JsonRpcRequest) (string, int64, error) {
