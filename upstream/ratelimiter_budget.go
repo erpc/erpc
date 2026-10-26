@@ -242,7 +242,16 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 
 	statuses, failure := b.doLimit(ctx, rlReq, limits)
 	if failure != "" {
-		statuses = b.onStoreFailure(failure, localStatuses, method, userLabel, networkLabel)
+		// Envoy's FixedRateLimitCacheImpl still hits Redis for uncached sibling
+		// descriptors. A Redis panic/timeout then drops the whole response —
+		// including descriptors already known OVER_LIMIT in freecache. Honor
+		// those cached denials so onFailure cannot override them.
+		if b.hasCachedOverLimit(rlReq, limits) {
+			statuses = deniedStatus
+			telemetry.MetricRateLimiterStoreFailureTotal.WithLabelValues(b.Id, failure, "cached_deny").Inc()
+		} else {
+			statuses = b.onStoreFailure(failure, localStatuses, method, userLabel, networkLabel)
+		}
 	}
 
 	blocking := overLimitIndex(statuses)
@@ -327,6 +336,32 @@ func overLimitIndex(statuses []*pb.RateLimitResponse_DescriptorStatus) int {
 		}
 	}
 	return -1
+}
+
+// hasCachedOverLimit reports whether any descriptor in rlReq is already marked
+// over-limit in the replica-local freecache (same keys envoy uses).
+func (b *RateLimiterBudget) hasCachedOverLimit(rlReq *pb.RateLimitRequest, limits []*config.RateLimit) bool {
+	if b.registry == nil || rlReq == nil {
+		return false
+	}
+	cache, gen, timeSrc := b.registry.overLimitLookup()
+	if cache == nil || timeSrc == nil {
+		return false
+	}
+	now := timeSrc.UnixNow()
+	for i, d := range rlReq.Descriptors {
+		if i >= len(limits) || limits[i] == nil || d == nil {
+			continue
+		}
+		ck := gen.GenerateCacheKey(rlReq.Domain, d, limits[i], now)
+		if ck.Key == "" {
+			continue
+		}
+		if _, err := cache.Get([]byte(ck.Key)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // onStoreFailure returns the statuses the budget's onFailure mode decides for a
