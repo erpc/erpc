@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"math/big"
 	"strconv"
-	"strings"
 
-	"github.com/erpc/erpc/common"
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/trie"
@@ -66,12 +64,13 @@ func RecomputeBlockHash(raw []byte) (hash string, ok bool) {
 			return "", false
 		}
 	}
-	if ts := fields["timestamp"]; len(ts) > 2 && !bytes.HasPrefix(ts, []byte(`"0x`)) {
-		v, err := ParseTimestamp(string(bytes.Trim(ts, `"`)))
-		if err != nil || v < 0 {
+	if ts := fields["timestamp"]; len(ts) > 0 && !bytes.HasPrefix(ts, []byte(`"0x`)) {
+		v, ok := JSONTimestamp(ts)
+		if !ok {
 			return "", false
 		}
 		fields["timestamp"] = json.RawMessage(`"0x` + strconv.FormatInt(v, 16) + `"`)
+		var err error
 		if raw, err = json.Marshal(fields); err != nil {
 			return "", false
 		}
@@ -81,15 +80,6 @@ func RecomputeBlockHash(raw []byte) (hash string, ok bool) {
 		return "", false
 	}
 	return gh.Hash().Hex(), true
-}
-
-// ParseTimestamp parses a block timestamp as eRPC has always read it: hex
-// (0x...) or decimal.
-func ParseTimestamp(s string) (int64, error) {
-	if strings.HasPrefix(s, "0x") {
-		return common.HexToInt64(s)
-	}
-	return strconv.ParseInt(s, 10, 64)
 }
 
 func init() {

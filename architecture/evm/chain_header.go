@@ -67,8 +67,8 @@ func parseChainHeader(raw json.RawMessage) (*chainHeader, error) {
 }
 
 // headerJSON decodes the optional header fields raw, so one in an encoding
-// integrity.Header does not take (a JSON integer timestamp) cannot fail the
-// whole header.
+// integrity.Header does not take (a JSON integer timestamp, a numeric
+// transactionsRoot) cannot fail the whole header.
 type headerJSON struct {
 	integrity.Header
 	Timestamp        json.RawMessage `json:"timestamp"`
@@ -87,9 +87,9 @@ func decodeChainHeader(raw json.RawMessage) (h *integrity.Header, ts uint64, err
 		return nil, 0, fmt.Errorf("%w: %v", errMalformedHeader, err)
 	}
 	h = &j.Header
-	if t, ok := jsonTimestamp(j.Timestamp); ok {
-		ts = t
-		h.Timestamp = "0x" + strconv.FormatUint(t, 16)
+	if t, ok := integrity.JSONTimestamp(j.Timestamp); ok {
+		ts = uint64(t)
+		h.Timestamp = "0x" + strconv.FormatInt(t, 16)
 	}
 	if s, ok := jsonString(j.LogsBloom); ok && isHexBytes(s, 256) {
 		h.LogsBloom = s
@@ -103,20 +103,6 @@ func decodeChainHeader(raw json.RawMessage) (h *integrity.Header, ts uint64, err
 		}
 	}
 	return h, ts, nil
-}
-
-// jsonTimestamp reads a timestamp as main does: a hex or decimal string,
-// or a JSON integer.
-func jsonTimestamp(raw json.RawMessage) (uint64, bool) {
-	s, ok := jsonString(raw)
-	if !ok {
-		s = string(raw)
-	}
-	ts, err := integrity.ParseTimestamp(s)
-	if err != nil || ts < 0 {
-		return 0, false
-	}
-	return uint64(ts), true
 }
 
 // jsonString is raw's value when it is a JSON string without escapes; no
