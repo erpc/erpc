@@ -337,7 +337,8 @@ Owner: `health/tracker.go`. Readers: the `Head` ballots (bench), the confirmed h
 
 ### 6.2 Voters: who votes?
 
-- `voter(u)` = `u` in the policy's eligible set for the lane (`tipCandidateUpstreams`), not syncing, not benched, best rank (live heads before configured caps).
+- `voter(u)` = `u` in the policy's eligible set for the lane (`tipCandidateUpstreams`), not syncing, not benched, best rank (live heads before configured caps). It is one function: the `Head` ballots, `Leader`, the Asks that move `Latest` (refresh, catch-up, band), the hash voters and topic admission all take their voters from it.
+- A number vote needs a head. A voter on a minority fork has none (§6.3), so the ballots, `Leader` and the Asks that move `Latest` skip it; its hash vote still counts, which is how it returns. A poller with no head yet is a voter for topic admission only: it gets its first head once admitted.
 - No tier filter on votes: a fallback upstream's latest is fetched anyway, and its hash costs nothing more.
 - Topic admission decides only which topics a voter feeds (§5.2, §12):
 
@@ -367,7 +368,7 @@ One `Head` per (network, lane). It is computed when an upstream head changes (lo
 | `Latest` | q-th highest voter number; caps, regression guard (1024 blocks, 60s, per instance) and guarantees (`servedTip.guaranteedFor`, `guaranteedMethods`) apply as today |
 | `Finalized` | the same ballot over voters' finalized numbers; a voter without a finalized tag (its tag refused 10 times in a row, never answered) reports latest − the derived depth: 30 min of chain at the block time floor (§6.7), at least `fallbackFinalityDepth` (#1079); until either is known, a voter has no finalized vote |
 | `Leader` | the highest voter within `Latest + maxRetryableBlockDistance` |
-| ceiling | raw max of the reports of the lane's registered upstreams, minus upstreams cordoned for chain identity or whose polls are failing (§6.1); `OldestReportAt` = the oldest time at which those reports' evidence was taken: for an answer, a poll's or a client request's that reached the upstream as the `latest` tag, the time its request was sent (it can show no later head than the node had then); for a push, its receive time. An interpolated client request is no report: its answer shows the upstream holds block N, not that its head is N |
+| ceiling | raw max of the reports of the lane's registered upstreams, minus upstreams cordoned for chain identity or whose polls fail as §6.1 defines (failed polls spanning W with no success since; one failed poll, a 429 included, keeps the upstream counted); `OldestReportAt` = the oldest time at which those reports' evidence was taken: for an answer, a poll's or a client request's that reached the upstream as the `latest` tag, the time its request was sent (it can show no later head than the node had then); for a push, its receive time. An interpolated client request is no report: its answer shows the upstream holds block N, not that its head is N |
 
 - A lane is one use-upstream group, at most 16 per network. A selector without a lane (`partitionKeyFor` returns `""`) keeps the stateless pick: the same rules, computed for that request.
 - Nothing is persisted or shared as a served value: a rogue value cannot spread to every instance or freeze `Latest` (#924).
@@ -515,7 +516,7 @@ A vendor can answer `eth_call(latest)` from old state while its header head is c
 | Fact | Tag-state head per upstream: the block it executes `latest` at, from Multicall3 `getBlockNumber()` at `latest` (ArbSys `arbBlockNumber()` on Nitro, where Multicall3 returns the L1 height). It never moves `Latest` |
 | Free evidence | Every Multicall3 pack sent with the tag carries one such call, stripped from the client's results, so each packed answer proves its own block |
 | Applies to | Family-3 requests (§7) whose block reaches the upstream as the tag: `translateLatestTag: false` methods, `skip-interpolation`. Numbered requests, other families (tracker fetches included) and requests while Head is unknown are unaffected |
-| Reference | `Latest`, not the upstream's own head |
+| Reference | The deciding request's `Latest` (its lane's), not the upstream's own head; where no request decides (gauges, probe logs), the network-wide `Latest`. A sample keeps its block and send time and is judged when read |
 | Tolerance | W in time: a sample is stale when `Latest` at its send time is more than W of chain above its block; so the sample's age is credited, as #1296 credits lag |
 | Skip | Positive stale evidence skips that upstream for tag requests only, decided once per request before its first attempt; no evidence admits it (#934) |
 | Readmit | 3 fresh samples in a row, or the probe interval plus W with no stale sample (W alone can fall between two probes); nothing is permanent |
@@ -525,11 +526,11 @@ A vendor can answer `eth_call(latest)` from old state while its header head is c
 - `pinLatestTag`, the shadow pin and the gate read one family-3 map, so a pinned upstream never gets a state method as the tag, `eth_estimateGas` included.
 - The multiplexer merges only requests that route alike: its key includes the `UseUpstream` directive, so a probe never shares an answer with a client request routed elsewhere.
 
-Owner: `architecture/evm/integrity_stateprobe.go`; the skip in `checkEvmUpstreamBlockAvailability` (`erpc/networks.go`). Keeps: #1109 (the prober publishes evidence; disproof feeds misbehavior), #1274, #1303 (probe and metric kept; its misbehavior record is replaced by the gate), #1443 (`translateLatestTag: false` stays).
+Owner: `architecture/evm/integrity_stateprobe.go`; the skip in `checkEvmUpstreamBlockAvailability` (`erpc/networks.go`). Keeps: #1109 (the prober publishes evidence; disproof feeds misbehavior), #1274, #1303 (probe and metric kept; its misbehavior record is replaced by the gate), #560 (`translateLatestTag: false` stays).
 
 ## 7. Requests: one value per request
 
-- A request reads `Head` once, before the multiplexer and the cache. Tag interpolation, every retry and hedge, `pinLatestTag`, cache keys and writes, `ResolveCacheBlockRef`, empty-result confidence, `eth_query` tag resolution and its range check, and the block heatmap use that value.
+- A request reads `Head` once, before the multiplexer and the cache. Tag interpolation, every retry and hedge, `pinLatestTag`, the shadow pin, cache keys and writes, `ResolveCacheBlockRef`, empty-result confidence, `eth_query` tag resolution and its range check, and the block heatmap use that value. A shadow pins its tag to the number the primary was sent: the answer's own number when it has one, else the request's `Latest`; the serving upstream's head only when the tag reached it as is.
 - Head unknown (cold start): tags reach upstreams unchanged; subscriptions wait.
 - The original tag stays in `EvmBlockRef`; `enforceNonNullTaggedBlocks` reads it, so interpolated tags keep the null-for-tag opt-out (#477).
 
