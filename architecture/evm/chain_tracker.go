@@ -2974,7 +2974,7 @@ func (t *ChainTracker) headerSpec(class fetchClass, method, blockRef, upstream s
 			}
 			h, err := parseChainHeader(result)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%w: %w", errFetchUndecoded, err)
 			}
 			// A by-hash fetch must return that hash, a by-number fetch that
 			// number; a node answering with another block would otherwise be

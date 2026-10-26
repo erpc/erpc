@@ -382,14 +382,23 @@ func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
 			// The parent's hash under another number: no answer joins this
 			// root, so its extension ends and it stays a root.
 			e.atBase, e.walk, t.treesDirty = true, 0, true
-		case !e.byHash:
+		case !e.byHash && againstNumber(err):
 			e.byHash = true
-		case e.walk > 0:
+		case e.byHash && e.walk > 0:
 			// The sender does not serve its own parent: the walk ends here,
 			// its lowest header stays a root, and fill sweeps for the rest.
 			e.walk, e.sender = 0, ""
 		}
 	})
+}
+
+// againstNumber reports whether a by-number fetch's outcome is evidence
+// against the number path, so the extension asks by hash: an answer whose
+// hash is not the child's parentHash, no block, or an answer that does not
+// decode. A capacity refusal, timeout or transport failure is none: the
+// extension stays by number, and the key's backoff spaces its retries.
+func againstNumber(err error) bool {
+	return err == nil || errors.Is(err, errFetchNotFound) || errors.Is(err, errFetchUndecoded)
 }
 
 // extended holds a root's fetched parent; the root joins under it, and the

@@ -51,16 +51,21 @@ type servedChain struct {
 	mu      sync.Mutex
 	blocks  map[string]json.RawMessage // number or hash -> header
 	gates   map[string]chan struct{}
+	refuse  map[string]int // ref -> answers left refused for capacity
 	fetches atomic.Int32
+	byHash  atomic.Int32
 }
 
 func newServedChain(t *testing.T, id string) *servedChain {
-	n := &servedChain{blocks: map[string]json.RawMessage{}, gates: map[string]chan struct{}{}}
+	n := &servedChain{blocks: map[string]json.RawMessage{}, gates: map[string]chan struct{}{}, refuse: map[string]int{}}
 	n.On("Forward", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			n.fetches.Add(1)
 			jrq, _ := req.JsonRpcRequest()
 			ref, _ := jrq.Params[0].(string)
+			if jrq.Method == "eth_getBlockByHash" {
+				n.byHash.Add(1)
+			}
 			n.mu.Lock()
 			gate := n.gates[ref]
 			n.mu.Unlock()
@@ -72,8 +77,14 @@ func newServedChain(t *testing.T, id string) *servedChain {
 				}
 			}
 			n.mu.Lock()
-			body := n.blocks[ref]
+			body, refused := n.blocks[ref], n.refuse[ref] > 0
+			if refused {
+				n.refuse[ref]--
+			}
 			n.mu.Unlock()
+			if refused {
+				return nil, common.NewErrUpstreamsExhaustedWithCause(common.NewErrEndpointCapacityExceeded(errors.New("vendor-a: 429")))
+			}
 			if body == nil {
 				return nil, errors.New("no block " + ref)
 			}
@@ -316,12 +327,18 @@ func TestChainTracker(t *testing.T) {
 		start, err := c.Head(ctx)
 		require.NoError(t, err)
 		assert.Equal(t, uint64(222), start.Number, "the first tap starts at the head")
+		// A capacity refusal is no evidence against the number path: fill
+		// retries by number under the key's backoff, never by hash.
+		net.mu.Lock()
+		net.refuse["0xd2"] = 2
+		net.mu.Unlock()
 		vote(232)
 		require.Eventually(t, func() bool {
 			c.sync(ctx)
 			v, _ := c.HashAt(201)
 			return v == testHash("a", 201)
 		}, 5*time.Second, 5*time.Millisecond, "the walk links 232 to 222 and fill runs reorgWindow below the head")
+		assert.Zero(t, net.byHash.Load(), "a 429 on a by-number fetch keeps fill by number")
 		b, err := c.Read(ctx, start, indexer.ReadOpts{})
 		require.NoError(t, err)
 		require.NotEmpty(t, b.Applied)
