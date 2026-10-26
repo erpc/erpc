@@ -44,7 +44,7 @@ func highestOf(ups []common.Upstream) common.Upstream {
 	var leader common.Upstream
 	var top int64
 	for _, u := range ups {
-		if h := upstreamLatestBlock(u); h > top {
+		if h := evmTipHead(u); h > top {
 			leader, top = u, h
 		}
 	}

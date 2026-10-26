@@ -3696,12 +3696,13 @@ func stablePartition(ups []common.Upstream, last func(common.Upstream) bool) []c
 // preferTipLeaderForNearTipGetBlock moves leader, the request Head's Leader,
 // to the front for eth_getBlockByNumber of its head or the next block while
 // its head is strictly ahead of every other upstream in ups, which may not
-// have imported that block yet.
+// have imported that block yet. Heads are read as the Leader was chosen
+// (evmTipHead).
 func preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn int64, leader common.Upstream) []common.Upstream {
 	if method != "eth_getBlockByNumber" || len(ups) < 2 || leader == nil {
 		return ups
 	}
-	tip := upstreamLatestBlock(leader)
+	tip := evmTipHead(leader)
 	if bn < tip || bn > tip+1 {
 		return ups
 	}
@@ -3710,7 +3711,7 @@ func preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn 
 		switch {
 		case u == leader:
 			at = i
-		case upstreamLatestBlock(u) >= tip:
+		case evmTipHead(u) >= tip:
 			return ups
 		}
 	}
@@ -3730,6 +3731,16 @@ func upstreamLatestBlock(u common.Upstream) int64 {
 		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 			return sp.LatestBlock()
 		}
+	}
+	return 0
+}
+
+// evmTipHead is u's latest head as the Leader is chosen on it (voterSet,
+// evmTipObservation), or 0 when unknown.
+func evmTipHead(u common.Upstream) int64 {
+	if eu, ok := u.(common.EvmUpstream); ok {
+		head, _ := evmTipObservation(eu, false)
+		return head
 	}
 	return 0
 }
