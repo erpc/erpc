@@ -742,7 +742,7 @@ func TestSvmMapGetBlockError(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := svmMapGetBlockError(tc.in)
+			err := svmMapError(tc.in)
 			require.Error(t, err)
 			assert.Equal(t, tc.wantBenign, common.HasErrorCode(err, common.ErrCodeEndpointUnsupported),
 				"benign-miss vs. real-failure classification decides whether a broken reader gets scored; got: %v", err)
