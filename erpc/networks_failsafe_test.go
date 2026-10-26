@@ -1379,6 +1379,15 @@ func TestGetFailsafeExecutor_MatchRequestKind(t *testing.T) {
 		assert.Equal(t, "internal", executor.MatchRequestKind())
 	})
 
+	t.Run("a timeout-only request (state probe) takes no network policy", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getProof","params":["0x0",[],"latest"]}`))
+		req.SetNetwork(network)
+		req.SetDirectives(&common.RequestDirectives{UpstreamPolicies: common.UpstreamPoliciesTimeoutOnly})
+		executor := network.getFailsafeExecutor(ctx, req)
+		require.NotNil(t, executor)
+		assert.Nil(t, executor.cfg, "no retry, hedge or timeout from the internal policy")
+	})
+
 	t.Run("user request skips the internal policy", func(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
 		req.SetNetwork(network)

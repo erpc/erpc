@@ -42,6 +42,9 @@ type Network struct {
 	cfg                  *common.NetworkConfig
 	inFlightRequests     *sync.Map
 	failsafeExecutors    []*networkExecutor // main: failsafe rename FailsafeExecutor → networkExecutor
+	// bareExecutor applies no network policy: timeout-only requests (state
+	// probes) take it, so they get no network retry or hedge (spec §6.11).
+	bareExecutor *networkExecutor
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	cacheDal             common.CacheDAL
 	metricsTracker       *health.Tracker
@@ -1554,14 +1557,18 @@ func (n *Network) observeServedTipMetrics(axis string, laneLabel string, tip, fr
 }
 
 func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *networkExecutor {
+	policies := req.UpstreamPolicies()
+	if policies == common.UpstreamPoliciesTimeoutOnly {
+		return n.bareExecutor
+	}
 	method, _ := req.Method()
 	finality := req.Finality(ctx)
-	// Request kind: "internal" = eRPC's own requests (tracker fetches,
-	// probes), "user" = client traffic. Lets a policy give the deduplicated
-	// internal fetches consensus while user methods rely on integrity
-	// validation (matchRequestKind).
+	// Request kind: "internal" = eRPC's own requests (tracker fetches),
+	// "user" = client traffic. Lets a policy give the deduplicated internal
+	// fetches consensus while user methods rely on integrity validation
+	// (matchRequestKind).
 	kind := "user"
-	if req.UpstreamPolicies() != common.UpstreamPoliciesConfigured {
+	if policies != common.UpstreamPoliciesConfigured {
 		kind = "internal"
 	}
 

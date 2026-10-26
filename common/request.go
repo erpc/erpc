@@ -225,9 +225,10 @@ const (
 	// UpstreamPoliciesConfigured: every configured policy; client traffic.
 	UpstreamPoliciesConfigured UpstreamPolicies = iota
 	// UpstreamPoliciesTimeoutOnly: subscription calls, state-poller and
-	// chainId probes, integrity state probes. No retry or hedge, which would
-	// send a subscribe twice, and no breaker, so probing a down vendor never
-	// opens one clients depend on; the per-attempt timeout applies.
+	// chainId probes, integrity state probes. No network or upstream retry
+	// or hedge, which would send a subscribe twice, and no breaker, so
+	// probing a down vendor never opens one clients depend on; the
+	// per-attempt timeout applies.
 	UpstreamPoliciesTimeoutOnly
 	// UpstreamPoliciesTracker: chain tracker fetches. No configured policy
 	// applies; an open breaker refuses them, and they never feed it, so
