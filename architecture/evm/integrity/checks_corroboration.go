@@ -18,7 +18,7 @@ func init() {
 	// block hash. Catches subtle receipt corruption (e.g. a plausible-but-wrong
 	// logIndex) that intrinsic checks cannot see without the block context.
 	register(&Check{
-		ID: "receiptVsBlock", Family: FamilyStructural, Class: ReorgSensitive,
+		ID: "receiptVsBlock", Family: FamilyStructural, Class: ReorgSensitive, History: true,
 		Methods: []string{MethodGetTransactionReceipt},
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			receipts := d.Receipts()

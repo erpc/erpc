@@ -32,7 +32,7 @@ func init() {
 	// chainProfiles. On such a chain this check is protocol-invalid, not a
 	// catch, and would reject every block.
 	register(&Check{
-		ID: "baseFeeDerivation", Family: FamilyStructural, Class: Deterministic,
+		ID: "baseFeeDerivation", Family: FamilyStructural, Class: Deterministic, History: true,
 		Methods: []string{MethodGetBlockByNumber},
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			h := d.Header()
@@ -74,7 +74,7 @@ func init() {
 	// a strict increase would reject honest data there, while a timestamp that
 	// moves BACKWARDS is invalid everywhere.
 	register(&Check{
-		ID: "timestampMonotonicity", Family: FamilyStructural, Class: Deterministic,
+		ID: "timestampMonotonicity", Family: FamilyStructural, Class: Deterministic, History: true,
 		Methods: []string{MethodGetBlockByNumber},
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			h := d.Header()

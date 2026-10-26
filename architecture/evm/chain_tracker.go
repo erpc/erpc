@@ -106,6 +106,9 @@ type ChainTracker struct {
 
 	// following is true while the tracker's integrity follow tap runs.
 	following atomic.Bool
+	// taps counts the taps open on this tracker (Want), the follow tap
+	// included.
+	taps atomic.Int32
 
 	// receiptsFailing is when every receipts and logs fetch since the last
 	// success started failing, in unix nanoseconds; 0 after a success.
@@ -192,6 +195,9 @@ type ChainTracker struct {
 	// treesDirty: a header was held or dropped, or a walk or fill ended,
 	// since trees was last published.
 	treesDirty bool
+	// served: history serves the tracker (spec §6.5 rule 1), read once per
+	// message (readServed).
+	served bool
 }
 
 type receiptsEntry struct {
@@ -539,6 +545,7 @@ func (t *ChainTracker) handle(msg trackerMsg) {
 	}
 	if msg.kind != msgSync {
 		t.readVoters()
+		t.readServed()
 	}
 	ok := t.guard("message", func() { t.receive(msg) }, func() {
 		if msg.kind == msgHeader && msg.vote == voteSource {
@@ -663,7 +670,7 @@ func (t *ChainTracker) update() bool {
 // publishTrees publishes the roots whose extension ended for good, once a
 // header was held or dropped, an extension ended or the pins moved. A
 // capped tree has not ended: a Read in it lifts the cap (spec §10.1). A
-// tracker that cannot fetch extends no root.
+// tracker that cannot fetch, or that no history serves, extends no root.
 func (t *ChainTracker) publishTrees() {
 	pub := t.state.Load()
 	if !t.treesDirty && t.trees.Load().state == pub {
@@ -676,7 +683,7 @@ func (t *ChainTracker) publishTrees() {
 		s.pinRoot = pinRoot.h
 	}
 	for r, e := range t.exts {
-		if e.atBase || !t.canFetch() {
+		if e.atBase || !t.extends() {
 			s.ended[r.h.hash] = struct{}{}
 		}
 	}
@@ -711,6 +718,11 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 			t.evict()
 		}
 		return
+	}
+	// Rule 1 without history: a vote off the pins' tree is a root at once,
+	// and it replaces the older trees.
+	if !t.served && t.counts(msg.upstream) && rootOf(nd) != t.pinRoot() {
+		t.replaceOlder(nd, msg.upstream)
 	}
 	// Rule 3: the vote moves once its walk ends; until then the previous
 	// one stays.
@@ -1433,7 +1445,9 @@ func (t *ChainTracker) apply(path []*node) {
 // §6.5). A re-anchor's old pins below the new tree are decided once fill
 // links that tree down to them (unlinkedPins), or dropped once they leave
 // the window. Headers compare by hash: fill can fetch an evicted block
-// again as a new header.
+// again as a new header. A tracker that no history serves moves to a new
+// root without a re-anchor, and nothing links its old pins (spec §6.5 rule
+// 1).
 func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	head := path[len(path)-1].h
 	telemetry.MetricChainTrackerHead.WithLabelValues(t.projectId(), t.networkLabel(), t.group).Set(float64(head.number))
@@ -1454,7 +1468,9 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 			break
 		}
 	}
-	if fork < 0 {
+	switch reverted := len(old) - 1 - fork; {
+	case fork < 0 && !t.served:
+	case fork < 0:
 		// Spec §15 labels re-anchors by network only: the network-wide
 		// tracker's count.
 		if t.selector == "" {
@@ -1464,7 +1480,7 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 		t.transition(zerolog.WarnLevel, "reanchor").Uint64("oldHead", was.number).Str("oldHeadHash", was.hashHex).
 			Uint64("head", head.number).Str("headHash", head.hashHex).Uint64("base", path[0].h.number).Str("baseHash", path[0].h.hashHex).
 			Msg("chain tracker pins moved to another tree of held headers")
-	} else if reverted := len(old) - 1 - fork; reverted > 0 {
+	case reverted > 0:
 		telemetry.MetricChainTrackerReorgDepth.WithLabelValues(t.projectId(), t.networkLabel(), t.group).
 			Observe(float64(reverted))
 	}
@@ -1493,9 +1509,11 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 			}
 		}
 	}
-	keepUnlinked(t.unlinkedPins)
-	if fork < 0 {
-		keepUnlinked(old)
+	if t.served {
+		keepUnlinked(t.unlinkedPins)
+		if fork < 0 {
+			keepUnlinked(old)
+		}
 	}
 	t.unlinkedPins = unlinked
 	if fin := t.finalizedHead(); span.hi > 0 && fin > 0 && span.lo <= fin {
@@ -2513,10 +2531,12 @@ func (t *ChainTracker) fetchCursor(ctx context.Context, c indexer.Cursor) (retry
 	return time.Time{}, nil
 }
 
-// Want registers o until release; the tracker then fetches, at pin time,
-// the receipts of each block o.MayMatch wants (spec §10), and fills the
-// whole window while o is Resumable.
+// Want registers a tap's o until release: history serves the tracker while
+// any tap is open (spec §6.5 rule 1); the tracker fetches, at pin time, the
+// receipts of each block o.MayMatch wants (spec §10), and fills the whole
+// window while o is Resumable.
 func (t *ChainTracker) Want(o indexer.ReadOpts) (release func()) {
+	t.taps.Add(1)
 	var id uint64
 	if o.MayMatch != nil {
 		t.wantMu.Lock()
@@ -2542,6 +2562,7 @@ func (t *ChainTracker) Want(o indexer.ReadOpts) (release func()) {
 			if o.Resumable {
 				t.deepFill.Add(-1)
 			}
+			t.taps.Add(-1)
 			t.mb.put(trackerMsg{kind: msgTick})
 		})
 	}

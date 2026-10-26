@@ -65,7 +65,7 @@ func init() {
 	})
 
 	register(&Check{
-		ID: "getLogsCompleteness", Family: FamilyStructural, Class: ReorgSensitive,
+		ID: "getLogsCompleteness", Family: FamilyStructural, Class: ReorgSensitive, History: true,
 		Methods: []string{MethodGetLogs},
 		// An empty [] response is the everything-dropped shape — the absent-block
 		// sweep below is exactly the check for it, so opt into emptyish responses

@@ -177,14 +177,16 @@ func responseBlockNumber(ctx context.Context, rs *common.NormalizedResponse, pat
 	return uint64(n), true
 }
 
-// headerChecks is a network's header checks, compiled from its integrity
-// config once per config.
+// headerChecks is a network's header checks, and whether any check of its
+// reads the trackers' history, compiled from its integrity config once per
+// config.
 type headerChecks struct {
-	cfg         *common.IntegrityConfig
-	chainId     int64
-	checks      integrity.CheckSet
-	policy      integrity.ReorgPolicy
-	observeOnly bool
+	cfg          *common.IntegrityConfig
+	chainId      int64
+	checks       integrity.CheckSet
+	policy       integrity.ReorgPolicy
+	observeOnly  bool
+	readsHistory bool
 }
 
 // headerChecksOf is n's header checks, compiled again only once n's
@@ -202,7 +204,8 @@ func (nt *networkTrackers) headerChecksOf(n common.Network) *headerChecks {
 		return hc
 	}
 	cs, policy, observeOnly, _ := resolveIntegrity(n, nil)
-	hc := &headerChecks{cfg: cfg, chainId: chainId, checks: integrity.HeaderCheckSet(cs), policy: policy, observeOnly: observeOnly}
+	hc := &headerChecks{cfg: cfg, chainId: chainId, checks: integrity.HeaderCheckSet(cs), policy: policy, observeOnly: observeOnly,
+		readsHistory: integrityReadsHistory(cfg, chainId)}
 	nt.checks.Store(hc)
 	return hc
 }

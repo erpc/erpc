@@ -13,6 +13,7 @@ import (
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
@@ -47,15 +48,17 @@ func voteChain(t *testing.T, c *ChainTracker, src, tag string, from, to uint64, 
 // Sources a and b, of two vendors, are its hash voters.
 type servedChain struct {
 	mockNetwork
-	mu     sync.Mutex
-	blocks map[string]json.RawMessage // number or hash -> header
-	gates  map[string]chan struct{}
+	mu      sync.Mutex
+	blocks  map[string]json.RawMessage // number or hash -> header
+	gates   map[string]chan struct{}
+	fetches atomic.Int32
 }
 
 func newServedChain(t *testing.T, id string) *servedChain {
 	n := &servedChain{blocks: map[string]json.RawMessage{}, gates: map[string]chan struct{}{}}
 	n.On("Forward", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			n.fetches.Add(1)
 			jrq, _ := req.JsonRpcRequest()
 			ref, _ := jrq.Params[0].(string)
 			n.mu.Lock()
@@ -225,6 +228,7 @@ func TestChainTracker(t *testing.T) {
 		ctx := context.Background()
 		net := newServedChain(t, "evm:walk-join")
 		c := newChainTracker(t.Context(), net, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		t.Cleanup(c.Want(indexer.ReadOpts{}))
 		voteChain(t, c, "a", "a", 1, 10, testHash("f", 0))
 		voteChain(t, c, "b", "a", 1, 10, testHash("f", 0))
 		b := func(n uint64) json.RawMessage {
@@ -264,6 +268,67 @@ func TestChainTracker(t *testing.T) {
 		v, _ = c.HashAt(6)
 		assert.Equal(t, testHash("a", 6), v, "the branch hangs from the fork point")
 		assert.Equal(t, before, reanchors(), "a reorg inside the window is no re-anchor")
+	})
+
+	// No tap and no integrity check read the history of an idle network,
+	// polled every 30s: each poll's vote, 61 blocks above the last, walked
+	// reorgWindow blocks, failed to link and re-anchored (dev: 3,840 header
+	// fetches and 120 re-anchors an hour on one network). Without a reader
+	// the vote is a root at once and replaces the older tree; the first tap
+	// starts history from the head, walking and filling as before.
+	t.Run("an idle tracker walks and fills nothing until a tap opens", func(t *testing.T) {
+		ctx := context.Background()
+		net := newServedChain(t, "evm:idle")
+		for n := uint64(1); n <= 300; n++ {
+			net.serve(n, testHash("a", n), testHeader(n, testHash("a", n), testHash("a", n-1)))
+		}
+		c := newChainTracker(t.Context(), net, 32, time.Hour, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		reanchors := func() float64 {
+			return testutil.ToFloat64(telemetry.MetricChainTrackerReanchorTotal.WithLabelValues("test", "evm:idle"))
+		}
+		before := reanchors()
+		vote := func(n uint64) {
+			for _, src := range []string{"a", "b"} {
+				c.Observe(src, testHeader(n, testHash("a", n), testHash("a", n-1)), true)
+			}
+			c.sync(ctx)
+		}
+		for _, n := range []uint64{100, 161, 222} {
+			vote(n)
+			require.Eventually(t, func() bool {
+				c.sync(ctx)
+				v, _ := c.HashAt(int64(n))
+				return v == testHash("a", n)
+			}, 5*time.Second, 5*time.Millisecond, "each poll's vote is the head")
+		}
+		assert.Zero(t, net.fetches.Load(), "no walk and no fill")
+		assert.Equal(t, before, reanchors(), "a root without history is no re-anchor")
+		for _, gone := range []uint64{100, 161, 221} {
+			_, held := c.HeldNumber(testHash("a", gone))
+			assert.False(t, held, "block %d: the newest root replaced the older trees", gone)
+		}
+		head, ok := c.Confirmed()
+		require.True(t, ok)
+		assert.Equal(t, uint64(222), head.Number, "the confirmed head follows the votes")
+
+		t.Cleanup(c.Want(indexer.ReadOpts{}))
+		c.sync(ctx)
+		start, err := c.Head(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(222), start.Number, "the first tap starts at the head")
+		vote(232)
+		require.Eventually(t, func() bool {
+			c.sync(ctx)
+			v, _ := c.HashAt(201)
+			return v == testHash("a", 201)
+		}, 5*time.Second, 5*time.Millisecond, "the walk links 232 to 222 and fill runs reorgWindow below the head")
+		b, err := c.Read(ctx, start, indexer.ReadOpts{})
+		require.NoError(t, err)
+		require.NotEmpty(t, b.Applied)
+		assert.Empty(t, b.Reverted)
+		assert.Equal(t, uint64(223), b.Applied[0].Number, "the tap continues from its start with no gap")
+		assert.Equal(t, uint64(232), b.Applied[len(b.Applied)-1].Number)
+		assert.Equal(t, before, reanchors(), "a walk that links is no re-anchor")
 	})
 }
 

@@ -53,9 +53,10 @@ type ChainFeed interface {
 	// Read returns the next non-empty batch from c, waiting as needed,
 	// bounded by ctx. ErrOutOfRange: the feed cannot continue c.
 	Read(ctx context.Context, c Cursor, o ReadOpts) (Batch, error)
-	// Want registers a tap's ReadOpts until release; the feed fetches
-	// receipts when a block is pinned and any registered MayMatch wants it,
-	// and fills the whole window while any registered tap is Resumable.
+	// Want registers a tap's ReadOpts until release; every tap registers.
+	// The feed keeps history while any tap is registered, fetches receipts
+	// when a block is pinned and any registered MayMatch wants it, and
+	// fills the whole window while any registered tap is Resumable.
 	Want(o ReadOpts) (release func())
 }
 

@@ -75,6 +75,78 @@ func (t *ChainTracker) canFetch() bool {
 	return t.network != nil && t.fetch != nil && t.fetch.sweep != nil
 }
 
+// readServed reads whether history serves the tracker (spec §6.5 rule 1):
+// a tap is open on it, or its network runs an integrity check that reads
+// its history. A tracker that history starts serving extends its roots
+// from the head.
+func (t *ChainTracker) readServed() {
+	served := t.taps.Load() > 0
+	if !served && t.network != nil {
+		if nt := registeredTrackers(t.network); nt != nil {
+			served = nt.headerChecksOf(t.network).readsHistory
+		}
+	}
+	if served != t.served {
+		t.served, t.treesDirty = served, true
+	}
+}
+
+// extends reports whether the tracker walks and fills: it can fetch, and
+// history serves it.
+func (t *ChainTracker) extends() bool {
+	return t.served && t.canFetch()
+}
+
+// replaceOlder is rule 1 for a tracker that no history serves: voter u's
+// counted vote nd off the pins' tree is a root at once, which no walk or
+// fill will join to another tree, and it replaces the older trees: every
+// tree but nd's that holds no counted vote of another voter, pending vote
+// or awaited answer. The pins of a replaced tree go with it; choose moves
+// them. Trees another voter's vote holds stay, and rule 4 weighs them.
+func (t *ChainTracker) replaceOlder(nd *node, u string) {
+	keep := map[*node]bool{rootOf(nd): true}
+	hold := func(n *node) {
+		if t.alive(n) {
+			keep[rootOf(n)] = true
+		}
+	}
+	for _, v := range t.baseVotes() {
+		if v.who != u {
+			hold(v.n)
+		}
+	}
+	for o, n := range t.pending {
+		if o != u {
+			hold(n)
+		}
+	}
+	hold(t.ask.pending)
+	if s := t.settle; s != nil {
+		for _, a := range s.answers {
+			hold(a)
+		}
+	}
+	var old []*node
+	for r := range t.exts {
+		if !keep[r] {
+			old = append(old, r)
+		}
+	}
+	pinRoot := t.pinRoot()
+	for _, r := range old {
+		if r == pinRoot {
+			t.pins = nil
+		}
+		var tree []*node
+		t.walkTree(r, func(n *node) { tree = append(tree, n) })
+		for _, n := range tree {
+			if t.alive(n) {
+				t.drop(n, true)
+			}
+		}
+	}
+}
+
 // walking reports whether n's tree is still being walked; votes in it wait.
 func (t *ChainTracker) walking(n *node) bool {
 	e := t.exts[rootOf(n)]
@@ -100,10 +172,10 @@ func (t *ChainTracker) pinRoot() *node {
 
 // walkFrom is rule 1 for a vote nd whose tree does not reach the pins: walk
 // it in class 1, asking its sender by hash on a mismatch. An empty tracker's
-// first vote, and a vote more than maxBackfill after the head, become roots
-// at once.
+// first vote, a vote more than maxBackfill after the head, and every vote
+// of a tracker that does not extend become roots at once.
 func (t *ChainTracker) walkFrom(nd *node, sender string) {
-	if !t.canFetch() || len(t.pins) == 0 || t.farAhead(nd.h) {
+	if !t.extends() || len(t.pins) == 0 || t.farAhead(nd.h) {
 		return
 	}
 	r := rootOf(nd)
@@ -115,8 +187,9 @@ func (t *ChainTracker) walkFrom(nd *node, sender string) {
 }
 
 // endWalks ends each walk whose tree came to hold the pins, so the votes
-// in it apply at once, and each walk no pending vote, ask answer or settle
-// answer waits on any more; fill goes on from where it stopped.
+// in it apply at once, each walk no pending vote, ask answer or settle
+// answer waits on any more, and every walk once history no longer serves
+// the tracker; fill goes on from where it stopped.
 func (t *ChainTracker) endWalks() {
 	pinRoot := t.pinRoot()
 	var awaited map[*node]bool
@@ -124,7 +197,7 @@ func (t *ChainTracker) endWalks() {
 		if e.walk == 0 {
 			continue
 		}
-		if r != pinRoot {
+		if t.served && r != pinRoot {
 			if awaited == nil {
 				awaited = t.rootsHolding(false)
 			}
@@ -243,7 +316,7 @@ func (t *ChainTracker) fillRoots() map[*node]bool {
 
 // extendRoots starts the next step of every root's walk or fill.
 func (t *ChainTracker) extendRoots() {
-	if !t.canFetch() {
+	if !t.extends() {
 		return
 	}
 	pinRoot, reads := t.pinRoot(), t.fillRoots()
