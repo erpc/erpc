@@ -2059,9 +2059,10 @@ func (e *EvmStatePoller) answered(g *giveUp) {
 	g.refusals, g.succeeded, g.at = 0, true, time.Time{}
 }
 
-// polledBlock is a polled latest or finalized block, decoded once: its
-// number and timestamp (0 when it carries none or an unparseable one) for
-// the counters, and its header past intake check 0, or why it failed it.
+// polledBlock is a polled latest or finalized block, decoded once by intake
+// check 0's parser: its number and timestamp (0 when it carries none or one
+// that does not parse) for the counters, and its header past check 0, or
+// why it failed it.
 type polledBlock struct {
 	number, timestamp int64
 	header            SourceHeader
@@ -2096,33 +2097,25 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string, polici
 
 	// resp is released on return.
 	raw := bytes.Clone(jrr.GetResultBytes())
-	var h integrity.Header
-	if err := common.SonicCfg.Unmarshal(raw, &h); err != nil || h.Number == "" {
-		return polledBlock{}, &common.BaseError{
-			Code:    "ErrEvmStatePoller",
-			Message: "cannot get block number from block data",
-			Details: map[string]interface{}{
-				"blockTag": blockTag,
-				"result":   string(raw),
-			},
+	h, ts, err := decodeChainHeader(raw)
+	if err == nil {
+		var ch *chainHeader
+		if ch, err = checkChainHeader(raw, h, ts); err == nil {
+			return polledBlock{number: int64(ch.number), timestamp: int64(ts), header: SourceHeader{ch}}, nil
+		}
+		// A header whose number parses still feeds the counters.
+		if n, nerr := common.HexToInt64(h.Number); nerr == nil && n >= 0 {
+			return polledBlock{number: n, timestamp: int64(ts), malformed: err}, nil
 		}
 	}
-	b := polledBlock{}
-	if b.number, err = common.HexToInt64(h.Number); err != nil {
-		return polledBlock{}, err
+	return polledBlock{}, &common.BaseError{
+		Code:    "ErrEvmStatePoller",
+		Message: "cannot get block number from block data",
+		Details: map[string]interface{}{
+			"blockTag": blockTag,
+			"result":   string(raw),
+		},
 	}
-	if s := h.Timestamp; s != "" {
-		if b.timestamp, err = parseBlockTimestamp(s); err != nil {
-			b.timestamp = 0
-			e.logger.Debug().Err(err).Msg("failed to parse block timestamp, continuing without it")
-		}
-	}
-	if ch, err := checkChainHeader(raw, &h); err != nil {
-		b.malformed = err
-	} else {
-		b.header = SourceHeader{ch}
-	}
-	return b, nil
 }
 
 func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {

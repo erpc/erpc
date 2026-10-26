@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2348,7 +2349,9 @@ func (s *chaosSeed) reorg3() {
 // hashes 1 and 2 blocks above its tip and 1000 and 1001 above it. They fail
 // blockHashRecompute at 2 heights in a row for longer than a live bound,
 // but one vendor alone, and far ahead of the head, never suspends the
-// check; intake drops each, and no client sees one.
+// check; intake drops each, and no client sees one. The one 1000 above
+// carries its timestamp as a JSON integer: check 0 reads it, so check 1
+// still judges that header.
 func (s *chaosSeed) forgedAhead() {
 	v := s.pick(s.wsA, s.wsB)
 	s.violator(v.ID)
@@ -2360,7 +2363,11 @@ func (s *chaosSeed) forgedAhead() {
 		head := v.Head()
 		var forged []json.RawMessage
 		for _, ahead := range []uint64{1, 2, 1000, 1001} {
-			forged = append(forged, chainsim.ForgeHash(chainsim.WithNumber(head.JSON(), head.Number+ahead)))
+			raw := chainsim.ForgeHash(chainsim.WithNumber(head.JSON(), head.Number+ahead))
+			if ahead == 1000 {
+				raw = withIntegerTimestamp(s.t, raw)
+			}
+			forged = append(forged, raw)
 		}
 		pushed += v.Push(forged...)
 		s.blocks(1)
@@ -2373,6 +2380,22 @@ func (s *chaosSeed) forgedAhead() {
 			"one vendor's forged heads never suspend %s", id)
 	}
 	s.occur(fForgedAhead, fmt.Sprintf("%s pushed %d forged heads, near and far ahead", v.ID, pushed))
+}
+
+// withIntegerTimestamp is raw with its hex timestamp written as a JSON
+// integer, as some nodes send it.
+func withIntegerTimestamp(t *testing.T, raw json.RawMessage) json.RawMessage {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw, &fields))
+	var hexTs string
+	require.NoError(t, json.Unmarshal(fields["timestamp"], &hexTs))
+	ts, err := strconv.ParseUint(strings.TrimPrefix(hexTs, "0x"), 16, 64)
+	require.NoError(t, err)
+	fields["timestamp"] = json.RawMessage(strconv.FormatUint(ts, 10))
+	out, err := json.Marshal(fields)
+	require.NoError(t, err)
+	return out
 }
 
 // slowWalk: every answer by hash or below the tip takes 2 block times, so

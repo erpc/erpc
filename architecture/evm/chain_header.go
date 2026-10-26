@@ -1,10 +1,12 @@
 package evm
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,44 +56,95 @@ type chainHeader struct {
 var errMalformedHeader = errors.New("malformed block header")
 
 // parseChainHeader is intake check 0: number, hash and parentHash must parse
-// into fixed types; timestamp, logsBloom and transactionsRoot must too when
-// present.
+// into fixed types; timestamp, logsBloom, transactionsRoot and gasUsed that
+// do not parse count as absent.
 func parseChainHeader(raw json.RawMessage) (*chainHeader, error) {
-	var h integrity.Header
-	if err := common.SonicCfg.Unmarshal(raw, &h); err != nil {
-		return nil, fmt.Errorf("%w: %v", errMalformedHeader, err)
+	h, ts, err := decodeChainHeader(raw)
+	if err != nil {
+		return nil, err
 	}
-	return checkChainHeader(raw, &h)
+	return checkChainHeader(raw, h, ts)
 }
 
-// checkChainHeader is intake check 0 over raw already decoded into h.
-func checkChainHeader(raw json.RawMessage, h *integrity.Header) (*chainHeader, error) {
+// headerJSON decodes the optional header fields raw, so one in an encoding
+// integrity.Header does not take (a JSON integer timestamp) cannot fail the
+// whole header.
+type headerJSON struct {
+	integrity.Header
+	Timestamp        json.RawMessage `json:"timestamp"`
+	LogsBloom        json.RawMessage `json:"logsBloom"`
+	TransactionsRoot json.RawMessage `json:"transactionsRoot"`
+	GasUsed          json.RawMessage `json:"gasUsed"`
+}
+
+// decodeChainHeader decodes raw once for intake check 0. The optional
+// fields that parse are set on h in the form integrity reads (timestamp as
+// hex); the others stay empty, as when absent. ts is the timestamp, 0 when
+// absent.
+func decodeChainHeader(raw json.RawMessage) (h *integrity.Header, ts uint64, err error) {
+	var j headerJSON
+	if err := common.SonicCfg.Unmarshal(raw, &j); err != nil {
+		return nil, 0, fmt.Errorf("%w: %v", errMalformedHeader, err)
+	}
+	h = &j.Header
+	if t, ok := jsonTimestamp(j.Timestamp); ok {
+		ts = t
+		h.Timestamp = "0x" + strconv.FormatUint(t, 16)
+	}
+	if s, ok := jsonString(j.LogsBloom); ok && isHexBytes(s, 256) {
+		h.LogsBloom = s
+	}
+	if s, ok := jsonString(j.TransactionsRoot); ok && isHexBytes(s, 32) {
+		h.TransactionsRoot = s
+	}
+	if s, ok := jsonString(j.GasUsed); ok {
+		if gas, err := common.HexToInt64(s); err == nil && gas >= 0 {
+			h.GasUsed = s
+		}
+	}
+	return h, ts, nil
+}
+
+// jsonTimestamp reads a timestamp as main does: a hex or decimal string,
+// or a JSON integer.
+func jsonTimestamp(raw json.RawMessage) (uint64, bool) {
+	s, ok := jsonString(raw)
+	if !ok {
+		s = string(raw)
+	}
+	ts, err := parseBlockTimestamp(s)
+	if err != nil || ts < 0 {
+		return 0, false
+	}
+	return uint64(ts), true
+}
+
+// jsonString is raw's value when it is a JSON string without escapes; no
+// hex field needs one.
+func jsonString(raw json.RawMessage) (string, bool) {
+	n := len(raw)
+	if n < 2 || raw[0] != '"' || raw[n-1] != '"' || bytes.IndexByte(raw[1:n-1], '\\') >= 0 {
+		return "", false
+	}
+	return string(raw[1 : n-1]), true
+}
+
+// checkChainHeader is intake check 0 over raw already decoded into h with
+// timestamp ts (decodeChainHeader).
+func checkChainHeader(raw json.RawMessage, h *integrity.Header, ts uint64) (*chainHeader, error) {
 	n, err := common.HexToInt64(h.Number)
 	if err != nil || n < 0 {
 		return nil, fmt.Errorf("%w: number %q", errMalformedHeader, h.Number)
 	}
-	ch := &chainHeader{number: uint64(n), raw: raw, parsed: h}
+	ch := &chainHeader{number: uint64(n), timestamp: ts, raw: raw, parsed: h}
 	if !decodeHex32(h.Hash, &ch.hash) {
 		return nil, fmt.Errorf("%w: hash %q", errMalformedHeader, h.Hash)
 	}
 	if !decodeHex32(h.ParentHash, &ch.parentHash) {
 		return nil, fmt.Errorf("%w: parentHash %q", errMalformedHeader, h.ParentHash)
 	}
-	if h.Timestamp != "" {
-		ts, err := common.HexToInt64(h.Timestamp)
-		if err != nil || ts < 0 {
-			return nil, fmt.Errorf("%w: timestamp %q", errMalformedHeader, h.Timestamp)
-		}
-		ch.timestamp = uint64(ts)
-	}
 	if h.LogsBloom != "" {
-		if !isHexBytes(h.LogsBloom, 256) {
-			return nil, fmt.Errorf("%w: logsBloom", errMalformedHeader)
-		}
 		ch.bloom, _ = hex.DecodeString(h.LogsBloom[2:])
-	}
-	if h.TransactionsRoot != "" && !isHexBytes(h.TransactionsRoot, 32) {
-		return nil, fmt.Errorf("%w: transactionsRoot %q", errMalformedHeader, h.TransactionsRoot)
 	}
 	ch.emptyTxs = strings.EqualFold(h.TransactionsRoot, integrity.EmptyTrieRoot)
 	ch.hashHex = hexHash(ch.hash)

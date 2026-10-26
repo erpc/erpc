@@ -371,6 +371,63 @@ func TestCovPoller_PollLatest_MalformedBlockAnswersAreErrors(t *testing.T) {
 	}
 }
 
+// Intake check 0 parses a polled block once: an optional field that does
+// not parse counts as absent, and the header still votes, before and after
+// intake binds (spec §5.3). Timestamps read as main read them.
+func TestCovPoller_PollLatest_OptionalFieldsThatDoNotParseCountAsAbsent(t *testing.T) {
+	block := func(extra string) string {
+		return fmt.Sprintf(`{"number":"0x64","hash":"0x%064x","parentHash":"0x%064x",%s}`, 101, 100, extra)
+	}
+	cases := []struct {
+		name, extra string
+		timestamp   int64
+	}{
+		{"json integer timestamp", `"timestamp":1700000100`, 1_700_000_100},
+		{"decimal string timestamp", `"timestamp":"1700000100"`, 1_700_000_100},
+		{"hex timestamp", `"timestamp":"0x6553f164"`, 0x6553f164},
+		{"unparseable timestamp", `"timestamp":"0xzz"`, 0},
+		{"fractional timestamp", `"timestamp":1.7e9`, 0},
+		{"short logsBloom", `"timestamp":"0x6553f164","logsBloom":"0x12"`, 0x6553f164},
+		{"numeric transactionsRoot", `"timestamp":"0x6553f164","transactionsRoot":7`, 0x6553f164},
+		{"unparseable gasUsed", `"timestamp":"0x6553f164","gasUsed":"lots"`, 0x6553f164},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := block(tc.extra)
+			handler := func(string, []interface{}) (*common.NormalizedResponse, error) {
+				return covPollerResult(raw), nil
+			}
+			header := func(t *testing.T, a common.HeadAnswer) SourceHeader {
+				t.Helper()
+				require.NoError(t, a.Err)
+				assert.Equal(t, common.AskFetched, a.Outcome)
+				require.NotNil(t, a.Header, "the header passes check 0")
+				sh := a.Header.(SourceHeader)
+				assert.Equal(t, uint64(100), sh.Cursor().Number)
+				assert.Equal(t, tc.timestamp, sh.Timestamp())
+				assert.JSONEq(t, raw, string(sh.Raw()), "the header keeps its source bytes")
+				return sh
+			}
+
+			// Before intake binds, the poll itself moves the counter.
+			p, _, ctx := covPollerNew(t, "cov-latest-optional", handler)
+			a := p.Ask(ctx, common.HeadNeedHash, common.AskRefresh)
+			header(t, a)
+			assert.Equal(t, int64(100), a.Block)
+			assert.Equal(t, int64(100), p.LatestBlock())
+
+			bound, _, ctx := covPollerNew(t, "cov-latest-optional-bound", handler)
+			in := &covPollerIntake{}
+			bound.BindIntake(in)
+			sh := header(t, bound.Ask(ctx, common.HeadNeedHash, common.AskRefresh))
+			in.mu.Lock()
+			defer in.mu.Unlock()
+			require.NoError(t, in.malformed, "intake takes the header as a vote")
+			assert.Equal(t, sh.Cursor(), in.header.Cursor())
+		})
+	}
+}
+
 func TestCovPoller_PollLatest_IsMonotonicAndIgnoresSmallRollbacks(t *testing.T) {
 	p, up, ctx := covPollerNew(t, "cov-latest-monotonic", covPollerBlocks(100, 90))
 	covPollerFastDebounce(p)
@@ -886,11 +943,20 @@ func TestCovPoller_Ask(t *testing.T) {
 	})
 }
 
-// covPollerIntake counts the poller's intake calls.
-type covPollerIntake struct{ polled, failed atomic.Int32 }
+// covPollerIntake counts the poller's intake calls and keeps the last
+// polled header.
+type covPollerIntake struct {
+	polled, failed atomic.Int32
+	mu             sync.Mutex
+	header         SourceHeader
+	malformed      error
+}
 
-func (i *covPollerIntake) Polled(string, SourceHeader, error, HeaderKind, time.Time) bool {
+func (i *covPollerIntake) Polled(_ string, sh SourceHeader, malformed error, _ HeaderKind, _ time.Time) bool {
 	i.polled.Add(1)
+	i.mu.Lock()
+	i.header, i.malformed = sh, malformed
+	i.mu.Unlock()
 	return true
 }
 func (i *covPollerIntake) PollFailed(string, time.Time)         { i.failed.Add(1) }
