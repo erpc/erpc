@@ -356,7 +356,7 @@ One chain tracker per network follows the canonical chain from source headers an
 | `erpc_served_tip_voters` | gauge | project, network, lane, rank | Upstreams on a lane's `latest` ballot per rank (`"live"`, `"live_benched"`, `"capped"`, `"capped_benched"`); only the best rank votes. |
 | `erpc_served_tip_quorum` | gauge | project, network, lane | Effective quorum of the lane's `latest` pick: the configured quorum capped at its voters. |
 | `erpc_upstream_report_age_seconds` | gauge | project, network, upstream, evidence | How long the lag reference has stood above the upstream's newest report. `evidence` ∈ `"number"`, `"hash"`. |
-| `erpc_upstream_tag_state_stale` | gauge | project, network, upstream | `1` while the upstream's `latest` state is stale and the tag-state gate skips it for tag requests. |
+| `erpc_upstream_tag_state_stale` | gauge | project, network, upstream | `1` while the upstream's `latest` state is stale against the network-wide `Latest`. The tag-state gate judges each tag request against its own `Latest`. |
 | `erpc_upstream_tag_state_all_stale_total` | counter | project, network, outcome | Tag requests whose every routed upstream had stale `latest` state. `outcome` ∈ `"routed"`, `"refused"`. |
 | `erpc_source_resubscribe_total` | counter | project, network, upstream, topic | Pending-transaction topics a push source subscribed again after 60s without a message while heads carried transactions. |
 | `erpc_shared_counter_remote_rejected_total` | counter | reason | Remote shared-counter states this instance rejected. `reason` ∈ `"non_positive"`, `"small_rollback"`, `"stale_timestamp"`, `"malformed"`. |

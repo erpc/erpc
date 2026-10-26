@@ -325,20 +325,80 @@ const (
 	tagStale
 )
 
-// tagStateHead is an upstream's tag-state head: the newest sample of the
-// block it executes "latest" at, and the state its samples built.
-type tagStateHead struct {
-	block     int64
-	sentAt    time.Time
-	state     tagState
-	streak    int // fresh samples in a row
-	lastStale time.Time
+// tagSample is one tag-state sample: the block an upstream executed
+// "latest" at, and when the request that asked was sent.
+type tagSample struct {
+	block  int64
+	sentAt time.Time
 }
 
-// credited is the head's block with its age credited at block time bt, as
-// #1296 credits lag: h + (now − sentAt) / bt.
-func (h tagStateHead) credited(now time.Time, bt time.Duration) int64 {
-	return h.block + int64(now.Sub(h.sentAt)/bt)
+// credited is the sample's block with its age credited at block time bt,
+// as #1296 credits lag: block + (now − sentAt) / bt.
+func (s tagSample) credited(now time.Time, bt time.Duration) int64 {
+	return s.block + int64(now.Sub(s.sentAt)/bt)
+}
+
+// staleAgainst is the one rule for a stale sample (spec §6.11): ref, the
+// reader's Latest, is more than W of chain above the sample's credited
+// block.
+func (s tagSample) staleAgainst(ref int64, now time.Time, bt, w time.Duration) bool {
+	return time.Duration(ref-s.credited(now, bt))*bt > w
+}
+
+// tagStateHead is an upstream's newest tag-state samples, oldest first:
+// enough to tell whether the fresh ones since a stale one readmit it.
+// published is its verdict against the network-wide Latest as the gauge
+// and the log last showed it.
+type tagStateHead struct {
+	samples   [tagStateFreshStreak]tagSample
+	n         int
+	published bool
+}
+
+// add keeps s as the newest sample; one older than the newest is dropped.
+func (h *tagStateHead) add(s tagSample) {
+	if h.n > 0 && s.sentAt.Before(h.samples[h.n-1].sentAt) {
+		return
+	}
+	if h.n == len(h.samples) {
+		copy(h.samples[:], h.samples[1:])
+		h.n--
+	}
+	h.samples[h.n] = s
+	h.n++
+}
+
+// state judges h against ref, the reader's Latest, at now: stale from a
+// stale sample until tagStateFreshStreak fresh ones follow it, or until
+// tagStateProbeFloor + W pass after it with no stale one (W alone can fall
+// between two probes); then admitted, fresh once a sample came after that.
+// No evidence before the first sample.
+func (h *tagStateHead) state(ref int64, now time.Time, bt, w time.Duration) tagState {
+	if h.n == 0 {
+		return tagNoEvidence
+	}
+	for i := h.n - 1; i >= 0; i-- {
+		s := h.samples[i]
+		if !s.staleAgainst(ref, now, bt, w) {
+			continue
+		}
+		readmit := s.sentAt.Add(tagStateProbeFloor + w)
+		switch {
+		case !now.After(readmit):
+			return tagStale
+		case h.samples[h.n-1].sentAt.After(readmit):
+			return tagFresh
+		}
+		return tagNoEvidence
+	}
+	return tagFresh
+}
+
+// tagView is an upstream's tag-state head judged against one reference:
+// its newest sample and its state.
+type tagView struct {
+	tagSample
+	state tagState
 }
 
 // tagTiming is the network's block time and W, the tag-state tolerance.
@@ -350,26 +410,31 @@ func (p *stateProber) tagTiming() (bt, w time.Duration) {
 	return bt, health.FreshnessWindow(bt)
 }
 
-// tagHeadLocked returns u's tag-state head, readmitted with no evidence once
-// a W passed with no stale sample; p.tagMu held. The W runs from when the
-// next sample was due (lastStale + tagStateProbeFloor): W is 2s at least and
-// so is the floor, so a W from the last stale sample alone would readmit a
-// still-stale upstream between every two of its probes.
-func (p *stateProber) tagHeadLocked(id string, now time.Time, w time.Duration) *tagStateHead {
-	if p.tagHeads == nil {
-		p.tagHeads = map[string]*tagStateHead{}
+// networkLatest is the reference where no request decides (spec §6.11):
+// the gauges and the probe logs.
+func (p *stateProber) networkLatest() int64 {
+	return common.EvmHeadOf(p.network, context.Background(), nil).Latest
+}
+
+// publishTagStates sets each upstream's tag-state gauge and logs each
+// change of its verdict, judged against the network-wide Latest at now.
+// Nothing is judged while Latest is unknown.
+func (p *stateProber) publishTagStates(now time.Time) {
+	ref := p.networkLatest()
+	if ref <= 0 {
+		return
 	}
-	h := p.tagHeads[id]
-	if h == nil {
-		h = &tagStateHead{}
-		p.tagHeads[id] = h
+	bt, w := p.tagTiming()
+	p.tagMu.Lock()
+	defer p.tagMu.Unlock()
+	for id, h := range p.tagHeads {
+		stale := h.state(ref, now, bt, w) == tagStale
+		p.setTagGauge(id, stale)
+		if stale != h.published {
+			h.published = stale
+			p.logTagState(id, stale, h.samples[h.n-1].block, ref)
+		}
 	}
-	if h.state == tagStale && now.Sub(h.lastStale) > tagStateProbeFloor+w {
-		h.state, h.streak = tagNoEvidence, 0
-		p.setTagGauge(id, false)
-		p.logTagState(id, false, h.block, 0)
-	}
-	return h
 }
 
 func (p *stateProber) setTagGauge(id string, stale bool) {
@@ -381,8 +446,7 @@ func (p *stateProber) setTagGauge(id string, stale bool) {
 }
 
 // logTagState logs u entering or leaving the tag-state skip (spec §17):
-// its newest sample executed "latest" at block while Latest was latest (0
-// for a readmission with no evidence).
+// its newest sample executed "latest" at block, judged against Latest.
 func (p *stateProber) logTagState(id string, stale bool, block, latest int64) {
 	msg := "tag-state gate readmits upstream for tag requests"
 	if stale {
@@ -392,48 +456,40 @@ func (p *stateProber) logTagState(id string, stale bool, block, latest int64) {
 		Bool("stale", stale).Int64("block", block).Int64("latest", latest).Msg(msg)
 }
 
-// recordTagSample folds one sample into u's tag-state head: u executed
-// "latest" at block when sent at sentAt, while the network's Latest was
-// latest. Stale when (latest − block) × bt > W. A sample older than the
-// head's newest is dropped. It returns the sample's verdict.
-func (p *stateProber) recordTagSample(id string, block, latest int64, sentAt time.Time) (stale bool) {
-	bt, w := p.tagTiming()
-	stale = time.Duration(latest-block)*bt > w
+// recordTagSample keeps one sample of u's tag-state head: u executed
+// "latest" at block when sent at sentAt. Its readers judge it (tagHead).
+func (p *stateProber) recordTagSample(id string, block int64, sentAt time.Time) {
 	p.tagMu.Lock()
-	defer p.tagMu.Unlock()
 	if p.tagSent == nil {
 		p.tagSent = map[string]time.Time{}
 	}
 	if sentAt.After(p.tagSent[id]) {
 		p.tagSent[id] = sentAt
 	}
-	h := p.tagHeadLocked(id, time.Now(), w)
-	if sentAt.Before(h.sentAt) {
-		return stale
+	if p.tagHeads == nil {
+		p.tagHeads = map[string]*tagStateHead{}
 	}
-	h.block, h.sentAt = block, sentAt
-	was := h.state == tagStale
-	if stale {
-		h.state, h.streak, h.lastStale = tagStale, 0, sentAt
-	} else {
-		h.streak++
-		if h.state != tagStale || h.streak >= tagStateFreshStreak {
-			h.state = tagFresh
-		}
+	h := p.tagHeads[id]
+	if h == nil {
+		h = &tagStateHead{}
+		p.tagHeads[id] = h
 	}
-	p.setTagGauge(id, h.state == tagStale)
-	if now := h.state == tagStale; now != was {
-		p.logTagState(id, now, block, latest)
-	}
-	return stale
+	h.add(tagSample{block: block, sentAt: sentAt})
+	p.tagMu.Unlock()
+	p.publishTagStates(time.Now())
 }
 
-// tagHead is a copy of u's tag-state head now.
-func (p *stateProber) tagHead(id string, now time.Time) tagStateHead {
-	_, w := p.tagTiming()
+// tagHead is u's tag-state head judged against ref, the reader's Latest,
+// at now.
+func (p *stateProber) tagHead(id string, ref int64, now time.Time) tagView {
+	bt, w := p.tagTiming()
 	p.tagMu.Lock()
 	defer p.tagMu.Unlock()
-	return *p.tagHeadLocked(id, now, w)
+	h := p.tagHeads[id]
+	if h == nil || h.n == 0 {
+		return tagView{}
+	}
+	return tagView{tagSample: h.samples[h.n-1], state: h.state(ref, now, bt, w)}
 }
 
 // latestChanged asks for a tag-state pass: the network's Latest moved.
@@ -523,14 +579,11 @@ func (p *stateProber) probeTagStates(ctx context.Context) {
 	for _, u := range ups {
 		serves[u.Id()], _ = u.ShouldHandleMethod("eth_call")
 	}
-	_, w := p.tagTiming()
 	now := time.Now()
+	p.publishTagStates(now)
 	var due []common.Upstream
 	var wakeIn time.Duration
 	p.tagMu.Lock()
-	for id := range p.tagHeads {
-		p.tagHeadLocked(id, now, w)
-	}
 	moved := p.tagMoved
 	p.tagMoved = false
 	if p.tagInflight == nil {
@@ -587,11 +640,10 @@ func (p *stateProber) probeTagStates(ctx context.Context) {
 }
 
 // probeLatest asks which block u's EVM executes in at "latest", sent as the
-// tag, and records the answer as a tag-state sample against the network's
-// Latest read at send.
+// tag, records the answer as a tag-state sample, and counts and logs it as
+// judged against the network-wide Latest.
 func (p *stateProber) probeLatest(ctx context.Context, u common.Upstream) {
-	latest := common.EvmHeadOf(p.network, ctx, nil).Latest
-	if latest <= 0 {
+	if p.networkLatest() <= 0 {
 		return // Head unknown: tag requests are not gated, nothing to judge
 	}
 	sentAt := time.Now()
@@ -599,7 +651,10 @@ func (p *stateProber) probeLatest(ctx context.Context, u common.Upstream) {
 	if !ok {
 		return
 	}
-	if p.recordTagSample(u.Id(), got, latest, sentAt) {
+	p.recordTagSample(u.Id(), got, sentAt)
+	latest := p.networkLatest()
+	bt, w := p.tagTiming()
+	if (tagSample{block: got, sentAt: sentAt}).staleAgainst(latest, time.Now(), bt, w) {
 		p.count(u, "latest", "stale")
 		log.Warn().Str("network", p.network.Label()).Str("upstream", u.Id()).
 			Int64("latest", latest).Int64("executedBlock", got).
@@ -611,13 +666,13 @@ func (p *stateProber) probeLatest(ctx context.Context, u common.Upstream) {
 
 // DecideTagState makes r's tag-state decision (spec §6.11), once, before its
 // first attempt, from its routed upstreams: each one that r's "latest"
-// reaches as the tag and whose tag-state head is stale is skipped. With
-// every routed upstream stale, the one with the highest credited head is
-// kept and the request counted routed; when that head is more than
-// tagStateRefuseBehind of chain below Latest, r is refused with -32603,
-// counted refused. r keeps its tag either way. Requests outside family 3,
-// numbered ones, those while Head is unknown and internal ones (probes,
-// tracker fetches) are not gated.
+// reaches as the tag and whose tag-state head is stale against r's Latest
+// is skipped. With every routed upstream stale, the one with the highest
+// credited head is kept and the request counted routed; when that head is
+// more than tagStateRefuseBehind of chain below Latest, r is refused with
+// -32603, counted refused. r keeps its tag either way. Requests outside
+// family 3, numbered ones, those while Head is unknown and internal ones
+// (probes, tracker fetches) are not gated.
 func DecideTagState(ctx context.Context, n common.Network, r *common.NormalizedRequest) error {
 	d := r.Directives()
 	if d != nil && d.IsInternal {
@@ -671,7 +726,7 @@ func DecideTagState(ctx context.Context, n common.Network, r *common.NormalizedR
 			continue
 		}
 		able++
-		h := p.tagHead(u.Id(), now)
+		h := p.tagHead(u.Id(), latest, now)
 		if h.state != tagStale {
 			continue
 		}

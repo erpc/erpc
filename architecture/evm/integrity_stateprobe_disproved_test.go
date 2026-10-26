@@ -275,7 +275,7 @@ func TestStateProber_StaleLatestTag(t *testing.T) {
 		}})
 		now := time.Now()
 		for id, want := range map[string]tagState{"stale": tagStale, "split": tagStale, "healthy": tagFresh, "pinned-stale": tagNoEvidence} {
-			assert.Equal(t, want, p.tagHead(id, now).state, id)
+			assert.Equal(t, want, p.tagHead(id, head, now).state, id)
 			assert.Equal(t, 0, fakeTrackerOf(t, ups[id]).MisbehaviorCount, "%s: a stale latest is gated, not scored", id)
 		}
 		assert.Equal(t, rounds, latestCalls["stale"])
@@ -288,19 +288,20 @@ func TestStateProber_StaleLatestTag(t *testing.T) {
 		}
 
 		for i := 1; i <= tagStateFreshStreak; i++ {
-			p.recordTagSample("stale", head, head, time.Now())
+			p.recordTagSample("stale", head, time.Now())
 			if i < tagStateFreshStreak {
-				assert.Equal(t, tagStale, p.tagHead("stale", time.Now()).state, "%d fresh samples do not readmit", i)
+				assert.Equal(t, tagStale, p.tagHead("stale", head, time.Now()).state, "%d fresh samples do not readmit", i)
 			}
 		}
-		assert.Equal(t, tagFresh, p.tagHead("stale", time.Now()).state, "3 fresh samples in a row readmit")
+		assert.Equal(t, tagFresh, p.tagHead("stale", head, time.Now()).state, "3 fresh samples in a row readmit")
 		assert.Equal(t, 0.0, gauge("stale"))
 
 		_, w := p.tagTiming()
-		p.recordTagSample("split", head, head, time.Now())
-		require.Equal(t, tagStale, p.tagHead("split", time.Now()).state)
-		assert.Equal(t, tagNoEvidence, p.tagHead("split", time.Now().Add(tagStateProbeFloor+w+time.Second)).state,
-			"a W without stale evidence admits")
+		p.recordTagSample("split", head, time.Now())
+		require.Equal(t, tagStale, p.tagHead("split", head, time.Now()).state)
+		later := time.Now().Add(tagStateProbeFloor + w + time.Second)
+		assert.Equal(t, tagNoEvidence, p.tagHead("split", head, later).state, "a W without stale evidence admits")
+		p.publishTagStates(later)
 		assert.Equal(t, 0.0, gauge("split"))
 	})
 

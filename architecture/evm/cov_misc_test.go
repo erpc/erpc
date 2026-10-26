@@ -209,7 +209,7 @@ func TestCovMisc_Multicall3_PacksFullBatchAndAnswersEachCaller(t *testing.T) {
 	assert.False(t, gotDeadline, "callers without a deadline give the pack none")
 	assert.Equal(t, before+4, covMiscMcCount(u, multicall3Packed))
 
-	h := p.tagHead(u.Id(), time.Now())
+	h := p.tagHead(u.Id(), latest, time.Now())
 	assert.EqualValues(t, executed, h.block, "the tag pack's answer is the upstream's tag-state sample")
 	assert.False(t, h.sentAt.IsZero())
 	assert.Equal(t, tagStale, h.state, "%d blocks below Latest at a 1s block time is past W", latest-executed)

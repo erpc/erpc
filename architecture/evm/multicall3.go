@@ -311,12 +311,6 @@ func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, bt *multicall3
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, mrq)
 
-	// The tag-state reference is the network-wide Latest at send, not the
-	// entries' Head.
-	var latest int64
-	if tag {
-		latest = common.EvmHeadOf(n, context.Background(), nil).Latest
-	}
 	sentAt := time.Now()
 	resp, err := u.Forward(ctx, mrq, false, false)
 	if resp != nil {
@@ -351,11 +345,12 @@ func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, bt *multicall3
 	}
 	// The sample is dated from the send of the attempt that answered; only a
 	// first attempt's send time is known here (permits never wait), so a
-	// retried or hedged pack gives no sample.
-	if s := mrq.ExecState().Snapshot(); tag && latest > 0 && s.UpstreamRetries == 0 && s.UpstreamHedges == 0 {
+	// retried or hedged pack gives no sample. Its reader judges it against
+	// its own Latest (spec §6.11).
+	if s := mrq.ExecState().Snapshot(); tag && s.UpstreamRetries == 0 && s.UpstreamHedges == 0 {
 		if executed, ok := multicall3Word(results[len(entries)]); ok {
 			if p := stateProberFor(n); p != nil {
-				p.recordTagSample(u.Id(), executed, latest, sentAt)
+				p.recordTagSample(u.Id(), executed, sentAt)
 			}
 		}
 	}

@@ -529,7 +529,7 @@ func TestCovInteg_StateProber(t *testing.T) {
 		p.probeLatest(ctx, u)
 		assert.Equal(t, 1, fleet.callCount())
 		assert.True(t, fleet.lastDirs().SkipInterpolation, "the probe sends latest as the tag")
-		assert.Equal(t, tagNoEvidence, p.tagHead("u1", time.Now()).state)
+		assert.Equal(t, tagNoEvidence, p.tagHead("u1", head, time.Now()).state)
 		assert.Zero(t, fakeTrackerOf(t, u).MisbehaviorCount)
 	})
 
