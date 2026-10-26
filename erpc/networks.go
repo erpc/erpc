@@ -815,18 +815,61 @@ func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 	})
 }
 
-// EvmRefreshHeadsBelow Asks, in the background, with a number need, the
-// voters of selector's lane whose head is below block (spec §6.5 catch-up,
+// EvmRefreshHeadsBelow Asks, in the background, with a number need, as
+// many of the voters of selector's lane whose head is below block as
+// Latest still lacks to reach it, oldest report first (spec §6.5 catch-up,
 // §6.4 by-hash hold): Latest is their ballot, so no other upstream moves
-// it.
+// it, and once the quorum holds block no further Ask can. A guarantee
+// subset's majority clamps Latest too (guaranteedFloor), so each subset
+// gets the Asks its own ballot lacks.
 func (n *Network) EvmRefreshHeadsBelow(selector string, block int64) {
-	s := n.voters(selector, voterQuery{kind: numberVote})
+	var ec *common.EvmNetworkConfig
+	if n.cfg != nil {
+		ec = n.cfg.Evm
+	}
+	n.askLacking(selector, block, voterQuery{kind: numberVote}, ec.ServedTipQuorum())
+	if ec == nil || ec.ServedTip == nil {
+		return
+	}
+	for _, g := range ec.ServedTip.GuaranteedFor {
+		n.askLacking(selector, block, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
+			m, _ := common.UpstreamMatchesSelector(g, u)
+			return m
+		}}, common.ServedTipQuorumMajority)
+	}
+	for _, m := range ec.ServedTip.GuaranteedMethods {
+		n.askLacking(selector, block, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
+			handle, _ := u.ShouldHandleMethod(m)
+			return handle
+		}}, common.ServedTipQuorumMajority)
+	}
+}
+
+// askLacking Asks, with a number need, as many of q's voters below block
+// as quorum lacks to hold it (quorum less the voters at or above it),
+// oldest report first.
+func (n *Network) askLacking(selector string, block int64, q voterQuery, quorum common.ServedTipQuorum) {
+	s := n.voters(selector, q)
+	if s.count() == 0 {
+		return
+	}
+	lacks := quorum.Of(s.count())
+	var below []common.EvmStatePoller
 	s.each(func(u common.Upstream, head int64) bool {
-		if head < block {
-			u.(common.EvmUpstream).EvmStatePoller().AskBackground(common.HeadNeedNumber, common.AskCatchUp)
+		if head >= block {
+			lacks--
+		} else if sp := u.(common.EvmUpstream).EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+			below = append(below, sp)
 		}
 		return true
 	})
+	if lacks <= 0 {
+		return
+	}
+	slices.SortStableFunc(below, func(a, b common.EvmStatePoller) int { return a.LatestReportAt().Compare(b.LatestReportAt()) })
+	for _, sp := range below[:min(lacks, len(below))] {
+		sp.AskBackground(common.HeadNeedNumber, common.AskCatchUp)
+	}
 }
 
 // EvmPollHeads Asks, with a hash need, each upstream in ids: voters that a

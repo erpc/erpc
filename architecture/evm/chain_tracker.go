@@ -2025,13 +2025,15 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 }
 
 // gate is the pins' backing for a publish. While a tap waits and the
-// lane's Latest holds back a pin the votes back, it asks the voters whose
-// head is below that pin for their heads once per block time, at most
-// catchUpMax apart (spec §6.5 catch-up): a voter that is no source, polled
+// lane's Latest holds back a pin the votes back, it asks as many of the
+// voters whose head is below that pin as Latest lacks, for their heads
+// once per block time, at most catchUpMax apart (spec §6.5 catch-up;
+// EvmRefreshHeadsBelow picks them): a voter that is no source, polled
 // every statePollerInterval, would otherwise hold every tap until its next
 // poll. A pin the vote need holds back for one block time is polled for
-// from the voters whose hash vote here is below it, at each publish: the
-// network paces those polls per upstream across lanes (EvmPollHeads).
+// from as many of the voters whose hash vote here is below it as the need
+// lacks, oldest evidence first: the network paces those polls per
+// upstream across lanes (EvmPollHeads).
 // Both run no faster than the demand's pace: a follow tap alone needs a
 // head once per integrity.follow.interval, not every block.
 // Their shared counters may already show it, moved by another instance or
@@ -2065,12 +2067,17 @@ func (t *ChainTracker) gate(path []*node) *pinBacking {
 			return b
 		}
 		t.catchUpAt = now.Add(max(t.BlockTime(), pace))
+		// Only as many as the need lacks, oldest evidence first: the
+		// voters already at or above the held pin count toward it.
+		lacks := max(b.need, 1) - (len(b.backs) - b.atLeast(int(held-b.base)))
 		var below []string
 		for _, u := range t.voters.Voters {
 			if nd := t.votes[u]; nd == nil || !t.alive(nd) || nd.h.number < held {
 				below = append(below, u)
 			}
 		}
+		slices.SortStableFunc(below, func(x, y string) int { return t.voteAt[x].Compare(t.voteAt[y]) })
+		below = below[:max(0, min(lacks, len(below)))]
 		if p, ok := t.network.(interface{ EvmPollHeads(ids []string) }); ok && len(below) > 0 {
 			t.callNetwork("catch-up", func() { p.EvmPollHeads(below) })
 		}

@@ -3216,6 +3216,9 @@ func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
 // The follow tap alone needs a head once per integrity.follow.interval
 // (1s), so head Asks (latest polls and eth_blockNumber) run at that pace,
 // not at the 300ms block time (spec §3 demand, §6.5 rule 6 and catch-up).
+// Catch-up then Asks only as many lagging voters as Latest lacks to reach
+// the pin (quorum 2), one of the four here, since the no_source Ask keeps
+// the first voter at it (§6.5 catch-up).
 func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -3223,7 +3226,7 @@ func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 	chain := newMockChain(0x100, false)
 	var vendors []*mockHttpVendor
 	var ups []*common.UpstreamConfig
-	for _, id := range []string{"rpc-a", "rpc-b", "rpc-c"} {
+	for _, id := range []string{"rpc-a", "rpc-b", "rpc-c", "rpc-d", "rpc-e"} {
 		v, srv := newMockHttpVendor(t, chain)
 		vendors = append(vendors, v)
 		up := sourceUpstream(id, srv.URL, nil)
@@ -3271,15 +3274,21 @@ func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`))
 	require.NoError(t, err)
 	_ = resp.Body.Close()
+	catchUp := func() float64 {
+		return testutil.ToFloat64(telemetry.MetricHeadAskTotal.WithLabelValues("test_ws", "evm:123", string(common.AskCatchUp), "fetched"))
+	}
 	time.Sleep(time.Second)
 	from, at = requests(), time.Now()
-	asked := asks()
+	asked, caught, head := asks(), catchUp(), chain.Head()
 	time.Sleep(5 * time.Second)
 	secs := time.Since(at).Seconds()
 	follow, askRate := float64(requests()-from)/secs, float64(asks()-asked)/secs
-	t.Logf("follow-only network: %.1f requests/s, %.1f head Asks/s", follow, askRate)
+	perBlock := (catchUp() - caught) / float64(chain.Head()-head)
+	t.Logf("follow-only network: %.1f requests/s, %.1f head Asks/s, %.2f catch-up Asks per block", follow, askRate, perBlock)
 	assert.Positive(t, follow, "the first client request starts the follow tap and the probes")
-	// One no_source Ask per second, and one catch-up round per second over
-	// the voters below the pin (2 of 3 at most).
-	assert.LessOrEqual(t, askRate, 3.5, "head Asks run at the follow tap's 1s pace, not every block")
+	// One no_source Ask per second, and one catch-up round per second.
+	assert.LessOrEqual(t, askRate, 2.5, "head Asks run at the follow tap's 1s pace, not every block")
+	// One catch-up round per second over 3.3 blocks, each Asking the one
+	// voter Latest lacks: at most 0.3 per block.
+	assert.LessOrEqual(t, perBlock, 0.35, "catch-up Asks only the voter Latest lacks")
 }
