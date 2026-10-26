@@ -102,6 +102,9 @@ func (h EvmHead) Rule(n int64, bt time.Duration, now time.Time) HeadRule {
 type HeadRefusal struct {
 	Rule  HeadRule
 	Block int64
+	// Ceiling is the ceiling Block was decided against: the one the Ask
+	// returned when Refreshed.
+	Ceiling int64
 	// Refreshed: N was decided again after its stale reports were Asked.
 	Refreshed bool
 	// owner is the leg that took the request's one retryable miss.

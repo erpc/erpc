@@ -936,8 +936,9 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 // refuseFutureRange refuses a range method (eth_getLogs, trace_filter)
 // whose toBlock the refusal rule calls future, before any dispatch (spec
 // §6.4): a node answers a range above its head with the part it has, so an
-// empty or short answer would pass for the whole range.
-func (n *Network) refuseFutureRange(ctx context.Context, req *common.NormalizedRequest, method string) error {
+// empty or short answer would pass for the whole range. The error names
+// the ceiling the verdict was decided against.
+func (n *Network) refuseFutureRange(req *common.NormalizedRequest, method string) error {
 	if n.cfg.Architecture != common.ArchitectureEvm || !methodHasDedicatedRangeAvailabilityHook(method) {
 		return nil
 	}
@@ -946,14 +947,13 @@ func (n *Network) refuseFutureRange(ctx context.Context, req *common.NormalizedR
 		return nil
 	}
 	n.countHeadRefusal(v.FutureRule())
-	ceiling := common.EvmHeadOf(n, ctx, req).Ceiling
 	return &common.ErrUpstreamBlockUnavailable{
 		BaseError: common.BaseError{
 			Code:    common.ErrCodeUpstreamBlockUnavailable,
-			Message: fmt.Sprintf("block not found for %s, requested toBlock %d is above the highest known block %d", method, v.Block, ceiling),
+			Message: fmt.Sprintf("block not found for %s, requested toBlock %d is above the highest known block %d", method, v.Block, v.Ceiling),
 			Details: map[string]interface{}{
 				"blockNumber":  v.Block,
-				"highestBlock": ceiling,
+				"highestBlock": v.Ceiling,
 			},
 		},
 	}
@@ -1345,7 +1345,7 @@ func (n *Network) SvmHighestFinalizedSlot(ctx context.Context) int64 {
 // ~100 slots the third upstream is holding, converting a served request into a
 // client-visible -32014.
 //
-// Same rationale as SvmHighestIndexedSlot and EVM's futureBlockCeiling: never
+// Same rationale as SvmHighestIndexedSlot and the EVM Head's ceiling: never
 // reject a block the most-ahead upstream actually has. Zero means UNKNOWN (no
 // poller has reported a root yet), and every caller must treat it as "no bound"
 // rather than as slot 0.
@@ -1940,7 +1940,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 		return resp, nil
 	}
-	if err := n.refuseFutureRange(ctx, req, method); err != nil {
+	if err := n.refuseFutureRange(req, method); err != nil {
 		common.SetTraceSpanError(forwardSpan, err)
 		if mlx != nil {
 			mlx.Close(ctx, nil, err)

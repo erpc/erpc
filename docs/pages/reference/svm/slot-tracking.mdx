@@ -406,7 +406,7 @@ The SVM poller feeds the shared health tracker, so the standard upstream gauges 
 
 - [`architecture/svm/svm_state_poller.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/svm_state_poller.go) — `Poll` fan-out, debounce and traffic gates, ingestion-lag computation, `IsHealthy`, `applyHealthToRouting` (edge-triggered cordoning), slot accessors, shared-counter wiring.
 - [`architecture/svm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/hooks.go) — `networkPostForward_getSlot` (per-commitment correction), `networkPreForward_getBlock` (availability guard), `effectiveCommitment`, `tipStalenessMargin`, `upstreamPostForward_trackContextSlot`.
-- [`architecture/svm/slot_lag.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/slot_lag.go) — `FilterByFinalizedSlotLag`, `ReferenceFinalizedSlot` (second-highest clamp), `HighestFinalizedSlot`, `FilterByMinContextSlot`.
+- [`architecture/svm/slot_lag.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/slot_lag.go) — `FilterByFinalizedSlotLag`, `ReferenceFinalizedSlot` (second-highest clamp), `FilterByMinContextSlot`.
 - [`architecture/svm/ledger_floor.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/ledger_floor.go) — slot-named request extraction shared by the declared-window checks (`slot_bounds.go`).
 - [`architecture/svm/history_sweep.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/history_sweep.go) — `getSignatureStatuses` null and `getSignaturesForAddress` short-page continuation toward a deeper floor.
 - [`architecture/svm/slot_bounds.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/slot_bounds.go) — declared `svm.blockAvailability` resolution and per-upstream skip.

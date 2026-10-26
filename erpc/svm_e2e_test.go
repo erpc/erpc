@@ -778,7 +778,7 @@ func TestSvm_Consensus_SlotLagFilterExcludesStaleUpstream(t *testing.T) {
 	//   fresh-a, fresh-b: 10_000   (manual advance via SuggestFinalizedSlot)
 	//   stale:            ~990     (poller-published, unchanged)
 	//
-	// HighestFinalizedSlot over the pool → 10000.
+	// ReferenceFinalizedSlot over the pool → 10000.
 	// Lag: fresh=0, stale = 10000 - 990 = 9010 → far beyond MaxFinalizedSlotLag=100.
 	// The filter must exclude `stale` from the consensus pool.
 	for _, u := range upsReg.GetNetworkUpstreams(ctx, util.SvmNetworkId("", "mainnet-beta")) {

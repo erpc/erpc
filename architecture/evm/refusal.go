@@ -71,6 +71,7 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 	if v.Rule == common.HeadStale {
 		v.Rule = common.HeadBand
 	}
+	v.Ceiling = h.Ceiling
 	if v.Rule == common.HeadBand && net != nil {
 		net.EvmAskBand(sel, n)
 	}
