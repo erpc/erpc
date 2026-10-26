@@ -509,7 +509,7 @@ func (n *Network) voters(sel string, q voterQuery) voterSet {
 
 // rank is u's rank for the query; ok is false when u casts no such vote
 // whatever the other candidates' ranks.
-func (s *voterSet) rank(u common.Upstream) (head int64, rank int, ok bool) {
+func (s voterSet) rank(u common.Upstream) (head int64, rank int, ok bool) {
 	if s.q.member != nil && !s.q.member(u) || s.q.kind == numberVote && s.n.isForkDemoted(u) {
 		return 0, 0, false
 	}
@@ -525,7 +525,7 @@ func (s *voterSet) rank(u common.Upstream) (head int64, rank int, ok bool) {
 }
 
 // count is how many voters the set had when it was read.
-func (s *voterSet) count() int {
+func (s voterSet) count() int {
 	if s.best < 0 {
 		return 0
 	}
@@ -534,14 +534,14 @@ func (s *voterSet) count() int {
 
 // live reports whether live heads, benched or not, rank best: a cap-only
 // set gives the regression guard no live reference.
-func (s *voterSet) live() bool {
+func (s voterSet) live() bool {
 	return s.best >= 0 && s.best <= 1
 }
 
 // each calls yield with each voter, in routing order, and its head on the
 // query's axis (0 for an admitted poller with none yet), until yield
 // returns false.
-func (s *voterSet) each(yield func(u common.Upstream, head int64) bool) {
+func (s voterSet) each(yield func(u common.Upstream, head int64) bool) {
 	if s.best < 0 {
 		return
 	}
@@ -553,7 +553,7 @@ func (s *voterSet) each(yield func(u common.Upstream, head int64) bool) {
 }
 
 // list is the voters in routing order.
-func (s *voterSet) list() []common.Upstream {
+func (s voterSet) list() []common.Upstream {
 	out := make([]common.Upstream, 0, s.count())
 	s.each(func(u common.Upstream, _ int64) bool {
 		out = append(out, u)
