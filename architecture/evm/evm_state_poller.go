@@ -1117,13 +1117,15 @@ const (
 	HeaderForkPolled
 )
 
-// PollIntake takes a bound poller's latest headers.
+// PollIntake takes a bound poller's latest and finalized headers.
 type PollIntake interface {
 	// Polled takes the header a poll of latest, sent at sent, fetched.
 	Polled(upstreamId string, raw json.RawMessage, kind HeaderKind, sent time.Time)
 	// PollFailed notes a poll of latest, sent at started, that the node
 	// failed (spec §6.1).
 	PollFailed(upstreamId string, started time.Time)
+	// PolledFinalized takes the header a poll of finalized fetched.
+	PolledFinalized(upstreamId string, raw json.RawMessage)
 }
 
 // BindIntake sends this poller's latest headers to intake; Set makes it a
@@ -1548,7 +1550,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 		).Inc()
 
 		// Actually fetch from upstream
-		blockNum, _, _, err := e.fetchBlock(ctx, "finalized", common.UpstreamPoliciesTimeoutOnly)
+		blockNum, _, header, err := e.fetchBlock(ctx, "finalized", common.UpstreamPoliciesTimeoutOnly)
 		if err != nil || blockNum == 0 {
 			if err == nil ||
 				common.HasErrorCode(err,
@@ -1597,6 +1599,11 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 			Msg("fetched finalized block")
 
 		e.tracker.SetFinalizedBlockNumber(e.upstream, blockNum)
+		// The header is this instance's own evidence of what is final
+		// (spec §6.5); another instance's poll of the shared counter is none.
+		if bound := e.pollSrc.Load(); bound != nil && header != nil {
+			bound.intake.PolledFinalized(e.upstream.Id(), header)
+		}
 
 		return blockNum, nil
 	})
@@ -1678,6 +1685,16 @@ func (e *EvmStatePoller) FinalizedBlock() int64 {
 		return latest - depth
 	}
 	return 0
+}
+
+// DerivedFinalized is FinalizedBlock while the upstream has no finalized
+// tag, latest − the derived finality depth (spec §6.4); ok false while it
+// has the tag.
+func (e *EvmStatePoller) DerivedFinalized() (number int64, ok bool) {
+	if !e.shouldSkipFinalizedCheck() {
+		return 0, false
+	}
+	return e.FinalizedBlock(), true
 }
 
 func (e *EvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {
@@ -2074,8 +2091,8 @@ func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
 }
 
 // fetchBlock returns the number and timestamp of the block at blockTag, and,
-// for latest, the header as the upstream sent it; policies are the probe's
-// upstream policies.
+// for latest and finalized, the header as the upstream sent it; policies
+// are the probe's upstream policies.
 func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string, policies common.UpstreamPolicies) (int64, int64, json.RawMessage, error) {
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
@@ -2130,7 +2147,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string, polici
 	}
 
 	var header json.RawMessage
-	if blockTag == "latest" {
+	if blockTag == "latest" || blockTag == "finalized" {
 		// resp is released on return.
 		header = bytes.Clone(jrr.GetResultBytes())
 	}

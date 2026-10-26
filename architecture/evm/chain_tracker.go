@@ -125,6 +125,8 @@ type ChainTracker struct {
 	heights      map[uint64][]*node   // held headers per height, oldest first
 	exts         map[*node]*extension // every held root: its walk or fill
 	votes        map[string]*node     // source upstream id -> its vote
+	// finals is each upstream's newest finalized evidence (finalThrough).
+	finals map[string]finalEvidence
 	// rewindDue holds the voters without a fresh hash vote on the new pins
 	// at the last move to a lower head: each is owed one rewind once a
 	// fresh vote of its reaches the pins (spec §14).
@@ -294,6 +296,7 @@ const (
 	msgSync
 	msgCall   // a tracker-owned fetch ended: fn runs on the tracker
 	msgSettle // ReconfirmPin asks for a settle; settled gets its outcome
+	msgFinal  // a voter's finalized evidence
 	msgKinds
 )
 
@@ -310,6 +313,17 @@ type trackerMsg struct {
 	fn       func()
 	settled  chan settleOutcome
 	number   int64 // the height a msgSettle re-checks
+	final    finalEvidence
+}
+
+// finalEvidence is one upstream's finalized evidence on this instance,
+// never shared (spec §6.5): the header its finalized poll answered, or,
+// for an upstream without a finalized tag, its derived finalized number,
+// which names no hash.
+type finalEvidence struct {
+	number  uint64
+	hash    [32]byte
+	derived bool
 }
 
 type anchor struct {
@@ -453,6 +467,7 @@ func (t *ChainTracker) clear() {
 	t.heights = make(map[uint64][]*node)
 	t.exts = make(map[*node]*extension)
 	t.votes = make(map[string]*node)
+	t.finals = make(map[string]finalEvidence)
 	t.rewindDue = nil
 	t.pending = make(map[string]*node)
 	t.voteAt = make(map[string]time.Time)
@@ -498,6 +513,11 @@ func (t *ChainTracker) observeAnswer(upstreamId string, h *chainHeader) {
 // with its evidence time.
 func (t *ChainTracker) observeSource(upstreamId string, h *chainHeader, at time.Time) {
 	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteSource, hdr: h, at: at})
+}
+
+// observeFinal takes upstreamId's finalized evidence (finalThrough).
+func (t *ChainTracker) observeFinal(upstreamId string, ev finalEvidence) {
+	t.mb.put(trackerMsg{kind: msgFinal, upstream: upstreamId, final: ev})
 }
 
 func (t *ChainTracker) observeFetched(upstreamId string, h *chainHeader) {
@@ -610,6 +630,10 @@ func (t *ChainTracker) receive(msg trackerMsg) {
 		msg.fn()
 	case msgSettle:
 		t.requestSettle(msg.settled, msg.number)
+	case msgFinal:
+		if cur, ok := t.finals[msg.upstream]; !ok || msg.final.number >= cur.number {
+			t.finals[msg.upstream] = msg.final
+		}
 	case msgTick, msgSync:
 	}
 }
@@ -1439,15 +1463,15 @@ func (t *ChainTracker) apply(path []*node) {
 }
 
 // recordMove counts a re-anchor, or the depth of a reorg, from old to path,
-// and sets the head gauge. A reverted block at or below the finalized
-// height is followed, logged as an error (final_hash_changed) and kept in
-// revertedFinal, so no permanent cache entry serves the old branch (spec
-// §6.5). A re-anchor's old pins below the new tree are decided once fill
-// links that tree down to them (unlinkedPins), or dropped once they leave
-// the window. Headers compare by hash: fill can fetch an evicted block
-// again as a new header. A tracker that no history serves moves to a new
-// root without a re-anchor, and nothing links its old pins (spec §6.5 rule
-// 1).
+// and sets the head gauge. A reverted final pin (finalThrough) is followed,
+// logged as an error (final_hash_changed) and kept in revertedFinal, so no
+// permanent cache entry serves the old branch (spec §6.5); any other revert
+// is a reorg. A re-anchor's old pins below the new tree are decided once
+// fill links that tree down to them (unlinkedPins), or dropped once they
+// leave the window. Headers compare by hash: fill can fetch an evicted
+// block again as a new header. A tracker that no history serves moves to a
+// new root without a re-anchor, and nothing links its old pins (spec §6.5
+// rule 1).
 func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	head := path[len(path)-1].h
 	telemetry.MetricChainTrackerHead.WithLabelValues(t.projectId(), t.networkLabel(), t.group).Set(float64(head.number))
@@ -1487,11 +1511,13 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	if t.selector == "" && head.number < old[len(old)-1].number {
 		t.rewindVoters(pathAt)
 	}
+	fin := t.finalizedHead()
 	var span heightSpan
 	var oldLo, newLo *chainHeader
 	replaced := func(hs []*chainHeader) {
+		through := t.finalThrough(hs, fin)
 		for _, h := range hs {
-			if p := pathAt(h.number); p != nil && p.hash != h.hash {
+			if p := pathAt(h.number); p != nil && p.hash != h.hash && h.number <= through {
 				if span.hi == 0 || int64(h.number) < span.lo {
 					span.lo, oldLo, newLo = int64(h.number), h, p
 				}
@@ -1516,7 +1542,7 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 		}
 	}
 	t.unlinkedPins = unlinked
-	if fin := t.finalizedHead(); span.hi > 0 && fin > 0 && span.lo <= fin {
+	if span.hi > 0 {
 		var ev *zerolog.Event
 		if t.selector == "" {
 			ev = common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantFinalHashChanged).Str("group", t.group)
@@ -1527,8 +1553,28 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 		ev.Int64("revertedFrom", span.lo).Str("oldHash", hexHash(oldLo.hash)).Str("newHash", hexHash(newLo.hash)).
 			Int64("finalized", fin).Uint64("head", head.number).Str("headHash", hexHash(head.hash)).
 			Msg("chain tracker followed a majority branch that reverts a finalized block")
-		t.addRevertedFinal(heightSpan{lo: span.lo, hi: min(span.hi, fin)})
+		t.addRevertedFinal(span)
 	}
+}
+
+// finalThrough is the number of the highest final pin of hs, pins oldest
+// first, 0 while none is (spec §6.5): at most fin, and covered by a voter's
+// finalized evidence on this instance. A header its finalized poll answered
+// covers the pins at and below it while hs holds that header; a derived
+// finalized number covers the pins at and below it.
+func (t *ChainTracker) finalThrough(hs []*chainHeader, fin int64) (through uint64) {
+	if fin <= 0 {
+		return 0
+	}
+	for u, ev := range t.finals {
+		if !t.voters.all && !slices.Contains(t.voters.Voters, u) {
+			continue
+		}
+		if ev.derived || slices.ContainsFunc(hs, func(h *chainHeader) bool { return h.number == ev.number && h.hash == ev.hash }) {
+			through = max(through, ev.number)
+		}
+	}
+	return min(through, uint64(fin))
 }
 
 // rewindVoters is the rollback write (spec §14), on a move to a branch
@@ -3341,24 +3387,61 @@ func ChainTrackerOf(ctx context.Context, n common.Network, selector string) *Cha
 
 // ObserveSourceHeader hands an accepted source header to the network-wide
 // tracker and to every group tracker whose selector matches u, as u's vote.
-// Each tracker drops it unless u is one of its lane's voters.
+// Each tracker drops it unless u is one of its lane's voters. An upstream
+// without a finalized tag brings its derived finalized number along, as its
+// finalized evidence (spec §6.5).
 func ObserveSourceHeader(n common.Network, u common.Upstream, sh SourceHeader, at time.Time) {
+	id := u.Id()
+	derived, ok := derivedFinalized(u)
+	lanesOf(n, u, func(t *ChainTracker) {
+		t.observeSource(id, sh.h, at)
+		if ok {
+			t.observeFinal(id, finalEvidence{number: derived, derived: true})
+		}
+	})
+}
+
+// ObserveFinalizedHeader hands the header u's finalized poll answered on
+// this instance to the trackers of u's lanes, as u's finalized evidence
+// (spec §6.5); it is never shared.
+func ObserveFinalizedHeader(n common.Network, u common.Upstream, sh SourceHeader) {
+	ev := finalEvidence{number: sh.h.number, hash: sh.h.hash}
+	lanesOf(n, u, func(t *ChainTracker) { t.observeFinal(u.Id(), ev) })
+}
+
+// lanesOf calls fn for the network-wide tracker of n and for every group
+// tracker whose selector matches u.
+func lanesOf(n common.Network, u common.Upstream, fn func(*ChainTracker)) {
 	nt := registeredTrackers(n)
 	if nt == nil {
 		return
 	}
-	id := u.Id()
 	nt.mu.Lock()
+	defer nt.mu.Unlock()
 	for _, t := range nt.groups {
 		if t.selector == "" {
-			t.observeSource(id, sh.h, at)
+			fn(t)
 			continue
 		}
 		if m, _ := common.UpstreamMatchesSelector(t.selector, u); m {
-			t.observeSource(id, sh.h, at)
+			fn(t)
 		}
 	}
-	nt.mu.Unlock()
+}
+
+// derivedFinalized is u's derived finalized number while u has no finalized
+// tag (spec §6.4); ok false otherwise.
+func derivedFinalized(u common.Upstream) (number uint64, ok bool) {
+	eu, isEvm := u.(interface{ EvmStatePoller() common.EvmStatePoller })
+	if !isEvm {
+		return 0, false
+	}
+	p, isPoller := eu.EvmStatePoller().(interface{ DerivedFinalized() (int64, bool) })
+	if !isPoller {
+		return 0, false
+	}
+	fin, derived := p.DerivedFinalized()
+	return uint64(max(fin, 0)), derived && fin > 0
 }
 
 // VotersChanged makes every tracker of n read its voters again.

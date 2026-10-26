@@ -174,6 +174,19 @@ func (in *networkIntake) PollFailed(upstreamId string, started time.Time) {
 	}
 }
 
+// PolledFinalized takes the header a poll of upstreamId's finalized
+// fetched on this instance: its finalized evidence for the trackers (spec
+// §6.5), never a vote.
+func (in *networkIntake) PolledFinalized(upstreamId string, raw json.RawMessage) {
+	sh, err := evm.ParseSourceHeader(raw)
+	if err != nil {
+		return
+	}
+	if u := in.upstream(upstreamId); u != nil {
+		evm.ObserveFinalizedHeader(in.nw, u, sh)
+	}
+}
+
 // pollsFailing reports whether upstreamId's polls of latest are failing
 // (PollFailed).
 func (in *networkIntake) pollsFailing(upstreamId string) bool {

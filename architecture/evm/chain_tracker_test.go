@@ -330,6 +330,40 @@ func TestChainTracker(t *testing.T) {
 		assert.Equal(t, uint64(232), b.Applied[len(b.Applied)-1].Number)
 		assert.Equal(t, before, reanchors(), "a walk that links is no re-anchor")
 	})
+
+	// A single upstream pinned a sibling at the finalized height, then its
+	// finalized poll answered that height with another hash before its head
+	// moved to the canonical branch (dev: 19 final_hash_changed on three
+	// one-upstream parachains). Finality by number alone called the revert
+	// a final-hash change; only finalized evidence that covers the pin's
+	// hash makes it one (spec §6.5).
+	t.Run("a revert counts as a final-hash change only when finalized evidence covered the pin", func(t *testing.T) {
+		ctx := context.Background()
+		const fin = 8
+		head := func() common.EvmHead { return common.EvmHead{Latest: 1 << 40, Finalized: fin} }
+		evidence := func(c *ChainTracker, n uint64, hash string) {
+			var h [32]byte
+			require.True(t, decodeHex32(hash, &h))
+			c.observeFinal("a", finalEvidence{number: n, hash: h})
+		}
+		run := func(covered string) *ChainTracker {
+			c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", head, newFetchScheduler(t.Context(), nil))
+			voteChain(t, c, "a", "a", 1, 10, testHash("f", 0))
+			evidence(c, fin, covered)
+			voteChain(t, c, "a", "c", fin, 11, testHash("a", fin-1))
+			v, ok := c.HashAt(fin)
+			require.True(t, ok)
+			require.Equal(t, testHash("c", fin), v, "the pins follow the upstream's branch")
+			c.sync(ctx)
+			return c
+		}
+		c := run(testHash("c", fin))
+		assert.False(t, c.RevertedFinal(fin), "the finalized poll named the other branch: the pin was never final")
+
+		c = run(testHash("a", fin))
+		assert.True(t, c.RevertedFinal(fin), "the finalized poll named the pin: its revert is a final-hash change")
+		assert.False(t, c.RevertedFinal(fin+1), "a pin above Finalized is never final")
+	})
 }
 
 func putReceipts(c *ChainTracker, blockHash string, receipts []integrity.Receipt) {

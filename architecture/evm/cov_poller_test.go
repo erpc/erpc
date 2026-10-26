@@ -857,6 +857,7 @@ type covPollerIntake struct{ polled, failed atomic.Int32 }
 
 func (i *covPollerIntake) Polled(string, json.RawMessage, HeaderKind, time.Time) { i.polled.Add(1) }
 func (i *covPollerIntake) PollFailed(string, time.Time)                          { i.failed.Add(1) }
+func (i *covPollerIntake) PolledFinalized(string, json.RawMessage)               {}
 
 // A counter another path keeps fresh meets a number need, but never a hash
 // need: its local fetch still runs, so this instance keeps sampling block
