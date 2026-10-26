@@ -241,8 +241,9 @@ type Source interface {
 func (t *ChainTracker) Observe(upstreamId string, raw json.RawMessage, vote bool)
 // Implements indexer.ChainFeed, integrity.History, ChainSegment, ReceiptCache, PinReconfirmer.
 
-// Per-upstream part of intake, shared with SuggestLatestBlock (heights).
-func (e *EvmStatePoller) ObserveHead(raw json.RawMessage) (accepted bool)
+// Per-upstream part of intake, shared with SuggestLatestBlock: a source
+// header's height, parsed once by intake, and when its evidence was taken.
+func (e *EvmStatePoller) ObserveHead(number int64, at time.Time) (accepted bool)
 ```
 
 ```go
@@ -303,7 +304,7 @@ push u:  newPendingTransactions:<v>     while demand has it and admitted(u)
 
 | # | Check | Home | On fail |
 |---|---|---|---|
-| 0 | Parse number, hash and parentHash into fixed types; timestamp, logsBloom, transactionsRoot and gasUsed too, when present. A header that omits them still votes: it gives no block time sample, no bloom verdict and no receipts skip, and an empty receipts answer for it is a failed fetch (§11) | network intake | drop; `outcome="malformed"` |
+| 0 | Parse number, hash and parentHash into fixed types; timestamp (hex, decimal string or integer, as main reads it), logsBloom, transactionsRoot and gasUsed too, when present: one that does not parse counts as absent. A header without them still votes: it gives no block time sample, no bloom verdict and no receipts skip, and an empty receipts answer for it is a failed fetch (§11). With integrity on, such a header still faces check 1, where its hash must recompute | network intake | drop; `outcome="malformed"` |
 | 1 | Header integrity, while integrity is on (§13) | network intake | drop; `erpc_integrity_violation_total` |
 | 2 | Chain identity on a major jump | poller, the `SuggestLatestBlock` code path | drop; async verify |
 | 3 | Per-upstream head counter | poller | — |
@@ -313,7 +314,6 @@ push u:  newPendingTransactions:<v>     while demand has it and admitted(u)
 - Hashes compare as bytes: `0xAB…` and `0xab…` are one block.
 - Client answers to `eth_getBlockByNumber(latest)` move the head counter where the tag still reaches upstreams (`translateLatestTag: false`, `skip-interpolation`), best-effort and non-blocking (#450), and reach the trackers without a vote.
 - The chain-identity cordon (`cordonForChainIdMismatch`) expires: the poller checks `eth_chainId` every 5 min and uncordons after 2 matching checks in a row; a mismatched major jump cordons again (#997).
-- The poller give-up (`skipLatestBlockCheck` after 10 failures) expires after 10 min; while it holds, the upstream is no poll source (#240).
 - Pending transactions pass check 4 and topic admission, then enter the mempool feed.
 
 ## 6. Head model: eleven concepts
