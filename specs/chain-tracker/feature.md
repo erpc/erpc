@@ -479,7 +479,7 @@ Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, th
 | settle: for a tie, the voters whose vote decides neither tied block (no fresh hash vote, a vote below the split or in another tree), then non-voters, up to 3 (hash); for a vote off the pins (§6.3), the voters that back the pins with an older vote and the voters with no fresh hash vote, oldest evidence first, up to 3 (fork) | hash, fork |
 | no hash voter, with demand (§6.5 rule 6) | hash |
 
-- An upstream that rejects `latest` 10 times stops being a poll source until the 10-min re-check.
+- A poller method (`latest`, `finalized`, the syncing check) refused 10 times before any success is given up for 10 min, then retried; an upstream given up on `latest` is no poll source meanwhile.
 - A panic in an Ask fails its waiters and is counted; no waiter hangs (#1060).
 - At most one live poller per upstream per instance (#1007); a stuck refresh exits within its fallback timeout + 1s (#838).
 - The finalized poll waits `max(debounce, depth × bt × 0.05)` (#1265); an upstream behind the reference's finalized keeps the regular cadence (#1269).
@@ -713,7 +713,7 @@ Cost, measured 2026-10-14 on public RPCs, 5 consecutive blocks each:
 
 - Consecutive checks find the parent among held headers by parentHash, never by number; a parent that is not held skips the check.
 - Suspension: §6.9. Anchors and the logs fallback need the evidence quorum (§6.10).
-- Tracker fetches run the checks (§8); `IsInternal` no longer skips them.
+- Tracker fetches run the checks (§8). A head poll or Ask answer is checked once, by intake (§5.3 check 1), not again after its forward.
 - An empty numbered trace (`trace_block` and kin) is accepted only for a pinned block whose header has `transactionsRoot` = the empty-trie root and `gasUsed` = 0, with a hash that recomputes; no acceptance-time fetch (#1201).
 - `integrity.follow.enabled` opens one integrity follow tap per tracker at the network's first client request, as main's follower started, and keeps it open. It holds demand at the pace of `integrity.follow.interval` (1s), and feeds `stateProberFor(...).onNewHead`, so the state probes start with it. Out of range restarts it after the confirmed head.
 - Group trackers count the voters of their lane; their settles carry the group selector.
@@ -747,7 +747,7 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | any upstream | one ahead, peers stalled | number ages of the peers | `Latest` and taps wait until the peers are benched | 90s |
 | any source | the chain makes no blocks | no reference moves | nothing reconnects or resubscribes | — |
 | poll source | errors, 429 | failed polls | backoff up to 60s; never stops for good; failed polls spanning W with no success end its hash vote | 60s |
-| other upstreams | poller give-up | `skipLatestBlockCheck` | expires | 10 min |
+| any upstream | poller give-up: a method refused 10 times before any success | the give-up | expires, then retried | 10 min |
 | intake | chain-identity cordon | cordon reason | `eth_chainId` every 5 min; uncordon after 2 matches | 10 min |
 | intake, integrity | a check no upstream passes | §6.9 | suspended; observe-only after 100 blocks; enforced after 2 passing heights | 2 heights |
 | tracker | voters disagree | split votes | the branch with the most votes; ties settle | 1 settle |
@@ -771,6 +771,7 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | gRPC | instance lags, restarted, or fill is slow | a stalled Read | 60s, then `UNAVAILABLE`; the client reconnects | 60s |
 | mempool | subscription silent | no message for 60s while blocks carry transactions | resubscribe, backing off to 30 min | 60s |
 | integrity follow tap | out of range | Read error | restart after the confirmed head | 1 Read |
+| state prober | an upstream's `eth_getProof` keeps failing | 10 errors in a row, no success | its proof probes stop; context probes go on | 10 min |
 | Kafka writer | lease lost | renewal fails | tap stops; the transactional epoch fences it; the next holder resumes from the last record | lease TTL |
 | block time | halt or restart | header timestamps | a span across the halt counts as at most 3× the EMA; caps: cadence 12s, W 60s | 1 sample |
 
@@ -1053,7 +1054,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | wsclient `enqueue`, `isLossy`, `runWriter`, per-subscription buffers; `WsConnection.NotificationDropped` | replaced by taps and their wait bounds |
 | logs case of `DedupKeyForFilter`, logs dedup windows, `logRemoved` | deleted |
 | `nullingress` | deleted |
-| `IsInternal` | split: request kind `internal` for failsafe matching; the retry, hedge and breaker bypass for subscription calls, state-poller, chainId and state probes only; tracker fetches skip open breakers and never feed them (§8) |
+| `IsInternal` | deleted: one field, `UpstreamPolicies`, says whose request it is: a client's (`Configured`) or eRPC's own (tracker fetch, poll or Ask, probe, subscription call, `eth_chainId` check). eRPC's own requests match failsafe kind `internal`; each keeps its policy bypass as before; tracker fetches skip open breakers and never feed them (§8) |
 | permanent switches: `IgnoreMethod` entries, `skipLatestBlockCheck`, the chain-identity cordon | each expires (§15.1) |
 | delivered-head floor: `NoteObservedLatestBlock`, `deliveredLatestBlock`, `applyDeliveredHeadFloor`, the network counter `latestBlockShared` | deleted: no block above `Latest` is sent, so nothing lifts `Latest` |
 | live bound, `live`, `SourceLive`, `newestKnown`, `erpc_source_live` | replaced by freshness (§6.1) and `erpc_upstream_report_age_seconds` |
