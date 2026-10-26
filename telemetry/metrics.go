@@ -373,6 +373,12 @@ var (
 		Help:      "Per-upstream WOULD-HAVE-BEEN-EXCLUDED events from `shadowExcludeIf` predicates. Same leaf-slug attribution as `selection_exclusion_total`, but the upstream stays in rotation — meant for safely auditioning a new (or removed) exclusion rule in production before promoting it to a real `excludeIf`.",
 	}, []string{"project", "network", "method", "upstream", "reason"})
 
+	MetricSelectionMethodBlockTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_method_block_total",
+		Help:      "Ticks where `blockMethods` blocked an upstream for one method; it stays in rotation for other methods. `method` is the blocked method, `reason` the leaf-predicate slug.",
+	}, []string{"project", "network", "method", "upstream", "reason"})
+
 	MetricSelectionExcludedSeconds = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "selection_excluded_seconds",
@@ -925,27 +931,30 @@ var (
 		Help:      "Total number of rate limiter fail-open events (requests allowed due to errors/timeouts).",
 	}, []string{"project", "network", "user", "agent_name", "budget", "category", "reason"})
 
+	// MetricRateLimiterStoreFailureTotal counts requests the remote store could
+	// not decide, by reason (store_unavailable | store_error | admission_full |
+	// limit_timeout) and what onFailure decided (allow | deny | local_allow |
+	// local_deny). rate_limiter_failopen_total keeps counting the allow ones.
+	MetricRateLimiterStoreFailureTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "rate_limiter_store_failure_total",
+		Help:      "Total number of rate-limit checks the remote store could not decide, by reason and onFailure decision.",
+	}, []string{"budget", "reason", "decision"})
+
 	// MetricRateLimiterRemoteInflight is a per-budget gauge of concurrent in-flight
-	// remote (e.g. Redis) DoLimit calls. When a remote rate limiter is overwhelmed
-	// this gauge climbs without bound — the admission semaphore in
-	// doLimitWithTimeout uses MetricRateLimiterAdmissionSheddedTotal to indicate
-	// when the cap is reached, but this gauge is the canary that something is
-	// queueing on the remote.
+	// remote (e.g. Redis) DoLimit calls, bounded by the admission semaphore.
 	MetricRateLimiterRemoteInflight = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "rate_limiter_remote_inflight",
 		Help:      "Current number of in-flight remote rate-limit checks per budget.",
 	}, []string{"budget"})
 
-	// MetricRateLimiterRemoteAdmissionSheddedTotal is a counter of fail-open events
-	// caused by the per-budget admission semaphore being full. This is intentionally
-	// distinct from "limit_timeout" in MetricRateLimiterFailopenTotal because it
-	// indicates load shedding (we never even attempted the remote call) vs the
-	// remote being slow.
+	// MetricRateLimiterRemoteAdmissionSheddedTotal counts checks that never
+	// reached the remote because the per-budget admission semaphore was full.
 	MetricRateLimiterRemoteAdmissionSheddedTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "rate_limiter_remote_admission_shedded_total",
-		Help:      "Total number of remote rate-limit checks fail-opened because the admission semaphore was full.",
+		Help:      "Total number of remote rate-limit checks shed because the admission semaphore was full.",
 	}, []string{"budget"})
 
 	MetricCacheSetSuccessTotal = DefineCounter(prometheus.CounterOpts{

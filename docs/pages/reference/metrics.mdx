@@ -429,6 +429,7 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 | `erpc_selection_rejection_total` | counter | project, network, method, upstream, step | Tick rejected upstream at a std-lib step. |
 | `erpc_selection_exclusion_total` | counter | project, network, method, upstream, reason | Exclusion event. `reason` = leaf-predicate slug. |
 | `erpc_selection_shadow_exclusion_total` | counter | project, network, method, upstream, reason | `shadowExcludeIf` would-have-excluded; upstream stays in rotation. |
+| `erpc_selection_method_block_total` | counter | project, network, method, upstream, reason | `blockMethods` blocked the upstream for `method`; it stays in rotation for other methods. |
 | `erpc_selection_excluded_seconds` | gauge | project, network, method, upstream | Wall-clock seconds continuously excluded. 0 when in rotation. |
 | `erpc_selection_readmit_total` | counter | project, network, method, upstream | Excluded → in-list transition. |
 | `erpc_selection_primary_switch_total` | counter | project, network, method, from, to | Primary upstream changed between ticks. |
