@@ -722,7 +722,7 @@ Cost, measured 2026-10-14 on public RPCs, 5 consecutive blocks each:
 - Freshness is this instance's clock, never the writer's: every number need reads the report time (a local report's send time, a remote value's receive time); `IsStale` also counts the end of each refresh attempt, an answer, an error or a timeout, so refreshes are debounced.
 - Connectors deliver every change of a counter's value or timestamp, and the counter decides; the DynamoDB watch no longer drops an older timestamp.
 - A rejected remote state is counted in `erpc_shared_counter_remote_rejected_total{reason}`.
-- Rollback write: when the pins re-anchor below a voter's counter, and that voter's own hash vote is on the new branch (at the switch, or later when its vote reaches the pins), its lower number is written with a rewind mark. Another instance accepts a marked value newer than its own, as a large rollback, without counting it against the upstream; the health tracker's head follows it. So `Latest`, `eth_call(latest)` and `getBlockByNumber(latest)` follow a rewound chain within 2 bt on every instance.
+- Rollback write: when the pins move to a branch whose head is below the old pinned head (a reorg or re-anchor down, never a catch-up), each voter whose own fresh hash vote (hash age at most W) is on the new branch below its counter gets that lower number written with a rewind mark, at the switch or later when its fresh vote reaches the pins. A vote from before a gap is no evidence. Another instance accepts a marked value newer than its own, as a large rollback, without counting it against the upstream; the health tracker's head follows it. So `Latest`, `eth_call(latest)` and `getBlockByNumber(latest)` follow a rewound chain within 2 bt on every instance.
 - Counters reject 0 and negative values, except `earliest` (#258, #1084); a v1 integer and a v2 JSON value on one key never collide (#956); the local value updates synchronously and the remote publish is async and deduped (#544, #658).
 - No network-level served value is shared (#924).
 
@@ -753,7 +753,7 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | Head | cold start, or no voter (all syncing or excluded) | `Latest` unknown | tags pass through; taps wait for the first confirmed head | first voter report |
 | shared state | backend down | publish and watch errors | each instance runs on its own polls; no frozen tip after | backend back |
 | shared state | a writer's clock is skewed | — | higher values win whatever their timestamp; freshness by receive time | none needed |
-| shared state | chain rewinds on every upstream | pins re-anchor below counters | rollback write (§14) | 2 bt |
+| shared state | chain rewinds on every upstream | the pins move down, fresh votes below counters | rollback write (§14) | 2 bt |
 | tag-state gate | every upstream stale | §6.11 | route to the highest tag-state head; `-32603` past 60s | 60s |
 | scheduler | rate limits | a sweep fails on capacity everywhere | halve the lowest busy class's share, never below 1 slot; classes 1 and 2 keep taking permits as clients do | 10 successes per slot |
 | scheduler | fetch hangs | timeout | 10s, then backoff | 10s |
