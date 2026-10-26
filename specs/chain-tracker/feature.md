@@ -184,6 +184,9 @@ type ReadOpts struct {
     // Resumable: the tap's clients resume from their own cursor, anywhere
     // in the window, so the feed fills the whole window while it is open.
     Resumable bool
+    // Pace: the slowest this tap needs heads at; 0 is every block. The
+    // tap's demand carries it (§3 demand); a Read ignores it.
+    Pace time.Duration
 }
 
 // ChainFeed is the reader side of one tracker.
@@ -219,6 +222,9 @@ func (t *Taps) RunChain(ctx context.Context, networkId, transport, kind string,
 func (t *Taps) RunMempool(ctx context.Context, networkId, transport, variant string,
     f MempoolFeed, emit func([]json.RawMessage) error) error
 func (t *Taps) Demand(networkId string) []Topic
+// Pace is the fastest pace the open taps of networkId need topic at;
+// ok is false while no tap needs it.
+func (t *Taps) Pace(networkId string, topic Topic) (pace time.Duration, ok bool)
 
 // Intake is what sources report into; erpc implements it per network.
 type Intake interface {
