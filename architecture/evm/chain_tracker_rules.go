@@ -406,7 +406,7 @@ type settleState struct {
 	// next is the soonest moment one of its targets' Asks may fetch again.
 	next time.Time
 	// head is the head the round decided: its answers back no pin above.
-	head *node
+	head    *node
 	waiters []chan settleOutcome
 }
 

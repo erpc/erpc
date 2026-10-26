@@ -150,7 +150,7 @@ type counterInt64 struct {
 	// (an answer, an error or the foreground timeout): it debounces the
 	// next refresh, since a report dated by a slow fetch's send time can
 	// be older than the debounce at once.
-	attemptAtUnixMs atomic.Int64
+	attemptAtUnixMs        atomic.Int64
 	registry               *sharedStateRegistry
 	key                    string
 	state                  atomic.Pointer[counterState]

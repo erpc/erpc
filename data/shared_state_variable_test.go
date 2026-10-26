@@ -838,7 +838,7 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 		key:              "test",
 		ignoreRollbackOf: 1024,
 	}
-	counter.storeValue(5)                                                     // Initialize with value 5
+	counter.storeValue(5)                                                      // Initialize with value 5
 	counter.reportAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli()) // force stale
 
 	var calls int32

@@ -68,7 +68,7 @@ func (n *covMiscEvmNetwork) EvmHead(context.Context, *NormalizedRequest) EvmHead
 func (n *covMiscEvmNetwork) EvmLaneHead(string, string) EvmHead {
 	return n.EvmHead(context.Background(), nil)
 }
-func (n *covMiscEvmNetwork) EvmRefreshHead(context.Context, bool)                  { n.refreshed.Add(1) }
+func (n *covMiscEvmNetwork) EvmRefreshHead(context.Context, bool) { n.refreshed.Add(1) }
 func (n *covMiscEvmNetwork) EvmRoutableUpstreams(context.Context) iter.Seq[Upstream] {
 	return func(yield func(Upstream) bool) {
 		for _, u := range n.routable {
