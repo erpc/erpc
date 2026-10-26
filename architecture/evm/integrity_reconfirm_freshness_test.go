@@ -151,8 +151,11 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		assert.Equal(t, canonical, hash, "must report what the chain says now, not the pin")
 		asked := net.askedNeeds()
 		require.NotEmpty(t, asked)
+		// The tracker's own refresh of the orphan votes may Ask with a fork
+		// need (§6.3), a hash need too; only a number need takes a shared
+		// counter's report.
 		for _, need := range asked {
-			assert.Equal(t, common.HeadNeedHash, need,
+			assert.NotEqual(t, common.HeadNeedNumber, need,
 				"only a local fetch, cache reads skipped, meets a hash need: a cached answer is an echo of the disputed value, not corroboration")
 		}
 	})
