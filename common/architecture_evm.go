@@ -217,10 +217,9 @@ type EvmStatePoller interface {
 	SyncingState() EvmSyncingState
 	SetSyncingState(state EvmSyncingState)
 	LatestBlock() int64
-	// LatestReport is the latest block's report: its number, when its
-	// evidence was taken (a poll's send time, else this instance's receive
-	// time), and whether this instance's newest poll succeeded.
-	LatestReport() (block int64, at time.Time, live bool)
+	// LatestReportAt is when the latest block report's evidence was taken:
+	// a poll's send time, else this instance's receive time.
+	LatestReportAt() time.Time
 	// FinalizedBlock is the upstream's finalized tag; only an upstream known
 	// to have no finalized tag reports latest − the derived finality depth (#1079).
 	FinalizedBlock() int64

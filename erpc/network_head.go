@@ -379,7 +379,7 @@ func (n *Network) laneLeader(sel string, latest int64) common.Upstream {
 // says: that setting decides how an empty answer is treated, not whether
 // an upstream can have the block. 0 (unknown) when the lane has no counted
 // upstream or any one's head is unknown. oldest is when the oldest counted
-// report's evidence was taken (LatestReport), zero when one has none.
+// report's evidence was taken (LatestReportAt), zero when one has none.
 func (n *Network) laneCeiling(sel string) (ceiling int64, oldest time.Time) {
 	ups := n.countedUpstreams(sel)
 	for i, u := range ups {
@@ -394,7 +394,7 @@ func (n *Network) laneCeiling(sel string) (ceiling int64, oldest time.Time) {
 		ceiling = max(ceiling, blk)
 		var at time.Time
 		if !sp.IsObjectNull() {
-			_, at, _ = sp.LatestReport()
+			at = sp.LatestReportAt()
 		}
 		if i == 0 || at.Before(oldest) {
 			oldest = at
@@ -405,8 +405,9 @@ func (n *Network) laneCeiling(sel string) (ceiling int64, oldest time.Time) {
 
 // countedUpstreams are the upstreams selector sel's lane ceiling counts:
 // every registered one within sel, minus those cordoned for answering for
-// another chain and those whose newest poll on this instance failed
-// (spec §6.1, §6.4).
+// another chain and those whose polls are failing (spec §6.1, §6.4;
+// networkIntake.pollsFailing): one failed poll, a 429 included, keeps an
+// upstream counted, so a block it reports is never called future.
 func (n *Network) countedUpstreams(sel string) []*upstream.Upstream {
 	if n.upstreamsRegistry == nil {
 		return nil
@@ -418,14 +419,11 @@ func (n *Network) countedUpstreams(sel string) []*upstream.Upstream {
 				continue
 			}
 		}
-		sp := u.EvmStatePoller()
-		if c, ok := sp.(interface{ ChainIdCordoned() bool }); ok && c.ChainIdCordoned() {
+		if c, ok := u.EvmStatePoller().(interface{ ChainIdCordoned() bool }); ok && c.ChainIdCordoned() {
 			continue
 		}
-		if sp != nil && !sp.IsObjectNull() {
-			if _, _, live := sp.LatestReport(); !live {
-				continue
-			}
+		if n.intake != nil && n.intake.pollsFailing(u.Id()) {
+			continue
 		}
 		out = append(out, u)
 	}
@@ -443,7 +441,7 @@ func (n *Network) EvmAskStale(ctx context.Context, selector string) (ceiling int
 	var stale []common.EvmStatePoller
 	for _, u := range n.countedUpstreams(selector) {
 		if sp := u.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-			if _, at, _ := sp.LatestReport(); cold || now.Sub(at) >= bt {
+			if cold || now.Sub(sp.LatestReportAt()) >= bt {
 				stale = append(stale, sp)
 			}
 		}

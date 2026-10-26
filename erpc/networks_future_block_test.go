@@ -243,7 +243,9 @@ func TestForward_FutureBlock_OptInWithoutServedTip_ShortCircuitsToNull(t *testin
 
 // Without served-tip "latest" is the corroborated (second-highest) head, but a
 // block only the most-ahead upstream has is still servable: with the opt-in it
-// must be dispatched, not nulled.
+// must be dispatched, not nulled. One failed poll of the most-ahead upstream,
+// a 429, is no failing poll (spec §6.1, §6.4 ceiling): its head stays in the
+// ceiling, so the block is still dispatched.
 func TestForward_FutureBlock_OptInWithoutServedTip_OnlyMostAheadHasBlock_Dispatches(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -254,7 +256,7 @@ func TestForward_FutureBlock_OptInWithoutServedTip_OnlyMostAheadHasBlock_Dispatc
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+	network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
 		{id: "fb1", chainID: 123, latestBlock: 100},
 		{id: "fb2", chainID: 123, latestBlock: 99},
 		{id: "fb3", chainID: 123, latestBlock: 98},
@@ -267,6 +269,25 @@ func TestForward_FutureBlock_OptInWithoutServedTip_OnlyMostAheadHasBlock_Dispatc
 	require.NoError(t, err)
 	assert.Contains(t, jrr.GetResultString(), "0x270f",
 		"a block the most-ahead upstream has must be dispatched, not short-circuited")
+
+	sampleBlockTime(t, network)
+	gock.New("http://fb1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return r.URL.Host == "fb1.localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+		}).
+		Reply(429).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32005,"message":"rate limited"}}`))
+	a := ups[0].EvmStatePoller().Ask(ctx, common.HeadNeedFork, common.AskRefresh)
+	require.Error(t, a.Err, "fb1's latest poll answered 429")
+	network.refreshHeads()
+
+	resp = forwardGetBlockByNumber(t, ctx, network, "0x64")
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), "0x270f",
+		"one 429 keeps fb1 in the ceiling: a block at its head is dispatched, not nulled")
 }
 
 // Every upstream of the network counts toward the ceiling, syncing ones

@@ -274,10 +274,10 @@ func (p *FakeEvmStatePoller) LatestBlock() int64 {
 	return p.latestBlockNumber
 }
 
-// LatestReport has no receive time: a fake's report reaches no further than
-// itself.
-func (p *FakeEvmStatePoller) LatestReport() (int64, time.Time, bool) {
-	return p.latestBlockNumber, time.Time{}, false
+// LatestReportAt has no receive time: a fake's report reaches no further
+// than itself.
+func (p *FakeEvmStatePoller) LatestReportAt() time.Time {
+	return time.Time{}
 }
 
 func (p *FakeEvmStatePoller) Poll(ctx context.Context) error {

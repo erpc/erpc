@@ -61,12 +61,13 @@ type networkIntake struct {
 
 // pollRecord is an upstream's last successful latest poll; since it, when
 // the first poll its node failed was sent and when the last failed (zero
-// while none did); and whether those failures expired its hash vote. A
+// while none did); and failing: those failures span W (spec §6.1). A
 // failed poll spans from its send to its failure: the node did not answer
-// in between, so one timeout as long as W spans W alone.
+// in between, so one timeout as long as W spans W alone, and one quick 429
+// spans nothing.
 type pollRecord struct {
 	ok, first, last time.Time
-	expired         bool
+	failing         bool
 }
 
 type rejectedHeader struct {
@@ -120,24 +121,29 @@ func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessa
 }
 
 // Polled takes the header a poll of upstreamId's latest, sent at sent,
-// fetched. A success renews a vote its failed polls expired (PollFailed).
+// fetched. A success ends its failing polls and renews the hash vote they
+// expired (PollFailed).
 func (in *networkIntake) Polled(upstreamId string, raw json.RawMessage, kind evm.HeaderKind, sent time.Time) {
 	in.mu.Lock()
-	expired := in.polls[upstreamId].expired
+	failing := in.polls[upstreamId].failing
 	in.polls[upstreamId] = pollRecord{ok: sent}
 	in.mu.Unlock()
-	if u := in.upstream(upstreamId); expired && u != nil && in.nw.metricsTracker != nil && in.nw.metricsTracker.RenewHashVote(u) {
-		evm.VotersChanged(in.nw)
-		in.nw.sources.wake()
+	if failing {
+		in.nw.headsChanged()
+		if u := in.upstream(upstreamId); !in.nw.sources.pushSource(upstreamId) && u != nil && in.nw.metricsTracker != nil && in.nw.metricsTracker.RenewHashVote(u) {
+			evm.VotersChanged(in.nw)
+			in.nw.sources.wake()
+		}
 	}
 	in.header(upstreamId, raw, kind, false, sent)
 }
 
 // PollFailed notes a poll of upstreamId's latest, sent at started, that its
-// node failed; one sent before the last success does not count. A voter
-// that is no push source is no hash voter once its failed polls span W
-// with no success since (spec §6.1): its channel stopped answering, so its
-// hash vote expires as a push source's does when its socket closes.
+// node failed; one sent before the last success does not count. Once its
+// failed polls span W with no success since, its polls are failing (spec
+// §6.1): the ceiling stops counting it (§6.4), and a voter that is no push
+// source is no hash voter: its channel stopped answering, so its hash vote
+// expires as a push source's does when its socket closes.
 func (in *networkIntake) PollFailed(upstreamId string, started time.Time) {
 	now, w, push := time.Now(), in.w(), in.nw.sources.pushSource(upstreamId)
 	in.mu.Lock()
@@ -150,15 +156,27 @@ func (in *networkIntake) PollFailed(upstreamId string, started time.Time) {
 		r.first = started
 	}
 	r.last = now
-	expire := !r.expired && r.last.Sub(r.first) >= w && !push
-	r.expired = r.expired || expire
+	began := !r.failing && r.last.Sub(r.first) >= w
+	r.failing = r.failing || began
 	in.polls[upstreamId] = r
 	in.mu.Unlock()
-	if u := in.upstream(upstreamId); expire && u != nil && in.nw.metricsTracker != nil {
+	if !began {
+		return
+	}
+	in.nw.headsChanged()
+	if u := in.upstream(upstreamId); !push && u != nil && in.nw.metricsTracker != nil {
 		in.nw.metricsTracker.ExpireHashVote(u)
 		evm.VotersChanged(in.nw)
 		in.nw.sources.wake()
 	}
+}
+
+// pollsFailing reports whether upstreamId's polls of latest are failing
+// (PollFailed).
+func (in *networkIntake) pollsFailing(upstreamId string) bool {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.polls[upstreamId].failing
 }
 
 // w is the network's freshness window, as its trackers read it.
