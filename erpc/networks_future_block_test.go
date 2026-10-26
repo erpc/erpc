@@ -252,6 +252,21 @@ func TestForward_FutureBlock_OptInWithoutServedTip_OnlyMostAheadHasBlock_Dispatc
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x64", futureBlockSentinel, &dispatched, "fb1", "fb2", "fb3")
+	// Registered before the network starts, since building a gock mock
+	// while pollers match requests is a data race; armed only around the Ask.
+	var rateLimited atomic.Bool
+	gock.New("http://fb1.localhost").
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			if !rateLimited.Load() {
+				return false
+			}
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+		}).
+		Reply(429).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32005,"message":"rate limited"}}`))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -271,15 +286,9 @@ func TestForward_FutureBlock_OptInWithoutServedTip_OnlyMostAheadHasBlock_Dispatc
 		"a block the most-ahead upstream has must be dispatched, not short-circuited")
 
 	sampleBlockTime(t, network)
-	gock.New("http://fb1.localhost").
-		Post("").
-		Filter(func(r *http.Request) bool {
-			body := util.SafeReadBody(r)
-			return r.URL.Host == "fb1.localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
-		}).
-		Reply(429).
-		JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32005,"message":"rate limited"}}`))
+	rateLimited.Store(true)
 	a := ups[0].EvmStatePoller().Ask(ctx, common.HeadNeedFork, common.AskRefresh)
+	rateLimited.Store(false)
 	require.Error(t, a.Err, "fb1's latest poll answered 429")
 	network.refreshHeads()
 
