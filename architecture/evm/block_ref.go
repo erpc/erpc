@@ -260,14 +260,7 @@ func ExtractBlockTimestampFromResponse(ctx context.Context, r *common.Normalized
 	// Force-copy the small string to avoid any potential reference to backing buffers
 	timestampStr = string(append([]byte(nil), timestampStr...))
 
-	var blockTimestamp int64
-	// Handle both hex (0x...) and decimal formats
-	if strings.HasPrefix(timestampStr, "0x") {
-		blockTimestamp, err = common.HexToInt64(timestampStr)
-	} else {
-		blockTimestamp, err = strconv.ParseInt(timestampStr, 10, 64)
-	}
-
+	blockTimestamp, err := parseBlockTimestamp(timestampStr)
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return 0, err
@@ -280,6 +273,14 @@ func ExtractBlockTimestampFromResponse(ctx context.Context, r *common.Normalized
 	}
 
 	return blockTimestamp, nil
+}
+
+// parseBlockTimestamp parses a block timestamp: hex (0x...) or decimal.
+func parseBlockTimestamp(s string) (int64, error) {
+	if strings.HasPrefix(s, "0x") {
+		return common.HexToInt64(s)
+	}
+	return strconv.ParseInt(s, 10, 64)
 }
 
 func extractRefFromJsonRpcRequest(ctx context.Context, req *common.NormalizedRequest, r *common.JsonRpcRequest) (string, int64, error) {

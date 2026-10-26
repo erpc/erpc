@@ -61,11 +61,16 @@ func parseChainHeader(raw json.RawMessage) (*chainHeader, error) {
 	if err := common.SonicCfg.Unmarshal(raw, &h); err != nil {
 		return nil, fmt.Errorf("%w: %v", errMalformedHeader, err)
 	}
+	return checkChainHeader(raw, &h)
+}
+
+// checkChainHeader is intake check 0 over raw already decoded into h.
+func checkChainHeader(raw json.RawMessage, h *integrity.Header) (*chainHeader, error) {
 	n, err := common.HexToInt64(h.Number)
 	if err != nil || n < 0 {
 		return nil, fmt.Errorf("%w: number %q", errMalformedHeader, h.Number)
 	}
-	ch := &chainHeader{number: uint64(n), raw: raw, parsed: &h}
+	ch := &chainHeader{number: uint64(n), raw: raw, parsed: h}
 	if !decodeHex32(h.Hash, &ch.hash) {
 		return nil, fmt.Errorf("%w: hash %q", errMalformedHeader, h.Hash)
 	}
@@ -123,6 +128,9 @@ func (s SourceHeader) Parent() [32]byte { return s.h.parentHash }
 
 // Timestamp is the header's timestamp in seconds, 0 when it carries none.
 func (s SourceHeader) Timestamp() int64 { return int64(s.h.timestamp) }
+
+// Raw is the header as its source sent it.
+func (s SourceHeader) Raw() json.RawMessage { return s.h.raw }
 
 func (h *chainHeader) cursor() indexer.Cursor {
 	return indexer.Cursor{Number: h.number, Hash: h.hash}

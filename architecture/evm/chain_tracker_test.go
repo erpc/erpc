@@ -716,7 +716,7 @@ func (n *settleNetwork) EvmAskHead(_ context.Context, id string, need common.Hea
 	h := n.latest[id]
 	n.smu.Unlock()
 	sent := time.Now()
-	return common.HeadAnswer{Outcome: common.AskFetched, Sent: sent, Next: sent.Add(time.Hour), Header: h}
+	return common.HeadAnswer{Outcome: common.AskFetched, Sent: sent, Next: sent.Add(time.Hour), Header: askedHeader(h)}
 }
 
 func (n *settleNetwork) forkAsks() int {

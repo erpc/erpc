@@ -545,14 +545,11 @@ func (t *ChainTracker) askHead(id string, need common.HeadNeed, reason common.As
 
 // heldAnswer holds an Ask's header; nil for a failed Ask.
 func (t *ChainTracker) heldAnswer(a common.HeadAnswer) *node {
-	if a.Err != nil || len(a.Header) == 0 {
+	sh, ok := a.Header.(SourceHeader)
+	if a.Err != nil || !ok {
 		return nil
 	}
-	h, err := parseChainHeader(a.Header)
-	if err != nil {
-		return nil
-	}
-	return t.heldOrHold(h)
+	return t.heldOrHold(sh.h)
 }
 
 // startSettle starts round s: an Ask of each target with need, reason

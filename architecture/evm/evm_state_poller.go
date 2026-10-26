@@ -614,7 +614,7 @@ type headFetch struct {
 	// next is the fork fetch queued while this one was in flight: it
 	// starts once this one ends.
 	next   *headFetch
-	header json.RawMessage
+	header common.EvmHeader
 	err    error
 	// parent is the span of the Ask that started the fetch: the fetch's
 	// span shows under it without taking its cancellation.
@@ -767,12 +767,13 @@ func (e *EvmStatePoller) askFetch(parent trace.SpanContext, need common.HeadNeed
 // runFetch runs f and gives its outcome to every waiter; a panic fails
 // them with an error.
 func (e *EvmStatePoller) runFetch(f *headFetch) {
-	var header json.RawMessage
+	var header common.EvmHeader
+	var answered bool
 	var err error
 	defer func() {
 		if rec := recover(); rec != nil {
 			e.countHeadPanic("fetch", rec)
-			header, err = nil, fmt.Errorf("head ask of upstream %s panicked: %v", e.upstream.Id(), rec)
+			header, answered, err = nil, false, fmt.Errorf("head ask of upstream %s panicked: %v", e.upstream.Id(), rec)
 		}
 		a := &e.headAsk
 		a.mu.Lock()
@@ -780,7 +781,7 @@ func (e *EvmStatePoller) runFetch(f *headFetch) {
 		switch {
 		case nodeFailedPoll(err):
 			a.failures++
-		case header != nil:
+		case answered:
 			a.failures = 0
 		}
 		next := f.next
@@ -809,17 +810,18 @@ func (e *EvmStatePoller) runFetch(f *headFetch) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, askTimeout)
 	defer cancel()
-	header, err = e.fetchLatest(ctx, f)
+	header, answered, err = e.fetchLatest(ctx, f)
 }
 
 // fetchLatest fetches latest for f. With an intake bound, the header goes
 // to it, as a hash vote of this upstream (spec §6.3), and the counter
-// moves only there, after the header passed its checks. nil header and
-// error: latest was refused as unsupported, or the answer did not pass;
-// after 10 refusals before any success the Ask gives up until
-// LatestBlockSkipExpiry, and the reconciler polls other sources
+// moves only there, after the header passed its checks. answered: the
+// node answered with a block; header: that block past intake check 0. No
+// header and no error: latest was refused as unsupported, or the answer
+// did not pass; after 10 refusals before any success the Ask gives up
+// until LatestBlockSkipExpiry, and the reconciler polls other sources
 // (LatestUnsupported).
-func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (json.RawMessage, error) {
+func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header common.EvmHeader, answered bool, err error) {
 	if e.logger.GetLevel() <= zerolog.TraceLevel {
 		e.logger.Trace().Str("ptr", fmt.Sprintf("%p", e)).Str("stack", string(debug.Stack())).Msg("fetching latest block number for evm state poller")
 	}
@@ -830,8 +832,8 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (json.Ra
 		e.upstream.Id(),
 	).Inc()
 	bound := e.pollSrc.Load()
-	blockNum, blockTimestamp, header, err := e.fetchBlock(ctx, "latest", common.UpstreamPoliciesHeadAsk)
-	if err != nil || blockNum == 0 {
+	b, err := e.fetchBlock(ctx, "latest", common.UpstreamPoliciesHeadAsk)
+	if err != nil || b.number == 0 {
 		if err == nil ||
 			common.HasErrorCode(err,
 				common.ErrCodeUpstreamRequestSkipped,
@@ -853,7 +855,7 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (json.Ra
 				}
 			}
 			e.stateMu.Unlock()
-			return nil, nil
+			return nil, false, nil
 		}
 		if nodeFailedPoll(err) && bound != nil {
 			bound.intake.PollFailed(e.upstream.Id(), f.sent)
@@ -866,7 +868,7 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (json.Ra
 			e.tracker.RecordUpstreamFailure(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateRealtime, err)
 		}
 		e.logger.Warn().Err(err).Msg("failed to get latest block number in evm state poller")
-		return nil, err
+		return nil, false, err
 	}
 
 	// Mark as successful and reset failure counter
@@ -875,44 +877,47 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (json.Ra
 	e.latestBlockFailureCount = 0
 	e.stateMu.Unlock()
 
+	if b.malformed == nil {
+		header = b.header
+	}
 	if bound != nil {
-		// Intake parses, verifies a major jump and moves the counter
-		// through ObserveHead; the fetch itself must not move it.
-		e.deliverFetched(bound, f, header)
+		// Intake checks the header, verifies a major jump and moves the
+		// counter through ObserveHead; the fetch itself must not move it.
+		e.deliverFetched(bound, f, b)
 		counter := e.latestBlockShared.GetValue()
-		if counter >= blockNum {
-			e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
+		if counter >= b.number {
+			e.tracker.SetLatestBlockNumber(e.upstream, b.number, b.timestamp)
 		}
 		e.logger.Debug().
-			Int64("blockNumber", blockNum).
-			Int64("blockTimestamp", blockTimestamp).
+			Int64("blockNumber", b.number).
+			Int64("blockTimestamp", b.timestamp).
 			Int64("counter", counter).
 			Msg("fetched latest block from upstream for its intake")
-		return header, nil
+		return header, true, nil
 	}
 
 	// A major move must pass a fresh chain-identity check before entering
 	// the shared counter / tracker (see verifyChainIdOnMajorHeadMove).
-	if !e.verifyChainIdOnMajorHeadMove(ctx, "latest", e.latestBlockShared.GetValue(), blockNum) {
-		return nil, nil
+	if !e.verifyChainIdOnMajorHeadMove(ctx, "latest", e.latestBlockShared.GetValue(), b.number) {
+		return nil, false, nil
 	}
 
 	// Directly update tracker with the correct timestamp for this locally-fetched block
 	// This happens BEFORE the OnValue callback is triggered, ensuring only the fetching node emits the metric
-	e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
-	e.latestBlockShared.TryUpdate(ctx, blockNum, f.sent)
+	e.tracker.SetLatestBlockNumber(e.upstream, b.number, b.timestamp)
+	e.latestBlockShared.TryUpdate(ctx, b.number, f.sent)
 
 	e.logger.Debug().
-		Int64("blockNumber", blockNum).
-		Int64("blockTimestamp", blockTimestamp).
+		Int64("blockNumber", b.number).
+		Int64("blockTimestamp", b.timestamp).
 		Msg("fetched latest block from upstream")
-	return header, nil
+	return header, true, nil
 }
 
 // deliverFetched sends f's header to the bound intake: a fork poll's
 // answer when a fork Ask waits on f, the poll source's stream while it is
 // one, else a poll's.
-func (e *EvmStatePoller) deliverFetched(bound *pollSource, f *headFetch, header json.RawMessage) {
+func (e *EvmStatePoller) deliverFetched(bound *pollSource, f *headFetch, b polledBlock) {
 	kind := HeaderPolled
 	if e.activePollSource() != nil {
 		kind = HeaderStreamed
@@ -922,7 +927,7 @@ func (e *EvmStatePoller) deliverFetched(bound *pollSource, f *headFetch, header 
 		kind = HeaderForkPolled
 	}
 	e.headAsk.mu.Unlock()
-	bound.intake.Polled(e.upstream.Id(), header, kind, f.sent)
+	bound.intake.Polled(e.upstream.Id(), b.header, b.malformed, kind, f.sent)
 }
 
 // backoffDelay is how long after a fetch's send the next one may start:
@@ -1078,19 +1083,12 @@ func (e *EvmStatePoller) RewindLatestBlock(blockNumber int64) {
 	}
 }
 
-// ObserveHead is the per-upstream part of intake for a source header, its
-// evidence taken at at: the height goes through SuggestLatestBlock, so a
-// major jump is verified before it moves the counter. accepted: the
-// counter holds the header's height now.
-func (e *EvmStatePoller) ObserveHead(raw json.RawMessage, at time.Time) (accepted bool) {
-	var h struct {
-		Number string `json:"number"`
-	}
-	if common.SonicCfg.Unmarshal(raw, &h) != nil {
-		return false
-	}
-	n, err := common.HexToInt64(h.Number)
-	if err != nil || n < 0 {
+// ObserveHead is the per-upstream part of intake for a source header's
+// height n, its evidence taken at at: n goes through SuggestLatestBlock,
+// so a major jump is verified before it moves the counter. accepted: the
+// counter holds n now.
+func (e *EvmStatePoller) ObserveHead(n int64, at time.Time) (accepted bool) {
+	if n < 0 {
 		return false
 	}
 	e.SuggestLatestBlock(n, at)
@@ -1119,13 +1117,14 @@ const (
 
 // PollIntake takes a bound poller's latest and finalized headers.
 type PollIntake interface {
-	// Polled takes the header a poll of latest, sent at sent, fetched.
-	Polled(upstreamId string, raw json.RawMessage, kind HeaderKind, sent time.Time)
+	// Polled takes the header a poll of latest, sent at sent, fetched;
+	// malformed: why it failed intake check 0, h then unset.
+	Polled(upstreamId string, h SourceHeader, malformed error, kind HeaderKind, sent time.Time)
 	// PollFailed notes a poll of latest, sent at started, that the node
 	// failed (spec §6.1).
 	PollFailed(upstreamId string, started time.Time)
 	// PolledFinalized takes the header a poll of finalized fetched.
-	PolledFinalized(upstreamId string, raw json.RawMessage)
+	PolledFinalized(upstreamId string, h SourceHeader)
 }
 
 // BindIntake sends this poller's latest headers to intake; Set makes it a
@@ -1550,8 +1549,8 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 		).Inc()
 
 		// Actually fetch from upstream
-		blockNum, _, header, err := e.fetchBlock(ctx, "finalized", common.UpstreamPoliciesTimeoutOnly)
-		if err != nil || blockNum == 0 {
+		b, err := e.fetchBlock(ctx, "finalized", common.UpstreamPoliciesTimeoutOnly)
+		if err != nil || b.number == 0 {
 			if err == nil ||
 				common.HasErrorCode(err,
 					common.ErrCodeUpstreamRequestSkipped,
@@ -1590,22 +1589,22 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 		e.stateMu.Unlock()
 
 		// Same chain-identity gate as the latest ratchet (see there).
-		if !e.verifyChainIdOnMajorHeadMove(ctx, "finalized", e.finalizedBlockShared.GetValue(), blockNum) {
+		if !e.verifyChainIdOnMajorHeadMove(ctx, "finalized", e.finalizedBlockShared.GetValue(), b.number) {
 			return 0, nil
 		}
 
 		e.logger.Debug().
-			Int64("blockNumber", blockNum).
+			Int64("blockNumber", b.number).
 			Msg("fetched finalized block")
 
-		e.tracker.SetFinalizedBlockNumber(e.upstream, blockNum)
+		e.tracker.SetFinalizedBlockNumber(e.upstream, b.number)
 		// The header is this instance's own evidence of what is final
 		// (spec §6.5); another instance's poll of the shared counter is none.
-		if bound := e.pollSrc.Load(); bound != nil && header != nil {
-			bound.intake.PolledFinalized(e.upstream.Id(), header)
+		if bound := e.pollSrc.Load(); bound != nil && b.malformed == nil {
+			bound.intake.PolledFinalized(e.upstream.Id(), b.header)
 		}
 
-		return blockNum, nil
+		return b.number, nil
 	})
 }
 
@@ -2090,10 +2089,18 @@ func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
 	return e.skipFinalizedCheck
 }
 
-// fetchBlock returns the number and timestamp of the block at blockTag, and,
-// for latest and finalized, the header as the upstream sent it; policies
-// are the probe's upstream policies.
-func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string, policies common.UpstreamPolicies) (int64, int64, json.RawMessage, error) {
+// polledBlock is a polled latest or finalized block, decoded once: its
+// number and timestamp (0 when it carries none or an unparseable one) for
+// the counters, and its header past intake check 0, or why it failed it.
+type polledBlock struct {
+	number, timestamp int64
+	header            SourceHeader
+	malformed         error
+}
+
+// fetchBlock fetches the block at blockTag, latest or finalized; policies
+// are the probe's upstream policies. A zero number: the answer was empty.
+func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string, policies common.UpstreamPolicies) (polledBlock, error) {
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
@@ -2103,55 +2110,49 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string, polici
 		defer resp.Release()
 	}
 	if err != nil {
-		return 0, 0, nil, err
+		return polledBlock{}, err
 	}
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
-		return 0, 0, nil, err
+		return polledBlock{}, err
 	}
 	if jrr == nil || jrr.Error != nil {
-		return 0, 0, nil, jrr.Error
+		return polledBlock{}, jrr.Error
 	}
 
 	if jrr.IsResultEmptyish(ctx) {
-		return 0, 0, nil, nil
+		return polledBlock{}, nil
 	}
 
-	numberStr, err := jrr.PeekStringByPath(ctx, "number")
-	if err != nil {
-		return 0, 0, nil, &common.BaseError{
+	// resp is released on return.
+	raw := bytes.Clone(jrr.GetResultBytes())
+	var h integrity.Header
+	if err := common.SonicCfg.Unmarshal(raw, &h); err != nil || h.Number == "" {
+		return polledBlock{}, &common.BaseError{
 			Code:    "ErrEvmStatePoller",
 			Message: "cannot get block number from block data",
 			Details: map[string]interface{}{
 				"blockTag": blockTag,
-				"result":   jrr.GetResultString(),
+				"result":   string(raw),
 			},
 		}
 	}
-	// Force-copy the small string to avoid any potential reference to backing buffers
-	numberStr = string(append([]byte(nil), numberStr...))
-	blockNum, err := common.HexToInt64(numberStr)
-	if err != nil {
-		return 0, 0, nil, err
+	b := polledBlock{}
+	if b.number, err = common.HexToInt64(h.Number); err != nil {
+		return polledBlock{}, err
 	}
-
-	// Extract timestamp using shared function
-	blockTimestamp, err := ExtractBlockTimestampFromResponse(ctx, resp)
-	if err != nil {
-		// If timestamp parsing fails, log debug and continue without timestamp
-		// This gracefully handles invalid timestamps without breaking the flow
-		e.logger.Debug().
-			Err(err).
-			Msg("failed to parse block timestamp, continuing without it")
-		blockTimestamp = 0
+	if s := h.Timestamp; s != "" {
+		if b.timestamp, err = parseBlockTimestamp(s); err != nil {
+			b.timestamp = 0
+			e.logger.Debug().Err(err).Msg("failed to parse block timestamp, continuing without it")
+		}
 	}
-
-	var header json.RawMessage
-	if blockTag == "latest" || blockTag == "finalized" {
-		// resp is released on return.
-		header = bytes.Clone(jrr.GetResultBytes())
+	if ch, err := checkChainHeader(raw, &h); err != nil {
+		b.malformed = err
+	} else {
+		b.header = SourceHeader{ch}
 	}
-	return blockNum, blockTimestamp, header, nil
+	return b, nil
 }
 
 func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {

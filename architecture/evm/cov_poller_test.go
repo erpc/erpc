@@ -171,7 +171,7 @@ func covPollerRpcError(code int, msg string) *common.NormalizedResponse {
 }
 
 func covPollerBlock(num int64) *common.NormalizedResponse {
-	return covPollerResult(fmt.Sprintf(`{"number":"0x%x","hash":"0x%064x","timestamp":"0x%x"}`, num, num+1, 1_700_000_000+num))
+	return covPollerResult(fmt.Sprintf(`{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","timestamp":"0x%x"}`, num, num+1, num, 1_700_000_000+num))
 }
 
 // covPollerBlockTag returns the first param of eth_getBlockByNumber.
@@ -732,7 +732,8 @@ func TestCovPoller_Ask(t *testing.T) {
 			a := <-answers
 			require.NoError(t, a.Err)
 			assert.Equal(t, int64(77), a.Block)
-			assert.Contains(t, string(a.Header), `"number":"0x4d"`)
+			require.NotNil(t, a.Header)
+			assert.Contains(t, string(a.Header.Raw()), `"number":"0x4d"`)
 			outcomes[a.Outcome]++
 		}
 		assert.Equal(t, map[common.AskOutcome]int{common.AskFetched: 1, common.AskInflight: waiters - 1}, outcomes)
@@ -855,9 +856,9 @@ func TestCovPoller_Ask(t *testing.T) {
 // covPollerIntake counts the poller's intake calls.
 type covPollerIntake struct{ polled, failed atomic.Int32 }
 
-func (i *covPollerIntake) Polled(string, json.RawMessage, HeaderKind, time.Time) { i.polled.Add(1) }
-func (i *covPollerIntake) PollFailed(string, time.Time)                          { i.failed.Add(1) }
-func (i *covPollerIntake) PolledFinalized(string, json.RawMessage)               {}
+func (i *covPollerIntake) Polled(string, SourceHeader, error, HeaderKind, time.Time) { i.polled.Add(1) }
+func (i *covPollerIntake) PollFailed(string, time.Time)                             { i.failed.Add(1) }
+func (i *covPollerIntake) PolledFinalized(string, SourceHeader)                     {}
 
 // A counter another path keeps fresh meets a number need, but never a hash
 // need: its local fetch still runs, so this instance keeps sampling block

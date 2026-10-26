@@ -2,7 +2,6 @@ package upstream
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -65,7 +64,7 @@ func (m *mockEvmStatePollerEnhanced) IsBlockFinalized(blockNumber int64) (bool, 
 func (m *mockEvmStatePollerEnhanced) SuggestFinalizedBlock(blockNumber int64, _ time.Time) {}
 func (m *mockEvmStatePollerEnhanced) SuggestLatestBlock(blockNumber int64, _ time.Time)    {}
 func (m *mockEvmStatePollerEnhanced) RewindLatestBlock(int64)                              {}
-func (m *mockEvmStatePollerEnhanced) ObserveHead(json.RawMessage, time.Time) bool          { return false }
+func (m *mockEvmStatePollerEnhanced) ObserveHead(int64, time.Time) bool                    { return false }
 func (m *mockEvmStatePollerEnhanced) Ask(context.Context, common.HeadNeed, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
@@ -639,7 +638,7 @@ func (m *mockEvmStatePollerWithCustomBehavior) SuggestFinalizedBlock(blockNumber
 }
 func (m *mockEvmStatePollerWithCustomBehavior) SuggestLatestBlock(blockNumber int64, _ time.Time) {}
 func (m *mockEvmStatePollerWithCustomBehavior) RewindLatestBlock(int64)                           {}
-func (m *mockEvmStatePollerWithCustomBehavior) ObserveHead(json.RawMessage, time.Time) bool {
+func (m *mockEvmStatePollerWithCustomBehavior) ObserveHead(int64, time.Time) bool {
 	return false
 }
 func (m *mockEvmStatePollerWithCustomBehavior) Ask(context.Context, common.HeadNeed, common.AskReason) common.HeadAnswer {

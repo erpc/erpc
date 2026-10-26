@@ -62,8 +62,9 @@ type HeadAnswer struct {
 	Outcome AskOutcome
 	// Block is the upstream's latest counter after the outcome.
 	Block int64
-	// Header is the fetched latest header; nil with no fetch answer.
-	Header json.RawMessage
+	// Header is the fetched latest header, parsed once at its fetch; nil
+	// with no fetch answer.
+	Header EvmHeader `tstype:"-"`
 	// Sent is when the fetch that answered was sent: the header's
 	// evidence time; zero with no fetch answer.
 	Sent time.Time
@@ -71,6 +72,13 @@ type HeadAnswer struct {
 	// send plus its backed-off cadence; zero when it may now.
 	Next time.Time
 	Err  error `tstype:"-"`
+}
+
+// EvmHeader is a latest header past intake check 0, parsed once where it
+// was fetched: the evm package's SourceHeader.
+type EvmHeader interface {
+	// Raw is the header as its upstream sent it.
+	Raw() json.RawMessage
 }
 
 // EvmHeadReaches is the one head predicate (spec §6.4, #1099): u, with head
@@ -232,11 +240,11 @@ type EvmStatePoller interface {
 	// hash vote holds on the chain tracker's new branch, to the latest
 	// counter when the counter is above it (spec §14 rollback write).
 	RewindLatestBlock(blockNumber int64)
-	// ObserveHead runs a source header through the upstream's part of
-	// intake: the chain-identity gate and the head counter, as
-	// SuggestLatestBlock does for heights. accepted: the counter holds the
-	// header's height now.
-	ObserveHead(raw json.RawMessage, at time.Time) (accepted bool)
+	// ObserveHead runs a source header's height, parsed once by intake,
+	// through the upstream's part of intake: the chain-identity gate and
+	// the head counter, as SuggestLatestBlock does. accepted: the counter
+	// holds that height now.
+	ObserveHead(number int64, at time.Time) (accepted bool)
 	// Ask is the upstream's head Ask (spec §6.8): single-flight, its
 	// outcome to every waiter; it waits for the answer or ctx's end.
 	Ask(ctx context.Context, need HeadNeed, reason AskReason) HeadAnswer

@@ -2,7 +2,6 @@ package upstream
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -299,7 +298,7 @@ func (m *mockEvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 func (m *mockEvmStatePoller) SuggestFinalizedBlock(blockNumber int64, _ time.Time) {}
 func (m *mockEvmStatePoller) SuggestLatestBlock(blockNumber int64, _ time.Time)    {}
 func (m *mockEvmStatePoller) RewindLatestBlock(int64)                              {}
-func (m *mockEvmStatePoller) ObserveHead(json.RawMessage, time.Time) bool          { return false }
+func (m *mockEvmStatePoller) ObserveHead(int64, time.Time) bool                    { return false }
 func (m *mockEvmStatePoller) Ask(context.Context, common.HeadNeed, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
@@ -629,7 +628,7 @@ func (m *mockEvmStatePollerWithUpdate) IsBlockFinalized(blockNumber int64) (bool
 func (m *mockEvmStatePollerWithUpdate) SuggestFinalizedBlock(blockNumber int64, _ time.Time) {}
 func (m *mockEvmStatePollerWithUpdate) SuggestLatestBlock(blockNumber int64, _ time.Time)    {}
 func (m *mockEvmStatePollerWithUpdate) RewindLatestBlock(int64)                              {}
-func (m *mockEvmStatePollerWithUpdate) ObserveHead(json.RawMessage, time.Time) bool          { return false }
+func (m *mockEvmStatePollerWithUpdate) ObserveHead(int64, time.Time) bool                    { return false }
 func (m *mockEvmStatePollerWithUpdate) Ask(context.Context, common.HeadNeed, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
