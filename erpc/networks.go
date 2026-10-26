@@ -485,55 +485,11 @@ func (n *Network) Logger() *zerolog.Logger {
 	return n.logger
 }
 
-// tipVoterRank is the one rule for who votes on a served-tip ballot. ok is
-// false for an upstream with no head on the axis: non-EVM, no state poller,
-// syncing, or no head yet. Otherwise rank orders the voters, and a ballot
-// counts only the lowest rank present: 0 live, 1 benched, 2 static cap,
-// 3 benched static cap.
-//
-// STATIC-CAP UPSTREAMS DO NOT VOTE while any live head is present. An upstream
-// configured with `blockAvailability.upper.exactBlock` below the chain's head is
-// declaring a SERVING RANGE ("I answer up to block X"), not observing where the
-// head is — see evmTipObservation. Letting such a declaration onto the ballot
-// lets two capped legacy upstreams pull the tip down: pinned at an
-// `upper.exactBlock` far below the live heads, they outvote them the moment a
-// third live upstream is excluded for lag, "latest" interpolates to a
-// historical block, the availability gate then admits ONLY those two
-// upstreams (the live ones start above the cap), and funded accounts read 0x0.
-//
-// BENCHED UPSTREAMS DO NOT VOTE while any non-benched one does: the health
-// tracker benches a head that stayed behind peers that kept advancing
-// (health.Tracker.IsHeadBenched), so one stalled node cannot hold
-// "latest" at its height. A live head always outranks a cap, benched or not:
-// a stalled live node is still closer to the chain than a serving range.
-func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (head int64, rank int, ok bool) {
-	eu, isEvm := u.(common.EvmUpstream)
-	if !isEvm {
-		return 0, 0, false
-	}
-	if sp := eu.EvmStatePoller(); sp == nil || sp.IsObjectNull() || eu.EvmSyncingState() == common.EvmSyncingStateSyncing {
-		return 0, 0, false
-	}
-	head, capped := evmTipObservation(eu, finalized)
-	if head <= 0 {
-		return 0, 0, false
-	}
-	if capped {
-		rank = 2
-	}
-	if tracker != nil && tracker.IsHeadBenched(u) {
-		rank++
-	}
-	return head, rank, true
-}
-
 // evmTipBallot builds the served-tip pick for an axis under quorum q from the
-// request's tip candidates (EvmRoutableUpstreams) that satisfy member (nil =
-// all of them): the heads of the best-ranked voters (tipVoterRank), minus
-// the voters on a minority fork, which have no number vote (spec §6.3). live
-// reports whether live, non-capped heads decided it (benched or not): a
-// cap-only ballot gives the regression guard no live reference. voters,
-// when not nil, is reset to the ids of the voters the pick counted.
+// number votes of sel's lane (voterSet) that satisfy member (nil = all of
+// them). live reports whether live, non-capped heads decided it (benched or
+// not): a cap-only ballot gives the regression guard no live reference.
+// voters, when not nil, is reset to the ids of the voters the pick counted.
 //
 // MIXED POOL vs ALL-CAPPED POOL. The rule applies per candidate set, which is
 // what lets the same function build the network-wide ballot AND each
@@ -551,35 +507,16 @@ func (n *Network) evmTipBallot(sel string, useFinalized bool, q common.ServedTip
 	if voters != nil {
 		*voters = (*voters)[:0]
 	}
-	best := -1
-	for u := range n.tipCandidates(sel) {
-		if member != nil && !member(u) || n.isForkDemoted(u) {
-			continue
-		}
-		head, rank, ok := tipVoterRank(u, useFinalized, n.metricsTracker)
-		if !ok {
-			continue
-		}
-		ranks[rank]++
-		if best >= 0 && rank > best {
-			continue
-		}
-		if best < 0 || rank < best {
-			best, heads = rank, heads[:0]
-			if voters != nil {
-				*voters = (*voters)[:0]
-			}
-		}
+	s := n.voters(sel, voterQuery{kind: numberVote, finalized: useFinalized, member: member})
+	s.each(func(u common.Upstream, head int64) bool {
 		heads = append(heads, head)
 		if voters != nil {
 			*voters = append(*voters, u.Id())
 		}
-	}
-	return common.PickServedTip(heads, q), best >= 0 && best <= 1, ranks
+		return true
+	})
+	return common.PickServedTip(heads, q), s.live(), s.ranks
 }
-
-// tipRanks counts a ballot's voters by tipVoterRank.
-type tipRanks [4]int
 
 // tipRankLabels name the ranks of tipVoterRank on erpc_served_tip_voters.
 var tipRankLabels = [4]string{"live", "live_benched", "capped", "capped_benched"}
@@ -841,12 +778,12 @@ func isSimpleGroupSelector(selector string) bool {
 
 // EvmRefreshHead asks the pollers that decide the request's head, its
 // finalized axis when finalized is set, for a background refresh: in
-// routing order, only as many of the ballot's voters (its best
-// tipVoterRank) as the quorum needs, since a fresher head anywhere else
-// cannot move the served value. A lane walks its voters at most once per
-// poll cadence per axis, the debounce each poller applies anyway, so the
-// per-request call costs no upstream iteration in between. Two passes over
-// the candidates, counting then refreshing, keep it free of allocation.
+// routing order, only as many of the ballot's voters (voterSet's number
+// votes) as the quorum needs, since a fresher head anywhere else cannot
+// move the served value. A lane walks its voters at most once per poll
+// cadence per axis, the debounce each poller applies anyway, so the
+// per-request call costs no upstream iteration in between. The voter set
+// counts, then each refreshes, so it stays free of allocation.
 func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 	sel := requestSelector(ctx)
 	var ec *common.EvmNetworkConfig
@@ -862,33 +799,20 @@ func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 	}
 	// The latest-axis rank on both axes: an upstream with no finalized
 	// number yet still gets polled for its first one.
-	best, voters := -1, 0
-	for u := range n.tipCandidates(sel) {
-		if _, rank, ok := tipVoterRank(u, false, n.metricsTracker); ok {
-			switch {
-			case best < 0 || rank < best:
-				best, voters = rank, 1
-			case rank == best:
-				voters++
-			}
-		}
-	}
-	if voters == 0 {
+	s := n.voters(sel, voterQuery{kind: numberVote})
+	if s.count() == 0 {
 		return
 	}
-	need := ec.ServedTipQuorum().Of(voters)
-	for u := range n.tipCandidates(sel) {
-		if _, rank, ok := tipVoterRank(u, false, n.metricsTracker); ok && rank == best {
-			if sp := u.(common.EvmUpstream).EvmStatePoller(); finalized {
-				sp.RefreshFinalizedBlock()
-			} else {
-				sp.AskBackground(common.HeadNeedNumber, common.AskRefresh)
-			}
-			if need--; need == 0 {
-				return
-			}
+	need := ec.ServedTipQuorum().Of(s.count())
+	s.each(func(u common.Upstream, _ int64) bool {
+		if sp := u.(common.EvmUpstream).EvmStatePoller(); finalized {
+			sp.RefreshFinalizedBlock()
+		} else {
+			sp.AskBackground(common.HeadNeedNumber, common.AskRefresh)
 		}
-	}
+		need--
+		return need > 0
+	})
 }
 
 // EvmRefreshHeadsBelow Asks, in the background, with a number need, the
@@ -896,17 +820,13 @@ func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 // §6.4 by-hash hold): Latest is their ballot, so no other upstream moves
 // it.
 func (n *Network) EvmRefreshHeadsBelow(selector string, block int64) {
-	for u := range n.tipCandidates(selector) {
-		if _, _, ok := tipVoterRank(u, false, n.metricsTracker); !ok {
-			continue
+	s := n.voters(selector, voterQuery{kind: numberVote})
+	s.each(func(u common.Upstream, head int64) bool {
+		if head < block {
+			u.(common.EvmUpstream).EvmStatePoller().AskBackground(common.HeadNeedNumber, common.AskCatchUp)
 		}
-		eu := u.(common.EvmUpstream)
-		if head, _ := evmTipObservation(eu, false); head < block {
-			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-				sp.AskBackground(common.HeadNeedNumber, common.AskCatchUp)
-			}
-		}
-	}
+		return true
+	})
 }
 
 // EvmPollHeads Asks, with a hash need, each upstream in ids: voters that a

@@ -351,9 +351,9 @@ func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool) int64 {
 	return tip
 }
 
-// laneLeader is the highest voter of the lane's ballot whose head is within
-// latest + maxRetryableBlockDistance (#1154): a head beyond reach of the
-// served one never leads. nil while latest is unknown.
+// laneLeader is the highest number voter of the lane (voterSet) whose head
+// is within latest + maxRetryableBlockDistance (#1154): a head beyond reach
+// of the served one never leads. nil while latest is unknown.
 func (n *Network) laneLeader(sel string, latest int64) common.Upstream {
 	if latest <= 0 {
 		return nil
@@ -361,22 +361,13 @@ func (n *Network) laneLeader(sel string, latest int64) common.Upstream {
 	reach := latest + n.maxRetryableBlockDistance()
 	var leader common.Upstream
 	var top int64
-	best := -1
-	for u := range n.tipCandidates(sel) {
-		if n.isForkDemoted(u) {
-			continue
-		}
-		head, rank, ok := tipVoterRank(u, false, n.metricsTracker)
-		if !ok || (best >= 0 && rank > best) {
-			continue
-		}
-		if best < 0 || rank < best {
-			best, leader, top = rank, nil, 0
-		}
+	s := n.voters(sel, voterQuery{kind: numberVote})
+	s.each(func(u common.Upstream, head int64) bool {
 		if head <= reach && head > top {
 			leader, top = u, head
 		}
-	}
+		return true
+	})
 	return leader
 }
 
@@ -488,13 +479,15 @@ func (n *Network) awaitBandAsk(ctx context.Context, sel string, block int64) {
 }
 
 // bandPollers are the pollers of the upstreams sel's lane ceiling counts
-// whose head is below block, voters first.
+// whose head is below block, number voters (voterSet) first.
 func (n *Network) bandPollers(sel string, block int64) []common.EvmStatePoller {
 	ups := n.countedUpstreams(sel)
+	s := n.voters(sel, voterQuery{kind: numberVote})
+	voters := s.list()
 	out := make([]common.EvmStatePoller, 0, len(ups))
-	for _, voters := range [2]bool{true, false} {
+	for _, first := range [2]bool{true, false} {
 		for _, u := range ups {
-			if _, _, ok := tipVoterRank(u, false, n.metricsTracker); ok != voters {
+			if slices.ContainsFunc(voters, func(v common.Upstream) bool { return v.Id() == u.Id() }) != first {
 				continue
 			}
 			if head, _ := evmTipObservation(u, false); head >= block {

@@ -453,44 +453,159 @@ func syncing(u common.Upstream) bool {
 	return ok && eu.EvmSyncingState() == common.EvmSyncingStateSyncing
 }
 
-// voters lists the voters of the lane of selector ("" network-wide) in
-// selection order (spec §6.2): upstreams in the policy's eligible set that
-// the selector matches, with a state poller and not syncing, of the best
-// rank present (tipVoterRank: live heads, or none yet, before benched ones
-// before configured caps). No tier filter: the fallback tier votes too. cands are the
-// eligible, matched upstreams that are not syncing, voters or not.
-func (in *networkIntake) voters(selector string) (voters, cands []common.Upstream) {
-	best := -1
-	for c := range in.nw.EvmRoutableUpstreams(context.Background()) {
-		if selector != "" {
-			if m, _ := common.UpstreamMatchesSelector(selector, c); !m {
-				continue
-			}
-		}
-		if syncing(c) {
-			continue
-		}
-		cands = append(cands, c)
-		_, rank, ok := tipVoterRank(c, false, in.nw.metricsTracker)
-		if !ok {
-			// No head yet is no reason to leave the ballot of voters: a
-			// poll source gets its first head only once admitted.
-			eu, isEvm := c.(common.EvmUpstream)
-			if !isEvm || eu.EvmStatePoller() == nil || eu.EvmStatePoller().IsObjectNull() {
-				continue
-			}
-			rank = 0
-		}
-		if best >= 0 && rank > best {
-			continue
-		}
-		if best < 0 || rank < best {
-			best, voters = rank, voters[:0]
-		}
-		voters = append(voters, c)
-	}
-	return voters, cands
+// voteKind is what a walk of the voters counts (spec §6.2).
+type voteKind uint8
+
+const (
+	// numberVote: the Head ballots, Leader and the Asks that move Latest
+	// (refresh, catch-up, band). A number vote needs a head: a voter on a
+	// minority fork (spec §6.3) or with no head yet casts none.
+	numberVote voteKind = iota
+	// hashVote: the hash voters. A voter on a minority fork keeps its hash
+	// vote, which is how it returns.
+	hashVote
+	// admissionVote: topic admission. A poller with no head yet is a voter
+	// too: a poll source gets its first head only once admitted.
+	admissionVote
+)
+
+// voterQuery is one use of voter(u): the vote it counts; finalized, the
+// axis whose heads rank the voters; member, the subset a guarantee ballot
+// runs on (nil: every voter).
+type voterQuery struct {
+	kind      voteKind
+	finalized bool
+	member    func(common.Upstream) bool
 }
+
+// voterSet is voter(u) over the lane of selector sel ("" network-wide),
+// the one place its rule applies (spec §6.2): upstreams in the policy's
+// eligible set, else every registered one (tipCandidates), that sel
+// matches, with a state poller and not syncing, of the best rank present
+// (tipVoterRank), minus what the query's kind excludes (voteKind). No
+// tier filter: the fallback tier votes too. voters finds the best rank in
+// one pass and each walks again, so neither allocates.
+type voterSet struct {
+	n     *Network
+	sel   string
+	q     voterQuery
+	best  int
+	ranks tipRanks
+}
+
+// voters is the voter set of sel's lane for q.
+func (n *Network) voters(sel string, q voterQuery) voterSet {
+	s := voterSet{n: n, sel: sel, q: q, best: -1}
+	for u := range n.tipCandidates(sel) {
+		if _, rank, ok := s.rank(u); ok {
+			s.ranks[rank]++
+			if s.best < 0 || rank < s.best {
+				s.best = rank
+			}
+		}
+	}
+	return s
+}
+
+// rank is u's rank for the query; ok is false when u casts no such vote
+// whatever the other candidates' ranks.
+func (s *voterSet) rank(u common.Upstream) (head int64, rank int, ok bool) {
+	if s.q.member != nil && !s.q.member(u) || s.q.kind == numberVote && s.n.isForkDemoted(u) {
+		return 0, 0, false
+	}
+	head, rank, ok = tipVoterRank(u, s.q.finalized, s.n.metricsTracker)
+	if !ok && s.q.kind == admissionVote && !syncing(u) {
+		if eu, isEvm := u.(common.EvmUpstream); isEvm {
+			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+				return 0, 0, true
+			}
+		}
+	}
+	return head, rank, ok
+}
+
+// count is how many voters the set had when it was read.
+func (s *voterSet) count() int {
+	if s.best < 0 {
+		return 0
+	}
+	return s.ranks[s.best]
+}
+
+// live reports whether live heads, benched or not, rank best: a cap-only
+// set gives the regression guard no live reference.
+func (s *voterSet) live() bool {
+	return s.best >= 0 && s.best <= 1
+}
+
+// each calls yield with each voter, in routing order, and its head on the
+// query's axis (0 for an admitted poller with none yet), until yield
+// returns false.
+func (s *voterSet) each(yield func(u common.Upstream, head int64) bool) {
+	if s.best < 0 {
+		return
+	}
+	for u := range s.n.tipCandidates(s.sel) {
+		if head, rank, ok := s.rank(u); ok && rank == s.best && !yield(u, head) {
+			return
+		}
+	}
+}
+
+// list is the voters in routing order.
+func (s *voterSet) list() []common.Upstream {
+	out := make([]common.Upstream, 0, s.count())
+	s.each(func(u common.Upstream, _ int64) bool {
+		out = append(out, u)
+		return true
+	})
+	return out
+}
+
+// tipVoterRank is a candidate's rank in voterSet. ok is false for an
+// upstream with no head on the axis: non-EVM, no state poller, syncing, or
+// no head yet. Otherwise rank orders the voters, and a voter set counts
+// only the lowest rank present: 0 live, 1 benched, 2 static cap, 3 benched
+// static cap.
+//
+// STATIC-CAP UPSTREAMS DO NOT VOTE while any live head is present. An upstream
+// configured with `blockAvailability.upper.exactBlock` below the chain's head is
+// declaring a SERVING RANGE ("I answer up to block X"), not observing where the
+// head is — see evmTipObservation. Letting such a declaration onto the ballot
+// lets two capped legacy upstreams pull the tip down: pinned at an
+// `upper.exactBlock` far below the live heads, they outvote them the moment a
+// third live upstream is excluded for lag, "latest" interpolates to a
+// historical block, the availability gate then admits ONLY those two
+// upstreams (the live ones start above the cap), and funded accounts read 0x0.
+//
+// BENCHED UPSTREAMS DO NOT VOTE while any non-benched one does: the health
+// tracker benches a head that stayed behind peers that kept advancing
+// (health.Tracker.IsHeadBenched), so one stalled node cannot hold
+// "latest" at its height. A live head always outranks a cap, benched or not:
+// a stalled live node is still closer to the chain than a serving range.
+func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (head int64, rank int, ok bool) {
+	eu, isEvm := u.(common.EvmUpstream)
+	if !isEvm {
+		return 0, 0, false
+	}
+	if sp := eu.EvmStatePoller(); sp == nil || sp.IsObjectNull() || eu.EvmSyncingState() == common.EvmSyncingStateSyncing {
+		return 0, 0, false
+	}
+	head, capped := evmTipObservation(eu, finalized)
+	if head <= 0 {
+		return 0, 0, false
+	}
+	if capped {
+		rank = 2
+	}
+	if tracker != nil && tracker.IsHeadBenched(u) {
+		rank++
+	}
+	return head, rank, true
+}
+
+// tipRanks counts a voter set's candidates by tipVoterRank.
+type tipRanks [4]int
 
 // voterSnapshot is the network-wide voters read from one eligible set
 // (Network.eligibleSet).
@@ -511,7 +626,7 @@ func (in *networkIntake) isVoter(upstreamId string) bool {
 	policy, all := in.nw.eligibleSet(context.Background())
 	s := in.voterIds.Load()
 	if s == nil || !s.of(policy, all) {
-		vs, _ := in.voters("")
+		vs := in.nw.voters("", voterQuery{kind: hashVote}).list()
 		ids := make([]string, 0, len(vs))
 		for _, u := range vs {
 			ids = append(ids, u.Id())
@@ -584,7 +699,7 @@ func freshVote(v health.HashVote, voted bool, w time.Duration, now time.Time) (o
 // A source streams while its stream head's hash age is at most w. next is
 // when a primary's streaming or lead next changes, 0 when no clock runs.
 func (in *networkIntake) admit(now time.Time, w time.Duration) (next time.Duration) {
-	voters, _ := in.voters("")
+	voters := in.nw.voters("", voterQuery{kind: admissionVote}).list()
 	soonest := func(d time.Duration) {
 		if next == 0 || d < next {
 			next = max(d, time.Millisecond)
@@ -667,7 +782,7 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 	hv.Vendors, hv.NetworkVendors = vs.vendors, vs.distinct
 	now := time.Now()
 	policy, all := n.eligibleSet(context.Background())
-	voters, cands := n.intake.voters(selector)
+	voters := n.voters(selector, voterQuery{kind: hashVote}).list()
 	var stale []string
 	hv.Voters = make([]string, 0, len(voters))
 	hv.Hash = make([]string, 0, len(voters))
@@ -695,14 +810,17 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 			n.intake.voterIds.Store(&voterSnapshot{ids: hv.Voters, policy: policy, all: slices.Clone(all)})
 		}
 	}
-	for _, u := range cands {
-		if !slices.Contains(hv.Voters, u.Id()) {
-			if eu, ok := u.(common.EvmUpstream); ok && eu.EvmStatePoller() != nil && !eu.EvmStatePoller().IsObjectNull() {
-				hv.Others = append(hv.Others, u.Id())
+	for c := range n.tipCandidates(selector) {
+		if syncing(c) {
+			continue
+		}
+		if !slices.Contains(hv.Voters, c.Id()) {
+			if eu, ok := c.(common.EvmUpstream); ok && eu.EvmStatePoller() != nil && !eu.EvmStatePoller().IsObjectNull() {
+				hv.Others = append(hv.Others, c.Id())
 			}
 		}
-		if cold && u.Config().IsSubscriptionSource() && !n.intake.reported(u.Id()) && !slices.Contains(hv.Hash, u.Id()) {
-			hv.Hash = append(hv.Hash, u.Id())
+		if cold && c.Config().IsSubscriptionSource() && !n.intake.reported(c.Id()) && !slices.Contains(hv.Hash, c.Id()) {
+			hv.Hash = append(hv.Hash, c.Id())
 		}
 	}
 	hv.Need = q.Of(len(hv.Hash))

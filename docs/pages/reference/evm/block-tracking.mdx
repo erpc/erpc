@@ -137,8 +137,8 @@ On a 12 s Ethereum Mainnet chain this yields ~8.4 s debounce — fresh enough to
 Both axes, every config. `Network.EvmHead` returns one published `Head` per lane (`Latest`, `Finalized`, `Leader`, ceiling), computed by `computeHead` when an upstream head, a bench or the eligible set changes, and every 1s. Each axis runs one pipeline:
 
 1. **Candidates** (`EvmRoutableUpstreams`): the selection policy's eligible upstreams in routing order (all registered upstreams until the policy's first decision), narrowed to the request's `use-upstream` selector when present.
-2. **Voter rank** (`tipVoterRank`): each candidate with a head on the axis ranks live 0, benched 1, static cap 2, benched static cap 3. A static cap is a `blockAvailability.upper.exactBlock` the chain has passed: a serving range, not a head observation (`latestBlockMinus` upstreams are live). A candidate that is syncing per `eth_syncing`, has no state poller or has no head yet does not vote.
-3. **Ballot** (`evmTipBallot`): only the heads of the best voter rank present vote. A benched head votes only when no non-benched live head exists; a static cap only when no live head exists.
+2. **Voter rank** (`tipVoterRank`): each candidate with a head on the axis ranks live 0, benched 1, static cap 2, benched static cap 3. A static cap is a `blockAvailability.upper.exactBlock` the chain has passed: a serving range, not a head observation (`latestBlockMinus` upstreams are live). A candidate that is syncing per `eth_syncing`, has no state poller, has no head yet or is on a minority fork casts no number vote.
+3. **Ballot** (`evmTipBallot`): only the heads of the best voter rank present vote. A benched head votes only when no non-benched live head exists; a static cap only when no live head exists. One voter set (`voterSet`) applies these rules for the ballots, `Leader`, the refresh, catch-up and band Asks, the hash voters and topic admission; a hash vote keeps a voter on a minority fork, and topic admission also keeps a poller with no head yet.
 4. **Pick** (`PickServedTip`): the highest block at least `servedTip.quorum` voters already have — the q-th highest head, or the lowest when fewer than q vote.
 5. The [regression guard](#regression-guard), then the [guarantee floors](#guarantee-subsets).
 
@@ -403,7 +403,8 @@ Served-tip and bench metrics (`erpc_network_served_tip_*`, `erpc_upstream_head_b
 
 - [`architecture/evm/evm_state_poller.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go) — `Bootstrap`, `Poll`, `Ask`, `PollLatestBlockNumber`, `PollFinalizedBlockNumber`; debounce resolution; syncing state machine
 - [`common/served_tip.go:L36-L157`](https://github.com/erpc/erpc/blob/main/common/served_tip.go#L36-L157) — `ServedTipQuorum`, `PickServedTip`
-- [`erpc/networks.go`](https://github.com/erpc/erpc/blob/main/erpc/networks.go) — `tipVoterRank`, `evmTipBallot`, `EvmRoutableUpstreams`, `requestSelector`, `laneFor`, `EvmRefreshHead`, `EvmAskHead`, `guardServedTipRegression`, `guaranteedFloor`, `guaranteedSubsetTip`, `anyRegisteredLiveHead`, `observeServedTipMetrics`
+- [`erpc/networks.go`](https://github.com/erpc/erpc/blob/main/erpc/networks.go) — `evmTipBallot`, `EvmRoutableUpstreams`, `requestSelector`, `laneFor`, `EvmRefreshHead`, `EvmAskHead`, `guardServedTipRegression`, `guaranteedFloor`, `guaranteedSubsetTip`, `anyRegisteredLiveHead`, `observeServedTipMetrics`
+- [`erpc/network_intake.go`](https://github.com/erpc/erpc/blob/main/erpc/network_intake.go) — `voterSet`, `tipVoterRank`
 - [`erpc/network_head.go`](https://github.com/erpc/erpc/blob/main/erpc/network_head.go) — `EvmHead`, `EvmLaneHead`, `computeHead`
 - [`architecture/evm/eth_blockNumber.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_blockNumber.go) — `eth_blockNumber` pre-forward answer and post-forward pin
 - [`health/tracker.go:L1428-L1664`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1428-L1664) — `corroboratedNetworkHead`, `headStallAfter`, `evaluateHeadBench`, `movedSinceBench`, `headIsBehind`, `benchPlausibleLead`, `IsHeadBenched`
