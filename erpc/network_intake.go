@@ -909,9 +909,13 @@ func (n *Network) isForkDemoted(u common.Upstream) bool {
 	return ids != nil && slices.Contains(*ids, u.Id())
 }
 
-// EvmHeadsDemanded reports whether an open tap needs newHeads.
-func (n *Network) EvmHeadsDemanded() bool {
-	return n.taps != nil && slices.Contains(n.taps.Demand(n.Label()), indexer.TopicNewHeads)
+// EvmHeadsDemand reports whether an open tap needs newHeads, and the
+// fastest pace one needs it at: 0 every block.
+func (n *Network) EvmHeadsDemand() (pace time.Duration, ok bool) {
+	if n.taps == nil {
+		return 0, false
+	}
+	return n.taps.Pace(n.Label(), indexer.TopicNewHeads)
 }
 
 // EvmTaps is the network's taps and the key its demand is counted under:

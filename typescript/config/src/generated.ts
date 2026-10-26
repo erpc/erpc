@@ -2443,9 +2443,9 @@ export interface IntegritySettings {
   stateProbe?: IntegrityStateProbeConfig;
   /**
    * Follow opens one integrity follow tap per chain tracker at the
-   * network's first client request: it holds demand, so source polls run
-   * while clients are quiet, and it drives the state prober on each new
-   * head. Off by default.
+   * network's first client request: it holds demand at its interval's
+   * pace, so source polls run while clients are quiet, and it drives the
+   * state prober on each new head. Off by default.
    */
   follow?: IntegrityFollowConfig;
   /**
@@ -2457,6 +2457,11 @@ export interface IntegritySettings {
   misbehaviorsDestination?: MisbehaviorsDestinationConfig;
 }
 /**
+ * DefaultIntegrityFollowInterval is the follow tap's pace when its config
+ * sets none.
+ */
+export const DefaultIntegrityFollowInterval = any /* time.Second */;
+/**
  * IntegrityFollowConfig configures the integrity follow tap.
  */
 export interface IntegrityFollowConfig {
@@ -2464,6 +2469,12 @@ export interface IntegrityFollowConfig {
    * Enabled opens the follow tap for this network. Default false.
    */
   enabled?: boolean;
+  /**
+   * Interval is the pace the follow tap needs heads at (default 1s): while
+   * it is a network's only newHeads demand, the tracker asks upstreams for
+   * newer heads no more often than this.
+   */
+  interval?: Duration;
 }
 /**
  * IntegrityStateProbeConfig configures the per-upstream state-trie probes.

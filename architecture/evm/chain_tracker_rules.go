@@ -853,13 +853,15 @@ func (t *ChainTracker) markRefreshed(k roundKey) {
 
 // askState is §6 rule 6: with demand and no source with a fresh hash vote,
 // the tracker Asks the first voter in selection order with a hash need,
-// once per cadence: the Ask's own debounce paces it (due, its answer's
-// Next). That answer is the only vote until the next.
+// once per cadence and no faster than the demand's pace: the Ask's own
+// debounce paces it (due, its answer's Next), and sent paces it at the
+// demand's pace. That answer is the only vote until the next.
 type askState struct {
 	vote, pending       *node
 	voter, pendingVoter string
 	out                 bool      // an Ask is out
 	due                 time.Time // when the voter's Ask may fetch again
+	sent                time.Time // when the last Ask went out
 }
 
 // noSourceWanted reports whether rule 6 Asks: demand, a voter, no Ask out,
@@ -867,18 +869,29 @@ type askState struct {
 // from each poll of it, rule 6's Asks and full polls included, yet no
 // schedule keeps those coming.
 func (t *ChainTracker) noSourceWanted() bool {
-	if t.ask.out || len(t.voters.Voters) == 0 || !t.demanded() {
+	if t.ask.out || len(t.voters.Voters) == 0 {
+		return false
+	}
+	if _, ok := t.demand(); !ok {
 		return false
 	}
 	return !slices.ContainsFunc(t.voters.Sources, t.counts)
 }
 
+// askDue is when rule 6's next Ask may go out: after the voter's debounce
+// and one demand pace after the last Ask.
+func (t *ChainTracker) askDue() time.Time {
+	pace, _ := t.demand()
+	return maxTime(t.ask.due, t.ask.sent.Add(pace))
+}
+
 // askNoSource is rule 6's Ask, reason no_source, once it is due.
 func (t *ChainTracker) askNoSource() {
-	if !t.noSourceWanted() || time.Now().Before(t.ask.due) {
+	if !t.noSourceWanted() || time.Now().Before(t.askDue()) {
 		return
 	}
 	id, seq := t.voters.Voters[0], t.askSeq
+	t.ask.sent = time.Now()
 	t.ask.out = t.askHead(id, common.HeadNeedHash, common.AskNoSource, func(a common.HeadAnswer) {
 		if seq != t.askSeq {
 			return
@@ -894,15 +907,32 @@ func (t *ChainTracker) askNoSource() {
 	})
 }
 
-// demanded reports whether newHeads demand stands for this tracker: an
-// open tap of the network for the network-wide tracker; a group tracker's
-// own integrity follow tap, since a network tap never reads a group.
-func (t *ChainTracker) demanded() bool {
+// demand reports whether newHeads demand stands for this tracker, and the
+// fastest pace it needs heads at (0 every block): an open tap of the
+// network for the network-wide tracker; a group tracker's own integrity
+// follow tap, at its interval, since a network tap never reads a group.
+func (t *ChainTracker) demand() (pace time.Duration, ok bool) {
 	if t.selector != "" {
-		return t.following.Load()
+		return t.followInterval(), t.following.Load()
 	}
-	n, ok := t.network.(interface{ EvmHeadsDemanded() bool })
-	return ok && n.EvmHeadsDemanded()
+	n, isNet := t.network.(interface {
+		EvmHeadsDemand() (time.Duration, bool)
+	})
+	if !isNet {
+		return 0, false
+	}
+	return n.EvmHeadsDemand()
+}
+
+// followInterval is the integrity follow tap's pace (spec §3 demand).
+func (t *ChainTracker) followInterval() time.Duration {
+	if t.network == nil {
+		return common.DefaultIntegrityFollowInterval
+	}
+	if cfg := t.network.Config(); cfg != nil && cfg.Integrity != nil {
+		return cfg.Integrity.Follow.IntervalOrDefault()
+	}
+	return common.DefaultIntegrityFollowInterval
 }
 
 // conflicts reports whether a vote leaves the pinned branch: neither
@@ -924,8 +954,10 @@ func (t *ChainTracker) conflicts(nd *node) bool {
 func (t *ChainTracker) rearm() {
 	now := time.Now()
 	var at time.Time
-	if t.noSourceWanted() && t.ask.due.After(now) {
-		at = t.ask.due
+	if t.noSourceWanted() {
+		if due := t.askDue(); due.After(now) {
+			at = due
+		}
 	}
 	if s := t.settle; s != nil {
 		due := t.retryAt[s.key.name]
@@ -961,10 +993,10 @@ func (t *ChainTracker) rearm() {
 }
 
 // follow runs the integrity follow tap (spec §13) from the network's first
-// client request (ClientRequested): it holds newHeads demand, so polls run
-// while clients are quiet, hands each new head to the state prober and
-// sets the head's lag behind the network's served tip. Out of range
-// restarts it after the head.
+// client request (ClientRequested): it holds newHeads demand at
+// integrity.follow.interval's pace, so polls run while clients are quiet,
+// hands each new head to the state prober and sets the head's lag behind
+// the network's served tip. Out of range restarts it after the head.
 func (t *ChainTracker) follow(ctx context.Context) {
 	tn, ok := t.network.(interface {
 		EvmTaps() (*indexer.Taps, string)
@@ -983,7 +1015,7 @@ func (t *ChainTracker) follow(ctx context.Context) {
 		t.mb.put(trackerMsg{kind: msgTick})
 	}()
 	for ctx.Err() == nil {
-		err := taps.RunChain(ctx, key, "integrity", "follow", t, nil, indexer.ReadOpts{}, func(b indexer.Batch) (int, error) {
+		err := taps.RunChain(ctx, key, "integrity", "follow", t, nil, indexer.ReadOpts{Pace: t.followInterval()}, func(b indexer.Batch) (int, error) {
 			if len(b.Applied) == 0 {
 				return 0, nil
 			}

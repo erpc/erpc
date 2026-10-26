@@ -909,7 +909,7 @@ func (n *coldNetwork) EvmHashVoters(_ string, _ time.Duration, cold bool) HashVo
 	return hv
 }
 
-func (n *coldNetwork) EvmHeadsDemanded() bool { return true }
+func (n *coldNetwork) EvmHeadsDemand() (time.Duration, bool) { return 0, true }
 
 // A cold instance's first header waits for a second voter's (spec §6.5
 // cold window), even when its upstreams become voters more than W after the

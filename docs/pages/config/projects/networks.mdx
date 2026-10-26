@@ -306,7 +306,7 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 | `chainTracker.reorgWindow` | `int` | `32` | Floor of the held window in blocks, the window of use-upstream group trackers, and the deepest reorg a tracker walks and replays. Raise it for deep-reorg chains (Polygon: `256`). A ws `logs` subscription that falls `reorgWindow` × block time behind closes with `1013`. |
 | `chainTracker.maxBackfill` | `Duration` | `5m` | Chain time, compared on header timestamps, the network-wide tracker holds for resuming gRPC `StreamBlocks` clients. A cursor older than this ends with `OUT_OF_RANGE`. |
 | `stripSubscribeFromBlockZero` | — | — | **Removed**; configs that set it fail to load. No upstream `logs` subscription is made. |
-| `integrity.reorgWindow`, `integrity.follow.interval`, `integrity.follow.maxBlocksPerTick` | — | — | **Removed** at project, network and profile level; configs that set them fail to load. Use `evm.chainTracker.reorgWindow` and `evm.chainTracker.maxBackfill`; the follow tap is driven by the confirmed head. |
+| `integrity.reorgWindow`, `integrity.follow.maxBlocksPerTick` | — | — | **Removed** at project, network and profile level; configs that set them fail to load. Use `evm.chainTracker.reorgWindow` and `evm.chainTracker.maxBackfill`; the follow tap is driven by the confirmed head. |
 
 #### `projects[].networks[].svm` — SvmNetworkConfig
 

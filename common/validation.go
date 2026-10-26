@@ -2018,6 +2018,9 @@ func (s *IntegritySettings) validate() error {
 	if b := s.Budget; b != nil && (b.MaxPerSecond < 0 || b.MaxConcurrent < 0) {
 		return fmt.Errorf("integrity.budget.maxPerSecond/maxConcurrent must be >= 0")
 	}
+	if f := s.Follow; f != nil && f.Interval < 0 {
+		return fmt.Errorf("integrity.follow.interval must be >= 0")
+	}
 	if s.MisbehaviorsDestination != nil {
 		if err := s.MisbehaviorsDestination.Validate(); err != nil {
 			return fmt.Errorf("integrity.misbehaviorsDestination: %w", err)

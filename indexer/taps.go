@@ -22,21 +22,21 @@ import (
 // tap, so a busy mempool reaches it in batches; a var so tests can change it.
 var MempoolWakeEvery = util.NewDuration(50 * time.Millisecond)
 
-// Taps runs read loops: read, emit, repeat. It counts open taps per network
-// and topic, so sources know what to feed.
+// Taps runs read loops: read, emit, repeat. It counts open taps per network,
+// topic and pace, so sources know what to feed and how often.
 type Taps struct {
 	projectId      string
 	onDemandChange func(networkId string)
 
 	mu   sync.Mutex
-	open map[string]map[Topic]int // networkId -> topic -> open taps
+	open map[string]map[Topic]map[time.Duration]int // networkId -> topic -> pace -> open taps
 }
 
 // NewTaps returns an empty Taps of one project; projectId labels metrics.
 // onDemandChange, if set, is called whenever a network's demand gains or
-// loses a topic; it must never block.
+// loses a topic, or a topic's pace changes; it must never block.
 func NewTaps(projectId string, onDemandChange func(networkId string)) *Taps {
-	return &Taps{projectId: projectId, onDemandChange: onDemandChange, open: make(map[string]map[Topic]int)}
+	return &Taps{projectId: projectId, onDemandChange: onDemandChange, open: make(map[string]map[Topic]map[time.Duration]int)}
 }
 
 // RunChain runs one tap on f until ctx ends, emit fails, or f returns an
@@ -46,8 +46,8 @@ func NewTaps(projectId string, onDemandChange func(networkId string)) *Taps {
 // continues after the last one it delivered.
 func (t *Taps) RunChain(ctx context.Context, networkId, transport, kind string,
 	f ChainFeed, start *Cursor, o ReadOpts, emit func(Batch) (delivered int, err error)) (err error) {
-	t.add(networkId, TopicNewHeads)
-	defer t.remove(networkId, TopicNewHeads)
+	t.add(networkId, TopicNewHeads, o.Pace)
+	defer t.remove(networkId, TopicNewHeads, o.Pace)
 	open := telemetry.GaugeHandle(telemetry.MetricTaps, t.projectId, networkId, transport, kind)
 	open.Inc()
 	defer open.Dec()
@@ -168,8 +168,8 @@ func (t *Taps) RunMempool(ctx context.Context, networkId, transport, variant str
 	f MempoolFeed, emit func([]json.RawMessage) error) (err error) {
 	kind := SubTypeNewPendingTransactions
 	topic := PendingTxTopic(variant)
-	t.add(networkId, topic)
-	defer t.remove(networkId, topic)
+	t.add(networkId, topic, 0)
+	defer t.remove(networkId, topic, 0)
 	open := telemetry.GaugeHandle(telemetry.MetricTaps, t.projectId, networkId, transport, kind)
 	open.Inc()
 	defer open.Dec()
@@ -226,27 +226,55 @@ func (t *Taps) Demand(networkId string) []Topic {
 	return topics
 }
 
-func (t *Taps) add(networkId string, topic Topic) {
+// Pace is the fastest pace the open taps of networkId need topic at: 0 is
+// every block. ok is false while no tap needs it.
+func (t *Taps) Pace(networkId string, topic Topic) (pace time.Duration, ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return fastest(t.open[networkId][topic])
+}
+
+func fastest(paces map[time.Duration]int) (pace time.Duration, ok bool) {
+	for p := range paces {
+		if !ok || p < pace {
+			pace, ok = p, true
+		}
+	}
+	return pace, ok
+}
+
+func (t *Taps) add(networkId string, topic Topic, pace time.Duration) {
 	t.mu.Lock()
 	byTopic := t.open[networkId]
 	if byTopic == nil {
-		byTopic = make(map[Topic]int)
+		byTopic = make(map[Topic]map[time.Duration]int)
 		t.open[networkId] = byTopic
 	}
-	byTopic[topic]++
-	changed := byTopic[topic] == 1
+	paces := byTopic[topic]
+	if paces == nil {
+		paces = make(map[time.Duration]int)
+		byTopic[topic] = paces
+	}
+	was, had := fastest(paces)
+	paces[pace]++
+	changed := !had || pace < was
 	t.mu.Unlock()
 	if changed && t.onDemandChange != nil {
 		t.onDemandChange(networkId)
 	}
 }
 
-func (t *Taps) remove(networkId string, topic Topic) {
+func (t *Taps) remove(networkId string, topic Topic, pace time.Duration) {
 	t.mu.Lock()
 	byTopic := t.open[networkId]
-	byTopic[topic]--
-	changed := byTopic[topic] == 0
-	if changed {
+	paces := byTopic[topic]
+	was, _ := fastest(paces)
+	if paces[pace]--; paces[pace] == 0 {
+		delete(paces, pace)
+	}
+	now, has := fastest(paces)
+	changed := !has || now != was
+	if !has {
 		delete(byTopic, topic)
 		if len(byTopic) == 0 {
 			delete(t.open, networkId)

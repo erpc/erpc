@@ -43,6 +43,9 @@ type ReadOpts struct {
 	// in the window, so the feed fills the whole window while it is open.
 	// Without one, fill stops reorgWindow blocks below the head.
 	Resumable bool
+	// Pace is how often the tap needs a newer head: 0 every block. The
+	// tap's demand carries it (Taps.Pace); a Read ignores it.
+	Pace time.Duration
 }
 
 // ChainFeed is the reader side of one tracker.

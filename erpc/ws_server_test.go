@@ -2345,6 +2345,7 @@ type mockHttpVendor struct {
 	chain       *mockChain
 	requests    atomic.Int64 // every JSON-RPC request, batched ones each
 	latestPolls atomic.Int64
+	headNumbers atomic.Int64 // eth_blockNumber requests
 	chainIdAsks atomic.Int64
 	// syncing answers eth_syncing as a node still syncing.
 	syncing atomic.Bool
@@ -2396,6 +2397,7 @@ func newMockHttpVendor(t *testing.T, chain *mockChain) (*mockHttpVendor, *httpte
 					result = mockSyncingAnswer
 				}
 			case "eth_blockNumber":
+				v.headNumbers.Add(1)
 				result = fmt.Sprintf("0x%x", chain.Head())
 			case "eth_getBlockByNumber":
 				tag, _ := params[0].(string)
@@ -3211,6 +3213,9 @@ func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
 // of most production networks (no subscription source, so §6.5 rule 6
 // Asks): an idle network, no client yet, sends nothing; the first client
 // request starts the follow tap and the state probes (spec §13, §6.11).
+// The follow tap alone needs a head once per integrity.follow.interval
+// (1s), so head Asks (latest polls and eth_blockNumber) run at that pace,
+// not at the 300ms block time (spec §3 demand, §6.5 rule 6 and catch-up).
 func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -3228,6 +3233,12 @@ func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 	requests := func() (n int64) {
 		for _, v := range vendors {
 			n += v.requests.Load()
+		}
+		return n
+	}
+	asks := func() (n int64) {
+		for _, v := range vendors {
+			n += v.latestPolls.Load() + v.headNumbers.Load()
 		}
 		return n
 	}
@@ -3260,9 +3271,15 @@ func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`))
 	require.NoError(t, err)
 	_ = resp.Body.Close()
+	time.Sleep(time.Second)
 	from, at = requests(), time.Now()
-	time.Sleep(3 * time.Second)
-	follow := float64(requests()-from) / time.Since(at).Seconds()
-	t.Logf("follow-only network: %.1f requests/s", follow)
+	asked := asks()
+	time.Sleep(5 * time.Second)
+	secs := time.Since(at).Seconds()
+	follow, askRate := float64(requests()-from)/secs, float64(asks()-asked)/secs
+	t.Logf("follow-only network: %.1f requests/s, %.1f head Asks/s", follow, askRate)
 	assert.Positive(t, follow, "the first client request starts the follow tap and the probes")
+	// One no_source Ask per second, and one catch-up round per second over
+	// the voters below the pin (2 of 3 at most).
+	assert.LessOrEqual(t, askRate, 3.5, "head Asks run at the follow tap's 1s pace, not every block")
 }

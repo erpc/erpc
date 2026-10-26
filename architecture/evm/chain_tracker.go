@@ -2032,6 +2032,8 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 // poll. A pin the vote need holds back for one block time is polled for
 // from the voters whose hash vote here is below it, at each publish: the
 // network paces those polls per upstream across lanes (EvmPollHeads).
+// Both run no faster than the demand's pace: a follow tap alone needs a
+// head once per integrity.follow.interval, not every block.
 // Their shared counters may already show it, moved by another instance or
 // a client response, which votes no hash. A poller skips a refresh inside
 // its debounce, so rearm asks again at catchUpAt; a counter that moves
@@ -2047,7 +2049,8 @@ func (t *ChainTracker) gate(path []*node) *pinBacking {
 	case t.heldSince.IsZero():
 		t.heldSince = now
 	}
-	if !capped && !holding || !t.demanded() {
+	pace, demanded := t.demand()
+	if !capped && !holding || !demanded {
 		t.catchUpAt = time.Time{}
 		return b
 	}
@@ -2058,7 +2061,10 @@ func (t *ChainTracker) gate(path []*node) *pinBacking {
 			t.catchUpAt = maxTime(t.catchUpAt, ripe)
 			return b
 		}
-		t.catchUpAt = now.Add(t.BlockTime())
+		if pace > 0 && now.Before(t.catchUpAt) {
+			return b
+		}
+		t.catchUpAt = now.Add(max(t.BlockTime(), pace))
 		var below []string
 		for _, u := range t.voters.Voters {
 			if nd := t.votes[u]; nd == nil || !t.alive(nd) || nd.h.number < held {
@@ -2073,7 +2079,7 @@ func (t *ChainTracker) gate(path []*node) *pinBacking {
 	if now.Before(t.catchUpAt) {
 		return b
 	}
-	t.catchUpAt = now.Add(min(t.BlockTime(), catchUpMax))
+	t.catchUpAt = now.Add(max(min(t.BlockTime(), catchUpMax), pace))
 	if r, ok := t.network.(interface {
 		EvmRefreshHeadsBelow(string, int64)
 	}); ok {

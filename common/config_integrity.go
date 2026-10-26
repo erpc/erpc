@@ -1,5 +1,7 @@
 package common
 
+import "time"
+
 // Integrity header-control modes (IntegrityConfig.HeaderMode).
 const (
 	// IntegrityHeaderModeOff ignores per-request integrity headers entirely.
@@ -72,9 +74,9 @@ type IntegritySettings struct {
 	// request, whatever this says.
 	StateProbe *IntegrityStateProbeConfig `yaml:"stateProbe,omitempty" json:"stateProbe,omitempty"`
 	// Follow opens one integrity follow tap per chain tracker at the
-	// network's first client request: it holds demand, so source polls run
-	// while clients are quiet, and it drives the state prober on each new
-	// head. Off by default.
+	// network's first client request: it holds demand at its interval's
+	// pace, so source polls run while clients are quiet, and it drives the
+	// state prober on each new head. Off by default.
 	Follow *IntegrityFollowConfig `yaml:"follow,omitempty" json:"follow,omitempty"`
 	// MisbehaviorsDestination durably archives every integrity catch (reject or
 	// soft-flag) as a JSONL record — same file/S3 destination shape as the
@@ -83,10 +85,27 @@ type IntegritySettings struct {
 	MisbehaviorsDestination *MisbehaviorsDestinationConfig `yaml:"misbehaviorsDestination,omitempty" json:"misbehaviorsDestination,omitempty"`
 }
 
+// DefaultIntegrityFollowInterval is the follow tap's pace when its config
+// sets none.
+const DefaultIntegrityFollowInterval = time.Second
+
 // IntegrityFollowConfig configures the integrity follow tap.
 type IntegrityFollowConfig struct {
 	// Enabled opens the follow tap for this network. Default false.
 	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// Interval is the pace the follow tap needs heads at (default 1s): while
+	// it is a network's only newHeads demand, the tracker asks upstreams for
+	// newer heads no more often than this.
+	Interval Duration `yaml:"interval,omitempty" json:"interval" tstype:"Duration"`
+}
+
+// IntervalOrDefault is the follow tap's pace: Interval, else
+// DefaultIntegrityFollowInterval. Nil-receiver safe.
+func (c *IntegrityFollowConfig) IntervalOrDefault() time.Duration {
+	if c == nil || c.Interval <= 0 {
+		return DefaultIntegrityFollowInterval
+	}
+	return c.Interval.Duration()
 }
 
 // IntegrityStateProbeConfig configures the per-upstream state-trie probes.

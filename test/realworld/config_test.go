@@ -39,15 +39,6 @@ func k1Cases() []k1Case {
 	project := func(cfg m) m { return cfg["projects"].([]m)[0] }
 	network := func(cfg m) m { return project(cfg)["networks"].([]m)[0] }
 	return []k1Case{
-		{"interval", "projects[].integrity.follow", func(cfg m) {
-			project(cfg)["integrity"] = m{"follow": m{"interval": "5s"}}
-		}},
-		{"interval", "projects[].networks[].integrity.follow", func(cfg m) {
-			network(cfg)["integrity"] = m{"follow": m{"interval": "5s"}}
-		}},
-		{"interval", "projects[].integrity.profiles.<name>.follow", func(cfg m) {
-			project(cfg)["integrity"] = m{"profiles": m{"p": m{"follow": m{"interval": "5s"}}}}
-		}},
 		{"maxBlocksPerTick", "projects[].networks[].integrity.follow", func(cfg m) {
 			network(cfg)["integrity"] = m{"follow": m{"maxBlocksPerTick": 10}}
 		}},
