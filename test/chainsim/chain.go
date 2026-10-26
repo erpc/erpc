@@ -83,10 +83,12 @@ type Chain struct {
 	started  atomic.Bool
 	done     chan struct{}
 	// ticks counts block times passed, halted ones included; tickCh is
-	// closed and replaced at each.
+	// closed and replaced at each. tickAt holds when Start and each tick
+	// ran, guarded by tickMu.
 	ticks  atomic.Uint64
 	tickMu sync.Mutex
 	tickCh chan struct{}
+	tickAt []time.Time
 }
 
 // Fork is a branch some vendors serve instead of the canonical chain; it
@@ -127,6 +129,9 @@ func (c *Chain) BlockTime() time.Duration { return c.cfg.BlockTime }
 // Start makes a block every block time until Stop or Close.
 func (c *Chain) Start() {
 	c.started.Store(true)
+	c.tickMu.Lock()
+	c.tickAt = append(c.tickAt, time.Now())
+	c.tickMu.Unlock()
 	go func() {
 		defer close(c.done)
 		t := time.NewTicker(c.cfg.BlockTime)
@@ -145,6 +150,24 @@ func (c *Chain) Start() {
 // Ticks is how many block times passed since Start, halted ones included:
 // a block time the host was too slow to tick is not one.
 func (c *Chain) Ticks() uint64 { return c.ticks.Load() }
+
+// Stall is a span in which the chain made no tick.
+type Stall struct{ From, To time.Time }
+
+// Stalls are the spans between ticks, Start's included, longer than d: the
+// host ran the chain's ticker that late, and every vendor shares the host
+// and the chain's lock.
+func (c *Chain) Stalls(d time.Duration) []Stall {
+	c.tickMu.Lock()
+	defer c.tickMu.Unlock()
+	var out []Stall
+	for i := 1; i < len(c.tickAt); i++ {
+		if c.tickAt[i].Sub(c.tickAt[i-1]) > d {
+			out = append(out, Stall{c.tickAt[i-1], c.tickAt[i]})
+		}
+	}
+	return out
+}
 
 // WaitTicks waits until n more block times passed, or the chain stopped.
 func (c *Chain) WaitTicks(n uint64) {
@@ -365,6 +388,7 @@ func (c *Chain) tick() {
 	c.refresh()
 	c.ticks.Add(1)
 	c.tickMu.Lock()
+	c.tickAt = append(c.tickAt, time.Now())
 	close(c.tickCh)
 	c.tickCh = make(chan struct{})
 	c.tickMu.Unlock()

@@ -1910,6 +1910,14 @@ func (s *chaosSeed) judge(end time.Time) {
 		require.False(t, loadFrom.IsZero() || openedAt.Before(loadFrom),
 			"tracker fetches alone open no breaker: %s opened at %s, before any client load", opened, openedAt.Format(time.StampMilli))
 	}
+	// The chain's ticker shares the host and the chain's lock with every
+	// vendor answer, so a span without a tick is a stall of the vendors, and
+	// of the receipts answers they owe. A stall of the receipts wait, less
+	// the block time a tap may already wait on a fresh block's receipts when
+	// it begins, is 60s on one block's receipts: out of range (§10.2, §15.1).
+	for _, st := range s.chain.Stalls(logsReceiptsWait.Load() - chaosBlock) {
+		s.allowCloses(st.From, st.To, 0)
+	}
 	s.mu.Lock()
 	clients, quiet := slices.Clone(s.clients), slices.Clone(s.quiet)
 	logs, closeOK := slices.Clone(s.logs), slices.Clone(s.closeOK)
@@ -2102,14 +2110,24 @@ func (s *chaosSeed) receiptsVendor() string {
 // and, when rotates, the other vendor served a block it was asked for.
 // When the sweeps ask the other vendor instead, by the selection order now
 // or by the calls of the fault's first blocks, the fault moves to it and
-// starts again, at most twice. Receipt fetches that land late, under -race,
+// starts again, at most twice. The selection order moves it only while the
+// vendor got no receipts call since the fault was set: the failures the
+// fault causes lower the vendor's score, so the order moves away from a
+// vendor the sweeps do ask. Receipt fetches that land late, under -race,
 // are counted while the fault is still on. It returns the vendor, the
 // blocks of the fault, the receipts calls the vendor got in them, and how
 // many blocks rotated.
 func (s *chaosSeed) faultyVendor(rotates bool, set func(f *chainsim.Faults, on bool)) (name string, from, to uint64, calls, rotated int) {
 	require.NotEmpty(s.t, s.openLogs(), "logs clients are open, so receipts are wanted")
+	asked := func(name string) (n int64) {
+		for _, v := range s.vendorOf(name) {
+			n += v.Stats().ReceiptsCalls
+		}
+		return n
+	}
 	name = s.receiptsVendor()
 	from = s.chain.Tip().Number + 1
+	asked0 := asked(name)
 	s.setVendor(name, func(f *chainsim.Faults) { set(f, true) })
 	exercised := func() bool {
 		calls, rotated = s.callsTo(name, from, to), s.rotated(name, from, to)
@@ -2117,7 +2135,10 @@ func (s *chaosSeed) faultyVendor(rotates bool, set func(f *chainsim.Faults, on b
 	}
 	moves := 0
 	for i := 0; i < 30; i += 2 {
-		now := s.receiptsVendor()
+		now := name
+		if asked(name) == asked0 {
+			now = s.receiptsVendor()
+		}
 		if i >= 4 && s.callsTo(name, from, to) == 0 && s.callsTo(otherVendor(name), from, to) > 0 {
 			now = otherVendor(name)
 		}
@@ -2125,6 +2146,7 @@ func (s *chaosSeed) faultyVendor(rotates bool, set func(f *chainsim.Faults, on b
 			moves++
 			s.setVendor(name, func(f *chainsim.Faults) { set(f, false) })
 			name, from, i = now, s.chain.Tip().Number+1, 0
+			asked0 = asked(name)
 			s.setVendor(name, func(f *chainsim.Faults) { set(f, true) })
 		}
 		s.blocks(2)
