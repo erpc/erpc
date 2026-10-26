@@ -133,8 +133,7 @@ func TestStateProber(t *testing.T) {
 		p, _ := proberFor(pn, head, stateRoot)
 		p.probeAll(context.Background(), head)
 		assert.EqualValues(t, head, pn.upstream.EvmStateProvenBlock())
-		_, remembered := p.proofUnsupported.Load("u1")
-		assert.True(t, remembered, "unsupported must be remembered, not rediscovered every block")
+		assert.True(t, p.proofsOff("u1"), "unsupported must be remembered, not rediscovered every block")
 	})
 
 	t.Run("getProof ignored by the upstream's own config: latched without a forward, context still proves", func(t *testing.T) {
@@ -144,8 +143,7 @@ func TestStateProber(t *testing.T) {
 		p, _ := proberFor(pn, head, stateRoot)
 		p.probeAll(context.Background(), head)
 		assert.EqualValues(t, head, pn.upstream.EvmStateProvenBlock())
-		_, remembered := p.proofUnsupported.Load("u1")
-		assert.True(t, remembered, "an ignored method is remembered as unsupported, not re-asked every block")
+		assert.True(t, p.proofsOff("u1"), "an ignored method is remembered as unsupported, not re-asked every block")
 	})
 
 	t.Run("no verified header at the height: nothing advances (no anchor, no proof)", func(t *testing.T) {

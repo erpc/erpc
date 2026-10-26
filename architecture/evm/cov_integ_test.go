@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -478,15 +479,42 @@ func TestCovInteg_StateProber(t *testing.T) {
 				net := mkNet("cov-integ-sp-proof", &tc.sc, u)
 				p := mkProber(net, 0)
 				if tc.latched {
-					p.proofUnsupported.Store("u1", true)
+					p.stopProofs("u1")
 				}
 				h := &integrity.Header{StateRoot: tc.root}
 				assert.Equal(t, tc.want, p.probeProof(ctx, u, head, h))
-				_, latched := p.proofUnsupported.Load("u1")
-				assert.Equal(t, tc.latch, latched)
+				assert.Equal(t, tc.latch, p.proofsOff("u1"))
 				assert.Equal(t, tc.forward, net.callCount() > 0)
 			})
 		}
+	})
+
+	t.Run("10 proof errors in a row stop proofs for a while; an answer resets the count", func(t *testing.T) {
+		root := "0x" + strings.Repeat("11", 32)
+		u := common.NewFakeUpstream("u1")
+		sc := &script{proofErr: errors.New("connection reset by peer")}
+		net := mkNet("cov-integ-sp-proof-errs", sc, u)
+		p := mkProber(net, 0)
+		h := &integrity.Header{StateRoot: root}
+		for range stateProbeProofErrors - 1 {
+			p.probeProof(ctx, u, head, h)
+		}
+		sc.proofErr, sc.proofRes = nil, `{"accountProof":["0xabcd"]}`
+		assert.Equal(t, probeMismatch, p.probeProof(ctx, u, head, h), "an answer, even a wrong one, ends the run of errors")
+		sc.proofErr = errors.New("connection reset by peer")
+		for range stateProbeProofErrors - 1 {
+			p.probeProof(ctx, u, head, h)
+		}
+		assert.False(t, p.proofsOff("u1"), "9 errors since the last answer stop nothing")
+		calls := net.callCount()
+		p.probeProof(ctx, u, head, h)
+		assert.True(t, p.proofsOff("u1"), "the 10th error in a row stops proof probes")
+		p.probeProof(ctx, u, head, h)
+		assert.Equal(t, calls+1, net.callCount(), "a stopped upstream gets no proof probe")
+
+		p.proofOff.Store("u1", time.Now().Add(-time.Second))
+		p.probeProof(ctx, u, head, h)
+		assert.Equal(t, calls+2, net.callCount(), "the switch expires: proofs are probed again")
 	})
 
 	t.Run("no evidence at all leaves the streak untouched", func(t *testing.T) {
