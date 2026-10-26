@@ -329,6 +329,12 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		resp, err = c.handleChainId(ctx, conn, req, jrReq)
 	case "getBlock":
 		resp, err = c.handleSvmGetBlock(ctx, conn, req, jrReq)
+	case "getTransaction":
+		resp, err = c.handleSvmGetTransaction(ctx, conn, req, jrReq)
+	case "getBlockTime":
+		resp, err = c.handleSvmGetBlockTime(ctx, conn, req, jrReq)
+	case "getBlocksWithLimit":
+		resp, err = c.handleSvmGetBlocksWithLimit(ctx, conn, req, jrReq)
 	default:
 		err := common.NewErrEndpointUnsupported(
 			fmt.Errorf("unsupported method for gRPC BDS client: %s", jrReq.Method),
@@ -1252,7 +1258,7 @@ func (c *GenericGrpcBdsClient) handleSvmGetBlock(ctx context.Context, conn *bdsC
 		grpcSpan.SetAttributes(attribute.String("grpc_error", err.Error()))
 		common.SetTraceSpanError(grpcSpan, err)
 		grpcSpan.End()
-		return nil, svmMapGetBlockError(err)
+		return nil, svmMapError(err)
 	}
 	grpcSpan.SetAttributes(
 		attribute.String("slot_status", grpcResp.SlotStatus.String()),
@@ -1282,20 +1288,16 @@ func (c *GenericGrpcBdsClient) handleSvmGetBlock(ctx context.Context, conn *bdsC
 	} else {
 		result = svm.BlockToJsonRpc(grpcResp.Block, grpcResp.Signatures)
 	}
-
-	jsonRpcResp := &common.JsonRpcResponse{}
-	if err := jsonRpcResp.SetID(jrReq.ID); err != nil {
-		return nil, fmt.Errorf("failed to set ID: %w", err)
+	// Agave's history leaves these null on old slots where the reader holds
+	// a value; render what Agave renders.
+	history := svmHistoryOf(req)
+	if !history.RecordsBlockTime(slot) {
+		result["blockTime"] = nil
 	}
-	resultBytes, err := sonic.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	if !history.RecordsBlockHeight(slot) {
+		result["blockHeight"] = nil
 	}
-	jsonRpcResp.SetResult(resultBytes)
-
-	return common.NewNormalizedResponse().
-		WithRequest(req).
-		WithJsonRpcResponse(jsonRpcResp), nil
+	return svmResult(req, jrReq, result)
 }
 
 // svmParseSlot accepts the slot as the JSON number it is on the wire. Solana
@@ -1345,10 +1347,10 @@ func svmCommitment(s string) svm.Commitment {
 	return svm.Commitment_COMMITMENT_FINALIZED
 }
 
-// svmMapGetBlockError decides, per gRPC status, whether the miss is benign
+// svmMapError decides, per gRPC status, whether an SVM reader miss is benign
 // (fall through to a live upstream) or a genuine transport failure worth
 // scoring against the connector.
-func svmMapGetBlockError(err error) error {
+func svmMapError(err error) error {
 	st, ok := status.FromError(err)
 	if !ok {
 		return fmt.Errorf("gRPC call failed: %w", err)
@@ -1361,6 +1363,7 @@ func svmMapGetBlockError(err error) error {
 			fmt.Errorf("slot outside BDS coverage: %s", st.Message()),
 		)
 	case codes.Unimplemented:
+		// Includes signature lookups while `--serve-signature-lookups` is off.
 		return common.NewErrEndpointUnsupported(
 			fmt.Errorf("method not served by BDS: %s", st.Message()),
 		)
