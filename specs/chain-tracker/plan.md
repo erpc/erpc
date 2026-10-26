@@ -98,8 +98,8 @@ T   the rest of the real-world catalogue
 
 ## H5: tag-state head and gate
 
-- Add (spec §6.11): tag-state head per upstream from the state prober and Multicall3 evidence; skip in `checkEvmUpstreamBlockAvailability` for tag requests; tolerance W with sample age credited; readmit after 3 fresh samples or a W without stale evidence; all stale → highest tag-state head, counted; `-32603` only past 60s; probe from network start, at most every 2s per upstream, re-probe on each skip; `eth_estimateGas` in `latestTagParamIndex`.
-- Delete: #1303's misbehavior record for stale `latest` state.
+- Add (spec §6.11): tag-state head per upstream from the state prober and Multicall3 evidence; skip in `checkEvmUpstreamBlockAvailability` for family-3 tag requests, decided once per request; tolerance W with sample age credited; readmit after 3 fresh samples or a W without stale evidence; all stale → highest tag-state head, counted; `-32603` only past 60s; probe from network start without `follow`, at most every 2s per upstream, re-probe on each skip; one family-3 map for the pin, the shadow pin and the gate.
+- Delete: #1303's misbehavior record for stale `latest` state; `latestTagParamIndex` and the prober's own "tag reaches u" predicate.
 - Tests, real-world: P11.
 
 ## H6: signals
@@ -109,8 +109,8 @@ T   the rest of the real-world catalogue
 
 ## HS: shared counters
 
-- Change (spec §14): a higher remote value wins whatever its timestamp (#1243, open on `main`: merge it, never rewrite it); timestamps decide only rollbacks past 1024 blocks; freshness = local receive time; `erpc_shared_counter_remote_rejected_total`.
-- Add: rollback write when the pins re-anchor below a voter's counter and its hash vote is on the new branch.
+- Change (spec §14): a higher remote value wins whatever its timestamp on every path, for head counters only (#1243, open on `main`: merge its branch, never rewrite it); timestamps decide only rollbacks past 1024 blocks; freshness = this instance's report time; connectors deliver every change; `erpc_shared_counter_remote_rejected_total`.
+- Add: rollback write with a rewind mark when the pins re-anchor below a voter's counter and its hash vote is on the new branch; other instances and the health tracker follow it.
 - Tests, real-world: X5, C5, N6.
 
 ## T: the rest of the catalogue
