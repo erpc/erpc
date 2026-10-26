@@ -12305,14 +12305,19 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 
 		cache.On("Get", mock.Anything, mock.Anything).Return(nil, nil).Once()
 
+		// Absent bounds read as the request's Latest (spec §7, family 4).
 		gock.New("http://rpc1.localhost").
 			Post("").
 			MatchType("json").
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"method":  "eth_getLogs",
-				"params":  []interface{}{map[string]interface{}{"address": "0x0000000000000000000000000000000000000011"}},
-				"id":      float64(1),
+				"params": []interface{}{map[string]interface{}{
+					"address":   "0x0000000000000000000000000000000000000011",
+					"fromBlock": "0x1273c18",
+					"toBlock":   "0x1273c18",
+				}},
+				"id": float64(1),
 			}).
 			Times(1).
 			Reply(200).
