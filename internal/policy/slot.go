@@ -46,6 +46,11 @@ type Slot struct {
 	// upstreams are shadow-probe candidates for incoming requests.
 	excludedCache atomic.Pointer[[]common.Upstream]
 
+	// methodBlocks holds the most recent tick's `blockMethods` result,
+	// indexed by method for the request path. Same atomic contract as
+	// `cache`; nil when the tick recorded no blocks.
+	methodBlocks atomic.Pointer[methodBlockIndex]
+
 	// lastAccessedAtMs is unix-millis of the last tick OR GetOrdered
 	// touching this slot. Drives the engine's idle-slot eviction —
 	// per-(method, finality) slots that haven't seen traffic in a
@@ -333,6 +338,7 @@ func (s *Slot) tickOnce() {
 		Scores:        scores,
 		StepLog:       evalRes.StepLog,
 		ShadowReasons: evalRes.ShadowReasons,
+		MethodBlocks:  evalRes.MethodBlocks,
 	}
 
 	// 5. Compute diff against previous tick.
@@ -346,6 +352,7 @@ func (s *Slot) tickOnce() {
 	s.cache.Store(&ordered2)
 	excludedUps := materializeExcluded(ups, excluded)
 	s.excludedCache.Store(&excludedUps)
+	s.methodBlocks.Store(newMethodBlockIndex(ups, evalRes.MethodBlocks))
 	if len(decision.Diff.Added) > 0 || len(decision.Diff.Removed) > 0 {
 		s.engine.eligibleChanged(s.networkID)
 	}
@@ -571,6 +578,20 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 	for id, slugs := range d.Output.ShadowReasons {
 		for _, slug := range slugs {
 			telemetry.MetricSelectionShadowExclusionTotal.WithLabelValues(project, s.networkLabel, s.method, id, slug).Inc()
+		}
+	}
+
+	// Per-method blocks: one increment per (upstream, blocked method, leaf
+	// slug) per tick. `method` is the blocked method, not the slot's.
+	for id, perMethod := range d.Output.MethodBlocks {
+		for method, b := range perMethod {
+			reasons := b.Reasons
+			if len(reasons) == 0 {
+				reasons = []string{"custom"}
+			}
+			for _, slug := range reasons {
+				telemetry.MetricSelectionMethodBlockTotal.WithLabelValues(project, s.networkLabel, method, id, slug).Inc()
+			}
 		}
 	}
 
