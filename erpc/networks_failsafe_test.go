@@ -1344,8 +1344,8 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 }
 
 // matchRequestKind scopes a policy by who issued the request: "internal" =
-// erpc's own auxiliary fetches (e.g. the integrity module's canonical
-// corroboration, marked IsInternal), "user" = client traffic. This is the
+// eRPC's own requests (UpstreamPolicies other than Configured, e.g. tracker
+// fetches), "user" = client traffic. This is the
 // enabler for consensus-on-aux: internal canonical fetches get a consensus
 // policy while user data methods rely on integrity validation.
 func TestGetFailsafeExecutor_MatchRequestKind(t *testing.T) {
@@ -1373,7 +1373,7 @@ func TestGetFailsafeExecutor_MatchRequestKind(t *testing.T) {
 	t.Run("internal request selects the internal policy", func(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
 		req.SetNetwork(network)
-		req.SetDirectives(&common.RequestDirectives{IsInternal: true})
+		req.SetDirectives(&common.RequestDirectives{UpstreamPolicies: common.UpstreamPoliciesTracker})
 		executor := network.getFailsafeExecutor(ctx, req)
 		require.NotNil(t, executor)
 		assert.Equal(t, "internal", executor.MatchRequestKind())
@@ -1393,7 +1393,7 @@ func TestGetFailsafeExecutor_MatchRequestKind(t *testing.T) {
 		})
 		internal := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
 		internal.SetNetwork(anyKind)
-		internal.SetDirectives(&common.RequestDirectives{IsInternal: true})
+		internal.SetDirectives(&common.RequestDirectives{UpstreamPolicies: common.UpstreamPoliciesTracker})
 		require.NotNil(t, anyKind.getFailsafeExecutor(ctx, internal))
 
 		user := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))

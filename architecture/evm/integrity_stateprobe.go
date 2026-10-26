@@ -671,11 +671,10 @@ func (p *stateProber) probeLatest(ctx context.Context, u common.Upstream) {
 // credited head is kept and the request counted routed; when that head is
 // more than tagStateRefuseBehind of chain below Latest, r is refused with
 // -32603, counted refused. r keeps its tag either way. Requests outside
-// family 3, numbered ones, those while Head is unknown and internal ones
+// family 3, numbered ones, those while Head is unknown and eRPC's own
 // (probes, tracker fetches) are not gated.
 func DecideTagState(ctx context.Context, n common.Network, r *common.NormalizedRequest) error {
-	d := r.Directives()
-	if d != nil && d.IsInternal {
+	if r.UpstreamPolicies() != common.UpstreamPoliciesConfigured {
 		return nil
 	}
 	p := stateProberFor(n)
@@ -861,15 +860,14 @@ func (p *stateProber) probeProof(ctx context.Context, u common.Upstream, n int64
 }
 
 // forwardTo sends one probe to EXACTLY the given upstream: cache bypassed (the
-// cache would answer instead of the node — the circular-evidence trap), marked
-// internal so the integrity engine does not recurse into validating the
+// cache would answer instead of the node — the circular-evidence trap), as
+// eRPC's own so the integrity engine does not recurse into validating the
 // probe's own response, timeout-only: no upstream retry, hedge or breaker,
 // and with interpolation skipped, so a "latest" reaches u as the tag. A
 // Use-Upstream request shares a multiplexer only with requests pinned to u.
 func (p *stateProber) forwardTo(ctx context.Context, u common.Upstream, body string) (string, error) {
 	req := common.NewNormalizedRequest([]byte(body))
 	req.SetDirectives(&common.RequestDirectives{
-		IsInternal:        true,
 		UpstreamPolicies:  common.UpstreamPoliciesTimeoutOnly,
 		UseUpstream:       u.Id(),
 		SkipCacheRead:     "true",

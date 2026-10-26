@@ -185,14 +185,11 @@ type RequestDirectives struct {
 	// Instruct the proxy to bypass method exclusion checks.
 	ByPassMethodExclusion bool `json:"-"`
 
-	// IsInternal marks a request erpc builds for itself as request kind
-	// "internal" for failsafe matching (matchRequestKind); the integrity
-	// engine checks its answer against held data only, never fetching more.
-	// Never set from HTTP headers.
-	IsInternal bool `json:"-"`
-
-	// UpstreamPolicies says which upstream failsafe policies apply. Never
-	// set from HTTP headers.
+	// UpstreamPolicies says whose request it is and which upstream failsafe
+	// policies apply: a client's (UpstreamPoliciesConfigured) or eRPC's own
+	// (any other), which matches failsafe request kind "internal" and whose
+	// answer the integrity engine checks against held data only. Never set
+	// from HTTP headers.
 	UpstreamPolicies UpstreamPolicies `json:"-"`
 
 	// Instruct the normalization layer to avoid mutating JSON-RPC params for block tag interpolation.

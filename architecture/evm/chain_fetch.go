@@ -88,7 +88,7 @@ func (s fetchSpec) key() fetchKey {
 // §8): a block by number, finalized included, can be reverted by the
 // majority (§6.5), and a cached one would hide that.
 func (s fetchSpec) directives() *common.RequestDirectives {
-	d := &common.RequestDirectives{IsInternal: true, UpstreamPolicies: common.UpstreamPoliciesTracker}
+	d := &common.RequestDirectives{UpstreamPolicies: common.UpstreamPoliciesTracker}
 	if s.class == classFill {
 		d.UpstreamPolicies = common.UpstreamPoliciesTrackerFill
 	}

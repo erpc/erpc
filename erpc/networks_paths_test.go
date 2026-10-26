@@ -408,7 +408,7 @@ func TestNetworksPaths_GetFailsafeExecutor(t *testing.T) {
 	newReq := func(method string, isInternal bool) *common.NormalizedRequest {
 		r := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":[]}`, method)))
 		if isInternal {
-			r.SetDirectives(&common.RequestDirectives{IsInternal: true})
+			r.SetDirectives(&common.RequestDirectives{UpstreamPolicies: common.UpstreamPoliciesTracker})
 		}
 		return r
 	}

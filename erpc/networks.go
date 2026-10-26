@@ -1556,12 +1556,12 @@ func (n *Network) observeServedTipMetrics(axis string, laneLabel string, tip, fr
 func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *networkExecutor {
 	method, _ := req.Method()
 	finality := req.Finality(ctx)
-	// Request kind: "internal" = erpc's own auxiliary fetches (e.g. integrity's
-	// canonical corroboration), "user" = client traffic. Lets a policy give the
-	// deduplicated internal fetches consensus while user methods rely on
-	// integrity validation (matchRequestKind).
+	// Request kind: "internal" = eRPC's own requests (tracker fetches,
+	// probes), "user" = client traffic. Lets a policy give the deduplicated
+	// internal fetches consensus while user methods rely on integrity
+	// validation (matchRequestKind).
 	kind := "user"
-	if dirs := req.Directives(); dirs != nil && dirs.IsInternal {
+	if req.UpstreamPolicies() != common.UpstreamPoliciesConfigured {
 		kind = "internal"
 	}
 

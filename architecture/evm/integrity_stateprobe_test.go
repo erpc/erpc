@@ -45,7 +45,7 @@ func newProbeNetwork(t *testing.T) *probeNetwork {
 			// answering a probe from the cache would be the circular-evidence
 			// trap all over again.
 			dirs := req.Directives()
-			if dirs == nil || dirs.UseUpstream != "u1" || dirs.SkipCacheRead != "true" || !dirs.IsInternal {
+			if dirs == nil || dirs.UseUpstream != "u1" || dirs.SkipCacheRead != "true" || dirs.UpstreamPolicies != common.UpstreamPoliciesTimeoutOnly {
 				return nil, fmt.Errorf("probe request missing required directives: %+v", dirs)
 			}
 			switch jrq.Method {

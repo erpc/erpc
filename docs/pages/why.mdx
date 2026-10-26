@@ -82,7 +82,7 @@ See [/use-cases/cut-costs-and-latency](/use-cases/cut-costs-and-latency) for cac
 - Every response carries `X-ERPC-*` diagnostic headers: `X-ERPC-Attempts`, `X-ERPC-Upstream-Retries`, `X-ERPC-Upstream-Hedges`, `X-ERPC-Cache` (HIT/MISS), `X-ERPC-Upstream` (winning upstream ID), `X-ERPC-Duration`. Source: [`erpc/http_server.go:L1105`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1105)
 - HTTP status follows JSON-RPC spec: 200 for all JSON-RPC responses (including errors); transport-level failures get appropriate 4xx/5xx codes.
 - Batch requests are dispatched concurrently; all results are re-assembled in order before writing the response.
-- Internal requests (state pollers, chainId probes) set `IsInternal=true` — they bypass retry, hedge, and circuit breaker policies; only per-attempt timeout applies.
+- eRPC's own requests (state pollers, chainId probes, state probes, subscription calls) set `UpstreamPolicies` to a value other than `Configured` — they bypass retry, hedge, and circuit breaker policies; only per-attempt timeout applies.
 - Request directives (`X-ERPC-Use-Upstream`, `X-ERPC-Skip-Cache-Read`, `X-ERPC-Retry-Empty`, etc.) override network `directiveDefaults` on a per-request basis. See the directive reference in [KB 01](/reference/architecture).
 
 ### Best practices
