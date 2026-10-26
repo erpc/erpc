@@ -407,9 +407,7 @@ type settleState struct {
 	next time.Time
 	// head is the head the round decided: its answers back no pin above.
 	head *node
-	// off and fork: the voter and fork point a refresh is for (§6.3).
-	off, fork string
-	waiters   []chan settleOutcome
+	waiters []chan settleOutcome
 }
 
 func (s *settleState) notify(o settleOutcome) {
@@ -489,7 +487,7 @@ func (t *ChainTracker) startSettle(s *settleState, targets []string, need common
 // startDispute starts a round over k, a tie or a conflicting no-source
 // answer, when one may start; skip is the voter whose answer k disputes.
 func (t *ChainTracker) startDispute(k roundKey, skip string) bool {
-	return t.maySettle(k) && t.startSettle(&settleState{key: k}, t.tieTargets(skip), common.HeadNeedHash, nil)
+	return t.maySettle(k) && t.startSettle(&settleState{key: k}, t.tieTargets(k, skip), common.HeadNeedHash, nil)
 }
 
 // settleAnswered takes target id's answer to round s. A failed Ask, a
@@ -526,9 +524,7 @@ func (t *ChainTracker) settleAnswered(s *settleState, id string, a common.HeadAn
 // the waiters hear the outcome, so they read the pins it left.
 func (t *ChainTracker) endSettle(s *settleState) {
 	s.inflight = false
-	if s.off != "" {
-		t.refreshedAt[s.off] = s.fork
-	}
+	t.markRefreshed(s.key)
 	stands := t.stands(s.key)
 	path, tie, _ := t.decide()
 	if path != nil {
@@ -644,18 +640,20 @@ func (t *ChainTracker) requestSettle(settled chan settleOutcome, number int64) {
 	case t.waits(k), s != nil && s.key.name != k.name && t.keepsPlace(s):
 		report(settled, settleDeferred)
 	default:
-		t.startSettle(&settleState{key: k}, t.tieTargets(skip), common.HeadNeedHash, settled)
+		t.startSettle(&settleState{key: k}, t.tieTargets(k, skip), common.HeadNeedHash, settled)
 	}
 }
 
-// tieTargets are the targets of a round over a tie, a conflicting
+// tieTargets are the targets of a round over k, a tie, a conflicting
 // no-source answer or a client's re-check (spec §6.8): the voters without a
-// counted vote here, then the non-voters, in selection order, up to
-// settleAsks; never skip, the voter whose answer is disputed.
-func (t *ChainTracker) tieTargets(skip string) []string {
+// counted vote that decides k, then the non-voters, in selection order, up
+// to settleAsks; never skip, the voter whose answer is disputed. A vote
+// below k's blocks, or in another tree, has no say in k: only its answer
+// can break the tie.
+func (t *ChainTracker) tieTargets(k roundKey, skip string) []string {
 	var out []string
 	for _, id := range t.voters.Voters {
-		if id != skip && !(t.counts(id) && t.alive(t.votes[id])) && len(out) < settleAsks {
+		if v := t.votes[id]; id != skip && !(t.counts(id) && t.alive(v) && t.decides(k, v)) && len(out) < settleAsks {
 			out = append(out, id)
 		}
 	}
@@ -667,18 +665,41 @@ func (t *ChainTracker) tieTargets(skip string) []string {
 	return out
 }
 
+// decides reports whether vote n takes part in round k: it is, or descends
+// from, one of k's blocks. A key that names no block takes every vote.
+func (t *ChainTracker) decides(k roundKey, n *node) bool {
+	if k.pinned == nil && len(k.branch) == 0 {
+		return true
+	}
+	in := func(b *node) bool { return b != nil && (b == n || isAncestor(b, n)) }
+	return in(k.pinned) || slices.ContainsFunc(k.branch, in)
+}
+
 // refreshTargets are §6.3's refresh for voter off's vote nd off the pins:
-// the voters whose counted vote backs the pins at nd's branch with
-// evidence older than nd's, oldest first, up to settleAsks.
-func (t *ChainTracker) refreshTargets(off string, nd *node) []string {
-	from, at := t.branchOf(nd).h.number, t.voteAt[off]
+// the voters, other than off, that are on no conflicting branch and whose
+// evidence is older than nd's, oldest first, up to settleAsks. A voter
+// without a counted vote has the oldest evidence: left out, a refresh
+// heard only the backers of the pins and moved them on a majority of the
+// voters that happened to be fresh (§19 C14).
+func (t *ChainTracker) refreshTargets(off string) []string {
+	at := t.voteAt[off]
+	evidence := func(u string) (time.Time, bool) {
+		if v := t.votes[u]; t.counts(u) && t.alive(v) {
+			return t.voteAt[u], !t.conflicts(v)
+		}
+		return time.Time{}, true
+	}
 	var out []string
-	for u, v := range t.votes {
-		if u != off && t.counts(u) && t.alive(v) && !t.conflicts(v) && v.h.number >= from && t.voteAt[u].Before(at) {
+	for _, u := range t.voters.Voters {
+		if e, behind := evidence(u); u != off && behind && e.Before(at) {
 			out = append(out, u)
 		}
 	}
-	slices.SortFunc(out, func(a, b string) int { return t.voteAt[a].Compare(t.voteAt[b]) })
+	slices.SortStableFunc(out, func(a, b string) int {
+		ea, _ := evidence(a)
+		eb, _ := evidence(b)
+		return ea.Compare(eb)
+	})
 	return out[:min(len(out), settleAsks)]
 }
 
@@ -692,11 +713,11 @@ func (t *ChainTracker) forkPoint(nd *node) string {
 }
 
 // refreshed reports whether voter u's vote nd off the pins was refreshed
-// (spec §6.3) at its fork point: a round for it there ended, a decided
-// round over its dispute stands, or no vote behind the pins there is
-// older. Otherwise it starts that round when one may start, Asking each
-// target with a fork need: a fetch sent before the round, as old as the
-// vote it would refresh, is no answer.
+// (spec §6.3) at its fork point: a round over its dispute ended there, a
+// decided round over it stands, or no vote behind the pins is older.
+// Otherwise it starts that round when one may start, Asking each target
+// with a fork need: a fetch sent before the round, as old as the vote it
+// would refresh, is no answer.
 func (t *ChainTracker) refreshed(u string, nd *node) bool {
 	fork := t.forkPoint(nd)
 	if at, ok := t.refreshedAt[u]; ok && at == fork {
@@ -707,15 +728,32 @@ func (t *ChainTracker) refreshed(u string, nd *node) bool {
 		t.refreshedAt[u] = fork
 		return true
 	}
-	targets := t.refreshTargets(u, nd)
+	targets := t.refreshTargets(u)
 	if len(targets) == 0 {
 		t.refreshedAt[u] = fork
 		return true
 	}
 	if t.maySettle(k) {
-		t.startSettle(&settleState{key: k, off: u, fork: fork}, targets, common.HeadNeedFork, nil)
+		t.startSettle(&settleState{key: k}, targets, common.HeadNeedFork, nil)
 	}
 	return false
+}
+
+// markRefreshed records a round over k as the refresh of every vote off
+// the pins that k disputes: a tie round over the same branch Asks the
+// voters without a fresh vote too, and one round per dispute is the
+// refresh (spec §6.5 rule 5). Waiting for a round of its own let the tie
+// rounds over that branch starve it, so the off voter was never polled
+// or demoted.
+func (t *ChainTracker) markRefreshed(k roundKey) {
+	if !k.disputed() {
+		return
+	}
+	for u, v := range t.votes {
+		if t.counts(u) && t.alive(v) && t.conflicts(v) && t.disputeOf(v).name == k.name {
+			t.refreshedAt[u] = t.forkPoint(v)
+		}
+	}
 }
 
 // askState is §6 rule 6: with demand and no source with a fresh hash vote,
