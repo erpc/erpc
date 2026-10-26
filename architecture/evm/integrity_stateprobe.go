@@ -122,9 +122,10 @@ type stateProber struct {
 // own upstreams. A prober leaves it when its network's ctx ends.
 var stateProbers sync.Map // common.Network -> *stateProber
 
-// startStateProber starts the network's prober, once. Every EVM network has
-// one, for the latest probe; cfg is nil unless integrity follow and
-// stateProbe are on, which add the context and proof probes.
+// startStateProber starts the network's prober, once, at its first client
+// request (ClientRequested). Every EVM network has one then, for the latest
+// probe; cfg is nil unless integrity follow and stateProbe are on, which
+// add the context and proof probes.
 func startStateProber(ctx context.Context, n common.Network, v *ChainTracker, cfg *common.IntegrityStateProbeConfig) {
 	interval := stateProbeMinInterval
 	if cfg != nil && cfg.Interval > 0 {
@@ -156,7 +157,8 @@ func startStateProber(ctx context.Context, n common.Network, v *ChainTracker, cf
 	v.fetch.bg.Go(func() { p.runTagStates(ctx) })
 }
 
-// stateProberFor returns n's running prober, nil before its trackers start.
+// stateProberFor returns n's running prober, nil before its first client
+// request.
 func stateProberFor(n common.Network) *stateProber {
 	v, ok := stateProbers.Load(n)
 	if !ok {

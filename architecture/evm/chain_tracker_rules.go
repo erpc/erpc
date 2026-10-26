@@ -960,10 +960,11 @@ func (t *ChainTracker) rearm() {
 	}
 }
 
-// follow runs the integrity follow tap (spec §12): it holds newHeads
-// demand, so polls run without clients, hands each new head to the state
-// prober and sets the head's lag behind the network's served tip. Out of
-// range restarts it after the head.
+// follow runs the integrity follow tap (spec §13) from the network's first
+// client request (ClientRequested): it holds newHeads demand, so polls run
+// while clients are quiet, hands each new head to the state prober and
+// sets the head's lag behind the network's served tip. Out of range
+// restarts it after the head.
 func (t *ChainTracker) follow(ctx context.Context) {
 	tn, ok := t.network.(interface {
 		EvmTaps() (*indexer.Taps, string)

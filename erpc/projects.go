@@ -148,6 +148,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	}
 	// Ensure project label is available for budget decision metrics by setting network on request early
 	nq.SetNetwork(network)
+	evm.ClientRequested(network)
 	if err := p.AcquireRateLimitPermit(ctx, nq); err != nil {
 		common.SetTraceSpanError(span, err)
 		return nil, err

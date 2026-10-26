@@ -3296,8 +3296,12 @@ type networkTrackers struct {
 	suspend *checkSuspensions
 	// checks is the network's compiled header checks.
 	checks atomic.Pointer[headerChecks]
-	mu     sync.Mutex
-	groups map[string]*ChainTracker // group key ("" network-wide) -> tracker
+	// requested is set once at the network's first client request
+	// (ClientRequested), under mu; it is read without mu on the request
+	// path.
+	requested atomic.Bool
+	mu        sync.Mutex
+	groups    map[string]*ChainTracker // group key ("" network-wide) -> tracker
 }
 
 var chainTrackers sync.Map // common.Network -> *networkTrackers
@@ -3370,22 +3374,47 @@ func (nt *networkTrackers) get(n common.Network, groupKey, selector, lane string
 	}
 	t := newChainTracker(nt.ctx, n, nt.window, backfill, selector, groupKey, lane, head, nt.fetch)
 	nt.groups[groupKey] = t
-	// Every network probes tag-state heads from its start (spec §6.11); the
-	// context and proof probes ride on the follow tap: its pinned headers are
-	// the anchor for judging an upstream's state claims.
-	var probeCfg *common.IntegrityStateProbeConfig
-	follow := false
-	if cfg := n.Config(); cfg != nil && cfg.Integrity != nil && cfg.Integrity.Follow.IsEnabled() {
-		follow = true
-		if cfg.Integrity.StateProbe.IsEnabled() {
-			probeCfg = cfg.Integrity.StateProbe
-		}
-	}
-	startStateProber(nt.ctx, n, t, probeCfg)
-	if follow {
-		nt.fetch.bg.Go(func() { t.follow(nt.ctx) })
+	if nt.requested.Load() {
+		startFollow(nt, n, t)
 	}
 	return t
+}
+
+// ClientRequested starts n's state probes and an integrity follow tap per
+// tracker at the network's first client request, as main started its
+// follower and prober, and keeps them on (spec §6.11 Probe, §13): an idle
+// network sends no follow Asks and no probes. Every client request calls
+// it; after the first it reads one atomic.
+func ClientRequested(n common.Network) {
+	nt := registeredTrackers(n)
+	if nt == nil || nt.requested.Load() {
+		return
+	}
+	nt.mu.Lock()
+	defer nt.mu.Unlock()
+	if nt.requested.Load() {
+		return
+	}
+	nt.requested.Store(true)
+	// The context and proof probes ride on the follow tap: its pinned
+	// headers are the anchor for judging an upstream's state claims.
+	var probeCfg *common.IntegrityStateProbeConfig
+	if cfg := n.Config(); cfg != nil && cfg.Integrity != nil && cfg.Integrity.Follow.IsEnabled() && cfg.Integrity.StateProbe.IsEnabled() {
+		probeCfg = cfg.Integrity.StateProbe
+	}
+	if wide := nt.groups[""]; wide != nil {
+		startStateProber(nt.ctx, n, wide, probeCfg)
+	}
+	for _, t := range nt.groups {
+		startFollow(nt, n, t)
+	}
+}
+
+// startFollow opens t's integrity follow tap when n's config turns it on.
+func startFollow(nt *networkTrackers, n common.Network, t *ChainTracker) {
+	if cfg := n.Config(); cfg != nil && cfg.Integrity != nil && cfg.Integrity.Follow.IsEnabled() {
+		nt.fetch.bg.Go(func() { t.follow(nt.ctx) })
+	}
 }
 
 // ChainTrackerOf returns the tracker of n's node group for a use-upstream

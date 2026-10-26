@@ -2343,6 +2343,7 @@ func (c *mockChain) answerBlock(params []interface{}, markServed bool, polls *at
 // mockHttpVendor is an HTTP JSON-RPC vendor of chain.
 type mockHttpVendor struct {
 	chain       *mockChain
+	requests    atomic.Int64 // every JSON-RPC request, batched ones each
 	latestPolls atomic.Int64
 	chainIdAsks atomic.Int64
 	// syncing answers eth_syncing as a node still syncing.
@@ -2379,6 +2380,7 @@ func newMockHttpVendor(t *testing.T, chain *mockChain) (*mockHttpVendor, *httpte
 			return
 		}
 		answer := func(req map[string]interface{}) map[string]interface{} {
+			v.requests.Add(1)
 			params, _ := req["params"].([]interface{})
 			var result interface{} = "0x1"
 			switch req["method"] {
@@ -3203,4 +3205,64 @@ func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
 	time.Sleep(2500 * time.Millisecond)
 	assert.Equal(t, asked+2, vendor.subscribes.Load(), "asked once per interval, not retried with backoff")
 	requireContiguous(t, conn, 2, 0)
+}
+
+// What integrity follow costs upstreams on an HTTP-only network, the shape
+// of most production networks (no subscription source, so §6.5 rule 6
+// Asks): an idle network, no client yet, sends nothing; the first client
+// request starts the follow tap and the state probes (spec §13, §6.11).
+func TestWebSocket_IntegrityFollowCost(t *testing.T) {
+	setupGock()
+	defer util.ResetGock()
+
+	chain := newMockChain(0x100, false)
+	var vendors []*mockHttpVendor
+	var ups []*common.UpstreamConfig
+	for _, id := range []string{"rpc-a", "rpc-b", "rpc-c"} {
+		v, srv := newMockHttpVendor(t, chain)
+		vendors = append(vendors, v)
+		up := sourceUpstream(id, srv.URL, nil)
+		up.Evm.StatePollerInterval = common.Duration(time.Hour)
+		ups = append(ups, up)
+	}
+	requests := func() (n int64) {
+		for _, v := range vendors {
+			n += v.requests.Load()
+		}
+		return n
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go chain.run(ctx, 300*time.Millisecond)
+
+	erpcSrv, addr, cancel := startTestERPCServer(t, sourcesConfig(func(nw *common.NetworkConfig) {
+		nw.Integrity = &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{
+			Follow:     &common.IntegrityFollowConfig{Enabled: util.BoolPtr(true)},
+			StateProbe: &common.IntegrityStateProbeConfig{Enabled: util.BoolPtr(true)},
+		}}
+	}, ups...))
+	defer func() { _ = erpcSrv.Shutdown(&log.Logger); cancel() }()
+
+	// Idle: once the upstreams' bootstrap calls are done, nothing.
+	start := time.Now()
+	settled := assert.Eventually(t, func() bool {
+		before := requests()
+		time.Sleep(time.Second)
+		return requests() == before
+	}, 10*time.Second, 10*time.Millisecond, "an idle network sends no requests")
+	from, at := requests(), time.Now()
+	time.Sleep(3 * time.Second)
+	idle := float64(requests()-from) / time.Since(at).Minutes()
+	t.Logf("idle network: %.0f requests/min (settled %v after %s)", idle, settled, time.Since(start).Round(time.Second))
+	assert.Zero(t, idle, "an idle network sends no requests per minute")
+
+	resp, err := http.Post(fmt.Sprintf("http://%s/test_ws/evm/123", addr), "application/json",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`))
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	from, at = requests(), time.Now()
+	time.Sleep(3 * time.Second)
+	follow := float64(requests()-from) / time.Since(at).Seconds()
+	t.Logf("follow-only network: %.1f requests/s", follow)
+	assert.Positive(t, follow, "the first client request starts the follow tap and the probes")
 }

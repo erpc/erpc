@@ -68,11 +68,13 @@ type IntegritySettings struct {
 	// and ObserveOnly suppresses the misbehavior recording like every other
 	// integrity effect. Requires follow to be enabled (the verified header is
 	// the trust anchor). Off by default. The "latest" tag-state probe behind
-	// the tag-state gate runs on every network whatever this says.
+	// the tag-state gate runs on every network from its first client
+	// request, whatever this says.
 	StateProbe *IntegrityStateProbeConfig `yaml:"stateProbe,omitempty" json:"stateProbe,omitempty"`
-	// Follow opens one integrity follow tap per chain tracker: it holds
-	// demand, so source polls run without clients, and it drives the state
-	// prober on each new head. Off by default.
+	// Follow opens one integrity follow tap per chain tracker at the
+	// network's first client request: it holds demand, so source polls run
+	// while clients are quiet, and it drives the state prober on each new
+	// head. Off by default.
 	Follow *IntegrityFollowConfig `yaml:"follow,omitempty" json:"follow,omitempty"`
 	// MisbehaviorsDestination durably archives every integrity catch (reject or
 	// soft-flag) as a JSONL record — same file/S3 destination shape as the

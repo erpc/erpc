@@ -299,9 +299,11 @@ func TestCovInteg_ChainTrackerOf(t *testing.T) {
 		}
 		net := &covIntegHeadNet{covIntegNet: newCovIntegNet("cov-integ-gcv-follow", cfg, nil), finalized: 42}
 		v := StartChainTrackers(ctx, net)
+		assert.Nil(t, stateProberFor(net), "an idle network probes nothing")
+		ClientRequested(net)
 		p := stateProberFor(net)
 		assert.Equal(t, 7, v.ReorgWindow())
-		require.NotNil(t, p)
+		require.NotNil(t, p, "the first client request starts the probes")
 		assert.Equal(t, 5*time.Second, p.interval)
 		assert.True(t, p.pinnedProbes)
 		assert.Same(t, v, p.view)
@@ -315,8 +317,10 @@ func TestCovInteg_ChainTrackerOf(t *testing.T) {
 		}}}
 		net := &covIntegHeadNet{covIntegNet: newCovIntegNet("cov-integ-gcv-nofollow", cfg, nil)}
 		v := StartChainTrackers(ctx, net)
+		assert.Nil(t, stateProberFor(net))
+		ClientRequested(net)
 		p := stateProberFor(net)
-		require.NotNil(t, p, "every network probes tag-state heads from its start")
+		require.NotNil(t, p, "every network probes tag-state heads from its first client request")
 		assert.Same(t, v, p.view)
 		assert.False(t, p.pinnedProbes, "context and proof probes still need follow")
 		p.onNewHead(5)
