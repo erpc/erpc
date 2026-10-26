@@ -490,8 +490,10 @@ func TestSettleAnswersCountForTheirDecisionOnly(t *testing.T) {
 	voteChain(t, c, "a", "0", 0, 10, testHash("f", 0))
 	voteChain(t, c, "b", "0", 0, 10, testHash("f", 0))
 
-	c.Observe("a", x, true)
+	// bb is pinned first and the tie keeps it while the round is out, so
+	// only the round's decision pins aa.
 	c.Observe("b", testHeader(11, testHash("bb", 11), testHash("0", 10)), true)
+	c.Observe("a", x, true)
 	require.Eventually(t, func() bool {
 		c.sync(context.Background())
 		v, _ := c.HashAt(11)
@@ -504,6 +506,98 @@ func TestSettleAnswersCountForTheirDecisionOnly(t *testing.T) {
 	c.sync(context.Background())
 	v, _ := c.HashAt(11)
 	assert.Equal(t, testHash("cc", 11), v, "both voters left the tie: its answers no longer count")
+}
+
+// rewindNetwork records the network-wide tracker's rollback writes; its
+// head Asks back off, so settles and refreshes end on the votes alone.
+type rewindNetwork struct {
+	*capturingNetwork
+	hv      HashVoters
+	rmu     sync.Mutex
+	rewound map[string]int64 // upstream id -> its last rewind
+}
+
+func (n *rewindNetwork) EvmHashVoters(string, time.Duration, bool) HashVoters { return n.hv }
+
+func (n *rewindNetwork) EvmAskHead(context.Context, string, common.HeadNeed, common.AskReason) common.HeadAnswer {
+	return common.HeadAnswer{Outcome: common.AskBackoff, Next: time.Now().Add(time.Hour)}
+}
+
+func (n *rewindNetwork) EvmRewindHeads(votes map[string]int64) {
+	n.rmu.Lock()
+	defer n.rmu.Unlock()
+	for u, bn := range votes {
+		n.rewound[u] = bn
+	}
+}
+
+func (n *rewindNetwork) rewinds() map[string]int64 {
+	n.rmu.Lock()
+	defer n.rmu.Unlock()
+	out := make(map[string]int64, len(n.rewound))
+	for u, bn := range n.rewound {
+		out[u] = bn
+	}
+	return out
+}
+
+// The rollback write (spec §14) follows only a move to a lower head, and
+// only a voter's fresh hash vote: an instance cut off from every vendor
+// re-anchors up after the gap, and its voters' votes from before it are no
+// evidence (row N4: Latest fell from 4821 to a 2-minute-old 4212).
+func TestRollbackWriteOnlyFromFreshVotesOnALowerBranch(t *testing.T) {
+	ids := []string{"a", "b", "c", "s"}
+	net := &rewindNetwork{capturingNetwork: newCapturingNetwork(t, 0, testHash("f", 0)), rewound: map[string]int64{},
+		hv: HashVoters{Voters: ids, Hash: ids, Need: 2, NetworkVendors: 4,
+			Vendors: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "s": "vendor-s"}}}
+	c := newChainTracker(t.Context(), net, 64, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+	beforeGap := time.Now().Add(-2 * time.Minute)
+	voteBefore := func(src, tag string, from, to uint64, parentOfFirst string) {
+		parent := parentOfFirst
+		for n := from; n <= to; n++ {
+			h, err := parseChainHeader(testHeader(n, testHash(tag, n), parent))
+			require.NoError(t, err)
+			c.observeSource(src, h, beforeGap)
+			parent = h.hashHex
+		}
+		c.sync(context.Background())
+	}
+	pinned := func(n int64, want string) {
+		t.Helper()
+		require.Eventually(t, func() bool {
+			c.sync(context.Background())
+			v, _ := c.HashAt(n)
+			return v == want
+		}, 5*time.Second, 5*time.Millisecond)
+	}
+	for _, u := range []string{"a", "b", "c"} {
+		voteBefore(u, "a", 1, 10, testHash("f", 0))
+	}
+	voteBefore("s", "b", 40, 45, testHash("f", 39))
+	pinned(10, testHash("a", 10))
+
+	// After the gap a and b vote on s's tree: the pins re-anchor up, 10 to
+	// 50, with s's vote from before the gap on the new pins.
+	voteChain(t, c, "a", "b", 46, 50, testHash("b", 45))
+	c.Observe("b", testHeader(50, testHash("b", 50), testHash("b", 49)), true)
+	pinned(50, testHash("b", 50))
+	c.Observe("c", testHeader(50, testHash("b", 50), testHash("b", 49)), true)
+	c.sync(context.Background())
+	assert.Empty(t, net.rewinds(), "a re-anchor up is a catch-up: no rollback write")
+
+	// A reorg to a lower head: a and b's fresh votes on the new branch are
+	// written at the switch, c's once its fresh vote reaches the pins; s's
+	// vote on the new branch is from before the gap and is never written.
+	fork := testHeader(48, testHash("c", 48), testHash("b", 47))
+	c.Observe("a", fork, true)
+	c.Observe("b", fork, true)
+	pinned(48, testHash("c", 48))
+	require.Eventually(t, func() bool { return len(net.rewinds()) == 2 }, 5*time.Second, 5*time.Millisecond)
+	assert.Equal(t, map[string]int64{"a": 48, "b": 48}, net.rewinds())
+	c.Observe("c", fork, true)
+	require.Eventually(t, func() bool { c.sync(context.Background()); return len(net.rewinds()) == 3 }, 5*time.Second, 5*time.Millisecond)
+	c.sync(context.Background())
+	assert.Equal(t, map[string]int64{"a": 48, "b": 48, "c": 48}, net.rewinds(), "a stale vote is no evidence for a rewind")
 }
 
 // A group tracker refreshes the votes behind the pins once per off voter and

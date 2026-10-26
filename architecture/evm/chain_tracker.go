@@ -122,9 +122,9 @@ type ChainTracker struct {
 	heights      map[uint64][]*node   // held headers per height, oldest first
 	exts         map[*node]*extension // every held root: its walk or fill
 	votes        map[string]*node     // source upstream id -> its vote
-	// rewindDue holds the voters whose hash vote was off the new pins at
-	// the last re-anchor or move to a lower head: each is owed one rewind
-	// once its vote reaches the pins (spec §14).
+	// rewindDue holds the voters without a fresh hash vote on the new pins
+	// at the last move to a lower head: each is owed one rewind once a
+	// fresh vote of its reaches the pins (spec §14).
 	rewindDue map[string]bool
 	pending   map[string]*node // source upstream id -> a vote its walk holds back
 	// voteAt and pendingAt are the evidence times of votes and pending
@@ -1455,7 +1455,7 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 		telemetry.MetricChainTrackerReorgDepth.WithLabelValues(t.projectId(), t.networkLabel(), t.group).
 			Observe(float64(reverted))
 	}
-	if t.selector == "" && (fork < 0 || head.number < old[len(old)-1].number) {
+	if t.selector == "" && head.number < old[len(old)-1].number {
 		t.rewindVoters(pathAt)
 	}
 	var span heightSpan
@@ -1500,17 +1500,19 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	}
 }
 
-// rewindVoters is the rollback write (spec §14), on a re-anchor or a move
-// to a lower head: each voter whose own hash vote is on the new pins has
-// its latest counter lowered to that vote's height where the counter is
-// above it, so Latest follows the rewound chain on every instance. A voter
-// whose vote is off the pins, or whose newest vote still waits on its walk,
-// is owed the rewind once its vote reaches the pins (rewindLate).
+// rewindVoters is the rollback write (spec §14), on a move to a branch
+// whose head is below the old pinned head, a reorg or a re-anchor down; a
+// re-anchor up is a catch-up and owes none. Each voter whose own fresh
+// hash vote is on the new pins has its latest counter lowered to that
+// vote's height where the counter is above it, so Latest follows the
+// rewound chain on every instance. Every other voter is owed the rewind
+// once a fresh vote of its reaches the pins (rewindLate): a vote from
+// before a gap is no evidence.
 func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) {
 	votes := make(map[string]int64, len(t.votes))
 	t.rewindDue = make(map[string]bool)
 	for u, nd := range t.votes {
-		if p := pathAt(nd.h.number); p != nil && p.hash == nd.h.hash {
+		if p := pathAt(nd.h.number); p != nil && p.hash == nd.h.hash && t.votedFresh(u) {
 			votes[u] = int64(nd.h.number)
 		} else {
 			t.rewindDue[u] = true
@@ -1524,20 +1526,25 @@ func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) {
 	t.rewindHeads(votes)
 }
 
-// rewindLate writes the rewind owed to a voter whose hash vote reached the
-// pins after the switch, once per voter per switch.
+// rewindLate writes the rewind owed to a voter once its fresh hash vote
+// reached the pins after the switch, once per voter per switch.
 func (t *ChainTracker) rewindLate() {
 	if len(t.rewindDue) == 0 {
 		return
 	}
 	votes := make(map[string]int64)
 	for u := range t.rewindDue {
-		if nd := t.votes[u]; nd != nil && t.alive(nd) && t.pinned(nd) {
+		if nd := t.votes[u]; nd != nil && t.alive(nd) && t.pinned(nd) && t.votedFresh(u) {
 			votes[u] = int64(nd.h.number)
 			delete(t.rewindDue, u)
 		}
 	}
 	t.rewindHeads(votes)
+}
+
+// votedFresh reports whether u's hash vote is at most W old (spec §14).
+func (t *ChainTracker) votedFresh(u string) bool {
+	return time.Since(t.voteAt[u]) <= t.W()
 }
 
 func (t *ChainTracker) rewindHeads(votes map[string]int64) {
