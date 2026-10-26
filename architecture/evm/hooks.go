@@ -152,76 +152,9 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 
 	var validationErr error
 
-	// Data-integrity checks. Opt-in: the network's integrity config selects the
-	// checks (empty config → nothing runs). The engine runs them over a single
-	// decode and converts a violation into a content-validation error so
-	// retry/consensus route around the upstream (consensus already excludes
-	// errors from preferLargerResponses, so a corrupt-but-larger response can no
-	// longer dispute an honest majority). eRPC's own requests (tracker
-	// fetches, probes, polls) are checked too, against held data only: a
-	// check never fetches recursively, and never judges them against the
-	// pins they are there to move. They hunt no replacement. Tracker
-	// fetches feed no answer back to the tracker: its scheduler hands them
-	// over itself.
-	dirs := rq.Directives()
-	if integrity.HasChecks(methodLower) {
-		if cs, policy, observeOnly, autoCorrect := resolveIntegrity(n, dirs); len(cs) > 0 {
-			held := dirs != nil && (dirs.IsInternal || dirs.UpstreamPolicies != common.UpstreamPoliciesConfigured)
-			tracked := dirs != nil && dirs.IsInternal
-			// Integrity state + corroboration are scoped to the node GROUP the request
-			// was pinned to (use-upstream selector), reusing erpc's served-tip grouping
-			// so a receipt from one group is only checked against same-group
-			// nodes. No selector → network-wide.
-			selector := ""
-			if dirs != nil {
-				selector = dirs.UseUpstream
-			}
-			view := ChainTrackerOf(ctx, n, selector)
-			// Request-aware checks (eth_getLogs filter reproduction) need the
-			// original params; read-only access under the request's RLock.
-			var params []any
-			if jrq, jerr := rq.JsonRpcRequest(ctx); jerr == nil && jrq != nil {
-				jrq.RLockWithTrace(ctx)
-				params = jrq.Params
-				jrq.RUnlock()
-			}
-			res := runIntegrity(ctx, n, u, rq, rs, integrityRun{
-				method:      methodLower,
-				category:    methodLower,
-				checks:      cs,
-				policy:      policy,
-				observeOnly: observeOnly,
-				autoCorrect: autoCorrect && !held,
-				params:      params,
-				view:        view,
-				held:        held,
-			})
-			if res.Err != nil {
-				if res.FallbackEligible {
-					// A recordOnly verdict escalated by autoCorrectWhenPossible:
-					// stash the flagged original so project.Forward can serve it
-					// if every alternative upstream is exhausted.
-					rq.SetIntegrityFallbackResponse(rs, res.RejectedCheckID, res.Finality, res.RejectedReason)
-				}
-				// project.Forward counts it as saved (a retry succeeded) or
-				// failed (no good response found).
-				rq.MarkIntegrityCaught(res.RejectedCheckID, res.Finality)
-				// Mark first (SetLastValidResponse refuses marked responses — an
-				// in-flight hedge could otherwise re-store this body), then drop
-				// the LVR only if it IS this response (an unconditional clear
-				// could lose a concurrent VALID response from another attempt).
-				rs.MarkIntegrityRejected()
-				rq.ClearLastValidResponseIf(rs)
-				return rs, res.Err
-			}
-			// Hand the validated response to the tracker: block responses are
-			// held as answers; narrow responses (receipts/tx) give anchors for
-			// FINALIZED blocks only (tip-thrash safety).
-			if !tracked && isBlockMethod(methodLower) {
-				observeBlockView(ctx, view, u, rs)
-			} else if !tracked && isAnchoredNarrowMethod(methodLower) {
-				observeNarrowView(ctx, view, u, rs)
-			}
+	if dirs := rq.Directives(); dirs == nil || !dirs.DeferIntegrity {
+		if err := validateIntegrity(ctx, n, u, rq, rs, methodLower); err != nil {
+			return rs, err
 		}
 	}
 
@@ -257,6 +190,85 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	}
 
 	return rs, re
+}
+
+// validateIntegrity runs the data-integrity checks on rs. Opt-in: the
+// network's integrity config selects the checks (empty config → nothing
+// runs). The engine runs them over a single decode and converts a
+// violation into a content-validation error so retry/consensus route
+// around the upstream (consensus already excludes errors from
+// preferLargerResponses, so a corrupt-but-larger response can no longer
+// dispute an honest majority). eRPC's own requests (tracker fetches,
+// probes, polls) are checked too, against held data only: a check never
+// fetches recursively, and never judges them against the pins they are
+// there to move. They hunt no replacement. Tracker fetches feed no answer
+// back to the tracker: its scheduler hands them over itself.
+func validateIntegrity(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, methodLower string) error {
+	if !integrity.HasChecks(methodLower) {
+		return nil
+	}
+	dirs := rq.Directives()
+	cs, policy, observeOnly, autoCorrect := resolveIntegrity(n, dirs)
+	if len(cs) == 0 {
+		return nil
+	}
+	held := dirs != nil && (dirs.IsInternal || dirs.UpstreamPolicies != common.UpstreamPoliciesConfigured)
+	tracked := dirs != nil && dirs.IsInternal
+	// Integrity state + corroboration are scoped to the node GROUP the request
+	// was pinned to (use-upstream selector), reusing erpc's served-tip grouping
+	// so a receipt from one group is only checked against same-group
+	// nodes. No selector → network-wide.
+	selector := ""
+	if dirs != nil {
+		selector = dirs.UseUpstream
+	}
+	view := ChainTrackerOf(ctx, n, selector)
+	// Request-aware checks (eth_getLogs filter reproduction) need the
+	// original params; read-only access under the request's RLock.
+	var params []any
+	if jrq, jerr := rq.JsonRpcRequest(ctx); jerr == nil && jrq != nil {
+		jrq.RLockWithTrace(ctx)
+		params = jrq.Params
+		jrq.RUnlock()
+	}
+	res := runIntegrity(ctx, n, u, rq, rs, integrityRun{
+		method:      methodLower,
+		category:    methodLower,
+		checks:      cs,
+		policy:      policy,
+		observeOnly: observeOnly,
+		autoCorrect: autoCorrect && !held,
+		params:      params,
+		view:        view,
+		held:        held,
+	})
+	if res.Err != nil {
+		if res.FallbackEligible {
+			// A recordOnly verdict escalated by autoCorrectWhenPossible:
+			// stash the flagged original so project.Forward can serve it
+			// if every alternative upstream is exhausted.
+			rq.SetIntegrityFallbackResponse(rs, res.RejectedCheckID, res.Finality, res.RejectedReason)
+		}
+		// project.Forward counts it as saved (a retry succeeded) or
+		// failed (no good response found).
+		rq.MarkIntegrityCaught(res.RejectedCheckID, res.Finality)
+		// Mark first (SetLastValidResponse refuses marked responses — an
+		// in-flight hedge could otherwise re-store this body), then drop
+		// the LVR only if it IS this response (an unconditional clear
+		// could lose a concurrent VALID response from another attempt).
+		rs.MarkIntegrityRejected()
+		rq.ClearLastValidResponseIf(rs)
+		return res.Err
+	}
+	// Hand the validated response to the tracker: block responses are
+	// held as answers; narrow responses (receipts/tx) give anchors for
+	// FINALIZED blocks only (tip-thrash safety).
+	if !tracked && isBlockMethod(methodLower) {
+		observeBlockView(ctx, view, u, rs)
+	} else if !tracked && isAnchoredNarrowMethod(methodLower) {
+		observeNarrowView(ctx, view, u, rs)
+	}
+	return nil
 }
 
 // isMethodInMarkEmptyList checks if the given method is in the network's configured

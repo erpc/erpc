@@ -195,6 +195,12 @@ type RequestDirectives struct {
 	// set from HTTP headers.
 	UpstreamPolicies UpstreamPolicies `json:"-"`
 
+	// DeferIntegrity: the upstream attempt skips the integrity checks; the
+	// caller runs them on the answer it takes (a chain tracker receipts
+	// fetch hands the answer to waiting client checks first, spec §11).
+	// Never set from HTTP headers.
+	DeferIntegrity bool `json:"-"`
+
 	// Instruct the normalization layer to avoid mutating JSON-RPC params for block tag interpolation.
 	// When true, the system will still compute and cache block references (for finality/metrics),
 	// but will NOT replace tags like "latest"/"finalized" with hex numbers in outbound requests.

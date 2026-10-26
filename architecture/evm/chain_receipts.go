@@ -43,6 +43,10 @@ var (
 var (
 	errReceiptsAnswer = errors.New("receipts answer fails the answer check")
 	errBloomMismatch  = errors.New("receipts bloom differs from the header's logsBloom")
+	// errReceiptsCheck: a receipts answer met the answer rules, then an
+	// integrity check rejected it; runIntegrity counted it against its
+	// upstream.
+	errReceiptsCheck = errors.New("receipts answer fails an integrity check")
 )
 
 type bloomVerdict uint8
@@ -540,16 +544,19 @@ func (t *ChainTracker) heldReceiptsOf(hash [32]byte) *heldReceipts {
 // blockHash. The decode is the answer check, then the bloom check against
 // the held header: a mismatch fails the fetch while the network's check is
 // on. h is nil when the caller holds no header; the decode then reads the
-// held one.
+// held one. A receipts answer's integrity checks run after its decode, so a
+// client check waiting on it takes it at once (spec §11); only an answer
+// that passes them is held.
 func (t *ChainTracker) receiptsSpec(class fetchClass, hash [32]byte, h *chainHeader, logs bool) fetchSpec {
 	key := hexHash(hash)
 	spec := fetchSpec{
-		class:    class,
-		kind:     "receipts",
-		selector: t.selector,
-		method:   "eth_getBlockReceipts",
-		params:   `["` + key + `"]`,
-		byHash:   true,
+		class:       class,
+		kind:        "receipts",
+		selector:    t.selector,
+		method:      "eth_getBlockReceipts",
+		params:      `["` + key + `"]`,
+		byHash:      true,
+		deferChecks: !logs,
 	}
 	gate := t.fetch.bloom
 	parse := parseReceipts
@@ -824,6 +831,9 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 		}
 		if errors.Is(res.err, errBloomMismatch) {
 			t.countBloomMismatch(res.upstream, spec.method, j.h)
+		}
+		// A wrong answer moves the next attempt to another vendor.
+		if errors.Is(res.err, errBloomMismatch) || errors.Is(res.err, errReceiptsCheck) {
 			if v := t.vendorOf(res.upstream); v != "" {
 				j.mismatched[v] = true
 			}

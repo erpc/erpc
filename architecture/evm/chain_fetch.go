@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -70,7 +71,12 @@ type fetchSpec struct {
 	byHash   bool
 	fresh    bool // a refetch after a wrong answer: never from the cache
 	client   bool // on a client request path: never waits out the key's backoff
-	decode   func(result []byte) (any, error)
+	// deferChecks: the integrity checks run after decode, outside the
+	// upstream attempt, and client waiters take the decoded answer before
+	// them (spec §11); every other waiter, the cache and the tracker get it
+	// only once they pass.
+	deferChecks bool
+	decode      func(result []byte) (any, error)
 }
 
 // key single-flights fetches; one that names an upstream is shared by every
@@ -82,11 +88,12 @@ func (s fetchSpec) key() fetchKey {
 	return fetchKey{selector: s.selector, method: s.method, params: s.params}
 }
 
-// directives keep the integrity engine off the fetch and select the
-// tracker's upstream policies, which for fill yield rate permits to
-// clients. Only an answer addressed by hash may come from the cache (spec
-// §8): a block by number, finalized included, can be reverted by the
-// majority (§6.5), and a cached one would hide that.
+// directives mark the fetch internal, so integrity checks it against held
+// data only, after decode when deferChecks, and select the tracker's
+// upstream policies, which for fill yield rate permits to clients. Only an
+// answer addressed by hash may come from the cache (spec §8): a block by
+// number, finalized included, can be reverted by the majority (§6.5), and
+// a cached one would hide that.
 func (s fetchSpec) directives() *common.RequestDirectives {
 	d := &common.RequestDirectives{IsInternal: true, UpstreamPolicies: common.UpstreamPoliciesTracker}
 	if s.class == classFill {
@@ -98,6 +105,7 @@ func (s fetchSpec) directives() *common.RequestDirectives {
 	if !s.byHash || s.fresh {
 		d.SkipCacheRead = "true"
 	}
+	d.DeferIntegrity = s.deferChecks
 	return d
 }
 
@@ -117,6 +125,19 @@ type fetchRequest struct {
 	halvings  uint64 // the scheduler's halvings when the sweep started
 	res       fetchResult
 	done      chan struct{} // closed once res is set
+	// ans is the answer client waiters take: the decoded answer before a
+	// deferred check runs, else res. answered closes once it is set.
+	ans      fetchResult
+	answered chan struct{}
+	answer   sync.Once
+}
+
+// answerWith sets the answer client waiters take, once.
+func (r *fetchRequest) answerWith(res fetchResult) {
+	r.answer.Do(func() {
+		r.ans = res
+		close(r.answered)
+	})
 }
 
 type fetchBackoff struct {
@@ -175,11 +196,13 @@ func newFetchScheduler(ctx context.Context, n common.Network) *fetchScheduler {
 	return s
 }
 
-// fetchWaiter is one submitter's hold on a request.
+// fetchWaiter is one submitter's hold on a request; a client one takes
+// the request's answer (fetchRequest.ans), every other its result.
 type fetchWaiter struct {
-	s    *fetchScheduler
-	r    *fetchRequest
-	left bool // guarded by s.mu
+	s      *fetchScheduler
+	r      *fetchRequest
+	client bool
+	left   bool // guarded by s.mu
 }
 
 // submit queues spec, or joins the request already queued or in flight for
@@ -198,7 +221,7 @@ func (s *fetchScheduler) submit(t *ChainTracker, spec fetchSpec) *fetchWaiter {
 		return s.doneWaiter(key, spec, errFetchBackoff)
 	}
 	if r == nil {
-		r = &fetchRequest{key: key, spec: spec, done: make(chan struct{})}
+		r = &fetchRequest{key: key, spec: spec, done: make(chan struct{}), answered: make(chan struct{})}
 		if b, ok := s.backoff[key]; ok {
 			r.notBefore = b.next
 		}
@@ -214,14 +237,15 @@ func (s *fetchScheduler) submit(t *ChainTracker, spec fetchSpec) *fetchWaiter {
 		r.trackers = append(r.trackers, t)
 	}
 	s.pumpLocked()
-	return &fetchWaiter{s: s, r: r}
+	return &fetchWaiter{s: s, r: r, client: spec.client}
 }
 
 // doneWaiter holds a request that ended before it was queued.
 func (s *fetchScheduler) doneWaiter(key fetchKey, spec fetchSpec, err error) *fetchWaiter {
-	r := &fetchRequest{key: key, spec: spec, res: fetchResult{err: err}, done: make(chan struct{})}
+	r := &fetchRequest{key: key, spec: spec, res: fetchResult{err: err}, done: make(chan struct{}), answered: make(chan struct{})}
+	r.answerWith(r.res)
 	close(r.done)
-	return &fetchWaiter{s: s, r: r}
+	return &fetchWaiter{s: s, r: r, client: spec.client}
 }
 
 // backoffEnd is when spec's key may be fetched again; zero when it may now.
@@ -265,11 +289,16 @@ func (s *fetchScheduler) fetch(ctx context.Context, t *ChainTracker, spec fetchS
 	return s.submit(t, spec).wait(ctx)
 }
 
-// wait returns the request's result; when ctx ends first the waiter leaves.
+// wait returns the request's result, or a client waiter's answer; when ctx
+// ends first the waiter leaves.
 func (w *fetchWaiter) wait(ctx context.Context) fetchResult {
+	ready, res := w.r.done, &w.r.res
+	if w.client {
+		ready, res = w.r.answered, &w.r.ans
+	}
 	select {
-	case <-w.r.done:
-		return w.r.res
+	case <-ready:
+		return *res
 	case <-ctx.Done():
 		w.leave()
 		return fetchResult{err: context.Cause(ctx)}
@@ -427,6 +456,7 @@ func (s *fetchScheduler) run(r *fetchRequest) {
 		}
 	}
 	r.res = res
+	r.answerWith(res)
 	close(r.done)
 }
 
@@ -485,7 +515,15 @@ func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 			return errFetchUndecoded
 		}
 		val, err = r.spec.decode(bytes.Clone(jrr.GetResultBytes()))
-		return err
+		if err != nil || !r.spec.deferChecks || resp.FromCache() {
+			// A cached answer passed the checks before it was cached.
+			return err
+		}
+		r.answerWith(fetchResult{upstream: upstreamId, val: val})
+		if err := validateIntegrity(ctx, s.network, resp.Upstream(), req, resp, strings.ToLower(r.spec.method)); err != nil {
+			return fmt.Errorf("%w: %w", errReceiptsCheck, err)
+		}
+		return nil
 	})
 	if err != nil {
 		return fetchResult{upstream: upstreamId, err: err}
