@@ -303,7 +303,7 @@ push u:  newPendingTransactions:<v>     while demand has it and admitted(u)
 
 | # | Check | Home | On fail |
 |---|---|---|---|
-| 0 | Parse number, hash, parentHash, timestamp, logsBloom, transactionsRoot, gasUsed into fixed types | network intake | drop; `outcome="malformed"` |
+| 0 | Parse number, hash and parentHash into fixed types; timestamp, logsBloom, transactionsRoot and gasUsed too, when present. A header that omits them still votes: it gives no block time sample, no bloom verdict and no receipts skip, and an empty receipts answer for it is a failed fetch (§11) | network intake | drop; `outcome="malformed"` |
 | 1 | Header integrity, while integrity is on (§13) | network intake | drop; `erpc_integrity_violation_total` |
 | 2 | Chain identity on a major jump | poller, the `SuggestLatestBlock` code path | drop; async verify |
 | 3 | Per-upstream head counter | poller | — |
@@ -428,7 +428,7 @@ Other rules:
 - A re-anchor is counted in `erpc_chain_tracker_reanchor_total`.
 - A message's changes are computed first and applied in one step. A panic drops the message and counts the header as `malformed` for its sender. 3 panics of one message kind (source votes count apart from client answers), with no message of that kind handled cleanly between them, reset the tracker to empty, counted in `erpc_chain_tracker_reset_total`; taps continue from their cursors (§10.1). Other kinds come between any two of one kind, so a state that breaks only source votes, or only fetch answers, still resets, while one vendor's bad header among clean ones never does.
 - Each change of the confirmed head wakes the taps.
-- A pin is final when it is at or below `Finalized` and finalized evidence covers its hash: a voter's `finalized` poll answered a header the pins hold at its height, and the pin is at or below that header on the pinned path. For a voter whose finality is the derived depth (no `finalized` tag), its derived number covers the pins below it. A pin at or below `Finalized` that no such evidence covers is not final: an upstream can still answer a sibling there before its next head, as single-upstream parachains do a few blocks behind their head, and its revert is a reorg.
+- A pin is final when it is at or below `Finalized` and the finalized evidence this instance holds covers it: a `finalized` poll this instance sent answered a header the pins hold at its height, and the pin is at or below that header on the pinned path; for a voter whose finality is the derived depth (no `finalized` tag), its derived number covers the pins below it. Where this instance holds no finalized header at or above a pin's height (another instance polled it, its shared counter being fresh), the pin is final when it is also below the confirmed head. A pin at or below `Finalized` that neither covers is not final: an upstream can still answer a sibling there before its next head, as single-upstream parachains do a few blocks behind their head, and its revert is a reorg.
 - A majority branch that reverts a final pin is followed, and logged as an error (`final_hash_changed`): clients stay on the chain the upstreams serve. An instance that followed the revert reads such a block past its permanent cache entry, and the fresh answer rewrites the shared entry; an instance started after the revert reads the entry as stored.
 - By-number answers at or below `Finalized` feed integrity's finalized anchors below the window (`observeNarrowAnchors`), only with the evidence quorum. Inside the window, pins win.
 
