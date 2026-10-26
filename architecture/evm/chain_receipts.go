@@ -1120,10 +1120,24 @@ func (t *ChainTracker) tapNeeds(o indexer.ReadOpts, h *chainHeader) bool {
 	return !t.fetch.bloom.bloomSkips(h) || o.MayMatch(h.bloom)
 }
 
+// prefetches reports whether the feed fetches block h's receipts at pin
+// time for client checks: they demand receipts, h was pinned since the
+// demand began, and the block has transactions.
+func (t *ChainTracker) prefetches(h *chainHeader, demanded bool) bool {
+	return demanded && h.number > t.prefetchAbove && !t.fetch.bloom.emptySkips(h)
+}
+
+// receiptsDemanded reports whether a client check read receipts through
+// the tracker within the last W (spec §11).
+func (t *ChainTracker) receiptsDemanded() bool {
+	at := t.receiptsReadAt.Load()
+	return at != 0 && time.Since(time.Unix(0, at)) < t.W()
+}
+
 // planReceipts starts a job for every pin within reorgWindow of the head
-// whose receipts the feed needs and lacks, and lets go of jobs for blocks
-// that left the pins or the window. It runs when the pins, the registry,
-// the skip or a job changed.
+// whose receipts the feed needs or prefetches and lacks, and lets go of
+// jobs for blocks that left the pins or the window. It runs when the
+// pins, the registry, the skip or a job changed.
 func (t *ChainTracker) planReceipts() {
 	version, trusted := t.wantVersion.Load(), t.fetch.bloom.trusted.Load()
 	if version != t.needsVersion || trusted != t.needsTrusted {
@@ -1138,12 +1152,16 @@ func (t *ChainTracker) planReceipts() {
 	t.receiptsDirty = false
 	wanted := make(map[[32]byte]bool)
 	if head := t.head(); head != nil && t.canFetch() {
+		demanded := t.receiptsDemanded()
+		if !demanded {
+			t.prefetchAbove = head.number
+		}
 		for i := len(t.pins) - 1; i >= 0; i-- {
 			h := t.pins[i].h
 			if h.number+uint64(t.window) < head.number {
 				break
 			}
-			if !t.feedNeeds(h) {
+			if !t.feedNeeds(h) && !t.prefetches(h, demanded) {
 				continue
 			}
 			wanted[h.hash] = true

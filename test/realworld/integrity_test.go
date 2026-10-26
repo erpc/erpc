@@ -109,11 +109,12 @@ func u8(integrity bool) spec {
 // bloom, u9FaultBlocks each, integrity on. Receipts are refetched from
 // vendor-b: every client's logs equal the canonical logs, no forged log
 // reaches a client, and violations count on vendor-a only. A tip client
-// (tipReceipts) reads a receipt of each head it receives: every answer is
-// the chain's; under the forged log its check takes vendor-a's receipts as
-// they meet the answer rules and waits for no refetch, while the forged
-// ones are never held (§11); no empty block gets a receipts call while it
-// demands receipts (§11 prefetch, C10).
+// (tipReceipts) reads a receipt of each even head it receives: every
+// answer is the chain's; under the forged log its check takes vendor-a's
+// receipts as they meet the answer rules and waits for no refetch, while
+// the forged ones are never held (§11). While it reads, every odd block
+// with transactions is fetched at pin time, even one no logs filter wants,
+// and no empty block gets a receipts call (§11 prefetch, C10).
 func u9() spec {
 	tr := &tipReceipts{}
 	return spec{name: "U9", integrity: true, bound: healthyDelivery, onHead: tr.onHead, body: func(s *scenario) {
@@ -153,10 +154,11 @@ func u9() spec {
 }
 
 // tipReceipts is a client that follows the tip: on each pod's first
-// newHeads delivery of a head with transactions it asks that pod for the
-// head's first transaction receipt, which integrity's receiptVsBlock
-// checks against the block's receipts (§11). waits are the answers' waits
-// by phase and block kind.
+// newHeads delivery of an even head with transactions it asks that pod
+// for the head's first transaction receipt, which integrity's
+// receiptVsBlock checks against the block's receipts (§11). The odd heads
+// it skips show the prefetch. waits are the answers' waits by phase and
+// block kind.
 type tipReceipts struct {
 	mu    sync.Mutex
 	phase string
@@ -188,7 +190,7 @@ type receiptJSON struct {
 
 func (tr *tipReceipts) onHead(s *scenario, c *headsClient, pod int, n uint64, h hash) {
 	b := s.chain.Block(h)
-	if b == nil || b.TxCount() == 0 || n+1 < s.chain.Tip().Number || !s.first(fmt.Sprintf("u9-receipt/%d/%s", pod, h.Hex())) {
+	if b == nil || b.TxCount() == 0 || n%2 == 1 || n+1 < s.chain.Tip().Number || !s.first(fmt.Sprintf("u9-receipt/%d/%s", pod, h.Hex())) {
 		return
 	}
 	tr.mu.Lock()
@@ -251,7 +253,9 @@ func kindName(k chainsim.Kind) string {
 
 // judge logs the waits and the receipts calls per block of the final
 // healthy blocks, minted in [healthy, to], and applies the tip client's
-// rules to the blocks minted in [from, to].
+// rules to the blocks minted in [from, to]: no empty block got a receipts
+// call, and each healthy quiet block it skipped got one, which no logs
+// filter asks for.
 func (tr *tipReceipts) judge(s *scenario, from, healthy, to time.Time) {
 	tr.mu.Lock()
 	waits, nulls := map[string][]time.Duration{}, tr.nulls
@@ -279,7 +283,8 @@ func (tr *tipReceipts) judge(s *scenario, from, healthy, to time.Time) {
 	} else if p50 := forged[len(forged)/2]; p50 >= u9VendorBLatency {
 		s.violate(s.name, "tip receipt checks under vendor-a's forged log waited p50 %s, at least vendor-b's %s: they waited on the receipts checks and vendor-b's refetch, not on vendor-a's answer (§11)", p50.Round(time.Millisecond), u9VendorBLatency)
 	}
-	calls := map[chainsim.Kind][2]int{}
+	type tally struct{ blocks, calls int }
+	calls := map[string]tally{}
 	for _, b := range s.chain.MintedBetween(from, to) {
 		n := 0
 		for _, v := range s.vendors {
@@ -292,13 +297,19 @@ func (tr *tipReceipts) judge(s *scenario, from, healthy, to time.Time) {
 		if b.MintedAt.Before(healthy) {
 			continue
 		}
-		sum := calls[b.Kind()]
-		calls[b.Kind()] = [2]int{sum[0] + 1, sum[1] + n}
-	}
-	for _, k := range []chainsim.Kind{chainsim.KindMatching, chainsim.KindQuiet, chainsim.KindEmpty} {
-		if c := calls[k]; c[0] > 0 {
-			s.logf("healthy: receipts calls per %s block per pod: %.2f over %d blocks", kindName(k), float64(c[1])/float64(c[0]*len(s.h.pods)), c[0])
+		read := "read"
+		if b.Number%2 == 1 {
+			read = "skipped"
+			if b.Kind() == chainsim.KindQuiet && n == 0 {
+				s.violate(s.name, "quiet block %d got no receipts call while clients read receipts: not prefetched at pin time (§11)", b.Number)
+			}
 		}
+		k := kindName(b.Kind()) + "/" + read
+		calls[k] = tally{calls[k].blocks + 1, calls[k].calls + n}
+	}
+	for _, k := range slices.Sorted(maps.Keys(calls)) {
+		c := calls[k]
+		s.logf("healthy: receipts calls per %s block per pod: %.2f over %d blocks", k, float64(c.calls)/float64(c.blocks*len(s.h.pods)), c.blocks)
 	}
 }
 

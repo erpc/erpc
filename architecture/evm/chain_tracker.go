@@ -114,6 +114,10 @@ type ChainTracker struct {
 	// receiptsFailing is when every receipts and logs fetch since the last
 	// success started failing, in unix nanoseconds; 0 after a success.
 	receiptsFailing atomic.Int64
+	// receiptsReadAt is when a client check last read receipts through
+	// this tracker (receiptsByHash), in unix nanoseconds: the demand
+	// that prefetches receipts at pin time for W after it (spec §11).
+	receiptsReadAt atomic.Int64
 
 	// Owned by the tracker's goroutine.
 	// receiptsDown is when receipts sweeps, which ask every upstream, began
@@ -187,6 +191,9 @@ type ChainTracker struct {
 	// receiptsDirty: the pins, a job or held receipts changed since the
 	// receipts were last planned.
 	receiptsDirty bool
+	// prefetchAbove is the head while no client check demands receipts:
+	// demand prefetches only the pins above it, pinned since it began.
+	prefetchAbove uint64
 	// probe is armed while receipts fail: the outage's head-block fetches.
 	probe         *time.Timer
 	anchorNumbers []int64
@@ -2963,9 +2970,11 @@ func (t *ChainTracker) headerByNumber(ctx context.Context, number int64, blockRe
 	return h.parsed, true
 }
 
-// receiptsByHash returns a block's receipts, fetching them on a miss. number
-// is the block's number when the caller knows it, else -1.
+// receiptsByHash returns a block's receipts for a client check, fetching
+// them on a miss; the read is the demand that prefetches receipts at pin
+// time. number is the block's number when the caller knows it, else -1.
 func (t *ChainTracker) receiptsByHash(ctx context.Context, blockHash string, number int64) ([]integrity.Receipt, bool) {
+	t.receiptsReadAt.Store(time.Now().UnixNano())
 	if r, ok := t.CachedReceipts(blockHash); ok {
 		return r, true
 	}
