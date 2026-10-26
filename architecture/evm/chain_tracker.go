@@ -694,7 +694,9 @@ func (t *ChainTracker) update() bool {
 // publishTrees publishes the roots whose extension ended for good, once a
 // header was held or dropped, an extension ended or the pins moved. A
 // capped tree has not ended: a Read in it lifts the cap (spec §10.1). A
-// tracker that cannot fetch, or that no history serves, extends no root.
+// tracker that cannot fetch extends no root. A tracker that no history
+// serves has ended none: the tap a Read belongs to starts its fill, and
+// the Read may come before the tracker heard of the tap.
 func (t *ChainTracker) publishTrees() {
 	pub := t.state.Load()
 	if !t.treesDirty && t.trees.Load().state == pub {
@@ -707,7 +709,7 @@ func (t *ChainTracker) publishTrees() {
 		s.pinRoot = pinRoot.h
 	}
 	for r, e := range t.exts {
-		if e.atBase || !t.extends() {
+		if e.atBase || !t.canFetch() {
 			s.ended[r.h.hash] = struct{}{}
 		}
 	}
