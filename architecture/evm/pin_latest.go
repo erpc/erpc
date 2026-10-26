@@ -56,6 +56,28 @@ func pinsLatestTag(u common.Upstream) bool {
 	return cfg != nil && cfg.Evm != nil && cfg.Evm.PinLatestTag != nil && *cfg.Evm.PinLatestTag
 }
 
+// LatestSentAs is the block r's "latest" was sent to u as (spec §7): r's
+// Head.Latest when interpolation or u's pinLatestTag replaced the tag;
+// when the tag reached u as is, u's own polled head, the closest height to
+// the one u evaluated it at. 0 when unknown.
+func LatestSentAs(ctx context.Context, r *common.NormalizedRequest, u common.Upstream) int64 {
+	if n := TagBlockNumber(ctx, r, "latest"); n > 0 {
+		return n
+	}
+	if u == nil {
+		return 0
+	}
+	if pinsLatestTag(u) {
+		return common.EvmHeadOf(r.Network(), ctx, r).Latest
+	}
+	if eu, ok := u.(common.EvmUpstream); ok {
+		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+			return sp.LatestBlock()
+		}
+	}
+	return 0
+}
+
 // PinLatestTag resolves what upstream u must receive for r when u sets
 // evm.pinLatestTag and r asks a family-3 method for latest: r's params with
 // the block selector set to height, r's Head.Latest, the number every attempt

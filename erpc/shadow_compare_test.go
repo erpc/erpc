@@ -619,21 +619,36 @@ func TestShadowCompare_DirectVerdicts(t *testing.T) {
 		assert.NotContains(t, pinHits.last(), `"latest"`)
 	})
 
-	t.Run("PinBlockTagFallsBackToServingUpstreamHead", func(t *testing.T) {
-		var primary common.Upstream
-		for _, u := range f.prj.upstreamsRegistry.GetNetworkUpstreams(f.ctx, util.EvmNetworkId(123)) {
-			if u.Id() == "rpc1" {
-				shadowCmpWaitHead(t, u, 0x11118888)
-				primary = u
-			}
+	// An answer with no number of its own: the primary was sent the
+	// request's Latest, not the serving upstream's head.
+	var primary common.Upstream
+	for _, u := range f.prj.upstreamsRegistry.GetNetworkUpstreams(f.ctx, util.EvmNetworkId(123)) {
+		if u.Id() == "rpc1" {
+			shadowCmpWaitHead(t, u, 0x11118888)
+			primary = u
 		}
-		require.NotNil(t, primary)
-		before := shadowCmpOutcomes(upsId, "eth_getBalance")
+	}
+	require.NotNil(t, primary)
+	headResp := func(dirs *common.RequestDirectives) *common.NormalizedResponse {
 		resp := pinResp(0)
+		resp.Request().SetDirectives(dirs)
+		resp.Request().TakeEvmHead(&common.EvmHead{Latest: 0x2000})
 		resp.SetUpstream(primary)
-		f.prj.executeShadowRequests(f.ctx, f.network, shadows, resp)
+		return resp
+	}
+
+	t.Run("PinBlockTagFallsBackToRequestLatest", func(t *testing.T) {
+		before := shadowCmpOutcomes(upsId, "eth_getBalance")
+		f.prj.executeShadowRequests(f.ctx, f.network, shadows, headResp(&common.RequestDirectives{RetryEmpty: true}))
 		shadowCmpAwait(t, upsId, "eth_getBalance", before, shadowCmpOutcome{identical: 1})
-		assert.Contains(t, pinHits.last(), `"0x11118888"`, "latest is pinned to the serving upstream's head")
+		assert.Contains(t, pinHits.last(), `"0x2000"`, "latest is pinned to the request's Latest, the number the primary was sent")
+	})
+
+	t.Run("PinBlockTagUsesServingUpstreamHeadWhenTagReachedIt", func(t *testing.T) {
+		before := shadowCmpOutcomes(upsId, "eth_getBalance")
+		f.prj.executeShadowRequests(f.ctx, f.network, shadows, headResp(&common.RequestDirectives{RetryEmpty: true, SkipInterpolation: true}))
+		shadowCmpAwait(t, upsId, "eth_getBalance", before, shadowCmpOutcome{identical: 1})
+		assert.Contains(t, pinHits.last(), `"0x11118888"`, "skip-interpolation sent the tag as is: latest is pinned to the serving upstream's head")
 	})
 
 	t.Run("UnresolvableRequestIsNotMirrored", func(t *testing.T) {

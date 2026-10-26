@@ -50,21 +50,12 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 
 	resp.RUnlock()
 
-	// The SERVING upstream's polled head, read once at mirror entry: the
-	// closest observable proxy for the height at which the primary just
-	// evaluated a "latest" tag (used by the PinBlockTag rewrite below when
-	// the response body carries no number of its own). Entry is the right
-	// moment: only a goroutine spawn and the hash above separate it from
-	// the primary's answer — µs-to-ms against a poller that updates ~1/s —
-	// while a read deeper in the per-upstream fan-out would drift further
-	// for no gain.
-	primaryHead := int64(0)
-	if ups := resp.Upstream(); ups != nil {
-		if evmUps, ok := ups.(common.EvmUpstream); ok {
-			if sp := evmUps.EvmStatePoller(); sp != nil {
-				primaryHead = sp.LatestBlock()
-			}
-		}
+	// The block the primary was sent, read once at mirror entry, for the
+	// PinBlockTag rewrite below: the answer's own number, else the number
+	// its "latest" was sent as (spec §7).
+	pinHeight, ok := resp.EvmBlockNumber().(int64)
+	if !ok || pinHeight <= 0 {
+		pinHeight = evm.LatestSentAs(ctx, origReq, resp.Upstream())
 	}
 
 	// Fire shadow requests concurrently
@@ -163,27 +154,15 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 			// Set network reference for completeness (not strictly required for forwarding)
 			shadowReq.SetNetwork(origReq.Network())
 
-			// Pin a "latest" selector to a concrete height before forwarding
-			// (ShadowUpstreamConfig.PinBlockTag). The primary evaluated the tag
-			// at ITS head; the shadow runs wall-clock-later and would evaluate
-			// it at a different head, so any read of volatile state diverges by
-			// construction and reports a mismatch that says nothing about
-			// correctness. The primary's resolved number is exact when its
-			// response carries one; otherwise the SERVING upstream's own polled
-			// head, captured synchronously at forward time, is the closest
-			// observable proxy. Never a network-wide head: that is the MAX over
-			// all upstreams, so whenever any other vendor leads the primary it
-			// pins a height the primary never evaluated — a manufactured
-			// mismatch on every block boundary. No usable height means no pin
-			// (fail-open, like every other guard on this path).
+			// Pin a "latest" selector to the block the primary was sent
+			// (ShadowUpstreamConfig.PinBlockTag): the shadow runs
+			// wall-clock-later and would evaluate the tag at a different
+			// head, so any read of volatile state diverges by construction
+			// and reports a mismatch that says nothing about correctness. No
+			// usable height means no pin (fail-open, like every other guard
+			// on this path).
 			if shadowCfg := ups.Config().Shadow; shadowCfg != nil && shadowCfg.PinBlockTag {
-				height := int64(0)
-				if bn, ok := resp.EvmBlockNumber().(int64); ok && bn > 0 {
-					height = bn
-				} else if primaryHead > 0 {
-					height = primaryHead
-				}
-				if pinned, changed := evm.PinBlockTagInBody(shadowReq.Body(), height); changed {
+				if pinned, changed := evm.PinBlockTagInBody(shadowReq.Body(), pinHeight); changed {
 					repinned := common.NewNormalizedRequest(pinned)
 					if dirs := origReq.Directives(); dirs != nil {
 						repinned.SetDirectives(dirs.Clone())
