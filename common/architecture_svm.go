@@ -127,3 +127,45 @@ func KnownGenesisHash(chain, cluster string) (string, bool) {
 	h, ok := clusters[cluster]
 	return h, ok
 }
+
+// SvmHistory is the slots from which a cluster's Agave history records block
+// fields. Below them Agave renders the field null whatever an archive holds;
+// a nil bound means the cluster records the field from its first slot.
+type SvmHistory struct {
+	BlockTimeFrom   *uint64
+	BlockHeightFrom *uint64
+}
+
+// RecordsBlockTime reports whether Agave renders `blockTime` for slot.
+func (h SvmHistory) RecordsBlockTime(slot uint64) bool {
+	return h.BlockTimeFrom == nil || slot >= *h.BlockTimeFrom
+}
+
+// RecordsBlockHeight reports whether Agave renders `blockHeight` for slot.
+func (h SvmHistory) RecordsBlockHeight(slot uint64) bool {
+	return h.BlockHeightFrom == nil || slot >= *h.BlockHeightFrom
+}
+
+// GenesisTimeOnly reports whether Agave answers slot's `blockTime` with the
+// genesis creation time, which no archive row carries: slot 0 on a cluster
+// that records no times after it.
+func (h SvmHistory) GenesisTimeOnly(slot uint64) bool {
+	return slot == 0 && h.BlockTimeFrom != nil
+}
+
+// knownSvmHistories holds the clusters whose history omits fields, bisected
+// against api.mainnet-beta.solana.com: `blockTime` is null through slot
+// 39,824,213 and `blockHeight` through 81,032,024.
+var knownSvmHistories = map[string]map[string]SvmHistory{
+	SvmChainSolana: {
+		"mainnet-beta": {BlockTimeFrom: ptrU64(39_824_214), BlockHeightFrom: ptrU64(81_032_025)},
+	},
+}
+
+// KnownSvmHistory returns the Agave history of (chain, cluster); the zero
+// value (every field recorded) for any other cluster.
+func KnownSvmHistory(chain, cluster string) SvmHistory {
+	return knownSvmHistories[ResolveSvmChain(chain)][cluster]
+}
+
+func ptrU64(v uint64) *uint64 { return &v }
