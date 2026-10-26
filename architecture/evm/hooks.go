@@ -158,11 +158,12 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	// retry/consensus route around the upstream (consensus already excludes
 	// errors from preferLargerResponses, so a corrupt-but-larger response can no
 	// longer dispute an honest majority). eRPC's own requests (tracker
-	// fetches, probes, polls) are checked too, against held data only: a
-	// check never fetches recursively, and never judges them against the
-	// pins they are there to move. They hunt no replacement. Tracker
-	// fetches feed no answer back to the tracker: its scheduler hands them
-	// over itself.
+	// fetches, probes) are checked too, against held data only: a check
+	// never fetches recursively, and never judges them against the pins
+	// they are there to move. They hunt no replacement, and feed no answer
+	// back to the tracker: its scheduler hands them over itself. Head polls
+	// and Asks go to their upstream directly, never through this hook: intake
+	// check 1 is their one check (spec §13).
 	dirs := rq.Directives()
 	if integrity.HasChecks(methodLower) {
 		if cs, policy, observeOnly, autoCorrect := resolveIntegrity(n, dirs); len(cs) > 0 {

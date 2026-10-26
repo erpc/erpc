@@ -877,13 +877,14 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header 
 	e.latestBlockFailureCount = 0
 	e.stateMu.Unlock()
 
-	if b.malformed == nil {
-		header = b.header
-	}
 	if bound != nil {
-		// Intake checks the header, verifies a major jump and moves the
-		// counter through ObserveHead; the fetch itself must not move it.
-		e.deliverFetched(bound, f, b)
+		// Intake checks the header once (spec §13), verifies a major jump
+		// and moves the counter through ObserveHead; the fetch itself must
+		// not move it. The Ask answer carries the header only once it
+		// passed, so no tracker holds a header intake dropped.
+		if e.deliverFetched(bound, f, b) {
+			header = b.header
+		}
 		counter := e.latestBlockShared.GetValue()
 		if counter >= b.number {
 			e.tracker.SetLatestBlockNumber(e.upstream, b.number, b.timestamp)
@@ -901,6 +902,9 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header 
 	if !e.verifyChainIdOnMajorHeadMove(ctx, "latest", e.latestBlockShared.GetValue(), b.number) {
 		return nil, false, nil
 	}
+	if b.malformed == nil {
+		header = b.header
+	}
 
 	// Directly update tracker with the correct timestamp for this locally-fetched block
 	// This happens BEFORE the OnValue callback is triggered, ensuring only the fetching node emits the metric
@@ -916,8 +920,8 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header 
 
 // deliverFetched sends f's header to the bound intake: a fork poll's
 // answer when a fork Ask waits on f, the poll source's stream while it is
-// one, else a poll's.
-func (e *EvmStatePoller) deliverFetched(bound *pollSource, f *headFetch, b polledBlock) {
+// one, else a poll's. passed: the header passed intake's checks.
+func (e *EvmStatePoller) deliverFetched(bound *pollSource, f *headFetch, b polledBlock) (passed bool) {
 	kind := HeaderPolled
 	if e.activePollSource() != nil {
 		kind = HeaderStreamed
@@ -927,7 +931,7 @@ func (e *EvmStatePoller) deliverFetched(bound *pollSource, f *headFetch, b polle
 		kind = HeaderForkPolled
 	}
 	e.headAsk.mu.Unlock()
-	bound.intake.Polled(e.upstream.Id(), b.header, b.malformed, kind, f.sent)
+	return bound.intake.Polled(e.upstream.Id(), b.header, b.malformed, kind, f.sent)
 }
 
 // backoffDelay is how long after a fetch's send the next one may start:
@@ -1118,8 +1122,9 @@ const (
 // PollIntake takes a bound poller's latest and finalized headers.
 type PollIntake interface {
 	// Polled takes the header a poll of latest, sent at sent, fetched;
-	// malformed: why it failed intake check 0, h then unset.
-	Polled(upstreamId string, h SourceHeader, malformed error, kind HeaderKind, sent time.Time)
+	// malformed: why it failed intake check 0, h then unset. passed: h
+	// passed intake's header checks (spec §5.3, §13).
+	Polled(upstreamId string, h SourceHeader, malformed error, kind HeaderKind, sent time.Time) (passed bool)
 	// PollFailed notes a poll of latest, sent at started, that the node
 	// failed (spec §6.1).
 	PollFailed(upstreamId string, started time.Time)

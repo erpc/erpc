@@ -856,7 +856,10 @@ func TestCovPoller_Ask(t *testing.T) {
 // covPollerIntake counts the poller's intake calls.
 type covPollerIntake struct{ polled, failed atomic.Int32 }
 
-func (i *covPollerIntake) Polled(string, SourceHeader, error, HeaderKind, time.Time) { i.polled.Add(1) }
+func (i *covPollerIntake) Polled(string, SourceHeader, error, HeaderKind, time.Time) bool {
+	i.polled.Add(1)
+	return true
+}
 func (i *covPollerIntake) PollFailed(string, time.Time)                             { i.failed.Add(1) }
 func (i *covPollerIntake) PolledFinalized(string, SourceHeader)                     {}
 

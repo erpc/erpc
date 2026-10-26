@@ -127,8 +127,9 @@ func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessa
 
 // Polled takes the header a poll of upstreamId's latest, sent at sent,
 // fetched; malformed: it failed intake check 0. A success ends its failing
-// polls and renews the hash vote they expired (PollFailed).
-func (in *networkIntake) Polled(upstreamId string, sh evm.SourceHeader, malformed error, kind evm.HeaderKind, sent time.Time) {
+// polls and renews the hash vote they expired (PollFailed). passed: the
+// header passed intake's checks (header).
+func (in *networkIntake) Polled(upstreamId string, sh evm.SourceHeader, malformed error, kind evm.HeaderKind, sent time.Time) (passed bool) {
 	in.mu.Lock()
 	failing := in.polls[upstreamId].failing
 	in.polls[upstreamId] = pollRecord{ok: sent}
@@ -142,9 +143,9 @@ func (in *networkIntake) Polled(upstreamId string, sh evm.SourceHeader, malforme
 	}
 	if malformed != nil {
 		in.count(upstreamId, "malformed")
-		return
+		return false
 	}
-	in.header(upstreamId, sh, kind, false, sent)
+	return in.header(upstreamId, sh, kind, false, sent)
 }
 
 // PollFailed notes a poll of upstreamId's latest, sent at started, that its
@@ -209,12 +210,14 @@ func (in *networkIntake) w() time.Duration {
 // is a header integrity held back before a check was suspended, so it
 // votes only when it is newer than its source's newest accepted header: a
 // replay never moves a vote back. A fork poll's answer moves the vote
-// whatever the path says: it is the node's head now.
-func (in *networkIntake) header(upstreamId string, sh evm.SourceHeader, kind evm.HeaderKind, replay bool, at time.Time) {
+// whatever the path says: it is the node's head now. passed: sh passed
+// checks 1 and 2, so a tracker may hold it; a header behind the vote,
+// which never votes, is checked too when it is not the vote itself.
+func (in *networkIntake) header(upstreamId string, sh evm.SourceHeader, kind evm.HeaderKind, replay bool, at time.Time) (passed bool) {
 	cur := sh.Cursor()
 	u := in.upstream(upstreamId)
 	if u == nil {
-		return
+		return false
 	}
 	stream, fresh := kind == evm.HeaderStreamed && !replay, kind == evm.HeaderForkPolled
 	in.mu.Lock()
@@ -234,7 +237,7 @@ func (in *networkIntake) header(upstreamId string, sh evm.SourceHeader, kind evm
 			in.noteStream(upstreamId, int64(cur.Number))
 		}
 		in.count(upstreamId, "duplicate")
-		return
+		return current || evm.CheckSourceHeader(in.nw, u, sh)
 	}
 	if !evm.CheckSourceHeader(in.nw, u, sh) {
 		in.mu.Lock()
@@ -244,16 +247,16 @@ func (in *networkIntake) header(upstreamId string, sh evm.SourceHeader, kind evm
 		}
 		in.mu.Unlock()
 		in.count(upstreamId, "gated_integrity")
-		return
+		return false
 	}
 	poller := u.EvmStatePoller()
 	if poller == nil || poller.IsObjectNull() || !poller.ObserveHead(int64(cur.Number), at) {
 		in.count(upstreamId, "gated_identity")
-		return
+		return false
 	}
 	if !in.accept(upstreamId, sh, replay, fresh) {
 		in.count(upstreamId, "duplicate")
-		return
+		return true
 	}
 	// The hash vote is recorded before the trackers see the header, so the
 	// tracker that handles it counts its sender as a hash voter.
@@ -269,6 +272,7 @@ func (in *networkIntake) header(upstreamId string, sh evm.SourceHeader, kind evm
 	} else {
 		in.count(upstreamId, "gated_voter")
 	}
+	return true
 }
 
 // noteStream notes number as upstreamId's stream head. No wake is needed
