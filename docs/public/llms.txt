@@ -122,7 +122,7 @@ eRPC is a fault-tolerant EVM RPC proxy and permanent caching layer. The bootstra
 
 **TypeScript configs** are compiled in-process via esbuild (IIFE bundle) and evaluated with the sobek JS runtime, so closures and module-level helpers in selection-policy `evalFunc` functions are preserved natively — no function serialisation.
 
-**No-config mode**: when `projects` is empty, a synthetic `main` project with public repository + Envio providers is injected, and `/evm/<chainId>` resolves without a project prefix.
+**No-config mode**: when `projects` is empty, a synthetic `main` project with public repository provider is injected, and `/evm/<chainId>` resolves without a project prefix.
 
 ### Config schema
 
@@ -268,6 +268,12 @@ links to its `.llms.txt` companion.
 - [HTTP client & proxy pools](https://docs.erpc.cloud/reference/http-client.llms.txt) — eRPC keeps a single pre-warmed, high-throughput connection to every upstream — and can rotate traffic across a fleet of SOCKS5 or HTTP proxies with zero extra latency.
 - [Lanes & concurrency](https://docs.erpc.cloud/reference/lanes.llms.txt) — Route a class of requests to a specific provider group and eRPC computes that group's own block tip — eliminating "block not found" churn caused by cross-provider tip pollution.
 - [Simulator](https://docs.erpc.cloud/reference/simulator.llms.txt) — A local browser playground that runs a real eRPC instance against synthetic upstreams — explore routing, failsafe, and selection-policy behavior in seconds, no credentials needed.
+
+### Compare
+
+- [eRPC vs dshackle](https://docs.erpc.cloud/compare/erpc-vs-dshackle.llms.txt) — eRPC vs dshackle (emeraldpay) feature by feature, with a source link in every cell, and where dshackle is the better fit.
+- [eRPC vs web3-proxy](https://docs.erpc.cloud/compare/erpc-vs-web3-proxy.llms.txt) — eRPC vs web3-proxy (llamanodes) feature by feature, with a source link in every cell, and where web3-proxy is the better fit.
+- [eRPC vs dRPC NodeCore](https://docs.erpc.cloud/compare/erpc-vs-drpc-nodecore.llms.txt) — eRPC vs drpc nodecore feature by feature, with a source link in every cell, and where NodeCore is the better fit.
 - **Presets**
   - [DVN (LayerZero)](https://docs.erpc.cloud/presets/dvn-ready.llms.txt) — A drop-in eRPC config for DVN operators — unanimous consensus on the four source-chain verification methods closes the forged-log attack vector that hit KelpDAO.
 
@@ -278,6 +284,9 @@ links to its `.llms.txt` companion.
 Convenient when an agent wants to iterate over every page rather than
 follow the hierarchy:
 
+- [eRPC vs dRPC NodeCore](https://docs.erpc.cloud/compare/erpc-vs-drpc-nodecore.llms.txt) — eRPC vs drpc nodecore feature by feature, with a source link in every cell, and where NodeCore is the better fit.
+- [eRPC vs dshackle](https://docs.erpc.cloud/compare/erpc-vs-dshackle.llms.txt) — eRPC vs dshackle (emeraldpay) feature by feature, with a source link in every cell, and where dshackle is the better fit.
+- [eRPC vs web3-proxy](https://docs.erpc.cloud/compare/erpc-vs-web3-proxy.llms.txt) — eRPC vs web3-proxy (llamanodes) feature by feature, with a source link in every cell, and where web3-proxy is the better fit.
 - [Authentication](https://docs.erpc.cloud/config/auth.llms.txt) — Lock down every request with a token, JWT, wallet signature, or IP allowlist — and bind each identity to its own rate-limit budget.
 - [Storage drivers](https://docs.erpc.cloud/config/database/drivers.llms.txt) — Five interchangeable cache back-ends — memory, Redis, PostgreSQL, DynamoDB, and a read-only gRPC BDS connector — all behind one uniform interface, with optional per-operation failsafe policies that keep transient storage hiccups invisible to your upstreams.
 - [Cache policies](https://docs.erpc.cloud/config/database/evm-json-rpc-cache.llms.txt) — Stop paying for the same upstream call twice — eRPC caches every EVM JSON-RPC response by finality bucket, fans out reads in parallel, and rejects stale tip-of-chain data before it ever reaches your users.

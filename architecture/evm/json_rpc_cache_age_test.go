@@ -241,11 +241,13 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 	})
 
 	t.Run("TriesNextPolicyAfterAgeRejection", func(t *testing.T) {
-		// Create two mock connectors
-		mockConnector1 := &data.MockConnector{}
+		// Two policies fan out concurrently, so the connectors must not hand the
+		// shared request to testify: its argument diff reflect-reads the request
+		// while the other goroutine lazily parses it, which -race reports.
+		mockConnector1 := &reqBlindConnector{MockConnector: &data.MockConnector{}}
 		mockConnector1.On("Id").Return("mock-connector-1")
 
-		mockConnector2 := &data.MockConnector{}
+		mockConnector2 := &reqBlindConnector{MockConnector: &data.MockConnector{}}
 		mockConnector2.On("Id").Return("mock-connector-2")
 
 		// Create an old cached response for connector 1 (2 minutes ago)
@@ -326,4 +328,14 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 		// Ensure we received a cached response; hash may vary depending on age-guard acceptance
 		assert.True(t, resp.FromCache())
 	})
+}
+
+// reqBlindConnector forwards Get to the testify mock without the request
+// metadata, so concurrent policy goroutines never reflect over the request.
+type reqBlindConnector struct {
+	*data.MockConnector
+}
+
+func (c *reqBlindConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, _ interface{}) ([]byte, error) {
+	return c.MockConnector.Get(ctx, index, partitionKey, rangeKey, nil)
 }

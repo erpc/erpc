@@ -221,7 +221,26 @@ jobs:
           version: "~> v2"
           args: release --clean
         env:
+          # The v-prefixed Go module tag lands on this commit after this step;
+          # pin the current tag so GoReleaser never picks that one instead.
+          GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.VERSION }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Go modules only resolve v-prefixed SemVer tags; Docker, npm and GitHub
+      # releases keep the bare version. Never forced: the Go checksum database
+      # pins the first commit a module version points to.
+      - name: Push Go module tag
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" >/dev/null; then
+            echo "v${VERSION} already exists"
+          else
+            git tag "v${VERSION}"
+            git push origin "v${VERSION}"
+          fi
+          curl -fsS "https://proxy.golang.org/github.com/erpc/erpc/@v/v${VERSION}.info"
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0

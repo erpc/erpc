@@ -496,12 +496,13 @@ var (
 	}, []string{"project", "vendor", "network", "upstream"})
 
 	// MetricUpstreamStateProbe counts probe outcomes, by probe kind
-	// (context = execution-context call, proof = eth_getProof) and outcome
-	// (match/mismatch/unsupported/error).
+	// (context = execution-context call at a pinned block, proof = eth_getProof,
+	// latest = execution-context call at the "latest" tag) and outcome
+	// (match/stale/pin_ignored/mismatch/unsupported/error).
 	MetricUpstreamStateProbe = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_state_probe_total",
-		Help:      "Total state-trie probes by kind (context/proof) and outcome (match/mismatch/unsupported/error).",
+		Help:      "Total state-trie probes by kind (context/proof/latest) and outcome (match/stale/pin_ignored/mismatch/unsupported/error).",
 	}, []string{"project", "vendor", "network", "upstream", "probe", "outcome"})
 
 	// MetricIntegrityFollowHead is the highest block of the CONTIGUOUS,
@@ -811,6 +812,20 @@ var (
 		Name:      "upstream_credit_units_total",
 		Help:      "Total vendor credit units accrued by upstream attempts, per (project, network, upstream, vendor, method, finality). Vendor-owned units, not money; not comparable across vendors.",
 	}, []string{"project", "network", "upstream", "vendor", "category", "finality"})
+
+	// Vendor requests saved by packing = sum(outcome="packed") - count(batch_size).
+	MetricUpstreamMulticall3CallsTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_multicall3_calls_total",
+		Help:      "eth_calls seen by an upstream with multicall3 packing, by outcome: packed (answered by a multicall), alone (no other call to pack with), reverted/empty/failed (multicall could not answer it exactly, sent alone), ineligible (not packable, sent alone), bypassed (target in bypassContracts or learned, sent alone), canceled (attempt ended while waiting).",
+	}, []string{"project", "network", "upstream", "vendor", "outcome"})
+
+	MetricUpstreamMulticall3BatchSize = DefineLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "upstream_multicall3_batch_size",
+		Help:      "eth_calls carried by each multicall3 request sent to an upstream.",
+		Buckets:   []float64{2, 3, 5, 8, 13, 20, 50, 100},
+	}, []string{"project", "network", "upstream", "vendor"})
 
 	// MetricNetworkRetryAttemptTotal counts retry attempts at the
 	// network scope, labeled by the reason for retry (empty_result /

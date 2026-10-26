@@ -194,12 +194,16 @@ func Validate(ctx context.Context, in Input) Result {
 				case PinFresh:
 					// Skipped counts as cleared too: the adopted pin resolved the
 					// dispute and the check has nothing left to verify.
-					if v2, _ := runCheck(ctx, c, d, cfg); v2 == nil || v2 == Skipped {
+					v2, panicked := runCheck(ctx, c, d, cfg)
+					if panicked {
+						res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "panic"})
+						continue
+					}
+					if v2 == nil || v2 == Skipped {
 						res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "reconfirmed"})
 						continue
-					} else {
-						v = v2
 					}
+					v = v2
 				case PinRateLimited:
 					// The pin could not be re-checked right now, so this violation
 					// rests on CACHED state we have no fresh evidence for. Hard

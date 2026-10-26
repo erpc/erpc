@@ -73,6 +73,78 @@ func setupTestSvmNetwork(t *testing.T, ctx context.Context, upstreams []*common.
 	return network
 }
 
+// setupTestSvmNetworkWithConsensus is like setupTestSvmNetwork but attaches a
+// 2-of-N consensus policy scoped to the given finality states (e.g. Realtime for
+// getSignaturesForAddress).
+func setupTestSvmNetworkWithConsensus(
+	t *testing.T,
+	ctx context.Context,
+	upstreams []*common.UpstreamConfig,
+	matchFinality []common.DataFinalityState,
+) *Network {
+	t.Helper()
+
+	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+	require.NoError(t, err)
+
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	require.NoError(t, err)
+
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		ctx, &log.Logger, "test",
+		upstreams, ssr, rateLimitersRegistry, vr, pr,
+		nil, metricsTracker, nil,
+	)
+
+	participants := len(upstreams)
+	if participants < 2 {
+		participants = 2
+	}
+	netCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm: &common.SvmNetworkConfig{
+			Cluster:    "mainnet-beta",
+			Commitment: "confirmed",
+		},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod:   "*",
+			MatchFinality: matchFinality,
+			Consensus: &common.ConsensusPolicyConfig{
+				MaxParticipants:    participants,
+				AgreementThreshold: 2,
+			},
+		}},
+	}
+	require.NoError(t, netCfg.SetDefaults(upstreams, nil))
+
+	network, err := NewNetwork(
+		ctx, &log.Logger, "test", netCfg,
+		rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil,
+	)
+	require.NoError(t, err)
+
+	upstreamsRegistry.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+	require.NoError(t, upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.SvmNetworkId("", "mainnet-beta")))
+	time.Sleep(150 * time.Millisecond)
+	return network
+}
+
 func svmUpstreamConfig(id, host string) *common.UpstreamConfig {
 	return &common.UpstreamConfig{
 		Id:       id,

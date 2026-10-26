@@ -19,6 +19,7 @@ const (
 	CompositeTypeLogsSplitProactive        = "logs-split-proactive"
 	CompositeTypeTraceFilterSplitOnError   = "trace-filter-split-on-error"
 	CompositeTypeTraceFilterSplitProactive = "trace-filter-split-proactive"
+	CompositeTypeMulticall3                = "multicall3"
 )
 
 const RequestContextKey ContextKey = "rq"
