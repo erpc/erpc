@@ -145,9 +145,9 @@ func TestDisprovedStreak_ObserveOnlyRecordsNothing(t *testing.T) {
 func TestStateProber_WrongCanaryFailsSymmetrically(t *testing.T) {
 	const head = int64(1000)
 	ups := []common.Upstream{
-		common.NewFakeUpstream("upstream-a"),
-		common.NewFakeUpstream("upstream-b"),
-		common.NewFakeUpstream("upstream-c"),
+		common.NewFakeUpstream("upstream-a", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(head, head-10))),
+		common.NewFakeUpstream("upstream-b", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(head, head-10))),
+		common.NewFakeUpstream("upstream-c", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(head, head-10))),
 	}
 	net := &fleetNetwork{ups: ups, cfg: &common.NetworkConfig{}}
 	net.forward = func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {

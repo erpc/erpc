@@ -226,6 +226,13 @@ func (p *stateProber) probeAll(ctx context.Context, headN int64) {
 	defer cancel()
 
 	for _, u := range enum.EvmAllUpstreams(ctx) {
+		// Probed at a pin above its head counter, u would meet the refusal
+		// rule (spec §6.4) and have its head Asked first, and its missing
+		// state would read as a failed probe. It is probed at a later pin it
+		// reached (spec §13), so it stays due.
+		if eu, isEvm := u.(common.EvmUpstream); !isEvm || eu.EvmEffectiveLatestBlock() < headN {
+			continue
+		}
 		id := u.Id()
 		p.mu.Lock()
 		last := p.lastProbe[id]

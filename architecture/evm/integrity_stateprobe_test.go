@@ -68,6 +68,7 @@ func newProbeNetwork(t *testing.T) *probeNetwork {
 }
 
 func proberFor(pn *probeNetwork, headN int64, stateRoot string) (*stateProber, *ChainTracker) {
+	common.WithEvmStatePoller(common.NewFakeEvmStatePoller(headN, headN-10))(pn.upstream)
 	v := newChainTracker(context.Background(), pn, 32, 0, "", "", "", nil, newFetchScheduler(context.Background(), pn))
 	v.Observe("a", json.RawMessage(fmt.Sprintf(`{"number":"0x%x","hash":"%s","parentHash":"%s","stateRoot":"%s"}`,
 		headN, testHash("e", uint64(headN)), testHash("f", uint64(headN-1)), stateRoot)), true)

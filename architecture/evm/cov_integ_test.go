@@ -17,6 +17,7 @@ import (
 	"github.com/erpc/erpc/util"
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
+	gethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -111,6 +112,65 @@ func (n *covIntegFleetHeadNet) EvmLaneHead(string, string) common.EvmHead {
 	return common.EvmHead{Latest: n.latest}
 }
 func (n *covIntegFleetHeadNet) EvmRefreshHead(context.Context, bool) {}
+
+// covIntegRefusingNet is a fleet whose Forward applies the refusal rule
+// first, as the network does before dispatch: a request's lane is the
+// upstream it names, whose head counter is its Latest and ceiling, and
+// each stale-ceiling or band Ask is counted by that upstream.
+type covIntegRefusingNet struct {
+	*covIntegFleetNet
+	askMu sync.Mutex
+	asks  map[string]int
+}
+
+func (n *covIntegRefusingNet) upstreamHead(id string) int64 {
+	for _, u := range n.ups {
+		if u.Id() == id {
+			return u.(common.EvmUpstream).EvmEffectiveLatestBlock()
+		}
+	}
+	return 0
+}
+
+func (n *covIntegRefusingNet) laneHead(sel string) common.EvmHead {
+	h := n.upstreamHead(sel)
+	return common.EvmHead{Latest: h, Ceiling: h}
+}
+
+func (n *covIntegRefusingNet) EvmHead(_ context.Context, req *common.NormalizedRequest) common.EvmHead {
+	return n.laneHead(req.Directives().UseUpstream)
+}
+func (n *covIntegRefusingNet) EvmLaneHead(_, sel string) common.EvmHead { return n.laneHead(sel) }
+func (n *covIntegRefusingNet) EvmRefreshHead(context.Context, bool)     {}
+func (n *covIntegRefusingNet) EvmBlockTime() time.Duration              { return time.Second }
+func (n *covIntegRefusingNet) EvmAskStale(_ context.Context, sel string) (int64, time.Time) {
+	n.ask(sel)
+	return n.upstreamHead(sel), time.Time{}
+}
+func (n *covIntegRefusingNet) EvmAskBand(sel string, _ int64) { n.ask(sel) }
+
+func (n *covIntegRefusingNet) ask(sel string) {
+	n.askMu.Lock()
+	defer n.askMu.Unlock()
+	n.asks[sel]++
+}
+
+func (n *covIntegRefusingNet) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	HeadRefusalOf(ctx, req)
+	return n.covIntegNet.Forward(ctx, req)
+}
+
+// probesTo counts the requests forwarded to upstream id.
+func (n *covIntegRefusingNet) probesTo(id string) (c int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for _, d := range n.dirs {
+		if d != nil && d.UseUpstream == id {
+			c++
+		}
+	}
+	return c
+}
 
 // covIntegPlainUp hides every EVM capability of the wrapped upstream.
 type covIntegPlainUp struct{ common.Upstream }
@@ -583,7 +643,7 @@ func TestCovInteg_StateProber(t *testing.T) {
 	})
 
 	t.Run("an upstream probed within the interval is skipped", func(t *testing.T) {
-		u := common.NewFakeUpstream("u1").(*common.FakeUpstream)
+		u := common.NewFakeUpstream("u1", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(head, head-10))).(*common.FakeUpstream)
 		u.Config().IgnoreMethods = []string{"eth_getProof"}
 		net := mkNet("cov-integ-sp-due", &script{callRes: atHead}, u)
 		p := mkProber(net, time.Hour)
@@ -596,7 +656,7 @@ func TestCovInteg_StateProber(t *testing.T) {
 	})
 
 	t.Run("run probes the newest handed head; the newest replaces a queued one", func(t *testing.T) {
-		u := common.NewFakeUpstream("u1").(*common.FakeUpstream)
+		u := common.NewFakeUpstream("u1", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(head, head-10))).(*common.FakeUpstream)
 		u.Config().IgnoreMethods = []string{"eth_getProof"}
 		net := mkNet("cov-integ-sp-run", &script{callRes: atHead}, u)
 		p := mkProber(net, 0)
@@ -609,6 +669,64 @@ func TestCovInteg_StateProber(t *testing.T) {
 		cancel()
 		<-done
 		assert.Equal(t, 1, net.callCount())
+	})
+
+	t.Run("a lagging upstream gets no probe and no head Ask until its head counter reaches the pin", func(t *testing.T) {
+		node := []byte("state-trie-root-node")
+		root := fmt.Sprintf("0x%x", gethcrypto.Keccak256(node))
+		lead := common.NewFakeUpstream("lead", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(head, head-10))).(*common.FakeUpstream)
+		lagPoller := common.NewFakeEvmStatePoller(head-16, head-26)
+		lag := common.NewFakeUpstream("lag", common.WithEvmStatePoller(lagPoller)).(*common.FakeUpstream)
+		net := &covIntegRefusingNet{asks: map[string]int{}}
+		net.covIntegFleetNet = &covIntegFleetNet{ups: []common.Upstream{lead, lag}, covIntegNet: newCovIntegNet("cov-integ-sp-lag", nil, func(req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			jrq, _ := req.JsonRpcRequest()
+			at := jrq.Params[1]
+			if jrq.Method == "eth_getProof" {
+				at = jrq.Params[2]
+			}
+			n, _ := parseHexQuantity(at.(string))
+			if n > net.upstreamHead(req.Directives().UseUpstream) {
+				return nil, errors.New("header not found") // a node holds no state above its head
+			}
+			if jrq.Method == "eth_getProof" {
+				return covIntegResp(fmt.Sprintf(`{"accountProof":["0x%x"]}`, node)), nil
+			}
+			return covIntegResp(fmt.Sprintf(`"0x%064x"`, n)), nil
+		})}
+		v := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		v.Observe("a", json.RawMessage(fmt.Sprintf(`{"number":"0x%x","hash":"%s","parentHash":"%s","stateRoot":"%s"}`,
+			head, testHash("e", uint64(head)), testHash("f", uint64(head-1)), root)), true)
+		v.sync(t.Context())
+		p := &stateProber{
+			network: net, view: v, pinnedProbes: true,
+			ctxProbe:  integrity.ChainStateContextProbe(1),
+			lastProbe: map[string]time.Time{}, work: make(chan int64, 1),
+		}
+
+		proofErrs := func() int64 {
+			v, ok := p.proofErrors.Load("lag")
+			if !ok {
+				return 0
+			}
+			return v.(*atomic.Int64).Load()
+		}
+		for range stateProbeProofErrors {
+			p.probeAll(ctx, head)
+		}
+		assert.Equal(t, 2*stateProbeProofErrors, net.probesTo("lead"), "an upstream at the pin gets the context and proof probes")
+		assert.Equal(t, head, lead.EvmStateProvenBlock())
+		assert.Zero(t, net.probesTo("lag"), "an upstream below the pin gets no probe")
+		assert.Empty(t, net.asks, "no probe Asks a head")
+		assert.Zero(t, proofErrs(), "a lagging upstream's missing state is no proof error")
+		assert.False(t, p.proofsOff("lag"), "the proof switch never counts a lagging upstream")
+		assert.Zero(t, covIntegStreak(p, "lag"))
+
+		lagPoller.SuggestLatestBlock(head, time.Now())
+		p.probeAll(ctx, head)
+		assert.Equal(t, 2, net.probesTo("lag"), "once its head counter reached the pin it is probed")
+		assert.Equal(t, head, lag.EvmStateProvenBlock())
+		assert.Empty(t, net.asks, "no probe Asks a head")
+		assert.Zero(t, proofErrs())
 	})
 
 	t.Run("nil network has empty project label", func(t *testing.T) {
