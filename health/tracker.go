@@ -122,6 +122,13 @@ func (t *Timer) ObserveDuration(isSuccess bool) {
 	t.tracker.RecordUpstreamDuration(t.upstream, t.method, duration, isSuccess, t.compositeType, t.finality, t.userId)
 }
 
+// ObserveCancelled records a primary attempt cancelled before it answered:
+// the elapsed time is a lower bound on its latency.
+func (t *Timer) ObserveCancelled() {
+	duration := time.Since(t.start)
+	t.tracker.RecordUpstreamCancelledDuration(t.upstream, t.method, duration, t.compositeType, t.finality, t.userId)
+}
+
 // ------------------------------------
 // TrackedMetrics
 // ------------------------------------
@@ -167,6 +174,13 @@ type TrackedMetrics struct {
 	// look idle to the very next sweep tick) and refreshed on every
 	// hot-path write.
 	LastAccessedAtMs atomic.Int64 `json:"-"`
+
+	// cancelledQuantiles holds the elapsed time of primary attempts
+	// cancelled before they answered (hedge lost, client gone): lower
+	// bounds on their latency. Kept out of ResponseQuantiles, which also
+	// drives adaptive timeouts and hedge delays; only PolicyQuantiles
+	// reads it. Allocated on the first cancellation.
+	cancelledQuantiles atomic.Pointer[QuantileTracker]
 }
 
 // newTrackedMetrics constructs an empty TrackedMetrics with all
@@ -204,6 +218,27 @@ func (m *TrackedMetrics) ErrorRate() float64 {
 
 func (m *TrackedMetrics) GetResponseQuantiles() common.QuantileTracker {
 	return m.ResponseQuantiles
+}
+
+// PolicyQuantiles reads qtiles off ResponseQuantiles merged with the
+// cancelled-attempt lower bounds. Each answered or cancelled primary
+// attempt then counts as min(latency, elapsed at cancel), so these
+// quantiles never exceed the true ones. Without the lower bounds, an
+// upstream whose every attempt loses a hedge race keeps an empty sketch
+// and reads as 0 s, the fastest.
+func (m *TrackedMetrics) PolicyQuantiles(qtiles []float64) []time.Duration {
+	return m.ResponseQuantiles.quantilesWith(m.cancelledQuantiles.Load(), qtiles)
+}
+
+func (m *TrackedMetrics) addCancelled(logger *zerolog.Logger, seconds float64) {
+	q := m.cancelledQuantiles.Load()
+	if q == nil {
+		q = NewQuantileTracker(logger)
+		if !m.cancelledQuantiles.CompareAndSwap(nil, q) {
+			q = m.cancelledQuantiles.Load()
+		}
+	}
+	q.Add(seconds)
 }
 
 func (m *TrackedMetrics) ThrottledRate() float64 {
@@ -257,6 +292,9 @@ func (m *TrackedMetrics) Rotate() {
 	m.RemoteRateLimitedTotal.RotateOldest()
 	m.MisbehaviorsTotal.RotateOldest()
 	m.ResponseQuantiles.RotateOldest()
+	if q := m.cancelledQuantiles.Load(); q != nil {
+		q.RotateOldest()
+	}
 }
 
 // Reset wipes every counter and the quantile sketch fully. Test/admin
@@ -267,6 +305,9 @@ func (m *TrackedMetrics) Reset() {
 	m.RemoteRateLimitedTotal.Wipe()
 	m.MisbehaviorsTotal.Wipe()
 	m.ResponseQuantiles.Reset()
+	if q := m.cancelledQuantiles.Load(); q != nil {
+		q.Reset()
+	}
 	m.Cordoned.Store(false)
 	m.LastCordonedReason.Store("")
 }
@@ -1025,10 +1066,8 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 	if isSuccess {
 		// Feed the quantile only when `isSuccess` — the caller already
 		// filtered to outcomes whose duration is a real latency signal:
-		// successful responses, EVM reverts (upstream did real work),
-		// and canceled-by-hedge / client-disconnect / engine-timeout
-		// observations (lower-bound on completion time, important for
-		// scoring upstreams that lose every hedge race).
+		// successful responses and EVM reverts (upstream did real work).
+		// Cancelled attempts go through RecordUpstreamCancelledDuration.
 		// Hard upstream errors (connection refused, server 5xx,
 		// throttling) stay out so an upstream that's failing fast
 		// doesn't get crowned "fastest in the pool".
@@ -1049,6 +1088,24 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 	obs.Observe(sec)
 }
 
+// RecordUpstreamCancelledDuration records the elapsed time of a primary
+// attempt cancelled before it answered. It feeds only the per-upstream
+// lower-bound sketch read by PolicyQuantiles; ResponseQuantiles and the
+// network aggregates stay real-latency only.
+func (t *Tracker) RecordUpstreamCancelledDuration(up common.Upstream, method string, d time.Duration, comp string, finality common.DataFinalityState, userId string) {
+	if comp == "" {
+		comp = "none"
+	}
+	sec := d.Seconds()
+	nowMs := time.Now().UnixMilli()
+	for _, k := range t.getUpsKeys(up, method, finality) {
+		tm := t.getUpsMetrics(k)
+		tm.addCancelled(t.logger, sec)
+		tm.touch(nowMs)
+	}
+	t.getUpstreamRequestDurationObserver(up, method, comp, finality, userId).Observe(sec)
+}
+
 func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, finality common.DataFinalityState, err error) {
 	// Ignore errors that do not reflect upstream quality:
 	// - ExecutionException: valid blockchain state (e.g. revert)
@@ -1061,7 +1118,7 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, final
 	//   attempts are excluded from RequestsTotal / ErrorsTotal at the call
 	//   site in upstream.tryForward, so cancellations only reach here for
 	//   primary attempts — where they almost always mean "client gave up,"
-	//   not "upstream failed."  Slowness is already captured by ResponseQuantiles.
+	//   not "upstream failed."  Slowness shows in PolicyQuantiles instead.
 	// - BlockUnavailable: the requested height is outside this upstream's
 	//   served window or has not been applied yet. Retry/failover still
 	//   happens; scoring lag is BlockHeadLag, not ErrorRate. Counting these
