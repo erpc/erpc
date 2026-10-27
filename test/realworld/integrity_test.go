@@ -117,7 +117,9 @@ func u8(integrity bool) spec {
 // answer is the chain's, and every check corroborates. Vendor-a's forged
 // receipts come u9ForgedSlow late, so the check is waiting on that fetch:
 // it takes them as they meet the answer rules and waits for no refetch
-// from vendor-b, while the forged ones are never held (§11). While it
+// from vendor-b, while the forged ones are never held (§11). They fail an
+// integrity check after decode, and the same sweep goes on to vendor-b, so
+// no receipts fetch fails under them (§11). While it
 // reads, every odd block with transactions is fetched at pin time, even
 // one no logs filter wants, and no empty block gets a receipts call (§11
 // prefetch, C10).
@@ -149,10 +151,21 @@ func u9() spec {
 			{"wrong-bloom", func(f *chainsim.Faults, on bool) { f.WrongBloom = on }},
 		} {
 			a0, b0 := s.receiptsCalls(vendorA), s.receiptsCalls(vendorB)
+			failed0 := s.failedReceiptsFetches()
 			tr.setPhase(fault.name)
 			s.fault(vendorA, fault.set, u9FaultBlocks)
 			during += s.receiptsCalls(vendorA) - a0
 			duringB += s.receiptsCalls(vendorB) - b0
+			if fault.name == "forged" {
+				// A forged log fails an integrity check after decode: the
+				// sweep goes on to vendor-b, so no receipts fetch fails
+				// (§11).
+				for pod, n := range s.failedReceiptsFetches() {
+					if d := n - failed0[pod]; d > 0 {
+						s.violate(s.name, "pod-%d: %v receipts fetches failed under vendor-a's forged log: a failed check ended the sweep before vendor-b", pod+1, d)
+					}
+				}
+			}
 			tr.setPhase("recovery")
 			s.blocks(10)
 		}
@@ -511,6 +524,16 @@ func (s *scenario) suspensions(check string) []float64 {
 	out := make([]float64, len(s.h.pods))
 	for pod := range s.h.pods {
 		out[pod], _ = s.metric(pod, "erpc_integrity_check_suspended_total", labels)
+	}
+	return out
+}
+
+// failedReceiptsFetches is the chain tracker's failed receipts fetches per
+// pod.
+func (s *scenario) failedReceiptsFetches() []float64 {
+	out := make([]float64, len(s.h.pods))
+	for pod := range s.h.pods {
+		out[pod], _ = s.metric(pod, "erpc_chain_tracker_fetch_total", map[string]string{"kind": "receipts", "outcome": "error"})
 	}
 	return out
 }

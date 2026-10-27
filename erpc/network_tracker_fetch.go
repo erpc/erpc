@@ -2,8 +2,10 @@ package erpc
 
 import (
 	"context"
+	"slices"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -19,8 +21,11 @@ var trackerAttemptSlack = time.Second
 // attempt gets an even share of what remains of ctx plus
 // trackerAttemptSlack, so one slow upstream cannot end the sweep. The cache
 // is read only when req's directives allow it. check is the tracker's
-// answer check: an answer it fails is returned with its error, never
-// cached and never shared. A network-wide sweep leads the in-flight
+// answer check: an answer it fails is never cached and never shared. A
+// content-validation failure (an integrity check the tracker ran after
+// decode) fails only that upstream: the pass goes on, to upstreams of
+// another vendor first (spec §11). Any other failure ends the pass with
+// that answer and its error. A network-wide sweep leads the in-flight
 // multiplexer, so identical client requests join it. A failed pass returns
 // ErrUpstreamsExhausted carrying each tried upstream's error.
 func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequest, upstreamId string, check func(*common.NormalizedResponse) error) (resp *common.NormalizedResponse, err error) {
@@ -66,10 +71,7 @@ func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequ
 		}
 	}
 
-	if resp, err = n.sweep(ctx, req, method, ups, startTime); err != nil {
-		return nil, err
-	}
-	if err = check(resp); err != nil {
+	if resp, err = n.sweep(ctx, req, method, ups, startTime, check); err != nil {
 		return resp, err
 	}
 	checked = true
@@ -80,13 +82,14 @@ func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequ
 	return resp, nil
 }
 
-// sweep tries ups in order and returns the first non-empty answer, else the
-// last empty one.
-func (n *Network) sweep(ctx context.Context, req *common.NormalizedRequest, method string, ups []common.Upstream, startTime time.Time) (*common.NormalizedResponse, error) {
+// sweep tries ups in order and returns the first non-empty answer check
+// passes, else the last empty one.
+func (n *Network) sweep(ctx context.Context, req *common.NormalizedRequest, method string, ups []common.Upstream, startTime time.Time, check func(*common.NormalizedResponse) error) (*common.NormalizedResponse, error) {
 	finality := req.Finality(ctx)
 	deadline, bounded := ctx.Deadline()
 	var best *common.NormalizedResponse
-	for _, u := range ups {
+	for i := range ups {
+		u := ups[i]
 		if ctx.Err() != nil {
 			break
 		}
@@ -121,6 +124,17 @@ func (n *Network) sweep(ctx context.Context, req *common.NormalizedRequest, meth
 		r.SetUpstream(u)
 		r.WithRequest(req)
 		if !r.IsResultEmptyish(ctx) {
+			if err := check(r); err != nil {
+				if !common.HasErrorCode(err, common.ErrCodeEndpointContentValidation) {
+					if best != nil {
+						best.Release()
+					}
+					return r, err
+				}
+				req.ErrorsByUpstream.Store(u, err)
+				otherVendorsFirst(ups[i+1:], evm.VendorKey(u))
+				continue
+			}
 			if best != nil {
 				best.Release()
 			}
@@ -133,7 +147,7 @@ func (n *Network) sweep(ctx context.Context, req *common.NormalizedRequest, meth
 		best = r
 	}
 	if best != nil {
-		return best, nil
+		return best, check(best)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, context.Cause(ctx)
@@ -141,6 +155,21 @@ func (n *Network) sweep(ctx context.Context, req *common.NormalizedRequest, meth
 	s := req.ExecState().Snapshot()
 	return nil, common.NewErrUpstreamsExhausted(req, &req.ErrorsByUpstream, n.projectId, n.networkId, method,
 		time.Since(startTime), s.Attempts, s.Retries, s.Hedges, len(ups))
+}
+
+// otherVendorsFirst moves the upstreams of vendor behind every other, in
+// place, each side keeping its order.
+func otherVendorsFirst(ups []common.Upstream, vendor string) {
+	slices.SortStableFunc(ups, func(a, b common.Upstream) int {
+		sa, sb := evm.VendorKey(a) == vendor, evm.VendorKey(b) == vendor
+		switch {
+		case sa == sb:
+			return 0
+		case sa:
+			return 1
+		}
+		return -1
+	})
 }
 
 // trackerUpstreams is the named upstream, or the selection order narrowed to
