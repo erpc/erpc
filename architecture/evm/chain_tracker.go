@@ -1620,17 +1620,17 @@ func (t *ChainTracker) finalThrough(hs []*chainHeader, fin int64) (through uint6
 
 // rewindVoters is the rollback write (spec §14), on a move to a branch
 // whose head is below the old pinned head, a reorg or a re-anchor down; a
-// re-anchor up is a catch-up and owes none. Each hash voter (hash age at
-// most W) whose vote is on the new pins has its latest counter lowered to
-// that vote's height where the counter is above it, so Latest follows the
+// re-anchor up is a catch-up and owes none. Each voter whose own fresh
+// hash vote is on the new pins has its latest counter lowered to that
+// vote's height where the counter is above it, so Latest follows the
 // rewound chain on every instance. Every other voter is owed the rewind
-// once it is a hash voter with its vote on the pins (rewindLate): a vote
-// from before a gap is no evidence.
+// once a fresh vote of its reaches the pins (rewindLate): a vote from
+// before a gap is no evidence.
 func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) {
 	votes := make(map[string]int64, len(t.votes))
 	t.rewindDue = make(map[string]bool)
 	for u, nd := range t.votes {
-		if p := pathAt(nd.h.number); p != nil && p.hash == nd.h.hash && t.counts(u) {
+		if p := pathAt(nd.h.number); p != nil && p.hash == nd.h.hash && t.votedFresh(u) {
 			votes[u] = int64(nd.h.number)
 		} else {
 			t.rewindDue[u] = true
@@ -1644,20 +1644,28 @@ func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) {
 	t.rewindHeads(votes)
 }
 
-// rewindLate writes the rewind owed to a voter once it is a hash voter
-// with its vote on the pins after the switch, once per voter per switch.
+// rewindLate writes the rewind owed to a voter once its fresh hash vote
+// reached the pins after the switch, once per voter per switch.
 func (t *ChainTracker) rewindLate() {
 	if len(t.rewindDue) == 0 {
 		return
 	}
 	votes := make(map[string]int64)
 	for u := range t.rewindDue {
-		if nd := t.votes[u]; nd != nil && t.alive(nd) && t.pinned(nd) && t.counts(u) {
+		if nd := t.votes[u]; nd != nil && t.alive(nd) && t.pinned(nd) && t.votedFresh(u) {
 			votes[u] = int64(nd.h.number)
 			delete(t.rewindDue, u)
 		}
 	}
 	t.rewindHeads(votes)
+}
+
+// votedFresh reports whether u's hash vote arrived at most W ago. Not
+// hash age: after a rewind on every upstream each vote on the new branch
+// stands below the old branch's headers for longer than W, so no voter is
+// a hash voter until the counters fall, and only this write lowers them.
+func (t *ChainTracker) votedFresh(u string) bool {
+	return time.Since(t.voteAt[u]) <= t.W()
 }
 
 func (t *ChainTracker) rewindHeads(votes map[string]int64) {
