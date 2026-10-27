@@ -1693,8 +1693,10 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 					Type:     common.UpstreamTypeEvm,
 					Id:       "rpc1",
 					Endpoint: "http://rpc1.localhost",
+					// Polled, so the head at answer time (0x11118888) is known.
 					Evm: &common.EvmUpstreamConfig{
-						ChainId: 123,
+						ChainId:             123,
+						StatePollerInterval: common.Duration(time.Minute),
 					},
 				},
 				{
@@ -1730,6 +1732,7 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 			}
 		}
 		require.NotNil(t, rpc1)
+		require.Equal(t, int64(0x11118888), req.HeadAtError(rpc1), "rpc1's head must be known when it answered")
 		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash", common.DataFinalityStateAll)
 		assert.True(t, metrics.MisbehaviorsTotal.Load() > 0,
 			"rpc1 SHOULD have misbehavior recorded — no block availability bounds configured")
@@ -1737,15 +1740,19 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 			"rpc1 should NOT have errors recorded — wrong-empty only records misbehavior, not failure")
 	})
 
-	misbehaviors := func(t *testing.T, network *Network, id string) int64 {
+	findUpstream := func(t *testing.T, network *Network, id string) *upstream.Upstream {
 		t.Helper()
 		for _, u := range network.upstreamsRegistry.GetAllUpstreams() {
 			if u.Id() == id {
-				return network.metricsTracker.GetUpstreamMethodMetrics(u, "eth_getTransactionByHash", common.DataFinalityStateAll).MisbehaviorsTotal.Load()
+				return u
 			}
 		}
 		t.Fatalf("upstream %s not found", id)
-		return 0
+		return nil
+	}
+	misbehaviors := func(t *testing.T, network *Network, id string) int64 {
+		t.Helper()
+		return network.metricsTracker.GetUpstreamMethodMetrics(findUpstream(t, network, id), "eth_getTransactionByHash", common.DataFinalityStateAll).MisbehaviorsTotal.Load()
 	}
 
 	t.Run("EmptyBelowItsHead_NoPunishment", func(t *testing.T) {
@@ -1784,8 +1791,8 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 
 		network := setupTestNetworkWithCustomUpstreams(t, ctx,
 			[]*common.UpstreamConfig{
-				{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-				{Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+				{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(time.Minute)}},
+				{Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(time.Minute)}},
 			},
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
@@ -1798,6 +1805,7 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 		resp, err := network.Forward(ctx, req)
 		require.NoError(t, err)
 		require.Equal(t, "rpc2", resp.UpstreamId())
+		require.Equal(t, int64(0x11118888), req.HeadAtError(findUpstream(t, network, "rpc1")), "rpc1's head must be known when it answered")
 
 		assert.Equal(t, int64(0), misbehaviors(t, network, "rpc1"),
 			"rpc1's head was below the winning block when it answered empty")

@@ -2513,7 +2513,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			upstream := key.(*upstream.Upstream)
 			// An upstream whose head was below the winning block when it answered
 			// was behind, or the data did not exist yet (e.g. a tx not yet mined).
-			if respBlockNumber > 0 && req.HeadAtError(upstream) < respBlockNumber {
+			// An unknown head (0) proves neither, so it still counts.
+			if head := req.HeadAtError(upstream); respBlockNumber > 0 && head > 0 && head < respBlockNumber {
 				return true
 			}
 			finality := req.Finality(ctx)
