@@ -334,7 +334,7 @@ func (p *FakeEvmStatePoller) AskReaching(context.Context, int64, AskReason) Head
 	return HeadAnswer{Outcome: AskSharedFresh, Block: p.latestBlockNumber}
 }
 
-func (p *FakeEvmStatePoller) RefreshFinalizedBlock() {}
+func (p *FakeEvmStatePoller) RefreshFinalizedBlock() bool { return true }
 
 func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown

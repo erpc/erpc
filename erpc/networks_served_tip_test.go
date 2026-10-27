@@ -48,6 +48,8 @@ type servedTipFixture struct {
 	syncing          bool
 	ignoreMethods    []string
 	tags             []string
+	// debounce, when set, is the upstream's statePollerDebounce.
+	debounce time.Duration
 }
 
 // setupServedTipNetwork bootstraps a Network with the supplied upstream
@@ -92,7 +94,7 @@ func setupServedTipNetworkEvery(t *testing.T, ctx context.Context, fixtures []se
 			cid = chainID
 		}
 		endpoint := "http://" + f.id + ".localhost"
-		evmCfg := &common.EvmUpstreamConfig{ChainId: cid}
+		evmCfg := &common.EvmUpstreamConfig{ChainId: cid, StatePollerDebounce: common.Duration(f.debounce)}
 		if f.upperExactBlock > 0 {
 			upper := f.upperExactBlock
 			evmCfg.BlockAvailability = &common.EvmBlockAvailabilityConfig{
@@ -2378,6 +2380,72 @@ func TestServedTip_Finalized_RegressionGuardHolds(t *testing.T) {
 	assert.Equal(t, int64(1_002_400), servedHead(network, ctx).Finalized,
 		"the guard protects the finalized axis exactly as it protects latest")
 	assert.Equal(t, before+1, servedTipRegressionCount(network, "finalized", "held"))
+}
+
+// A finalized refresh (spec §6.8) Asks as many voters as the quorum needs,
+// oldest finalized report first, and passes over a voter whose finalized
+// tag is given up: its report stays the oldest, but it has no finalized
+// poll, so a place for it would leave the quorum one voter short.
+func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	polls := map[string]int{}
+	for _, id := range []string{"tagless", "fin-a", "fin-b"} {
+		reply := `{"jsonrpc":"2.0","id":1,"result":{"number":"0x26ac","timestamp":"0x6702a8e0"}}`
+		if id == "tagless" {
+			reply = `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid block number tag finalized"}}`
+		}
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				if !strings.Contains(util.SafeReadBody(r), `"finalized"`) {
+					return false
+				}
+				mu.Lock()
+				polls[id]++
+				mu.Unlock()
+				return true
+			}).
+			Reply(200).
+			JSON([]byte(reply))
+	}
+	finalizedPolls := func() map[string]int {
+		mu.Lock()
+		defer mu.Unlock()
+		out := map[string]int{}
+		for k, v := range polls {
+			out[k] = v
+		}
+		return out
+	}
+
+	network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+		{id: "tagless", chainID: 123, latestBlock: 10_000, debounce: time.Millisecond},
+		{id: "fin-a", chainID: 123, latestBlock: 10_000, debounce: time.Millisecond},
+		{id: "fin-b", chainID: 123, latestBlock: 10_000, debounce: time.Millisecond},
+	}, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorum(2)})
+	tagless := ups[0].EvmStatePoller()
+	require.Eventually(t, func() bool {
+		_, _ = tagless.PollFinalizedBlockNumber(ctx)
+		return tagless.GetDiagnostics().SkipFinalizedCheck
+	}, 5*time.Second, 5*time.Millisecond, "tagless gives its finalized tag up after 10 refusals")
+	setServedTipFinalized(t, ups[1], 9_900)
+	setServedTipFinalized(t, ups[2], 9_900)
+	time.Sleep(10 * time.Millisecond) // past every finalized debounce
+
+	before := finalizedPolls()
+	network.EvmRefreshHead(ctx, true)
+	require.Eventually(t, func() bool {
+		now := finalizedPolls()
+		return now["fin-a"] > before["fin-a"] && now["fin-b"] > before["fin-b"]
+	}, 2*time.Second, 5*time.Millisecond, "the refresh polls both voters with a finalized tag: the quorum needs 2 (polls %v → %v)", before, finalizedPolls())
 }
 
 // The guard's clamp branch: the upstream that backed the remembered pick leaves

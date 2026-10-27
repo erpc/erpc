@@ -970,19 +970,20 @@ func nodeFailedPoll(err error) bool {
 
 // RefreshFinalizedBlock starts a background finalized-block poll when the
 // stored one is older than the finalized poll's debounce and no refresh is
-// already in flight; it never blocks.
-func (e *EvmStatePoller) RefreshFinalizedBlock() {
+// already in flight; it never blocks. polls is false when the upstream has
+// no finalized poll to refresh: its finalized tag is given up (spec §6.8).
+func (e *EvmStatePoller) RefreshFinalizedBlock() (polls bool) {
 	if e.IsObjectNull() || e.finalizedBlockShared == nil || e.givenUp(&e.finalizedGiveUp) {
-		return
+		return false
 	}
 	e.stateMu.RLock()
 	cfg := e.cfg
 	e.stateMu.RUnlock()
 	if !e.finalizedBlockShared.IsStale(e.resolveFinalizedDebounce(cfg, e.resolveDebounce(cfg))) {
-		return
+		return true
 	}
 	if !e.finalizedRefreshInFlight.CompareAndSwap(false, true) {
-		return
+		return true
 	}
 	go func() {
 		defer e.finalizedRefreshInFlight.Store(false)
@@ -993,6 +994,7 @@ func (e *EvmStatePoller) RefreshFinalizedBlock() {
 			e.logger.Debug().Err(err).Msg("on-demand finalized block refresh failed in evm state poller")
 		}
 	}()
+	return true
 }
 
 // SuggestLatestBlock reports blockNumber as the upstream's latest, its

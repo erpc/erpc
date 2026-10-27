@@ -41,6 +41,7 @@ type Faults struct {
 	Capacity      bool          // -32005 compute units exceeded, on every method
 	NoNewHeads    bool          // eth_subscribe newHeads answers unsupported
 	RefuseLatest  bool          // eth_getBlockByNumber(latest) answers unsupported
+	NoFinalized   bool          // the finalized and safe tags answer invalid, as on a chain with none
 	Slow          time.Duration // every answer waits this long
 	SlowReceipts  time.Duration // receipts and logs answers wait this long more
 	SlowHistory   time.Duration // answers by hash, and by number below its head, wait this long more
@@ -676,7 +677,7 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 			}
 			b = v.tip
 		case "finalized", "safe":
-			if c.cfg.NoFinalized {
+			if c.cfg.NoFinalized || f.NoFinalized {
 				return nil, &rpcError{-32602, "invalid block number tag " + tag}
 			}
 			depth := uint64(FinalizedLag)

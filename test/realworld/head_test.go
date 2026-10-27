@@ -460,17 +460,23 @@ func (s *scenario) podLogged(pod int, text string) bool {
 	return false
 }
 
-// P7: C12, with http-b finalizing p7FinalityDepth deep. The finalized tag
-// answers Head.Finalized (Latest − FinalizedLag: the q-th highest voter
-// finalized); a block at or below it keeps its hash unless the majority
-// reverts it; a permanent cache write needs the serving upstream to have
-// finalized the block (§6.4 Finality, #90). vendor-b ranks first, so a
-// finalized refresh in routing order would ask http-b and ws-b alone and
-// vendor-a's finalized would stay at its first poll (§6.8).
+// P7: C12, with http-b finalizing p7FinalityDepth deep and ws-b with no
+// finalized tag. The finalized tag answers Head.Finalized (Latest −
+// FinalizedLag: the q-th highest voter finalized); a block at or below it
+// keeps its hash unless the majority reverts it; a permanent cache write
+// needs the serving upstream to have finalized the block (§6.4 Finality,
+// #90). vendor-b ranks first, so a finalized refresh in routing order
+// would ask http-b and ws-b alone and vendor-a's finalized would stay at
+// its first poll; ws-b's finalized report stays the oldest once its tag is
+// given up, so a refresh that gave it a place would leave one for the
+// other three (§6.8).
 func p7() spec {
 	return spec{name: "P7", cache: true, bound: deepReorgDelivery, allow: []string{"ws:logs-end", "ws:jump"},
 		network: map[string]interface{}{"selectionPolicy": rankFirst("b")},
-		faults:  map[string]chainsim.Faults{"http-b": {FinalityDepth: p7FinalityDepth}},
+		faults: map[string]chainsim.Faults{
+			"http-b": {FinalityDepth: p7FinalityDepth},
+			"ws-b":   {NoFinalized: true},
+		},
 		body: func(s *scenario) {
 			s.blocks(50)
 			var finals []*chainsim.Block

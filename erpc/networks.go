@@ -785,10 +785,11 @@ func isSimpleGroupSelector(selector string) bool {
 // needs, since a fresher head anywhere else cannot move the served value.
 // The latest axis takes them in routing order; the finalized axis oldest
 // finalized report first, since a voter's finality depth is its own and
-// routing order does not reflect it (spec §6.8). A lane walks its voters
-// at most once per poll cadence per axis, the debounce each poller
-// applies anyway, so the per-request call costs no upstream iteration in
-// between.
+// routing order does not reflect it, and passes over a voter whose
+// finalized tag is given up: its vote is derived from its latest (spec
+// §6.8). A lane walks its voters at most once per poll cadence per axis,
+// the debounce each poller applies anyway, so the per-request call costs
+// no upstream iteration in between.
 func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 	sel := requestSelector(ctx)
 	var ec *common.EvmNetworkConfig
@@ -823,8 +824,13 @@ func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 		return true
 	})
 	slices.SortStableFunc(pollers, func(a, b common.EvmStatePoller) int { return a.FinalizedReportAt().Compare(b.FinalizedReportAt()) })
-	for _, sp := range pollers[:min(need, len(pollers))] {
-		sp.RefreshFinalizedBlock()
+	for _, sp := range pollers {
+		if need <= 0 {
+			break
+		}
+		if sp.RefreshFinalizedBlock() {
+			need--
+		}
 	}
 }
 

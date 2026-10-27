@@ -259,8 +259,9 @@ type EvmStatePoller interface {
 	AskBackground(need HeadNeed, reason AskReason)
 	// RefreshFinalizedBlock polls the finalized block in the background
 	// when the stored one is older than the finalized poll's debounce;
-	// non-blocking, one in flight.
-	RefreshFinalizedBlock()
+	// non-blocking, one in flight. polls is false when the upstream has no
+	// finalized poll to refresh: its finalized tag is given up.
+	RefreshFinalizedBlock() (polls bool)
 	SetNetworkConfig(cfg *NetworkConfig)
 	IsObjectNull() bool
 	EarliestBlock(probe EvmAvailabilityProbeType) int64

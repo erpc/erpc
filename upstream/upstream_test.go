@@ -306,7 +306,7 @@ func (m *mockEvmStatePoller) AskBackground(common.HeadNeed, common.AskReason) {}
 func (m *mockEvmStatePoller) AskReaching(context.Context, int64, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
-func (m *mockEvmStatePoller) RefreshFinalizedBlock()                     {}
+func (m *mockEvmStatePoller) RefreshFinalizedBlock() bool                { return true }
 func (m *mockEvmStatePoller) LatestReportAt() time.Time                  { return time.Time{} }
 func (m *mockEvmStatePoller) FinalizedReportAt() time.Time               { return time.Time{} }
 func (m *mockEvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {}
@@ -637,7 +637,7 @@ func (m *mockEvmStatePollerWithUpdate) AskBackground(common.HeadNeed, common.Ask
 func (m *mockEvmStatePollerWithUpdate) AskReaching(context.Context, int64, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
-func (m *mockEvmStatePollerWithUpdate) RefreshFinalizedBlock()                     {}
+func (m *mockEvmStatePollerWithUpdate) RefreshFinalizedBlock() bool                { return true }
 func (m *mockEvmStatePollerWithUpdate) LatestReportAt() time.Time                  { return time.Time{} }
 func (m *mockEvmStatePollerWithUpdate) FinalizedReportAt() time.Time               { return time.Time{} }
 func (m *mockEvmStatePollerWithUpdate) SetNetworkConfig(cfg *common.NetworkConfig) {}
