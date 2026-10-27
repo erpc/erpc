@@ -205,6 +205,9 @@ type ChainTracker struct {
 	// was last handled cleanly (handle).
 	panics [panicSlots]int
 	stack  []*node // walkTree's scratch
+	// pick's scratch (countVotes)
+	spine      []*node
+	spineVotes []int
 	// treesDirty: a header was held or dropped, or a walk or fill ended,
 	// since trees was last published.
 	treesDirty bool
@@ -1367,23 +1370,14 @@ func (t *ChainTracker) choose() {
 // child whose subtree holds the most votes. Ties keep the pins. tie is the
 // first tie met: the tied roots, or the tied children at the fork point.
 func (t *ChainTracker) pick(counted []voter) (path []*node, tie []*node) {
-	counts := make(map[*node]int)
-	roots := make(map[*node]struct{})
-	for _, v := range counted {
-		for a := v.n; a != nil; a = a.parent {
-			counts[a]++
-			if a.parent == nil {
-				roots[a] = struct{}{}
-			}
-		}
-	}
+	counts := t.countVotes(counted)
 	pinRoot := t.pinRoot()
 	better := func(r, cur *node) bool {
 		switch {
 		case cur == nil:
 			return true
-		case counts[r] != counts[cur]:
-			return counts[r] > counts[cur]
+		case counts.of(r) != counts.of(cur):
+			return counts.of(r) > counts.of(cur)
 		case cur == pinRoot:
 			return false
 		case r == pinRoot:
@@ -1395,13 +1389,13 @@ func (t *ChainTracker) pick(counted []voter) (path []*node, tie []*node) {
 		}
 	}
 	var root *node
-	for r := range roots {
+	for r := range counts.roots {
 		if better(r, root) {
 			root = r
 		}
 	}
-	for r := range roots {
-		if counts[r] == counts[root] {
+	for r := range counts.roots {
+		if counts.of(r) == counts.of(root) {
 			tie = append(tie, r)
 		}
 	}
@@ -1413,12 +1407,12 @@ func (t *ChainTracker) pick(counted []voter) (path []*node, tie []*node) {
 	for cur := root; ; {
 		most := 0
 		for _, c := range cur.children {
-			most = max(most, counts[c])
+			most = max(most, counts.of(c))
 		}
 		var next *node
 		ties := 0
 		for _, c := range cur.children {
-			if most > 0 && counts[c] == most {
+			if most > 0 && counts.of(c) == most {
 				ties++
 				if ties == 1 || t.pinned(c) {
 					next = c
@@ -1427,7 +1421,7 @@ func (t *ChainTracker) pick(counted []voter) (path []*node, tie []*node) {
 		}
 		if ties > 1 && tie == nil {
 			for _, c := range cur.children {
-				if counts[c] == most {
+				if counts.of(c) == most {
 					tie = append(tie, c)
 				}
 			}
@@ -1440,7 +1434,7 @@ func (t *ChainTracker) pick(counted []voter) (path []*node, tie []*node) {
 					next = c
 				}
 			}
-			if most > 0 && next != nil && counts[next] != most {
+			if most > 0 && next != nil && counts.of(next) != most {
 				next = nil
 			}
 		}
@@ -1451,6 +1445,72 @@ func (t *ChainTracker) pick(counted []voter) (path []*node, tie []*node) {
 		cur = next
 	}
 	return path, tie
+}
+
+// voteCounts is how many counted votes each node's subtree holds. A vote
+// is walked only up to the spine, the head pin and its ancestors: a spine
+// node's count is the votes that reach the spine at or above it, so the
+// count costs what the votes sit off the spine, not the window's depth.
+type voteCounts struct {
+	spine []*node // root first; consecutive numbers
+	above []int   // above[i]: votes reaching the spine at spine[i] or higher
+	off   map[*node]int
+	roots map[*node]struct{} // the roots of the trees holding a vote
+}
+
+func (c *voteCounts) of(n *node) int {
+	if i, ok := c.spineAt(n); ok {
+		return c.above[i]
+	}
+	return c.off[n]
+}
+
+func (c *voteCounts) spineAt(n *node) (int, bool) {
+	if len(c.spine) == 0 || n.h.number < c.spine[0].h.number {
+		return 0, false
+	}
+	i := n.h.number - c.spine[0].h.number
+	if i >= uint64(len(c.spine)) || c.spine[i] != n {
+		return 0, false
+	}
+	return int(i), true
+}
+
+// countVotes counts counted for pick. Every ancestor of a spine node is on
+// the spine, so a vote's walk passes every off-spine node it counts in
+// before it reaches the spine.
+func (t *ChainTracker) countVotes(counted []voter) *voteCounts {
+	c := &voteCounts{off: make(map[*node]int), roots: make(map[*node]struct{})}
+	if len(t.pins) > 0 {
+		spine := t.spine[:0]
+		for a := t.pins[len(t.pins)-1]; a != nil; a = a.parent {
+			spine = append(spine, a)
+		}
+		slices.Reverse(spine)
+		above := slices.Grow(t.spineVotes[:0], len(spine))[:len(spine)]
+		clear(above)
+		t.spine, t.spineVotes = spine, above
+		c.spine, c.above = spine, above
+	}
+	for _, v := range counted {
+		for a := v.n; a != nil; a = a.parent {
+			if i, ok := c.spineAt(a); ok {
+				c.above[i]++
+				break
+			}
+			c.off[a]++
+			if a.parent == nil {
+				c.roots[a] = struct{}{}
+			}
+		}
+	}
+	for i := len(c.above) - 2; i >= 0; i-- {
+		c.above[i] += c.above[i+1]
+	}
+	if len(c.above) > 0 && c.above[0] > 0 {
+		c.roots[c.spine[0]] = struct{}{}
+	}
+	return c
 }
 
 // apply makes path the pins in one step: the pins inside the window are
