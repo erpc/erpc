@@ -1421,8 +1421,12 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 				u,
 			))
 		}
-		cfg.Evm.ChainId = realChainID
-		u.networkId.Store(util.EvmNetworkId(cfg.Evm.ChainId))
+		// Only an unset chainId is written: a Bootstrap re-run on a registered
+		// upstream must not write the config its readers hold.
+		if cfg.Evm.ChainId == 0 {
+			cfg.Evm.ChainId = realChainID
+		}
+		u.networkId.Store(util.EvmNetworkId(realChainID))
 		u.chainIdValidated.Store(true)
 
 		// Arm chain-identity enforcement on clients that support it (the gRPC

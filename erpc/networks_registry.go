@@ -280,20 +280,13 @@ func (nr *NetworksRegistry) buildNetworkBootstrapTask(networkId string) *util.Bo
 		fmt.Sprintf("network/%s", networkId),
 		func(ctx context.Context) error {
 			nr.logger.Debug().Str("networkId", networkId).Msg("attempt to bootstrap network")
-			// A retry reuses the network an earlier attempt prepared: its
-			// trackers already read its config, so it is never resolved again.
-			var nwCfg *common.NetworkConfig
-			if pn, ok := nr.preparedNetworks.Load(networkId); ok {
-				nwCfg = pn.(*Network).cfg
-			} else {
-				var err error
-				if nwCfg, err = nr.resolveNetworkConfig(networkId); err != nil {
-					// Network config resolution failed definitively (e.g., invalid format)
-					return common.NewTaskFatal(err)
-				}
+			nwCfg, err := nr.resolveNetworkConfig(networkId)
+			if err != nil {
+				// Network config resolution failed definitively (e.g., invalid format)
+				return common.NewTaskFatal(err)
 			}
 			// passing task ctx here will cancel the task if the request is finished or the initializer is cancelled/times out
-			err := nr.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkId)
+			err = nr.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkId)
 			ups := nr.upstreamsRegistry.GetNetworkUpstreams(nr.appCtx, networkId)
 			if len(ups) == 0 {
 				// Warn, not Error: a network resolving to zero upstreams is
@@ -429,13 +422,10 @@ func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.Netw
 		default:
 			return nil, common.NewErrInvalidEvmChainId(networkId)
 		}
-		if err := nwCfg.SetDefaults(prj.Config.Upstreams, prj.Config.NetworkDefaults); err != nil {
-			return nil, fmt.Errorf("failed to set defaults for network config: %w", err)
+		if err := prj.Config.SetNetworkDefaults(nwCfg); err != nil {
+			return nil, err
 		}
 		prj.ExposeNetworkConfig(nwCfg)
 	}
-	// Fold the project-wide integrity block into this network's (network wins).
-	// Runs once per network at bootstrap, so the merge is not repeated.
-	nwCfg.Integrity = common.MergeIntegrityConfig(prj.Config.Integrity, nwCfg.Integrity)
 	return nwCfg, nil
 }

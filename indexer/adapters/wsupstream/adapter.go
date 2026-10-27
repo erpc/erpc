@@ -440,9 +440,19 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 		}
 		done := true
 		a.subsMu.Lock()
-		// This pass covers every ask made so far.
+		// The pass asks what is wanted now, so the asks made so far are
+		// spent: a wake left from one would retry a refused subscribe
+		// with no backoff. An ask made during the pass wakes the next.
 		a.resubAgain = false
+		select {
+		case <-a.resubWake:
+		default:
+		}
 		askHeads := a.headsWanted && a.headsReask == nil
+		subs := make([]*pendingSub, 0, len(a.topics))
+		for _, sub := range a.topics {
+			subs = append(subs, sub)
+		}
 		a.subsMu.Unlock()
 		if askHeads {
 			attemptCtx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
@@ -475,12 +485,6 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 			}
 		}
 
-		a.subsMu.Lock()
-		subs := make([]*pendingSub, 0, len(a.topics))
-		for _, sub := range a.topics {
-			subs = append(subs, sub)
-		}
-		a.subsMu.Unlock()
 		for _, sub := range subs {
 			attemptCtx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
 			sub.mu.Lock()

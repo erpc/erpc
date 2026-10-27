@@ -476,11 +476,6 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 			e.synced++
 		}
 
-		upsCfg = e.upstream.Config()
-		if upsCfg.Evm == nil {
-			upsCfg.Evm = &common.EvmUpstreamConfig{}
-		}
-
 		// By default, we don't know if the node is syncing or not.
 		e.syncingState = common.EvmSyncingStateUnknown
 

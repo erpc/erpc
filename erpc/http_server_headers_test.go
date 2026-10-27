@@ -17,9 +17,6 @@ import (
 // success, validation reject, JSON-RPC errors, even when the upstream
 // call never succeeds. Headers may be absent only on very-early errors
 // (URL parse, project lookup) where no request was constructed.
-// Each server gets its own config: bootstrap folds the project's integrity
-// block into the network config, which an earlier server's trackers still
-// read while they wind down.
 func TestHttpServer_HeadersCoverage(t *testing.T) {
 	t.Run("success path carries full header set", func(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
@@ -50,6 +47,9 @@ func TestHttpServer_HeadersCoverage(t *testing.T) {
 	})
 
 	t.Run("validation error carries headers", func(t *testing.T) {
+		// Each server its own config, as each process loads its own: the
+		// previous server's trackers may still read theirs, and this server's
+		// SetDefaults and bootstrap would otherwise write the same object.
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(minimalServerConfig(), t)
 		defer shutdown()
 

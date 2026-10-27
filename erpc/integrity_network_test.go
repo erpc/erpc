@@ -48,8 +48,10 @@ func mockReceipt(url, body string, times int) {
 // buildIntegrityNetwork wires a real two-upstream network (rpc1, rpc2) with a
 // retry failsafe — only the HTTP transport is mocked (via gock). Every other
 // object (registries, upstreams, clients, network, the post-forward hook and
-// the integrity engine) is real.
-func buildIntegrityNetwork(t *testing.T, ctx context.Context) *Network {
+// the integrity engine) is real. A nil integrity enables the intrinsic
+// logIndex magnitude check; the config is final before the network is built,
+// since its trackers read it from their start.
+func buildIntegrityNetwork(t *testing.T, ctx context.Context, integrity *common.IntegrityConfig) *Network {
 	t.Helper()
 	vr := thirdparty.NewVendorsRegistry()
 	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
@@ -84,20 +86,23 @@ func buildIntegrityNetwork(t *testing.T, ctx context.Context) *Network {
 	}
 
 	fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 3}}
-	tru := true
-	ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{
-		Architecture: common.ArchitectureEvm,
-		Evm:          &common.EvmNetworkConfig{ChainId: 123},
-		Failsafe:     []*common.FailsafeConfig{fsCfg},
-		// Enable the intrinsic logIndex magnitude check (the corrupt-receipt
-		// tests rely on it). Integrity is opt-in, so it must be configured.
-		Integrity: &common.IntegrityConfig{
+	if integrity == nil {
+		tru := true
+		// The corrupt-receipt tests rely on the intrinsic logIndex magnitude
+		// check. Integrity is opt-in, so it must be configured.
+		integrity = &common.IntegrityConfig{
 			IntegritySettings: common.IntegritySettings{
 				Checks: map[string]*common.IntegrityCheckConfig{
 					"indexMagnitude": {Enabled: &tru},
 				},
 			},
-		},
+		}
+	}
+	ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe:     []*common.FailsafeConfig{fsCfg},
+		Integrity:    integrity,
 	}, rlr, upr, mt, nil)
 	require.NoError(t, err)
 	ntw.Bootstrap(ctx)
@@ -140,7 +145,7 @@ func TestIntegrity_Network_CorruptReceiptFailsOver(t *testing.T) {
 	mockReceipt("http://rpc1.localhost", receiptBody(underflowedIdx...), 1) // corrupt → rejected
 	mockReceipt("http://rpc2.localhost", receiptBody(canonicalIdx...), 1)   // canonical → served
 
-	ntw := buildIntegrityNetwork(t, ctx)
+	ntw := buildIntegrityNetwork(t, ctx, nil)
 	resp, err := forwardReceipt(t, ctx, ntw)
 	require.NoError(t, err, "must fail over to the healthy upstream")
 	require.NotNil(t, resp)
@@ -164,7 +169,7 @@ func TestIntegrity_Network_CleanReceiptPasses(t *testing.T) {
 
 	mockReceipt("http://rpc1.localhost", receiptBody(canonicalIdx...), 1)
 
-	ntw := buildIntegrityNetwork(t, ctx)
+	ntw := buildIntegrityNetwork(t, ctx, nil)
 	resp, err := forwardReceipt(t, ctx, ntw)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
@@ -190,7 +195,7 @@ func TestIntegrity_Network_SavedRequestFlagged(t *testing.T) {
 	mockReceipt("http://rpc1.localhost", receiptBody(underflowedIdx...), 1) // corrupt → rejected
 	mockReceipt("http://rpc2.localhost", receiptBody(canonicalIdx...), 1)   // canonical → served
 
-	ntw := buildIntegrityNetwork(t, ctx)
+	ntw := buildIntegrityNetwork(t, ctx, nil)
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`))
 	req.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 
@@ -253,11 +258,10 @@ func TestIntegrity_Network_ConfigLevelDrivesCorroboration(t *testing.T) {
 	mockMethod("http://rpc1.localhost", "eth_getBlockReceipts", blockReceiptsOneLog("0x0"))
 	mockMethod("http://rpc2.localhost", "eth_getBlockReceipts", blockReceiptsOneLog("0x0"))
 
-	ntw := buildIntegrityNetwork(t, ctx)
 	// Enable the authoritative tier via CONFIG, not a per-request directive.
-	ntw.Config().Integrity = &common.IntegrityConfig{
+	ntw := buildIntegrityNetwork(t, ctx, &common.IntegrityConfig{
 		IntegritySettings: common.IntegritySettings{Level: "authoritative"},
-	}
+	})
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`))
 	resp, err := ntw.Forward(ctx, req)
@@ -284,7 +288,7 @@ func TestIntegrity_Network_AllUpstreamsCorrupt(t *testing.T) {
 	mockReceipt("http://rpc1.localhost", receiptBody(underflowedIdx...), 1)
 	mockReceipt("http://rpc2.localhost", receiptBody(underflowedIdx...), 1)
 
-	ntw := buildIntegrityNetwork(t, ctx)
+	ntw := buildIntegrityNetwork(t, ctx, nil)
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`))
 	req.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 

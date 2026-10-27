@@ -1402,11 +1402,9 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 			}
 		}
 	}
-	if p.Networks != nil {
-		for _, network := range p.Networks {
-			if err := network.SetDefaults(p.Upstreams, p.NetworkDefaults); err != nil {
-				return fmt.Errorf("failed to set defaults for network: %w", err)
-			}
+	for _, network := range p.Networks {
+		if err := p.SetNetworkDefaults(network); err != nil {
+			return err
 		}
 	}
 	if p.Auth != nil {
@@ -1418,6 +1416,20 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 		if err := p.CORS.SetDefaults(); err != nil {
 			return fmt.Errorf("failed to set defaults for cors: %w", err)
 		}
+	}
+	return nil
+}
+
+// SetNetworkDefaults resolves n against this project: its defaults, then the
+// project-wide integrity block folded under n's own (network wins). It runs
+// before any network is built from n, for configured and lazy networks alike:
+// a network's trackers read n from their first message on.
+func (p *ProjectConfig) SetNetworkDefaults(n *NetworkConfig) error {
+	if err := n.SetDefaults(p.Upstreams, p.NetworkDefaults); err != nil {
+		return fmt.Errorf("failed to set defaults for network: %w", err)
+	}
+	if p.Integrity != nil {
+		n.Integrity = MergeIntegrityConfig(p.Integrity, n.Integrity)
 	}
 	return nil
 }
