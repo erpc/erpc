@@ -109,8 +109,8 @@ func newServedChain(t *testing.T, id string) *servedChain {
 }
 
 func (n *servedChain) EvmHashVoters(string, time.Duration, bool) HashVoters {
-	return HashVoters{Voters: []string{"a", "b"}, Hash: []string{"a", "b"}, Need: 2, NetworkVendors: 2,
-		Vendors: map[string]string{"a": "vendor-a", "b": "vendor-b"}}
+	return HashVoters{Voters: []string{"a", "b"}, Hash: []string{"a", "b"}, Need: 2,
+		Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b"}, Distinct: 2}}
 }
 
 // serve makes the chain answer block n, hash h, by number and by hash.
@@ -737,7 +737,7 @@ func (n *settleNetwork) forkAsks() int {
 func TestSettleAnswersCountForTheirDecisionOnly(t *testing.T) {
 	x := testHeader(11, testHash("aa", 11), testHash("0", 10))
 	net := newSettleNetwork(t, HashVoters{Voters: []string{"a", "b"}, Hash: []string{"a", "b"}, Need: 2, Others: []string{"c", "d", "e"},
-		Vendors: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "d": "vendor-d", "e": "vendor-e"}, NetworkVendors: 5},
+		Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "d": "vendor-d", "e": "vendor-e"}, Distinct: 5}},
 		map[string]json.RawMessage{"c": x, "d": x, "e": x})
 	c := newChainTracker(t.Context(), net, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
 	voteChain(t, c, "a", "0", 0, 10, testHash("f", 0))
@@ -801,8 +801,8 @@ func (n *rewindNetwork) rewinds() map[string]int64 {
 func TestRollbackWriteOnlyFromFreshVotesOnALowerBranch(t *testing.T) {
 	ids := []string{"a", "b", "c", "s"}
 	net := &rewindNetwork{capturingNetwork: newCapturingNetwork(t, 0, testHash("f", 0)), rewound: map[string]int64{},
-		hv: HashVoters{Voters: ids, Hash: ids, Need: 2, NetworkVendors: 4,
-			Vendors: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "s": "vendor-s"}}}
+		hv: HashVoters{Voters: ids, Hash: ids, Need: 2,
+			Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "s": "vendor-s"}, Distinct: 4}}}
 	c := newChainTracker(t.Context(), net, 64, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
 	beforeGap := time.Now().Add(-2 * time.Minute)
 	voteBefore := func(src, tag string, from, to uint64, parentOfFirst string) {
@@ -859,7 +859,7 @@ func TestSettleRefreshRunsOncePerForkPoint(t *testing.T) {
 	head := testHeader(10, testHash("0", 10), testHash("0", 9))
 	off := func(tag string) json.RawMessage { return testHeader(10, testHash(tag, 10), testHash("0", 9)) }
 	net := newSettleNetwork(t, HashVoters{Voters: []string{"a", "b", "c", "d"}, Hash: []string{"a", "b", "c", "d"}, Need: 3,
-		Vendors: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "d": "vendor-d"}, NetworkVendors: 4},
+		Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "d": "vendor-d"}, Distinct: 4}},
 		map[string]json.RawMessage{"a": head, "b": head, "c": off("dd"), "d": head})
 	c := newChainTracker(t.Context(), net, 32, 0, "group-*", "group", "group", nil, newFetchScheduler(t.Context(), net))
 	for _, u := range []string{"a", "b", "c", "d"} {
@@ -900,7 +900,7 @@ func (n *coldNetwork) EvmHashVoters(_ string, _ time.Duration, cold bool) HashVo
 		return HashVoters{Need: 1}
 	}
 	hv := HashVoters{Voters: []string{"a", "b"}, Sources: []string{"a", "b"},
-		Vendors: map[string]string{"a": "vendor-a", "b": "vendor-b"}, NetworkVendors: 2}
+		Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b"}, Distinct: 2}}
 	if cold {
 		hv.Hash = []string{"a", "b"}
 	}

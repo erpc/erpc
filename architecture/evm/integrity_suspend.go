@@ -125,15 +125,6 @@ func (s *checkSuspensions) mode(id string) integrity.CheckMode {
 	return integrity.CheckEnforced
 }
 
-// networkVendors is how many vendors the network's upstreams name; 0 while
-// the tracker has not started.
-func (s *checkSuspensions) networkVendors() int {
-	if t := s.tracker.Load(); t != nil {
-		return t.networkVendors()
-	}
-	return 0
-}
-
 // outcomeVerdict maps a header check's outcome to passed or failed; judged
 // is false for outcomes that say nothing about the header.
 func outcomeVerdict(outcome string) (passed, judged bool) {
@@ -151,14 +142,7 @@ func outcomeVerdict(outcome string) (passed, judged bool) {
 // matches its own logs says nothing of the header's, so a bloom pass comes
 // only from the receipts path (recordBloom).
 func (s *checkSuspensions) recordOutcomes(height uint64, vendor string, outcomes []integrity.CheckOutcome) {
-	vendors := -1
-	for _, oc := range outcomes {
-		if passed, judged := outcomeVerdict(oc.Outcome); judged && !passed {
-			vendors = s.networkVendors()
-			break
-		}
-	}
-	s.record(height, vendor, vendors, func(yield func(id string, passed bool)) {
+	s.record(height, vendor, func(yield func(id string, passed bool)) {
 		for _, oc := range outcomes {
 			passed, judged := outcomeVerdict(oc.Outcome)
 			if judged && (slices.Contains(integrity.HeaderChecks, oc.CheckID) || oc.CheckID == bloomCheckID && !passed) {
@@ -174,16 +158,17 @@ func (s *checkSuspensions) recordBloom(height uint64, vendor string, matched boo
 	if vendor == "" {
 		return
 	}
-	vendors := -1
-	if !matched {
-		vendors = s.networkVendors()
-	}
-	s.record(height, vendor, vendors, func(yield func(string, bool)) { yield(bloomCheckID, matched) })
+	s.record(height, vendor, func(yield func(string, bool)) { yield(bloomCheckID, matched) })
 }
 
 // record notes the verdicts of vendor's answer at height, then moves every
-// check on with time. networkVendors is read only by failing verdicts.
-func (s *checkSuspensions) record(height uint64, vendor string, networkVendors int, verdicts func(yield func(id string, passed bool))) {
+// check on with time. Failing verdicts count against the vendor table the
+// network-wide tracker publishes; no vendor is known before it starts.
+func (s *checkSuspensions) record(height uint64, vendor string, verdicts func(yield func(id string, passed bool))) {
+	vendors := noVendors
+	if t := s.tracker.Load(); t != nil {
+		vendors = t.vendorTable()
+	}
 	head, headKnown := s.head()
 	window := s.window()
 	now := time.Now()
@@ -197,7 +182,7 @@ func (s *checkSuspensions) record(height uint64, vendor string, networkVendors i
 				h = &checkHealth{rule: ruleOf(id), heights: make(map[uint64]*heightVerdict)}
 				s.checks[id] = h
 			}
-			changed = s.recordLocked(id, h, height, vendor, passed, networkVendors, head, headKnown, window, now) || changed
+			changed = s.recordLocked(id, h, height, vendor, passed, vendors.Distinct, head, headKnown, window, now) || changed
 		})
 	}
 	for id, h := range s.checks {

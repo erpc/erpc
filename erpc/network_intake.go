@@ -684,30 +684,28 @@ func (in *networkIntake) isVoter(upstreamId string) bool {
 	return slices.Contains(s.ids, upstreamId)
 }
 
-// upstreamVendors is each upstream's vendor and how many distinct vendors
-// one upstream set names, which the evidence quorum reads (spec §6.10).
+// upstreamVendors is the vendor table of one upstream set (spec §6.10).
 type upstreamVendors struct {
-	ups      []*upstream.Upstream
-	vendors  map[string]string
-	distinct int
+	ups   []*upstream.Upstream
+	table *evm.Vendors
 }
 
-// vendorsOf is the vendors of ups, computed again only when the set or a
-// vendor name changed.
-func (in *networkIntake) vendorsOf(ups []*upstream.Upstream) *upstreamVendors {
+// vendorsOf is the vendor table of ups, computed again only when the set
+// or a vendor name changed.
+func (in *networkIntake) vendorsOf(ups []*upstream.Upstream) *evm.Vendors {
 	if c := in.vendors.Load(); c != nil && c.of(ups) {
-		return c
+		return c.table
 	}
-	c := &upstreamVendors{ups: slices.Clone(ups), vendors: make(map[string]string, len(ups))}
+	t := &evm.Vendors{Of: make(map[string]string, len(ups))}
 	distinct := make(map[string]struct{}, len(ups))
 	for _, u := range ups {
 		v := evm.VendorKey(u)
-		c.vendors[u.Id()] = v
+		t.Of[u.Id()] = v
 		distinct[v] = struct{}{}
 	}
-	c.distinct = len(distinct)
-	in.vendors.Store(c)
-	return c
+	t.Distinct = len(distinct)
+	in.vendors.Store(&upstreamVendors{ups: slices.Clone(ups), table: t})
+	return t
 }
 
 func (c *upstreamVendors) of(ups []*upstream.Upstream) bool {
@@ -715,7 +713,7 @@ func (c *upstreamVendors) of(ups []*upstream.Upstream) bool {
 		return false
 	}
 	for i, u := range ups {
-		if c.ups[i] != u || c.vendors[u.Id()] != evm.VendorKey(u) {
+		if c.ups[i] != u || c.table.Of[u.Id()] != evm.VendorKey(u) {
 			return false
 		}
 	}
@@ -825,8 +823,7 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 		hv.Need = q.Of(0)
 		return hv
 	}
-	vs := n.intake.vendorsOf(n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId))
-	hv.Vendors, hv.NetworkVendors = vs.vendors, vs.distinct
+	hv.Vendors = n.intake.vendorsOf(n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId))
 	now := time.Now()
 	policy, all := n.eligibleSet(context.Background())
 	voters := n.voters(selector, voterQuery{kind: hashVote}).list()

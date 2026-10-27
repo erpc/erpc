@@ -39,6 +39,19 @@ func VendorKey(u common.Upstream) string {
 	return u.Id()
 }
 
+// Vendors is the network's vendor table, which the evidence quorum reads
+// (spec §6.10): the VendorKey of each upstream on the network, and how many
+// distinct vendors they name. An upstream off the network has no vendor,
+// so its answer counts for none. Intake publishes it; it is never
+// modified once published.
+type Vendors struct {
+	Of       map[string]string
+	Distinct int
+}
+
+// noVendors is the table before intake published one: no vendor known.
+var noVendors = &Vendors{}
+
 // vendorsOf is how many distinct vendors (VendorKey) ups name.
 func vendorsOf(ups []common.Upstream) int {
 	var seen []string

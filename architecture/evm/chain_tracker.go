@@ -162,6 +162,9 @@ type ChainTracker struct {
 	// voters is the lane's voter set as the network's intake last read it,
 	// before the message being handled.
 	voters HashVoters
+	// vendors is voters.Vendors, published for readers on other
+	// goroutines: fetch answer checks, suspension, logs subscribes.
+	vendors atomic.Pointer[Vendors]
 	// offPins is, per voter whose vote left the pinned branch, when the
 	// tracker first polled it for its head and when last; demoted are those
 	// still off W after that first poll, sorted, as last handed to the
@@ -857,11 +860,9 @@ type HashVoters struct {
 	// Need is q.Of(len(Hash)).
 	Hash []string
 	Need int
-	// Vendors names the vendor of each upstream of the network;
-	// NetworkVendors is how many distinct vendors they name, which the
-	// evidence quorum reads (meetsEvidence).
-	Vendors        map[string]string
-	NetworkVendors int
+	// Vendors is the network's vendor table (meetsEvidence); nil when
+	// intake published none.
+	Vendors *Vendors
 	// Next is when the soonest hash voter's hash age passes W; zero while
 	// none will without a new vote.
 	Next time.Time
@@ -888,6 +889,9 @@ func (t *ChainTracker) readVoters() {
 	cold := t.coldUntil.IsZero() || now.Before(t.coldUntil)
 	old := t.voters.Hash
 	t.callNetwork("voters", func() { t.voters = n.EvmHashVoters(t.selector, w, cold) })
+	if t.voters.Vendors != nil {
+		t.vendors.Store(t.voters.Vendors)
+	}
 	if t.coldUntil.IsZero() && len(t.voters.Voters) > 0 {
 		t.coldUntil = now.Add(w)
 	}
@@ -905,6 +909,15 @@ func (t *ChainTracker) readVoters() {
 // hash voter of the lane.
 func (t *ChainTracker) counts(upstreamId string) bool {
 	return t.voters.all || slices.Contains(t.voters.Hash, upstreamId)
+}
+
+// vendorTable is the network's vendor table as the tracker last read it;
+// any goroutine may read it.
+func (t *ChainTracker) vendorTable() *Vendors {
+	if v := t.vendors.Load(); v != nil {
+		return v
+	}
+	return noVendors
 }
 
 // offPin is one voter off the pinned branch: when the tracker first polled
@@ -1974,7 +1987,8 @@ func (b *pinBacking) same(o *pinBacking) bool {
 // answer on the pinned branch backs the whole branch the settle chose, so
 // a split the settle decided flows at once.
 func (t *ChainTracker) backingOf(path []*node) *pinBacking {
-	b := &pinBacking{need: t.voters.Need, voters: len(t.voters.Hash), vendors: t.voters.NetworkVendors, ceiling: t.sendCeiling()}
+	vt := t.vendorTable()
+	b := &pinBacking{need: t.voters.Need, voters: len(t.voters.Hash), vendors: vt.Distinct, ceiling: t.sendCeiling()}
 	if t.voters.all {
 		b.voters = 1
 	}
@@ -2005,7 +2019,7 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 		if i = min(i, upTo); i < 0 {
 			return
 		}
-		b.backs = append(b.backs, pinBack{i, t.voters.Vendors[v.who]})
+		b.backs = append(b.backs, pinBack{i, vt.Of[v.who]})
 	}
 	votes := t.baseVotes()
 	for _, v := range votes {
@@ -2211,7 +2225,7 @@ func (t *ChainTracker) handleAnchors(as []anchor) {
 			votes[i].vendors = append(votes[i].vendors, a.vendor)
 		}
 		t.anchorVotes[a.number] = votes
-		t.anchors.Store(a.number, anchorOf(votes, t.voters.NetworkVendors))
+		t.anchors.Store(a.number, anchorOf(votes, t.vendorTable().Distinct))
 	}
 	for len(t.anchorNumbers) > t.window {
 		t.anchors.Delete(t.anchorNumbers[0])

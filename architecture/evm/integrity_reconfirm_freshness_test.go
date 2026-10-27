@@ -37,8 +37,8 @@ type capturingNetwork struct {
 }
 
 func (n *capturingNetwork) EvmHashVoters(string, time.Duration, bool) HashVoters {
-	hv := HashVoters{Voters: []string{"a", "b"}, Need: 1, NetworkVendors: 2,
-		Vendors: map[string]string{"a": "vendor-a", "b": "vendor-b"}}
+	hv := HashVoters{Voters: []string{"a", "b"}, Need: 1,
+		Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b"}, Distinct: 2}}
 	if n.sourcesVote.Load() {
 		hv.Hash, hv.Need = []string{"a", "b"}, 2
 	}

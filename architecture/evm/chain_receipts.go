@@ -802,7 +802,8 @@ func (t *ChainTracker) logsAgreed(j *receiptsJob, upstreamId string, r *heldRece
 		return false
 	}
 	j.tried[upstreamId] = true
-	vendor := t.vendorOf(upstreamId)
+	vt := t.vendorTable()
+	vendor := vt.Of[upstreamId]
 	if vendor == "" {
 		return false
 	}
@@ -814,7 +815,7 @@ func (t *ChainTracker) logsAgreed(j *receiptsJob, upstreamId string, r *heldRece
 	if !slices.Contains(j.agree[i].vendors, vendor) {
 		j.agree[i].vendors = append(j.agree[i].vendors, vendor)
 	}
-	return meetsEvidence(len(j.agree[i].vendors), t.networkVendors())
+	return meetsEvidence(len(j.agree[i].vendors), vt.Distinct)
 }
 
 func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec, res fetchResult) {
@@ -851,7 +852,7 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 		// A wrong answer moves the next attempt to another vendor.
 		if wrongAnswer(res.err) {
 			for _, id := range []string{spec.upstream, res.upstream} {
-				if v := t.vendorOf(id); v != "" {
+				if v := t.vendorTable().Of[id]; v != "" {
 					j.mismatched[v] = true
 				}
 			}
@@ -970,7 +971,7 @@ func (t *ChainTracker) usableMethods() (receipts, logs bool) {
 	if !t.fetch.bloom.prof().agreeLogs {
 		return receipts, len(getLogs) > 0
 	}
-	return receipts, meetsEvidence(vendorsOf(getLogs), t.networkVendors())
+	return receipts, meetsEvidence(vendorsOf(getLogs), t.vendorTable().Distinct)
 }
 
 // ServesLogs reports whether logs subscribes may start (spec §10): an
@@ -1000,7 +1001,7 @@ func (t *ChainTracker) endJob(j *receiptsJob, r *heldReceipts) {
 // for the network's bloom check. It runs in the fetch's answer check.
 func (t *ChainTracker) countBloomMismatch(u common.Upstream, method string, h *chainHeader) {
 	if s := suspensionsOf(t.network); s != nil {
-		s.recordBloom(h.number, t.vendorOf(u.Id()), false)
+		s.recordBloom(h.number, t.vendorTable().Of[u.Id()], false)
 	}
 	telemetry.MetricIntegrityViolation.WithLabelValues(
 		t.projectId(), u.VendorName(), t.networkLabel(), u.Id(), strings.ToLower(method), "bloomMatch", "reject", t.finalityLabel(int64(h.number)),
@@ -1014,11 +1015,8 @@ func (t *ChainTracker) countBloomMismatch(u common.Upstream, method string, h *c
 // answer for block h matched its header's bloom, or not; a cached answer
 // ("") names no vendor and counts for none.
 func (t *ChainTracker) recordBloom(upstreamId string, h *chainHeader, matched bool) {
-	if upstreamId == "" {
-		return
-	}
 	if s := suspensionsOf(t.network); s != nil {
-		s.recordBloom(h.number, t.vendorOf(upstreamId), matched)
+		s.recordBloom(h.number, t.vendorTable().Of[upstreamId], matched)
 	}
 }
 
@@ -1073,25 +1071,6 @@ func (t *ChainTracker) methodUpstreams(method string) []common.Upstream {
 		}
 	}
 	return out
-}
-
-// vendorOf is the VendorKey of upstreamId among every upstream of the
-// network; "" once it left the network, so its answer counts for no
-// vendor.
-func (t *ChainTracker) vendorOf(upstreamId string) string {
-	for _, u := range t.networkUpstreams() {
-		if u.Id() == upstreamId {
-			return VendorKey(u)
-		}
-	}
-	return ""
-}
-
-// networkVendors is how many vendors the network's upstreams name, which
-// the evidence quorum reads: a group's own vendors do not lower it (spec
-// §6.10).
-func (t *ChainTracker) networkVendors() int {
-	return vendorsOf(t.networkUpstreams())
 }
 
 // wantsSnapshot are the registered MayMatch tests.
