@@ -651,6 +651,12 @@ type receiptsJob struct {
 	mismatched   map[string]bool // vendors whose answer mismatched, this round
 	tried        map[string]bool // upstreams asked by name, this round
 	agree        []logsVote      // the logs digests vendors answered, this round
+	// failed holds the upstreams that failed this block on the job's
+	// method, every round; exhausted closes once every upstream serving
+	// it did: a check waiting on the job can no longer be verified (spec
+	// §11).
+	failed    map[string]bool
+	exhausted chan struct{}
 }
 
 // logsVote is one logsDigest and the vendors that answered it.
@@ -660,7 +666,7 @@ type logsVote struct {
 }
 
 func (t *ChainTracker) startJob(h *chainHeader, keep bool) *receiptsJob {
-	j := &receiptsJob{h: h, keep: keep, done: make(chan struct{})}
+	j := &receiptsJob{h: h, keep: keep, done: make(chan struct{}), failed: make(map[string]bool), exhausted: make(chan struct{})}
 	j.newRound()
 	t.jobs[h.hash] = j
 	t.runJob(j)
@@ -700,12 +706,14 @@ func (t *ChainTracker) runJob(j *receiptsJob) {
 	case !j.logs && logs && (!receipts || jobDown || j.attempt > 0 && netDown):
 		j.logs = true
 		j.newRound()
+		clear(j.failed)
 	case j.logs && receipts && (!logs || t.receiptsDown.IsZero()):
 		// Receipts are served again and a receipts answer ended the
 		// network-wide switch, or logs no longer may stand in: receipts
 		// prove the logs, so the job leaves the stand-in.
 		j.logs, j.failingSince = false, time.Time{}
 		j.newRound()
+		clear(j.failed)
 	}
 	spec := t.receiptsSpec(t.fetchClassAt(int64(j.h.number), classTipReceipts), j.h.hash, j.h, j.logs)
 	spec.fresh = j.fresh
@@ -843,7 +851,32 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 				j.tried[u] = true
 			}
 		}
+		t.noteFailed(j, spec, res)
 		t.runJob(j)
+	}
+}
+
+// noteFailed adds to j.failed the upstreams the failed attempt rules out:
+// the one asked or answering, every one of a vendor that mismatched, and
+// every one when a network-wide sweep was exhausted. Once every upstream
+// serving spec.method failed the block, j.exhausted closes.
+func (t *ChainTracker) noteFailed(j *receiptsJob, spec fetchSpec, res fetchResult) {
+	var ex *common.ErrUpstreamsExhausted
+	sweptAll := spec.upstream == "" && errors.As(res.err, &ex)
+	all := true
+	for _, u := range t.methodUpstreams(spec.method) {
+		id := u.Id()
+		if sweptAll || id == spec.upstream || id == res.upstream || j.mismatched[VendorKey(u)] {
+			j.failed[id] = true
+		}
+		all = all && j.failed[id]
+	}
+	if all {
+		select {
+		case <-j.exhausted:
+		default:
+			close(j.exhausted)
+		}
 	}
 }
 

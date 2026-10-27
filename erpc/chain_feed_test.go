@@ -2626,7 +2626,7 @@ func (s *chaosSeed) blockDown60() {
 	from := time.Now()
 	open := s.openLogs()
 	hold := chaosScaled(60*time.Second) + 2*chaosBlock
-	s.chain.FailNextMatching(hold)
+	s.chain.FailNext(chainsim.KindMatching, hold)
 	var b *chainsim.Block
 	require.Eventually(s.t, func() bool {
 		b = s.chain.Failing()

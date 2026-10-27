@@ -29,6 +29,14 @@ const (
 	// receipt check is already waiting on the fetch when they come
 	// (harness).
 	u9ForgedSlow = 300 * time.Millisecond
+	// u9Unverifiable: how long every vendor fails one quiet block's
+	// receipts (harness). A receipt check of it that waited on a refetch
+	// would wait this long, or the 10s fetch timeout.
+	u9Unverifiable = 5 * time.Second
+	// u9UnverifiableWait: a receipt check of a block every upstream failed
+	// passes within the failed sweep; this leaves room for a sweep over
+	// both vendors, far below u9Unverifiable (harness).
+	u9UnverifiableWait = time.Second
 	// bloomSuspendRun: blocks in a row whose bloom mismatches, from
 	// vendors that meet the evidence quorum, suspend the bloom check;
 	// bloomRearmRun matching blocks in a row re-arm it (§6.9).
@@ -122,7 +130,9 @@ func u8(integrity bool) spec {
 // no receipts fetch fails under them (§11). While it
 // reads, every odd block with transactions is fetched at pin time, even
 // one no logs filter wants, and no empty block gets a receipts call (§11
-// prefetch, C10).
+// prefetch, C10). Then every vendor fails one quiet block's receipts: its
+// receipt check is unverifiable and passes once the sweep failed (§11,
+// #1014).
 func u9() spec {
 	tr := &tipReceipts{}
 	// vendor-a ranks first whatever its score, so the tracker asks it
@@ -172,6 +182,8 @@ func u9() spec {
 		s.logf("under vendor-a's faults, vendor-a answered %d receipts calls, vendor-b %d", during, duringB)
 		s.requireOnVendorA(during, nil)
 		s.requireNotSuspended(susp, "")
+		tr.setPhase("unverifiable")
+		tr.unverified = s.unverifiable()
 		tr.setPhase("healthy")
 		healthy := time.Now()
 		s.blocks(25)
@@ -193,6 +205,9 @@ type tipReceipts struct {
 	phase string
 	waits map[string][]time.Duration
 	nulls int
+	// unverified: receiptVsBlock skips per pod while every vendor failed a
+	// block (unverifiable).
+	unverified []float64
 }
 
 func (tr *tipReceipts) setPhase(p string) {
@@ -205,7 +220,7 @@ func (tr *tipReceipts) setPhase(p string) {
 // names it twice.
 func (tr *tipReceipts) reset() {
 	tr.mu.Lock()
-	tr.phase, tr.waits, tr.nulls = "warmup", map[string][]time.Duration{}, 0
+	tr.phase, tr.waits, tr.nulls, tr.unverified = "warmup", map[string][]time.Duration{}, 0, nil
 	tr.mu.Unlock()
 }
 
@@ -287,7 +302,7 @@ func kindName(k chainsim.Kind) string {
 // filter asks for.
 func (tr *tipReceipts) judge(s *scenario, from, healthy, to time.Time) {
 	tr.mu.Lock()
-	waits, nulls := map[string][]time.Duration{}, tr.nulls
+	waits, nulls, unverified := map[string][]time.Duration{}, tr.nulls, tr.unverified
 	for k, w := range tr.waits {
 		waits[k] = slices.Clone(w)
 	}
@@ -314,12 +329,13 @@ func (tr *tipReceipts) judge(s *scenario, from, healthy, to time.Time) {
 	}
 	// A fast wait that skipped the corroboration proves nothing: every
 	// receipt check corroborates, from vendor-b when vendor-a's receipts
-	// fail (§11 "the block is fetched again").
+	// fail (§11 "the block is fetched again"), unless every vendor failed
+	// the block.
 	for pod := range s.h.pods {
 		skip, _ := s.metric(pod, "erpc_integrity_check_total", map[string]string{"check": "receiptVsBlock", "outcome": "skip"})
 		pass, _ := s.metric(pod, "erpc_integrity_check_total", map[string]string{"check": "receiptVsBlock", "outcome": "pass"})
-		s.logf("pod-%d: receiptVsBlock pass %v skip %v", pod+1, pass, skip)
-		if skip > 0 {
+		s.logf("pod-%d: receiptVsBlock pass %v skip %v, %v of them unverifiable", pod+1, pass, skip, unverified[pod])
+		if skip -= unverified[pod]; skip > 0 {
 			s.violate(s.name, "pod-%d: %v of %v tip receipt checks skipped receiptVsBlock: no canonical receipts while vendor-b served them", pod+1, skip, skip+pass)
 		}
 	}
@@ -534,6 +550,64 @@ func (s *scenario) failedReceiptsFetches() []float64 {
 	out := make([]float64, len(s.h.pods))
 	for pod := range s.h.pods {
 		out[pod], _ = s.metric(pod, "erpc_chain_tracker_fetch_total", map[string]string{"kind": "receipts", "outcome": "error"})
+	}
+	return out
+}
+
+// unverifiable makes every vendor fail one quiet block's receipts for
+// u9Unverifiable and reads its first transaction's receipt on each pod
+// once it is pinned. The check cannot be verified once the sweep failed
+// on every upstream, so it passes then, not after the outage or the fetch
+// timeout (§11, #1014). It returns the receiptVsBlock skips per pod
+// meanwhile.
+func (s *scenario) unverifiable() []float64 {
+	skips := func() []float64 {
+		out := make([]float64, len(s.h.pods))
+		for pod := range s.h.pods {
+			out[pod], _ = s.metric(pod, "erpc_integrity_check_total", map[string]string{"check": "receiptVsBlock", "outcome": "skip"})
+		}
+		return out
+	}
+	before := skips()
+	s.chain.FailNext(chainsim.KindQuiet, u9Unverifiable)
+	var b *chainsim.Block
+	for range 50 {
+		if b = s.chain.Failing(); b != nil {
+			break
+		}
+		s.blocks(1)
+	}
+	if b == nil {
+		s.violate("harness", "no quiet block minted in 50 blocks")
+		return make([]float64, len(s.h.pods))
+	}
+	// Pinned on every pod, still failing on every vendor: each answer that
+	// comes within u9UnverifiableWait came during the outage.
+	s.blocks(2)
+	var wg sync.WaitGroup
+	for pod := range s.h.pods {
+		wg.Go(func() {
+			start := time.Now()
+			var r receiptJSON
+			err := s.call(pod, &r, "eth_getTransactionReceipt", b.TxHash(0).Hex())
+			wait := time.Since(start)
+			s.logf("pod-%d: receipt of block %d, which every vendor fails, answered in %s", pod+1, b.Number, wait.Round(time.Millisecond))
+			switch {
+			case wait >= u9UnverifiableWait:
+				s.violate(s.name, "pod-%d: receipt check of block %d, which every vendor fails, waited %s: an unverifiable check passes once the sweep failed (§11, #1014)", pod+1, b.Number, wait.Round(time.Millisecond))
+			case err != nil:
+				s.violate(s.name, "pod-%d: eth_getTransactionReceipt of block %d, which every vendor fails: %v", pod+1, b.Number, err)
+			case r.BlockHash != b.Hash:
+				s.violate(s.name, "pod-%d: receipt of block %d names block %s", pod+1, b.Number, r.BlockHash.Hex())
+			}
+		})
+	}
+	wg.Wait()
+	out := skips()
+	for pod := range out {
+		if out[pod] -= before[pod]; out[pod] == 0 {
+			s.violate(s.name, "pod-%d: no receiptVsBlock skip while every vendor failed block %d: the check never ran unverifiable", pod+1, b.Number)
+		}
 	}
 	return out
 }

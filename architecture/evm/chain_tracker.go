@@ -3097,8 +3097,10 @@ func (t *ChainTracker) fetched(res fetchResult) {
 // to lie within reorgWindow of the head is tip receipts; any other is fill.
 // When that fetch fails, or its key backs off after a failed one, a held
 // block's receipts are fetched again from another vendor (its job): the
-// check waits for them, as a sweep waited for its next upstream, for at
-// most one fetch's time.
+// check waits for them, as a sweep waited for its next upstream, while an
+// upstream that has not failed the block remains, for at most one fetch's
+// time. Once every upstream failed it, the check is unverifiable and
+// passes at once (spec §11, #1014).
 func (t *ChainTracker) resolveReceipts(ctx context.Context, blockHash string, number int64) ([]integrity.Receipt, bool) {
 	if t.network == nil {
 		return nil, false
@@ -3122,8 +3124,11 @@ func (t *ChainTracker) resolveReceipts(ctx context.Context, blockHash string, nu
 		t.countBloomMismatch(res.upstream, spec.method, h)
 	}
 	r, ok := res.val.(*heldReceipts)
+	var ex *common.ErrUpstreamsExhausted
 	switch {
 	case ok:
+	case errors.As(res.err, &ex):
+		// The sweep asked every upstream, and each failed the block.
 	case h != nil && ctx.Err() == nil:
 		r = t.refetchedReceipts(ctx, h)
 		ok = r != nil
@@ -3142,7 +3147,8 @@ func (t *ChainTracker) resolveReceipts(ctx context.Context, blockHash string, nu
 }
 
 // refetchedReceipts waits, for at most fetchTimeout, on held block h's
-// receipts job and returns the receipts it held; nil when it held none.
+// receipts job and returns the receipts it held; nil when it held none, or
+// once every upstream failed the block.
 func (t *ChainTracker) refetchedReceipts(ctx context.Context, h *chainHeader) *heldReceipts {
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
@@ -3154,6 +3160,8 @@ func (t *ChainTracker) refetchedReceipts(ctx context.Context, h *chainHeader) *h
 	select {
 	case <-j.done:
 		return j.res
+	case <-j.exhausted:
+		return nil
 	case <-ctx.Done():
 		return nil
 	}

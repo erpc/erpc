@@ -67,9 +67,10 @@ type Chain struct {
 	// are the calls held since it was set.
 	trapHold time.Duration
 	traps    map[Hash]*Trap
-	// failHold, while set, makes the next canonical matching block failing,
-	// whose receipts and logs calls fail until failUntil.
+	// failHold, while set, makes the next canonical block of failKind
+	// failing, whose receipts and logs calls fail until failUntil.
 	failHold  time.Duration
+	failKind  Kind
 	failing   *Block
 	failUntil time.Time
 	// headerBloomOff, while set, mints headers whose logsBloom is a
@@ -248,7 +249,7 @@ func (c *Chain) mintLocked(parent *Block, number uint64, at time.Time, minority 
 	for i := range txs {
 		c.byTx[txHash(hash, i)] = txRef{b, i}
 	}
-	if c.failHold > 0 && k == KindMatching && !minority {
+	if c.failHold > 0 && k == c.failKind && !minority {
 		c.failing, c.failUntil, c.failHold = b, b.MintedAt.Add(c.failHold), 0
 	}
 	return b
@@ -562,11 +563,11 @@ func (c *Chain) Traps() map[Hash]Trap {
 	return out
 }
 
-// FailNextMatching makes the next canonical block with matching logs fail
-// every receipts and logs call on every vendor for hold after it is minted.
-func (c *Chain) FailNextMatching(hold time.Duration) {
+// FailNext makes the next canonical block of kind fail every receipts and
+// logs call on every vendor for hold after it is minted.
+func (c *Chain) FailNext(kind Kind, hold time.Duration) {
 	c.mu.Lock()
-	c.failHold, c.failing = hold, nil
+	c.failHold, c.failKind, c.failing = hold, kind, nil
 	c.mu.Unlock()
 }
 
@@ -582,7 +583,7 @@ func (c *Chain) OffHeaderBloom(on bool) {
 	c.mu.Unlock()
 }
 
-// Failing is the block FailNextMatching chose, nil until it is minted.
+// Failing is the block FailNext chose, nil until it is minted.
 func (c *Chain) Failing() *Block {
 	c.mu.Lock()
 	defer c.mu.Unlock()
