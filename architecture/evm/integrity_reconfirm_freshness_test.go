@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -57,7 +58,17 @@ func (n *capturingNetwork) EvmAskHead(ctx context.Context, _ string, need common
 	}
 	sent := time.Now()
 	return common.HeadAnswer{Outcome: common.AskFetched, Sent: sent, Next: sent.Add(time.Hour),
-		Header: []byte(fmt.Sprintf(`{"number":"%s","hash":"%s","parentHash":"%s"}`, n.num, n.hash, testHash("f", n.number()-1)))}
+		Header: askedHeader([]byte(fmt.Sprintf(`{"number":"%s","hash":"%s","parentHash":"%s"}`, n.num, n.hash, testHash("f", n.number()-1))))}
+}
+
+// askedHeader is raw as an Ask answer carries it, parsed at its fetch; nil
+// when raw is none or fails intake check 0.
+func askedHeader(raw json.RawMessage) common.EvmHeader {
+	sh, err := ParseSourceHeader(raw)
+	if len(raw) == 0 || err != nil {
+		return nil
+	}
+	return sh
 }
 
 func (n *capturingNetwork) number() uint64 {

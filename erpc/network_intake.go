@@ -57,6 +57,8 @@ type networkIntake struct {
 	// polls is, per polled upstream, its last successful latest poll and
 	// the failures its node gave since (spec §6.1).
 	polls map[string]pollRecord
+	// counts are the header outcome counters, bound once each.
+	counts telemetry.CounterSet[headCount]
 }
 
 // pollRecord is an upstream's last successful latest poll; since it, when
@@ -72,7 +74,7 @@ type pollRecord struct {
 
 type rejectedHeader struct {
 	upstreamId string
-	raw        json.RawMessage
+	sh         evm.SourceHeader
 	at         time.Time
 }
 
@@ -93,7 +95,12 @@ func newNetworkIntake(nw *Network) *networkIntake {
 type pushIntake struct{ *networkIntake }
 
 func (p pushIntake) Header(upstreamId string, raw json.RawMessage) {
-	p.header(upstreamId, raw, evm.HeaderStreamed, false, time.Now())
+	sh, err := evm.ParseSourceHeader(raw)
+	if err != nil {
+		p.count(upstreamId, "malformed")
+		return
+	}
+	p.header(upstreamId, sh, evm.HeaderStreamed, false, time.Now())
 }
 
 var (
@@ -121,9 +128,10 @@ func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessa
 }
 
 // Polled takes the header a poll of upstreamId's latest, sent at sent,
-// fetched. A success ends its failing polls and renews the hash vote they
-// expired (PollFailed).
-func (in *networkIntake) Polled(upstreamId string, raw json.RawMessage, kind evm.HeaderKind, sent time.Time) {
+// fetched; malformed: it failed intake check 0. A success ends its failing
+// polls and renews the hash vote they expired (PollFailed). passed: the
+// header passed intake's checks (header).
+func (in *networkIntake) Polled(upstreamId string, sh evm.SourceHeader, malformed error, kind evm.HeaderKind, sent time.Time) (passed bool) {
 	in.mu.Lock()
 	failing := in.polls[upstreamId].failing
 	in.polls[upstreamId] = pollRecord{ok: sent}
@@ -135,7 +143,11 @@ func (in *networkIntake) Polled(upstreamId string, raw json.RawMessage, kind evm
 			in.nw.sources.wake()
 		}
 	}
-	in.header(upstreamId, raw, kind, false, sent)
+	if malformed != nil {
+		in.count(upstreamId, "malformed")
+		return false
+	}
+	return in.header(upstreamId, sh, kind, false, sent)
 }
 
 // PollFailed notes a poll of upstreamId's latest, sent at started, that its
@@ -177,11 +189,7 @@ func (in *networkIntake) PollFailed(upstreamId string, started time.Time) {
 // PolledFinalized takes the header a poll of upstreamId's finalized
 // fetched on this instance: its finalized evidence for the trackers (spec
 // §6.5), never a vote.
-func (in *networkIntake) PolledFinalized(upstreamId string, raw json.RawMessage) {
-	sh, err := evm.ParseSourceHeader(raw)
-	if err != nil {
-		return
-	}
+func (in *networkIntake) PolledFinalized(upstreamId string, sh evm.SourceHeader) {
 	if u := in.upstream(upstreamId); u != nil {
 		evm.ObserveFinalizedHeader(in.nw, u, sh)
 	}
@@ -200,21 +208,18 @@ func (in *networkIntake) w() time.Duration {
 	return health.FreshnessWindow(in.nw.EvmBlockTime())
 }
 
-// header takes a source header that came as kind; replay: raw is a header
-// integrity held back before a check was suspended, so it votes only when
-// it is newer than its source's newest accepted header: a replay never
-// moves a vote back. A fork poll's answer moves the vote whatever the path
-// says: it is the node's head now.
-func (in *networkIntake) header(upstreamId string, raw json.RawMessage, kind evm.HeaderKind, replay bool, at time.Time) {
-	sh, err := evm.ParseSourceHeader(raw)
-	if err != nil {
-		in.count(upstreamId, "malformed")
-		return
-	}
+// header takes a source header past check 0 that came as kind; replay: sh
+// is a header integrity held back before a check was suspended, so it
+// votes only when it is newer than its source's newest accepted header: a
+// replay never moves a vote back. A fork poll's answer moves the vote
+// whatever the path says: it is the node's head now. passed: sh passed
+// checks 1 and 2, so a tracker may hold it; a header behind the vote,
+// which never votes, is checked too when it is not the vote itself.
+func (in *networkIntake) header(upstreamId string, sh evm.SourceHeader, kind evm.HeaderKind, replay bool, at time.Time) (passed bool) {
 	cur := sh.Cursor()
 	u := in.upstream(upstreamId)
 	if u == nil {
-		return
+		return false
 	}
 	stream, fresh := kind == evm.HeaderStreamed && !replay, kind == evm.HeaderForkPolled
 	in.mu.Lock()
@@ -234,26 +239,26 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, kind evm
 			in.noteStream(upstreamId, int64(cur.Number))
 		}
 		in.count(upstreamId, "duplicate")
-		return
+		return current || evm.CheckSourceHeader(in.nw, u, sh)
 	}
 	if !evm.CheckSourceHeader(in.nw, u, sh) {
 		in.mu.Lock()
-		in.rejected = append(in.rejected, rejectedHeader{upstreamId, raw, at})
+		in.rejected = append(in.rejected, rejectedHeader{upstreamId, sh, at})
 		if over := len(in.rejected) - rejectedKept; over > 0 {
 			in.rejected = slices.Delete(in.rejected, 0, over)
 		}
 		in.mu.Unlock()
 		in.count(upstreamId, "gated_integrity")
-		return
+		return false
 	}
 	poller := u.EvmStatePoller()
-	if poller == nil || poller.IsObjectNull() || !poller.ObserveHead(raw, at) {
+	if poller == nil || poller.IsObjectNull() || !poller.ObserveHead(int64(cur.Number), at) {
 		in.count(upstreamId, "gated_identity")
-		return
+		return false
 	}
 	if !in.accept(upstreamId, sh, replay, fresh) {
 		in.count(upstreamId, "duplicate")
-		return
+		return true
 	}
 	// The hash vote is recorded before the trackers see the header, so the
 	// tracker that handles it counts its sender as a hash voter.
@@ -269,6 +274,7 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, kind evm
 	} else {
 		in.count(upstreamId, "gated_voter")
 	}
+	return true
 }
 
 // noteStream notes number as upstreamId's stream head. No wake is needed
@@ -305,7 +311,7 @@ func (in *networkIntake) replayRejected() {
 			}
 		}()
 		for _, r := range held {
-			in.header(r.upstreamId, r.raw, evm.HeaderPolled, true, r.at)
+			in.header(r.upstreamId, r.sh, evm.HeaderPolled, true, r.at)
 		}
 	}()
 }
@@ -351,9 +357,16 @@ func (n *Network) newestHashVoteAt() (at time.Time) {
 	return at
 }
 
+// headCount is one series of erpc_chain_tracker_source_heads_total.
+type headCount struct{ project, network, upstream, outcome string }
+
+func headCountLabels(k headCount) []string {
+	return []string{k.project, k.network, k.upstream, k.outcome}
+}
+
 func (in *networkIntake) count(upstreamId, outcome string) {
-	telemetry.CounterHandle(telemetry.MetricChainTrackerSourceHeadsTotal,
-		in.nw.projectId, in.nw.Label(), upstreamId, outcome).Inc()
+	in.counts.Inc(telemetry.MetricChainTrackerSourceHeadsTotal,
+		headCount{in.nw.projectId, in.nw.Label(), upstreamId, outcome}, headCountLabels)
 }
 
 func (in *networkIntake) upstream(id string) *upstream.Upstream {

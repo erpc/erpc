@@ -185,14 +185,11 @@ type RequestDirectives struct {
 	// Instruct the proxy to bypass method exclusion checks.
 	ByPassMethodExclusion bool `json:"-"`
 
-	// IsInternal marks a request erpc builds for itself as request kind
-	// "internal" for failsafe matching (matchRequestKind); the integrity
-	// engine checks its answer against held data only, never fetching more.
-	// Never set from HTTP headers.
-	IsInternal bool `json:"-"`
-
-	// UpstreamPolicies says which upstream failsafe policies apply. Never
-	// set from HTTP headers.
+	// UpstreamPolicies says whose request it is and which upstream failsafe
+	// policies apply: a client's (UpstreamPoliciesConfigured) or eRPC's own
+	// (any other), which matches failsafe request kind "internal" and whose
+	// answer the integrity engine checks against held data only. Never set
+	// from HTTP headers.
 	UpstreamPolicies UpstreamPolicies `json:"-"`
 
 	// DeferIntegrity: the upstream attempt skips the integrity checks; the
@@ -234,9 +231,10 @@ const (
 	// UpstreamPoliciesConfigured: every configured policy; client traffic.
 	UpstreamPoliciesConfigured UpstreamPolicies = iota
 	// UpstreamPoliciesTimeoutOnly: subscription calls, state-poller and
-	// chainId probes, integrity state probes. No retry or hedge, which would
-	// send a subscribe twice, and no breaker, so probing a down vendor never
-	// opens one clients depend on; the per-attempt timeout applies.
+	// chainId probes, integrity state probes. No network or upstream retry
+	// or hedge, which would send a subscribe twice, and no breaker, so
+	// probing a down vendor never opens one clients depend on; the
+	// per-attempt timeout applies.
 	UpstreamPoliciesTimeoutOnly
 	// UpstreamPoliciesTracker: chain tracker fetches. No configured policy
 	// applies; an open breaker refuses them, and they never feed it, so

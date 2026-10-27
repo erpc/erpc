@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"go.opentelemetry.io/otel/attribute"
@@ -260,14 +261,7 @@ func ExtractBlockTimestampFromResponse(ctx context.Context, r *common.Normalized
 	// Force-copy the small string to avoid any potential reference to backing buffers
 	timestampStr = string(append([]byte(nil), timestampStr...))
 
-	var blockTimestamp int64
-	// Handle both hex (0x...) and decimal formats
-	if strings.HasPrefix(timestampStr, "0x") {
-		blockTimestamp, err = common.HexToInt64(timestampStr)
-	} else {
-		blockTimestamp, err = strconv.ParseInt(timestampStr, 10, 64)
-	}
-
+	blockTimestamp, err := integrity.ParseTimestamp(timestampStr)
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return 0, err

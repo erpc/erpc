@@ -61,8 +61,9 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 	tracker := nw.chainTracker
 	window := tracker.ReorgWindow()
 	sends := newTapSends(nw, lane, "ws", indexer.SubTypeLogs)
+	notify := wsc.notifier(sub)
 	write := func(log json.RawMessage) error {
-		if err := wsc.WriteSubscriptionNotification(sub, log); err != nil {
+		if err := notify.write(log); err != nil {
 			return wsWriteError{err}
 		}
 		return nil

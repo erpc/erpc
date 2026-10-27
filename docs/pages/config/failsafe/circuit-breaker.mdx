@@ -208,7 +208,7 @@ completed attempt from its (response, error) pair:
 - **OutcomeSuccess**: all non-error, non-syncing-empty responses.
 
 **What bypasses the breaker entirely.** Hedge attempts (`isHedge == true`), internal
-state-poller, chain-id and state probes and subscription calls (`req.IsInternal()`), and
+state-poller, chain-id and state probes and subscription calls (`req.UpstreamPolicies()` is `TimeoutOnly` or `HeadAsk`), and
 composite batch fan-out sub-requests (`req.IsCompositeRequest()`) all skip
 `TryAcquirePermit` and `Record`.
 
@@ -541,7 +541,7 @@ window and require a high success ratio. This pairs well with the fast-trip brea
    upstream does not count as a failure. Only the primary (non-hedge) attempt counts. This is
    intentional to avoid penalizing upstreams for aggressive hedging.
 5. **Internal probe calls bypass the breaker in both directions.** State-poller probes
-   (`req.IsInternal()`) neither block on an open breaker nor record outcomes. An Open upstream
+   (`req.UpstreamPolicies()` is `TimeoutOnly` or `HeadAsk`) neither block on an open breaker nor record outcomes. An Open upstream
    will receive internal probes but no user traffic and no chain tracker fetches.
 6. **`circuitBreaker` at network scope causes startup failure.** Even `circuitBreaker: {}` in
    a network `failsafe` block causes `NewNetworkExecutor` to return an error and eRPC will not

@@ -140,7 +140,8 @@ func NewNetwork(
 		}
 	}
 
-	// Catch-all no-op executor.
+	// Catch-all no-op executor; timeout-only requests take it whatever the
+	// config matches.
 	noop, _ := NewNetworkExecutor(nil, &lg, nil, dynamicBlockUnavailableDelay)
 	failsafeExecutors = append(failsafeExecutors, noop)
 
@@ -169,6 +170,7 @@ func NewNetwork(
 
 		inFlightRequests:  &sync.Map{},
 		failsafeExecutors: failsafeExecutors,
+		bareExecutor:      noop,
 		initializer:       util.NewInitializer(appCtx, &lg, nil),
 	}
 	network.servedTipAll.label = "all"

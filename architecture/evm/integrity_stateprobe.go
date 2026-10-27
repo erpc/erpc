@@ -74,6 +74,14 @@ import (
 // stateProbeMinInterval is the default floor between probes of one upstream.
 const stateProbeMinInterval = 2 * time.Second
 
+// stateProbeProofErrors is how many eth_getProof errors in a row, with no
+// answer between them, stop an upstream's proof probes (spec §15.1).
+const stateProbeProofErrors = 10
+
+// stateProbeProofOffFor is how long an upstream's proof probes stay off
+// once stopped: like an IgnoreMethod entry, the switch expires.
+var stateProbeProofOffFor = 10 * time.Minute
+
 type stateProber struct {
 	network  common.Network
 	view     *ChainTracker // the tracker whose pinned headers anchor the probes
@@ -86,9 +94,14 @@ type stateProber struct {
 	mu        sync.Mutex
 	lastProbe map[string]time.Time // upstream id -> last probe start
 
-	// proofUnsupported remembers upstreams whose provider does not expose
-	// eth_getProof, so the probe is not re-attempted on every block.
-	proofUnsupported sync.Map // upstream id -> true
+	// proofOff stops an upstream's proof probes until a time: its provider
+	// does not expose eth_getProof, or erred stateProbeProofErrors times in
+	// a row. Context probes go on. The switch expires, as IgnoreMethod
+	// entries do, so a vendor that fixed its proofs is probed again.
+	proofOff sync.Map // upstream id -> time.Time
+	// proofErrors counts an upstream's eth_getProof errors since its last
+	// proof answer.
+	proofErrors sync.Map // upstream id -> *atomic.Int64
 
 	// disprovedStreak counts CONSECUTIVE probe mismatches per upstream — the
 	// INTERNAL debounce between one unlucky probe and real evidence. Never
@@ -673,11 +686,10 @@ func (p *stateProber) probeLatest(ctx context.Context, u common.Upstream) {
 // credited head is kept and the request counted routed; when that head is
 // more than tagStateRefuseBehind of chain below Latest, r is refused with
 // -32603, counted refused. r keeps its tag either way. Requests outside
-// family 3, numbered ones, those while Head is unknown and internal ones
+// family 3, numbered ones, those while Head is unknown and eRPC's own
 // (probes, tracker fetches) are not gated.
 func DecideTagState(ctx context.Context, n common.Network, r *common.NormalizedRequest) error {
-	d := r.Directives()
-	if d != nil && d.IsInternal {
+	if r.UpstreamPolicies() != common.UpstreamPoliciesConfigured {
 		return nil
 	}
 	p := stateProberFor(n)
@@ -700,7 +712,7 @@ func DecideTagState(ctx context.Context, n common.Network, r *common.NormalizedR
 		return nil
 	}
 	var sel string
-	if d != nil {
+	if d := r.Directives(); d != nil {
 		sel = d.UseUpstream
 	}
 	now := time.Now()
@@ -812,7 +824,7 @@ func (p *stateProber) probeProof(ctx context.Context, u common.Upstream, n int64
 	if h.StateRoot == "" {
 		return probeUnknown
 	}
-	if _, off := p.proofUnsupported.Load(u.Id()); off {
+	if p.proofsOff(u.Id()) {
 		return probeUnknown
 	}
 	// An upstream whose own configuration excludes the method (ignoreMethods /
@@ -821,7 +833,7 @@ func (p *stateProber) probeProof(ctx context.Context, u common.Upstream, n int64
 	// below — so the probe erred on every block instead of latching once.
 	// Ask the upstream before forwarding and remember the answer.
 	if ok, _ := u.ShouldHandleMethod("eth_getProof"); !ok {
-		p.proofUnsupported.Store(u.Id(), true)
+		p.stopProofs(u.Id())
 		p.count(u, "proof", "unsupported")
 		return probeUnknown
 	}
@@ -831,10 +843,10 @@ func (p *stateProber) probeProof(ctx context.Context, u common.Upstream, n int64
 	res, err := p.forwardTo(ctx, u, body)
 	if err != nil {
 		if isMethodUnsupportedErr(err) {
-			p.proofUnsupported.Store(u.Id(), true)
+			p.stopProofs(u.Id())
 			p.count(u, "proof", "unsupported")
 		} else {
-			p.count(u, "proof", "error")
+			p.proofErred(u)
 		}
 		return probeUnknown
 	}
@@ -842,12 +854,20 @@ func (p *stateProber) probeProof(ctx context.Context, u common.Upstream, n int64
 		AccountProof []string `json:"accountProof"`
 	}
 	if json.Unmarshal([]byte(res), &proof) != nil || len(proof.AccountProof) == 0 {
-		p.count(u, "proof", "error")
+		p.proofErred(u)
 		return probeUnknown
 	}
-	node0, err0 := hexBytes(proof.AccountProof[0])
-	want, err1 := hexBytes(h.StateRoot)
-	if err0 != nil || err1 != nil || len(want) != 32 {
+	node0, err := hexBytes(proof.AccountProof[0])
+	if err != nil {
+		p.proofErred(u)
+		return probeUnknown
+	}
+	if v, ok := p.proofErrors.Load(u.Id()); ok {
+		v.(*atomic.Int64).Store(0)
+	}
+	// The verified root itself unusable is no fault of u's.
+	want, err := hexBytes(h.StateRoot)
+	if err != nil || len(want) != 32 {
 		p.count(u, "proof", "error")
 		return probeUnknown
 	}
@@ -862,16 +882,41 @@ func (p *stateProber) probeProof(ctx context.Context, u common.Upstream, n int64
 	return probeMatch
 }
 
+// proofsOff reports whether upstream id's proof probes are stopped now.
+func (p *stateProber) proofsOff(id string) bool {
+	until, ok := p.proofOff.Load(id)
+	return ok && time.Now().Before(until.(time.Time))
+}
+
+// stopProofs stops upstream id's proof probes for stateProbeProofOffFor.
+func (p *stateProber) stopProofs(id string) {
+	p.proofOff.Store(id, time.Now().Add(stateProbeProofOffFor))
+}
+
+// proofErred counts an eth_getProof error of u; the stateProbeProofErrors-th
+// in a row stops its proof probes.
+func (p *stateProber) proofErred(u common.Upstream) {
+	p.count(u, "proof", "error")
+	v, _ := p.proofErrors.LoadOrStore(u.Id(), new(atomic.Int64))
+	if v.(*atomic.Int64).Add(1) < stateProbeProofErrors {
+		return
+	}
+	v.(*atomic.Int64).Store(0)
+	p.stopProofs(u.Id())
+	log.Warn().Str("network", p.network.Label()).Str("upstream", u.Id()).Int("errors", stateProbeProofErrors).
+		Dur("for", stateProbeProofOffFor).Msg("state probe: eth_getProof keeps failing, stopping proof probes for a while")
+}
+
 // forwardTo sends one probe to EXACTLY the given upstream: cache bypassed (the
-// cache would answer instead of the node — the circular-evidence trap), marked
-// internal so the integrity engine does not recurse into validating the
-// probe's own response, timeout-only: no upstream retry, hedge or breaker,
+// cache would answer instead of the node — the circular-evidence trap), as
+// eRPC's own so the integrity engine does not recurse into validating the
+// probe's own response, timeout-only: no network or upstream retry or
+// hedge, no breaker (spec §6.11),
 // and with interpolation skipped, so a "latest" reaches u as the tag. A
 // Use-Upstream request shares a multiplexer only with requests pinned to u.
 func (p *stateProber) forwardTo(ctx context.Context, u common.Upstream, body string) (string, error) {
 	req := common.NewNormalizedRequest([]byte(body))
 	req.SetDirectives(&common.RequestDirectives{
-		IsInternal:        true,
 		UpstreamPolicies:  common.UpstreamPoliciesTimeoutOnly,
 		UseUpstream:       u.Id(),
 		SkipCacheRead:     "true",

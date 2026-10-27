@@ -525,7 +525,6 @@ func TestChainTracker_GroupScoping(t *testing.T) {
 	t.Run("a fetch is pinned to the group selector", func(t *testing.T) {
 		d := fetchSpec{selector: "group-a*", method: "eth_getBlockByHash", byHash: true}.directives()
 		require.NotNil(t, d)
-		assert.True(t, d.IsInternal)
 		assert.Equal(t, common.UpstreamPoliciesTracker, d.UpstreamPolicies)
 		assert.Equal(t, "group-a*", d.UseUpstream, "corroboration must stay in the served group")
 		assert.Empty(t, d.SkipCacheRead, "a by-hash fetch may read the cache")
@@ -537,7 +536,7 @@ func TestChainTracker_GroupScoping(t *testing.T) {
 
 	t.Run("no selector → network-wide (no use-upstream pin)", func(t *testing.T) {
 		d := fetchSpec{method: "eth_getBlockByNumber"}.directives()
-		assert.True(t, d.IsInternal)
+		assert.Equal(t, common.UpstreamPoliciesTracker, d.UpstreamPolicies)
 		assert.Equal(t, "", d.UseUpstream)
 	})
 }
@@ -723,7 +722,7 @@ func (n *settleNetwork) EvmAskHead(_ context.Context, id string, need common.Hea
 	h := n.latest[id]
 	n.smu.Unlock()
 	sent := time.Now()
-	return common.HeadAnswer{Outcome: common.AskFetched, Sent: sent, Next: sent.Add(time.Hour), Header: h}
+	return common.HeadAnswer{Outcome: common.AskFetched, Sent: sent, Next: sent.Add(time.Hour), Header: askedHeader(h)}
 }
 
 func (n *settleNetwork) forkAsks() int {

@@ -2,7 +2,6 @@ package evm
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -171,7 +170,7 @@ func covPollerRpcError(code int, msg string) *common.NormalizedResponse {
 }
 
 func covPollerBlock(num int64) *common.NormalizedResponse {
-	return covPollerResult(fmt.Sprintf(`{"number":"0x%x","hash":"0x%064x","timestamp":"0x%x"}`, num, num+1, 1_700_000_000+num))
+	return covPollerResult(fmt.Sprintf(`{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","timestamp":"0x%x"}`, num, num+1, num, 1_700_000_000+num))
 }
 
 // covPollerBlockTag returns the first param of eth_getBlockByNumber.
@@ -265,13 +264,26 @@ func TestCovPoller_PollLatest_GivesUpAfterTenUnsupportedAnswers(t *testing.T) {
 			d = p.GetDiagnostics()
 			assert.Equal(t, 10, d.LatestBlockFailureCount)
 			assert.False(t, d.LatestBlockSuccessfulOnce)
-			assert.Contains(t, d.LatestBlockDetectionIssue, "latest block check disabled")
+			assert.Contains(t, d.LatestBlockDetectionIssue, "latest block check given up")
 
 			calls := up.callCount("eth_getBlockByNumber")
 			v, err = p.PollLatestBlockNumber(ctx)
 			require.NoError(t, err)
 			assert.Zero(t, v)
 			assert.Equal(t, calls, up.callCount("eth_getBlockByNumber"), "after giving up the upstream is not asked again")
+			assert.True(t, p.LatestUnsupported(), "no poll source while given up")
+
+			// PollerGiveUpExpiry later it is retried once; a refused retry
+			// gives it up again at once.
+			covPollerExpireGiveUp(p, &p.latestGiveUp)
+			assert.False(t, p.LatestUnsupported(), "the give-up expires")
+			time.Sleep(20 * time.Millisecond) // past the poll debounce
+			_, _ = p.PollLatestBlockNumber(ctx)
+			assert.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"), "an expired give-up is retried")
+			assert.True(t, p.LatestUnsupported(), "a refused retry gives up again")
+			time.Sleep(20 * time.Millisecond)
+			_, _ = p.PollLatestBlockNumber(ctx)
+			assert.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"))
 		})
 	}
 }
@@ -355,6 +367,63 @@ func TestCovPoller_PollLatest_MalformedBlockAnswersAreErrors(t *testing.T) {
 			assert.Zero(t, v)
 			assert.Zero(t, p.LatestBlock())
 			assert.Zero(t, p.GetDiagnostics().LatestBlockFailureCount, "malformed answers are transient, not 'unsupported'")
+		})
+	}
+}
+
+// Intake check 0 parses a polled block once: an optional field that does
+// not parse counts as absent, and the header still votes, before and after
+// intake binds (spec §5.3). Timestamps read as main read them.
+func TestCovPoller_PollLatest_OptionalFieldsThatDoNotParseCountAsAbsent(t *testing.T) {
+	block := func(extra string) string {
+		return fmt.Sprintf(`{"number":"0x64","hash":"0x%064x","parentHash":"0x%064x",%s}`, 101, 100, extra)
+	}
+	cases := []struct {
+		name, extra string
+		timestamp   int64
+	}{
+		{"json integer timestamp", `"timestamp":1700000100`, 1_700_000_100},
+		{"decimal string timestamp", `"timestamp":"1700000100"`, 1_700_000_100},
+		{"hex timestamp", `"timestamp":"0x6553f164"`, 0x6553f164},
+		{"unparseable timestamp", `"timestamp":"0xzz"`, 0},
+		{"fractional timestamp", `"timestamp":1.7e9`, 0},
+		{"short logsBloom", `"timestamp":"0x6553f164","logsBloom":"0x12"`, 0x6553f164},
+		{"numeric transactionsRoot", `"timestamp":"0x6553f164","transactionsRoot":7`, 0x6553f164},
+		{"unparseable gasUsed", `"timestamp":"0x6553f164","gasUsed":"lots"`, 0x6553f164},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := block(tc.extra)
+			handler := func(string, []interface{}) (*common.NormalizedResponse, error) {
+				return covPollerResult(raw), nil
+			}
+			header := func(t *testing.T, a common.HeadAnswer) SourceHeader {
+				t.Helper()
+				require.NoError(t, a.Err)
+				assert.Equal(t, common.AskFetched, a.Outcome)
+				require.NotNil(t, a.Header, "the header passes check 0")
+				sh := a.Header.(SourceHeader)
+				assert.Equal(t, uint64(100), sh.Cursor().Number)
+				assert.Equal(t, tc.timestamp, sh.Timestamp())
+				assert.JSONEq(t, raw, string(sh.Raw()), "the header keeps its source bytes")
+				return sh
+			}
+
+			// Before intake binds, the poll itself moves the counter.
+			p, _, ctx := covPollerNew(t, "cov-latest-optional", handler)
+			a := p.Ask(ctx, common.HeadNeedHash, common.AskRefresh)
+			header(t, a)
+			assert.Equal(t, int64(100), a.Block)
+			assert.Equal(t, int64(100), p.LatestBlock())
+
+			bound, _, ctx := covPollerNew(t, "cov-latest-optional-bound", handler)
+			in := &covPollerIntake{}
+			bound.BindIntake(in)
+			sh := header(t, bound.Ask(ctx, common.HeadNeedHash, common.AskRefresh))
+			in.mu.Lock()
+			defer in.mu.Unlock()
+			require.NoError(t, in.malformed, "intake takes the header as a vote")
+			assert.Equal(t, sh.Cursor(), in.header.Cursor())
 		})
 	}
 }
@@ -473,15 +542,36 @@ func TestCovPoller_PollFinalized_GivesUpAfterTenUnsupportedAnswers(t *testing.T)
 
 			d := p.GetDiagnostics()
 			assert.Equal(t, 10, d.FinalizedBlockFailureCount)
-			assert.Contains(t, d.FinalizedBlockDetectionIssue, "finalized block check disabled")
+			assert.Contains(t, d.FinalizedBlockDetectionIssue, "finalized block check given up")
 
 			calls := up.callCount("eth_getBlockByNumber")
 			v, err = p.PollFinalizedBlockNumber(ctx)
 			require.NoError(t, err)
 			assert.Zero(t, v)
 			assert.Equal(t, calls, up.callCount("eth_getBlockByNumber"))
+			_, derived := p.DerivedFinalized()
+			assert.True(t, derived, "a given-up finalized tag is derived from latest")
+
+			// PollerGiveUpExpiry later it is retried once; finality stays
+			// derived through the retry, and a refused retry gives up again.
+			covPollerExpireGiveUp(p, &p.finalizedGiveUp)
+			_, derived = p.DerivedFinalized()
+			assert.True(t, derived, "derived finality never flips off on a retry")
+			time.Sleep(20 * time.Millisecond) // past the poll debounce
+			_, _ = p.PollFinalizedBlockNumber(ctx)
+			assert.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"), "an expired give-up is retried")
+			time.Sleep(20 * time.Millisecond)
+			_, _ = p.PollFinalizedBlockNumber(ctx)
+			assert.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"), "a refused retry gives up again")
 		})
 	}
+}
+
+// covPollerExpireGiveUp backdates g's give-up by PollerGiveUpExpiry.
+func covPollerExpireGiveUp(p *EvmStatePoller, g *giveUp) {
+	p.stateMu.Lock()
+	g.at = time.Now().Add(-PollerGiveUpExpiry.Load())
+	p.stateMu.Unlock()
 }
 
 func TestCovPoller_PollFinalized_UnsupportedAfterSuccessNeverGivesUp(t *testing.T) {
@@ -732,7 +822,8 @@ func TestCovPoller_Ask(t *testing.T) {
 			a := <-answers
 			require.NoError(t, a.Err)
 			assert.Equal(t, int64(77), a.Block)
-			assert.Contains(t, string(a.Header), `"number":"0x4d"`)
+			require.NotNil(t, a.Header)
+			assert.Contains(t, string(a.Header.Raw()), `"number":"0x4d"`)
 			outcomes[a.Outcome]++
 		}
 		assert.Equal(t, map[common.AskOutcome]int{common.AskFetched: 1, common.AskInflight: waiters - 1}, outcomes)
@@ -852,12 +943,24 @@ func TestCovPoller_Ask(t *testing.T) {
 	})
 }
 
-// covPollerIntake counts the poller's intake calls.
-type covPollerIntake struct{ polled, failed atomic.Int32 }
+// covPollerIntake counts the poller's intake calls and keeps the last
+// polled header.
+type covPollerIntake struct {
+	polled, failed atomic.Int32
+	mu             sync.Mutex
+	header         SourceHeader
+	malformed      error
+}
 
-func (i *covPollerIntake) Polled(string, json.RawMessage, HeaderKind, time.Time) { i.polled.Add(1) }
-func (i *covPollerIntake) PollFailed(string, time.Time)                          { i.failed.Add(1) }
-func (i *covPollerIntake) PolledFinalized(string, json.RawMessage)               {}
+func (i *covPollerIntake) Polled(_ string, sh SourceHeader, malformed error, _ HeaderKind, _ time.Time) bool {
+	i.polled.Add(1)
+	i.mu.Lock()
+	i.header, i.malformed = sh, malformed
+	i.mu.Unlock()
+	return true
+}
+func (i *covPollerIntake) PollFailed(string, time.Time)         { i.failed.Add(1) }
+func (i *covPollerIntake) PolledFinalized(string, SourceHeader) {}
 
 // A counter another path keeps fresh meets a number need, but never a hash
 // need: its local fetch still runs, so this instance keeps sampling block
@@ -959,7 +1062,6 @@ func TestCovPoller_FetchSyncingState(t *testing.T) {
 		err     error
 		syncing bool
 		wantErr string
-		skip    bool
 	}{
 		{name: "bool true", resp: covPollerResult(`true`), syncing: true},
 		{name: "bool false", resp: covPollerResult(`false`)},
@@ -973,8 +1075,8 @@ func TestCovPoller_FetchSyncingState(t *testing.T) {
 		{name: "string result", resp: covPollerResult(`"yes"`), wantErr: "cannot parse syncing state"},
 		{name: "not json", resp: covPollerResult(`nope`), wantErr: "cannot parse syncing state"},
 		{name: "json-rpc error", resp: covPollerRpcError(-32601, "the method eth_syncing does not exist/is not available"), wantErr: "does not exist/is not available"},
-		{name: "unsupported marks skip", err: common.NewErrEndpointUnsupported(errors.New("no")), wantErr: "does not support", skip: true},
-		{name: "client error marks skip", err: common.NewErrEndpointClientSideException(errors.New("bad")), wantErr: "client-side", skip: true},
+		{name: "unsupported", err: common.NewErrEndpointUnsupported(errors.New("no")), wantErr: "does not support"},
+		{name: "client error", err: common.NewErrEndpointClientSideException(errors.New("bad")), wantErr: "client-side"},
 		{name: "server error keeps checking", err: common.NewErrEndpointServerSideException(errors.New("down"), nil, 503), wantErr: "internal error on remote endpoint"},
 	}
 	for _, tc := range cases {
@@ -990,7 +1092,7 @@ func TestCovPoller_FetchSyncingState(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, tc.syncing, syncing)
 			}
-			assert.Equal(t, tc.skip, p.GetDiagnostics().SkipSyncingCheck)
+			assert.False(t, p.GetDiagnostics().SkipSyncingCheck, "one refusal never gives the syncing check up")
 		})
 	}
 }

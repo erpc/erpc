@@ -199,10 +199,12 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 // around the upstream (consensus already excludes errors from
 // preferLargerResponses, so a corrupt-but-larger response can no longer
 // dispute an honest majority). eRPC's own requests (tracker fetches,
-// probes, polls) are checked too, against held data only: a check never
+// probes) are checked too, against held data only: a check never
 // fetches recursively, and never judges them against the pins they are
-// there to move. They hunt no replacement. Tracker fetches feed no answer
-// back to the tracker: its scheduler hands them over itself.
+// there to move. They hunt no replacement, and feed no answer back to the
+// tracker: its scheduler hands them over itself. Head polls and Asks go
+// to their upstream directly, never through this hook: intake check 1 is
+// their one check (spec §13).
 func validateIntegrity(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, methodLower string) error {
 	if !integrity.HasChecks(methodLower) {
 		return nil
@@ -212,8 +214,7 @@ func validateIntegrity(ctx context.Context, n common.Network, u common.Upstream,
 	if len(cs) == 0 {
 		return nil
 	}
-	held := dirs != nil && (dirs.IsInternal || dirs.UpstreamPolicies != common.UpstreamPoliciesConfigured)
-	tracked := dirs != nil && dirs.IsInternal
+	own := rq.UpstreamPolicies() != common.UpstreamPoliciesConfigured
 	// Integrity state + corroboration are scoped to the node GROUP the request
 	// was pinned to (use-upstream selector), reusing erpc's served-tip grouping
 	// so a receipt from one group is only checked against same-group
@@ -237,10 +238,10 @@ func validateIntegrity(ctx context.Context, n common.Network, u common.Upstream,
 		checks:      cs,
 		policy:      policy,
 		observeOnly: observeOnly,
-		autoCorrect: autoCorrect && !held,
+		autoCorrect: autoCorrect && !own,
 		params:      params,
 		view:        view,
-		held:        held,
+		held:        own,
 	})
 	if res.Err != nil {
 		if res.FallbackEligible {
@@ -263,9 +264,9 @@ func validateIntegrity(ctx context.Context, n common.Network, u common.Upstream,
 	// Hand the validated response to the tracker: block responses are
 	// held as answers; narrow responses (receipts/tx) give anchors for
 	// FINALIZED blocks only (tip-thrash safety).
-	if !tracked && isBlockMethod(methodLower) {
+	if !own && isBlockMethod(methodLower) {
 		observeBlockView(ctx, view, u, rs)
-	} else if !tracked && isAnchoredNarrowMethod(methodLower) {
+	} else if !own && isAnchoredNarrowMethod(methodLower) {
 		observeNarrowView(ctx, view, u, rs)
 	}
 	return nil

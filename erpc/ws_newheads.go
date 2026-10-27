@@ -46,6 +46,7 @@ func (e wsWriteError) Error() string { return e.err.Error() }
 func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane string) {
 	tracker := nw.chainTracker
 	sends := newTapSends(nw, lane, "ws", indexer.SubTypeNewHeads)
+	notify := wsc.notifier(sub)
 	emit := func(b indexer.Batch) (int, error) {
 		select {
 		case <-opened:
@@ -65,7 +66,7 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 				sm.logger.Warn().Err(err).Uint64("block", blk.Number).Msg("cannot project a held header as newHeads")
 				continue
 			}
-			if err := sends.write(blk, snap, func() error { return wsc.WriteSubscriptionNotification(sub, payload) }); err != nil {
+			if err := sends.write(blk, snap, func() error { return notify.write(payload) }); err != nil {
 				return i, wsWriteError{err}
 			}
 		}

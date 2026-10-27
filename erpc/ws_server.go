@@ -708,27 +708,53 @@ func (wsc *WsConnection) waitInflight(timeout time.Duration) {
 	}
 }
 
-func (wsc *WsConnection) WriteSubscriptionNotification(sub wsclient.Subscription, result json.RawMessage) error {
-	labels := []string{wsc.project.Config.Id, wsc.networkLabel, sub.Kind.String()}
+// wsNotifier writes one subscription's eth_subscription notifications. The
+// envelope is spliced around the payload bytes as they came, so no
+// notification is encoded again per subscriber, and the metric handles are
+// bound once.
+type wsNotifier struct {
+	wsc *WsConnection
+	sub wsclient.Subscription
+	// prefix is the envelope up to the result:
+	// {"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"<id>","result":
+	prefix      []byte
+	sent, bytes *telemetry.BoundCounter
+}
 
-	notification := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"method":  "eth_subscription",
-		"params": map[string]interface{}{
-			"subscription": sub.ClientSubID,
-			"result":       result,
-		},
+var wsNotificationSuffix = []byte("}}\n")
+
+func (wsc *WsConnection) notifier(sub wsclient.Subscription) *wsNotifier {
+	id, _ := json.Marshal(sub.ClientSubID)
+	prefix := make([]byte, 0, 96+len(id))
+	prefix = append(prefix, `{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":`...)
+	prefix = append(prefix, id...)
+	prefix = append(prefix, `,"result":`...)
+	labels := []string{wsc.project.Config.Id, wsc.networkLabel, sub.Kind.String()}
+	return &wsNotifier{
+		wsc: wsc, sub: sub, prefix: prefix,
+		sent:  telemetry.BindCounter(telemetry.MetricWebsocketNotificationsSentTotal, labels...),
+		bytes: telemetry.BindCounter(telemetry.MetricWebsocketNotificationBytesTotal, labels...),
 	}
-	body := countingWriter{}
-	written, err := wsc.writeNotification(sub, wsc.notificationCostBlock(sub), func(w io.Writer) error {
-		body.w = w
-		return json.NewEncoder(&body).Encode(notification)
+}
+
+// write writes one notification carrying result, valid JSON as is.
+func (n *wsNotifier) write(result json.RawMessage) error {
+	size := len(n.prefix) + len(result) + len(wsNotificationSuffix)
+	written, err := n.wsc.writeNotification(n.sub, n.wsc.notificationCostBlock(n.sub), func(w io.Writer) error {
+		if _, err := w.Write(n.prefix); err != nil {
+			return err
+		}
+		if _, err := w.Write(result); err != nil {
+			return err
+		}
+		_, err := w.Write(wsNotificationSuffix)
+		return err
 	})
 	if err != nil || !written {
 		return err
 	}
-	telemetry.CounterHandle(telemetry.MetricWebsocketNotificationsSentTotal, labels...).Inc()
-	telemetry.CounterHandle(telemetry.MetricWebsocketNotificationBytesTotal, labels...).Add(float64(body.n))
+	n.sent.Inc()
+	n.bytes.Add(float64(size))
 	return nil
 }
 
@@ -742,15 +768,4 @@ func (wsc *WsConnection) writeNotification(sub wsclient.Subscription, costs []by
 		return false, nil
 	}
 	return true, wsc.writeMessageLocked(costs, write)
-}
-
-type countingWriter struct {
-	w io.Writer
-	n int
-}
-
-func (c *countingWriter) Write(p []byte) (int, error) {
-	n, err := c.w.Write(p)
-	c.n += n
-	return n, err
 }

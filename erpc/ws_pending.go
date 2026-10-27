@@ -36,6 +36,7 @@ func (m *mempoolFrom) Tail(variant string) uint64 {
 // never goes silent.
 func (sm *SubscriptionManager) runPendingTxs(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, variant string, from uint64) {
 	feed := &mempoolFrom{MempoolFeed: nw.mempool, from: from}
+	notify := wsc.notifier(sub)
 	emit := func(txs []json.RawMessage) error {
 		select {
 		case <-opened:
@@ -43,7 +44,7 @@ func (sm *SubscriptionManager) runPendingTxs(ctx context.Context, wsc *WsConnect
 			return ctx.Err()
 		}
 		for _, tx := range txs {
-			if err := wsc.WriteSubscriptionNotification(sub, tx); err != nil {
+			if err := notify.write(tx); err != nil {
 				return wsWriteError{err}
 			}
 		}

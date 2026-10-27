@@ -15,6 +15,19 @@ import (
 // sourceHeaderCategory labels the integrity metrics of source headers.
 const sourceHeaderCategory = "source_header"
 
+// integrityCheckCount is one series of erpc_integrity_check_total.
+type integrityCheckCount struct {
+	project, vendor, network, upstream, category, check, outcome string
+}
+
+func integrityCheckCountLabels(k integrityCheckCount) []string {
+	return []string{k.project, k.vendor, k.network, k.upstream, k.category, k.check, k.outcome}
+}
+
+// integrityCheckCounts are the check outcome counters, bound once each:
+// one entry per series the counter ever held.
+var integrityCheckCounts telemetry.CounterSet[integrityCheckCount]
+
 // integrityRun is one integrity validation of an upstream response.
 type integrityRun struct {
 	method      string // lowercase; selects the checks
@@ -108,9 +121,9 @@ func runIntegrity(ctx context.Context, n common.Network, u common.Upstream, rq *
 	// Per-check attempts/outcomes — sum = total attempts. "pass" means an
 	// actual verification ran; "skip" means the check couldn't evaluate.
 	for _, oc := range res.Outcomes {
-		telemetry.MetricIntegrityCheck.WithLabelValues(
+		integrityCheckCounts.Inc(telemetry.MetricIntegrityCheck, integrityCheckCount{
 			n.ProjectId(), u.VendorName(), n.Label(), u.Id(), r.category, oc.CheckID, oc.Outcome,
-		).Inc()
+		}, integrityCheckCountLabels)
 	}
 	for _, rec := range res.Recorded {
 		verdict := rec.Verdict

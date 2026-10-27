@@ -43,7 +43,7 @@ const (
 	pollWindow = 10 * time.Second
 
 	// u17SkipExpiry: the 10 min re-check of a latest give-up (§6.8; §15.1
-	// poller give-up), shortened through evm.LatestBlockSkipExpiry.
+	// poller give-up), shortened through evm.PollerGiveUpExpiry.
 	u17SkipExpiry = 40 * time.Second
 	// u17Refusals: refused latest polls before the give-up (§6.8).
 	u17Refusals = 10
@@ -260,7 +260,7 @@ func u17() spec {
 	return spec{name: "U17", bound: healthyDelivery,
 		faults: map[string]chainsim.Faults{"http-a": {RefuseLatest: true}},
 		upEvm:  map[string]map[string]interface{}{"http-a": {"subscriptionSource": true}},
-		vars:   map[string]time.Duration{"evm.LatestBlockSkipExpiry": u17SkipExpiry},
+		vars:   map[string]time.Duration{"evm.PollerGiveUpExpiry": u17SkipExpiry},
 		body: func(s *scenario) {
 			v, up, pods := s.vendors["http-a"], s.upstream("http-a"), len(s.h.pods)
 			first, last, refused := awaitRefusalsEnd(s, v)

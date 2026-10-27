@@ -402,7 +402,7 @@ all waiting followers with a response ID patch per follower:
 - **Prefer `staticResponses`** for methods your upstreams do not support and will never support
   (e.g. a custom method returning a fixed value); this avoids wasting upstream budget on
   guaranteed errors.
-- **Internal requests** (state pollers, chainId probes) set `IsInternal=true`, bypassing retry,
+- **eRPC's own requests** (state pollers, chainId probes) set `UpstreamPolicies: TimeoutOnly`, bypassing retry,
   hedge, and circuit breaker — only per-attempt timeout applies. Never forward internal requests
   to a public consumer-facing failsafe path.
 
