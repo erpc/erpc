@@ -780,13 +780,15 @@ func isSimpleGroupSelector(selector string) bool {
 }
 
 // EvmRefreshHead asks the pollers that decide the request's head, its
-// finalized axis when finalized is set, for a background refresh: in
-// routing order, only as many of the ballot's voters (voterSet's number
-// votes) as the quorum needs, since a fresher head anywhere else cannot
-// move the served value. A lane walks its voters at most once per poll
-// cadence per axis, the debounce each poller applies anyway, so the
-// per-request call costs no upstream iteration in between. The voter set
-// counts, then each refreshes, so it stays free of allocation.
+// finalized axis when finalized is set, for a background refresh: only as
+// many of the ballot's voters (voterSet's number votes) as the quorum
+// needs, since a fresher head anywhere else cannot move the served value.
+// The latest axis takes them in routing order; the finalized axis oldest
+// finalized report first, since a voter's finality depth is its own and
+// routing order does not reflect it (spec §6.8). A lane walks its voters
+// at most once per poll cadence per axis, the debounce each poller
+// applies anyway, so the per-request call costs no upstream iteration in
+// between.
 func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 	sel := requestSelector(ctx)
 	var ec *common.EvmNetworkConfig
@@ -807,15 +809,23 @@ func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 		return
 	}
 	need := ec.ServedTipQuorum().Of(s.count())
+	if !finalized {
+		s.each(func(u common.Upstream, _ int64) bool {
+			u.(common.EvmUpstream).EvmStatePoller().AskBackground(common.HeadNeedNumber, common.AskRefresh)
+			need--
+			return need > 0
+		})
+		return
+	}
+	pollers := make([]common.EvmStatePoller, 0, s.count())
 	s.each(func(u common.Upstream, _ int64) bool {
-		if sp := u.(common.EvmUpstream).EvmStatePoller(); finalized {
-			sp.RefreshFinalizedBlock()
-		} else {
-			sp.AskBackground(common.HeadNeedNumber, common.AskRefresh)
-		}
-		need--
-		return need > 0
+		pollers = append(pollers, u.(common.EvmUpstream).EvmStatePoller())
+		return true
 	})
+	slices.SortStableFunc(pollers, func(a, b common.EvmStatePoller) int { return a.FinalizedReportAt().Compare(b.FinalizedReportAt()) })
+	for _, sp := range pollers[:min(need, len(pollers))] {
+		sp.RefreshFinalizedBlock()
+	}
 }
 
 // EvmRefreshHeadsBelow Asks, in the background, with a number need, as

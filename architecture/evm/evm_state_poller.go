@@ -1256,6 +1256,14 @@ func (e *EvmStatePoller) LatestReportAt() time.Time {
 	return e.latestBlockShared.ReportAt()
 }
 
+// FinalizedReportAt is LatestReportAt for the finalized tag.
+func (e *EvmStatePoller) FinalizedReportAt() time.Time {
+	if e.finalizedBlockShared == nil {
+		return time.Time{}
+	}
+	return e.finalizedBlockShared.ReportAt()
+}
+
 // OnFinalizedBlock is OnLatestBlock for the finalized block number.
 func (e *EvmStatePoller) OnFinalizedBlock(cb func(int64)) {
 	if e.finalizedBlockShared != nil {

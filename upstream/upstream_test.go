@@ -307,7 +307,8 @@ func (m *mockEvmStatePoller) AskReaching(context.Context, int64, common.AskReaso
 	return common.HeadAnswer{}
 }
 func (m *mockEvmStatePoller) RefreshFinalizedBlock()                     {}
-func (m *mockEvmStatePoller) LatestReportAt() time.Time                 { return time.Time{} }
+func (m *mockEvmStatePoller) LatestReportAt() time.Time                  { return time.Time{} }
+func (m *mockEvmStatePoller) FinalizedReportAt() time.Time               { return time.Time{} }
 func (m *mockEvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePoller) IsObjectNull() bool                         { return m.isNull }
 
@@ -636,8 +637,9 @@ func (m *mockEvmStatePollerWithUpdate) AskBackground(common.HeadNeed, common.Ask
 func (m *mockEvmStatePollerWithUpdate) AskReaching(context.Context, int64, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
-func (m *mockEvmStatePollerWithUpdate) RefreshFinalizedBlock() {}
-func (m *mockEvmStatePollerWithUpdate) LatestReportAt() time.Time { return time.Time{} }
+func (m *mockEvmStatePollerWithUpdate) RefreshFinalizedBlock()                     {}
+func (m *mockEvmStatePollerWithUpdate) LatestReportAt() time.Time                  { return time.Time{} }
+func (m *mockEvmStatePollerWithUpdate) FinalizedReportAt() time.Time               { return time.Time{} }
 func (m *mockEvmStatePollerWithUpdate) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerWithUpdate) IsObjectNull() bool                         { return false }
 

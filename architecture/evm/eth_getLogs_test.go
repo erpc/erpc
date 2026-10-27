@@ -1772,7 +1772,8 @@ func (p *fixedPoller) Ask(context.Context, common.HeadNeed, common.AskReason) co
 }
 func (p *fixedPoller) AskBackground(common.HeadNeed, common.AskReason) {}
 func (p *fixedPoller) RefreshFinalizedBlock()                          {}
-func (p *fixedPoller) LatestReportAt() time.Time                        { return time.Time{} }
+func (p *fixedPoller) LatestReportAt() time.Time                       { return time.Time{} }
+func (p *fixedPoller) FinalizedReportAt() time.Time                    { return time.Time{} }
 
 func (p *fixedPoller) FinalizedBlock() int64 { return p.finalized }
 

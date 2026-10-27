@@ -72,8 +72,9 @@ func (m *mockEvmStatePollerEnhanced) AskBackground(common.HeadNeed, common.AskRe
 func (m *mockEvmStatePollerEnhanced) AskReaching(context.Context, int64, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
-func (m *mockEvmStatePollerEnhanced) RefreshFinalizedBlock() {}
-func (m *mockEvmStatePollerEnhanced) LatestReportAt() time.Time { return time.Time{} }
+func (m *mockEvmStatePollerEnhanced) RefreshFinalizedBlock()                     {}
+func (m *mockEvmStatePollerEnhanced) LatestReportAt() time.Time                  { return time.Time{} }
+func (m *mockEvmStatePollerEnhanced) FinalizedReportAt() time.Time               { return time.Time{} }
 func (m *mockEvmStatePollerEnhanced) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerEnhanced) IsObjectNull() bool                         { return m.isNull }
 func (m *mockEvmStatePollerEnhanced) GetDiagnostics() *common.EvmStatePollerDiagnostics {
@@ -648,8 +649,9 @@ func (m *mockEvmStatePollerWithCustomBehavior) AskBackground(common.HeadNeed, co
 func (m *mockEvmStatePollerWithCustomBehavior) AskReaching(context.Context, int64, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
-func (m *mockEvmStatePollerWithCustomBehavior) RefreshFinalizedBlock() {}
-func (m *mockEvmStatePollerWithCustomBehavior) LatestReportAt() time.Time { return time.Time{} }
+func (m *mockEvmStatePollerWithCustomBehavior) RefreshFinalizedBlock()                     {}
+func (m *mockEvmStatePollerWithCustomBehavior) LatestReportAt() time.Time                  { return time.Time{} }
+func (m *mockEvmStatePollerWithCustomBehavior) FinalizedReportAt() time.Time               { return time.Time{} }
 func (m *mockEvmStatePollerWithCustomBehavior) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerWithCustomBehavior) IsObjectNull() bool                         { return false }
 func (m *mockEvmStatePollerWithCustomBehavior) GetDiagnostics() *common.EvmStatePollerDiagnostics {

@@ -273,9 +273,13 @@ func (p *FakeEvmStatePoller) LatestBlock() int64 {
 	return p.latestBlockNumber
 }
 
-// LatestReportAt has no receive time: a fake's report reaches no further
-// than itself.
+// LatestReportAt and FinalizedReportAt have no receive time: a fake's
+// report reaches no further than itself.
 func (p *FakeEvmStatePoller) LatestReportAt() time.Time {
+	return time.Time{}
+}
+
+func (p *FakeEvmStatePoller) FinalizedReportAt() time.Time {
 	return time.Time{}
 }
 
