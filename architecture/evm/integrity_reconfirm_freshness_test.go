@@ -92,6 +92,8 @@ func newCapturingNetwork(t *testing.T, number int64, hash string) *capturingNetw
 	).Maybe()
 	n.On("Id").Return("evm:1").Maybe()
 	n.On("ProjectId").Return("test").Maybe() // aux metric labels
+	// A group tracker reads its follow interval from the config.
+	n.On("Config").Return(&common.NetworkConfig{}).Maybe()
 	// No served tip here: latest never caps the delivery gate.
 	n.On("HeadLatest", mock.Anything).Return(int64(1) << 62).Maybe()
 	return n
