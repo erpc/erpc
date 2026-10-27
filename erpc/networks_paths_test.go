@@ -270,7 +270,7 @@ func TestNetworksPaths_BareNetworkAccessors(t *testing.T) {
 	t.Run("ArchitectureDefaultsToEvmWhenEvmConfigured", func(t *testing.T) {
 		n := pathsBareNetwork(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{ChainId: 1}})
 		assert.Equal(t, common.ArchitectureEvm, n.Architecture())
-		assert.Equal(t, common.ArchitectureEvm, n.cfg.Architecture, "the default is persisted on the config")
+		assert.Empty(t, n.cfg.Architecture, "a read never writes the live config, which trackers read concurrently")
 		empty := pathsBareNetwork(&common.NetworkConfig{})
 		assert.Equal(t, common.NetworkArchitecture(""), empty.Architecture())
 	})
