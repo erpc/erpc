@@ -29,10 +29,24 @@ const (
 	// finalityMinAge: a voter without a finalized tag reports latest − the
 	// derived depth, at least 30 min of chain (§6.4 Finality, #1079).
 	finalityMinAge = 30 * time.Minute
-	// c13History covers the derived depth at C13's first check, 5s into
-	// a pod's life: 30 min at the block time floor, (5s − 1s) / 25 blocks
-	// = 0.16s, is 11,250 blocks (§6.4, §6.7).
+	// c13History covers the derived depth at C13's first check, at least
+	// 5s into a pod's life: 30 min at the block time floor, (5s − 1s) / 25
+	// blocks = 0.16s, is 11,250 blocks (§6.4, §6.7); a later check reads a
+	// floor nearer 0.2s, so a shallower depth.
 	c13History = 15000
+	// c13FinalizedReads bounds the finalized reads a cold pod answers
+	// with the vendors' refusal. A tagless voter votes latest − the
+	// derived depth after giveUpRefusals (10) refused finalized polls
+	// (architecture/evm/evm_state_poller.go), the bootstrap poll the
+	// first; one vote decides a ballot with fewer votes than the quorum.
+	// Each read refreshes the finalized axis at most once per cadence, on
+	// the quorum (2) of the 4 voters in routing order (EvmRefreshHead,
+	// §6.8), and that order may rotate: one voter's 9 more polls take at
+	// most 9 × 4 / 2 = 18 reads, and the next read answers.
+	c13FinalizedReads = 19
+	// c13ReadEvery: a finalized read per cold poll cadence (0.7s, §6.7)
+	// plus the refresh's round trip.
+	c13ReadEvery = time.Second
 	// c9BlockTime and coldHeaders: C9's chain, and the headers by which a
 	// cold instance's first block time sample lands: it spans the first two
 	// timestamp changes (§6.7; §19 C9). c9WatchHeaders: how long C9 checks
@@ -569,21 +583,28 @@ func (s *scenario) probe(pod int, sel string, b *chainsim.Block) error {
 	return nil
 }
 
-// C13: a chain without a finalized tag on every vendor. The finalized tag
-// answers latest − the derived depth, at least finalityMinAge of chain
-// (§6.4 Finality), and the cache uses it: a block below it is cached
-// permanently, one above it only as recent.
+// C13: a chain without a finalized tag on every vendor. Within
+// c13FinalizedReads reads, one per c13ReadEvery, the finalized tag answers
+// latest − the derived depth, at least finalityMinAge of chain (§6.4
+// Finality); reads before it answer the vendors' refusal. The cache uses
+// it: a block below it is cached permanently, one above it only as recent.
 func c13() spec {
 	return spec{name: "C13", cache: true, bound: healthyDelivery, sim: chainsim.Config{History: c13History, NoFinalized: true},
 		body: func(s *scenario) {
 			s.blocks(25)
 			for pod := range s.h.pods {
 				got := s.blockAnswer(pod, "", "eth_getBlockByNumber", "finalized", false)
+				reads := 1
+				for ; strings.HasPrefix(got, "error: ") && reads < c13FinalizedReads; reads++ {
+					time.Sleep(c13ReadEvery)
+					got = s.blockAnswer(pod, "", "eth_getBlockByNumber", "finalized", false)
+				}
+				s.logf("pod-%d: eth_getBlockByNumber(finalized) read %d answered %s", pod+1, reads, got)
 				fin := s.blockOf(got)
 				latest := s.blockOf(s.blockAnswer(pod, "", "eth_getBlockByNumber", "latest", false))
 				switch {
 				case fin == nil:
-					s.violate(s.name, "pod-%d: eth_getBlockByNumber(finalized) answered %s", pod+1, got)
+					s.violate(s.name, "pod-%d: eth_getBlockByNumber(finalized) read %d answered %s", pod+1, reads, got)
 					continue
 				case latest == nil:
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(latest) answered no block", pod+1)
