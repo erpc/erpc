@@ -14,11 +14,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -3213,7 +3215,8 @@ func (t *ChainTracker) transition(level zerolog.Level, kind string) *zerolog.Eve
 }
 
 // observeBlockView hands a validated block response to the tracker as an
-// answer: held, never voted.
+// answer: held, never voted. A hash the tracker holds is skipped (the first
+// held wins), and only the header is held, never the block's body.
 func observeBlockView(ctx context.Context, t *ChainTracker, u common.Upstream, rs *common.NormalizedResponse) {
 	if t == nil || rs == nil {
 		return
@@ -3222,7 +3225,19 @@ func observeBlockView(ctx context.Context, t *ChainTracker, u common.Upstream, r
 	if err != nil || jrr == nil {
 		return
 	}
-	h, err := parseChainHeader(bytes.Clone(jrr.GetResultBytes()))
+	block := jrr.GetResultBytes()
+	if hash, err := sonic.GetFromString(util.B2Str(block), "hash"); err == nil {
+		if s, err := hash.String(); err == nil {
+			if _, held := t.HeldNumber(s); held {
+				return
+			}
+		}
+	}
+	raw, err := headerOf(block)
+	if err != nil {
+		return
+	}
+	h, err := parseChainHeader(raw)
 	if err != nil {
 		return
 	}

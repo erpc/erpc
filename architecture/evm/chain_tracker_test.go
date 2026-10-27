@@ -586,6 +586,27 @@ func TestObserveBlockView(t *testing.T) {
 		_, ok := c.HashAt(0x20)
 		assert.False(t, ok)
 	})
+
+	t.Run("an answer holds its header only, and a held hash keeps its first header", func(t *testing.T) {
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		voteChain(t, c, "a", "a", 0x10, 0x11, testHash("f", 0xf))
+		answer := func(miner string) *common.NormalizedResponse {
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByHash","params":["x",true]}`))
+			body := fmt.Sprintf(`{"number":"0x10","hash":"%s","parentHash":"%s","miner":"%s","size":"0x220","transactions":[{"hash":"%s","input":"0x00"}],"uncles":[],"withdrawals":[{"index":"0x1"}]}`,
+				testHash("e", 0x10), testHash("f", 0xf), miner, testHash("b", 1))
+			return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(common.MustNewJsonRpcResponseFromBytes([]byte("1"), []byte(body), nil))
+		}
+
+		observeBlockView(context.Background(), c, nil, answer("0x01"))
+		c.sync(context.Background())
+		observeBlockView(context.Background(), c, nil, answer("0x02"))
+		c.sync(context.Background())
+
+		h, held := c.held.Load(testHash("e", 0x10))
+		require.True(t, held)
+		assert.JSONEq(t, fmt.Sprintf(`{"number":"0x10","hash":"%s","parentHash":"%s","miner":"0x01","size":"0x220"}`, testHash("e", 0x10), testHash("f", 0xf)),
+			string(h.(*chainHeader).raw), "the header fields of the first answer, without its body")
+	})
 }
 
 // The hash anchor: a by-hash fetch must never trust (or cache) receipts that

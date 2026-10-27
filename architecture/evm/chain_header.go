@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
+	"github.com/erpc/erpc/util"
 )
 
 // chainHeader is one held header: its fixed fields, its bytes as first held,
@@ -272,16 +274,33 @@ func hexHash(h [32]byte) string {
 	return string(buf[:])
 }
 
-var newHeadsDropped = []string{"transactions", "uncles", "withdrawals", "size"}
+// blockBody is a block's fields outside its header: no header encoding or
+// hash recompute reads them.
+var blockBody = []string{"transactions", "uncles", "withdrawals"}
+
+var newHeadsDropped = append(slices.Clone(blockBody), "size")
 
 // NewHeadsPayload is the eth_subscribe newHeads payload of a block: its JSON
 // without transactions, uncles, withdrawals and size, other fields in order.
 func NewHeadsPayload(block json.RawMessage) (json.RawMessage, error) {
-	root, err := sonic.Get(block)
+	return withoutFields(block, newHeadsDropped)
+}
+
+// headerOf is a block's JSON without its body (blockBody), other fields in
+// order, in bytes of its own.
+func headerOf(block json.RawMessage) (json.RawMessage, error) {
+	return withoutFields(block, blockBody)
+}
+
+// withoutFields is block's JSON without keys, in new bytes: the searcher
+// reads block in place, and the edited object always encodes into a new
+// buffer.
+func withoutFields(block json.RawMessage, keys []string) (json.RawMessage, error) {
+	root, err := sonic.GetFromString(util.B2Str(block))
 	if err != nil {
 		return nil, err
 	}
-	for _, key := range newHeadsDropped {
+	for _, key := range keys {
 		if _, err := root.Unset(key); err != nil {
 			return nil, err
 		}
