@@ -25,6 +25,10 @@ const (
 	// u9TipMin: fewer tip receipt answers under one fault exercise
 	// nothing (harness).
 	u9TipMin = 20
+	// u9ForgedSlow: vendor-a's forged receipts come this late, so a tip
+	// receipt check is already waiting on the fetch when they come
+	// (harness).
+	u9ForgedSlow = 300 * time.Millisecond
 	// bloomSuspendRun: blocks in a row whose bloom mismatches, from
 	// vendors that meet the evidence quorum, suspend the bloom check;
 	// bloomRearmRun matching blocks in a row re-arm it (§6.9).
@@ -110,11 +114,13 @@ func u8(integrity bool) spec {
 // vendor-b: every client's logs equal the canonical logs, no forged log
 // reaches a client, and violations count on vendor-a only. A tip client
 // (tipReceipts) reads a receipt of each even head it receives: every
-// answer is the chain's; under the forged log its check takes vendor-a's
-// receipts as they meet the answer rules and waits for no refetch, while
-// the forged ones are never held (§11). While it reads, every odd block
-// with transactions is fetched at pin time, even one no logs filter wants,
-// and no empty block gets a receipts call (§11 prefetch, C10).
+// answer is the chain's, and every check corroborates. Vendor-a's forged
+// receipts come u9ForgedSlow late, so the check is waiting on that fetch:
+// it takes them as they meet the answer rules and waits for no refetch
+// from vendor-b, while the forged ones are never held (§11). While it
+// reads, every odd block with transactions is fetched at pin time, even
+// one no logs filter wants, and no empty block gets a receipts call (§11
+// prefetch, C10).
 func u9() spec {
 	tr := &tipReceipts{}
 	// vendor-a ranks first whatever its score, so the tracker asks it
@@ -133,7 +139,13 @@ func u9() spec {
 			set  func(*chainsim.Faults, bool)
 		}{
 			{"truncated", func(f *chainsim.Faults, on bool) { f.TruncReceipts = on }},
-			{"forged", func(f *chainsim.Faults, on bool) { f.ForgedLog = on }},
+			{"forged", func(f *chainsim.Faults, on bool) {
+				f.ForgedLog = on
+				f.SlowReceipts = 0
+				if on {
+					f.SlowReceipts = u9ForgedSlow
+				}
+			}},
 			{"wrong-bloom", func(f *chainsim.Faults, on bool) { f.WrongBloom = on }},
 		} {
 			a0, b0 := s.receiptsCalls(vendorA), s.receiptsCalls(vendorB)
@@ -284,8 +296,8 @@ func (tr *tipReceipts) judge(s *scenario, from, healthy, to time.Time) {
 	slices.Sort(forged)
 	if len(forged) < u9TipMin {
 		s.violate("harness", "%d tip receipt answers under vendor-a's forged log, fewer than %d", len(forged), u9TipMin)
-	} else if p50 := forged[len(forged)/2]; p50 >= u9VendorBLatency {
-		s.violate(s.name, "tip receipt checks under vendor-a's forged log waited p50 %s, at least vendor-b's %s: they waited on the receipts checks and vendor-b's refetch, not on vendor-a's answer (§11)", p50.Round(time.Millisecond), u9VendorBLatency)
+	} else if p50 := forged[len(forged)/2]; p50 >= u9ForgedSlow+u9VendorBLatency {
+		s.violate(s.name, "tip receipt checks under vendor-a's forged log, %s late, waited p50 %s, past %s more: they waited on the receipts checks and vendor-b's refetch, not on vendor-a's answer (§11)", u9ForgedSlow, p50.Round(time.Millisecond), u9VendorBLatency)
 	}
 	// A fast wait that skipped the corroboration proves nothing: every
 	// receipt check corroborates, from vendor-b when vendor-a's receipts
