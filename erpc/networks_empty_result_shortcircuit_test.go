@@ -588,6 +588,8 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	require.NoError(t, cfg.SetDefaults(ups, nil))
 	n := setupTestNetwork(t, ctx, ups, cfg)
 	n.PinUpstreamOrderForTest("rpc1", "rpc2")
+	// The project calls it for a client request; the follow tap starts there.
+	evm.ClientRequested(n)
 	request := func(ref string) *common.NormalizedRequest {
 		r := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"debug_traceBlockByNumber","params":["%s",{"tracer":"callTracer"}]}`, ref)))
 		r.SetNetwork(n)
