@@ -906,11 +906,11 @@ func (t *ChainTracker) askNoSource() {
 
 // demand reports whether newHeads demand stands for this tracker, and the
 // fastest pace it needs heads at (0 every block): an open tap of the
-// network for the network-wide tracker; a group tracker's own integrity
-// follow tap, at its interval, since a network tap never reads a group.
+// network for the network-wide tracker; a tap open on a group tracker, at
+// the integrity follow interval, since only its follow tap reads a group.
 func (t *ChainTracker) demand() (pace time.Duration, ok bool) {
 	if t.selector != "" {
-		return t.followInterval(), t.following.Load()
+		return t.followInterval(), t.taps.Load() > 0
 	}
 	n, isNet := t.network.(interface {
 		EvmHeadsDemand() (time.Duration, bool)
@@ -1005,12 +1005,6 @@ func (t *ChainTracker) follow(ctx context.Context) {
 	if taps == nil {
 		return
 	}
-	t.following.Store(true)
-	t.mb.put(trackerMsg{kind: msgTick})
-	defer func() {
-		t.following.Store(false)
-		t.mb.put(trackerMsg{kind: msgTick})
-	}()
 	for ctx.Err() == nil {
 		err := taps.RunChain(ctx, key, "integrity", "follow", t, nil, indexer.ReadOpts{Pace: t.followInterval()}, func(b indexer.Batch) (int, error) {
 			if len(b.Applied) == 0 {

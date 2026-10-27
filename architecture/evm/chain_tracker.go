@@ -105,8 +105,6 @@ type ChainTracker struct {
 	// fetch runs every fetch of this tracker; one per network.
 	fetch *fetchScheduler
 
-	// following is true while the tracker's integrity follow tap runs.
-	following atomic.Bool
 	// taps counts the taps open on this tracker (Want), the follow tap
 	// included.
 	taps atomic.Int32
