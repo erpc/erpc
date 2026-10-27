@@ -257,6 +257,10 @@ type NormalizedRequest struct {
 	upstreamMutex    sync.Mutex
 	UpstreamIdx      uint32
 	ErrorsByUpstream sync.Map
+	// Upstream -> its latest block when the ErrorsByUpstream entry was stored.
+	// Wrong-empty accounting needs the head at answer time: by the time the
+	// request ends, a lagging upstream may have caught up.
+	headsAtError sync.Map
 
 	// Fields for centralized upstream management
 	upstreamList      []Upstream // Available upstreams for this request
@@ -1549,6 +1553,7 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 	// permanent errors (method ignored, execution exception).
 	if err != nil {
 		r.ErrorsByUpstream.Store(upstream, err)
+		r.headsAtError.Store(upstream, latestBlockOf(upstream))
 	} else if resp != nil && resp.IsResultEmptyish(ctx) {
 		jr, jrErr := resp.JsonRpcResponse(ctx)
 		if jr == nil {
@@ -1556,6 +1561,7 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 		} else {
 			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish: %v", jr.GetResultString()), upstream))
 		}
+		r.headsAtError.Store(upstream, latestBlockOf(upstream))
 	}
 
 	// Free from ConsumedUpstreams if the upstream can be retried on a
@@ -1571,4 +1577,25 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 	if canReUse {
 		r.ConsumedUpstreams.Delete(upstream)
 	}
+}
+
+// HeadAtError returns the upstream's latest block as eRPC knew it when the
+// upstream's ErrorsByUpstream entry was stored; 0 when unknown.
+func (r *NormalizedRequest) HeadAtError(upstream Upstream) int64 {
+	if v, ok := r.headsAtError.Load(upstream); ok {
+		return v.(int64)
+	}
+	return 0
+}
+
+func latestBlockOf(upstream Upstream) int64 {
+	eu, ok := upstream.(EvmUpstream)
+	if !ok {
+		return 0
+	}
+	sp := eu.EvmStatePoller()
+	if sp == nil || sp.IsObjectNull() {
+		return 0
+	}
+	return sp.LatestBlock()
 }

@@ -1719,7 +1719,8 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 
-		// rpc1 SHOULD be punished — no block availability config means unbounded
+		// rpc1 SHOULD be punished — no block availability bounds, and its head
+		// (0x11118888) was past block 200 when it answered empty
 		ups := network.upstreamsRegistry.GetAllUpstreams()
 		var rpc1 *upstream.Upstream
 		for _, u := range ups {
@@ -1734,6 +1735,120 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 			"rpc1 SHOULD have misbehavior recorded — no block availability bounds configured")
 		assert.Equal(t, int64(0), metrics.ErrorsTotal.Load(),
 			"rpc1 should NOT have errors recorded — wrong-empty only records misbehavior, not failure")
+	})
+
+	misbehaviors := func(t *testing.T, network *Network, id string) int64 {
+		t.Helper()
+		for _, u := range network.upstreamsRegistry.GetAllUpstreams() {
+			if u.Id() == id {
+				return network.metricsTracker.GetUpstreamMethodMetrics(u, "eth_getTransactionByHash", common.DataFinalityStateAll).MisbehaviorsTotal.Load()
+			}
+		}
+		t.Fatalf("upstream %s not found", id)
+		return 0
+	}
+
+	t.Run("EmptyBelowItsHead_NoPunishment", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// The tx sits above rpc1's head (0x11118888) and below rpc2's (0x22228888):
+		// rpc1 was behind, not wrong.
+		aheadOfRpc1 := map[string]interface{}{}
+		for k, v := range txReceiptResult {
+			aheadOfRpc1[k] = v
+		}
+		aheadOfRpc1["blockNumber"] = "0x11119999"
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": aheadOfRpc1})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithCustomUpstreams(t, ctx,
+			[]*common.UpstreamConfig{
+				{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+				{Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			},
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
+		)
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["` + txHash + `"]}`))
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.Equal(t, "rpc2", resp.UpstreamId())
+
+		assert.Equal(t, int64(0), misbehaviors(t, network, "rpc1"),
+			"rpc1's head was below the winning block when it answered empty")
+	})
+
+	t.Run("SameUpstreamRetryWins_NoPunishment", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// rpc1 answers null, then returns the tx on the retry.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil})
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": txReceiptResult})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithCustomUpstreams(t, ctx,
+			[]*common.UpstreamConfig{
+				{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			},
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
+		)
+		network.PinUpstreamOrderForTest("rpc1")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["` + txHash + `"]}`))
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.Equal(t, "rpc1", resp.UpstreamId())
+		require.Equal(t, 2, resp.Attempts(), "rpc1 answers null once, then wins the retry")
+
+		assert.Equal(t, int64(0), misbehaviors(t, network, "rpc1"),
+			"the winning upstream is never counted for its own earlier empty answer")
 	})
 }
 
