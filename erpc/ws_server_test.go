@@ -3244,8 +3244,8 @@ func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
 // The follow tap alone needs a head once per integrity.follow.interval
 // (1s), not every 300ms block (spec §3 demand), so in a window of T the
 // head Asks that fetch are, by reason:
-//   - no_source: rule 6 sends one once ask.sent is a pace old (askDue), at
-//     most T/pace + 1;
+//   - no_source: rule 6 Asks at the follow pace and again at the answer's
+//     Next, a pace after its fetch, at most T/pace + 1;
 //   - catch_up: gate sets catchUpAt at least a pace ahead for either kind
 //     of round, at most T/pace + 1 rounds; a round Asks only the voters
 //     Latest lacks to reach the pin (quorum 2), and the pin's own voter is

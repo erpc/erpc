@@ -535,22 +535,22 @@ func report(ch chan settleOutcome, o settleOutcome) {
 
 // headAsker is the network's Ask of one upstream's head (spec §6.8).
 type headAsker interface {
-	EvmAskHead(ctx context.Context, upstreamId string, need common.HeadNeed, reason common.AskReason) common.HeadAnswer
+	EvmAskHead(ctx context.Context, upstreamId string, need common.HeadNeed, pace time.Duration, reason common.AskReason) common.HeadAnswer
 }
 
 var errHeadAskPanicked = errors.New("head ask panicked")
 
-// askHead Asks upstream id's head off the tracker's goroutine; done runs
-// on it with the answer. A panic in the Ask is a failed answer. false: the
-// network has no Ask.
-func (t *ChainTracker) askHead(id string, need common.HeadNeed, reason common.AskReason, done func(common.HeadAnswer)) bool {
+// askHead Asks upstream id's head at pace off the tracker's goroutine;
+// done runs on it with the answer. A panic in the Ask is a failed answer.
+// false: the network has no Ask.
+func (t *ChainTracker) askHead(id string, need common.HeadNeed, pace time.Duration, reason common.AskReason, done func(common.HeadAnswer)) bool {
 	n, ok := t.network.(headAsker)
 	if !ok || t.fetch == nil {
 		return false
 	}
 	t.fetch.bg.Go(func() {
 		a := common.HeadAnswer{Err: errHeadAskPanicked}
-		t.callNetwork("head-ask", func() { a = n.EvmAskHead(t.ctx, id, need, reason) })
+		t.callNetwork("head-ask", func() { a = n.EvmAskHead(t.ctx, id, need, pace, reason) })
 		t.mb.put(trackerMsg{kind: msgCall, fn: func() { done(a) }})
 	})
 	return true
@@ -576,7 +576,7 @@ func (t *ChainTracker) startSettle(s *settleState, targets []string, need common
 	t.settle = s
 	for _, id := range targets {
 		s.asked++
-		if t.askHead(id, need, common.AskSettle, func(a common.HeadAnswer) { t.settleAnswered(s, id, a) }) {
+		if t.askHead(id, need, 0, common.AskSettle, func(a common.HeadAnswer) { t.settleAnswered(s, id, a) }) {
 			s.out++
 		} else {
 			s.deferred++
@@ -863,15 +863,15 @@ func (t *ChainTracker) markRefreshed(k roundKey) {
 
 // askState is §6 rule 6: with demand and no source with a fresh hash vote,
 // the tracker Asks the first voter in selection order with a hash need,
-// once per cadence and no faster than the demand's pace: the Ask's own
-// debounce paces it (due, its answer's Next), and sent paces it at the
-// demand's pace. That answer is the only vote until the next.
+// at the demand's pace (the Ask keeps it at least the cadence). That
+// answer is the only vote until the next.
 type askState struct {
 	vote, pending       *node
 	voter, pendingVoter string
-	out                 bool      // an Ask is out
-	due                 time.Time // when the voter's Ask may fetch again
-	sent                time.Time // when the last Ask went out
+	out                 bool // an Ask is out
+	// due is the last answer's Next: the Ask at this pace fetches nothing
+	// sooner, so the tracker wakes for it then rather than Ask again.
+	due time.Time
 }
 
 // noSourceWanted reports whether rule 6 Asks: demand, a voter, no Ask out,
@@ -888,21 +888,14 @@ func (t *ChainTracker) noSourceWanted() bool {
 	return !slices.ContainsFunc(t.voters.Sources, t.counts)
 }
 
-// askDue is when rule 6's next Ask may go out: after the voter's debounce
-// and one demand pace after the last Ask.
-func (t *ChainTracker) askDue() time.Time {
-	pace, _ := t.demand()
-	return maxTime(t.ask.due, t.ask.sent.Add(pace))
-}
-
 // askNoSource is rule 6's Ask, reason no_source, once it is due.
 func (t *ChainTracker) askNoSource() {
-	if !t.noSourceWanted() || time.Now().Before(t.askDue()) {
+	if !t.noSourceWanted() || time.Now().Before(t.ask.due) {
 		return
 	}
+	pace, _ := t.demand()
 	id, seq := t.voters.Voters[0], t.askSeq
-	t.ask.sent = time.Now()
-	t.ask.out = t.askHead(id, common.HeadNeedHash, common.AskNoSource, func(a common.HeadAnswer) {
+	t.ask.out = t.askHead(id, common.HeadNeedHash, pace, common.AskNoSource, func(a common.HeadAnswer) {
 		if seq != t.askSeq {
 			return
 		}
@@ -965,7 +958,7 @@ func (t *ChainTracker) rearm() {
 	now := time.Now()
 	var at time.Time
 	if t.noSourceWanted() {
-		if due := t.askDue(); due.After(now) {
+		if due := t.ask.due; due.After(now) {
 			at = due
 		}
 	}

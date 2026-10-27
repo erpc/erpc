@@ -212,7 +212,10 @@ type servedTipAnchor struct {
 	guardState atomic.Int32
 
 	// refreshedAtNs is when EvmRefreshHead last walked this axis's voters
-	// (UnixNano); the pollers' own debounce makes a walk sooner a no-op.
+	// (UnixNano). It saves each request the voter walk and an Ask per
+	// voter; the Ask paces the fetches, but within one cadence a routing
+	// order that rotates would Ask voters the last walk did not, and the
+	// finalized axis is no Ask.
 	refreshedAtNs atomic.Int64
 }
 
@@ -810,7 +813,7 @@ func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 	need := ec.ServedTipQuorum().Of(s.count())
 	if !finalized {
 		s.each(func(u common.Upstream, _ int64) bool {
-			u.(common.EvmUpstream).EvmStatePoller().AskBackground(common.HeadNeedNumber, common.AskRefresh)
+			u.(common.EvmUpstream).EvmStatePoller().AskBackground(common.HeadNeedNumber, 0, common.AskRefresh)
 			need--
 			return need > 0
 		})
@@ -832,40 +835,40 @@ func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 	}
 }
 
-// EvmRefreshHeadsBelow Asks, in the background, with a number need, as
-// many of the voters of selector's lane whose head is below block as
-// Latest still lacks to reach it, oldest report first (spec §6.5 catch-up,
-// §6.4 by-hash hold): Latest is their ballot, so no other upstream moves
-// it, and once the quorum holds block no further Ask can. A guarantee
-// subset's majority clamps Latest too (guaranteedFloor), so each subset
-// gets the Asks its own ballot lacks.
-func (n *Network) EvmRefreshHeadsBelow(selector string, block int64) {
+// EvmRefreshHeadsBelow Asks, in the background, with a number need at
+// pace, as many of the voters of selector's lane whose head is below
+// block as Latest still lacks to reach it, oldest report first (spec §6.5
+// catch-up, §6.4 by-hash hold): Latest is their ballot, so no other
+// upstream moves it, and once the quorum holds block no further Ask can.
+// A guarantee subset's majority clamps Latest too (guaranteedFloor), so
+// each subset gets the Asks its own ballot lacks.
+func (n *Network) EvmRefreshHeadsBelow(selector string, block int64, pace time.Duration) {
 	var ec *common.EvmNetworkConfig
 	if n.cfg != nil {
 		ec = n.cfg.Evm
 	}
-	n.askLacking(selector, block, voterQuery{kind: numberVote}, ec.ServedTipQuorum())
+	n.askLacking(selector, block, pace, voterQuery{kind: numberVote}, ec.ServedTipQuorum())
 	if ec == nil || ec.ServedTip == nil {
 		return
 	}
 	for _, g := range ec.ServedTip.GuaranteedFor {
-		n.askLacking(selector, block, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
+		n.askLacking(selector, block, pace, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
 			m, _ := common.UpstreamMatchesSelector(g, u)
 			return m
 		}}, common.ServedTipQuorumMajority)
 	}
 	for _, m := range ec.ServedTip.GuaranteedMethods {
-		n.askLacking(selector, block, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
+		n.askLacking(selector, block, pace, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
 			handle, _ := u.ShouldHandleMethod(m)
 			return handle
 		}}, common.ServedTipQuorumMajority)
 	}
 }
 
-// askLacking Asks, with a number need, as many of q's voters below block
-// as quorum lacks to hold it (quorum less the voters at or above it),
-// oldest report first.
-func (n *Network) askLacking(selector string, block int64, q voterQuery, quorum common.ServedTipQuorum) {
+// askLacking Asks, with a number need at pace, as many of q's voters
+// below block as quorum lacks to hold it (quorum less the voters at or
+// above it), oldest report first.
+func (n *Network) askLacking(selector string, block int64, pace time.Duration, q voterQuery, quorum common.ServedTipQuorum) {
 	s := n.voters(selector, q)
 	if s.count() == 0 {
 		return
@@ -885,23 +888,23 @@ func (n *Network) askLacking(selector string, block int64, q voterQuery, quorum 
 	}
 	slices.SortStableFunc(below, func(a, b common.EvmStatePoller) int { return a.LatestReportAt().Compare(b.LatestReportAt()) })
 	for _, sp := range below[:min(lacks, len(below))] {
-		sp.AskBackground(common.HeadNeedNumber, common.AskCatchUp)
+		sp.AskBackground(common.HeadNeedNumber, pace, common.AskCatchUp)
 	}
 }
 
-// EvmPollHeads Asks, with a hash need, each upstream in ids: voters that a
-// held vote need waits on (spec §6.5). Every lane's tracker asks at each
-// publish; the network Asks each upstream at most once per block time.
-func (n *Network) EvmPollHeads(ids []string) {
-	n.pollHeads(ids, common.HeadNeedHash, common.AskCatchUp)
+// EvmPollHeads Asks, with a hash need at pace, each upstream in ids:
+// voters that a held vote need waits on (spec §6.5). Every lane's tracker
+// asks at each publish; the Ask's pace keeps it to one fetch per upstream
+// per pace across lanes.
+func (n *Network) EvmPollHeads(ids []string, pace time.Duration) {
+	n.pollHeads(ids, common.HeadNeedHash, pace, common.AskCatchUp)
 }
 
-// EvmPollForks Asks, with a fork need, each voter in ids whose vote the
-// pins moved off (spec §6.3), at most once per block time per upstream as
-// EvmPollHeads. Each answer is its voter's hash vote, whatever it voted
-// before.
-func (n *Network) EvmPollForks(ids []string) {
-	n.pollHeads(ids, common.HeadNeedFork, common.AskRefresh)
+// EvmPollForks Asks, with a fork need at pace, each voter in ids whose
+// vote the pins moved off (spec §6.3). Each answer is its voter's hash
+// vote, whatever it voted before. next is the soonest of their Asks' Next.
+func (n *Network) EvmPollForks(ids []string, pace time.Duration) (next time.Time) {
+	return n.pollHeads(ids, common.HeadNeedFork, pace, common.AskRefresh)
 }
 
 // EvmRewindHeads is the network-wide tracker's rollback write (spec §14):
@@ -922,42 +925,38 @@ func (n *Network) EvmRewindHeads(votes map[string]int64) {
 	}
 }
 
-func (n *Network) pollHeads(ids []string, need common.HeadNeed, reason common.AskReason) {
+// pollHeads Asks each upstream in ids in the background; next is the
+// soonest of their Asks' Next.
+func (n *Network) pollHeads(ids []string, need common.HeadNeed, pace time.Duration, reason common.AskReason) (next time.Time) {
 	if n.upstreamsRegistry == nil {
-		return
+		return time.Time{}
 	}
-	kind := evm.HeaderPolled
-	if need == common.HeadNeedFork {
-		kind = evm.HeaderForkPolled
-	}
-	every := n.EvmBlockTime()
-	if every <= 0 {
-		every = health.ColdBlockTime
-	}
-	now := time.Now()
 	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
 		if !slices.Contains(ids, u.Id()) {
 			continue
 		}
 		p := u.EvmStatePoller()
-		if p == nil || p.IsObjectNull() || n.intake != nil && !n.intake.pollDue(u.Id(), kind, now, every) {
+		if p == nil || p.IsObjectNull() {
 			continue
 		}
-		p.AskBackground(need, reason)
+		if at := p.AskBackground(need, pace, reason); !at.IsZero() && (next.IsZero() || at.Before(next)) {
+			next = at
+		}
 	}
+	return next
 }
 
-// EvmAskHead is the Ask of upstreamId's head for a chain tracker's settle
-// or no-source Ask (spec §6.5 rules 5 and 6, §6.8); AskBackoff when the
-// network has no such upstream with a poller.
-func (n *Network) EvmAskHead(ctx context.Context, upstreamId string, need common.HeadNeed, reason common.AskReason) common.HeadAnswer {
+// EvmAskHead is the Ask of upstreamId's head at pace for a chain
+// tracker's settle or no-source Ask (spec §6.5 rules 5 and 6, §6.8);
+// AskBackoff when the network has no such upstream with a poller.
+func (n *Network) EvmAskHead(ctx context.Context, upstreamId string, need common.HeadNeed, pace time.Duration, reason common.AskReason) common.HeadAnswer {
 	if n.upstreamsRegistry != nil {
 		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
 			if u.Id() != upstreamId {
 				continue
 			}
 			if p := u.EvmStatePoller(); p != nil && !p.IsObjectNull() {
-				return p.Ask(ctx, need, reason)
+				return p.Ask(ctx, need, pace, reason)
 			}
 			break
 		}

@@ -12,18 +12,21 @@ const (
 	UpstreamTypeEvm UpstreamType = "evm"
 )
 
-// HeadNeed is what a head Ask must produce (spec §6.8).
+// HeadNeed is what a head Ask must produce (spec §6.8); the Ask's pace
+// is the oldest evidence that meets it.
 type HeadNeed uint8
 
 const (
 	// HeadNeedNumber: a fresh number; a shared counter whose report is
-	// younger than the cadence meets it.
+	// younger than the pace meets it.
 	HeadNeedNumber HeadNeed = iota
-	// HeadNeedHash: a hash vote; only a local fetch sent within the
-	// cadence meets it.
+	// HeadNeedHash: a hash vote; only a local fetch sent within the pace
+	// meets it.
 	HeadNeedHash
 	// HeadNeedFork: a hash need whose answer is fresh evidence of the
-	// node's head, whatever its earlier votes say (spec §6.3 fork poll).
+	// node's head, whatever its earlier votes say (spec §6.3 fork poll):
+	// only a fork fetch meets it, sent after the Ask at pace 0, else
+	// within the pace.
 	HeadNeedFork
 )
 
@@ -49,8 +52,8 @@ const (
 	AskFetched AskOutcome = "fetched"
 	// AskSharedFresh: the shared counter met a number need.
 	AskSharedFresh AskOutcome = "shared_fresh"
-	// AskInflight: a local fetch sent within the cadence met it, in
-	// flight or answered.
+	// AskInflight: a local fetch sent within the pace met it, in flight
+	// or answered.
 	AskInflight AskOutcome = "inflight"
 	// AskBackoff: the upstream backs off; nothing was fetched.
 	AskBackoff AskOutcome = "backoff"
@@ -68,8 +71,9 @@ type HeadAnswer struct {
 	// Sent is when the fetch that answered was sent: the header's
 	// evidence time; zero with no fetch answer.
 	Sent time.Time
-	// Next is when the upstream's Ask may fetch again: its last fetch's
-	// send plus its backed-off cadence; zero when it may now.
+	// Next is when an Ask at the same pace may fetch again: the meeting
+	// fetch's send plus the pace or its backed-off cadence, the longer;
+	// zero when it may now.
 	Next time.Time
 	Err  error `tstype:"-"`
 }
@@ -249,14 +253,18 @@ type EvmStatePoller interface {
 	// holds that height now.
 	ObserveHead(number int64, at time.Time) (accepted bool)
 	// Ask is the upstream's head Ask (spec §6.8): single-flight, its
-	// outcome to every waiter; it waits for the answer or ctx's end.
-	Ask(ctx context.Context, need HeadNeed, reason AskReason) HeadAnswer
-	// AskReaching is a number-need Ask for a caller that needs block: a
-	// joined fetch that answers below it is followed by one more Ask; at
-	// most W in all.
-	AskReaching(ctx context.Context, block int64, reason AskReason) HeadAnswer
-	// AskBackground is Ask without waiting for the answer.
-	AskBackground(need HeadNeed, reason AskReason)
+	// outcome to every waiter; it waits for the answer or ctx's end. pace
+	// is the oldest evidence the caller accepts, never below the cadence
+	// (0 is the cadence; a fork need's pace is as given): callers keep no
+	// fetch pacer of their own.
+	Ask(ctx context.Context, need HeadNeed, pace time.Duration, reason AskReason) HeadAnswer
+	// AskReaching is a number-need Ask at pace for a caller that needs
+	// block: a joined fetch that answers below it is followed by one fork
+	// Ask; at most W in all.
+	AskReaching(ctx context.Context, block int64, pace time.Duration, reason AskReason) HeadAnswer
+	// AskBackground is Ask without waiting for the answer; next is the
+	// answer's Next.
+	AskBackground(need HeadNeed, pace time.Duration, reason AskReason) (next time.Time)
 	// RefreshFinalizedBlock polls the finalized block in the background
 	// when the stored one is older than the finalized poll's debounce;
 	// non-blocking, one in flight. polls is false when the upstream has no

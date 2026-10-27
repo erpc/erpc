@@ -1764,13 +1764,15 @@ type fixedPoller struct {
 
 func (p *fixedPoller) LatestBlock() int64                                   { return p.latest }
 func (p *fixedPoller) PollLatestBlockNumber(context.Context) (int64, error) { return p.latest, nil }
-func (p *fixedPoller) AskReaching(context.Context, int64, common.AskReason) common.HeadAnswer {
+func (p *fixedPoller) AskReaching(context.Context, int64, time.Duration, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{Block: p.latest}
 }
-func (p *fixedPoller) Ask(context.Context, common.HeadNeed, common.AskReason) common.HeadAnswer {
+func (p *fixedPoller) Ask(context.Context, common.HeadNeed, time.Duration, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
-func (p *fixedPoller) AskBackground(common.HeadNeed, common.AskReason) {}
+func (p *fixedPoller) AskBackground(common.HeadNeed, time.Duration, common.AskReason) time.Time {
+	return time.Time{}
+}
 func (p *fixedPoller) RefreshFinalizedBlock() bool                     { return true }
 func (p *fixedPoller) LatestReportAt() time.Time                       { return time.Time{} }
 func (p *fixedPoller) FinalizedReportAt() time.Time                    { return time.Time{} }

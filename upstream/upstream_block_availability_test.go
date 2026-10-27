@@ -65,11 +65,13 @@ func (m *mockEvmStatePollerEnhanced) SuggestFinalizedBlock(blockNumber int64, _ 
 func (m *mockEvmStatePollerEnhanced) SuggestLatestBlock(blockNumber int64, _ time.Time)    {}
 func (m *mockEvmStatePollerEnhanced) RewindLatestBlock(int64)                              {}
 func (m *mockEvmStatePollerEnhanced) ObserveHead(int64, time.Time) bool                    { return false }
-func (m *mockEvmStatePollerEnhanced) Ask(context.Context, common.HeadNeed, common.AskReason) common.HeadAnswer {
+func (m *mockEvmStatePollerEnhanced) Ask(context.Context, common.HeadNeed, time.Duration, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
-func (m *mockEvmStatePollerEnhanced) AskBackground(common.HeadNeed, common.AskReason) {}
-func (m *mockEvmStatePollerEnhanced) AskReaching(context.Context, int64, common.AskReason) common.HeadAnswer {
+func (m *mockEvmStatePollerEnhanced) AskBackground(common.HeadNeed, time.Duration, common.AskReason) time.Time {
+	return time.Time{}
+}
+func (m *mockEvmStatePollerEnhanced) AskReaching(context.Context, int64, time.Duration, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
 func (m *mockEvmStatePollerEnhanced) RefreshFinalizedBlock() bool                { return true }
@@ -642,11 +644,13 @@ func (m *mockEvmStatePollerWithCustomBehavior) RewindLatestBlock(int64)         
 func (m *mockEvmStatePollerWithCustomBehavior) ObserveHead(int64, time.Time) bool {
 	return false
 }
-func (m *mockEvmStatePollerWithCustomBehavior) Ask(context.Context, common.HeadNeed, common.AskReason) common.HeadAnswer {
+func (m *mockEvmStatePollerWithCustomBehavior) Ask(context.Context, common.HeadNeed, time.Duration, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
-func (m *mockEvmStatePollerWithCustomBehavior) AskBackground(common.HeadNeed, common.AskReason) {}
-func (m *mockEvmStatePollerWithCustomBehavior) AskReaching(context.Context, int64, common.AskReason) common.HeadAnswer {
+func (m *mockEvmStatePollerWithCustomBehavior) AskBackground(common.HeadNeed, time.Duration, common.AskReason) time.Time {
+	return time.Time{}
+}
+func (m *mockEvmStatePollerWithCustomBehavior) AskReaching(context.Context, int64, time.Duration, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
 func (m *mockEvmStatePollerWithCustomBehavior) RefreshFinalizedBlock() bool                { return true }

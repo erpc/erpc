@@ -148,10 +148,11 @@ type ChainTracker struct {
 	maxHeld   *chainHeader
 	wakeAt    time.Time
 	wake      *time.Timer
-	// catchUpAt is when the next catch-up may ask while the network's latest
-	// block holds back a backed pin, or, while the vote need holds one, when
-	// the tracker asks again (the network paces those polls); zero while
-	// neither does (gate). heldSince is when the vote need began to hold one.
+	// catchUpAt is when the next catch-up round may ask while the network's
+	// latest block holds back a backed pin, or, while the vote need holds
+	// one, when the tracker asks again (each Ask paces its upstream); zero
+	// while neither does (gate). heldSince is when the vote need began to
+	// hold one.
 	catchUpAt time.Time
 	heldSince time.Time
 	// coldUntil is W after the first read of the voters that found any,
@@ -168,10 +169,10 @@ type ChainTracker struct {
 	// goroutines: fetch answer checks, suspension, logs subscribes.
 	vendors atomic.Pointer[Vendors]
 	// offPins is, per voter whose vote left the pinned branch, when the
-	// tracker first polled it for its head and when last; demoted are those
-	// still off W after that first poll, sorted, as last handed to the
-	// network (spec §6.3 minority fork). Network-wide only.
-	offPins map[string]offPin
+	// tracker first polled it for its head; demoted are those still off W
+	// after that first poll, sorted, as last handed to the network (spec
+	// §6.3 minority fork). Network-wide only.
+	offPins map[string]time.Time
 	// refreshedAt is, per voter whose vote is off the pins, the fork point
 	// its refresh ran for (spec §6.3); every tracker keeps it.
 	refreshedAt map[string]string
@@ -491,7 +492,7 @@ func (t *ChainTracker) clear() {
 	t.settle = nil
 	t.pins, t.maxHeld = nil, nil
 	t.coldUntil = time.Time{}
-	t.offPins = make(map[string]offPin)
+	t.offPins = make(map[string]time.Time)
 	t.refreshedAt = make(map[string]string)
 	t.retryAt = make(map[string]time.Time)
 	t.treesDirty = true
@@ -925,19 +926,16 @@ func (t *ChainTracker) vendorTable() *Vendors {
 	return noVendors
 }
 
-// offPin is one voter off the pinned branch: when the tracker first polled
-// it for its head, and when last.
-type offPin struct{ since, polled time.Time }
-
 // trackForks is spec §6.3's minority fork. A vote off the pins first
 // refreshes the votes behind the pins (refreshed): a vote from before a
 // reorg is no evidence of a fork, as a healthy upstream answers on the new
 // branch. Only if the pins still hold after those answers does the
 // network-wide tracker poll the off voter, at once and again each W while
-// its vote stays off. A voter still off W after the first poll loses its
-// number vote and goes last in routing, until its vote is on the branch
-// again. The network reads the demoted set; forkAt is the next poll or
-// demotion.
+// its vote stays off: a fork Ask at once at the block time, then at W,
+// whose pace keeps it to one fetch per W. A voter still off W after the
+// first poll loses its number vote and goes last in routing, until its
+// vote is on the branch again. The network reads the demoted set; forkAt
+// is the next poll or demotion.
 func (t *ChainTracker) trackForks() {
 	now, w := time.Now(), t.W()
 	for u := range t.offPins {
@@ -950,10 +948,10 @@ func (t *ChainTracker) trackForks() {
 			delete(t.refreshedAt, u)
 		}
 	}
-	var demoted, poll []string
+	var demoted, first, again []string
 	t.forkAt = time.Time{}
 	soonest := func(at time.Time) {
-		if t.forkAt.IsZero() || at.Before(t.forkAt) {
+		if !at.IsZero() && (t.forkAt.IsZero() || at.Before(t.forkAt)) {
 			t.forkAt = at
 		}
 	}
@@ -963,20 +961,18 @@ func (t *ChainTracker) trackForks() {
 			delete(t.refreshedAt, u)
 			continue
 		}
-		op, ok := t.offPins[u]
+		since, ok := t.offPins[u]
 		if !ok {
 			if !t.refreshed(u, nd) || t.selector != "" {
 				continue
 			}
-			op.since = now
+			since = now
+			t.offPins[u] = since
+			first = append(first, u)
+		} else {
+			again = append(again, u)
 		}
-		if !ok || !now.Before(op.polled.Add(w)) {
-			op.polled = now
-			t.offPins[u] = op
-			poll = append(poll, u)
-		}
-		soonest(op.polled.Add(w))
-		if at := op.since.Add(w); now.After(at) {
+		if at := since.Add(w); now.After(at) {
 			demoted = append(demoted, u)
 		} else {
 			soonest(at)
@@ -985,9 +981,16 @@ func (t *ChainTracker) trackForks() {
 	if t.selector != "" {
 		return
 	}
-	if len(poll) > 0 {
-		if p, ok := t.network.(interface{ EvmPollForks(ids []string) }); ok {
-			t.callNetwork("fork-poll", func() { p.EvmPollForks(poll) })
+	if p, ok := t.network.(interface {
+		EvmPollForks(ids []string, pace time.Duration) time.Time
+	}); ok {
+		for _, polls := range []struct {
+			ids  []string
+			pace time.Duration
+		}{{first, t.BlockTime()}, {again, w}} {
+			if len(polls.ids) > 0 {
+				t.callNetwork("fork-poll", func() { soonest(p.EvmPollForks(polls.ids, polls.pace)) })
+			}
 		}
 	}
 	slices.Sort(demoted)
@@ -2116,14 +2119,16 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 // every statePollerInterval, would otherwise hold every tap until its next
 // poll. A pin the vote need holds back for one block time is polled for
 // from as many of the voters whose hash vote here is below it as the need
-// lacks, oldest evidence first: the network paces those polls per
-// upstream across lanes (EvmPollHeads).
+// lacks, oldest evidence first (EvmPollHeads).
 // Both run no faster than the demand's pace: a follow tap alone needs a
-// head once per integrity.follow.interval, not every block.
+// head once per integrity.follow.interval, not every block. Each Ask
+// carries that pace, so an upstream is fetched once per pace across
+// lanes; catchUpAt spaces the rounds, each asking only as many voters as
+// the lane lacks: without it, an answer still below the pin would send
+// the next round to the next voter at once.
 // Their shared counters may already show it, moved by another instance or
-// a client response, which votes no hash. A poller skips a refresh inside
-// its debounce, so rearm asks again at catchUpAt; a counter that moves
-// wakes the tracker (LatestChanged).
+// a client response, which votes no hash. rearm asks again at catchUpAt;
+// a counter that moves wakes the tracker (LatestChanged).
 func (t *ChainTracker) gate(path []*node) *pinBacking {
 	b := t.backingOf(path)
 	now := time.Now()
@@ -2150,7 +2155,8 @@ func (t *ChainTracker) gate(path []*node) *pinBacking {
 		if pace > 0 && now.Before(t.catchUpAt) {
 			return b
 		}
-		t.catchUpAt = now.Add(max(t.BlockTime(), pace))
+		every := max(t.BlockTime(), pace)
+		t.catchUpAt = now.Add(every)
 		// Only as many as the need lacks, oldest evidence first: the
 		// voters already at or above the held pin count toward it.
 		lacks := max(b.need, 1) - (len(b.backs) - b.atLeast(int(held-b.base)))
@@ -2162,19 +2168,22 @@ func (t *ChainTracker) gate(path []*node) *pinBacking {
 		}
 		slices.SortStableFunc(below, func(x, y string) int { return t.voteAt[x].Compare(t.voteAt[y]) })
 		below = below[:max(0, min(lacks, len(below)))]
-		if p, ok := t.network.(interface{ EvmPollHeads(ids []string) }); ok && len(below) > 0 {
-			t.callNetwork("catch-up", func() { p.EvmPollHeads(below) })
+		if p, ok := t.network.(interface {
+			EvmPollHeads(ids []string, pace time.Duration)
+		}); ok && len(below) > 0 {
+			t.callNetwork("catch-up", func() { p.EvmPollHeads(below, every) })
 		}
 		return b
 	}
 	if now.Before(t.catchUpAt) {
 		return b
 	}
-	t.catchUpAt = now.Add(max(min(t.BlockTime(), catchUpMax), pace))
+	every := max(min(t.BlockTime(), catchUpMax), pace)
+	t.catchUpAt = now.Add(every)
 	if r, ok := t.network.(interface {
-		EvmRefreshHeadsBelow(string, int64)
+		EvmRefreshHeadsBelow(string, int64, time.Duration)
 	}); ok {
-		t.callNetwork("catch-up", func() { r.EvmRefreshHeadsBelow(t.selector, int64(pin)) })
+		t.callNetwork("catch-up", func() { r.EvmRefreshHeadsBelow(t.selector, int64(pin), every) })
 	}
 	return b
 }

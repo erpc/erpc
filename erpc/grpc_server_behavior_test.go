@@ -749,7 +749,7 @@ func TestGrpcServerBehavior_StreamBlocks(t *testing.T) {
 		require.NoError(t, err)
 		poller := nw.upstreamsRegistry.GetNetworkUpstreams(bctx, nw.networkId)[0].EvmStatePoller()
 		fx.up.head.Store(uint64(head + 3))
-		require.NoError(t, poller.Ask(bctx, common.HeadNeedFork, common.AskCatchUp).Err)
+		require.NoError(t, poller.Ask(bctx, common.HeadNeedFork, 0, common.AskCatchUp).Err)
 		recv(head + 3)
 		fx.up.head.Store(uint64(head + 5))
 		for _, want := range []int64{head + 4, head + 5} {

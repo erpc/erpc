@@ -324,13 +324,15 @@ func (p *FakeEvmStatePoller) ObserveHead(n int64, _ time.Time) bool {
 	return true
 }
 
-func (p *FakeEvmStatePoller) Ask(context.Context, HeadNeed, AskReason) HeadAnswer {
+func (p *FakeEvmStatePoller) Ask(context.Context, HeadNeed, time.Duration, AskReason) HeadAnswer {
 	return HeadAnswer{Outcome: AskSharedFresh, Block: p.latestBlockNumber}
 }
 
-func (p *FakeEvmStatePoller) AskBackground(HeadNeed, AskReason) {}
+func (p *FakeEvmStatePoller) AskBackground(HeadNeed, time.Duration, AskReason) time.Time {
+	return time.Time{}
+}
 
-func (p *FakeEvmStatePoller) AskReaching(context.Context, int64, AskReason) HeadAnswer {
+func (p *FakeEvmStatePoller) AskReaching(context.Context, int64, time.Duration, AskReason) HeadAnswer {
 	return HeadAnswer{Outcome: AskSharedFresh, Block: p.latestBlockNumber}
 }
 

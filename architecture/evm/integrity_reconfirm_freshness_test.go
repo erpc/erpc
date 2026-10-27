@@ -45,7 +45,7 @@ func (n *capturingNetwork) EvmHashVoters(string, time.Duration, bool) HashVoters
 	return hv
 }
 
-func (n *capturingNetwork) EvmAskHead(ctx context.Context, _ string, need common.HeadNeed, _ common.AskReason) common.HeadAnswer {
+func (n *capturingNetwork) EvmAskHead(ctx context.Context, _ string, need common.HeadNeed, _ time.Duration, _ common.AskReason) common.HeadAnswer {
 	n.mu.Lock()
 	n.asks = append(n.asks, need)
 	n.mu.Unlock()

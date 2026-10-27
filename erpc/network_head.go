@@ -430,11 +430,12 @@ func (n *Network) countedUpstreams(sel string) []*upstream.Upstream {
 	return out
 }
 
-// EvmAskStale Asks, with a number need, each of selector's counted
-// upstreams whose report is 1 bt old or older, every one before the first
-// block time sample, waits for their answers, at most 1 bt or until ctx
-// ends, and returns the lane's ceiling and oldest report after them (spec
-// §6.4: no future on a stale report).
+// EvmAskStale Asks, with a number need at 1 bt (spec §6.8), each of
+// selector's counted upstreams whose report is 1 bt old or older, every
+// one before the first block time sample, waits for their answers, at most
+// 1 bt or until ctx ends, and returns the lane's ceiling and oldest report
+// after them (spec §6.4: no future on a stale report). The age filter
+// saves the request path an Ask per fresh upstream; the Ask paces fetches.
 func (n *Network) EvmAskStale(ctx context.Context, selector string) (ceiling int64, oldestReportAt time.Time) {
 	bt, cold := n.blockTimeOrCold(), n.EvmBlockTime() <= 0
 	now := time.Now()
@@ -448,17 +449,19 @@ func (n *Network) EvmAskStale(ctx context.Context, selector string) (ceiling int
 	}
 	ctx, cancel := context.WithTimeout(ctx, bt)
 	defer cancel()
-	askAll(ctx, stale, common.AskRefusal)
+	askAll(ctx, stale, bt, common.AskRefusal)
 	return n.laneCeiling(selector)
 }
 
-// EvmAskBand Asks, in the background, with a number need, each upstream
-// selector's lane ceiling counts whose head is below block, voters first
-// (spec §6.4 band): a syncing upstream votes for no Latest yet may hold
-// the block, and the band's retry orders upstreams by these heads.
+// EvmAskBand Asks, in the background, with a number need at 1 bt, each
+// upstream selector's lane ceiling counts whose head is below block,
+// voters first (spec §6.4 band): a syncing upstream votes for no Latest
+// yet may hold the block, and the band's retry orders upstreams by these
+// heads.
 func (n *Network) EvmAskBand(selector string, block int64) {
+	bt := n.blockTimeOrCold()
 	for _, sp := range n.bandPollers(selector, block) {
-		sp.AskBackground(common.HeadNeedNumber, common.AskRefusal)
+		sp.AskBackground(common.HeadNeedNumber, bt, common.AskRefusal)
 	}
 }
 
@@ -469,9 +472,10 @@ func (n *Network) EvmAskBand(selector string, block int64) {
 func (n *Network) awaitBandAsk(ctx context.Context, sel string, block int64) {
 	ctx, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
 	defer cancel()
+	bt := n.blockTimeOrCold()
 	var wg sync.WaitGroup
 	for _, sp := range n.bandPollers(sel, block) {
-		wg.Go(func() { sp.AskReaching(ctx, block, common.AskRefusal) })
+		wg.Go(func() { sp.AskReaching(ctx, block, bt, common.AskRefusal) })
 	}
 	wg.Wait()
 }
@@ -499,12 +503,12 @@ func (n *Network) bandPollers(sel string, block int64) []common.EvmStatePoller {
 	return out
 }
 
-// askAll Asks each of pollers with a number need for reason, at once, and
-// waits for every answer or ctx's end.
-func askAll(ctx context.Context, pollers []common.EvmStatePoller, reason common.AskReason) {
+// askAll Asks each of pollers with a number need at pace for reason, at
+// once, and waits for every answer or ctx's end.
+func askAll(ctx context.Context, pollers []common.EvmStatePoller, pace time.Duration, reason common.AskReason) {
 	var wg sync.WaitGroup
 	for _, sp := range pollers {
-		wg.Go(func() { sp.Ask(ctx, common.HeadNeedNumber, reason) })
+		wg.Go(func() { sp.Ask(ctx, common.HeadNeedNumber, pace, reason) })
 	}
 	wg.Wait()
 }
@@ -555,7 +559,7 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 	if at <= 0 || bn <= at {
 		return resp, false
 	}
-	n.EvmRefreshHeadsBelow(sel, bn)
+	n.EvmRefreshHeadsBelow(sel, bn, 0)
 	bt := n.EvmBlockTime()
 	if bt <= 0 {
 		bt = health.ColdBlockTime

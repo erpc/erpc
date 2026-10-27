@@ -40,7 +40,7 @@ func CheckBlockRangeAvailability(
 	if !available {
 		// The Ask's error is its upstream's; the check below reads the
 		// head it leaves.
-		_ = statePoller.AskReaching(ctx, toBlock, common.AskRefresh)
+		_ = statePoller.AskReaching(ctx, toBlock, 0, common.AskRefresh)
 		available, err = up.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, false, toBlock)
 		if err != nil {
 			return err

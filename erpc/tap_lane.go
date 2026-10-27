@@ -179,7 +179,7 @@ func (f laneFeed) Read(ctx context.Context, c indexer.Cursor, o indexer.ReadOpts
 			b.Applied, b.Next = nil, indexer.Cursor{Number: fork.Number - 1, Hash: fork.ParentHash}
 			return b, nil
 		}
-		f.nw.EvmRefreshHeadsBelow(f.selector, int64(b.Applied[0].Number))
+		f.nw.EvmRefreshHeadsBelow(f.selector, int64(b.Applied[0].Number), 0)
 		every := f.nw.EvmBlockTime()
 		if every <= 0 || every > time.Second {
 			every = time.Second
