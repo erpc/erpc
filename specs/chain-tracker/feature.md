@@ -725,6 +725,7 @@ Cost, measured 2026-10-14 on public RPCs, 5 consecutive blocks each:
 - Tracker fetches run the checks (§8). A head poll or Ask answer is checked once, by intake (§5.3 check 1), not again after its forward.
 - An empty numbered trace (`trace_block` and kin) is accepted only for a pinned block whose header has `transactionsRoot` = the empty-trie root and `gasUsed` = 0, with a hash that recomputes; no acceptance-time fetch (#1201).
 - `integrity.follow.enabled` opens one integrity follow tap per tracker at the network's first client request, as main's follower started, and keeps it open. It holds demand at the pace of `integrity.follow.interval` (1s), and feeds `stateProberFor(...).onNewHead`, so the state probes start with it. Out of range restarts it after the confirmed head.
+- A pinned state probe at block N goes only to the upstreams whose head counter reached N; an upstream below N is probed at a later pin it reached. Its block comes from the confirmed head, so the probe never meets the refusal rule (§6.4): it Asks no head, and a lagging upstream's missing state never counts as a failed probe.
 - Group trackers count the voters of their lane; their settles carry the group selector.
 - With integrity on, every delivered log is proven against `receiptsRoot` of a hash-linked header, except logs from the fallback (§11).
 - Chain profiles still apply: Kaia excludes `receiptsRootRecompute`.
