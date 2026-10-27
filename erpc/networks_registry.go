@@ -422,13 +422,10 @@ func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.Netw
 		default:
 			return nil, common.NewErrInvalidEvmChainId(networkId)
 		}
-		if err := nwCfg.SetDefaults(prj.Config.Upstreams, prj.Config.NetworkDefaults); err != nil {
-			return nil, fmt.Errorf("failed to set defaults for network config: %w", err)
+		if err := prj.Config.SetNetworkDefaults(nwCfg); err != nil {
+			return nil, err
 		}
 		prj.ExposeNetworkConfig(nwCfg)
 	}
-	// Fold the project-wide integrity block into this network's (network wins).
-	// Runs once per network at bootstrap, so the merge is not repeated.
-	nwCfg.Integrity = common.MergeIntegrityConfig(prj.Config.Integrity, nwCfg.Integrity)
 	return nwCfg, nil
 }

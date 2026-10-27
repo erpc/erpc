@@ -286,14 +286,15 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 	if n.policyEngine == nil {
 		return nil
 	}
-	cfg := n.cfg.SelectionPolicy
-	if cfg == nil {
-		cfg = &common.SelectionPolicyConfig{}
-		n.cfg.SelectionPolicy = cfg
+	// A copy: defaults and the engine's default-policy upgrade write it, and
+	// a retry runs this again while the network serves from n.cfg.
+	cfg := &common.SelectionPolicyConfig{}
+	if n.cfg.SelectionPolicy != nil {
+		*cfg = *n.cfg.SelectionPolicy
 	}
-	// Defensive: callers may have set Eval but skipped SetDefaults (common
-	// in tests that build Config as Go struct literals). Compile here so
-	// the engine never sees a nil program.
+	// Callers may have set Eval but skipped SetDefaults (common in tests that
+	// build Config as Go struct literals). Compile here so the engine never
+	// sees a nil program.
 	if cfg.CompiledProgram == nil {
 		if err := cfg.SetDefaults(); err != nil {
 			return fmt.Errorf("selectionPolicy SetDefaults: %w", err)
@@ -471,12 +472,9 @@ func (n *Network) ProjectId() string {
 }
 
 func (n *Network) Architecture() common.NetworkArchitecture {
-	if n.cfg.Architecture == "" {
-		if n.cfg.Evm != nil {
-			n.cfg.Architecture = common.ArchitectureEvm
-		}
+	if n.cfg.Architecture == "" && n.cfg.Evm != nil {
+		return common.ArchitectureEvm
 	}
-
 	return n.cfg.Architecture
 }
 

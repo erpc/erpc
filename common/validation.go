@@ -839,6 +839,11 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			return err
 		}
 	}
+	// Before the networks: each network's block already carries the project's
+	// folded in, so a project error must be reported as the project's.
+	if err := p.Integrity.Validate(); err != nil {
+		return fmt.Errorf("project.*: %w", err)
+	}
 	if p.Networks != nil {
 		existingIds := make(map[string]bool)
 		existingAliases := make(map[string]bool)
@@ -883,9 +888,6 @@ func (p *ProjectConfig) Validate(c *Config) error {
 		if !c.HasRateLimiterBudget(p.RateLimitBudget) {
 			return fmt.Errorf("project.*.rateLimitBudget '%s' does not exist in config.rateLimiters", p.RateLimitBudget)
 		}
-	}
-	if err := p.Integrity.Validate(); err != nil {
-		return fmt.Errorf("project.*: %w", err)
 	}
 	return nil
 }
