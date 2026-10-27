@@ -3214,11 +3214,17 @@ func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
 // Asks): an idle network, no client yet, sends nothing; the first client
 // request starts the follow tap and the state probes (spec §13, §6.11).
 // The follow tap alone needs a head once per integrity.follow.interval
-// (1s), so head Asks (latest polls and eth_blockNumber) run at that pace,
-// not at the 300ms block time (spec §3 demand, §6.5 rule 6 and catch-up).
-// Catch-up then Asks only as many lagging voters as Latest lacks to reach
-// the pin (quorum 2), one of the four here, since the no_source Ask keeps
-// the first voter at it (§6.5 catch-up).
+// (1s), not every 300ms block (spec §3 demand), so in a window of T the
+// head Asks that fetch are, by reason:
+//   - no_source: rule 6 sends one once ask.sent is a pace old (askDue), at
+//     most T/pace + 1;
+//   - catch_up: gate sets catchUpAt at least a pace ahead for either kind
+//     of round, at most T/pace + 1 rounds; a round Asks only the voters
+//     Latest lacks to reach the pin (quorum 2), and the pin's own voter is
+//     at it, so one voter per round;
+//   - refusal: none, since a pinned probe goes only to upstreams at its
+//     block (spec §13); settle, refresh and poll: none on one linear chain
+//     with no client request and an hour's poll interval.
 func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -3274,21 +3280,32 @@ func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`))
 	require.NoError(t, err)
 	_ = resp.Body.Close()
-	catchUp := func() float64 {
-		return testutil.ToFloat64(telemetry.MetricHeadAskTotal.WithLabelValues("test_ws", "evm:123", string(common.AskCatchUp), "fetched"))
+	pace := common.DefaultIntegrityFollowInterval
+	reasons := []common.AskReason{common.AskNoSource, common.AskCatchUp, common.AskRefusal, common.AskSettle, common.AskRefresh, common.AskPoll}
+	fetched := func() map[common.AskReason]float64 {
+		out := map[common.AskReason]float64{}
+		for _, r := range reasons {
+			out[r] = testutil.ToFloat64(telemetry.MetricHeadAskTotal.WithLabelValues("test_ws", "evm:123", string(r), string(common.AskFetched)))
+		}
+		return out
 	}
 	time.Sleep(time.Second)
 	from, at = requests(), time.Now()
-	asked, caught, head := asks(), catchUp(), chain.Head()
+	asked, before := asks(), fetched()
 	time.Sleep(5 * time.Second)
-	secs := time.Since(at).Seconds()
-	follow, askRate := float64(requests()-from)/secs, float64(asks()-asked)/secs
-	perBlock := (catchUp() - caught) / float64(chain.Head()-head)
-	t.Logf("follow-only network: %.1f requests/s, %.1f head Asks/s, %.2f catch-up Asks per block", follow, askRate, perBlock)
+	after, vendorAsks, secs := fetched(), asks()-asked, time.Since(at).Seconds()
+	follow := float64(requests()-from) / secs
+	rounds := float64(int(secs/pace.Seconds()) + 1)
+	by := map[common.AskReason]float64{}
+	for _, r := range reasons {
+		by[r] = after[r] - before[r]
+	}
+	t.Logf("follow-only network over %.1fs: %.1f requests/s, %d vendor head requests, fetched Asks by reason %v", secs, follow, vendorAsks, by)
 	assert.Positive(t, follow, "the first client request starts the follow tap and the probes")
-	// One no_source Ask per second, and one catch-up round per second.
-	assert.LessOrEqual(t, askRate, 2.5, "head Asks run at the follow tap's 1s pace, not every block")
-	// One catch-up round per second over 3.3 blocks, each Asking the one
-	// voter Latest lacks: at most 0.3 per block.
-	assert.LessOrEqual(t, perBlock, 0.35, "catch-up Asks only the voter Latest lacks")
+	assert.LessOrEqual(t, by[common.AskNoSource], rounds, "rule 6 Asks once per follow pace")
+	assert.LessOrEqual(t, by[common.AskCatchUp], rounds, "one catch-up round per follow pace, one lagging voter each")
+	for _, r := range []common.AskReason{common.AskRefusal, common.AskSettle, common.AskRefresh, common.AskPoll} {
+		assert.Zero(t, by[r], "no %s Asks on a follow-only network", r)
+	}
+	assert.LessOrEqual(t, float64(vendorAsks), 2*rounds, "every vendor head request is one of those Asks")
 }
