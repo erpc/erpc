@@ -49,6 +49,12 @@ var (
 	errReceiptsCheck = errors.New("receipts answer fails an integrity check")
 )
 
+// wrongAnswer reports whether err holds a receipts answer that failed its
+// checks, rather than a fetch that got none.
+func wrongAnswer(err error) bool {
+	return errors.Is(err, errReceiptsAnswer) || errors.Is(err, errBloomMismatch) || errors.Is(err, errReceiptsCheck)
+}
+
 type bloomVerdict uint8
 
 const (
@@ -543,9 +549,11 @@ func (t *ChainTracker) heldReceiptsOf(hash [32]byte) *heldReceipts {
 // receiptsSpec fetches block h's receipts by hash, or with logs its logs by
 // blockHash. The decode is the answer check, then the bloom check against
 // the held header: a mismatch fails the fetch while the network's check is
-// on. h is nil when the caller holds no header; the decode then reads the
-// held one. A receipts answer's integrity checks run after its decode, so a
-// client check waiting on it takes it at once (spec §11); only an answer
+// on, and counts against its upstream. Any answer the decode refuses fails
+// only its upstream: the sweep goes on, to another vendor first (spec
+// §11). h is nil when the caller holds no header; the decode then reads the
+// held one. A receipts answer's integrity checks run after its decode, so
+// a client check waiting on it takes it at once (spec §11); only an answer
 // that passes them is held.
 func (t *ChainTracker) receiptsSpec(class fetchClass, hash [32]byte, h *chainHeader, logs bool) fetchSpec {
 	key := hexHash(hash)
@@ -566,17 +574,20 @@ func (t *ChainTracker) receiptsSpec(class fetchClass, hash [32]byte, h *chainHea
 			return parseLogs(result, hash, h, gate.checking(), gate.prof().logIndexes)
 		}
 	}
-	spec.decode = func(result []byte) (any, error) {
+	spec.decode = func(result []byte, from common.Upstream) (any, error) {
 		hdr := h
 		if hdr == nil {
 			hdr = t.heldHeader(hash)
 		}
 		r, err := parse(result, hash, hdr)
-		if err != nil {
-			return nil, err
+		if err == nil && r.bloom == bloomMismatch && gate.checking() {
+			err = errBloomMismatch
+			if from != nil {
+				t.countBloomMismatch(from, spec.method, hdr)
+			}
 		}
-		if r.bloom == bloomMismatch && gate.checking() {
-			return nil, errBloomMismatch
+		if err != nil {
+			return nil, common.NewErrEndpointContentValidation(err, from)
 		}
 		return r, nil
 	}
@@ -822,7 +833,7 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 		t.endJob(j, r)
 	case errors.Is(res.err, errSchedulerClosed) || t.ctx.Err() != nil:
 		t.endJob(j, nil)
-	case res.upstream == "" && (errors.Is(res.err, errBloomMismatch) || errors.Is(res.err, errReceiptsAnswer)):
+	case res.upstream == "" && wrongAnswer(res.err) && !common.HasErrorCode(res.err, common.ErrCodeUpstreamsExhausted):
 		// A cached answer failed the checks: no vendor answered it, so
 		// nothing counts; the next attempt skips the cache.
 		j.fresh = true
@@ -837,13 +848,12 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 				t.receiptsDown = time.Now()
 			}
 		}
-		if errors.Is(res.err, errBloomMismatch) {
-			t.countBloomMismatch(res.upstream, spec.method, j.h)
-		}
 		// A wrong answer moves the next attempt to another vendor.
-		if errors.Is(res.err, errBloomMismatch) || errors.Is(res.err, errReceiptsCheck) {
-			if v := t.vendorOf(res.upstream); v != "" {
-				j.mismatched[v] = true
+		if wrongAnswer(res.err) {
+			for _, id := range []string{spec.upstream, res.upstream} {
+				if v := t.vendorOf(id); v != "" {
+					j.mismatched[v] = true
+				}
 			}
 		}
 		for _, u := range []string{spec.upstream, res.upstream} {
@@ -985,29 +995,18 @@ func (t *ChainTracker) endJob(j *receiptsJob, r *heldReceipts) {
 	t.receiptsDirty = true
 }
 
-// countBloomMismatch counts a mismatching answer against its upstream, as
+// countBloomMismatch counts u's mismatching answer against it, as
 // integrity counts a bloomMatch violation, in its misbehavior score, and
-// for the network's bloom check. A cached answer names no upstream, and
-// counts against none.
-func (t *ChainTracker) countBloomMismatch(upstreamId, method string, h *chainHeader) {
-	if upstreamId == "" {
-		return
-	}
-	u := t.upstreamOf(upstreamId)
-	vendor := ""
-	if u != nil {
-		vendor = u.VendorName()
-	}
+// for the network's bloom check. It runs in the fetch's answer check.
+func (t *ChainTracker) countBloomMismatch(u common.Upstream, method string, h *chainHeader) {
 	if s := suspensionsOf(t.network); s != nil {
-		s.recordBloom(h.number, t.vendorOf(upstreamId), false)
+		s.recordBloom(h.number, t.vendorOf(u.Id()), false)
 	}
 	telemetry.MetricIntegrityViolation.WithLabelValues(
-		t.projectId(), vendor, t.networkLabel(), upstreamId, strings.ToLower(method), "bloomMatch", "reject", t.finalityLabel(int64(h.number)),
+		t.projectId(), u.VendorName(), t.networkLabel(), u.Id(), strings.ToLower(method), "bloomMatch", "reject", t.finalityLabel(int64(h.number)),
 	).Inc()
-	if u != nil {
-		if ht := u.Tracker(); ht != nil {
-			ht.RecordUpstreamMisbehavior(u, strings.ToLower(method), common.DataFinalityStateUnfinalized)
-		}
+	if ht := u.Tracker(); ht != nil {
+		ht.RecordUpstreamMisbehavior(u, strings.ToLower(method), common.DataFinalityStateUnfinalized)
 	}
 }
 
@@ -1074,15 +1073,6 @@ func (t *ChainTracker) methodUpstreams(method string) []common.Upstream {
 		}
 	}
 	return out
-}
-
-func (t *ChainTracker) upstreamOf(id string) common.Upstream {
-	for _, u := range t.receiptsUpstreams() {
-		if u.Id() == id {
-			return u
-		}
-	}
-	return nil
 }
 
 // vendorOf is the VendorKey of upstreamId among every upstream of the

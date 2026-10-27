@@ -22,10 +22,10 @@ var trackerAttemptSlack = time.Second
 // trackerAttemptSlack, so one slow upstream cannot end the sweep. The cache
 // is read only when req's directives allow it. check is the tracker's
 // answer check: an answer it fails is never cached and never shared. A
-// content-validation failure (an integrity check the tracker ran after
-// decode) fails only that upstream: the pass goes on, to upstreams of
-// another vendor first (spec §11). Any other failure ends the pass with
-// that answer and its error. A network-wide sweep leads the in-flight
+// content-validation failure (check found the answer itself wrong) fails
+// only that upstream: the pass goes on, to upstreams of another vendor
+// first (spec §11). Any other failure ends the pass with that answer and
+// its error. A network-wide sweep leads the in-flight
 // multiplexer, so identical client requests join it. A failed pass returns
 // ErrUpstreamsExhausted carrying each tried upstream's error.
 func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequest, upstreamId string, check func(*common.NormalizedResponse) error) (resp *common.NormalizedResponse, err error) {
@@ -83,11 +83,15 @@ func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequ
 }
 
 // sweep tries ups in order and returns the first non-empty answer check
-// passes, else the last empty one.
+// passes, else the last empty one with its check's outcome. An answer
+// whose check fails for its content fails only that upstream, empty or not.
 func (n *Network) sweep(ctx context.Context, req *common.NormalizedRequest, method string, ups []common.Upstream, startTime time.Time, check func(*common.NormalizedResponse) error) (*common.NormalizedResponse, error) {
 	finality := req.Finality(ctx)
 	deadline, bounded := ctx.Deadline()
-	var best *common.NormalizedResponse
+	var (
+		best    *common.NormalizedResponse
+		bestErr error
+	)
 	for i := range ups {
 		u := ups[i]
 		if ctx.Err() != nil {
@@ -123,31 +127,26 @@ func (n *Network) sweep(ctx context.Context, req *common.NormalizedRequest, meth
 		}
 		r.SetUpstream(u)
 		r.WithRequest(req)
+		err = check(r)
+		if common.HasErrorCode(err, common.ErrCodeEndpointContentValidation) {
+			req.ErrorsByUpstream.Store(u, err)
+			otherVendorsFirst(ups[i+1:], evm.VendorKey(u))
+			continue
+		}
 		if !r.IsResultEmptyish(ctx) {
-			if err := check(r); err != nil {
-				if !common.HasErrorCode(err, common.ErrCodeEndpointContentValidation) {
-					if best != nil {
-						best.Release()
-					}
-					return r, err
-				}
-				req.ErrorsByUpstream.Store(u, err)
-				otherVendorsFirst(ups[i+1:], evm.VendorKey(u))
-				continue
-			}
 			if best != nil {
 				best.Release()
 			}
-			return r, nil
+			return r, err
 		}
 		// Another upstream may hold the block this one answers null for.
 		if best != nil {
 			best.Release()
 		}
-		best = r
+		best, bestErr = r, err
 	}
 	if best != nil {
-		return best, check(best)
+		return best, bestErr
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, context.Cause(ctx)

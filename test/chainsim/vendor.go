@@ -34,6 +34,7 @@ type Faults struct {
 	TruncReceipts bool          // receipts without their last 10
 	ForgedLog     bool          // receipts whose first log's data is forged
 	WrongBloom    bool          // receipts whose logsBloom is zero
+	ParentHash    bool          // receipts that name the parent's hash as their blockHash
 	OffBloom      bool          // receipts whose logsBloom is set but not the header's (bloomMatch)
 	NoReceipts    bool          // eth_getBlockReceipts answers -32601
 	Throttled     bool          // HTTP 429; -32005 over ws
@@ -726,10 +727,16 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		if f.TruncReceipts {
 			drop = 10
 		}
-		if drop == 0 && !f.WrongBloom && !f.OffBloom && !f.ForgedLog {
+		if drop == 0 && !f.WrongBloom && !f.OffBloom && !f.ForgedLog && !f.ParentHash {
 			v.served[h] = true
 		}
-		return b.receipts(f.WrongBloom, f.OffBloom, drop, f.ForgedLog), nil
+		rs := b.receipts(f.WrongBloom, f.OffBloom, drop, f.ForgedLog)
+		if f.ParentHash {
+			for _, r := range rs {
+				r["blockHash"] = b.ParentHash().Hex()
+			}
+		}
+		return rs, nil
 	case "eth_getTransactionReceipt":
 		hs, _ := firstString(params)
 		h, ok := parseHash(hs)

@@ -3019,7 +3019,7 @@ func (t *ChainTracker) headerSpec(class fetchClass, method, blockRef, upstream s
 		params:   `["` + blockRef + `",false]`,
 		byHash:   method == "eth_getBlockByHash",
 		client:   client,
-		decode: func(result []byte) (any, error) {
+		decode: func(result []byte, _ common.Upstream) (any, error) {
 			if r := bytes.TrimSpace(result); len(r) == 0 || bytes.Equal(r, []byte("null")) {
 				return nil, errFetchNotFound
 			}
@@ -3118,9 +3118,6 @@ func (t *ChainTracker) resolveReceipts(ctx context.Context, blockHash string, nu
 	spec := t.receiptsSpec(class, hash, h, false)
 	spec.client = true
 	res := t.fetch.fetch(ctx, t, spec)
-	if errors.Is(res.err, errBloomMismatch) && h != nil {
-		t.countBloomMismatch(res.upstream, spec.method, h)
-	}
 	r, ok := res.val.(*heldReceipts)
 	var ex *common.ErrUpstreamsExhausted
 	switch {

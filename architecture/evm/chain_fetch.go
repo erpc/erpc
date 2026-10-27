@@ -59,8 +59,9 @@ type fetchKey struct {
 	selector, upstream, method, params string
 }
 
-// fetchSpec is one tracker fetch. decode turns the answer into what the
-// tracker holds; an error fails the fetch.
+// fetchSpec is one tracker fetch. decode turns the answer of from (nil for
+// a cached answer) into what the tracker holds; an error fails the fetch,
+// and one with ErrCodeEndpointContentValidation only from's attempt.
 type fetchSpec struct {
 	class    fetchClass
 	kind     string // metric label: header, receipts, logs
@@ -76,7 +77,7 @@ type fetchSpec struct {
 	// them (spec §11); every other waiter, the cache and the tracker get it
 	// only once they pass.
 	deferChecks bool
-	decode      func(result []byte) (any, error)
+	decode      func(result []byte, from common.Upstream) (any, error)
 }
 
 // key single-flights fetches; one that names an upstream is shared by every
@@ -508,14 +509,12 @@ func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 	defer cancel()
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + r.spec.method + `","params":` + r.spec.params + `}`))
 	req.SetDirectives(r.spec.directives())
-	var (
-		upstreamId string
-		val        any
-	)
-	// A cached answer names no upstream: no vendor answered it.
-	_, err := s.sweep(ctx, req, r.spec.upstream, func(resp *common.NormalizedResponse) error {
+	var val any
+	resp, err := s.sweep(ctx, req, r.spec.upstream, func(resp *common.NormalizedResponse) error {
+		// A cached answer names no upstream: no vendor answered it.
+		var from common.Upstream
 		if u := resp.Upstream(); u != nil && !resp.FromCache() {
-			upstreamId = u.Id()
+			from = u
 		}
 		if hook := TrackerFetchHook.Load(); hook != nil {
 			(*hook)(r.spec.method, r.spec.params)
@@ -527,17 +526,26 @@ func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 		if jrr == nil || jrr.Error != nil {
 			return errFetchUndecoded
 		}
-		val, err = r.spec.decode(bytes.Clone(jrr.GetResultBytes()))
-		if err != nil || !r.spec.deferChecks || resp.FromCache() {
-			// A cached answer passed the checks before it was cached.
+		v, err := r.spec.decode(bytes.Clone(jrr.GetResultBytes()), from)
+		if err != nil {
 			return err
 		}
-		r.answerWith(fetchResult{upstream: upstreamId, val: val})
-		if err := validateIntegrity(ctx, s.network, resp.Upstream(), req, resp, strings.ToLower(r.spec.method)); err != nil {
-			return fmt.Errorf("%w: %w", errReceiptsCheck, err)
+		if r.spec.deferChecks && from != nil {
+			// A cached answer passed the checks before it was cached.
+			r.answerWith(fetchResult{upstream: from.Id(), val: v})
+			if err := validateIntegrity(ctx, s.network, from, req, resp, strings.ToLower(r.spec.method)); err != nil {
+				return fmt.Errorf("%w: %w", errReceiptsCheck, err)
+			}
 		}
+		// Set only by an answer that passed: the sweep may go on past later
+		// ones and return this one.
+		val = v
 		return nil
 	})
+	upstreamId := ""
+	if resp != nil && !resp.FromCache() && resp.Upstream() != nil {
+		upstreamId = resp.Upstream().Id()
+	}
 	if err != nil {
 		return fetchResult{upstream: upstreamId, err: err}
 	}

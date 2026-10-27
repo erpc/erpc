@@ -72,7 +72,7 @@ func TestFetchScheduler_CapacityRefusals(t *testing.T) {
 	s := newFetchScheduler(t.Context(), net)
 	spec := func(class fetchClass, param string) fetchSpec {
 		return fetchSpec{class: class, kind: "header", method: "eth_getBlockByNumber", params: `["` + param + `",false]`,
-			decode: func(b []byte) (any, error) { return string(b), nil }}
+			decode: func(b []byte, _ common.Upstream) (any, error) { return string(b), nil }}
 	}
 	share := func(c fetchClass) int {
 		s.mu.Lock()

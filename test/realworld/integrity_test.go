@@ -117,22 +117,24 @@ func u8(integrity bool) spec {
 	}}
 }
 
-// U9: vendor-a serves truncated receipts, then a forged log, then a zero
-// bloom, u9FaultBlocks each, integrity on. Receipts are refetched from
-// vendor-b: every client's logs equal the canonical logs, no forged log
-// reaches a client, and violations count on vendor-a only. A tip client
-// (tipReceipts) reads a receipt of each even head it receives: every
-// answer is the chain's, and every check corroborates. Vendor-a's forged
-// receipts come u9ForgedSlow late, so the check is waiting on that fetch:
-// it takes them as they meet the answer rules and waits for no refetch
-// from vendor-b, while the forged ones are never held (§11). They fail an
-// integrity check after decode, and the same sweep goes on to vendor-b, so
-// no receipts fetch fails under them (§11). While it
-// reads, every odd block with transactions is fetched at pin time, even
-// one no logs filter wants, and no empty block gets a receipts call (§11
-// prefetch, C10). Then every vendor fails one quiet block's receipts: its
-// receipt check is unverifiable and passes once the sweep failed (§11,
-// #1014).
+// U9: vendor-a serves truncated receipts, then a forged log, then receipts
+// naming another block, then a zero bloom, u9FaultBlocks each, integrity
+// on. Receipts are refetched from vendor-b: every client's logs equal the
+// canonical logs, no forged log reaches a client, and violations count on
+// vendor-a only. A tip client (tipReceipts) reads a receipt of each even
+// head it receives: every answer is the chain's, and every check
+// corroborates. Vendor-a's forged receipts come u9ForgedSlow late, so the
+// check is waiting on that fetch: it takes them as they meet the answer
+// rules and waits for no refetch from vendor-b, while the forged ones are
+// never held (§11). They fail an integrity check after decode, and the
+// same sweep goes on to vendor-b, so no receipts fetch fails under them
+// (§11). Receipts naming another block, as late, fail the answer rules:
+// the same sweep goes on to vendor-b too, so the check waits for that
+// sweep, not for a refetch (§11). While it reads, every odd block with
+// transactions is fetched at pin time, even one no logs filter wants, and
+// no empty block gets a receipts call (§11 prefetch, C10). Then every
+// vendor fails one quiet block's receipts: its receipt check is
+// unverifiable and passes once the sweep failed (§11, #1014).
 func u9() spec {
 	tr := &tipReceipts{}
 	// vendor-a ranks first whatever its score, so the tracker asks it
@@ -140,58 +142,62 @@ func u9() spec {
 	// vendor-b's refetch, not which vendor the policy put first.
 	return spec{name: "U9", integrity: true, bound: healthyDelivery, onHead: tr.onHead,
 		network: map[string]interface{}{"selectionPolicy": rankFirst("a")}, body: func(s *scenario) {
-		from := time.Now()
-		tr.reset()
-		s.slowVendorB()
-		s.blocks(25)
-		susp := s.suspensions("")
-		var during, duringB int64
-		for _, fault := range []struct {
-			name string
-			set  func(*chainsim.Faults, bool)
-		}{
-			{"truncated", func(f *chainsim.Faults, on bool) { f.TruncReceipts = on }},
-			{"forged", func(f *chainsim.Faults, on bool) {
-				f.ForgedLog = on
-				f.SlowReceipts = 0
-				if on {
-					f.SlowReceipts = u9ForgedSlow
-				}
-			}},
-			{"wrong-bloom", func(f *chainsim.Faults, on bool) { f.WrongBloom = on }},
-		} {
-			a0, b0 := s.receiptsCalls(vendorA), s.receiptsCalls(vendorB)
-			failed0 := s.failedReceiptsFetches()
-			tr.setPhase(fault.name)
-			s.fault(vendorA, fault.set, u9FaultBlocks)
-			during += s.receiptsCalls(vendorA) - a0
-			duringB += s.receiptsCalls(vendorB) - b0
-			if fault.name == "forged" {
-				// A forged log fails an integrity check after decode: the
-				// sweep goes on to vendor-b, so no receipts fetch fails
-				// (§11).
-				for pod, n := range s.failedReceiptsFetches() {
-					if d := n - failed0[pod]; d > 0 {
-						s.violate(s.name, "pod-%d: %v receipts fetches failed under vendor-a's forged log: a failed check ended the sweep before vendor-b", pod+1, d)
+			from := time.Now()
+			tr.reset()
+			s.slowVendorB()
+			s.blocks(25)
+			susp := s.suspensions("")
+			var during, duringB int64
+			for _, fault := range []struct {
+				name string
+				// late: vendor-a's wrong answer comes u9ForgedSlow late and
+				// fails a check, so the same sweep goes on to vendor-b and no
+				// receipts fetch fails (§11).
+				late bool
+				set  func(*chainsim.Faults, bool)
+			}{
+				{"truncated", false, func(f *chainsim.Faults, on bool) { f.TruncReceipts = on }},
+				{"forged", true, func(f *chainsim.Faults, on bool) { f.ForgedLog = on }},
+				{"wrong-hash", true, func(f *chainsim.Faults, on bool) { f.ParentHash = on }},
+				{"wrong-bloom", false, func(f *chainsim.Faults, on bool) { f.WrongBloom = on }},
+			} {
+				a0, b0 := s.receiptsCalls(vendorA), s.receiptsCalls(vendorB)
+				failed0 := s.failedReceiptsFetches()
+				tr.setPhase(fault.name)
+				s.fault(vendorA, func(f *chainsim.Faults, on bool) {
+					fault.set(f, on)
+					if fault.late {
+						f.SlowReceipts = 0
+						if on {
+							f.SlowReceipts = u9ForgedSlow
+						}
+					}
+				}, u9FaultBlocks)
+				during += s.receiptsCalls(vendorA) - a0
+				duringB += s.receiptsCalls(vendorB) - b0
+				if fault.late {
+					for pod, n := range s.failedReceiptsFetches() {
+						if d := n - failed0[pod]; d > 0 {
+							s.violate(s.name, "pod-%d: %v receipts fetches failed under vendor-a's %s receipts: a failed check ended the sweep before vendor-b", pod+1, d, fault.name)
+						}
 					}
 				}
+				tr.setPhase("recovery")
+				s.blocks(10)
 			}
-			tr.setPhase("recovery")
-			s.blocks(10)
-		}
-		s.logf("under vendor-a's faults, vendor-a answered %d receipts calls, vendor-b %d", during, duringB)
-		s.requireOnVendorA(during, nil)
-		s.requireNotSuspended(susp, "")
-		tr.setPhase("unverifiable")
-		tr.unverified = s.unverifiable()
-		tr.setPhase("healthy")
-		healthy := time.Now()
-		s.blocks(25)
-		to := time.Now()
-		// The last blocks' receipts calls end after they are minted.
-		s.blocks(5)
-		tr.judge(s, from, healthy, to)
-	}}
+			s.logf("under vendor-a's faults, vendor-a answered %d receipts calls, vendor-b %d", during, duringB)
+			s.requireOnVendorA(during, nil)
+			s.requireNotSuspended(susp, "")
+			tr.setPhase("unverifiable")
+			tr.unverified = s.unverifiable()
+			tr.setPhase("healthy")
+			healthy := time.Now()
+			s.blocks(25)
+			to := time.Now()
+			// The last blocks' receipts calls end after they are minted.
+			s.blocks(5)
+			tr.judge(s, from, healthy, to)
+		}}
 }
 
 // tipReceipts is a client that follows the tip: on each pod's first
@@ -315,17 +321,29 @@ func (tr *tipReceipts) judge(s *scenario, from, healthy, to time.Time) {
 			w[len(w)/2].Round(time.Millisecond), w[len(w)*9/10].Round(time.Millisecond), w[len(w)-1].Round(time.Millisecond))
 	}
 	s.logf("tip receipts: %d null answers", nulls)
-	var forged []time.Duration
-	for _, k := range keys {
-		if strings.HasPrefix(k, "forged/") {
-			forged = append(forged, waits[k]...)
+	phase := func(name string) []time.Duration {
+		var out []time.Duration
+		for _, k := range keys {
+			if strings.HasPrefix(k, name+"/") {
+				out = append(out, waits[k]...)
+			}
+		}
+		slices.Sort(out)
+		if len(out) < u9TipMin {
+			s.violate("harness", "%d tip receipt answers under vendor-a's %s receipts, fewer than %d", len(out), name, u9TipMin)
+			return nil
+		}
+		return out
+	}
+	if forged := phase("forged"); forged != nil {
+		if p50 := forged[len(forged)/2]; p50 >= u9ForgedSlow+u9VendorBLatency {
+			s.violate(s.name, "tip receipt checks under vendor-a's forged log, %s late, waited p50 %s, past %s more: they waited on the receipts checks and vendor-b's refetch, not on vendor-a's answer (§11)", u9ForgedSlow, p50.Round(time.Millisecond), u9VendorBLatency)
 		}
 	}
-	slices.Sort(forged)
-	if len(forged) < u9TipMin {
-		s.violate("harness", "%d tip receipt answers under vendor-a's forged log, fewer than %d", len(forged), u9TipMin)
-	} else if p50 := forged[len(forged)/2]; p50 >= u9ForgedSlow+u9VendorBLatency {
-		s.violate(s.name, "tip receipt checks under vendor-a's forged log, %s late, waited p50 %s, past %s more: they waited on the receipts checks and vendor-b's refetch, not on vendor-a's answer (§11)", u9ForgedSlow, p50.Round(time.Millisecond), u9VendorBLatency)
+	if wrong := phase("wrong-hash"); wrong != nil {
+		if p90 := wrong[len(wrong)*9/10]; p90 >= u9ForgedSlow+u9UnverifiableWait {
+			s.violate(s.name, "tip receipt checks under vendor-a's receipts naming another block, %s late, waited p90 %s, past %s more: the wrong answer ended the sweep, and the check waited on a refetch, not on the sweep's next vendor (§11)", u9ForgedSlow, p90.Round(time.Millisecond), u9UnverifiableWait)
+		}
 	}
 	// A fast wait that skipped the corroboration proves nothing: every
 	// receipt check corroborates, from vendor-b when vendor-a's receipts
