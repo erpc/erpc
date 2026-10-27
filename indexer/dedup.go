@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -15,6 +16,9 @@ import (
 //     not part of the key but the state DedupWindow tracks per key, so
 //     add, remove and re-add are each delivered once.
 //   - newPendingTransactions: the tx hash, from a string or an object's hash.
+//   - newFlashblocks: number + transactionsRoot when both are present.
+//     Otherwise payload_id + index, both required. index 0 is present.
+//     A payload with neither identity has no key.
 //
 // Keys are lowercased because hex on the wire is case-insensitive.
 func DedupKeyForFilter(subType string, result json.RawMessage) string {
@@ -43,6 +47,23 @@ func DedupKeyForFilter(subType string, result json.RawMessage) string {
 		if err := common.SonicCfg.Unmarshal(result, &asObj); err == nil {
 			return strings.ToLower(asObj.Hash)
 		}
+	case SubTypeNewFlashblocks:
+		var fb struct {
+			Number           string `json:"number"`
+			TransactionsRoot string `json:"transactionsRoot"`
+			PayloadID        string `json:"payload_id"`
+			Index            *int   `json:"index"`
+		}
+		if err := common.SonicCfg.Unmarshal(result, &fb); err != nil {
+			return ""
+		}
+		if fb.Number != "" && fb.TransactionsRoot != "" {
+			return strings.ToLower(fb.Number) + ":" + strings.ToLower(fb.TransactionsRoot)
+		}
+		if fb.PayloadID == "" || fb.Index == nil {
+			return ""
+		}
+		return strings.ToLower(fb.PayloadID) + ":" + strconv.Itoa(*fb.Index)
 	}
 	return ""
 }

@@ -140,6 +140,71 @@ func TestDedupKeyForFilter_PendingTxAsObject(t *testing.T) {
 	}
 }
 
+func TestDedupKeyForFilter_NewFlashblocks(t *testing.T) {
+	got := DedupKeyForFilter(SubTypeNewFlashblocks, json.RawMessage(`{"payload_id":"0xABC","index":0}`))
+	if got != "0xabc:0" {
+		t.Fatalf("flashblock key: got %q", got)
+	}
+	got = DedupKeyForFilter(SubTypeNewFlashblocks, json.RawMessage(`{"payload_id":"0xabc","index":1,"diff":{}}`))
+	if got != "0xabc:1" {
+		t.Fatalf("flashblock key with diff: got %q", got)
+	}
+}
+
+func TestDedupKeyForFilter_NewFlashblocksBlockSnapshot(t *testing.T) {
+	// A Chainstack snapshot is a block object: hash may be zero and each
+	// transaction blockHash null. Identity is number + transactionsRoot.
+	const zeroHash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+	a := DedupKeyForFilter(SubTypeNewFlashblocks, json.RawMessage(
+		`{"number":"0x10","transactionsRoot":"0xABC","hash":"`+zeroHash+`","transactions":[{"blockHash":null}]}`,
+	))
+	b := DedupKeyForFilter(SubTypeNewFlashblocks, json.RawMessage(
+		`{"number":"0x10","transactionsRoot":"0xabc","hash":"`+zeroHash+`","transactions":[{"blockHash":null}]}`,
+	))
+	if a != "0x10:0xabc" || a != b {
+		t.Fatalf("same number and transactionsRoot must share a key, got %q vs %q", a, b)
+	}
+	c := DedupKeyForFilter(SubTypeNewFlashblocks, json.RawMessage(
+		`{"number":"0x10","transactionsRoot":"0xdef","hash":"`+zeroHash+`"}`,
+	))
+	if c == a || c != "0x10:0xdef" {
+		t.Fatalf("a new transactionsRoot at the same number is a different flashblock, got %q", c)
+	}
+	// number + transactionsRoot wins when a Base identity is also present.
+	both := DedupKeyForFilter(SubTypeNewFlashblocks, json.RawMessage(
+		`{"number":"0x10","transactionsRoot":"0xabc","payload_id":"0xFFF","index":0}`,
+	))
+	if both != a {
+		t.Fatalf("block snapshot identity must win over payload_id, got %q", both)
+	}
+}
+
+func TestDedupKeyForFilter_NewFlashblocksPartialBlockUsesPayloadID(t *testing.T) {
+	missingRoot := DedupKeyForFilter(SubTypeNewFlashblocks, json.RawMessage(`{"number":"0x10","payload_id":"0xABC","index":0}`))
+	if missingRoot != "0xabc:0" {
+		t.Fatalf("missing transactionsRoot must use payload_id and index, got %q", missingRoot)
+	}
+	missingNumber := DedupKeyForFilter(SubTypeNewFlashblocks, json.RawMessage(`{"transactionsRoot":"0xabc","payload_id":"0xABC","index":1}`))
+	if missingNumber != "0xabc:1" {
+		t.Fatalf("missing number must use payload_id and index, got %q", missingNumber)
+	}
+}
+
+func TestDedupKeyForFilter_NewFlashblocksMissingIdentityReturnsEmpty(t *testing.T) {
+	for _, p := range []string{
+		`{}`,
+		`{"payload_id":"0xabc"}`,
+		`{"index":0}`,
+		`{"number":"0x10"}`,
+		`{"transactionsRoot":"0xabc"}`,
+		`not json`,
+	} {
+		if got := DedupKeyForFilter(SubTypeNewFlashblocks, json.RawMessage(p)); got != "" {
+			t.Fatalf("payload %s: want empty key, got %q", p, got)
+		}
+	}
+}
+
 func TestDedupKeyForFilter_UnknownSubTypeReturnsEmpty(t *testing.T) {
 	got := DedupKeyForFilter("unknown", json.RawMessage(`{}`))
 	if got != "" {

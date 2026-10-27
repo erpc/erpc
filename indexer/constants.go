@@ -9,6 +9,7 @@ const (
 	SubTypeNewHeads               = "newHeads"
 	SubTypeLogs                   = "logs"
 	SubTypeNewPendingTransactions = "newPendingTransactions"
+	SubTypeNewFlashblocks         = "newFlashblocks"
 )
 
 // DefaultDedupWindowSize bounds the per-filter set of recently delivered

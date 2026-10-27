@@ -549,6 +549,8 @@ func (a *Adapter) handleFilter(subType, paramsHash string, raw []byte) {
 	kind := indexer.KindLog
 	if subType == indexer.SubTypeNewPendingTransactions {
 		kind = indexer.KindPendingTx
+	} else if subType == indexer.SubTypeNewFlashblocks {
+		kind = indexer.KindFlashblock
 	}
 	a.sink.Ingest(indexer.StreamEvent{
 		Kind:       kind,

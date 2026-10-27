@@ -10,6 +10,7 @@ const (
 	KindNewHead
 	KindLog
 	KindPendingTx
+	KindFlashblock
 )
 
 // String returns the matching eth_subscribe subscription type.
@@ -21,6 +22,8 @@ func (k EventKind) String() string {
 		return "logs"
 	case KindPendingTx:
 		return "newPendingTransactions"
+	case KindFlashblock:
+		return "newFlashblocks"
 	default:
 		return "unknown"
 	}

@@ -378,7 +378,7 @@ func (sm *SubscriptionManager) resolveSubscription(ctx context.Context, networkI
 	switch subType {
 	case indexer.SubTypeNewHeads:
 		return indexer.KindNewHead, "", nil
-	case indexer.SubTypeLogs, indexer.SubTypeNewPendingTransactions:
+	case indexer.SubTypeLogs, indexer.SubTypeNewPendingTransactions, indexer.SubTypeNewFlashblocks:
 		hash, err := sm.idx.EnsureFilter(ctx, networkID, subType, params)
 		if err != nil {
 			return 0, "", err
@@ -386,6 +386,8 @@ func (sm *SubscriptionManager) resolveSubscription(ctx context.Context, networkI
 		kind := indexer.KindLog
 		if subType == indexer.SubTypeNewPendingTransactions {
 			kind = indexer.KindPendingTx
+		} else if subType == indexer.SubTypeNewFlashblocks {
+			kind = indexer.KindFlashblock
 		}
 		return kind, hash, nil
 	default:

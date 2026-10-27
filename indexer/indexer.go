@@ -442,7 +442,7 @@ func (i *Indexer) dedupe(ns *networkState, ev *StreamEvent, removed bool) bool {
 		}
 		ns.lastHead = &headMarker{num: ev.Block.Number, hash: strings.Clone(ev.Block.Hash)}
 		return true
-	case KindLog, KindPendingTx:
+	case KindLog, KindPendingTx, KindFlashblock:
 		ns.filterMu.RLock()
 		f := ns.filters[ev.FilterHash]
 		ns.filterMu.RUnlock()
