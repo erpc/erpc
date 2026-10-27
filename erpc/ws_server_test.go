@@ -1434,12 +1434,16 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 	})
 
 	// Every source answers a new variant with a capacity error: the
-	// subscribe opens, and the sources' retry delivers.
+	// subscribe opens, and the sources' retry, after their backoff,
+	// delivers. The variant is asked while each source's newHeads
+	// subscribe is still in flight, as on a fresh or reconnected socket.
 	t.Run("CapacityAnswersOpenAndRetryDelivers", func(t *testing.T) {
 		setupGock()
 		defer util.ResetGock()
 		chain := newMockChain(0x100, false)
+		held := make(chan struct{})
 		busyOnce := func(v *mockWsVendor) {
+			v.headsHeld = held
 			v.refusePending = func(n int32) map[string]interface{} {
 				if n == 1 {
 					return map[string]interface{}{"code": -32005, "message": "limit exceeded"}
@@ -1453,10 +1457,20 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 		defer cleanup()
 		conn := dialWs(t, addr)
 		defer conn.Close()
+		sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`)
+		require.Eventually(t, func() bool { return a.subscribes.Load() == 1 && b.subscribes.Load() == 1 },
+			10*time.Second, 10*time.Millisecond, "each source subscribes newHeads")
 
-		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newPendingTransactions"]}`)
+		require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":2,"method":"eth_subscribe","params":["newPendingTransactions"]}`)))
+		time.Sleep(300 * time.Millisecond)
+		close(held)
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(15*time.Second)))
+		_, msg, err := conn.ReadMessage()
+		require.NoError(t, err)
+		var resp map[string]interface{}
+		require.NoError(t, json.Unmarshal(msg, &resp))
 		subID, ok := resp["result"].(string)
-		require.True(t, ok, "capacity answers open the subscription: %v", resp)
+		require.True(t, ok, "capacity answers open the subscription: %s", msg)
 		assert.Zero(t, a.pendingLive()+b.pendingLive(), "no source took the topic yet")
 		require.Eventually(t, func() bool { return a.pendingLive() == 1 && b.pendingLive() == 1 },
 			10*time.Second, 10*time.Millisecond, "each source retries until the topic is live")
@@ -2468,6 +2482,9 @@ type mockWsVendor struct {
 	// chainIdHeld, if set, holds the eth_chainId answer until it closes,
 	// so the upstream registers only then.
 	chainIdHeld chan struct{}
+	// headsHeld, if set, holds each newHeads subscribe answer until it
+	// closes; the socket keeps answering every other request meanwhile.
+	headsHeld chan struct{}
 	// refusePending, if set, gives the JSON-RPC error answering the n-th
 	// newPendingTransactions subscribe (from 1), nil to accept it.
 	refusePending func(n int32) map[string]interface{}
@@ -2604,6 +2621,14 @@ func newMockWsVendor(t *testing.T, chain *mockChain, configure func(v *mockWsVen
 				reply["result"] = subID
 				heads := chain.watch()
 				go func() {
+					if v.headsHeld != nil {
+						select {
+						case <-done:
+							return
+						case <-v.headsHeld:
+						}
+						mockWriteJSON(conn, reply)
+					}
 					for {
 						select {
 						case <-done:
@@ -2619,6 +2644,9 @@ func newMockWsVendor(t *testing.T, chain *mockChain, configure func(v *mockWsVen
 						}
 					}
 				}()
+				if v.headsHeld != nil {
+					continue
+				}
 			}
 			mockWriteJSON(conn, reply)
 		}
