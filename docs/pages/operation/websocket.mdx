@@ -165,7 +165,8 @@ ws.onmessage = (event) => {
 
 - the network has no WebSocket upstream, or none of the selected upstreams is connected and accepts the subscription;
 - the subscription type is not supported (`-32602`);
-- the connection already has `server.webSocket.maxSubscriptionsPerConnection` active subscriptions;
+- the connection already has `server.webSocket.maxSubscriptionsPerConnection` active subscriptions (`-32005`);
+- the instance already has `server.webSocket.maxSubscriptions` active subscriptions (`-32005`);
 - the request is rate limited.
 
 A failed `eth_subscribe` leaves your WebSocket connection open. You can retry on the same connection.
@@ -241,8 +242,11 @@ The WebSocket upstream client features:
 - **Ping/pong keepalive** (30s interval) to detect dead connections
 - **Lazy connection** — if the upstream is unavailable at startup, eRPC retries in the background without blocking
 - **Fail-fast while reconnecting** — requests sent while the connection is down fail immediately with a retryable error so they fail over to other upstreams
+- **Heads subscribed at startup** — while the WebSocket server is enabled, eRPC subscribes to `newHeads` on every WebSocket upstream as soon as its network initializes, so state pollers use pushed heads instead of polling even before any client subscribes
+- **Silent subscription recovery** — if a `newHeads` subscription stops delivering while the same upstream's polled head keeps advancing, eRPC reconnects to that upstream
+- **Unsupported `newHeads` is not retried** — if an upstream rejects `eth_subscribe newHeads` as unsupported, eRPC stops asking until the next reconnect or resubscribe; its state poller keeps tracking the head
 
-`eth_subscribe` and `eth_unsubscribe` are only sent to upstreams by eRPC's own subscription handling. A plain HTTP `eth_subscribe` is never forwarded to a WebSocket upstream, since the resulting subscription would have no owner.
+`eth_subscribe` and `eth_unsubscribe` are only sent to upstreams by eRPC's own subscription handling. Over HTTP both are rejected with `-32601` without reaching any upstream, since a subscription needs a client WebSocket connection to deliver to.
 
 ## Server configuration
 
@@ -269,7 +273,19 @@ server:
     maxConcurrentRequestsPerConnection: 250
     # Notifications queued per subscription for a slow reader (default: 256)
     subscriptionBufferSize: 256
+    # Instance-wide caps; 0 (the default) means unlimited
+    maxConnections: 0
+    maxConnectionsPerIP: 0
+    maxSubscriptions: 0
 ```
+
+`maxSubscriptionsPerConnection` alone does not bound a client: it can open any number of connections. On a public endpoint also set the instance-wide caps:
+
+- `maxConnections` — concurrent client connections on the instance. The only connection cap that holds when client IPs are unknown or spoofed.
+- `maxConnectionsPerIP` — concurrent client connections from one client IP, resolved as for HTTP (see `trustedIPForwarders`). Together with `maxSubscriptionsPerConnection` it bounds one client's subscriptions.
+- `maxSubscriptions` — active subscriptions across all connections on the instance.
+
+A connection over a cap is refused with `429` before the upgrade; a subscription over `maxSubscriptions` gets a JSON-RPC error and the connection stays open. Refusals are counted in `erpc_websocket_rejected_total`. The caps are per instance, so a fleet admits up to N times each.
 
 The upgrade request must name a network (`/<project-id>/<architecture>/<chain-id>`, or a path that [domain aliasing](/operation/url) resolves to one); otherwise it is rejected with `400`. On shutdown eRPC closes every client connection with `1001` (going away) straight away so clients reconnect to another instance; in-flight requests get up to `server.waitBeforeShutdown` to answer first.
 

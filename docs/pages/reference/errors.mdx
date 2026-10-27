@@ -165,7 +165,7 @@ Legend:
 | 10 | `ErrNetworkNotFound` | yes | yes | 404 | −32603 | network not configured |
 | 11 | `ErrUnknownNetworkID` | yes | yes | 200 | −32603 | — |
 | 12 | `ErrUnknownNetworkArchitecture` | yes | yes | 200 | −32603 | — |
-| 13 | `ErrNotImplemented` | yes | yes | 200 | −32603 | — |
+| 13 | `ErrNotImplemented` | yes | yes | 200 | −32601 | stateful method under a multi-upstream pool, `eth_accounts`/`eth_sign`, or subscription over HTTP → method not supported |
 | 14 | `ErrInvalidEvmChainId` | yes | yes | 200 | −32603 | — |
 | 15 | `ErrFinalizedBlockUnavailable` | yes | yes | 200 | −32603 | finality check |
 | 16 | `ErrUpstreamClientInitialization` | yes | yes | — | — | not fatal unless wrapped in `TaskFatalError` |
@@ -285,7 +285,7 @@ Entry point: <SourceLink file="architecture/evm/error_normalizer.go" lines="20" 
 | 12 | Nonce conflict: "nonce too low", "nonce has already been used" | `ErrEndpointNonceException` (`nonce_too_low`) | −32003 | yes | no |
 | 12b | Mempool policy rejections: "existing transaction had higher priority", "newer transaction had higher priority", "transaction fee too low", whole-message "rejected" (Monad `EthTxPoolDropReason`, surfaced as −32603 with no `data`) | `ErrEndpointExecutionException` | −32003 | no | no (yes for `eth_sendRawTransaction` — pool contents are node-local) |
 | 13 | "insufficient funds", "insufficient balance" | `ErrEndpointExecutionException` | −32003 | no | yes (`trace_*`/`debug_*`/`eth_trace*` only — state-reconstruction artifact; non-retried for writes & live simulations) |
-| 14 | code == −32003, "out of gas", "gas too low", "IntrinsicGas" | `ErrEndpointExecutionException` | −32003 | no | no (yes for `eth_sendRawTransaction`) |
+| 14 | code == −32003, "out of gas", "gas too low", "gas required exceeds allowance" (`eth_estimateGas` out of gas at its cap; go-ethereum estimator, seen on Arbitrum nitro), "IntrinsicGas" | `ErrEndpointExecutionException` | −32003 | no | no (yes for `eth_sendRawTransaction`) |
 | 15a | "not found"/"not available" AND ("Method"\|"module") | `ErrEndpointUnsupported` | −32601 | no | yes |
 | 15b | same outer AND ("header"\|"block"\|"transaction"\|"state") | `ErrEndpointMissingData` | −32014 | yes | yes |
 | 15c | same outer, neither 15a nor 15b | `ErrEndpointClientSideException` | −32600 | yes | yes |
@@ -576,6 +576,7 @@ Past that threshold the verdict is immediate: the request does not wait out the 
 23. **HTTP 401/403 outranks an SVM JSON-RPC error body.** Helius and QuickNode return 401/403 *with* an error object; classifying from the body first sent expired API keys down whichever generic path their code happened to map to. The status wins, and the codeless fallback is deliberately `-32600` rather than eRPC's `-32016`, which an SVM client would decode as `MinContextSlotNotReached` and retry forever instead of fixing the key.
 24. **`simulateTransaction` is retryable and hedgeable on SVM.** It is read-only, so it is deliberately excluded from the SVM write-method guard — but it is still in `neverCacheMethods`, so it is never served from cache.
 25. **The HyperEVM precompile-state reply is missing data, not out of gas.** A HyperEVM read precompile (`0x…0800` onwards) needs HyperCore state for the requested block. Many nodes hold it only for their live tip and answer older blocks with `-32003 "out of gas: gas exhausted during precompiled contract execution: <gas cap>"`, while other nodes answer the same call. Rule 7b maps that wording to `ErrEndpointMissingData`, so the sweep moves on to the next upstream. If every upstream lacks the state, the client gets `-32014` with the node's message verbatim. A contract that calls the precompile through a library which catches the failure and reverts with its own error (for example `PrecompileLib__SpotBalancePrecompileFailed()`) produces a plain `execution reverted`, which stays rule 9. `eth_sendRawTransaction` keeps rule 14. Confirmed by `TestNetworkForward_PrecompileStateGap_FailsOverToUpstreamWithState` and `TestHttpServer_PrecompileStateGap_AllUpstreamsLackStateSurfacesNodeMessage`.
+26. **`gas required exceeds allowance` is final, not a server fault.** go-ethereum's gas estimator (`eth/gasestimator`) answers `eth_estimateGas` with `-32000 "gas required exceeds allowance (N)"` when the call still runs out of gas at its cap N, most often a sender whose balance buys only N gas. Arbitrum nitro nodes return it (nitro carries the estimator in its go-ethereum fork); other go-ethereum-derived clients may too. Rule 14 maps it to `ErrEndpointExecutionException`, so one upstream answers and the client gets the node's message with code `-32003` (the code rule 14 gives "out of gas" too). Before, it fell through to rule 20: the estimate was sent to every upstream and the client got `ErrUpstreamsExhausted`. A node's own RPC gas cap setting can also produce it; like "out of gas", it is not retried for that reason. Confirmed by `TestExtractJsonRpcError_GasRequiredExceedsAllowance`.
 
 ### Observability
 

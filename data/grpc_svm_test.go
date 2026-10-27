@@ -87,7 +87,7 @@ func TestGrpcConnectorSupportedMethodsGatesReads(t *testing.T) {
 		{name: "eth_getTransactionReceipt still served", networkId: "evm:1", method: "eth_getTransactionReceipt", params: `["0xabc"]`, served: true},
 		{name: "eth_getBlockReceipts still served", networkId: "evm:1", method: "eth_getBlockReceipts", params: `["0x1"]`, served: true},
 		{name: "eth_chainId still served", networkId: "evm:1", method: "eth_chainId", params: `[]`, served: true},
-		{name: "unlisted svm method is fast-skipped", networkId: "svm:solana-mainnet", method: "getTransaction", params: `["sig"]`, served: false},
+		{name: "unlisted svm method is fast-skipped", networkId: "svm:solana-mainnet", method: "getSignaturesForAddress", params: `["addr"]`, served: false},
 		{name: "unlisted evm method is fast-skipped", networkId: "evm:1", method: "eth_call", params: `[{}]`, served: false},
 	}
 

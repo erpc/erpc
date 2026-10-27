@@ -122,6 +122,9 @@ func (s *ServerConfig) Validate() error {
 		if ws.SubscriptionBufferSize < 1 {
 			return fmt.Errorf("server.webSocket.subscriptionBufferSize must be at least 1")
 		}
+		if ws.MaxConnections < 0 || ws.MaxConnectionsPerIP < 0 || ws.MaxSubscriptions < 0 {
+			return fmt.Errorf("server.webSocket.maxConnections, maxConnectionsPerIP and maxSubscriptions must not be negative")
+		}
 	}
 
 	// Validate trusted IP forwarders if provided (IPs or CIDRs). Support legacy + new field
@@ -214,12 +217,26 @@ func (r *RateLimiterConfig) Validate() error {
 		if r.Store.NearLimitRatio != 0 && (r.Store.NearLimitRatio <= 0 || r.Store.NearLimitRatio >= 1) {
 			return fmt.Errorf("rateLimiters.store.nearLimitRatio must be > 0 and < 1")
 		}
+		switch r.Store.OnFailure {
+		case "", RateLimitStoreFailureAllow, RateLimitStoreFailureDeny:
+			if r.Store.LocalLimitFactor != 0 {
+				return fmt.Errorf("rateLimiters.store.localLimitFactor is only used with onFailure: %s", RateLimitStoreFailureLocal)
+			}
+		case RateLimitStoreFailureLocal:
+			if r.Store.LocalLimitFactor <= 0 || r.Store.LocalLimitFactor > 1 {
+				return fmt.Errorf("rateLimiters.store.localLimitFactor must be > 0 and <= 1 when onFailure is %s", RateLimitStoreFailureLocal)
+			}
+		default:
+			return fmt.Errorf("rateLimiters.store.onFailure '%s' is invalid, must be one of: %s, %s, %s", r.Store.OnFailure, RateLimitStoreFailureAllow, RateLimitStoreFailureDeny, RateLimitStoreFailureLocal)
+		}
 		// Validate redis connector
 		if err := r.Store.Redis.Validate(); err != nil {
 			return fmt.Errorf("rateLimiters.store.redis is invalid: %w", err)
 		}
 	case "memory":
-		// No validation for memory store
+		if r.Store.OnFailure != "" || r.Store.LocalLimitFactor != 0 {
+			return fmt.Errorf("rateLimiters.store.onFailure and localLimitFactor apply only to driver: redis")
+		}
 	case "":
 		fallthrough
 	default:
@@ -1177,6 +1194,19 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 			return err
 		}
 	}
+	if m := e.Multicall3; m != nil {
+		if m.MaxWait <= 0 {
+			return fmt.Errorf("upstream.*.evm.multicall3.maxWait must be greater than 0")
+		}
+		if m.MaxCalls < 2 {
+			return fmt.Errorf("upstream.*.evm.multicall3.maxCalls must be at least 2")
+		}
+		for _, a := range m.BypassContracts {
+			if raw, err := HexToBytes(a); err != nil || len(raw) != 20 {
+				return fmt.Errorf("upstream.*.evm.multicall3.bypassContracts entry '%s' is not a 20-byte hex address", a)
+			}
+		}
+	}
 
 	return nil
 }
@@ -1666,6 +1696,11 @@ func (e *EvmNetworkConfig) Validate() error {
 	if e.GetLogsMaxAllowedRange == 0 {
 		return fmt.Errorf("network.*.evm.getLogsMaxAllowedRange must be greater than 0")
 	}
+	for method := range e.LocalAnswers {
+		if !slices.Contains(LocalAnswerMethods(), method) {
+			return fmt.Errorf("network.*.evm.localAnswers.%s: eRPC has no local answer for this method; one of %v", method, LocalAnswerMethods())
+		}
+	}
 	if e.ServedTip != nil {
 		if q := e.ServedTip.Quorum; q < 0 && q != ServedTipQuorumMajority {
 			return fmt.Errorf("network.*.evm.servedTip.quorum must be an integer >= 1 or \"majority\"")
@@ -1827,6 +1862,12 @@ func (b *SvmAvailabilityBoundConfig) Validate() error {
 	}
 	if b.FirstAvailableSlotPlus != nil && *b.FirstAvailableSlotPlus < 0 {
 		return fmt.Errorf("bound.firstAvailableSlotPlus must be >= 0")
+	}
+	if b.UpdateRate < 0 {
+		return fmt.Errorf("bound.updateRate must be >= 0")
+	}
+	if b.UpdateRate != 0 && b.FirstAvailableSlotPlus == nil {
+		return fmt.Errorf("bound.updateRate applies only to firstAvailableSlotPlus")
 	}
 	return nil
 }
