@@ -2368,7 +2368,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, rate(erpc_network_timeout_duration_seconds_bucket{le!=\"+Inf\", cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[$rate_window]))",
+              "expr": "histogram_quantile(0.99, rate(erpc_network_timeout_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[$rate_window]))",
               "interval": "",
               "legendFormat": "p99 {{project}}, {{network}}, {{category}}",
               "range": true,
@@ -17969,7 +17969,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{le!=\"+Inf\", cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\", project=~\"${project:regex}\", finality=~\"${finality:regex}\", user=~\"${user:regex}\", category=~\"${category:regex}\"}[$rate_window])) by (le, project, network, user, finality))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\", project=~\"${project:regex}\", finality=~\"${finality:regex}\", user=~\"${user:regex}\", category=~\"${category:regex}\"}[$rate_window])) by (le, project, network, user, finality))",
               "legendFormat": "{{project}}, {{network}}, {{user}}, {{finality}}",
               "range": true,
               "refId": "A"
@@ -18076,7 +18076,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{le!=\"+Inf\", cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\", project=~\"${project:regex}\", finality=~\"${finality:regex}\", user=~\"${user:regex}\", category=~\"${category:regex}\"}[$rate_window])) by (le, project, network, user, finality))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\", project=~\"${project:regex}\", finality=~\"${finality:regex}\", user=~\"${user:regex}\", category=~\"${category:regex}\"}[$rate_window])) by (le, project, network, user, finality))",
               "legendFormat": "{{project}}, {{network}}, {{user}}, {{finality}}",
               "range": true,
               "refId": "A"
