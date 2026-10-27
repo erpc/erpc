@@ -167,6 +167,15 @@ export const MaxShredInsertSlotLagThreshold: number /* int64 */ = 100;
  * so pre-multi-chain configs keep producing "svm:<cluster>" IDs.
  */
 export const SvmChainSolana = "solana";
+/**
+ * SvmHistory is the slots from which a cluster's Agave history records block
+ * fields. Below them Agave renders the field null whatever an archive holds;
+ * a nil bound means the cluster records the field from its first slot.
+ */
+export interface SvmHistory {
+  blocktimefrom?: number /* uint64 */;
+  blockheightfrom?: number /* uint64 */;
+}
 
 //////////
 // source: blocktime_adaptive_duration.go
