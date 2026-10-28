@@ -902,6 +902,9 @@ func (s *chaosSeed) config() *common.Config {
 			}
 		}
 	}, ups...)
+	// No readiness grace: its 10s default sleep outlives the 10s the
+	// leak check waits after the last seed.
+	cfg.Server.WaitBeforeShutdown = common.Duration(0).Ptr()
 	cfg.RateLimiters = &common.RateLimiterConfig{Budgets: budgets}
 	cfg.Database = &common.DatabaseConfig{EvmJsonRpcCache: &common.CacheConfig{
 		Connectors: []*common.ConnectorConfig{{
