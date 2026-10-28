@@ -458,7 +458,9 @@ func TestForward_FutureBlock_OptIn_ShortCircuitNotMirroredToExcluded(t *testing.
 // hedge's null wins over the block. Consensus slots, each pinned to one
 // upstream: all three slots' upstreams miss, one reporting the block it
 // lacks; the band's Ask finds the fourth upstream's node at the block, and
-// a slot's retry, head first, serves it.
+// a slot's retry, head first, serves it. A slot's retry picks only the
+// upstreams the request may still select: one whose answer was final
+// (#1348) is not asked again.
 func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -510,6 +512,43 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 			}).
 			Reply(200).
 			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":` + result + `}`))
+	}
+	// Consensus (1 of 3) over three upstreams: cf1 reports 101 but lacks
+	// it, cf2 and cf3 do not support the method, a final answer.
+	var finalAnswers atomic.Int64
+	for _, id := range []string{"cf1", "cf2", "cf3"} {
+		head := int64(100)
+		if id == "cf1" {
+			head = 101
+		}
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			JSON([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x%x","timestamp":"0x6702a8f0"}}`, head)))
+		answer := `"result":null`
+		if id != "cf1" {
+			answer = `"error":{"code":-32601,"message":"the method eth_getBlockByNumber does not exist/is not available"}`
+		}
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x65"`) {
+					return false
+				}
+				if id != "cf1" {
+					finalAnswers.Add(1)
+				}
+				return true
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,` + answer + `}`))
 	}
 	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
 		{id: "bh1", chainID: 123, latestBlock: 100},
@@ -600,6 +639,22 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 	assert.Contains(t, jrr.GetResultString(), "0x270f", "a slot's retry reaches the upstream the band's Ask found at the block")
 	assert.Equal(t, int64(1), csHolder.Load(), "the upstream at the block, asked once")
 	assert.GreaterOrEqual(t, slotMisses.Load(), int64(3), "every slot dispatched its own upstream")
+
+	final, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "cf1", chainID: 123, latestBlock: 101},
+		{id: "cf2", chainID: 123, latestBlock: 100},
+		{id: "cf3", chainID: 123, latestBlock: 100},
+	})
+	cons, err = consensus.NewConsensus(consCfg, final.logger)
+	require.NoError(t, err)
+	ex, err = NewNetworkExecutor(&common.FailsafeConfig{MatchMethod: "*", Consensus: consCfg}, final.logger, cons, nil)
+	require.NoError(t, err)
+	final.failsafeExecutors = []*networkExecutor{ex}
+	require.Equal(t, int64(100), servedHead(final, ctx).Latest)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x65",false]}`))
+	_, _ = final.Forward(ctx, req)
+	assert.Equal(t, int64(2), finalAnswers.Load(), "each upstream that gave a final answer, asked once")
 }
 
 // A future block dispatched (shortCircuitFutureBlocks off) takes one

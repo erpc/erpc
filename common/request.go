@@ -1581,60 +1581,69 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 		)
 	}
 
-	// Capture any UseUpstream directive to be applied inside the generic selection loop
-	var useUpstreamPattern string
-	if r.directives != nil && r.directives.UseUpstream != "" {
-		useUpstreamPattern = r.directives.UseUpstream
-	}
-
 	upstreamCount := len(r.upstreamList)
 
 	// Simple round-robin selection. The outer loop in networks.go is capped to prevent
 	// infinite loops. Retryable errors are removed from ConsumedUpstreams by
 	// MarkUpstreamCompleted, allowing re-selection on subsequent iterations.
-	for attempts := 0; attempts < upstreamCount; attempts++ {
+	for range upstreamCount {
 		idx := r.UpstreamIdx % uint32(upstreamCount)
 		r.UpstreamIdx++ // Guaranteed increment for next caller
 
-		upstream := r.upstreamList[idx]
-
-		// If a UseUpstream selector is provided, only consider matching
-		// upstreams. The selector matches the upstream id OR any of its tags
-		// (e.g. `use-upstream=family:systx`); see MatchesSelector.
-		if useUpstreamPattern != "" {
-			match, err := UpstreamMatchesSelector(useUpstreamPattern, upstream)
-			if err != nil || !match {
-				continue
-			}
-		}
-
-		// Skip if already consumed (in-flight or already completed this round)
-		if _, consumed := r.ConsumedUpstreams.Load(upstream); consumed {
-			continue
-		}
-
-		// Skip if already responded with a permanent error (method ignored,
-		// execution exception, etc.). Retryable errors (including MissingData)
-		// are allowed through so the upstream can be retried on subsequent rounds.
-		if prevErr, exists := r.ErrorsByUpstream.Load(upstream); exists {
-			if pe, ok := prevErr.(error); ok && !IsRetryableTowardsUpstream(pe) {
-				continue
-			}
-		}
-
-		// Try to reserve this upstream atomically
-		// If LoadOrStore returns loaded=false, we successfully reserved it
-		if _, loaded := r.ConsumedUpstreams.LoadOrStore(upstream, true); !loaded {
-			// Successfully reserved this upstream
+		if upstream := r.upstreamList[idx]; r.reserveLocked(upstream) {
 			return upstream, nil
 		}
-		// If we reach here, another goroutine reserved this upstream, continue to next
 	}
 
 	return nil, NewErrNoUpstreamsLeftToSelect(
 		r,
 		"no more non-consumed or working upstreams left",
 	)
+}
+
+// ReserveUpstream reserves upstream for an attempt when NextUpstream could
+// select it: a caller with its own order (the refusal band's head-first
+// retry) picks only what NextUpstream would.
+func (r *NormalizedRequest) ReserveUpstream(upstream Upstream) bool {
+	if r == nil {
+		return false
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+	return r.reserveLocked(upstream)
+}
+
+// reserveLocked reserves upstream when it is selectable and not consumed
+// (in flight, or completed this round).
+func (r *NormalizedRequest) reserveLocked(upstream Upstream) bool {
+	if !r.matchesUseUpstreamLocked(upstream) || r.failedPermanentlyLocked(upstream) {
+		return false
+	}
+	_, loaded := r.ConsumedUpstreams.LoadOrStore(upstream, true)
+	return !loaded
+}
+
+// matchesUseUpstreamLocked reports whether upstream matches the request's
+// UseUpstream selector (its id or any of its tags, e.g.
+// `use-upstream=family:systx`); every upstream does without one.
+func (r *NormalizedRequest) matchesUseUpstreamLocked(upstream Upstream) bool {
+	if r.directives == nil || r.directives.UseUpstream == "" {
+		return true
+	}
+	match, err := UpstreamMatchesSelector(r.directives.UseUpstream, upstream)
+	return err == nil && match
+}
+
+// failedPermanentlyLocked reports whether upstream already answered with an
+// error no retry changes (method ignored, execution exception, etc.).
+// Retryable errors, missing data included, leave it selectable.
+func (r *NormalizedRequest) failedPermanentlyLocked(upstream Upstream) bool {
+	prevErr, exists := r.ErrorsByUpstream.Load(upstream)
+	if !exists {
+		return false
+	}
+	pe, ok := prevErr.(error)
+	return ok && !IsRetryableTowardsUpstream(pe)
 }
 
 // AllUpstreamsFailedPermanently reports whether every upstream this request
@@ -1648,23 +1657,13 @@ func (r *NormalizedRequest) AllUpstreamsFailedPermanently() bool {
 	r.upstreamMutex.Lock()
 	defer r.upstreamMutex.Unlock()
 
-	var useUpstreamPattern string
-	if r.directives != nil {
-		useUpstreamPattern = r.directives.UseUpstream
-	}
 	selectable := 0
 	for _, upstream := range r.upstreamList {
-		if useUpstreamPattern != "" {
-			if match, err := UpstreamMatchesSelector(useUpstreamPattern, upstream); err != nil || !match {
-				continue
-			}
+		if !r.matchesUseUpstreamLocked(upstream) {
+			continue
 		}
 		selectable++
-		prevErr, exists := r.ErrorsByUpstream.Load(upstream)
-		if !exists {
-			return false
-		}
-		if pe, ok := prevErr.(error); !ok || IsRetryableTowardsUpstream(pe) {
+		if !r.failedPermanentlyLocked(upstream) {
 			return false
 		}
 	}

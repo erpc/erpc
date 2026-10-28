@@ -3698,9 +3698,9 @@ func isFallbackTier(u common.Upstream) bool {
 }
 
 // headFirst picks req's band retry (spec §6.4): its routed upstreams not
-// yet attempted, ordered by their heads as they are now, those reaching bn
-// first, with no I/O. Upstreams the policy did not route stay the
-// fallback escape's.
+// yet attempted that NextUpstream may still select, ordered by their heads
+// as they are now, those reaching bn first, with no I/O. Upstreams the
+// policy did not route stay the fallback escape's.
 func (n *Network) headFirst(req *common.NormalizedRequest, attempted map[string]struct{}, bn int64) func() (common.Upstream, error) {
 	var rest []common.Upstream
 	for _, u := range req.Upstreams() {
@@ -3713,7 +3713,7 @@ func (n *Network) headFirst(req *common.NormalizedRequest, attempted map[string]
 		for len(rest) > 0 {
 			u := rest[0]
 			rest = rest[1:]
-			if _, loaded := req.ConsumedUpstreams.LoadOrStore(u, true); !loaded {
+			if req.ReserveUpstream(u) {
 				return u, nil
 			}
 		}
