@@ -2390,6 +2390,11 @@ type mockHttpVendor struct {
 	// a 503; slowFailed counts the polls failed so.
 	slowFail   atomic.Int64
 	slowFailed atomic.Int32
+	// lag, while set, is how many blocks below the chain's head latest
+	// and eth_blockNumber answer: a node restarted behind.
+	lag atomic.Int64
+	// onLatest, while set, runs at each latest poll the vendor answers.
+	onLatest atomic.Pointer[func()]
 }
 
 // mockWrongChainLead is how far another chain's latest is above the
@@ -2428,9 +2433,12 @@ func newMockHttpVendor(t *testing.T, chain *mockChain) (*mockHttpVendor, *httpte
 				}
 			case "eth_blockNumber":
 				v.headNumbers.Add(1)
-				result = fmt.Sprintf("0x%x", chain.Head())
+				result = fmt.Sprintf("0x%x", chain.Head()-v.lag.Load())
 			case "eth_getBlockByNumber":
 				tag, _ := params[0].(string)
+				if f := v.onLatest.Load(); f != nil && tag == "latest" {
+					(*f)()
+				}
 				switch {
 				case tag == "latest" && v.noLatest.Load():
 					v.latestPolls.Add(1)
@@ -2439,6 +2447,9 @@ func newMockHttpVendor(t *testing.T, chain *mockChain) (*mockHttpVendor, *httpte
 				case tag == "latest" && v.wrongChain.Load():
 					v.latestPolls.Add(1)
 					result = mockHead(chain.Head() + mockWrongChainLead)
+				case tag == "latest" && v.lag.Load() > 0:
+					v.latestPolls.Add(1)
+					result = chain.block(chain.Head() - v.lag.Load())
 				default:
 					result = chain.answerBlock(params, true, &v.latestPolls)
 				}
@@ -3269,6 +3280,12 @@ func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
 //   - refusal: none, since a pinned probe goes only to upstreams at its
 //     block (spec §13); settle, refresh and poll: none on one linear chain
 //     with no client request and an hour's poll interval.
+//
+// Then one voter's node falls 40 blocks behind its own counter (a restart,
+// §19 P1): its answers sit below the counter, which only rises (§14), so
+// its report time stays where it was. Catch-up orders by evidence, which
+// counts this instance's Asks of it (§6.8), so it never takes the slot
+// twice in a row while the voters that could move Latest wait.
 func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -3276,7 +3293,8 @@ func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 	chain := newMockChain(0x100, false)
 	var vendors []*mockHttpVendor
 	var ups []*common.UpstreamConfig
-	for _, id := range []string{"rpc-a", "rpc-b", "rpc-c", "rpc-d", "rpc-e"} {
+	ids := []string{"rpc-a", "rpc-b", "rpc-c", "rpc-d", "rpc-e"}
+	for _, id := range ids {
 		v, srv := newMockHttpVendor(t, chain)
 		vendors = append(vendors, v)
 		up := sourceUpstream(id, srv.URL, nil)
@@ -3352,4 +3370,52 @@ func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 		assert.Zero(t, by[r], "no %s Asks on a follow-only network", r)
 	}
 	assert.LessOrEqual(t, float64(vendorAsks), 2*rounds, "every vendor head request is one of those Asks")
+
+	prj, err := erpcSrv.erpc.GetProject("test_ws")
+	require.NoError(t, err)
+	network, err := prj.GetNetwork(context.Background(), "evm:123")
+	require.NoError(t, err)
+	voters := network.EvmHashVoters("", network.chainTracker.W(), false).Voters
+	require.Len(t, voters, len(ids))
+	// Rule 6 Asks the first voter; every other voter's latest poll is a
+	// catch-up slot. The lagging node is the other voter with the oldest
+	// report: next in line for the slot.
+	var lagging string
+	var counter int64
+	var oldest time.Time
+	for _, u := range network.upstreamsRegistry.GetNetworkUpstreams(context.Background(), network.networkId) {
+		sp := u.EvmStatePoller()
+		if at := sp.LatestReportAt(); u.Id() != voters[0] && (lagging == "" || at.Before(oldest)) {
+			lagging, counter, oldest = u.Id(), sp.LatestBlock(), at
+		}
+	}
+	var slotsMu sync.Mutex
+	var slots []string
+	for i, v := range vendors {
+		id := ids[i]
+		polled := func() {
+			if id == voters[0] {
+				return
+			}
+			slotsMu.Lock()
+			slots = append(slots, id)
+			slotsMu.Unlock()
+		}
+		v.onLatest.Store(&polled)
+	}
+	vendors[slices.Index(ids, lagging)].lag.Store(chain.Head() - counter + 40)
+	// 40 blocks of 300ms: its answers stay below its counter all along,
+	// and its report stays younger than the 30s bench.
+	time.Sleep(8 * time.Second)
+	for _, v := range vendors {
+		v.onLatest.Store(nil)
+	}
+	slotsMu.Lock()
+	defer slotsMu.Unlock()
+	t.Logf("catch-up slots with %s 40 blocks behind its counter: %v", lagging, slots)
+	require.GreaterOrEqual(t, len(slots), 3, "catch-up keeps Asking while Latest holds the pin back")
+	for i := 1; i < len(slots); i++ {
+		require.False(t, slots[i] == lagging && slots[i-1] == lagging,
+			"%s, answering below its counter, takes the catch-up slot twice in a row: %v", lagging, slots)
+	}
 }

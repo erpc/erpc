@@ -784,7 +784,7 @@ func isSimpleGroupSelector(selector string) bool {
 // many of the ballot's voters (voterSet's number votes) as the quorum
 // needs, since a fresher head anywhere else cannot move the served value.
 // The latest axis takes them in routing order; the finalized axis oldest
-// finalized report first, since a voter's finality depth is its own and
+// finalized evidence first, since a voter's finality depth is its own and
 // routing order does not reflect it, and passes over a voter whose
 // finalized tag is given up: its vote is derived from its latest (spec
 // §6.8). A lane walks its voters at most once per poll cadence per axis,
@@ -823,7 +823,7 @@ func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 		pollers = append(pollers, u.(common.EvmUpstream).EvmStatePoller())
 		return true
 	})
-	slices.SortStableFunc(pollers, func(a, b common.EvmStatePoller) int { return a.FinalizedReportAt().Compare(b.FinalizedReportAt()) })
+	oldestEvidenceFirst(pollers, true)
 	for _, sp := range pollers {
 		if need <= 0 {
 			break
@@ -845,7 +845,7 @@ func (n *Network) EvmRefreshHeadsBelow(selector string, block int64, pace time.D
 
 // lackingVoters are the pollers of as many of the voters of selector's
 // lane whose head is below block as Latest still lacks to reach it,
-// oldest report first, each once (spec §6.5 catch-up, §6.4 by-hash wait):
+// oldest evidence first, each once (spec §6.5 catch-up, §6.4 by-hash wait):
 // Latest is their ballot, so no other upstream moves it, and once the
 // quorum holds block no further Ask can. A guarantee subset's majority
 // clamps Latest too (guaranteedFloor), so each subset adds the voters its
@@ -876,7 +876,7 @@ func (n *Network) lackingVoters(selector string, block int64) []common.EvmStateP
 
 // lacking appends to out, unless already there, as many of q's voters
 // below block as quorum lacks to hold it (quorum less the voters at or
-// above it), oldest report first.
+// above it), oldest evidence first.
 func (n *Network) lacking(out []common.EvmStatePoller, selector string, block int64, q voterQuery, quorum common.ServedTipQuorum) []common.EvmStatePoller {
 	s := n.voters(selector, q)
 	if s.count() == 0 {
@@ -895,13 +895,35 @@ func (n *Network) lacking(out []common.EvmStatePoller, selector string, block in
 	if lacks <= 0 {
 		return out
 	}
-	slices.SortStableFunc(below, func(a, b common.EvmStatePoller) int { return a.LatestReportAt().Compare(b.LatestReportAt()) })
+	oldestEvidenceFirst(below, false)
 	for _, sp := range below[:min(lacks, len(below))] {
 		if !slices.Contains(out, sp) {
 			out = append(out, sp)
 		}
 	}
 	return out
+}
+
+// oldestEvidenceFirst orders pollers by their evidence time on the latest
+// or finalized axis (common.EvidenceAt), oldest first, stably.
+func oldestEvidenceFirst(pollers []common.EvmStatePoller, finalized bool) {
+	type ranked struct {
+		sp common.EvmStatePoller
+		at time.Time
+	}
+	rs := make([]ranked, len(pollers))
+	for i, sp := range pollers {
+		rs[i].sp = sp
+		if finalized {
+			rs[i].at = common.EvidenceAt(sp.FinalizedReportAt(), sp.FinalizedAskAt())
+		} else {
+			rs[i].at = common.EvidenceAt(sp.LatestReportAt(), sp.LatestAskAt())
+		}
+	}
+	slices.SortStableFunc(rs, func(a, b ranked) int { return a.at.Compare(b.at) })
+	for i, r := range rs {
+		pollers[i] = r.sp
+	}
 }
 
 // EvmPollHeads Asks, with a hash need at pace, each upstream in ids:
@@ -956,6 +978,28 @@ func (n *Network) pollHeads(ids []string, need common.HeadNeed, pace time.Durati
 		}
 	}
 	return next
+}
+
+// EvmLatestAskAt is, for each upstream in ids, the send time of this
+// instance's last Ask fetch of its latest: the Ask half of a chain
+// tracker's evidence times (common.EvidenceAt). An upstream never Asked
+// is absent.
+func (n *Network) EvmLatestAskAt(ids []string) map[string]time.Time {
+	out := make(map[string]time.Time, len(ids))
+	if n.upstreamsRegistry == nil {
+		return out
+	}
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
+		if !slices.Contains(ids, u.Id()) {
+			continue
+		}
+		if p := u.EvmStatePoller(); p != nil && !p.IsObjectNull() {
+			if at := p.LatestAskAt(); !at.IsZero() {
+				out[u.Id()] = at
+			}
+		}
+	}
+	return out
 }
 
 // EvmAskHead is the Ask of upstreamId's head at pace for a chain

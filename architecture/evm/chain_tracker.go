@@ -206,7 +206,7 @@ type ChainTracker struct {
 	// demand prefetches only the pins above it, pinned since it began.
 	prefetchAbove uint64
 	// probe is armed while receipts fail: the outage's head-block fetches.
-	probe         *time.Timer
+	probe *time.Timer
 	// panics counts, per panicSlot, the panics since a message of that slot
 	// was last handled cleanly (handleBatch).
 	panics [panicSlots]int
@@ -2289,7 +2289,9 @@ func (t *ChainTracker) gate(path []*node) *pinBacking {
 				below = append(below, u)
 			}
 		}
-		slices.SortStableFunc(below, func(x, y string) int { return t.voteAt[x].Compare(t.voteAt[y]) })
+		if lacks > 0 && lacks < len(below) {
+			t.oldestEvidenceFirst(below, func(u string) time.Time { return t.voteAt[u] })
+		}
 		below = below[:max(0, min(lacks, len(below)))]
 		if p, ok := t.network.(interface {
 			EvmPollHeads(ids []string, pace time.Duration)
@@ -2316,6 +2318,23 @@ func maxTime(a, b time.Time) time.Time {
 		return a
 	}
 	return b
+}
+
+// oldestEvidenceFirst orders voters ids by their evidence time on the
+// latest axis (common.EvidenceAt), oldest first, stably: report is a
+// voter's newest report here, the Ask half the network's.
+func (t *ChainTracker) oldestEvidenceFirst(ids []string, report func(string) time.Time) {
+	var asked map[string]time.Time
+	if n, ok := t.network.(interface {
+		EvmLatestAskAt(ids []string) map[string]time.Time
+	}); ok {
+		t.callNetwork("ask-times", func() { asked = n.EvmLatestAskAt(ids) })
+	}
+	at := make(map[string]time.Time, len(ids))
+	for _, u := range ids {
+		at[u] = common.EvidenceAt(report(u), asked[u])
+	}
+	slices.SortStableFunc(ids, func(x, y string) int { return at[x].Compare(at[y]) })
 }
 
 // sendCeiling is the highest number this tracker's taps may send: its

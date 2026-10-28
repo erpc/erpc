@@ -78,6 +78,19 @@ type HeadAnswer struct {
 	Err  error `tstype:"-"`
 }
 
+// EvidenceAt is a voter's evidence time on an axis, latest or finalized
+// (spec §6.8): the later of its newest report there and the send time of
+// this instance's last Ask of it there. Every oldest-first ordering of
+// voters reads it: a voter whose answers sit below its own counter never
+// refreshes its report, and ordered by reports alone it would take every
+// slot (§19 P1).
+func EvidenceAt(report, asked time.Time) time.Time {
+	if asked.After(report) {
+		return asked
+	}
+	return report
+}
+
 // EvmHeader is a latest header past intake check 0, parsed once where it
 // was fetched: the evm package's SourceHeader.
 type EvmHeader interface {
@@ -238,6 +251,11 @@ type EvmStatePoller interface {
 	// FinalizedReportAt is LatestReportAt for the finalized tag; zero
 	// before any report.
 	FinalizedReportAt() time.Time
+	// LatestAskAt is the send time of this instance's last Ask fetch of
+	// latest, zero before any: the Ask half of EvidenceAt.
+	LatestAskAt() time.Time
+	// FinalizedAskAt is LatestAskAt for the finalized tag's poll.
+	FinalizedAskAt() time.Time
 	IsBlockFinalized(blockNumber int64) (bool, error)
 	SuggestFinalizedBlock(blockNumber int64, at time.Time)
 	// SuggestLatestBlock reports blockNumber, its evidence taken at at: an
