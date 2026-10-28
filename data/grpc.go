@@ -66,6 +66,12 @@ var supportedMethods = map[string]struct{}{
 	// eth_blockNumber has no native BDS gRPC method; Get derives it from the
 	// latest block (see the translation in Get).
 	"eth_blockNumber": {},
+	// Served by the prism trace reader only; on a block/log reader these are
+	// UNIMPLEMENTED, which the client maps to unsupported (a miss).
+	"debug_traceBlockByNumber": {},
+	"debug_traceBlockByHash":   {},
+	"debug_traceTransaction":   {},
+	"eth_getBalance":           {},
 	// SVM. Solana method names are unprefixed, so they cannot collide with the
 	// eth_* entries above and one allowlist serves both architectures.
 	"getBlock":           {},
