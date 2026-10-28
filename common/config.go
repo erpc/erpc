@@ -1631,14 +1631,10 @@ type FailsafeConfig struct {
 	// write methods (sendTransaction, simulateTransaction, requestAirdrop) are "none".
 	// Rejected at upstream and connector scopes.
 	MatchCommitment []string `yaml:"matchCommitment,omitempty" json:"matchCommitment" tstype:"('none' | 'processed' | 'confirmed' | 'finalized')[]"`
-	// MatchRequestKind scopes this policy by who issued the request:
-	// "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
-	// the integrity module's canonical corroboration), or ""/"*" for both.
-	// This is what lets an operator give INTERNAL canonical fetches a
-	// consensus policy (quorum-verified ground truth, deduplicated to ~once
-	// per block by the ChainView) while user data methods rely on integrity
-	// validation instead of per-request fan-out.
-	MatchRequestKind string                      `yaml:"matchRequestKind,omitempty" json:"matchRequestKind,omitempty" tstype:"'user' | 'internal' | '*'"`
+	// MatchRequestKind "user", "*" or "" matches every client request: no
+	// eRPC-own request (tracker fetch, head poll, probe) goes through a
+	// failsafe policy. "internal" is refused at load.
+	MatchRequestKind string                      `yaml:"matchRequestKind,omitempty" json:"matchRequestKind,omitempty" tstype:"'user' | '*'"`
 	Retry            *RetryPolicyConfig          `yaml:"retry" json:"retry"`
 	CircuitBreaker   *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
 	Timeout          *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`

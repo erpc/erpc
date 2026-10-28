@@ -1250,15 +1250,11 @@ export interface FailsafeConfig {
    */
   matchCommitment?: ('none' | 'processed' | 'confirmed' | 'finalized')[];
   /**
-   * MatchRequestKind scopes this policy by who issued the request:
-   * "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
-   * the integrity module's canonical corroboration), or ""/"*" for both.
-   * This is what lets an operator give INTERNAL canonical fetches a
-   * consensus policy (quorum-verified ground truth, deduplicated to ~once
-   * per block by the ChainView) while user data methods rely on integrity
-   * validation instead of per-request fan-out.
+   * MatchRequestKind "user", "*" or "" matches every client request: no
+   * eRPC-own request (tracker fetch, head poll, probe) goes through a
+   * failsafe policy. "internal" is refused at load.
    */
-  matchRequestKind?: 'user' | 'internal' | '*';
+  matchRequestKind?: 'user' | '*';
   retry?: RetryPolicyConfig;
   circuitBreaker?: CircuitBreakerPolicyConfig;
   timeout?: TimeoutPolicyConfig;

@@ -1626,20 +1626,11 @@ func (n *Network) observeServedTipMetrics(axis string, laneLabel string, tip, fr
 }
 
 func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *networkExecutor {
-	policies := req.UpstreamPolicies()
-	if policies == common.UpstreamPoliciesTimeoutOnly {
+	if req.UpstreamPolicies() == common.UpstreamPoliciesTimeoutOnly {
 		return n.bareExecutor
 	}
 	method, _ := req.Method()
 	finality := req.Finality(ctx)
-	// Request kind: "internal" = eRPC's own requests (tracker fetches),
-	// "user" = client traffic. Lets a policy give the deduplicated internal
-	// fetches consensus while user methods rely on integrity validation
-	// (matchRequestKind).
-	kind := "user"
-	if policies != common.UpstreamPoliciesConfigured {
-		kind = "internal"
-	}
 
 	// matchCommitment compares the commitment erpc pins on the wire, so a rule
 	// is a function of the bytes the multiplexer and cache key on. Non-SVM
@@ -1664,10 +1655,7 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 		mc := fe.MatchCommitment()
 		commitmentMatches := len(mc) == 0 || slices.Contains(mc, commitment)
 
-		mk := fe.MatchRequestKind()
-		kindMatches := mk == "*" || mk == "" || mk == kind
-
-		if methodMatches && finalityMatches && commitmentMatches && kindMatches {
+		if methodMatches && finalityMatches && commitmentMatches {
 			return fe
 		}
 	}

@@ -25,8 +25,8 @@ func TestCovValidation_Failsafe(t *testing.T) {
 	}
 	cvRunCases(t, baseline, (*FailsafeConfig).Validate, []cvCase[FailsafeConfig]{
 		{"matchMethod empty", func(f *FailsafeConfig) { f.MatchMethod = "" }, "failsafe.matchMethod cannot be empty, use '*' to match any method"},
-		{"matchRequestKind unknown", func(f *FailsafeConfig) { f.MatchRequestKind = "admin" }, "failsafe.matchRequestKind 'admin' is invalid, must be one of: user | internal | *"},
-		{"matchRequestKind internal", func(f *FailsafeConfig) { f.MatchRequestKind = "internal" }, ""},
+		{"matchRequestKind unknown", func(f *FailsafeConfig) { f.MatchRequestKind = "admin" }, "failsafe.matchRequestKind 'admin' is invalid, must be one of: user | *"},
+		{"matchRequestKind internal", func(f *FailsafeConfig) { f.MatchRequestKind = "internal" }, "failsafe.matchRequestKind 'internal' is deleted: no eRPC-own request (tracker fetch, head poll, probe) goes through a failsafe policy; remove it"},
 
 		{"timeout without duration", func(f *FailsafeConfig) { f.Timeout.Duration = nil }, "upstream.*.failsafe.timeout.duration is required"},
 		{"timeout quantile out of range", func(f *FailsafeConfig) { f.Timeout.Duration = &AdaptiveDuration{Quantile: 1.5, Base: 1} }, "upstream.*.failsafe.timeout.duration.quantile must be between 0 and 1"},

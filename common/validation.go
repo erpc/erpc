@@ -1309,9 +1309,11 @@ func (f *FailsafeConfig) Validate() error {
 	}
 
 	switch f.MatchRequestKind {
-	case "", "*", "user", "internal":
+	case "", "*", "user":
+	case "internal":
+		return fmt.Errorf("failsafe.matchRequestKind 'internal' is deleted: no eRPC-own request (tracker fetch, head poll, probe) goes through a failsafe policy; remove it")
 	default:
-		return fmt.Errorf("failsafe.matchRequestKind '%s' is invalid, must be one of: user | internal | *", f.MatchRequestKind)
+		return fmt.Errorf("failsafe.matchRequestKind '%s' is invalid, must be one of: user | *", f.MatchRequestKind)
 	}
 
 	for _, c := range f.MatchCommitment {
