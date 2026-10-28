@@ -1818,12 +1818,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		return nil, err
 	}
 
-	// For a specific block, try upstreams whose poller already has it first.
+	// For a specific block, try upstreams that already have it first.
 	// Ordering hints only: every upstream stays eligible.
 	if n.Architecture() == common.ArchitectureEvm {
 		if bn := requestBlockNumber(ctx, req); bn > 0 {
-			upsList = partitionUpstreamsByLatestBlock(upsList, bn)
-			upsList = preferTipLeaderForNearTipGetBlock(upsList, method, bn)
+			upsList = n.partitionUpstreamsByLatestBlock(upsList, bn)
+			upsList = n.preferTipLeaderForNearTipGetBlock(upsList, method, bn)
 		}
 	}
 
@@ -3505,15 +3505,15 @@ func isFallbackTier(u common.Upstream) bool {
 	return u.Config() != nil && u.Config().HasTag(common.TagTierFallback)
 }
 
-// partitionUpstreamsByLatestBlock moves upstreams whose polled head is known
-// to be below bn behind the rest, preserving order within each group. An
-// upstream with no known head keeps its place.
-func partitionUpstreamsByLatestBlock(ups []common.Upstream, bn int64) []common.Upstream {
+// partitionUpstreamsByLatestBlock moves upstreams whose head is known to be
+// below bn behind the rest, preserving order within each group. An upstream
+// with no known head keeps its place.
+func (n *Network) partitionUpstreamsByLatestBlock(ups []common.Upstream, bn int64) []common.Upstream {
 	if bn <= 0 || len(ups) < 2 {
 		return ups
 	}
 	return stablePartition(ups, func(u common.Upstream) bool {
-		lb := upstreamLatestBlock(u)
+		lb := n.upstreamHead(u)
 		return lb > 0 && lb < bn
 	})
 }
@@ -3541,13 +3541,13 @@ func stablePartition(ups []common.Upstream, last func(common.Upstream) bool) []c
 // preferTipLeaderForNearTipGetBlock moves the upstream whose head is strictly
 // ahead of every other to the front for eth_getBlockByNumber of that head or
 // the next block, which its siblings may not have imported yet.
-func preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn int64) []common.Upstream {
+func (n *Network) preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn int64) []common.Upstream {
 	if method != "eth_getBlockByNumber" || len(ups) < 2 {
 		return ups
 	}
 	leader, tip, runnerUp := -1, int64(0), int64(0)
 	for i, u := range ups {
-		if lb := upstreamLatestBlock(u); lb > tip {
+		if lb := n.upstreamHead(u); lb > tip {
 			leader, tip, runnerUp = i, lb, tip
 		} else if lb > runnerUp {
 			runnerUp = lb
@@ -3561,6 +3561,19 @@ func preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn 
 	out = append(out, ups[:leader]...)
 	out = append(out, ups[leader+1:]...)
 	return out
+}
+
+// upstreamHead is u's head for ordering: its polled head, or the head the
+// tracker presumes it holds when that is higher. A polled head ages by up to
+// a poll interval; read raw, it made a fast upstream polled every 10s on a 2s
+// chain look blocks behind a slow one polled more often, so tip reads went to
+// the slow one first.
+func (n *Network) upstreamHead(u common.Upstream) int64 {
+	lb := upstreamLatestBlock(u)
+	if n.metricsTracker == nil {
+		return lb
+	}
+	return max(lb, n.metricsTracker.PresumedLatestBlock(u))
 }
 
 // upstreamLatestBlock is u's polled head, or 0 when unknown.

@@ -48,6 +48,9 @@ type servedTipFixture struct {
 	syncing          bool
 	ignoreMethods    []string
 	tags             []string
+	// statePollerInterval sets evm.statePollerInterval; the tracker credits a
+	// head for one poll period after each report.
+	statePollerInterval time.Duration
 }
 
 // setupServedTipNetwork bootstraps a Network with the supplied upstream
@@ -82,7 +85,7 @@ func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []ser
 			cid = chainID
 		}
 		endpoint := "http://" + f.id + ".localhost"
-		evmCfg := &common.EvmUpstreamConfig{ChainId: cid}
+		evmCfg := &common.EvmUpstreamConfig{ChainId: cid, StatePollerInterval: common.Duration(f.statePollerInterval)}
 		if f.upperExactBlock > 0 {
 			upper := f.upperExactBlock
 			evmCfg.BlockAvailability = &common.EvmBlockAvailabilityConfig{

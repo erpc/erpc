@@ -1762,6 +1762,24 @@ func (t *Tracker) IsHeadBenched(ups common.Upstream) bool {
 	return false
 }
 
+// PresumedLatestBlock is the head ups is presumed to hold now: the network
+// head less its BlockHeadLag, so a head that only aged since its last report
+// (headReport) reads as kept pace, and one that stopped reporting does not.
+// Never above the corroborated network head. 0 until ups reported a head.
+func (t *Tracker) PresumedLatestBlock(ups common.Upstream) int64 {
+	net := ups.NetworkId()
+	um, ok := t.metadata.Load(metadataKey{ups, net})
+	if !ok || um.(*NetworkMetadata).evmLatestBlockNumber.Load() <= 0 {
+		return 0
+	}
+	ntw := t.getMetadata(metadataKey{nil, net}).evmLatestBlockNumber.Load()
+	m, ok := t.upsMetrics.Load(upstreamKey{ups, "*", common.DataFinalityStateAll})
+	if ntw <= 0 || !ok {
+		return 0
+	}
+	return ntw - m.(*TrackedMetrics).BlockHeadLag.Load()
+}
+
 func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64, blockTimestamp int64) {
 	id := upstream.Id()
 	net := upstream.NetworkId()
