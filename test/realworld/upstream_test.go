@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/test/chainsim"
+	gethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rpc"
 )
@@ -59,6 +60,16 @@ const (
 	// so its jump reaches every pod within a second (harness).
 	u13Recheck      = 20 * time.Second
 	u13PollInterval = time.Second
+
+	// u20Pruned: http-a keeps only this many blocks below its head, as a
+	// tip-only plan does (§19 G8). u20Depth: a gRPC cursor this far below
+	// the head, inside the window (maxBackfill of chain) and past
+	// http-a's history. u20History: the chain holds that depth from its
+	// start. u20Rounds: how many times each pod is resumed that deep.
+	u20Pruned  = 100
+	u20Depth   = 200
+	u20History = 2 * u20Depth
+	u20Rounds  = 3
 )
 
 // U2: a network of 3 https vendors, http-a ranked first, http-b and
@@ -570,4 +581,78 @@ func u15() spec {
 				s.violate("harness", "no receipts or logs call reached vendor-a: its missing method was never exercised")
 			}
 		}}
+}
+
+// U20: http-a, ranked first, has pruned everything more than u20Pruned
+// below its head: it answers HTTP 403 with an HTML body (U20-403) or null
+// (U20-null) there. Fill and resume use the other vendors: a gRPC stream
+// resumed u20Depth below the head, on every pod, gets every canonical
+// header from the cursor + 1 to the head, and no tap goes out of range
+// (§9 window; §10.3; §19 G8).
+func u20(forbidden bool) spec {
+	name := "U20-null"
+	if forbidden {
+		name = "U20-403"
+	}
+	return spec{name: name, bound: healthyDelivery, sim: chainsim.Config{History: u20History},
+		network: map[string]interface{}{"selectionPolicy": rankFirst("http-a")},
+		faults:  map[string]chainsim.Faults{"http-a": {Pruned: u20Pruned, PrunedForbidden: forbidden}},
+		body: func(s *scenario) {
+			s.blocks(25)
+			oor := make([]float64, len(s.h.pods))
+			for pod := range s.h.pods {
+				oor[pod], _ = s.metric(pod, "erpc_tap_out_of_range_total", nil)
+			}
+			for range u20Rounds {
+				for pod := range s.h.pods {
+					s.resumeDeep(pod, u20Depth)
+				}
+				s.blocks(25)
+			}
+			if n := s.vendors["http-a"].Stats().PrunedRefused; n == 0 {
+				s.violate("harness", "http-a refused no call for pruned history: nothing asked it below its head − %d", u20Pruned)
+			} else {
+				s.logf("http-a refused %d calls for pruned history", n)
+			}
+			for pod := range s.h.pods {
+				if v, _ := s.metric(pod, "erpc_tap_out_of_range_total", nil); v > oor[pod] {
+					s.violate(s.name, "pod-%d: %v taps out of range while http-a's history was pruned", pod+1, v-oor[pod])
+				}
+			}
+		}}
+}
+
+// resumeDeep resumes a StreamBlocks stream on pod from the canonical block
+// depth below the head and reads it up to that head: every header is the
+// canonical one after the last, with no end.
+func (s *scenario) resumeDeep(pod int, depth uint64) {
+	tip := s.chain.Tip()
+	cur := s.chain.CanonAt(tip.Number - depth)
+	if cur == nil {
+		s.violate("harness", "the chain holds no block %d below its head %d", depth, tip.Number)
+		return
+	}
+	rctx, cancel := context.WithCancel(s.ctx)
+	defer cancel()
+	n := cur.Number
+	ev := s.openStream(rctx, pod, &n, cur.Hash.Bytes())
+	start := time.Now()
+	for prev := cur; prev.Number < tip.Number; {
+		e, ok := next(ev, d3Reply)
+		switch {
+		case !ok:
+			s.violate(s.name, "pod-%d: resumed %d deep from %d %s: nothing after %d within %s", pod+1, depth, cur.Number, short(cur.Hash), prev.Number, d3Reply)
+			return
+		case e.h == nil:
+			s.violate(s.name, "pod-%d: resumed %d deep from %d %s: ended %s %s after %d", pod+1, depth, cur.Number, short(cur.Hash), e.code, e.msg, prev.Number)
+			return
+		}
+		want := s.chain.CanonAt(prev.Number + 1)
+		if got := gethcommon.BytesToHash(e.h.Hash); e.h.Number != want.Number || got != want.Hash {
+			s.violate(s.name, "pod-%d: resumed %d deep from %d: header %d %s after %d, not the canonical %d %s", pod+1, depth, cur.Number, e.h.Number, short(got), prev.Number, want.Number, short(want.Hash))
+			return
+		}
+		prev = want
+	}
+	s.logf("pod-%d: resumed %d deep from %d, read to %d in %s", pod+1, depth, cur.Number, tip.Number, time.Since(start).Round(time.Millisecond))
 }

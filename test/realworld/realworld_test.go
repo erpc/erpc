@@ -90,6 +90,7 @@ func catalogue() []phaseSpec {
 		{"c16", 12401, []spec{c16()}},
 		{"c17", 12501, []spec{c17()}},
 		{"c18", 12601, []spec{c18()}},
+		{"pruned", 12701, []spec{u20(true), u20(false)}},
 	}
 }
 
