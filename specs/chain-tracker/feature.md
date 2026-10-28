@@ -388,6 +388,8 @@ Refusal rule, for block N on a request:
 | `Latest` < N ≤ ceiling | refresh (Ask with a number need for the lane's upstreams below N that the ceiling counts, voters first, §6.8); an empty or null answer, or a missing-data error, a range refused per upstream included, is a retryable miss once per request, its hedges included; the retry waits for that Ask until it answers, at most W, then orders the request's routed upstreams by the head predicate, head ≥ N first, with no further I/O; the answer after it goes to the client as the upstream gave it |
 | above | future, only when every counted report is younger than 1 bt; the older ones are Asked first (one poll each, single-flight, at most once per bt) and N decided again, counted `future_after_refresh`; a report still older than 1 bt after the Ask keeps N in the band; an estimate of where a stale upstream is now never stands in for asking it; until the first block time sample, every report counts as older than 1 bt |
 
+- Near future: a request the rule calls future, with N at most W / bt blocks above the ceiling (at least 1), first waits for the ceiling to reach N, at most W, while the lane's voters below N are Asked at the block-time pace (single-flight). N is decided again each time the ceiling moves; a request still future when W ends is refused, counted `future_after_wait`. A client that polls a block or a log range a few blocks ahead of the vendors gets it, not an error. With `shortCircuitFutureBlocks`, a future block still gets `null` at once (#1238).
+- Every leg of a request gets the band's one retry: a consensus slot or a hedge pinned to one upstream retries in the head-first order too, and a miss in one leg never stops another. Today's image served such misses through its sibling legs; a leg that stopped its siblings would turn them into client errors.
 - Sites: `tryShortCircuitFutureBlock` (with `shortCircuitFutureBlocks`, a future block gets `null` with no dispatch, #1238), `EmptyResultBeyondConfidence` (`enforceNonNullBlock`, empty-is-miss), the `eth_query` range check, and the `eth_getLogs` and `trace_filter` range check: a future `toBlock` is refused, never dispatched, since a node answers a range above its head with the part it has.
 - The availability gate checks configured bounds only (#934). One head predicate adds `headLagToleranceBlocks` to `latestBlockMinus` bounds in the gate and in upstream ordering (#1099); votes and the ceiling keep the bound.
 - A by-hash answer (the §7 by-hash family, `eth_getLogs` by `blockHash` included), from an upstream or from the cache, from a block above `Latest` waits up to 1 bt while the voters `Latest` lacks are Asked for a head fetched after the wait began; then it is sent if `Latest` includes its block, else `null`. A request that ends during the wait gets `null`. Each wait counts in `erpc_head_refusal_total` by its outcome.
@@ -868,7 +870,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | Metric | Change |
 |---|---|
 | `erpc_chain_tracker_invariant_violations_total{project,network,invariant}` | new; invariant: `sent_above_latest`, `sent_unconfirmed`, `tap_gap`, `removed_unsent`, `pins_unlinked`, `final_hash_changed`, `latest_regressed` (only a `Latest` below a block this instance sent while the lane's ballot counts the same voters as before; a fall with a changed counted set, a voter gone or one joined under a majority quorum, is a membership change, logged, not counted; counted once per fall and re-armed when `Latest` reaches that block again); must stay 0 except `final_hash_changed`, which logs a followed majority, and `latest_regressed` when every upstream rewinds (§14) |
-| `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `retried_found`, `retried_missing` (the promise broke on this instance), `future`, `future_after_refresh`; the by-hash wait (§6.4): `held_served`, `held_null` |
+| `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `retried_found`, `retried_missing` (the promise broke on this instance), `future`, `future_after_refresh`, `future_after_wait` (near future, §6.4); the by-hash wait (§6.4): `held_served`, `held_null` |
 | `erpc_head_ask_total{project,network,reason,outcome}` | new; reason: the §6.8 caller (`poll`, `catch_up`, `refusal`, `refresh`, `settle`, `no_source`); outcome: `fetched`, `shared_fresh`, `inflight`, `backoff` |
 | `erpc_chain_tracker_confirm_lag_blocks{project,network}` | new: pins head − confirmed head; with no confirmed pin, the number of pins |
 | `erpc_tap_delivery_seconds{transport,kind}` | new: confirmed-head change → write |
@@ -966,8 +968,8 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | Client behaviour | 9 | D1–D9 |
 | Cross-instance | 9 | X1–X9 |
 | Config | 7 | K1–K7 |
-| HTTP consistency | 12 | P1–P11, P11-nitro |
-| Total | 82 | |
+| HTTP consistency | 13 | P1–P12, P11-nitro |
+| Total | 83 | |
 
 | ID | Setup and fault | Expected |
 |---|---|---|
@@ -1053,6 +1055,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | P10 | `flashblocks*` + normal groups; use-upstream client fetches a delivered block | lane-consistent result; no `retried_missing` |
 | P11 | `translateLatestTag: false` method; one stale-state vendor, then all stale, then all more than 60s stale | stale vendor skipped; all stale → highest tag-state head, not `-32603`; all past 60s → `-32603` with `executedBlock` and `servedTip`, counted `refused` |
 | P11-nitro | a Nitro chain other than Arbitrum One: Multicall3 `getBlockNumber()` answers the parent chain's height, ArbSys `arbBlockNumber()` the chain's own; `skip-interpolation` `eth_call(latest)` | the first probe finds Nitro; every tag-state head is the chain's own height; every call served at `Latest`; no upstream counted stale |
+| P12 | 0.3s blocks; clients ask `eth_getLogs` and `eth_getBlockByNumber` 1–5 blocks above every vendor's head, through consensus slots and hedges; one slot's upstream misses a block at or below `Latest` | each answered once the chain reaches its block, within W, with no block-unavailable error; the missing slot retries in head-first order and its siblings are not stopped; a block more than W of chain ahead is refused, counted `future` |
 
 - The in-process chaos test `TestChainFeed_ConvergesUnderFaults` (`erpc/chain_feed_test.go`) stays as the fast CI test and uses the `test/chainsim` simulator. Panic recovery (`TrackerMessageHook`) is tested only there: no black-box trigger exists.
 
@@ -1125,6 +1128,7 @@ One home per fact:
 - Subscribers get a pushed head once q upstreams report it: one poll round trip with one wss vendor (70–160 ms measured on eth, sepolia, hoodi, monad); none with two.
 - One vendor ahead with its peers stalled: subscribers and `latest` wait up to 90s (the bench), then get the held blocks in batches; gRPC reconnects at most once. A wait longer than `maxBackfill` leaves the taps' cursors below the window, and they end as §10.2 states.
 - Catch-up refreshes while a subscriber is open: at most one per upstream per cadence per instance, only for voters below the pin, and only as many as `Latest` lacks to reach it.
+- A request for a block at most W of chain above every vendor's head waits up to W and is served; one further ahead is refused at once, as before.
 - With integrity on, a network whose client receipts are checked fetches each block's receipts when it is pinned, while such checks ran within W: at most one receipts call per block with transactions per instance.
 - `eth_getBlockByNumber(latest)` answers block `Latest`: up to one poll behind a vendor's newest block; it now equals `eth_blockNumber`.
 - `eth_getBlockByNumber("finalized")` answers block `Finalized`, which trails up to 5% of the finality window.
