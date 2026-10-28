@@ -1403,6 +1403,7 @@ type EvmUpstreamConfig struct {
 	// upstream when its blockAvailability upper bound is below that head or the head is unknown.
 	// For an upstream whose own head lags the network: it answers only blocks it holds, and a block
 	// it lacks fails as missing data so the next upstream answers, instead of an older "latest".
+	// Never a request whose tag reaches upstreams as is (translateLatestTag: false, skip-interpolation).
 	PinLatestTag *bool `yaml:"pinLatestTag,omitempty" json:"pinLatestTag"`
 	// SubscriptionSource makes this upstream a chain-tracker source: it feeds
 	// newHeads by push over ws/wss, by polling eth_getBlockByNumber(latest)

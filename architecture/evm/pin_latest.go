@@ -49,26 +49,13 @@ func PinBlockTagInBody(body []byte, height int64) ([]byte, bool) {
 	return out, true
 }
 
-// pinsLatestTag reports whether u sets evm.pinLatestTag: it is sent the
-// request's Head.Latest for a family-3 "latest", never the tag.
-func pinsLatestTag(u common.Upstream) bool {
-	cfg := u.Config()
-	return cfg != nil && cfg.Evm != nil && cfg.Evm.PinLatestTag != nil && *cfg.Evm.PinLatestTag
-}
-
 // LatestSentAs is the block r's "latest" was sent to u as (spec §7): r's
-// Head.Latest when interpolation or u's pinLatestTag replaced the tag;
-// when the tag reached u as is, u's own polled head, the closest height to
-// the one u evaluated it at. 0 when unknown.
+// Head.Latest when interpolation replaced the tag; when the tag reached u
+// as is, u's own polled head, the closest height to the one u evaluated it
+// at. 0 when unknown.
 func LatestSentAs(ctx context.Context, r *common.NormalizedRequest, u common.Upstream) int64 {
 	if n := TagBlockNumber(ctx, r, "latest"); n > 0 {
 		return n
-	}
-	if u == nil {
-		return 0
-	}
-	if pinsLatestTag(u) {
-		return common.EvmHeadOf(r.Network(), ctx, r).Latest
 	}
 	if eu, ok := u.(common.EvmUpstream); ok {
 		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
@@ -81,11 +68,15 @@ func LatestSentAs(ctx context.Context, r *common.NormalizedRequest, u common.Ups
 // PinLatestTag resolves what upstream u must receive for r when u sets
 // evm.pinLatestTag and r asks a family-3 method for latest: r's params with
 // the block selector set to height, r's Head.Latest, the number every attempt
-// and hedge of r uses (spec §7). pinned is false when u does not pin r.
-// pinned with height 0 means the head is unknown, and u must not be sent
-// "latest" at all.
+// and hedge of r uses (spec §7). pinned is false when u does not pin r: u
+// does not set it, or r's tag reaches upstreams as is (translateLatestTag
+// off, skip-interpolation), whatever u sets. pinned with height 0 means the
+// head is unknown, and u must not be sent "latest" at all.
 func PinLatestTag(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest) (params []interface{}, height int64, pinned bool) {
-	if !pinsLatestTag(u) {
+	if cfg := u.Config(); cfg == nil || cfg.Evm == nil || cfg.Evm.PinLatestTag == nil || !*cfg.Evm.PinLatestTag {
+		return nil, 0, false
+	}
+	if d := r.Directives(); d != nil && d.SkipInterpolation {
 		return nil, 0, false
 	}
 	jrq, err := r.JsonRpcRequest(ctx)
@@ -93,9 +84,10 @@ func PinLatestTag(ctx context.Context, n common.Network, u common.Upstream, r *c
 		return nil, 0, false
 	}
 	jrq.RLock()
-	_, ok := latestStateSelector(jrq.Method, jrq.Params)
+	method := jrq.Method
+	_, ok := latestStateSelector(method, jrq.Params)
 	jrq.RUnlock()
-	if !ok {
+	if !ok || keepsLatestTag(getMethodConfig(method, n)) {
 		return nil, 0, false
 	}
 	height = common.EvmHeadOf(n, ctx, r).Latest

@@ -111,14 +111,23 @@ func (c *ethCallTags) get() []interface{} {
 	return append([]interface{}(nil), c.tags...)
 }
 
-// TestNetwork_PinLatestTag walks a network whose eth_call keeps "latest"
-// (translateLatestTag: false) over a pinned upstream (evm.pinLatestTag,
-// upper.latestBlockMinus: 0) tried first and a vendor tried second.
+// TestNetwork_PinLatestTag walks a network over a pinned upstream
+// (evm.pinLatestTag, upper.latestBlockMinus: 0) tried first and a vendor
+// tried second. An interpolated eth_call carries the request's one number to
+// both; a tag sent as is (translateLatestTag: false, skip-interpolation)
+// reaches the pinned upstream as the tag too: pinLatestTag never pins it
+// (spec §7).
 func TestNetwork_PinLatestTag(t *testing.T) {
 	const head = int64(0x2000)
 	headHex := fmt.Sprintf("0x%x", head)
 
-	run := func(t *testing.T, pinnedHead int64, pinnedReply string) (result string, pinnedTags, vendorTags []interface{}) {
+	type send int
+	const (
+		interpolated send = iota
+		keepsTag
+		skipsInterpolation
+	)
+	run := func(t *testing.T, how send, pinnedHead int64, pinnedReply string) (result string, pinnedTags, vendorTags []interface{}) {
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -197,7 +206,7 @@ func TestNetwork_PinLatestTag(t *testing.T) {
 			},
 			Methods: &common.MethodsConfig{
 				Definitions: map[string]*common.CacheMethodConfig{
-					"eth_call": {ReqRefs: [][]interface{}{{1}}, TranslateLatestTag: b(false)},
+					"eth_call": {ReqRefs: [][]interface{}{{1}}, TranslateLatestTag: b(how != keepsTag)},
 				},
 			},
 		}
@@ -215,11 +224,18 @@ func TestNetwork_PinLatestTag(t *testing.T) {
 
 		req := common.NewNormalizedRequest([]byte(
 			`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"},"latest"]}`))
+		if how == skipsInterpolation {
+			req.SetDirectives(&common.RequestDirectives{SkipInterpolation: true})
+		}
 		req.SetNetwork(network)
 		jrq, err := req.JsonRpcRequest()
 		require.NoError(t, err)
 		evm.NormalizeHttpJsonRpc(ctx, req, jrq)
-		require.Equal(t, "latest", jrq.Params[1], "translateLatestTag: false keeps latest on the request")
+		sent := interface{}("latest")
+		if how == interpolated {
+			sent = headHex
+		}
+		require.Equal(t, sent, jrq.Params[1])
 
 		resp, err := network.Forward(ctx, req)
 		require.NoError(t, err)
@@ -227,32 +243,30 @@ func TestNetwork_PinLatestTag(t *testing.T) {
 		require.NoError(t, err)
 		result = jrr.GetResultString()
 		resp.Release()
-		require.Equal(t, "latest", jrq.Params[1], "the request keeps latest after a pinned attempt")
+		require.Equal(t, sent, jrq.Params[1], "the request keeps what it sends after an attempt")
 		return result, pinned.get(), vendor.get()
 	}
 
-	t.Run("PinnedAtHeadIsSentHeadAndAnswers", func(t *testing.T) {
-		result, pinnedTags, vendorTags := run(t, head, `{"jsonrpc":"2.0","id":1,"result":"0x11"}`)
+	t.Run("InterpolatedAtHeadIsSentTheNumber", func(t *testing.T) {
+		result, pinnedTags, vendorTags := run(t, interpolated, head, `{"jsonrpc":"2.0","id":1,"result":"0x11"}`)
 		assert.Equal(t, `"0x11"`, result)
 		assert.Equal(t, []interface{}{headHex}, pinnedTags)
 		assert.Empty(t, vendorTags)
 	})
 
-	t.Run("PinnedBehindHeadIsSkipped", func(t *testing.T) {
-		result, pinnedTags, vendorTags := run(t, head-2, `{"jsonrpc":"2.0","id":1,"result":"0x11"}`)
+	t.Run("InterpolatedBehindHeadIsSkipped", func(t *testing.T) {
+		result, pinnedTags, vendorTags := run(t, interpolated, head-2, `{"jsonrpc":"2.0","id":1,"result":"0x11"}`)
 		assert.Equal(t, `"0x22"`, result)
 		assert.Empty(t, pinnedTags)
-		assert.Equal(t, []interface{}{"latest"}, vendorTags)
+		assert.Equal(t, []interface{}{headHex}, vendorTags)
 	})
 
-	t.Run("PinnedMissingHeadFallsBackToVendor", func(t *testing.T) {
-		result, pinnedTags, vendorTags := run(t, head,
-			`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"header not found"}}`)
-		assert.Equal(t, `"0x22"`, result)
-		require.NotEmpty(t, pinnedTags)
-		for _, tag := range pinnedTags {
-			assert.Equal(t, headHex, tag)
-		}
-		assert.Equal(t, []interface{}{"latest"}, vendorTags)
-	})
+	for name, how := range map[string]send{"TranslateLatestTagOff": keepsTag, "SkipInterpolation": skipsInterpolation} {
+		t.Run(name+"IsSentTheTagAsIs", func(t *testing.T) {
+			result, pinnedTags, vendorTags := run(t, how, head-2, `{"jsonrpc":"2.0","id":1,"result":"0x11"}`)
+			assert.Equal(t, `"0x11"`, result, "the lagging pinned upstream answers its own latest")
+			assert.Equal(t, []interface{}{"latest"}, pinnedTags, "never pinned to the request's number")
+			assert.Empty(t, vendorTags)
+		})
+	}
 }
