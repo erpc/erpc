@@ -874,11 +874,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					// Hedge discards are accounted at the network layer
 					// via MetricNetworkHedgeDiscardsTotal.
 					//
-					// Latency observation is also skipped (see the
-					// ObserveDuration call below) — elapsed-by-cancel is
-					// not a natural latency sample. Probe traffic from
-					// `probeExcluded` provides successful samples for
-					// upstreams that never win the hedge race.
+					// Latency: see timer.ObserveCancelled below.
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(ctx, method, nrq)
@@ -910,32 +906,29 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				// quantile — the upstream did real work; the duration
 				// reflects actual response time.
 				//
-				// Cancellations (hedge-lost / client gave up / engine
-				// timeout) are deliberately excluded: the elapsed-by-
-				// cancel time is not natural latency. An upstream that
-				// only ever loses hedge races (e.g. always sees
-				// hedge-fired slow methods because the primary handles
-				// the fast ones) would otherwise accumulate a quantile
-				// of 100% cancellation observations, biasing its p70
-				// toward "however long the winner of the race took
-				// before cancellation." Cross-upstream comparisons
-				// (e.g. `latencyDeviationAbove`) would trip on this
-				// artificial signal even when per-method latencies are
-				// identical.
-				//
-				// With probeExcluded in the chain (default), excluded
-				// upstreams accumulate real successful samples via
-				// shadow-mirrored traffic — so the "every-hedge-loser
-				// stays optimistic forever" concern is handled without
-				// polluting the quantile. Without probeExcluded, rely
-				// on absolute thresholds (`latencyAbove(N)`) +
-				// non-latency signals (error rate, throttle rate, lag).
+				// A primary attempt cancelled because another attempt won
+				// the hedge race records its elapsed time as a latency
+				// lower bound, kept apart from ResponseQuantiles (which
+				// also drives adaptive timeouts and hedge delays) and read
+				// only by the selection policy. Without it, an upstream
+				// whose every attempt loses the hedge race keeps an empty
+				// sketch and the policy ranks it fastest. Client cancels
+				// and deadlines record nothing: their elapsed time is the
+				// caller's patience, not this upstream's speed. Hedge
+				// attempts are skipped: a losing hedge is cancelled when
+				// the earlier primary answers, so its elapsed time says
+				// little about its own latency.
 				//
 				// All other errors fired before / instead of a meaningful
 				// response and would conflate "broken" with "slow" if
 				// counted; they stay out of the quantile.
 				isRevert := common.HasErrorCode(errCall, common.ErrCodeEndpointExecutionException)
-				timer.ObserveDuration(isRevert)
+				if !hedgeAttempt && common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled) &&
+					errors.Is(context.Cause(ctx), failsafe.ErrHedgeLost) {
+					timer.ObserveCancelled()
+				} else {
+					timer.ObserveDuration(isRevert)
+				}
 				if isRevert {
 					nrq.ClearLastValidResponse()
 				}

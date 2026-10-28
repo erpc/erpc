@@ -66,6 +66,29 @@ func svmStrictCommitment(v interface{}) (svm.Commitment, error) {
 	}
 }
 
+// svmReaderCommitment is the commitment to ask the reader at for a slot-pinned
+// read, and false when the slot is above the network's root at finalized.
+//
+// The reader's own FINALIZED ceiling is its checkpoint: a batch is stored
+// once 32 slots deep, and the checkpoint lands ~10 s later, so it trails the
+// network's root by tens of seconds. Since Alpenglow (epoch 1064) confirmed
+// and finalized are the same state, so a confirmed block at or below the
+// root the vendor pollers report is the finalized block. With no root known
+// the reader's ceiling stays the bound.
+func svmReaderCommitment(ctx context.Context, req *common.NormalizedRequest, want svm.Commitment, slot uint64) (svm.Commitment, bool) {
+	if want != svm.Commitment_COMMITMENT_FINALIZED {
+		return want, true
+	}
+	root, ok := svmFinalizedSlot(ctx, req)
+	if !ok {
+		return want, true
+	}
+	if slot > root {
+		return want, false
+	}
+	return svm.Commitment_COMMITMENT_CONFIRMED, true
+}
+
 // svmFinalizedSlot is the network's majority finalized root, or ok=false when
 // the request carries no SVM network or no upstream has reported one. The
 // reader stores blocks at confirmed and does not read commitment for these
@@ -201,6 +224,16 @@ func (c *GenericGrpcBdsClient) handleSvmGetTransaction(ctx context.Context, conn
 		}
 	}
 
+	// A finalized read is asked at CONFIRMED and bounded by the network root
+	// after the answer: the slot is unknown until the reader names it (see
+	// svmReaderCommitment for why the reader's own ceiling is not used).
+	root, bounded := uint64(0), false
+	if grpcReq.Commitment == svm.Commitment_COMMITMENT_FINALIZED {
+		if root, bounded = svmFinalizedSlot(ctx, req); bounded {
+			grpcReq.Commitment = svm.Commitment_COMMITMENT_CONFIRMED
+		}
+	}
+
 	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.SvmGetTransaction",
 		trace.WithAttributes(attribute.String("commitment", grpcReq.Commitment.String())),
 	)
@@ -240,6 +273,9 @@ func (c *GenericGrpcBdsClient) handleSvmGetTransaction(ctx context.Context, conn
 	if grpcReq.MaxSupportedTransactionVersion == nil {
 		// Agave renders `version` only for a caller that opted in.
 		delete(result, "version")
+	}
+	if bounded && grpcResp.Slot > root {
+		return nil, svmUnservable("slot %d is not finalized on this network", grpcResp.Slot)
 	}
 	result["slot"] = grpcResp.Slot
 	result["transactionIndex"] = *grpcResp.TransactionIndex
@@ -350,6 +386,10 @@ func (c *GenericGrpcBdsClient) handleSvmGetBlocksWithLimit(ctx context.Context, 
 	if !ok || start > finalized {
 		return nil, svmUnservable("start slot %d is not finalized on this network", start)
 	}
+	// The check below bounds the list by the network's root, so the reader
+	// need not apply its own: its FINALIZED ceiling is its checkpoint, tens
+	// of seconds behind the root, and would short every list near the tip.
+	grpcReq.Commitment = svm.Commitment_COMMITMENT_CONFIRMED
 
 	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.SvmGetBlocksWithLimit",
 		trace.WithAttributes(

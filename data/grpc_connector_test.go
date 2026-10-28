@@ -263,6 +263,13 @@ func TestGrpcConnector_GetOutcomes(t *testing.T) {
 		assert.ErrorIs(t, err, sendErr)
 	})
 
+	t.Run("reader refusal is a miss, not an error", func(t *testing.T) {
+		refused := common.NewErrEndpointUnsupported(errors.New("only callTracer without config is served"))
+		gc := newBlockNumberConnector(t, &scriptedClient{err: refused})
+		_, err := gc.Get(context.Background(), ConnectorMainIndex, "pk", "rk", getReq())
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound))
+	})
+
 	t.Run("nil response without error is an empty miss", func(t *testing.T) {
 		gc := newBlockNumberConnector(t, &scriptedClient{})
 		got, err := gc.Get(context.Background(), ConnectorMainIndex, "pk", "rk", getReq())
