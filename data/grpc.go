@@ -340,6 +340,11 @@ func (g *GrpcConnector) Get(ctx context.Context, index, partitionKey, rangeKey s
 		} else {
 			span.SetAttributes(attribute.String("grpc.send_result", "nil_response"))
 		}
+		// The reader refuses what it does not store (another tracer, a
+		// balance at a tag): that is a miss, not a connector error.
+		if common.HasErrorCode(err, common.ErrCodeEndpointUnsupported) {
+			return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, GrpcDriverName)
+		}
 		return nil, err
 	}
 	jrr, err := resp.JsonRpcResponse(callCtx)
