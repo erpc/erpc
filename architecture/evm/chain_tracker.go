@@ -87,12 +87,12 @@ type ChainTracker struct {
 	anchorVotes   map[int64][]anchorVote // the hashes vendors answered per anchor
 
 	// revertedFinal holds the spans of blocks at or below Finalized a
-	// followed majority branch reverted (recordMove), final or not, newest
+	// followed majority branch reverted (moveOf), final or not, newest
 	// last, at most maxRevertedFinal; any goroutine reads it.
 	revertedFinal atomic.Pointer[[]heightSpan]
 	// unlinkedPins are the pins a re-anchor left below the new tree, with
 	// the finality they had on the path they were pinned on; only the
-	// tracker's goroutine reads or writes them (recordMove).
+	// tracker's goroutine reads or writes them (moveOf, apply).
 	unlinkedPins []unlinkedPin
 
 	wantMu      sync.Mutex
@@ -579,12 +579,13 @@ func (t *ChainTracker) run(ctx context.Context) {
 }
 
 // handle applies one message, then moves walks, fill, settles and asks on.
-// Each step recovers on its own: a panicking message is dropped, and a
-// panicking step of update never blames the message. 3 panics in one
-// panicSlot, with no message of that slot handled cleanly between them,
-// reset the tracker to empty: other kinds come between any two of one kind,
-// so a state that breaks only source votes, or only fetch answers, still
-// resets, while one vendor's bad header among clean ones never does.
+// The message and each step of update recover on their own: a panicking
+// message is dropped, and a panic in it or in a step of update counts in
+// the message's panicSlot. 3 panics in one panicSlot, with no message of
+// that slot handled cleanly between them, reset the tracker to empty:
+// other kinds come between any two of one kind, so a state that breaks
+// only source votes, or only fetch answers, still resets, while one
+// vendor's bad header among clean ones never does.
 func (t *ChainTracker) handle(msg trackerMsg) {
 	if msg.done != nil {
 		defer close(msg.done)
@@ -1528,9 +1529,11 @@ func (t *ChainTracker) countVotes(counted []voter) *voteCounts {
 	return c
 }
 
-// apply makes path the pins in one step: the pins inside the window are
-// computed first, compared with the published state, then committed and
-// published together.
+// apply makes path the pins in one step (spec §6.5): the pins inside the
+// window, the state to publish and the move's outcome are computed first,
+// then committed and published together, and only then signalled, so a
+// panic computing any of them leaves the pins and their record as they
+// were.
 func (t *ChainTracker) apply(path []*node) {
 	head := path[len(path)-1].h
 	i := 0
@@ -1545,8 +1548,17 @@ func (t *ChainTracker) apply(path []*node) {
 	s := newFeedState(path)
 	b := t.gate(path)
 	s.confirmed, s.backing = b.confirmed(), b
-	t.pins, t.treesDirty, t.receiptsDirty = path, true, true
 	s.logs = t.logsHeadOf(s)
+	mv := t.moveOf(pub.pins, path)
+
+	t.pins, t.treesDirty, t.receiptsDirty = path, true, true
+	t.unlinkedPins = mv.unlinked
+	if mv.rewinds {
+		t.rewindDue = mv.rewindDue
+	}
+	if mv.revertedFinal != nil {
+		t.revertedFinal.Store(mv.revertedFinal)
+	}
 	t.unstamp(pub.pins, s)
 	t.stamp(s)
 	if pub.head() != head && !head.emptyTxs {
@@ -1554,30 +1566,52 @@ func (t *ChainTracker) apply(path []*node) {
 	}
 	old := t.state.Swap(s)
 	close(old.changed)
-	t.published(old, s, true)
 
-	t.recordMove(pub.pins, path)
+	t.published(old, s, true)
+	t.signalMove(mv)
 	t.evict()
 }
 
-// recordMove counts a re-anchor, or the depth of a reorg, from old to path,
-// and sets the head gauge. Every reverted pin at or below Finalized is kept
-// in revertedFinal, so no permanent cache entry serves the old branch: a
-// permanent write needs only the serving upstream's finalized number. A
-// reverted final pin (finalThrough) is also logged as an error
-// (final_hash_changed); any other revert is a reorg (spec §6.5). A
-// re-anchor's old pins below the new tree are decided once fill links that
-// tree down to them (unlinkedPins), or dropped once they leave the window;
-// they keep the finality they had on the old path, which held the
-// finalized evidence. Headers compare by hash: fill can fetch an evicted
-// block again as a new header. A tracker that no history serves moves to a
-// new root without a re-anchor, and nothing links its old pins (spec §6.5
-// rule 1).
-func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
+// move is the outcome of moving the pins from old to the path headed by
+// head (moveOf), computed before the move commits.
+type move struct {
+	old        []*chainHeader
+	head, base *chainHeader
+	reanchor   bool // to another tree of held headers, counted
+	reverted   int  // the old pins a reorg reverted
+	// rewinds: the move owes the rollback write (rewindVoters): rewind
+	// lowers these counters now, rewindDue are the voters owed it later.
+	rewinds   bool
+	rewind    map[string]int64
+	rewindDue map[string]bool
+	unlinked  []unlinkedPin
+	// revertedFinal is revertedFinal with the reverted pins at or below
+	// Finalized; nil while none reverted.
+	revertedFinal *[]heightSpan
+	// alarm spans the reverted final pins (final_hash_changed); oldLo is
+	// its lowest old pin, newLo the pin that replaced it.
+	alarm        heightSpan
+	oldLo, newLo *chainHeader
+	fin          int64
+}
+
+// moveOf computes a re-anchor, or the depth of a reorg, from old to path.
+// Every reverted pin at or below Finalized is kept in revertedFinal, so no
+// permanent cache entry serves the old branch: a permanent write needs only
+// the serving upstream's finalized number. A reverted final pin
+// (finalThrough) is also an alarm (final_hash_changed); any other revert is
+// a reorg (spec §6.5). A re-anchor's old pins below the new tree are
+// decided once fill links that tree down to them (unlinkedPins), or dropped
+// once they leave the window; they keep the finality they had on the old
+// path, which held the finalized evidence. Headers compare by hash: fill
+// can fetch an evicted block again as a new header. A tracker that no
+// history serves moves to a new root without a re-anchor, and nothing
+// links its old pins (spec §6.5 rule 1). It changes no state.
+func (t *ChainTracker) moveOf(old []*chainHeader, path []*node) move {
 	head := path[len(path)-1].h
-	telemetry.MetricChainTrackerHead.WithLabelValues(t.projectId(), t.networkLabel(), t.group).Set(float64(head.number))
+	mv := move{old: old, head: head, base: path[0].h, unlinked: t.unlinkedPins}
 	if len(old) == 0 {
-		return
+		return mv
 	}
 	base := path[0].h.number
 	pathAt := func(n uint64) *chainHeader {
@@ -1596,26 +1630,18 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	switch reverted := len(old) - 1 - fork; {
 	case fork < 0 && !t.served:
 	case fork < 0:
-		// Spec §15 labels re-anchors by network only: the network-wide
-		// tracker's count.
-		if t.selector == "" {
-			telemetry.CounterHandle(telemetry.MetricChainTrackerReanchorTotal, t.projectId(), t.networkLabel()).Inc()
-		}
-		was := old[len(old)-1]
-		t.transition(zerolog.WarnLevel, "reanchor").Uint64("oldHead", was.number).Str("oldHeadHash", was.hashHex).
-			Uint64("head", head.number).Str("headHash", head.hashHex).Uint64("base", path[0].h.number).Str("baseHash", path[0].h.hashHex).
-			Msg("chain tracker pins moved to another tree of held headers")
+		mv.reanchor = true
 	case reverted > 0:
-		telemetry.MetricChainTrackerReorgDepth.WithLabelValues(t.projectId(), t.networkLabel(), t.group).
-			Observe(float64(reverted))
+		mv.reverted = reverted
 	}
 	if t.selector == "" && head.number < old[len(old)-1].number {
-		t.rewindVoters(pathAt)
+		mv.rewinds = true
+		mv.rewind, mv.rewindDue = t.rewindVoters(pathAt)
 	}
 	fin := t.finalizedHead()
+	mv.fin = fin
 	finalOld := t.finalThrough(old, fin)
-	var reverted, alarm heightSpan
-	var oldLo, newLo *chainHeader
+	var reverted heightSpan
 	replaced := func(h *chainHeader, final bool) {
 		p := pathAt(h.number)
 		if fin <= 0 || p == nil || p.hash == h.hash || int64(h.number) > fin {
@@ -1623,10 +1649,10 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 		}
 		reverted = reverted.with(int64(h.number))
 		if final {
-			if alarm.hi == 0 || int64(h.number) < alarm.lo {
-				oldLo, newLo = h, p
+			if mv.alarm.hi == 0 || int64(h.number) < mv.alarm.lo {
+				mv.oldLo, mv.newLo = h, p
 			}
-			alarm = alarm.with(int64(h.number))
+			mv.alarm = mv.alarm.with(int64(h.number))
 		}
 	}
 	for _, h := range old {
@@ -1635,23 +1661,52 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	for _, u := range t.unlinkedPins {
 		replaced(u.h, u.final)
 	}
-	var unlinked []unlinkedPin
+	mv.unlinked = nil
 	if t.served {
 		for _, u := range t.unlinkedPins {
 			if u.h.number < base && t.holds(head, u.h) {
-				unlinked = append(unlinked, u)
+				mv.unlinked = append(mv.unlinked, u)
 			}
 		}
 		if fork < 0 {
 			for _, h := range old {
 				if h.number < base && t.holds(head, h) {
-					unlinked = append(unlinked, unlinkedPin{h: h, final: h.number <= finalOld})
+					mv.unlinked = append(mv.unlinked, unlinkedPin{h: h, final: h.number <= finalOld})
 				}
 			}
 		}
 	}
-	t.unlinkedPins = unlinked
-	if alarm.hi > 0 {
+	if reverted.hi > 0 {
+		spans := t.revertedFinalWith(reverted)
+		mv.revertedFinal = &spans
+	}
+	return mv
+}
+
+// signalMove counts and logs a committed move, sets the head gauge and
+// writes the rollback (spec §14); every call into the network recovers on
+// its own.
+func (t *ChainTracker) signalMove(mv move) {
+	telemetry.MetricChainTrackerHead.WithLabelValues(t.projectId(), t.networkLabel(), t.group).Set(float64(mv.head.number))
+	if mv.reanchor {
+		// Spec §15 labels re-anchors by network only: the network-wide
+		// tracker's count.
+		if t.selector == "" {
+			telemetry.CounterHandle(telemetry.MetricChainTrackerReanchorTotal, t.projectId(), t.networkLabel()).Inc()
+		}
+		was := mv.old[len(mv.old)-1]
+		t.transition(zerolog.WarnLevel, "reanchor").Uint64("oldHead", was.number).Str("oldHeadHash", was.hashHex).
+			Uint64("head", mv.head.number).Str("headHash", mv.head.hashHex).Uint64("base", mv.base.number).Str("baseHash", mv.base.hashHex).
+			Msg("chain tracker pins moved to another tree of held headers")
+	}
+	if mv.reverted > 0 {
+		telemetry.MetricChainTrackerReorgDepth.WithLabelValues(t.projectId(), t.networkLabel(), t.group).
+			Observe(float64(mv.reverted))
+	}
+	if mv.rewinds {
+		t.rewindHeads(mv.rewind)
+	}
+	if mv.alarm.hi > 0 {
 		var ev *zerolog.Event
 		if t.selector == "" {
 			ev = common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantFinalHashChanged).Str("group", t.group)
@@ -1659,12 +1714,9 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 			ev = t.transition(zerolog.ErrorLevel, "invariant_violation").
 				Str("invariant", string(common.InvariantFinalHashChanged))
 		}
-		ev.Int64("revertedFrom", alarm.lo).Str("oldHash", hexHash(oldLo.hash)).Str("newHash", hexHash(newLo.hash)).
-			Int64("finalized", fin).Uint64("head", head.number).Str("headHash", hexHash(head.hash)).
+		ev.Int64("revertedFrom", mv.alarm.lo).Str("oldHash", hexHash(mv.oldLo.hash)).Str("newHash", hexHash(mv.newLo.hash)).
+			Int64("finalized", mv.fin).Uint64("head", mv.head.number).Str("headHash", hexHash(mv.head.hash)).
 			Msg("chain tracker followed a majority branch that reverts a finalized block")
-	}
-	if reverted.hi > 0 {
-		t.addRevertedFinal(reverted)
 	}
 }
 
@@ -1699,26 +1751,25 @@ func (t *ChainTracker) finalThrough(hs []*chainHeader, fin int64) (through uint6
 // whose head is below the old pinned head, a reorg or a re-anchor down; a
 // re-anchor up is a catch-up and owes none. Each voter whose own fresh
 // hash vote is on the new pins has its latest counter lowered to that
-// vote's height where the counter is above it, so Latest follows the
-// rewound chain on every instance. Every other voter is owed the rewind
-// once a fresh vote of its reaches the pins (rewindLate): a vote from
-// before a gap is no evidence.
-func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) {
-	votes := make(map[string]int64, len(t.votes))
-	t.rewindDue = make(map[string]bool)
+// vote's height where the counter is above it (votes), so Latest follows
+// the rewound chain on every instance. Every other voter is owed the
+// rewind once a fresh vote of its reaches the pins (due, rewindLate): a
+// vote from before a gap is no evidence.
+func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) (votes map[string]int64, due map[string]bool) {
+	votes, due = make(map[string]int64, len(t.votes)), make(map[string]bool)
 	for u, nd := range t.votes {
 		if p := pathAt(nd.h.number); p != nil && p.hash == nd.h.hash && t.votedFresh(u) {
 			votes[u] = int64(nd.h.number)
 		} else {
-			t.rewindDue[u] = true
+			due[u] = true
 		}
 	}
 	for u := range t.pending {
 		if _, written := votes[u]; !written {
-			t.rewindDue[u] = true
+			due[u] = true
 		}
 	}
-	t.rewindHeads(votes)
+	return votes, due
 }
 
 // rewindLate writes the rewind owed to a voter once its fresh hash vote
@@ -1766,12 +1817,12 @@ func (s heightSpan) with(n int64) heightSpan {
 	return heightSpan{lo: min(s.lo, n), hi: max(s.hi, n)}
 }
 
-// addRevertedFinal publishes s in revertedFinal, merged with every span it
+// revertedFinalWith is revertedFinal with s, merged with every span it
 // overlaps or touches, the oldest span leaving at the bound. A deep revert
 // is followed one height at a time, each a span of its own: unmerged, its
 // first heights would leave the bound while their permanent entries still
-// hold the old branch. Only the tracker's goroutine calls it.
-func (t *ChainTracker) addRevertedFinal(s heightSpan) {
+// hold the old branch. Only the tracker's goroutine stores revertedFinal.
+func (t *ChainTracker) revertedFinalWith(s heightSpan) []heightSpan {
 	var spans []heightSpan
 	if p := t.revertedFinal.Load(); p != nil {
 		spans = *p
@@ -1787,8 +1838,7 @@ func (t *ChainTracker) addRevertedFinal(s heightSpan) {
 	if len(next) >= maxRevertedFinal {
 		next = next[len(next)-maxRevertedFinal+1:]
 	}
-	next = append(next, s)
-	t.revertedFinal.Store(&next)
+	return append(next, s)
 }
 
 // RevertedFinal reports whether a followed majority branch reverted block
