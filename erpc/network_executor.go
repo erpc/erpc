@@ -441,6 +441,11 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 		return ""
 	}
 	if err != nil {
+		// Every upstream already gave a final answer (e.g. each rejected a
+		// transaction): another round would select no upstream, only wait.
+		if req != nil && req.AllUpstreamsFailedPermanently() {
+			return ""
+		}
 		if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 			if se, ok := err.(common.StandardError); ok {
 				if retryable, ok := se.DeepSearch("retryableTowardNetwork").(bool); ok && retryable {
@@ -682,6 +687,12 @@ func (e *networkExecutor) runHedge(
 			).Inc()
 		}()
 		if err != nil {
+			// No sibling can select an upstream any more: end the race now
+			// instead of waiting for the remaining hedge timers.
+			if req != nil && req.AllUpstreamsFailedPermanently() {
+				kept = true
+				return true
+			}
 			// ErrNoUpstreamsLeftToSelect: this fan-out exhausted its share —
 			// terminal for this leg, but the race continues if siblings have
 			// not yet returned. Same applies for an empty ErrUpstreamsExhausted
