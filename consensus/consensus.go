@@ -147,14 +147,38 @@ func (c *Consensus) Close() error {
 // CloseAll closes every Consensus registered by NewConsensus. Wired into
 // graceful shutdown next to evm.CloseIntegrityExporters so S3 flush workers
 // and shared file hubs release before the process exits.
-func CloseAll() {
-	inflightAnalyzers.Wait()
+//
+// Fire-and-forget analyzers use context.WithoutCancel, and exporter Close may
+// upload to S3 with no context of its own. ctx bounds both waits. When it
+// ends, CloseAll returns and leaves a still-running flush behind so process
+// exit is not stuck on a hung upstream or bucket.
+func CloseAll(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	waitOrContinue(ctx, func() { inflightAnalyzers.Wait() })
 	liveConsensuses.Range(func(key, _ any) bool {
-		if c, ok := key.(*Consensus); ok {
-			_ = c.Close()
+		c, ok := key.(*Consensus)
+		if !ok {
+			return true
 		}
+		waitOrContinue(ctx, func() { _ = c.Close() })
 		return true
 	})
+}
+
+// waitOrContinue runs fn and returns when fn finishes or ctx ends, whichever
+// is first. fn is not cancelled; the caller stops waiting.
+func waitOrContinue(ctx context.Context, fn func()) {
+	done := make(chan struct{})
+	go func() {
+		fn()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 // buildPolicy compiles one ConsensusPolicyConfig into a consensusPolicy. Used
@@ -169,7 +193,7 @@ func buildPolicy(cfg *common.ConsensusPolicyConfig, logger *zerolog.Logger, poli
 		WithPunishMisbehavior(cfg.PunishMisbehavior).
 		WithLowParticipantsBehavior(cfg.LowParticipantsBehavior).
 		WithLogger(logger).
-		WithFireAndForget(cfg.FireAndForget != nil && *cfg.FireAndForget).
+		WithFireAndForget(cfg.FireAndForget).
 		WithMaxWaitOnResult(cfg.MaxWaitOnResult).
 		WithMaxWaitOnEmpty(cfg.MaxWaitOnEmpty).
 		WithRequiredParticipants(cfg.RequiredParticipants).

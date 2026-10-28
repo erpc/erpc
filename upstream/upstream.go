@@ -1554,8 +1554,18 @@ const operatorCordonGenIndex = 2
 // Cordon / Uncordon flip the tracker cell for (upstream, method) on this pod:
 // in-process detectors (consensus sit-out, state-poller checks) and
 // method-scoped operator cordons use them.
-func (u *Upstream) Cordon(method string, reason string, class common.CordonClass) {
-	u.metricsTracker.Cordon(u, method, reason, class)
+// Cordon is the stable Upstream method. It records an operator-class cordon.
+func (u *Upstream) Cordon(method string, reason string) {
+	u.CordonClass(method, reason, common.CordonClassOperator)
+}
+
+// Uncordon is the stable Upstream method. It clears only the operator class.
+func (u *Upstream) Uncordon(method string, reason string) {
+	u.UncordonClass(method, reason, common.CordonClassOperator)
+}
+
+func (u *Upstream) CordonClass(method string, reason string, class common.CordonClass) {
+	u.metricsTracker.CordonClass(u, method, reason, class)
 }
 
 // Uncordon lifts a pod-local cordon of one class. While the operator holds the
@@ -1563,13 +1573,13 @@ func (u *Upstream) Cordon(method string, reason string, class common.CordonClass
 // "*" via this path — only UncordonAdmin can. Punishment/availability owners
 // must still clear their own bits while an operator cordon is held; otherwise
 // a later UncordonAdmin (operator bit only) would leave a stale sitout cordon.
-func (u *Upstream) Uncordon(method string, reason string, class common.CordonClass) {
+func (u *Upstream) UncordonClass(method string, reason string, class common.CordonClass) {
 	if class == common.CordonClassOperator {
 		if v, ok := u.operatorCordon.Load().(data.CounterInt64SharedVariable); ok && method == "*" && v.GetValue() > 0 {
 			return
 		}
 	}
-	u.metricsTracker.Uncordon(u, method, reason, class)
+	u.metricsTracker.UncordonClass(u, method, reason, class)
 }
 
 // CordonedReason returns the cordon reason and whether the (upstream,
@@ -1591,7 +1601,7 @@ func (u *Upstream) CordonAdmin(ctx context.Context, reason string) {
 		// Already held and no uncordon is between snapshot and publish.
 		// Refresh the local bit only so a duplicate admin call does not move
 		// the shared start time.
-		u.metricsTracker.Cordon(u, "*", reason, common.CordonClassOperator)
+		u.metricsTracker.CordonClass(u, "*", reason, common.CordonClassOperator)
 		u.operatorCordonReason.Store("")
 		u.adminCordonMu.Unlock()
 		return
@@ -1696,7 +1706,7 @@ func (u *Upstream) clearAllCordonClasses(method, reason string) {
 		common.CordonClassPunishment,
 		common.CordonClassAvailability,
 	} {
-		u.metricsTracker.Uncordon(u, method, reason, class)
+		u.metricsTracker.UncordonClass(u, method, reason, class)
 	}
 }
 
@@ -1714,7 +1724,7 @@ func (u *Upstream) operatorCordonVar() data.CounterInt64SharedVariable {
 				reason = r
 			}
 			if cordonedAtMs > 0 {
-				u.metricsTracker.Cordon(u, "*", reason, common.CordonClassOperator)
+				u.metricsTracker.CordonClass(u, "*", reason, common.CordonClassOperator)
 			} else {
 				// Lift the operator bit only. Skip when a CordonAdmin re-asserted
 				// after this uncordon snapshotted generations: that call already
@@ -1724,7 +1734,7 @@ func (u *Upstream) operatorCordonVar() data.CounterInt64SharedVariable {
 				if maxGen > 0 && u.metricsTracker.CordonGens(u, "*")[operatorCordonGenIndex] > maxGen {
 					return
 				}
-				u.metricsTracker.Uncordon(u, "*", reason, common.CordonClassOperator)
+				u.metricsTracker.UncordonClass(u, "*", reason, common.CordonClassOperator)
 			}
 		})
 		u.operatorCordon.Store(v)

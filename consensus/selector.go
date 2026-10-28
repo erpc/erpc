@@ -148,7 +148,7 @@ func toEvalUpstreams(ups []common.Upstream, method string) []policyengine.Upstre
 
 		var classes []string
 		if tr := up.Tracker(); tr != nil {
-			for _, cl := range tr.CordonClasses(up, method) {
+			for _, cl := range common.CordonClassesOf(tr, up, method) {
 				classes = append(classes, string(cl))
 			}
 		}
@@ -201,7 +201,7 @@ func hasPunishmentOrOperator(up common.Upstream, method string) bool {
 	if tr == nil {
 		return false
 	}
-	for _, cl := range tr.CordonClasses(up, method) {
+	for _, cl := range common.CordonClassesOf(tr, up, method) {
 		if cl == common.CordonClassPunishment || cl == common.CordonClassOperator {
 			return true
 		}

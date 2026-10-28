@@ -3213,9 +3213,9 @@ func overlayConsensusPolicy(base, child *ConsensusPolicyConfig) {
 			base.BlockEvidenceFields[method] = append([]string(nil), fields...)
 		}
 	}
-	if child.FireAndForget != nil {
-		v := *child.FireAndForget
-		base.FireAndForget = &v
+	if child.fireAndForgetSet {
+		base.FireAndForget = child.FireAndForget
+		base.fireAndForgetSet = true
 	}
 	if child.MaxWaitOnResult != nil {
 		base.MaxWaitOnResult = child.MaxWaitOnResult.Copy()

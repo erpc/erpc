@@ -62,16 +62,16 @@ func (u *suggestGateUpstream) isCordoned() bool {
 }
 
 // common.Upstream
-func (u *suggestGateUpstream) Id() string                                 { return u.id }
-func (u *suggestGateUpstream) VendorName() string                         { return "" }
-func (u *suggestGateUpstream) NetworkId() string                          { return "evm:123" }
-func (u *suggestGateUpstream) NetworkLabel() string                       { return "evm:123" }
-func (u *suggestGateUpstream) Config() *common.UpstreamConfig             { return u.cfg }
-func (u *suggestGateUpstream) Logger() *zerolog.Logger                    { return &u.logger }
-func (u *suggestGateUpstream) Vendor() common.Vendor                      { return nil }
-func (u *suggestGateUpstream) Tracker() common.HealthTracker              { return nil }
-func (u *suggestGateUpstream) IgnoreMethod(string)                        {}
-func (u *suggestGateUpstream) Uncordon(_, _ string, _ common.CordonClass) {
+func (u *suggestGateUpstream) Id() string                     { return u.id }
+func (u *suggestGateUpstream) VendorName() string             { return "" }
+func (u *suggestGateUpstream) NetworkId() string              { return "evm:123" }
+func (u *suggestGateUpstream) NetworkLabel() string           { return "evm:123" }
+func (u *suggestGateUpstream) Config() *common.UpstreamConfig { return u.cfg }
+func (u *suggestGateUpstream) Logger() *zerolog.Logger        { return &u.logger }
+func (u *suggestGateUpstream) Vendor() common.Vendor          { return nil }
+func (u *suggestGateUpstream) Tracker() common.HealthTracker  { return nil }
+func (u *suggestGateUpstream) IgnoreMethod(string)            {}
+func (u *suggestGateUpstream) Uncordon(_, _ string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.cordoned = false
@@ -83,7 +83,7 @@ func (u *suggestGateUpstream) ShouldHandleMethod(string) (bool, error) {
 func (u *suggestGateUpstream) Forward(context.Context, *common.NormalizedRequest, bool, bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (u *suggestGateUpstream) Cordon(_, reason string, _ common.CordonClass) {
+func (u *suggestGateUpstream) Cordon(_, reason string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.cordoned = true
@@ -240,7 +240,7 @@ func TestSuggestLatestBlock_MismatchAfterAdminClearReCordons(t *testing.T) {
 	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
 
 	// Simulate UncordonAdmin: tracker cleared, ownership flag still true.
-	up.Uncordon("*", "ops cleared", common.CordonClassAvailability)
+	up.Uncordon("*", "ops cleared")
 	require.False(t, up.isCordoned())
 	require.True(t, p.cordonedByChainId.Load())
 

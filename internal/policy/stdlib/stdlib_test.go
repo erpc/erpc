@@ -41,10 +41,10 @@ func (f *fakeUpstream) Tracker() common.HealthTracker {
 func (f *fakeUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (f *fakeUpstream) Cordon(method, reason string, class common.CordonClass)   {}
-func (f *fakeUpstream) Uncordon(method, reason string, class common.CordonClass) {}
-func (f *fakeUpstream) IgnoreMethod(method string)                               {}
-func (f *fakeUpstream) ShouldHandleMethod(method string) (bool, error)           { return true, nil }
+func (f *fakeUpstream) Cordon(method, reason string)                   {}
+func (f *fakeUpstream) Uncordon(method, reason string)                 {}
+func (f *fakeUpstream) IgnoreMethod(method string)                     {}
+func (f *fakeUpstream) ShouldHandleMethod(method string) (bool, error) { return true, nil }
 
 func mkUps(ids ...string) []common.Upstream {
 	out := make([]common.Upstream, len(ids))

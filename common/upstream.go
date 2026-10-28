@@ -58,16 +58,27 @@ const (
 // (legacy call sites, internal probes, batch retries). Cordon/Uncordon
 // stay finality-agnostic because cordoning is an admin-level decision
 // about an entire (upstream, method) pair, not a per-finality bucket.
+// Cordon and Uncordon stay class-less so existing tracker implementations
+// keep compiling. Class-aware cordoning is the optional ClassedHealthTracker.
 type HealthTracker interface {
 	RecordUpstreamMisbehavior(up Upstream, method string, finality DataFinalityState)
 	RecordUpstreamRequest(up Upstream, method string, finality DataFinalityState)
 	RecordUpstreamFailure(up Upstream, method string, finality DataFinalityState, err error)
-	Cordon(upstream Upstream, method string, reason string, class CordonClass)
-	Uncordon(upstream Upstream, method string, reason string, class CordonClass)
-	// CordonClasses returns the set of cordon classes currently held for
-	// (upstream, method), as the union of the exact-method scope and the
-	// wildcard "*" scope. Empty means not cordoned. Read by the consensus
-	// selector to build the eval context.
+	Cordon(upstream Upstream, method string, reason string)
+	Uncordon(upstream Upstream, method string, reason string)
+}
+
+// ClassedHealthTracker is the optional capability for a cordon that carries a
+// class. The consensus selector reads CordonClasses. A tracker that does not
+// implement this still receives HealthTracker.Cordon/Uncordon; the class is
+// not stored, and the selector does not treat that upstream as
+// availability-only (the only class that permits a policy downgrade).
+type ClassedHealthTracker interface {
+	CordonClass(upstream Upstream, method string, reason string, class CordonClass)
+	UncordonClass(upstream Upstream, method string, reason string, class CordonClass)
+	// CordonClasses returns the classes currently held for (upstream, method),
+	// as the union of the exact-method scope and the wildcard "*" scope.
+	// Empty means not cordoned.
 	CordonClasses(upstream Upstream, method string) []CordonClass
 }
 
@@ -85,8 +96,8 @@ type Upstream interface {
 	// network layer where the hedge policy lives) — used to gate per-upstream
 	// rate counters so hedges don't inflate them.
 	Forward(ctx context.Context, nq *NormalizedRequest, byPassMethodExclusion, isHedgeAttempt bool) (*NormalizedResponse, error)
-	Cordon(method string, reason string, class CordonClass)
-	Uncordon(method string, reason string, class CordonClass)
+	Cordon(method string, reason string)
+	Uncordon(method string, reason string)
 	IgnoreMethod(method string)
 	// ShouldHandleMethod reports whether this upstream is expected to serve the
 	// given method (false when ignored/unsupported, e.g. via autoIgnoreUnsupportedMethods).
@@ -111,4 +122,46 @@ func UniqueUpstreamKey(up Upstream) string {
 	}
 
 	return cfg.Id + "/" + hex.EncodeToString(sha.Sum(nil))
+}
+
+// ClassedUpstream is the optional capability for an upstream that records a
+// cordon class. In-tree upstreams implement it. Out-of-tree upstreams keep
+// the class-less Upstream.Cordon/Uncordon methods.
+type ClassedUpstream interface {
+	CordonClass(method string, reason string, class CordonClass)
+	UncordonClass(method string, reason string, class CordonClass)
+}
+
+// CordonClassed cordons up under class when it implements ClassedUpstream.
+// Otherwise it calls Cordon, so a legacy upstream is still taken out of rotation.
+func CordonClassed(up Upstream, method, reason string, class CordonClass) {
+	if c, ok := up.(ClassedUpstream); ok {
+		c.CordonClass(method, reason, class)
+		return
+	}
+	up.Cordon(method, reason)
+}
+
+// UncordonClassed lifts one class when up implements ClassedUpstream.
+// Otherwise it calls Uncordon.
+func UncordonClassed(up Upstream, method, reason string, class CordonClass) {
+	if c, ok := up.(ClassedUpstream); ok {
+		c.UncordonClass(method, reason, class)
+		return
+	}
+	up.Uncordon(method, reason)
+}
+
+// CordonClassesOf reads classes when tr implements ClassedHealthTracker.
+// A nil tracker or a legacy tracker returns nil: no class is visible, so the
+// selector must not treat the upstream as availability-only.
+func CordonClassesOf(tr HealthTracker, up Upstream, method string) []CordonClass {
+	if tr == nil {
+		return nil
+	}
+	c, ok := tr.(ClassedHealthTracker)
+	if !ok {
+		return nil
+	}
+	return c.CordonClasses(up, method)
 }

@@ -148,7 +148,7 @@ func TestProbeVerdicts_RemoveCordonedDefaultNoProbe(t *testing.T) {
 	defer cancel()
 	defer engine.Stop()
 
-	tracker.Cordon(ups[0], "*", "penalty box", common.CordonClassPunishment)
+	tracker.CordonClass(ups[0], "*", "penalty box", common.CordonClassPunishment)
 	probeable, excludedAll := probeSet(engine)
 	require.True(t, excludedAll["plain1"], "cordoned upstream is excluded")
 	require.False(t, probeable["plain1"], "cordoned upstream must NOT be probed by default")
@@ -159,7 +159,7 @@ func TestProbeVerdicts_RemoveCordonedProbeOverride(t *testing.T) {
 	defer cancel()
 	defer engine.Stop()
 
-	tracker.Cordon(ups[0], "*", "penalty box", common.CordonClassPunishment)
+	tracker.CordonClass(ups[0], "*", "penalty box", common.CordonClassPunishment)
 	probeable, _ := probeSet(engine)
 	require.True(t, probeable["plain1"], "probe:true override re-enables probing for cordoned upstreams")
 }

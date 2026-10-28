@@ -860,7 +860,7 @@ func (e *EvmStatePoller) cordonForChainIdMismatch(tag string, current, polled in
 	// Tracker bit first, then ownership flag — a concurrent recovery that
 	// observes the flag must also observe the cordon (or take the mutex and
 	// wait until both are set).
-	e.upstream.Cordon("*", fmt.Sprintf("chain identity mismatch on major %s head move: %s", tag, cause.Error()), common.CordonClassAvailability)
+	common.CordonClassed(e.upstream, "*", fmt.Sprintf("chain identity mismatch on major %s head move: %s", tag, cause.Error()), common.CordonClassAvailability)
 	e.cordonedByChainId.Store(true)
 }
 
@@ -875,7 +875,7 @@ func (e *EvmStatePoller) maybeUncordonAfterChainIdRecovery() {
 	}
 	e.cordonedByChainId.Store(false)
 	e.logger.Info().Msg("chain identity re-validated after mismatch; uncordoning availability")
-	e.upstream.Uncordon("*", "evm state poller: chain identity re-validated after mismatch", common.CordonClassAvailability)
+	common.UncordonClassed(e.upstream, "*", "evm state poller: chain identity re-validated after mismatch", common.CordonClassAvailability)
 }
 
 func absInt64(v int64) int64 {

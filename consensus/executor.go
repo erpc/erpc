@@ -2157,11 +2157,11 @@ func (e *executor) handleMisbehavingUpstream(logger *zerolog.Logger, upstream co
 	// Cordon the upstream first. Consensus misbehavior is a PUNISHMENT cordon:
 	// the selector reads this typed class (never the reason string) and pins the
 	// network to the strictest policy while any upstream is punished.
-	upstream.Cordon("*", "misbehaving in consensus", common.CordonClassPunishment)
+	common.CordonClassed(upstream, "*", "misbehaving in consensus", common.CordonClassPunishment)
 
 	// Create the timer
 	timer := time.AfterFunc(e.punishMisbehavior.SitOutPenalty.Duration(), func() {
-		upstream.Uncordon("*", "end of consensus penalty", common.CordonClassPunishment)
+		common.UncordonClassed(upstream, "*", "end of consensus penalty", common.CordonClassPunishment)
 		e.misbehavingUpstreamsSitoutTimer.Delete(upstreamId)
 	})
 

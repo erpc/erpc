@@ -38,9 +38,9 @@ func (f *canaryUpstream) Forward(ctx context.Context, nq *common.NormalizedReque
 	f.calls = append(f.calls, jrq.Method)
 	return f.handler(jrq.Method, string(params))
 }
-func (f *canaryUpstream) Cordon(method string, reason string, class common.CordonClass)   {}
-func (f *canaryUpstream) Uncordon(method string, reason string, class common.CordonClass) {}
-func (f *canaryUpstream) IgnoreMethod(method string)                                      {}
+func (f *canaryUpstream) Cordon(method string, reason string)   {}
+func (f *canaryUpstream) Uncordon(method string, reason string) {}
+func (f *canaryUpstream) IgnoreMethod(method string)            {}
 func (f *canaryUpstream) ShouldHandleMethod(method string) (bool, error) {
 	return true, nil
 }
