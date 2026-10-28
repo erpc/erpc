@@ -480,19 +480,20 @@ var consensusRules = []consensusRule{
 	},
 	// ReturnError + PreferNonEmpty: dispute when Empty would win against any
 	// NonEmpty (promoteAbstentionWinner may later release via empty-outside-
-	// retention), OR when ConsensusError and NonEmpty both meet threshold
-	// (MissingData abstention tie → promoteAbstentionWinner via MissingData
-	// waiver). Do NOT dispute an agreed ConsensusError against a below-
-	// threshold NonEmpty — PreferNonEmpty must not override an agreed
-	// execution revert (return_error_prefer_non_empty_does_not_override_agreed_error).
-	// Gate on group presence (not getBestByCount) so a tied NonEmpty cannot
-	// win by map iteration and mask a genuine consensus-valid error. Only
-	// dispute when the empty/ConsensusError group is competitive with the
-	// best NonEmpty (count >=) — a strict NonEmpty majority (e.g. empty=2,
-	// non-empty=4 at threshold 2) must still win without synthesizing a
-	// dispute.
+	// retention). Gate on group presence (not getBestByCount) so a tied
+	// NonEmpty cannot win by map iteration and mask a genuine result. Only
+	// dispute when the empty group is competitive with the best NonEmpty
+	// (count >=) — a strict NonEmpty majority (e.g. empty=2, non-empty=4 at
+	// threshold 2) must still win without synthesizing a dispute.
+	//
+	// A MissingData-only ConsensusError tie is disputed ONLY when a
+	// requiredParticipants entry opts into waiveAgreementOnMissingData — the
+	// dispute is what promoteAbstentionWinner releases (composition_test /
+	// waiver e2e pin this). Without the opt-in, a missing×N+data×N tie falls
+	// to the generic threshold-winner (map order, same as main). A revert
+	// ConsensusError is never disputed here — it stays the agreed error.
 	{
-		Description: "return error when empty/tied consensus-error would win but non-empty exists (above threshold)",
+		Description: "return error when empty/missing-data-waivable consensus-error would win but non-empty exists (above threshold)",
 		Condition: func(a *consensusAnalysis) bool {
 			if a.config.disputeBehavior != common.ConsensusDisputeBehaviorReturnError {
 				return false
@@ -500,8 +501,9 @@ var consensusRules = []consensusRule{
 			if !a.config.preferNonEmpty {
 				return false
 			}
+			missingDataWaivable := anyMissingDataWaiverOptIn(a.config.requiredParticipants)
 			bestEmpty := 0
-			bestConsensusErr := 0
+			bestMissingDataErr := 0
 			bestNonEmpty := 0
 			hasAnyNonEmpty := false
 			for _, g := range a.groups {
@@ -514,8 +516,8 @@ var consensusRules = []consensusRule{
 						bestEmpty = g.Count
 					}
 				case ResponseTypeConsensusError:
-					if g.Count > bestConsensusErr {
-						bestConsensusErr = g.Count
+					if missingDataWaivable && groupIsMissingDataAbstention(g) && g.Count > bestMissingDataErr {
+						bestMissingDataErr = g.Count
 					}
 				case ResponseTypeNonEmpty:
 					hasAnyNonEmpty = true
@@ -528,7 +530,7 @@ var consensusRules = []consensusRule{
 			if bestEmpty >= th && hasAnyNonEmpty && bestEmpty >= bestNonEmpty {
 				return true
 			}
-			return bestConsensusErr >= th && bestNonEmpty >= th && bestConsensusErr >= bestNonEmpty
+			return bestMissingDataErr >= th && bestNonEmpty >= th && bestMissingDataErr >= bestNonEmpty
 		},
 		Action: func(a *consensusAnalysis) *slotResult {
 			return &slotResult{Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil)}
