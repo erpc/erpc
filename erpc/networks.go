@@ -1772,8 +1772,9 @@ func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedReq
 	// Ordering hints only: every upstream stays eligible.
 	if n.Architecture() == common.ArchitectureEvm {
 		if bn := n.routingBlockNumber(ctx, req); bn > 0 {
-			upsList = n.partitionUpstreamsByLatestBlock(upsList, bn)
-			upsList = preferTipLeaderForNearTipGetBlock(upsList, method, bn, n.requestHead(req).Leader)
+			head := n.requestHead(req)
+			upsList = n.partitionUpstreamsByLatestBlock(upsList, bn, head.Latest)
+			upsList = n.preferTipLeaderForNearTipGetBlock(upsList, method, bn, head.Leader, head.Latest)
 		}
 	}
 
@@ -3752,7 +3753,7 @@ func (n *Network) headFirst(req *common.NormalizedRequest, attempted map[string]
 			rest = append(rest, u)
 		}
 	}
-	rest = n.partitionUpstreamsByLatestBlock(rest, bn)
+	rest = n.partitionUpstreamsByLatestBlock(rest, bn, n.requestHead(req).Latest)
 	return func() (common.Upstream, error) {
 		for len(rest) > 0 {
 			u := rest[0]
@@ -3770,9 +3771,9 @@ func (n *Network) headFirst(req *common.NormalizedRequest, attempted map[string]
 // each group (spec §6.1, §6.4, §8). A push source is judged by its hash
 // vote on this instance, as its requests ride this instance's socket,
 // which may be half-open while the shared head counter moves; any other
-// upstream by its head counter. An upstream with no known head keeps its
-// place.
-func (n *Network) partitionUpstreamsByLatestBlock(ups []common.Upstream, bn int64) []common.Upstream {
+// upstream by its head counter, credited up to latest (creditedHead). An
+// upstream with no known head keeps its place.
+func (n *Network) partitionUpstreamsByLatestBlock(ups []common.Upstream, bn, latest int64) []common.Upstream {
 	if bn <= 0 || len(ups) < 2 {
 		return ups
 	}
@@ -3780,6 +3781,8 @@ func (n *Network) partitionUpstreamsByLatestBlock(ups []common.Upstream, bn int6
 		head := upstreamLatestBlock(u)
 		if n.metricsTracker != nil && n.sources.pushSource(u.Id()) {
 			head = n.metricsTracker.HashVoteNumber(u)
+		} else {
+			head = n.creditedHead(u, head, latest)
 		}
 		return head > 0 && !common.EvmHeadReaches(u, head, bn)
 	})
@@ -3809,8 +3812,9 @@ func stablePartition(ups []common.Upstream, last func(common.Upstream) bool) []c
 // to the front for eth_getBlockByNumber of its head or the next block while
 // its head is strictly ahead of every other upstream in ups, which may not
 // have imported that block yet. Heads are read as the Leader was chosen
-// (evmTipHead).
-func preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn int64, leader common.Upstream) []common.Upstream {
+// (evmTipHead), the others credited up to latest (creditedHead), so a
+// fresher poll alone makes no leader.
+func (n *Network) preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn int64, leader common.Upstream, latest int64) []common.Upstream {
 	if method != "eth_getBlockByNumber" || len(ups) < 2 || leader == nil {
 		return ups
 	}
@@ -3823,7 +3827,7 @@ func preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn 
 		switch {
 		case u == leader:
 			at = i
-		case evmTipHead(u) >= tip:
+		case n.creditedHead(u, evmTipHead(u), latest) >= tip:
 			return ups
 		}
 	}
@@ -3835,6 +3839,32 @@ func preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn 
 	out = append(out, ups[:at]...)
 	out = append(out, ups[at+1:]...)
 	return out
+}
+
+// creditedHead is head, u's head as read for ordering, plus the blocks the
+// chain made since u's newest report beyond its lag then, never above
+// latest (spec §6.4, #1352): a polled head ages by up to a poll interval,
+// and read raw it put a fast upstream polled every 10s on a 2s chain behind
+// a slow one polled more often. The report is u's head counter and its
+// report time. A head that is unknown, at or above latest, capped by a
+// configured exactBlock, or a push source's gets none, and so does a
+// benched one (Tracker.HeadCredit). It orders only.
+func (n *Network) creditedHead(u common.Upstream, head, latest int64) int64 {
+	if head <= 0 || head >= latest || n.metricsTracker == nil || n.sources.pushSource(u.Id()) {
+		return head
+	}
+	eu, ok := u.(common.EvmUpstream)
+	if !ok {
+		return head
+	}
+	sp := eu.EvmStatePoller()
+	if sp == nil || sp.IsObjectNull() {
+		return head
+	}
+	if _, capped := evmTipObservation(eu, false); capped {
+		return head
+	}
+	return min(latest, head+n.metricsTracker.HeadCredit(u, sp.LatestBlock(), sp.LatestReportAt(), latest))
 }
 
 // upstreamLatestBlock is u's polled head, or 0 when unknown.

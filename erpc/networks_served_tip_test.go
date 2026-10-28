@@ -50,6 +50,9 @@ type servedTipFixture struct {
 	tags             []string
 	// debounce, when set, is the upstream's statePollerDebounce.
 	debounce time.Duration
+	// statePollerInterval sets evm.statePollerInterval; the tracker credits a
+	// head for one poll period after each report.
+	statePollerInterval time.Duration
 }
 
 // setupServedTipNetwork bootstraps a Network with the supplied upstream
@@ -94,7 +97,7 @@ func setupServedTipNetworkEvery(t *testing.T, ctx context.Context, fixtures []se
 			cid = chainID
 		}
 		endpoint := "http://" + f.id + ".localhost"
-		evmCfg := &common.EvmUpstreamConfig{ChainId: cid, StatePollerDebounce: common.Duration(f.debounce)}
+		evmCfg := &common.EvmUpstreamConfig{ChainId: cid, StatePollerDebounce: common.Duration(f.debounce), StatePollerInterval: common.Duration(f.statePollerInterval)}
 		if f.upperExactBlock > 0 {
 			upper := f.upperExactBlock
 			evmCfg.BlockAvailability = &common.EvmBlockAvailabilityConfig{

@@ -1975,6 +1975,39 @@ func (t *Tracker) HashVoteNumber(ups common.Upstream) int64 {
 	return 0
 }
 
+// HeadCredit is how many blocks ups is presumed to have gained since it
+// reported head at at, its head counter and that report's time, for
+// ordering only (spec §6.4, #1352): what latest made beyond ups's lag then
+// (its {*, All} BlockHeadLag, which keeps the lag at the report for one
+// poll period, see headReport), at most the blocks the chain can make
+// since at by the network block time, so a latest that rose only because
+// peers reported late is no progress. 0 for a head that is unknown, at or
+// above latest, benched, or tracked above latest, and until the block time
+// is known.
+func (t *Tracker) HeadCredit(ups common.Upstream, head int64, at time.Time, latest int64) int64 {
+	if head <= 0 || head >= latest || at.IsZero() {
+		return 0
+	}
+	net := ups.NetworkId()
+	um, ok := t.metadata.Load(metadataKey{ups, net})
+	if !ok {
+		return 0
+	}
+	meta := um.(*NetworkMetadata)
+	nm, ok := t.metadata.Load(metadataKey{nil, net})
+	if !ok || meta.headBenched.Load() || meta.evmLatestBlockNumber.Load() > latest {
+		return 0
+	}
+	blockTime := time.Duration(nm.(*NetworkMetadata).evmBlockTime.Load())
+	m, ok := t.upsMetrics.Load(upstreamKey{ups, "*", common.DataFinalityStateAll})
+	if !ok || blockTime <= 0 {
+		return 0
+	}
+	byLag := latest - m.(*TrackedMetrics).BlockHeadLag.Load() - head
+	byTime := int64(t.now().Sub(at) / blockTime)
+	return max(0, min(byLag, byTime))
+}
+
 // ageHashVote starts the hash age when the lag reference ref stands above
 // the hash vote, and ends it once the vote reaches ref. The age counts from
 // the first hash vote above it that reached this instance (fv) at or below
@@ -2246,6 +2279,19 @@ func (t *Tracker) setLatestBlockNumber(upstream common.Upstream, blockNumber int
 			t.getHeadLagGauge,
 			lg,
 		)
+		// Every reporter's {*, All} lag follows the new head, served or not:
+		// the index above holds only upstreams with traffic or a policy read,
+		// and a reporter missing from it would keep the lag it had when its
+		// poller last reported, after the poller stopped. Network-scope lag
+		// policies and HeadCredit read this bucket.
+		for _, r := range ntwMeta.reporters {
+			if r.meta.evmLatestBlockNumber.Load() <= 0 {
+				continue
+			}
+			lag := blocksBehind(ntwBn, lagHead(r.ups, r.meta))
+			t.loadOrStoreUpsMetrics(upstreamKey{r.ups, "*", common.DataFinalityStateAll}).BlockHeadLag.Store(lag)
+			t.getHeadLagGauge(t.projectId, r.ups.VendorName(), netLabel, r.ups.Id()).Set(float64(lag))
+		}
 	} else {
 		// Only update items for this single upstream
 		t.updateSingleUpstreamLag(

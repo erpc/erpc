@@ -491,6 +491,19 @@ func TestWildcardLagMirroredForPeerUpstreams(t *testing.T) {
 	// ups1 is at the tip — its wildcard lag must be 0.
 	ups1WildcardLag := tracker.GetUpstreamMethodMetrics(ups1, "*", common.DataFinalityStateAll).BlockHeadLag.Load()
 	require.EqualValues(t, 0, ups1WildcardLag)
+
+	// ups4 never served traffic and nothing read its metrics, so it is not in
+	// the request index. It reports the tip, then its poller stops while the
+	// chain goes on: its lag must follow the head all the same, or it reads
+	// "at tip" for good (HeadCredit and lag policies read this bucket).
+	ups4 := common.NewFakeUpstream("upstream4")
+	tracker.SetLatestBlockNumber(ups4, 1000, 0)
+	tracker.SetLatestBlockNumber(ups1, 1010, 0)
+	tracker.SetLatestBlockNumber(ups3, 1010, 0)
+	m, ok := tracker.upsMetrics.Load(upstreamKey{ups4, "*", common.DataFinalityStateAll})
+	require.True(t, ok)
+	require.EqualValues(t, 10, m.(*TrackedMetrics).BlockHeadLag.Load(),
+		"an unindexed reporter's lag must follow the network head after its poller stops")
 }
 
 func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
