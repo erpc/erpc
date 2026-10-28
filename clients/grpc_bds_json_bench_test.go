@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/blockchain-data-standards/manifesto/evm"
-	"github.com/bytedance/sonic"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -56,15 +55,7 @@ func loadBaseReceipts(b *testing.B) *evm.GetBlockReceiptsResponse {
 func BenchmarkGrpcBdsReceiptsJson(b *testing.B) {
 	resp := loadBaseReceipts(b)
 	render := func() []byte {
-		result := make([]interface{}, len(resp.Receipts))
-		for j, r := range resp.Receipts {
-			result[j] = evm.ReceiptToJsonRpc(r)
-		}
-		out, err := sonic.Marshal(result)
-		if err != nil {
-			b.Fatal(err)
-		}
-		return out
+		return renderResult(func(buf []byte) []byte { return evm.AppendReceiptsJsonRpc(buf, resp.Receipts) })
 	}
 	b.SetBytes(int64(len(render())))
 	b.ReportAllocs()
