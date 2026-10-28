@@ -96,7 +96,7 @@ func TestCovSvm_UnparseableRequest_EveryEntryPoint(t *testing.T) {
 	require.False(t, handled)
 
 	// Slot helpers fail open / report "no bound".
-	end, ok := RequestRangeEndSlot(ctx, covSvmBadReq(), 7, 100)
+	end, _, ok := RequestRangeEndSlot(ctx, covSvmBadReq(), 7, 100)
 	require.True(t, ok)
 	require.EqualValues(t, 7, end, "unknown method resolves to start itself")
 	_, ok = RequestLowerBoundSlot(ctx, covSvmBadReq())
@@ -388,13 +388,13 @@ func TestCovSvm_RequestRangeEndSlot_GetBlocksWithLimitMalformed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	for _, params := range []string{`[50]`, `[50,-1]`, `[50,1.5]`} {
-		end, ok := RequestRangeEndSlot(ctx, reqOf(t, "getBlocksWithLimit", params), 50, 80)
+		end, _, ok := RequestRangeEndSlot(ctx, reqOf(t, "getBlocksWithLimit", params), 50, 80)
 		require.False(t, ok, "params %s must fail open", params)
 		require.Zero(t, end)
 	}
 	// Native int / int64 limits are accepted and resolve to the tip.
 	for _, limit := range []interface{}{int(10), int64(10)} {
-		end, ok := RequestRangeEndSlot(ctx, covSvmReqFromParams("getBlocksWithLimit", []interface{}{int64(50), limit}), 50, 80)
+		end, _, ok := RequestRangeEndSlot(ctx, covSvmReqFromParams("getBlocksWithLimit", []interface{}{int64(50), limit}), 50, 80)
 		require.True(t, ok)
 		require.EqualValues(t, 80, end)
 	}
