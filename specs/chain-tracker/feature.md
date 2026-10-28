@@ -144,7 +144,8 @@ flowchart LR
 Execution model:
 
 - Each tracker is one goroutine with a mailbox. Observations, fetch results and ticks are messages; the loop never holds a lock across I/O.
-- The mailbox never blocks a sender, and never drops fetch results or ticks: at most 16 fetches are in flight. When headers fill it, answers drop first, then each source keeps only its newest header; walks fill the heights that dropped.
+- The mailbox never blocks a sender, and never drops fetch results or ticks: at most 16 fetches are in flight. When headers fill it, answers drop first, then each source keeps only its newest header; walks fill the heights that dropped. Client answers never grow it without bound: a client answer for a block below the window is dropped before it is queued, and integrity's finalized anchors are recorded outside the tracker's goroutine.
+- The tracker takes its mailbox in batches: source votes and fetch results before client answers, then one read of the voters and one update for the whole batch, so a burst of client answers delays a vote by at most one batch.
 - `Head` is published as one atomic value; no request computes it again.
 - Taps read the state the tracker publishes after each change; a Read never takes a lock the tracker waits on.
 - Tracker, reconciler, Ask and tap loops run under `recover`, counted in `erpc_unexpected_panic_total`, as the ws server's handlers do (`erpc/ws_server.go`). In the tracker, a panic drops only the message it was handling; 3 panics of one message kind, with none of that kind handled cleanly between them, reset it (§6.5). Calls from the tracker into the network's head code recover on their own and never fail a message.
@@ -333,7 +334,7 @@ Each concept answers one question and has one home. W (§1) is the one freshness
   - Hash age reads the newest hash vote (§6.3): how long since another voter's first local header above U's vote, at or below the reference, arrived.
 - Number age decides the bench: an upstream is benched after `max(30s, 3 × its backed-off cadence)` (§6.8), and readmitted once its counter reaches the lag reference. A wss source's cadence is its poll cadence, so it benches at the 30s floor. A benched upstream is no voter.
 - #1263's stall rules stay beside number age: a head frozen above peers whose newest blocks are a stall window younger is benched by block age, so a frozen pair above the chain never benches the honest pair below it.
-- Hash age decides the hash voters: a voter is a hash voter while its hash age is at most W and its channel answers. A push source's channel is its socket; any other voter's is its polls: once its failed polls of `latest` cover at least W, from the first one's send to the last one's failure, with no success since, its hash vote expires as a closed socket's does, until a poll succeeds. One timeout as long as W covers W alone; two quick 429s do not. A failed poll is one the node failed (transport error, timeout, 5xx, 429); eRPC's own refusals (local rate limit, open breaker, skip) and unsupported or client-error answers are no poll: they neither fail nor back off, and a failure whose request was sent before the last success does not count. A halted chain still answers polls and keeps its hash voters; an instance cut from its vendors loses them, so its streams end (§10.2).
+- Hash age decides the hash voters: a voter is a hash voter while its hash age is at most W and its channel answers. A push source's channel is its socket; any other voter's is its polls: once its failed polls of `latest` cover at least W, from the first one's send to the last one's failure, with no success since, its hash vote expires as a closed socket's does, until a poll succeeds. One timeout as long as W covers W alone; two quick 429s do not. A failed poll is one the node failed (transport error, timeout, 5xx, 429) or the vendor refused us (401, 403: a ban or a revoked key); eRPC's own refusals (local rate limit, open breaker, skip) and unsupported or client-error answers are no poll: they neither fail nor back off, and a failure whose request was sent before the last success does not count. A halted chain still answers polls and keeps its hash voters; an instance cut from its vendors loses them, so its streams end (§10.2).
 - Routing hints, ordering only; every upstream stays eligible:
   - Reached N: for a request at block N, by number or by a block hash the tracker holds, the upstreams that reached N go first, the policy's order kept within each part. A push source (a wss upstream whose `newHeads` subscription is live) reached N when its hash vote on this instance did, since its requests ride that socket; any other upstream when its head counter did. Tracker fetches use the same rule (§8).
   - A request with no block: a push source whose hash age exceeds W, or whose socket closed, goes after the others until it reports again, so a half-open socket holds no client request. Hash age never reorders any other upstream: its freshness follows the poll schedule, which is no evidence of a fault. Being behind by less than W reorders nobody.
@@ -389,11 +390,12 @@ Refusal rule, for block N on a request:
 
 - Sites: `tryShortCircuitFutureBlock` (with `shortCircuitFutureBlocks`, a future block gets `null` with no dispatch, #1238), `EmptyResultBeyondConfidence` (`enforceNonNullBlock`, empty-is-miss), the `eth_query` range check, and the `eth_getLogs` and `trace_filter` range check: a future `toBlock` is refused, never dispatched, since a node answers a range above its head with the part it has.
 - The availability gate checks configured bounds only (#934). One head predicate adds `headLagToleranceBlocks` to `latestBlockMinus` bounds in the gate and in upstream ordering (#1099); votes and the ceiling keep the bound.
-- A by-hash answer (the §7 by-hash family, `eth_getLogs` by `blockHash` included), from an upstream or from the cache, from a block above `Latest` waits up to 1 bt while heads refresh; then it is sent if `Latest` includes its block, else `null`. A request that ends during the wait gets `null`.
+- A by-hash answer (the §7 by-hash family, `eth_getLogs` by `blockHash` included), from an upstream or from the cache, from a block above `Latest` waits up to 1 bt while the voters `Latest` lacks are Asked for a head fetched after the wait began; then it is sent if `Latest` includes its block, else `null`. A request that ends during the wait gets `null`. Each wait counts in `erpc_head_refusal_total` by its outcome.
+- An upstream the availability gate skips for block N is Asked in the background, as main polled it: the request never waits on it.
 
 Finality:
 
-- Reads: N is final when N ≤ `Head.Finalized`. The `finalized` tag, cache hits, labels, integrity `IsFinalized`, narrow anchors and empty-result confidence read it.
+- Reads: N is final when N ≤ `Head.Finalized`. The `finalized` tag, cache hits, labels, integrity `IsFinalized`, narrow anchors and empty-result confidence read it. `Finalized` moves by the full poll and the `finalized`-tag refresh only, as on main: a read of a block above it polls nothing.
 - Permanent cache writes: N ≤ `Head.Finalized` and N ≤ the serving upstream's own finalized (#90): its polls of the `finalized` tag and its answers to a tag it was sent, never an interpolated request it served. An upstream on a minority fork cannot write a permanent entry.
 - Per-upstream finality stays per upstream for routing (`upstream/evm_upstream_ops.go`, `EvmStatePoller`): a routing fact, not a head.
 - The cache write guard reads the network-wide lane's `Latest`, whatever lane the request used (#932).
@@ -407,7 +409,7 @@ Each tracker runs one goroutine. It holds headers by hash; a header whose parent
 Fork choice:
 
 1. Hold: an empty tracker holds the first vote as a root. A vote more than `maxBackfill` after the head, by header time, becomes a root at once. Any other vote whose parent is not held is walked (§8, class 1): missing heights by number, each checked against the parentHash of the block above, and a mismatch fetched by hash from its sender. The walk stops at a held header, or after `reorgWindow` blocks, where its lowest header becomes a root. Client and integrity answers inside the window are held; they never walk. A tracker that no history serves (no open tap, integrity follow included, and no integrity check on its network that reads pins) walks and fills nothing: a vote whose parent is not held becomes a root at once and replaces the older trees, and that is no re-anchor. Its first tap or check starts history from its head.
-2. Fill: every root is extended downward (§9) until it joins another tree, reaches the window base, or names the all-zero parentHash (the chain's first block): that root is final, never fetched below.
+2. Fill: every root is extended downward (§9) until it joins another tree, reaches the window base, names the all-zero parentHash (the chain's first block), or names a parent no upstream returns by hash in one full sweep: that root is final, never fetched below.
 3. Vote: a voter's hash vote moves to its newest header once that header is held; until then its previous vote stays. An ancestor of the current vote does not move it back.
 4. Choose: take the tree with the most votes; a tie keeps the tree of the pins. In it, from the root, follow the child whose subtree holds the most votes; a tie keeps the pinned child; a block with no voted child follows its pinned child. Stop at a block with no child to follow, or at a tie with no pinned child. The last block followed is the head; the path from the root to it is the pins.
 5. Settle: a tie in rule 4, or a hash vote off the pins (§6.3), runs a settle (§6.8). Each answer is walked like a vote; once held, a voter's answer is its hash vote, and a non-voter's adds one vote for this decision only: it counts while the votes alone still meet that tie or dispute, and backs no head above the one decided. The pins stay while a round is out, at most W from its start; walks still out then count as no answer. No answer: the settle runs again after the Ask's backoff; no target: after one block time. A refresh (§6.3) runs once per voter and fork point; any round that ends over a dispute counts as the refresh of every vote it disputes.
@@ -481,18 +483,18 @@ Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, th
 | catch-up (§6.5) | number; hash for voters without a fresh hash vote | bt, at most 1s; no faster than the demand's pace |
 | refusal band and stale ceiling (§6.4) | number | 1 bt |
 | `eth_blockNumber`, `eth_getBlockByNumber(latest\|finalized)` pre-forward refresh | number | cadence |
-| a numbered read above `Head.Finalized` (§6.4 Finality), the finalized axis | number | the finalized debounce |
+| availability-gate skip (§6.4), in the background | number | cadence |
 | settle: for a tie, the voters whose vote decides neither tied block (no fresh hash vote, a vote below the split or in another tree), then non-voters, up to 3 (hash); for a vote off the pins (§6.3), the voters that back the pins with an older vote and the voters with no fresh hash vote, oldest evidence first, up to 3 (fork) | hash, fork | cadence; a fork need: sent after the pins moved |
 | a vote still off the pins after its settle (§6.3) | hash | W |
 | no hash voter, with demand (§6.5 rule 6) | hash | cadence; no faster than the demand's pace |
 
-- A head refresh (the pre-forward refresh, and a numbered read's finalized axis) Asks as many of the lane's voters as the quorum needs. On the latest axis it takes them in routing order, as main does: pushes and polls keep those fresh, and lag benches a voter. On the finalized axis it takes them oldest finalized report first, so every voter's finalized is refreshed within ⌈voters / q⌉ refreshes: a voter's finality depth is its own, and neither routing order nor the bench reflects it (§19 P7). A voter whose `finalized` tag is given up has no finalized poll to refresh: its vote is derived from its latest (§6.4), so it takes no place among them.
+- The pre-forward refresh Asks as many of the lane's voters as the quorum needs. On the latest axis it takes them in routing order, as main does: pushes and polls keep those fresh, and lag benches a voter. On the finalized axis it takes them oldest finalized report first, so every voter's finalized is refreshed within ⌈voters / q⌉ refreshes: a voter's finality depth is its own, and neither routing order nor the bench reflects it (§19 P7). A voter whose `finalized` tag is given up has no finalized poll to refresh: its vote is derived from its latest (§6.4), so it takes no place among them.
 - A poller method (`latest`, `finalized`, the syncing check) refused 10 times before any success is given up for 10 min, then retried; an upstream given up on `latest` is no poll source meanwhile.
 - A panic in an Ask fails its waiters and is counted; no waiter hangs (#1060).
 - At most one live poller per upstream per instance (#1007); a stuck refresh exits within its fallback timeout + 1s (#838).
 - The finalized poll waits `max(debounce, depth × bt × 0.05)` (#1265); an upstream behind the reference's finalized keeps the regular cadence (#1269).
 
-Owner: `architecture/evm/evm_state_poller.go` (`RefreshLatestBlock`). Signal: `erpc_head_ask_total`. Keeps: #1256, #790, #240, #1007, #838, #1060, #1265, #1269.
+Owner: `architecture/evm/evm_state_poller.go` (`Ask`). Signal: `erpc_head_ask_total`. Keeps: #1256, #790, #240, #1007, #838, #1060, #1265, #1269.
 
 ### 6.9 Suspension: is a check wrong network-wide?
 
@@ -523,7 +525,7 @@ A vendor can answer `eth_call(latest)` from old state while its header head is c
 
 | Part | Rule |
 |---|---|
-| Fact | Tag-state head per upstream: the block it executes `latest` at, from Multicall3 `getBlockNumber()` at `latest` (ArbSys `arbBlockNumber()` on Nitro, where Multicall3 returns the L1 height). It never moves `Latest` |
+| Fact | Tag-state head per upstream: the block it executes `latest` at, from Multicall3 `getBlockNumber()` at `latest`; on an Arbitrum Nitro chain, where Multicall3 returns the parent chain's height, from ArbSys `arbBlockNumber()`. A network is Nitro when ArbSys (`0x64`) answers there, whatever its chainId (Arbitrum One, Nova, Sepolia, every Orbit chain), decided on its first probe and kept. It never moves `Latest` |
 | Free evidence | Every Multicall3 pack sent with the tag carries one such call, stripped from the client's results, so each packed answer proves its own block |
 | Applies to | Family-3 requests (§7) whose block reaches the upstream as the tag: `translateLatestTag: false` methods, `skip-interpolation`. Numbered requests, other families (tracker fetches included) and requests while Head is unknown are unaffected |
 | Reference | The deciding request's `Latest` (its lane's), not the upstream's own head; where no request decides (gauges, probe logs), the network-wide `Latest`. A sample keeps its block and send time and is judged when read |
@@ -562,7 +564,7 @@ Owner: `architecture/evm/integrity_stateprobe.go`; the skip in `checkEvmUpstream
 |---|---|
 | `translateLatestTag`, `translateFinalizedTag` | on for every method but `arbtrace_*`; off is the per-method opt-out and covers every form (plain tag, absent param, EIP-1898): the tag reaches upstreams as is, an absent selector as the literal `latest`, and that method leaves the promise |
 | `skip-interpolation` directive | per-request opt-out: tags and absent selectors reach upstreams as the client sent them |
-| `evm.pinLatestTag` | pins a lagging upstream to the request's one number, on every attempt and hedge; must stay off for upstreams of a tag-only method |
+| `evm.pinLatestTag` | pins a lagging upstream to the request's one number, on every attempt and hedge; never a request whose tag reaches upstreams as is (`translateLatestTag: false`, `skip-interpolation`), whatever the upstream sets |
 
 Chains whose state works only at the tag: on HyperEVM, HyperCore read precompiles (`0x…0800`–`0x…08ff`) fail at any explicit block number, even the exact head; a nested read fails silently. At `latest` they succeed. Such methods set `translateLatestTag: false`; the tag-state gate (§6.11) protects them.
 
@@ -617,7 +619,7 @@ From cursor `c`, first matching case:
 - Receipts a logs tap needs for a Reverted block, and the feed lacks, are fetched by hash; Read waits for them as for Applied.
 - Read returns once the batch is not empty. Until then it waits for the next confirmed-head change, a fill or those receipts; a new head alone does not restart a receipts wait.
 - A tap at the confirmed head reads one block per head.
-- Per-block work is shared: one receipts parse with an index by address and topic0, one match per filter, one encoding per transport, cached per network and bounded by the window.
+- Per-block work is shared: one receipts parse, one match per filter, one encoding per transport, cached per network and bounded by the window. The index by address and topic0 is built the first time a logs tap reads the block; prefetched receipts that only client checks read keep no index and no copies of their logs.
 
 ### 10.2 Per transport
 
@@ -671,7 +673,7 @@ A ws tap's lag is the age of the block after its cursor: how long that block has
 ```
 
 - Receipts are fetched when a block is pinned, not when a tap reaches it, while they are demanded: a registered `MayMatch` wants the block, or a client check read receipts on the network within the last W, so the next client receipt finds its block's receipts held or in flight.
-- A receipts answer counts only when it is non-null, every receipt names the requested `blockHash`, and it is non-empty unless `transactionsRoot` is the empty-trie root. Anything else is a failed fetch, never "no logs".
+- A receipts answer counts only when it is non-null, every receipt names the requested `blockHash`, and it is non-empty unless the block is empty: its `transactionsRoot` is the empty-trie root, or, on a network that sets `validateTransactionsRoot: false` (its roots are not Ethereum's trie: Hedera, Kaia), its `gasUsed` is 0. Anything else is a failed fetch, never "no logs". An empty block's receipts are never fetched.
 - A client check that waits on a block's receipts fetch (`receiptVsBlock`) gets the answer once it meets the rules above. The receipts checks that are on (§13) run right after; only receipts that pass them are held, so logs taps and later reads see checked receipts only. A failed fetch of any kind, a failed check included, counts against its upstream, and the fetch goes on in the same sweep, to an upstream of another vendor first, as after a bloom mismatch.
 - A client check whose receipts fetch failed waits on the block's refetch while an upstream that has not failed this block remains. Once every upstream failed it, the check is unverifiable and passes at once: an unverified check never rejects (#1014).
 - Bloom check: the OR of the receipt blooms must equal the header's logsBloom, on every answer. A mismatch counts against that upstream (`bloomMatch`), and the block is fetched from an upstream of another vendor. Suspension follows §6.9.
@@ -684,7 +686,7 @@ A ws tap's lag is the age of the block after its cursor: how long that block has
 - Auto-ignored methods (`IgnoreMethod`) expire after 10 min, so a vendor that answered "unsupported" during a deploy serves again.
 - Logs travel as verbatim JSON. Receipt logs carry `blockTimestamp`; `integrity.Log` does not model it.
 - Matching uses `LogsFilter.Matches` (geth `filterLogs`) in `architecture/evm/logfilter`. Integrity and the ws `logs` transport share it.
-- A `logs` subscribe parses its filter as geth does (`address`, `topics`); one that does not parse fails with `-32602` before any fetch. `fromBlock`/`toBlock` are ignored, as for a live geth subscription.
+- A `logs` subscribe parses its filter as geth does (`address`, `topics`); one that does not parse fails with `-32602` before any fetch. As in geth, a filter holds at most 1,000 addresses, 4 topic positions and 1,000 values per position; more fails with `-32602`. `fromBlock`/`toBlock` are ignored, as for a live geth subscription.
 
 Cost, measured 2026-10-14 on public RPCs, 5 consecutive blocks each:
 
@@ -726,7 +728,7 @@ Cost, measured 2026-10-14 on public RPCs, 5 consecutive blocks each:
 - An empty numbered trace (`trace_block` and kin) is accepted only for a pinned block whose header has `transactionsRoot` = the empty-trie root and `gasUsed` = 0, with a hash that recomputes; no acceptance-time fetch (#1201).
 - `integrity.follow.enabled` opens one integrity follow tap per tracker at the network's first client request, as main's follower started, and keeps it open. It holds demand at the pace of `integrity.follow.interval` (1s), and feeds `stateProberFor(...).onNewHead`, so the state probes start with it. Out of range restarts it after the confirmed head.
 - A pinned state probe at block N goes only to the upstreams whose head counter reached N; an upstream below N is probed at a later pin it reached. Its block comes from the confirmed head, so the probe never meets the refusal rule (§6.4): it Asks no head, and a lagging upstream's missing state never counts as a failed probe.
-- Group trackers count the voters of their lane; their settles carry the group selector.
+- Group trackers count the voters of their lane; their settles carry the group selector. A network holds at most 16 of them, the lanes of §6.4; a selector past the 16th has no group tracker, and its integrity checks read the network-wide tracker.
 - With integrity on, every delivered log is proven against `receiptsRoot` of a hash-linked header, except logs from the fallback (§11).
 - Chain profiles still apply: Kaia excludes `receiptsRootRecompute`.
 
@@ -866,7 +868,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | Metric | Change |
 |---|---|
 | `erpc_chain_tracker_invariant_violations_total{project,network,invariant}` | new; invariant: `sent_above_latest`, `sent_unconfirmed`, `tap_gap`, `removed_unsent`, `pins_unlinked`, `final_hash_changed`, `latest_regressed` (only a `Latest` below a block this instance sent while the lane's ballot counts the same voters as before; a fall with a changed counted set, a voter gone or one joined under a majority quorum, is a membership change, logged, not counted; counted once per fall and re-armed when `Latest` reaches that block again); must stay 0 except `final_hash_changed`, which logs a followed majority, and `latest_regressed` when every upstream rewinds (§14) |
-| `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `retried_found`, `retried_missing` (the promise broke on this instance), `future`, `future_after_refresh` |
+| `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `retried_found`, `retried_missing` (the promise broke on this instance), `future`, `future_after_refresh`; the by-hash wait (§6.4): `held_served`, `held_null` |
 | `erpc_head_ask_total{project,network,reason,outcome}` | new; reason: the §6.8 caller (`poll`, `catch_up`, `refusal`, `refresh`, `settle`, `no_source`); outcome: `fetched`, `shared_fresh`, `inflight`, `backoff` |
 | `erpc_chain_tracker_confirm_lag_blocks{project,network}` | new: pins head − confirmed head; with no confirmed pin, the number of pins |
 | `erpc_tap_delivery_seconds{transport,kind}` | new: confirmed-head change → write |
@@ -897,6 +899,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_subscription_withheld_heads_total` | deleted: `erpc_chain_tracker_source_heads_total{outcome="gated_*"}` counts the same heads per upstream and reason |
 | `erpc_subscription_undelivered_total` | deleted: taps read the feed, so no event goes undelivered |
 | `erpc_upstream_stale_finalized_block_total` | deleted with the post-forward raise (§20): `finalized` reads `Head.Finalized` |
+| `erpc_upstream_stale_latest_block_total` | `category="eth_getBlockByNumber"` disappears with the post-forward raise (§20); `eth_blockNumber` is answered from `Head`, so the series left rarely moves. The bundled dashboards drop both stale-block panels |
 | `erpc_integrity_aux_request_total` | `kind="chain_follow"` disappears |
 | `erpc_upstream_subscriptions_active` | `kind="logs"` disappears |
 | `erpc_subscription_dedup_dropped_total` | `kind="logs"`, `kind="newHeads"` disappear; mempool only |
@@ -910,9 +913,9 @@ Tap metrics label `network` with the network label. Every other metric keeps its
 ## 18. Rollout
 
 1. Config first. Both images decode config strictly. For each deleted key, compare its configured value with its default; remove it while still on the old image, only where the value equals the default.
-2. New image with no new keys: development → staging → one canary instance per region → everywhere. Rollback is the previous image digest, valid while no new key exists. A network with a tuned value of a moved key (`integrity.reorgWindow` → `evm.chainTracker.reorgWindow`) cannot run either image with the other's key: its key moves in the same deploy as its new image, and its rollback reverts both.
+2. New image with no new keys: development → staging → one region or one fleet at a time → everywhere. Rollback is the previous image digest, valid while no new key exists. Every config a stage deploys boots both images, so a pod of either image that restarts during a roll or a rollback reads a config it accepts: a stage moves the image and nothing else. A tuned value of a moved key (`integrity.reorgWindow`) is removed first, while still on the old image: the window's `maxBackfill` of chain time already holds at least as many headers on the chains that set it (arbitrum 1024 blocks ≈ 3.6 min of chain).
 3. Other new keys (`subscriptionSource`, `evm.chainTracker.*`) only after the previous digest has left the rollback window: the old image rejects them.
-4. The canary writes the same per-upstream counters the control instances read: gate each stage on canary-written vs control-polled counter agreement. While old and new images share one backend, old pods ignore the rewind mark (§14): a rewind of up to 1024 blocks reaches them only through their own polls, and a deeper one counts a large rollback against the upstream on old pods.
+4. The canary writes the same per-upstream counters the control instances read: gate each stage on canary-written vs control-polled counter agreement. While old and new images share one backend, old pods ignore the rewind mark (§14), and a rewind of up to 1024 blocks reaches them by no path: their own polls treat it as noise (#222), so they keep the higher counter until the chain passes it; a deeper one counts a large rollback against the upstream on old pods.
 5. Go/no-go per stage, in seconds and per subscriber:
    - invariant violations 0;
    - `retried_missing` 0;
@@ -957,14 +960,14 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 
 | Area | Count | IDs |
 |---|---|---|
-| Upstream faults | 18 | U1–U18 |
+| Upstream faults | 20 | U1–U20 |
 | Network faults | 7 | N1–N7 |
-| Chain behaviour | 14 | C1–C14 |
+| Chain behaviour | 18 | C1–C18 |
 | Client behaviour | 9 | D1–D9 |
 | Cross-instance | 9 | X1–X9 |
 | Config | 7 | K1–K7 |
-| HTTP consistency | 11 | P1–P11 |
-| Total | 75 | |
+| HTTP consistency | 12 | P1–P11, P11-nitro |
+| Total | 82 | |
 
 | ID | Setup and fault | Expected |
 |---|---|---|
@@ -986,6 +989,8 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | U16 | wss refuses `newHeads` as unsupported | polled at cadence; asked again on reconnect and every 10 min |
 | U17 | https refuses `latest` 10 times | give-up; re-probed after 10 min; never a stuck poll source |
 | U18 | one HTTP vendor that is no source on a minority fork at the same heights, 20 blocks | taps never send its blocks; HTTP never serves them once W has passed since this instance first polled a fork header from it (its hash vote, §6.3) |
+| U19 | one https vendor answers HTTP 403 with an HTML body (a CDN ban or a revoked key); clients ask head+1 with `shortCircuitFutureBlocks` on | its polls fail (§6.1): its Asks back off and it leaves the ceiling, so a block above every other voter's head is `null` with no dispatch |
+| U20 | the first-ranked https vendor pruned below head−100 answers HTTP 403 with an HTML body (U20-403), or `null` and `[]` for logs (U20-null); gRPC streams resume 200 deep | every stream gets every canonical header up to the head from another vendor; no tap ends out of range |
 | N1 | +300 ms constant latency to one vendor | delivery p99 within 2 bt; `Latest` never held at the slowed vendor's number while q other voters report higher |
 | N2 | 0–2 bt jitter on every vendor; pushes reordered | `newHeads` in order, parent-linked, no duplicate |
 | N3 | instance 1 cut from vendor X for 50 blocks | instance 1 flows on vendor Y's votes; no stall |
@@ -1007,6 +1012,10 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | C12 | majority reverts a finalized block | followed; `final_hash_changed` logged; no permanent cache entry |
 | C13 | chain without a `finalized` tag | `finalized` = latest − derived depth (at least 30 min); cache uses it |
 | C14 | 2 of 4 votes on a branch that does not link | canonical stays; no stall |
+| C15 | hashes and roots not Ethereum's (Hedera, Kaia): no header hash recomputes, an empty block's `transactionsRoot` is keccak(""); `validateTransactionsRoot: false` | `gasUsed` 0 is an empty block: its receipts are never fetched; no receipts or logs fetch fails; no tap ends `1013` |
+| C16 | testnet reset: every vendor restarts on a new genesis with the same chainId, its head dropping from millions to 10 | `eth_blockNumber` follows within 2 min (the 60s regression guard, then 60s); every tap restarts on the new chain; every latest counter follows; no read answers from the old chain, its cached final block included |
+| C17 | no block for 30 min, past `maxBackfill`, then 20 blocks on demand, each 0–60s after the last | no upstream benched; W stays under its 60s cap; every tap gets every block within its bound |
+| C18 | one wss upstream that finalizes 2 below its head; chain halted; a reorg 3 deep reverts the block one instance's own finalized poll covered | `final_hash_changed` counted only on that instance; every client told of the reorg |
 | D1 | ws client stops reading for 20 blocks; gRPC client stops reading | `newHeads` restart past `reorgWindow`; gRPC `UNAVAILABLE` after the 10s send wait; other taps unaffected |
 | D2 | ws clients reconnect every 10 blocks | `newHeads` restart = number jump only; logs resubscribe |
 | D3 | gRPC resume on the other instance; orphan cursor; cursor below window; cursor above head | resend from fork point; `OUT_OF_RANGE`; `OUT_OF_RANGE`; wait |
@@ -1043,6 +1052,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | P9 | head+1 polling | as K7 |
 | P10 | `flashblocks*` + normal groups; use-upstream client fetches a delivered block | lane-consistent result; no `retried_missing` |
 | P11 | `translateLatestTag: false` method; one stale-state vendor, then all stale, then all more than 60s stale | stale vendor skipped; all stale → highest tag-state head, not `-32603`; all past 60s → `-32603` with `executedBlock` and `servedTip`, counted `refused` |
+| P11-nitro | a Nitro chain other than Arbitrum One: Multicall3 `getBlockNumber()` answers the parent chain's height, ArbSys `arbBlockNumber()` the chain's own; `skip-interpolation` `eth_call(latest)` | the first probe finds Nitro; every tag-state head is the chain's own height; every call served at `Latest`; no upstream counted stale |
 
 - The in-process chaos test `TestChainFeed_ConvergesUnderFaults` (`erpc/chain_feed_test.go`) stays as the fast CI test and uses the `test/chainsim` simulator. Panic recovery (`TrackerMessageHook`) is tested only there: no black-box trigger exists.
 
@@ -1053,7 +1063,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | `chainFollower`: ticker, `advance`, `step`, `ingest`, the retry of an unreconciled block | merged into the tracker's walk and fill; re-anchor replaces the retry |
 | `chainView` | becomes `ChainTracker` |
 | pin writes of `chainView.observe` from `observeBlockView`, `resolveHeaderKind` and `ReconfirmPin` | replaced by `Observe` without a vote; only hash votes move pins |
-| `matchRequestKind: internal` consensus for integrity's canonical fetches | no longer applies: tracker fetches follow §8, and settles replace the quorum |
+| `failsafe[].matchRequestKind: internal` | deleted: no eRPC-own request goes through a network failsafe policy (tracker fetches §8, head Asks §6.8, probes §6.11); a config naming it is refused at load |
 | `blockStreamManager`, `blockStreamHub`, `fetchBlockHeader`, `blockStreamMaxBackfill`, `ProcessBlockStream` | deleted; gRPC is a transport over taps |
 | indexer `Sink`, `StreamEvent`, `IndexedEvent`, `EventIngress`, `EventEgress`, `IngressSelector`, `NetworkHandle` | replaced by `Intake`, `Source`, feeds and taps |
 | indexer `EnsureFilter`, `ReleaseFilter`, `subscribe`, `reconcile`, `partitionIngresses`, `Ingest`, `dedupe`, `fanOut`, `headMarker` | deleted |
@@ -1064,7 +1074,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | wsclient `enqueue`, `isLossy`, `runWriter`, per-subscription buffers; `WsConnection.NotificationDropped` | replaced by taps and their wait bounds |
 | logs case of `DedupKeyForFilter`, logs dedup windows, `logRemoved` | deleted |
 | `nullingress` | deleted |
-| `IsInternal` | deleted: one field, `UpstreamPolicies`, says whose request it is: a client's (`Configured`) or eRPC's own (tracker fetch, poll or Ask, probe, subscription call, `eth_chainId` check). eRPC's own requests match failsafe kind `internal`; each keeps its policy bypass as before; tracker fetches skip open breakers and never feed them (§8) |
+| `IsInternal` | deleted: one field, `UpstreamPolicies`, says whose request it is: a client's (`Configured`) or eRPC's own (tracker fetch, poll or Ask, probe, subscription call, `eth_chainId` check). Each of eRPC's own requests keeps its policy bypass as before; tracker fetches skip open breakers and never feed them (§8) |
 | permanent switches: `IgnoreMethod` entries, `skipLatestBlockCheck`, the chain-identity cordon | each expires (§15.1) |
 | delivered-head floor: `NoteObservedLatestBlock`, `deliveredLatestBlock`, `applyDeliveredHeadFloor`, the network counter `latestBlockShared` | deleted: no block above `Latest` is sent, so nothing lifts `Latest` |
 | live bound, `live`, `SourceLive`, `newestKnown`, `erpc_source_live` | replaced by freshness (§6.1) and `erpc_upstream_report_age_seconds` |
@@ -1121,7 +1131,7 @@ One home per fact:
 - A request just above `Latest` costs one extra upstream call for an empty answer. Above the ceiling, every upstream whose report is older than 1 bt is Asked first: head+1 polling polls slow upstreams up to once per bt per instance, only while clients ask above the head.
 - `eth_blockNumber` on another instance may trail a sent head by one poll; the block itself loads.
 - Without shared state, a lane whose voters all push over links slower than another instance's by more than 1 bt can call a block that instance sent "future": a push carries no send time to age it by.
-- A by-hash lookup of a block above `Latest` waits up to 1 bt.
+- A by-hash lookup of a block above `Latest` waits up to 1 bt, then answers `null` if `Latest` still does not include the block: a wallet polling `eth_getTransactionReceipt` for a transaction just mined sees it once q upstreams hold its block.
 - Absent block params read as `latest`: the JSON-RPC default; now cacheable and consistent across upstreams.
 - A voter that leaves the ballot (bench, exclusion by the selection policy, cordon, failed polls) can step `Latest` back to the next voter's number until catch-up or the next pre-forward refresh Asks it; the block itself still loads.
 - Permanent cache writes need the serving upstream's finalized too.
@@ -1143,7 +1153,12 @@ One home per fact:
 - One block whose receipts fail for 60s closes every ws `logs` connection of the network with `1013`, spread over 60s.
 - gRPC slow client: today it skips forward past 256 blocks; now the stream ends with `OUT_OF_RANGE` past the window, or `UNAVAILABLE` after a 10s `Send`.
 - A gRPC client whose cursor is an orphan no upstream serves gets `OUT_OF_RANGE` and backfills, even after a 1-block reorg.
-- gRPC `StreamBlocks` stops sending `eth_getBlockByNumber` per block through the request path: per-block rate-limit counting ends, as for ws notifications.
+- gRPC `StreamBlocks` stops sending `eth_getBlockByNumber` per block through the request path: per-block rate-limit counting ends, as for ws notifications, and request metrics and logs count a stream once, as `eth_subscribe` at open. Auth runs once at open: a key revoked mid-stream keeps its open streams until the connection's maximum age (10 min).
+- `eth_subscribe` on a network with no subscription source answers `-32601`, as geth does for notifications it does not support; main sent `-32603`.
+- A request whose tag reaches the upstream as is (`translateLatestTag: false`, `skip-interpolation`, `arbtrace_*` by default) is never cached, and an `eth_getLogs` or `trace_filter` range whose bound is sent as a tag is not split up front: eRPC does not know where the upstream's tag ends.
+- One client can hold all 16 `newPendingTransactions` variants of a network; every other new variant is then refused. `StreamBlocks` streams have no per-instance cap, as on main; a cursor above every head waits until the connection's maximum age.
+- An upstream and its push twin (the same vendor's ws beside its HTTP endpoint) count as two hash voters: one vendor can confirm a head alone where it runs both; the evidence quorum (§6.10) still counts it once.
+- ws `logs` read the network-wide receipts, whatever lane the connection pins: on HyperEVM, a `systx-*` subscriber can get the standard family's log indexes.
 - Tracker fetches leave client rate limits. They share upstream permits with clients, except catch-up, which yields; when clients use a whole upstream budget, tracker fetches fail with them until load drops. Head Asks skip rate limits (§6.8): at most one fetch per upstream per cadence per instance, outside the vendor budget an operator configured.
 - Expiring switches re-probe failing vendors: one request per method every 10 min, one `eth_chainId` per cordoned upstream every 5 min.
 - A check that no upstream passes is suspended after 2 heights; on a network with one vendor, that vendor alone can suspend it, and 8 truncated receipts answers in a row turn the bloom check off.
