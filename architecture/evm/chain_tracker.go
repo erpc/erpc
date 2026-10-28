@@ -738,8 +738,7 @@ func (t *ChainTracker) guard(step string, fn func(), onPanic func()) (ok bool) {
 // trees are published for Reads outside the pins.
 func (t *ChainTracker) update() bool {
 	ok := t.guard("choose", func() {
-		t.endWalks()
-		t.promote()
+		t.moveVotes()
 		if s := t.settle; s != nil && s.inflight && (s.out == 0 && !t.anyWalking(s.answers) || !time.Now().Before(s.ends)) {
 			t.endSettle(s)
 		} else {
@@ -811,14 +810,24 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 		return
 	}
 	// Rule 1 without history: a vote off the pins' tree is a root at once,
-	// and it replaces the older trees.
+	// and it replaces the older trees. Votes earlier in the batch move
+	// first, as an update after each message would move them, so another
+	// voter's vote that left an old tree no longer keeps it.
 	if !t.served && t.counts(msg.upstream) && rootOf(nd) != t.pinRoot() {
+		t.moveVotes()
 		t.replaceOlder(nd, msg.upstream)
 	}
 	// Rule 3: the vote moves once its walk ends; until then the previous
 	// one stays.
 	t.pending[msg.upstream], t.pendingAt[msg.upstream] = nd, msg.at
 	t.walkFrom(nd, msg.upstream)
+}
+
+// moveVotes ends the walks nothing waits on and moves the votes whose walks
+// ended (rule 3).
+func (t *ChainTracker) moveVotes() {
+	t.endWalks()
+	t.promote()
 }
 
 // promote moves each pending vote whose walk ended. An ancestor of the
