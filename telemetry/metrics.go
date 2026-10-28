@@ -964,7 +964,7 @@ var (
 	MetricHeadRefusalTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "head_refusal_total",
-		Help:      "Total requests naming a block, by the refusal rule's outcome: served, retried_found, retried_missing, future, future_after_refresh.",
+		Help:      "Total requests naming a block, by the refusal rule's outcome: served, retried_found, retried_missing, future, future_after_refresh; by-hash waits for a block above Latest: held_served, held_null.",
 	}, []string{"project", "network", "rule"})
 
 	// MetricHeadAskTotal counts every head Ask (spec §6.8, §17) by its

@@ -535,9 +535,12 @@ var byHashFamily = map[string][]interface{}{
 
 // holdByHash returns the answer to send for resp, an answer to req, from
 // an upstream or the cache (spec §6.4): a by-hash answer from a block
-// above its lane's Latest waits up to 1 bt while the voters below that
-// block refresh, then is sent if Latest includes the block, else it is
-// null, as it is when ctx ends first. held: resp was replaced by null.
+// above its lane's Latest waits up to 1 bt while the voters Latest lacks
+// are Asked for a head fetched after the wait began (AskReaching: a
+// counter fresher than 1 bt is no evidence their nodes lack the block),
+// then is sent if Latest includes the block, else it is null, as it is
+// when ctx ends first. Each wait counts its outcome. held: resp was
+// replaced by null.
 func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (out *common.NormalizedResponse, held bool) {
 	bn := byHashBlock(ctx, req, resp)
 	if bn <= 0 {
@@ -559,23 +562,22 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 	if at <= 0 || bn <= at {
 		return resp, false
 	}
-	n.EvmRefreshHeadsBelow(sel, bn, 0)
-	bt := n.EvmBlockTime()
-	if bt <= 0 {
-		bt = health.ColdBlockTime
+	bt := n.blockTimeOrCold()
+	wait, cancel := context.WithTimeout(ctx, bt)
+	defer cancel()
+	for _, sp := range n.lackingVoters(sel, bn) {
+		go sp.AskReaching(wait, bn, bt, common.AskRefusal)
 	}
-	timer := time.NewTimer(bt)
-	defer timer.Stop()
 	for at < bn {
 		select {
 		case <-moved:
-		case <-timer.C:
-			return nullAnswer(req, resp)
-		case <-ctx.Done():
+		case <-wait.Done():
+			n.countHeadRefusal("held_null")
 			return nullAnswer(req, resp)
 		}
 		at, moved = latest()
 	}
+	n.countHeadRefusal("held_served")
 	return resp, false
 }
 

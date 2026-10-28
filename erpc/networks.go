@@ -836,42 +836,52 @@ func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 }
 
 // EvmRefreshHeadsBelow Asks, in the background, with a number need at
-// pace, as many of the voters of selector's lane whose head is below
-// block as Latest still lacks to reach it, oldest report first (spec §6.5
-// catch-up, §6.4 by-hash hold): Latest is their ballot, so no other
-// upstream moves it, and once the quorum holds block no further Ask can.
-// A guarantee subset's majority clamps Latest too (guaranteedFloor), so
-// each subset gets the Asks its own ballot lacks.
+// pace, the voters Latest lacks to reach block (lackingVoters; spec §6.5
+// catch-up).
 func (n *Network) EvmRefreshHeadsBelow(selector string, block int64, pace time.Duration) {
+	for _, sp := range n.lackingVoters(selector, block) {
+		sp.AskBackground(common.HeadNeedNumber, pace, common.AskCatchUp)
+	}
+}
+
+// lackingVoters are the pollers of as many of the voters of selector's
+// lane whose head is below block as Latest still lacks to reach it,
+// oldest report first, each once (spec §6.5 catch-up, §6.4 by-hash wait):
+// Latest is their ballot, so no other upstream moves it, and once the
+// quorum holds block no further Ask can. A guarantee subset's majority
+// clamps Latest too (guaranteedFloor), so each subset adds the voters its
+// own ballot lacks.
+func (n *Network) lackingVoters(selector string, block int64) []common.EvmStatePoller {
 	var ec *common.EvmNetworkConfig
 	if n.cfg != nil {
 		ec = n.cfg.Evm
 	}
-	n.askLacking(selector, block, pace, voterQuery{kind: numberVote}, ec.ServedTipQuorum())
+	out := n.lacking(nil, selector, block, voterQuery{kind: numberVote}, ec.ServedTipQuorum())
 	if ec == nil || ec.ServedTip == nil {
-		return
+		return out
 	}
 	for _, g := range ec.ServedTip.GuaranteedFor {
-		n.askLacking(selector, block, pace, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
+		out = n.lacking(out, selector, block, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
 			m, _ := common.UpstreamMatchesSelector(g, u)
 			return m
 		}}, common.ServedTipQuorumMajority)
 	}
 	for _, m := range ec.ServedTip.GuaranteedMethods {
-		n.askLacking(selector, block, pace, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
+		out = n.lacking(out, selector, block, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
 			handle, _ := u.ShouldHandleMethod(m)
 			return handle
 		}}, common.ServedTipQuorumMajority)
 	}
+	return out
 }
 
-// askLacking Asks, with a number need at pace, as many of q's voters
+// lacking appends to out, unless already there, as many of q's voters
 // below block as quorum lacks to hold it (quorum less the voters at or
 // above it), oldest report first.
-func (n *Network) askLacking(selector string, block int64, pace time.Duration, q voterQuery, quorum common.ServedTipQuorum) {
+func (n *Network) lacking(out []common.EvmStatePoller, selector string, block int64, q voterQuery, quorum common.ServedTipQuorum) []common.EvmStatePoller {
 	s := n.voters(selector, q)
 	if s.count() == 0 {
-		return
+		return out
 	}
 	lacks := quorum.Of(s.count())
 	var below []common.EvmStatePoller
@@ -884,12 +894,15 @@ func (n *Network) askLacking(selector string, block int64, pace time.Duration, q
 		return true
 	})
 	if lacks <= 0 {
-		return
+		return out
 	}
 	slices.SortStableFunc(below, func(a, b common.EvmStatePoller) int { return a.LatestReportAt().Compare(b.LatestReportAt()) })
 	for _, sp := range below[:min(lacks, len(below))] {
-		sp.AskBackground(common.HeadNeedNumber, pace, common.AskCatchUp)
+		if !slices.Contains(out, sp) {
+			out = append(out, sp)
+		}
 	}
+	return out
 }
 
 // EvmPollHeads Asks, with a hash need at pace, each upstream in ids:
