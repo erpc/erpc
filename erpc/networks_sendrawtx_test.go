@@ -2528,7 +2528,8 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
 			"client must get the node's rejection, got: %v", err)
-		assert.Less(t, elapsed, 1500*time.Millisecond,
+		// main waits out hedge and retry timers (~6s); 3s leaves room for -race.
+		assert.Less(t, elapsed, 3*time.Second,
 			"rejection must return once every upstream has answered, not after hedge and retry delays")
 	})
 }
