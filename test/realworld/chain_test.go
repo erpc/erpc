@@ -54,6 +54,17 @@ const (
 	c17Blocks = 20
 	c17MaxGap = 60 * time.Second
 	wCap      = 60 * time.Second
+
+	// c18FinalityDepth: C18's one vendor finalizes this far below its
+	// head, as a parachain whose finality follows its relay chain closely;
+	// c18Depth: the reorg replaces the head and the 2 siblings below it,
+	// from the fork point 3 below the head, so a pin at the vendor's
+	// finalized height reverts (§19 G12). c18PollInterval keeps the full
+	// poll, which polls finalized, out of the reorg's few seconds on most
+	// pods (harness).
+	c18FinalityDepth = 2
+	c18Depth         = 3
+	c18PollInterval  = 5 * time.Minute
 )
 
 // C2: a reorg reorgWindow − 1 deep. As C1, every client that received a
@@ -470,4 +481,84 @@ func c17() spec {
 		s.chain.Halt(false)
 		s.blocks(25)
 	}}
+}
+
+// C18: one upstream, a wss vendor that finalizes c18FinalityDepth below
+// its head. With the chain halted at H, pod-1 polls the finalized tag: its
+// own poll answers H − c18FinalityDepth on the pinned path, which covers
+// that pin. The other pod reads Head.Finalized from the shared counter
+// only. A reorg then replaces H − 2 … H. Each pod counts
+// final_hash_changed exactly when its own finalized poll covered the
+// reverted pin, and every client is told of the reorg (§6.5 finality; §19
+// G12).
+func c18() spec {
+	return spec{name: "C18", bound: healthyDelivery,
+		vendors: []vendorSpec{{"ws-a", "vendor-a", true}},
+		faults:  map[string]chainsim.Faults{"ws-a": {FinalityDepth: c18FinalityDepth}},
+		upEvm:   map[string]map[string]interface{}{"ws-a": {"statePollerInterval": c18PollInterval.String()}},
+		body: func(s *scenario) {
+			s.blocks(50)
+			up := s.upstream("ws-a")
+			polled := func(pod int) float64 {
+				v, _ := s.metric(pod, "erpc_upstream_finalized_block_polled_total", map[string]string{"upstream": up})
+				return v
+			}
+			alarms := func(pod int) float64 {
+				v, _ := s.metric(pod, "erpc_chain_tracker_invariant_violations_total", map[string]string{"invariant": "final_hash_changed"})
+				return v
+			}
+			finalized := map[string]string{"lane": "all", "axis": "finalized"}
+			s.chain.Halt(true)
+			time.Sleep(healthyDelivery + reconnectSlack)
+			head := s.chain.Tip()
+			fin := head.Number - c18FinalityDepth
+			polled0, alarms0 := make([]float64, len(s.h.pods)), make([]float64, len(s.h.pods))
+			for pod := range s.h.pods {
+				polled0[pod], alarms0[pod] = polled(pod), alarms(pod)
+			}
+			for deadline := time.Now().Add(httpCheckWait); ; {
+				got := s.blockAnswer(0, "", "eth_getBlockByNumber", "finalized", false)
+				v, _ := s.metric(0, "erpc_network_served_tip_block_number", finalized)
+				if polled(0) > polled0[0] && uint64(v) == fin {
+					s.logf("pod-1 polled finalized %d with the chain halted at %d (tag answered %s)", fin, head.Number, got)
+					break
+				}
+				if time.Now().After(deadline) {
+					s.violate("harness", "pod-1: no finalized poll reached %d within %s (polls %v → %v, Head.Finalized %v, tag %s)", fin, httpCheckWait, polled0[0], polled(0), v, got)
+					s.chain.Halt(false)
+					return
+				}
+				time.Sleep(scrapeEvery)
+			}
+			covered := make([]bool, len(s.h.pods))
+			for pod := range s.h.pods {
+				if v, ok := s.waitMetric(pod, "erpc_network_served_tip_block_number", finalized, httpCheckWait, func(v float64) bool { return uint64(v) == fin }); !ok {
+					s.violate(s.name, "pod-%d: Head.Finalized %v, not the vendor's %d, %s after pod-1 polled it", pod+1, v, fin, httpCheckWait)
+				}
+				covered[pod] = polled(pod) > polled0[pod]
+				s.logf("pod-%d: own finalized poll since the halt: %v", pod+1, covered[pod])
+			}
+			if !slices.Contains(covered, false) {
+				s.violate("harness", "every pod polled finalized during the halt: no pod holds Finalized without its own evidence")
+			}
+			r := s.reorg(c18Depth)
+			s.chain.Halt(false)
+			if r.old[0].Number != fin {
+				s.violate("harness", "the reorg reverts from %d, not the finalized pin %d", r.old[0].Number, fin)
+			}
+			time.Sleep(deepReorgDelivery + reconnectSlack)
+			for pod := range s.h.pods {
+				d := alarms(pod) - alarms0[pod]
+				switch {
+				case covered[pod] && d == 0:
+					s.violate(s.name, "pod-%d: its own finalized poll answered %d %s on the pinned path, the reorg reverted it, and final_hash_changed did not count", pod+1, fin, short(r.old[0].Hash))
+				case !covered[pod] && d > 0:
+					s.violate(s.name, "pod-%d: %v final_hash_changed for the revert of %d…%d, which no finalized poll of its own covered (Head.Finalized %d from the shared counter)", pod+1, d, r.old[0].Number, head.Number, fin)
+				default:
+					s.logf("pod-%d: final_hash_changed +%v, own evidence %v", pod+1, d, covered[pod])
+				}
+			}
+			s.requireReorgsTold()
+			s.blocks(25)
+		}}
 }
