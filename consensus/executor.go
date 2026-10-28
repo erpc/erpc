@@ -433,6 +433,9 @@ func (e *executor) runAnalyzer(
 	responses := make([]*execResult, 0, maxToSpawn)
 	var winner *slotResult
 	var analysis *consensusAnalysis
+	// analysisResponses is how many responses the last analysis covered; the
+	// post-loop recompute skips a rebuild when the bag did not grow.
+	analysisResponses := -1
 	var shortCircuitReason string
 	shortCircuited := false
 	waitCapped := false
@@ -570,7 +573,11 @@ func (e *executor) runAnalyzer(
 		responses = append(responses, resp)
 		considerWaitCap(resp)
 
+		// Track how many responses the last analysis covered so the post-loop
+		// recompute can skip rebuilding when the bag did not grow (review
+		// finding — re-running determineWinner double-counts waiver metrics).
 		analysis = newConsensusAnalysis(e.logger, ctx, e.config, responses)
+		analysisResponses = len(responses)
 		winner = e.determineWinner(ctx, lg, analysis)
 		if reason, ok := e.shouldShortCircuit(winner, analysis); ok {
 			shortCircuited = true
@@ -612,8 +619,13 @@ func (e *executor) runAnalyzer(
 	// non-empty data. Only a fully collected bag (every slot wrote) makes
 	// hasRemaining false without an explicit seal.
 	if !shortCircuited {
-		analysis = newConsensusAnalysis(e.logger, ctx, e.config, responses)
-		winner = e.determineWinner(ctx, lg, analysis)
+		// Rebuild only when the bag grew since the last in-loop analysis; a
+		// fully-collected final response already produced the final winner,
+		// and re-running determineWinner would fire waiver metrics twice.
+		if analysis == nil || analysisResponses != len(responses) {
+			analysis = newConsensusAnalysis(e.logger, ctx, e.config, responses)
+			winner = e.determineWinner(ctx, lg, analysis)
+		}
 		markWinningParticipants(originalReq, winner, analysis)
 	}
 	sendOutcomeOnce(consensusOutcome{winner: winner, analysis: analysis, shortCircuited: shortCircuited})

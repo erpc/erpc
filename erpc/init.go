@@ -231,7 +231,11 @@ func Init(
 	}
 	// CloseAll waits for in-flight consensus analyzers, then flushes exporters.
 	// Fire-and-forget rounds outlive HTTP shutdown and still export misbehavior.
-	consensus.CloseAll(context.Background())
+	// Bound the wait: one hung analyzer must not block process exit while the
+	// metrics server stays up (review finding). 5s matches the metrics drain.
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	consensus.CloseAll(closeCtx)
 	if metricsSrv != nil {
 		logger.Info().Msg("shutting down metrics server...")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
