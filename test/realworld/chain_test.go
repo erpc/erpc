@@ -12,7 +12,7 @@ import (
 )
 
 // Bounds of the chain-behaviour scenarios (§19 C2, C6, C8, C10, C11, C14,
-// C15).
+// C15, C16, C17, C18).
 const (
 	// c6Halt: the chain makes no block this long (§19 C6); c6Sample: how
 	// often Latest is read meanwhile (harness).
@@ -41,8 +41,9 @@ const (
 	// planned in a row at its start (harness).
 	c15Run   = logsCloseSpread + 20*time.Second
 	c15Empty = 10
+
 	// c16First: C16's chain runs in the millions before its reset;
-	// c16ResetHead: every vendor's head after it (§19 G9). c16Follow:
+	// c16ResetHead: every vendor's head after it (§19 C16). c16Follow:
 	// Latest follows a fall past the regression guard's 1024 blocks once
 	// the guard's 60s hold fails open (§6.4, erpc/networks.go
 	// servedTipRegressionTTL), plus 60s.
@@ -51,7 +52,7 @@ const (
 	c16Follow    = 2 * time.Minute
 
 	// c17Halt: C17's chain makes no block this long, past maxBackfill
-	// (§19 G10). Then c17Blocks blocks come one at a time, each up to
+	// (§19 C17). Then c17Blocks blocks come one at a time, each up to
 	// c17MaxGap after the last. The EMA grows at most 1.2× per sample
 	// (alpha 0.1, samples capped at 3× the EMA, §6.7), so from the
 	// chain's 0.2s it needs 26 samples to reach 20s, where W = 3 × bt
@@ -66,7 +67,7 @@ const (
 	// head, as a parachain whose finality follows its relay chain closely;
 	// c18Depth: the reorg replaces the head and the 2 siblings below it,
 	// from the fork point 3 below the head, so a pin at the vendor's
-	// finalized height reverts (§19 G12). c18PollInterval keeps the full
+	// finalized height reverts (§19 C18). c18PollInterval keeps the full
 	// poll, which polls finalized, out of the reorg's few seconds on most
 	// pods (harness).
 	c18FinalityDepth = 2
@@ -358,7 +359,7 @@ func c15() spec {
 // end 1013 and resubscribe, gRPC ends OUT_OF_RANGE and starts over); every
 // pod's latest counter of every upstream, and the shared one, follow the
 // new chain; and no read is answered from the old chain, though its
-// finalized block was cached permanently (§6.4, §14, §10.2; §19 G9).
+// finalized block was cached permanently (§6.4, §14, §10.2; §19 C16).
 func c16() spec {
 	return spec{name: "C16", cache: true, bound: healthyDelivery, sim: chainsim.Config{First: c16First},
 		allow: []string{"ws:logs-end", "ws:jump", "grpc:OutOfRange"},
@@ -493,7 +494,7 @@ func (s *scenario) requireCountersFollow() {
 // c17Blocks blocks on demand, each 0 to c17MaxGap after the last, as an
 // Orbit chain that mints on traffic. No upstream is benched, W stays
 // below its cap while the blocks flow, and every tap gets every block
-// within its bound (§6.1, §6.5 rule 1, §6.7; §19 G10).
+// within its bound (§6.1, §6.5 rule 1, §6.7; §19 C17).
 func c17() spec {
 	return spec{name: "C17", bound: healthyDelivery, body: func(s *scenario) {
 		s.blocks(25)
@@ -551,7 +552,7 @@ func c17() spec {
 // only. A reorg then replaces H − 2 … H. Each pod counts
 // final_hash_changed exactly when its own finalized poll covered the
 // reverted pin, and every client is told of the reorg (§6.5 finality; §19
-// G12).
+// C18).
 func c18() spec {
 	return spec{name: "C18", bound: healthyDelivery,
 		vendors: []vendorSpec{{"ws-a", "vendor-a", true}},

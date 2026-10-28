@@ -62,7 +62,7 @@ const (
 	u13PollInterval = time.Second
 
 	// u20Pruned: http-a keeps only this many blocks below its head, as a
-	// tip-only plan does (§19 G8). u20Depth: a gRPC cursor this far below
+	// tip-only plan does (§19 U20). u20Depth: a gRPC cursor this far below
 	// the head, inside the window (maxBackfill of chain) and past
 	// http-a's history. u20History: the chain holds that depth from its
 	// start. u20Rounds: how many times each pod is resumed that deep.
@@ -588,7 +588,7 @@ func u15() spec {
 // (U20-null) there. Fill and resume use the other vendors: a gRPC stream
 // resumed u20Depth below the head, on every pod, gets every canonical
 // header from the cursor + 1 to the head, and no tap goes out of range
-// (§9 window; §10.3; §19 G8).
+// (§9 window; §10.3; §19 U20).
 func u20(forbidden bool) spec {
 	name := "U20-null"
 	if forbidden {
