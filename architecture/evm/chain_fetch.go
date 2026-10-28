@@ -162,7 +162,6 @@ type fetchScheduler struct {
 	bg    util.Goroutines
 
 	mu       sync.Mutex
-	closed   bool
 	pending  map[fetchKey]*fetchRequest // queued or in flight
 	queues   [fetchClasses][]*fetchRequest
 	inflight [fetchClasses]int
@@ -227,7 +226,7 @@ func (s *fetchScheduler) submit(t *ChainTracker, spec fetchSpec) *fetchWaiter {
 	key := spec.key()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.ctx.Err() != nil {
 		return s.doneWaiter(key, spec, errSchedulerClosed)
 	}
 	r := s.pending[key]
@@ -346,7 +345,9 @@ func (s *fetchScheduler) unqueueLocked(r *fetchRequest) {
 // pumpLocked starts every queued request a slot allows, lowest class
 // first, and arms the timer for the earliest one still in backoff.
 func (s *fetchScheduler) pumpLocked() {
-	if s.closed {
+	// close runs in its own goroutine after ctx ends; until it fails the
+	// queued requests, a fetch that ended with ctx must not start them.
+	if s.ctx.Err() != nil {
 		return
 	}
 	now := time.Now()
@@ -649,7 +650,6 @@ func (s *fetchScheduler) setSlotsGaugeLocked(c fetchClass) {
 // close fails every queued request once the network's ctx ends.
 func (s *fetchScheduler) close() {
 	s.mu.Lock()
-	s.closed = true
 	if s.timer != nil {
 		s.timer.Stop()
 	}
