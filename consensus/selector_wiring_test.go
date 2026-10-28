@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/failsafe"
+	policyengine "github.com/erpc/erpc/internal/consensus/policy"
 	"github.com/rs/zerolog"
 )
 
@@ -419,6 +421,32 @@ func TestResolvePolicy_PunishedAbsentFromCandidatesPinsStandard(t *testing.T) {
 	}
 	if h := req.ExecState().ConsensusPolicy(); h != "standard" {
 		t.Fatalf("header policy = %q, want standard", h)
+	}
+}
+
+// openBreakerUpstream is an upstream whose catch-all circuit breaker is open
+// and which holds no cordon. allUnavailable() must see it as unhealthy.
+type openBreakerUpstream struct {
+	common.Upstream
+}
+
+func (openBreakerUpstream) CircuitBreakerState() failsafe.State { return failsafe.StateOpen }
+
+func TestBuildEvalContext_OpenBreakerIsUnhealthy(t *testing.T) {
+	c := newWiringConsensus(t)
+	down := openBreakerUpstream{Upstream: common.NewFakeUpstream("internal-blue", common.WithTags("type:internal"))}
+	req := wiringRequest(t, "eth_getBalance", "")
+	req.SetNetworkUpstreams([]common.Upstream{down})
+
+	ectx := c.buildEvalContext(req)
+	if len(ectx.Upstreams) != 1 {
+		t.Fatalf("Upstreams = %+v, want the open-breaker node", ectx.Upstreams)
+	}
+	if ectx.Upstreams[0].Health.State != policyengine.StateUnhealthy {
+		t.Fatalf("state = %q, want %q", ectx.Upstreams[0].Health.State, policyengine.StateUnhealthy)
+	}
+	if len(ectx.Upstreams[0].Health.CordonClasses) != 0 {
+		t.Fatalf("cordonClasses = %v, want none", ectx.Upstreams[0].Health.CordonClasses)
 	}
 }
 

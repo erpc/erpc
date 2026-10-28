@@ -388,6 +388,9 @@ func (e *executor) runAnalyzer(
 	analyzerDone chan<- struct{},
 	collectionSpan trace.Span,
 ) {
+	inflightAnalyzers.Add(1)
+	defer inflightAnalyzers.Done()
+
 	outcomeSent := false
 	sendOutcomeOnce := func(o consensusOutcome) {
 		if outcomeSent {
@@ -1617,6 +1620,7 @@ func emptyOutsideRetentionWaivedQuotas(analysis *consensusAnalysis, reqs []*comm
 // abstainers' blockAvailability lower bounds (feature §7.1):
 //   - proves: every matching empty has a finite lower and winnerBlock < lower
 //   - contradicts: at least one finite lower has winnerBlock >= lower (in range)
+//
 // When neither (bounds unavailable), the caller may fall back to chain-head depth.
 func availabilityBoundProofState(matching []*execResult, winnerBlock *big.Int) (proves, contradicts bool) {
 	if winnerBlock == nil || len(matching) == 0 {

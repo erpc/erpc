@@ -209,6 +209,29 @@ func TestUncordonAdmin_PreservesPostSnapshotDetectorCordon(t *testing.T) {
 		"availability present at snapshot must be cleared")
 }
 
+// A CordonAdmin that arrives after UncordonAdmin has snapshotted generations
+// must publish a new shared timestamp and keep the operator bit when that
+// uncordon then publishes zero.
+func TestCordonAdmin_ReassertSurvivesInFlightUncordon(t *testing.T) {
+	ctx := context.Background()
+	a := newCordonTestUpstream(t, "")
+	a.CordonAdmin(ctx, "incident")
+	require.True(t, cordoned(a)())
+
+	gens := a.metricsTracker.CordonGens(a, "*")
+	a.uncordonInFlight.Store(true)
+	a.uncordonMaxOperatorGen.Store(gens[operatorCordonGenIndex])
+	before := a.operatorCordonVar().GetValue()
+
+	a.CordonAdmin(ctx, "incident again")
+	require.Greater(t, a.operatorCordonVar().GetValue(), before, "in-flight re-assert must advance the shared counter")
+	require.Greater(t, a.metricsTracker.CordonGens(a, "*")[operatorCordonGenIndex], gens[operatorCordonGenIndex])
+
+	a.operatorCordonVar().TryUpdate(ctx, 0)
+	classes := a.metricsTracker.CordonClasses(a, "*")
+	require.Contains(t, classes, common.CordonClassOperator, "stale zero must not clear a re-asserted operator cordon")
+}
+
 // After UncordonAdmin completes, a subsequent CordonAdmin must stick
 // (shared counter + local operator bit). Mid-clear injection is covered by
 // the post-publish GetValue()!=0 guard in UncordonAdmin / recovery ordering.
