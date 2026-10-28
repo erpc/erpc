@@ -19,7 +19,9 @@ import (
 
 // TestRealWorld runs the catalogue scenarios (review §3): network-scoped
 // ones concurrently on shared pods, pod-scoped ones each in their own phase
-// with fresh pods and redis (selectedPhases).
+// with fresh pods and redis (selectedPhases). Each phase waits for a quiet
+// host; REALWORLD_LOADED_HOST=1 starts it at any load, and every latency
+// verdict taken above the limit still fails, labelled "host overloaded".
 func TestRealWorld(t *testing.T) {
 	phases, err := selectedPhases()
 	if err != nil {

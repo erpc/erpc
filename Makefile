@@ -7,7 +7,7 @@ help:
 	@echo " build                         Build the eRPC server + simulator"
 	@echo " fmt                           Format source code"
 	@echo " test                          Run unit tests"
-	@echo " test-realworld                Run the chain tracker real-world suite (-race eRPC pods, redis-server)"
+	@echo " test-realworld                Run the chain tracker real-world suite (-race eRPC pods, redis-server); REALWORLD_LOADED_HOST=1 starts phases at any host load"
 	@echo
 	@echo " run-k6                        Run k6 tests"
 	@echo " run-pprof                     Run the eRPC server with pprof"

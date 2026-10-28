@@ -2,6 +2,7 @@ package realworld
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
@@ -32,17 +33,20 @@ type hostSample struct {
 }
 
 // hostLoad records the host's load every hostSampleEvery for the run.
+// loaded (REALWORLD_LOADED_HOST=1): phases start at any load, on a host
+// other work keeps busy; latency verdicts above the limit stay labelled.
 type hostLoad struct {
-	limit float64
-	done  chan struct{}
-	wg    sync.WaitGroup
+	limit  float64
+	loaded bool
+	done   chan struct{}
+	wg     sync.WaitGroup
 
 	mu      sync.Mutex
 	samples []hostSample
 }
 
 func startHostLoad() *hostLoad {
-	hl := &hostLoad{limit: quietLoadPerCPU * float64(runtime.NumCPU()), done: make(chan struct{})}
+	hl := &hostLoad{limit: quietLoadPerCPU * float64(runtime.NumCPU()), loaded: os.Getenv("REALWORLD_LOADED_HOST") == "1", done: make(chan struct{})}
 	hl.wg.Add(1)
 	go hl.run()
 	return hl
@@ -104,13 +108,18 @@ func loadAverage() (float64, error) {
 	return strconv.ParseFloat(string(m[1]), 64)
 }
 
-// waitQuiet waits until the 1-min load average is below the limit.
+// waitQuiet waits until the 1-min load average is below the limit, or
+// only logs it on a loaded host.
 func (hl *hostLoad) waitQuiet(logf func(string, ...interface{})) error {
 	start := time.Now()
 	for {
 		load, err := loadAverage()
 		if err != nil {
 			return err
+		}
+		if hl.loaded {
+			logf("REALWORLD_LOADED_HOST: starting at load %.1f, limit %.1f", load, hl.limit)
+			return nil
 		}
 		if load < hl.limit {
 			if waited := time.Since(start); waited > time.Second {
