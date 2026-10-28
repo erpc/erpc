@@ -960,14 +960,14 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 
 | Area | Count | IDs |
 |---|---|---|
-| Upstream faults | 18 | U1–U18 |
+| Upstream faults | 20 | U1–U20 |
 | Network faults | 7 | N1–N7 |
-| Chain behaviour | 14 | C1–C14 |
+| Chain behaviour | 18 | C1–C18 |
 | Client behaviour | 9 | D1–D9 |
 | Cross-instance | 9 | X1–X9 |
 | Config | 7 | K1–K7 |
-| HTTP consistency | 11 | P1–P11 |
-| Total | 75 | |
+| HTTP consistency | 12 | P1–P11, P11-nitro |
+| Total | 82 | |
 
 | ID | Setup and fault | Expected |
 |---|---|---|
@@ -989,6 +989,8 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | U16 | wss refuses `newHeads` as unsupported | polled at cadence; asked again on reconnect and every 10 min |
 | U17 | https refuses `latest` 10 times | give-up; re-probed after 10 min; never a stuck poll source |
 | U18 | one HTTP vendor that is no source on a minority fork at the same heights, 20 blocks | taps never send its blocks; HTTP never serves them once W has passed since this instance first polled a fork header from it (its hash vote, §6.3) |
+| U19 | one https vendor answers HTTP 403 with an HTML body (a CDN ban or a revoked key); clients ask head+1 with `shortCircuitFutureBlocks` on | its polls fail (§6.1): its Asks back off and it leaves the ceiling, so a block above every other voter's head is `null` with no dispatch |
+| U20 | the first-ranked https vendor pruned below head−100 answers HTTP 403 with an HTML body (U20-403), or `null` and `[]` for logs (U20-null); gRPC streams resume 200 deep | every stream gets every canonical header up to the head from another vendor; no tap ends out of range |
 | N1 | +300 ms constant latency to one vendor | delivery p99 within 2 bt; `Latest` never held at the slowed vendor's number while q other voters report higher |
 | N2 | 0–2 bt jitter on every vendor; pushes reordered | `newHeads` in order, parent-linked, no duplicate |
 | N3 | instance 1 cut from vendor X for 50 blocks | instance 1 flows on vendor Y's votes; no stall |
@@ -1010,6 +1012,10 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | C12 | majority reverts a finalized block | followed; `final_hash_changed` logged; no permanent cache entry |
 | C13 | chain without a `finalized` tag | `finalized` = latest − derived depth (at least 30 min); cache uses it |
 | C14 | 2 of 4 votes on a branch that does not link | canonical stays; no stall |
+| C15 | hashes and roots not Ethereum's (Hedera, Kaia): no header hash recomputes, an empty block's `transactionsRoot` is keccak(""); `validateTransactionsRoot: false` | `gasUsed` 0 is an empty block: its receipts are never fetched; no receipts or logs fetch fails; no tap ends `1013` |
+| C16 | testnet reset: every vendor restarts on a new genesis with the same chainId, its head dropping from millions to 10 | `eth_blockNumber` follows within 2 min (the 60s regression guard, then 60s); every tap restarts on the new chain; every latest counter follows; no read answers from the old chain, its cached final block included |
+| C17 | no block for 30 min, past `maxBackfill`, then 20 blocks on demand, each 0–60s after the last | no upstream benched; W stays under its 60s cap; every tap gets every block within its bound |
+| C18 | one wss upstream that finalizes 2 below its head; chain halted; a reorg 3 deep reverts the block one instance's own finalized poll covered | `final_hash_changed` counted only on that instance; every client told of the reorg |
 | D1 | ws client stops reading for 20 blocks; gRPC client stops reading | `newHeads` restart past `reorgWindow`; gRPC `UNAVAILABLE` after the 10s send wait; other taps unaffected |
 | D2 | ws clients reconnect every 10 blocks | `newHeads` restart = number jump only; logs resubscribe |
 | D3 | gRPC resume on the other instance; orphan cursor; cursor below window; cursor above head | resend from fork point; `OUT_OF_RANGE`; `OUT_OF_RANGE`; wait |
@@ -1046,6 +1052,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | P9 | head+1 polling | as K7 |
 | P10 | `flashblocks*` + normal groups; use-upstream client fetches a delivered block | lane-consistent result; no `retried_missing` |
 | P11 | `translateLatestTag: false` method; one stale-state vendor, then all stale, then all more than 60s stale | stale vendor skipped; all stale → highest tag-state head, not `-32603`; all past 60s → `-32603` with `executedBlock` and `servedTip`, counted `refused` |
+| P11-nitro | a Nitro chain other than Arbitrum One: Multicall3 `getBlockNumber()` answers the parent chain's height, ArbSys `arbBlockNumber()` the chain's own; `skip-interpolation` `eth_call(latest)` | the first probe finds Nitro; every tag-state head is the chain's own height; every call served at `Latest`; no upstream counted stale |
 
 - The in-process chaos test `TestChainFeed_ConvergesUnderFaults` (`erpc/chain_feed_test.go`) stays as the fast CI test and uses the `test/chainsim` simulator. Panic recovery (`TrackerMessageHook`) is tested only there: no black-box trigger exists.
 
