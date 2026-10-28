@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2386,8 +2387,9 @@ func TestServedTip_Finalized_RegressionGuardHolds(t *testing.T) {
 }
 
 // A finalized-tag request's refresh (spec §6.4 Finality, §6.8) polls every
-// voter with a finalized tag and waits for them; a voter whose finalized
-// tag is given up has no finalized poll and gets none.
+// voter with a finalized tag and waits for them, at most W, even when a
+// poll outlasts the shared counter's foreground budget (UpdateMaxWait); a
+// voter whose finalized tag is given up has no finalized poll and gets none.
 func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -2396,19 +2398,19 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Once the chain finalizes 10000, the vendors answer it slower than the
+	// shared state's default UpdateMaxWait (50ms) and well within W.
+	const slowPoll = 300 * time.Millisecond
 	var mu sync.Mutex
+	var finalizedMore atomic.Bool
 	polls := map[string]int{}
-	for _, id := range []string{"tagless", "fin-a", "fin-b"} {
-		reply := `{"jsonrpc":"2.0","id":1,"result":{"number":"0x270f","timestamp":"0x6702a8e0"}}`
-		if id == "tagless" {
-			reply = `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid block number tag finalized"}}`
-		}
+	finalizedMock := func(id string, when func() bool, delay time.Duration, reply string) {
 		gock.New("http://" + id + ".localhost").
 			Post("").
 			Persist().
 			// gock runs filters before it matches the host: count only this vendor's.
 			Filter(func(r *http.Request) bool {
-				if r.URL.Host != id+".localhost" || !strings.Contains(util.SafeReadBody(r), `"finalized"`) {
+				if r.URL.Host != id+".localhost" || !when() || !strings.Contains(util.SafeReadBody(r), `"finalized"`) {
 					return false
 				}
 				mu.Lock()
@@ -2417,7 +2419,14 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 				return true
 			}).
 			Reply(200).
+			Delay(delay).
 			JSON([]byte(reply))
+	}
+	always := func() bool { return true }
+	finalizedMock("tagless", always, 0, `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid block number tag finalized"}}`)
+	for _, id := range []string{"fin-a", "fin-b"} {
+		finalizedMock(id, finalizedMore.Load, slowPoll, `{"jsonrpc":"2.0","id":1,"result":{"number":"0x2710","timestamp":"0x6702a8e1"}}`)
+		finalizedMock(id, func() bool { return !finalizedMore.Load() }, 0, `{"jsonrpc":"2.0","id":1,"result":{"number":"0x270f","timestamp":"0x6702a8e0"}}`)
 	}
 	finalizedPolls := func() map[string]int {
 		mu.Lock()
@@ -2469,11 +2478,15 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	t.Logf("reads above Finalized for %s: %d finalized polls (%v → %v), %d per minute", window, reads, from, finalizedPolls(), reads*int(time.Minute/window))
 	assert.Zero(t, reads, "a read above Finalized polls no finalized")
 
+	finalizedMore.Store(true)
 	before := finalizedPolls()
-	network.awaitFinalizedRefresh(ctx, "")
+	tagReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["finalized",false]}`))
+	tagReq.SetNetwork(network)
+	head := network.EvmHead(ctx, tagReq)
 	now := finalizedPolls()
 	assert.True(t, now["fin-a"] > before["fin-a"] && now["fin-b"] > before["fin-b"],
-		"the refresh polls both voters with a finalized tag and waits for them (polls %v → %v)", before, now)
+		"the refresh polls both voters with a finalized tag (polls %v → %v)", before, now)
+	assert.Equal(t, int64(10_000), head.Finalized, "the finalized-tag request waits for the slow polls and takes their answer")
 	assert.Equal(t, before["tagless"], now["tagless"], "a given-up finalized tag is not polled")
 }
 

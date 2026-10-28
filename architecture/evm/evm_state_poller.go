@@ -166,10 +166,6 @@ type EvmStatePoller struct {
 	// keep-fresh advances never touch this.
 	latestMajorVerifyInProgress sync.Mutex
 
-	// finalizedRefresh is RefreshFinalized's poll in flight, closed when it
-	// ends; nil while none is.
-	finalizedRefresh atomic.Pointer[chan struct{}]
-
 	// Earliest per probe tracking
 	earliestByProbe              map[common.EvmAvailabilityProbeType]data.CounterInt64SharedVariable
 	earliestSchedulerStarted     map[common.EvmAvailabilityProbeType]bool
@@ -1018,43 +1014,16 @@ func nodeFailedPoll(err error) bool {
 
 // RefreshFinalized polls the finalized block when the stored one is older
 // than the finalized poll's debounce, or joins the poll in flight, and
-// waits for it until ctx ends (spec §6.4 Finality). The poll itself runs
-// on the app's context, so a waiter that leaves ends no other waiter's
-// poll. polls is false when the upstream has no finalized poll to refresh:
-// its finalized tag is given up (spec §6.8).
+// waits for it until ctx ends (spec §6.4 Finality), however long past the
+// shared state's foreground budget it takes. The poll itself runs on the
+// app's context, so a waiter that leaves ends no other waiter's poll.
+// polls is false when the upstream has no finalized poll to refresh: its
+// finalized tag is given up (spec §6.8).
 func (e *EvmStatePoller) RefreshFinalized(ctx context.Context) (polls bool) {
 	if e.IsObjectNull() || e.finalizedBlockShared == nil || e.givenUp(&e.finalizedGiveUp) {
 		return false
 	}
-	e.stateMu.RLock()
-	cfg := e.cfg
-	e.stateMu.RUnlock()
-	done := e.finalizedRefresh.Load()
-	if done == nil {
-		if !e.finalizedBlockShared.IsStale(e.resolveFinalizedDebounce(cfg, e.resolveDebounce(cfg))) {
-			return true
-		}
-		c := make(chan struct{})
-		if e.finalizedRefresh.CompareAndSwap(nil, &c) {
-			go func() {
-				defer close(c)
-				defer e.finalizedRefresh.Store(nil)
-				defer e.recoverHeadPanic("finalized-refresh")
-				pctx, cancel := context.WithTimeout(e.appCtx, 10*time.Second)
-				defer cancel()
-				if _, err := e.PollFinalizedBlockNumber(pctx); err != nil {
-					e.logger.Debug().Err(err).Msg("on-demand finalized block refresh failed in evm state poller")
-				}
-			}()
-			done = &c
-		} else if done = e.finalizedRefresh.Load(); done == nil {
-			return true
-		}
-	}
-	select {
-	case <-*done:
-	case <-ctx.Done():
-	}
+	e.finalizedBlockShared.UpdateIfStale(ctx, e.finalizedDebounce(), e.fetchFinalized)
 	return true
 }
 
@@ -1578,54 +1547,62 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	)
 	defer span.End()
 
+	return e.finalizedBlockShared.TryUpdateIfStale(ctx, e.finalizedDebounce(), e.fetchFinalized)
+}
+
+// finalizedDebounce is the finalized poll's debounce (spec §6.8, #1265).
+func (e *EvmStatePoller) finalizedDebounce() time.Duration {
 	e.stateMu.RLock()
 	cfg := e.cfg
+	e.stateMu.RUnlock()
+	return e.resolveFinalizedDebounce(cfg, e.resolveDebounce(cfg))
+}
+
+// fetchFinalized fetches the upstream's finalized block: the shared
+// counter's refresh function.
+func (e *EvmStatePoller) fetchFinalized(ctx context.Context) (int64, error) {
+	e.stateMu.RLock()
 	polled := e.polledFinalized
 	e.stateMu.RUnlock()
+	e.logger.Trace().Msg("fetching finalized block number for evm state poller")
+	polled.Inc()
 
-	dbi := e.resolveFinalizedDebounce(cfg, e.resolveDebounce(cfg))
-
-	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
-		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
-		polled.Inc()
-
-		// Actually fetch from upstream
-		b, err := e.fetchBlock(ctx, "finalized", common.UpstreamPoliciesTimeoutOnly)
-		if err != nil || b.number == 0 {
-			if refusedPoll(err) {
-				e.refused(&e.finalizedGiveUp, "finalized", err)
-				return 0, nil
-			} else {
-				// See PollLatestBlockNumber.
-				if e.tracker != nil && common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
-					e.tracker.RecordUpstreamRequest(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateFinalized)
-					e.tracker.RecordUpstreamFailure(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateFinalized, err)
-				}
-				e.logger.Warn().Err(err).Msg("failed to get finalized block number in evm state poller")
-				return 0, err
-			}
-		}
-
-		e.answered(&e.finalizedGiveUp)
-
-		// Same chain-identity gate as the latest ratchet (see there).
-		if !e.verifyChainIdOnMajorHeadMove(ctx, "finalized", e.finalizedBlockShared.GetValue(), b.number) {
+	// Actually fetch from upstream
+	b, err := e.fetchBlock(ctx, "finalized", common.UpstreamPoliciesTimeoutOnly)
+	if err != nil || b.number == 0 {
+		if refusedPoll(err) {
+			e.refused(&e.finalizedGiveUp, "finalized", err)
 			return 0, nil
+		} else {
+			// See PollLatestBlockNumber.
+			if e.tracker != nil && common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
+				e.tracker.RecordUpstreamRequest(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateFinalized)
+				e.tracker.RecordUpstreamFailure(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateFinalized, err)
+			}
+			e.logger.Warn().Err(err).Msg("failed to get finalized block number in evm state poller")
+			return 0, err
 		}
+	}
 
-		e.logger.Debug().
-			Int64("blockNumber", b.number).
-			Msg("fetched finalized block")
+	e.answered(&e.finalizedGiveUp)
 
-		e.tracker.SetFinalizedBlockNumber(e.upstream, b.number)
-		// The header is this instance's own evidence of what is final
-		// (spec §6.5); another instance's poll of the shared counter is none.
-		if bound := e.pollSrc.Load(); bound != nil && b.malformed == nil {
-			bound.intake.PolledFinalized(e.upstream.Id(), b.header)
-		}
+	// Same chain-identity gate as the latest ratchet (see there).
+	if !e.verifyChainIdOnMajorHeadMove(ctx, "finalized", e.finalizedBlockShared.GetValue(), b.number) {
+		return 0, nil
+	}
 
-		return b.number, nil
-	})
+	e.logger.Debug().
+		Int64("blockNumber", b.number).
+		Msg("fetched finalized block")
+
+	e.tracker.SetFinalizedBlockNumber(e.upstream, b.number)
+	// The header is this instance's own evidence of what is final
+	// (spec §6.5); another instance's poll of the shared counter is none.
+	if bound := e.pollSrc.Load(); bound != nil && b.malformed == nil {
+		bound.intake.PolledFinalized(e.upstream.Id(), b.header)
+	}
+
+	return b.number, nil
 }
 
 // SuggestFinalizedBlock reports blockNumber as the upstream's finalized

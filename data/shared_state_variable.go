@@ -24,6 +24,9 @@ type CounterInt64SharedVariable interface {
 	SharedVariable
 	GetValue() int64
 	TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) (int64, error)
+	// UpdateIfStale is TryUpdateIfStale waiting for the refresh, its own or
+	// the one in flight, until ctx ends instead of UpdateMaxWait.
+	UpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) int64
 	// TryUpdate reports newValue, its evidence taken at at (ReportAt).
 	TryUpdate(ctx context.Context, newValue int64, at time.Time) int64
 	OnValue(callback func(int64))
@@ -147,14 +150,18 @@ type counterInt64 struct {
 	// reportAtUnixMs is ReportAt.
 	reportAtUnixMs atomic.Int64
 	// attemptAtUnixMs is this instance's clock when its last refresh ended
-	// (an answer, an error or the foreground timeout): it debounces the
-	// next refresh, since a report dated by a slow fetch's send time can
-	// be older than the debounce at once.
+	// (an answer, an error or the foreground timeout) or a waited refresh
+	// started (UpdateIfStale): it debounces the next refresh, since a
+	// report dated by a slow fetch's send time can be older than the
+	// debounce at once.
 	attemptAtUnixMs        atomic.Int64
 	registry               *sharedStateRegistry
 	key                    string
 	state                  atomic.Pointer[counterState]
 	updateMu               sync.Mutex
+	// refreshing is closed when the refresh that outlived its caller's
+	// foreground wait lands; nil while none does. updateMu guards it.
+	refreshing             chan struct{}
 	valueCallbacks         []func(int64)
 	ignoreRollbackOf       int64
 	largeRollbackCallbacks []func(localVal, newVal int64)
@@ -487,6 +494,10 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64, at time.Ti
 	return c.GetValue()
 }
 
+// TryUpdateIfStale refreshes the counter by executeNewValueFn when no report
+// and no refresh attempt is within staleness, waiting for it at most
+// UpdateMaxWait: past that foreground budget the refresh goes on in the
+// background and the current value is returned.
 func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Duration, executeNewValueFn func(ctx context.Context) (int64, error)) (int64, error) {
 	ctx, span := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale",
 		trace.WithAttributes(
@@ -520,10 +531,72 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	// (e.g. Redis lock acquisition) can block normal request flow.
 	span.SetAttributes(attribute.Bool("foreground_remote_io_disabled", true))
 
-	// Execute the refresh function (e.g., RPC call to get latest block) in background.
-	// fallbackTimeout is sized for remote storage ops; honor a longer caller
-	// deadline since the refresh itself can legitimately take longer. The
-	// parent stays appCtx so the fetch survives foreground cancellation.
+	resultCh, fnTimeout := c.startRefresh(ctx, executeNewValueFn)
+
+	timer := time.NewTimer(c.registry.updateMaxWait)
+	defer timer.Stop()
+	span.SetAttributes(attribute.String("role", "local"))
+
+	select {
+	case r := <-resultCh:
+		span.SetAttributes(
+			attribute.String("result_path", "got_result"),
+			attribute.Bool("async_refresh", false),
+		)
+		// Always behave like "follower" in the synchronous path: local update only,
+		// remote reconciliation/push happens asynchronously via scheduleBackgroundPushCurrent().
+		return c.applyRefreshResult(initialVal, r)
+	case <-timer.C:
+		span.SetAttributes(
+			attribute.String("result_path", "timeout"),
+			attribute.Bool("async_refresh", true),
+		)
+		c.markFreshAttempt()
+		c.refreshing = make(chan struct{})
+		c.continueAsyncRefresh(resultCh, fnTimeout, c.refreshing)
+		return initialVal, nil
+	}
+}
+
+// UpdateIfStale is TryUpdateIfStale for a caller that waits for a fresh
+// value until ctx ends instead of UpdateMaxWait (spec §6.4 Finality): it
+// starts the refresh, or joins the one in flight, and returns the value
+// once that refresh lands. The refresh runs on the app's context, so a
+// waiter that leaves ends no other waiter's refresh.
+func (c *counterInt64) UpdateIfStale(ctx context.Context, staleness time.Duration, executeNewValueFn func(ctx context.Context) (int64, error)) int64 {
+	ctx, span := common.StartSpan(ctx, "CounterInt64.UpdateIfStale",
+		trace.WithAttributes(
+			attribute.String("key", c.key),
+			attribute.Int64("staleness_ms", staleness.Milliseconds()),
+		),
+	)
+	defer span.End()
+
+	c.updateMu.Lock()
+	done := c.refreshing
+	if done == nil && c.IsStale(staleness) {
+		resultCh, fnTimeout := c.startRefresh(ctx, executeNewValueFn)
+		c.markFreshAttempt()
+		done = make(chan struct{})
+		c.refreshing = done
+		c.continueAsyncRefresh(resultCh, fnTimeout, done)
+	}
+	c.updateMu.Unlock()
+	span.SetAttributes(attribute.Bool("waited", done != nil))
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
+	}
+	return c.GetValue()
+}
+
+// startRefresh runs executeNewValueFn in the background on the app's
+// context; its one result, a panic's included, arrives on the channel.
+// fnTimeout is sized for remote storage ops; it honors a longer caller
+// deadline since the refresh itself can legitimately take longer.
+func (c *counterInt64) startRefresh(ctx context.Context, executeNewValueFn func(ctx context.Context) (int64, error)) (<-chan refreshResult, time.Duration) {
 	fnTimeout := c.registry.fallbackTimeout
 	if deadline, ok := ctx.Deadline(); ok {
 		if remaining := time.Until(deadline); remaining > fnTimeout {
@@ -569,29 +642,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 		resultCh <- refreshResult{val: value, err: err, started: started}
 	}()
-
-	timer := time.NewTimer(c.registry.updateMaxWait)
-	defer timer.Stop()
-	span.SetAttributes(attribute.String("role", "local"))
-
-	select {
-	case r := <-resultCh:
-		span.SetAttributes(
-			attribute.String("result_path", "got_result"),
-			attribute.Bool("async_refresh", false),
-		)
-		// Always behave like "follower" in the synchronous path: local update only,
-		// remote reconciliation/push happens asynchronously via scheduleBackgroundPushCurrent().
-		return c.applyRefreshResult(initialVal, r)
-	case <-timer.C:
-		span.SetAttributes(
-			attribute.String("result_path", "timeout"),
-			attribute.Bool("async_refresh", true),
-		)
-		c.markFreshAttempt()
-		c.continueAsyncRefresh(resultCh, fnTimeout)
-		return initialVal, nil
-	}
+	return resultCh, fnTimeout
 }
 
 func (c *counterInt64) OnValue(cb func(int64)) {
@@ -682,8 +733,18 @@ func (c *counterInt64) applyRefreshResult(initialVal int64, r refreshResult) (in
 	return c.GetValue(), nil
 }
 
-func (c *counterInt64) continueAsyncRefresh(resultCh <-chan refreshResult, fnTimeout time.Duration) {
+// continueAsyncRefresh applies the refresh's result when it lands, then
+// closes done, which c.refreshing holds until then.
+func (c *counterInt64) continueAsyncRefresh(resultCh <-chan refreshResult, fnTimeout time.Duration, done chan struct{}) {
 	go func() {
+		defer func() {
+			c.updateMu.Lock()
+			if c.refreshing == done {
+				c.refreshing = nil
+			}
+			c.updateMu.Unlock()
+			close(done)
+		}()
 		// Bound the helper's lifetime. The paired refresh worker is capped by
 		// fnCtx (fnTimeout), but if a downstream call ignores its context the
 		// worker may never send and this goroutine would leak permanently.
