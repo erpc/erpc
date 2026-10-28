@@ -19,9 +19,8 @@ Only the latest release receives security fixes. Upgrade to the newest release b
 
 ## Verifying releases
 
-Release binaries and Docker images carry GitHub build provenance attestations:
+Release binaries carry GitHub build provenance attestations:
 
 ```sh
 gh attestation verify erpc_linux_x86_64 --repo erpc/erpc
-gh attestation verify oci://ghcr.io/erpc/erpc:<version> --repo erpc/erpc
 ```
