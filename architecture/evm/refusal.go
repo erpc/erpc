@@ -65,10 +65,11 @@ func ShortCircuitsFuture(rq *common.NormalizedRequest) bool {
 // those reports are Asked first and n decided again; still stale after
 // the Ask, n is in the band, the cheaper way to be wrong. Until the first
 // block time sample, every report counts as older than 1 bt (spec §6.4).
-// With wait, a future n at most nearFutureBlocks above the ceiling waits
-// for the ceiling to reach it, at most W, and is decided again on the
-// ceiling the wait saw; Latest stays the request's own (spec §7). A band
-// block Asks the upstreams below it, in the background.
+// With wait, an n at most nearFutureBlocks above the ceiling, future or
+// kept in the band by a stale report, waits for the ceiling to reach it,
+// at most W, and is decided again on the ceiling the wait saw; Latest
+// stays the request's own (spec §7). A band block Asks the upstreams
+// below it, in the background.
 func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead, sel string, n int64, wait bool) *common.HeadRefusal {
 	net, _ := nw.(headRefuser)
 	bt, cold := health.ColdBlockTime, true
@@ -88,11 +89,17 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 		}
 		v.Rule, v.Refreshed = h.Rule(n, bt, time.Now()), true
 	}
-	if v.Rule == common.HeadFuture && wait && net != nil && n-h.Ceiling <= nearFutureBlocks(bt) {
-		// The wait Asked the lane's voters every bt: a report that aged
-		// meanwhile keeps n future, never sends a range above every head.
+	if aboveCeiling := v.Rule == common.HeadFuture || v.Rule == common.HeadStale; aboveCeiling && wait && net != nil && n-h.Ceiling <= nearFutureBlocks(bt, h.OldestReportAt, time.Now()) {
+		kept := v.Rule == common.HeadStale
 		h.Ceiling, h.OldestReportAt = net.EvmAwaitCeiling(ctx, sel, n)
-		if v.Rule, v.Waited = h.Rule(n, bt, time.Now()), true; v.Rule == common.HeadStale {
+		if cold {
+			h.OldestReportAt = time.Time{}
+		}
+		// Still above the ceiling after W: a band n takes the band's one
+		// retry; a future n whose reports aged during the wait (the wait
+		// Asked them every bt) stays future, never sends a range above
+		// every head.
+		if v.Rule, v.Waited = h.Rule(n, bt, time.Now()), true; v.Rule == common.HeadStale && !kept {
 			v.Rule = common.HeadFuture
 		}
 	}
@@ -106,10 +113,16 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 	return v
 }
 
-// nearFutureBlocks is how far above the ceiling a future block waits for
-// it: W / bt blocks, at least 1 (spec §6.4 near future).
-func nearFutureBlocks(bt time.Duration) int64 {
-	return max(1, int64(health.FreshnessWindow(bt)/bt))
+// nearFutureBlocks is how far above the ceiling a block waits for it:
+// (W + A) / bt blocks, at least 1, A the age of the ceiling's evidence,
+// unknown (0) while a report has none (spec §6.4 near future). The chain
+// kept making blocks since those reports were taken.
+func nearFutureBlocks(bt time.Duration, oldestReportAt, now time.Time) int64 {
+	var age time.Duration
+	if !oldestReportAt.IsZero() {
+		age = max(0, now.Sub(oldestReportAt))
+	}
+	return max(1, int64((health.FreshnessWindow(bt)+age)/bt))
 }
 
 // EmptyResultBeyondConfidence reports whether an empty answer for rq is its answer rather
