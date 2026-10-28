@@ -3006,12 +3006,13 @@ func (n *Network) handleBlockSkip(
 	req.MarkUpstreamCompleted(ctx, u, nil, errToStore)
 
 	// When the block is slightly ahead (retryable), Ask the upstream with a
-	// number need and wait for the answer (spec §6.8), so the retry after
+	// number need in the background (spec §6.4, §6.8), as main polled it:
+	// the request never waits on it, and the retry after
 	// blockUnavailableDelay sees its head; concurrent skips join one fetch.
 	if isRetryable {
 		if eu, ok := u.(common.EvmUpstream); ok {
 			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-				_, _ = sp.PollLatestBlockNumber(ctx)
+				sp.AskBackground(common.HeadNeedNumber, 0, common.AskRefresh)
 			}
 		}
 	}

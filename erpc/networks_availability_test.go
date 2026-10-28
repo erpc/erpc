@@ -1516,11 +1516,10 @@ func TestRetryableBlockUnavailability_NoInfiniteLoop(t *testing.T) {
 
 // TestHandleBlockSkip_RetryableTriggersStatePollerRefresh verifies that when a
 // block is slightly ahead of the upstream's known latest (retryable case),
-// handleBlockSkip triggers an async PollLatestBlockNumber call. We prove this
-// by using a dynamic gock response: after a baseline of polls during bootstrap,
-// the very next poll still returns the old block (consumed by EvmAssertBlockAvailability),
-// but the poll after that returns a newer block. If handleBlockSkip fires its
-// async poll, the state poller picks up the newer block number.
+// handleBlockSkip Asks the upstream in the background (spec §6.4, §6.8): the
+// first poll after the bootstrap baseline is that Ask's, takes skipAskDelay
+// and returns a newer block. The request returns before it; the poller then
+// picks the newer block up.
 func TestHandleBlockSkip_RetryableTriggersStatePollerRefresh(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -1552,6 +1551,8 @@ func TestHandleBlockSkip_RetryableTriggersStatePollerRefresh(t *testing.T) {
 			// the newer block so we can prove the refresh fired.
 			bn := "0x11118888"
 			if bl > 0 && sinceBaseline >= 1 {
+				// The skip's Ask is slow: the request must not wait on it.
+				time.Sleep(skipAskDelay)
 				bn = "0x11118889"
 			}
 			body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"%s","timestamp":"0x6702a8f0"}}`, bn)
@@ -1633,29 +1634,29 @@ func TestHandleBlockSkip_RetryableTriggersStatePollerRefresh(t *testing.T) {
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x11118889"]}`))
 	req.SetNetwork(network)
 
-	fwdCtx, fwdCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	fwdCtx, fwdCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer fwdCancel()
+	start := time.Now()
 	_, fwdErr := network.Forward(fwdCtx, req)
+	elapsed := time.Since(start)
 	require.Error(t, fwdErr)
+	require.Less(t, elapsed, skipAskDelay/2, "the skipped upstream is Asked in the background: the request never waits on it")
 
-	// Wait for the handleBlockSkip async PollLatestBlockNumber goroutine
-	time.Sleep(300 * time.Millisecond)
-
-	afterPolls := latestPollCount.Load()
-	delta := afterPolls - pollBaseline.Load()
-	// Bounds-only gating no longer force-polls synchronously; handleBlockSkip fires
-	// at least the async refresh poll for a retryable skip.
-	require.GreaterOrEqual(t, delta, int64(1),
-		"retryable block skip should trigger at least 1 async refresh poll after baseline; delta=%d", delta)
+	require.Eventually(t, func() bool { return latestPollCount.Load()-pollBaseline.Load() >= 1 }, 2*skipAskDelay, 20*time.Millisecond,
+		"retryable block skip should trigger at least 1 async refresh poll after baseline")
 
 	// The async poll returned 0x11118889 → state poller should have updated
 	ups, upsErr := upr.GetSortedUpstreams(ctx, util.EvmNetworkId(123), "eth_getBalance")
 	require.NoError(t, upsErr)
 	require.NotEmpty(t, ups)
 	eu := ups[0].(common.EvmUpstream)
-	require.Equal(t, int64(0x11118889), eu.EvmStatePoller().LatestBlock(),
+	require.Eventually(t, func() bool { return eu.EvmStatePoller().LatestBlock() == 0x11118889 }, 2*skipAskDelay, 20*time.Millisecond,
 		"state poller should reflect the updated block from handleBlockSkip's async poll")
 }
+
+// skipAskDelay is how long the skipped upstream's Ask takes in
+// TestHandleBlockSkip_RetryableTriggersStatePollerRefresh.
+const skipAskDelay = 3 * time.Second
 
 // TestHandleBlockSkip_NonRetryableDoesNotTriggerRefresh verifies that when a
 // block is far beyond the upstream's latest (non-retryable case),
