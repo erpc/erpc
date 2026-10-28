@@ -13,6 +13,33 @@ import (
 //go:embed stdlib.js
 var stdlibSource string
 
+// stdlibProg is the stdlib compiled once at package init instead of re-parsed
+// per VM build; it is a pure setup script (guarded by a global sentinel) so
+// sharing the *Program across runtimes is safe.
+var stdlibProg = mustCompileStdlib("consensus-policy-stdlib.js", stdlibSource)
+
+// freezeProg freezes the builtins the stdlib relies on so a clean eval cannot
+// poison prototypes for the next pooled caller.
+var freezeProg = mustCompileStdlib("consensus-policy-freeze.js", `(function () {
+	var f = Object.freeze;
+	f(Object.prototype);
+	f(Array.prototype);
+	f(Function.prototype);
+	f(String.prototype);
+	f(Number.prototype);
+	f(Boolean.prototype);
+	f(Math);
+	f(JSON);
+})()`)
+
+func mustCompileStdlib(name, src string) *sobek.Program {
+	p, err := sobek.Compile(name, src, false)
+	if err != nil {
+		panic(err)
+	}
+	return p
+}
+
 // poolSize is the number of pre-warmed VMs. Bounded, and the same order of
 // magnitude as the selection-policy engine. The eval runs once per request
 // before fan-out; 8 concurrent evals in flight is already well beyond the
@@ -55,23 +82,13 @@ func compileFn(evalFunction string, buildTimeout time.Duration) (*compiled, erro
 
 	build := func() (*vm, error) {
 		rt := newSandboxRuntime()
-		if _, err := rt.RunString(stdlibSource); err != nil {
+		if _, err := rt.RunProgram(stdlibProg); err != nil {
 			return nil, fmt.Errorf("consensus policy: install stdlib: %w", err)
 		}
 		// Freeze builtins the stdlib relies on so a successful eval that
 		// mutates Array.prototype (etc.) cannot poison a later pooled caller.
 		// Throw paths discard the VM entirely (see Evaluate).
-		if _, err := rt.RunString(`(function () {
-			var f = Object.freeze;
-			f(Object.prototype);
-			f(Array.prototype);
-			f(Function.prototype);
-			f(String.prototype);
-			f(Number.prototype);
-			f(Boolean.prototype);
-			f(Math);
-			f(JSON);
-		})()`); err != nil {
+		if _, err := rt.RunProgram(freezeProg); err != nil {
 			return nil, fmt.Errorf("consensus policy: freeze sandbox builtins: %w", err)
 		}
 		// Evaluating the operator's function EXPRESSION must be bounded. A
@@ -222,10 +239,10 @@ func (s *Selector) Evaluate(ctx EvalContext, timeout time.Duration) (string, err
 		s.pool.discard()
 		return "", err
 	}
-	// A successful eval can still mutate globalThis or close over mutable
-	// state. Reusing the VM would let a later request observe that. Discard
-	// so the next caller gets a fresh realm; the pool refills asynchronously.
-	s.pool.discard()
+	// Builtins the stdlib touches are frozen at build time (see compileFn), so
+	// a clean eval cannot have poisoned prototypes for the next caller. Return
+	// the VM to the pool; only throw/bad-return/timeout paths discard.
+	s.pool.release(v)
 	return name, nil
 }
 
@@ -239,15 +256,17 @@ func discardWhenStopped(p *pool, done <-chan struct{}) {
 	}()
 }
 
-// resultName interprets the eval return value. null/undefined → "" (default);
-// a string is the policy name; anything else is a fail-closed error.
+// resultName interprets the eval return value. A string is the policy name.
+// null/undefined and any non-string are fail-closed errors (review finding):
+// a missing `return` (undefined) must surface as an eval failure, not silently
+// select the default — operators opt into the default by returning "default".
 //
 // Do not call Export() here: for non-primitive returns it recursively converts
 // objects and can run Proxy/accessor traps after the eval timeout has already
 // elapsed. ExportType() / String() stay on the typed value metadata.
 func resultName(v sobek.Value) (string, error) {
 	if v == nil || sobek.IsUndefined(v) || sobek.IsNull(v) {
-		return "", nil
+		return "", fmt.Errorf("%w: eval returned null/undefined, want a policy name or \"default\"", ErrEvalNull)
 	}
 	if et := v.ExportType(); et != nil && et.Kind() == reflect.String {
 		return v.String(), nil
@@ -256,5 +275,5 @@ func resultName(v sobek.Value) (string, error) {
 	if et := v.ExportType(); et != nil {
 		typeName = et.String()
 	}
-	return "", fmt.Errorf("%w: eval returned %s, want string or null", ErrEvalThrew, typeName)
+	return "", fmt.Errorf("%w: eval returned %s, want a policy name or \"default\"", ErrEvalThrew, typeName)
 }

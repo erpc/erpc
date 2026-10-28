@@ -54,6 +54,9 @@ var (
 
 	// ErrEvalThrew wraps a JS throw or a non-string return from the eval.
 	ErrEvalThrew = errors.New("consensus policy: eval failed")
+	// ErrEvalNull marks a null/undefined return (e.g. a missing `return`):
+	// fail-closed, counted and logged, never a silent default pick.
+	ErrEvalNull = errors.New("consensus policy: eval returned null")
 )
 
 // Request is the request-shaped half of the eval context. BlockNumber is nil

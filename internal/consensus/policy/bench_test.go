@@ -41,7 +41,9 @@ func benchSteadyState(b *testing.B, n int) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := s.Evaluate(ctx, 50*time.Millisecond); err != nil {
+		// 500ms so a single GC pause during a long -benchtime run doesn't fail
+		// the whole benchmark; steady-state reuse is well under 1ms.
+		if _, err := s.Evaluate(ctx, 500*time.Millisecond); err != nil {
 			b.Fatal(err)
 		}
 	}

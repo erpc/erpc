@@ -34,6 +34,21 @@ func mustCompile(t *testing.T, js string) *Selector {
 	return s
 }
 
+// mustCompileWithPool compiles with a custom pre-warm count so tests can
+// force VM reuse deterministically (poolSize = 1).
+func mustCompileWithPool(t *testing.T, js string, poolN int) *Selector {
+	t.Helper()
+	c, err := compileFn(js, 0)
+	if err != nil {
+		t.Fatalf("compileFn: %v", err)
+	}
+	p, err := newPool(poolN, c.build)
+	if err != nil {
+		t.Fatalf("newPool: %v", err)
+	}
+	return &Selector{pool: p}
+}
+
 func i64(n int64) *int64 { return &n }
 
 func up(id string, tags []string, state string, classes []string, ba *BlockRange) Upstream {
@@ -181,25 +196,28 @@ func TestEvaluate_EmptyUpstreams(t *testing.T) {
 	}
 }
 
-func TestEvaluate_NullReturnIsDefault(t *testing.T) {
+// A null return is a fail-closed error (review finding): a missing `return`
+// or an explicit null must surface as an eval failure, never a silent default
+// pick. Operators opt into the default by returning the string "default".
+func TestEvaluate_NullReturnFails(t *testing.T) {
 	s := mustCompile(t, `(ctx) => null`)
 	name, err := s.Evaluate(EvalContext{}, 50*time.Millisecond)
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
+	if err == nil {
+		t.Fatalf("null return: expected error, got name %q", name)
 	}
-	if name != "" {
-		t.Fatalf("null return: got %q, want empty", name)
+	if !errors.Is(err, ErrEvalNull) {
+		t.Fatalf("null return: got %v, want ErrEvalNull", err)
 	}
 }
 
-func TestEvaluate_UndefinedReturnIsDefault(t *testing.T) {
+func TestEvaluate_UndefinedReturnFails(t *testing.T) {
 	s := mustCompile(t, `(ctx) => { }`)
 	name, err := s.Evaluate(EvalContext{}, 50*time.Millisecond)
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
+	if err == nil {
+		t.Fatalf("undefined return: expected error, got name %q", name)
 	}
-	if name != "" {
-		t.Fatalf("undefined return: got %q, want empty", name)
+	if !errors.Is(err, ErrEvalNull) {
+		t.Fatalf("undefined return: got %v, want ErrEvalNull", err)
 	}
 }
 
@@ -482,19 +500,27 @@ func TestEvaluate_ReferenceMatrix(t *testing.T) {
 	}
 }
 
-// A closure that counts calls must not carry that count onto the next
-// request. The pool used to release a successful VM; the ninth call then
-// reused one of the eight pre-warmed realms and returned "later".
-func TestEvaluate_FreshRealmEachCall(t *testing.T) {
-	s := mustCompile(t, `(() => { let n = 0; return () => { n++; return n === 1 ? "first" : "later" } })()`)
-	for i := 0; i < poolSize+2; i++ {
-		name, err := s.Evaluate(EvalContext{}, time.Second)
-		if err != nil {
-			t.Fatalf("call %d: %v", i, err)
-		}
-		if name != "first" {
-			t.Fatalf("call %d returned %q, want first", i, name)
-		}
+// Successful evals now reuse the pooled VM (review finding). A closure that
+// counts calls keeps its count across requests on the same VM; operators must
+// not depend on fresh-realm isolation — the eval contract is per-request
+// ctx-only state. What reuse must NOT leak is builtin mutation, which
+// TestEvaluate_ThrowDoesNotPoisonPool covers via the discard path.
+func TestEvaluate_ReusesVMBetweenCalls(t *testing.T) {
+	// One VM in the pool so sequential evals deterministically share it.
+	s := mustCompileWithPool(t, `(() => { let n = 0; return () => { n++; return n === 1 ? "first" : "later" } })()`, 1)
+	first, err := s.Evaluate(EvalContext{}, time.Second)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if first != "first" {
+		t.Fatalf("first call = %q, want first", first)
+	}
+	second, err := s.Evaluate(EvalContext{}, time.Second)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if second != "later" {
+		t.Fatalf("second call = %q, want later (same VM reused)", second)
 	}
 }
 
