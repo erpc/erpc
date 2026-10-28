@@ -2365,8 +2365,9 @@ func TestServedTip_Finalized_RegressionGuardHolds(t *testing.T) {
 // Finalized is irreversible, so the served finalized tip must not step back
 // when the voters change (#1353): a leader leaving the ballot hands the
 // majority to a lagging cohort, yet a live voter still reports the served
-// block as finalized. Only when no live voter reports it does the tip follow
-// the pick down.
+// block as finalized. Another instance sharing state serves it too, though it
+// never saw the leaders' majority. Only when no live voter reports it does the
+// tip follow the pick down.
 func TestServedTip_Finalized_NeverRegressesWhenTheMajorityFlips(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -2406,6 +2407,12 @@ func TestServedTip_Finalized_NeverRegressesWhenTheMajorityFlips(t *testing.T) {
 	assert.Equal(t, int64(201), finalized(),
 		"the laggers are now the majority of 4, but two live voters still report 201 finalized")
 
+	replica, err := NewNetwork(ctx, &log.Logger, network.projectId, network.cfg,
+		network.rateLimitersRegistry, network.upstreamsRegistry, network.metricsTracker, nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(201), replica.EvmHighestFinalizedBlockNumber(ctx),
+		"a fresh instance's own pick is 150, but the other instance served 201 and a voter here backs it")
+
 	for _, u := range lead[:2] {
 		setServedTipFinalized(t, u, 202)
 	}
@@ -2418,6 +2425,8 @@ func TestServedTip_Finalized_NeverRegressesWhenTheMajorityFlips(t *testing.T) {
 	vote(false, lead...)
 	assert.Equal(t, int64(150), finalized(),
 		"no live voter reports 202 finalized any more: the tip follows the pick")
+	assert.Equal(t, int64(150), replica.EvmHighestFinalizedBlockNumber(ctx),
+		"a shared value no voter backs is ignored")
 }
 
 // The guard's clamp branch: the upstream that backed the remembered pick leaves

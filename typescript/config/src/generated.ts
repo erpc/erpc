@@ -1853,7 +1853,8 @@ export interface EvmNetworkConfig {
  * highest one at least Quorum of those voters already have. The health
  * tracker benches an upstream whose head stopped moving while another kept
  * advancing, until it catches up again. "finalized" never steps back below a
- * block already served while a voter still reports it finalized.
+ * block already served, by this instance or (network-wide, through shared
+ * state) by another, while a voter here still reports it finalized.
  */
 export interface EvmServedTipConfig {
   /**

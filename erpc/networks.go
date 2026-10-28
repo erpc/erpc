@@ -60,6 +60,10 @@ type Network struct {
 	// deliveredLatestBlock is the highest head this instance has delivered to
 	// a WebSocket subscriber.
 	deliveredLatestBlock atomic.Int64
+	// servedFinalizedShared is the highest network-wide finalized tip any
+	// instance has served (see shareFinalized). Nil when shared state is not
+	// configured.
+	servedFinalizedShared data.CounterInt64SharedVariable
 
 	// servedTipAll is the network-wide served-tip lane. Lanes hold the
 	// advance-age watchdog, the regression guard's memory and the finalized
@@ -881,16 +885,18 @@ func (n *Network) futureBlockCeiling(ctx context.Context) (head int64, known boo
 // already has (see evmTipBallot and common.PickServedTip), guarded against a
 // regression far below the live heads, lifted to the head already delivered to
 // WebSocket subscribers (network-wide latest only), clamped to every
-// configured guarantee, held at the lane's finalized floor (finalized only),
-// then exported on the request's lane.
+// configured guarantee, held at the lane's finalized floor and, network-wide,
+// at the finalized other instances served (finalized only), then exported on
+// the request's lane.
 //
 // The guard is in-process, bounded and one-directional (it can only hold the
 // tip, and only briefly), and it cannot produce a block that no live upstream
-// reports in the very same evaluation. The finalized floor is in-process too,
-// and holds a block only while a voter of the same evaluation reports it. Nothing is
-// persisted and nothing is predicted, so no inherited or rogue value can pin,
-// freeze or poison the result (networks_served_tip_invariants_test.go pins
-// those outcomes against the frozen-tip regression).
+// reports in the very same evaluation. The finalized floors hold a block only
+// while a voter of the same evaluation reports it, the shared one included.
+// Nothing else is persisted and nothing is predicted, so no inherited or
+// rogue value can pin, freeze or poison the result
+// (networks_served_tip_invariants_test.go pins those outcomes against the
+// frozen-tip regression).
 func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool) int64 {
 	axis := "latest"
 	if finalized {
@@ -934,11 +940,14 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 
 	// Finalized floor (#1353): a change of voters — the quorum passing to a
 	// lagging cohort, in the lane's ballot or a guarantee subset's — cannot
-	// pull "finalized" below a block this lane already served while a voter
-	// of each of those ballots still reports it. Last, so nothing above
-	// lowers it.
+	// pull "finalized" below a block this lane, or for the network-wide lane
+	// any instance, already served while a voter of each of those ballots
+	// still reports it. Last, so nothing above lowers it.
 	if finalized && lane != nil {
 		tip = n.holdFinalized(ctx, anchor, q, tip)
+		if lane == &n.servedTipAll {
+			tip = n.shareFinalized(ctx, q, tip)
+		}
 	}
 
 	if common.IsTracingDetailed {
@@ -1000,6 +1009,28 @@ func (n *Network) finalizedBacking(ctx context.Context, q common.ServedTipQuorum
 		backing = min(backing, subsets)
 	}
 	return backing
+}
+
+// shareFinalized lifts the network-wide finalized tip to the highest one any
+// instance served (servedFinalizedShared), so instances behind one load
+// balancer agree: under holdFinalized's rule, only while a voter here still
+// reports it (finalizedBacking). A shared value no voter here backs is
+// ignored, as an instance's own floor is, and ages out as the chain passes
+// it, so a stale or rogue one cannot pin this instance. It publishes this
+// instance's raises; the steady state (tip equals the shared value) is one
+// shared read.
+func (n *Network) shareFinalized(ctx context.Context, q common.ServedTipQuorum, tip int64) int64 {
+	if n.servedFinalizedShared == nil || tip <= 0 {
+		return tip
+	}
+	shared := n.servedFinalizedShared.GetValue()
+	switch {
+	case tip > shared:
+		n.servedFinalizedShared.TryUpdate(ctx, tip)
+	case tip < shared && shared <= n.finalizedBacking(ctx, q):
+		return shared
+	}
+	return tip
 }
 
 // guardServedTipRegression returns the tip to serve for `pick`, substituting the
@@ -1443,7 +1474,8 @@ func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []i
 // EvmHighestLatestBlockNumber: the same ballot, quorum, guard and guarantees,
 // applied to each upstream's EvmEffectiveFinalizedBlock, then held at the
 // lane's finalized floor so it does not step back while a voter still reports
-// what was served (holdFinalized).
+// what this instance served (holdFinalized), or network-wide what any
+// instance served (shareFinalized).
 func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestFinalizedBlockNumber", trace.WithAttributes(
 		attribute.String("network.id", n.networkId),
