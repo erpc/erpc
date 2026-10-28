@@ -398,7 +398,7 @@ Refusal rule, for block N on a request:
 
 Finality:
 
-- Reads: N is final when N ≤ `Head.Finalized`. The `finalized` tag, cache hits, labels, integrity `IsFinalized`, narrow anchors and empty-result confidence read it. `Finalized` moves by the full poll and the `finalized`-tag refresh only, as on main: a read of a block above it polls nothing.
+- Reads: N is final when N ≤ `Head.Finalized`. The `finalized` tag, cache hits, labels, integrity `IsFinalized`, narrow anchors and empty-result confidence read it. `Finalized` moves by the full poll and the `finalized`-tag refresh; a numbered read above it polls nothing. A request that names the `finalized` tag (any method, any param) takes its `Head` after the lane's finalized refresh: when none started within the finalized debounce (§6.8), it starts one, or joins the one in flight, and waits for it, at most W, before interpolation and the cache lookup. On main such a request reached an upstream, which answered with its live finalized; a `Head.Finalized` up to one full poll old would serve older finalized blocks than main (§19 P7).
 - Permanent cache writes: N ≤ `Head.Finalized` and N ≤ the serving upstream's own finalized (#90): its polls of the `finalized` tag and its answers to a tag it was sent, never an interpolated request it served. An upstream on a minority fork cannot write a permanent entry.
 - Per-upstream finality stays per upstream for routing (`upstream/evm_upstream_ops.go`, `EvmStatePoller`): a routing fact, not a head.
 - The cache write guard reads the network-wide lane's `Latest`, whatever lane the request used (#932).
@@ -486,7 +486,8 @@ Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, th
 | poll source | hash | cadence |
 | catch-up (§6.5) | number; hash for voters without a fresh hash vote | bt, at most 1s; no faster than the demand's pace |
 | refusal band and stale ceiling (§6.4) | number | 1 bt |
-| `eth_blockNumber`, `eth_getBlockByNumber(latest\|finalized)` pre-forward refresh | number | cadence |
+| `eth_blockNumber`, `eth_getBlockByNumber(latest)` pre-forward refresh, in the background | number | cadence |
+| a request naming the `finalized` tag (§6.4 Finality), waited for | number | the finalized debounce |
 | availability-gate skip (§6.4), in the background | number | cadence |
 | settle: for a tie, the voters whose vote decides neither tied block (no fresh hash vote, a vote below the split or in another tree), then non-voters, up to 3 (hash); for a vote off the pins (§6.3), the voters that back the pins with an older vote and the voters with no fresh hash vote, oldest evidence first, up to 3 (fork) | hash, fork | cadence; a fork need: sent after the pins moved |
 | a vote still off the pins after its settle (§6.3) | hash | W |
