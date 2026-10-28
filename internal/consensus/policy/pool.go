@@ -143,22 +143,22 @@ func (p *pool) maybeRefill() {
 			idle := len(p.free)
 			need := p.size - idle
 			atCap := p.alive >= poolMaxSize
-			p.mu.Unlock()
 			if need <= 0 || atCap {
-				return
-			}
-			v, err := p.build()
-			if err != nil {
-				return
-			}
-			p.mu.Lock()
-			if p.alive >= poolMaxSize {
 				p.mu.Unlock()
-				// Drop the extra — don't retain past cap.
 				return
 			}
+			// Reserve the slot before building. A synchronous acquire that
+			// lands mid-build would otherwise reserve the same slot and the
+			// refill would construct a runtime past poolMaxSize.
 			p.alive++
 			p.mu.Unlock()
+			v, err := p.build()
+			if err != nil {
+				p.mu.Lock()
+				p.alive--
+				p.mu.Unlock()
+				return
+			}
 			select {
 			case p.free <- v:
 			default:

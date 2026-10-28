@@ -1079,10 +1079,15 @@ func (t *Tracker) CordonClass(upstream common.Upstream, method, reason string, c
 	prev := tm.CordonMask.Or(cordonBit(class))
 	tm.storeCordonReason(class, reason)
 	tm.LastCordonedReason.Store(reason)
-	if idx, ok := cordonClassIndex(class); ok {
-		tm.cordonGen[idx].Add(1)
-		tm.cordonSetAtMs[idx].Store(time.Now().UnixMilli())
+	idx, ok := cordonClassIndex(class)
+	if !ok {
+		// Unknown classes set the operator bit (cordonBit); advance the
+		// operator generation too so a class cordoned after an admin snapshot
+		// is not cleared by UncordonClassesAtMostGens as if it predated it.
+		idx, _ = cordonClassIndex(common.CordonClassOperator)
 	}
+	tm.cordonGen[idx].Add(1)
+	tm.cordonSetAtMs[idx].Store(time.Now().UnixMilli())
 	if prev == 0 {
 		tm.CordonedAtMs.Store(time.Now().UnixMilli())
 		telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(

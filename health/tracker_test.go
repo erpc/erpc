@@ -1506,6 +1506,28 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		assert.Zero(t, tm.CordonMask.Load(), "operator uncordon clears the operator cordon")
 	})
 
+	t.Run("cordon_with_unrecognized_class_advances_operator_generation", func(t *testing.T) {
+		// cordonBit aliases an unknown class to the operator bit; the operator
+		// generation must advance too, or an admin uncordon snapshot taken
+		// before this cordon would clear it as if it predated the snapshot.
+		tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
+
+		ups := common.NewFakeUpstream("unknown-class-gen")
+		before := tracker.CordonGens(ups, "*")
+		tracker.CordonClass(ups, "*", "future detector", common.CordonClass("some-future-class"))
+		after := tracker.CordonGens(ups, "*")
+		assert.Greater(t, after[2], before[2], "unknown class advances the operator generation")
+
+		// A snapshot taken before the cordon must not clear it.
+		tracker.UncordonClassesAtMostGens(ups, "*", "admin recovery", before)
+		tm := tracker.getUpsMetrics(upstreamKey{ups, "*", common.DataFinalityStateAll})
+		assert.NotZero(t, tm.CordonMask.Load(),
+			"post-snapshot unknown-class cordon survives the admin clear")
+	})
+
 	t.Run("operator_uncordon_leaves_punishment_and_availability_bits", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
 		ctx, cancel := context.WithCancel(context.Background())

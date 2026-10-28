@@ -1519,20 +1519,21 @@ func (c *ConsensusPolicyConfig) Validate() error {
 	}
 	// A block-evidence path that is also ignored would let differing block
 	// numbers collapse into one winner group while waiver proof is taken from
-	// a size-selected response — reject that overlap at load time. Method
-	// lookup matches runtime methodFields (exact first, then EqualFold).
+	// a size-selected response — reject that overlap at load time. An ignore
+	// path that is an ancestor of the evidence path strips it too
+	// (ignoreFields["receipt"] removes receipt.blockNumber), so reject any
+	// ignore path equal to or a dot-delimited ancestor of an evidence path.
+	// Method lookup matches runtime methodFields (exact first, then EqualFold).
 	for method, evidencePaths := range c.BlockEvidenceFields {
 		ignored, ignoreKey, found := lookupMethodFields(c.IgnoreFields, method)
 		if !found || len(evidencePaths) == 0 {
 			continue
 		}
-		ignoreSet := make(map[string]struct{}, len(ignored))
-		for _, p := range ignored {
-			ignoreSet[p] = struct{}{}
-		}
 		for _, ep := range evidencePaths {
-			if _, ok := ignoreSet[ep]; ok {
-				return fmt.Errorf("consensus.blockEvidenceFields[%q] path %q is also listed in ignoreFields[%q]: evidence fields must not be ignored or waiver proof can disagree with the winning group", method, ep, ignoreKey)
+			for _, ip := range ignored {
+				if ip == ep || strings.HasPrefix(ep, ip+".") {
+					return fmt.Errorf("consensus.blockEvidenceFields[%q] path %q is also listed in ignoreFields[%q]: evidence fields must not be ignored or waiver proof can disagree with the winning group", method, ep, ignoreKey)
+				}
 			}
 		}
 	}
