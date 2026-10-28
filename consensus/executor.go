@@ -506,12 +506,12 @@ func (e *executor) runAnalyzer(
 	// Collect responses. Every participant is guaranteed to write exactly
 	// once to responseChan (see executeParticipant: all exit paths + panic
 	// recovery write; channel is buffered to maxToSpawn so writes never block).
+	capExpired := false
 	for i := 0; i < maxToSpawn; i++ {
-		var resp *execResult
-		select {
-		case resp = <-responseChan:
-		case <-timerC():
-			// Wait cap fired — resolve with what we have.
+		resp, received := nextResponse(responseChan, timerC(), &capExpired)
+		if !received {
+			// Wait cap fired and nothing more is in hand — resolve with
+			// what we have.
 			waitCapped = true
 			if !e.config.fireAndForget {
 				cancelRemaining()
@@ -521,8 +521,6 @@ func (e *executor) runAnalyzer(
 					}
 				}
 			}
-		}
-		if waitCapped {
 			break
 		}
 		if resp == nil {
@@ -1626,5 +1624,34 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 		telemetry.MetricConsensusErrors.
 			WithLabelValues(labels.projectId, labels.networkId, labels.category, errLabel, labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
+	}
+}
+
+// nextResponse receives the next participant response for the collection
+// loop. Before the wait cap expires it blocks on either, and sets
+// *capExpired when the cap fires. Once the cap has fired, it only takes
+// responses already delivered. received is false when the cap has fired
+// and none is in hand. A participant may deliver nil, so resp alone cannot
+// carry that.
+//
+// Responses already in the channel still count after the cap fires. Under
+// load the collection loop can reach its select after both a response and
+// the timer are ready, and select picks one at random. Picking the timer
+// used to discard answers the participants had already returned, and turned
+// agreement into a false low-participants error.
+func nextResponse(responses <-chan *execResult, capC <-chan time.Time, capExpired *bool) (resp *execResult, received bool) {
+	if !*capExpired {
+		select {
+		case resp = <-responses:
+			return resp, true
+		case <-capC:
+			*capExpired = true
+		}
+	}
+	select {
+	case resp = <-responses:
+		return resp, true
+	default:
+		return nil, false
 	}
 }
