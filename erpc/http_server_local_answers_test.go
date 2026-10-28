@@ -142,6 +142,25 @@ func TestHttpServer_LocalAnswers(t *testing.T) {
 		}
 	})
 
+	t.Run("a network staticResponse wins over the local answer", func(t *testing.T) {
+		mockUpstream()
+		defer util.ResetGock()
+		cfg := config(nil)
+		cfg.Projects[0].Networks[0].StaticResponses = []*common.StaticResponseConfig{
+			{Method: "web3_clientVersion", Response: &common.StaticResponseBodyConfig{Result: "my-chain/v1"}},
+		}
+		send, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		got, n := call(t, send, "web3_clientVersion", nil)
+		assert.Zero(t, n)
+		assert.Equal(t, "my-chain/v1", got)
+
+		got, n = call(t, send, "net_version", nil)
+		assert.Zero(t, n)
+		assert.Equal(t, localAnswers["net_version"], got, "methods without a static response keep the local answer")
+	})
+
 	t.Run("a method without a local answer is refused in config", func(t *testing.T) {
 		cfg := config(map[string]bool{"eth_getBalance": false})
 		require.NoError(t, cfg.SetDefaults(nil))
