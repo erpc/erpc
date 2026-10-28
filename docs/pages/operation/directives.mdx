@@ -396,7 +396,7 @@ Directives have no dedicated Prometheus metrics; their effects appear in existin
 - [`erpc/http_server.go:1081-1272`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1081-L1272) — `executionHeadersMode`, `setResponseHeaders`, `writeCounterHeaders`, `writeResponseMetadataHeaders`, `writeUpstreamTraceHeaders`
 - [`erpc/network_executor.go:179-188`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L179-L188) — `SkipConsensus` branch
 - [`erpc/network_executor.go:374-462`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L374-L462) — `shouldRetryWithReason`: `RetryEmpty` / `RetryPending` checks and `EmptyResultMaxAttempts` cap
-- [`erpc/networks.go:564-655`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L564-L655) — selector-scoped served tip: `tipCandidateUpstreams`, `requestSelector`, `servedTipLaneFor`
+- [`erpc/networks.go:564-655`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L564-L655) — selector-scoped served tip: `EvmRoutableUpstreams`, `requestSelector`, `servedTipLaneFor`
 - [`upstream/upstream.go:1505-1548`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L1505-L1548) — `shouldSkip`: `UseUpstream` selector check via `UpstreamMatchesSelector`
 - [`common/matcher.go:34-112`](https://github.com/erpc/erpc/blob/main/common/matcher.go#L34-L112) — `WildcardMatch`, `MatchesSelector`, `UpstreamMatchesSelector`
 - [`erpc/skip_consensus_directive_test.go`](https://github.com/erpc/erpc/blob/main/erpc/skip_consensus_directive_test.go) — end-to-end `SkipConsensus` tests

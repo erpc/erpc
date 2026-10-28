@@ -120,24 +120,6 @@ func (s *scriptedUpstream) Config() *common.UpstreamConfig {
 	return s.fakeUpstreamForPoller.Config()
 }
 
-// newScriptedUpstreamDeclaringFloor is a scriptedUpstream whose operator
-// declared a firstAvailableSlotPlus lower bound — the only config under which
-// the poller observes the ledger floor.
-func newScriptedUpstreamDeclaringFloor() *scriptedUpstream {
-	up := newScriptedUpstream()
-	plus := int64(0)
-	up.cfg = &common.UpstreamConfig{
-		Id: "test-poller", Type: common.UpstreamTypeSvm, Endpoint: "http://x",
-		Svm: &common.SvmUpstreamConfig{
-			Cluster: "mainnet-beta",
-			BlockAvailability: &common.SvmBlockAvailabilityConfig{
-				Lower: &common.SvmAvailabilityBoundConfig{FirstAvailableSlotPlus: &plus},
-			},
-		},
-	}
-	return up
-}
-
 type cordonEvent struct {
 	method string
 	reason string
@@ -279,7 +261,7 @@ func newPollerOnCtx(t *testing.T, appCtx context.Context, up common.Upstream) *S
 
 func TestSvmStatePoller_Poll_FansOutAllFiveCalls(t *testing.T) {
 	t.Parallel()
-	up := newScriptedUpstreamDeclaringFloor()
+	up := newScriptedUpstream()
 	up.script("getHealth", []byte(`"ok"`))
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
@@ -319,9 +301,12 @@ func TestSvmStatePoller_Poll_FansOutAllFiveCalls(t *testing.T) {
 	if !p.IsHealthy() {
 		t.Error("IsHealthy should be true: getHealth ok + lag within threshold")
 	}
-	if floor, known := p.FirstAvailableSlot(); !known || floor != 200 {
-		t.Errorf("FirstAvailableSlot = (%d, %v), want (200, true)", floor, known)
-	}
+	// The floor fetch may finish after Poll's bounded foreground wait under
+	// -race; it still lands via the async closure.
+	require.Eventually(t, func() bool {
+		floor, known := p.FirstAvailableSlot()
+		return known && floor == 200
+	}, 5*time.Second, 10*time.Millisecond, "FirstAvailableSlot must become (200, true)")
 }
 
 // The ledger floor is the one poll whose absence must never cost us an
@@ -329,7 +314,7 @@ func TestSvmStatePoller_Poll_FansOutAllFiveCalls(t *testing.T) {
 // "no constraint".
 func TestSvmStatePoller_FirstAvailableSlot_UnknownUntilObserved(t *testing.T) {
 	t.Parallel()
-	up := newScriptedUpstreamDeclaringFloor()
+	up := newScriptedUpstream()
 	up.script("getHealth", []byte(`"ok"`))
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
@@ -356,10 +341,9 @@ func TestSvmStatePoller_FirstAvailableSlot_UnknownUntilObserved(t *testing.T) {
 	require.Zero(t, floor)
 }
 
-// The observed floor is opt-in: an upstream whose operator declared no
-// firstAvailableSlotPlus costs no floor probe and carries no floor, however
-// many ticks run.
-func TestSvmStatePoller_FirstAvailableSlot_NotPolledWithoutDeclaredBound(t *testing.T) {
+// Every upstream observes its floor, declared bound or not, and the probe is
+// debounced by the staleness window rather than issued on every tick.
+func TestSvmStatePoller_FirstAvailableSlot_PolledWithoutDeclaredBound(t *testing.T) {
 	t.Parallel()
 	exact := int64(0)
 	cases := map[string]*common.UpstreamConfig{
@@ -385,10 +369,10 @@ func TestSvmStatePoller_FirstAvailableSlot_NotPolledWithoutDeclaredBound(t *test
 			for range 3 {
 				require.NoError(t, p.Poll(context.Background()))
 			}
-			require.Zero(t, up.callCount("oldestBlock"))
+			require.Equal(t, 1, up.callCount("oldestBlock"), "one probe per staleness window")
 			floor, known := p.FirstAvailableSlot()
-			require.False(t, known)
-			require.Zero(t, floor)
+			require.True(t, known)
+			require.EqualValues(t, 509, floor)
 		})
 	}
 }
@@ -398,7 +382,7 @@ func TestSvmStatePoller_FirstAvailableSlot_NotPolledWithoutDeclaredBound(t *test
 // FirstAvailableSlot returns a second value instead of just the counter.
 func TestSvmStatePoller_FirstAvailableSlot_ZeroIsKnown(t *testing.T) {
 	t.Parallel()
-	up := newScriptedUpstreamDeclaringFloor()
+	up := newScriptedUpstream()
 	up.script("getHealth", []byte(`"ok"`))
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
@@ -408,8 +392,13 @@ func TestSvmStatePoller_FirstAvailableSlot_ZeroIsKnown(t *testing.T) {
 	p := newPollerWithUpstream(t, up)
 	require.NoError(t, p.Poll(context.Background()))
 
-	floor, known := p.FirstAvailableSlot()
-	require.True(t, known, "an observed floor of 0 must read as KNOWN")
+	// Under -race the foreground wait can time out while the fetch completes
+	// asynchronously; the closure then marks the floor known.
+	require.Eventually(t, func() bool {
+		_, known := p.FirstAvailableSlot()
+		return known
+	}, 5*time.Second, 10*time.Millisecond, "an observed floor of 0 must read as KNOWN")
+	floor, _ := p.FirstAvailableSlot()
 	require.Zero(t, floor)
 }
 
@@ -419,7 +408,7 @@ func TestSvmStatePoller_FirstAvailableSlot_ZeroIsKnown(t *testing.T) {
 // violate the unknown/fail-open contract.
 func TestSvmStatePoller_FirstAvailableSlot_EmptyLeavesUnknown(t *testing.T) {
 	t.Parallel()
-	up := newScriptedUpstreamDeclaringFloor()
+	up := newScriptedUpstream()
 	up.script("getHealth", []byte(`"ok"`))
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
@@ -440,7 +429,7 @@ func TestSvmStatePoller_FirstAvailableSlot_EmptyLeavesUnknown(t *testing.T) {
 // a replica may legitimately never perform the fetch itself.
 func TestSvmStatePoller_FirstAvailableSlot_KnownFromCounterPropagation(t *testing.T) {
 	t.Parallel()
-	up := newScriptedUpstreamDeclaringFloor()
+	up := newScriptedUpstream()
 	p := newPollerWithUpstream(t, up)
 
 	_, known := p.FirstAvailableSlot()
@@ -462,7 +451,7 @@ func TestSvmStatePoller_FirstAvailableSlot_KnownFromCounterPropagation(t *testin
 // doing the fetching.
 func TestSvmStatePoller_FirstAvailableSlot_KnownWithoutLocalFetch(t *testing.T) {
 	t.Parallel()
-	up := newScriptedUpstreamDeclaringFloor()
+	up := newScriptedUpstream()
 	up.script("getHealth", []byte(`"ok"`))
 	up.script("getSlot:processed", []byte(`300000`))
 	up.script("getSlot:finalized", []byte(`299900`))
@@ -491,7 +480,7 @@ func TestSvmStatePoller_FirstAvailableSlot_KnownWithoutLocalFetch(t *testing.T) 
 // on every instance except the one doing the fetching.
 func TestSvmStatePoller_FirstAvailableSlot_PropagatedZeroBecomesKnownOnTick(t *testing.T) {
 	t.Parallel()
-	up := newScriptedUpstreamDeclaringFloor()
+	up := newScriptedUpstream()
 	up.script("getHealth", []byte(`"ok"`))
 	up.script("getSlot:processed", []byte(`300000`))
 	up.script("getSlot:finalized", []byte(`299900`))
@@ -524,7 +513,7 @@ func TestSvmStatePoller_FirstAvailableSlot_PropagatedZeroBecomesKnownOnTick(t *t
 // in this file. Another parallel test writing a different floor between Poll
 // and ToFloat64 would flake the equality check.
 func TestSvmStatePoller_FirstAvailableSlot_GaugeSetWithoutLocalFetch(t *testing.T) {
-	up := newScriptedUpstreamDeclaringFloor()
+	up := newScriptedUpstream()
 	up.script("getHealth", []byte(`"ok"`))
 	up.script("getSlot:processed", []byte(`300000`))
 	up.script("getSlot:finalized", []byte(`299900`))
@@ -547,7 +536,7 @@ func TestSvmStatePoller_FirstAvailableSlot_GaugeSetWithoutLocalFetch(t *testing.
 // advertise a floor near MaxInt64 and evict itself from every slot-named read.
 func TestSvmStatePoller_FirstAvailableSlot_AboveOwnLatestRejected(t *testing.T) {
 	t.Parallel()
-	up := newScriptedUpstreamDeclaringFloor()
+	up := newScriptedUpstream()
 	up.script("getHealth", []byte(`"ok"`))
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
@@ -563,29 +552,56 @@ func TestSvmStatePoller_FirstAvailableSlot_AboveOwnLatestRejected(t *testing.T) 
 }
 
 // The floor moves O(1) slot per slot while sitting O(100k) slots below the
-// head, so it is polled on its own staleness window rather than every tick.
+// head, so by default it is probed once and then frozen, as EVM's
+// earliestBlockPlus is at updateRate 0. A firstAvailableSlotPlus bound's
+// updateRate re-probes it on that cadence; nothing else does.
 func TestSvmStatePoller_FirstAvailableSlot_PolledLessOftenThanHealth(t *testing.T) {
 	t.Parallel()
-	up := newScriptedUpstreamDeclaringFloor()
-	up.script("getHealth", []byte(`"ok"`))
-	up.script("getSlot:processed", []byte(`1000`))
-	up.script("getSlot:finalized", []byte(`990`))
-	up.script("getMaxShredInsertSlot", []byte(`1002`))
-	up.script("oldestBlock", []byte(`[200]`))
-
-	p := newPollerWithUpstream(t, up)
-	const polls = 2 * healthPollEveryNTicks
-	for range polls {
-		require.NoError(t, p.Poll(context.Background()))
+	plus := int64(0)
+	exact := int64(0)
+	withRate := func(b *common.SvmAvailabilityBoundConfig) *common.UpstreamConfig {
+		return &common.UpstreamConfig{
+			Id: "test-poller", Type: common.UpstreamTypeSvm, Endpoint: "http://x",
+			Svm: &common.SvmUpstreamConfig{BlockAvailability: &common.SvmBlockAvailabilityConfig{Lower: b}},
+		}
 	}
+	cases := map[string]struct {
+		cfg       *common.UpstreamConfig
+		wantFloor int
+	}{
+		"default: frozen after first observation": {nil, 1},
+		"firstAvailableSlotPlus updateRate 1ns": {
+			withRate(&common.SvmAvailabilityBoundConfig{FirstAvailableSlotPlus: &plus, UpdateRate: common.Duration(time.Nanosecond)}),
+			2 * healthPollEveryNTicks,
+		},
+		"updateRate on a bound without the floor is ignored": {
+			withRate(&common.SvmAvailabilityBoundConfig{ExactSlot: &exact, UpdateRate: common.Duration(time.Nanosecond)}),
+			1,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			up := newScriptedUpstream()
+			up.cfg = tc.cfg
+			up.script("getHealth", []byte(`"ok"`))
+			up.script("getSlot:processed", []byte(`1000`))
+			up.script("getSlot:finalized", []byte(`990`))
+			up.script("getMaxShredInsertSlot", []byte(`1002`))
+			up.script("oldestBlock", []byte(`[200]`))
 
-	// getHealth is tick-throttled (healthPollEveryNTicks); the floor is
-	// independently debounced by DefaultFirstAvailableSlotStaleness, so it
-	// stays at one fetch across this burst.
-	require.Equal(t, polls/healthPollEveryNTicks, up.callCount("getHealth"),
-		"getHealth runs every Nth poll")
-	require.Equal(t, 1, up.callCount("oldestBlock"),
-		"the floor is debounced by its own staleness window, not by the poll gate")
+			p := newPollerWithUpstream(t, up)
+			const polls = 2 * healthPollEveryNTicks
+			for range polls {
+				require.NoError(t, p.Poll(context.Background()))
+				time.Sleep(time.Millisecond)
+			}
+
+			require.Equal(t, polls/healthPollEveryNTicks, up.callCount("getHealth"),
+				"getHealth runs every Nth poll")
+			require.Equal(t, tc.wantFloor, up.callCount("oldestBlock"),
+				"the floor is debounced by its own staleness window, not by the poll gate")
+		})
+	}
 }
 
 func TestSvmStatePoller_Poll_HealthFailureFlipsHealthy(t *testing.T) {
@@ -770,7 +786,9 @@ func TestSvmStatePoller_Poll_TrafficGate_SkipCapForcesFullPoll(t *testing.T) {
 	scriptAllFour(up)
 	p := newPollerWithUpstream(t, up)
 
-	const debounce = 100 * time.Millisecond
+	// Wide enough that a loaded -race run cannot age the stamps made right
+	// before each Poll out of the gate window.
+	const debounce = 400 * time.Millisecond
 	p.SetDebounceInterval(debounce)
 
 	// Expected cumulative getSlot fetches after the i-th poll: polls 1-4 are

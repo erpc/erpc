@@ -161,6 +161,19 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			return capErr
 		}
 
+		// jsonrpsee per-connection eth_subscribe cap (reth -32006): a full socket, not an unhealthy upstream.
+		if strings.Contains(msg, "Too many subscriptions") {
+			return common.NewErrEndpointCapacityExceeded(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		}
+
 		if r.StatusCode == 402 ||
 			strings.Contains(msg, "reached the free tier") ||
 			strings.Contains(msg, "Monthly capacity limit") ||
@@ -327,6 +340,31 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				}
 			}
 			return execErr
+		}
+		// Aurora (Borealis engine) answers debug_trace* with -32603 for two
+		// per-transaction outcomes that no other node can change:
+		//   "no EVM execution in transaction 0x…": a NEAR-native transaction
+		//     surfaced in the EVM block, so there is nothing to trace;
+		//   "EVM tracing failed in transaction 0x… due to ContractError {…}":
+		//     the engine's own verdict for that transaction;
+		//   "StandaloneError(TransactionHashNotFound(0x…))": the tracer has no
+		//     EVM record of a transaction the chain does list (engine system
+		//     calls to 0x4444…192b), for old and new blocks alike.
+		// As a server-side exception every request was retried until the
+		// failsafe gave up (12 attempts each) and the caller saw
+		// ErrUpstreamsExhausted instead of the real reason.
+		if strings.Contains(msg, "no EVM execution in transaction") ||
+			strings.Contains(msg, "EVM tracing failed in transaction") ||
+			strings.Contains(msg, "StandaloneError(TransactionHashNotFound(") {
+			return common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCallException,
+					err.Message,
+					nil,
+					details,
+				),
+			)
 		}
 		// EVM HALTS reported as "EVM error: <HaltReason>".
 		//
@@ -539,11 +577,20 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		//----------------------------------------------------------------
 		// "Transaction rejected" or "out of gas" errors
 		// Note: This comes AFTER nonce/duplicate detection to avoid masking those errors.
+		//
+		// "gas required exceeds allowance (N)" is the eth_estimateGas verdict of
+		// go-ethereum's gas estimator (eth/gasestimator) when the call still runs
+		// out of gas at its cap N (for a sender with a tiny balance, the gas its
+		// balance can buy). Seen from Arbitrum nitro nodes, which carry that
+		// estimator in their go-ethereum fork. As a server-side exception every
+		// upstream was asked and answered the same, and the caller saw
+		// ErrUpstreamsExhausted instead of the node's reason.
 		//----------------------------------------------------------------
 
 		if code == common.JsonRpcErrorTransactionRejected ||
 			strings.Contains(msg, "out of gas") ||
 			strings.Contains(msg, "gas too low") ||
+			strings.Contains(msg, "gas required exceeds allowance") ||
 			strings.Contains(msg, "IntrinsicGas") {
 
 			execErr := common.NewErrEndpointExecutionException(
