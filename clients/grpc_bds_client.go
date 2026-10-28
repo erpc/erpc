@@ -1245,13 +1245,17 @@ func (c *GenericGrpcBdsClient) handleSvmGetBlock(ctx context.Context, conn *bdsC
 		return nil, err
 	}
 
+	commitment, servable := svmReaderCommitment(ctx, req, svmCommitment(opts.Commitment), slot)
+	if !servable {
+		return nil, svmUnservable("slot %d is not finalized on this network", slot)
+	}
 	grpcReq := &svm.GetBlockRequest{
 		Slot:               slot,
 		TransactionDetails: details,
 		// Inverted: the proto's false is Agave's `rewards: true` default.
 		ExcludeRewards:                 opts.Rewards != nil && !*opts.Rewards,
 		MaxSupportedTransactionVersion: opts.MaxSupportedTransactionVersion,
-		Commitment:                     svmCommitment(opts.Commitment),
+		Commitment:                     commitment,
 		MinContextSlot:                 opts.MinContextSlot,
 		// GenesisHash is deliberately never set: the reader does not publish
 		// its own, and asserting one it cannot verify would be refused.
