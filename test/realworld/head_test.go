@@ -466,18 +466,6 @@ func c12() spec {
 // that took the number from the shared counter has no header for it and
 // counts none (§6.5, C18's rule).
 func revertFinalized(s *scenario) {
-	tip := s.chain.Tip().Number
-	var heights []uint64
-	for n := tip - revertDepth + 1; n <= tip-revertDepth+5; n++ {
-		heights = append(heights, n)
-	}
-	for pod := range s.h.pods {
-		for _, n := range heights {
-			if got, want := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false), s.chain.CanonAt(n).Hash.Hex(); got != want {
-				s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) before the revert answered %s, not %s", pod+1, n, got, want)
-			}
-		}
-	}
 	polled := func(pod int) float64 {
 		v, _ := s.metric(pod, "erpc_upstream_finalized_block_polled_total", nil)
 		return v
@@ -498,6 +486,18 @@ func revertFinalized(s *scenario) {
 	}
 	if !slices.Contains(covered, true) {
 		s.violate("harness", "no pod's finalized-tag read polled finalized itself: no pod holds a final pin with its own evidence")
+	}
+	tip := s.chain.Tip().Number
+	var heights []uint64
+	for n := tip - revertDepth + 1; n <= tip-revertDepth+5; n++ {
+		heights = append(heights, n)
+	}
+	for pod := range s.h.pods {
+		for _, n := range heights {
+			if got, want := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false), s.chain.CanonAt(n).Hash.Hex(); got != want {
+				s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) before the revert answered %s, not %s", pod+1, n, got, want)
+			}
+		}
 	}
 	r := s.reorg(revertDepth)
 	replaced := 0
