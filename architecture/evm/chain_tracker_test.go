@@ -519,6 +519,39 @@ func TestChainTracker_NarrowAnchors(t *testing.T) {
 		require.NoError(t, validate(honest).Err)
 		assert.Error(t, validate(wrong).Err, "the wrong hash is rejected once 2 vendors agree on the anchor")
 	})
+
+	// An indexer backfilling finalized receipts and old blocks while the
+	// tracker is busy: integrity records each anchor on the request path,
+	// and an answer below the window never reaches the mailbox (spec §3).
+	t.Run("a burst of anchors and old answers queues nothing on a stalled tracker", func(t *testing.T) {
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		voteChain(t, c, "a", "c", 0x20, 0x30, testHash("c", 0x1f))
+		stalled, release := make(chan struct{}), make(chan struct{})
+		hook := func(tr *ChainTracker, upstreamId string, _ *indexer.Cursor, _ bool) {
+			if tr == c && upstreamId == "stall" {
+				close(stalled)
+				<-release
+			}
+		}
+		TrackerMessageHook.Store(&hook)
+		t.Cleanup(func() { TrackerMessageHook.Store(nil) })
+		c.observeFinal("stall", finalEvidence{})
+		<-stalled
+		for i := range uint64(2 * mailboxHeaderCap) {
+			n := 1 + i%0x10
+			c.observeNarrowAnchors(0x40, fmt.Sprintf("vendor-%d", i), []byte(fmt.Sprintf(`{"blockNumber":"0x%x","blockHash":"%s"}`, n, testHash("b", n))))
+			c.Observe("client", testHeader(n, testHash("d", i+1), testHash("d", i)), false)
+		}
+		c.mb.mu.Lock()
+		queued := len(c.mb.queue)
+		c.mb.mu.Unlock()
+		close(release)
+		c.sync(context.Background())
+		assert.Zero(t, queued, "anchors and answers below the window wait in no mailbox")
+		v, ok := c.HashAt(0x10)
+		require.True(t, ok)
+		assert.Equal(t, testHash("b", 0x10), v, "the anchors are recorded")
+	})
 }
 
 func TestChainTracker_GroupScoping(t *testing.T) {

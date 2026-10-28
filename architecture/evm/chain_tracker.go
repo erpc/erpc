@@ -73,11 +73,18 @@ type ChainTracker struct {
 	// in unix nanoseconds; 0 before one.
 	txHeadAt atomic.Int64
 
-	// held, receipts and anchors are read by any goroutine; only the
-	// tracker's goroutine writes them.
+	// held and receipts are read by any goroutine; only the tracker's
+	// goroutine writes them.
 	held     sync.Map // lowercase hash -> *chainHeader
 	receipts sync.Map // lowercase block hash -> *heldReceipts
-	anchors  sync.Map // int64 -> *anchorEntry: finalized narrow anchors
+	// anchors are the finalized narrow anchors, read by any goroutine.
+	// Integrity records them on the request path under anchorMu, never
+	// through the mailbox, so a burst of them never grows it (spec §3);
+	// anchorNumbers and anchorVotes are what anchorMu guards.
+	anchors       sync.Map // int64 -> *anchorEntry
+	anchorMu      sync.Mutex
+	anchorNumbers []int64
+	anchorVotes   map[int64][]anchorVote // the hashes vendors answered per anchor
 
 	// revertedFinal holds the spans of blocks at or below Finalized a
 	// followed majority branch reverted (recordMove), final or not, newest
@@ -200,8 +207,6 @@ type ChainTracker struct {
 	prefetchAbove uint64
 	// probe is armed while receipts fail: the outage's head-block fetches.
 	probe         *time.Timer
-	anchorNumbers []int64
-	anchorVotes   map[int64][]anchorVote // the hashes vendors answered per anchor
 	// panics counts, per panicSlot, the panics since a message of that slot
 	// was last handled cleanly (handle).
 	panics [panicSlots]int
@@ -305,7 +310,6 @@ type msgKind uint8
 const (
 	msgHeader  msgKind = iota // a source vote or a client answer
 	msgFetched                // a tracker fetch's answer; never shed
-	msgAnchors
 	msgReceipts
 	msgTick
 	msgSync
@@ -322,7 +326,6 @@ type trackerMsg struct {
 	raw      json.RawMessage
 	hdr      *chainHeader // set when the sender already parsed raw
 	at       time.Time    // a source vote's evidence time
-	anchors  []anchor
 	held     *heldReceipts
 	done     chan struct{}
 	fn       func()
@@ -363,8 +366,8 @@ type anchorEntry struct {
 
 // mailbox never blocks a sender. It sheds only client answers and source
 // headers: when they fill it, answers drop first, then each source keeps
-// only its newest header. Fetch results, anchors and receipts never drop; at
-// most one tick waits.
+// only its newest header. Fetch results and receipts never drop; at most
+// one tick waits.
 type mailbox struct {
 	mu    sync.Mutex
 	queue []trackerMsg
@@ -507,11 +510,13 @@ func (t *ChainTracker) clear() {
 // Observe is the tracker's only input of headers. vote is true for a source
 // header that passed intake; client and integrity answers never vote.
 func (t *ChainTracker) Observe(upstreamId string, raw json.RawMessage, vote bool) {
-	v := voteNone
-	if vote {
-		v = voteSource
+	if !vote {
+		if h, err := parseChainHeader(raw); err == nil {
+			t.observeAnswer(upstreamId, h)
+		}
+		return
 	}
-	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: v, raw: raw, at: time.Now()})
+	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteSource, raw: raw, at: time.Now()})
 }
 
 // VotersChanged makes the tracker read its voters again: the policy's
@@ -520,7 +525,13 @@ func (t *ChainTracker) VotersChanged() {
 	t.mb.put(trackerMsg{kind: msgTick})
 }
 
+// observeAnswer queues a client or integrity answer, unless it lies
+// outside the window of the published head, where the tracker would drop
+// it: a backfill of old blocks never grows the mailbox (spec §3).
 func (t *ChainTracker) observeAnswer(upstreamId string, h *chainHeader) {
+	if head := t.state.Load().head(); head != nil && !t.within(head, h) {
+		return
+	}
 	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteNone, hdr: h})
 }
 
@@ -637,8 +648,6 @@ func (t *ChainTracker) receive(msg trackerMsg) {
 	switch msg.kind {
 	case msgHeader, msgFetched:
 		t.handleHeader(msg)
-	case msgAnchors:
-		t.handleAnchors(msg.anchors)
 	case msgReceipts:
 		t.holdReceipts(msg.held, msg.upstream)
 	case msgCall:
@@ -829,9 +838,12 @@ func (t *ChainTracker) holds(ref, h *chainHeader) bool {
 // and at most reorgWindow blocks above it. Without pins every header is.
 func (t *ChainTracker) inWindow(h *chainHeader) bool {
 	head := t.head()
-	if head == nil {
-		return true
-	}
+	return head == nil || t.within(head, h)
+}
+
+// within reports whether h lies inside the window below head and at most
+// reorgWindow blocks above it.
+func (t *ChainTracker) within(head, h *chainHeader) bool {
 	return t.holds(head, h) && h.number <= head.number+uint64(t.window)
 }
 
@@ -2272,16 +2284,21 @@ func (t *ChainTracker) reset() {
 	t.clear()
 	t.held.Range(func(k, _ any) bool { t.held.Delete(k); return true })
 	t.receipts.Range(func(k, _ any) bool { t.receipts.Delete(k); return true })
+	t.receiptsOrder = nil
+	t.anchorMu.Lock()
 	t.anchors.Range(func(k, _ any) bool { t.anchors.Delete(k); return true })
-	t.receiptsOrder, t.anchorNumbers, t.anchorVotes = nil, nil, nil
+	t.anchorNumbers, t.anchorVotes = nil, nil
+	t.anchorMu.Unlock()
 	t.publish()
 	t.publishTrees()
 }
 
-// handleAnchors keeps the newest reorgWindow finalized anchors, each with
+// recordAnchors keeps the newest reorgWindow finalized anchors, each with
 // the hashes vendors answered for it; HashAt serves them only below the
-// window.
-func (t *ChainTracker) handleAnchors(as []anchor) {
+// window. Any goroutine may call it.
+func (t *ChainTracker) recordAnchors(as []anchor) {
+	t.anchorMu.Lock()
+	defer t.anchorMu.Unlock()
 	if t.anchorVotes == nil {
 		t.anchorVotes = make(map[int64][]anchorVote)
 	}
@@ -3381,7 +3398,7 @@ func (t *ChainTracker) observeNarrowAnchors(fin int64, vendor string, result []b
 		}
 	}
 	if len(as) > 0 {
-		t.mb.put(trackerMsg{kind: msgAnchors, anchors: as})
+		t.recordAnchors(as)
 	}
 }
 
