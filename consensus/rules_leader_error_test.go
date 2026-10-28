@@ -41,7 +41,7 @@ func (n *leaderNetwork) EvmHead(context.Context, *common.NormalizedRequest) comm
 func (n *leaderNetwork) EvmLaneHead(string, string) common.EvmHead {
 	return n.EvmHead(context.Background(), nil)
 }
-func (n *leaderNetwork) EvmRefreshHead(context.Context, bool) {}
+func (n *leaderNetwork) EvmRefreshHead(context.Context) {}
 
 // Without this, a new EvmNetwork method makes the fake silently stop being an
 // EvmNetwork and the leader lookup returns nil.

@@ -97,7 +97,7 @@ func (n *covIntegHeadNet) EvmLaneHead(groupKey, selector string) common.EvmHead 
 	return common.EvmHead{Latest: n.latest, Finalized: n.finalized}
 }
 
-func (n *covIntegHeadNet) EvmRefreshHead(context.Context, bool) {}
+func (n *covIntegHeadNet) EvmRefreshHead(context.Context) {}
 
 // covIntegFleetHeadNet is a fleet with a network-wide Latest.
 type covIntegFleetHeadNet struct {
@@ -111,7 +111,7 @@ func (n *covIntegFleetHeadNet) EvmHead(context.Context, *common.NormalizedReques
 func (n *covIntegFleetHeadNet) EvmLaneHead(string, string) common.EvmHead {
 	return common.EvmHead{Latest: n.latest}
 }
-func (n *covIntegFleetHeadNet) EvmRefreshHead(context.Context, bool) {}
+func (n *covIntegFleetHeadNet) EvmRefreshHead(context.Context) {}
 
 // covIntegRefusingNet is a fleet whose Forward applies the refusal rule
 // first, as the network does before dispatch: a request's lane is the
@@ -141,7 +141,7 @@ func (n *covIntegRefusingNet) EvmHead(_ context.Context, req *common.NormalizedR
 	return n.laneHead(req.Directives().UseUpstream)
 }
 func (n *covIntegRefusingNet) EvmLaneHead(_, sel string) common.EvmHead { return n.laneHead(sel) }
-func (n *covIntegRefusingNet) EvmRefreshHead(context.Context, bool)     {}
+func (n *covIntegRefusingNet) EvmRefreshHead(context.Context)           {}
 func (n *covIntegRefusingNet) EvmBlockTime() time.Duration              { return time.Second }
 func (n *covIntegRefusingNet) EvmAskStale(_ context.Context, sel string) (int64, time.Time) {
 	n.ask(sel)

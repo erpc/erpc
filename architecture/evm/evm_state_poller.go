@@ -166,8 +166,9 @@ type EvmStatePoller struct {
 	// keep-fresh advances never touch this.
 	latestMajorVerifyInProgress sync.Mutex
 
-	// Single in-flight flag for RefreshFinalizedBlock's background poll.
-	finalizedRefreshInFlight atomic.Bool
+	// finalizedRefresh is RefreshFinalized's poll in flight, closed when it
+	// ends; nil while none is.
+	finalizedRefresh atomic.Pointer[chan struct{}]
 	// finalizedAskAt is the send time, in Unix ns, of this instance's last
 	// finalized poll (FinalizedAskAt).
 	finalizedAskAt atomic.Int64
@@ -1018,32 +1019,45 @@ func nodeFailedPoll(err error) bool {
 	)
 }
 
-// RefreshFinalizedBlock starts a background finalized-block poll when the
-// stored one is older than the finalized poll's debounce and no refresh is
-// already in flight; it never blocks. polls is false when the upstream has
-// no finalized poll to refresh: its finalized tag is given up (spec §6.8).
-func (e *EvmStatePoller) RefreshFinalizedBlock() (polls bool) {
+// RefreshFinalized polls the finalized block when the stored one is older
+// than the finalized poll's debounce, or joins the poll in flight, and
+// waits for it until ctx ends (spec §6.4 Finality). The poll itself runs
+// on the app's context, so a waiter that leaves ends no other waiter's
+// poll. polls is false when the upstream has no finalized poll to refresh:
+// its finalized tag is given up (spec §6.8).
+func (e *EvmStatePoller) RefreshFinalized(ctx context.Context) (polls bool) {
 	if e.IsObjectNull() || e.finalizedBlockShared == nil || e.givenUp(&e.finalizedGiveUp) {
 		return false
 	}
 	e.stateMu.RLock()
 	cfg := e.cfg
 	e.stateMu.RUnlock()
-	if !e.finalizedBlockShared.IsStale(e.resolveFinalizedDebounce(cfg, e.resolveDebounce(cfg))) {
-		return true
-	}
-	if !e.finalizedRefreshInFlight.CompareAndSwap(false, true) {
-		return true
-	}
-	go func() {
-		defer e.finalizedRefreshInFlight.Store(false)
-		defer e.recoverHeadPanic("finalized-refresh")
-		ctx, cancel := context.WithTimeout(e.appCtx, 10*time.Second)
-		defer cancel()
-		if _, err := e.PollFinalizedBlockNumber(ctx); err != nil {
-			e.logger.Debug().Err(err).Msg("on-demand finalized block refresh failed in evm state poller")
+	done := e.finalizedRefresh.Load()
+	if done == nil {
+		if !e.finalizedBlockShared.IsStale(e.resolveFinalizedDebounce(cfg, e.resolveDebounce(cfg))) {
+			return true
 		}
-	}()
+		c := make(chan struct{})
+		if e.finalizedRefresh.CompareAndSwap(nil, &c) {
+			go func() {
+				defer close(c)
+				defer e.finalizedRefresh.Store(nil)
+				defer e.recoverHeadPanic("finalized-refresh")
+				pctx, cancel := context.WithTimeout(e.appCtx, 10*time.Second)
+				defer cancel()
+				if _, err := e.PollFinalizedBlockNumber(pctx); err != nil {
+					e.logger.Debug().Err(err).Msg("on-demand finalized block refresh failed in evm state poller")
+				}
+			}()
+			done = &c
+		} else if done = e.finalizedRefresh.Load(); done == nil {
+			return true
+		}
+	}
+	select {
+	case <-*done:
+	case <-ctx.Done():
+	}
 	return true
 }
 

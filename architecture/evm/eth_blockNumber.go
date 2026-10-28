@@ -52,9 +52,11 @@ func headNumber(ctx context.Context, network common.Network, nq *common.Normaliz
 // (headNumberAxis) without dispatching whenever enforce-highest-block is on
 // and the head is known: the post-forward hook below pins every response to
 // that same value EXACTLY, so an upstream's answer is always discarded and
-// the call buys nothing but vendor cost and latency. Each answer also asks
-// the ballot's pollers for a debounced background refresh, so on a quiet
-// network the head a client polls for is not held at the ticker interval.
+// the call buys nothing but vendor cost and latency. A Latest answer also
+// asks the ballot's pollers for a debounced background refresh, so on a
+// quiet network the head a client polls for is not held at the ticker
+// interval; a Finalized answer already waited for its refresh
+// (Network.Forward).
 // An unknown head (cold pollers) and enforce-highest-block=false keep
 // forwarding.
 func networkPreForward_eth_blockNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
@@ -70,7 +72,9 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 	if tip <= 0 {
 		return false, nil, nil
 	}
-	common.EvmRefreshHead(network, ctx, finalized)
+	if !finalized {
+		common.EvmRefreshHead(network, ctx)
+	}
 	hex, err := common.NormalizeHex(tip)
 	if err != nil {
 		return true, nil, err

@@ -779,58 +779,93 @@ func isSimpleGroupSelector(selector string) bool {
 	return true
 }
 
-// EvmRefreshHead asks the pollers that decide the request's head, its
-// finalized axis when finalized is set, for a background refresh: only as
-// many of the ballot's voters (voterSet's number votes) as the quorum
-// needs, since a fresher head anywhere else cannot move the served value.
-// The latest axis takes them in routing order; the finalized axis oldest
-// finalized evidence first, since a voter's finality depth is its own and
-// routing order does not reflect it, and passes over a voter whose
-// finalized tag is given up: its vote is derived from its latest (spec
-// §6.8). A lane walks its voters at most once per poll cadence per axis,
-// the debounce each poller applies anyway, so the per-request call costs
-// no upstream iteration in between.
-func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
+// EvmRefreshHead asks the pollers that decide the request's Latest for a
+// background refresh: only as many of the ballot's voters (voterSet's
+// number votes) as the quorum needs, in routing order, since a fresher
+// head anywhere else cannot move the served value. A lane walks its voters
+// at most once per poll cadence, the debounce each poller applies anyway,
+// so the per-request call costs no upstream iteration in between.
+func (n *Network) EvmRefreshHead(ctx context.Context) {
 	sel := requestSelector(ctx)
 	var ec *common.EvmNetworkConfig
 	if n.cfg != nil {
 		ec = n.cfg.Evm
 	}
 	if l := n.laneFor(sel); l != nil {
-		a := l.anchor(finalized)
+		a := &l.latest
 		now, last := time.Now().UnixNano(), a.refreshedAtNs.Load()
 		if now-last < int64(ec.PollCadence(n.blockTimeOrCold())) || !a.refreshedAtNs.CompareAndSwap(last, now) {
 			return
 		}
 	}
-	// The latest-axis rank on both axes: an upstream with no finalized
-	// number yet still gets polled for its first one.
 	s := n.voters(sel, voterQuery{kind: numberVote})
 	if s.count() == 0 {
 		return
 	}
 	need := ec.ServedTipQuorum().Of(s.count())
-	if !finalized {
-		s.each(func(u common.Upstream, _ int64) bool {
-			u.(common.EvmUpstream).EvmStatePoller().AskBackground(common.HeadNeedNumber, 0, common.AskRefresh)
-			need--
-			return need > 0
-		})
+	s.each(func(u common.Upstream, _ int64) bool {
+		u.(common.EvmUpstream).EvmStatePoller().AskBackground(common.HeadNeedNumber, 0, common.AskRefresh)
+		need--
+		return need > 0
+	})
+}
+
+// awaitFinalizedRefresh refreshes the finalized numbers of as many of
+// selector sel's ballot voters as the quorum needs and waits for them, at
+// most W, then publishes sel's lane Head, so a request naming the
+// `finalized` tag takes a Finalized no older than the finalized debounce
+// (spec §6.4 Finality, §6.8). Voters go oldest finalized evidence first,
+// since a voter's finality depth is its own and routing order does not
+// reflect it; a voter whose finalized tag is given up is passed over, its
+// vote being derived from its latest. Each poller polls only past its
+// finalized debounce and joins a poll in flight. The latest-axis rank
+// serves here too: an upstream with no finalized number yet still gets
+// polled for its first one.
+func (n *Network) awaitFinalizedRefresh(ctx context.Context, sel string) {
+	s := n.voters(sel, voterQuery{kind: numberVote})
+	if s.count() == 0 {
 		return
 	}
+	var ec *common.EvmNetworkConfig
+	if n.cfg != nil {
+		ec = n.cfg.Evm
+	}
+	need := ec.ServedTipQuorum().Of(s.count())
 	pollers := make([]common.EvmStatePoller, 0, s.count())
 	s.each(func(u common.Upstream, _ int64) bool {
 		pollers = append(pollers, u.(common.EvmUpstream).EvmStatePoller())
 		return true
 	})
 	oldestEvidenceFirst(pollers, true)
-	for _, sp := range pollers {
-		if need <= 0 {
-			break
+	ctx, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
+	defer cancel()
+	type refreshed struct{ polls, moved bool }
+	results := make(chan refreshed)
+	next, running := 0, 0
+	start := func() {
+		sp := pollers[next]
+		next++
+		running++
+		go func() {
+			before := sp.FinalizedBlock()
+			polls := sp.RefreshFinalized(ctx)
+			results <- refreshed{polls, sp.FinalizedBlock() != before}
+		}()
+	}
+	for running < need && next < len(pollers) {
+		start()
+	}
+	moved := false
+	for running > 0 {
+		r := <-results
+		running--
+		moved = moved || r.moved
+		if !r.polls && next < len(pollers) {
+			start()
 		}
-		if sp.RefreshFinalizedBlock() {
-			need--
-		}
+	}
+	if l := n.laneFor(sel); moved && l != nil {
+		n.refreshLaneRecovered(l)
 	}
 }
 
@@ -1875,6 +1910,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		if err := evm.ApplySafeBlockSource(ctx, n, req); err != nil {
 			common.SetTraceSpanError(forwardSpan, err)
 			return nil, err
+		}
+
+		// A request naming the finalized tag takes its Head after the
+		// lane's finalized refresh (spec §6.4 Finality): a Finalized up to
+		// one full poll old would serve older blocks than the tag gets live.
+		if req.EvmHead() == nil && evm.NamesFinalizedTag(ctx, req) {
+			sel := ""
+			if d := req.Directives(); d != nil {
+				sel = d.UseUpstream
+			}
+			n.awaitFinalizedRefresh(ctx, sel)
 		}
 
 		// MIP-16 eth_query*: the query executor answers it for both transports

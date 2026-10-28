@@ -283,11 +283,12 @@ type EvmStatePoller interface {
 	// AskBackground is Ask without waiting for the answer; next is the
 	// answer's Next.
 	AskBackground(need HeadNeed, pace time.Duration, reason AskReason) (next time.Time)
-	// RefreshFinalizedBlock polls the finalized block in the background
-	// when the stored one is older than the finalized poll's debounce;
-	// non-blocking, one in flight. polls is false when the upstream has no
-	// finalized poll to refresh: its finalized tag is given up.
-	RefreshFinalizedBlock() (polls bool)
+	// RefreshFinalized polls the finalized block when the stored one is
+	// older than the finalized poll's debounce, or joins the poll in
+	// flight, and waits for it until ctx ends. polls is false when the
+	// upstream has no finalized poll to refresh: its finalized tag is given
+	// up.
+	RefreshFinalized(ctx context.Context) (polls bool)
 	SetNetworkConfig(cfg *NetworkConfig)
 	IsObjectNull() bool
 	EarliestBlock(probe EvmAvailabilityProbeType) int64

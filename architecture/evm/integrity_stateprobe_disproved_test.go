@@ -40,7 +40,7 @@ func (s *fleetNetwork) EvmHead(context.Context, *common.NormalizedRequest) commo
 func (s *fleetNetwork) EvmLaneHead(string, string) common.EvmHead {
 	return common.EvmHead{Latest: s.latest}
 }
-func (s *fleetNetwork) EvmRefreshHead(context.Context, bool) {}
+func (s *fleetNetwork) EvmRefreshHead(context.Context) {}
 
 func fakeTrackerOf(t *testing.T, u common.Upstream) *common.FakeHealthTracker {
 	t.Helper()

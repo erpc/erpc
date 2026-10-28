@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"slices"
 
 	"github.com/erpc/erpc/common"
 )
@@ -84,6 +85,34 @@ func tagBlockNumber(ctx context.Context, nrq *common.NormalizedRequest, cfg *com
 		return common.EvmHeadOf(network, ctx, nrq).Finalized
 	}
 	return 0
+}
+
+// NamesFinalizedTag reports whether any of nrq's params, at any depth, is
+// the "finalized" tag (spec §6.4 Finality: any method, any param).
+func NamesFinalizedTag(ctx context.Context, nrq *common.NormalizedRequest) bool {
+	jrq, err := nrq.JsonRpcRequest(ctx)
+	if err != nil || jrq == nil {
+		return false
+	}
+	jrq.RLock()
+	defer jrq.RUnlock()
+	return namesFinalized(jrq.Params)
+}
+
+func namesFinalized(v interface{}) bool {
+	switch t := v.(type) {
+	case string:
+		return t == "finalized"
+	case []interface{}:
+		return slices.ContainsFunc(t, namesFinalized)
+	case map[string]interface{}:
+		for _, e := range t {
+			if namesFinalized(e) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // keepsLatestTag reports whether a method's config sends "latest" to

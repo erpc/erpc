@@ -2385,10 +2385,11 @@ func TestServedTip_Finalized_RegressionGuardHolds(t *testing.T) {
 	assert.Equal(t, before+1, servedTipRegressionCount(network, "finalized", "held"))
 }
 
-// A finalized refresh (spec §6.8) Asks as many voters as the quorum needs,
-// oldest finalized report first, and passes over a voter whose finalized
-// tag is given up: its report stays the oldest, but it has no finalized
-// poll, so a place for it would leave the quorum one voter short.
+// A finalized-tag request's refresh (spec §6.4 Finality, §6.8) polls as
+// many voters as the quorum needs, oldest finalized report first, and waits
+// for them; it passes over a voter whose finalized tag is given up: its
+// report stays the oldest, but it has no finalized poll, so a place for it
+// would leave the quorum one voter short.
 func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -2468,14 +2469,12 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	reads := polled() - fromPolls
 	t.Logf("reads above Finalized for %s: %d finalized polls (%v → %v), %d per minute", window, reads, from, finalizedPolls(), reads*int(time.Minute/window))
 	assert.Zero(t, reads, "a read above Finalized polls no finalized")
-	time.Sleep(network.cfg.Evm.PollCadence(network.blockTimeOrCold())) // past the lane's refresh gate
 
 	before := finalizedPolls()
-	network.EvmRefreshHead(ctx, true)
-	require.Eventually(t, func() bool {
-		now := finalizedPolls()
-		return now["fin-a"] > before["fin-a"] && now["fin-b"] > before["fin-b"]
-	}, 2*time.Second, 5*time.Millisecond, "the refresh polls both voters with a finalized tag: the quorum needs 2 (polls %v → %v)", before, finalizedPolls())
+	network.awaitFinalizedRefresh(ctx, "")
+	now := finalizedPolls()
+	assert.True(t, now["fin-a"] > before["fin-a"] && now["fin-b"] > before["fin-b"],
+		"the refresh polls both voters with a finalized tag and waits for them: the quorum needs 2 (polls %v → %v)", before, now)
 }
 
 // The guard's clamp branch: the upstream that backed the remembered pick leaves

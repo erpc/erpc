@@ -308,7 +308,7 @@ func (m *mockEvmStatePoller) AskBackground(common.HeadNeed, time.Duration, commo
 func (m *mockEvmStatePoller) AskReaching(context.Context, int64, time.Duration, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
-func (m *mockEvmStatePoller) RefreshFinalizedBlock() bool                { return true }
+func (m *mockEvmStatePoller) RefreshFinalized(context.Context) bool      { return true }
 func (m *mockEvmStatePoller) LatestReportAt() time.Time                  { return time.Time{} }
 func (m *mockEvmStatePoller) FinalizedReportAt() time.Time               { return time.Time{} }
 func (m *mockEvmStatePoller) LatestAskAt() time.Time                     { return time.Time{} }
@@ -643,7 +643,7 @@ func (m *mockEvmStatePollerWithUpdate) AskBackground(common.HeadNeed, time.Durat
 func (m *mockEvmStatePollerWithUpdate) AskReaching(context.Context, int64, time.Duration, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
-func (m *mockEvmStatePollerWithUpdate) RefreshFinalizedBlock() bool                { return true }
+func (m *mockEvmStatePollerWithUpdate) RefreshFinalized(context.Context) bool      { return true }
 func (m *mockEvmStatePollerWithUpdate) LatestReportAt() time.Time                  { return time.Time{} }
 func (m *mockEvmStatePollerWithUpdate) FinalizedReportAt() time.Time               { return time.Time{} }
 func (m *mockEvmStatePollerWithUpdate) LatestAskAt() time.Time                     { return time.Time{} }

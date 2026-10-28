@@ -844,7 +844,7 @@ func TestNetworksPaths_ForwardOnLiveNetwork(t *testing.T) {
 		require.NotNil(t, leader)
 		assert.Equal(t, "test", leader.Id())
 		assert.NotNil(t, network.MetricsTracker())
-		network.EvmRefreshHead(ctx, false)
+		network.EvmRefreshHead(ctx)
 		assert.Equal(t, head, servedHead(network, ctx).Latest, "one voter: the served tip is its head")
 	})
 
