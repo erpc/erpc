@@ -122,8 +122,9 @@ func (t *Timer) ObserveDuration(isSuccess bool) {
 	t.tracker.RecordUpstreamDuration(t.upstream, t.method, duration, isSuccess, t.compositeType, t.finality, t.userId)
 }
 
-// ObserveCancelled records a primary attempt cancelled before it answered:
-// the elapsed time is a lower bound on its latency.
+// ObserveCancelled records a primary attempt cancelled because another
+// attempt won the hedge race: the elapsed time is a lower bound on its
+// latency.
 func (t *Timer) ObserveCancelled() {
 	duration := time.Since(t.start)
 	t.tracker.RecordUpstreamCancelledDuration(t.upstream, t.method, duration, t.compositeType, t.finality, t.userId)
@@ -176,10 +177,10 @@ type TrackedMetrics struct {
 	LastAccessedAtMs atomic.Int64 `json:"-"`
 
 	// cancelledQuantiles holds the elapsed time of primary attempts
-	// cancelled before they answered (hedge lost, client gone): lower
-	// bounds on their latency. Kept out of ResponseQuantiles, which also
-	// drives adaptive timeouts and hedge delays; only PolicyQuantiles
-	// reads it. Allocated on the first cancellation.
+	// cancelled because another attempt won the hedge race: lower bounds
+	// on their latency. Kept out of ResponseQuantiles, which also drives
+	// adaptive timeouts and hedge delays; only PolicyQuantiles reads it.
+	// Allocated on the first such cancellation.
 	cancelledQuantiles atomic.Pointer[QuantileTracker]
 }
 
@@ -221,7 +222,7 @@ func (m *TrackedMetrics) GetResponseQuantiles() common.QuantileTracker {
 }
 
 // PolicyQuantiles reads qtiles off ResponseQuantiles merged with the
-// cancelled-attempt lower bounds. Each answered or cancelled primary
+// cancelled-attempt lower bounds. Each answered or hedge-lost primary
 // attempt then counts as min(latency, elapsed at cancel), so these
 // quantiles never exceed the true ones. Without the lower bounds, an
 // upstream whose every attempt loses a hedge race keeps an empty sketch
@@ -1089,9 +1090,9 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 }
 
 // RecordUpstreamCancelledDuration records the elapsed time of a primary
-// attempt cancelled before it answered. It feeds only the per-upstream
-// lower-bound sketch read by PolicyQuantiles; ResponseQuantiles and the
-// network aggregates stay real-latency only.
+// attempt cancelled because another attempt won the hedge race. It feeds
+// only the per-upstream lower-bound sketch read by PolicyQuantiles;
+// ResponseQuantiles and the network aggregates stay real-latency only.
 func (t *Tracker) RecordUpstreamCancelledDuration(up common.Upstream, method string, d time.Duration, comp string, finality common.DataFinalityState, userId string) {
 	if comp == "" {
 		comp = "none"

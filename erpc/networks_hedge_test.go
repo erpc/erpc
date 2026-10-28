@@ -1441,6 +1441,10 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "primary attempt counted")
 		assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
 			"client disconnect must NOT count as an upstream failure — the upstream didn't do anything wrong")
+		// A client cancel says nothing about rpc1's speed: no latency
+		// lower bound reaches the policy view.
+		assert.Equal(t, time.Duration(0), m1.PolicyQuantiles([]float64{0.70})[0],
+			"client disconnect must NOT record a latency lower bound")
 	})
 
 	// The smoking-gun scenario from #878's description: under heavy

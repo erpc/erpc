@@ -906,22 +906,25 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				// quantile — the upstream did real work; the duration
 				// reflects actual response time.
 				//
-				// A cancelled primary attempt (hedge lost, client gave
-				// up) records its elapsed time as a latency lower bound,
-				// kept apart from ResponseQuantiles (which also drives
-				// adaptive timeouts and hedge delays) and read only by
-				// the selection policy. Without it, an upstream whose
-				// every attempt loses the hedge race keeps an empty
-				// sketch and the policy ranks it fastest. Hedge attempts
-				// are skipped: a losing hedge is cancelled when the
-				// earlier primary answers, so its elapsed time says
+				// A primary attempt cancelled because another attempt won
+				// the hedge race records its elapsed time as a latency
+				// lower bound, kept apart from ResponseQuantiles (which
+				// also drives adaptive timeouts and hedge delays) and read
+				// only by the selection policy. Without it, an upstream
+				// whose every attempt loses the hedge race keeps an empty
+				// sketch and the policy ranks it fastest. Client cancels
+				// and deadlines record nothing: their elapsed time is the
+				// caller's patience, not this upstream's speed. Hedge
+				// attempts are skipped: a losing hedge is cancelled when
+				// the earlier primary answers, so its elapsed time says
 				// little about its own latency.
 				//
 				// All other errors fired before / instead of a meaningful
 				// response and would conflate "broken" with "slow" if
 				// counted; they stay out of the quantile.
 				isRevert := common.HasErrorCode(errCall, common.ErrCodeEndpointExecutionException)
-				if !hedgeAttempt && common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled) {
+				if !hedgeAttempt && common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled) &&
+					errors.Is(context.Cause(ctx), failsafe.ErrHedgeLost) {
 					timer.ObserveCancelled()
 				} else {
 					timer.ObserveDuration(isRevert)
