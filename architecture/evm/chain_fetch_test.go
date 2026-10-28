@@ -125,3 +125,37 @@ func TestFetchScheduler_CapacityRefusals(t *testing.T) {
 	}
 	failed.leave()
 }
+
+// hangingNet's sweeps answer only once the network's ctx ends.
+type hangingNet struct{ capacityNet }
+
+func (*hangingNet) SweepUpstreams(ctx context.Context, _ *common.NormalizedRequest, _ string, _ func(*common.NormalizedResponse) error) (*common.NormalizedResponse, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// An integrity check queued behind a full scheduler when the network
+// shuts down fails at once, not when its own request ends.
+func TestFetchScheduler_ClientWaiterEndsAtClose(t *testing.T) {
+	slots := fetchSlots
+	fetchSlots = 1
+	t.Cleanup(func() { fetchSlots = slots })
+	ctx, cancel := context.WithCancel(t.Context())
+	s := newFetchScheduler(ctx, &hangingNet{})
+	spec := func(param string) fetchSpec {
+		return fetchSpec{class: classHead, kind: "header", method: "eth_getBlockByHash", params: `["` + param + `",false]`, client: true,
+			decode: func(b []byte, _ common.Upstream) (any, error) { return string(b), nil }}
+	}
+	s.submit(nil, spec("0x1"))
+	queued := s.submit(nil, spec("0x2"))
+	require.False(t, queued.r.started, "the one slot is taken")
+	cancel()
+	waited := make(chan fetchResult, 1)
+	go func() { waited <- queued.wait(t.Context()) }()
+	select {
+	case res := <-waited:
+		require.ErrorIs(t, res.err, errSchedulerClosed)
+	case <-time.After(time.Second):
+		t.Fatal("a client waiter outlived the scheduler")
+	}
+}

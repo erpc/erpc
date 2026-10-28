@@ -256,9 +256,8 @@ func (s *fetchScheduler) submit(t *ChainTracker, spec fetchSpec) *fetchWaiter {
 
 // doneWaiter holds a request that ended before it was queued.
 func (s *fetchScheduler) doneWaiter(key fetchKey, spec fetchSpec, err error) *fetchWaiter {
-	r := &fetchRequest{key: key, spec: spec, res: fetchResult{err: err}, done: make(chan struct{}), answered: make(chan struct{})}
-	r.answerWith(r.res)
-	close(r.done)
+	r := &fetchRequest{key: key, spec: spec, done: make(chan struct{}), answered: make(chan struct{})}
+	r.fail(err)
 	return &fetchWaiter{s: s, r: r, client: spec.client}
 }
 
@@ -420,9 +419,16 @@ func (s *fetchScheduler) startLocked(r *fetchRequest) {
 	if !s.bg.Go(func() { s.run(r) }) {
 		s.inflight[r.spec.class]--
 		delete(s.pending, r.key)
-		r.res = fetchResult{err: errSchedulerClosed}
-		close(r.done)
+		r.fail(errSchedulerClosed)
 	}
+}
+
+// fail ends a request that never ran: every waiter, client ones included,
+// gets err.
+func (r *fetchRequest) fail(err error) {
+	r.res = fetchResult{err: err}
+	r.answerWith(r.res)
+	close(r.done)
 }
 
 func (s *fetchScheduler) run(r *fetchRequest) {
@@ -657,8 +663,7 @@ func (s *fetchScheduler) close() {
 	}
 	s.mu.Unlock()
 	for _, r := range dropped {
-		r.res = fetchResult{err: errSchedulerClosed}
-		close(r.done)
+		r.fail(errSchedulerClosed)
 	}
 }
 
