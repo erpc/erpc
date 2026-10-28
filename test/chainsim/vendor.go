@@ -52,6 +52,14 @@ type Faults struct {
 	FinalityDepth uint64        // finalized tag this far below its head; 0 is FinalizedLag
 	StaleState    uint64        // eth_call at latest (or no block) executes this far below its head; numbered calls are right
 	Forbidden     bool          // HTTP 403 with an HTML body on every call and ws upgrade, as a CDN ban or a revoked key
+	// Pruned: history more than this far below its head is gone, as on a
+	// tip-only plan: blocks by number or hash, receipts, logs and calls
+	// there answer null ([] for eth_getLogs).
+	Pruned uint64
+	// PrunedForbidden: an HTTP request that asks for pruned history gets
+	// HTTP 403 with an HTML body instead, as a plan behind Cloudflare
+	// answers; over ws it still answers null.
+	PrunedForbidden bool
 }
 
 // Stats are what a vendor counted since it started.
@@ -64,6 +72,7 @@ type Stats struct {
 	CappedLogs                                                              int64 // eth_getLogs answers CapLogs cut short
 	CapacityRefused                                                         int64 // calls a Capacity fault refused
 	ForbiddenLatest                                                         int64 // eth_getBlockByNumber(latest) calls a Forbidden fault refused
+	PrunedRefused                                                           int64 // calls or HTTP requests a Pruned fault answered null or 403
 }
 
 // Vendor is one simulated node of a chain, on its own listener.
@@ -99,7 +108,7 @@ type Vendor struct {
 
 	connects, headsSubs, pendingSubs, logsSubs, throttled, receiptsCalls  atomic.Int64
 	logsCalls, slowAnswers, forgedHeads, cappedLogs, subSeq, headsRefused atomic.Int64
-	capacityRefused, forbiddenLatest                                      atomic.Int64
+	capacityRefused, forbiddenLatest, prunedRefused                       atomic.Int64
 }
 
 // LatestCall is one eth_getBlockByNumber(latest) call a vendor answered.
@@ -288,7 +297,7 @@ func (v *Vendor) Stats() Stats {
 	return Stats{Connects: v.connects.Load(), HeadsSubscribes: v.headsSubs.Load(), PendingSubscribes: v.pendingSubs.Load(),
 		LogsSubscribes: v.logsSubs.Load(), Throttled: v.throttled.Load(), HeadsRefused: v.headsRefused.Load(), ReceiptsCalls: v.receiptsCalls.Load(),
 		LogsCalls: v.logsCalls.Load(), SlowAnswers: v.slowAnswers.Load(), ForgedHeads: v.forgedHeads.Load(), CappedLogs: v.cappedLogs.Load(),
-		CapacityRefused: v.capacityRefused.Load(), ForbiddenLatest: v.forbiddenLatest.Load()}
+		CapacityRefused: v.capacityRefused.Load(), ForbiddenLatest: v.forbiddenLatest.Load(), PrunedRefused: v.prunedRefused.Load()}
 }
 
 // ReceiptsOf are the eth_getBlockReceipts calls the vendor got for block h,
@@ -456,7 +465,7 @@ func (v *Vendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = io.WriteString(w, "<html><head><title>403 Forbidden</title></head><body><h1>Access denied</h1></body></html>")
+		_, _ = io.WriteString(w, forbiddenPage)
 		return
 	}
 	if websocket.IsWebSocketUpgrade(r) {
@@ -464,32 +473,114 @@ func (v *Vendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, _ := io.ReadAll(r.Body)
-	w.Header().Set("Content-Type", "application/json")
 	if f.Throttled {
 		v.throttled.Add(1)
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_ = json.NewEncoder(w).Encode(reply(nil, nil, &rpcError{-32005, "rate limit exceeded"}))
 		return
 	}
-	one := func(req map[string]interface{}) map[string]interface{} {
+	batch := bytes.HasPrefix(bytes.TrimSpace(body), []byte("["))
+	var reqs []map[string]interface{}
+	if batch {
+		_ = json.Unmarshal(body, &reqs)
+	} else {
+		var req map[string]interface{}
+		_ = json.Unmarshal(body, &req)
+		reqs = []map[string]interface{}{req}
+	}
+	if f.PrunedForbidden && v.prunedAny(reqs) {
+		v.prunedRefused.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, forbiddenPage)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	out := make([]map[string]interface{}, 0, len(reqs))
+	for _, req := range reqs {
 		method, _ := req["method"].(string)
 		params, _ := req["params"].([]interface{})
 		res, e := v.answer(method, params)
-		return reply(req["id"], res, e)
+		out = append(out, reply(req["id"], res, e))
 	}
-	if bytes.HasPrefix(bytes.TrimSpace(body), []byte("[")) {
-		var reqs []map[string]interface{}
-		_ = json.Unmarshal(body, &reqs)
-		out := make([]map[string]interface{}, 0, len(reqs))
-		for _, req := range reqs {
-			out = append(out, one(req))
-		}
+	if batch {
 		_ = json.NewEncoder(w).Encode(out)
 		return
 	}
-	var req map[string]interface{}
-	_ = json.Unmarshal(body, &req)
-	_ = json.NewEncoder(w).Encode(one(req))
+	_ = json.NewEncoder(w).Encode(out[0])
+}
+
+const forbiddenPage = "<html>\n<head><title>403 Forbidden</title></head>\n<body>\n<center><h1>403 Forbidden</h1></center>\n</body>\n</html>\n"
+
+// prunedAny reports whether any of reqs asks for history the Pruned fault
+// drops.
+func (v *Vendor) prunedAny(reqs []map[string]interface{}) bool {
+	v.chain.mu.Lock()
+	defer v.chain.mu.Unlock()
+	for _, req := range reqs {
+		method, _ := req["method"].(string)
+		params, _ := req["params"].([]interface{})
+		if v.prunedLocked(method, params) {
+			return true
+		}
+	}
+	return false
+}
+
+// prunedLocked reports whether a call asks for a block more than
+// Faults.Pruned below the vendor's head, or for something in one.
+func (v *Vendor) prunedLocked(method string, params []interface{}) bool {
+	depth := v.faults.Pruned
+	if depth == 0 || v.tip.Number <= depth {
+		return false
+	}
+	floor := v.tip.Number - depth
+	byNumber := func(s string) bool {
+		n, ok := parseNumber(s)
+		return s == "earliest" || ok && n < floor
+	}
+	byHash := func(s string) bool {
+		h, ok := parseHash(s)
+		b := v.chain.byHash[h]
+		return ok && b != nil && b.Number < floor
+	}
+	first, _ := firstString(params)
+	switch method {
+	case "eth_getBlockByNumber", "eth_getBlockTransactionCountByNumber":
+		return byNumber(first)
+	case "eth_getBlockByHash", "eth_getBlockReceipts":
+		return byHash(first)
+	case "eth_getTransactionReceipt":
+		h, ok := parseHash(first)
+		tx, found := v.chain.byTx[h]
+		return ok && found && tx.b.Number < floor
+	case "eth_getLogs":
+		if len(params) == 0 {
+			return false
+		}
+		q, _ := params[0].(map[string]interface{})
+		if s, ok := q["blockHash"].(string); ok {
+			return byHash(s)
+		}
+		s, ok := q["fromBlock"].(string)
+		return ok && byNumber(s)
+	case "eth_call":
+		if len(params) < 2 {
+			return false
+		}
+		switch ref := params[1].(type) {
+		case string:
+			return byNumber(ref)
+		case map[string]interface{}:
+			if s, ok := ref["blockNumber"].(string); ok {
+				return byNumber(s)
+			}
+			s, _ := ref["blockHash"].(string)
+			return byHash(s)
+		}
+	}
+	return false
 }
 
 // pollsLatest reports whether body, a JSON-RPC request or batch, holds an
@@ -668,6 +759,13 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 	if f.Capacity {
 		v.capacityRefused.Add(1)
 		return nil, &rpcError{-32005, "compute units exceeded"}
+	}
+	if v.prunedLocked(method, params) {
+		v.prunedRefused.Add(1)
+		if method == "eth_getLogs" {
+			return []map[string]interface{}{}, nil
+		}
+		return nil, nil
 	}
 	switch method {
 	case "eth_chainId":

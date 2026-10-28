@@ -1,8 +1,10 @@
 package realworld
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"time"
 
 	"github.com/erpc/erpc/test/chainsim"
@@ -39,6 +41,37 @@ const (
 	// planned in a row at its start (harness).
 	c15Run   = logsCloseSpread + 20*time.Second
 	c15Empty = 10
+	// c16First: C16's chain runs in the millions before its reset;
+	// c16ResetHead: every vendor's head after it (§19 G9). c16Follow:
+	// Latest follows a fall past the regression guard's 1024 blocks once
+	// the guard's 60s hold fails open (§6.4, erpc/networks.go
+	// servedTipRegressionTTL), plus 60s.
+	c16First     = 5_000_000
+	c16ResetHead = 10
+	c16Follow    = 2 * time.Minute
+
+	// c17Halt: C17's chain makes no block this long, past maxBackfill
+	// (§19 G10). Then c17Blocks blocks come one at a time, each up to
+	// c17MaxGap after the last. The EMA grows at most 1.2× per sample
+	// (alpha 0.1, samples capped at 3× the EMA, §6.7), so from the
+	// chain's 0.2s it needs 26 samples to reach 20s, where W = 3 × bt
+	// meets its cap (§1): W stays below the cap for c17Blocks unless one
+	// sample across the halt moves it. wCap: W's cap (§1).
+	c17Halt   = 30 * time.Minute
+	c17Blocks = 20
+	c17MaxGap = 60 * time.Second
+	wCap      = 60 * time.Second
+
+	// c18FinalityDepth: C18's one vendor finalizes this far below its
+	// head, as a parachain whose finality follows its relay chain closely;
+	// c18Depth: the reorg replaces the head and the 2 siblings below it,
+	// from the fork point 3 below the head, so a pin at the vendor's
+	// finalized height reverts (§19 G12). c18PollInterval keeps the full
+	// poll, which polls finalized, out of the reorg's few seconds on most
+	// pods (harness).
+	c18FinalityDepth = 2
+	c18Depth         = 3
+	c18PollInterval  = 5 * time.Minute
 )
 
 // C2: a reorg reorgWindow − 1 deep. As C1, every client that received a
@@ -316,5 +349,277 @@ func c15() spec {
 					s.violate(s.name, "pod-%d: %v taps out of range, 1013 for a logs client", pod+1, v)
 				}
 			}
+		}}
+}
+
+// C16: a testnet reset. Every vendor's head drops from the millions to
+// c16ResetHead on a new genesis, same chain id. Each pod's eth_blockNumber
+// follows within c16Follow; every tap restarts on the new chain (ws logs
+// end 1013 and resubscribe, gRPC ends OUT_OF_RANGE and starts over); every
+// pod's latest counter of every upstream, and the shared one, follow the
+// new chain; and no read is answered from the old chain, though its
+// finalized block was cached permanently (§6.4, §14, §10.2; §19 G9).
+func c16() spec {
+	return spec{name: "C16", cache: true, bound: healthyDelivery, sim: chainsim.Config{First: c16First},
+		allow: []string{"ws:logs-end", "ws:jump", "grpc:OutOfRange"},
+		body: func(s *scenario) {
+			s.blocks(25)
+			old := s.probeAt(s.chain.Tip().Number - chainsim.FinalizedLag - 20)
+			if old == nil {
+				s.violate("harness", "no old block below the finalized tag holds transactions")
+				return
+			}
+			for pod := range s.h.pods {
+				s.requireCachedAs(pod, old.Number, cacheFinal)
+				if got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(old.Number), false); got != old.Hash.Hex() {
+					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) before the reset answered %s", pod+1, old.Number, got)
+				}
+				if got := s.blockAnswer(pod, "", "eth_getBlockByHash", old.Hash.Hex(), false); got != old.Hash.Hex() {
+					s.violate(s.name, "pod-%d: eth_getBlockByHash(%s) before the reset answered %s", pod+1, short(old.Hash), got)
+				}
+			}
+			was := s.chain.Tip()
+			at := time.Now()
+			ex := s.excuse(-1, at)
+			tip := s.chain.Reset(c16ResetHead)
+			for pod := range s.h.pods {
+				s.owe(pod, "latest_regressed", 1)
+			}
+			s.logf("testnet reset: head %d %s → %d %s", was.Number, short(was.Hash), tip.Number, short(tip.Hash))
+			followed := make([]time.Time, len(s.h.pods))
+			for left := len(s.h.pods); left > 0 && time.Since(at) < c16Follow+reconnectSlack; {
+				time.Sleep(scrapeEvery)
+				for pod := range s.h.pods {
+					if !followed[pod].IsZero() {
+						continue
+					}
+					var bn hexutil.Uint64
+					if err := s.call(pod, &bn, "eth_blockNumber"); err == nil && uint64(bn) < c16First {
+						followed[pod] = time.Now()
+						left--
+						s.logf("pod-%d: eth_blockNumber %d, %s after the reset", pod+1, bn, time.Since(at).Round(100*time.Millisecond))
+					}
+				}
+			}
+			last := at
+			for pod, t := range followed {
+				switch {
+				case t.IsZero():
+					s.violate(s.name, "pod-%d: eth_blockNumber still on the old chain %s after the reset (bound %s)", pod+1, time.Since(at).Round(time.Second), c16Follow)
+				case t.Sub(at) > c16Follow:
+					s.violate(s.name, "pod-%d: eth_blockNumber followed the reset after %s (bound %s)", pod+1, t.Sub(at).Round(time.Second), c16Follow)
+				}
+				if t.After(last) {
+					last = t
+				}
+			}
+			// Taps restart once Latest follows; ws logs close 1013 over
+			// logsCloseSpread (§10.2).
+			s.endExcuse(ex, last.Add(logsCloseSpread+reconnectSlack))
+			time.Sleep(time.Until(last.Add(logsCloseSpread + reconnectSlack)))
+			s.requireCountersFollow()
+			for pod := range s.h.pods {
+				var raw json.RawMessage
+				err := s.call(pod, &raw, probeMethod, hexutil.EncodeUint64(old.Number))
+				if err == nil && len(raw) > 0 && string(raw) != "null" {
+					s.violate(s.name, "pod-%d: %s(%d), an old-chain block cached as final, answered %s after the reset", pod+1, probeMethod, old.Number, raw)
+				}
+				if got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(old.Number), false); got == old.Hash.Hex() {
+					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered the old chain's block after the reset", pod+1, old.Number)
+				}
+				if got := s.blockAnswer(pod, "", "eth_getBlockByHash", old.Hash.Hex(), false); got == old.Hash.Hex() {
+					s.violate(s.name, "pod-%d: eth_getBlockByHash(%s) answered the old chain's block after the reset", pod+1, short(old.Hash))
+				}
+			}
+			var taps []*clientBase
+			for _, c := range s.heads {
+				taps = append(taps, &c.clientBase)
+			}
+			for _, g := range s.grpcs {
+				taps = append(taps, &g.clientBase)
+			}
+			for _, c := range s.logs {
+				taps = append(taps, &c.clientBase)
+			}
+			for _, c := range taps {
+				c.mu.Lock()
+				restarted := slices.ContainsFunc(c.deliveries, func(d delivery) bool { return d.number < c16First && d.at.After(at) })
+				c.mu.Unlock()
+				if !restarted {
+					s.violate(c.name, "received no block of the new chain within %s of the reset", time.Since(at).Round(time.Second))
+				}
+			}
+			for range c5WatchBlocks {
+				for pod := range s.h.pods {
+					s.requireLatestFollows(pod)
+				}
+				s.blocks(1)
+			}
+		}}
+}
+
+// requireCountersFollow: on every pod, each upstream's latest block, and
+// its shared counter, reach the chain's tip within W and stand at or
+// below it: no instance keeps a counter of the old chain (§14).
+func (s *scenario) requireCountersFollow() {
+	near := func(v float64) bool {
+		tip := s.chain.Tip().Number
+		return uint64(v) <= tip && uint64(v)+headSlackBlocks >= tip
+	}
+	for key := range s.vendors {
+		up := s.upstream(key)
+		for pod := range s.h.pods {
+			if v, ok := s.waitMetric(pod, "erpc_upstream_latest_block_number", map[string]string{"upstream": up}, liveBound+reconnectSlack, near); !ok {
+				s.violate(s.name, "pod-%d: %s's latest block %v, not within %d of the tip %d", pod+1, up, v, headSlackBlocks, s.chain.Tip().Number)
+			}
+		}
+		redisKey := upstreamCounterKey(s.upSpec(key), "latestBlock")
+		deadline := time.Now().Add(liveBound + reconnectSlack)
+		for {
+			st, err := s.h.redis.counter(redisKey)
+			if err == nil && near(float64(st.Value)) {
+				break
+			}
+			if time.Now().After(deadline) {
+				s.violate(s.name, "shared counter of %s is %d (by %s, err %v), not within %d of the tip %d", up, st.Value, st.UpdatedBy, err, headSlackBlocks, s.chain.Tip().Number)
+				break
+			}
+			time.Sleep(scrapeEvery)
+		}
+	}
+}
+
+// C17: the chain makes no block for c17Halt, past maxBackfill, then
+// c17Blocks blocks on demand, each 0 to c17MaxGap after the last, as an
+// Orbit chain that mints on traffic. No upstream is benched, W stays
+// below its cap while the blocks flow, and every tap gets every block
+// within its bound (§6.1, §6.5 rule 1, §6.7; §19 G10).
+func c17() spec {
+	return spec{name: "C17", bound: healthyDelivery, body: func(s *scenario) {
+		s.blocks(25)
+		benched := func(pod int) float64 {
+			v, _ := s.metric(pod, "erpc_upstream_head_benched_total", nil)
+			return v
+		}
+		bench0 := make([]float64, len(s.h.pods))
+		for pod := range s.h.pods {
+			bench0[pod] = benched(pod)
+		}
+		s.chain.Halt(true)
+		s.logf("no blocks for %s from %d", c17Halt, s.chain.Tip().Number)
+		time.Sleep(c17Halt)
+		capped := make([]bool, len(s.h.pods))
+		watchW := func(d time.Duration) {
+			for end := time.Now().Add(d); ; {
+				for pod := range s.h.pods {
+					bt, ok := s.metric(pod, "erpc_network_dynamic_block_time_milliseconds", nil)
+					w := time.Duration(min(max(3*bt, float64(liveBound.Milliseconds())), float64(wCap.Milliseconds()))) * time.Millisecond
+					if ok && w >= wCap && !capped[pod] {
+						capped[pod] = true
+						s.violate(s.name, "pod-%d: block time %vms, W at its %s cap, while blocks flow after a %s halt", pod+1, bt, wCap, c17Halt)
+					}
+				}
+				if time.Now().After(end) {
+					return
+				}
+				time.Sleep(time.Second)
+			}
+		}
+		for i := range c17Blocks {
+			s.chain.Burst(1, 0)
+			b := s.chain.Tip()
+			gap := time.Duration(rand.Int64N(int64(c17MaxGap) + 1))
+			s.logf("on-demand block %d/%d: %d %s; next in %s", i+1, c17Blocks, b.Number, short(b.Hash), gap.Round(time.Second))
+			watchW(max(gap, healthyDelivery))
+		}
+		for pod := range s.h.pods {
+			bt, _ := s.metric(pod, "erpc_network_dynamic_block_time_milliseconds", nil)
+			s.logf("pod-%d: block time %vms after %d on-demand blocks", pod+1, bt, c17Blocks)
+			if v := benched(pod); v > bench0[pod] {
+				s.violate(s.name, "pod-%d: %v benches across a %s halt and on-demand blocks", pod+1, v-bench0[pod], c17Halt)
+			}
+		}
+		s.chain.Halt(false)
+		s.blocks(25)
+	}}
+}
+
+// C18: one upstream, a wss vendor that finalizes c18FinalityDepth below
+// its head. With the chain halted at H, pod-1 polls the finalized tag: its
+// own poll answers H − c18FinalityDepth on the pinned path, which covers
+// that pin. The other pod reads Head.Finalized from the shared counter
+// only. A reorg then replaces H − 2 … H. Each pod counts
+// final_hash_changed exactly when its own finalized poll covered the
+// reverted pin, and every client is told of the reorg (§6.5 finality; §19
+// G12).
+func c18() spec {
+	return spec{name: "C18", bound: healthyDelivery,
+		vendors: []vendorSpec{{"ws-a", "vendor-a", true}},
+		faults:  map[string]chainsim.Faults{"ws-a": {FinalityDepth: c18FinalityDepth}},
+		upEvm:   map[string]map[string]interface{}{"ws-a": {"statePollerInterval": c18PollInterval.String()}},
+		body: func(s *scenario) {
+			s.blocks(50)
+			up := s.upstream("ws-a")
+			polled := func(pod int) float64 {
+				v, _ := s.metric(pod, "erpc_upstream_finalized_block_polled_total", map[string]string{"upstream": up})
+				return v
+			}
+			alarms := func(pod int) float64 {
+				v, _ := s.metric(pod, "erpc_chain_tracker_invariant_violations_total", map[string]string{"invariant": "final_hash_changed"})
+				return v
+			}
+			finalized := map[string]string{"lane": "all", "axis": "finalized"}
+			s.chain.Halt(true)
+			time.Sleep(healthyDelivery + reconnectSlack)
+			head := s.chain.Tip()
+			fin := head.Number - c18FinalityDepth
+			polled0, alarms0 := make([]float64, len(s.h.pods)), make([]float64, len(s.h.pods))
+			for pod := range s.h.pods {
+				polled0[pod], alarms0[pod] = polled(pod), alarms(pod)
+			}
+			for deadline := time.Now().Add(httpCheckWait); ; {
+				got := s.blockAnswer(0, "", "eth_getBlockByNumber", "finalized", false)
+				v, _ := s.metric(0, "erpc_network_served_tip_block_number", finalized)
+				if polled(0) > polled0[0] && uint64(v) == fin {
+					s.logf("pod-1 polled finalized %d with the chain halted at %d (tag answered %s)", fin, head.Number, got)
+					break
+				}
+				if time.Now().After(deadline) {
+					s.violate("harness", "pod-1: no finalized poll reached %d within %s (polls %v → %v, Head.Finalized %v, tag %s)", fin, httpCheckWait, polled0[0], polled(0), v, got)
+					s.chain.Halt(false)
+					return
+				}
+				time.Sleep(scrapeEvery)
+			}
+			covered := make([]bool, len(s.h.pods))
+			for pod := range s.h.pods {
+				if v, ok := s.waitMetric(pod, "erpc_network_served_tip_block_number", finalized, httpCheckWait, func(v float64) bool { return uint64(v) == fin }); !ok {
+					s.violate(s.name, "pod-%d: Head.Finalized %v, not the vendor's %d, %s after pod-1 polled it", pod+1, v, fin, httpCheckWait)
+				}
+				covered[pod] = polled(pod) > polled0[pod]
+				s.logf("pod-%d: own finalized poll since the halt: %v", pod+1, covered[pod])
+			}
+			if !slices.Contains(covered, false) {
+				s.violate("harness", "every pod polled finalized during the halt: no pod holds Finalized without its own evidence")
+			}
+			r := s.reorg(c18Depth)
+			s.chain.Halt(false)
+			if r.old[0].Number != fin {
+				s.violate("harness", "the reorg reverts from %d, not the finalized pin %d", r.old[0].Number, fin)
+			}
+			time.Sleep(deepReorgDelivery + reconnectSlack)
+			for pod := range s.h.pods {
+				d := alarms(pod) - alarms0[pod]
+				switch {
+				case covered[pod] && d == 0:
+					s.violate(s.name, "pod-%d: its own finalized poll answered %d %s on the pinned path, the reorg reverted it, and final_hash_changed did not count", pod+1, fin, short(r.old[0].Hash))
+				case !covered[pod] && d > 0:
+					s.violate(s.name, "pod-%d: %v final_hash_changed for the revert of %d…%d, which no finalized poll of its own covered (Head.Finalized %d from the shared counter)", pod+1, d, r.old[0].Number, head.Number, fin)
+				default:
+					s.logf("pod-%d: final_hash_changed +%v, own evidence %v", pod+1, d, covered[pod])
+				}
+			}
+			s.requireReorgsTold()
+			s.blocks(25)
 		}}
 }

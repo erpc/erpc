@@ -30,6 +30,8 @@ type Config struct {
 	HeaderPad int
 	// History is how many blocks are minted at start; 0 is HistoryBlocks.
 	History int
+	// First is the number of the first history block; 0 is firstNumber.
+	First uint64
 	// NoFinalized: the chain has no finalized tag; every vendor refuses it.
 	NoFinalized bool
 	// BadBaseFee: every block's base fee is 1000 + its number, which no
@@ -126,10 +128,14 @@ func NewChain(cfg Config) *Chain {
 	if history == 0 {
 		history = HistoryBlocks
 	}
+	first := cfg.First
+	if first == 0 {
+		first = firstNumber
+	}
 	start := time.Now().Add(-time.Duration(history) * cfg.BlockTime)
 	var parent *Block
 	for i := range history {
-		b := c.mintLocked(parent, firstNumber+uint64(i), start.Add(time.Duration(i)*cfg.BlockTime), false)
+		b := c.mintLocked(parent, first+uint64(i), start.Add(time.Duration(i)*cfg.BlockTime), false)
 		c.canon = append(c.canon, b)
 		parent = b
 	}
@@ -473,6 +479,30 @@ func (c *Chain) Rewind(depth int) (old []*Block, tip *Block) {
 	c.mu.Unlock()
 	c.refresh()
 	return old, tip
+}
+
+// Reset restarts the chain from a new genesis, as a testnet reset does
+// under the same chain id: blocks 0 to head, one block time apart, ending
+// now. Every fork ends, and every vendor forgets the old chain: it serves
+// none of it, by number or by hash. It returns the new head.
+func (c *Chain) Reset(head uint64) *Block {
+	c.mu.Lock()
+	start := time.Now().Add(-time.Duration(head) * c.cfg.BlockTime)
+	var b *Block
+	canon := make([]*Block, 0, head+1)
+	for n := range head + 1 {
+		b = c.mintLocked(b, n, start.Add(time.Duration(n)*c.cfg.BlockTime), false)
+		canon = append(canon, b)
+	}
+	c.canon = canon
+	clear(c.forks)
+	for _, v := range c.vendors {
+		v.fork = nil
+		v.seen = make(map[Hash]bool)
+	}
+	c.mu.Unlock()
+	c.refresh()
+	return b
 }
 
 // StartFork moves vs onto a minority branch that leaves the canonical chain
