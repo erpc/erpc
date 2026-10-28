@@ -442,7 +442,7 @@ func creditUsage(u common.Upstream) (common.CreditUsage, int64, bool) {
 	if !ok {
 		return common.CreditUsage{}, 0, false
 	}
-	usage, ok := provider.CreditUsage(u.Logger(), cfg.CreditAllowance)
+	usage, ok := provider.CreditUsage(u.Logger(), cfg)
 	if !ok || time.Since(usage.FetchedAt) > maxCreditUsageAge {
 		return common.CreditUsage{}, 0, false
 	}

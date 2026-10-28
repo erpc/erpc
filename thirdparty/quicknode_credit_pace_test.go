@@ -33,10 +33,12 @@ func (u *pacedUpstream) Tracker() common.HealthTracker  { return nil }
 func (u *pacedUpstream) Cordon(method, reason string)   {}
 func (u *pacedUpstream) Uncordon(method, reason string) {}
 
-// A QuickNode upstream with a prepaid allowance is promoted ahead of a
+// A QuickNode upstream on the allowance account is promoted ahead of a
 // per-call vendor while account usage is behind pace, falls back to its
-// configured last place once ahead, and is dropped near the allowance. Cold
-// start, before the first usage reading, keeps the configured order.
+// configured last place once ahead, and is dropped near the allowance. An
+// upstream on another QuickNode account (its credits bill elsewhere) never
+// gets credit fields, so it keeps its configured place. Cold start, before
+// the first usage and endpoint readings, keeps the configured order.
 func TestQuicknodeCreditPace_DrivesPolicyOrder(t *testing.T) {
 	const allowance = int64(90_000_000_000)
 	periodStart := time.Now().Add(-10 * 24 * time.Hour).Unix()
@@ -45,37 +47,54 @@ func TestQuicknodeCreditPace_DrivesPolicyOrder(t *testing.T) {
 		"ahead-pace":   50_000_000_000,
 		"at-allowance": allowance - 1_000_000_000,
 	}
-	release := make(chan struct{})
+	release := map[string]chan struct{}{}
+	for k := range usedByKey {
+		release[k] = make(chan struct{})
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-release
 		used, ok := usedByKey[r.Header.Get("x-api-key")]
-		if r.URL.Path != "/v0/usage/rpc" || !ok {
+		if !ok {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		_, _ = fmt.Fprintf(w, `{"data":{"start_time":%d,"end_time":%d,"credits_used":%d,"limit":2000000000},"error":null}`,
-			periodStart, time.Now().Unix(), used)
+		switch r.URL.Path {
+		case "/v0/endpoints":
+			_, _ = fmt.Fprint(w, `{"data":[{"id":"1","http_url":"https://on-account-name.arbitrum-mainnet.quiknode.pro/tok/","chain":"arb","network":"arbitrum-mainnet"}]}`)
+		case "/v0/usage/rpc":
+			<-release[r.Header.Get("x-api-key")]
+			_, _ = fmt.Fprintf(w, `{"data":{"start_time":%d,"end_time":%d,"credits_used":%d,"limit":2000000000},"error":null}`,
+				periodStart, time.Now().Unix(), used)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
 	}))
 	defer server.Close()
-	prev := quicknodeUsageURL
+	prevUsage, prevEndpoints := quicknodeUsageURL, quicknodeEndpointsURL
 	quicknodeUsageURL = server.URL + "/v0/usage/rpc"
-	defer func() { quicknodeUsageURL = prev }()
+	quicknodeEndpointsURL = server.URL + "/v0/endpoints"
+	defer func() { quicknodeUsageURL, quicknodeEndpointsURL = prevUsage, prevEndpoints }()
 
 	for _, tc := range []struct {
 		apiKey string
 		want   []string
 	}{
-		{apiKey: "behind-pace", want: []string{"quicknode", "fallback"}},
-		{apiKey: "ahead-pace", want: []string{"fallback", "quicknode"}},
-		{apiKey: "at-allowance", want: []string{"fallback"}},
+		{apiKey: "behind-pace", want: []string{"quicknode", "fallback", "other-account"}},
+		{apiKey: "ahead-pace", want: []string{"fallback", "quicknode", "other-account"}},
+		{apiKey: "at-allowance", want: []string{"fallback", "other-account"}},
 	} {
 		t.Run(tc.apiKey, func(t *testing.T) {
 			qn := CreateQuicknodeVendor()
+			ca := &common.CreditAllowanceConfig{Credits: allowance, ApiKey: tc.apiKey}
+			onAccount := &common.UpstreamConfig{
+				Id: "quicknode", VendorName: "quicknode", CreditAllowance: ca,
+				Endpoint: "https://on-account-name.arbitrum-mainnet.quiknode.pro/tok/",
+			}
 			ups := []common.Upstream{
 				&pacedUpstream{cfg: &common.UpstreamConfig{Id: "fallback", VendorName: "chainstack"}},
+				&pacedUpstream{vendor: qn, cfg: onAccount},
 				&pacedUpstream{vendor: qn, cfg: &common.UpstreamConfig{
-					Id: "quicknode", VendorName: "quicknode",
-					CreditAllowance: &common.CreditAllowanceConfig{Credits: allowance, ApiKey: tc.apiKey},
+					Id: "other-account", VendorName: "quicknode", CreditAllowance: ca,
+					Endpoint: "https://other-account-name.arbitrum-mainnet.quiknode.pro/tok/",
 				}},
 			}
 
@@ -103,14 +122,19 @@ func TestQuicknodeCreditPace_DrivesPolicyOrder(t *testing.T) {
 				return got
 			}
 
-			// Cold start: the first tick only triggers the fetch, so the
+			// Cold start: the first ticks only trigger the fetches, so the
 			// configured order holds.
-			require.Equal(t, []string{"fallback", "quicknode"}, order())
-
-			release <- struct{}{}
+			require.Equal(t, []string{"fallback", "quicknode", "other-account"}, order())
 			provider := qn.(common.CreditUsageProvider)
 			require.Eventually(t, func() bool {
-				_, ok := provider.CreditUsage(&logger, &common.CreditAllowanceConfig{Credits: allowance, ApiKey: tc.apiKey})
+				provider.CreditUsage(&logger, onAccount)
+				return qn.(*QuicknodeVendor).accountEndpoints.Has(tc.apiKey)
+			}, 5*time.Second, 10*time.Millisecond)
+			require.Equal(t, []string{"fallback", "quicknode", "other-account"}, order())
+
+			close(release[tc.apiKey])
+			require.Eventually(t, func() bool {
+				_, ok := provider.CreditUsage(&logger, onAccount)
 				return ok
 			}, 5*time.Second, 10*time.Millisecond)
 

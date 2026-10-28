@@ -31,6 +31,9 @@ type QuicknodeVendor struct {
 	// usageCache holds the account's current-period usage keyed by admin
 	// apiKey, from GET /v0/usage/rpc; CreditUsage reads it lock-free.
 	usageCache *RemoteDataCache[common.CreditUsage]
+	// accountEndpoints holds every endpoint name on the account keyed by
+	// admin apiKey, so CreditUsage paces only upstreams that bill to it.
+	accountEndpoints *RemoteDataCache[map[string]struct{}]
 }
 
 // quicknodeCreditUnits is the built-in FALLBACK API-credit model
@@ -207,19 +210,71 @@ const DefaultQuicknodeUsageRecheckInterval = 5 * time.Minute
 var quicknodeUsageURL = "https://api.quicknode.com/v0/usage/rpc"
 
 // CreditUsage implements common.CreditUsageProvider. Lock-free read of the
-// last reading; a stale or missing one triggers a background refresh.
-func (v *QuicknodeVendor) CreditUsage(logger *zerolog.Logger, allowance *common.CreditAllowanceConfig) (common.CreditUsage, bool) {
-	if v == nil || v.usageCache == nil || allowance == nil || allowance.ApiKey == "" {
+// last usage reading and of the allowance account's endpoint list; stale or
+// missing ones trigger a background refresh. An upstream whose host is not
+// one of that account's endpoints (a second QuickNode account) gets ok=false:
+// its traffic bills elsewhere and must not be paced against this allowance.
+func (v *QuicknodeVendor) CreditUsage(logger *zerolog.Logger, upstream *common.UpstreamConfig) (common.CreditUsage, bool) {
+	if v == nil || v.usageCache == nil || upstream == nil || upstream.CreditAllowance == nil || upstream.CreditAllowance.ApiKey == "" {
 		return common.CreditUsage{}, false
 	}
-	usage, fresh := v.usageCache.Lookup(allowance.ApiKey, DefaultQuicknodeUsageRecheckInterval)
+	apiKey := upstream.CreditAllowance.ApiKey
+	if !v.accountOwnsEndpoint(logger, apiKey, upstream.Endpoint) {
+		return common.CreditUsage{}, false
+	}
+	usage, fresh := v.usageCache.Lookup(apiKey, DefaultQuicknodeUsageRecheckInterval)
 	if !fresh {
-		apiKey := allowance.ApiKey
 		v.usageCache.TriggerAsyncRefresh(logger, apiKey, func(ctx context.Context) (common.CreditUsage, error) {
 			return fetchQuicknodeUsage(ctx, apiKey)
 		})
 	}
-	return usage, usage.Used > 0 || !usage.PeriodStart.IsZero()
+	return usage, !usage.FetchedAt.IsZero()
+}
+
+// accountOwnsEndpoint reports whether endpoint's name is one of the
+// account's endpoints (/v0/endpoints, unfiltered, refreshed hourly). Unknown
+// (list not fetched yet) is false. Kept apart from the discovery cache,
+// which is tag-filtered and probes every endpoint's chain ID.
+func (v *QuicknodeVendor) accountOwnsEndpoint(logger *zerolog.Logger, apiKey, endpoint string) bool {
+	name := quicknodeEndpointName(endpoint)
+	if name == "" {
+		return false
+	}
+	names, fresh := v.accountEndpoints.Lookup(apiKey, DefaultQuicknodeRecheckInterval)
+	if !fresh {
+		v.accountEndpoints.TriggerAsyncRefresh(logger, apiKey, func(ctx context.Context) (map[string]struct{}, error) {
+			endpoints, err := v.fetchEndpoints(ctx, apiKey, nil)
+			if err != nil {
+				return nil, err
+			}
+			out := make(map[string]struct{}, len(endpoints))
+			for _, ep := range endpoints {
+				if n := quicknodeEndpointName(ep.HttpUrl); n != "" {
+					out[n] = struct{}{}
+				}
+			}
+			return out, nil
+		})
+	}
+	_, ok := names[name]
+	return ok
+}
+
+// quicknodeEndpointName is the endpoint's account-unique name: the first
+// host label of a *.quiknode.pro URL ("burned-nameless-wildflower" in
+// https://burned-nameless-wildflower.ink-mainnet.quiknode.pro/<token>/).
+// A proxied URL carries the QuickNode URL in its path or query; the host
+// is still the text after the last '/' before ".quiknode.pro".
+func quicknodeEndpointName(endpoint string) string {
+	at := strings.Index(endpoint, ".quiknode.pro")
+	if at < 0 {
+		return ""
+	}
+	host := endpoint[strings.LastIndexByte(endpoint[:at], '/')+1 : at]
+	if dot := strings.IndexByte(host, '.'); dot >= 0 {
+		return host[:dot]
+	}
+	return host
 }
 
 // fetchQuicknodeUsage reads GET /v0/usage/rpc. Live shape (2026-10-19):
@@ -295,9 +350,10 @@ const DefaultQuicknodeRecheckInterval = 1 * time.Hour
 
 func CreateQuicknodeVendor() common.Vendor {
 	return &QuicknodeVendor{
-		cache:      NewRemoteDataCache[[]*QuicknodeEndpoint]("quicknode"),
-		cuCache:    NewRemoteDataCache[map[string]int64]("quicknode-cu"),
-		usageCache: NewRemoteDataCache[common.CreditUsage]("quicknode-usage"),
+		cache:            NewRemoteDataCache[[]*QuicknodeEndpoint]("quicknode"),
+		cuCache:          NewRemoteDataCache[map[string]int64]("quicknode-cu"),
+		usageCache:       NewRemoteDataCache[common.CreditUsage]("quicknode-usage"),
+		accountEndpoints: NewRemoteDataCache[map[string]struct{}]("quicknode-account-endpoints"),
 	}
 }
 
@@ -461,11 +517,15 @@ func (v *QuicknodeVendor) resolveEndpoints(logger *zerolog.Logger, apiKey string
 	return endpoints, true
 }
 
+// quicknodeEndpointsURL lists the account's endpoints. A var so tests can
+// point it at a mock server.
+var quicknodeEndpointsURL = "https://api.quicknode.com/v0/endpoints"
+
 func (v *QuicknodeVendor) fetchEndpoints(ctx context.Context, apiKey string, filterParams *QuicknodeFilterParams) ([]*QuicknodeEndpoint, error) {
 	var allEndpoints []*QuicknodeEndpoint
 
 	// Build URL with pagination
-	baseURL := "https://api.quicknode.com/v0/endpoints"
+	baseURL := quicknodeEndpointsURL
 	limit := 100
 	offset := 0
 

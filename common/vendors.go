@@ -42,12 +42,14 @@ type CreditUnitsProvider interface {
 }
 
 // CreditUsageProvider is an OPTIONAL Vendor capability: report the credits
-// a vendor account used in its current billing period, account-wide. The
-// selection policy divides it by the pro-rata `creditAllowance` to get
-// `u.creditPace`. Implementations MUST NOT block: return the last fetched
-// value and refresh in the background; ok=false until a value exists.
+// the vendor account behind `upstream.creditAllowance` used in its current
+// billing period, account-wide. The selection policy divides it by the
+// pro-rata allowance to get `u.creditPace`. ok=false until a value exists,
+// and also when the upstream's endpoint is not on that account (its credits
+// would not draw on the allowance). Implementations MUST NOT block: return
+// the last fetched values and refresh in the background.
 type CreditUsageProvider interface {
-	CreditUsage(logger *zerolog.Logger, allowance *CreditAllowanceConfig) (usage CreditUsage, ok bool)
+	CreditUsage(logger *zerolog.Logger, upstream *UpstreamConfig) (usage CreditUsage, ok bool)
 }
 
 // CreditUsage is one account usage reading. PeriodStart/PeriodEnd bound the
