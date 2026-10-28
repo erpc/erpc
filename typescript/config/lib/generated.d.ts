@@ -36,22 +36,25 @@ export interface AdaptiveDuration {
 export type ArchitectureHandler = any;
 export declare const UpstreamTypeEvm: UpstreamType;
 /**
- * HeadNeed is what a head Ask must produce (spec §6.8).
+ * HeadNeed is what a head Ask must produce (spec §6.8); the Ask's pace
+ * is the oldest evidence that meets it.
  */
 export type HeadNeed = number;
 /**
  * HeadNeedNumber: a fresh number; a shared counter whose report is
- * younger than the cadence meets it.
+ * younger than the pace meets it.
  */
 export declare const HeadNeedNumber: HeadNeed;
 /**
- * HeadNeedHash: a hash vote; only a local fetch sent within the
- * cadence meets it.
+ * HeadNeedHash: a hash vote; only a local fetch sent within the pace
+ * meets it.
  */
 export declare const HeadNeedHash: HeadNeed;
 /**
  * HeadNeedFork: a hash need whose answer is fresh evidence of the
- * node's head, whatever its earlier votes say (spec §6.3 fork poll).
+ * node's head, whatever its earlier votes say (spec §6.3 fork poll):
+ * only a fork fetch meets it, sent after the Ask at pace 0, else
+ * within the pace.
  */
 export declare const HeadNeedFork: HeadNeed;
 /**
@@ -79,8 +82,8 @@ export declare const AskFetched: AskOutcome;
  */
 export declare const AskSharedFresh: AskOutcome;
 /**
- * AskInflight: a local fetch sent within the cadence met it, in
- * flight or answered.
+ * AskInflight: a local fetch sent within the pace met it, in flight
+ * or answered.
  */
 export declare const AskInflight: AskOutcome;
 /**
@@ -98,20 +101,22 @@ export interface HeadAnswer {
      */
     block: number;
     /**
-     * Header is the fetched latest header; nil with no fetch answer.
-     */
-    header: any;
-    /**
      * Sent is when the fetch that answered was sent: the header's
      * evidence time; zero with no fetch answer.
      */
     sent: any;
     /**
-     * Next is when the upstream's Ask may fetch again: its last fetch's
-     * send plus its backed-off cadence; zero when it may now.
+     * Next is when an Ask at the same pace may fetch again: the meeting
+     * fetch's send plus the pace or its backed-off cadence, the longer;
+     * zero when it may now.
      */
     next: any;
 }
+/**
+ * EvmHeader is a latest header past intake check 0, parsed once where it
+ * was fetched: the evm package's SourceHeader.
+ */
+export type EvmHeader = any;
 export type EvmUpstream = Upstream;
 /**
  * EvmStateProvenWriter is the OPTIONAL, separately-asserted surface the
@@ -213,6 +218,15 @@ export declare const MaxShredInsertSlotLagThreshold: number;
  * so pre-multi-chain configs keep producing "svm:<cluster>" IDs.
  */
 export declare const SvmChainSolana = "solana";
+/**
+ * SvmHistory is the slots from which a cluster's Agave history records block
+ * fields. Below them Agave renders the field null whatever an archive holds;
+ * a nil bound means the cluster records the field from its first slot.
+ */
+export interface SvmHistory {
+    blocktimefrom?: number;
+    blockheightfrom?: number;
+}
 /**
  * BlockTimeAdaptiveDuration is a duration that is either a fixed value or derived from the
  * network's estimated block time. It's the reusable shape for knobs (e.g. cache
@@ -2302,7 +2316,36 @@ export interface RateLimitStoreConfig {
     redis?: RedisConnectorConfig;
     cacheKeyPrefix?: string;
     nearLimitRatio?: number;
+    /**
+     * OnFailure decides a request the redis store could not: not connected,
+     * erroring, slower than redis.getTimeout, or at its in-flight cap.
+     */
+    onFailure?: RateLimitStoreFailureMode;
+    /**
+     * LocalLimitFactor scales every maxCount for the in-process limiter that
+     * onFailure: local decides with. It counts this replica only, so set it
+     * near 1/replicas. Required for local; must be > 0 and <= 1.
+     */
+    localLimitFactor?: number;
 }
+/**
+ * RateLimitStoreFailureMode is what a redis-backed budget does with a request
+ * its store could not decide.
+ */
+export type RateLimitStoreFailureMode = string;
+/**
+ * RateLimitStoreFailureAllow (default) admits the request.
+ */
+export declare const RateLimitStoreFailureAllow: RateLimitStoreFailureMode;
+/**
+ * RateLimitStoreFailureDeny rejects the request as rate limited.
+ */
+export declare const RateLimitStoreFailureDeny: RateLimitStoreFailureMode;
+/**
+ * RateLimitStoreFailureLocal decides it with an in-process limiter that
+ * counts every request, at maxCount × localLimitFactor.
+ */
+export declare const RateLimitStoreFailureLocal: RateLimitStoreFailureMode;
 /**
  * IntegrityHeaderModeOff ignores per-request integrity headers entirely.
  */
@@ -2388,13 +2431,15 @@ export interface IntegritySettings {
      * and ObserveOnly suppresses the misbehavior recording like every other
      * integrity effect. Requires follow to be enabled (the verified header is
      * the trust anchor). Off by default. The "latest" tag-state probe behind
-     * the tag-state gate runs on every network whatever this says.
+     * the tag-state gate runs on every network from its first client
+     * request, whatever this says.
      */
     stateProbe?: IntegrityStateProbeConfig;
     /**
-     * Follow opens one integrity follow tap per chain tracker: it holds
-     * demand, so source polls run without clients, and it drives the state
-     * prober on each new head. Off by default.
+     * Follow opens one integrity follow tap per chain tracker at the
+     * network's first client request: it holds demand at its interval's
+     * pace, so source polls run while clients are quiet, and it drives the
+     * state prober on each new head. Off by default.
      */
     follow?: IntegrityFollowConfig;
     /**
@@ -2406,6 +2451,11 @@ export interface IntegritySettings {
     misbehaviorsDestination?: MisbehaviorsDestinationConfig;
 }
 /**
+ * DefaultIntegrityFollowInterval is the follow tap's pace when its config
+ * sets none.
+ */
+export declare const DefaultIntegrityFollowInterval: typeof any;
+/**
  * IntegrityFollowConfig configures the integrity follow tap.
  */
 export interface IntegrityFollowConfig {
@@ -2413,6 +2463,12 @@ export interface IntegrityFollowConfig {
      * Enabled opens the follow tap for this network. Default false.
      */
     enabled?: boolean;
+    /**
+     * Interval is the pace the follow tap needs heads at (default 1s): while
+     * it is a network's only newHeads demand, the tracker asks upstreams for
+     * newer heads no more often than this.
+     */
+    interval?: Duration;
 }
 /**
  * IntegrityStateProbeConfig configures the per-upstream state-trie probes.
@@ -2768,6 +2824,11 @@ export declare const HeadStale: HeadRule;
 export interface HeadRefusal {
     rule: HeadRule;
     block: number;
+    /**
+     * Ceiling is the ceiling Block was decided against: the one the Ask
+     * returned when Refreshed.
+     */
+    ceiling: number;
     /**
      * Refreshed: N was decided again after its stale reports were Asked.
      */

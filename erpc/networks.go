@@ -2635,7 +2635,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 		// If response is not empty, but at least one upstream responded empty we track in a metric.
 		// Derived from ErrorsByUpstream entries with ErrEndpointMissingData code.
+		winner := resp.Upstream()
 		req.ErrorsByUpstream.Range(func(key, value any) bool {
+			// The winner's own earlier empty answer was a retry that later succeeded.
+			if key == winner {
+				return true
+			}
 			upstreamErr, ok := value.(error)
 			if !ok || !common.HasErrorCode(upstreamErr, common.ErrCodeEndpointMissingData) {
 				return true
@@ -2646,6 +2651,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				return true
 			}
 			upstream := key.(*upstream.Upstream)
+			// An upstream whose head was below the winning block when it answered
+			// was behind, or the data did not exist yet (e.g. a tx not yet mined).
+			// An unknown head (0) proves neither, so it still counts.
+			if head := req.HeadAtError(upstream); respBlockNumber > 0 && head > 0 && head < respBlockNumber {
+				return true
+			}
 			finality := req.Finality(ctx)
 			telemetry.CounterHandle(telemetry.MetricUpstreamWrongEmptyResponseTotal,
 				n.projectId,

@@ -63,22 +63,25 @@ export type ArchitectureHandler = any;
 
 export const UpstreamTypeEvm: UpstreamType = "evm";
 /**
- * HeadNeed is what a head Ask must produce (spec §6.8).
+ * HeadNeed is what a head Ask must produce (spec §6.8); the Ask's pace
+ * is the oldest evidence that meets it.
  */
 export type HeadNeed = number /* uint8 */;
 /**
  * HeadNeedNumber: a fresh number; a shared counter whose report is
- * younger than the cadence meets it.
+ * younger than the pace meets it.
  */
 export const HeadNeedNumber: HeadNeed = 0;
 /**
- * HeadNeedHash: a hash vote; only a local fetch sent within the
- * cadence meets it.
+ * HeadNeedHash: a hash vote; only a local fetch sent within the pace
+ * meets it.
  */
 export const HeadNeedHash: HeadNeed = 1;
 /**
  * HeadNeedFork: a hash need whose answer is fresh evidence of the
- * node's head, whatever its earlier votes say (spec §6.3 fork poll).
+ * node's head, whatever its earlier votes say (spec §6.3 fork poll):
+ * only a fork fetch meets it, sent after the Ask at pace 0, else
+ * within the pace.
  */
 export const HeadNeedFork: HeadNeed = 2;
 /**
@@ -106,8 +109,8 @@ export const AskFetched: AskOutcome = "fetched";
  */
 export const AskSharedFresh: AskOutcome = "shared_fresh";
 /**
- * AskInflight: a local fetch sent within the cadence met it, in
- * flight or answered.
+ * AskInflight: a local fetch sent within the pace met it, in flight
+ * or answered.
  */
 export const AskInflight: AskOutcome = "inflight";
 /**
@@ -125,20 +128,22 @@ export interface HeadAnswer {
    */
   block: number /* int64 */;
   /**
-   * Header is the fetched latest header; nil with no fetch answer.
-   */
-  header: any /* json.RawMessage */;
-  /**
    * Sent is when the fetch that answered was sent: the header's
    * evidence time; zero with no fetch answer.
    */
   sent: any /* time.Time */;
   /**
-   * Next is when the upstream's Ask may fetch again: its last fetch's
-   * send plus its backed-off cadence; zero when it may now.
+   * Next is when an Ask at the same pace may fetch again: the meeting
+   * fetch's send plus the pace or its backed-off cadence, the longer;
+   * zero when it may now.
    */
   next: any /* time.Time */;
 }
+/**
+ * EvmHeader is a latest header past intake check 0, parsed once where it
+ * was fetched: the evm package's SourceHeader.
+ */
+export type EvmHeader = any;
 export type EvmUpstream = 
     Upstream;
 /**
