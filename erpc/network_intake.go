@@ -29,7 +29,10 @@ import (
 type networkIntake struct {
 	nw *Network
 
-	mu sync.Mutex
+	// voteMu orders the health tracker's hash votes as accept ordered
+	// them: taken before mu, held across RecordHashVote (recordHashVote).
+	voteMu sync.Mutex
+	mu     sync.Mutex
 	// last is each upstream's accepted headers, ending at its hash vote
 	// (votePath).
 	last map[string]votePath
@@ -257,11 +260,7 @@ func (in *networkIntake) header(upstreamId string, sh evm.SourceHeader, kind evm
 		in.count(upstreamId, "duplicate")
 		return true
 	}
-	// The hash vote is recorded before the trackers see the header, so the
-	// tracker that handles it counts its sender as a hash voter.
-	if mt := in.nw.metricsTracker; mt != nil {
-		mt.RecordHashVote(u, int64(cur.Number), replay)
-	}
+	in.recordHashVote(u, cur, replay)
 	if stream {
 		in.noteStream(upstreamId, int64(cur.Number))
 	}
@@ -453,6 +452,27 @@ func (in *networkIntake) accept(upstreamId string, sh evm.SourceHeader, onlyNewe
 	}
 	in.last[upstreamId] = path.with(cur, sh.Parent())
 	return true
+}
+
+// recordHashVote hands u's accepted header cur to the health tracker as its
+// hash vote, before the trackers see it, so the tracker that handles it
+// counts u as a hash voter. Two headers of u accepted at once (a push and a
+// poll) record in turn, and one that a later accept replaced records
+// nothing: the health vote never steps back behind intake's.
+func (in *networkIntake) recordHashVote(u common.Upstream, cur indexer.Cursor, replay bool) {
+	mt := in.nw.metricsTracker
+	if mt == nil {
+		return
+	}
+	in.voteMu.Lock()
+	defer in.voteMu.Unlock()
+	in.mu.Lock()
+	path := in.last[u.Id()]
+	current := len(path) > 0 && path[len(path)-1].cur == cur
+	in.mu.Unlock()
+	if current {
+		mt.RecordHashVote(u, int64(cur.Number), replay)
+	}
 }
 
 // forget drops what intake holds of an upstream that left the network.
