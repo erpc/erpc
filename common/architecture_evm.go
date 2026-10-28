@@ -248,14 +248,9 @@ type EvmStatePoller interface {
 	// FinalizedBlock is the upstream's finalized tag; only an upstream known
 	// to have no finalized tag reports latest − the derived finality depth (#1079).
 	FinalizedBlock() int64
-	// FinalizedReportAt is LatestReportAt for the finalized tag; zero
-	// before any report.
-	FinalizedReportAt() time.Time
 	// LatestAskAt is the send time of this instance's last Ask fetch of
 	// latest, zero before any: the Ask half of EvidenceAt.
 	LatestAskAt() time.Time
-	// FinalizedAskAt is LatestAskAt for the finalized tag's poll.
-	FinalizedAskAt() time.Time
 	IsBlockFinalized(blockNumber int64) (bool, error)
 	SuggestFinalizedBlock(blockNumber int64, at time.Time)
 	// SuggestLatestBlock reports blockNumber, its evidence taken at at: an

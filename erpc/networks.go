@@ -810,61 +810,38 @@ func (n *Network) EvmRefreshHead(ctx context.Context) {
 	})
 }
 
-// awaitFinalizedRefresh refreshes the finalized numbers of as many of
-// selector sel's ballot voters as the quorum needs and waits for them, at
-// most W, then publishes sel's lane Head, so a request naming the
-// `finalized` tag takes a Finalized no older than the finalized debounce
-// (spec §6.4 Finality, §6.8). Voters go oldest finalized evidence first,
-// since a voter's finality depth is its own and routing order does not
-// reflect it; a voter whose finalized tag is given up is passed over, its
-// vote being derived from its latest. Each poller polls only past its
-// finalized debounce and joins a poll in flight. The latest-axis rank
-// serves here too: an upstream with no finalized number yet still gets
-// polled for its first one.
+// awaitFinalizedRefresh refreshes the finalized numbers of every voter of
+// selector sel's ballot and waits for them, at most W, then publishes
+// sel's lane Head, so a request naming the `finalized` tag takes a
+// Finalized no older than the finalized debounce (spec §6.4 Finality,
+// §6.8). Every voter, not a quorum's worth: a voter's finality depth is
+// its own, so which voters decide the ballot's q-th highest finalized is
+// known only from fresh numbers, and a refresh of the deep ones leaves it
+// where it was. Each poller polls only past its finalized debounce, joins
+// a poll in flight, and has none once its finalized tag is given up. The
+// latest-axis rank serves here too: an upstream with no finalized number
+// yet still gets polled for its first one.
 func (n *Network) awaitFinalizedRefresh(ctx context.Context, sel string) {
 	s := n.voters(sel, voterQuery{kind: numberVote})
 	if s.count() == 0 {
 		return
 	}
-	var ec *common.EvmNetworkConfig
-	if n.cfg != nil {
-		ec = n.cfg.Evm
-	}
-	need := ec.ServedTipQuorum().Of(s.count())
-	pollers := make([]common.EvmStatePoller, 0, s.count())
-	s.each(func(u common.Upstream, _ int64) bool {
-		pollers = append(pollers, u.(common.EvmUpstream).EvmStatePoller())
-		return true
-	})
-	oldestEvidenceFirst(pollers, true)
 	ctx, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
 	defer cancel()
-	type refreshed struct{ polls, moved bool }
-	results := make(chan refreshed)
-	next, running := 0, 0
-	start := func() {
-		sp := pollers[next]
-		next++
-		running++
-		go func() {
+	var wg sync.WaitGroup
+	var moved atomic.Bool
+	s.each(func(u common.Upstream, _ int64) bool {
+		sp := u.(common.EvmUpstream).EvmStatePoller()
+		wg.Go(func() {
 			before := sp.FinalizedBlock()
-			polls := sp.RefreshFinalized(ctx)
-			results <- refreshed{polls, sp.FinalizedBlock() != before}
-		}()
-	}
-	for running < need && next < len(pollers) {
-		start()
-	}
-	moved := false
-	for running > 0 {
-		r := <-results
-		running--
-		moved = moved || r.moved
-		if !r.polls && next < len(pollers) {
-			start()
-		}
-	}
-	if l := n.laneFor(sel); moved && l != nil {
+			if sp.RefreshFinalized(ctx) && sp.FinalizedBlock() != before {
+				moved.Store(true)
+			}
+		})
+		return true
+	})
+	wg.Wait()
+	if l := n.laneFor(sel); moved.Load() && l != nil {
 		n.refreshLaneRecovered(l)
 	}
 }
@@ -930,7 +907,7 @@ func (n *Network) lacking(out []common.EvmStatePoller, selector string, block in
 	if lacks <= 0 {
 		return out
 	}
-	oldestEvidenceFirst(below, false)
+	oldestEvidenceFirst(below)
 	for _, sp := range below[:min(lacks, len(below))] {
 		if !slices.Contains(out, sp) {
 			out = append(out, sp)
@@ -939,21 +916,16 @@ func (n *Network) lacking(out []common.EvmStatePoller, selector string, block in
 	return out
 }
 
-// oldestEvidenceFirst orders pollers by their evidence time on the latest
-// or finalized axis (common.EvidenceAt), oldest first, stably.
-func oldestEvidenceFirst(pollers []common.EvmStatePoller, finalized bool) {
+// oldestEvidenceFirst orders pollers by their latest evidence time
+// (common.EvidenceAt), oldest first, stably.
+func oldestEvidenceFirst(pollers []common.EvmStatePoller) {
 	type ranked struct {
 		sp common.EvmStatePoller
 		at time.Time
 	}
 	rs := make([]ranked, len(pollers))
 	for i, sp := range pollers {
-		rs[i].sp = sp
-		if finalized {
-			rs[i].at = common.EvidenceAt(sp.FinalizedReportAt(), sp.FinalizedAskAt())
-		} else {
-			rs[i].at = common.EvidenceAt(sp.LatestReportAt(), sp.LatestAskAt())
-		}
+		rs[i] = ranked{sp, common.EvidenceAt(sp.LatestReportAt(), sp.LatestAskAt())}
 	}
 	slices.SortStableFunc(rs, func(a, b ranked) int { return a.at.Compare(b.at) })
 	for i, r := range rs {
