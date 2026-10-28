@@ -1,7 +1,6 @@
 package erpc
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -661,15 +660,15 @@ func requestSelector(ctx context.Context) string {
 // laneFor returns the lane of the use-upstream selector sel: the
 // network-wide lane for "", the group's lazily-materialized lane when sel
 // carves out a real sub-group (identity and DDoS-safe gating from
-// EvmUpstreamGroupForSelector, count capped by maxServedTipLanes), else nil:
-// the subset pick then runs per request with no guard, no gauges and no
-// anchor, so a subset value never overwrites any gauge. A new lane publishes
-// its first Head before it is returned.
+// partitionKeyFor, count capped by maxServedTipLanes), else nil: the
+// subset pick then runs per request with no guard, no gauges and no
+// anchor, so a subset value never overwrites any gauge. A new lane
+// publishes its first Head before it is returned.
 func (n *Network) laneFor(sel string) *servedTipLane {
 	if sel == "" {
 		return &n.servedTipAll
 	}
-	key, label := n.EvmUpstreamGroupForSelector(context.Background(), sel)
+	key, ids := n.partitionKeyFor(context.Background(), sel)
 	if key == "" {
 		return nil
 	}
@@ -680,7 +679,7 @@ func (n *Network) laneFor(sel string) *servedTipLane {
 	if n.servedTipLaneCount.Load() >= maxServedTipLanes {
 		return nil
 	}
-	l := &servedTipLane{key: key, selector: sel, label: label}
+	l := &servedTipLane{key: key, selector: sel, label: common.LaneName(ids)}
 	n.refreshLane(l)
 	actual, loaded := n.servedTipLanes.LoadOrStore(key, l)
 	if !loaded {
@@ -733,13 +732,21 @@ func (n *Network) partitionKeyFor(ctx context.Context, selector string) (string,
 	return "grp:" + hex.EncodeToString(sum[:8]), matched
 }
 
-// EvmUpstreamGroupForSelector is the single source of node-GROUP identity: it maps a
-// use-upstream selector to a stable group key (for keying per-group state) and a
-// human-readable lane name, or ("","") when the selector doesn't carve out a real
-// sub-group. partitionKeyFor provides the dedup/bounds/cross-pod-stable key; this adds
-// the lane. Used by the lanes' Heads (laneFor) AND by
-// the integrity module, so both corroborate/track within the SAME group a request was
-// pinned to (whatever node groups the use-upstream selector carves out) — one grouping, not two.
+// EvmUpstreamGroupForSelector is the single source of node-GROUP identity:
+// it maps a use-upstream selector to its lane's stable key (for keying
+// per-group state) and human-readable name, or ("","") when the selector
+// has no lane of its own: it carves out no real sub-group, or its group
+// came past maxServedTipLanes. The lanes' Heads and the integrity module
+// (group trackers, spec §13) both read it, so a network holds at most
+// maxServedTipLanes group trackers, and a selector past them tracks and
+// corroborates within the network-wide lane — one grouping, not two.
+func (n *Network) EvmUpstreamGroupForSelector(_ context.Context, selector string) (key string, lane string) {
+	if l := n.laneFor(selector); l != nil && l.key != "" {
+		return l.key, l.label
+	}
+	return "", ""
+}
+
 // EvmAllUpstreams exposes the network's upstreams to the architecture layer
 // (interface-asserted from architecture/evm, which cannot import this package).
 // Used by the integrity state prober to enumerate probe targets.
@@ -750,14 +757,6 @@ func (n *Network) EvmAllUpstreams(ctx context.Context) []common.Upstream {
 		out = append(out, u)
 	}
 	return out
-}
-
-func (n *Network) EvmUpstreamGroupForSelector(ctx context.Context, selector string) (key string, lane string) {
-	k, ids := n.partitionKeyFor(ctx, selector)
-	if k == "" {
-		return "", ""
-	}
-	return k, common.LaneName(ids)
 }
 
 // isSimpleGroupSelector reports whether a selector is a single glob token
@@ -3584,14 +3583,15 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 						if sentTag == "latest" {
 							ups.EvmStatePoller().SuggestLatestBlock(blockNumber, sentAt)
 						}
-						// An answer, never a vote: held by the tracker of
-						// the request's group.
+						// An answer, never a vote: the tracker of the
+						// request's group holds its header, in bytes of its
+						// own, once per hash.
 						selector := ""
 						if d := req.Directives(); d != nil {
 							selector = d.UseUpstream
 						}
 						if t := evm.ChainTrackerOf(ctx, n, selector); t != nil {
-							t.Observe(ups.Id(), bytes.Clone(jrs.GetResultBytes()), false)
+							t.Observe(ups.Id(), jrs.GetResultBytes(), false)
 						}
 					}
 				}

@@ -39,7 +39,7 @@ var mailboxHeaderCap = 1024
 
 // trackerPanicsToReset is how many messages of one kind may panic, with
 // none of that kind handled cleanly between them, before the tracker resets
-// to empty (handle).
+// to empty (handleBatch).
 const trackerPanicsToReset = 3
 
 // TrackerMessageHook, when set, runs on a tracker's goroutine before each
@@ -73,19 +73,26 @@ type ChainTracker struct {
 	// in unix nanoseconds; 0 before one.
 	txHeadAt atomic.Int64
 
-	// held, receipts and anchors are read by any goroutine; only the
-	// tracker's goroutine writes them.
+	// held and receipts are read by any goroutine; only the tracker's
+	// goroutine writes them.
 	held     sync.Map // lowercase hash -> *chainHeader
 	receipts sync.Map // lowercase block hash -> *heldReceipts
-	anchors  sync.Map // int64 -> *anchorEntry: finalized narrow anchors
+	// anchors are the finalized narrow anchors, read by any goroutine.
+	// Integrity records them on the request path under anchorMu, never
+	// through the mailbox, so a burst of them never grows it (spec §3);
+	// anchorNumbers and anchorVotes are what anchorMu guards.
+	anchors       sync.Map // int64 -> *anchorEntry
+	anchorMu      sync.Mutex
+	anchorNumbers []int64
+	anchorVotes   map[int64][]anchorVote // the hashes vendors answered per anchor
 
 	// revertedFinal holds the spans of blocks at or below Finalized a
-	// followed majority branch reverted (recordMove), final or not, newest
+	// followed majority branch reverted (moveOf), final or not, newest
 	// last, at most maxRevertedFinal; any goroutine reads it.
 	revertedFinal atomic.Pointer[[]heightSpan]
 	// unlinkedPins are the pins a re-anchor left below the new tree, with
 	// the finality they had on the path they were pinned on; only the
-	// tracker's goroutine reads or writes them (recordMove).
+	// tracker's goroutine reads or writes them (moveOf, apply).
 	unlinkedPins []unlinkedPin
 
 	wantMu      sync.Mutex
@@ -163,7 +170,7 @@ type ChainTracker struct {
 	// later neither ends nor reopens the window.
 	coldUntil time.Time
 	// voters is the lane's voter set as the network's intake last read it,
-	// before the message being handled.
+	// before the batch being handled.
 	voters HashVoters
 	// vendors is voters.Vendors, published for readers on other
 	// goroutines: fetch answer checks, suspension, logs subscribes.
@@ -200,10 +207,8 @@ type ChainTracker struct {
 	prefetchAbove uint64
 	// probe is armed while receipts fail: the outage's head-block fetches.
 	probe         *time.Timer
-	anchorNumbers []int64
-	anchorVotes   map[int64][]anchorVote // the hashes vendors answered per anchor
 	// panics counts, per panicSlot, the panics since a message of that slot
-	// was last handled cleanly (handle).
+	// was last handled cleanly (handleBatch).
 	panics [panicSlots]int
 	stack  []*node // walkTree's scratch
 	// pick's scratch (countVotes)
@@ -213,7 +218,7 @@ type ChainTracker struct {
 	// since trees was last published.
 	treesDirty bool
 	// served: history serves the tracker (spec §6.5 rule 1), read once per
-	// message (readServed).
+	// batch (readServed).
 	served bool
 }
 
@@ -305,7 +310,6 @@ type msgKind uint8
 const (
 	msgHeader  msgKind = iota // a source vote or a client answer
 	msgFetched                // a tracker fetch's answer; never shed
-	msgAnchors
 	msgReceipts
 	msgTick
 	msgSync
@@ -322,7 +326,6 @@ type trackerMsg struct {
 	raw      json.RawMessage
 	hdr      *chainHeader // set when the sender already parsed raw
 	at       time.Time    // a source vote's evidence time
-	anchors  []anchor
 	held     *heldReceipts
 	done     chan struct{}
 	fn       func()
@@ -363,8 +366,8 @@ type anchorEntry struct {
 
 // mailbox never blocks a sender. It sheds only client answers and source
 // headers: when they fill it, answers drop first, then each source keeps
-// only its newest header. Fetch results, anchors and receipts never drop; at
-// most one tick waits.
+// only its newest header. Fetch results and receipts never drop; at most
+// one tick waits.
 type mailbox struct {
 	mu    sync.Mutex
 	queue []trackerMsg
@@ -505,13 +508,28 @@ func (t *ChainTracker) clear() {
 }
 
 // Observe is the tracker's only input of headers. vote is true for a source
-// header that passed intake; client and integrity answers never vote.
+// header that passed intake; client and integrity answers never vote. An
+// answer is a block: a hash the tracker holds is skipped (the first held
+// wins), and only its header is held, never its body, in bytes of its own.
 func (t *ChainTracker) Observe(upstreamId string, raw json.RawMessage, vote bool) {
-	v := voteNone
 	if vote {
-		v = voteSource
+		t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteSource, raw: raw, at: time.Now()})
+		return
 	}
-	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: v, raw: raw, at: time.Now()})
+	if hash, err := sonic.GetFromString(util.B2Str(raw), "hash"); err == nil {
+		if s, err := hash.String(); err == nil {
+			if _, held := t.HeldNumber(s); held {
+				return
+			}
+		}
+	}
+	header, err := headerOf(raw)
+	if err != nil {
+		return
+	}
+	if h, err := parseChainHeader(header); err == nil {
+		t.observeAnswer(upstreamId, h)
+	}
 }
 
 // VotersChanged makes the tracker read its voters again: the policy's
@@ -520,7 +538,13 @@ func (t *ChainTracker) VotersChanged() {
 	t.mb.put(trackerMsg{kind: msgTick})
 }
 
+// observeAnswer queues a client or integrity answer, unless it lies
+// outside the window of the published head, where the tracker would drop
+// it: a backfill of old blocks never grows the mailbox (spec §3).
 func (t *ChainTracker) observeAnswer(upstreamId string, h *chainHeader) {
+	if head := t.state.Load().head(); head != nil && !t.within(head, h) {
+		return
+	}
 	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteNone, hdr: h})
 }
 
@@ -561,51 +585,79 @@ func (t *ChainTracker) run(ctx context.Context) {
 			return
 		case <-t.mb.wake:
 		}
-		for _, msg := range t.mb.take() {
-			t.handle(msg)
+		t.handleBatch(t.mb.take())
+	}
+}
+
+// handleBatch applies one batch the mailbox gave (spec §3): it reads the
+// voters once, applies every message but the client answers in order, then
+// the answers, so a burst of answers delays a vote by at most one batch;
+// then it moves walks, fill, settles and asks on once, and only then ends
+// the syncs. The messages and each step of update recover on their own: a
+// panicking message is dropped, and a panic in it, or in a step of update,
+// counts in the panicSlot of each message of the batch it touched. 3
+// panics in one panicSlot, with no message of that slot handled cleanly
+// between them, reset the tracker to empty: other kinds come between any
+// two of one kind, so a state that breaks only source votes, or only fetch
+// answers, still resets, while one vendor's bad header among clean ones
+// never does.
+func (t *ChainTracker) handleBatch(batch []trackerMsg) {
+	defer func() {
+		for _, msg := range batch {
+			if msg.done != nil {
+				close(msg.done)
+			}
+		}
+	}()
+	updates := slices.ContainsFunc(batch, func(msg trackerMsg) bool { return msg.kind != msgSync })
+	if updates {
+		t.readVoters()
+		t.readServed()
+	}
+	var failed []int
+	for _, answers := range []bool{false, true} {
+		for i, msg := range batch {
+			if isAnswer(msg) != answers {
+				continue
+			}
+			if !t.guard("message", func() { t.receive(msg) }, func() { t.dropped(msg) }) {
+				failed = append(failed, i)
+			}
+		}
+	}
+	updated := !updates || t.update()
+	for i, msg := range batch {
+		slot := panicSlot(msg)
+		if !slices.Contains(failed, i) && (updated || msg.kind == msgSync) {
+			t.panics[slot] = 0
+			continue
+		}
+		t.panics[slot]++
+		if t.panics[slot] >= trackerPanicsToReset {
+			t.panics = [panicSlots]int{}
+			t.reset()
+			telemetry.CounterHandle(telemetry.MetricChainTrackerResetTotal, t.projectId(), t.networkLabel()).Inc()
+			t.transition(zerolog.ErrorLevel, "reset").Int("panics", trackerPanicsToReset).Int("slot", slot).
+				Msg("chain tracker reset to empty after panics in a row")
 		}
 	}
 }
 
-// handle applies one message, then moves walks, fill, settles and asks on.
-// Each step recovers on its own: a panicking message is dropped, and a
-// panicking step of update never blames the message. 3 panics in one
-// panicSlot, with no message of that slot handled cleanly between them,
-// reset the tracker to empty: other kinds come between any two of one kind,
-// so a state that breaks only source votes, or only fetch answers, still
-// resets, while one vendor's bad header among clean ones never does.
-func (t *ChainTracker) handle(msg trackerMsg) {
-	if msg.done != nil {
-		defer close(msg.done)
+// isAnswer: msg is a client or integrity answer, which a batch applies
+// after every other message.
+func isAnswer(msg trackerMsg) bool {
+	return msg.kind == msgHeader && msg.vote == voteNone
+}
+
+// dropped is what a message that panicked leaves: a source header counts
+// as malformed for its sender, and a settle request is answered.
+func (t *ChainTracker) dropped(msg trackerMsg) {
+	if msg.kind == msgHeader && msg.vote == voteSource {
+		telemetry.CounterHandle(telemetry.MetricChainTrackerSourceHeadsTotal,
+			t.projectId(), t.networkLabel(), msg.upstream, "malformed").Inc()
 	}
-	if msg.kind != msgSync {
-		t.readVoters()
-		t.readServed()
-	}
-	ok := t.guard("message", func() { t.receive(msg) }, func() {
-		if msg.kind == msgHeader && msg.vote == voteSource {
-			telemetry.CounterHandle(telemetry.MetricChainTrackerSourceHeadsTotal,
-				t.projectId(), t.networkLabel(), msg.upstream, "malformed").Inc()
-		}
-		if msg.settled != nil {
-			report(msg.settled, settleUnanswered)
-		}
-	})
-	if msg.kind != msgSync {
-		ok = t.update() && ok
-	}
-	slot := panicSlot(msg)
-	if ok {
-		t.panics[slot] = 0
-		return
-	}
-	t.panics[slot]++
-	if t.panics[slot] >= trackerPanicsToReset {
-		t.panics = [panicSlots]int{}
-		t.reset()
-		telemetry.CounterHandle(telemetry.MetricChainTrackerResetTotal, t.projectId(), t.networkLabel()).Inc()
-		t.transition(zerolog.ErrorLevel, "reset").Int("panics", trackerPanicsToReset).Int("slot", slot).
-			Msg("chain tracker reset to empty after panics in a row")
+	if msg.settled != nil {
+		report(msg.settled, settleUnanswered)
 	}
 }
 
@@ -637,8 +689,6 @@ func (t *ChainTracker) receive(msg trackerMsg) {
 	switch msg.kind {
 	case msgHeader, msgFetched:
 		t.handleHeader(msg)
-	case msgAnchors:
-		t.handleAnchors(msg.anchors)
 	case msgReceipts:
 		t.holdReceipts(msg.held, msg.upstream)
 	case msgCall:
@@ -680,7 +730,7 @@ func (t *ChainTracker) guard(step string, fn func(), onPanic func()) (ok bool) {
 	return true
 }
 
-// update runs after every message: walks that nothing waits on end, votes
+// update runs after every batch: walks that nothing waits on end, votes
 // whose walks ended move (rule 3), a settle whose answers are in ends
 // (rule 5), the pins follow the votes (rule 4), a vote off the pins is
 // refreshed before its voter is polled (§6.3), roots extend (rules 1, 2),
@@ -829,9 +879,12 @@ func (t *ChainTracker) holds(ref, h *chainHeader) bool {
 // and at most reorgWindow blocks above it. Without pins every header is.
 func (t *ChainTracker) inWindow(h *chainHeader) bool {
 	head := t.head()
-	if head == nil {
-		return true
-	}
+	return head == nil || t.within(head, h)
+}
+
+// within reports whether h lies inside the window below head and at most
+// reorgWindow blocks above it.
+func (t *ChainTracker) within(head, h *chainHeader) bool {
 	return t.holds(head, h) && h.number <= head.number+uint64(t.window)
 }
 
@@ -850,7 +903,7 @@ func (t *ChainTracker) farAhead(h *chainHeader) bool {
 }
 
 // HashVoters is what the network's intake says of one lane's voters (spec
-// §6.2, §6.5), read once per tracker message.
+// §6.2, §6.5), read once per batch of tracker messages.
 type HashVoters struct {
 	// Voters are the lane's voters in selection order; settles and
 	// no-source Asks go to them.
@@ -1066,9 +1119,11 @@ func (t *ChainTracker) hold(h *chainHeader) *node {
 }
 
 // capOrphans keeps at most maxOrphansPerHeight unpinned headers at a
-// height, dropping the oldest childless one that no counted vote points
-// to; keep, just held, stays. An orphan with held children stays, so a
-// drop never cuts a tree inside the window.
+// height, dropping the oldest childless one that no counted vote, nor a
+// vote its walk or the batch's update holds back, points to: every vote is
+// held (spec §6 rule 1), and answers applied after the votes of their
+// batch never push one out. keep, just held, stays. An orphan with held
+// children stays, so a drop never cuts a tree inside the window.
 func (t *ChainTracker) capOrphans(number uint64, keep *node) {
 	orphans := 0
 	for _, n := range t.heights[number] {
@@ -1084,11 +1139,21 @@ func (t *ChainTracker) capOrphans(number uint64, keep *node) {
 		if orphans <= maxOrphansPerHeight {
 			return
 		}
-		if n != keep && len(n.children) == 0 && !t.pinned(n) && !slices.ContainsFunc(counted, func(v voter) bool { return v.n == n }) {
+		if n != keep && len(n.children) == 0 && !t.pinned(n) && !slices.ContainsFunc(counted, func(v voter) bool { return v.n == n }) && !t.pendingVote(n) {
 			t.drop(n, true)
 			orphans--
 		}
 	}
+}
+
+// pendingVote reports whether n is a vote not yet moved (promote).
+func (t *ChainTracker) pendingVote(n *node) bool {
+	for _, p := range t.pending {
+		if p == n {
+			return true
+		}
+	}
+	return false
 }
 
 // drop releases a held header. Only eviction drops a header with children;
@@ -1516,9 +1581,11 @@ func (t *ChainTracker) countVotes(counted []voter) *voteCounts {
 	return c
 }
 
-// apply makes path the pins in one step: the pins inside the window are
-// computed first, compared with the published state, then committed and
-// published together.
+// apply makes path the pins in one step (spec §6.5): the pins inside the
+// window, the state to publish and the move's outcome are computed first,
+// then committed and published together, and only then signalled, so a
+// panic computing any of them leaves the pins and their record as they
+// were.
 func (t *ChainTracker) apply(path []*node) {
 	head := path[len(path)-1].h
 	i := 0
@@ -1533,8 +1600,17 @@ func (t *ChainTracker) apply(path []*node) {
 	s := newFeedState(path)
 	b := t.gate(path)
 	s.confirmed, s.backing = b.confirmed(), b
-	t.pins, t.treesDirty, t.receiptsDirty = path, true, true
 	s.logs = t.logsHeadOf(s)
+	mv := t.moveOf(pub.pins, path)
+
+	t.pins, t.treesDirty, t.receiptsDirty = path, true, true
+	t.unlinkedPins = mv.unlinked
+	if mv.rewinds {
+		t.rewindDue = mv.rewindDue
+	}
+	if mv.revertedFinal != nil {
+		t.revertedFinal.Store(mv.revertedFinal)
+	}
 	t.unstamp(pub.pins, s)
 	t.stamp(s)
 	if pub.head() != head && !head.emptyTxs {
@@ -1542,30 +1618,52 @@ func (t *ChainTracker) apply(path []*node) {
 	}
 	old := t.state.Swap(s)
 	close(old.changed)
-	t.published(old, s, true)
 
-	t.recordMove(pub.pins, path)
+	t.published(old, s, true)
+	t.signalMove(mv)
 	t.evict()
 }
 
-// recordMove counts a re-anchor, or the depth of a reorg, from old to path,
-// and sets the head gauge. Every reverted pin at or below Finalized is kept
-// in revertedFinal, so no permanent cache entry serves the old branch: a
-// permanent write needs only the serving upstream's finalized number. A
-// reverted final pin (finalThrough) is also logged as an error
-// (final_hash_changed); any other revert is a reorg (spec §6.5). A
-// re-anchor's old pins below the new tree are decided once fill links that
-// tree down to them (unlinkedPins), or dropped once they leave the window;
-// they keep the finality they had on the old path, which held the
-// finalized evidence. Headers compare by hash: fill can fetch an evicted
-// block again as a new header. A tracker that no history serves moves to a
-// new root without a re-anchor, and nothing links its old pins (spec §6.5
-// rule 1).
-func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
+// move is the outcome of moving the pins from old to the path headed by
+// head (moveOf), computed before the move commits.
+type move struct {
+	old        []*chainHeader
+	head, base *chainHeader
+	reanchor   bool // to another tree of held headers, counted
+	reverted   int  // the old pins a reorg reverted
+	// rewinds: the move owes the rollback write (rewindVoters): rewind
+	// lowers these counters now, rewindDue are the voters owed it later.
+	rewinds   bool
+	rewind    map[string]int64
+	rewindDue map[string]bool
+	unlinked  []unlinkedPin
+	// revertedFinal is revertedFinal with the reverted pins at or below
+	// Finalized; nil while none reverted.
+	revertedFinal *[]heightSpan
+	// alarm spans the reverted final pins (final_hash_changed); oldLo is
+	// its lowest old pin, newLo the pin that replaced it.
+	alarm        heightSpan
+	oldLo, newLo *chainHeader
+	fin          int64
+}
+
+// moveOf computes a re-anchor, or the depth of a reorg, from old to path.
+// Every reverted pin at or below Finalized is kept in revertedFinal, so no
+// permanent cache entry serves the old branch: a permanent write needs only
+// the serving upstream's finalized number. A reverted final pin
+// (finalThrough) is also an alarm (final_hash_changed); any other revert is
+// a reorg (spec §6.5). A re-anchor's old pins below the new tree are
+// decided once fill links that tree down to them (unlinkedPins), or dropped
+// once they leave the window; they keep the finality they had on the old
+// path, which held the finalized evidence. Headers compare by hash: fill
+// can fetch an evicted block again as a new header. A tracker that no
+// history serves moves to a new root without a re-anchor, and nothing
+// links its old pins (spec §6.5 rule 1). It changes no state.
+func (t *ChainTracker) moveOf(old []*chainHeader, path []*node) move {
 	head := path[len(path)-1].h
-	telemetry.MetricChainTrackerHead.WithLabelValues(t.projectId(), t.networkLabel(), t.group).Set(float64(head.number))
+	mv := move{old: old, head: head, base: path[0].h, unlinked: t.unlinkedPins}
 	if len(old) == 0 {
-		return
+		return mv
 	}
 	base := path[0].h.number
 	pathAt := func(n uint64) *chainHeader {
@@ -1584,26 +1682,18 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	switch reverted := len(old) - 1 - fork; {
 	case fork < 0 && !t.served:
 	case fork < 0:
-		// Spec §15 labels re-anchors by network only: the network-wide
-		// tracker's count.
-		if t.selector == "" {
-			telemetry.CounterHandle(telemetry.MetricChainTrackerReanchorTotal, t.projectId(), t.networkLabel()).Inc()
-		}
-		was := old[len(old)-1]
-		t.transition(zerolog.WarnLevel, "reanchor").Uint64("oldHead", was.number).Str("oldHeadHash", was.hashHex).
-			Uint64("head", head.number).Str("headHash", head.hashHex).Uint64("base", path[0].h.number).Str("baseHash", path[0].h.hashHex).
-			Msg("chain tracker pins moved to another tree of held headers")
+		mv.reanchor = true
 	case reverted > 0:
-		telemetry.MetricChainTrackerReorgDepth.WithLabelValues(t.projectId(), t.networkLabel(), t.group).
-			Observe(float64(reverted))
+		mv.reverted = reverted
 	}
 	if t.selector == "" && head.number < old[len(old)-1].number {
-		t.rewindVoters(pathAt)
+		mv.rewinds = true
+		mv.rewind, mv.rewindDue = t.rewindVoters(pathAt)
 	}
 	fin := t.finalizedHead()
+	mv.fin = fin
 	finalOld := t.finalThrough(old, fin)
-	var reverted, alarm heightSpan
-	var oldLo, newLo *chainHeader
+	var reverted heightSpan
 	replaced := func(h *chainHeader, final bool) {
 		p := pathAt(h.number)
 		if fin <= 0 || p == nil || p.hash == h.hash || int64(h.number) > fin {
@@ -1611,10 +1701,10 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 		}
 		reverted = reverted.with(int64(h.number))
 		if final {
-			if alarm.hi == 0 || int64(h.number) < alarm.lo {
-				oldLo, newLo = h, p
+			if mv.alarm.hi == 0 || int64(h.number) < mv.alarm.lo {
+				mv.oldLo, mv.newLo = h, p
 			}
-			alarm = alarm.with(int64(h.number))
+			mv.alarm = mv.alarm.with(int64(h.number))
 		}
 	}
 	for _, h := range old {
@@ -1623,23 +1713,52 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 	for _, u := range t.unlinkedPins {
 		replaced(u.h, u.final)
 	}
-	var unlinked []unlinkedPin
+	mv.unlinked = nil
 	if t.served {
 		for _, u := range t.unlinkedPins {
 			if u.h.number < base && t.holds(head, u.h) {
-				unlinked = append(unlinked, u)
+				mv.unlinked = append(mv.unlinked, u)
 			}
 		}
 		if fork < 0 {
 			for _, h := range old {
 				if h.number < base && t.holds(head, h) {
-					unlinked = append(unlinked, unlinkedPin{h: h, final: h.number <= finalOld})
+					mv.unlinked = append(mv.unlinked, unlinkedPin{h: h, final: h.number <= finalOld})
 				}
 			}
 		}
 	}
-	t.unlinkedPins = unlinked
-	if alarm.hi > 0 {
+	if reverted.hi > 0 {
+		spans := t.revertedFinalWith(reverted)
+		mv.revertedFinal = &spans
+	}
+	return mv
+}
+
+// signalMove counts and logs a committed move, sets the head gauge and
+// writes the rollback (spec §14); every call into the network recovers on
+// its own.
+func (t *ChainTracker) signalMove(mv move) {
+	telemetry.MetricChainTrackerHead.WithLabelValues(t.projectId(), t.networkLabel(), t.group).Set(float64(mv.head.number))
+	if mv.reanchor {
+		// Spec §15 labels re-anchors by network only: the network-wide
+		// tracker's count.
+		if t.selector == "" {
+			telemetry.CounterHandle(telemetry.MetricChainTrackerReanchorTotal, t.projectId(), t.networkLabel()).Inc()
+		}
+		was := mv.old[len(mv.old)-1]
+		t.transition(zerolog.WarnLevel, "reanchor").Uint64("oldHead", was.number).Str("oldHeadHash", was.hashHex).
+			Uint64("head", mv.head.number).Str("headHash", mv.head.hashHex).Uint64("base", mv.base.number).Str("baseHash", mv.base.hashHex).
+			Msg("chain tracker pins moved to another tree of held headers")
+	}
+	if mv.reverted > 0 {
+		telemetry.MetricChainTrackerReorgDepth.WithLabelValues(t.projectId(), t.networkLabel(), t.group).
+			Observe(float64(mv.reverted))
+	}
+	if mv.rewinds {
+		t.rewindHeads(mv.rewind)
+	}
+	if mv.alarm.hi > 0 {
 		var ev *zerolog.Event
 		if t.selector == "" {
 			ev = common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantFinalHashChanged).Str("group", t.group)
@@ -1647,12 +1766,9 @@ func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
 			ev = t.transition(zerolog.ErrorLevel, "invariant_violation").
 				Str("invariant", string(common.InvariantFinalHashChanged))
 		}
-		ev.Int64("revertedFrom", alarm.lo).Str("oldHash", hexHash(oldLo.hash)).Str("newHash", hexHash(newLo.hash)).
-			Int64("finalized", fin).Uint64("head", head.number).Str("headHash", hexHash(head.hash)).
+		ev.Int64("revertedFrom", mv.alarm.lo).Str("oldHash", hexHash(mv.oldLo.hash)).Str("newHash", hexHash(mv.newLo.hash)).
+			Int64("finalized", mv.fin).Uint64("head", mv.head.number).Str("headHash", hexHash(mv.head.hash)).
 			Msg("chain tracker followed a majority branch that reverts a finalized block")
-	}
-	if reverted.hi > 0 {
-		t.addRevertedFinal(reverted)
 	}
 }
 
@@ -1687,26 +1803,25 @@ func (t *ChainTracker) finalThrough(hs []*chainHeader, fin int64) (through uint6
 // whose head is below the old pinned head, a reorg or a re-anchor down; a
 // re-anchor up is a catch-up and owes none. Each voter whose own fresh
 // hash vote is on the new pins has its latest counter lowered to that
-// vote's height where the counter is above it, so Latest follows the
-// rewound chain on every instance. Every other voter is owed the rewind
-// once a fresh vote of its reaches the pins (rewindLate): a vote from
-// before a gap is no evidence.
-func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) {
-	votes := make(map[string]int64, len(t.votes))
-	t.rewindDue = make(map[string]bool)
+// vote's height where the counter is above it (votes), so Latest follows
+// the rewound chain on every instance. Every other voter is owed the
+// rewind once a fresh vote of its reaches the pins (due, rewindLate): a
+// vote from before a gap is no evidence.
+func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) (votes map[string]int64, due map[string]bool) {
+	votes, due = make(map[string]int64, len(t.votes)), make(map[string]bool)
 	for u, nd := range t.votes {
 		if p := pathAt(nd.h.number); p != nil && p.hash == nd.h.hash && t.votedFresh(u) {
 			votes[u] = int64(nd.h.number)
 		} else {
-			t.rewindDue[u] = true
+			due[u] = true
 		}
 	}
 	for u := range t.pending {
 		if _, written := votes[u]; !written {
-			t.rewindDue[u] = true
+			due[u] = true
 		}
 	}
-	t.rewindHeads(votes)
+	return votes, due
 }
 
 // rewindLate writes the rewind owed to a voter once its fresh hash vote
@@ -1754,12 +1869,12 @@ func (s heightSpan) with(n int64) heightSpan {
 	return heightSpan{lo: min(s.lo, n), hi: max(s.hi, n)}
 }
 
-// addRevertedFinal publishes s in revertedFinal, merged with every span it
+// revertedFinalWith is revertedFinal with s, merged with every span it
 // overlaps or touches, the oldest span leaving at the bound. A deep revert
 // is followed one height at a time, each a span of its own: unmerged, its
 // first heights would leave the bound while their permanent entries still
-// hold the old branch. Only the tracker's goroutine calls it.
-func (t *ChainTracker) addRevertedFinal(s heightSpan) {
+// hold the old branch. Only the tracker's goroutine stores revertedFinal.
+func (t *ChainTracker) revertedFinalWith(s heightSpan) []heightSpan {
 	var spans []heightSpan
 	if p := t.revertedFinal.Load(); p != nil {
 		spans = *p
@@ -1775,8 +1890,7 @@ func (t *ChainTracker) addRevertedFinal(s heightSpan) {
 	if len(next) >= maxRevertedFinal {
 		next = next[len(next)-maxRevertedFinal+1:]
 	}
-	next = append(next, s)
-	t.revertedFinal.Store(&next)
+	return append(next, s)
 }
 
 // RevertedFinal reports whether a followed majority branch reverted block
@@ -2272,16 +2386,21 @@ func (t *ChainTracker) reset() {
 	t.clear()
 	t.held.Range(func(k, _ any) bool { t.held.Delete(k); return true })
 	t.receipts.Range(func(k, _ any) bool { t.receipts.Delete(k); return true })
+	t.receiptsOrder = nil
+	t.anchorMu.Lock()
 	t.anchors.Range(func(k, _ any) bool { t.anchors.Delete(k); return true })
-	t.receiptsOrder, t.anchorNumbers, t.anchorVotes = nil, nil, nil
+	t.anchorNumbers, t.anchorVotes = nil, nil
+	t.anchorMu.Unlock()
 	t.publish()
 	t.publishTrees()
 }
 
-// handleAnchors keeps the newest reorgWindow finalized anchors, each with
+// recordAnchors keeps the newest reorgWindow finalized anchors, each with
 // the hashes vendors answered for it; HashAt serves them only below the
-// window.
-func (t *ChainTracker) handleAnchors(as []anchor) {
+// window. Any goroutine may call it.
+func (t *ChainTracker) recordAnchors(as []anchor) {
+	t.anchorMu.Lock()
+	defer t.anchorMu.Unlock()
 	if t.anchorVotes == nil {
 		t.anchorVotes = make(map[int64][]anchorVote)
 	}
@@ -3284,8 +3403,7 @@ func (t *ChainTracker) transition(level zerolog.Level, kind string) *zerolog.Eve
 }
 
 // observeBlockView hands a validated block response to the tracker as an
-// answer: held, never voted. A hash the tracker holds is skipped (the first
-// held wins), and only the header is held, never the block's body.
+// answer: held, never voted (Observe).
 func observeBlockView(ctx context.Context, t *ChainTracker, u common.Upstream, rs *common.NormalizedResponse) {
 	if t == nil || rs == nil {
 		return
@@ -3294,27 +3412,11 @@ func observeBlockView(ctx context.Context, t *ChainTracker, u common.Upstream, r
 	if err != nil || jrr == nil {
 		return
 	}
-	block := jrr.GetResultBytes()
-	if hash, err := sonic.GetFromString(util.B2Str(block), "hash"); err == nil {
-		if s, err := hash.String(); err == nil {
-			if _, held := t.HeldNumber(s); held {
-				return
-			}
-		}
-	}
-	raw, err := headerOf(block)
-	if err != nil {
-		return
-	}
-	h, err := parseChainHeader(raw)
-	if err != nil {
-		return
-	}
 	upstreamId := ""
 	if u != nil {
 		upstreamId = u.Id()
 	}
-	t.observeAnswer(upstreamId, h)
+	t.Observe(upstreamId, jrr.GetResultBytes(), false)
 }
 
 func isBlockMethod(methodLower string) bool {
@@ -3381,7 +3483,7 @@ func (t *ChainTracker) observeNarrowAnchors(fin int64, vendor string, result []b
 		}
 	}
 	if len(as) > 0 {
-		t.mb.put(trackerMsg{kind: msgAnchors, anchors: as})
+		t.recordAnchors(as)
 	}
 }
 
@@ -3573,7 +3675,8 @@ func startFollow(nt *networkTrackers, n common.Network, t *ChainTracker) {
 // ChainTrackerOf returns the tracker of n's node group for a use-upstream
 // selector, the same grouping as latest-block tracking
 // (EvmUpstreamGroupForSelector). A selector that carves out no real
-// sub-group yields the network-wide tracker. nil while n has no trackers.
+// sub-group, or whose group came past the network's lanes (spec §13),
+// yields the network-wide tracker. nil while n has no trackers.
 func ChainTrackerOf(ctx context.Context, n common.Network, selector string) *ChainTracker {
 	if n == nil {
 		return nil

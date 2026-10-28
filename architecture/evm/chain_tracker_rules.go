@@ -952,7 +952,7 @@ func (t *ChainTracker) conflicts(nd *node) bool {
 // the next catch-up while the lane's Latest caps the sends, the end of the
 // cold window, the moment the soonest hash voter's hash age passes W, or
 // the moment a vote off the pins has been off for W (minority fork). It
-// runs after every message, so a deadline that fires never hides a later
+// runs after every batch, so a deadline that fires never hides a later
 // one.
 func (t *ChainTracker) rearm() {
 	now := time.Now()
