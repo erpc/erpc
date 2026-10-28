@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -9,11 +10,12 @@ import (
 )
 
 // headRefuser is the network's side of the refusal rule (spec §6.4, §6.8):
-// its block time, the Ask of the reports older than 1 bt, and the band's
-// Ask of the upstreams below a block.
+// its block time, the Ask of the reports older than 1 bt, the near-future
+// wait for the ceiling, and the band's Ask of the upstreams below a block.
 type headRefuser interface {
 	EvmBlockTime() time.Duration
 	EvmAskStale(ctx context.Context, selector string) (ceiling int64, oldestReportAt time.Time)
+	EvmAwaitCeiling(ctx context.Context, selector string, block int64) (ceiling int64, oldestReportAt time.Time)
 	EvmAskBand(selector string, block int64)
 }
 
@@ -40,7 +42,22 @@ func HeadRefusalOf(ctx context.Context, rq *common.NormalizedRequest) *common.He
 	if d := rq.Directives(); d != nil {
 		sel = d.UseUpstream
 	}
-	return rq.TakeHeadRefusal(DecideHeadRefusal(ctx, nw, common.EvmHeadOf(nw, ctx, rq), sel, bn))
+	return rq.TakeHeadRefusal(DecideHeadRefusal(ctx, nw, common.EvmHeadOf(nw, ctx, rq), sel, bn, !ShortCircuitsFuture(rq)))
+}
+
+// ShortCircuitsFuture reports whether a future block on rq gets null with
+// no dispatch and no wait: a numbered eth_getBlockByNumber on a network
+// with shortCircuitFutureBlocks (spec §6.4, #1238).
+func ShortCircuitsFuture(rq *common.NormalizedRequest) bool {
+	nw := rq.Network()
+	if nw == nil {
+		return false
+	}
+	if cfg := nw.Config(); cfg == nil || !cfg.Evm.ShortCircuitFutureBlocksEnabled() {
+		return false
+	}
+	method, _ := rq.Method()
+	return strings.EqualFold(method, "eth_getBlockByNumber")
 }
 
 // DecideHeadRefusal applies the refusal rule to block n on head h of
@@ -48,8 +65,11 @@ func HeadRefusalOf(ctx context.Context, rq *common.NormalizedRequest) *common.He
 // those reports are Asked first and n decided again; still stale after
 // the Ask, n is in the band, the cheaper way to be wrong. Until the first
 // block time sample, every report counts as older than 1 bt (spec §6.4).
-// A band block Asks the upstreams below it, in the background.
-func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead, sel string, n int64) *common.HeadRefusal {
+// With wait, a future n at most nearFutureBlocks above the ceiling waits
+// for the ceiling to reach it, at most W, and is decided again on the
+// ceiling the wait saw; Latest stays the request's own (spec §7). A band
+// block Asks the upstreams below it, in the background.
+func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead, sel string, n int64, wait bool) *common.HeadRefusal {
 	net, _ := nw.(headRefuser)
 	bt, cold := health.ColdBlockTime, true
 	if net != nil {
@@ -68,6 +88,14 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 		}
 		v.Rule, v.Refreshed = h.Rule(n, bt, time.Now()), true
 	}
+	if v.Rule == common.HeadFuture && wait && net != nil && n-h.Ceiling <= nearFutureBlocks(bt) {
+		// The wait Asked the lane's voters every bt: a report that aged
+		// meanwhile keeps n future, never sends a range above every head.
+		h.Ceiling, h.OldestReportAt = net.EvmAwaitCeiling(ctx, sel, n)
+		if v.Rule, v.Waited = h.Rule(n, bt, time.Now()), true; v.Rule == common.HeadStale {
+			v.Rule = common.HeadFuture
+		}
+	}
 	if v.Rule == common.HeadStale {
 		v.Rule = common.HeadBand
 	}
@@ -76,6 +104,12 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 		net.EvmAskBand(sel, n)
 	}
 	return v
+}
+
+// nearFutureBlocks is how far above the ceiling a future block waits for
+// it: W / bt blocks, at least 1 (spec §6.4 near future).
+func nearFutureBlocks(bt time.Duration) int64 {
+	return max(1, int64(health.FreshnessWindow(bt)/bt))
 }
 
 // EmptyResultBeyondConfidence reports whether an empty answer for rq is its answer rather

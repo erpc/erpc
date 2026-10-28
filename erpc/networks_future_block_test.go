@@ -526,7 +526,12 @@ func TestForward_BandBlock_HedgesShareOneMiss(t *testing.T) {
 
 // A future block dispatched (shortCircuitFutureBlocks off) takes one
 // retryable miss too (spec §6.4): the first null is never final, and the
-// answer after it goes to the client as the upstream gave it.
+// answer after it goes to the client as the upstream gave it. Once the
+// block time is known, a block at most W / bt above the ceiling waits for
+// it, at most W, while the voters are Asked every bt (near future): a
+// numbered read and a log range are served once the nodes reach them,
+// and a range still above the ceiling after W is refused, counted
+// future_after_wait.
 func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -535,14 +540,74 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// The nodes' head: their latest answer, and the blocks they hold.
+	var head atomic.Int64
+	head.Store(100)
+	held := func(blockHex, result string) string {
+		var n int64
+		fmt.Sscanf(blockHex, "0x%x", &n)
+		if head.Load() < n {
+			return "null"
+		}
+		return result
+	}
+	ids := []string{"fm1", "fm2", "fm3"}
+	var first, second, nearCalls atomic.Int64
+	mockGetBlockByNumberAt("0x69", "null", &first, "fm1")
+	mockGetBlockByNumberAt("0x69", futureBlockSentinel, &second, "fm2", "fm3")
+	for _, id := range ids {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x%x","timestamp":"0x6702a8f0"}}`, head.Load())
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x66"`) {
+					return false
+				}
+				nearCalls.Add(1)
+				return true
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				body := `{"jsonrpc":"2.0","id":1,"result":` + held("0x66", futureBlockSentinel) + `}`
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return r.URL.Host == id+".localhost" && strings.Contains(util.SafeReadBody(r), `"eth_getLogs"`)
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				body := `{"jsonrpc":"2.0","id":1,"result":` + held("0x67", `[{"blockNumber":"0x67","blockHash":"0x00000000000000000000000000000000000000000000000000000000000000c7","logIndex":"0x0"}]`) + `}`
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+	}
+
 	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
 		{id: "fm1", chainID: 123, latestBlock: 100},
 		{id: "fm2", chainID: 123, latestBlock: 100},
 		{id: "fm3", chainID: 123, latestBlock: 100},
 	})
-	var first, second atomic.Int64
-	mockGetBlockByNumberAt("0x69", "null", &first, "fm1")
-	mockGetBlockByNumberAt("0x69", futureBlockSentinel, &second, "fm2", "fm3")
 
 	resp := forwardGetBlockByNumber(t, ctx, network, "0x69")
 	jrr, err := resp.JsonRpcResponse(ctx)
@@ -550,6 +615,46 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	assert.Contains(t, jrr.GetResultString(), "0x270f", "the answer after the future block's one miss")
 	assert.Positive(t, first.Load(), "the first upstream answered null")
 	assert.Equal(t, int64(1), second.Load(), "one retry")
+
+	// bt 1s: W 3s, so the near future is 3 blocks above the ceiling.
+	sampleBlockTime(t, network)
+	afterWait := func() float64 {
+		return promUtil.ToFloat64(telemetry.MetricHeadRefusalTotal.WithLabelValues("test", network.Label(), "future_after_wait"))
+	}
+	refused := afterWait()
+	reach := func(n int64, after time.Duration) {
+		time.AfterFunc(after, func() { head.Store(n) })
+	}
+
+	reach(0x66, 300*time.Millisecond)
+	start := time.Now()
+	resp = forwardGetBlockByNumber(t, ctx, network, "0x66")
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), "0x270f", "a block 2 above the ceiling, served once the nodes reach it")
+	assert.Less(t, time.Since(start), 3*time.Second, "within W")
+	assert.Positive(t, nearCalls.Load())
+
+	logs := func(toHex string) (*common.NormalizedResponse, error) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"` + toHex + `","toBlock":"` + toHex + `"}]}`))
+		return network.Forward(ctx, req)
+	}
+	reach(0x67, 300*time.Millisecond)
+	start = time.Now()
+	resp, err = logs("0x67")
+	require.NoError(t, err, "a log range 1 above the ceiling, served once the nodes reach it")
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"0x67"`)
+	assert.Less(t, time.Since(start), 3*time.Second, "within W")
+	assert.Equal(t, refused, afterWait(), "no near-future request refused yet")
+
+	start = time.Now()
+	_, err = logs("0x6a")
+	require.Error(t, err, "a range 3 above a ceiling that stays")
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable), "got %v", err)
+	assert.GreaterOrEqual(t, time.Since(start), 2500*time.Millisecond, "refused once W ended")
+	assert.Equal(t, refused+1, afterWait(), "counted future_after_wait")
 }
 
 // mockMethodAnswer makes every listed upstream answer method with result,

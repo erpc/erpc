@@ -107,6 +107,9 @@ type HeadRefusal struct {
 	Ceiling int64
 	// Refreshed: N was decided again after its stale reports were Asked.
 	Refreshed bool
+	// Waited: N, near the ceiling, waited up to W for it (spec §6.4 near
+	// future).
+	Waited bool
 	// owner is the leg that took the request's one retryable miss.
 	owner atomic.Pointer[RefusalLeg]
 	// answered: a leg took its answer after the miss.
@@ -114,9 +117,13 @@ type HeadRefusal struct {
 }
 
 // FutureRule is the refusal counter's rule for a future verdict:
-// future_after_refresh when its stale reports were Asked first.
+// future_after_wait when it waited for the ceiling, future_after_refresh
+// when its stale reports were Asked first.
 func (r *HeadRefusal) FutureRule() string {
-	if r.Refreshed {
+	switch {
+	case r.Waited:
+		return "future_after_wait"
+	case r.Refreshed:
 		return "future_after_refresh"
 	}
 	return "future"

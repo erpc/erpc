@@ -983,11 +983,8 @@ func (n *Network) EvmAskHead(ctx context.Context, upstreamId string, need common
 // and hedging across all of them only burns latency and load. It runs only
 // when the network sets evm.shortCircuitFutureBlocks, and the synthesized
 // response is returned directly from Forward, so it is never cached.
-func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.NormalizedRequest, method string) (*common.NormalizedResponse, bool) {
-	if n.cfg == nil || !n.cfg.Evm.ShortCircuitFutureBlocksEnabled() {
-		return nil, false
-	}
-	if !strings.EqualFold(method, "eth_getBlockByNumber") {
+func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, bool) {
+	if !evm.ShortCircuitsFuture(req) {
 		return nil, false
 	}
 	v := evm.HeadRefusalOf(ctx, req)
@@ -1987,15 +1984,27 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	req.SetUpstreams(upsList)
 
 	// The refusal rule decides the request's block once, before dispatch
-	// (spec §6.4): a stale ceiling is Asked here, a band block refreshes
-	// the voters below it. A future block, with shortCircuitFutureBlocks,
-	// gets the truthful null with no dispatch; it runs before rate limiting
-	// so it consumes no permit, and before the probe-bus publish so it is
-	// never mirrored to excluded upstreams.
+	// (spec §6.4): a stale ceiling is Asked here, a near-future block waits
+	// for the ceiling, a band block refreshes the voters below it. A
+	// future block, with shortCircuitFutureBlocks, gets the truthful null
+	// with no dispatch and no wait; it runs before rate limiting so it
+	// consumes no permit, and before the probe-bus publish so it is never
+	// mirrored to excluded upstreams. A request that ends during the wait
+	// ends as any request whose context ends.
 	if n.cfg.Architecture == common.ArchitectureEvm {
 		evm.HeadRefusalOf(ctx, req)
+		if err := ctx.Err(); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				err = common.NewErrNetworkRequestTimeout(time.Since(startTime), err)
+			}
+			common.SetTraceSpanError(forwardSpan, err)
+			if mlx != nil {
+				mlx.Close(ctx, nil, err)
+			}
+			return nil, err
+		}
 	}
-	if resp, ok := n.tryShortCircuitFutureBlock(ctx, req, method); ok {
+	if resp, ok := n.tryShortCircuitFutureBlock(ctx, req); ok {
 		forwardSpan.SetAttributes(attribute.Bool("future_block.short_circuit", true))
 		n.countRefusal(ctx, req, resp, nil)
 		if mlx != nil {
