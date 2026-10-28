@@ -1779,7 +1779,7 @@ func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedReq
 	// Ordering hints only: every upstream stays eligible.
 	if n.Architecture() == common.ArchitectureEvm {
 		if bn := n.routingBlockNumber(ctx, req); bn > 0 {
-			head := n.requestHead(req)
+			head := n.requestHead(ctx, req)
 			upsList = n.partitionUpstreamsByLatestBlock(upsList, bn, head.Latest)
 			upsList = n.preferTipLeaderForNearTipGetBlock(upsList, method, bn, head.Leader, head.Latest)
 		}
@@ -1884,17 +1884,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			return nil, err
 		}
 
-		// A request naming the finalized tag takes its Head after the
-		// lane's finalized refresh (spec §6.4 Finality): a Finalized up to
-		// one full poll old would serve older blocks than the tag gets live.
-		if req.EvmHead() == nil && evm.NamesFinalizedTag(ctx, req) {
-			sel := ""
-			if d := req.Directives(); d != nil {
-				sel = d.UseUpstream
-			}
-			n.awaitFinalizedRefresh(ctx, sel)
-		}
-
 		// MIP-16 eth_query*: the query executor answers it for both transports
 		// (see forwardQuery). Shim sub-requests carry a parent id and are
 		// ordinary methods, so they never re-enter here.
@@ -1910,7 +1899,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// cache, and its tags interpolated to it: the cache key, every attempt
 	// and hedge, and the response all see the same latest.
 	if n.cfg.Architecture == common.ArchitectureEvm {
-		n.requestHead(req)
+		n.requestHead(ctx, req)
 	}
 	if err := n.prepareRequest(ctx, req); err != nil {
 		common.SetTraceSpanError(forwardSpan, err)
@@ -2375,7 +2364,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 							}
 							n.awaitBandAsk(loopCtx, sel, refusal.Block)
 						}
-						nextUpstream = n.headFirst(effectiveReq, attempted, refusal.Block)
+						nextUpstream = n.headFirst(loopCtx, effectiveReq, attempted, refusal.Block)
 						// One more pick for the retry, a slot's included.
 						maxLoopIterations = max(maxLoopIterations, loopIteration+2)
 						// With no upstream left to retry, the client gets
@@ -3764,14 +3753,14 @@ func isFallbackTier(u common.Upstream) bool {
 // yet attempted that NextUpstream may still select, ordered by their heads
 // as they are now, those reaching bn first, with no I/O. Upstreams the
 // policy did not route stay the fallback escape's.
-func (n *Network) headFirst(req *common.NormalizedRequest, attempted map[string]struct{}, bn int64) func() (common.Upstream, error) {
+func (n *Network) headFirst(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, bn int64) func() (common.Upstream, error) {
 	var rest []common.Upstream
 	for _, u := range req.Upstreams() {
 		if _, seen := attempted[u.Id()]; !seen {
 			rest = append(rest, u)
 		}
 	}
-	rest = n.partitionUpstreamsByLatestBlock(rest, bn, n.requestHead(req).Latest)
+	rest = n.partitionUpstreamsByLatestBlock(rest, bn, n.requestHead(ctx, req).Latest)
 	return func() (common.Upstream, error) {
 		for len(rest) > 0 {
 			u := rest[0]

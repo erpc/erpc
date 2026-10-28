@@ -1,13 +1,12 @@
 package realworld
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"math"
 	"math/big"
 	"math/rand/v2"
-	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -86,8 +85,11 @@ const (
 	// request).
 	p6Advance = 1
 	// revertDepth reverts blocks below every vendor's finalized tag and
-	// below Head.Finalized, which trails the voters' finalized by up to W,
-	// liveBound / blockTime = 10 blocks (§6.8 #1265; §19 C12), by 6.
+	// below Head.Finalized as a finalized-tag read refreshes it just before
+	// the revert, up to W behind the voters' finalized, liveBound /
+	// blockTime = 10 blocks (§6.4 Finality; §19 C12), by 6. Without that
+	// read Head.Finalized trails up to one full poll, and a revert above it
+	// is followed without final_hash_changed (§6.5).
 	revertDepth = chainsim.FinalizedLag + 10 + 6
 	// p7FinalityDepth: http-b finalizes this deep, below Head.Finalized
 	// (§6.4: permanent writes need the serving upstream's finalized).
@@ -457,7 +459,12 @@ func c12() spec {
 	}}
 }
 
-// revertFinalized runs C12's revert and its checks.
+// revertFinalized runs C12's revert and its checks: a finalized-tag read
+// on each pod refreshes its Head.Finalized just before the majority
+// reverts below it. A pod whose own finalized poll answered that read
+// holds the pin with its own evidence and counts final_hash_changed; a pod
+// that took the number from the shared counter has no header for it and
+// counts none (§6.5, C18's rule).
 func revertFinalized(s *scenario) {
 	tip := s.chain.Tip().Number
 	var heights []uint64
@@ -471,6 +478,27 @@ func revertFinalized(s *scenario) {
 			}
 		}
 	}
+	polled := func(pod int) float64 {
+		v, _ := s.metric(pod, "erpc_upstream_finalized_block_polled_total", nil)
+		return v
+	}
+	alarms := func(pod int) float64 {
+		v, _ := s.metric(pod, "erpc_chain_tracker_invariant_violations_total", map[string]string{"invariant": "final_hash_changed"})
+		return v
+	}
+	covered, fins, alarms0 := make([]bool, len(s.h.pods)), make([]uint64, len(s.h.pods)), make([]float64, len(s.h.pods))
+	for pod := range s.h.pods {
+		polled0 := polled(pod)
+		alarms0[pod] = alarms(pod)
+		if b := s.blockOf(s.blockAnswer(pod, "", "eth_getBlockByNumber", "finalized", false)); b != nil {
+			fins[pod] = b.Number
+			covered[pod] = polled(pod) > polled0
+		}
+		s.logf("pod-%d: finalized tag %d before the revert, own finalized poll %v", pod+1, fins[pod], covered[pod])
+	}
+	if !slices.Contains(covered, true) {
+		s.violate("harness", "no pod's finalized-tag read polled finalized itself: no pod holds a final pin with its own evidence")
+	}
 	r := s.reorg(revertDepth)
 	replaced := 0
 	for _, n := range heights {
@@ -482,44 +510,25 @@ func revertFinalized(s *scenario) {
 		s.violate(s.name, "harness: no read height %d…%d was reverted (fork point %d)", heights[0], heights[len(heights)-1], r.old[0].Number-1)
 	}
 	time.Sleep(max(deepReorgDelivery, logsCloseSpread) + reconnectSlack)
-	logged := false
 	for pod := range s.h.pods {
 		for _, n := range heights {
 			if got, want := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false), s.chain.CanonAt(n).Hash.Hex(); got != want {
 				s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) after the revert answered %s, not the new branch's %s: a permanent entry kept the reverted block", pod+1, n, got, want)
 			}
 		}
-		logged = logged || s.podLogged(pod, "final_hash_changed")
-	}
-	if !logged {
-		s.violate(s.name, "no pod logged final_hash_changed after the majority reverted %d finalized blocks", revertDepth-chainsim.FinalizedLag)
+		d := alarms(pod) - alarms0[pod]
+		switch {
+		case fins[pod] < r.old[0].Number:
+			s.violate("harness", "pod-%d: the revert from %d is above its finalized tag %d", pod+1, r.old[0].Number, fins[pod])
+		case covered[pod] && d == 0:
+			s.violate(s.name, "pod-%d: its own finalized poll answered %d, the majority reverted from %d, and final_hash_changed did not count", pod+1, fins[pod], r.old[0].Number)
+		case !covered[pod] && d > 0:
+			s.violate(s.name, "pod-%d: %v final_hash_changed for the revert from %d, which no finalized poll of its own covered (finalized tag %d from the shared counter)", pod+1, d, r.old[0].Number, fins[pod])
+		default:
+			s.logf("pod-%d: final_hash_changed +%v, own evidence %v", pod+1, d, covered[pod])
+		}
 	}
 	s.requireReorgsTold()
-}
-
-// podLogged reports whether any of pod's process logs holds text.
-func (s *scenario) podLogged(pod int, text string) bool {
-	p := s.h.pods[pod]
-	p.mu.Lock()
-	logs := append([]string(nil), p.logs...)
-	p.mu.Unlock()
-	for _, path := range logs {
-		f, err := os.Open(path)
-		if err != nil {
-			continue
-		}
-		sc := bufio.NewScanner(f)
-		sc.Buffer(make([]byte, 1<<20), 16<<20)
-		found := false
-		for sc.Scan() && !found {
-			found = strings.Contains(sc.Text(), text)
-		}
-		_ = f.Close()
-		if found {
-			return true
-		}
-	}
-	return false
 }
 
 // P7: C12, with http-b finalizing p7FinalityDepth deep and ws-b with no

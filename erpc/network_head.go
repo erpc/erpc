@@ -34,13 +34,16 @@ func (n *Network) EvmHead(ctx context.Context, req *common.NormalizedRequest) co
 	if req == nil {
 		return *n.servedTipAll.published()
 	}
-	return *n.requestHead(req)
+	return *n.requestHead(ctx, req)
 }
 
 // requestHead is the Head req took once from its lane; every later reader
 // of req gets that value, so retries, hedges, the cache key and
-// interpolation all see the same Latest.
-func (n *Network) requestHead(req *common.NormalizedRequest) *common.EvmHead {
+// interpolation all see the same Latest. A request naming the finalized
+// tag takes it after the lane's finalized refresh (spec §6.4 Finality): a
+// Finalized up to one full poll old would serve older blocks than the tag
+// gets live.
+func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest) *common.EvmHead {
 	if h := req.EvmHead(); h != nil {
 		return h
 	}
@@ -52,6 +55,9 @@ func (n *Network) requestHead(req *common.NormalizedRequest) *common.EvmHead {
 	sel := ""
 	if d := req.Directives(); d != nil {
 		sel = d.UseUpstream
+	}
+	if evm.NamesFinalizedTag(ctx, req) {
+		n.awaitFinalizedRefresh(ctx, sel)
 	}
 	return req.TakeEvmHead(n.headFor(sel))
 }

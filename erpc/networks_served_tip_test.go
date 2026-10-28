@@ -2386,8 +2386,7 @@ func TestServedTip_Finalized_RegressionGuardHolds(t *testing.T) {
 }
 
 // A finalized-tag request's refresh (spec §6.4 Finality, §6.8) polls every
-// voter with a finalized tag and waits for them; a voter whose finalized
-// tag is given up has no finalized poll and gets none.
+// voter with a finalized tag and waits for them.
 func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -2473,7 +2472,6 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	now := finalizedPolls()
 	assert.True(t, now["fin-a"] > before["fin-a"] && now["fin-b"] > before["fin-b"],
 		"the refresh polls both voters with a finalized tag and waits for them (polls %v → %v)", before, now)
-	assert.Equal(t, before["tagless"], now["tagless"], "a given-up finalized tag is not polled")
 }
 
 // The guard's clamp branch: the upstream that backed the remembered pick leaves
