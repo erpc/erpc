@@ -87,6 +87,7 @@ func catalogue() []phaseSpec {
 		{"k1", 12101, []spec{k1()}},
 		{"config", 12201, []spec{k3(64), k3(32), k4()}},
 		{"consistency", 12301, []spec{p2(), p3(), p4(), p8()}},
+		{"c16", 12401, []spec{c16()}},
 	}
 }
 

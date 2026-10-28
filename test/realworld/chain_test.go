@@ -1,7 +1,9 @@
 package realworld
 
 import (
+	"encoding/json"
 	"math/rand/v2"
+	"slices"
 	"time"
 
 	"github.com/erpc/erpc/test/chainsim"
@@ -31,6 +33,15 @@ const (
 	// c14Blocks: blocks two of four voters stay on a branch that does not
 	// link (harness).
 	c14Blocks = 30
+
+	// c16First: C16's chain runs in the millions before its reset;
+	// c16ResetHead: every vendor's head after it (§19 G9). c16Follow:
+	// Latest follows a fall past the regression guard's 1024 blocks once
+	// the guard's 60s hold fails open (§6.4, erpc/networks.go
+	// servedTipRegressionTTL), plus 60s.
+	c16First     = 5_000_000
+	c16ResetHead = 10
+	c16Follow    = 2 * time.Minute
 )
 
 // C2: a reorg reorgWindow − 1 deep. As C1, every client that received a
@@ -255,4 +266,141 @@ func c14() spec {
 		s.blocks(25)
 		s.requireNoMinorityDelivered()
 	}}
+}
+
+// C16: a testnet reset. Every vendor's head drops from the millions to
+// c16ResetHead on a new genesis, same chain id. Each pod's eth_blockNumber
+// follows within c16Follow; every tap restarts on the new chain (ws logs
+// end 1013 and resubscribe, gRPC ends OUT_OF_RANGE and starts over); every
+// pod's latest counter of every upstream, and the shared one, follow the
+// new chain; and no read is answered from the old chain, though its
+// finalized block was cached permanently (§6.4, §14, §10.2; §19 G9).
+func c16() spec {
+	return spec{name: "C16", cache: true, bound: healthyDelivery, sim: chainsim.Config{First: c16First},
+		allow: []string{"ws:logs-end", "ws:jump", "grpc:OutOfRange"},
+		body: func(s *scenario) {
+			s.blocks(25)
+			old := s.probeAt(s.chain.Tip().Number - chainsim.FinalizedLag - 20)
+			if old == nil {
+				s.violate("harness", "no old block below the finalized tag holds transactions")
+				return
+			}
+			for pod := range s.h.pods {
+				s.requireCachedAs(pod, old.Number, cacheFinal)
+				if got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(old.Number), false); got != old.Hash.Hex() {
+					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) before the reset answered %s", pod+1, old.Number, got)
+				}
+				if got := s.blockAnswer(pod, "", "eth_getBlockByHash", old.Hash.Hex(), false); got != old.Hash.Hex() {
+					s.violate(s.name, "pod-%d: eth_getBlockByHash(%s) before the reset answered %s", pod+1, short(old.Hash), got)
+				}
+			}
+			was := s.chain.Tip()
+			at := time.Now()
+			ex := s.excuse(-1, at)
+			tip := s.chain.Reset(c16ResetHead)
+			for pod := range s.h.pods {
+				s.owe(pod, "latest_regressed", 1)
+			}
+			s.logf("testnet reset: head %d %s → %d %s", was.Number, short(was.Hash), tip.Number, short(tip.Hash))
+			followed := make([]time.Time, len(s.h.pods))
+			for left := len(s.h.pods); left > 0 && time.Since(at) < c16Follow+reconnectSlack; {
+				time.Sleep(scrapeEvery)
+				for pod := range s.h.pods {
+					if !followed[pod].IsZero() {
+						continue
+					}
+					var bn hexutil.Uint64
+					if err := s.call(pod, &bn, "eth_blockNumber"); err == nil && uint64(bn) < c16First {
+						followed[pod] = time.Now()
+						left--
+						s.logf("pod-%d: eth_blockNumber %d, %s after the reset", pod+1, bn, time.Since(at).Round(100*time.Millisecond))
+					}
+				}
+			}
+			last := at
+			for pod, t := range followed {
+				switch {
+				case t.IsZero():
+					s.violate(s.name, "pod-%d: eth_blockNumber still on the old chain %s after the reset (bound %s)", pod+1, time.Since(at).Round(time.Second), c16Follow)
+				case t.Sub(at) > c16Follow:
+					s.violate(s.name, "pod-%d: eth_blockNumber followed the reset after %s (bound %s)", pod+1, t.Sub(at).Round(time.Second), c16Follow)
+				}
+				if t.After(last) {
+					last = t
+				}
+			}
+			// Taps restart once Latest follows; ws logs close 1013 over
+			// logsCloseSpread (§10.2).
+			s.endExcuse(ex, last.Add(logsCloseSpread+reconnectSlack))
+			time.Sleep(time.Until(last.Add(logsCloseSpread + reconnectSlack)))
+			s.requireCountersFollow()
+			for pod := range s.h.pods {
+				var raw json.RawMessage
+				err := s.call(pod, &raw, probeMethod, hexutil.EncodeUint64(old.Number))
+				if err == nil && len(raw) > 0 && string(raw) != "null" {
+					s.violate(s.name, "pod-%d: %s(%d), an old-chain block cached as final, answered %s after the reset", pod+1, probeMethod, old.Number, raw)
+				}
+				if got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(old.Number), false); got == old.Hash.Hex() {
+					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered the old chain's block after the reset", pod+1, old.Number)
+				}
+				if got := s.blockAnswer(pod, "", "eth_getBlockByHash", old.Hash.Hex(), false); got == old.Hash.Hex() {
+					s.violate(s.name, "pod-%d: eth_getBlockByHash(%s) answered the old chain's block after the reset", pod+1, short(old.Hash))
+				}
+			}
+			var taps []*clientBase
+			for _, c := range s.heads {
+				taps = append(taps, &c.clientBase)
+			}
+			for _, g := range s.grpcs {
+				taps = append(taps, &g.clientBase)
+			}
+			for _, c := range s.logs {
+				taps = append(taps, &c.clientBase)
+			}
+			for _, c := range taps {
+				c.mu.Lock()
+				restarted := slices.ContainsFunc(c.deliveries, func(d delivery) bool { return d.number < c16First && d.at.After(at) })
+				c.mu.Unlock()
+				if !restarted {
+					s.violate(c.name, "received no block of the new chain within %s of the reset", time.Since(at).Round(time.Second))
+				}
+			}
+			for range c5WatchBlocks {
+				for pod := range s.h.pods {
+					s.requireLatestFollows(pod)
+				}
+				s.blocks(1)
+			}
+		}}
+}
+
+// requireCountersFollow: on every pod, each upstream's latest block, and
+// its shared counter, reach the chain's tip within W and stand at or
+// below it: no instance keeps a counter of the old chain (§14).
+func (s *scenario) requireCountersFollow() {
+	near := func(v float64) bool {
+		tip := s.chain.Tip().Number
+		return uint64(v) <= tip && uint64(v)+headSlackBlocks >= tip
+	}
+	for key := range s.vendors {
+		up := s.upstream(key)
+		for pod := range s.h.pods {
+			if v, ok := s.waitMetric(pod, "erpc_upstream_latest_block_number", map[string]string{"upstream": up}, liveBound+reconnectSlack, near); !ok {
+				s.violate(s.name, "pod-%d: %s's latest block %v, not within %d of the tip %d", pod+1, up, v, headSlackBlocks, s.chain.Tip().Number)
+			}
+		}
+		redisKey := upstreamCounterKey(s.upSpec(key), "latestBlock")
+		deadline := time.Now().Add(liveBound + reconnectSlack)
+		for {
+			st, err := s.h.redis.counter(redisKey)
+			if err == nil && near(float64(st.Value)) {
+				break
+			}
+			if time.Now().After(deadline) {
+				s.violate(s.name, "shared counter of %s is %d (by %s, err %v), not within %d of the tip %d", up, st.Value, st.UpdatedBy, err, headSlackBlocks, s.chain.Tip().Number)
+				break
+			}
+			time.Sleep(scrapeEvery)
+		}
+	}
 }
