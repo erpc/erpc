@@ -3,8 +3,11 @@ package erpc
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
+	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -127,19 +130,26 @@ type pollAgeEnv struct {
 	advance func(time.Duration)
 	head    int64
 	movers  []string
-	mocked  map[int64]bool
+	// wrongChain makes id answer eth_chainId with another chain, so its
+	// poller refuses any major head move it verifies.
+	wrongChain map[string]*atomic.Bool
 }
 
+var pollAgeBlockParam = regexp.MustCompile(`"params":\["(0x[0-9a-fA-F]+)"`)
+
 // newPollAgeEnv builds the network and warms it up for 4 blocks with every
-// fixture that has a head moving, so the block time is known.
+// fixture that has a head moving, so the block time is known. Every mock is
+// registered before any poller runs: gock is not safe to change under
+// requests in flight.
 func newPollAgeEnv(t *testing.T, fixtures []servedTipFixture, order ...string) *pollAgeEnv {
 	t.Helper()
+	advance := pinServedTipClock(t)
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	e := &pollAgeEnv{t: t, ctx: ctx, advance: pinServedTipClock(t), head: 1000,
-		ups: map[string]*upstream.Upstream{}, offset: map[string]int64{}, mocked: map[int64]bool{}}
+	e := &pollAgeEnv{t: t, ctx: ctx, advance: advance, head: 1000,
+		ups: map[string]*upstream.Upstream{}, offset: map[string]int64{}, wrongChain: map[string]*atomic.Bool{}}
 	for i, f := range fixtures {
 		fixtures[i].chainID = 123
 		fixtures[i].statePollerInterval = 10 * time.Second
@@ -147,6 +157,40 @@ func newPollAgeEnv(t *testing.T, fixtures []servedTipFixture, order ...string) *
 			e.offset[f.id] = f.latestBlock - 1000
 			e.movers = append(e.movers, f.id)
 		}
+		host := f.id + ".localhost"
+		wrong := &atomic.Bool{}
+		e.wrongChain[f.id] = wrong
+		gock.New("http://" + host).
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return r.URL.Host == host && strings.Contains(util.SafeReadBody(r), "eth_chainId")
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				id := "0x7b"
+				if wrong.Load() {
+					id = "0x1"
+				}
+				res.Body = io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":"` + id + `"}`))
+				res.ContentLength = -1
+				return res
+			})
+		// Answers eth_getBlockByNumber for any concrete block with that block.
+		gock.New("http://" + host).
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == host && strings.Contains(body, "eth_getBlockByNumber") && pollAgeBlockParam.MatchString(body)
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				hex := pollAgeBlockParam.FindStringSubmatch(util.SafeReadBody(res.Request))[1]
+				res.Body = io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{"number":"` + hex + `","hash":"0x` + strings.Repeat("a", 64) + `","parentHash":"0x` + strings.Repeat("b", 64) + `","timestamp":"0x6702a8f1"}}`))
+				res.ContentLength = -1
+				return res
+			})
 	}
 	network, ups := setupServedTipNetworkWith(t, ctx, fixtures, nil)
 	e.network = network
@@ -183,23 +227,7 @@ func (e *pollAgeEnv) report(id string, h int64) {
 // every upstream answers it.
 func (e *pollAgeEnv) first(bn int64) string {
 	e.t.Helper()
-	hex := fmt.Sprintf("0x%x", bn)
-	if !e.mocked[bn] {
-		e.mocked[bn] = true
-		for id := range e.ups {
-			host := id + ".localhost"
-			gock.New("http://" + host).
-				Post("").
-				Persist().
-				Filter(func(r *http.Request) bool {
-					body := util.SafeReadBody(r)
-					return r.URL.Host == host && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"`+hex+`"`)
-				}).
-				Reply(200).
-				JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"` + hex + `","hash":"0x` + strings.Repeat("a", 64) + `","parentHash":"0x` + strings.Repeat("b", 64) + `","timestamp":"0x6702a8f1"}}`))
-		}
-	}
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["` + hex + `",false]}`))
+	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, bn)))
 	req.SetNetwork(e.network)
 	_, err := e.network.Forward(e.ctx, req)
 	require.NoError(e.t, err)
@@ -313,16 +341,19 @@ func TestNetwork_TipGetBlockOrdersByPollAgeCreditedHead(t *testing.T) {
 			{id: "slow", latestBlock: 1000},
 			{id: "rogue", latestBlock: 1000},
 		}, "rogue", "fast", "slow")
+		s := e.head
 		e.movers = []string{"fast", "slow"}
+		// The rogue is on another chain: its poller refuses the jump it verifies,
+		// while the tracker stores the far-ahead head it reported.
+		e.wrongChain["rogue"].Store(true)
 		e.report("rogue", 103_000)
 		e.step(3)
-		assert.Equal(t, e.polled("rogue"), e.headOf("rogue"), "a tracked head above the network earns no credit")
+		require.Equal(t, s, e.polled("rogue"), "the poller never adopts a head on another chain")
+		assert.Equal(t, s, e.headOf("rogue"), "a tracked head above the network earns no credit")
 		for _, id := range []string{"fast", "slow"} {
 			assert.Equal(t, e.head, e.headOf(id), "%s: at the network head, never above it", id)
 		}
-		if e.polled("rogue") < e.head {
-			assert.Equal(t, "fast", e.first(e.head), "a rogue its poller did not follow stays demoted")
-		}
+		assert.Equal(t, "fast", e.first(e.head), "the rogue stays demoted")
 	})
 
 	t.Run("poller stops at tip, never served", func(t *testing.T) {
