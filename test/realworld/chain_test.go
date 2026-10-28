@@ -42,6 +42,18 @@ const (
 	c16First     = 5_000_000
 	c16ResetHead = 10
 	c16Follow    = 2 * time.Minute
+
+	// c17Halt: C17's chain makes no block this long, past maxBackfill
+	// (§19 G10). Then c17Blocks blocks come one at a time, each up to
+	// c17MaxGap after the last. The EMA grows at most 1.2× per sample
+	// (alpha 0.1, samples capped at 3× the EMA, §6.7), so from the
+	// chain's 0.2s it needs 26 samples to reach 20s, where W = 3 × bt
+	// meets its cap (§1): W stays below the cap for c17Blocks unless one
+	// sample across the halt moves it. wCap: W's cap (§1).
+	c17Halt   = 30 * time.Minute
+	c17Blocks = 20
+	c17MaxGap = 60 * time.Second
+	wCap      = 60 * time.Second
 )
 
 // C2: a reorg reorgWindow − 1 deep. As C1, every client that received a
@@ -403,4 +415,59 @@ func (s *scenario) requireCountersFollow() {
 			time.Sleep(scrapeEvery)
 		}
 	}
+}
+
+// C17: the chain makes no block for c17Halt, past maxBackfill, then
+// c17Blocks blocks on demand, each 0 to c17MaxGap after the last, as an
+// Orbit chain that mints on traffic. No upstream is benched, W stays
+// below its cap while the blocks flow, and every tap gets every block
+// within its bound (§6.1, §6.5 rule 1, §6.7; §19 G10).
+func c17() spec {
+	return spec{name: "C17", bound: healthyDelivery, body: func(s *scenario) {
+		s.blocks(25)
+		benched := func(pod int) float64 {
+			v, _ := s.metric(pod, "erpc_upstream_head_benched_total", nil)
+			return v
+		}
+		bench0 := make([]float64, len(s.h.pods))
+		for pod := range s.h.pods {
+			bench0[pod] = benched(pod)
+		}
+		s.chain.Halt(true)
+		s.logf("no blocks for %s from %d", c17Halt, s.chain.Tip().Number)
+		time.Sleep(c17Halt)
+		capped := make([]bool, len(s.h.pods))
+		watchW := func(d time.Duration) {
+			for end := time.Now().Add(d); ; {
+				for pod := range s.h.pods {
+					bt, ok := s.metric(pod, "erpc_network_dynamic_block_time_milliseconds", nil)
+					w := time.Duration(min(max(3*bt, float64(liveBound.Milliseconds())), float64(wCap.Milliseconds()))) * time.Millisecond
+					if ok && w >= wCap && !capped[pod] {
+						capped[pod] = true
+						s.violate(s.name, "pod-%d: block time %vms, W at its %s cap, while blocks flow after a %s halt", pod+1, bt, wCap, c17Halt)
+					}
+				}
+				if time.Now().After(end) {
+					return
+				}
+				time.Sleep(time.Second)
+			}
+		}
+		for i := range c17Blocks {
+			s.chain.Burst(1, 0)
+			b := s.chain.Tip()
+			gap := time.Duration(rand.Int64N(int64(c17MaxGap) + 1))
+			s.logf("on-demand block %d/%d: %d %s; next in %s", i+1, c17Blocks, b.Number, short(b.Hash), gap.Round(time.Second))
+			watchW(max(gap, healthyDelivery))
+		}
+		for pod := range s.h.pods {
+			bt, _ := s.metric(pod, "erpc_network_dynamic_block_time_milliseconds", nil)
+			s.logf("pod-%d: block time %vms after %d on-demand blocks", pod+1, bt, c17Blocks)
+			if v := benched(pod); v > bench0[pod] {
+				s.violate(s.name, "pod-%d: %v benches across a %s halt and on-demand blocks", pod+1, v-bench0[pod], c17Halt)
+			}
+		}
+		s.chain.Halt(false)
+		s.blocks(25)
+	}}
 }
