@@ -2851,17 +2851,14 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 	// Reads decide on the request's Head.Finalized (spec §6.4). An answer
 	// from an upstream is final only when that upstream has finalized the
 	// block too (#90) and is not on a minority fork (§6.3), so neither
-	// makes a permanent cache entry.
+	// makes a permanent cache entry. A read above Finalized polls nothing:
+	// only the full poll and the finalized-tag refresh move it.
 	fin := n.EvmHead(ctx, req).Finalized
 	span.SetAttributes(attribute.Int64("head.finalized", fin))
+	if fin <= 0 {
+		return finality
+	}
 	if blockNumber > fin {
-		// A fresher finalized may cover the block: a read above it
-		// refreshes the voters' finalized, at most once per finalized
-		// debounce (§6.8 #1265).
-		n.EvmRefreshHead(ctx, true)
-		if fin <= 0 {
-			return finality
-		}
 		return common.DataFinalityStateUnfinalized
 	}
 	if resp != nil {
