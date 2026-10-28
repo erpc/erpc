@@ -63,7 +63,7 @@ likely cause. Reference: https://docs.erpc.cloud/reference/lanes.llms.txt`}
 
 ### How it works
 
-A **lane** is not a config object. It is an emergent artifact: when a request carries a `use-upstream` selector (via `X-ERPC-Use-Upstream` header, `?use-upstream=` query parameter, or `directivesDefaults.useUpstream` in config), eRPC resolves which upstreams match. If the matched set is a proper subset of at least two upstreams — and the selector is "simple" (see below) — eRPC derives a stable key by SHA-256-hashing the sorted upstream IDs, then lazily creates a `servedTipLane` for that key (`servedTipLaneFor`). A lane holds no pick state: only its label and, per axis, an in-process anchor for the advance-age gauge and the regression guard's memory. The network-wide pick is the lane `servedTipAll`, labelled `"all"`; only it gets the WebSocket delivered-head floor. The tip itself is the [served-tip rule](/reference/evm/block-tracking#served-tip) over the matched subset, computed fresh for every selector, lane or not. Nothing is shared across pods. Source: <SourceLink file="erpc/networks.go" lines="113-132" />, <SourceLink file="erpc/networks.go" lines="628-655" />
+A **lane** is not a config object. It is an emergent artifact: when a request carries a `use-upstream` selector (via `X-ERPC-Use-Upstream` header, `?use-upstream=` query parameter, or `directivesDefaults.useUpstream` in config), eRPC resolves which upstreams match. If the matched set is a proper subset of at least two upstreams — and the selector is "simple" (see below) — eRPC derives a stable key by SHA-256-hashing the sorted upstream IDs, then lazily creates a `servedTipLane` for that key (`servedTipLaneFor`). A lane holds no pick state: only its label and, per axis, an in-process anchor for the advance-age gauge, the regression guard's memory and, on `finalized`, the [finalized floor](/reference/evm/block-tracking#finalized-floor). The network-wide pick is the lane `servedTipAll`, labelled `"all"`; only it gets the WebSocket delivered-head floor. The tip itself is the [served-tip rule](/reference/evm/block-tracking#served-tip) over the matched subset, computed fresh for every selector, lane or not. Nothing is shared across pods. Source: <SourceLink file="erpc/networks.go" lines="113-133" />, <SourceLink file="erpc/networks.go" lines="636-663" />
 
 **LaneName algorithm.** `LaneName(ids)` sorts the upstream IDs alphabetically, then builds a set of non-empty hyphen-split tokens for each ID (empty strings from consecutive hyphens are discarded). It walks the tokens of the first sorted ID and returns the first token that appears in every other ID's token set. If no universally shared token exists, it falls back to a concatenation of the first two characters of each ID (up to five IDs). The result is deterministic and order-independent — every pod reaches the same name from the same upstream topology. Source: <SourceLink file="common/lane.go" lines="25" />
 
@@ -144,27 +144,27 @@ export default createConfig({
 6. **`LaneName` is not guaranteed unique.** Two different upstream sets could produce the same name if both share the same common token. The lane key is the stable identifier; the name is decorative for dashboards.
 7. **Negated selectors match by ID only, never by tag.** A pattern containing `!` skips tag evaluation entirely. `!alchemy-*` excludes by ID but will not rescue non-matching IDs via tags.
 8. **`LaneName` sort is alphabetical.** For `(quicknode-systx, systx-quicknode)`, sorted order puts `quicknode-systx` first; `LaneName` returns `"quicknode"`, not `"systx"`. Source: `common/lane_test.go` (`order independent` test).
-9. **Lane state is per process.** Anchors and regression-guard memory live in memory; a restarted pod rebuilds them from live heads.
+9. **Lane state is per process.** Anchors, regression-guard memory and finalized floors live in memory; a restarted pod rebuilds them from live heads.
 10. **`LaneName` output is written to Prometheus labels as-is, without sanitization.** If upstream IDs contain unusual characters that cause `LaneName` to produce an unexpected string, that string becomes the label value verbatim. The label is never normalized or escaped beyond what `LaneName` itself produces.
 
 ### Observability
 
-Lanes are the `lane` label of the four `erpc_network_served_tip_*` series ([meanings](/reference/metrics#area-3-block-number-and-tip-tracking)): `lane="all"` is the network-wide pick (`servedTipAll`), `lane=<LaneName>` a group's own pick. A named lane's series exist only for networks that receive targeted `use-upstream` traffic; a request without a lane writes no series. Source: <SourceLink file="erpc/networks.go" lines="1502-1532" />
+Lanes are the `lane` label of the four `erpc_network_served_tip_*` series ([meanings](/reference/metrics#area-3-block-number-and-tip-tracking)): `lane="all"` is the network-wide pick (`servedTipAll`), `lane=<LaneName>` a group's own pick. A named lane's series exist only for networks that receive targeted `use-upstream` traffic; a request without a lane writes no series. Source: <SourceLink file="erpc/networks.go" lines="1584-1614" />
 
 ### Source code entry points
 
 - [`common/lane.go`](https://github.com/erpc/erpc/blob/main/common/lane.go) — `LaneName(ids []string) string`: naming algorithm, pure function.
 - [`common/lane_test.go`](https://github.com/erpc/erpc/blob/main/common/lane_test.go) — unit tests for `LaneName`: shared-token precedence, order-independence, fallback combo, single-id, empty input, determinism.
-- [`erpc/networks.go:L113-L132`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L113-L132) — `maxServedTipLanes = 16`, `servedTipLane` struct.
-- [`erpc/networks.go:L628-L655`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L628-L655) — `servedTipLaneFor`: lazy lane materialization with cap and `sync.Map`.
-- [`erpc/networks.go:L657-L746`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L657-L746) — `partitionKeyFor`: selector → SHA-256 key; `EvmUpstreamGroupForSelector`; `isSimpleGroupSelector` filter.
-- [`erpc/networks.go:L870-L942`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L870-L942) — `servedTip`: guard, floors and gauges per lane.
-- [`erpc/networks.go:L1502-L1532`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1502-L1532) — `observeServedTipMetrics`: gauge emission per lane label.
+- [`erpc/networks.go:L113-L133`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L113-L133) — `maxServedTipLanes = 16`, `servedTipLane` struct.
+- [`erpc/networks.go:L636-L663`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L636-L663) — `servedTipLaneFor`: lazy lane materialization with cap and `sync.Map`.
+- [`erpc/networks.go:L665-L754`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L665-L754) — `partitionKeyFor`: selector → SHA-256 key; `EvmUpstreamGroupForSelector`; `isSimpleGroupSelector` filter.
+- [`erpc/networks.go:L879-L962`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L879-L962) — `servedTip`: guard, floors and gauges per lane.
+- [`erpc/networks.go:L1584-L1614`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1584-L1614) — `observeServedTipMetrics`: gauge emission per lane label.
 - [`common/matcher.go:L73-L112`](https://github.com/erpc/erpc/blob/main/common/matcher.go#L73-L112) — `MatchesSelector` + `UpstreamMatchesSelector`: ID + tag matching primitive.
 - [`common/request.go:L739-L741`](https://github.com/erpc/erpc/blob/main/common/request.go#L739-L741) — `X-ERPC-Use-Upstream` header extraction.
 - [`common/request.go:L811-L812`](https://github.com/erpc/erpc/blob/main/common/request.go#L811-L812) — `?use-upstream=` query-param extraction.
 - [`common/request.go:L1424-L1445`](https://github.com/erpc/erpc/blob/main/common/request.go#L1424-L1445) — `UpstreamMatchesSelector` call in the upstream selection loop; filters which upstreams receive the forwarded request.
-- [`erpc/networks.go:L617-L626`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L617-L626) — `requestSelector(ctx)`: reads `UseUpstream` directive from the bound request context for both served-tip and forwarding use.
+- [`erpc/networks.go:L625-L634`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L625-L634) — `requestSelector(ctx)`: reads `UseUpstream` directive from the bound request context for both served-tip and forwarding use.
 - [`common/config.go:L2109`](https://github.com/erpc/erpc/blob/main/common/config.go#L2109) — `DirectivesConfig.UseUpstream` field.
 - [`telemetry/metrics.go:L198-L250`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L198-L250) — metric definitions.
 

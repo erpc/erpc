@@ -862,8 +862,8 @@ func TestServedTip_GuaranteedMethodFloor_DoesNotUndoTheGuardsHold(t *testing.T) 
 	assert.Equal(t, healthy, network.EvmHighestLatestBlockNumber(ctx),
 		"the floor must not undo the guard's hold: live upstreams serve eth_getLogs, "+
 			"they are merely absent, so the cap-only floor is a transient lie")
-	assert.Zero(t, network.guaranteedFloor(ctx, false),
-		"and the method must contribute no floor at all while that is true")
+	floor, _ := network.guaranteedFloor(ctx, false)
+	assert.Zero(t, floor, "and the method must contribute no floor at all while that is true")
 
 	advance(servedTipRegressionTTL + time.Second)
 	assert.Equal(t, legacyCap, network.EvmHighestLatestBlockNumber(ctx),
@@ -2360,6 +2360,64 @@ func TestServedTip_Finalized_RegressionGuardHolds(t *testing.T) {
 	assert.Equal(t, int64(1_002_400), network.EvmHighestFinalizedBlockNumber(ctx),
 		"the guard protects the finalized axis exactly as it protects latest")
 	assert.Equal(t, before+1, servedTipRegressionCount(network, "finalized", "held"))
+}
+
+// Finalized is irreversible, so the served finalized tip must not step back
+// when the voters change (#1353): a leader leaving the ballot hands the
+// majority to a lagging cohort, yet a live voter still reports the served
+// block as finalized. Only when no live voter reports it does the tip follow
+// the pick down.
+func TestServedTip_Finalized_NeverRegressesWhenTheMajorityFlips(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "lead1", chainID: 123, latestBlock: 1_000},
+		{id: "lead2", chainID: 123, latestBlock: 1_000},
+		{id: "lead3", chainID: 123, latestBlock: 1_000},
+		{id: "lag1", chainID: 123, latestBlock: 1_000},
+		{id: "lag2", chainID: 123, latestBlock: 1_000},
+	})
+	lead, lag := ups[:3], ups[3:]
+	finalized := func() int64 { return network.EvmHighestFinalizedBlockNumber(ctx) }
+	// A syncing upstream leaves the ballot, as an excluded or benched one does.
+	vote := func(on bool, us ...*upstream.Upstream) {
+		for _, u := range us {
+			state := common.EvmSyncingStateSyncing
+			if on {
+				state = common.EvmSyncingStateNotSyncing
+			}
+			u.EvmStatePoller().SetSyncingState(state)
+		}
+	}
+	for _, u := range lead {
+		setServedTipFinalized(t, u, 201)
+	}
+	for _, u := range lag {
+		setServedTipFinalized(t, u, 150)
+	}
+	require.Equal(t, int64(201), finalized(), "majority of 5: the three leaders")
+
+	vote(false, lead[2])
+	assert.Equal(t, int64(201), finalized(),
+		"the laggers are now the majority of 4, but two live voters still report 201 finalized")
+
+	for _, u := range lead[:2] {
+		setServedTipFinalized(t, u, 202)
+	}
+	assert.Equal(t, int64(201), finalized(), "the hold never serves past the served value on its own")
+
+	setServedTipFinalized(t, lead[2], 202)
+	vote(true, lead[2])
+	assert.Equal(t, int64(202), finalized(), "the leaders' majority moves it forward")
+
+	vote(false, lead...)
+	assert.Equal(t, int64(150), finalized(),
+		"no live voter reports 202 finalized any more: the tip follows the pick")
 }
 
 // The guard's clamp branch: the upstream that backed the remembered pick leaves

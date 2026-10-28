@@ -1852,7 +1852,8 @@ export interface EvmNetworkConfig {
  * static-capped, then benched and static-capped), and the served block is the
  * highest one at least Quorum of those voters already have. The health
  * tracker benches an upstream whose head stopped moving while another kept
- * advancing, until it catches up again.
+ * advancing, until it catches up again. "finalized" never steps back below a
+ * block already served while a voter still reports it finalized.
  */
 export interface EvmServedTipConfig {
   /**

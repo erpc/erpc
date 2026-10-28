@@ -62,8 +62,8 @@ type Network struct {
 	deliveredLatestBlock atomic.Int64
 
 	// servedTipAll is the network-wide served-tip lane. Lanes hold the
-	// advance-age watchdog and the regression guard's memory; the pick itself
-	// is stateless (common.PickServedTip).
+	// advance-age watchdog, the regression guard's memory and the finalized
+	// floor; the pick itself is stateless (common.PickServedTip).
 	servedTipAll servedTipLane
 
 	// servedTipLanes holds lazily-materialized per-group lanes for
@@ -115,9 +115,10 @@ func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64
 // the cap, a group's request gets the stateless subset pick with no lane.
 const maxServedTipLanes = 16
 
-// servedTipLane is one served-tip scope with its own telemetry and guard
-// memory: the network-wide pick (label "all") or a use-upstream group's pick
-// (label common.LaneName of the matched upstream set). It holds NO pick state.
+// servedTipLane is one served-tip scope with its own telemetry, guard memory
+// and finalized floor: the network-wide pick (label "all") or a use-upstream
+// group's pick (label common.LaneName of the matched upstream set). It holds
+// NO pick state.
 type servedTipLane struct {
 	label     string
 	latest    servedTipAnchor
@@ -133,7 +134,8 @@ func (l *servedTipLane) anchor(finalized bool) *servedTipAnchor {
 
 // servedTipAnchor tracks, per process, when the served-tip VALUE was last
 // seen to change — the advance-age watchdog's clock — and holds the regression
-// guard's last corroborated pick (see guardServedTipRegression).
+// guard's last corroborated pick (see guardServedTipRegression) and, on the
+// finalized axis, the finalized floor (see holdFinalized).
 //
 // The first observed value does NOT count as a change (there is nothing to
 // compare against): the anchor stays unset until the process witnesses the
@@ -143,8 +145,9 @@ func (l *servedTipLane) anchor(finalized bool) *servedTipAnchor {
 // pods. A persisted anchor plus a strict clamp is exactly what produces the
 // frozen-tip regression (see the picker's doc comment and
 // networks_served_tip_invariants_test.go); every field below is rebuilt from
-// live observations after a restart, and the guard always fails open on its
-// own after a bounded window.
+// live observations after a restart, the guard always fails open on its own
+// after a bounded window, and the finalized floor yields the moment no voter
+// reports it.
 type servedTipAnchor struct {
 	seenValue   atomic.Int64
 	changedAtMs atomic.Int64
@@ -165,6 +168,11 @@ type servedTipAnchor struct {
 	// on transitions, so a sustained regression reports twice (once when it
 	// starts holding, once if it gives up) instead of once per request.
 	guardState atomic.Int32
+
+	// finalizedFloor is the finalized axis's floor: the highest tip this lane
+	// served as finalized since the last evaluation in which no voter
+	// reported it. Unused on the latest axis.
+	finalizedFloor atomic.Int64
 }
 
 const (
@@ -873,14 +881,16 @@ func (n *Network) futureBlockCeiling(ctx context.Context) (head int64, known boo
 // already has (see evmTipBallot and common.PickServedTip), guarded against a
 // regression far below the live heads, lifted to the head already delivered to
 // WebSocket subscribers (network-wide latest only), clamped to every
-// configured guarantee, then exported on the request's lane.
+// configured guarantee, held at the lane's finalized floor (finalized only),
+// then exported on the request's lane.
 //
 // The guard is in-process, bounded and one-directional (it can only hold the
 // tip, and only briefly), and it cannot produce a block that no live upstream
-// reports in the very same evaluation. Nothing is persisted and nothing is
-// predicted, so no inherited or rogue value can pin, freeze or poison the
-// result (networks_served_tip_invariants_test.go pins those outcomes against
-// the frozen-tip regression).
+// reports in the very same evaluation. The finalized floor is in-process too,
+// and holds a block only while a voter of the same evaluation reports it. Nothing is
+// persisted and nothing is predicted, so no inherited or rogue value can pin,
+// freeze or poison the result (networks_served_tip_invariants_test.go pins
+// those outcomes against the frozen-tip regression).
 func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool) int64 {
 	axis := "latest"
 	if finalized {
@@ -917,9 +927,18 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 	// outside the subset have. It runs after the delivered-head floor, so the
 	// floor may lift the tip but never past a guarantee.
 	if tip > 0 {
-		if floor := n.guaranteedFloor(ctx, finalized); floor > 0 && floor < tip {
+		if floor, _ := n.guaranteedFloor(ctx, finalized); floor > 0 && floor < tip {
 			tip = floor
 		}
+	}
+
+	// Finalized floor (#1353): a change of voters — the quorum passing to a
+	// lagging cohort, in the lane's ballot or a guarantee subset's — cannot
+	// pull "finalized" below a block this lane already served while a voter
+	// of each of those ballots still reports it. Last, so nothing above
+	// lowers it.
+	if finalized && lane != nil {
+		tip = n.holdFinalized(ctx, anchor, q, tip)
 	}
 
 	if common.IsTracingDetailed {
@@ -940,6 +959,47 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 		n.observeServedTipMetrics(axis, lane.label, tip, pick.Freshest, anchor.age())
 	}
 	return tip
+}
+
+// holdFinalized returns the finalized tip to serve for the computed tip, and
+// keeps the lane's finalized floor.
+//
+// Finality never reverts, so a block this lane served as finalized is still
+// finalized. While a voter still reports it (finalizedBacking), a lower
+// computed tip means the voters changed — a leader left the ballot and a
+// lagging cohort became the quorum — not the chain, so the lane keeps serving
+// it. Once no voter reports it, the floor drops to the computed tip: it never
+// outlives its evidence, so it cannot pin a block no voter has finalized (a
+// wiped testnet, a wrong-chain pair that once formed a quorum), and a voter
+// that returns later does not bring it back.
+//
+// The backing is read after the floor: the tip's ballot may predate a floor a
+// concurrent evaluation just raised, and a voter's finalized head only moves
+// up, so only a fresh read tells a voter that left from one read too early.
+// Only served values enter the floor, so a single voter cannot raise it, and
+// the steady state (tip equals floor) is one shared read.
+func (n *Network) holdFinalized(ctx context.Context, anchor *servedTipAnchor, q common.ServedTipQuorum, tip int64) int64 {
+	for {
+		floor := anchor.finalizedFloor.Load()
+		if tip < floor && floor <= n.finalizedBacking(ctx, q) {
+			return floor
+		}
+		if tip == floor || anchor.finalizedFloor.CompareAndSwap(floor, tip) {
+			return tip
+		}
+	}
+}
+
+// finalizedBacking is the highest finalized block a voter reports in every
+// ballot servedTip passes the finalized tip through: the request's own and each
+// constraining guarantee subset's.
+func (n *Network) finalizedBacking(ctx context.Context, q common.ServedTipQuorum) int64 {
+	pick, _ := n.evmTipBallot(ctx, true, q, nil)
+	backing := pick.Max
+	if _, subsets := n.guaranteedFloor(ctx, true); subsets > 0 {
+		backing = min(backing, subsets)
+	}
+	return backing
 }
 
 // guardServedTipRegression returns the tip to serve for `pick`, substituting the
@@ -1381,7 +1441,9 @@ func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []i
 
 // EvmHighestFinalizedBlockNumber is the finalized-axis sibling of
 // EvmHighestLatestBlockNumber: the same ballot, quorum, guard and guarantees,
-// applied to each upstream's EvmEffectiveFinalizedBlock.
+// applied to each upstream's EvmEffectiveFinalizedBlock, then held at the
+// lane's finalized floor so it does not step back while a voter still reports
+// what was served (holdFinalized).
 func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestFinalizedBlockNumber", trace.WithAttributes(
 		attribute.String("network.id", n.networkId),
@@ -1423,7 +1485,9 @@ func (n *Network) applyDeliveredHeadFloor(computed, liveMax int64) int64 {
 
 // guaranteedFloor returns the lowest majority served tip across every
 // configured guarantee SUBSET, or 0 when none is configured or none constrains
-// the tip. Two kinds of subset, one rule (guaranteedSubsetTip):
+// the tip, and backing: the lowest of those constraining subsets' highest
+// heads, which bounds the finalized floor (finalizedBacking). Two kinds of
+// subset, one rule (guaranteedSubsetPick):
 //
 //   - GuaranteedMethods — the eligible upstreams that handle the method
 //     (autoIgnoreUnsupportedMethods drops the rest). "latest" never resolves
@@ -1436,34 +1500,39 @@ func (n *Network) applyDeliveredHeadFloor(computed, liveMax int64) int64 {
 // Each subset is clamped to its OWN MAJORITY, never its minimum, so a single
 // frozen member is outvoted inside its group and cannot pin the network. An
 // empty subset constrains nothing.
-func (n *Network) guaranteedFloor(ctx context.Context, useFinalized bool) int64 {
+func (n *Network) guaranteedFloor(ctx context.Context, useFinalized bool) (floor, backing int64) {
 	if n.cfg == nil || n.cfg.Evm == nil || n.cfg.Evm.ServedTip == nil {
-		return 0
+		return 0, 0
 	}
 	st := n.cfg.Evm.ServedTip
-	var floor int64
-	fold := func(tip int64) {
-		if tip > 0 && (floor == 0 || tip < floor) {
-			floor = tip
+	fold := func(p common.ServedTipPick) {
+		if p.Tip <= 0 {
+			return
+		}
+		if floor == 0 || p.Tip < floor {
+			floor = p.Tip
+		}
+		if backing == 0 || p.Max < backing {
+			backing = p.Max
 		}
 	}
 	for _, sel := range st.GuaranteedFor {
-		fold(n.guaranteedSubsetTip(ctx, useFinalized, func(u common.Upstream) bool {
+		fold(n.guaranteedSubsetPick(ctx, useFinalized, func(u common.Upstream) bool {
 			m, _ := common.UpstreamMatchesSelector(sel, u)
 			return m
 		}))
 	}
 	for _, m := range st.GuaranteedMethods {
-		fold(n.guaranteedSubsetTip(ctx, useFinalized, func(u common.Upstream) bool {
+		fold(n.guaranteedSubsetPick(ctx, useFinalized, func(u common.Upstream) bool {
 			handle, _ := u.ShouldHandleMethod(m)
 			return handle
 		}))
 	}
-	return floor
+	return floor, backing
 }
 
-// guaranteedSubsetTip is the majority tip of the guarantee subset `member`
-// selects, or 0 when that subset sets no floor this evaluation.
+// guaranteedSubsetPick is the majority pick of the guarantee subset `member`
+// selects, or the zero pick when that subset sets no floor this evaluation.
 //
 // The ballot is evmTipBallot's, so a subset's static caps drop out whenever a
 // live member is in it; without that the floor was a second door onto the
@@ -1480,12 +1549,12 @@ func (n *Network) guaranteedFloor(ctx context.Context, useFinalized bool) int64 
 //
 // So a cap-only ballot floors only when the REGISTERED set, which eligibility
 // churn cannot change, has no live member (anyRegisteredLiveHead).
-func (n *Network) guaranteedSubsetTip(ctx context.Context, useFinalized bool, member func(common.Upstream) bool) int64 {
+func (n *Network) guaranteedSubsetPick(ctx context.Context, useFinalized bool, member func(common.Upstream) bool) common.ServedTipPick {
 	pick, live := n.evmTipBallot(ctx, useFinalized, common.ServedTipQuorumMajority, member)
 	if pick.Inputs == 0 || (!live && n.anyRegisteredLiveHead(ctx, member, useFinalized)) {
-		return 0
+		return common.ServedTipPick{}
 	}
-	return pick.Tip
+	return pick
 }
 
 // anyRegisteredLiveHead reports whether any REGISTERED upstream matching member
