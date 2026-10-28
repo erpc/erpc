@@ -12,6 +12,7 @@ import (
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
@@ -450,12 +451,15 @@ func TestForward_FutureBlock_OptIn_ShortCircuitNotMirroredToExcluded(t *testing.
 		"a short-circuited request must reach no upstream, mirrored probes included")
 }
 
-// A band block with hedging on (spec §6.4): the request takes one retryable
-// miss across its hedges. The first leg routes to the upstream whose head
-// reaches the block (slow); a hedge gets a null below it, takes the miss
-// and retries; a later hedge, beside that leg, stops without dispatching,
-// and no hedge's null wins over the block.
-func TestForward_BandBlock_HedgesShareOneMiss(t *testing.T) {
+// Every leg of a band request gets the band's one retry (spec §6.4), and a
+// miss in one leg never stops another. Hedges: the first leg routes to the
+// upstream whose head reaches the block (slow); a hedge gets a null below
+// it and retries; a later hedge, beside that leg, dispatches too, and no
+// hedge's null wins over the block. Consensus slots, each pinned to one
+// upstream: all three slots' upstreams miss, one reporting the block it
+// lacks; the band's Ask finds the fourth upstream's node at the block, and
+// a slot's retry, head first, serves it.
+func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -463,6 +467,50 @@ func TestForward_BandBlock_HedgesShareOneMiss(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Consensus (1 of 3) over four upstreams: cs1 reports 101 but lacks it,
+	// cs2 and cs3 are at 100, cs4's node reaches 101 once Asked.
+	var csHead atomic.Int64
+	csHead.Store(100)
+	heads := map[string]func() int64{
+		"cs1": func() int64 { return 101 },
+		"cs2": func() int64 { return 100 },
+		"cs3": func() int64 { return 100 },
+		"cs4": csHead.Load,
+	}
+	var slotMisses, csHolder atomic.Int64
+	for _, id := range []string{"cs1", "cs2", "cs3", "cs4"} {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x%x","timestamp":"0x6702a8f0"}}`, heads[id]())
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+		result, calls := "null", &slotMisses
+		if id == "cs4" {
+			result, calls = futureBlockSentinel, &csHolder
+		}
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x65"`) {
+					return false
+				}
+				calls.Add(1)
+				return true
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":` + result + `}`))
+	}
 	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
 		{id: "bh1", chainID: 123, latestBlock: 100},
 		{id: "bh2", chainID: 123, latestBlock: 100},
@@ -478,7 +526,8 @@ func TestForward_BandBlock_HedgesShareOneMiss(t *testing.T) {
 
 	var below, holder atomic.Int64
 	// bh1 answers at once, so the first hedge takes the miss; its retry
-	// lands on bh2 or bh3 and runs past the second hedge's start.
+	// lands on bh2 or bh3 and runs past the second hedge's start, and bh4
+	// answers long after both.
 	for i, id := range []string{"bh1", "bh2", "bh3"} {
 		gock.New("http://" + id + ".localhost").
 			Post("").
@@ -513,7 +562,7 @@ func TestForward_BandBlock_HedgesShareOneMiss(t *testing.T) {
 			return true
 		}).
 		Reply(200).
-		Delay(80 * time.Millisecond).
+		Delay(300 * time.Millisecond).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":` + futureBlockSentinel + `}`))
 
 	resp := forwardGetBlockByNumber(t, ctx, network, "0x65")
@@ -521,7 +570,36 @@ func TestForward_BandBlock_HedgesShareOneMiss(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, jrr.GetResultString(), "0x270f", "the band block from the upstream whose head reaches it, not a hedge's null")
 	assert.Equal(t, int64(1), holder.Load(), "the upstream at the block, asked once")
-	assert.Equal(t, int64(2), below.Load(), "the miss and its retry; the hedge beside them dispatched no more")
+	assert.GreaterOrEqual(t, below.Load(), int64(3), "the miss, its retry, and the hedge beside them")
+
+	slots, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "cs1", chainID: 123, latestBlock: 101},
+		{id: "cs2", chainID: 123, latestBlock: 100},
+		{id: "cs3", chainID: 123, latestBlock: 100},
+		{id: "cs4", chainID: 123, latestBlock: 100},
+	})
+	// A tip log policy's shape: 1 of 3, non-empty preferred, the most
+	// common valid result on a dispute or too few participants.
+	consCfg := &common.ConsensusPolicyConfig{
+		MaxParticipants: 3, AgreementThreshold: 1, PreferNonEmpty: util.BoolPtr(true),
+		DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+		LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+	}
+	require.NoError(t, consCfg.SetDefaults())
+	cons, err := consensus.NewConsensus(consCfg, slots.logger)
+	require.NoError(t, err)
+	ex, err = NewNetworkExecutor(&common.FailsafeConfig{MatchMethod: "*", Consensus: consCfg}, slots.logger, cons, nil)
+	require.NoError(t, err)
+	slots.failsafeExecutors = []*networkExecutor{ex}
+	require.Equal(t, int64(100), servedHead(slots, ctx).Latest)
+
+	csHead.Store(101)
+	resp = forwardGetBlockByNumber(t, ctx, slots, "0x65")
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), "0x270f", "a slot's retry reaches the upstream the band's Ask found at the block")
+	assert.Equal(t, int64(1), csHolder.Load(), "the upstream at the block, asked once")
+	assert.GreaterOrEqual(t, slotMisses.Load(), int64(3), "every slot dispatched its own upstream")
 }
 
 // A future block dispatched (shortCircuitFutureBlocks off) takes one

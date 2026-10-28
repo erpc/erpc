@@ -2175,11 +2175,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			maxLoopIterations = 1
 		}
 		attempted := make(map[string]struct{}, maxLoopIterations)
-		// leg is this execution to the refusal rule: a hedge leg running
-		// beside the one holding the request's miss stops, a later one
-		// takes its answer (spec §6.4).
+		// leg is this execution to the refusal rule: it gets its own one
+		// retryable miss, whatever its sibling slots and hedges got (spec
+		// §6.4).
 		leg := &common.RefusalLeg{}
-		defer leg.End()
 		// The fallback escape below swaps in its own picker, leaving the
 		// request's routed list untouched for later retries.
 		nextUpstream := effectiveReq.NextUpstream
@@ -2208,14 +2207,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					common.SetTraceSpanError(loopSpan, cause)
 					loopSpan.End()
 					return nil, cause
-				}
-				// Another leg holds the request's one miss and its retry
-				// (spec §6.4): this leg dispatches no more.
-				if effectiveReq.HeadRefusal().Sibling(leg) {
-					err := common.NewErrEndpointMissingData(fmt.Errorf("another hedge holds the retryable miss above Latest"), nil)
-					common.SetTraceSpanError(loopSpan, err)
-					loopSpan.End()
-					return nil, err
 				}
 
 				u, selErr := nextUpstream()
@@ -2300,10 +2291,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				// The refusal rule (spec §6.4): an empty or missing answer for a
-				// block above Latest is the request's one retryable miss, its
-				// hedges included; the retry asks the upstreams whose head
-				// reaches the block first. The answer after it goes to the
-				// client as the upstream gave it.
+				// block above Latest is the leg's one retryable miss, in a
+				// consensus slot or a hedge pinned to one upstream too; the
+				// retry asks the upstreams whose head reaches the block first.
+				// The answer after it goes to the client as the upstream gave it.
 				refusal := effectiveReq.HeadRefusal()
 				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && isEmptyNetworkResult(method, r)
 				missing := emptyAnswer || missingDataErr(err)
@@ -2322,6 +2313,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 							n.awaitBandAsk(loopCtx, sel, refusal.Block)
 						}
 						nextUpstream = n.headFirst(effectiveReq, attempted, refusal.Block)
+						// One more pick for the retry, a slot's included.
+						maxLoopIterations = max(maxLoopIterations, loopIteration+2)
 						// With no upstream left to retry, the client gets
 						// this answer as the upstream gave it: an empty
 						// answer stays the result, never a missing-data
@@ -2334,13 +2327,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						}
 						loopSpan.End()
 						continue
-					case common.MissSibling:
-						if err == nil {
-							err = common.NewErrEndpointMissingData(fmt.Errorf("another hedge holds the retryable miss above Latest"), u)
-						}
-						common.SetTraceSpanError(loopSpan, err)
-						loopSpan.End()
-						return nil, err
 					case common.MissFinal:
 						if !emptyAnswer {
 							common.SetTraceSpanError(loopSpan, err)

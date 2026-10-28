@@ -98,7 +98,7 @@ func (h EvmHead) Rule(n int64, bt time.Duration, now time.Time) HeadRule {
 }
 
 // HeadRefusal is the refusal rule's verdict for one request's block, taken
-// once (spec §6.4), and the one retryable miss it got since.
+// once (spec §6.4), and the retryable misses its legs got since.
 type HeadRefusal struct {
 	Rule  HeadRule
 	Block int64
@@ -110,8 +110,8 @@ type HeadRefusal struct {
 	// Waited: N, near the ceiling, waited up to W for it (spec §6.4 near
 	// future).
 	Waited bool
-	// owner is the leg that took the request's one retryable miss.
-	owner atomic.Pointer[RefusalLeg]
+	// missed: a leg of the request took its retryable miss.
+	missed atomic.Bool
 	// answered: a leg took its answer after the miss.
 	answered atomic.Bool
 }
@@ -129,24 +129,20 @@ func (r *HeadRefusal) FutureRule() string {
 	return "future"
 }
 
-// RefusalLeg is one execution of a request: a hedge leg, or a retry
-// round's. End it when it returns.
-type RefusalLeg struct{ ended atomic.Bool }
-
-func (l *RefusalLeg) End() { l.ended.Store(true) }
+// RefusalLeg is one execution of a request: a consensus slot, a hedge
+// leg, or a retry round's. One goroutine runs it.
+type RefusalLeg struct{ missed bool }
 
 // MissVerdict is what an empty or missing answer above Latest is to the
 // leg that got it.
 type MissVerdict uint8
 
 const (
-	// MissRetry: the request's one retryable miss; the leg retries.
+	// MissRetry: the leg's one retryable miss; the leg retries.
 	MissRetry MissVerdict = iota
-	// MissFinal: the answer after the miss, sent as the upstream gave it.
+	// MissFinal: the answer after the leg's miss, sent as the upstream
+	// gave it.
 	MissFinal
-	// MissSibling: a leg running beside this one holds the miss; this leg
-	// stops with a retryable miss.
-	MissSibling
 )
 
 // AboveLatest reports whether the request's block is above its Latest.
@@ -155,52 +151,40 @@ func (r *HeadRefusal) AboveLatest() bool {
 }
 
 // Final reports whether an empty answer now may be the request's answer:
-// its one miss is taken.
+// a leg took its miss.
 func (r *HeadRefusal) Final() bool {
-	return r.AboveLatest() && r.owner.Load() != nil
+	return r.AboveLatest() && r.missed.Load()
 }
 
-// Spent reports whether the request took its answer after its miss, so an
-// empty or missing answer may no longer be retried.
+// Spent reports whether a leg took its answer after its miss, so an empty
+// or missing answer may no longer be retried.
 func (r *HeadRefusal) Spent() bool {
 	return r != nil && r.answered.Load()
 }
 
 // Miss records an empty or missing answer leg got for a block above
-// Latest: the first is the request's retryable miss; after it, the
-// answer of its leg, or of a leg that started after it ended, is final.
+// Latest: each leg's first is its retryable miss, so a miss in one leg
+// never stops another (spec §6.4: every leg gets the band's one retry);
+// the leg's next is final.
 func (r *HeadRefusal) Miss(leg *RefusalLeg) MissVerdict {
-	if r.owner.CompareAndSwap(nil, leg) {
+	r.missed.Store(true)
+	if !leg.missed {
+		leg.missed = true
 		return MissRetry
-	}
-	if r.Sibling(leg) {
-		return MissSibling
 	}
 	r.answered.Store(true)
 	return MissFinal
 }
 
-// Sibling reports whether another leg, still running, holds the request's
-// miss and its retry: leg is a hedge beside it.
-func (r *HeadRefusal) Sibling(leg *RefusalLeg) bool {
-	if r == nil {
-		return false
-	}
-	o := r.owner.Load()
-	return o != nil && o != leg && !o.ended.Load()
-}
-
-// Retried reports whether the request got its retryable miss.
+// Retried reports whether a leg of the request got its retryable miss.
 func (r *HeadRefusal) Retried() bool {
-	return r != nil && r.owner.Load() != nil
+	return r != nil && r.missed.Load()
 }
 
 // Refuse records that the request's null was decided with no dispatch (a
 // future block under shortCircuitFutureBlocks): that null is its answer.
 func (r *HeadRefusal) Refuse() {
-	l := &RefusalLeg{}
-	l.End()
-	r.owner.CompareAndSwap(nil, l)
+	r.missed.Store(true)
 	r.answered.Store(true)
 }
 
