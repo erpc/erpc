@@ -434,6 +434,21 @@ export interface PolicyEvalUpstreamArray extends ReadonlyArray<PolicyEvalUpstrea
      * `stickyPrimary` / `probeExcluded` are untouched.
      */
     shadowExcludeIf(predicate: PolicyEvalPredicate, reasonOverride?: string): PolicyEvalUpstreamArray;
+    /**
+     * Per-method exclusion. For each upstream and each method it has samples
+     * for that matches `match`, `when` runs with `u.metrics` set to that
+     * method's numbers (`requestsTotal`, `latencyP`). A trip skips the
+     * upstream for that method only; it stays in rotation for every other
+     * method. When blocks would leave a method no upstream, all stay.
+     * Blocked upstreams get probe traffic for that method unless
+     * `probe: false`. Counted in `erpc_selection_method_block_total`.
+     * Returns the array unchanged.
+     */
+    blockMethods(opts: {
+        match: Pattern;
+        when: PolicyEvalPredicate;
+        probe?: boolean;
+    }): PolicyEvalUpstreamArray;
     reject(fn: (u: PolicyEvalUpstream, i: number, a: PolicyEvalUpstream[]) => unknown): PolicyEvalUpstreamArray;
     partition(fn: (u: PolicyEvalUpstream) => unknown): [PolicyEvalUpstreamArray, PolicyEvalUpstreamArray];
     unique(keyFn?: (u: PolicyEvalUpstream) => string): PolicyEvalUpstreamArray;

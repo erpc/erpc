@@ -85,8 +85,9 @@ the starting point for your own tweaks:
                 // Outer \`samplesAbove(20)\` gates on aggregate counts so the
                 // predicate doesn't even run on cold-start pods.
                 .excludeIf(any(all(samplesAbove(20), latencyAbove(3000), latencyDeviationAbove(3, { mode: 'majority' })), latencyAbove(10_000)))
-                // Block-head lag: drop if behind tip by ≥16 blocks or ≥30s.
-                .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
+                // Block-head lag: drop if behind tip by ≥16 blocks or ≥30s. Not
+                // probed: the state poller refreshes lag, probes cannot.
+                .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)), { probe: false })
                 // Outage safety net: if everyone failed the health excludes, fall
                 // back to the raw set rather than failing closed.
                 .whenEmpty(() => upstreams)
@@ -98,10 +99,10 @@ the starting point for your own tweaks:
                 // Hold the primary stable across ticks unless a meaningfully better
                 // option exists for ≥30s.
                 .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
-                // Shadow-mirror sampled real traffic to currently-excluded
-                // upstreams in the background so they accumulate fresh tracker
-                // samples without touching real user traffic. Per-upstream
-                // opt-out via \`routing.probe: off\`.
+                // Shadow-mirror sampled real traffic to upstreams excluded for
+                // errors, throttling or latency, in the background, so they
+                // accumulate fresh tracker samples without touching real user
+                // traffic. Per-upstream opt-out via \`routing.probe: off\`.
                 .probeExcluded({ sampleRate: 0.1, minSamples: 10, minSamplesWindow: '60s', maxConcurrent: 4, timeout: '10s' })`}
   ts={`projects: [{
   id: "main",
@@ -123,8 +124,9 @@ the starting point for your own tweaks:
           // samplesAbove(20) gates cold-start pods. (Full rationale: see the
           // shipped default_policy.js.)
           .excludeIf(any(all(samplesAbove(20), latencyAbove(3000), latencyDeviationAbove(3, { mode: "majority" })), latencyAbove(10_000)))
-          // Block-head lag: drop if behind tip by ≥16 blocks or ≥30s.
-          .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
+          // Block-head lag: drop if behind tip by ≥16 blocks or ≥30s. Not
+          // probed: the state poller refreshes lag, probes cannot.
+          .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)), { probe: false })
           // Outage safety net: fall back to the raw set rather than failing closed.
           .whenEmpty(() => upstreams)
           // Tier split: prefer non-fallback; use tier:fallback when no primary survives.
@@ -212,7 +214,7 @@ The default `evalScope: "network"` creates one slot per network. Setting `evalSc
 
 `errorRate` counts only genuine upstream-quality failures: connection refused, 5xx, genuine timeouts. EVM reverts, rate-limit 429s, client disconnects, and hedge cancellations are deliberately excluded so a misbehaving caller or aggressive hedger cannot inflate a healthy upstream's error rate.
 
-`throttledRate` counts remote 429 responses specifically — vendor quota exhaustion. `misbehaviorRate` tracks upstreams returning semantically wrong data. Latency quantiles are populated only from _successful_ responses — a fast-failing upstream that rejects connections in 1ms has empty quantile sketches and reports `p70 = 0` (unknown quality, not ultra-fast). A well-written policy should guard `latencyAbove` with `samplesAbove(N)`.
+`throttledRate` counts remote 429 responses specifically — vendor quota exhaustion. `misbehaviorRate` tracks upstreams returning semantically wrong data. Latency quantiles come from successful responses plus primary attempts cancelled because another attempt won the hedge race, which count at their elapsed time as a lower bound. Client cancels and deadlines record nothing. An upstream whose every attempt loses the hedge race therefore reads at least the hedge delay, not `0`. A fast-failing upstream that rejects connections in 1ms has empty quantile sketches and reports `p70 = 0` (unknown quality, not ultra-fast). A well-written policy should guard `latencyAbove` with `samplesAbove(N)`.
 
 `blockHeadLag` and `finalizationLag` are atomic point-in-time state, not rolling counters. They persist across window rotations and stay non-zero until the upstream catches up to the network tip. `blockHeadLagSeconds` and `finalizationLagSeconds` multiply the block count by the tracker's EMA-estimated block time (alpha 0.1, minimum 3 samples before publishing). Until the EMA is warm, both seconds fields are `0` — pair `blockSecondsLagAbove` with `blockNumberLagAbove` for cold-start coverage.
 
@@ -228,7 +230,7 @@ The default `evalScope: "network"` creates one slot per network. Setting `evalSc
         all(samplesAbove(20), latencyAbove(3000), latencyDeviationAbove(3, { mode: 'majority' })),
         latencyAbove(10_000)
     ))
-    .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
+    .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)), { probe: false })
     .whenEmpty(() => upstreams)
     .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
     .sortByScore(PREFER_FASTEST)
@@ -236,9 +238,9 @@ The default `evalScope: "network"` creates one slot per network. Setting `evalSc
     .probeExcluded({ sampleRate: 0.1, minSamples: 10, minSamplesWindow: '60s', maxConcurrent: 4, timeout: '10s' })
 ```
 
-Each `excludeIf` step records per-leaf attribution into `erpc_selection_exclusion_total{reason}`. The `whenEmpty` safety net prevents fail-closed behavior during a widespread outage. `stickyPrimary` prevents flapping: the challenger must score more than 30% above the incumbent AND the last switch must be at least 30 seconds ago. `probeExcluded` shadow-mirrors 10% of real traffic to excluded upstreams so re-admission happens the moment their metrics recover.
+Each `excludeIf` step records per-leaf attribution into `erpc_selection_exclusion_total{reason}`. The `whenEmpty` safety net prevents fail-closed behavior during a widespread outage. `stickyPrimary` prevents flapping: the challenger must score more than 30% above the incumbent AND the last switch must be at least 30 seconds ago. `probeExcluded` shadow-mirrors 10% of real traffic to upstreams excluded for errors, throttling or latency, so re-admission happens the moment their metrics recover. Lag exclusions are not probed: the state poller re-admits them as soon as the upstream catches up.
 
-**Probe eligibility (which excluded upstreams get shadow traffic).** Not every exclusion benefits from probing, so exclude-family steps record a per-upstream probe verdict: `excludeIf(...)` defaults to probe-**eligible** (the predicate reads traffic metrics that freeze without traffic — probes are how the upstream proves recovery), while `excludeTag(...)` and `removeCordoned()` default to probe-**blocking** (static/admin exclusions don't reverse via traffic data, so probing them only burns quota). Each accepts an override: `excludeTag('tier:reserve', { probe: true })`, `excludeIf(blockNumberLagAbove(16), { probe: false })` — the latter is recommended for lag predicates, whose inputs the state poller refreshes regardless of traffic. Verdicts combine order-insensitively across the whole chain: every exclude step judges every upstream it *would* drop (including upstreams already dropped by earlier steps), and an excluded upstream is probed iff at least one probe-eligible step excludes it **and** no probe-blocking step does — so an upstream that is both erroring and tag-excluded is not probed, regardless of step order. Upstreams excluded only by untracked means (raw `filter`, `take`, …) default to probing. `routing.probe: 'off'` remains the per-upstream hard veto on top. The resolved verdict is visible per upstream in the decision output (`ProbeEligible`).
+**Probe eligibility (which excluded upstreams get shadow traffic).** Not every exclusion benefits from probing, so exclude-family steps record a per-upstream probe verdict: `excludeIf(...)` defaults to probe-**eligible** (the predicate reads traffic metrics that freeze without traffic — probes are how the upstream proves recovery), while `excludeTag(...)` and `removeCordoned()` default to probe-**blocking** (static/admin exclusions don't reverse via traffic data, so probing them only burns quota). Each accepts an override: `excludeTag('tier:reserve', { probe: true })`, `excludeIf(blockNumberLagAbove(16), { probe: false })` — the default policy uses the latter for its lag rule, because the state poller refreshes lag regardless of traffic and probes cannot. Verdicts combine order-insensitively across the whole chain: every exclude step judges every upstream it *would* drop (including upstreams already dropped by earlier steps), and an excluded upstream is probed iff at least one probe-eligible step excludes it **and** no probe-blocking step does — so an upstream that is both erroring and tag-excluded is not probed, regardless of step order. Upstreams excluded only by untracked means (raw `filter`, `take`, …) default to probing. `routing.probe: 'off'` remains the per-upstream hard veto on top. The resolved verdict is visible per upstream in the decision output (`ProbeEligible`).
 
 **Scoring formula and presets.** `sortByScore` ranks surviving upstreams by:
 
@@ -259,6 +261,8 @@ Per-upstream `routing.scoreMultipliers` on the upstream config merge with the ch
 **Circuit-breaker interplay.** The selection policy and the [circuit breaker](/config/failsafe/circuit-breaker) are complementary layers that act at different points and timescales. The policy runs per eval tick and excludes upstreams from the ranked list via `excludeIf` predicates over rolling-window metrics. The circuit breaker is a per-upstream state machine *inside the upstream executor*: it is checked only after the sweep has already dispatched to that upstream (selection runs first). When the breaker is open, `TryAcquirePermit()` fails the attempt immediately with `ErrFailsafeCircuitBreakerOpen` — no transport call is made — and the sweep advances to the next upstream in the policy's ordered list. So an upstream can sit at position 0 in the policy list with an open breaker: each request burns one cheap fast-fail attempt there before moving on, until the policy's own metrics demote it on a later tick. Neither mechanism reads the other's state (breaker-open does not cordon or exclude); they only interact through outcomes. If the split bothers you, align breaker thresholds with the policy's `errorRateAbove` so both layers agree on what "broken" means. Source: [`upstream/upstream_executor.go:L345-L366`](https://github.com/erpc/erpc/blob/main/upstream/upstream_executor.go#L345-L366).
 
 **`shadowExcludeIf` — dry-run exclusion rules.** `shadowExcludeIf(predicate)` is the non-destructive counterpart of `excludeIf`. The predicate runs every tick; would-have-been-excluded upstreams stay in the ordered list but each trip increments `erpc_selection_shadow_exclusion_total{upstream, reason}` with the same leaf-slug attribution. Use it to measure a new rule's blast radius before promoting it to `excludeIf`.
+
+**`blockMethods` — per-method exclusion.** `blockMethods({ match, when, probe? })` skips an upstream for single methods while it keeps serving all others. For each upstream and each method with samples that matches `match` (glob or array), `when` runs with `u.metrics` set to that method's numbers (`requestsTotal`, `latencyP`), so `samplesAbove` and `latencyAbove` work; rate predicates do not trip. A trip removes the upstream from that method's list at request time. If blocks would leave a method no upstream, all stay. Blocked upstreams receive probe traffic for that method unless `probe: false`. Each block increments `erpc_selection_method_block_total{method, upstream, reason}`. The step works at `evalScope: 'network'`.
 
 **`includeIf` — conditional re-admission (pool-level quantifiers).** `includeIf(target, condition)` is the dual of `excludeIf`: it ADDS upstreams from the full universe back into the chain when an aggregate condition over the *surviving pool* holds — it never removes anyone. `target` comes first ("include *these* if *condition*"): a tag pattern (`'tier:reserve'`, `!` negation supported) or a selector object `{id, tag, vendor, type, position}` whose facets AND together; an object with no concrete facet (`{}`, `{position:'head'}`) is a deliberate no-op so it can never accidentally admit the entire universe. Admitted upstreams land at the tail by default (`position: 'head'` available in object form), are never duplicated by id, and are ranked by the subsequent `sortByScore` like everyone else. `condition` is a boolean or `(pool, ctx) => boolean` receiving the current chain — which is what enables pool-level ("network-level") questions via native array methods over the per-upstream predicate factories: `p.every(blockSecondsLagAbove(30))`, `p.length < 2`. Mind that native `every` is `true` on an empty array — guard with `p.length > 0 &&` when the empty pool should be handled by a separate explicit `p.length < 1` line. Malformed arguments and throwing conditions degrade to a no-op rather than sinking the eval. Source: [`internal/policy/stdlib/stdlib.js:L1023-L1116`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/stdlib.js#L1023-L1116); tests: [`internal/policy/stdlib/include_if_test.go`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/include_if_test.go).
 
@@ -364,7 +368,7 @@ Defaults: <SourceLink file="common/defaults.go" lines="2512-2609" />
 | Field | Type | Default | Footguns |
 |---|---|---|---|
 | `evalInterval` | `Duration` | `15s` ([`common/defaults.go:L2532`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2532)) | `0` disables the ticker (frozen cache); tests only. Should be ≥ 3× `scoreMetricsWindowSize / 10` for stable quantile reads. |
-| `evalTimeout` | `Duration` | `100ms` ([`common/defaults.go:L2534-2535`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2534-2535)) | Exceeded → tick error logged, previous cache retained unchanged. Must be `< evalInterval`. |
+| `evalTimeout` | `Duration` | `100ms` ([`common/defaults.go:L3125-3126`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L3125-3126)) | Exceeded → warning logged and `timeout` counted; the eval cannot be interrupted, so its result is still applied. Must be `< evalInterval`. |
 | `evalScope` | `EvalScope` enum | `"network"` ([`common/defaults.go:L2556-2583`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2556-2583)) | `"network"` \| `"network-method"` \| `"network-finality"` \| `"network-method-finality"`. Narrower scopes multiply goroutines and JS evals. `scoreMultipliers.method`-specific entries **never match** in `"network"` scope because `ctx.method == "*"`. |
 | `evalPerMethod` | `*bool` | `nil` — **deprecated** | Pointer-bool alias for the method axis. `SetDefaults` nils it unconditionally and derives `evalScope` instead. Excluded from TS surface (`tstype:"-"`). |
 | `evalPerFinality` | `*bool` | `nil` — **deprecated** | Same mechanics as `evalPerMethod` for the finality axis. Niled by `SetDefaults`. |
@@ -659,6 +663,22 @@ non-obvious choices.
     .probeExcluded({ sampleRate: 0.1, minSamples: 10, timeout: '10s' })
 ```
 
+**5b. Blocking one slow method on one upstream (`blockMethods`).** Keep an upstream for `eth_call` and logs, but skip it for traces while its trace p99 is over 5s:
+
+```js
+(upstreams, ctx) =>
+  upstreams
+    .removeCordoned()
+    .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+    .blockMethods({
+      match: ['debug_trace*', 'trace_*'],
+      when: all(samplesAbove(20), latencyAbove(5000, 99)),
+    })
+    .whenEmpty(() => upstreams)
+    .sortByScore(PREFER_FASTEST)
+    .probeExcluded({ sampleRate: 0.05, minSamples: 10, timeout: '10s' })
+```
+
 **6. Reserve tier — break-glass inclusion (`includeIf`).** Keep a pricier or rate-limited
 provider (tagged `tags: ["tier:reserve"]`) out of normal rotation, and bring it in only
 when the serving pool is *collectively* unfit — every survivor lagging or slow, or none
@@ -750,6 +770,7 @@ reserve upstreams to also keep shadow-probe traffic off them while benched:
 | `erpc_selection_rejection_total` | Counter | `project, network, method, upstream, step` | Per tick × excluded upstream; `step` = first stdlib primitive that dropped the upstream. |
 | `erpc_selection_exclusion_total` | Counter | `project, network, method, upstream, reason` | Per tick × excluded upstream × leaf predicate slug. |
 | `erpc_selection_shadow_exclusion_total` | Counter | `project, network, method, upstream, reason` | `shadowExcludeIf` would-have-excluded; upstream stays in rotation. |
+| `erpc_selection_method_block_total` | Counter | `project, network, method, upstream, reason` | Per tick × `blockMethods` block; `method` is the blocked method. Upstream stays in rotation for other methods. |
 | `erpc_selection_excluded_seconds` | Gauge | `project, network, method, upstream` | Seconds continuously excluded; reset to `0` on readmit. |
 | `erpc_selection_readmit_total` | Counter | `project, network, method, upstream` | Excluded → in-rotation transition. |
 | `erpc_selection_readmit_age_seconds` | Histogram | `project, network, method` | Distribution of exclusion age at readmit. |
@@ -769,7 +790,7 @@ reserve upstreams to also keep shadow-probe traffic off them while benched:
 An upstream can have `position=0` in the wildcard slot and `position=1` in a per-method slot simultaneously (positions are per-slot).
 
 **`erpc_selection_eval_errors_total` `kind` values** (classified at [`internal/policy/slot.go:L460-L467`](https://github.com/erpc/erpc/blob/main/internal/policy/slot.go#L460-L467)):
-- `"timeout"` — JS eval exceeded `evalTimeout` (default 100 ms); previous cache retained.
+- `"timeout"` — JS eval exceeded `evalTimeout` (default 100 ms); its result is still applied.
 - `"throw"` — uncaught JS exception (runtime error, user-thrown error).
 - `"invalid_return"` — eval completed but returned a non-array, null/undefined, entries without `id`, or unknown upstream IDs.
 

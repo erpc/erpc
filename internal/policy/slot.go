@@ -46,6 +46,11 @@ type Slot struct {
 	// upstreams are shadow-probe candidates for incoming requests.
 	excludedCache atomic.Pointer[[]common.Upstream]
 
+	// methodBlocks holds the most recent tick's `blockMethods` result,
+	// indexed by method for the request path. Same atomic contract as
+	// `cache`; nil when the tick recorded no blocks.
+	methodBlocks atomic.Pointer[methodBlockIndex]
+
 	// lastAccessedAtMs is unix-millis of the last tick OR GetOrdered
 	// touching this slot. Drives the engine's idle-slot eviction —
 	// per-(method, finality) slots that haven't seen traffic in a
@@ -211,33 +216,28 @@ func (s *Slot) tickOnce() {
 	}
 	s.mu.Unlock()
 
-	// 3. Run the eval (with optional timeout). Scores are the per-upstream
+	// 3. Run the eval. Scores are the per-upstream
 	// `score` values the JS attached during `sortByScore(...)` — we cache
 	// them on the slot so diagnostic tooling (admin endpoint, simulator)
 	// can read the engine's authoritative ranking without re-implementing
 	// the PREFER_FASTEST formula in Go. The chronological step log is
 	// captured only when the engine's debug flag is on (simulator always,
 	// eRPC when the logger is at DEBUG) — see `Engine.SetStepLogEnabled`.
-	var (
-		evalRes *EvalResult
-		evalErr error
-	)
+	//
+	// sobek cannot interrupt a running eval, so evalTimeout cannot cut one
+	// short: an eval past it is reported, and its result still replaces the
+	// older cache.
 	stepLogEnabled := s.engine.stepLogEnabled.Load()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		evalRes, evalErr = runEval(s.engine.pool, s.cfg, ups, metrics, metricsAcrossMethods, metricsByMethod, evalCtx, stepLogEnabled, s.engine.sticky)
-	}()
-
-	if timeout > 0 {
-		select {
-		case <-done:
-		case <-time.After(timeout):
-			evalErr = fmt.Errorf("%w after %s", ErrEvalTimeout, timeout)
-			<-done // let the goroutine finish — sobek doesn't support interrupt mid-call cleanly
-		}
-	} else {
-		<-done
+	evalStart := time.Now()
+	evalRes, evalErr := runEval(s.engine.pool, s.cfg, ups, metrics, metricsAcrossMethods, metricsByMethod, evalCtx, stepLogEnabled, s.engine.sticky)
+	if took := time.Since(evalStart); timeout > 0 && took > timeout {
+		telemetry.MetricSelectionEvalErrorsTotal.WithLabelValues(s.engine.projectID, s.networkLabel, s.method, "timeout").Inc()
+		s.engine.logger.Warn().
+			Str("network", s.networkID).
+			Str("method", s.method).
+			Dur("took", took).
+			Dur("evalTimeout", timeout).
+			Msg("selection policy eval exceeded evalTimeout")
 	}
 
 	decision := &Decision{
@@ -305,6 +305,7 @@ func (s *Slot) tickOnce() {
 		Scores:        scores,
 		StepLog:       evalRes.StepLog,
 		ShadowReasons: evalRes.ShadowReasons,
+		MethodBlocks:  evalRes.MethodBlocks,
 	}
 
 	// 5. Compute diff against previous tick.
@@ -318,6 +319,7 @@ func (s *Slot) tickOnce() {
 	s.cache.Store(&ordered2)
 	excludedUps := materializeExcluded(ups, excluded)
 	s.excludedCache.Store(&excludedUps)
+	s.methodBlocks.Store(newMethodBlockIndex(ups, evalRes.MethodBlocks))
 
 	// 6b. Reconcile this network's probe subsystem against the
 	// eval-emitted `__probeConfig`. Non-nil → create/update Prober;
@@ -468,9 +470,7 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 
 	if d.Error != "" {
 		kind := "throw"
-		if strings.Contains(d.Error, "timed out") {
-			kind = "timeout"
-		} else if strings.Contains(d.Error, ErrInvalidReturn.Error()) {
+		if strings.Contains(d.Error, ErrInvalidReturn.Error()) {
 			kind = "invalid_return"
 		}
 		telemetry.MetricSelectionEvalErrorsTotal.WithLabelValues(project, s.networkLabel, s.method, kind).Inc()
@@ -542,6 +542,20 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 	for id, slugs := range d.Output.ShadowReasons {
 		for _, slug := range slugs {
 			telemetry.MetricSelectionShadowExclusionTotal.WithLabelValues(project, s.networkLabel, s.method, id, slug).Inc()
+		}
+	}
+
+	// Per-method blocks: one increment per (upstream, blocked method, leaf
+	// slug) per tick. `method` is the blocked method, not the slot's.
+	for id, perMethod := range d.Output.MethodBlocks {
+		for method, b := range perMethod {
+			reasons := b.Reasons
+			if len(reasons) == 0 {
+				reasons = []string{"custom"}
+			}
+			for _, slug := range reasons {
+				telemetry.MetricSelectionMethodBlockTotal.WithLabelValues(project, s.networkLabel, method, id, slug).Inc()
+			}
 		}
 	}
 

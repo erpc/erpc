@@ -1,0 +1,97 @@
+---
+title: eRPC vs dshackle
+description: eRPC vs dshackle (emeraldpay) feature by feature, with a source link in every cell, and where dshackle is the better fit.
+---
+
+import { LLMsTxtLink, AISection } from "../../components";
+
+<LLMsTxtLink />
+
+# eRPC vs dshackle
+
+[dshackle](https://github.com/emeraldpay/dshackle) and eRPC both put one endpoint in front of many blockchain nodes.
+dshackle comes from wallet infrastructure: a gRPC API with streams, signed responses, and deep Bitcoin support.
+eRPC is an EVM and Solana JSON-RPC proxy built around failover, a finality-aware cache, and cost control.
+Every cell below links to the page or line that states it. Facts were checked on 2026-10-22.
+
+## Feature table
+
+| | eRPC | dshackle |
+|---|---|---|
+| Language, license | Go, Apache-2.0 ([LICENSE](https://github.com/erpc/erpc/blob/32a8a1e450c6ab5a78477859c85221b6a9058c72/LICENSE#L1)) | Rust on `master`, Kotlin in v0.17.0; Apache-2.0 ([Cargo.toml](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/Cargo.toml#L1-L4), [LICENSE](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/LICENSE)) |
+| Latest release | 0.4.0, 2026-10-11 ([release](https://github.com/erpc/erpc/releases/tag/0.4.0)) | v0.17.0, 2026-04-01 ([release](https://github.com/emeraldpay/dshackle/releases/tag/v0.17.0)) |
+| Chains | EVM and Solana ([networks](/config/projects/networks)) | EVM and Bitcoin ([upstream config](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/04-upstream-config.adoc#L13-L34)) |
+| Client APIs | JSON-RPC over HTTP and WebSocket ([websocket](/operation/websocket)) | JSON-RPC over HTTP and WebSocket, plus a gRPC API ([methods](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/07-methods.adoc#L1-L30)) |
+| Config | YAML or TypeScript ([quick start](/)) | YAML with `include` and `${ENV}` ([server config](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/03-server-config.adoc#L1-L10)) |
+| Upstream selection | Score from errors, latency, 429s, block lag ([selection policies](/config/projects/selection-policies)) | Role tiers plus round-robin; lag and sync filters ([upstream config](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/04-upstream-config.adoc#L154-L177)) |
+| Failover and retry | Yes, per method ([retry](/config/failsafe/retry)) | Primary, secondary, fallback with growing delay ([upstream config](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/04-upstream-config.adoc#L167-L177)) |
+| Hedged requests | Yes ([hedge](/config/failsafe/hedge)) | Not documented ([source tree](https://github.com/emeraldpay/dshackle/tree/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/src)) |
+| Circuit breaker | Yes ([circuit breaker](/config/failsafe/circuit-breaker)) | Pauses upstreams that return 429 or overload ([pause.rs](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/src/upstream/pause.rs#L15-L59)) |
+| Cross-checking answers | Consensus across N upstreams with a threshold ([consensus](/config/failsafe/consensus)) | Per-method quorum: not lagging, non-empty, max nonce, broadcast ([ethereum.rs](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/src/upstream/methods/ethereum.rs#L64-L90)) |
+| Signed responses | No | Yes, names the upstream that answered ([methods](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/07-methods.adoc#L94-L117)) |
+| Cache | Memory, Redis, PostgreSQL, DynamoDB; finality-aware ([drivers](/config/database/drivers), [cache](/config/database/evm-json-rpc-cache)) | Memory and Redis; blocks, txs, receipts by hash ([caching](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/10-caching.adoc#L1-L16)) |
+| Rate limits | Per client, project, network, upstream ([rate limiters](/config/rate-limiters)) | None for clients ([overload.rs](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/src/upstream/overload.rs#L15-L35)) |
+| Client auth | Secret, JWT, SIWE, IP, database ([auth](/config/auth)) | TLS client certificates ([authentication](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/08-authentication.adoc#L68)) |
+| `eth_getLogs` splitting | Yes ([getLogs splitting](/reference/evm/getlogs-splitting)) | Not documented; passed through ([ethereum.rs](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/src/upstream/methods/ethereum.rs#L122)) |
+| JSON-RPC batch | Yes ([batch](/operation/batch)) | Yes ([reference](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/reference-configuration.adoc#L420-L424)) |
+| `eth_subscribe` | newHeads, logs, newPendingTransactions ([websocket](/operation/websocket)) | newHeads, logs, newPendingTransactions, syncing ([egress.rs](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/src/upstream/egress.rs#L42-L45)) |
+| Metrics, tracing | Prometheus, OpenTelemetry ([monitoring](/operation/monitoring), [tracing](/operation/tracing)) | Prometheus; JSON access logs, no OpenTelemetry ([monitoring](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/06-monitoring.adoc#L1-L14)) |
+| Multi-tenant | Projects, per-user budgets ([projects](/config/projects)) | Not documented ([reference](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/reference-configuration.adoc#L434-L454)) |
+| Archive routing | Block availability per upstream ([upstreams](/config/projects/upstreams)) | Labels such as `archive: true`, method on/off ([upstream config](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/04-upstream-config.adoc#L264-L284)) |
+| Deployment | Binaries, Docker, Kubernetes manifests, `npx start-erpc` ([docker](/deployment/docker), [kubernetes](/deployment/kubernetes)) | Docker, release zip ([Dockerfile](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/Dockerfile)) |
+
+"Not documented" means the project's docs do not describe it and a search of its source found no code for it.
+
+## Where dshackle is stronger
+
+- **gRPC API with streams.** Head, balance (ETH, ERC-20, BTC with xpub) and tx-status subscriptions ([methods](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/07-methods.adoc#L11-L30)).
+- **Signed responses.** A client can prove which upstream produced an answer ([methods](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/07-methods.adoc#L94-L117)).
+- **Bitcoin.** bitcoind, Esplora and ZeroMQ notifications ([reference](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/reference-configuration.adoc#L944-L992)). eRPC does not serve Bitcoin.
+- **Instance mesh.** dshackle instances link over mTLS gRPC across regions ([architecture](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/01-architecture-intro.adoc#L63-L72)).
+- **Fork-aware routing.** Upstreams on the losing fork still serve data below the fork point ([upstream config](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/docs/04-upstream-config.adoc#L119-L150)).
+
+## Where eRPC is stronger
+
+- Hedging, circuit breaker and consensus as separate failsafe steps ([failsafe](/config/failsafe)).
+- Finality-aware cache on four storage drivers ([cache](/config/database/evm-json-rpc-cache)).
+- `eth_getLogs` range splitting ([getLogs splitting](/reference/evm/getlogs-splitting)).
+- Client auth and rate limits for public or multi-team endpoints ([auth](/config/auth), [rate limiters](/config/rate-limiters)).
+- Solana support ([networks](/config/projects/networks)).
+
+## Note on dshackle versions
+
+The latest dshackle release, v0.17.0, is Kotlin. Since April 2026 the `master` branch is a Rust rewrite, version `0.18.0-dev` ([Cargo.toml](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/Cargo.toml#L1-L4)).
+The dshackle README says `master` "should not be used in production" ([README](https://github.com/emeraldpay/dshackle/blob/896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78/README.adoc#L308)).
+dRPC keeps a separate Kotlin fork, [drpcorg/dshackle](https://github.com/drpcorg/dshackle), with more chains and JWT auth. This page compares `emeraldpay/dshackle`.
+
+<AISection title="eRPC vs dshackle — agent reference">
+
+### Sources and snapshot
+
+- eRPC: `erpc/erpc` at `32a8a1e450c6ab5a78477859c85221b6a9058c72`, docs at docs.erpc.cloud.
+- dshackle: `emeraldpay/dshackle` `master` at `896ab53b7c8806b5ee481a14aa1e1c04e7bc1a78` (2026-10-13), release `v0.17.0` at `f781e8edc4e35887f684209250412baf530417ae`.
+- Checked 2026-10-22. Absence claims ("Not documented") rest on the dshackle docs plus a source search of `master` `src/` and `v0.17.0` `src/main`. No maintainer statement confirms them.
+
+### Moving from dshackle to eRPC
+
+| dshackle concept | eRPC equivalent |
+|---|---|
+| `cluster.upstreams[]` | `projects[].upstreams[]` ([upstreams](/config/projects/upstreams)) |
+| `blockchain` per upstream | `networks[].evm.chainId` ([networks](/config/projects/networks)) |
+| `role: primary/secondary/fallback` | selection policy ([selection policies](/config/projects/selection-policies)) |
+| `methods.enabled[].quorum` | `failsafe[].consensus` ([consensus](/config/failsafe/consensus)) |
+| `methods.enabled` / `methods.disabled` | `allowMethods` / `ignoreMethods` ([upstreams](/config/projects/upstreams)) |
+| Redis cache | `database.evmJsonRpcCache` with a Redis connector ([cache](/config/database/evm-json-rpc-cache)) |
+
+### Keep dshackle when
+
+- Clients use its gRPC streams or signed responses.
+- You serve Bitcoin.
+
+### Related pages
+
+- [Why eRPC?](/why)
+- [eRPC vs web3-proxy](/compare/erpc-vs-web3-proxy)
+- [eRPC vs dRPC NodeCore](/compare/erpc-vs-drpc-nodecore)
+
+</AISection>

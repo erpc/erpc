@@ -211,6 +211,7 @@ type Upstream struct {
 	evmStatePoller       common.EvmStatePoller
 	svmStatePoller       common.SvmStatePoller
 	statePollerOnce      sync.Once
+	evmMulticall3        *evm.Multicall3Batcher
 	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
 	chainIdValidated atomic.Bool
 	// Highest block at which the integrity state probe PROVED this upstream
@@ -317,6 +318,10 @@ func NewUpstream(
 		pup.Client = client
 	}
 
+	if ec := pup.config.Evm; ec != nil && ec.Multicall3 != nil {
+		pup.evmMulticall3 = evm.NewMulticall3Batcher(ec.Multicall3)
+	}
+
 	lg.Debug().Msgf("prepared upstream")
 
 	return pup, nil
@@ -421,13 +426,15 @@ func (u *Upstream) Config() *common.UpstreamConfig {
 }
 
 // IsDown reports whether the circuit breaker of the failsafe policy that
-// would serve method is open. Breakers scoped to other methods don't count.
-func (u *Upstream) IsDown(method string) bool {
+// would serve method at finality is open. Breakers scoped to other methods
+// or finalities don't count. Pass the request's real finality (not Unknown)
+// when checking escape/health paths so a finalized/realtime-scoped open
+// breaker is not missed.
+func (u *Upstream) IsDown(method string, finality common.DataFinalityState) bool {
 	if u == nil {
 		return true
 	}
-	req := common.NewNormalizedRequestFromJsonRpcRequest(common.NewJsonRpcRequest(method, nil))
-	fe := u.getFailsafeExecutor(req)
+	fe := u.failsafeExecutorFor(method, finality)
 	if fe == nil {
 		return false
 	}
@@ -519,8 +526,13 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 
 func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *upstreamExecutor {
 	method, _ := req.Method()
-	finality := req.Finality(context.Background())
+	return u.failsafeExecutorFor(method, req.Finality(context.Background()))
+}
 
+// failsafeExecutorFor picks the policy the same way getFailsafeExecutor does,
+// so health checks that only have method+finality (not a full request) still
+// see the breaker the real call would hit.
+func (u *Upstream) failsafeExecutorFor(method string, finality common.DataFinalityState) *upstreamExecutor {
 	// 4-tier priority: method+finality > method > finality > catch-all.
 	for _, fe := range u.failsafeExecutors {
 		mp, fl := fe.MatchMethod(), fe.MatchFinality()
@@ -862,11 +874,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					// Hedge discards are accounted at the network layer
 					// via MetricNetworkHedgeDiscardsTotal.
 					//
-					// Latency observation is also skipped (see the
-					// ObserveDuration call below) — elapsed-by-cancel is
-					// not a natural latency sample. Probe traffic from
-					// `probeExcluded` provides successful samples for
-					// upstreams that never win the hedge race.
+					// Latency: see timer.ObserveCancelled below.
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(ctx, method, nrq)
@@ -898,32 +906,29 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				// quantile — the upstream did real work; the duration
 				// reflects actual response time.
 				//
-				// Cancellations (hedge-lost / client gave up / engine
-				// timeout) are deliberately excluded: the elapsed-by-
-				// cancel time is not natural latency. An upstream that
-				// only ever loses hedge races (e.g. always sees
-				// hedge-fired slow methods because the primary handles
-				// the fast ones) would otherwise accumulate a quantile
-				// of 100% cancellation observations, biasing its p70
-				// toward "however long the winner of the race took
-				// before cancellation." Cross-upstream comparisons
-				// (e.g. `latencyDeviationAbove`) would trip on this
-				// artificial signal even when per-method latencies are
-				// identical.
-				//
-				// With probeExcluded in the chain (default), excluded
-				// upstreams accumulate real successful samples via
-				// shadow-mirrored traffic — so the "every-hedge-loser
-				// stays optimistic forever" concern is handled without
-				// polluting the quantile. Without probeExcluded, rely
-				// on absolute thresholds (`latencyAbove(N)`) +
-				// non-latency signals (error rate, throttle rate, lag).
+				// A primary attempt cancelled because another attempt won
+				// the hedge race records its elapsed time as a latency
+				// lower bound, kept apart from ResponseQuantiles (which
+				// also drives adaptive timeouts and hedge delays) and read
+				// only by the selection policy. Without it, an upstream
+				// whose every attempt loses the hedge race keeps an empty
+				// sketch and the policy ranks it fastest. Client cancels
+				// and deadlines record nothing: their elapsed time is the
+				// caller's patience, not this upstream's speed. Hedge
+				// attempts are skipped: a losing hedge is cancelled when
+				// the earlier primary answers, so its elapsed time says
+				// little about its own latency.
 				//
 				// All other errors fired before / instead of a meaningful
 				// response and would conflate "broken" with "slow" if
 				// counted; they stay out of the quantile.
 				isRevert := common.HasErrorCode(errCall, common.ErrCodeEndpointExecutionException)
-				timer.ObserveDuration(isRevert)
+				if !hedgeAttempt && common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled) &&
+					errors.Is(context.Cause(ctx), failsafe.ErrHedgeLost) {
+					timer.ObserveCancelled()
+				} else {
+					timer.ObserveDuration(isRevert)
+				}
 				if isRevert {
 					nrq.ClearLastValidResponse()
 				}

@@ -582,6 +582,55 @@
     return out;
   });
 
+  // ─── 4.3c blockMethods — per-method exclusion ───────────────────────────
+  //
+  // Blocks an upstream for single methods while it stays in the pool for
+  // every other method. For each upstream in the chain and each method
+  // it has samples for that matches `match`, `when` runs against a view
+  // of the upstream whose `u.metrics` is that method's numbers: only
+  // requestsTotal and latencyP, so samplesAbove / latencyAbove work and
+  // rate predicates never trip. A trip records the block in
+  // `__policyMethodBlocks`; the engine applies it per request after the
+  // eval. The array passes through unchanged.
+  //
+  //   .blockMethods({ match: ['debug_trace*', 'trace_*'],
+  //                   when: all(samplesAbove(20), latencyAbove(5000, 99)) })
+  //
+  // A method stays served by all its upstreams when blocks would leave it
+  // none. Blocked upstreams are probe candidates for that method unless
+  // `probe: false`.
+  const METHOD_METRICS_PROTO = {
+    latencyP(q) {
+      if (q > 1) q = q / 100;
+      if (q <= 0.5) return this.p50ms;
+      if (q <= 0.7) return this.p70ms;
+      if (q <= 0.9) return this.p90ms;
+      if (q <= 0.95) return this.p95ms;
+      return this.p99ms;
+    },
+  };
+  define('blockMethods', function (opts) {
+    const log = globalThis.__policyMethodBlocks;
+    if (!log || !opts || typeof opts.when !== 'function') return this.slice();
+    const when = opts.when;
+    const probe = opts.probe !== false;
+    for (const u of this) {
+      const byMethod = u.metricsByMethod;
+      if (!byMethod) continue;
+      for (const m in byMethod) {
+        if (!matchAny(opts.match, m)) continue;
+        const view = Object.create(u);
+        view.metrics = Object.assign(Object.create(METHOD_METRICS_PROTO), byMethod[m]);
+        if (!when(view)) continue;
+        let reasons;
+        if (typeof when.policyLeaves === 'function') reasons = when.policyLeaves(view);
+        else reasons = [when.policySlug || 'custom'];
+        (log[u.id] || (log[u.id] = {}))[m] = { probe: probe, reasons: reasons };
+      }
+    }
+    return this.slice();
+  });
+
   // ─── 4.4 Generic functional (extends what JS already gives us) ──────────
 
   define('reject', function (fn) { return this.filter((u, i, a) => !fn(u, i, a)); });

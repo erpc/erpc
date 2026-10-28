@@ -208,6 +208,16 @@ type WebSocketServerConfig struct {
 	// newPendingTransactions drop their oldest entry; logs close the
 	// connection instead (1013), so the client knows it missed data.
 	SubscriptionBufferSize int `yaml:"subscriptionBufferSize,omitempty" json:"subscriptionBufferSize"`
+	// MaxConnections caps concurrent client connections on this instance
+	// (0 = unlimited). Unlike the per-IP cap it holds when client IPs are
+	// unknown or spoofed.
+	MaxConnections int `yaml:"maxConnections,omitempty" json:"maxConnections"`
+	// MaxConnectionsPerIP caps concurrent client connections from one
+	// resolved client IP (0 = unlimited); see trustedIPForwarders.
+	MaxConnectionsPerIP int `yaml:"maxConnectionsPerIP,omitempty" json:"maxConnectionsPerIP"`
+	// MaxSubscriptions caps active subscriptions across all connections on
+	// this instance (0 = unlimited).
+	MaxSubscriptions int `yaml:"maxSubscriptions,omitempty" json:"maxSubscriptions"`
 }
 
 // ExecutionHeadersMode controls how much per-request execution detail is
@@ -1459,6 +1469,25 @@ type EvmUpstreamConfig struct {
 	DeprecatedGetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
 
 	QueryShim *EvmQueryShimConfig `yaml:"queryShim,omitempty" json:"queryShim"`
+	// Multicall3 packs eth_calls bound for this upstream that share a block into one
+	// Multicall3 aggregate3 eth_call, so a vendor billed per request is billed once
+	// per pack. Nil (default) sends every eth_call alone.
+	Multicall3 *EvmMulticall3Config `yaml:"multicall3,omitempty" json:"multicall3"`
+}
+
+// EvmMulticall3Config bounds one pack. A call joins the open pack for its block,
+// and the pack is sent MaxWait after its first call or when it holds MaxCalls.
+// A call the pack cannot answer exactly (multicall failed, inner call reverted
+// or returned nothing) is sent alone, as it would be without packing.
+type EvmMulticall3Config struct {
+	MaxWait  Duration `yaml:"maxWait,omitempty" json:"maxWait" tstype:"Duration"`
+	MaxCalls int      `yaml:"maxCalls,omitempty" json:"maxCalls"`
+	// BypassContracts are target addresses whose calls are never packed, for
+	// contracts that answer differently when the caller is Multicall3 instead
+	// of the zero address (msg.sender or caller-code checks) without reverting.
+	// Contracts that revert inside a pack but succeed alone are learned at
+	// runtime and need no entry.
+	BypassContracts []string `yaml:"bypassContracts,omitempty" json:"bypassContracts"`
 }
 
 // EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,
@@ -1610,6 +1639,11 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	}
 	if c.QueryShim != nil {
 		copied.QueryShim = c.QueryShim.Copy()
+	}
+	if c.Multicall3 != nil {
+		v := *c.Multicall3
+		v.BypassContracts = slices.Clone(c.Multicall3.BypassContracts)
+		copied.Multicall3 = &v
 	}
 
 	return copied
@@ -2655,9 +2689,9 @@ type SvmUpstreamConfig struct {
 
 	// BlockAvailability is an operator restriction on the slot window this
 	// upstream may serve. Only what the operator declares is enforced; the
-	// upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed and
-	// used as a lower anchor solely when a bound uses firstAvailableSlotPlus,
-	// mirroring EVM's earliestBlockPlus. Unknown floor = unbounded.
+	// upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed for
+	// every upstream and anchors a firstAvailableSlotPlus bound, mirroring EVM's
+	// earliestBlockPlus. Unknown floor = unbounded.
 	BlockAvailability *SvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
 }
 
@@ -2684,18 +2718,21 @@ func (c *SvmBlockAvailabilityConfig) Copy() *SvmBlockAvailabilityConfig {
 }
 
 // SvmAvailabilityBoundConfig is a single declared slot bound.
-// Exactly one field must be set.
+// Exactly one of ExactSlot, LatestSlotMinus, FirstAvailableSlotPlus must be set.
+// UpdateRate applies only to firstAvailableSlotPlus: how often the floor it
+// anchors on is re-probed. 0 freezes it after the first observation, as EVM.
 type SvmAvailabilityBoundConfig struct {
-	ExactSlot              *int64 `yaml:"exactSlot,omitempty" json:"exactSlot,omitempty"`
-	LatestSlotMinus        *int64 `yaml:"latestSlotMinus,omitempty" json:"latestSlotMinus,omitempty"`
-	FirstAvailableSlotPlus *int64 `yaml:"firstAvailableSlotPlus,omitempty" json:"firstAvailableSlotPlus,omitempty"`
+	ExactSlot              *int64   `yaml:"exactSlot,omitempty" json:"exactSlot,omitempty"`
+	LatestSlotMinus        *int64   `yaml:"latestSlotMinus,omitempty" json:"latestSlotMinus,omitempty"`
+	FirstAvailableSlotPlus *int64   `yaml:"firstAvailableSlotPlus,omitempty" json:"firstAvailableSlotPlus,omitempty"`
+	UpdateRate             Duration `yaml:"updateRate,omitempty" json:"updateRate,omitempty" tstype:"Duration"`
 }
 
 func (c *SvmAvailabilityBoundConfig) Copy() *SvmAvailabilityBoundConfig {
 	if c == nil {
 		return nil
 	}
-	out := &SvmAvailabilityBoundConfig{}
+	out := &SvmAvailabilityBoundConfig{UpdateRate: c.UpdateRate}
 	if c.ExactSlot != nil {
 		v := *c.ExactSlot
 		out.ExactSlot = &v
@@ -2778,6 +2815,11 @@ type EvmNetworkConfig struct {
 	// empty result likely means the upstream hasn't indexed that data yet.
 	// Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
 	MarkEmptyAsErrorMethods []string `yaml:"markEmptyAsErrorMethods,omitempty" json:"markEmptyAsErrorMethods,omitempty"`
+
+	// LocalAnswers turns off eRPC's own answer for a method on this network:
+	// `{net_peerCount: false}` routes net_peerCount to the upstreams. Every
+	// method in LocalAnswerMethods is answered by eRPC unless set false here.
+	LocalAnswers map[string]bool `yaml:"localAnswers,omitempty" json:"localAnswers,omitempty"`
 
 	// StripSubscribeFromBlockZero removes a zero `fromBlock` from eth_subscribe
 	// logs filters before forwarding upstream. fromBlock has no meaning for a
@@ -3370,7 +3412,28 @@ type RateLimitStoreConfig struct {
 	Redis          *RedisConnectorConfig `yaml:"redis,omitempty" json:"redis,omitempty"`
 	CacheKeyPrefix string                `yaml:"cacheKeyPrefix,omitempty" json:"cacheKeyPrefix"`
 	NearLimitRatio float32               `yaml:"nearLimitRatio,omitempty" json:"nearLimitRatio"`
+	// OnFailure decides a request the redis store could not: not connected,
+	// erroring, slower than redis.getTimeout, or at its in-flight cap.
+	OnFailure RateLimitStoreFailureMode `yaml:"onFailure,omitempty" json:"onFailure,omitempty"`
+	// LocalLimitFactor scales every maxCount for the in-process limiter that
+	// onFailure: local decides with. It counts this replica only, so set it
+	// near 1/replicas. Required for local; must be > 0 and <= 1.
+	LocalLimitFactor float64 `yaml:"localLimitFactor,omitempty" json:"localLimitFactor,omitempty"`
 }
+
+// RateLimitStoreFailureMode is what a redis-backed budget does with a request
+// its store could not decide.
+type RateLimitStoreFailureMode string
+
+const (
+	// RateLimitStoreFailureAllow (default) admits the request.
+	RateLimitStoreFailureAllow RateLimitStoreFailureMode = "allow"
+	// RateLimitStoreFailureDeny rejects the request as rate limited.
+	RateLimitStoreFailureDeny RateLimitStoreFailureMode = "deny"
+	// RateLimitStoreFailureLocal decides it with an in-process limiter that
+	// counts every request, at maxCount × localLimitFactor.
+	RateLimitStoreFailureLocal RateLimitStoreFailureMode = "local"
+)
 
 // CachePartitionKey builds the JSON-RPC cache partition key.
 // Empty suffix keeps {networkId}:{ref}; a set suffix yields {networkId}:{suffix}:{ref}.

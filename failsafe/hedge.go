@@ -2,6 +2,8 @@ package failsafe
 
 import (
 	"context"
+	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -59,6 +61,12 @@ func releaseHedgeTimer(t *time.Timer) {
 	hedgeTimerPool.Put(t)
 }
 
+// ErrHedgeLost is the cancel cause of attempts still in flight when a
+// sibling attempt wins the race. Read it with context.Cause to tell a
+// lost race from a caller cancel or deadline. It wraps context.Canceled
+// so cause-based error classification still sees a cancellation.
+var ErrHedgeLost = fmt.Errorf("another hedged attempt won the race: %w", context.Canceled)
+
 // HedgeHooks lets the caller observe hedge events. OnFire fires when an
 // extra hedge attempt is spawned — useful for metric increments.
 type HedgeHooks struct {
@@ -108,8 +116,8 @@ func RunHedged[R any](
 		maxHedges = 0
 	}
 
-	siblingCtx, cancelAll := context.WithCancel(parentCtx)
-	defer cancelAll()
+	siblingCtx, cancelAll := context.WithCancelCause(parentCtx)
+	defer cancelAll(nil)
 
 	resultCh := make(chan hedgeResult[R], maxHedges+1)
 	fired := 0
@@ -122,7 +130,16 @@ func RunHedged[R any](
 			hooks.OnFire(idx, 0)
 		}
 		go func() {
-			r, err := inner(siblingCtx)
+			// A panic here would kill the process: no caller frame can recover a
+			// goroutine. Surface it as this attempt's error instead.
+			r, err := func() (r R, err error) {
+				defer func() {
+					if rec := recover(); rec != nil {
+						err = fmt.Errorf("hedge attempt panic: %v\n%s", rec, debug.Stack())
+					}
+				}()
+				return inner(siblingCtx)
+			}()
 			select {
 			case resultCh <- hedgeResult[R]{r: r, err: err}:
 			default:
@@ -194,7 +211,7 @@ func RunHedged[R any](
 		case <-parentCtx.Done():
 			// Timer cleanup handled by the deferred release at function
 			// exit — no explicit Stop needed here.
-			cancelAll()
+			cancelAll(nil)
 			// Drain pending goroutines, releasing their results.
 			for pending > 0 {
 				res := <-resultCh
@@ -233,7 +250,7 @@ func RunHedged[R any](
 			if keep == nil || keep(res.r, res.err) {
 				winner = res
 				winnerSet = true
-				cancelAll()
+				cancelAll(ErrHedgeLost)
 				if hedgeTimer != nil {
 					releaseHedgeTimer(hedgeTimer)
 					hedgeTimer = nil

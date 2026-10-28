@@ -167,6 +167,15 @@ export const MaxShredInsertSlotLagThreshold: number /* int64 */ = 100;
  * so pre-multi-chain configs keep producing "svm:<cluster>" IDs.
  */
 export const SvmChainSolana = "solana";
+/**
+ * SvmHistory is the slots from which a cluster's Agave history records block
+ * fields. Below them Agave renders the field null whatever an archive holds;
+ * a nil bound means the cluster records the field from its first slot.
+ */
+export interface SvmHistory {
+  blocktimefrom?: number /* uint64 */;
+  blockheightfrom?: number /* uint64 */;
+}
 
 //////////
 // source: blocktime_adaptive_duration.go
@@ -311,6 +320,22 @@ export interface WebSocketServerConfig {
    * connection instead (1013), so the client knows it missed data.
    */
   subscriptionBufferSize?: number /* int */;
+  /**
+   * MaxConnections caps concurrent client connections on this instance
+   * (0 = unlimited). Unlike the per-IP cap it holds when client IPs are
+   * unknown or spoofed.
+   */
+  maxConnections?: number /* int */;
+  /**
+   * MaxConnectionsPerIP caps concurrent client connections from one
+   * resolved client IP (0 = unlimited); see trustedIPForwarders.
+   */
+  maxConnectionsPerIP?: number /* int */;
+  /**
+   * MaxSubscriptions caps active subscriptions across all connections on
+   * this instance (0 = unlimited).
+   */
+  maxSubscriptions?: number /* int */;
 }
 /**
  * ExecutionHeadersMode controls how much per-request execution detail is
@@ -1089,6 +1114,30 @@ export interface EvmUpstreamConfig {
    */
   maxAvailableRecentBlocks?: number /* int64 */;
   queryShim?: EvmQueryShimConfig;
+  /**
+   * Multicall3 packs eth_calls bound for this upstream that share a block into one
+   * Multicall3 aggregate3 eth_call, so a vendor billed per request is billed once
+   * per pack. Nil (default) sends every eth_call alone.
+   */
+  multicall3?: EvmMulticall3Config;
+}
+/**
+ * EvmMulticall3Config bounds one pack. A call joins the open pack for its block,
+ * and the pack is sent MaxWait after its first call or when it holds MaxCalls.
+ * A call the pack cannot answer exactly (multicall failed, inner call reverted
+ * or returned nothing) is sent alone, as it would be without packing.
+ */
+export interface EvmMulticall3Config {
+  maxWait?: Duration;
+  maxCalls?: number /* int */;
+  /**
+   * BypassContracts are target addresses whose calls are never packed, for
+   * contracts that answer differently when the caller is Multicall3 instead
+   * of the zero address (msg.sender or caller-code checks) without reverting.
+   * Contracts that revert inside a pack but succeed alone are learned at
+   * runtime and need no entry.
+   */
+  bypassContracts?: string[];
 }
 /**
  * EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,
@@ -1640,9 +1689,9 @@ export interface SvmUpstreamConfig {
   /**
    * BlockAvailability is an operator restriction on the slot window this
    * upstream may serve. Only what the operator declares is enforced; the
-   * upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed and
-   * used as a lower anchor solely when a bound uses firstAvailableSlotPlus,
-   * mirroring EVM's earliestBlockPlus. Unknown floor = unbounded.
+   * upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed for
+   * every upstream and anchors a firstAvailableSlotPlus bound, mirroring EVM's
+   * earliestBlockPlus. Unknown floor = unbounded.
    */
   blockAvailability?: SvmBlockAvailabilityConfig;
 }
@@ -1657,12 +1706,15 @@ export interface SvmBlockAvailabilityConfig {
 }
 /**
  * SvmAvailabilityBoundConfig is a single declared slot bound.
- * Exactly one field must be set.
+ * Exactly one of ExactSlot, LatestSlotMinus, FirstAvailableSlotPlus must be set.
+ * UpdateRate applies only to firstAvailableSlotPlus: how often the floor it
+ * anchors on is re-probed. 0 freezes it after the first observation, as EVM.
  */
 export interface SvmAvailabilityBoundConfig {
   exactSlot?: number /* int64 */;
   latestSlotMinus?: number /* int64 */;
   firstAvailableSlotPlus?: number /* int64 */;
+  updateRate?: Duration;
 }
 export interface EvmNetworkConfig {
   chainId: number /* int64 */;
@@ -1729,6 +1781,12 @@ export interface EvmNetworkConfig {
    * Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
    */
   markEmptyAsErrorMethods?: string[];
+  /**
+   * LocalAnswers turns off eRPC's own answer for a method on this network:
+   * `{net_peerCount: false}` routes net_peerCount to the upstreams. Every
+   * method in LocalAnswerMethods is answered by eRPC unless set false here.
+   */
+  localAnswers?: { [key: string]: boolean};
   /**
    * StripSubscribeFromBlockZero removes a zero `fromBlock` from eth_subscribe
    * logs filters before forwarding upstream. fromBlock has no meaning for a
@@ -2203,7 +2261,36 @@ export interface RateLimitStoreConfig {
   redis?: RedisConnectorConfig;
   cacheKeyPrefix?: string;
   nearLimitRatio?: number /* float32 */;
+  /**
+   * OnFailure decides a request the redis store could not: not connected,
+   * erroring, slower than redis.getTimeout, or at its in-flight cap.
+   */
+  onFailure?: RateLimitStoreFailureMode;
+  /**
+   * LocalLimitFactor scales every maxCount for the in-process limiter that
+   * onFailure: local decides with. It counts this replica only, so set it
+   * near 1/replicas. Required for local; must be > 0 and <= 1.
+   */
+  localLimitFactor?: number /* float64 */;
 }
+/**
+ * RateLimitStoreFailureMode is what a redis-backed budget does with a request
+ * its store could not decide.
+ */
+export type RateLimitStoreFailureMode = string;
+/**
+ * RateLimitStoreFailureAllow (default) admits the request.
+ */
+export const RateLimitStoreFailureAllow: RateLimitStoreFailureMode = "allow";
+/**
+ * RateLimitStoreFailureDeny rejects the request as rate limited.
+ */
+export const RateLimitStoreFailureDeny: RateLimitStoreFailureMode = "deny";
+/**
+ * RateLimitStoreFailureLocal decides it with an in-process limiter that
+ * counts every request, at maxCount × localLimitFactor.
+ */
+export const RateLimitStoreFailureLocal: RateLimitStoreFailureMode = "local";
 
 //////////
 // source: config_integrity.go
@@ -2468,6 +2555,17 @@ export type JsonRpcErrorExtractor = any;
  * Similar to http.HandlerFunc style adapters.
  */
 export type JsonRpcErrorExtractorFunc = any;
+
+//////////
+// source: evm_local_answers.go
+
+/**
+ * EvmRoutableUpstreamsProvider is the optional surface a network exposes its
+ * routable upstreams through: the selection policy's eligible set in routing
+ * order, narrowed to the request's use-upstream selector. Asserted narrowly,
+ * like EvmStateProvenWriter, so EvmNetwork implementations need not change.
+ */
+export type EvmRoutableUpstreamsProvider = any;
 
 //////////
 // source: exec_state.go

@@ -85,6 +85,16 @@ func (s *HttpServer) handleWebSocket(
 ) {
 	wsCfg := s.serverCfg.WebSocket
 
+	// Checked before the upgrade so a refused client gets a plain 429.
+	clientIP := s.resolveRealClientIP(r)
+	if reason, ok := s.wsConnLimiter.acquire(clientIP); !ok {
+		lg.Warn().Str("reason", reason).Msg("websocket connection refused: connection limit reached")
+		telemetry.CounterHandle(telemetry.MetricWebsocketRejectedTotal, project.Config.Id, reason).Inc()
+		http.Error(w, "too many websocket connections", http.StatusTooManyRequests)
+		return
+	}
+	defer s.wsConnLimiter.release(clientIP)
+
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:  wsCfg.ReadBufferSize,
 		WriteBufferSize: wsCfg.WriteBufferSize,

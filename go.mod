@@ -8,7 +8,7 @@ require (
 	github.com/DataDog/sketches-go v1.4.8
 	github.com/IGLOU-EU/go-wildcard/v2 v2.1.1
 	github.com/aws/aws-sdk-go v1.55.8
-	github.com/blockchain-data-standards/manifesto v0.0.0-20261008203857-00f4bd1d2991
+	github.com/blockchain-data-standards/manifesto v0.0.0-20261028180840-f5af8ad93499
 	github.com/bytedance/sonic v1.15.2
 	github.com/coder/websocket v1.8.15
 	github.com/dgraph-io/ristretto/v2 v2.4.2
@@ -55,7 +55,10 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require github.com/prometheus/client_model v0.6.2
+require (
+	github.com/coocood/freecache v1.2.4
+	github.com/prometheus/client_model v0.6.2
+)
 
 require (
 	cel.dev/expr v0.25.2 // indirect
@@ -78,7 +81,6 @@ require (
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v0.2.1 // indirect
-	github.com/coocood/freecache v1.2.4 // indirect
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
 	github.com/crate-crypto/go-eth-kzg v1.5.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect

@@ -8584,3 +8584,53 @@ func TestHttpServer_AdminMethodFilter(t *testing.T) {
 		assert.True(t, hasError, "invalid pattern expression should propagate as a request error")
 	})
 }
+
+// eth_subscribe/eth_unsubscribe require a persistent connection and are served
+// only on the WebSocket path. Over HTTP eRPC must reject them, not forward: with
+// a WS link to the upstream it would otherwise create a real upstream
+// subscription and hand the HTTP client a subscription id that is immediately
+// orphaned (notifications flow to eRPC's link, not the client) — a fail-open
+// where a "did we subscribe?" guard gets a false positive on a dead stream.
+func TestHttpServer_RejectsSubscriptionMethodsOverHttp(t *testing.T) {
+	cfg := &common.Config{
+		Server: &common.ServerConfig{
+			MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+		},
+		Projects: []*common.ProjectConfig{
+			{
+				Id: "test_project",
+				Networks: []*common.NetworkConfig{
+					{
+						Architecture: common.ArchitectureEvm,
+						Evm:          &common.EvmNetworkConfig{ChainId: 123},
+					},
+				},
+				Upstreams: []*common.UpstreamConfig{
+					{
+						Type:     common.UpstreamTypeEvm,
+						Endpoint: "http://rpc1.localhost",
+						Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+					},
+				},
+			},
+		},
+		RateLimiters: &common.RateLimiterConfig{},
+	}
+
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+	defer shutdown()
+
+	for _, method := range []string{"eth_subscribe", "eth_unsubscribe"} {
+		statusCode, _, body := sendRequest(
+			fmt.Sprintf(`{"jsonrpc":"2.0","method":%q,"params":["newHeads"],"id":1}`, method), nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode, "%s: JSON-RPC errors ride a 200 for POST", method)
+		assert.Contains(t, body, "-32601", "%s over HTTP must be method-not-supported (-32601)", method)
+		assert.Contains(t, body, "WebSocket", "%s rejection must point the client at WebSocket", method)
+		assert.NotContains(t, body, `"result"`, "%s must not fail open with a subscription id", method)
+	}
+}
