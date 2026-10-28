@@ -1762,7 +1762,11 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 		defer util.AssertNoPendingMocks(t, 0)
 
 		// The tx sits above rpc1's head (0x11118888) and below rpc2's (0x22228888):
-		// rpc1 was behind, not wrong.
+		// rpc1 was behind, not wrong. rpc3 (0x33338888) puts Latest, the
+		// 2nd-highest head, at 0x22228888, so rpc2's answer is inside Latest
+		// and reaches the client; with rpc1 and rpc2 alone, Latest would be
+		// rpc1's head and a by-hash answer above it is held, then null
+		// (chain-tracker spec §6.4).
 		aheadOfRpc1 := map[string]interface{}{}
 		for k, v := range txReceiptResult {
 			aheadOfRpc1[k] = v
@@ -1793,11 +1797,12 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 			[]*common.UpstreamConfig{
 				{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(time.Minute)}},
 				{Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(time.Minute)}},
+				{Type: common.UpstreamTypeEvm, Id: "rpc3", Endpoint: "http://rpc3.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(time.Minute)}},
 			},
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
 		)
-		network.PinUpstreamOrderForTest("rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2", "rpc3")
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["` + txHash + `"]}`))
 		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
