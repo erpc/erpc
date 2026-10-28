@@ -1637,6 +1637,40 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 	)
 }
 
+// AllUpstreamsFailedPermanently reports whether every upstream this request
+// may select has already answered with an error that NextUpstream will not
+// re-select (an execution exception, an unsupported method). A retry or hedge
+// can then draw no upstream at all, so it cannot change the outcome.
+func (r *NormalizedRequest) AllUpstreamsFailedPermanently() bool {
+	if r == nil {
+		return false
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+
+	var useUpstreamPattern string
+	if r.directives != nil {
+		useUpstreamPattern = r.directives.UseUpstream
+	}
+	selectable := 0
+	for _, upstream := range r.upstreamList {
+		if useUpstreamPattern != "" {
+			if match, err := UpstreamMatchesSelector(useUpstreamPattern, upstream); err != nil || !match {
+				continue
+			}
+		}
+		selectable++
+		prevErr, exists := r.ErrorsByUpstream.Load(upstream)
+		if !exists {
+			return false
+		}
+		if pe, ok := prevErr.(error); !ok || IsRetryableTowardsUpstream(pe) {
+			return false
+		}
+	}
+	return selectable > 0
+}
+
 func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream Upstream, resp *NormalizedResponse, err error) {
 	r.upstreamMutex.Lock()
 	defer r.upstreamMutex.Unlock()
