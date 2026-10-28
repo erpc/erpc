@@ -58,6 +58,46 @@ func TestFilterMethodEligible(t *testing.T) {
 	})
 }
 
+// A stateful method that no targeted upstream serves (e.g. filter methods left
+// out of every allowMethods) is unsupported, not a multi-upstream problem.
+func TestShouldHandleMethod_StatefulEligibility(t *testing.T) {
+	statefulNet := func() *Network {
+		return &Network{
+			cfg: &common.NetworkConfig{
+				Methods: &common.MethodsConfig{
+					Definitions: map[string]*common.CacheMethodConfig{
+						"eth_getFilterChanges": {Stateful: true},
+					},
+				},
+			},
+		}
+	}
+	newReq := func() *common.NormalizedRequest {
+		return common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getFilterChanges","params":[]}`))
+	}
+
+	full1 := common.NewFakeUpstream("full-1")
+	full2 := common.NewFakeUpstream("full-2")
+	noFilter1 := common.NewFakeUpstream("no-filter-1")
+	noFilter1.Config().IgnoreMethods = []string{"eth_getFilterChanges"}
+	noFilter2 := common.NewFakeUpstream("no-filter-2")
+	noFilter2.Config().IgnoreMethods = []string{"eth_getFilterChanges"}
+
+	t.Run("no eligible upstream reports unsupported, not single-upstream", func(t *testing.T) {
+		err := statefulNet().shouldHandleMethod(newReq(), "eth_getFilterChanges", []common.Upstream{noFilter1, noFilter2})
+		require.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeNotImplemented))
+		assert.Contains(t, err.Error(), "not supported by any targeted upstream")
+	})
+
+	t.Run("multiple eligible upstreams report single-upstream requirement", func(t *testing.T) {
+		err := statefulNet().shouldHandleMethod(newReq(), "eth_getFilterChanges", []common.Upstream{full1, full2})
+		require.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeNotImplemented))
+		assert.Contains(t, err.Error(), "single targeted upstream")
+	})
+}
+
 // sumCounterFamily returns the sum of every series in a counter family from
 // the default prometheus registry. Reading the family sum (rather than exact
 // label values) keeps the assertion robust to label changes; callers compare

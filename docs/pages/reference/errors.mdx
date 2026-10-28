@@ -165,7 +165,7 @@ Legend:
 | 10 | `ErrNetworkNotFound` | yes | yes | 404 | −32603 | network not configured |
 | 11 | `ErrUnknownNetworkID` | yes | yes | 200 | −32603 | — |
 | 12 | `ErrUnknownNetworkArchitecture` | yes | yes | 200 | −32603 | — |
-| 13 | `ErrNotImplemented` | yes | yes | 200 | −32601 | stateful method under a multi-upstream pool, `eth_accounts`/`eth_sign`, or subscription over HTTP → method not supported |
+| 13 | `ErrNotImplemented` | yes | yes | 200 | −32601 | stateful method under a multi-upstream pool or served by no targeted upstream, `eth_accounts`/`eth_sign`, or subscription over HTTP → method not supported |
 | 14 | `ErrInvalidEvmChainId` | yes | yes | 200 | −32603 | — |
 | 15 | `ErrFinalizedBlockUnavailable` | yes | yes | 200 | −32603 | finality check |
 | 16 | `ErrUpstreamClientInitialization` | yes | yes | — | — | not fatal unless wrapped in `TaskFatalError` |
