@@ -432,7 +432,7 @@ func putReceipts(c *ChainTracker, blockHash string, receipts []integrity.Receipt
 	if err != nil {
 		panic(err)
 	}
-	r, err := parseReceipts(raw, hash, nil)
+	r, err := parseReceipts(raw, hash, nil, false)
 	if err != nil {
 		panic(err)
 	}
@@ -648,7 +648,7 @@ func TestReceiptsMatchBlock(t *testing.T) {
 	var hash [32]byte
 	require.True(t, decodeHex32(h, &hash))
 	check := func(body string) error {
-		_, err := parseReceipts([]byte(body), hash, nil)
+		_, err := parseReceipts([]byte(body), hash, nil, false)
 		return err
 	}
 	t.Run("all receipts on the requested hash (case-insensitive) → ok", func(t *testing.T) {

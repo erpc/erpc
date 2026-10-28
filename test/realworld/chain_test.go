@@ -1,6 +1,7 @@
 package realworld
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"time"
 
@@ -8,7 +9,8 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
-// Bounds of the chain-behaviour scenarios (§19 C2, C6, C8, C10, C11, C14).
+// Bounds of the chain-behaviour scenarios (§19 C2, C6, C8, C10, C11, C14,
+// C15).
 const (
 	// c6Halt: the chain makes no block this long (§19 C6); c6Sample: how
 	// often Latest is read meanwhile (harness).
@@ -31,6 +33,12 @@ const (
 	// c14Blocks: blocks two of four voters stay on a branch that does not
 	// link (harness).
 	c14Blocks = 30
+
+	// c15Run: C15 runs past the 60s after which a tap waiting on one
+	// block's receipts closes 1013 (§10.2), with c15Empty empty blocks
+	// planned in a row at its start (harness).
+	c15Run   = logsCloseSpread + 20*time.Second
+	c15Empty = 10
 )
 
 // C2: a reorg reorgWindow − 1 deep. As C1, every client that received a
@@ -255,4 +263,58 @@ func c14() spec {
 		s.blocks(25)
 		s.requireNoMinorityDelivered()
 	}}
+}
+
+// C15: a chain whose hashes and roots are not Ethereum's (Hedera, Kaia):
+// no header hashes to its hash, and an empty block's transactionsRoot is
+// keccak(""), not the empty-trie root. The network sets
+// validateTransactionsRoot: false, so a header with gasUsed 0 is an empty
+// block. One ws logs client per pod reads every block: no empty block's
+// receipts are fetched, no receipts or logs fetch fails, and no tap closes
+// 1013 (§19 C15; §11 receipts answer).
+func c15() spec {
+	return spec{name: "C15", bound: healthyDelivery, sim: chainsim.Config{Foreign: true},
+		network: map[string]interface{}{"directiveDefaults": map[string]interface{}{"validateTransactionsRoot": false}},
+		clients: func(s *scenario) {
+			for pod := range s.h.pods {
+				s.addLogs(fmt.Sprintf("p%d-logs", pod+1), pod, 0)
+			}
+		},
+		body: func(s *scenario) {
+			s.blocks(25)
+			plan := make([]chainsim.Kind, c15Empty)
+			for i := range plan {
+				plan[i] = chainsim.KindEmpty
+			}
+			from := s.chain.Plan(plan...).Number + 1
+			s.logf("%d empty blocks from %d, then %s of random blocks", c15Empty, from, c15Run)
+			time.Sleep(c15Run)
+			to := s.chain.Tip().Number
+			empty := 0
+			for n := from; n <= to; n++ {
+				b := s.chain.CanonAt(n)
+				if b == nil || b.Kind() != chainsim.KindEmpty {
+					continue
+				}
+				empty++
+				for key, v := range s.vendors {
+					if calls, _ := v.ReceiptsOf(b.Hash); calls > 0 {
+						s.violate(s.name, "%s answered %d receipts calls for empty block %d", s.upstream(key), calls, n)
+					}
+				}
+			}
+			if empty < c15Empty {
+				s.violate("harness", "only %d empty blocks minted from %d to %d", empty, from, to)
+			}
+			for pod := range s.h.pods {
+				for _, kind := range []string{"receipts", "logs"} {
+					if v, _ := s.metric(pod, "erpc_chain_tracker_fetch_total", map[string]string{"kind": kind, "outcome": "error"}); v > 0 {
+						s.violate(s.name, "pod-%d: %v failed %s fetches on a chain whose empty blocks carry a foreign root", pod+1, v, kind)
+					}
+				}
+				if v, _ := s.metric(pod, "erpc_tap_out_of_range_total", nil); v > 0 {
+					s.violate(s.name, "pod-%d: %v taps out of range, 1013 for a logs client", pod+1, v)
+				}
+			}
+		}}
 }

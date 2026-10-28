@@ -2543,9 +2543,12 @@ type DirectiveDefaultsConfig struct {
 	// retained only so existing YAML still parses. At startup the flags that map
 	// to a current check are translated into `integrity.checks` by
 	// migrateLegacyIntegrityChecks (an explicit `integrity` block wins per check);
-	// they are NOT read at runtime. The receipt-count / expected-block /
-	// receipt-to-transaction flags have no equivalent in the new model and are
-	// accepted but ignored. See docs/pages/config/failsafe/integrity.mdx.
+	// they are NOT read at runtime, except validateTransactionsRoot: false,
+	// which also says the network's roots are not Ethereum's trie, so the
+	// chain tracker takes gasUsed 0 as an empty block. The receipt-count /
+	// expected-block / receipt-to-transaction flags have no equivalent in
+	// the new model and are accepted but ignored. See
+	// docs/pages/config/failsafe/integrity.mdx.
 	DeprecatedValidateTransactionsRoot        *bool   `yaml:"validateTransactionsRoot,omitempty" json:"validateTransactionsRoot"`
 	DeprecatedValidateHeaderFieldLengths      *bool   `yaml:"validateHeaderFieldLengths,omitempty" json:"validateHeaderFieldLengths"`
 	DeprecatedValidateTransactionFields       *bool   `yaml:"validateTransactionFields,omitempty" json:"validateTransactionFields"`

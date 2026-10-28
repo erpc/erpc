@@ -35,6 +35,8 @@ func newProbeNetwork(t *testing.T) *probeNetwork {
 	pn.On("Id").Return("evm:1").Maybe()
 	pn.On("ProjectId").Return("test").Maybe()
 	pn.On("Label").Return("mainnet").Maybe()
+	// The receipts profile reads the config (validateTransactionsRoot).
+	pn.On("Config").Return(&common.NetworkConfig{}).Maybe()
 	// No served tip here: latest never caps the delivery gate.
 	pn.On("HeadLatest", mock.Anything).Return(int64(1) << 62).Maybe()
 	pn.On("Forward", mock.Anything, mock.Anything).Return(

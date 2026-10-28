@@ -88,6 +88,10 @@ type bloomProfile struct {
 	// emptyOff: the chain profile disables transactionsRootRecompute, so
 	// the root may miss committed system transactions and their receipts.
 	emptyOff bool
+	// foreignRoots: the network sets validateTransactionsRoot: false, its
+	// roots are not Ethereum's trie (Hedera, Kaia), so gasUsed 0, not the
+	// empty-trie root, marks an empty block.
+	foreignRoots bool
 	// agreeLogs: integrity is on, so logs from eth_getLogs by blockHash,
 	// which stand in for receipts that keep failing, are held only once
 	// vendors that meet the evidence quorum answered the same logs.
@@ -118,6 +122,9 @@ func (g *bloomGate) prof() *bloomProfile {
 					g.profile.emptyOff = true
 				}
 			}
+			if dd := cfg.DirectiveDefaults; dd != nil && dd.DeprecatedValidateTransactionsRoot != nil {
+				g.profile.foreignRoots = !*dd.DeprecatedValidateTransactionsRoot
+			}
 		}
 		cs, _, _, _ := resolveIntegrity(n, nil)
 		g.profile.agreeLogs = len(cs) > 0
@@ -143,10 +150,27 @@ func (g *bloomGate) bloomSkips(h *chainHeader) bool {
 	return !p.checkOff && !p.skipsOff && g.trusted.Load() && h.hashRecomputes()
 }
 
-// emptySkips: the block has no transactions, so no receipts to fetch.
+// empty reports whether block h has no transactions, so no receipts (spec
+// §11): its transactionsRoot is the empty-trie root, or on a network with
+// foreign roots its gasUsed is 0. False when no header is held.
+func (g *bloomGate) empty(h *chainHeader) bool {
+	if h == nil {
+		return false
+	}
+	if g.prof().foreignRoots {
+		gas, err := common.HexToInt64(h.parsed.GasUsed)
+		return err == nil && gas == 0
+	}
+	return h.emptyTxs
+}
+
+// emptySkips: the block is empty, so its receipts are never fetched. On
+// Ethereum's roots only for a header whose hash recomputes and a profile
+// whose root lists every transaction; foreign roots prove nothing either
+// way, so gasUsed alone decides there.
 func (g *bloomGate) emptySkips(h *chainHeader) bool {
 	p := g.prof()
-	return !p.checkOff && !p.skipsOff && !p.emptyOff && h.emptyTxs && h.hashRecomputes()
+	return !p.checkOff && g.empty(h) && (p.foreignRoots || !p.skipsOff && !p.emptyOff && h.hashRecomputes())
 }
 
 // newLocked reports whether v is a new outcome for block h; a block counts
@@ -179,7 +203,7 @@ func (g *bloomGate) noted(h *chainHeader, v bloomVerdict) {
 	case v == bloomMismatch:
 		g.txRun = 0
 		g.trusted.Store(false)
-	case !h.emptyTxs:
+	case !g.empty(h):
 		if g.txRun++; g.txRun >= bloomTrustRun {
 			g.trusted.Store(true)
 		}
@@ -325,11 +349,11 @@ func judgedBloom(h *chainHeader) []byte {
 }
 
 // parseReceipts is the answer check of an eth_getBlockReceipts answer for
-// block hash (spec §10): non-null, every receipt names hash, and non-empty
-// unless h's transactionsRoot is the empty-trie root. Anything else fails
-// the fetch; it never reads as "no logs". With h's judgedBloom, the
-// verdict compares the OR of the receipt blooms with it.
-func parseReceipts(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts, error) {
+// block hash (spec §11): non-null, every receipt names hash, and non-empty
+// unless the block is empty (bloomGate.empty). Anything else fails the
+// fetch; it never reads as "no logs". With h's judgedBloom, the verdict
+// compares the OR of the receipt blooms with it.
+func parseReceipts(result []byte, hash [32]byte, h *chainHeader, empty bool) (*heldReceipts, error) {
 	if isNullResult(result) {
 		return nil, fmt.Errorf("%w: null", errReceiptsAnswer)
 	}
@@ -337,7 +361,7 @@ func parseReceipts(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts,
 	if err := common.SonicCfg.Unmarshal(result, &rs); err != nil {
 		return nil, fmt.Errorf("%w: %v", errReceiptsAnswer, err)
 	}
-	if len(rs) == 0 && (h == nil || !h.emptyTxs) {
+	if len(rs) == 0 && !empty {
 		return nil, fmt.Errorf("%w: no receipts for a block with transactions", errReceiptsAnswer)
 	}
 	key := hexHash(hash)
@@ -390,10 +414,10 @@ type synthReceipt struct {
 // receipts fallback: non-null, and every log names hash; with logIndexes,
 // their logIndexes run 0..N-1 (logIndexContiguity). No logs reads as "no
 // logs" only when the bloom check proves it (checking, with h's
-// judgedBloom) or h's transactionsRoot is the empty-trie root. Its logs are
-// grouped into receipts by transaction; the bloom verdict compares the
-// bloom of the logs with h's judgedBloom.
-func parseLogs(result []byte, hash [32]byte, h *chainHeader, checking, logIndexes bool) (*heldReceipts, error) {
+// judgedBloom) or the block is empty. Its logs are grouped into receipts
+// by transaction; the bloom verdict compares the bloom of the logs with h's
+// judgedBloom.
+func parseLogs(result []byte, hash [32]byte, h *chainHeader, empty, checking, logIndexes bool) (*heldReceipts, error) {
 	if isNullResult(result) {
 		return nil, fmt.Errorf("%w: null", errReceiptsAnswer)
 	}
@@ -401,8 +425,8 @@ func parseLogs(result []byte, hash [32]byte, h *chainHeader, checking, logIndexe
 	if err := common.SonicCfg.Unmarshal(result, &raws); err != nil {
 		return nil, fmt.Errorf("%w: %v", errReceiptsAnswer, err)
 	}
-	if len(raws) == 0 && !(checking && judgedBloom(h) != nil) && (h == nil || !h.emptyTxs) {
-		return nil, fmt.Errorf("%w: no logs, and neither the bloom nor the transactions root proves none", errReceiptsAnswer)
+	if len(raws) == 0 && !(checking && judgedBloom(h) != nil) && !empty {
+		return nil, fmt.Errorf("%w: no logs, and neither the bloom nor an empty block proves none", errReceiptsAnswer)
 	}
 	key := hexHash(hash)
 	r := newHeldReceipts(hash, h, nil)
@@ -594,11 +618,13 @@ func (t *ChainTracker) receiptsSpec(class fetchClass, hash [32]byte, h *chainHea
 		deferChecks: !logs,
 	}
 	gate := t.fetch.bloom
-	parse := parseReceipts
+	parse := func(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts, error) {
+		return parseReceipts(result, hash, h, gate.empty(h))
+	}
 	if logs {
 		spec.kind, spec.method, spec.params = "logs", "eth_getLogs", `[{"blockHash":"`+key+`"}]`
 		parse = func(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts, error) {
-			return parseLogs(result, hash, h, gate.checking(), gate.prof().logIndexes)
+			return parseLogs(result, hash, h, gate.empty(h), gate.checking(), gate.prof().logIndexes)
 		}
 	}
 	spec.decode = func(result []byte, from common.Upstream) (any, error) {
