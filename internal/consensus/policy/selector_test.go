@@ -482,6 +482,22 @@ func TestEvaluate_ReferenceMatrix(t *testing.T) {
 	}
 }
 
+// A closure that counts calls must not carry that count onto the next
+// request. The pool used to release a successful VM; the ninth call then
+// reused one of the eight pre-warmed realms and returned "later".
+func TestEvaluate_FreshRealmEachCall(t *testing.T) {
+	s := mustCompile(t, `(() => { let n = 0; return () => { n++; return n === 1 ? "first" : "later" } })()`)
+	for i := 0; i < poolSize+2; i++ {
+		name, err := s.Evaluate(EvalContext{}, time.Second)
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		if name != "first" {
+			t.Fatalf("call %d returned %q, want first", i, name)
+		}
+	}
+}
+
 func TestEvaluate_Concurrent(t *testing.T) {
 	s := mustCompile(t, referenceEval)
 	ctx := EvalContext{

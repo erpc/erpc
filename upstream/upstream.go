@@ -247,6 +247,11 @@ type Upstream struct {
 	// snapshotted. OnValue(0) must not clear a later re-assert (gen above this).
 	// Index 2 matches health.Tracker.CordonGens: [punishment, availability, operator].
 	uncordonMaxOperatorGen atomic.Uint64
+	// uncordonSnap is the full per-class generation snapshot for this
+	// UncordonAdmin. The recovery callback uses it so a detector cordon that
+	// lands during the clock wait (it does not take adminCordonMu) is kept.
+	// Nil on peers, which fall back to the time watermark.
+	uncordonSnap atomic.Pointer[[3]uint64]
 }
 
 func NewUpstream(
@@ -1625,6 +1630,8 @@ func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
 	// lands after this recovery cannot be wiped by our local clear (or by a
 	// delayed recovery OnValue that races the same pod).
 	gens := u.metricsTracker.CordonGens(u, "*")
+	snap := gens
+	u.uncordonSnap.Store(&snap)
 	u.uncordonMaxOperatorGen.Store(gens[operatorCordonGenIndex])
 	u.uncordonInFlight.Store(true)
 	watermarkMs := time.Now().UnixMilli()
@@ -1657,6 +1664,7 @@ func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
 	defer u.operatorCordonReason.Store("")
 	defer u.uncordonInFlight.Store(false)
 	defer u.uncordonMaxOperatorGen.Store(0)
+	defer u.uncordonSnap.Store(nil)
 	// A CordonAdmin that re-asserted after the snapshot bumped the operator
 	// generation. Our zero must not be the value that sticks, and the gated
 	// clear below must not run against that newer bit.
@@ -1760,6 +1768,15 @@ func (u *Upstream) operatorRecoveryVar() data.CounterInt64SharedVariable {
 			defer u.adminCordonMu.Unlock()
 			// A newer CordonAdmin that won after TryUpdate(0) must keep its bit.
 			if op.GetValue() > 0 {
+				return
+			}
+			// On the issuing pod, clear by the generation snapshot. A detector
+			// cordon during the clock wait does not take adminCordonMu, so its
+			// set time can still be <= watermarkMs; the generation is what
+			// proves it landed after the snapshot. Peers have no snapshot and
+			// use the watermark.
+			if snap := u.uncordonSnap.Load(); snap != nil {
+				u.metricsTracker.UncordonClassesAtMostGens(u, "*", reason, *snap)
 				return
 			}
 			u.metricsTracker.UncordonClassesNotAfter(u, "*", reason, notAfterMs)

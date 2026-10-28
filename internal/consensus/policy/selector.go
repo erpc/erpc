@@ -125,7 +125,6 @@ func runProgramBounded(rt *sobek.Runtime, prog *sobek.Program, timeout time.Dura
 		return val, err
 	case <-timer.C:
 		rt.Interrupt(ErrEvalTimeout)
-		<-done
 		return nil, ErrEvalTimeout
 	}
 }
@@ -188,7 +187,6 @@ func (s *Selector) Evaluate(ctx EvalContext, timeout time.Duration) (string, err
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			v.interrupt(ErrEvalTimeout)
-			<-done
 			s.pool.discard()
 			return "", ErrEvalTimeout
 		}
@@ -197,8 +195,11 @@ func (s *Selector) Evaluate(ctx EvalContext, timeout time.Duration) (string, err
 		select {
 		case <-done:
 		case <-timer.C:
+			// Interrupt is cooperative and does not preempt a native builtin
+			// (regex, sort, JSON.stringify). Do not block the request on that
+			// call. The VM is discarded so it cannot be reused; the goroutine
+			// exits when the native call returns.
 			v.interrupt(ErrEvalTimeout)
-			<-done
 			s.pool.discard()
 			return "", ErrEvalTimeout
 		}
@@ -218,7 +219,10 @@ func (s *Selector) Evaluate(ctx EvalContext, timeout time.Duration) (string, err
 		s.pool.discard()
 		return "", err
 	}
-	s.pool.release(v)
+	// A successful eval can still mutate globalThis or close over mutable
+	// state. Reusing the VM would let a later request observe that. Discard
+	// so the next caller gets a fresh realm; the pool refills asynchronously.
+	s.pool.discard()
 	return name, nil
 }
 
