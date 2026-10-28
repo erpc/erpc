@@ -1187,6 +1187,10 @@ func (r *NormalizedRequest) Validate() error {
 		return NewErrInvalidRequest(fmt.Errorf("method is required"))
 	}
 
+	if !IsValidMethodName(method) {
+		return errInvalidMethodName(method)
+	}
+
 	return nil
 }
 
