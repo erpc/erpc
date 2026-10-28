@@ -35,6 +35,8 @@ func (c *capturingExporter) AppendWithMetadata(line []byte, method, networkId st
 	return c.err
 }
 
+func (c *capturingExporter) Close() error { return nil }
+
 func (c *capturingExporter) records(t *testing.T) []misbehaviorRecord {
 	t.Helper()
 	c.mu.Lock()
@@ -75,7 +77,7 @@ func trackRound(t *testing.T, e *executor, labels metricsLabels, responses []*ex
 	ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
 	lg := zerolog.Nop()
 	analysis := newConsensusAnalysis(&lg, ctx, e.config, responses)
-	winner := e.determineWinner(&lg, analysis)
+	winner := e.determineWinner(ctx, &lg, analysis)
 	e.trackAndPunishMisbehavingUpstreams(&lg, req, labels, winner, analysis)
 	return winner
 }
@@ -406,18 +408,18 @@ func TestFileMisbehaviorExporter_Lifecycle(t *testing.T) {
 	lg := zerolog.Nop()
 
 	t.Run("rejects empty and relative paths", func(t *testing.T) {
-		_, err := newFileMisbehaviorExporter(nil, &lg)
+		_, err := newFileMisbehaviorExporter(nil, &lg, defaultPolicyName)
 		require.Error(t, err)
-		_, err = newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{}, &lg)
+		_, err = newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{}, &lg, defaultPolicyName)
 		require.Error(t, err)
-		_, err = newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{Path: "relative/dir"}, &lg)
+		_, err = newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{Path: "relative/dir"}, &lg, defaultPolicyName)
 		require.ErrorContains(t, err, "must be absolute")
 	})
 
 	t.Run("fails when the base path cannot be created", func(t *testing.T) {
 		blocker := filepath.Join(t.TempDir(), "file")
 		require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
-		_, err := newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{Path: filepath.Join(blocker, "sub")}, &lg)
+		_, err := newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{Path: filepath.Join(blocker, "sub")}, &lg, defaultPolicyName)
 		require.Error(t, err)
 	})
 
@@ -425,13 +427,13 @@ func TestFileMisbehaviorExporter_Lifecycle(t *testing.T) {
 		dir := t.TempDir()
 		exp, err := newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{
 			Path: dir, FilePattern: "{method}-{networkId}",
-		}, &lg)
+		}, &lg, defaultPolicyName)
 		require.NoError(t, err)
 		require.NoError(t, exp.AppendWithMetadata([]byte(`{"n":1}`), "eth_call", "evm:1"))
 		require.NoError(t, exp.AppendWithMetadata([]byte(`{"n":2}`), "eth_call", "evm:1"))
 		require.NoError(t, exp.AppendWithMetadata([]byte(`{"n":3}`), "eth_getLogs", "evm:1"))
 		require.NoError(t, exp.Close())
-		assert.Empty(t, exp.fileHandles)
+		assert.Empty(t, exp.hub.handles)
 
 		readLines := func(name string) []string {
 			f, err := os.Open(filepath.Join(dir, name))
@@ -450,7 +452,7 @@ func TestFileMisbehaviorExporter_Lifecycle(t *testing.T) {
 
 	t.Run("reports an error when the target file cannot be opened", func(t *testing.T) {
 		dir := t.TempDir()
-		exp, err := newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{Path: dir, FilePattern: "{method}"}, &lg)
+		exp, err := newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{Path: dir, FilePattern: "{method}"}, &lg, defaultPolicyName)
 		require.NoError(t, err)
 		// A directory squatting on the resolved file name makes open fail.
 		require.NoError(t, os.Mkdir(filepath.Join(dir, "eth_call.jsonl"), 0o750))
@@ -462,8 +464,8 @@ func TestFileMisbehaviorExporter_Lifecycle(t *testing.T) {
 func TestCreateMisbehaviorExporter_SelectsImplementation(t *testing.T) {
 	lg := zerolog.Nop()
 
-	assert.Nil(t, createMisbehaviorExporter(nil, &lg))
-	assert.Nil(t, createMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{}, &lg))
+	assert.Nil(t, createMisbehaviorExporter(nil, &lg, defaultPolicyName))
+	assert.Nil(t, createMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{}, &lg, defaultPolicyName))
 	assert.Nil(t, NewMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{
 		Type: common.MisbehaviorsDestinationTypeFile, Path: "not-absolute",
 	}, &lg), "a file exporter that fails to initialize is disabled")

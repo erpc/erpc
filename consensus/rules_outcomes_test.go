@@ -729,7 +729,7 @@ func TestShouldShortCircuit_Reasons(t *testing.T) {
 			analysis := analyzeFor(t, tt.cfg, method, nil, tt.results(t))
 			lg := zerolog.Nop()
 			e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: tt.cfg}}
-			winner := e.determineWinner(&lg, analysis)
+			winner := e.determineWinner(context.Background(), &lg, analysis)
 			reason, ok := e.shouldShortCircuit(winner, analysis)
 			assert.Equal(t, tt.wantReason != "", ok)
 			assert.Equal(t, tt.wantReason, reason)
