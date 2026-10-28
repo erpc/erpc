@@ -618,7 +618,7 @@ func TestCovInteg_StateProber(t *testing.T) {
 		net := &covIntegFleetHeadNet{covIntegFleetNet: fleet, latest: head}
 		p := mkProber(net, 0)
 		p.probeLatest(ctx, u)
-		assert.Equal(t, 1, fleet.callCount())
+		assert.Equal(t, 2, fleet.callCount(), "ArbSys answers no code, so Multicall3 is decided and asked")
 		assert.True(t, fleet.lastDirs().SkipInterpolation, "the probe sends latest as the tag")
 		assert.Equal(t, tagNoEvidence, p.tagHead("u1", head, time.Now()).state)
 		assert.Zero(t, fakeTrackerOf(t, u).MisbehaviorCount)
