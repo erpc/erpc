@@ -502,7 +502,7 @@ func (n *Network) evmTipBallot(ctx context.Context, useFinalized bool, q common.
 		}
 		heads = append(heads, head)
 	}
-	return common.PickServedTip(heads, q), best >= 0 && best <= 1
+	return common.PickServedTip(heads, q, n.servedTipPairLead()), best >= 0 && best <= 1
 }
 
 // evmTipObservation returns an upstream's effective head for the axis, plus
@@ -1262,13 +1262,24 @@ func (n *Network) servedTipMaxRegressionBlocks() int64 {
 	return common.DefaultToleratedBlockHeadRollback
 }
 
+// servedTipPairLead is the widest gap between exactly two voters within which
+// the higher head is served (common.PickServedTip's pair rule): the regression
+// tolerance, or the shared rollback tolerance when the operator turned the
+// guard off with -1, so the rule stays on whatever the guard does.
+func (n *Network) servedTipPairLead() int64 {
+	if t := n.servedTipMaxRegressionBlocks(); t > 0 {
+		return t
+	}
+	return common.DefaultToleratedBlockHeadRollback
+}
+
 // SvmHighestLatestSlot returns the majority-vote latest slot across SVM
 // upstreams. Uses common.PickServedTip with a strict-majority quorum so a single
 // fast/rogue upstream cannot inflate the served tip.
 func (n *Network) SvmHighestLatestSlot(ctx context.Context) int64 {
 	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestLatestSlot")
 	defer span.End()
-	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, false), common.ServedTipQuorumMajority)
+	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, false), common.ServedTipQuorumMajority, 0)
 	span.SetAttributes(attribute.Int64("highest_latest_slot", pick.Tip))
 	return pick.Tip
 }
@@ -1280,7 +1291,7 @@ func (n *Network) SvmHighestLatestSlot(ctx context.Context) int64 {
 func (n *Network) SvmHighestFinalizedSlot(ctx context.Context) int64 {
 	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestFinalizedSlot")
 	defer span.End()
-	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, true), common.ServedTipQuorumMajority)
+	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, true), common.ServedTipQuorumMajority, 0)
 	span.SetAttributes(attribute.Int64("highest_finalized_slot", pick.Tip))
 	return pick.Tip
 }
