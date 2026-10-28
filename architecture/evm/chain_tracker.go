@@ -39,7 +39,7 @@ var mailboxHeaderCap = 1024
 
 // trackerPanicsToReset is how many messages of one kind may panic, with
 // none of that kind handled cleanly between them, before the tracker resets
-// to empty (handle).
+// to empty (handleBatch).
 const trackerPanicsToReset = 3
 
 // TrackerMessageHook, when set, runs on a tracker's goroutine before each
@@ -170,7 +170,7 @@ type ChainTracker struct {
 	// later neither ends nor reopens the window.
 	coldUntil time.Time
 	// voters is the lane's voter set as the network's intake last read it,
-	// before the message being handled.
+	// before the batch being handled.
 	voters HashVoters
 	// vendors is voters.Vendors, published for readers on other
 	// goroutines: fetch answer checks, suspension, logs subscribes.
@@ -208,7 +208,7 @@ type ChainTracker struct {
 	// probe is armed while receipts fail: the outage's head-block fetches.
 	probe         *time.Timer
 	// panics counts, per panicSlot, the panics since a message of that slot
-	// was last handled cleanly (handle).
+	// was last handled cleanly (handleBatch).
 	panics [panicSlots]int
 	stack  []*node // walkTree's scratch
 	// pick's scratch (countVotes)
@@ -218,7 +218,7 @@ type ChainTracker struct {
 	// since trees was last published.
 	treesDirty bool
 	// served: history serves the tracker (spec §6.5 rule 1), read once per
-	// message (readServed).
+	// batch (readServed).
 	served bool
 }
 
@@ -572,52 +572,79 @@ func (t *ChainTracker) run(ctx context.Context) {
 			return
 		case <-t.mb.wake:
 		}
-		for _, msg := range t.mb.take() {
-			t.handle(msg)
+		t.handleBatch(t.mb.take())
+	}
+}
+
+// handleBatch applies one batch the mailbox gave (spec §3): it reads the
+// voters once, applies every message but the client answers in order, then
+// the answers, so a burst of answers delays a vote by at most one batch;
+// then it moves walks, fill, settles and asks on once, and only then ends
+// the syncs. The messages and each step of update recover on their own: a
+// panicking message is dropped, and a panic in it, or in a step of update,
+// counts in the panicSlot of each message of the batch it touched. 3
+// panics in one panicSlot, with no message of that slot handled cleanly
+// between them, reset the tracker to empty: other kinds come between any
+// two of one kind, so a state that breaks only source votes, or only fetch
+// answers, still resets, while one vendor's bad header among clean ones
+// never does.
+func (t *ChainTracker) handleBatch(batch []trackerMsg) {
+	defer func() {
+		for _, msg := range batch {
+			if msg.done != nil {
+				close(msg.done)
+			}
+		}
+	}()
+	updates := slices.ContainsFunc(batch, func(msg trackerMsg) bool { return msg.kind != msgSync })
+	if updates {
+		t.readVoters()
+		t.readServed()
+	}
+	var failed []int
+	for _, answers := range []bool{false, true} {
+		for i, msg := range batch {
+			if isAnswer(msg) != answers {
+				continue
+			}
+			if !t.guard("message", func() { t.receive(msg) }, func() { t.dropped(msg) }) {
+				failed = append(failed, i)
+			}
+		}
+	}
+	updated := !updates || t.update()
+	for i, msg := range batch {
+		slot := panicSlot(msg)
+		if !slices.Contains(failed, i) && (updated || msg.kind == msgSync) {
+			t.panics[slot] = 0
+			continue
+		}
+		t.panics[slot]++
+		if t.panics[slot] >= trackerPanicsToReset {
+			t.panics = [panicSlots]int{}
+			t.reset()
+			telemetry.CounterHandle(telemetry.MetricChainTrackerResetTotal, t.projectId(), t.networkLabel()).Inc()
+			t.transition(zerolog.ErrorLevel, "reset").Int("panics", trackerPanicsToReset).Int("slot", slot).
+				Msg("chain tracker reset to empty after panics in a row")
 		}
 	}
 }
 
-// handle applies one message, then moves walks, fill, settles and asks on.
-// The message and each step of update recover on their own: a panicking
-// message is dropped, and a panic in it or in a step of update counts in
-// the message's panicSlot. 3 panics in one panicSlot, with no message of
-// that slot handled cleanly between them, reset the tracker to empty:
-// other kinds come between any two of one kind, so a state that breaks
-// only source votes, or only fetch answers, still resets, while one
-// vendor's bad header among clean ones never does.
-func (t *ChainTracker) handle(msg trackerMsg) {
-	if msg.done != nil {
-		defer close(msg.done)
+// isAnswer: msg is a client or integrity answer, which a batch applies
+// after every other message.
+func isAnswer(msg trackerMsg) bool {
+	return msg.kind == msgHeader && msg.vote == voteNone
+}
+
+// dropped is what a message that panicked leaves: a source header counts
+// as malformed for its sender, and a settle request is answered.
+func (t *ChainTracker) dropped(msg trackerMsg) {
+	if msg.kind == msgHeader && msg.vote == voteSource {
+		telemetry.CounterHandle(telemetry.MetricChainTrackerSourceHeadsTotal,
+			t.projectId(), t.networkLabel(), msg.upstream, "malformed").Inc()
 	}
-	if msg.kind != msgSync {
-		t.readVoters()
-		t.readServed()
-	}
-	ok := t.guard("message", func() { t.receive(msg) }, func() {
-		if msg.kind == msgHeader && msg.vote == voteSource {
-			telemetry.CounterHandle(telemetry.MetricChainTrackerSourceHeadsTotal,
-				t.projectId(), t.networkLabel(), msg.upstream, "malformed").Inc()
-		}
-		if msg.settled != nil {
-			report(msg.settled, settleUnanswered)
-		}
-	})
-	if msg.kind != msgSync {
-		ok = t.update() && ok
-	}
-	slot := panicSlot(msg)
-	if ok {
-		t.panics[slot] = 0
-		return
-	}
-	t.panics[slot]++
-	if t.panics[slot] >= trackerPanicsToReset {
-		t.panics = [panicSlots]int{}
-		t.reset()
-		telemetry.CounterHandle(telemetry.MetricChainTrackerResetTotal, t.projectId(), t.networkLabel()).Inc()
-		t.transition(zerolog.ErrorLevel, "reset").Int("panics", trackerPanicsToReset).Int("slot", slot).
-			Msg("chain tracker reset to empty after panics in a row")
+	if msg.settled != nil {
+		report(msg.settled, settleUnanswered)
 	}
 }
 
@@ -690,7 +717,7 @@ func (t *ChainTracker) guard(step string, fn func(), onPanic func()) (ok bool) {
 	return true
 }
 
-// update runs after every message: walks that nothing waits on end, votes
+// update runs after every batch: walks that nothing waits on end, votes
 // whose walks ended move (rule 3), a settle whose answers are in ends
 // (rule 5), the pins follow the votes (rule 4), a vote off the pins is
 // refreshed before its voter is polled (§6.3), roots extend (rules 1, 2),
@@ -863,7 +890,7 @@ func (t *ChainTracker) farAhead(h *chainHeader) bool {
 }
 
 // HashVoters is what the network's intake says of one lane's voters (spec
-// §6.2, §6.5), read once per tracker message.
+// §6.2, §6.5), read once per batch of tracker messages.
 type HashVoters struct {
 	// Voters are the lane's voters in selection order; settles and
 	// no-source Asks go to them.
@@ -1079,9 +1106,11 @@ func (t *ChainTracker) hold(h *chainHeader) *node {
 }
 
 // capOrphans keeps at most maxOrphansPerHeight unpinned headers at a
-// height, dropping the oldest childless one that no counted vote points
-// to; keep, just held, stays. An orphan with held children stays, so a
-// drop never cuts a tree inside the window.
+// height, dropping the oldest childless one that no counted vote, nor a
+// vote its walk or the batch's update holds back, points to: every vote is
+// held (spec §6 rule 1), and answers applied after the votes of their
+// batch never push one out. keep, just held, stays. An orphan with held
+// children stays, so a drop never cuts a tree inside the window.
 func (t *ChainTracker) capOrphans(number uint64, keep *node) {
 	orphans := 0
 	for _, n := range t.heights[number] {
@@ -1097,11 +1126,21 @@ func (t *ChainTracker) capOrphans(number uint64, keep *node) {
 		if orphans <= maxOrphansPerHeight {
 			return
 		}
-		if n != keep && len(n.children) == 0 && !t.pinned(n) && !slices.ContainsFunc(counted, func(v voter) bool { return v.n == n }) {
+		if n != keep && len(n.children) == 0 && !t.pinned(n) && !slices.ContainsFunc(counted, func(v voter) bool { return v.n == n }) && !t.pendingVote(n) {
 			t.drop(n, true)
 			orphans--
 		}
 	}
+}
+
+// pendingVote reports whether n is a vote not yet moved (promote).
+func (t *ChainTracker) pendingVote(n *node) bool {
+	for _, p := range t.pending {
+		if p == n {
+			return true
+		}
+	}
+	return false
 }
 
 // drop releases a held header. Only eviction drops a header with children;

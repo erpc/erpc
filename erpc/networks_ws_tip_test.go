@@ -567,6 +567,90 @@ func TestNetworkIntake_WithholdsUnacceptedMajorJump(t *testing.T) {
 	eventuallyPinned(t, network, 1002, "the next heads of the right chain vote")
 }
 
+// An indexer backfills blocks through the tracker while a source votes:
+// 2,046 client answers, as many as the mailbox lets queue ahead of a vote
+// (1,023 in the batch the tracker took, 1,023 queued), stand before the
+// vote. The tracker takes votes before answers, so the vote waits for the
+// rest of its batch at most (spec §3).
+func TestNetworkIntake_VoteBehindClientAnswersWaitsOneBatch(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, u := setupWsTipNetwork(t, ctx, "rpc5", "http://rpc5.localhost")
+	u.EvmStatePoller().SuggestLatestBlock(1000, time.Now())
+	network.intake.Polled("rpc5", polledHead(t, "a", 1000), nil, evm.HeaderStreamed, time.Now())
+	eventuallyPinned(t, network, 1000, "the source pins 1000")
+	tracker := network.chainTracker
+
+	// The mailbox holds 1,024 headers; a stall marker or the vote takes
+	// one place.
+	const mailboxMessages = 1023
+	var (
+		stalls        = map[string]chan struct{}{"stall-1": make(chan struct{}), "stall-2": make(chan struct{})}
+		releases      = map[string]chan struct{}{"stall-1": make(chan struct{}), "stall-2": make(chan struct{})}
+		released      atomic.Bool
+		answers       int // only the tracker's goroutine writes it
+		answersBefore int
+		voteDelay     time.Duration
+		releasedAt    time.Time
+		voteSeen      = make(chan struct{})
+	)
+	hook := func(tr *evm.ChainTracker, upstreamId string, header *indexer.Cursor, sourceVote bool) {
+		if tr != tracker {
+			return
+		}
+		if stalled, ok := stalls[upstreamId]; ok {
+			close(stalled)
+			<-releases[upstreamId]
+			return
+		}
+		if !released.Load() {
+			return
+		}
+		switch {
+		case upstreamId == "client":
+			answers++
+		case sourceVote && upstreamId == "rpc5" && header != nil && header.Number == 1001 && voteDelay == 0:
+			voteDelay, answersBefore = time.Since(releasedAt), answers
+			close(voteSeen)
+		}
+	}
+	evm.TrackerMessageHook.Store(&hook)
+	t.Cleanup(func() { evm.TrackerMessageHook.Store(nil) })
+
+	answer := func(i int) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(`{"number":"0x3e9","hash":"%s","parentHash":"%s","timestamp":"0x%x"}`,
+			tipHash("c", uint64(i)), tipHash("a", 1000), 1_700_001_001))
+	}
+	tracker.Observe("stall-1", tipHead("e", 1001), true)
+	<-stalls["stall-1"]
+	tracker.Observe("stall-2", tipHead("e", 1002), true)
+	for i := range mailboxMessages {
+		tracker.Observe("client", answer(i), false)
+	}
+	close(releases["stall-1"])
+	<-stalls["stall-2"]
+	for i := range mailboxMessages {
+		tracker.Observe("client", answer(mailboxMessages+i), false)
+	}
+	network.intake.Polled("rpc5", polledHead(t, "a", 1001), nil, evm.HeaderStreamed, time.Now())
+	releasedAt = time.Now()
+	released.Store(true)
+	close(releases["stall-2"])
+	select {
+	case <-voteSeen:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the tracker never handled the vote")
+	}
+	t.Logf("a vote behind %d client answers waited %s, handled after %d of them",
+		2*mailboxMessages, voteDelay, answersBefore)
+	assert.LessOrEqual(t, answersBefore, mailboxMessages, "the vote waits for the rest of its batch at most")
+	require.Eventually(t, func() bool { return pinned(network) == 1001 }, 2*time.Second, 10*time.Millisecond,
+		"the vote moves the pins, pinned %d", pinned(network))
+}
+
 // A head from a source the network does not know never votes and reaches
 // no client.
 func TestNetworkIntake_WithholdsUnverifiableSource(t *testing.T) {
