@@ -117,7 +117,7 @@ T   the rest of the real-world catalogue
 
 - Add every spec §19 scenario not yet run: U2, U4–U7, U13, U15, N1, N2, N4, N5, N7, C1–C3, C6, C8, C10, C11, C14, D1–D7, D9, X1, X4, X6, K1–K4, P2–P4, P8.
 - Change: `erpc/chain_feed_test.go` uses `test/chainsim`; it stays the fast CI test.
-- Tests: all 75 scenarios pass on `make test-realworld`; the chaos test passes 3 runs under `-race`.
+- Tests: all 82 scenarios pass on `make test-realworld`; the chaos test passes 3 runs under `-race`.
 
 ## Slice 7: docs, last deletions, verify, smoke
 
@@ -126,7 +126,7 @@ T   the rest of the real-world catalogue
   - `docs/pages/operation/production.mdx`: `subscriptionBufferSize` and the `indexer` block removed.
   - `docs/pages/config/projects/upstreams.mdx`: `subscriptionSource`.
   - `docs/pages/config/projects/networks.mdx`: `chainTracker`, deleted keys, per-method tags and `translateLatestTag`.
-  - `docs/pages/config/failsafe/integrity.mdx`: follow tap; suspension; evidence quorum; `matchRequestKind: internal` no longer covers tracker fetches.
+  - `docs/pages/config/failsafe/integrity.mdx`: follow tap; suspension; evidence quorum; `matchRequestKind: internal` is refused at load.
   - `docs/pages/config/failsafe/circuit-breaker.mdx`: tracker fetches skip open breakers and never feed them.
   - `docs/pages/reference/metrics.mdx`: spec §17.
   - The gRPC `StreamBlocks` page: resume fields, reorg resend, end codes.
