@@ -55,7 +55,15 @@ func loadBaseReceipts(b *testing.B) *evm.GetBlockReceiptsResponse {
 func BenchmarkGrpcBdsReceiptsJson(b *testing.B) {
 	resp := loadBaseReceipts(b)
 	render := func() []byte {
-		return renderResult(func(buf []byte) []byte { return evm.AppendReceiptsJsonRpc(buf, resp.Receipts) })
+		var err error
+		out := renderResult(func(buf []byte) []byte {
+			buf, err = evm.AppendReceiptsJsonRpc(buf, resp.Receipts)
+			return buf
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+		return out
 	}
 	b.SetBytes(int64(len(render())))
 	b.ReportAllocs()

@@ -858,7 +858,15 @@ func (c *GenericGrpcBdsClient) handleGetTransactionReceipt(ctx context.Context, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-	jsonRpcResp.SetResult(renderResult(func(b []byte) []byte { return evm.AppendReceiptJsonRpc(b, grpcResp.Receipt) }))
+	var renderErr error
+	result := renderResult(func(b []byte) []byte {
+		b, renderErr = evm.AppendReceiptJsonRpc(b, grpcResp.Receipt)
+		return b
+	})
+	if renderErr != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", renderErr)
+	}
+	jsonRpcResp.SetResult(result)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -956,7 +964,15 @@ func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, conn 
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-	jsonRpcResp.SetResult(renderResult(func(b []byte) []byte { return evm.AppendReceiptsJsonRpc(b, grpcResp.Receipts) }))
+	var renderErr error
+	result := renderResult(func(b []byte) []byte {
+		b, renderErr = evm.AppendReceiptsJsonRpc(b, grpcResp.Receipts)
+		return b
+	})
+	if renderErr != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", renderErr)
+	}
+	jsonRpcResp.SetResult(result)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
