@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -27,13 +28,15 @@ import (
 // VERIFIED header for a height (the trust anchor — without the follower this
 // verification would be circular, judging the node against its own claims):
 //
-//   - context probe: eth_call to the Multicall3 getBlockNumber() pinned at
-//     block N. The EVM answers from the execution context it actually used, so
-//     a node executing against older state returns the OLDER height. Universal
-//     (Multicall3 is deployed at one address on 200+ chains) and catches the
-//     operational failure: fleets/nodes that lag their own claimed head.
-//     Validated live: at a pinned block the returned number matches the
-//     verified header exactly; pointed at N-5000 it returns N-5000's context.
+//   - context probe: the network's execution-context call (stateContext:
+//     Multicall3 getBlockNumber(), ArbSys arbBlockNumber() on Nitro) pinned
+//     at block N. The EVM answers from the execution context it actually
+//     used, so a node executing against older state returns the OLDER
+//     height. Universal (Multicall3 is deployed at one address on 200+
+//     chains) and catches the operational failure: fleets/nodes that lag
+//     their own claimed head. Validated live: at a pinned block the returned
+//     number matches the verified header exactly; pointed at N-5000 it
+//     returns N-5000's context.
 //
 //   - proof probe: eth_getProof for the same account at N; the first account-
 //     proof node must keccak-hash to the verified header's stateRoot. That is
@@ -66,10 +69,6 @@ import (
 // the existing misbehaviorRateAbove predicate. The tag-state heads are the
 // one exception: the gate in checkEvmUpstreamBlockAvailability skips an
 // upstream whose "latest" state is stale for tag requests.
-// The context-probe target is per-ARCHITECTURE (integrity.ChainStateContextProbe):
-// standard EVMs use Multicall3 getBlockNumber, but e.g. Nitro's block.number is
-// the L1 height and needs ArbSys arbBlockNumber instead — assuming one probe
-// for all chains mislabelled every honest arbitrum upstream as stale.
 
 // stateProbeMinInterval is the default floor between probes of one upstream.
 const stateProbeMinInterval = 2 * time.Second
@@ -86,7 +85,7 @@ type stateProber struct {
 	network  common.Network
 	view     *ChainTracker // the tracker whose pinned headers anchor the probes
 	interval time.Duration
-	ctxProbe *integrity.StateContextProbe // per-architecture "which block are you in"
+	stateCtx stateContext // the network's execution-context call, decided by its first probe
 	// pinnedProbes: integrity follow and stateProbe are on, so followed heads
 	// run the context and proof probes (#1109). The latest probe runs anyway.
 	pinnedProbes bool
@@ -144,15 +143,10 @@ func startStateProber(ctx context.Context, n common.Network, v *ChainTracker, cf
 	if cfg != nil && cfg.Interval > 0 {
 		interval = cfg.Interval.Duration()
 	}
-	var chainId int64
-	if c := n.Config(); c != nil && c.Evm != nil {
-		chainId = c.Evm.ChainId
-	}
 	p := &stateProber{
 		network:      n,
 		view:         v,
 		interval:     interval,
-		ctxProbe:     integrity.ChainStateContextProbe(chainId),
 		pinnedProbes: cfg != nil,
 		lastProbe:    map[string]time.Time{},
 		work:         make(chan int64, 1),
@@ -789,25 +783,26 @@ func TagStateSkip(n common.Network, u common.Upstream, r *common.NormalizedReque
 	return false
 }
 
-// executedBlock sends the context probe call at blockParam and returns the
-// block the upstream's EVM executed it in. ok is false when the answer is no
-// evidence; that outcome is already counted under probe.
+// executedBlock sends the network's context call at blockParam and returns
+// the block the upstream's EVM executed it in. ok is false when the answer
+// is no evidence; that outcome is already counted under probe.
 func (p *stateProber) executedBlock(ctx context.Context, u common.Upstream, probe, blockParam string) (int64, bool) {
 	if ok, _ := u.ShouldHandleMethod("eth_call"); !ok {
 		p.count(u, probe, "unsupported")
 		return 0, false
 	}
-	body := fmt.Sprintf(
-		`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"%s","data":"%s"},"%s"]}`,
-		p.ctxProbe.To, p.ctxProbe.Data, blockParam)
-	res, err := p.forwardTo(ctx, u, body)
+	res, err := p.stateCtx.call(ctx, blockParam, func(ctx context.Context, c *integrity.StateContextProbe, blockParam string) (string, error) {
+		return p.forwardTo(ctx, u, fmt.Sprintf(
+			`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"%s","data":"%s"},"%s"]}`,
+			c.To, c.Data, blockParam))
+	})
 	if err != nil {
 		p.count(u, probe, "error")
 		return 0, false
 	}
-	if res == "" || res == "0x" {
-		// No returndata: Multicall3 is not deployed on this chain (or this
-		// node prunes code) — no evidence, not a failure.
+	if r := strings.Trim(res, `"`); r == "" || r == "0x" {
+		// No returndata: the contract is not deployed on this chain (or
+		// this node prunes code) — no evidence, not a failure.
 		p.count(u, probe, "unsupported")
 		return 0, false
 	}
@@ -817,6 +812,54 @@ func (p *stateProber) executedBlock(ctx context.Context, u common.Upstream, prob
 		return 0, false
 	}
 	return got, true
+}
+
+// stateContext is a network's execution-context call (spec §6.11): ArbSys
+// arbBlockNumber() on an Arbitrum Nitro chain, whose Multicall3
+// getBlockNumber() answers the parent chain's height; Multicall3
+// getBlockNumber() elsewhere. A network is Nitro when ArbSys answers there,
+// whatever its chain id: its first probe asks ArbSys, and that answer
+// decides for good. The zero value is undecided.
+type stateContext struct {
+	decided atomic.Pointer[integrity.StateContextProbe]
+}
+
+// probe is the decided call, nil while undecided.
+func (s *stateContext) probe() *integrity.StateContextProbe { return s.decided.Load() }
+
+// call sends the context call at blockParam with send and returns its raw
+// result. Undecided, it sends ArbSys first: a 32-byte word decides Nitro
+// and is the answer; any other answer, or a revert, means ArbSys has no
+// code there, so Multicall3 is decided and sent. A call that gets no
+// answer leaves it undecided.
+func (s *stateContext) call(ctx context.Context, blockParam string, send func(context.Context, *integrity.StateContextProbe, string) (string, error)) (string, error) {
+	if c := s.decided.Load(); c != nil {
+		return send(ctx, c, blockParam)
+	}
+	res, err := send(ctx, integrity.ArbSysBlockNumber, blockParam)
+	switch {
+	case err == nil && isReturnWord(res):
+		s.decided.CompareAndSwap(nil, integrity.ArbSysBlockNumber)
+	case err == nil || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException):
+		s.decided.CompareAndSwap(nil, integrity.Multicall3BlockNumber)
+	default:
+		return "", err
+	}
+	if c := s.decided.Load(); c != integrity.ArbSysBlockNumber {
+		return send(ctx, c, blockParam)
+	}
+	return res, nil
+}
+
+// isReturnWord reports whether res, a JSON-encoded eth_call result, is one
+// 32-byte word.
+func isReturnWord(res string) bool {
+	s := strings.Trim(res, `"`)
+	if len(s) != 66 || s[0] != '0' || (s[1] != 'x' && s[1] != 'X') {
+		return false
+	}
+	_, err := hex.DecodeString(s[2:])
+	return err == nil
 }
 
 // probeProof verifies the upstream can produce an account proof rooted at the
@@ -840,7 +883,7 @@ func (p *stateProber) probeProof(ctx context.Context, u common.Upstream, n int64
 	}
 	body := fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":1,"method":"eth_getProof","params":["%s",[],"0x%x"]}`,
-		p.ctxProbe.To, n)
+		integrity.Multicall3Address, n)
 	res, err := p.forwardTo(ctx, u, body)
 	if err != nil {
 		if isMethodUnsupportedErr(err) {

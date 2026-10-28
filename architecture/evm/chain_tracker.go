@@ -1613,7 +1613,7 @@ func (t *ChainTracker) apply(path []*node) {
 	}
 	t.unstamp(pub.pins, s)
 	t.stamp(s)
-	if pub.head() != head && !head.emptyTxs {
+	if pub.head() != head && !t.fetch.bloom.empty(head) {
 		t.txHeadAt.Store(time.Now().UnixNano())
 	}
 	old := t.state.Swap(s)

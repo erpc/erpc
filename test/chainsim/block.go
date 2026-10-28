@@ -16,6 +16,7 @@ import (
 
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
+	gethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/trie"
 )
 
@@ -312,8 +313,10 @@ func receiptsRoot(tag string, txs [][]logSpec) Hash {
 
 // header builds a block whose header hashes to its hash (blockHashRecompute)
 // and whose logsBloom is the OR of its receipts' blooms, or with offBloom
-// and transactions that OR with one more value added (OffHeaderBloom).
-func header(chainID int64, parent *Block, number uint64, ts uint64, tag string, txs [][]logSpec, pad int, baseFee int64, offBloom bool) (Hash, json.RawMessage) {
+// and transactions that OR with one more value added (OffHeaderBloom). A
+// foreign header (Config.Foreign) carries a hash it does not hash to, and
+// an empty one the roots keccak("") instead of the empty-trie root.
+func header(chainID int64, parent *Block, number uint64, ts uint64, tag string, txs [][]logSpec, pad int, baseFee int64, offBloom, foreign bool) (Hash, json.RawMessage) {
 	var ph Hash
 	if parent != nil {
 		ph = parent.Hash
@@ -343,8 +346,13 @@ func header(chainID int64, parent *Block, number uint64, ts uint64, tag string, 
 		hdr.TxHash = sha256.Sum256(fmt.Appendf(nil, "txs/%d/%s", chainID, tag))
 		hdr.ReceiptHash = receiptsRoot(tag, txs)
 		hdr.GasUsed = uint64(len(txs)) * 21000
+	} else if foreign {
+		hdr.TxHash, hdr.ReceiptHash = gethcrypto.Keccak256Hash(), gethcrypto.Keccak256Hash()
 	}
 	hash := hdr.Hash()
+	if foreign {
+		hash = sha256.Sum256(append([]byte("foreign/"), hash[:]...))
+	}
 	raw, err := hdr.MarshalJSON()
 	if err != nil {
 		panic(err)
@@ -354,6 +362,7 @@ func header(chainID int64, parent *Block, number uint64, ts uint64, tag string, 
 		panic(err)
 	}
 	fields["size"] = json.RawMessage(`"0x220"`)
+	fields["hash"], _ = json.Marshal(hash.Hex())
 	hashes := make([]string, len(txs))
 	for i := range txs {
 		hashes[i] = txHash(hash, i).Hex()

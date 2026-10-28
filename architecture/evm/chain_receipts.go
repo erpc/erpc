@@ -88,6 +88,10 @@ type bloomProfile struct {
 	// emptyOff: the chain profile disables transactionsRootRecompute, so
 	// the root may miss committed system transactions and their receipts.
 	emptyOff bool
+	// foreignRoots: the network sets validateTransactionsRoot: false, its
+	// roots are not Ethereum's trie (Hedera, Kaia), so gasUsed 0, not the
+	// empty-trie root, marks an empty block.
+	foreignRoots bool
 	// agreeLogs: integrity is on, so logs from eth_getLogs by blockHash,
 	// which stand in for receipts that keep failing, are held only once
 	// vendors that meet the evidence quorum answered the same logs.
@@ -118,6 +122,9 @@ func (g *bloomGate) prof() *bloomProfile {
 					g.profile.emptyOff = true
 				}
 			}
+			if dd := cfg.DirectiveDefaults; dd != nil && dd.DeprecatedValidateTransactionsRoot != nil {
+				g.profile.foreignRoots = !*dd.DeprecatedValidateTransactionsRoot
+			}
 		}
 		cs, _, _, _ := resolveIntegrity(n, nil)
 		g.profile.agreeLogs = len(cs) > 0
@@ -143,10 +150,27 @@ func (g *bloomGate) bloomSkips(h *chainHeader) bool {
 	return !p.checkOff && !p.skipsOff && g.trusted.Load() && h.hashRecomputes()
 }
 
-// emptySkips: the block has no transactions, so no receipts to fetch.
+// empty reports whether block h has no transactions, so no receipts (spec
+// §11): its transactionsRoot is the empty-trie root, or on a network with
+// foreign roots its gasUsed is 0. False when no header is held.
+func (g *bloomGate) empty(h *chainHeader) bool {
+	if h == nil {
+		return false
+	}
+	if g.prof().foreignRoots {
+		gas, err := common.HexToInt64(h.parsed.GasUsed)
+		return err == nil && gas == 0
+	}
+	return h.emptyTxs
+}
+
+// emptySkips: the block is empty, so its receipts are never fetched. On
+// Ethereum's roots only for a header whose hash recomputes and a profile
+// whose root lists every transaction; foreign roots prove nothing either
+// way, so gasUsed alone decides there.
 func (g *bloomGate) emptySkips(h *chainHeader) bool {
 	p := g.prof()
-	return !p.checkOff && !p.skipsOff && !p.emptyOff && h.emptyTxs && h.hashRecomputes()
+	return !p.checkOff && g.empty(h) && (p.foreignRoots || !p.skipsOff && !p.emptyOff && h.hashRecomputes())
 }
 
 // newLocked reports whether v is a new outcome for block h; a block counts
@@ -179,7 +203,7 @@ func (g *bloomGate) noted(h *chainHeader, v bloomVerdict) {
 	case v == bloomMismatch:
 		g.txRun = 0
 		g.trusted.Store(false)
-	case !h.emptyTxs:
+	case !g.empty(h):
 		if g.txRun++; g.txRun >= bloomTrustRun {
 			g.trusted.Store(true)
 		}
@@ -187,8 +211,10 @@ func (g *bloomGate) noted(h *chainHeader, v bloomVerdict) {
 }
 
 // heldReceipts is one block's receipts as the feed holds them: verbatim,
-// parsed once, indexed by address and topic0, with the logs each filter
-// matched as positions.
+// checked once; the first logs tap that reads them builds the index by
+// address and topic0, with the logs each filter matched as positions.
+// Receipts only client checks read keep no index and no copy of a log
+// (spec §10.1).
 type heldReceipts struct {
 	hash     [32]byte
 	h        *chainHeader // the header the answer was checked against; nil when none was held
@@ -199,12 +225,14 @@ type heldReceipts struct {
 	// digest is what vendors must agree on for logs from eth_getLogs.
 	digest logsDigest
 
-	logs     []json.RawMessage
-	addr     []string   // per log, lowercase
-	topics   [][]string // per log, lowercase
-	byAddr   map[string][]int32
-	byTopic0 map[string][]int32
-	matches  sync.Map // filter key -> []int32
+	indexOnce sync.Once
+	indexOK   bool // every log of raw parsed into the index
+	logs      []json.RawMessage
+	addr      []string   // per log, lowercase
+	topics    [][]string // per log, lowercase
+	byAddr    map[string][]int32
+	byTopic0  map[string][]int32
+	matches   sync.Map // filter key -> []int32
 
 	view     sync.Once
 	receipts []integrity.Receipt
@@ -247,34 +275,62 @@ func (r *heldReceipts) method() string {
 }
 
 func newHeldReceipts(hash [32]byte, h *chainHeader, raw json.RawMessage) *heldReceipts {
-	r := &heldReceipts{hash: hash, h: h, number: -1, raw: raw,
-		byAddr: make(map[string][]int32), byTopic0: make(map[string][]int32)}
+	r := &heldReceipts{hash: hash, h: h, number: -1, raw: raw}
 	if h != nil {
 		r.number = int64(h.number)
 	}
 	return r
 }
 
-// addLog parses and indexes one log.
-func (r *heldReceipts) addLog(raw json.RawMessage) (logLite, error) {
+// parseLog is one log of an answer as the answer check reads it.
+func parseLog(raw json.RawMessage) (logLite, error) {
 	var l logLite
 	if err := common.SonicCfg.Unmarshal(raw, &l); err != nil {
 		return l, fmt.Errorf("%w: log: %v", errReceiptsAnswer, err)
 	}
-	i := int32(len(r.logs))
-	addr := strings.ToLower(l.Address)
-	topics := make([]string, len(l.Topics))
-	for k, tp := range l.Topics {
-		topics[k] = strings.ToLower(tp)
-	}
-	r.logs = append(r.logs, raw)
-	r.addr = append(r.addr, addr)
-	r.topics = append(r.topics, topics)
-	r.byAddr[addr] = append(r.byAddr[addr], i)
-	if len(topics) > 0 {
-		r.byTopic0[topics[0]] = append(r.byTopic0[topics[0]], i)
-	}
 	return l, nil
+}
+
+// index builds the logs index from raw once, for the first logs tap that
+// reads the receipts, and reports whether every log parsed.
+func (r *heldReceipts) index() bool {
+	r.indexOnce.Do(func() {
+		var rs []struct {
+			Logs []json.RawMessage `json:"logs"`
+		}
+		if common.SonicCfg.Unmarshal(r.raw, &rs) != nil {
+			return
+		}
+		r.byAddr, r.byTopic0 = make(map[string][]int32), make(map[string][]int32)
+		for i := range rs {
+			for _, raw := range rs[i].Logs {
+				l, err := parseLog(raw)
+				if err != nil {
+					return
+				}
+				p := int32(len(r.logs))
+				addr := strings.ToLower(l.Address)
+				topics := lowerAll(l.Topics)
+				r.logs = append(r.logs, raw)
+				r.addr = append(r.addr, addr)
+				r.topics = append(r.topics, topics)
+				r.byAddr[addr] = append(r.byAddr[addr], p)
+				if len(topics) > 0 {
+					r.byTopic0[topics[0]] = append(r.byTopic0[topics[0]], p)
+				}
+			}
+		}
+		r.indexOK = true
+	})
+	return r.indexOK
+}
+
+func lowerAll(ss []string) []string {
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = strings.ToLower(s)
+	}
+	return out
 }
 
 func isNullResult(result []byte) bool {
@@ -293,11 +349,11 @@ func judgedBloom(h *chainHeader) []byte {
 }
 
 // parseReceipts is the answer check of an eth_getBlockReceipts answer for
-// block hash (spec §10): non-null, every receipt names hash, and non-empty
-// unless h's transactionsRoot is the empty-trie root. Anything else fails
-// the fetch; it never reads as "no logs". With h's judgedBloom, the
-// verdict compares the OR of the receipt blooms with it.
-func parseReceipts(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts, error) {
+// block hash (spec §11): non-null, every receipt names hash, and non-empty
+// unless the block is empty (bloomGate.empty). Anything else fails the
+// fetch; it never reads as "no logs". With h's judgedBloom, the verdict
+// compares the OR of the receipt blooms with it.
+func parseReceipts(result []byte, hash [32]byte, h *chainHeader, empty bool) (*heldReceipts, error) {
 	if isNullResult(result) {
 		return nil, fmt.Errorf("%w: null", errReceiptsAnswer)
 	}
@@ -305,7 +361,7 @@ func parseReceipts(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts,
 	if err := common.SonicCfg.Unmarshal(result, &rs); err != nil {
 		return nil, fmt.Errorf("%w: %v", errReceiptsAnswer, err)
 	}
-	if len(rs) == 0 && (h == nil || !h.emptyTxs) {
+	if len(rs) == 0 && !empty {
 		return nil, fmt.Errorf("%w: no receipts for a block with transactions", errReceiptsAnswer)
 	}
 	key := hexHash(hash)
@@ -330,7 +386,7 @@ func parseReceipts(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts,
 			}
 		}
 		for _, l := range rs[i].Logs {
-			if _, err := r.addLog(l); err != nil {
+			if _, err := parseLog(l); err != nil {
 				return nil, err
 			}
 		}
@@ -358,10 +414,10 @@ type synthReceipt struct {
 // receipts fallback: non-null, and every log names hash; with logIndexes,
 // their logIndexes run 0..N-1 (logIndexContiguity). No logs reads as "no
 // logs" only when the bloom check proves it (checking, with h's
-// judgedBloom) or h's transactionsRoot is the empty-trie root. Its logs are
-// grouped into receipts by transaction; the bloom verdict compares the
-// bloom of the logs with h's judgedBloom.
-func parseLogs(result []byte, hash [32]byte, h *chainHeader, checking, logIndexes bool) (*heldReceipts, error) {
+// judgedBloom) or the block is empty. Its logs are grouped into receipts
+// by transaction; the bloom verdict compares the bloom of the logs with h's
+// judgedBloom.
+func parseLogs(result []byte, hash [32]byte, h *chainHeader, empty, checking, logIndexes bool) (*heldReceipts, error) {
 	if isNullResult(result) {
 		return nil, fmt.Errorf("%w: null", errReceiptsAnswer)
 	}
@@ -369,8 +425,8 @@ func parseLogs(result []byte, hash [32]byte, h *chainHeader, checking, logIndexe
 	if err := common.SonicCfg.Unmarshal(result, &raws); err != nil {
 		return nil, fmt.Errorf("%w: %v", errReceiptsAnswer, err)
 	}
-	if len(raws) == 0 && !(checking && judgedBloom(h) != nil) && (h == nil || !h.emptyTxs) {
-		return nil, fmt.Errorf("%w: no logs, and neither the bloom nor the transactions root proves none", errReceiptsAnswer)
+	if len(raws) == 0 && !(checking && judgedBloom(h) != nil) && !empty {
+		return nil, fmt.Errorf("%w: no logs, and neither the bloom nor an empty block proves none", errReceiptsAnswer)
 	}
 	key := hexHash(hash)
 	r := newHeldReceipts(hash, h, nil)
@@ -385,7 +441,7 @@ func parseLogs(result []byte, hash [32]byte, h *chainHeader, checking, logIndexe
 	set := sha256.New()
 	r.digest = logsDigest{count: len(raws), last: -1}
 	for i, raw := range raws {
-		l, err := r.addLog(raw)
+		l, err := parseLog(raw)
 		if err != nil {
 			return nil, err
 		}
@@ -413,9 +469,9 @@ func parseLogs(result []byte, hash [32]byte, h *chainHeader, checking, logIndexe
 			idx = -1
 		}
 		r.digest.last = idx
-		fmt.Fprintf(set, "%s|%d|%s|%s|", strings.ToLower(l.TransactionHash), idx, r.addr[i], strings.ToLower(l.Data))
-		for _, tp := range r.topics[i] {
-			set.Write([]byte(tp))
+		fmt.Fprintf(set, "%s|%d|%s|%s|", strings.ToLower(l.TransactionHash), idx, strings.ToLower(l.Address), strings.ToLower(l.Data))
+		for _, tp := range l.Topics {
+			set.Write([]byte(strings.ToLower(tp)))
 			set.Write([]byte{','})
 		}
 		set.Write([]byte{'\n'})
@@ -449,20 +505,12 @@ func verdictOf(match bool) bloomVerdict {
 	return bloomMismatch
 }
 
-// indexReceipts parses receipts already accepted, such as a Read's batch,
-// without the answer check.
+// indexReceipts indexes receipts already accepted, such as a Read's batch,
+// without the answer check; nil when a log does not parse.
 func indexReceipts(hash [32]byte, raw json.RawMessage) *heldReceipts {
-	var rs []receiptLite
-	if common.SonicCfg.Unmarshal(raw, &rs) != nil {
-		return nil
-	}
 	r := newHeldReceipts(hash, nil, raw)
-	for i := range rs {
-		for _, l := range rs[i].Logs {
-			if _, err := r.addLog(l); err != nil {
-				return nil
-			}
-		}
+	if !r.index() {
+		return nil
 	}
 	return r
 }
@@ -481,6 +529,9 @@ func (r *heldReceipts) integrityView() []integrity.Receipt {
 // computed once per (block, filter): candidates from the address index,
 // else the topic0 index, else every log, each checked with f.Matches.
 func (r *heldReceipts) match(f *logfilter.LogsFilter) []json.RawMessage {
+	if !r.index() {
+		return nil
+	}
 	var pos []int32
 	if v, ok := r.matches.Load(f.Key()); ok {
 		pos = v.([]int32)
@@ -567,11 +618,13 @@ func (t *ChainTracker) receiptsSpec(class fetchClass, hash [32]byte, h *chainHea
 		deferChecks: !logs,
 	}
 	gate := t.fetch.bloom
-	parse := parseReceipts
+	parse := func(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts, error) {
+		return parseReceipts(result, hash, h, gate.empty(h))
+	}
 	if logs {
 		spec.kind, spec.method, spec.params = "logs", "eth_getLogs", `[{"blockHash":"`+key+`"}]`
 		parse = func(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts, error) {
-			return parseLogs(result, hash, h, gate.checking(), gate.prof().logIndexes)
+			return parseLogs(result, hash, h, gate.empty(h), gate.checking(), gate.prof().logIndexes)
 		}
 	}
 	spec.decode = func(result []byte, from common.Upstream) (any, error) {

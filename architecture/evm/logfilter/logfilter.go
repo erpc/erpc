@@ -131,11 +131,20 @@ func Parse(params []any) *LogsFilter {
 	return f
 }
 
+// Limits of a subscribe filter, as geth's (eth/filters maxAddresses,
+// maxTopics, maxSubTopics): matching costs each block's logs times the
+// values, so a client cannot make every block's match unbounded.
+const (
+	maxSubscribeAddresses   = 1000
+	maxSubscribeTopics      = 4
+	maxSubscribeTopicValues = 1000
+)
+
 // ParseSubscribe parses the filter of an eth_subscribe logs request as geth
 // does: absent or an object whose address is a 20-byte hex value or a list
-// of them, and whose topics hold at most 4 positions, each null, a 32-byte
-// hex value or a list of them. fromBlock and toBlock are ignored, as for a
-// live geth subscription.
+// of at most 1,000 of them, and whose topics hold at most 4 positions, each
+// null, a 32-byte hex value or a list of at most 1,000 of them. fromBlock
+// and toBlock are ignored, as for a live geth subscription.
 func ParseSubscribe(filter any) (*LogsFilter, error) {
 	if filter == nil {
 		filter = map[string]any{}
@@ -151,6 +160,9 @@ func ParseSubscribe(filter any) (*LogsFilter, error) {
 			return nil, fmt.Errorf("invalid address %q", a)
 		}
 	case []any:
+		if len(a) > maxSubscribeAddresses {
+			return nil, fmt.Errorf("too many addresses: %d, at most %d", len(a), maxSubscribeAddresses)
+		}
 		for _, v := range a {
 			if s, ok := v.(string); !ok || !isHexBytes(s, 20) {
 				return nil, fmt.Errorf("invalid address %v", v)
@@ -163,8 +175,8 @@ func ParseSubscribe(filter any) (*LogsFilter, error) {
 	switch ts := obj["topics"].(type) {
 	case nil:
 	case []any:
-		if len(ts) > 4 {
-			return nil, fmt.Errorf("too many topic positions: %d", len(ts))
+		if len(ts) > maxSubscribeTopics {
+			return nil, fmt.Errorf("too many topic positions: %d, at most %d", len(ts), maxSubscribeTopics)
 		}
 		topics = make([]any, len(ts))
 		for i, pos := range ts {
@@ -176,6 +188,9 @@ func ParseSubscribe(filter any) (*LogsFilter, error) {
 				}
 				topics[i] = p
 			case []any:
+				if len(p) > maxSubscribeTopicValues {
+					return nil, fmt.Errorf("too many values in topic position %d: %d, at most %d", i, len(p), maxSubscribeTopicValues)
+				}
 				topics[i] = p
 				for _, v := range p {
 					if v == nil {

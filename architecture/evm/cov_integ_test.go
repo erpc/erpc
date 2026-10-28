@@ -483,7 +483,6 @@ func TestCovInteg_StateProber(t *testing.T) {
 		voteChain(t, v, "a", "e", uint64(head), uint64(head), testHash("f", uint64(head-1)))
 		return &stateProber{
 			network: net, view: v, interval: interval, pinnedProbes: true,
-			ctxProbe:  integrity.ChainStateContextProbe(1),
 			lastProbe: map[string]time.Time{}, work: make(chan int64, 1),
 		}
 	}
@@ -619,7 +618,7 @@ func TestCovInteg_StateProber(t *testing.T) {
 		net := &covIntegFleetHeadNet{covIntegFleetNet: fleet, latest: head}
 		p := mkProber(net, 0)
 		p.probeLatest(ctx, u)
-		assert.Equal(t, 1, fleet.callCount())
+		assert.Equal(t, 2, fleet.callCount(), "ArbSys answers no code, so Multicall3 is decided and asked")
 		assert.True(t, fleet.lastDirs().SkipInterpolation, "the probe sends latest as the tag")
 		assert.Equal(t, tagNoEvidence, p.tagHead("u1", head, time.Now()).state)
 		assert.Zero(t, fakeTrackerOf(t, u).MisbehaviorCount)
@@ -699,7 +698,6 @@ func TestCovInteg_StateProber(t *testing.T) {
 		v.sync(t.Context())
 		p := &stateProber{
 			network: net, view: v, pinnedProbes: true,
-			ctxProbe:  integrity.ChainStateContextProbe(1),
 			lastProbe: map[string]time.Time{}, work: make(chan int64, 1),
 		}
 
@@ -748,7 +746,7 @@ func TestCovInteg_StartStateProber(t *testing.T) {
 	require.NotNil(t, p)
 	assert.Equal(t, 3*time.Second, p.interval)
 	assert.True(t, p.pinnedProbes)
-	assert.Equal(t, integrity.ChainStateContextProbe(42161), p.ctxProbe, "the probe target follows the chain architecture")
+	assert.Nil(t, p.stateCtx.probe(), "the chain id decides no probe target: the first probe's ArbSys answer does")
 
 	startStateProber(ctx, net, v2, nil)
 	assert.Same(t, p, stateProberFor(net), "one prober per network")

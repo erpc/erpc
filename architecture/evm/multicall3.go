@@ -266,10 +266,10 @@ func (b *Multicall3Batcher) send(bt *multicall3Batch, n common.Network, u common
 // aggregate sends the pack as one eth_call through the upstream, so its rate
 // limits, retries and credit accounting count it once. A pack whose block
 // selector means "latest" (the tag or an EIP-1898 latest leaf) carries one
-// more call, the per-architecture block-number call
-// (integrity.ChainStateContextProbe): free evidence of the block u executes
-// "latest" at, recorded as u's tag-state sample (spec §6.11) and stripped
-// before the results meet the entries.
+// more call, the network's block-number call (stateContext), once the
+// state prober's first probe decided it: free evidence of the block u
+// executes "latest" at, recorded as u's tag-state sample (spec §6.11) and
+// stripped before the results meet the entries.
 func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, bt *multicall3Batch, n common.Network, u common.Upstream) ([]aggregate3Result, bool) {
 	packed := entries
 	_, tag := selectsLatest(bt.block)
@@ -357,14 +357,17 @@ func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, bt *multicall3
 	return results[:len(entries)], true
 }
 
-// multicall3TagProbe is the pack entry for n's per-architecture block-number
-// call; nil when its target cannot be encoded.
+// multicall3TagProbe is the pack entry for n's block-number call; nil before
+// its state prober decided the call, or when its target cannot be encoded.
 func multicall3TagProbe(n common.Network) *multicall3Entry {
-	var chainId int64
-	if c := n.Config(); c != nil && c.Evm != nil {
-		chainId = c.Evm.ChainId
+	p := stateProberFor(n)
+	if p == nil {
+		return nil
 	}
-	probe := integrity.ChainStateContextProbe(chainId)
+	probe := p.stateCtx.probe()
+	if probe == nil {
+		return nil
+	}
 	target, err := common.HexToBytes(probe.To)
 	if err != nil || len(target) != 20 {
 		return nil

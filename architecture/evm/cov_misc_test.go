@@ -154,19 +154,29 @@ func covMiscResultString(t *testing.T, r *common.NormalizedResponse) string {
 }
 
 // covMiscTagPack answers a tag pack: results for the clients' entries, then
-// the block-number entry the batcher adds.
+// the block-number entry the batcher adds once the network's context call
+// is decided (covMiscDecided).
 func covMiscTagPack(results ...aggregate3Result) []aggregate3Result {
 	return append(results, aggregate3Result{success: true, data: covMiscWord(1)})
+}
+
+// covMiscDecided starts n's state prober with its context call decided
+// (Multicall3, as its first probe would on a chain without ArbSys), so its
+// tag packs carry the block-number call.
+func covMiscDecided(t *testing.T, n common.Network) *stateProber {
+	tracker := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+	startStateProber(t.Context(), n, tracker, nil)
+	p := stateProberFor(n)
+	require.NotNil(t, p)
+	p.stateCtx.decided.Store(integrity.Multicall3BlockNumber)
+	t.Cleanup(func() { stateProbers.CompareAndDelete(n, p) })
+	return p
 }
 
 func TestCovMisc_Multicall3_PacksFullBatchAndAnswersEachCaller(t *testing.T) {
 	const latest, executed = 100, 90
 	n := &queryTestNetwork{latest: latest}
-	tracker := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
-	startStateProber(t.Context(), n, tracker, nil)
-	p := stateProberFor(n)
-	require.NotNil(t, p)
-	t.Cleanup(func() { stateProbers.CompareAndDelete(n, p) })
+	p := covMiscDecided(t, n)
 	probeTarget, err := common.HexToBytes(integrity.Multicall3Address)
 	require.NoError(t, err)
 
@@ -217,6 +227,7 @@ func TestCovMisc_Multicall3_PacksFullBatchAndAnswersEachCaller(t *testing.T) {
 
 func TestCovMisc_Multicall3_PackDeadlineIsLastCallers(t *testing.T) {
 	n := &queryTestNetwork{}
+	covMiscDecided(t, n)
 	now := time.Now()
 	ctx1, c1 := context.WithDeadline(context.Background(), now.Add(time.Hour))
 	defer c1()
@@ -263,7 +274,9 @@ func TestCovMisc_Multicall3_FailedPackSendsEveryCallAlone(t *testing.T) {
 				return tc.forward()
 			})
 			before := covMiscMcCount(u, multicall3Failed)
-			outs := covMiscMcRun(covMiscBg(2), &queryTestNetwork{}, u, []*common.NormalizedRequest{
+			n := &queryTestNetwork{}
+			covMiscDecided(t, n)
+			outs := covMiscMcRun(covMiscBg(2), n, u, []*common.NormalizedRequest{
 				covMiscMcCall(1, covLogsAddr("a"), "0x01", "latest"),
 				covMiscMcCall(2, covLogsAddr("b"), "0x02", "latest"),
 			})
@@ -309,6 +322,7 @@ func TestCovMisc_Multicall3_RevertedInPackLearnsBypassOnlyOnCleanAloneSuccess(t 
 		return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3(covMiscTagPack(aggregate3Result{false, nil}, aggregate3Result{false, nil}))) + `"`), nil
 	})
 	n := &queryTestNetwork{}
+	covMiscDecided(t, n)
 	reqs := []*common.NormalizedRequest{covMiscMcCall(1, addrA, "0x01", "latest"), covMiscMcCall(2, addrB, "0x02", "latest")}
 	before := covMiscMcCount(u, multicall3Reverted)
 	outs := covMiscMcRun(covMiscBg(2), n, u, reqs)
@@ -374,7 +388,9 @@ func TestCovMisc_Multicall3_UnencodableCallerIdFallsBackAlone(t *testing.T) {
 	jrq.ID = make(chan int)
 	bad := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
 	before := covMiscMcCount(u, multicall3Failed)
-	outs := covMiscMcRun(covMiscBg(2), &queryTestNetwork{}, u, []*common.NormalizedRequest{
+	n := &queryTestNetwork{}
+	covMiscDecided(t, n)
+	outs := covMiscMcRun(covMiscBg(2), n, u, []*common.NormalizedRequest{
 		covMiscMcCall(1, covLogsAddr("b"), "0x02", "latest"), bad,
 	})
 	assert.True(t, outs[0].handled)

@@ -97,6 +97,10 @@ type EvmStatePoller struct {
 	polledLatest, polledFinalized prometheus.Counter
 	// askCounts are the Ask counters, bound once each.
 	askCounts telemetry.CounterSet[askCount]
+	// stateCtx is the callState canary's context call, decided by this
+	// upstream's first answer: the poller has no handle on its network's
+	// state prober, which runs only from the first client request.
+	stateCtx stateContext
 
 	// When node is fully synced we don't need to query syncing state anymore.
 	// A number is used so that at least X times the upstream tells us it's synced.
@@ -2429,16 +2433,14 @@ func (e *EvmStatePoller) checkEventLogsProbe(ctx context.Context, block int64) (
 // checkCallStateProbe verifies whether historical STATE is available at the
 // given block.
 //
-// Strong form first: the per-architecture execution canary (the same
-// integrity.ChainStateContextProbe the state prober uses — Multicall3
-// getBlockNumber() on standard EVMs, ArbSys arbBlockNumber() on Nitro, where
-// block.number is the L1 height) is eth_call'ed pinned at the block, and
-// availability means the node EXECUTED at exactly that height. A node serving
-// stale state answers eth_getBalance with a well-formed 0x0, but it cannot
-// answer the canary with the pinned height — the returned number comes from
-// the execution context the node actually used. A wrong canary for a chain
-// (the Multicall3-on-Nitro precedent) mismatches on every upstream alike, so
-// it degrades bounds symmetrically and leaves relative ranking unchanged.
+// Strong form first: the execution-context canary (stateContext, the rule
+// the state prober decides by — ArbSys arbBlockNumber() where ArbSys
+// answers, which is Nitro, where block.number is the parent chain's height;
+// Multicall3 getBlockNumber() elsewhere) is eth_call'ed pinned at the
+// block, and availability means the node EXECUTED at exactly that height.
+// A node serving stale state answers eth_getBalance with a well-formed 0x0,
+// but it cannot answer the canary with the pinned height — the returned
+// number comes from the execution context the node actually used.
 //
 // Where the canary yields no evidence — not deployed at that height ("0x"),
 // erroring/reverting, or answering something unparseable — this DISCOVERS the
@@ -2448,21 +2450,28 @@ func (e *EvmStatePoller) checkCallStateProbe(ctx context.Context, block int64) (
 	if block < 0 {
 		return false, false, nil
 	}
-	hex := fmt.Sprintf("0x%x", uint64(block))
-	var chainId int64
-	if upCfg := e.upstream.Config(); upCfg != nil && upCfg.Evm != nil {
-		chainId = upCfg.Evm.ChainId
-	}
-	canary := integrity.ChainStateContextProbe(chainId)
-	pr := common.NewProbeRequest([]byte(
-		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_call","params":[{"to":"%s","data":"%s"},"%s"]}`,
-			util.RandomID(), canary.To, canary.Data, hex,
-		),
-	))
-	resp, err := e.upstream.Forward(ctx, pr, true, false)
-	if resp != nil {
-		defer resp.Release()
-	}
+	res, err := e.stateCtx.call(ctx, fmt.Sprintf("0x%x", uint64(block)), func(ctx context.Context, c *integrity.StateContextProbe, blockParam string) (string, error) {
+		pr := common.NewProbeRequest([]byte(
+			fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_call","params":[{"to":"%s","data":"%s"},"%s"]}`,
+				util.RandomID(), c.To, c.Data, blockParam,
+			),
+		))
+		resp, err := e.upstream.Forward(ctx, pr, true, false)
+		if resp != nil {
+			defer resp.Release()
+		}
+		if err != nil {
+			return "", err
+		}
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil || jrr == nil {
+			return "", fmt.Errorf("no json-rpc response: %w", err)
+		}
+		if jrr.Error != nil {
+			return "", jrr.Error
+		}
+		return string(jrr.GetResultBytes()), nil
+	})
 	if err != nil {
 		if common.HasErrorCode(err,
 			common.ErrCodeUpstreamRequestSkipped,
@@ -2471,10 +2480,8 @@ func (e *EvmStatePoller) checkCallStateProbe(ctx context.Context, block int64) (
 		) {
 			return false, true, nil
 		}
-	} else if jrr, jerr := resp.JsonRpcResponse(); jerr == nil && jrr != nil && jrr.Error == nil {
-		if got, ok := parseHexQuantity(string(jrr.GetResultBytes())); ok {
-			return got == block, false, nil
-		}
+	} else if got, ok := parseHexQuantity(res); ok {
+		return got == block, false, nil
 	}
 	return e.checkBalanceStateProbe(ctx, block)
 }

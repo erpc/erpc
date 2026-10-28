@@ -41,6 +41,14 @@ type Config struct {
 	// MatchLast: every matching block ends with a log both filters match,
 	// in a transaction with another log, so Faults.CapLogs can cut it.
 	MatchLast bool
+	// Nitro: an Arbitrum Nitro chain. Multicall3 getBlockNumber() answers
+	// the parent chain's height (ParentNumber), ArbSys arbBlockNumber() the
+	// chain's own; off Nitro, ArbSys has no code and answers "0x".
+	Nitro bool
+	// Foreign: the chain's hashes and roots are not Ethereum's (Hedera,
+	// Kaia): no header hashes to its hash, and an empty block carries
+	// keccak("") as its transactionsRoot and receiptsRoot, gasUsed 0.
+	Foreign bool
 }
 
 // Chain is one simulated chain: its canonical branch, every block ever
@@ -243,7 +251,7 @@ func (c *Chain) mintLocked(parent *Block, number uint64, at time.Time, minority 
 	if c.cfg.BadBaseFee {
 		baseFee = 1000 + int64(number)
 	}
-	hash, raw := header(c.cfg.ChainID, parent, number, ts, tag, txs, c.cfg.HeaderPad, baseFee, c.headerBloomOff)
+	hash, raw := header(c.cfg.ChainID, parent, number, ts, tag, txs, c.cfg.HeaderPad, baseFee, c.headerBloomOff, c.cfg.Foreign)
 	b := &Block{Number: number, Hash: hash, Parent: parent, Time: ts, MintedAt: time.Now(), minority: minority, kind: k, tag: tag, txs: txs, raw: raw}
 	c.byHash[hash] = b
 	for i := range txs {

@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	gethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/assert"
@@ -36,6 +35,8 @@ func newProbeNetwork(t *testing.T) *probeNetwork {
 	pn.On("Id").Return("evm:1").Maybe()
 	pn.On("ProjectId").Return("test").Maybe()
 	pn.On("Label").Return("mainnet").Maybe()
+	// The receipts profile reads the config (validateTransactionsRoot).
+	pn.On("Config").Return(&common.NetworkConfig{}).Maybe()
 	// No served tip here: latest never caps the delivery gate.
 	pn.On("HeadLatest", mock.Anything).Return(int64(1) << 62).Maybe()
 	pn.On("Forward", mock.Anything, mock.Anything).Return(
@@ -75,7 +76,6 @@ func proberFor(pn *probeNetwork, headN int64, stateRoot string) (*stateProber, *
 	v.sync(context.Background())
 	p := &stateProber{
 		network: pn, view: v, interval: 0,
-		ctxProbe:  integrity.ChainStateContextProbe(1),
 		lastProbe: map[string]time.Time{}, work: make(chan int64, 1),
 	}
 	return p, v

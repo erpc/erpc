@@ -348,6 +348,36 @@ func TestChainTracker(t *testing.T) {
 		assert.Equal(t, before, reanchors(), "a walk that links is no re-anchor")
 	})
 
+	// A client answer from a pruned fork is a root whose parent no vendor
+	// serves any more: one full by-hash sweep that finds it nowhere makes
+	// the root final (spec §6.5 rule 2), where fill once swept every
+	// upstream again at each backoff until the root left the window.
+	t.Run("a root whose parent no upstream returns by hash ends its fill after one sweep", func(t *testing.T) {
+		ctx := context.Background()
+		net := newServedChain(t, "evm:orphan-root")
+		for n := uint64(0); n <= 20; n++ {
+			net.serve(n, testHash("a", n), testHeader(n, testHash("a", n), testHash("a", n-1)))
+		}
+		net.mu.Lock()
+		net.blocks[testHash("e", 14)] = json.RawMessage(`null`)
+		net.mu.Unlock()
+		c := newChainTracker(t.Context(), net, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		t.Cleanup(c.Want(indexer.ReadOpts{}))
+		voteChain(t, c, "a", "a", 0, 20, testHash("f", 0))
+		voteChain(t, c, "b", "a", 0, 20, testHash("f", 0))
+		c.Observe("client", testHeader(15, testHash("e", 15), testHash("e", 14)), false)
+		require.Eventually(t, func() bool {
+			c.sync(ctx)
+			return net.byHash.Load() > 0
+		}, 5*time.Second, 5*time.Millisecond, "fill asks the orphan's parent by hash once by number answers another block")
+		for end := time.Now().Add(2500 * time.Millisecond); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+			c.sync(ctx)
+		}
+		assert.EqualValues(t, 1, net.byHash.Load(), "one sweep that finds the parent nowhere ends the fill; the key's backoff (200ms doubling) would have retried it 3 times")
+		_, held := c.HeldNumber(testHash("e", 15))
+		assert.True(t, held, "the orphan stays held, a final root")
+	})
+
 	// A single upstream pinned a sibling at the finalized height, then its
 	// finalized poll answered that height with another hash before its head
 	// moved to the canonical branch (dev: 19 final_hash_changed on three
@@ -402,7 +432,7 @@ func putReceipts(c *ChainTracker, blockHash string, receipts []integrity.Receipt
 	if err != nil {
 		panic(err)
 	}
-	r, err := parseReceipts(raw, hash, nil)
+	r, err := parseReceipts(raw, hash, nil, false)
 	if err != nil {
 		panic(err)
 	}
@@ -707,7 +737,7 @@ func TestReceiptsMatchBlock(t *testing.T) {
 	var hash [32]byte
 	require.True(t, decodeHex32(h, &hash))
 	check := func(body string) error {
-		_, err := parseReceipts([]byte(body), hash, nil)
+		_, err := parseReceipts([]byte(body), hash, nil, false)
 		return err
 	}
 	t.Run("all receipts on the requested hash (case-insensitive) → ok", func(t *testing.T) {

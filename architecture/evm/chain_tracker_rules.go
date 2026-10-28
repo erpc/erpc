@@ -67,8 +67,9 @@ func vendorsOf(ups []common.Upstream) int {
 // by number, each answer checked against the parentHash of the block above,
 // and a mismatch fetched by hash. A walk takes class 1 and at most
 // reorgWindow blocks; fill takes class 3 and runs until the root joins
-// another tree or reaches the window base. Below reorgWindow blocks under
-// the head, fill waits for demand (fillsBelow) without ending.
+// another tree, reaches the window base, or names a parent one full by-hash
+// sweep finds on no upstream. Below reorgWindow blocks under the head, fill
+// waits for demand (fillsBelow) without ending.
 type extension struct {
 	sender string // the voter a walk asks by hash; "" sweeps
 	walk   int    // blocks left to walk; 0 fills
@@ -401,6 +402,10 @@ func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
 			// The sender does not serve its own parent: the walk ends here,
 			// its lowest header stays a root, and fill sweeps for the rest.
 			e.walk, e.sender = 0, ""
+		case e.byHash && errors.Is(err, errFetchNotFound):
+			// Every upstream of a full sweep answered null for the parent:
+			// the root is final (spec §6.5 rule 2), never asked again.
+			e.atBase, t.treesDirty = true, true
 		}
 	})
 }
