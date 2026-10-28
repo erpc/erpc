@@ -144,7 +144,7 @@ export default createConfig({
 6. **`LaneName` is not guaranteed unique.** Two different upstream sets could produce the same name if both share the same common token. The lane key is the stable identifier; the name is decorative for dashboards.
 7. **Negated selectors match by ID only, never by tag.** A pattern containing `!` skips tag evaluation entirely. `!alchemy-*` excludes by ID but will not rescue non-matching IDs via tags.
 8. **`LaneName` sort is alphabetical.** For `(quicknode-systx, systx-quicknode)`, sorted order puts `quicknode-systx` first; `LaneName` returns `"quicknode"`, not `"systx"`. Source: `common/lane_test.go` (`order independent` test).
-9. **Lane state is per process.** Anchors and regression-guard memory live in memory; a restarted pod rebuilds them from live heads.
+9. **Lane state is per process.** Anchors, regression-guard memory and finalized floors live in memory; a restarted pod rebuilds them from live heads.
 10. **`LaneName` output is written to Prometheus labels as-is, without sanitization.** If upstream IDs contain unusual characters that cause `LaneName` to produce an unexpected string, that string becomes the label value verbatim. The label is never normalized or escaped beyond what `LaneName` itself produces.
 
 ### Observability
