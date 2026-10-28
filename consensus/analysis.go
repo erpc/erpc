@@ -85,11 +85,10 @@ type consensusAnalysis struct {
 	// Use for "how many more can arrive" math; use totalParticipants for
 	// vote counting.
 	collectedResponses int
-	// collectionSealed is set when the analyzer will not incorporate any more
-	// responses into this analysis — typically after a wait-cap fires and
-	// remaining in-flight slots are cancelled. Waivers treat a sealed bag as
-	// round-complete even when collectedResponses < maxParticipants: the
-	// missing slots cannot return data anymore.
+	// collectionSealed marks the bag round-complete for waivers even when
+	// collectedResponses < maxParticipants. Only set when every participant
+	// slot has produced a terminal acknowledgement — cancellation alone must
+	// not seal (cancel-ignoring / already-buffered results can still arrive).
 	collectionSealed  bool
 	validParticipants int
 	originalRequest   *common.NormalizedRequest
@@ -266,8 +265,8 @@ func dedupeByUpstream(responses []*execResult) []*execResult {
 // counting it as still-arriving capacity would suppress short-circuits (and
 // hold composition-dispute rounds open) after every slot already answered.
 //
-// A sealed collection (wait-cap cancelled the rest) reports false even when
-// collectedResponses < maxParticipants — nothing in-flight can still join.
+// A sealed collection reports false even when collectedResponses <
+// maxParticipants — used only when every slot has already acknowledged.
 func (a *consensusAnalysis) hasRemaining() bool {
 	if a == nil || a.collectionSealed {
 		return false
@@ -275,9 +274,9 @@ func (a *consensusAnalysis) hasRemaining() bool {
 	return a.config.maxParticipants > a.collectedResponses
 }
 
-// sealCollection marks the response bag final: the analyzer will not accept
-// further answers. Call after wait-cap (or equivalent) cancels remaining slots
-// so MissingData / empty-outside-retention waivers can evaluate.
+// sealCollection marks the response bag final for waiver evaluation.
+// Callers must only seal after every participant slot has produced a
+// terminal result/acknowledgement — not merely after cancelling stragglers.
 func (a *consensusAnalysis) sealCollection() {
 	if a != nil {
 		a.collectionSealed = true

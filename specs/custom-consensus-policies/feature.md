@@ -9,7 +9,7 @@ Companion: [plan.md](./plan.md) (phased delivery).
 
 > Design contract for named consensus policies + a pre-round JS selector.
 > Semantics below incorporate lessons from an internal prototype used to validate
-> the design (waiver floors, wait-cap sealing, hedge empty votes, PreferNonEmpty
+> the design (waiver floors, round-complete waivers, hedge empty votes, PreferNonEmpty
 > ties, config repetition). This document proposes behavior for upstream — it is
 > not a changelog of a fork.
 
@@ -528,13 +528,12 @@ Layers that make those grades work:
  The waiver is **round-complete**: it reports no waivers while responses can
  still arrive. Because composition disputes deliberately do **not**
  short-circuit while `hasRemaining`, a round with an unanswered required
- slot would otherwise defer the waiver forever. The wait-cap closes that:
- when `maxWaitOnResult` / `maxWaitOnEmpty` fires and cancels the stragglers,
- the analyzer **seals** the collection and re-runs `determineWinner`, so
- waivers evaluate even at e.g. `maxParticipants: 4` with only three answers.
- `fireAndForget` must **not** cancel/seal (its slots keep running) — stay
- fail-closed. Mid-round "unproven" empty-waiver deferral is **debug-only**
- (do not spam Info / metrics while the round is incomplete).
+ slot defers the waiver. Wait-cap cancel alone must **not** seal: a result
+ may already be buffered when the timer fires, or the upstream call may
+ ignore cancellation, so sealing a partial bag could waive while omitted
+ tagged data still arrives. Stay fail-closed until every slot has produced
+ a terminal acknowledgement. Mid-round "unproven" empty-waiver deferral is
+ **debug-only** (do not spam Info / metrics while the round is incomplete).
 
  Load-time validation: a policy using any waiver is rejected unless at least
  one entry is never-waivable **and** carries `minAgreement > 0`.

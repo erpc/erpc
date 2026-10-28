@@ -600,22 +600,19 @@ func (e *executor) runAnalyzer(
 		waitTimer.Stop()
 	}
 
-	// All participants accounted for (or wait-cap sealed the bag). If no
-	// short-circuit already released the caller, compute/recompute the final
-	// winner now. Wait-cap is the critical case: composition disputes do not
-	// short-circuit while hasRemaining, so the last mid-round determineWinner
-	// deferred MissingData / empty-outside-retention waivers; after remaining
-	// slots are cancelled those waivers must get a sealed, round-complete pass.
+	// All participants accounted for, or wait-cap returned early with a
+	// partial bag. If no short-circuit already released the caller,
+	// compute/recompute the final winner now.
+	//
+	// Waivers stay fail-closed on wait-cap: cancelling remaining contexts
+	// is not a round-completion barrier (a result may already be buffered,
+	// or the upstream call may ignore cancel — wait-cap tests intentionally
+	// use such calls). Sealing a partial bag could waive MissingData /
+	// empty-outside-retention while an omitted tagged response still holds
+	// non-empty data. Only a fully collected bag (every slot wrote) makes
+	// hasRemaining false without an explicit seal.
 	if !shortCircuited {
 		analysis = newConsensusAnalysis(e.logger, ctx, e.config, responses)
-		if waitCapped && !e.config.fireAndForget {
-			// Wait-cap cancelled remaining slots, so unanswered ones cannot
-			// still return data — seal so MissingData / empty-outside-retention
-			// waivers evaluate. fireAndForget deliberately skips that cancel,
-			// so sealing would let a waiver fire on a still-running partial
-			// round. Leave the bag unsealed (fail closed) in that mode.
-			analysis.sealCollection()
-		}
 		winner = e.determineWinner(ctx, lg, analysis)
 		markWinningParticipants(originalReq, winner, analysis)
 	}
@@ -1194,10 +1191,10 @@ func groupIsMissingDataAbstention(g *responseGroup) bool {
 //
 // The waiver is round-complete by design: while any response can still arrive
 // (analysis.hasRemaining) a slower tagged upstream could still return data, so
-// this reports no waivers and the caller keeps the quota strict. After wait-cap
-// seals the collection (not in fireAndForget), hasRemaining is false even with
-// unanswered slots — those were cancelled and cannot return data. It scans all
-// groups (the entire round), not just the winning group.
+// this reports no waivers and the caller keeps the quota strict. Wait-cap
+// cancel alone does not clear hasRemaining — only a fully collected bag or an
+// explicit seal after every slot acknowledged does. It scans all groups (the
+// entire round), not just the winning group.
 func missingDataWaivedQuotas(analysis *consensusAnalysis, reqs []*common.ConsensusRequiredParticipant) map[*common.ConsensusRequiredParticipant]struct{} {
 	if analysis == nil || analysis.hasRemaining() {
 		return nil
@@ -1562,10 +1559,9 @@ func (e *executor) winnerBlockEvidence(analysis *consensusAnalysis, g *responseG
 //
 // Round-complete by design (mirrors missingDataWaivedQuotas): while any
 // response can still arrive, a slower tagged upstream could still return data,
-// so this reports no waivers. After wait-cap seals the collection (remaining
-// slots cancelled — not in fireAndForget, which leaves them running),
-// hasRemaining is false even if collectedResponses < maxParticipants.
-// Without a winner block and neither proof source, it reports none — fail closed.
+// so this reports no waivers. Wait-cap cancel alone does not clear
+// hasRemaining. Without a winner block and neither proof source, it reports
+// none — fail closed.
 func emptyOutsideRetentionWaivedQuotas(analysis *consensusAnalysis, reqs []*common.ConsensusRequiredParticipant, winnerBlock *big.Int, head int64) map[*common.ConsensusRequiredParticipant]struct{} {
 	if analysis == nil || analysis.hasRemaining() {
 		return nil

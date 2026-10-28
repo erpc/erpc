@@ -635,9 +635,9 @@ func TestMissingDataWaiver_DeferredWhileRoundHasRemaining(t *testing.T) {
 }
 
 func TestMissingDataWaiver_FiresWhenCollectionSealedShortOfMaxParticipants(t *testing.T) {
-	// Worldchain-shaped wait-cap: maxParticipants 4, only 3 answered (one
-	// sibling down/hanging), remaining cancelled. Sealing the bag must let
-	// the MissingData waiver evaluate — cancelled slots cannot return data.
+	// Explicit seal after every slot has acknowledged (not wait-cap cancel
+	// alone): maxParticipants 4, only 3 answers in the bag. Sealing must let
+	// the MissingData waiver evaluate.
 	cfg := &config{
 		maxParticipants:      4,
 		agreementThreshold:   2,
