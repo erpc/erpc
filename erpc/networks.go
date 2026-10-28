@@ -3563,17 +3563,22 @@ func (n *Network) preferTipLeaderForNearTipGetBlock(ups []common.Upstream, metho
 	return out
 }
 
-// upstreamHead is u's head for ordering: its polled head, or the head the
-// tracker presumes it holds when that is higher. A polled head ages by up to
-// a poll interval; read raw, it made a fast upstream polled every 10s on a 2s
-// chain look blocks behind a slow one polled more often, so tip reads went to
-// the slow one first.
+// upstreamHead is u's head for ordering: its polled head plus the blocks the
+// tracker presumes it gained since its last report (HeadCredit), never above
+// the corroborated network head. A polled head ages by up to a poll interval;
+// read raw, it made a fast upstream polled every 10s on a 2s chain look blocks
+// behind a slow one polled more often, so tip reads went to the slow one first.
+// An unknown head stays unknown.
 func (n *Network) upstreamHead(u common.Upstream) int64 {
 	lb := upstreamLatestBlock(u)
-	if n.metricsTracker == nil {
+	if lb <= 0 || n.metricsTracker == nil {
 		return lb
 	}
-	return max(lb, n.metricsTracker.PresumedLatestBlock(u))
+	credit, network := n.metricsTracker.HeadCredit(u)
+	if credit <= 0 {
+		return lb
+	}
+	return max(lb, min(lb+credit, network))
 }
 
 // upstreamLatestBlock is u's polled head, or 0 when unknown.

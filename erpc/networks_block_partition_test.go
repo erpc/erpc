@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/stretchr/testify/assert"
@@ -113,82 +113,242 @@ func TestPreferTipLeaderForNearTipGetBlock(t *testing.T) {
 	assert.Equal(t, []string{"c", "b", "a"}, ids((&Network{}).preferTipLeaderForNearTipGetBlock(ahead, "eth_call", 1000)))
 }
 
-// A polled head ages by up to a poll interval. Through real pollers, the real
-// tracker and the real Network: "fast" is first in policy order and polls
-// every 10s, so a few seconds after its poll it reads blocks behind "slow" and
-// "reader", which polled since ("reader" serves no eth_getBlockByNumber).
-// A tip read still goes to "fast" first while its poll is younger than its
-// interval; once "fast" stops reporting past that, it is demoted again.
-func TestNetwork_TipGetBlockOrdersByPollAgeCreditedHead(t *testing.T) {
+// pollAgeEnv drives one network of real pollers, the real tracker and the
+// real Network on a pinned clock. Each step is 2s and one block; each mover
+// polls it, at its offset from the network head (its fixture's latestBlock
+// less 1000). Every head carries its block timestamp, so the tracker learns
+// the 2s block time, as in production.
+type pollAgeEnv struct {
+	t       *testing.T
+	ctx     context.Context
+	network *Network
+	ups     map[string]*upstream.Upstream
+	offset  map[string]int64
+	advance func(time.Duration)
+	head    int64
+	movers  []string
+	mocked  map[int64]bool
+}
+
+// newPollAgeEnv builds the network and warms it up for 4 blocks with every
+// fixture that has a head moving, so the block time is known.
+func newPollAgeEnv(t *testing.T, fixtures []servedTipFixture, order ...string) *pollAgeEnv {
+	t.Helper()
 	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	advance := pinServedTipClock(t)
+	t.Cleanup(cancel)
+	e := &pollAgeEnv{t: t, ctx: ctx, advance: pinServedTipClock(t), head: 1000,
+		ups: map[string]*upstream.Upstream{}, offset: map[string]int64{}, mocked: map[int64]bool{}}
+	for i, f := range fixtures {
+		fixtures[i].chainID = 123
+		fixtures[i].statePollerInterval = 10 * time.Second
+		if f.latestBlock > 0 {
+			e.offset[f.id] = f.latestBlock - 1000
+			e.movers = append(e.movers, f.id)
+		}
+	}
+	network, ups := setupServedTipNetworkWith(t, ctx, fixtures, nil)
+	e.network = network
+	for _, u := range ups {
+		e.ups[u.Id()] = u
+	}
+	network.PinUpstreamOrderForTest(order...)
+	e.step(4)
+	require.NotZero(t, network.metricsTracker.GetNetworkBlockTime("evm:123"), "warm-up must teach the block time")
+	return e
+}
 
-	hits := map[string]*atomic.Int64{"fast": {}, "slow": {}}
-	for id, n := range hits {
-		for _, bn := range []int64{1003, 1010} {
-			hex := fmt.Sprintf("0x%x", bn)
-			gock.New("http://" + id + ".localhost").
+// step moves the chain n blocks, 2s each, through the movers' polls.
+func (e *pollAgeEnv) step(n int) {
+	for range n {
+		e.advance(2 * time.Second)
+		e.head++
+		for _, id := range e.movers {
+			e.report(id, e.head+e.offset[id])
+		}
+	}
+}
+
+// report is one successful poll of id answering h, moved or not, the way the
+// poller reports it: the tracker first, with the block timestamp, then the
+// poller's counter.
+func (e *pollAgeEnv) report(id string, h int64) {
+	u := e.ups[id]
+	e.network.metricsTracker.SetLatestBlockNumber(u, h, 1_800_000_000+2*(h-1000))
+	u.EvmStatePoller().SuggestLatestBlock(h)
+}
+
+// first is the upstream Forward tries first for eth_getBlockByNumber(bn);
+// every upstream answers it.
+func (e *pollAgeEnv) first(bn int64) string {
+	e.t.Helper()
+	hex := fmt.Sprintf("0x%x", bn)
+	if !e.mocked[bn] {
+		e.mocked[bn] = true
+		for id := range e.ups {
+			host := id + ".localhost"
+			gock.New("http://" + host).
 				Post("").
 				Persist().
 				Filter(func(r *http.Request) bool {
 					body := util.SafeReadBody(r)
-					if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"`+hex+`"`) {
-						return false
-					}
-					n.Add(1)
-					return true
+					return r.URL.Host == host && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"`+hex+`"`)
 				}).
 				Reply(200).
 				JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"` + hex + `","hash":"0x` + strings.Repeat("a", 64) + `","parentHash":"0x` + strings.Repeat("b", 64) + `","timestamp":"0x6702a8f1"}}`))
 		}
 	}
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["` + hex + `",false]}`))
+	req.SetNetwork(e.network)
+	_, err := e.network.Forward(e.ctx, req)
+	require.NoError(e.t, err)
+	log := req.ExecState().UpstreamAttemptLog()
+	require.NotEmpty(e.t, log)
+	return log[0].UpstreamId
+}
 
-	const interval = 10 * time.Second
-	network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-		{id: "fast", chainID: 123, latestBlock: 1000, statePollerInterval: interval},
-		{id: "slow", chainID: 123, latestBlock: 1000, statePollerInterval: interval},
-		{id: "reader", chainID: 123, latestBlock: 1000, statePollerInterval: interval, ignoreMethods: []string{"eth_getBlockByNumber"}},
-	}, nil)
-	network.PinUpstreamOrderForTest("fast", "slow", "reader")
-	fast, slow, reader := ups[0], ups[1], ups[2]
+func (e *pollAgeEnv) headOf(id string) int64 { return e.network.upstreamHead(e.ups[id]) }
 
-	head := int64(1000)
-	step := func() {
-		advance(2 * time.Second)
-		head++
-		slow.EvmStatePoller().SuggestLatestBlock(head)
-		reader.EvmStatePoller().SuggestLatestBlock(head)
-	}
-	getBlock := func(bn int64) string {
-		t.Helper()
-		req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, bn)))
-		req.SetNetwork(network)
-		resp, err := network.Forward(ctx, req)
-		require.NoError(t, err)
-		require.NotNil(t, resp.Upstream())
-		return resp.Upstream().Id()
+func (e *pollAgeEnv) polled(id string) int64 { return e.ups[id].EvmStatePoller().LatestBlock() }
+
+// A polled head ages by up to a poll interval (10s here, on a 2s chain); the
+// tracker credits that age (HeadCredit) and tip reads order by it. Each row is
+// one way an upstream can be wrong, and asserts that the credit never puts it
+// where a fresh head would be. "reader" and "late" serve no
+// eth_getBlockByNumber: they only move the network head.
+func TestNetwork_TipGetBlockOrdersByPollAgeCreditedHead(t *testing.T) {
+	ignoreGetBlock := []string{"eth_getBlockByNumber"}
+	trio := func() []servedTipFixture {
+		return []servedTipFixture{
+			{id: "fast", latestBlock: 1000},
+			{id: "slow", latestBlock: 1000},
+			{id: "reader", latestBlock: 1000, ignoreMethods: ignoreGetBlock},
+		}
 	}
 
-	// 6s after its poll, "fast" reads 3 blocks behind; its poll is younger
-	// than its interval, so it is presumed at the head.
-	for range 3 {
-		step()
-	}
-	require.Equal(t, int64(1000), fast.EvmStatePoller().LatestBlock())
-	require.Equal(t, head, slow.EvmStatePoller().LatestBlock())
-	assert.Equal(t, "fast", getBlock(head), "a head that only aged since its poll must not demote the first-ranked upstream")
-	assert.Zero(t, hits["slow"].Load(), "the slow upstream must not take the tip read")
+	t.Run("poller stops at tip after serving", func(t *testing.T) {
+		e := newPollAgeEnv(t, trio(), "fast", "slow", "reader")
+		s := e.head
+		e.movers = []string{"slow", "reader"}
+		e.step(3)
+		require.Equal(t, s, e.polled("fast"))
+		assert.Equal(t, "fast", e.first(e.head), "6s after its poll, a head 3 behind only aged: it keeps its place")
+		e.step(7)
+		assert.InDelta(t, s+5, e.headOf("fast"), 1, "the credit froze one poll period after the last report")
+		assert.Equal(t, "slow", e.first(e.head), "silent past its poll period while the chain moved: demoted")
+	})
 
-	// "fast" stops reporting past its interval while the chain goes on.
-	for range 7 {
-		step()
-	}
-	hits["fast"].Store(0)
-	assert.Equal(t, "slow", getBlock(head), "a head that stopped reporting past its interval stays demoted")
-	assert.Zero(t, hits["fast"].Load(), "the stale upstream must not be tried first")
+	t.Run("stuck head while its polls succeed", func(t *testing.T) {
+		e := newPollAgeEnv(t, trio(), "fast", "slow", "reader")
+		s := e.head
+		e.movers = []string{"slow", "reader"}
+		e.step(5)
+		e.report("fast", s)
+		assert.Equal(t, s, e.headOf("fast"), "a report of the same head ends the credit")
+		assert.Equal(t, "slow", e.first(e.head), "demoted within one poll period")
+		for i := 1; i <= 15; i++ {
+			e.step(1)
+			if i%5 == 0 {
+				e.report("fast", s)
+			}
+			require.LessOrEqual(t, e.headOf("fast"), e.head-5, "step %d: lag at its last report stays", i)
+		}
+		require.True(t, e.network.metricsTracker.IsHeadBenched(e.ups["fast"]), "a head stuck behind moving peers is benched")
+		e.report("fast", s)
+		e.step(1)
+		assert.Equal(t, s, e.headOf("fast"), "a benched head gets no credit")
+		assert.Equal(t, "slow", e.first(e.head))
+	})
+
+	t.Run("steady lag of 5 blocks, network head jumps on a late peer", func(t *testing.T) {
+		e := newPollAgeEnv(t, []servedTipFixture{
+			{id: "lagger", latestBlock: 995},
+			{id: "slow", latestBlock: 1000},
+			{id: "late", latestBlock: 990, ignoreMethods: ignoreGetBlock},
+		}, "lagger", "slow", "late")
+		e.movers = []string{"slow", "late"}
+		for i := 1; i <= 20; i++ {
+			if i == 7 {
+				e.offset["late"] = 0 // catches up at once: the network head jumps 10
+			}
+			e.step(1)
+			if i%5 == 0 {
+				e.report("lagger", e.head-5)
+			}
+			require.LessOrEqual(t, e.headOf("lagger"), e.head-5, "step %d: never presumed above network - 5", i)
+		}
+		assert.Equal(t, "slow", e.first(e.head))
+	})
+
+	t.Run("never reported a head", func(t *testing.T) {
+		e := newPollAgeEnv(t, []servedTipFixture{
+			{id: "never"},
+			{id: "slow", latestBlock: 1000},
+			{id: "reader", latestBlock: 1000, ignoreMethods: ignoreGetBlock},
+		}, "never", "slow", "reader")
+		e.step(3)
+		require.Zero(t, e.polled("never"))
+		before := e.first(e.head)
+		e.step(1)
+		assert.Zero(t, e.headOf("never"), "served traffic, still no head: no credit")
+		assert.Equal(t, before, e.first(e.head), "order unchanged by the credit")
+	})
+
+	t.Run("slow-to-answer upstream with the fresher poll", func(t *testing.T) {
+		e := newPollAgeEnv(t, trio(), "fast", "slow", "reader")
+		e.movers = []string{"slow", "reader"}
+		e.step(3)
+		assert.Equal(t, "fast", e.first(e.head), "a fresher poll alone does not make a tip leader")
+		e.movers = []string{"fast", "reader"}
+		e.step(3)
+		assert.LessOrEqual(t, e.headOf("slow"), e.head, "credit never above the corroborated head")
+		assert.Equal(t, "fast", e.first(e.head))
+		assert.Equal(t, "fast", e.first(e.head+1), "credit never makes a tip leader")
+	})
+
+	t.Run("far-ahead rogue", func(t *testing.T) {
+		e := newPollAgeEnv(t, []servedTipFixture{
+			{id: "fast", latestBlock: 1000},
+			{id: "slow", latestBlock: 1000},
+			{id: "rogue", latestBlock: 1000},
+		}, "rogue", "fast", "slow")
+		e.movers = []string{"fast", "slow"}
+		e.report("rogue", 103_000)
+		e.step(3)
+		assert.Equal(t, e.polled("rogue"), e.headOf("rogue"), "a tracked head above the network earns no credit")
+		for _, id := range []string{"fast", "slow"} {
+			assert.Equal(t, e.head, e.headOf(id), "%s: at the network head, never above it", id)
+		}
+		if e.polled("rogue") < e.head {
+			assert.Equal(t, "fast", e.first(e.head), "a rogue its poller did not follow stays demoted")
+		}
+	})
+
+	t.Run("poller stops at tip, never served", func(t *testing.T) {
+		e := newPollAgeEnv(t, trio(), "fast", "slow", "reader")
+		s := e.head
+		// Peers are known to the tracker; fast has served nothing.
+		for _, id := range []string{"slow", "reader"} {
+			e.network.metricsTracker.GetUpstreamMethodMetrics(e.ups[id], "eth_getBlockByNumber", common.DataFinalityStateAll)
+		}
+		e.movers = []string{"slow", "reader"}
+		e.step(10)
+		assert.InDelta(t, s+5, e.headOf("fast"), 1, "the credit froze one poll period after the last report")
+		assert.Equal(t, "slow", e.first(e.head), "demoted as if it had served")
+	})
+
+	t.Run("two upstreams only", func(t *testing.T) {
+		e := newPollAgeEnv(t, []servedTipFixture{
+			{id: "fast", latestBlock: 1000},
+			{id: "slow", latestBlock: 1000},
+		}, "fast", "slow")
+		s := e.head
+		e.movers = []string{"slow"}
+		e.step(3)
+		assert.Equal(t, s, e.headOf("fast"), "the corroborated head is the lower one: no credit")
+		assert.Equal(t, "slow", e.first(e.head), "same order as without the credit")
+		e.step(20)
+		assert.Equal(t, "slow", e.first(e.head), "still demoted once benched")
+	})
 }
