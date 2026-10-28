@@ -795,7 +795,7 @@ func (e *SvmStatePoller) applyHealthToRouting() {
 			e.logger.Info().
 				Int64("shredInsertSlotLag", e.maxShredInsertSlotLag.Load()).
 				Msg("svm upstream recovered; uncordoning")
-			e.upstream.Uncordon("*", "svm state poller: getHealth ok and shred-insert lag back within threshold")
+			e.upstream.Uncordon("*", "svm state poller: getHealth ok and shred-insert lag back within threshold", common.CordonClassAvailability)
 		}
 		return
 	}
@@ -815,7 +815,7 @@ func (e *SvmStatePoller) applyHealthToRouting() {
 		Int64("latestSlot", e.LatestSlot()).
 		Str("reason", reason).
 		Msg("svm upstream unhealthy; cordoning out of rotation")
-	e.upstream.Cordon("*", reason)
+	e.upstream.Cordon("*", reason, common.CordonClassAvailability)
 }
 
 // SuggestLatestSlot ingests an externally-observed processed/latest slot —

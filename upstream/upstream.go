@@ -223,6 +223,16 @@ type Upstream struct {
 	// it in-process. Created once, lazily (see operatorCordonVar).
 	operatorCordon     atomic.Value // data.CounterInt64SharedVariable
 	operatorCordonOnce sync.Once
+	// operatorRecovery is a monotonic shared epoch bumped by UncordonAdmin
+	// when the operator counter is already zero. A single TryUpdate(0) is a
+	// no-op in that case, and a zero→epoch→zero pulse can coalesce so peers
+	// never see OnValue — this counter's sole job is "clear every class".
+	operatorRecovery     atomic.Value // data.CounterInt64SharedVariable
+	operatorRecoveryOnce sync.Once
+	// adminCordonMu serializes local CordonAdmin/UncordonAdmin clears with
+	// peer OnValue callbacks. TryUpdate may invoke OnValue synchronously, so
+	// callers must release this mutex before publishing shared-state updates.
+	adminCordonMu sync.Mutex
 	// operatorCordonReason is the reason given on this replica for the
 	// in-flight CordonAdmin/UncordonAdmin call; it is cleared when that
 	// call returns. Peers and restarted pods only see that an operator
@@ -347,6 +357,7 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 		}
 	})
 	u.operatorCordonVar()
+	u.operatorRecoveryVar()
 
 	if u.evmStatePoller != nil {
 		err = u.evmStatePoller.Bootstrap(ctx)
@@ -1525,18 +1536,22 @@ func (u *Upstream) MarshalJSON() ([]byte, error) {
 // Cordon / Uncordon flip the tracker cell for (upstream, method) on this pod:
 // in-process detectors (consensus sit-out, state-poller checks) and
 // method-scoped operator cordons use them.
-func (u *Upstream) Cordon(method string, reason string) {
-	u.metricsTracker.Cordon(u, method, reason)
+func (u *Upstream) Cordon(method string, reason string, class common.CordonClass) {
+	u.metricsTracker.Cordon(u, method, reason, class)
 }
 
-// Uncordon lifts a pod-local cordon. While the operator holds the shared
-// whole-upstream cordon, a detector cannot lift the "*" cell; only
-// UncordonAdmin can.
-func (u *Upstream) Uncordon(method string, reason string) {
-	if v, ok := u.operatorCordon.Load().(data.CounterInt64SharedVariable); ok && method == "*" && v.GetValue() > 0 {
-		return
+// Uncordon lifts a pod-local cordon of one class. While the operator holds the
+// shared whole-upstream cordon, a detector cannot clear the operator class on
+// "*" via this path — only UncordonAdmin can. Punishment/availability owners
+// must still clear their own bits while an operator cordon is held; otherwise
+// a later UncordonAdmin (operator bit only) would leave a stale sitout cordon.
+func (u *Upstream) Uncordon(method string, reason string, class common.CordonClass) {
+	if class == common.CordonClassOperator {
+		if v, ok := u.operatorCordon.Load().(data.CounterInt64SharedVariable); ok && method == "*" && v.GetValue() > 0 {
+			return
+		}
 	}
-	u.metricsTracker.Uncordon(u, method, reason)
+	u.metricsTracker.Uncordon(u, method, reason, class)
 }
 
 // CordonedReason returns the cordon reason and whether the (upstream,
@@ -1549,23 +1564,83 @@ func (u *Upstream) CordonedReason(method string) (string, bool) {
 // the shared counter (value = unix-ms, kept while already held). Local-first
 // and pushed in the background, like every other shared counter.
 func (u *Upstream) CordonAdmin(ctx context.Context, reason string) {
+	u.adminCordonMu.Lock()
 	u.operatorCordonReason.Store(reason)
-	defer u.operatorCordonReason.Store("")
-	if v := u.operatorCordonVar(); v.GetValue() == 0 {
-		v.TryUpdate(ctx, time.Now().UnixMilli())
-	} else {
-		u.metricsTracker.Cordon(u, "*", reason)
+	v := u.operatorCordonVar()
+	if v.GetValue() != 0 {
+		// Already held: refresh local bit under the same mutex hold so an
+		// UncordonAdmin that completed while we were unlocked cannot leave us
+		// with a local-only cordon and a zero shared counter.
+		u.metricsTracker.Cordon(u, "*", reason, common.CordonClassOperator)
+		u.operatorCordonReason.Store("")
+		u.adminCordonMu.Unlock()
+		return
 	}
+	u.adminCordonMu.Unlock()
+	// TryUpdate may invoke OnValue synchronously; that callback takes
+	// adminCordonMu, so we must not hold it across the call.
+	v.TryUpdate(ctx, time.Now().UnixMilli())
+	u.operatorCordonReason.Store("")
 }
 
-// UncordonAdmin lifts the operator's cordon fleet-wide; on this pod that
-// also clears any automatic wildcard cordon — the operator call is the
-// override for a detector verdict.
+// UncordonAdmin lifts the shared operator cordon fleet-wide and clears every
+// cordon class on "*" locally (and on peers via shared-state callbacks).
+// That is the intentional recovery path for availability cordons that have no
+// automatic Uncordon — e.g. EVM chain-identity mismatch. Class-scoped
+// Uncordon still clears one bit only (feature §4.5).
 func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
+	u.adminCordonMu.Lock()
 	u.operatorCordonReason.Store(reason)
+	// Snapshot per-class gens before publishing so a detector cordon that
+	// lands after this recovery cannot be wiped by our local clear (or by a
+	// delayed recovery OnValue that races the same pod).
+	gens := u.metricsTracker.CordonGens(u, "*")
+	watermarkMs := time.Now().UnixMilli()
+	// Advance past the snapshot millisecond while still holding the mutex so a
+	// detector Cordon that races after unlock cannot share cordonSetAtMs with
+	// this recovery watermark (UncordonClassesNotAfter is inclusive).
+	for time.Now().UnixMilli() <= watermarkMs {
+		time.Sleep(100 * time.Microsecond)
+	}
+	v := u.operatorCordonVar()
+	u.adminCordonMu.Unlock()
+
+	// TryUpdate may invoke OnValue synchronously under adminCordonMu — never
+	// hold the mutex across these publishes.
+	//
+	// Always publish TryUpdate(0), even when this replica's mirror already
+	// reads zero: a peer may still hold a positive operator counter that our
+	// local view has not caught up to. Equal local 0→0 is a no-op here; the
+	// recovery epoch below also lifts a still-positive peer counter.
+	v.TryUpdate(ctx, 0)
+	rv := u.operatorRecoveryVar()
+	next := watermarkMs * int64(time.Millisecond)
+	if cur := rv.GetValue(); next <= cur {
+		next = cur + 1
+	}
+	rv.TryUpdate(ctx, next)
+
+	u.adminCordonMu.Lock()
+	defer u.adminCordonMu.Unlock()
 	defer u.operatorCordonReason.Store("")
-	u.operatorCordonVar().TryUpdate(ctx, 0)
-	u.metricsTracker.Uncordon(u, "*", reason)
+	// A concurrent CordonAdmin that won after our publish must keep its bit.
+	if v.GetValue() != 0 {
+		return
+	}
+	u.metricsTracker.UncordonClassesAtMostGens(u, "*", reason, gens)
+}
+
+// clearAllCordonClasses clears operator, punishment, and availability bits on
+// the given method cell. Used by tests / callers that intentionally wipe
+// every class without a generation watermark.
+func (u *Upstream) clearAllCordonClasses(method, reason string) {
+	for _, class := range []common.CordonClass{
+		common.CordonClassOperator,
+		common.CordonClassPunishment,
+		common.CordonClassAvailability,
+	} {
+		u.metricsTracker.Uncordon(u, method, reason, class)
+	}
 }
 
 // operatorCordonVar creates the shared counter on first use; every value it
@@ -1575,17 +1650,68 @@ func (u *Upstream) operatorCordonVar() data.CounterInt64SharedVariable {
 		key := data.CounterValueSchemaVersion + "/operatorCordon/" + u.ProjectId + "/" + common.UniqueUpstreamKey(u)
 		v := u.sharedStateRegistry.GetCounterInt64(key, 0)
 		v.OnValue(func(cordonedAtMs int64) {
+			u.adminCordonMu.Lock()
+			defer u.adminCordonMu.Unlock()
 			reason := "operator cordon (set on another replica)"
 			if r, ok := u.operatorCordonReason.Load().(string); ok && r != "" {
 				reason = r
 			}
 			if cordonedAtMs > 0 {
-				u.metricsTracker.Cordon(u, "*", reason)
+				u.metricsTracker.Cordon(u, "*", reason, common.CordonClassOperator)
 			} else {
-				u.metricsTracker.Uncordon(u, "*", reason)
+				// Lift the operator bit only. All-class clear is owned by the
+				// recovery epoch so it can respect per-class watermarks /
+				// generations; an unconditional clearAll here would erase a
+				// newer concurrent CordonAdmin or post-recovery detector cordon.
+				u.metricsTracker.Uncordon(u, "*", reason, common.CordonClassOperator)
 			}
 		})
 		u.operatorCordon.Store(v)
 	})
 	return u.operatorCordon.Load().(data.CounterInt64SharedVariable)
+}
+
+// operatorRecoveryVar creates the shared recovery-epoch counter used by
+// UncordonAdmin to clear classes fleet-wide. Each positive epoch clears
+// classes whose last set time is <= the epoch watermark (UnixNano→ms).
+func (u *Upstream) operatorRecoveryVar() data.CounterInt64SharedVariable {
+	u.operatorRecoveryOnce.Do(func() {
+		key := data.CounterValueSchemaVersion + "/operatorCordonRecovery/" + u.ProjectId + "/" + common.UniqueUpstreamKey(u)
+		v := u.sharedStateRegistry.GetCounterInt64(key, 0)
+		v.OnValue(func(epoch int64) {
+			if epoch <= 0 {
+				return
+			}
+			reason := "operator cordon recovery (set on another replica)"
+			if r, ok := u.operatorCordonReason.Load().(string); ok && r != "" {
+				reason = r
+			}
+			notAfterMs := epoch / int64(time.Millisecond)
+			if notAfterMs <= 0 {
+				notAfterMs = time.Now().UnixMilli()
+			}
+
+			// Authoritative fleet uncordon for operator state that predates
+			// this recovery. The operator counter stores cordon-at unix-ms;
+			// skip TryUpdate(0) when a newer CordonAdmin (higher ms) landed
+			// after this recovery epoch was issued.
+			op := u.operatorCordonVar()
+			if opVal := op.GetValue(); opVal > 0 {
+				if opVal > notAfterMs {
+					return
+				}
+				op.TryUpdate(u.appCtx, 0)
+			}
+
+			u.adminCordonMu.Lock()
+			defer u.adminCordonMu.Unlock()
+			// A newer CordonAdmin that won after TryUpdate(0) must keep its bit.
+			if op.GetValue() > 0 {
+				return
+			}
+			u.metricsTracker.UncordonClassesNotAfter(u, "*", reason, notAfterMs)
+		})
+		u.operatorRecovery.Store(v)
+	})
+	return u.operatorRecovery.Load().(data.CounterInt64SharedVariable)
 }

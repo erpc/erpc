@@ -13,4 +13,11 @@ type User struct {
 	// the strategy that authenticated this user. Nil means "no strategy-level
 	// override" — the project-level pattern applies.
 	AllowClientDirectives *string
+
+	// Auth is the name of the auth strategy that authenticated this caller
+	// (feature §4.3). Stamped ONLY by the auth registry from the strategy
+	// config — never from a client-controlled header. Empty when the strategy
+	// is unnamed. The trusted-header path never sets it. The consensus-policy
+	// selector compares this string in operator evals (ctx.user.auth).
+	Auth string
 }

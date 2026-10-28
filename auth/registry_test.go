@@ -144,3 +144,41 @@ func newSecretAuthRegistry(t *testing.T, cfg *common.AuthConfig) *AuthRegistry {
 	require.NoError(t, err)
 	return registry
 }
+
+func TestAuthRegistry_Authenticate_StampsStrategyName(t *testing.T) {
+	registry := newSecretAuthRegistry(t, &common.AuthConfig{
+		Strategies: []*common.AuthStrategyConfig{
+			{
+				Name:   "consensus-waive",
+				Type:   common.AuthTypeSecret,
+				Secret: &common.SecretStrategyConfig{Id: "waive", Value: "waive-token"},
+			},
+			{
+				Type:   common.AuthTypeSecret,
+				Secret: &common.SecretStrategyConfig{Id: "anon", Value: "anon-token"},
+			},
+		},
+	})
+
+	t.Run("named strategy", func(t *testing.T) {
+		user, err := registry.Authenticate(context.Background(), nil, "eth_call", &AuthPayload{
+			Method: "eth_call",
+			Type:   common.AuthTypeSecret,
+			Secret: &SecretPayload{Value: "waive-token"},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, user)
+		assert.Equal(t, "consensus-waive", user.Auth)
+	})
+
+	t.Run("unnamed strategy stamps empty", func(t *testing.T) {
+		user, err := registry.Authenticate(context.Background(), nil, "eth_call", &AuthPayload{
+			Method: "eth_call",
+			Type:   common.AuthTypeSecret,
+			Secret: &SecretPayload{Value: "anon-token"},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, user)
+		assert.Equal(t, "", user.Auth)
+	})
+}

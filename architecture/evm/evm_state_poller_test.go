@@ -42,9 +42,9 @@ func (f *fakePollerUpstream) Forward(ctx context.Context, nq *common.NormalizedR
 	}
 	return nil, errors.New("fake upstream: forward always fails")
 }
-func (f *fakePollerUpstream) Cordon(method string, reason string)   {}
-func (f *fakePollerUpstream) Uncordon(method string, reason string) {}
-func (f *fakePollerUpstream) IgnoreMethod(method string)            {}
+func (f *fakePollerUpstream) Cordon(method string, reason string, class common.CordonClass)   {}
+func (f *fakePollerUpstream) Uncordon(method string, reason string, class common.CordonClass) {}
+func (f *fakePollerUpstream) IgnoreMethod(method string)                                      {}
 func (f *fakePollerUpstream) ShouldHandleMethod(method string) (bool, error) {
 	return true, nil
 }
