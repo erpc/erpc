@@ -1876,10 +1876,26 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		malformed, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", s.addr), nil)
 		require.NoError(t, err)
 		defer malformed.Close()
-		resp := sendAndReceive(t, malformed, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["logs",{"address":"0x123"}]}`)
-		errObj, ok := resp["error"].(map[string]interface{})
-		require.True(t, ok, "a malformed address fails: %v", resp)
-		assert.EqualValues(t, common.JsonRpcErrorInvalidArgument, errObj["code"])
+		// geth's limits: 1,000 addresses, 4 topic positions, 1,000 values
+		// per position; one more of any fails as a malformed filter does.
+		values := func(n int, width int) string {
+			vs := make([]string, n)
+			for i := range vs {
+				vs[i] = fmt.Sprintf(`"0x%0*x"`, 2*width, i)
+			}
+			return "[" + strings.Join(vs, ",") + "]"
+		}
+		for name, filter := range map[string]string{
+			"a malformed address":                `{"address":"0x123"}`,
+			"1,001 addresses":                    `{"address":` + values(1001, 20) + `}`,
+			"5 topic positions":                  `{"topics":[null,null,null,null,null]}`,
+			"1,001 values in one topic position": `{"topics":[null,` + values(1001, 32) + `]}`,
+		} {
+			resp := sendAndReceive(t, malformed, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["logs",`+filter+`]}`)
+			errObj, ok := resp["error"].(map[string]interface{})
+			require.True(t, ok, "%s fails: %v", name, resp)
+			assert.EqualValues(t, common.JsonRpcErrorInvalidArgument, errObj["code"], name)
+		}
 		s.blocks(2)
 		assert.Zero(t, receiptsAndLogsCalls(s), "a filter that does not parse makes no upstream call")
 
