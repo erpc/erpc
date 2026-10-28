@@ -554,6 +554,22 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *upstreamE
 	return u.failsafeExecutorFor(method, req.Finality(context.Background()))
 }
 
+// CircuitBreakerOpen reports whether the breaker that would serve this
+// method and finality is open. Matching follows getFailsafeExecutor
+// (method+finality, then method, then finality, then catch-all). The
+// catch-all CircuitBreakerState is the simulator's per-upstream pill, not
+// the breaker for one request.
+func (u *Upstream) CircuitBreakerOpen(method string, finality common.DataFinalityState) bool {
+	if u == nil {
+		return false
+	}
+	fe := u.failsafeExecutorFor(method, finality)
+	if fe == nil || fe.Breaker() == nil {
+		return false
+	}
+	return fe.Breaker().State() == failsafe.StateOpen
+}
+
 // failsafeExecutorFor picks the policy the same way getFailsafeExecutor does,
 // so health checks that only have method+finality (not a full request) still
 // see the breaker the real call would hit.
@@ -1613,9 +1629,21 @@ func (u *Upstream) CordonAdmin(ctx context.Context, reason string) {
 	// An in-flight UncordonAdmin has already snapshotted the old generation.
 	// Publish a fresh timestamp so that zero cannot be the last shared value
 	// for this re-assert, then retry once if the zero landed first.
+	// Monotonic on the shared counter, not this pod's clock. A slow replica
+	// must not publish a value older than the last cordon or the last
+	// recovery epoch, or a peer will treat the new cordon as already cleared.
 	publish := time.Now().UnixMilli()
-	if cur > 0 && publish <= cur {
-		publish = cur + 1
+	floor := cur
+	// Read a recovery epoch only when UncordonAdmin already created the
+	// counter. Creating it here would deliver a stored epoch and clear the
+	// cordon this call is setting.
+	if loaded := u.operatorRecovery.Load(); loaded != nil {
+		if rec := loaded.(data.CounterInt64SharedVariable).GetValue(); rec > floor {
+			floor = rec
+		}
+	}
+	if publish <= floor {
+		publish = floor + 1
 	}
 	v.TryUpdate(ctx, publish)
 	if v.GetValue() == 0 {
@@ -1644,14 +1672,10 @@ func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
 	u.uncordonSnap.Store(&snap)
 	u.uncordonMaxOperatorGen.Store(gens[operatorCordonGenIndex])
 	u.uncordonInFlight.Store(true)
-	watermarkMs := time.Now().UnixMilli()
-	// Advance past the snapshot millisecond while still holding the mutex so a
-	// detector Cordon that races after unlock cannot share cordonSetAtMs with
-	// this recovery watermark (UncordonClassesNotAfter is inclusive).
-	for time.Now().UnixMilli() <= watermarkMs {
-		time.Sleep(100 * time.Microsecond)
-	}
 	v := u.operatorCordonVar()
+	// Recovery epoch is the shared operator generation being cleared, not
+	// this pod's wall clock. Peers compare their copy of the same counter.
+	clearedGen := v.GetValue()
 	u.adminCordonMu.Unlock()
 
 	// TryUpdate may invoke OnValue synchronously under adminCordonMu — never
@@ -1663,7 +1687,12 @@ func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
 	// recovery epoch below also lifts a still-positive peer counter.
 	v.TryUpdate(ctx, 0)
 	rv := u.operatorRecoveryVar()
-	next := watermarkMs * int64(time.Millisecond)
+	next := clearedGen
+	if next < 1 {
+		// Local mirror may already be 0 while a peer still holds a positive
+		// generation. A positive epoch is what makes that peer run the clear.
+		next = 1
+	}
 	if cur := rv.GetValue(); next <= cur {
 		next = cur + 1
 	}
@@ -1743,8 +1772,9 @@ func (u *Upstream) operatorCordonVar() data.CounterInt64SharedVariable {
 }
 
 // operatorRecoveryVar creates the shared recovery-epoch counter used by
-// UncordonAdmin to clear classes fleet-wide. Each positive epoch clears
-// classes whose last set time is <= the epoch watermark (UnixNano→ms).
+// UncordonAdmin to clear classes fleet-wide. The epoch is the shared
+// operator generation being cleared (or the next monotonic value), never a
+// wall clock. Peers must not compare it with their own cordonSetAtMs.
 func (u *Upstream) operatorRecoveryVar() data.CounterInt64SharedVariable {
 	u.operatorRecoveryOnce.Do(func() {
 		key := data.CounterValueSchemaVersion + "/operatorCordonRecovery/" + u.ProjectId + "/" + common.UniqueUpstreamKey(u)
@@ -1757,18 +1787,13 @@ func (u *Upstream) operatorRecoveryVar() data.CounterInt64SharedVariable {
 			if r, ok := u.operatorCordonReason.Load().(string); ok && r != "" {
 				reason = r
 			}
-			notAfterMs := epoch / int64(time.Millisecond)
-			if notAfterMs <= 0 {
-				notAfterMs = time.Now().UnixMilli()
-			}
 
-			// Authoritative fleet uncordon for operator state that predates
-			// this recovery. The operator counter stores cordon-at unix-ms;
-			// skip TryUpdate(0) when a newer CordonAdmin (higher ms) landed
-			// after this recovery epoch was issued.
+			// Skip when the shared operator counter has already moved past
+			// this epoch: that is a newer CordonAdmin, on this counter's own
+			// sequence, not a comparison of two pods' clocks.
 			op := u.operatorCordonVar()
 			if opVal := op.GetValue(); opVal > 0 {
-				if opVal > notAfterMs {
+				if opVal > epoch {
 					return
 				}
 				op.TryUpdate(u.appCtx, 0)
@@ -1780,16 +1805,17 @@ func (u *Upstream) operatorRecoveryVar() data.CounterInt64SharedVariable {
 			if op.GetValue() > 0 {
 				return
 			}
-			// On the issuing pod, clear by the generation snapshot. A detector
-			// cordon during the clock wait does not take adminCordonMu, so its
-			// set time can still be <= watermarkMs; the generation is what
-			// proves it landed after the snapshot. Peers have no snapshot and
-			// use the watermark.
+			// Issuing pod: clear by the snapshot taken before publish, so a
+			// detector cordon during the publish is kept.
 			if snap := u.uncordonSnap.Load(); snap != nil {
 				u.metricsTracker.UncordonClassesAtMostGens(u, "*", reason, *snap)
 				return
 			}
-			u.metricsTracker.UncordonClassesNotAfter(u, "*", reason, notAfterMs)
+			// Peer: this callback is the causal cut. Clear classes present
+			// now. A detector cordon after this snapshot has a higher local
+			// generation and is kept. Do not compare wall clocks.
+			gens := u.metricsTracker.CordonGens(u, "*")
+			u.metricsTracker.UncordonClassesAtMostGens(u, "*", reason, gens)
 		})
 		u.operatorRecovery.Store(v)
 	})

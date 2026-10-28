@@ -209,6 +209,45 @@ func TestUncordonAdmin_PreservesPostSnapshotDetectorCordon(t *testing.T) {
 		"availability present at snapshot must be cleared")
 }
 
+// A peer applies recovery without the issuer's snapshot and without a
+// wall-clock watermark. Classes present when the callback runs are cleared.
+// A cordon after that callback is a later local generation and stays.
+func TestRecovery_PeerClearsByLocalGenerationNotWallClock(t *testing.T) {
+	ctx := context.Background()
+	a := newCordonTestUpstream(t, "")
+	a.CordonClass("*", "old availability", common.CordonClassAvailability)
+
+	// Epoch 1 is not a timestamp. The old path treated a non-positive
+	// millisecond watermark as time.Now() and compared clocks.
+	a.operatorRecoveryVar().TryUpdate(ctx, 1)
+
+	classes := a.metricsTracker.CordonClasses(a, "*")
+	require.NotContains(t, classes, common.CordonClassAvailability,
+		"classes present when recovery is applied must be cleared")
+
+	a.CordonClass("*", "after recovery", common.CordonClassPunishment)
+	classes = a.metricsTracker.CordonClasses(a, "*")
+	require.Contains(t, classes, common.CordonClassPunishment,
+		"a cordon after recovery was applied must stay")
+}
+
+// A shared operator generation newer than the recovery epoch is a later
+// CordonAdmin. Recovery must not clear it, and must not consult wall clocks
+// to decide that.
+func TestRecovery_SkipsWhenOperatorGenerationIsNewer(t *testing.T) {
+	ctx := context.Background()
+	a := newCordonTestUpstream(t, "")
+	a.CordonAdmin(ctx, "incident")
+	require.Greater(t, a.operatorCordonVar().GetValue(), int64(1))
+	a.CordonClass("*", "availability", common.CordonClassAvailability)
+
+	a.operatorRecoveryVar().TryUpdate(ctx, 1)
+
+	classes := a.metricsTracker.CordonClasses(a, "*")
+	require.Contains(t, classes, common.CordonClassOperator)
+	require.Contains(t, classes, common.CordonClassAvailability)
+}
+
 // A detector cordon during UncordonAdmin's clock wait does not take
 // adminCordonMu, so its set time can still fall on the recovery watermark.
 // The generation snapshot must keep it; the time watermark must not.

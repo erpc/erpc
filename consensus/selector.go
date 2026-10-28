@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"context"
 	"errors"
 	"math"
 	"strconv"
@@ -86,6 +87,7 @@ func (c *Consensus) markSelected(req *common.NormalizedRequest, projectId, netwo
 // two sides cannot drift.
 func (c *Consensus) buildEvalContext(req *common.NormalizedRequest) policyengine.EvalContext {
 	method, _ := req.Method()
+	finality := req.Finality(context.Background())
 
 	// Prefer the unfiltered network registry for ctx.upstreams so
 	// allUnavailable() still sees availability-cordoned internals that
@@ -105,7 +107,7 @@ func (c *Consensus) buildEvalContext(req *common.NormalizedRequest) policyengine
 			Network:     req.NetworkLabel(),
 			BlockNumber: blockNumberPtr(req.EvmBlockNumber()),
 		},
-		Upstreams: toEvalUpstreams(upsForHealth, method),
+		Upstreams: toEvalUpstreams(upsForHealth, method, finality),
 	}
 
 	// Auth is the strategy name stamped by the auth registry (§4.3). A nil
@@ -124,7 +126,7 @@ func (c *Consensus) buildEvalContext(req *common.NormalizedRequest) policyengine
 		if !hasPunishmentOrOperator(up, method) {
 			continue
 		}
-		mapped := toEvalUpstreams([]common.Upstream{up}, method)
+		mapped := toEvalUpstreams([]common.Upstream{up}, method, finality)
 		if len(mapped) > 0 {
 			ectx.PunishedOrOperator = append(ectx.PunishedOrOperator, mapped[0])
 		}
@@ -135,7 +137,7 @@ func (c *Consensus) buildEvalContext(req *common.NormalizedRequest) policyengine
 
 // toEvalUpstreams maps runtime upstreams into the plain-value snapshots the
 // selector engine consumes (tags, cordon classes, block-availability bounds).
-func toEvalUpstreams(ups []common.Upstream, method string) []policyengine.Upstream {
+func toEvalUpstreams(ups []common.Upstream, method string, finality common.DataFinalityState) []policyengine.Upstream {
 	out := make([]policyengine.Upstream, 0, len(ups))
 	for _, up := range ups {
 		if up == nil {
@@ -155,12 +157,12 @@ func toEvalUpstreams(ups []common.Upstream, method string) []policyengine.Upstre
 		pu.Health.CordonClasses = classes
 		// Cordon wins over breaker state: a cordoned upstream is out of
 		// rotation for a typed reason, which allUnavailable() whitelists
-		// separately. An open catch-all circuit breaker with no cordon is
+		// separately. An open breaker for this method, with no cordon, is
 		// the unhealthy-but-uncordoned case (down, not yet cordoned).
 		switch {
 		case len(classes) > 0:
 			pu.Health.State = policyengine.StateCordoned
-		case circuitBreakerOpen(up):
+		case circuitBreakerOpen(up, method, finality):
 			pu.Health.State = policyengine.StateUnhealthy
 		default:
 			pu.Health.State = policyengine.StateHealthy
@@ -181,11 +183,19 @@ func toEvalUpstreams(ups []common.Upstream, method string) []policyengine.Upstre
 	return out
 }
 
-// circuitBreakerOpen reports the catch-all breaker used for methods without
-// their own failsafe block. Half-open is still serving probes, so only StateOpen
-// is the down-but-uncordoned case allUnavailable() documents. Upstreams that
-// do not expose a breaker (fakes, non-upstream types) are not unhealthy.
-func circuitBreakerOpen(up common.Upstream) bool {
+// circuitBreakerOpen reports the breaker that would serve method+finality.
+// Half-open is still serving probes, so only open is the down-but-uncordoned
+// case allUnavailable() documents. Upstreams that expose CircuitBreakerOpen
+// are asked for this request. Others fall back to the catch-all
+// CircuitBreakerState (fakes and the simulator pill). No method at all means
+// not unhealthy.
+func circuitBreakerOpen(up common.Upstream, method string, finality common.DataFinalityState) bool {
+	type methodBreaker interface {
+		CircuitBreakerOpen(method string, finality common.DataFinalityState) bool
+	}
+	if b, ok := up.(methodBreaker); ok {
+		return b.CircuitBreakerOpen(method, finality)
+	}
 	type circuitBreaker interface {
 		CircuitBreakerState() failsafe.State
 	}

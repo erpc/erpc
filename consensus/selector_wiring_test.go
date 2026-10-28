@@ -446,6 +446,41 @@ type openBreakerUpstream struct {
 
 func (openBreakerUpstream) CircuitBreakerState() failsafe.State { return failsafe.StateOpen }
 
+// methodOpenBreaker reports open only for one method. The catch-all
+// CircuitBreakerState stays closed, so the selector must read the
+// method-specific breaker.
+type methodOpenBreaker struct {
+	common.Upstream
+	openMethod string
+}
+
+func (m methodOpenBreaker) CircuitBreakerState() failsafe.State { return failsafe.StateClosed }
+
+func (m methodOpenBreaker) CircuitBreakerOpen(method string, _ common.DataFinalityState) bool {
+	return method == m.openMethod
+}
+
+func TestBuildEvalContext_MethodBreakerOpenIsUnhealthy(t *testing.T) {
+	c := newWiringConsensus(t)
+	down := methodOpenBreaker{
+		Upstream:   common.NewFakeUpstream("internal-blue", common.WithTags("type:internal")),
+		openMethod: "eth_call",
+	}
+	req := wiringRequest(t, "eth_call", "")
+	req.SetNetworkUpstreams([]common.Upstream{down})
+	ectx := c.buildEvalContext(req)
+	if ectx.Upstreams[0].Health.State != policyengine.StateUnhealthy {
+		t.Fatalf("eth_call state = %q, want unhealthy", ectx.Upstreams[0].Health.State)
+	}
+
+	req = wiringRequest(t, "eth_getBalance", "")
+	req.SetNetworkUpstreams([]common.Upstream{down})
+	ectx = c.buildEvalContext(req)
+	if ectx.Upstreams[0].Health.State != policyengine.StateHealthy {
+		t.Fatalf("eth_getBalance state = %q, want healthy", ectx.Upstreams[0].Health.State)
+	}
+}
+
 func TestBuildEvalContext_OpenBreakerIsUnhealthy(t *testing.T) {
 	c := newWiringConsensus(t)
 	down := openBreakerUpstream{Upstream: common.NewFakeUpstream("internal-blue", common.WithTags("type:internal"))}

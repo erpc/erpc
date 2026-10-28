@@ -187,7 +187,10 @@ func (s *Selector) Evaluate(ctx EvalContext, timeout time.Duration) (string, err
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			v.interrupt(ErrEvalTimeout)
-			s.pool.discard()
+			// The slot stays in alive until the goroutine exits. Discarding
+			// now would let the pool build another runtime while this one is
+			// still running, past poolMaxSize.
+			discardWhenStopped(s.pool, done)
 			return "", ErrEvalTimeout
 		}
 		timer := time.NewTimer(remaining)
@@ -197,10 +200,10 @@ func (s *Selector) Evaluate(ctx EvalContext, timeout time.Duration) (string, err
 		case <-timer.C:
 			// Interrupt is cooperative and does not preempt a native builtin
 			// (regex, sort, JSON.stringify). Do not block the request on that
-			// call. The VM is discarded so it cannot be reused; the goroutine
-			// exits when the native call returns.
+			// call. Discard only after done so the slot is counted until the
+			// goroutine actually exits.
 			v.interrupt(ErrEvalTimeout)
-			s.pool.discard()
+			discardWhenStopped(s.pool, done)
 			return "", ErrEvalTimeout
 		}
 	} else {
@@ -224,6 +227,16 @@ func (s *Selector) Evaluate(ctx EvalContext, timeout time.Duration) (string, err
 	// so the next caller gets a fresh realm; the pool refills asynchronously.
 	s.pool.discard()
 	return name, nil
+}
+
+// discardWhenStopped drops the VM after its eval goroutine exits. The request
+// path must not wait: a native builtin ignores Interrupt and may run long.
+// Holding the slot until then is what keeps alive <= poolMaxSize.
+func discardWhenStopped(p *pool, done <-chan struct{}) {
+	go func() {
+		<-done
+		p.discard()
+	}()
 }
 
 // resultName interprets the eval return value. null/undefined → "" (default);
