@@ -11981,6 +11981,10 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 		unclampedUpstream.EvmStatePoller().SuggestLatestBlock(1950, time.Now())
 		unclampedUpstream.EvmStatePoller().SuggestFinalizedBlock(1850, time.Now())
 		time.Sleep(50 * time.Millisecond)
+		// The head loop may have served 1850 while the clamped node's latest,
+		// and so its bound, was still unapplied; the unclamped node still backs
+		// that floor. Start from no floor to read the settled ballot.
+		freshHeadMemory(network)
 
 		// Second-highest of effective finalized blocks {1800, 1850} = 1800
 		highest := servedHead(network, ctx).Finalized
