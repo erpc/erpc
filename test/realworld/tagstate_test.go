@@ -1,6 +1,7 @@
 package realworld
 
 import (
+	"context"
 	"errors"
 	"math/big"
 	"time"
@@ -32,6 +33,10 @@ const (
 	// p11RefusedCode: the JSON-RPC code of that refusal.
 	p11RefusedCode = -32603
 )
+
+// p11NitroChain: Arbitrum Nova's chain id, a Nitro chain that is not
+// Arbitrum One (§19 P11-nitro).
+const p11NitroChain = 42170
 
 // p11Depths: in P11's all-stale phase every vendor executes latest this far
 // below its head; ws-a holds the highest tag-state head, http-a, ranked
@@ -142,6 +147,46 @@ func p11() spec {
 		}}
 }
 
+// P11-nitro: a Nitro chain other than Arbitrum One. Multicall3
+// getBlockNumber() answers the parent chain's height, far below the
+// chain's; ArbSys arbBlockNumber() answers the chain's own. A
+// skip-interpolation eth_call(latest) reaches every upstream as the tag,
+// so each is probed: ArbSys answers, so the network is Nitro and every
+// tag-state head is the chain's own height. Every call is served at
+// Latest, and no pod shows any upstream stale (§6.11 Fact).
+func p11Nitro() spec {
+	return spec{name: "P11-nitro", bound: healthyDelivery, sim: chainsim.Config{ChainID: p11NitroChain, Nitro: true},
+		body: func(s *scenario) {
+			s.blocks(25)
+			s.logf("skip-interpolation eth_call(latest) reaches every upstream as the tag")
+			for end := time.Now().Add(p11Evidence); time.Now().Before(end); s.blocks(2) {
+				for pod := range s.h.pods {
+					_, _, _ = s.tagCall(pod)
+				}
+			}
+			for i := range p11Reads {
+				pod := i % len(s.h.pods)
+				if bn, at, err := s.tagCall(pod); err != nil {
+					s.violate(s.name, "pod-%d: skip-interpolation eth_call(latest) on a Nitro chain: %v", pod+1, err)
+				} else if at+headSlackBlocks < bn {
+					s.violate(s.name, "pod-%d: skip-interpolation eth_call(latest) executed at %d, %d below Latest %d", pod+1, at, bn-at, bn)
+				}
+				s.blocks(2)
+			}
+			for pod := range s.h.pods {
+				if v, _ := s.metric(pod, "erpc_upstream_state_probe_total", map[string]string{"probe": "latest", "outcome": "match"}); v == 0 {
+					s.violate(s.name, "pod-%d: no latest probe matched: the tag requests left the upstreams unprobed", pod+1)
+				}
+				for key := range s.vendors {
+					up := s.upstream(key)
+					if v, _ := s.metric(pod, "erpc_upstream_tag_state_stale", map[string]string{"upstream": up}); v != 0 {
+						s.violate(s.name, "pod-%d: erpc_upstream_tag_state_stale of %s is %v on a Nitro chain whose upstreams all execute latest at the head", pod+1, up, v)
+					}
+				}
+			}
+		}}
+}
+
 // latestCall reads eth_blockNumber, then eth_call(latest) to Multicall3
 // getBlockNumber() on pod: Latest, and the block the call executed at.
 func (s *scenario) latestCall(pod int) (latest, at uint64, err error) {
@@ -152,6 +197,30 @@ func (s *scenario) latestCall(pod int) (latest, at uint64, err error) {
 	var res hexutil.Bytes
 	call := map[string]interface{}{"to": chainsim.Multicall3.Hex(), "data": chainsim.GetBlockNumberSig}
 	if err := s.call(pod, &res, "eth_call", call, "latest"); err != nil {
+		return uint64(bn), 0, err
+	}
+	return uint64(bn), new(big.Int).SetBytes(res).Uint64(), nil
+}
+
+// tagCall reads eth_blockNumber, then a skip-interpolation eth_call(latest)
+// to ArbSys arbBlockNumber() on pod: Latest, and the block the call
+// executed at.
+func (s *scenario) tagCall(pod int) (latest, at uint64, err error) {
+	var bn hexutil.Uint64
+	if err := s.call(pod, &bn, "eth_blockNumber"); err != nil {
+		return 0, 0, err
+	}
+	c, err := rpc.DialOptions(context.Background(), s.h.pods[pod].httpURL(s.project, s.chain.ID()),
+		rpc.WithHTTPClient(s.httpc), rpc.WithHeader("X-ERPC-Skip-Interpolation", "true"))
+	if err != nil {
+		return uint64(bn), 0, err
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), httpCheckWait)
+	defer cancel()
+	var res hexutil.Bytes
+	call := map[string]interface{}{"to": chainsim.ArbSys.Hex(), "data": chainsim.ArbBlockNumberSig}
+	if err := c.CallContext(ctx, &res, "eth_call", call, "latest"); err != nil {
 		return uint64(bn), 0, err
 	}
 	return uint64(bn), new(big.Int).SetBytes(res).Uint64(), nil

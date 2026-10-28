@@ -41,6 +41,10 @@ type Config struct {
 	// MatchLast: every matching block ends with a log both filters match,
 	// in a transaction with another log, so Faults.CapLogs can cut it.
 	MatchLast bool
+	// Nitro: an Arbitrum Nitro chain. Multicall3 getBlockNumber() answers
+	// the parent chain's height (ParentNumber), ArbSys arbBlockNumber() the
+	// chain's own; off Nitro, ArbSys has no code and answers "0x".
+	Nitro bool
 }
 
 // Chain is one simulated chain: its canonical branch, every block ever

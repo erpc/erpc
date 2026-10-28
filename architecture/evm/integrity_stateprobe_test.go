@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	gethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/assert"
@@ -75,7 +74,6 @@ func proberFor(pn *probeNetwork, headN int64, stateRoot string) (*stateProber, *
 	v.sync(context.Background())
 	p := &stateProber{
 		network: pn, view: v, interval: 0,
-		ctxProbe:  integrity.ChainStateContextProbe(1),
 		lastProbe: map[string]time.Time{}, work: make(chan int64, 1),
 	}
 	return p, v

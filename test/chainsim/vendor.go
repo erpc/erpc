@@ -823,15 +823,24 @@ func (v *Vendor) trapped(params []interface{}) (interface{}, bool) {
 }
 
 // Multicall3 and its getBlockNumber() selector: the call returns the
-// number of the block it executes at.
+// number of the block it executes at, its parent chain's on a Nitro chain.
+// ArbSys and its arbBlockNumber() selector: the chain's own number, on a
+// Nitro chain only.
 var (
 	Multicall3        = gethcommon.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11")
 	GetBlockNumberSig = "0x42cbb15c"
+	ArbSys            = gethcommon.HexToAddress("0x0000000000000000000000000000000000000064")
+	ArbBlockNumberSig = "0xa3b1b31d"
 )
 
-// callLocked answers eth_call: Multicall3 getBlockNumber() at the block the
-// call names (latest, a number, or an EIP-1898 object) on the vendor's
-// branch; any other call "0x0".
+// ParentNumber is a Nitro chain's parent-chain height when the chain is at
+// n: far below n, as Ethereum's is below Arbitrum Nova's.
+func ParentNumber(n uint64) uint64 { return n / 4 }
+
+// callLocked answers eth_call: Multicall3 getBlockNumber() and ArbSys
+// arbBlockNumber() at the block the call names (latest, a number, or an
+// EIP-1898 object) on the vendor's branch; ArbSys off Nitro "0x", as a
+// call to an address with no code; any other call "0x0".
 func (v *Vendor) callLocked(params []interface{}) (interface{}, *rpcError) {
 	if len(params) == 0 {
 		return nil, &rpcError{-32602, "missing call"}
@@ -842,7 +851,12 @@ func (v *Vendor) callLocked(params []interface{}) (interface{}, *rpcError) {
 	if data == "" {
 		data, _ = tx["input"].(string)
 	}
-	if !strings.EqualFold(to, Multicall3.Hex()) || !strings.EqualFold(data, GetBlockNumberSig) {
+	multicall := strings.EqualFold(to, Multicall3.Hex()) && strings.EqualFold(data, GetBlockNumberSig)
+	arbSys := strings.EqualFold(to, ArbSys.Hex()) && strings.EqualFold(data, ArbBlockNumberSig)
+	switch {
+	case arbSys && !v.chain.cfg.Nitro:
+		return "0x", nil
+	case !multicall && !arbSys:
 		return "0x0", nil
 	}
 	at := v.tip
@@ -876,7 +890,11 @@ func (v *Vendor) callLocked(params []interface{}) (interface{}, *rpcError) {
 	if at == nil {
 		return nil, &rpcError{-32000, "header not found"}
 	}
-	return fmt.Sprintf("0x%064x", at.Number), nil
+	n := at.Number
+	if multicall && v.chain.cfg.Nitro {
+		n = ParentNumber(n)
+	}
+	return fmt.Sprintf("0x%064x", n), nil
 }
 
 // logsLocked answers eth_getLogs by blockHash or by range on the vendor's

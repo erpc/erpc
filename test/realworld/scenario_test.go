@@ -61,8 +61,9 @@ type spec struct {
 	oldPods   []int
 	cold      []int
 	webSocket map[string]interface{}
-	// sim configures the chain; ChainID and Seed come from the phase, a
-	// zero BlockTime is blockTime.
+	// sim configures the chain; ChainID, unless set, and Seed come from the
+	// phase (P11-nitro needs a Nitro chain's id), a zero BlockTime is
+	// blockTime.
 	sim chainsim.Config
 	// faults are vendor faults set before any pod boots, by vendor key.
 	faults map[string]chainsim.Faults
@@ -233,6 +234,9 @@ func newScenario(h *harness, sp spec, chainID int64) *scenario {
 		h.t.Fatal(err)
 	}
 	s.tr = newTranscript(s.dir, "scenario")
+	if sp.sim.ChainID != 0 {
+		chainID = sp.sim.ChainID
+	}
 	cfg := sp.sim
 	cfg.ChainID, cfg.Seed = chainID, uint64(chainID)
 	if cfg.BlockTime == 0 {

@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
@@ -168,7 +167,6 @@ func TestStateProber_WrongCanaryFailsSymmetrically(t *testing.T) {
 	voteChain(t, v, "a", "e", uint64(head), uint64(head), testHash("f", uint64(head-1)))
 	p := &stateProber{
 		network: net, view: v, interval: 0,
-		ctxProbe:  integrity.ChainStateContextProbe(0),
 		lastProbe: map[string]time.Time{}, work: make(chan int64, 1),
 	}
 
@@ -253,7 +251,6 @@ func TestStateProber_StaleLatestTag(t *testing.T) {
 		voteChain(t, v, "a", "e", uint64(head), uint64(head), testHash("f", uint64(head-1)))
 		p = &stateProber{
 			network: net, view: v, pinnedProbes: true,
-			ctxProbe:  integrity.ChainStateContextProbe(999),
 			lastProbe: map[string]time.Time{}, work: make(chan int64, 1),
 		}
 		for range rounds {
