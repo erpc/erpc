@@ -194,9 +194,10 @@ func TestStateProber_WrongCanaryFailsSymmetrically(t *testing.T) {
 // network's Latest: a stale answer makes it stale at once (a split fleet
 // included), a healthy sibling within W of Latest stays fresh, and 3 fresh
 // samples or a W without stale evidence readmit. No misbehavior is recorded:
-// the gate acts on the state. Where eRPC sends a number instead (the default
-// translateLatestTag, or the upstream's pinLatestTag), the tag is never
-// probed.
+// the gate acts on the state. A pinLatestTag upstream gets the tag too (spec
+// §7: pinLatestTag never pins a tag sent as is), so it is probed like the
+// others. Where eRPC sends a number instead (the default
+// translateLatestTag), the tag is never probed.
 func TestStateProber_StaleLatestTag(t *testing.T) {
 	const head = int64(1000)
 	rounds := stateProbeDisprovedStreak + 2
@@ -274,7 +275,7 @@ func TestStateProber_StaleLatestTag(t *testing.T) {
 			"eth_call": {TranslateLatestTag: util.BoolPtr(false)},
 		}})
 		now := time.Now()
-		for id, want := range map[string]tagState{"stale": tagStale, "split": tagStale, "healthy": tagFresh, "pinned-stale": tagNoEvidence} {
+		for id, want := range map[string]tagState{"stale": tagStale, "split": tagStale, "healthy": tagFresh, "pinned-stale": tagStale} {
 			assert.Equal(t, want, p.tagHead(id, head, now).state, id)
 			assert.Equal(t, 0, fakeTrackerOf(t, ups[id]).MisbehaviorCount, "%s: a stale latest is gated, not scored", id)
 		}
@@ -282,7 +283,8 @@ func TestStateProber_StaleLatestTag(t *testing.T) {
 		assert.Equal(t, 1.0, gauge("stale"))
 		assert.Equal(t, 1.0, gauge("split"), "a fleet half stale is stale: each stale answer resets its fresh streak")
 		assert.Equal(t, 0.0, gauge("healthy"))
-		assert.Equal(t, 0, latestCalls["pinned-stale"], "a pinLatestTag upstream never receives \"latest\"")
+		assert.Equal(t, rounds, latestCalls["pinned-stale"], "a pinLatestTag upstream receives \"latest\" as the tag, and is probed")
+		assert.Equal(t, 1.0, gauge("pinned-stale"))
 		for id, u := range ups {
 			assert.EqualValues(t, head, u.EvmStateProvenBlock(), "%s holds state at the pin: a stale latest does not hide it (#1109)", id)
 		}

@@ -620,7 +620,7 @@ func (p *stateProber) probeTagStates(ctx context.Context) {
 			delete(p.tagAsked, id)
 			continue
 		}
-		gets := !pinsLatestTag(u) && (keeps || now.Sub(p.tagReached[id]) < tagStateReachedFor)
+		gets := keeps || now.Sub(p.tagReached[id]) < tagStateReachedFor
 		asked := p.tagAsked[id]
 		if !(moved && gets || asked) || p.tagInflight[id] {
 			continue // a running probe's end wakes the pass for an ask
@@ -726,8 +726,8 @@ func DecideTagState(ctx context.Context, n common.Network, r *common.NormalizedR
 	bt, _ := p.tagTiming()
 	skips := map[string]bool{}
 	// able: routed upstreams that can take the attempt. One that does not
-	// serve the method, or pins latest while lagging below the number it
-	// would be sent, is no fresh alternative to a stale one.
+	// serve the method is no fresh alternative to a stale one. A
+	// pinLatestTag upstream gets the tag too (PinLatestTag).
 	able := 0
 	var best string
 	var bestHead int64
@@ -738,12 +738,6 @@ func DecideTagState(ctx context.Context, n common.Network, r *common.NormalizedR
 			}
 		}
 		if ok, _ := u.ShouldHandleMethod(method); !ok {
-			continue
-		}
-		if pinsLatestTag(u) {
-			if eu, ok := u.(common.EvmUpstream); ok && eu.EvmEffectiveLatestBlock() >= latest {
-				able++ // sent the number, never the tag
-			}
 			continue
 		}
 		able++
@@ -789,7 +783,7 @@ func TagStateSkip(n common.Network, u common.Upstream, r *common.NormalizedReque
 		p.tagSkipped(u.Id())
 		return true
 	}
-	if d := r.Directives(); d != nil && d.SkipInterpolation && !pinsLatestTag(u) {
+	if d := r.Directives(); d != nil && d.SkipInterpolation {
 		p.tagReachedBy(u.Id())
 	}
 	return false

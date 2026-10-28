@@ -2,6 +2,8 @@ package erpc
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -10,8 +12,10 @@ import (
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
+	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -574,7 +578,10 @@ func mockMethodAnswer(method, result string, dispatched *atomic.Int64, ids ...st
 // null, from the cache as from an upstream (spec §6.4, §7 family 5): two
 // instances share a cache, and instance 1, one block ahead, cached a
 // receipt of its Latest. eth_getLogs by blockHash is of the family, and a
-// request that ends during the wait gets null too.
+// request that ends during the wait gets null too. The wait Asks the
+// voters Latest lacks for a head fetched after it began: on instance 3,
+// whose voters' counters are fresh but whose nodes already hold the block,
+// the answer is served. Each wait counts its outcome.
 func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -641,6 +648,11 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 		return err == nil && got != nil && !got.IsResultEmptyish(ctx)
 	}, 2*time.Second, 20*time.Millisecond, "instance 1 cached the receipt")
 
+	// The instances share a label, so the waits' counts are read as deltas.
+	held := func(rule string) float64 {
+		return promUtil.ToFloat64(telemetry.MetricHeadRefusalTotal.WithLabelValues("test", behind.Label(), rule))
+	}
+	nulls := held("held_null")
 	start := time.Now()
 	req = common.NewNormalizedRequest([]byte(receiptReq))
 	resp, err = behind.Forward(ctx, req)
@@ -662,6 +674,48 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "null", jrr.GetResultString(), "logs by hash above Latest, request ended during the hold")
 	assert.Positive(t, logsCalls.Load(), "dispatched to an upstream")
+	assert.Equal(t, nulls+2, held("held_null"), "both waits on instance 2 ended null")
+
+	// Instance 3: its voters reported 100 just now, with a cadence of an
+	// hour, so their counters meet any number need; their nodes hold 101.
+	var head atomic.Int64
+	head.Store(100)
+	for _, id := range []string{"hf1", "hf2"} {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x%x","timestamp":"0x6702a8f0"}}`, head.Load())
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+	}
+	nulls, served := held("held_null"), held("held_served")
+	fresh, freshUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "hf1", chainID: 123, latestBlock: 100, debounce: time.Hour},
+		{id: "hf2", chainID: 123, latestBlock: 100, debounce: time.Hour},
+	})
+	for _, u := range freshUps {
+		setServedTipFinalized(t, u, 90)
+	}
+	require.Equal(t, int64(100), servedHead(fresh, ctx).Latest)
+	var freshCalls atomic.Int64
+	mockMethodAnswer("eth_getTransactionReceipt", receipt, &freshCalls, "hf1", "hf2")
+	head.Store(101)
+	resp, err = fresh.Forward(ctx, common.NewNormalizedRequest([]byte(receiptReq)))
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the wait's fetch finds 101 on both voters: the receipt is served")
+	assert.Equal(t, int64(101), servedHead(fresh, ctx).Latest)
+	assert.Equal(t, served+1, held("held_served"), "the wait on instance 3 ended served")
+	assert.Equal(t, nulls, held("held_null"))
 }
 
 // sampleBlockTime gives network its first block time sample: before it,

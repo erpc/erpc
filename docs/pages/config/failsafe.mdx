@@ -119,7 +119,7 @@ explain the thresholds. Reference: https://docs.erpc.cloud/config/failsafe.llms.
 
 Within each tier, the first matching entry in config order wins. (<SourceLink file="upstream/upstream.go" />)
 
-**Network-scope** failsafe (including consensus) uses a simpler **first-match-in-config-order** scan on `matchMethod` + `matchFinality` + `matchCommitment` + `matchRequestKind`. Place specific commitment rules before broader ones. (<SourceLink file="erpc/networks.go" />)
+**Network-scope** failsafe (including consensus) uses a simpler **first-match-in-config-order** scan on `matchMethod` + `matchFinality` + `matchCommitment`. Place specific commitment rules before broader ones. (<SourceLink file="erpc/networks.go" />) `matchRequestKind` accepts `user` or `*`, both matching every client request: no eRPC-own request (tracker fetch, head poll, probe) goes through a failsafe policy, and `matchRequestKind: internal` is refused at load.
 
 **`matchFinality` valid values.** `finalized`, `unfinalized`, `realtime`, `unknown`. A value like `"latest"` is not a valid finality token and silently never matches any request.
 

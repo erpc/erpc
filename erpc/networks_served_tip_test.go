@@ -2397,7 +2397,7 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	var mu sync.Mutex
 	polls := map[string]int{}
 	for _, id := range []string{"tagless", "fin-a", "fin-b"} {
-		reply := `{"jsonrpc":"2.0","id":1,"result":{"number":"0x26ac","timestamp":"0x6702a8e0"}}`
+		reply := `{"jsonrpc":"2.0","id":1,"result":{"number":"0x270f","timestamp":"0x6702a8e0"}}`
 		if id == "tagless" {
 			reply = `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid block number tag finalized"}}`
 		}
@@ -2436,9 +2436,36 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 		_, _ = tagless.PollFinalizedBlockNumber(ctx)
 		return tagless.GetDiagnostics().SkipFinalizedCheck
 	}, 5*time.Second, 5*time.Millisecond, "tagless gives its finalized tag up after 10 refusals")
-	setServedTipFinalized(t, ups[1], 9_900)
-	setServedTipFinalized(t, ups[2], 9_900)
+	// Finalized one block below latest: a finalized debounce of the
+	// depth's fraction stays below the poll cadence (§6.8 #1265).
+	setServedTipFinalized(t, ups[1], 9_999)
+	setServedTipFinalized(t, ups[2], 9_999)
 	time.Sleep(10 * time.Millisecond) // past every finalized debounce
+
+	// Reads above Finalized poll no finalized (spec §6.4 Finality): only
+	// the full poll and the finalized-tag refresh move it. The vendors
+	// count the polls they get.
+	polled := func() int {
+		total := 0
+		for _, n := range finalizedPolls() {
+			total += n
+		}
+		return total
+	}
+	read := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x2710",false]}`))
+	read.SetNetwork(network)
+	require.Equal(t, common.DataFinalityStateUnfinalized, network.GetFinality(ctx, read, nil), "block 10000 is above Finalized")
+	const window = 3 * time.Second
+	start, from, fromPolls := time.Now(), finalizedPolls(), polled()
+	for time.Since(start) < window {
+		network.GetFinality(ctx, read, nil)
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond) // a poll a read started lands
+	reads := polled() - fromPolls
+	t.Logf("reads above Finalized for %s: %d finalized polls (%v → %v), %d per minute", window, reads, from, finalizedPolls(), reads*int(time.Minute/window))
+	assert.Zero(t, reads, "a read above Finalized polls no finalized")
+	time.Sleep(network.cfg.Evm.PollCadence(network.blockTimeOrCold())) // past the lane's refresh gate
 
 	before := finalizedPolls()
 	network.EvmRefreshHead(ctx, true)

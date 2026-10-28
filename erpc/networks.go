@@ -836,42 +836,52 @@ func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 }
 
 // EvmRefreshHeadsBelow Asks, in the background, with a number need at
-// pace, as many of the voters of selector's lane whose head is below
-// block as Latest still lacks to reach it, oldest report first (spec §6.5
-// catch-up, §6.4 by-hash hold): Latest is their ballot, so no other
-// upstream moves it, and once the quorum holds block no further Ask can.
-// A guarantee subset's majority clamps Latest too (guaranteedFloor), so
-// each subset gets the Asks its own ballot lacks.
+// pace, the voters Latest lacks to reach block (lackingVoters; spec §6.5
+// catch-up).
 func (n *Network) EvmRefreshHeadsBelow(selector string, block int64, pace time.Duration) {
+	for _, sp := range n.lackingVoters(selector, block) {
+		sp.AskBackground(common.HeadNeedNumber, pace, common.AskCatchUp)
+	}
+}
+
+// lackingVoters are the pollers of as many of the voters of selector's
+// lane whose head is below block as Latest still lacks to reach it,
+// oldest report first, each once (spec §6.5 catch-up, §6.4 by-hash wait):
+// Latest is their ballot, so no other upstream moves it, and once the
+// quorum holds block no further Ask can. A guarantee subset's majority
+// clamps Latest too (guaranteedFloor), so each subset adds the voters its
+// own ballot lacks.
+func (n *Network) lackingVoters(selector string, block int64) []common.EvmStatePoller {
 	var ec *common.EvmNetworkConfig
 	if n.cfg != nil {
 		ec = n.cfg.Evm
 	}
-	n.askLacking(selector, block, pace, voterQuery{kind: numberVote}, ec.ServedTipQuorum())
+	out := n.lacking(nil, selector, block, voterQuery{kind: numberVote}, ec.ServedTipQuorum())
 	if ec == nil || ec.ServedTip == nil {
-		return
+		return out
 	}
 	for _, g := range ec.ServedTip.GuaranteedFor {
-		n.askLacking(selector, block, pace, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
+		out = n.lacking(out, selector, block, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
 			m, _ := common.UpstreamMatchesSelector(g, u)
 			return m
 		}}, common.ServedTipQuorumMajority)
 	}
 	for _, m := range ec.ServedTip.GuaranteedMethods {
-		n.askLacking(selector, block, pace, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
+		out = n.lacking(out, selector, block, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
 			handle, _ := u.ShouldHandleMethod(m)
 			return handle
 		}}, common.ServedTipQuorumMajority)
 	}
+	return out
 }
 
-// askLacking Asks, with a number need at pace, as many of q's voters
+// lacking appends to out, unless already there, as many of q's voters
 // below block as quorum lacks to hold it (quorum less the voters at or
 // above it), oldest report first.
-func (n *Network) askLacking(selector string, block int64, pace time.Duration, q voterQuery, quorum common.ServedTipQuorum) {
+func (n *Network) lacking(out []common.EvmStatePoller, selector string, block int64, q voterQuery, quorum common.ServedTipQuorum) []common.EvmStatePoller {
 	s := n.voters(selector, q)
 	if s.count() == 0 {
-		return
+		return out
 	}
 	lacks := quorum.Of(s.count())
 	var below []common.EvmStatePoller
@@ -884,12 +894,15 @@ func (n *Network) askLacking(selector string, block int64, pace time.Duration, q
 		return true
 	})
 	if lacks <= 0 {
-		return
+		return out
 	}
 	slices.SortStableFunc(below, func(a, b common.EvmStatePoller) int { return a.LatestReportAt().Compare(b.LatestReportAt()) })
 	for _, sp := range below[:min(lacks, len(below))] {
-		sp.AskBackground(common.HeadNeedNumber, pace, common.AskCatchUp)
+		if !slices.Contains(out, sp) {
+			out = append(out, sp)
+		}
 	}
+	return out
 }
 
 // EvmPollHeads Asks, with a hash need at pace, each upstream in ids:
@@ -1613,20 +1626,11 @@ func (n *Network) observeServedTipMetrics(axis string, laneLabel string, tip, fr
 }
 
 func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *networkExecutor {
-	policies := req.UpstreamPolicies()
-	if policies == common.UpstreamPoliciesTimeoutOnly {
+	if req.UpstreamPolicies() == common.UpstreamPoliciesTimeoutOnly {
 		return n.bareExecutor
 	}
 	method, _ := req.Method()
 	finality := req.Finality(ctx)
-	// Request kind: "internal" = eRPC's own requests (tracker fetches),
-	// "user" = client traffic. Lets a policy give the deduplicated internal
-	// fetches consensus while user methods rely on integrity validation
-	// (matchRequestKind).
-	kind := "user"
-	if policies != common.UpstreamPoliciesConfigured {
-		kind = "internal"
-	}
 
 	// matchCommitment compares the commitment erpc pins on the wire, so a rule
 	// is a function of the bytes the multiplexer and cache key on. Non-SVM
@@ -1651,10 +1655,7 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 		mc := fe.MatchCommitment()
 		commitmentMatches := len(mc) == 0 || slices.Contains(mc, commitment)
 
-		mk := fe.MatchRequestKind()
-		kindMatches := mk == "*" || mk == "" || mk == kind
-
-		if methodMatches && finalityMatches && commitmentMatches && kindMatches {
+		if methodMatches && finalityMatches && commitmentMatches {
 			return fe
 		}
 	}
@@ -2851,17 +2852,14 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 	// Reads decide on the request's Head.Finalized (spec §6.4). An answer
 	// from an upstream is final only when that upstream has finalized the
 	// block too (#90) and is not on a minority fork (§6.3), so neither
-	// makes a permanent cache entry.
+	// makes a permanent cache entry. A read above Finalized polls nothing:
+	// only the full poll and the finalized-tag refresh move it.
 	fin := n.EvmHead(ctx, req).Finalized
 	span.SetAttributes(attribute.Int64("head.finalized", fin))
+	if fin <= 0 {
+		return finality
+	}
 	if blockNumber > fin {
-		// A fresher finalized may cover the block: a read above it
-		// refreshes the voters' finalized, at most once per finalized
-		// debounce (§6.8 #1265).
-		n.EvmRefreshHead(ctx, true)
-		if fin <= 0 {
-			return finality
-		}
 		return common.DataFinalityStateUnfinalized
 	}
 	if resp != nil {
@@ -2996,12 +2994,13 @@ func (n *Network) handleBlockSkip(
 	req.MarkUpstreamCompleted(ctx, u, nil, errToStore)
 
 	// When the block is slightly ahead (retryable), Ask the upstream with a
-	// number need and wait for the answer (spec §6.8), so the retry after
+	// number need in the background (spec §6.4, §6.8), as main polled it:
+	// the request never waits on it, and the retry after
 	// blockUnavailableDelay sees its head; concurrent skips join one fetch.
 	if isRetryable {
 		if eu, ok := u.(common.EvmUpstream); ok {
 			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-				_, _ = sp.PollLatestBlockNumber(ctx)
+				sp.AskBackground(common.HeadNeedNumber, 0, common.AskRefresh)
 			}
 		}
 	}

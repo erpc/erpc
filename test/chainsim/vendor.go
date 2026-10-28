@@ -51,6 +51,7 @@ type Faults struct {
 	Syncing       bool          // eth_syncing answers in progress; still serves what it holds
 	FinalityDepth uint64        // finalized tag this far below its head; 0 is FinalizedLag
 	StaleState    uint64        // eth_call at latest (or no block) executes this far below its head; numbered calls are right
+	Forbidden     bool          // HTTP 403 with an HTML body on every call and ws upgrade, as a CDN ban or a revoked key
 }
 
 // Stats are what a vendor counted since it started.
@@ -62,6 +63,7 @@ type Stats struct {
 	ForgedHeads                                                             int64 // heads pushed with a wrong hash, once per head
 	CappedLogs                                                              int64 // eth_getLogs answers CapLogs cut short
 	CapacityRefused                                                         int64 // calls a Capacity fault refused
+	ForbiddenLatest                                                         int64 // eth_getBlockByNumber(latest) calls a Forbidden fault refused
 }
 
 // Vendor is one simulated node of a chain, on its own listener.
@@ -97,7 +99,7 @@ type Vendor struct {
 
 	connects, headsSubs, pendingSubs, logsSubs, throttled, receiptsCalls  atomic.Int64
 	logsCalls, slowAnswers, forgedHeads, cappedLogs, subSeq, headsRefused atomic.Int64
-	capacityRefused                                                       atomic.Int64
+	capacityRefused, forbiddenLatest                                      atomic.Int64
 }
 
 // LatestCall is one eth_getBlockByNumber(latest) call a vendor answered.
@@ -286,7 +288,7 @@ func (v *Vendor) Stats() Stats {
 	return Stats{Connects: v.connects.Load(), HeadsSubscribes: v.headsSubs.Load(), PendingSubscribes: v.pendingSubs.Load(),
 		LogsSubscribes: v.logsSubs.Load(), Throttled: v.throttled.Load(), HeadsRefused: v.headsRefused.Load(), ReceiptsCalls: v.receiptsCalls.Load(),
 		LogsCalls: v.logsCalls.Load(), SlowAnswers: v.slowAnswers.Load(), ForgedHeads: v.forgedHeads.Load(), CappedLogs: v.cappedLogs.Load(),
-		CapacityRefused: v.capacityRefused.Load()}
+		CapacityRefused: v.capacityRefused.Load(), ForbiddenLatest: v.forbiddenLatest.Load()}
 }
 
 // ReceiptsOf are the eth_getBlockReceipts calls the vendor got for block h,
@@ -447,6 +449,16 @@ func (v *Vendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "vendor down", http.StatusServiceUnavailable)
 		return
 	}
+	if f.Forbidden {
+		body, _ := io.ReadAll(r.Body)
+		if pollsLatest(body) {
+			v.forbiddenLatest.Add(1)
+		}
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, "<html><head><title>403 Forbidden</title></head><body><h1>Access denied</h1></body></html>")
+		return
+	}
 	if websocket.IsWebSocketUpgrade(r) {
 		v.serveWS(w, r)
 		return
@@ -478,6 +490,29 @@ func (v *Vendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req map[string]interface{}
 	_ = json.Unmarshal(body, &req)
 	_ = json.NewEncoder(w).Encode(one(req))
+}
+
+// pollsLatest reports whether body, a JSON-RPC request or batch, holds an
+// eth_getBlockByNumber(latest).
+func pollsLatest(body []byte) bool {
+	type call struct {
+		Method string        `json:"method"`
+		Params []interface{} `json:"params"`
+	}
+	var calls []call
+	if err := json.Unmarshal(body, &calls); err != nil {
+		var one call
+		if json.Unmarshal(body, &one) != nil {
+			return false
+		}
+		calls = []call{one}
+	}
+	for _, c := range calls {
+		if c.Method == "eth_getBlockByNumber" && len(c.Params) > 0 && c.Params[0] == "latest" {
+			return true
+		}
+	}
+	return false
 }
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}

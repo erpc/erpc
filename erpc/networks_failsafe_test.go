@@ -1343,11 +1343,9 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 	})
 }
 
-// matchRequestKind scopes a policy by who issued the request: "internal" =
-// eRPC's own requests (UpstreamPolicies other than Configured, e.g. tracker
-// fetches), "user" = client traffic. This is the
-// enabler for consensus-on-aux: internal canonical fetches get a consensus
-// policy while user data methods rely on integrity validation.
+// matchRequestKind "user" matches every client request, as "*" does: no
+// eRPC-own request goes through a network failsafe policy (spec §20), and
+// a timeout-only one (state probe) takes none at all.
 func TestGetFailsafeExecutor_MatchRequestKind(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -1356,27 +1354,12 @@ func TestGetFailsafeExecutor_MatchRequestKind(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	failsafeConfigs := []*common.FailsafeConfig{
-		{
-			MatchMethod:      "*",
-			MatchRequestKind: "internal",
-			Retry:            &common.RetryPolicyConfig{MaxAttempts: 5},
-		},
+	network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, []*common.FailsafeConfig{
 		{
 			MatchMethod:      "*",
 			MatchRequestKind: "user",
 			Retry:            &common.RetryPolicyConfig{MaxAttempts: 2},
 		},
-	}
-	network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, failsafeConfigs)
-
-	t.Run("internal request selects the internal policy", func(t *testing.T) {
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
-		req.SetNetwork(network)
-		req.SetDirectives(&common.RequestDirectives{UpstreamPolicies: common.UpstreamPoliciesTracker})
-		executor := network.getFailsafeExecutor(ctx, req)
-		require.NotNil(t, executor)
-		assert.Equal(t, "internal", executor.MatchRequestKind())
 	})
 
 	t.Run("a timeout-only request (state probe) takes no network policy", func(t *testing.T) {
@@ -1385,29 +1368,16 @@ func TestGetFailsafeExecutor_MatchRequestKind(t *testing.T) {
 		req.SetDirectives(&common.RequestDirectives{UpstreamPolicies: common.UpstreamPoliciesTimeoutOnly})
 		executor := network.getFailsafeExecutor(ctx, req)
 		require.NotNil(t, executor)
-		assert.Nil(t, executor.cfg, "no retry, hedge or timeout from the internal policy")
+		assert.Nil(t, executor.cfg, "no retry, hedge or timeout from a configured policy")
 	})
 
-	t.Run("user request skips the internal policy", func(t *testing.T) {
+	t.Run("a client request takes the user policy", func(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
 		req.SetNetwork(network)
 		executor := network.getFailsafeExecutor(ctx, req)
 		require.NotNil(t, executor)
-		assert.Equal(t, "user", executor.MatchRequestKind())
-	})
-
-	t.Run("unset kind matches both (backward compatible)", func(t *testing.T) {
-		anyKind := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, []*common.FailsafeConfig{
-			{MatchMethod: "*", Retry: &common.RetryPolicyConfig{MaxAttempts: 3}},
-		})
-		internal := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
-		internal.SetNetwork(anyKind)
-		internal.SetDirectives(&common.RequestDirectives{UpstreamPolicies: common.UpstreamPoliciesTracker})
-		require.NotNil(t, anyKind.getFailsafeExecutor(ctx, internal))
-
-		user := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
-		user.SetNetwork(anyKind)
-		require.NotNil(t, anyKind.getFailsafeExecutor(ctx, user))
+		require.NotNil(t, executor.cfg)
+		assert.Equal(t, 2, executor.cfg.Retry.MaxAttempts)
 	})
 }
 

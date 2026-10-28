@@ -68,6 +68,16 @@ const (
 	// probe asks Latest + 3 (§19 U14).
 	u14Ahead = 5
 	u14Probe = 3
+	// u19Ban, u19Window: U19's vendor answers 403 for u19Ban; the
+	// scenario judges its last u19Window. Ask backoff doubles from the
+	// cadence to AskMaxBackoff, 60s, in about 72s (§6.8), so the window
+	// sees at most 2 backed-off fetches per pod; u19PodAsks adds harness
+	// slack for a fetch in flight at the window's edges.
+	u19Ban        = 150 * time.Second
+	u19Window     = 60 * time.Second
+	u19PodAsks    = 4
+	u19Probe      = 10
+	u19ProbeEvery = time.Second
 	// p6Latency is harness, not spec: every vendor answers this late, so
 	// the tip moves while an eth_call is in flight.
 	p6Latency = 2 * blockTime
@@ -179,6 +189,44 @@ func u12() spec {
 			s.blocks(25)
 			stop()
 			hb.Update(func(f *chainsim.Faults) { f.Ahead = 0 })
+			s.blocks(25)
+		}}
+}
+
+// U19: http-b answers HTTP 403 with an HTML body, as a CDN ban or a
+// revoked key does, for u19Ban, under head+1 polling with
+// shortCircuitFutureBlocks on. Its polls fail (§6.1): its Asks back off,
+// and it leaves the ceiling, so a block u19Probe above the tip, above
+// every other voter's head, is null with no dispatch (§6.4, #1238).
+func u19() spec {
+	return spec{name: "U19", bound: healthyDelivery, evm: map[string]interface{}{"shortCircuitFutureBlocks": true},
+		body: func(s *scenario) {
+			s.blocks(25)
+			up, hb := s.upstream("http-b"), s.vendors["http-b"]
+			hb.Update(func(f *chainsim.Faults) { f.Forbidden = true })
+			banned := time.Now()
+			s.logf("%s answers 403 with an HTML body", up)
+			pollNext(s, true)
+			time.Sleep(time.Until(banned.Add(u19Ban - u19Window)))
+			from := hb.Stats().ForbiddenLatest
+			probes := 0
+			for end := time.Now().Add(u19Window); time.Now().Before(end); time.Sleep(u19ProbeEvery) {
+				for pod := range s.h.pods {
+					n := s.chain.Tip().Number + u19Probe
+					at := time.Now()
+					got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
+					probes++
+					if d := s.dispatches(n, at, time.Now()); got != "null" || d > 0 {
+						s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), above every voter's head while %s answers 403, answered %s after %d dispatches", pod+1, n, up, got, d)
+					}
+				}
+			}
+			asks := hb.Stats().ForbiddenLatest - from
+			s.logf("%d probes; %s refused %d latest polls in the ban's last %s", probes, up, asks, u19Window)
+			if limit := int64(u19PodAsks * len(s.h.pods)); asks > limit {
+				s.violate(s.name, "%s, answering 403, got %d latest polls in %s, more than %d: its Asks do not back off", up, asks, u19Window, limit)
+			}
+			hb.Update(func(f *chainsim.Faults) { f.Forbidden = false })
 			s.blocks(25)
 		}}
 }

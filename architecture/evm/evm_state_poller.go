@@ -997,8 +997,9 @@ func (e *EvmStatePoller) netLabel() string {
 }
 
 // nodeFailedPoll reports whether err is the node failing a poll of latest
-// (spec §6.1): a transport error, a timeout, a 5xx or a 429. eRPC's own
-// refusals (local rate limit, open breaker, skip) are no poll.
+// (spec §6.1): a transport error, a timeout, a 5xx or a 429, or the vendor
+// refusing us (401, 403: a ban or a revoked key). eRPC's own refusals
+// (local rate limit, open breaker, skip) are no poll.
 func nodeFailedPoll(err error) bool {
 	return common.HasErrorCode(err,
 		common.ErrCodeEndpointTransportFailure,
@@ -1006,6 +1007,7 @@ func nodeFailedPoll(err error) bool {
 		common.ErrCodeFailsafeTimeoutExceeded,
 		common.ErrCodeEndpointServerSideException,
 		common.ErrCodeEndpointCapacityExceeded,
+		common.ErrCodeEndpointUnauthorized,
 	)
 }
 

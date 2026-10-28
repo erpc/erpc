@@ -1142,6 +1142,7 @@ export interface EvmUpstreamConfig {
    * upstream when its blockAvailability upper bound is below that head or the head is unknown.
    * For an upstream whose own head lags the network: it answers only blocks it holds, and a block
    * it lacks fails as missing data so the next upstream answers, instead of an older "latest".
+   * Never a request whose tag reaches upstreams as is (translateLatestTag: false, skip-interpolation).
    */
   pinLatestTag?: boolean;
   /**
@@ -1250,15 +1251,11 @@ export interface FailsafeConfig {
    */
   matchCommitment?: ('none' | 'processed' | 'confirmed' | 'finalized')[];
   /**
-   * MatchRequestKind scopes this policy by who issued the request:
-   * "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
-   * the integrity module's canonical corroboration), or ""/"*" for both.
-   * This is what lets an operator give INTERNAL canonical fetches a
-   * consensus policy (quorum-verified ground truth, deduplicated to ~once
-   * per block by the ChainView) while user data methods rely on integrity
-   * validation instead of per-request fan-out.
+   * MatchRequestKind "user", "*" or "" matches every client request: no
+   * eRPC-own request (tracker fetch, head poll, probe) goes through a
+   * failsafe policy. "internal" is refused at load.
    */
-  matchRequestKind?: 'user' | 'internal' | '*';
+  matchRequestKind?: 'user' | '*';
   retry?: RetryPolicyConfig;
   circuitBreaker?: CircuitBreakerPolicyConfig;
   timeout?: TimeoutPolicyConfig;

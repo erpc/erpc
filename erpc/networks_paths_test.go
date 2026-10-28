@@ -399,26 +399,20 @@ func TestNetworksPaths_GetFailsafeExecutor(t *testing.T) {
 	logs := mk(&common.FailsafeConfig{MatchMethod: "eth_getLogs"})
 	finalizedOnly := mk(&common.FailsafeConfig{MatchMethod: "eth_call", MatchFinality: []common.DataFinalityState{common.DataFinalityStateFinalized}})
 	svmFinalized := mk(&common.FailsafeConfig{MatchMethod: "eth_call", MatchCommitment: []string{"finalized"}})
-	internal := mk(&common.FailsafeConfig{MatchRequestKind: "internal"})
 	catchAll := mk(nil)
 
 	n := pathsBareNetwork(nil)
-	n.failsafeExecutors = []*networkExecutor{logs, finalizedOnly, svmFinalized, internal, catchAll}
+	n.failsafeExecutors = []*networkExecutor{logs, finalizedOnly, svmFinalized, catchAll}
 	ctx := context.Background()
-	newReq := func(method string, isInternal bool) *common.NormalizedRequest {
-		r := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":[]}`, method)))
-		if isInternal {
-			r.SetDirectives(&common.RequestDirectives{UpstreamPolicies: common.UpstreamPoliciesTracker})
-		}
-		return r
+	newReq := func(method string) *common.NormalizedRequest {
+		return common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":[]}`, method)))
 	}
 
-	assert.Same(t, logs, n.getFailsafeExecutor(ctx, newReq("eth_getLogs", false)))
-	assert.Same(t, internal, n.getFailsafeExecutor(ctx, newReq("eth_call", true)), "finality and commitment filters skip; internal kind matches")
-	assert.Same(t, catchAll, n.getFailsafeExecutor(ctx, newReq("eth_call", false)))
+	assert.Same(t, logs, n.getFailsafeExecutor(ctx, newReq("eth_getLogs")))
+	assert.Same(t, catchAll, n.getFailsafeExecutor(ctx, newReq("eth_call")), "finality and commitment filters skip")
 
-	n.failsafeExecutors = []*networkExecutor{logs, internal}
-	assert.Nil(t, n.getFailsafeExecutor(ctx, newReq("eth_call", false)), "no matching executor")
+	n.failsafeExecutors = []*networkExecutor{logs}
+	assert.Nil(t, n.getFailsafeExecutor(ctx, newReq("eth_call")), "no matching executor")
 }
 
 func TestNetworksPaths_PrepareRequest(t *testing.T) {
