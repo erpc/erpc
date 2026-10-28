@@ -639,6 +639,62 @@ func TestObserveBlockView(t *testing.T) {
 		require.True(t, held)
 		assert.JSONEq(t, fmt.Sprintf(`{"number":"0x10","hash":"%s","parentHash":"%s","miner":"0x01","size":"0x220"}`, testHash("e", 0x10), testHash("f", 0xf)),
 			string(h.(*chainHeader).raw), "the header fields of the first answer, without its body")
+
+		latest := fmt.Sprintf(`{"number":"0x11","hash":"%s","parentHash":"%s","size":"0x220","transactions":[{"hash":"%s","input":"0x00"}],"uncles":[]}`,
+			testHash("e", 0x11), testHash("e", 0x10), testHash("b", 2))
+		c.Observe("client", json.RawMessage(latest), false)
+		c.sync(context.Background())
+		h, held = c.held.Load(testHash("e", 0x11))
+		require.True(t, held)
+		assert.JSONEq(t, fmt.Sprintf(`{"number":"0x11","hash":"%s","parentHash":"%s","size":"0x220"}`, testHash("e", 0x11), testHash("e", 0x10)),
+			string(h.(*chainHeader).raw), "a client's latest answer holds its header only")
+	})
+}
+
+// BenchmarkObserveLatestAnswer is a client's eth_getBlockByNumber(latest)
+// answer with 200 full transactions handed to the tracker, as
+// enrichStatePoller does: once its hash is held, and while it is new.
+func BenchmarkObserveLatestAnswer(b *testing.B) {
+	txs := make([]string, 200)
+	for i := range txs {
+		txs[i] = fmt.Sprintf(`{"hash":"%s","from":"0x%040x","to":"0x%040x","input":"0x%0512x","value":"0x1","nonce":"0x%x"}`, testHash("b", uint64(i)), i, i+1, i, i)
+	}
+	block := func(hash string) []byte {
+		return []byte(fmt.Sprintf(`{"number":"0x11","hash":"%s","parentHash":"%s","timestamp":"0x6553f111","size":"0x220","transactions":[%s],"uncles":[],"withdrawals":[]}`,
+			hash, testHash("a", 0x10), strings.Join(txs, ",")))
+	}
+	setup := func(b *testing.B) *ChainTracker {
+		c := newChainTracker(b.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(b.Context(), nil))
+		parent := testHash("f", 0xf)
+		for n := uint64(0x10); n <= 0x11; n++ {
+			c.Observe("a", testHeader(n, testHash("a", n), parent), true)
+			parent = testHash("a", n)
+		}
+		c.sync(context.Background())
+		return c
+	}
+	b.Run("held", func(b *testing.B) {
+		c := setup(b)
+		answer := block(testHash("a", 0x11))
+		b.ReportAllocs()
+		for b.Loop() {
+			c.Observe("client", answer, false)
+			c.sync(context.Background())
+		}
+	})
+	b.Run("new", func(b *testing.B) {
+		c := setup(b)
+		answers := make([][]byte, 64)
+		for i := range answers {
+			answers[i] = block(testHash("c", uint64(i)))
+		}
+		i := 0
+		b.ReportAllocs()
+		for b.Loop() {
+			c.Observe("client", answers[i%len(answers)], false)
+			c.sync(context.Background())
+			i++
+		}
 	})
 }
 

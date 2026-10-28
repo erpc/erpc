@@ -1,7 +1,6 @@
 package erpc
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -3585,14 +3584,15 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 						if sentTag == "latest" {
 							ups.EvmStatePoller().SuggestLatestBlock(blockNumber, sentAt)
 						}
-						// An answer, never a vote: held by the tracker of
-						// the request's group.
+						// An answer, never a vote: the tracker of the
+						// request's group holds its header, in bytes of its
+						// own, once per hash.
 						selector := ""
 						if d := req.Directives(); d != nil {
 							selector = d.UseUpstream
 						}
 						if t := evm.ChainTrackerOf(ctx, n, selector); t != nil {
-							t.Observe(ups.Id(), bytes.Clone(jrs.GetResultBytes()), false)
+							t.Observe(ups.Id(), jrs.GetResultBytes(), false)
 						}
 					}
 				}

@@ -508,15 +508,28 @@ func (t *ChainTracker) clear() {
 }
 
 // Observe is the tracker's only input of headers. vote is true for a source
-// header that passed intake; client and integrity answers never vote.
+// header that passed intake; client and integrity answers never vote. An
+// answer is a block: a hash the tracker holds is skipped (the first held
+// wins), and only its header is held, never its body, in bytes of its own.
 func (t *ChainTracker) Observe(upstreamId string, raw json.RawMessage, vote bool) {
-	if !vote {
-		if h, err := parseChainHeader(raw); err == nil {
-			t.observeAnswer(upstreamId, h)
-		}
+	if vote {
+		t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteSource, raw: raw, at: time.Now()})
 		return
 	}
-	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteSource, raw: raw, at: time.Now()})
+	if hash, err := sonic.GetFromString(util.B2Str(raw), "hash"); err == nil {
+		if s, err := hash.String(); err == nil {
+			if _, held := t.HeldNumber(s); held {
+				return
+			}
+		}
+	}
+	header, err := headerOf(raw)
+	if err != nil {
+		return
+	}
+	if h, err := parseChainHeader(header); err == nil {
+		t.observeAnswer(upstreamId, h)
+	}
 }
 
 // VotersChanged makes the tracker read its voters again: the policy's
@@ -3390,8 +3403,7 @@ func (t *ChainTracker) transition(level zerolog.Level, kind string) *zerolog.Eve
 }
 
 // observeBlockView hands a validated block response to the tracker as an
-// answer: held, never voted. A hash the tracker holds is skipped (the first
-// held wins), and only the header is held, never the block's body.
+// answer: held, never voted (Observe).
 func observeBlockView(ctx context.Context, t *ChainTracker, u common.Upstream, rs *common.NormalizedResponse) {
 	if t == nil || rs == nil {
 		return
@@ -3400,27 +3412,11 @@ func observeBlockView(ctx context.Context, t *ChainTracker, u common.Upstream, r
 	if err != nil || jrr == nil {
 		return
 	}
-	block := jrr.GetResultBytes()
-	if hash, err := sonic.GetFromString(util.B2Str(block), "hash"); err == nil {
-		if s, err := hash.String(); err == nil {
-			if _, held := t.HeldNumber(s); held {
-				return
-			}
-		}
-	}
-	raw, err := headerOf(block)
-	if err != nil {
-		return
-	}
-	h, err := parseChainHeader(raw)
-	if err != nil {
-		return
-	}
 	upstreamId := ""
 	if u != nil {
 		upstreamId = u.Id()
 	}
-	t.observeAnswer(upstreamId, h)
+	t.Observe(upstreamId, jrr.GetResultBytes(), false)
 }
 
 func isBlockMethod(methodLower string) bool {
