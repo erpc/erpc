@@ -67,6 +67,10 @@ type DecisionOutput struct {
 	// for real. Always captured (production-default), not gated by the
 	// step-log toggle.
 	ShadowReasons map[string][]string
+
+	// MethodBlocks[upstreamID][method] is what `blockMethods` recorded:
+	// the upstream stays in Order but is skipped for that method.
+	MethodBlocks map[string]map[string]MethodBlock
 }
 
 // ExcludedUpstream explains why an upstream was dropped this tick.

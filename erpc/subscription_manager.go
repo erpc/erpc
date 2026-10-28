@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -40,6 +41,10 @@ type SubscriptionManager struct {
 
 	networks    sync.Map // indexerNetworkKey -> struct{}, once bootstrapped
 	bootstrapMu sync.Mutex
+
+	// activeSubs counts client subscriptions on this instance for
+	// server.webSocket.maxSubscriptions.
+	activeSubs atomic.Int64
 }
 
 type connEntry struct {
@@ -98,6 +103,11 @@ func (sm *SubscriptionManager) Subscribe(
 	if conn.adapter.Count() >= maxSubs {
 		return nil, common.NewErrSubscriptionLimitExceeded(maxSubs)
 	}
+	maxTotal := wsc.server.serverCfg.WebSocket.MaxSubscriptions
+	if maxTotal > 0 && sm.activeSubs.Load() >= int64(maxTotal) {
+		telemetry.CounterHandle(telemetry.MetricWebsocketRejectedTotal, project.Config.Id, wsRejectSubGlobal).Inc()
+		return nil, common.NewErrInstanceSubscriptionLimitExceeded(maxTotal)
+	}
 
 	if err := sm.acquireRateLimits(ctx, project, nw, nq); err != nil {
 		return nil, err
@@ -130,11 +140,19 @@ func (sm *SubscriptionManager) Subscribe(
 		return nil, err
 	}
 
+	if !sm.reserveSub(maxTotal) {
+		sm.releaseFilter(ctx, key, kind, filterHash)
+		telemetry.CounterHandle(telemetry.MetricWebsocketRejectedTotal, project.Config.Id, wsRejectSubGlobal).Inc()
+		err := common.NewErrInstanceSubscriptionLimitExceeded(maxTotal)
+		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
+		return nil, err
+	}
 	// Counted before it is visible, so a racing cleanup never takes the
 	// gauge below zero.
 	wsc.subscriptionsGauge(kind).Inc()
 	if err := conn.adapter.AddSubscription(clientSubID, key, kind, filterHash, maxSubs); err != nil {
 		wsc.subscriptionsGauge(kind).Dec()
+		sm.activeSubs.Add(-1)
 		sm.releaseFilter(ctx, key, kind, filterHash)
 		if errors.Is(err, wsclient.ErrLimitExceeded) {
 			err = common.NewErrSubscriptionLimitExceeded(maxSubs)
@@ -210,6 +228,7 @@ func (sm *SubscriptionManager) Unsubscribe(
 	}
 	wsc.subscriptionsGauge(kind).Dec()
 	sm.releaseFilter(ctx, subNetworkID, kind, filterHash)
+	sm.activeSubs.Add(-1)
 
 	lg.Info().Str("clientSubId", clientSubID).Str("subType", kind.String()).Msg("subscription removed")
 
@@ -234,10 +253,22 @@ func (sm *SubscriptionManager) CleanupConnection(wsc *WsConnection) {
 	for _, sub := range conn.adapter.Drain() {
 		wsc.subscriptionsGauge(sub.Kind).Dec()
 		sm.releaseFilter(ctx, sub.NetworkID, sub.Kind, sub.FilterHash)
+		sm.activeSubs.Add(-1)
 	}
 	conn.detach()
 
 	sm.logger.Debug().Str("connId", wsc.id).Msg("cleaned up all subscriptions for connection")
+}
+
+// reserveSub takes one slot of the instance-wide subscription cap (0 =
+// unlimited); the caller gives it back with activeSubs.Add(-1).
+func (sm *SubscriptionManager) reserveSub(maxTotal int) bool {
+	n := sm.activeSubs.Add(1)
+	if maxTotal > 0 && n > int64(maxTotal) {
+		sm.activeSubs.Add(-1)
+		return false
+	}
+	return true
 }
 
 // releaseFilter drops a subscription's filter reference; newHeads
@@ -310,7 +341,7 @@ func (s *subIngressSelector) Select(_, _ string, _ []interface{}) (defaults, fal
 	failoverOn := s.nw.cfg != nil && s.nw.cfg.Failover.Enabled()
 	eligible := make(map[string]struct{})
 	if failoverOn {
-		for u := range s.nw.tipCandidateUpstreams(ctx) {
+		for u := range s.nw.EvmRoutableUpstreams(ctx) {
 			eligible[u.Id()] = struct{}{}
 		}
 	}
@@ -470,6 +501,22 @@ func (h *networkHandle) DedupEntriesAdded(delta int) {
 	telemetry.GaugeHandle(telemetry.MetricSubscriptionDedupEntries, h.nw.projectId, h.nw.Label()).Add(float64(delta))
 }
 
+func (h *networkHandle) HeadIndexed() {
+	telemetry.GaugeHandle(telemetry.MetricNetworkSubscriptionLastHeadTimestamp, h.nw.projectId, h.nw.Label()).SetToCurrentTime()
+}
+
+func (h *networkHandle) Undelivered(kind indexer.EventKind) {
+	telemetry.CounterHandle(telemetry.MetricSubscriptionUndeliveredTotal, h.nw.projectId, h.nw.Label(), kind.String()).Inc()
+}
+
+// DeliveringHead floors "latest" to a head a client is about to receive. Only
+// such heads count: a head no client subscribed to (a prewarmed subscription)
+// would otherwise lift "latest" past the upstreams that poll, and their
+// blockAvailability upper bound would then mark them unable to serve it.
+func (h *networkHandle) DeliveringHead(blockNumber int64) {
+	h.nw.NoteObservedLatestBlock(h.nw.appCtx, blockNumber)
+}
+
 // indexerNetworkKey names nw in the indexer and its adapters. Projects can
 // define the same network, each with its own upstreams, so the key includes
 // the project.
@@ -481,9 +528,16 @@ func indexerNetworkKey(nw *Network) string { return nw.projectId + "/" + nw.netw
 // asynchronously first, so that head is not delivered) and the fallback-tier
 // gate allows it (see deliversHeadsFrom). A head from an upstream with no
 // poller (not bootstrapped, e.g. its chain could not be verified) or one the
-// network doesn't know is not delivered. A delivered head also advances the
-// network's delivered-head floor before clients see it.
+// network doesn't know is not delivered.
 func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64) bool {
+	deliver := h.suggestLatestBlock(sourceId, blockNumber)
+	if !deliver {
+		telemetry.CounterHandle(telemetry.MetricSubscriptionWithheldHeadsTotal, h.nw.projectId, h.nw.Label()).Inc()
+	}
+	return deliver
+}
+
+func (h *networkHandle) suggestLatestBlock(sourceId string, blockNumber int64) bool {
 	upstreamID, ok := strings.CutPrefix(sourceId, "ws:")
 	if !ok {
 		return true
@@ -499,11 +553,7 @@ func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64) b
 			return false
 		}
 		poller.SuggestLatestBlock(blockNumber)
-		if !deliver || poller.LatestBlock() < blockNumber {
-			return false
-		}
-		h.nw.NoteObservedLatestBlock(h.nw.appCtx, blockNumber)
-		return true
+		return deliver && poller.LatestBlock() >= blockNumber
 	}
 	return false
 }
@@ -519,7 +569,7 @@ func (h *networkHandle) deliversHeadsFrom(ctx context.Context, u common.Upstream
 	if h.nw.cfg == nil || !h.nw.cfg.Failover.Enabled() || !isFallbackTier(u) {
 		return true
 	}
-	for c := range h.nw.tipCandidateUpstreams(ctx) {
+	for c := range h.nw.EvmRoutableUpstreams(ctx) {
 		if s := h.heads[c.Id()]; s != nil && !isFallbackTier(c) && s.HeadsLive() {
 			return false
 		}

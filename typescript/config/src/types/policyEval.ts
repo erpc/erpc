@@ -471,6 +471,22 @@ export interface PolicyEvalUpstreamArray
     reasonOverride?: string,
   ): PolicyEvalUpstreamArray;
 
+  /**
+   * Per-method exclusion. For each upstream and each method it has samples
+   * for that matches `match`, `when` runs with `u.metrics` set to that
+   * method's numbers (`requestsTotal`, `latencyP`). A trip skips the
+   * upstream for that method only; it stays in rotation for every other
+   * method. When blocks would leave a method no upstream, all stay.
+   * Blocked upstreams get probe traffic for that method unless
+   * `probe: false`. Counted in `erpc_selection_method_block_total`.
+   * Returns the array unchanged.
+   */
+  blockMethods(opts: {
+    match: Pattern;
+    when: PolicyEvalPredicate;
+    probe?: boolean;
+  }): PolicyEvalUpstreamArray;
+
   // ─── 4.4 Generic functional ───────────────────────────────────────────
   reject(
     fn: (u: PolicyEvalUpstream, i: number, a: PolicyEvalUpstream[]) => unknown,

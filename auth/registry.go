@@ -45,7 +45,7 @@ func NewAuthRegistry(appCtx context.Context, logger *zerolog.Logger, projectId s
 // Authenticate checks the authentication payload against all registered strategies
 func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedRequest, method string, ap *AuthPayload) (*common.User, error) {
 	if ap == nil {
-		return nil, common.NewErrAuthUnauthorized("n/a", "auth payload is nil")
+		return nil, common.NewErrAuthUnauthorized("n/a", "unauthorized", "auth payload is nil")
 	}
 
 	if len(r.strategies) == 0 {
@@ -111,7 +111,7 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 // every request.
 func (r *AuthRegistry) AcceptsPayload(ctx context.Context, req *common.NormalizedRequest, ap *AuthPayload) error {
 	if ap == nil {
-		return common.NewErrAuthUnauthorized("n/a", "auth payload is nil")
+		return common.NewErrAuthUnauthorized("n/a", "unauthorized", "auth payload is nil")
 	}
 	if len(r.strategies) == 0 {
 		return nil
@@ -137,11 +137,11 @@ func unauthorized(errs []error) error {
 	}
 
 	if len(errs) == 0 {
-		return common.NewErrAuthUnauthorized("n/a", "no auth strategy matched make sure correct headers or query strings are provided")
+		return common.NewErrAuthUnauthorized("n/a", "unauthorized", "no auth strategy matched make sure correct headers or query strings are provided")
 	}
 
 	// If no strategy matched or succeeded, consider the request unauthorized
-	return common.NewErrAuthUnauthorized("n/a", errors.Join(errs...).Error())
+	return common.NewErrAuthUnauthorized("n/a", "unauthorized", errors.Join(errs...).Error())
 }
 
 // FindDatabaseConnector finds a database connector by ID from the strategies

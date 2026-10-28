@@ -603,6 +603,58 @@ func TestSvmGetBlockRequestCarriesMappedFields(t *testing.T) {
 	}
 }
 
+// fakeSvmRootNetwork reports a fixed network finalized root; 0 is unknown.
+type fakeSvmRootNetwork struct {
+	common.SvmNetwork
+	root int64
+}
+
+func (n fakeSvmRootNetwork) SvmHighestFinalizedSlot(context.Context) int64 { return n.root }
+
+// Config is nil: no SVM history, so every field renders as recorded.
+func (fakeSvmRootNetwork) Config() *common.NetworkConfig { return nil }
+
+// TestSvmGetBlockFinalizedUsesNetworkRoot: the reader's own FINALIZED ceiling
+// trails the network root by tens of seconds, so a finalized read at or below
+// the root the pollers report asks the reader at CONFIRMED (one state since
+// Alpenglow), a slot above the root falls through without a reader call, and
+// an unknown root leaves the reader's ceiling as the bound.
+func TestSvmGetBlockFinalizedUsesNetworkRoot(t *testing.T) {
+	tests := []struct {
+		name           string
+		root           int64
+		params         string
+		wantCall       bool
+		wantCommitment svm.Commitment
+	}{
+		{"at root asks confirmed", 1000, `[1000]`, true, svm.Commitment_COMMITMENT_CONFIRMED},
+		{"explicit finalized below root asks confirmed", 1000, `[990,{"commitment":"finalized"}]`, true, svm.Commitment_COMMITMENT_CONFIRMED},
+		{"above root falls through", 1000, `[1001]`, false, 0},
+		{"unknown root keeps reader ceiling", 0, `[1001]`, true, svm.Commitment_COMMITMENT_FINALIZED},
+		{"confirmed above root is untouched", 1000, `[1001,{"commitment":"confirmed"}]`, true, svm.Commitment_COMMITMENT_CONFIRMED},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeSvmClient{resp: svmBlockPresent()}
+			req := common.NewNormalizedRequest([]byte(
+				`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":` + tc.params + `}`,
+			))
+			req.SetNetwork(fakeSvmRootNetwork{root: tc.root})
+			jrReq, err := req.JsonRpcRequest()
+			require.NoError(t, err)
+			_, err = (&GenericGrpcBdsClient{}).handleSvmGetBlock(context.Background(), &bdsConn{svmClient: fake}, req, jrReq)
+			if !tc.wantCall {
+				require.Error(t, err)
+				assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointUnsupported), "must fall through, got %v", err)
+				assert.Zero(t, fake.calls)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantCommitment, fake.got.Commitment)
+		})
+	}
+}
+
 // TestSvmTransactionDetails covers the string -> enum mapping and, more
 // importantly, the split between the two failure kinds: "accounts" is a shape
 // BDS has no representation for and must fall through as unsupported, whereas
@@ -742,7 +794,7 @@ func TestSvmMapGetBlockError(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := svmMapGetBlockError(tc.in)
+			err := svmMapError(tc.in)
 			require.Error(t, err)
 			assert.Equal(t, tc.wantBenign, common.HasErrorCode(err, common.ErrCodeEndpointUnsupported),
 				"benign-miss vs. real-failure classification decides whether a broken reader gets scored; got: %v", err)
