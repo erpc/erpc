@@ -263,8 +263,10 @@ type NormalizedRequest struct {
 	headsAtError sync.Map
 
 	// Fields for centralized upstream management
-	upstreamList      []Upstream // Available upstreams for this request
-	ConsumedUpstreams *sync.Map  // Tracks upstreams that provided valid responses
+	upstreamList         []Upstream // Available upstreams for this request (post-selection)
+	networkUpstreamList  []Upstream // Unfiltered network registry — consensus-policy fail-closed helpers
+	networkUpstreamsSet  bool       // true after SetNetworkUpstreams (even if the snapshot is empty)
+	ConsumedUpstreams    *sync.Map  // Tracks upstreams that provided valid responses
 
 	// escalatedToFallbacks makes the per-request fallback escape happen at
 	// most once across retries and hedges.
@@ -1289,6 +1291,34 @@ func (r *NormalizedRequest) SetUpstreams(upstreams []Upstream) {
 	}
 }
 
+// SetNetworkUpstreams stores the network-registry upstream list for this
+// request (cordon-inclusive, method-eligible). The consensus-policy selector
+// uses it to observe punishment / operator cordons that selection already
+// dropped from Upstreams(). Consensus reorder must not overwrite this list.
+// An empty slice is a real snapshot (e.g. nothing method-eligible) and must
+// not be treated as "never set".
+func (r *NormalizedRequest) SetNetworkUpstreams(upstreams []Upstream) {
+	if r == nil {
+		return
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+	r.networkUpstreamList = upstreams
+	r.networkUpstreamsSet = true
+}
+
+// HasNetworkUpstreams reports whether SetNetworkUpstreams was called, even
+// when the stored snapshot is empty. The selector falls back to Upstreams()
+// only when this is false (unit tests / non-network paths).
+func (r *NormalizedRequest) HasNetworkUpstreams() bool {
+	if r == nil {
+		return false
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+	return r.networkUpstreamsSet
+}
+
 // UpstreamsCount returns the number of available upstreams for this request
 func (r *NormalizedRequest) UpstreamsCount() int {
 	if r == nil {
@@ -1323,6 +1353,25 @@ func (r *NormalizedRequest) MarkEscalatedToFallbacks() bool {
 		return false
 	}
 	return r.escalatedToFallbacks.CompareAndSwap(false, true)
+}
+
+// NetworkUpstreams returns a snapshot of the network-registry list (cordon-
+// inclusive, method-eligible) set via SetNetworkUpstreams. Returns nil when
+// unset; returns an empty (non-nil) slice when set to empty so callers can
+// distinguish "no registry snapshot" from "registry had zero eligible
+// upstreams". Safe for concurrent use.
+func (r *NormalizedRequest) NetworkUpstreams() []Upstream {
+	if r == nil {
+		return nil
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+	if !r.networkUpstreamsSet {
+		return nil
+	}
+	out := make([]Upstream, len(r.networkUpstreamList))
+	copy(out, r.networkUpstreamList)
+	return out
 }
 
 // UserId returns the user ID from the user object, or "n/a" if not available

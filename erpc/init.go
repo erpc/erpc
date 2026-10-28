@@ -10,6 +10,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
@@ -228,6 +229,9 @@ func Init(
 	if cfg.Server != nil && cfg.Server.WaitAfterShutdown != nil {
 		time.Sleep(cfg.Server.WaitAfterShutdown.Duration())
 	}
+	// CloseAll waits for in-flight consensus analyzers, then flushes exporters.
+	// Fire-and-forget rounds outlive HTTP shutdown and still export misbehavior.
+	consensus.CloseAll()
 	if metricsSrv != nil {
 		logger.Info().Msg("shutting down metrics server...")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -193,6 +193,8 @@ type Initializer struct {
 	autoRetryActive atomic.Bool
 	cancelAutoRetry atomic.Value // context.CancelFunc
 	autoRetryWg     sync.WaitGroup
+	stopMu          sync.Mutex
+	stopped         atomic.Bool
 
 	conf *InitializerConfig
 
@@ -224,8 +226,15 @@ func (i *Initializer) ExecuteTasks(ctx context.Context, tasks ...*BootstrapTask)
 	if len(tasks) == 0 {
 		return nil
 	}
+	if i.stopped.Load() {
+		return fmt.Errorf("initializer stopped")
+	}
 
 	i.tasksMu.Lock()
+	if i.stopped.Load() {
+		i.tasksMu.Unlock()
+		return fmt.Errorf("initializer stopped")
+	}
 	tasksToWait := make([]*BootstrapTask, 0, len(tasks))
 	for _, task := range tasks {
 		actual, existed := i.tasks.LoadOrStore(task.Name, task)
@@ -354,6 +363,9 @@ func (i *Initializer) taskReadyForRetry(t *BootstrapTask) bool {
 func (i *Initializer) attemptRemainingTasks(respectBackoff bool) {
 	i.tasksMu.Lock()
 	defer i.tasksMu.Unlock()
+	if i.stopped.Load() {
+		return
+	}
 
 	var tasksToRun []*BootstrapTask
 
@@ -598,9 +610,16 @@ func (i *Initializer) MarkTaskAsFailed(name string, err error) {
 func (i *Initializer) Stop(destroyFn func() error) error {
 	i.logger.Debug().Msg("stopping initializer")
 
-	// Stop the auto-retry loop before taking tasksMu, which the loop also
-	// acquires.
-	if cancel := i.cancelAutoRetry.Load(); cancel != nil {
+	// Mark stopped under stopMu before cancelling so ensureAutoRetryIfEnabled
+	// cannot Add a new loop after Wait returns (or while Wait sees a zero
+	// count). ExecuteTasks / attemptRemainingTasks also refuse work once
+	// stopped so they cannot start tasks against destroyFn'd resources.
+	i.stopMu.Lock()
+	i.stopped.Store(true)
+	cancel := i.cancelAutoRetry.Load()
+	i.stopMu.Unlock()
+
+	if cancel != nil {
 		cancel.(context.CancelFunc)()
 	}
 	i.autoRetryWg.Wait()
@@ -699,6 +718,11 @@ func (i *Initializer) ensureAutoRetryIfEnabled() {
 	if !i.conf.AutoRetry {
 		return
 	}
+	i.stopMu.Lock()
+	defer i.stopMu.Unlock()
+	if i.stopped.Load() {
+		return
+	}
 	if i.autoRetryActive.Load() {
 		return
 	}
@@ -707,7 +731,7 @@ func (i *Initializer) ensureAutoRetryIfEnabled() {
 	rctx, cancel := context.WithCancel(i.appCtx)
 	i.cancelAutoRetry.Store(cancel)
 
-	// Add to wait group
+	// Add to wait group under stopMu so Stop cannot Wait between Add and go.
 	i.autoRetryWg.Add(1)
 	go func() {
 		defer i.autoRetryWg.Done()
@@ -755,8 +779,15 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 	}
 
 	delay := i.conf.RetryMinDelay
-	// Wait for the first delay before doing the first retry
-	<-time.After(delay)
+	// Wait for the first delay before doing the first retry, but stay
+	// interruptible so Stop() is not blocked for RetryMinDelay.
+	select {
+	case <-ctx.Done():
+		i.logger.Debug().Err(ctx.Err()).Msg("initialization auto-retry interrupted")
+		i.autoRetryActive.Store(false)
+		return
+	case <-time.After(delay):
+	}
 	for {
 		if ctx.Err() != nil {
 			i.logger.Debug().Err(ctx.Err()).Msg("initialization auto-retry interrupted")

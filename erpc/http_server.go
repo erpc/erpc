@@ -1335,6 +1335,11 @@ func writeCounterHeaders(st *common.ExecState, w http.ResponseWriter) {
 	if snap.ConsensusLowParticipants > 0 {
 		setInt(w, "X-ERPC-Consensus-Low-Participants", snap.ConsensusLowParticipants)
 	}
+	// The consensus policy the pre-round selector resolved for this request.
+	// Present only when the custom-policy selector is enabled and ran.
+	if snap.ConsensusPolicy != "" {
+		w.Header().Set("X-ERPC-Consensus-Policy", snap.ConsensusPolicy)
+	}
 }
 
 // writeResponseMetadataHeaders emits X-ERPC-Cache, X-ERPC-Upstream,

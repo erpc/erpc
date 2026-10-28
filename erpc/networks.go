@@ -2030,8 +2030,24 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	// Set upstreams on the request
+	// Set upstreams on the request. Candidates are the post-selection list;
+	// the registry snapshot is kept separately so the consensus-policy
+	// selector can still see punishment/operator cordons that removeCordoned
+	// already dropped from upsList. Method-ineligible upstreams are filtered
+	// out of that snapshot so a healthy ignoreMethods match cannot keep
+	// allUnavailable()/canServeBlock() from selecting fallback.
 	req.SetUpstreams(upsList)
+	if n.upstreamsRegistry != nil {
+		reg := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+		all := make([]common.Upstream, 0, len(reg))
+		for _, u := range reg {
+			all = append(all, u)
+		}
+		if eligible, dropped := filterMethodEligible(all, method); dropped > 0 {
+			all = eligible
+		}
+		req.SetNetworkUpstreams(all)
+	}
 
 	// Future-block short-circuit: a concrete block number beyond every
 	// upstream's head cannot be served yet — return the truthful null instead of
