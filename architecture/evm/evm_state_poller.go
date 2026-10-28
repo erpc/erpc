@@ -168,6 +168,9 @@ type EvmStatePoller struct {
 
 	// Single in-flight flag for RefreshFinalizedBlock's background poll.
 	finalizedRefreshInFlight atomic.Bool
+	// finalizedAskAt is the send time, in Unix ns, of this instance's last
+	// finalized poll (FinalizedAskAt).
+	finalizedAskAt atomic.Int64
 
 	// Earliest per probe tracking
 	earliestByProbe              map[common.EvmAvailabilityProbeType]data.CounterInt64SharedVariable
@@ -1313,6 +1316,32 @@ func (e *EvmStatePoller) FinalizedReportAt() time.Time {
 	return e.finalizedBlockShared.ReportAt()
 }
 
+// LatestAskAt is the send time of this instance's last Ask fetch of the
+// upstream's latest (spec §6.8); zero before any.
+func (e *EvmStatePoller) LatestAskAt() time.Time {
+	if e.IsObjectNull() {
+		return time.Time{}
+	}
+	a := &e.headAsk
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.last == nil {
+		return time.Time{}
+	}
+	return a.last.sent
+}
+
+// FinalizedAskAt is LatestAskAt for the finalized tag's poll.
+func (e *EvmStatePoller) FinalizedAskAt() time.Time {
+	if e.IsObjectNull() {
+		return time.Time{}
+	}
+	if ns := e.finalizedAskAt.Load(); ns > 0 {
+		return time.Unix(0, ns)
+	}
+	return time.Time{}
+}
+
 // OnFinalizedBlock is OnLatestBlock for the finalized block number.
 func (e *EvmStatePoller) OnFinalizedBlock(cb func(int64)) {
 	if e.finalizedBlockShared != nil {
@@ -1567,6 +1596,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
 		polled.Inc()
+		e.finalizedAskAt.Store(time.Now().UnixNano())
 
 		// Actually fetch from upstream
 		b, err := e.fetchBlock(ctx, "finalized", common.UpstreamPoliciesTimeoutOnly)

@@ -782,17 +782,22 @@ func TestNetworksPaths_BoundaryLaneAndFutureBlockGuards(t *testing.T) {
 	assert.Nil(t, n.eligibleUpstreamIDsForBoundary(ctx, "eth_getLogs", newReq(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{}]}`)),
 		"range methods own their availability")
 
-	future := newReq(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0xffffff",false]}`)
-	resp, ok := n.tryShortCircuitFutureBlock(ctx, future, "eth_getBlockByNumber")
+	onN := func(body string) *common.NormalizedRequest {
+		r := newReq(body)
+		r.SetNetwork(n)
+		return r
+	}
+	future := onN(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0xffffff",false]}`)
+	resp, ok := n.tryShortCircuitFutureBlock(ctx, future)
 	assert.False(t, ok, "disabled by default")
 	assert.Nil(t, resp)
 
 	n.cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
-	_, ok = n.tryShortCircuitFutureBlock(ctx, future, "eth_call")
+	_, ok = n.tryShortCircuitFutureBlock(ctx, onN(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{},"0xffffff"]}`))
 	assert.False(t, ok, "only eth_getBlockByNumber")
-	_, ok = n.tryShortCircuitFutureBlock(ctx, newReq(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`), "eth_getBlockByNumber")
+	_, ok = n.tryShortCircuitFutureBlock(ctx, onN(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
 	assert.False(t, ok, "tags never short-circuit")
-	_, ok = n.tryShortCircuitFutureBlock(ctx, future, "eth_getBlockByNumber")
+	_, ok = n.tryShortCircuitFutureBlock(ctx, future)
 	assert.False(t, ok, "unknown heads fail open")
 }
 
@@ -860,7 +865,8 @@ func TestNetworksPaths_ForwardOnLiveNetwork(t *testing.T) {
 		assert.Equal(t, head+100000, resp.EvmBlockNumber())
 
 		within := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, head)))
-		_, ok := network.tryShortCircuitFutureBlock(ctx, within, "eth_getBlockByNumber")
+		within.SetNetwork(network)
+		_, ok := network.tryShortCircuitFutureBlock(ctx, within)
 		assert.False(t, ok, "a block at the head is dispatched")
 	})
 

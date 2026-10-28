@@ -784,7 +784,7 @@ func isSimpleGroupSelector(selector string) bool {
 // many of the ballot's voters (voterSet's number votes) as the quorum
 // needs, since a fresher head anywhere else cannot move the served value.
 // The latest axis takes them in routing order; the finalized axis oldest
-// finalized report first, since a voter's finality depth is its own and
+// finalized evidence first, since a voter's finality depth is its own and
 // routing order does not reflect it, and passes over a voter whose
 // finalized tag is given up: its vote is derived from its latest (spec
 // §6.8). A lane walks its voters at most once per poll cadence per axis,
@@ -823,7 +823,7 @@ func (n *Network) EvmRefreshHead(ctx context.Context, finalized bool) {
 		pollers = append(pollers, u.(common.EvmUpstream).EvmStatePoller())
 		return true
 	})
-	slices.SortStableFunc(pollers, func(a, b common.EvmStatePoller) int { return a.FinalizedReportAt().Compare(b.FinalizedReportAt()) })
+	oldestEvidenceFirst(pollers, true)
 	for _, sp := range pollers {
 		if need <= 0 {
 			break
@@ -845,7 +845,7 @@ func (n *Network) EvmRefreshHeadsBelow(selector string, block int64, pace time.D
 
 // lackingVoters are the pollers of as many of the voters of selector's
 // lane whose head is below block as Latest still lacks to reach it,
-// oldest report first, each once (spec §6.5 catch-up, §6.4 by-hash wait):
+// oldest evidence first, each once (spec §6.5 catch-up, §6.4 by-hash wait):
 // Latest is their ballot, so no other upstream moves it, and once the
 // quorum holds block no further Ask can. A guarantee subset's majority
 // clamps Latest too (guaranteedFloor), so each subset adds the voters its
@@ -876,7 +876,7 @@ func (n *Network) lackingVoters(selector string, block int64) []common.EvmStateP
 
 // lacking appends to out, unless already there, as many of q's voters
 // below block as quorum lacks to hold it (quorum less the voters at or
-// above it), oldest report first.
+// above it), oldest evidence first.
 func (n *Network) lacking(out []common.EvmStatePoller, selector string, block int64, q voterQuery, quorum common.ServedTipQuorum) []common.EvmStatePoller {
 	s := n.voters(selector, q)
 	if s.count() == 0 {
@@ -895,13 +895,35 @@ func (n *Network) lacking(out []common.EvmStatePoller, selector string, block in
 	if lacks <= 0 {
 		return out
 	}
-	slices.SortStableFunc(below, func(a, b common.EvmStatePoller) int { return a.LatestReportAt().Compare(b.LatestReportAt()) })
+	oldestEvidenceFirst(below, false)
 	for _, sp := range below[:min(lacks, len(below))] {
 		if !slices.Contains(out, sp) {
 			out = append(out, sp)
 		}
 	}
 	return out
+}
+
+// oldestEvidenceFirst orders pollers by their evidence time on the latest
+// or finalized axis (common.EvidenceAt), oldest first, stably.
+func oldestEvidenceFirst(pollers []common.EvmStatePoller, finalized bool) {
+	type ranked struct {
+		sp common.EvmStatePoller
+		at time.Time
+	}
+	rs := make([]ranked, len(pollers))
+	for i, sp := range pollers {
+		rs[i].sp = sp
+		if finalized {
+			rs[i].at = common.EvidenceAt(sp.FinalizedReportAt(), sp.FinalizedAskAt())
+		} else {
+			rs[i].at = common.EvidenceAt(sp.LatestReportAt(), sp.LatestAskAt())
+		}
+	}
+	slices.SortStableFunc(rs, func(a, b ranked) int { return a.at.Compare(b.at) })
+	for i, r := range rs {
+		pollers[i] = r.sp
+	}
 }
 
 // EvmPollHeads Asks, with a hash need at pace, each upstream in ids:
@@ -958,6 +980,28 @@ func (n *Network) pollHeads(ids []string, need common.HeadNeed, pace time.Durati
 	return next
 }
 
+// EvmLatestAskAt is, for each upstream in ids, the send time of this
+// instance's last Ask fetch of its latest: the Ask half of a chain
+// tracker's evidence times (common.EvidenceAt). An upstream never Asked
+// is absent.
+func (n *Network) EvmLatestAskAt(ids []string) map[string]time.Time {
+	out := make(map[string]time.Time, len(ids))
+	if n.upstreamsRegistry == nil {
+		return out
+	}
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
+		if !slices.Contains(ids, u.Id()) {
+			continue
+		}
+		if p := u.EvmStatePoller(); p != nil && !p.IsObjectNull() {
+			if at := p.LatestAskAt(); !at.IsZero() {
+				out[u.Id()] = at
+			}
+		}
+	}
+	return out
+}
+
 // EvmAskHead is the Ask of upstreamId's head at pace for a chain
 // tracker's settle or no-source Ask (spec §6.5 rules 5 and 6, §6.8);
 // AskBackoff when the network has no such upstream with a poller.
@@ -983,11 +1027,8 @@ func (n *Network) EvmAskHead(ctx context.Context, upstreamId string, need common
 // and hedging across all of them only burns latency and load. It runs only
 // when the network sets evm.shortCircuitFutureBlocks, and the synthesized
 // response is returned directly from Forward, so it is never cached.
-func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.NormalizedRequest, method string) (*common.NormalizedResponse, bool) {
-	if n.cfg == nil || !n.cfg.Evm.ShortCircuitFutureBlocksEnabled() {
-		return nil, false
-	}
-	if !strings.EqualFold(method, "eth_getBlockByNumber") {
+func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, bool) {
+	if !evm.ShortCircuitsFuture(req) {
 		return nil, false
 	}
 	v := evm.HeadRefusalOf(ctx, req)
@@ -1987,15 +2028,27 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	req.SetUpstreams(upsList)
 
 	// The refusal rule decides the request's block once, before dispatch
-	// (spec §6.4): a stale ceiling is Asked here, a band block refreshes
-	// the voters below it. A future block, with shortCircuitFutureBlocks,
-	// gets the truthful null with no dispatch; it runs before rate limiting
-	// so it consumes no permit, and before the probe-bus publish so it is
-	// never mirrored to excluded upstreams.
+	// (spec §6.4): a stale ceiling is Asked here, a near-future block waits
+	// for the ceiling, a band block refreshes the voters below it. A
+	// future block, with shortCircuitFutureBlocks, gets the truthful null
+	// with no dispatch and no wait; it runs before rate limiting so it
+	// consumes no permit, and before the probe-bus publish so it is never
+	// mirrored to excluded upstreams. A request that ends during the wait
+	// ends as any request whose context ends.
 	if n.cfg.Architecture == common.ArchitectureEvm {
 		evm.HeadRefusalOf(ctx, req)
+		if err := ctx.Err(); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				err = common.NewErrNetworkRequestTimeout(time.Since(startTime), err)
+			}
+			common.SetTraceSpanError(forwardSpan, err)
+			if mlx != nil {
+				mlx.Close(ctx, nil, err)
+			}
+			return nil, err
+		}
 	}
-	if resp, ok := n.tryShortCircuitFutureBlock(ctx, req, method); ok {
+	if resp, ok := n.tryShortCircuitFutureBlock(ctx, req); ok {
 		forwardSpan.SetAttributes(attribute.Bool("future_block.short_circuit", true))
 		n.countRefusal(ctx, req, resp, nil)
 		if mlx != nil {
@@ -2166,11 +2219,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			maxLoopIterations = 1
 		}
 		attempted := make(map[string]struct{}, maxLoopIterations)
-		// leg is this execution to the refusal rule: a hedge leg running
-		// beside the one holding the request's miss stops, a later one
-		// takes its answer (spec §6.4).
+		// leg is this execution to the refusal rule: it gets its own one
+		// retryable miss, whatever its sibling slots and hedges got (spec
+		// §6.4).
 		leg := &common.RefusalLeg{}
-		defer leg.End()
 		// The fallback escape below swaps in its own picker, leaving the
 		// request's routed list untouched for later retries.
 		nextUpstream := effectiveReq.NextUpstream
@@ -2199,14 +2251,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					common.SetTraceSpanError(loopSpan, cause)
 					loopSpan.End()
 					return nil, cause
-				}
-				// Another leg holds the request's one miss and its retry
-				// (spec §6.4): this leg dispatches no more.
-				if effectiveReq.HeadRefusal().Sibling(leg) {
-					err := common.NewErrEndpointMissingData(fmt.Errorf("another hedge holds the retryable miss above Latest"), nil)
-					common.SetTraceSpanError(loopSpan, err)
-					loopSpan.End()
-					return nil, err
 				}
 
 				u, selErr := nextUpstream()
@@ -2291,10 +2335,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				// The refusal rule (spec §6.4): an empty or missing answer for a
-				// block above Latest is the request's one retryable miss, its
-				// hedges included; the retry asks the upstreams whose head
-				// reaches the block first. The answer after it goes to the
-				// client as the upstream gave it.
+				// block above Latest is the leg's one retryable miss, in a
+				// consensus slot or a hedge pinned to one upstream too; the
+				// retry asks the upstreams whose head reaches the block first.
+				// The answer after it goes to the client as the upstream gave it.
 				refusal := effectiveReq.HeadRefusal()
 				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && isEmptyNetworkResult(method, r)
 				missing := emptyAnswer || missingDataErr(err)
@@ -2313,6 +2357,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 							n.awaitBandAsk(loopCtx, sel, refusal.Block)
 						}
 						nextUpstream = n.headFirst(effectiveReq, attempted, refusal.Block)
+						// One more pick for the retry, a slot's included.
+						maxLoopIterations = max(maxLoopIterations, loopIteration+2)
 						// With no upstream left to retry, the client gets
 						// this answer as the upstream gave it: an empty
 						// answer stays the result, never a missing-data
@@ -2325,13 +2371,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						}
 						loopSpan.End()
 						continue
-					case common.MissSibling:
-						if err == nil {
-							err = common.NewErrEndpointMissingData(fmt.Errorf("another hedge holds the retryable miss above Latest"), u)
-						}
-						common.SetTraceSpanError(loopSpan, err)
-						loopSpan.End()
-						return nil, err
 					case common.MissFinal:
 						if !emptyAnswer {
 							common.SetTraceSpanError(loopSpan, err)
@@ -3703,9 +3742,9 @@ func isFallbackTier(u common.Upstream) bool {
 }
 
 // headFirst picks req's band retry (spec §6.4): its routed upstreams not
-// yet attempted, ordered by their heads as they are now, those reaching bn
-// first, with no I/O. Upstreams the policy did not route stay the
-// fallback escape's.
+// yet attempted that NextUpstream may still select, ordered by their heads
+// as they are now, those reaching bn first, with no I/O. Upstreams the
+// policy did not route stay the fallback escape's.
 func (n *Network) headFirst(req *common.NormalizedRequest, attempted map[string]struct{}, bn int64) func() (common.Upstream, error) {
 	var rest []common.Upstream
 	for _, u := range req.Upstreams() {
@@ -3718,7 +3757,7 @@ func (n *Network) headFirst(req *common.NormalizedRequest, attempted map[string]
 		for len(rest) > 0 {
 			u := rest[0]
 			rest = rest[1:]
-			if _, loaded := req.ConsumedUpstreams.LoadOrStore(u, true); !loaded {
+			if req.ReserveUpstream(u) {
 				return u, nil
 			}
 		}

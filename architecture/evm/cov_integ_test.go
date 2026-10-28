@@ -147,6 +147,9 @@ func (n *covIntegRefusingNet) EvmAskStale(_ context.Context, sel string) (int64,
 	n.ask(sel)
 	return n.upstreamHead(sel), time.Time{}
 }
+func (n *covIntegRefusingNet) EvmAwaitCeiling(_ context.Context, sel string, _ int64) (int64, time.Time) {
+	return n.upstreamHead(sel), time.Time{}
+}
 func (n *covIntegRefusingNet) EvmAskBand(sel string, _ int64) { n.ask(sel) }
 
 func (n *covIntegRefusingNet) ask(sel string) {

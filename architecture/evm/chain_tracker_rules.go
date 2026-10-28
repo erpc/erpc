@@ -787,13 +787,13 @@ func (t *ChainTracker) decides(k roundKey, n *node) bool {
 
 // refreshTargets are §6.3's refresh for voter off's vote nd off the pins:
 // the voters, other than off, that are on no conflicting branch and whose
-// evidence is older than nd's, oldest first, up to settleAsks. A voter
-// without a counted vote has the oldest evidence: left out, a refresh
+// vote is older than nd's, oldest evidence first (§6.8), up to settleAsks.
+// A voter without a counted vote has the oldest vote: left out, a refresh
 // heard only the backers of the pins and moved them on a majority of the
 // voters that happened to be fresh (§19 C14).
 func (t *ChainTracker) refreshTargets(off string) []string {
 	at := t.voteAt[off]
-	evidence := func(u string) (time.Time, bool) {
+	vote := func(u string) (time.Time, bool) {
 		if v := t.votes[u]; t.counts(u) && t.alive(v) {
 			return t.voteAt[u], !t.conflicts(v)
 		}
@@ -801,15 +801,16 @@ func (t *ChainTracker) refreshTargets(off string) []string {
 	}
 	var out []string
 	for _, u := range t.voters.Voters {
-		if e, behind := evidence(u); u != off && behind && e.Before(at) {
+		if e, behind := vote(u); u != off && behind && e.Before(at) {
 			out = append(out, u)
 		}
 	}
-	slices.SortStableFunc(out, func(a, b string) int {
-		ea, _ := evidence(a)
-		eb, _ := evidence(b)
-		return ea.Compare(eb)
-	})
+	if len(out) > settleAsks {
+		t.oldestEvidenceFirst(out, func(u string) time.Time {
+			e, _ := vote(u)
+			return e
+		})
+	}
 	return out[:min(len(out), settleAsks)]
 }
 

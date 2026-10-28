@@ -355,9 +355,10 @@ func servesAll(u common.Upstream, sets [][]string) bool {
 
 // checkAvailability fails with -32001 when a block of the resolved range is
 // one the refusal rule calls future (spec §6.4: above the ceiling plus its
-// age in blocks, the ceiling Asked first when stale), or outside the union
-// of the availability windows of the upstreams that can serve the method
-// (natively or through the shim sub-requests).
+// age in blocks, the ceiling Asked first when stale, a near-future block
+// waiting up to W for it), or outside the union of the availability
+// windows of the upstreams that can serve the method (natively or through
+// the shim sub-requests).
 func (qe *EvmQueryExecutor) checkAvailability(ctx context.Context, p *queryPlan, natives []common.Upstream, shimEnabled bool) error {
 	lo, hi := p.from, p.to
 	if p.desc {
@@ -370,7 +371,11 @@ func (qe *EvmQueryExecutor) checkAvailability(ctx context.Context, p *queryPlan,
 				sel = d.UseUpstream
 			}
 		}
-		if v := archevm.DecideHeadRefusal(ctx, qe.network, p.head, sel, int64(hi)); v.Rule == common.HeadFuture {
+		v := archevm.DecideHeadRefusal(ctx, qe.network, p.head, sel, int64(hi), true)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if v.Rule == common.HeadFuture {
 			qe.network.countHeadRefusal(v.FutureRule())
 			return queryRangeUnavailable("block %#x is above the highest known block %#x", hi, v.Ceiling)
 		}

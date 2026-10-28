@@ -283,6 +283,15 @@ func (p *FakeEvmStatePoller) FinalizedReportAt() time.Time {
 	return time.Time{}
 }
 
+// LatestAskAt and FinalizedAskAt are zero: a fake is never Asked.
+func (p *FakeEvmStatePoller) LatestAskAt() time.Time {
+	return time.Time{}
+}
+
+func (p *FakeEvmStatePoller) FinalizedAskAt() time.Time {
+	return time.Time{}
+}
+
 func (p *FakeEvmStatePoller) Poll(ctx context.Context) error {
 	return nil
 }

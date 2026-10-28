@@ -1629,9 +1629,12 @@ export interface DirectiveDefaultsConfig {
    * retained only so existing YAML still parses. At startup the flags that map
    * to a current check are translated into `integrity.checks` by
    * migrateLegacyIntegrityChecks (an explicit `integrity` block wins per check);
-   * they are NOT read at runtime. The receipt-count / expected-block /
-   * receipt-to-transaction flags have no equivalent in the new model and are
-   * accepted but ignored. See docs/pages/config/failsafe/integrity.mdx.
+   * they are NOT read at runtime, except validateTransactionsRoot: false,
+   * which also says the network's roots are not Ethereum's trie, so the
+   * chain tracker takes gasUsed 0 as an empty block. The receipt-count /
+   * expected-block / receipt-to-transaction flags have no equivalent in
+   * the new model and are accepted but ignored. See
+   * docs/pages/config/failsafe/integrity.mdx.
    */
   validateTransactionsRoot?: boolean;
   validateHeaderFieldLengths?: boolean;
@@ -2844,7 +2847,7 @@ export const HeadFuture: HeadRule = 2;
 export const HeadStale: HeadRule = 3;
 /**
  * HeadRefusal is the refusal rule's verdict for one request's block, taken
- * once (spec §6.4), and the one retryable miss it got since.
+ * once (spec §6.4), and the retryable misses its legs got since.
  */
 export interface HeadRefusal {
   rule: HeadRule;
@@ -2858,10 +2861,15 @@ export interface HeadRefusal {
    * Refreshed: N was decided again after its stale reports were Asked.
    */
   refreshed: boolean;
+  /**
+   * Waited: N, near the ceiling, waited up to W for it (spec §6.4 near
+   * future).
+   */
+  waited: boolean;
 }
 /**
- * RefusalLeg is one execution of a request: a hedge leg, or a retry
- * round's. End it when it returns.
+ * RefusalLeg is one execution of a request: a consensus slot, a hedge
+ * leg, or a retry round's. One goroutine runs it.
  */
 export interface RefusalLeg {
 }
@@ -2871,18 +2879,14 @@ export interface RefusalLeg {
  */
 export type MissVerdict = number /* uint8 */;
 /**
- * MissRetry: the request's one retryable miss; the leg retries.
+ * MissRetry: the leg's one retryable miss; the leg retries.
  */
 export const MissRetry: MissVerdict = 0;
 /**
- * MissFinal: the answer after the miss, sent as the upstream gave it.
+ * MissFinal: the answer after the leg's miss, sent as the upstream
+ * gave it.
  */
 export const MissFinal: MissVerdict = 1;
-/**
- * MissSibling: a leg running beside this one holds the miss; this leg
- * stops with a retryable miss.
- */
-export const MissSibling: MissVerdict = 2;
 /**
  * SvmNetwork is the SVM-specific view of a Network. Production Network
  * implementations satisfy this automatically when the underlying network is

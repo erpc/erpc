@@ -1776,6 +1776,8 @@ func (p *fixedPoller) AskBackground(common.HeadNeed, time.Duration, common.AskRe
 func (p *fixedPoller) RefreshFinalizedBlock() bool  { return true }
 func (p *fixedPoller) LatestReportAt() time.Time    { return time.Time{} }
 func (p *fixedPoller) FinalizedReportAt() time.Time { return time.Time{} }
+func (p *fixedPoller) LatestAskAt() time.Time       { return time.Time{} }
+func (p *fixedPoller) FinalizedAskAt() time.Time    { return time.Time{} }
 
 func (p *fixedPoller) FinalizedBlock() int64 { return p.finalized }
 
