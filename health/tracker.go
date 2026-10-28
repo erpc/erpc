@@ -89,6 +89,9 @@ type NetworkMetadata struct {
 	// only; guarded by the network entry's headMu.
 	headReport      headReport
 	finalizedReport headReport
+	// headReportedAt is headReport.at in unix ns, read lock-free by
+	// HeadCredit on the request path.
+	headReportedAt atomic.Int64
 
 	// Dynamic block time via EMA on on-chain block timestamps: on the network
 	// entry from the corroborated head, on an upstream entry from that
@@ -1762,6 +1765,34 @@ func (t *Tracker) IsHeadBenched(ups common.Upstream) bool {
 	return false
 }
 
+// HeadCredit is how many blocks ups is presumed to have gained since its last
+// latest-head report, and the corroborated network head. The credit is what
+// the network made since that report beyond ups's lag then (BlockHeadLag, see
+// headReport), so it freezes one poll period after the report, is 0 for a
+// benched head and for a head above the network head, and never exceeds the
+// blocks the chain can make in the time since the report at the network
+// block time: a network head that rose only because peers reported late is
+// not progress. 0 until the block time is known.
+func (t *Tracker) HeadCredit(ups common.Upstream) (credit, network int64) {
+	net := ups.NetworkId()
+	um, ok := t.metadata.Load(metadataKey{ups, net})
+	if !ok {
+		return 0, 0
+	}
+	meta := um.(*NetworkMetadata)
+	ntwMeta := t.getMetadata(metadataKey{nil, net})
+	network = ntwMeta.evmLatestBlockNumber.Load()
+	head, at := meta.evmLatestBlockNumber.Load(), meta.headReportedAt.Load()
+	blockTime := time.Duration(ntwMeta.evmBlockTime.Load())
+	m, ok := t.upsMetrics.Load(upstreamKey{ups, "*", common.DataFinalityStateAll})
+	if !ok || head <= 0 || network <= 0 || at == 0 || blockTime <= 0 {
+		return 0, network
+	}
+	byLag := network - m.(*TrackedMetrics).BlockHeadLag.Load() - head
+	byTime := int64(t.now().Sub(time.Unix(0, at)) / blockTime)
+	return max(0, min(byLag, byTime)), network
+}
+
 func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64, blockTimestamp int64) {
 	id := upstream.Id()
 	net := upstream.NetworkId()
@@ -1879,6 +1910,7 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	// network made beyond its last report (headReport).
 	now, blockTime := t.now(), time.Duration(ntwMeta.evmBlockTime.Load())
 	upsMeta.headReport.reported(now, ntwBn)
+	upsMeta.headReportedAt.Store(now.UnixNano())
 	lagHead := func(ups common.Upstream, meta *NetworkMetadata) int64 {
 		h := meta.evmLatestBlockNumber.Load()
 		if !meta.headBenched.Load() {
@@ -1904,6 +1936,19 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 			t.getHeadLagGauge,
 			&lg,
 		)
+		// Every reporter's {*, All} lag follows the new head, served or not:
+		// the index above holds only upstreams with traffic or a policy read,
+		// and a reporter missing from it would keep the lag it had when its
+		// poller last reported, after the poller stopped. Network-scope lag
+		// policies and HeadCredit read this bucket.
+		for _, r := range ntwMeta.reporters {
+			if r.meta.evmLatestBlockNumber.Load() <= 0 {
+				continue
+			}
+			lag := blocksBehind(ntwBn, lagHead(r.ups, r.meta))
+			t.loadOrStoreUpsMetrics(upstreamKey{r.ups, "*", common.DataFinalityStateAll}).BlockHeadLag.Store(lag)
+			t.getHeadLagGauge(t.projectId, r.ups.VendorName(), netLabel, r.ups.Id()).Set(float64(lag))
+		}
 	} else {
 		// Only update items for this single upstream
 		t.updateSingleUpstreamLag(
