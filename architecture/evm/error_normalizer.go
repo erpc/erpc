@@ -615,6 +615,24 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
+		// "Invalid chain ID": the transaction's chainId does not match the
+		// network. Every upstream answers the same, so it is not retried, not
+		// even for eth_sendRawTransaction.
+		//----------------------------------------------------------------
+
+		if strings.Contains(ml, "invalid chain id") {
+			return common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorTransactionRejected,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		}
+
+		//----------------------------------------------------------------
 		// "Not found" or "disabled" errors (missing data or unsupported)
 		//----------------------------------------------------------------
 
