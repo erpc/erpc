@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand/v2"
 	"net/http"
 	"runtime"
@@ -287,7 +288,6 @@ type chaosClient struct {
 	first      uint64
 	last       uint64
 	floor      uint64 // a permitted restart: blocks below are not judged
-	lastTaps   tapEnds
 	problems   []string
 	conn       *websocket.Conn
 }
@@ -325,10 +325,51 @@ func tapEndsOf(kind string) tapEnds {
 	return out
 }
 
+// tapEndsAt is the tap ends counted as of at.
+type tapEndsAt struct {
+	at   time.Time
+	ends tapEnds
+}
+
+// recordHeadsEnds appends the newHeads tap ends to s.headsEnds whenever
+// the count changed, until ctx ends. A change is stamped up to one poll
+// late, so headsEndsAt may miss an end just before t: it then counts it
+// as later, never earlier.
+func (s *chaosSeed) recordHeadsEnds(ctx context.Context) {
+	s.endsMu.Lock()
+	last := s.headsEnds[len(s.headsEnds)-1].ends
+	s.endsMu.Unlock()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(10 * time.Millisecond):
+		}
+		if now := tapEndsOf(indexer.SubTypeNewHeads); !maps.Equal(now, last) {
+			s.endsMu.Lock()
+			s.headsEnds = append(s.headsEnds, tapEndsAt{at: time.Now(), ends: now})
+			s.endsMu.Unlock()
+			last = now
+		}
+	}
+}
+
+// headsEndsAt is the newHeads tap ends counted as of t.
+func (s *chaosSeed) headsEndsAt(t time.Time) tapEnds {
+	s.endsMu.Lock()
+	defer s.endsMu.Unlock()
+	// The first entry stamped after t; the one before it holds as of t.
+	i, found := slices.BinarySearchFunc(s.headsEnds, t, func(e tapEndsAt, t time.Time) int { return e.at.Compare(t) })
+	if found {
+		i++
+	}
+	return s.headsEnds[max(i, 1)-1].ends
+}
+
 // restartContext names what may explain a jump: the newHeads tap ends
-// since the client's previous head, the tap's cursor (that head), the
-// tracker's head and sendable head now, and the faults that ran since
-// shortly before the previous head.
+// since the client's previous head could first be sent, the tap's cursor
+// (that head), the tracker's head and sendable head now, and the faults
+// that ran since shortly before the client applied that head.
 func (s *chaosSeed) restartContext(prev, now tapEnds, cursor uint64, since time.Time) string {
 	return fmt.Sprintf("tap ends %s; tap cursor %d; %s", endsSince(prev, now), cursor, s.trackerContext(since))
 }
@@ -379,7 +420,6 @@ func (s *chaosSeed) dialClient(name string, slow func() bool) *chaosClient {
 	require.NotEmpty(s.t, resp.Result, "client %s: the first message is the subscription id, as geth sends it: %s", name, msg)
 	cl.conn = conn
 	cl.subscribed = time.Now()
-	cl.lastTaps = tapEndsOf(indexer.SubTypeNewHeads)
 	s.mu.Lock()
 	s.clients = append(s.clients, cl)
 	s.mu.Unlock()
@@ -453,12 +493,19 @@ func (cl *chaosClient) apply(s *chaosSeed, n uint64, h chainsim.Hash) {
 		if len(cl.notes) > 0 {
 			since = cl.notes[len(cl.notes)-1].at
 		}
-		why := s.restartContext(cl.lastTaps, ends, cl.last, since)
+		// The tap that sent cl.last may have ended before the client read
+		// it: count the ends since that head could first be sent, its
+		// mint, not since the client applied it.
+		sent := s.headsEndsAt(cl.subscribed)
+		if prev := s.chain.Block(cl.chain[cl.last]); prev != nil && prev.MintedAt.After(cl.subscribed) {
+			sent = s.headsEndsAt(prev.MintedAt)
+		}
+		why := s.restartContext(sent, ends, cl.last, since)
 		// A tap more than the window behind restarts after the head (spec
 		// §9.2), counted as lag or, once its cursor left the window, as
 		// below_window; the jump then spans more than the window.
 		behind := ends[indexer.OutOfRangeLag]+ends[indexer.OutOfRangeBelowWindow] >
-			cl.lastTaps[indexer.OutOfRangeLag]+cl.lastTaps[indexer.OutOfRangeBelowWindow] &&
+			sent[indexer.OutOfRangeLag]+sent[indexer.OutOfRangeBelowWindow] &&
 			n > cl.last+1+uint64(chaosReorgWindow)
 		if deep || behind {
 			cl.floor = n
@@ -467,7 +514,6 @@ func (cl *chaosClient) apply(s *chaosSeed, n uint64, h chainsim.Hash) {
 			cl.problems = append(cl.problems, fmt.Sprintf("jump %d → %d with no fault that calls for a restart; %s", cl.last, n, why))
 		}
 	}
-	cl.lastTaps = ends
 	for k := range cl.chain {
 		if k >= n {
 			delete(cl.chain, k)
@@ -746,6 +792,11 @@ type chaosSeed struct {
 
 	faultMu sync.Mutex
 	spans   []faultSpan
+
+	// headsEnds are the newHeads tap ends counted so far, each time the
+	// count changed, oldest first.
+	endsMu    sync.Mutex
+	headsEnds []tapEndsAt
 
 	// violators are the upstreams that serve forged data, the only ones
 	// integrity may count violations against.
@@ -1060,6 +1111,8 @@ func (s *chaosSeed) run(faults []string) {
 	defer stop()
 	s.startERPC()
 	go s.watchBreakers(ctx)
+	s.headsEnds = []tapEndsAt{{at: time.Now(), ends: tapEndsOf(indexer.SubTypeNewHeads)}}
+	go s.recordHeadsEnds(ctx)
 	s.chain.Start()
 
 	order := slices.Clone(faults)
