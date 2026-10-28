@@ -82,15 +82,17 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 		// shared state (racing the handler's read) and would also leak the
 		// capability into the cache entry.
 		//
-		// Auth (strategy name) is always stamped — including "" for unnamed
-		// strategies — so consensus-policy evals can string-compare ctx.user.auth
-		// (feature §4.3). AllowClientDirectives is stamped only when configured.
-		if user != nil {
+		// Auth (strategy name) is stamped on the request ExecState, not on a
+		// copied User: the consensus-policy eval reads it from there
+		// (feature §4.3), so an authenticated request no longer pays a User
+		// copy unless AllowClientDirectives (main behavior) also needs one.
+		if req != nil {
+			req.ExecState().SetAuthStrategy(az.cfg.Name)
+		}
+		if user != nil && az.cfg.AllowClientDirectives != nil {
 			stamped := *user
 			stamped.Auth = az.cfg.Name
-			if az.cfg.AllowClientDirectives != nil {
-				stamped.AllowClientDirectives = az.cfg.AllowClientDirectives
-			}
+			stamped.AllowClientDirectives = az.cfg.AllowClientDirectives
 			user = &stamped
 		}
 

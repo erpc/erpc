@@ -46,7 +46,17 @@ type Consensus struct {
 	selector    *policyengine.Selector      // nil when customPolicy is unset
 	evalTimeout time.Duration               // wall-clock cap for one selector eval
 	logger      *zerolog.Logger
-	closed      sync.Once
+	// evalFailLogLimiter rate-limits the per-failure Warn so a failing eval
+	// under load logs once per window instead of once per request.
+	evalFailLogLimiter *policyLogLimiter
+	closed             sync.Once
+}
+
+// HasSelector reports whether a pre-round customPolicy selector is configured.
+// The request path uses it to skip building selector inputs (upstream
+// snapshot, auth stamp) when no policy eval will consume them.
+func (c *Consensus) HasSelector() bool {
+	return c != nil && c.selector != nil
 }
 
 // NewConsensus constructs a Consensus from config.
@@ -86,7 +96,11 @@ func NewConsensus(cfg *common.ConsensusPolicyConfig, logger *zerolog.Logger) (*C
 	sharedLimiter := &sync.Map{}
 	sharedSitout := &sync.Map{}
 
-	c := &Consensus{policy: buildPolicy(cfg, logger, defaultPolicyName), logger: logger}
+	c := &Consensus{
+		policy:             buildPolicy(cfg, logger, defaultPolicyName),
+		logger:             logger,
+		evalFailLogLimiter: newPolicyLogLimiter(5 * time.Second),
+	}
 	c.policy.misbehavingUpstreamsLimiter = sharedLimiter
 	c.policy.misbehavingUpstreamsSitoutTimer = sharedSitout
 	// Bind every policy to the same PunishMisbehavior pointer so the shared
@@ -142,6 +156,35 @@ func (c *Consensus) Close() error {
 		}
 	})
 	return firstErr
+}
+
+// ResetSitout clears the shared sit-out timer entry for an upstream across
+// every live Consensus so a full admin uncordon lets the upstream be re-
+// punished immediately (review finding): without it, an uncleared sit-out
+// entry suppresses re-punish until the original penalty window ends.
+func ResetSitout(upstreamId string) {
+	liveConsensuses.Range(func(key, _ any) bool {
+		c, ok := key.(*Consensus)
+		if !ok {
+			return true
+		}
+		clearPolicySitout(c.policy, upstreamId)
+		for _, p := range c.named {
+			clearPolicySitout(p, upstreamId)
+		}
+		return true
+	})
+}
+
+func clearPolicySitout(p *consensusPolicy, upstreamId string) {
+	if p == nil || p.misbehavingUpstreamsSitoutTimer == nil {
+		return
+	}
+	if v, ok := p.misbehavingUpstreamsSitoutTimer.LoadAndDelete(upstreamId); ok {
+		if t, ok := v.(*time.Timer); ok {
+			t.Stop()
+		}
+	}
 }
 
 // CloseAll closes every Consensus registered by NewConsensus. Wired into

@@ -878,6 +878,16 @@ func (e *EvmStatePoller) maybeUncordonAfterChainIdRecovery() {
 	common.UncordonClassed(e.upstream, "*", "evm state poller: chain identity re-validated after mismatch", common.CordonClassAvailability)
 }
 
+// ResetChainIdCordon clears the chain-identity cordon ownership flag so an
+// admin uncordon fully releases this upstream (review finding): without it,
+// the poller keeps holding heads behind a verify even after the operator
+// cleared every cordon class. No-op when the flag is unset.
+func (e *EvmStatePoller) ResetChainIdCordon() {
+	e.chainIdCordonMu.Lock()
+	defer e.chainIdCordonMu.Unlock()
+	e.cordonedByChainId.Store(false)
+}
+
 func absInt64(v int64) int64 {
 	if v < 0 {
 		return -v

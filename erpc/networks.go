@@ -1725,6 +1725,19 @@ func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 	return leader
 }
 
+// consensusPolicySelectorEnabled reports whether ANY failsafe executor on this
+// network runs a pre-round customPolicy selector. When none do, the request
+// path must not build selector-only inputs. Scans the pre-built executors
+// (no per-request finality resolution, so no I/O).
+func (n *Network) consensusPolicySelectorEnabled() bool {
+	for _, fe := range n.failsafeExecutors {
+		if fe != nil && fe.consensus != nil && fe.consensus.HasSelector() {
+			return true
+		}
+	}
+	return false
+}
+
 func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *networkExecutor {
 	method, _ := req.Method()
 	finality := req.Finality(ctx)
@@ -2037,7 +2050,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// out of that snapshot so a healthy ignoreMethods match cannot keep
 	// allUnavailable()/canServeBlock() from selecting fallback.
 	req.SetUpstreams(upsList)
-	if n.upstreamsRegistry != nil {
+	// Only the consensus-policy selector reads this snapshot; building it for
+	// every request contradicts the "zero added per-request cost" contract
+	// when customPolicy is unset (review finding). Skip the copy + method
+	// filter entirely unless the matched network executor will run an eval.
+	if n.upstreamsRegistry != nil && n.consensusPolicySelectorEnabled() {
 		reg := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
 		all := make([]common.Upstream, 0, len(reg))
 		for _, u := range reg {

@@ -52,6 +52,9 @@ type consensusRunner interface {
 		req *common.NormalizedRequest,
 		inner func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error),
 	) (*common.NormalizedResponse, error)
+	// HasSelector reports whether a pre-round customPolicy selector is
+	// configured. The request path skips building selector inputs when false.
+	HasSelector() bool
 }
 
 // NewNetworkExecutor builds a per-(method, finality) network executor.

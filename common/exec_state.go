@@ -137,6 +137,11 @@ type ExecState struct {
 	// writer in practice.
 	consensusPolicy atomic.Value // string
 
+	// authStrategy is the name of the auth strategy that authenticated this
+	// request (stamped by the auth registry). The consensus-policy selector
+	// reads it instead of copying *User on every authenticated request.
+	authStrategy atomic.Value // string
+
 	// keepEmptyConsensusSlot is set by the consensus executor when the
 	// selected policy opts into waiveAgreementOnEmptyOutsideRetention. Hedge
 	// keep() reads it so consensus-slot empty votes are preserved only under
@@ -246,6 +251,28 @@ func (s *ExecState) MarkUpstreamAttemptWon(upstreamId string) {
 			return
 		}
 	}
+}
+
+// SetAuthStrategy records the auth strategy name for this request. Called by
+// the auth registry even when the strategy is unnamed (""), so the consensus
+// selector can distinguish "no auth" (never set) from "unnamed strategy".
+func (s *ExecState) SetAuthStrategy(name string) {
+	if s == nil {
+		return
+	}
+	s.authStrategy.Store(name)
+}
+
+// AuthStrategy returns the stamped auth strategy name, or "" when no
+// authenticated strategy ran or the strategy was unnamed.
+func (s *ExecState) AuthStrategy() string {
+	if s == nil {
+		return ""
+	}
+	if v, ok := s.authStrategy.Load().(string); ok {
+		return v
+	}
+	return ""
 }
 
 // SetConsensusPolicy records the consensus policy the pre-round selector

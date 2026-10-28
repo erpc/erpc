@@ -161,24 +161,26 @@ func TestAuthRegistry_Authenticate_StampsStrategyName(t *testing.T) {
 	})
 
 	t.Run("named strategy", func(t *testing.T) {
-		user, err := registry.Authenticate(context.Background(), nil, "eth_call", &AuthPayload{
+		req := common.NewNormalizedRequest(nil)
+		user, err := registry.Authenticate(context.Background(), req, "eth_call", &AuthPayload{
 			Method: "eth_call",
 			Type:   common.AuthTypeSecret,
 			Secret: &SecretPayload{Value: "waive-token"},
 		})
 		require.NoError(t, err)
 		require.NotNil(t, user)
-		assert.Equal(t, "consensus-waive", user.Auth)
+		assert.Equal(t, "consensus-waive", req.ExecState().AuthStrategy())
 	})
 
 	t.Run("unnamed strategy stamps empty", func(t *testing.T) {
-		user, err := registry.Authenticate(context.Background(), nil, "eth_call", &AuthPayload{
+		req := common.NewNormalizedRequest(nil)
+		user, err := registry.Authenticate(context.Background(), req, "eth_call", &AuthPayload{
 			Method: "eth_call",
 			Type:   common.AuthTypeSecret,
 			Secret: &SecretPayload{Value: "anon-token"},
 		})
 		require.NoError(t, err)
 		require.NotNil(t, user)
-		assert.Equal(t, "", user.Auth)
+		assert.Equal(t, "", req.ExecState().AuthStrategy())
 	})
 }
