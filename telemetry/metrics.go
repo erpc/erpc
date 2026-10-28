@@ -1187,6 +1187,15 @@ var (
 		Name:      "consensus_policy_eval_failed_total",
 		Help:      "Consensus-policy selector evaluations that failed closed to the default policy, by reason.",
 	}, []string{"project", "network", "reason"})
+
+	// MetricConsensusPolicyFallback counts fail-closed default picks so the
+	// `consensus_policy_selected_total{consensus_policy="default"}` series can
+	// be split into a real `default` eval pick and a fallback (review finding).
+	MetricConsensusPolicyFallback = DefineLabeledCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "consensus_policy_fallback_total",
+		Help:      "Consensus-policy selections that fell back to the default policy (vs. an intentional default pick), by reason.",
+	}, []string{"project", "network", "reason"})
 )
 
 var DefaultHistogramBuckets = []float64{

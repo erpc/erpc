@@ -1137,32 +1137,6 @@ func (t *Tracker) UncordonClassesAtMostGens(upstream common.Upstream, method, re
 	}
 }
 
-// UncordonClassesNotAfter clears each class whose last set time is <= notAfterMs.
-// Used by peer recovery OnValue where the recovery epoch carries the issuer's
-// wall-clock watermark (UnixNano → ms). Set-time check + clear share cordonMu.
-func (t *Tracker) UncordonClassesNotAfter(upstream common.Upstream, method, reason string, notAfterMs int64) {
-	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
-	tm.cordonMu.Lock()
-	defer tm.cordonMu.Unlock()
-	for _, class := range []common.CordonClass{
-		common.CordonClassOperator,
-		common.CordonClassPunishment,
-		common.CordonClassAvailability,
-	} {
-		idx, ok := cordonClassIndex(class)
-		if !ok {
-			continue
-		}
-		setAt := tm.cordonSetAtMs[idx].Load()
-		if setAt <= 0 || setAt > notAfterMs {
-			continue
-		}
-		if tm.CordonMask.Load()&cordonBit(class) == 0 {
-			continue
-		}
-		t.uncordonLocked(upstream, method, reason, class, tm)
-	}
-}
 
 func (t *Tracker) UncordonClass(upstream common.Upstream, method string, reason string, class common.CordonClass) {
 	lg := upstream.Logger()

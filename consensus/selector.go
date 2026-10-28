@@ -33,24 +33,32 @@ func (c *Consensus) resolvePolicy(req *common.NormalizedRequest) *consensusPolic
 
 	switch {
 	case err != nil:
+		var reason string
 		switch {
 		case errors.Is(err, policyengine.ErrEvalTimeout):
-			telemetry.MetricConsensusPolicyEvalFailed.
-				WithLabelValues(projectId, networkId, "timeout").Inc()
+			reason = "timeout"
+		case errors.Is(err, policyengine.ErrEvalNull):
+			reason = "null"
 		default:
-			telemetry.MetricConsensusPolicyEvalFailed.
-				WithLabelValues(projectId, networkId, "throw").Inc()
+			reason = "throw"
 		}
-		if c.logger != nil {
-			c.logger.Warn().Err(err).Str("networkId", networkId).
+		telemetry.MetricConsensusPolicyEvalFailed.
+			WithLabelValues(projectId, networkId, reason).Inc()
+		// Demote to Debug and rate-limit: a failing eval under load logs one
+		// Warn per request (review finding). The metric already counts every
+		// failure; the log is for debugging a bad eval, not per-request noise.
+		if c.logger != nil && c.evalFailLogLimiter.allow(projectId, networkId, reason) {
+			c.logger.Warn().Err(err).Str("networkId", networkId).Str("reason", reason).
 				Msg("consensus policy selector failed closed to default policy")
 		}
-		c.markSelected(req, projectId, networkId, defaultPolicyName)
+		c.markSelectedWithFallback(req, projectId, networkId, defaultPolicyName, reason)
 		return c.policy
 
-	case name == "" || name == defaultPolicyName:
-		// Operator returned null/undefined or the reserved "default" string:
-		// intentional select of the inline fail-closed policy (§3).
+	case name == defaultPolicyName:
+		// Operator explicitly returned the reserved "default" string:
+		// intentional select of the inline fail-closed policy (§3). A
+		// null/undefined return now fails closed above (ErrEvalNull) — it is
+		// never a silent default pick.
 		c.markSelected(req, projectId, networkId, defaultPolicyName)
 		return c.policy
 
@@ -62,12 +70,26 @@ func (c *Consensus) resolvePolicy(req *common.NormalizedRequest) *consensusPolic
 		// A name the operator returned that isn't configured. Fail closed.
 		telemetry.MetricConsensusPolicyEvalFailed.
 			WithLabelValues(projectId, networkId, "unknown_name").Inc()
-		if c.logger != nil {
+		if c.logger != nil && c.evalFailLogLimiter.allow(projectId, networkId, "unknown_name") {
 			c.logger.Warn().Str("policy", name).Str("networkId", networkId).
 				Msg("consensus policy selector returned an unknown policy name; using default")
 		}
-		c.markSelected(req, projectId, networkId, defaultPolicyName)
+		c.markSelectedWithFallback(req, projectId, networkId, defaultPolicyName, "unknown_name")
 		return c.policy
+	}
+}
+
+// markSelectedWithFallback records a fail-closed default pick with the
+// fallback reason so the metric distinguishes a real `default` eval pick
+// from a fallback (review finding). Header still reads `default` — the
+// round ran under that policy either way.
+func (c *Consensus) markSelectedWithFallback(req *common.NormalizedRequest, projectId, networkId, name, reason string) {
+	telemetry.MetricConsensusPolicySelected.
+		WithLabelValues(projectId, networkId, name).Inc()
+	telemetry.MetricConsensusPolicyFallback.
+		WithLabelValues(projectId, networkId, reason).Inc()
+	if req != nil {
+		req.ExecState().SetConsensusPolicy(name)
 	}
 }
 
@@ -110,10 +132,17 @@ func (c *Consensus) buildEvalContext(req *common.NormalizedRequest) policyengine
 		Upstreams: toEvalUpstreams(upsForHealth, method, finality),
 	}
 
-	// Auth is the strategy name stamped by the auth registry (§4.3). A nil
-	// user is a nil ctx.user.
-	if u := req.User(); u != nil {
-		ectx.User = &policyengine.User{Auth: u.Auth}
+	// Auth is the strategy name stamped by the auth registry onto ExecState
+	// (§4.3). Prefer it over the legacy User.Auth copy so authenticated
+	// requests don't pay a User clone; a nil user is a nil ctx.user.
+	authName := req.ExecState().AuthStrategy()
+	if authName == "" {
+		if u := req.User(); u != nil {
+			authName = u.Auth
+		}
+	}
+	if authName != "" || req.ExecState().AuthStrategy() != "" {
+		ectx.User = &policyengine.User{Auth: authName}
 	}
 
 	// PunishedOrOperator is filtered from the unfiltered network registry so

@@ -21,6 +21,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/failsafe"
+	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
@@ -1724,20 +1725,18 @@ func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
 		return
 	}
 	u.metricsTracker.UncordonClassesAtMostGens(u, "*", reason, gens)
-}
 
-// clearAllCordonClasses clears operator, punishment, and availability bits on
-// the given method cell. Used by tests / callers that intentionally wipe
-// every class without a generation watermark.
-func (u *Upstream) clearAllCordonClasses(method, reason string) {
-	for _, class := range []common.CordonClass{
-		common.CordonClassOperator,
-		common.CordonClassPunishment,
-		common.CordonClassAvailability,
-	} {
-		u.metricsTracker.UncordonClass(u, method, reason, class)
+	// Clearing the class bits is not enough: the punishment sit-out entry and
+	// the chain-identity ownership flag are detector state that outlive the
+	// bits (review finding). Reset both so a full admin uncordon actually
+	// releases the upstream — re-punish is possible immediately, and the EVM
+	// poller stops holding this upstream's heads behind a chain-id verify.
+	consensus.ResetSitout(u.Id())
+	if u.evmStatePoller != nil {
+		u.evmStatePoller.ResetChainIdCordon()
 	}
 }
+
 
 // operatorCordonVar creates the shared counter on first use; every value it
 // takes — from this pod, a peer, or the bootstrap fetch — flips the "*" cell.
