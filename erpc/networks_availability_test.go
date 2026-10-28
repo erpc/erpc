@@ -1515,11 +1515,12 @@ func TestRetryableBlockUnavailability_NoInfiniteLoop(t *testing.T) {
 }
 
 // TestHandleBlockSkip_RetryableTriggersStatePollerRefresh verifies that when a
-// block is slightly ahead of the upstream's known latest (retryable case),
+// block is ahead of the upstream's known latest within the retryable distance,
 // handleBlockSkip Asks the upstream in the background (spec §6.4, §6.8): the
 // first poll after the bootstrap baseline is that Ask's, takes skipAskDelay
 // and returns a newer block. The request returns before it; the poller then
-// picks the newer block up.
+// picks the newer block up. The block is beyond the near future, which
+// would wait up to W for the ceiling (§6.4).
 func TestHandleBlockSkip_RetryableTriggersStatePollerRefresh(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -1583,7 +1584,7 @@ func TestHandleBlockSkip_RetryableTriggersStatePollerRefresh(t *testing.T) {
 			ChainId:             123,
 			StatePollerInterval: common.Duration(120 * time.Second),
 			StatePollerDebounce: common.Duration(1 * time.Nanosecond), // Near-zero debounce so every PollLatestBlockNumber fires (0 is overridden to 5s by defaults)
-			// Upper = latest turns "block just ahead of the head" into a retryable skip.
+			// Upper = latest turns a block ahead of the head into a retryable skip.
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Upper: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(0)},
 			},
@@ -1622,16 +1623,17 @@ func TestHandleBlockSkip_RetryableTriggersStatePollerRefresh(t *testing.T) {
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 	network.PinUpstreamOrderForTest()
-	// Past the cold start, a block this far above fresh reports is future:
-	// no Ask (spec §6.4).
+	// Past the cold start, a block this far above fresh reports is future,
+	// beyond the near future: no wait, no Ask (spec §6.4).
 	sampleBlockTime(t, network)
 
 	time.Sleep(100 * time.Millisecond)
 	pollBaseline.Store(latestPollCount.Load())
 	require.Greater(t, pollBaseline.Load(), int64(0), "state poller should have polled during bootstrap")
 
-	// Request block 0x11118889 (1 ahead of latest 0x11118888, retryable)
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x11118889"]}`))
+	// Request block 0x11118898: 16 ahead of latest 0x11118888, within the
+	// retryable distance (128), above the near future (W / bt = 3 blocks).
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x11118898"]}`))
 	req.SetNetwork(network)
 
 	fwdCtx, fwdCancel := context.WithTimeout(ctx, 10*time.Second)
