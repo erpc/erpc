@@ -1399,11 +1399,16 @@
   globalThis.throttleRateBelow    = function (rate) { return _leaf(u => u.metrics.throttledRate   < rate, 'throttledRate<'   + rate, 'throttle_rate_below'); };
   globalThis.misbehaviorRateAbove = function (rate) { return _leaf(u => u.metrics.misbehaviorRate > rate, 'misbehaviorRate>' + rate, 'misbehavior_rate_above'); };
 
-  // Prepaid-credit pacing: `u.creditPace` is account credits used this
+  // Prepaid-credit pacing. `u.creditPace` is account credits used this
   // billing period over the pro-rata `creditAllowance` (1.0 = on track to
-  // use it exactly). Unset (no allowance or no usage reading yet) is never
-  // "above", so a cold start keeps the configured order.
+  // use it exactly); `u.creditRemaining` is allowance minus credits used.
+  // Both are absent without an allowance or before the first usage reading,
+  // and every factory here is false on absence: a cold start neither
+  // excludes a prepaid vendor nor promotes it.
   globalThis.creditPaceAbove = function (pace) { return _leaf(u => typeof u.creditPace === 'number' && u.creditPace > pace, 'creditPace>' + pace, 'credit_pace_above'); };
+  globalThis.creditPaceBelow = function (pace) { return _leaf(u => typeof u.creditPace === 'number' && u.creditPace < pace, 'creditPace<' + pace, 'credit_pace_below'); };
+  globalThis.creditRemainingBelow = function (credits) { return _leaf(u => typeof u.creditRemaining === 'number' && u.creditRemaining < credits, 'creditRemaining<' + credits, 'credit_remaining_below'); };
+  globalThis.creditRemainingAbove = function (credits) { return _leaf(u => typeof u.creditRemaining === 'number' && u.creditRemaining > credits, 'creditRemaining>' + credits, 'credit_remaining_above'); };
 
   // Latency factory — millisecond threshold at any quantile.
   //

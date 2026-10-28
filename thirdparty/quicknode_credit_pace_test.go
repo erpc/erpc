@@ -33,15 +33,17 @@ func (u *pacedUpstream) Tracker() common.HealthTracker  { return nil }
 func (u *pacedUpstream) Cordon(method, reason string)   {}
 func (u *pacedUpstream) Uncordon(method, reason string) {}
 
-// A QuickNode upstream with a prepaid allowance leads while account usage is
-// on pace, drops out once usage runs ahead of the pro-rata allowance, and
-// keeps its place on cold start before the first usage reading lands.
+// A QuickNode upstream with a prepaid allowance is promoted ahead of a
+// per-call vendor while account usage is behind pace, falls back to its
+// configured last place once ahead, and is dropped near the allowance. Cold
+// start, before the first usage reading, keeps the configured order.
 func TestQuicknodeCreditPace_DrivesPolicyOrder(t *testing.T) {
 	const allowance = int64(90_000_000_000)
 	periodStart := time.Now().Add(-10 * 24 * time.Hour).Unix()
 	usedByKey := map[string]int64{
-		"under-pace": 1_000_000_000,
-		"over-pace":  allowance, // whole month's allowance used in 10 days
+		"behind-pace":  1_000_000_000,
+		"ahead-pace":   50_000_000_000,
+		"at-allowance": allowance - 1_000_000_000,
 	}
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,17 +65,18 @@ func TestQuicknodeCreditPace_DrivesPolicyOrder(t *testing.T) {
 		apiKey string
 		want   []string
 	}{
-		{apiKey: "under-pace", want: []string{"quicknode", "fallback"}},
-		{apiKey: "over-pace", want: []string{"fallback"}},
+		{apiKey: "behind-pace", want: []string{"quicknode", "fallback"}},
+		{apiKey: "ahead-pace", want: []string{"fallback", "quicknode"}},
+		{apiKey: "at-allowance", want: []string{"fallback"}},
 	} {
 		t.Run(tc.apiKey, func(t *testing.T) {
 			qn := CreateQuicknodeVendor()
 			ups := []common.Upstream{
+				&pacedUpstream{cfg: &common.UpstreamConfig{Id: "fallback", VendorName: "chainstack"}},
 				&pacedUpstream{vendor: qn, cfg: &common.UpstreamConfig{
 					Id: "quicknode", VendorName: "quicknode",
 					CreditAllowance: &common.CreditAllowanceConfig{Credits: allowance, ApiKey: tc.apiKey},
 				}},
-				&pacedUpstream{cfg: &common.UpstreamConfig{Id: "fallback", VendorName: "chainstack"}},
 			}
 
 			ctx, cancel := context.WithCancel(context.Background())
@@ -83,7 +86,10 @@ func TestQuicknodeCreditPace_DrivesPolicyOrder(t *testing.T) {
 			defer engine.Stop()
 			cfg := &common.SelectionPolicyConfig{
 				EvalTimeout: common.Duration(time.Second),
-				EvalFunc:    `(upstreams) => upstreams.excludeIf(creditPaceAbove(1.0), { probe: false })`,
+				EvalFunc: `(upstreams) => {
+					const live = upstreams.excludeIf(creditRemainingBelow(5e9), { probe: false });
+					return live.filter(creditPaceBelow(1.0)).union(live);
+				}`,
 			}
 			require.NoError(t, cfg.SetDefaults())
 			require.NoError(t, engine.RegisterNetwork("evm:42161", "", func() []common.Upstream { return ups }, cfg))
@@ -99,7 +105,7 @@ func TestQuicknodeCreditPace_DrivesPolicyOrder(t *testing.T) {
 
 			// Cold start: the first tick only triggers the fetch, so the
 			// configured order holds.
-			require.Equal(t, []string{"quicknode", "fallback"}, order())
+			require.Equal(t, []string{"fallback", "quicknode"}, order())
 
 			release <- struct{}{}
 			provider := qn.(common.CreditUsageProvider)

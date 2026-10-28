@@ -412,12 +412,14 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 			}
 		}
 
-		// creditPace — account credits used this billing period over the
-		// pro-rata `creditAllowance` (1.0 = on track to use it exactly).
-		// Present only when the upstream sets an allowance and its vendor
-		// has a usage reading; `creditPaceAbove` treats absence as not ahead.
-		if pace, ok := creditPace(u, evalCtx.Now); ok {
-			_ = obj.Set("creditPace", pace)
+		// creditPace / creditRemaining — account credits used this billing
+		// period over the pro-rata `creditAllowance` (1.0 = on track to use
+		// it exactly), and allowance minus credits used. Present only when
+		// the upstream sets an allowance and its vendor has a usage reading;
+		// the credit* predicates treat absence as false.
+		if usage, allowance, ok := creditUsage(u); ok {
+			_ = obj.Set("creditPace", usage.Pace(allowance, time.UnixMilli(evalCtx.Now)))
+			_ = obj.Set("creditRemaining", allowance-usage.Used)
 		}
 
 		_ = arr.Set(strconv.Itoa(i), obj)
@@ -426,20 +428,25 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 	return arr
 }
 
-func creditPace(u common.Upstream, nowMs int64) (float64, bool) {
+// maxCreditUsageAge drops a usage reading the vendor has not refreshed for
+// this long (failing usage API): the credit fields go absent and policies
+// fall back to their no-allowance order rather than act on old usage.
+const maxCreditUsageAge = 30 * time.Minute
+
+func creditUsage(u common.Upstream) (common.CreditUsage, int64, bool) {
 	cfg := u.Config()
 	if cfg == nil || cfg.CreditAllowance == nil {
-		return 0, false
+		return common.CreditUsage{}, 0, false
 	}
 	provider, ok := u.Vendor().(common.CreditUsageProvider)
 	if !ok {
-		return 0, false
+		return common.CreditUsage{}, 0, false
 	}
 	usage, ok := provider.CreditUsage(u.Logger(), cfg.CreditAllowance)
-	if !ok {
-		return 0, false
+	if !ok || time.Since(usage.FetchedAt) > maxCreditUsageAge {
+		return common.CreditUsage{}, 0, false
 	}
-	return usage.Pace(cfg.CreditAllowance.Credits, time.UnixMilli(nowMs)), true
+	return usage, cfg.CreditAllowance.Credits, true
 }
 
 // resolveScoreMultipliers selects the first `routing.scoreMultipliers`

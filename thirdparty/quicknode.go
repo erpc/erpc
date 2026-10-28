@@ -266,6 +266,7 @@ func fetchQuicknodeUsage(ctx context.Context, apiKey string) (common.CreditUsage
 		Used:        body.Data.CreditsUsed,
 		PeriodStart: start,
 		PeriodEnd:   start.AddDate(0, 1, 0),
+		FetchedAt:   time.Now(),
 	}, nil
 }
 

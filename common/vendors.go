@@ -51,11 +51,13 @@ type CreditUsageProvider interface {
 }
 
 // CreditUsage is one account usage reading. PeriodStart/PeriodEnd bound the
-// billing period the Used credits belong to.
+// billing period the Used credits belong to; FetchedAt is when the vendor
+// API returned it.
 type CreditUsage struct {
 	Used        int64
 	PeriodStart time.Time
 	PeriodEnd   time.Time
+	FetchedAt   time.Time
 }
 
 // Pace is Used over the allowance pro-rated to `now`: 1.0 means on track to
