@@ -325,6 +325,12 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		resp, err = c.handleGetTransactionReceipt(ctx, conn, req, jrReq)
 	case "eth_getBlockReceipts":
 		resp, err = c.handleGetBlockReceipts(ctx, conn, req, jrReq)
+	case "debug_traceBlockByNumber", "debug_traceBlockByHash":
+		resp, err = c.handleTraceBlock(ctx, conn, req, jrReq)
+	case "debug_traceTransaction":
+		resp, err = c.handleTraceTransaction(ctx, conn, req, jrReq)
+	case "eth_getBalance":
+		resp, err = c.handleGetBalance(ctx, conn, req, jrReq)
 	case "eth_chainId":
 		resp, err = c.handleChainId(ctx, conn, req, jrReq)
 	case "getBlock":
@@ -340,6 +346,12 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 			fmt.Errorf("unsupported method for gRPC BDS client: %s", jrReq.Method),
 		)
 		common.SetTraceSpanError(span, err)
+		return nil, err
+	}
+
+	// A request the handler cannot map is the upstream's refusal, not a
+	// transport failure: keep it unsupported so the network tries the next.
+	if common.HasErrorCode(err, common.ErrCodeEndpointUnsupported) {
 		return nil, err
 	}
 
@@ -1233,13 +1245,17 @@ func (c *GenericGrpcBdsClient) handleSvmGetBlock(ctx context.Context, conn *bdsC
 		return nil, err
 	}
 
+	commitment, servable := svmReaderCommitment(ctx, req, svmCommitment(opts.Commitment), slot)
+	if !servable {
+		return nil, svmUnservable("slot %d is not finalized on this network", slot)
+	}
 	grpcReq := &svm.GetBlockRequest{
 		Slot:               slot,
 		TransactionDetails: details,
 		// Inverted: the proto's false is Agave's `rewards: true` default.
 		ExcludeRewards:                 opts.Rewards != nil && !*opts.Rewards,
 		MaxSupportedTransactionVersion: opts.MaxSupportedTransactionVersion,
-		Commitment:                     svmCommitment(opts.Commitment),
+		Commitment:                     commitment,
 		MinContextSlot:                 opts.MinContextSlot,
 		// GenesisHash is deliberately never set: the reader does not publish
 		// its own, and asserting one it cannot verify would be refused.

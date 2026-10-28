@@ -89,6 +89,9 @@ type NetworkMetadata struct {
 	// only; guarded by the network entry's headMu.
 	headReport      headReport
 	finalizedReport headReport
+	// headReportedAt is headReport.at in unix ns, read lock-free by
+	// HeadCredit on the request path.
+	headReportedAt atomic.Int64
 
 	// Dynamic block time via EMA on on-chain block timestamps: on the network
 	// entry from the corroborated head, on an upstream entry from that
@@ -120,6 +123,14 @@ type Timer struct {
 func (t *Timer) ObserveDuration(isSuccess bool) {
 	duration := time.Since(t.start)
 	t.tracker.RecordUpstreamDuration(t.upstream, t.method, duration, isSuccess, t.compositeType, t.finality, t.userId)
+}
+
+// ObserveCancelled records a primary attempt cancelled because another
+// attempt won the hedge race: the elapsed time is a lower bound on its
+// latency.
+func (t *Timer) ObserveCancelled() {
+	duration := time.Since(t.start)
+	t.tracker.RecordUpstreamCancelledDuration(t.upstream, t.method, duration, t.compositeType, t.finality, t.userId)
 }
 
 // ------------------------------------
@@ -167,6 +178,13 @@ type TrackedMetrics struct {
 	// look idle to the very next sweep tick) and refreshed on every
 	// hot-path write.
 	LastAccessedAtMs atomic.Int64 `json:"-"`
+
+	// cancelledQuantiles holds the elapsed time of primary attempts
+	// cancelled because another attempt won the hedge race: lower bounds
+	// on their latency. Kept out of ResponseQuantiles, which also drives
+	// adaptive timeouts and hedge delays; only PolicyQuantiles reads it.
+	// Allocated on the first such cancellation.
+	cancelledQuantiles atomic.Pointer[QuantileTracker]
 }
 
 // newTrackedMetrics constructs an empty TrackedMetrics with all
@@ -204,6 +222,27 @@ func (m *TrackedMetrics) ErrorRate() float64 {
 
 func (m *TrackedMetrics) GetResponseQuantiles() common.QuantileTracker {
 	return m.ResponseQuantiles
+}
+
+// PolicyQuantiles reads qtiles off ResponseQuantiles merged with the
+// cancelled-attempt lower bounds. Each answered or hedge-lost primary
+// attempt then counts as min(latency, elapsed at cancel), so these
+// quantiles never exceed the true ones. Without the lower bounds, an
+// upstream whose every attempt loses a hedge race keeps an empty sketch
+// and reads as 0 s, the fastest.
+func (m *TrackedMetrics) PolicyQuantiles(qtiles []float64) []time.Duration {
+	return m.ResponseQuantiles.quantilesWith(m.cancelledQuantiles.Load(), qtiles)
+}
+
+func (m *TrackedMetrics) addCancelled(logger *zerolog.Logger, seconds float64) {
+	q := m.cancelledQuantiles.Load()
+	if q == nil {
+		q = NewQuantileTracker(logger)
+		if !m.cancelledQuantiles.CompareAndSwap(nil, q) {
+			q = m.cancelledQuantiles.Load()
+		}
+	}
+	q.Add(seconds)
 }
 
 func (m *TrackedMetrics) ThrottledRate() float64 {
@@ -257,6 +296,9 @@ func (m *TrackedMetrics) Rotate() {
 	m.RemoteRateLimitedTotal.RotateOldest()
 	m.MisbehaviorsTotal.RotateOldest()
 	m.ResponseQuantiles.RotateOldest()
+	if q := m.cancelledQuantiles.Load(); q != nil {
+		q.RotateOldest()
+	}
 }
 
 // Reset wipes every counter and the quantile sketch fully. Test/admin
@@ -267,6 +309,9 @@ func (m *TrackedMetrics) Reset() {
 	m.RemoteRateLimitedTotal.Wipe()
 	m.MisbehaviorsTotal.Wipe()
 	m.ResponseQuantiles.Reset()
+	if q := m.cancelledQuantiles.Load(); q != nil {
+		q.Reset()
+	}
 	m.Cordoned.Store(false)
 	m.LastCordonedReason.Store("")
 }
@@ -1025,10 +1070,8 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 	if isSuccess {
 		// Feed the quantile only when `isSuccess` — the caller already
 		// filtered to outcomes whose duration is a real latency signal:
-		// successful responses, EVM reverts (upstream did real work),
-		// and canceled-by-hedge / client-disconnect / engine-timeout
-		// observations (lower-bound on completion time, important for
-		// scoring upstreams that lose every hedge race).
+		// successful responses and EVM reverts (upstream did real work).
+		// Cancelled attempts go through RecordUpstreamCancelledDuration.
 		// Hard upstream errors (connection refused, server 5xx,
 		// throttling) stay out so an upstream that's failing fast
 		// doesn't get crowned "fastest in the pool".
@@ -1049,6 +1092,24 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 	obs.Observe(sec)
 }
 
+// RecordUpstreamCancelledDuration records the elapsed time of a primary
+// attempt cancelled because another attempt won the hedge race. It feeds
+// only the per-upstream lower-bound sketch read by PolicyQuantiles;
+// ResponseQuantiles and the network aggregates stay real-latency only.
+func (t *Tracker) RecordUpstreamCancelledDuration(up common.Upstream, method string, d time.Duration, comp string, finality common.DataFinalityState, userId string) {
+	if comp == "" {
+		comp = "none"
+	}
+	sec := d.Seconds()
+	nowMs := time.Now().UnixMilli()
+	for _, k := range t.getUpsKeys(up, method, finality) {
+		tm := t.getUpsMetrics(k)
+		tm.addCancelled(t.logger, sec)
+		tm.touch(nowMs)
+	}
+	t.getUpstreamRequestDurationObserver(up, method, comp, finality, userId).Observe(sec)
+}
+
 func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, finality common.DataFinalityState, err error) {
 	// Ignore errors that do not reflect upstream quality:
 	// - ExecutionException: valid blockchain state (e.g. revert)
@@ -1061,7 +1122,7 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, final
 	//   attempts are excluded from RequestsTotal / ErrorsTotal at the call
 	//   site in upstream.tryForward, so cancellations only reach here for
 	//   primary attempts — where they almost always mean "client gave up,"
-	//   not "upstream failed."  Slowness is already captured by ResponseQuantiles.
+	//   not "upstream failed."  Slowness shows in PolicyQuantiles instead.
 	// - BlockUnavailable: the requested height is outside this upstream's
 	//   served window or has not been applied yet. Retry/failover still
 	//   happens; scoring lag is BlockHeadLag, not ErrorRate. Counting these
@@ -1704,6 +1765,34 @@ func (t *Tracker) IsHeadBenched(ups common.Upstream) bool {
 	return false
 }
 
+// HeadCredit is how many blocks ups is presumed to have gained since its last
+// latest-head report, and the corroborated network head. The credit is what
+// the network made since that report beyond ups's lag then (BlockHeadLag, see
+// headReport), so it freezes one poll period after the report, is 0 for a
+// benched head and for a head above the network head, and never exceeds the
+// blocks the chain can make in the time since the report at the network
+// block time: a network head that rose only because peers reported late is
+// not progress. 0 until the block time is known.
+func (t *Tracker) HeadCredit(ups common.Upstream) (credit, network int64) {
+	net := ups.NetworkId()
+	um, ok := t.metadata.Load(metadataKey{ups, net})
+	if !ok {
+		return 0, 0
+	}
+	meta := um.(*NetworkMetadata)
+	ntwMeta := t.getMetadata(metadataKey{nil, net})
+	network = ntwMeta.evmLatestBlockNumber.Load()
+	head, at := meta.evmLatestBlockNumber.Load(), meta.headReportedAt.Load()
+	blockTime := time.Duration(ntwMeta.evmBlockTime.Load())
+	m, ok := t.upsMetrics.Load(upstreamKey{ups, "*", common.DataFinalityStateAll})
+	if !ok || head <= 0 || network <= 0 || at == 0 || blockTime <= 0 {
+		return 0, network
+	}
+	byLag := network - m.(*TrackedMetrics).BlockHeadLag.Load() - head
+	byTime := int64(t.now().Sub(time.Unix(0, at)) / blockTime)
+	return max(0, min(byLag, byTime)), network
+}
+
 func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64, blockTimestamp int64) {
 	id := upstream.Id()
 	net := upstream.NetworkId()
@@ -1821,6 +1910,7 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	// network made beyond its last report (headReport).
 	now, blockTime := t.now(), time.Duration(ntwMeta.evmBlockTime.Load())
 	upsMeta.headReport.reported(now, ntwBn)
+	upsMeta.headReportedAt.Store(now.UnixNano())
 	lagHead := func(ups common.Upstream, meta *NetworkMetadata) int64 {
 		h := meta.evmLatestBlockNumber.Load()
 		if !meta.headBenched.Load() {
@@ -1846,6 +1936,19 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 			t.getHeadLagGauge,
 			&lg,
 		)
+		// Every reporter's {*, All} lag follows the new head, served or not:
+		// the index above holds only upstreams with traffic or a policy read,
+		// and a reporter missing from it would keep the lag it had when its
+		// poller last reported, after the poller stopped. Network-scope lag
+		// policies and HeadCredit read this bucket.
+		for _, r := range ntwMeta.reporters {
+			if r.meta.evmLatestBlockNumber.Load() <= 0 {
+				continue
+			}
+			lag := blocksBehind(ntwBn, lagHead(r.ups, r.meta))
+			t.loadOrStoreUpsMetrics(upstreamKey{r.ups, "*", common.DataFinalityStateAll}).BlockHeadLag.Store(lag)
+			t.getHeadLagGauge(t.projectId, r.ups.VendorName(), netLabel, r.ups.Id()).Set(float64(lag))
+		}
 	} else {
 		// Only update items for this single upstream
 		t.updateSingleUpstreamLag(

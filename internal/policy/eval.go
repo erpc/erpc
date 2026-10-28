@@ -82,8 +82,9 @@ func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string, fin
 		// One merge → five reads. GetQuantile calls mergedSnapshot
 		// internally and each call rebuilds an ephemeral DDSketch from
 		// all sub-buckets — pprof had 5× redundant merges from this
-		// exact 5-line block. GetQuantiles shares the merge once.
-		qs := m.ResponseQuantiles.GetQuantiles(quantileFractions[:])
+		// exact 5-line block. PolicyQuantiles shares the merge once and
+		// folds in cancelled attempts as latency lower bounds.
+		qs := m.PolicyQuantiles(quantileFractions[:])
 		out.P50ResponseSeconds = qs[0].Seconds()
 		out.P70ResponseSeconds = qs[1].Seconds()
 		out.P90ResponseSeconds = qs[2].Seconds()
@@ -241,7 +242,7 @@ func convertTrackedMetrics(tr healthTracker, u common.Upstream, method string, m
 		// Single merge for all 5 quantiles — see comment in
 		// `readUpstreamMetrics`. This callsite multiplies by every
 		// (upstream, method) in the slot, so the savings stack hard.
-		qs := m.ResponseQuantiles.GetQuantiles(quantileFractions[:])
+		qs := m.PolicyQuantiles(quantileFractions[:])
 		out.P50ResponseSeconds = qs[0].Seconds()
 		out.P70ResponseSeconds = qs[1].Seconds()
 		out.P90ResponseSeconds = qs[2].Seconds()

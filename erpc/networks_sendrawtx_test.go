@@ -2463,6 +2463,75 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 
 		wg.Wait()
 	})
+
+	t.Run("AllUpstreamsRejectReturnsWithoutWaitingOnHedges", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		var upstreamConfigs []*common.UpstreamConfig
+		for _, id := range []string{"rpc1", "rpc2", "rpc3", "rpc4"} {
+			endpoint := "http://" + id + ".localhost"
+			upstreamConfigs = append(upstreamConfigs, &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       id,
+				Endpoint: endpoint,
+				Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+			})
+			gock.New(endpoint).
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				Delay(300 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32003,
+						"message": "gas limit too high",
+					},
+				})
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Production broadcast shape: more consensus slots than upstreams,
+		// hedged and retried. Every upstream rejects, so the hedge timers
+		// left on the idle slots must not delay the answer.
+		network := setupSendRawTxNetwork(t, ctx, upstreamConfigs, &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm:          &common.EvmNetworkConfig{ChainId: 123},
+			Failsafe: []*common.FailsafeConfig{{
+				MatchMethod: "eth_sendRawTransaction",
+				Hedge: &common.HedgePolicyConfig{
+					MaxCount: 2,
+					Delay:    common.NewStaticDuration(500 * time.Millisecond),
+				},
+				Retry: &common.RetryPolicyConfig{MaxAttempts: 6},
+				Consensus: &common.ConsensusPolicyConfig{
+					MaxParticipants:    10,
+					AgreementThreshold: 1,
+					FireAndForget:      true,
+				},
+			}},
+		})
+
+		start := time.Now()
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`))
+		_, err := network.Forward(ctx, req)
+		elapsed := time.Since(start)
+
+		require.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
+			"client must get the node's rejection, got: %v", err)
+		// main waits out hedge and retry timers (~6s); 3s leaves room for -race.
+		assert.Less(t, elapsed, 3*time.Second,
+			"rejection must return once every upstream has answered, not after hedge and retry delays")
+	})
 }
 
 // Helper to set up a test network with fire-and-forget consensus for eth_sendRawTransaction

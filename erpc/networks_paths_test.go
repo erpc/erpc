@@ -162,11 +162,11 @@ func TestNetworksPaths_UpstreamOrderingHelpers(t *testing.T) {
 			pathsFakeUpstream("unknown", 0, 0),
 			pathsFakeUpstream("at", 150, 1),
 		}
-		assert.Equal(t, []string{"ahead", "unknown", "at", "behind"}, pathsIds(partitionUpstreamsByLatestBlock(ups, 100)))
-		assert.Equal(t, pathsIds(ups), pathsIds(partitionUpstreamsByLatestBlock(ups, 0)), "no block keeps order")
-		assert.Equal(t, []string{"behind"}, pathsIds(partitionUpstreamsByLatestBlock(ups[:1], 100)))
+		assert.Equal(t, []string{"ahead", "unknown", "at", "behind"}, pathsIds((&Network{}).partitionUpstreamsByLatestBlock(ups, 100)))
+		assert.Equal(t, pathsIds(ups), pathsIds((&Network{}).partitionUpstreamsByLatestBlock(ups, 0)), "no block keeps order")
+		assert.Equal(t, []string{"behind"}, pathsIds((&Network{}).partitionUpstreamsByLatestBlock(ups[:1], 100)))
 		noPoller := []common.Upstream{common.NewFakeUpstream("np1"), common.NewFakeUpstream("np2")}
-		assert.Equal(t, []string{"np1", "np2"}, pathsIds(partitionUpstreamsByLatestBlock(noPoller, 100)))
+		assert.Equal(t, []string{"np1", "np2"}, pathsIds((&Network{}).partitionUpstreamsByLatestBlock(noPoller, 100)))
 	})
 
 	t.Run("PreferTipLeaderForNearTipGetBlock", func(t *testing.T) {
@@ -193,7 +193,7 @@ func TestNetworksPaths_UpstreamOrderingHelpers(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				assert.Equal(t, tc.want, pathsIds(preferTipLeaderForNearTipGetBlock(tc.ups, tc.method, tc.bn)))
+				assert.Equal(t, tc.want, pathsIds((&Network{}).preferTipLeaderForNearTipGetBlock(tc.ups, tc.method, tc.bn)))
 			})
 		}
 	})

@@ -1818,12 +1818,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		return nil, err
 	}
 
-	// For a specific block, try upstreams whose poller already has it first.
+	// For a specific block, try upstreams that already have it first.
 	// Ordering hints only: every upstream stays eligible.
 	if n.Architecture() == common.ArchitectureEvm {
 		if bn := requestBlockNumber(ctx, req); bn > 0 {
-			upsList = partitionUpstreamsByLatestBlock(upsList, bn)
-			upsList = preferTipLeaderForNearTipGetBlock(upsList, method, bn)
+			upsList = n.partitionUpstreamsByLatestBlock(upsList, bn)
+			upsList = n.preferTipLeaderForNearTipGetBlock(upsList, method, bn)
 		}
 	}
 
@@ -2495,7 +2495,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 		// If response is not empty, but at least one upstream responded empty we track in a metric.
 		// Derived from ErrorsByUpstream entries with ErrEndpointMissingData code.
+		winner := resp.Upstream()
 		req.ErrorsByUpstream.Range(func(key, value any) bool {
+			// The winner's own earlier empty answer was a retry that later succeeded.
+			if key == winner {
+				return true
+			}
 			upstreamErr, ok := value.(error)
 			if !ok || !common.HasErrorCode(upstreamErr, common.ErrCodeEndpointMissingData) {
 				return true
@@ -2506,6 +2511,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				return true
 			}
 			upstream := key.(*upstream.Upstream)
+			// An upstream whose head was below the winning block when it answered
+			// was behind, or the data did not exist yet (e.g. a tx not yet mined).
+			// An unknown head (0) proves neither, so it still counts.
+			if head := req.HeadAtError(upstream); respBlockNumber > 0 && head > 0 && head < respBlockNumber {
+				return true
+			}
 			finality := req.Finality(ctx)
 			telemetry.CounterHandle(telemetry.MetricUpstreamWrongEmptyResponseTotal,
 				n.projectId,
@@ -3494,15 +3505,15 @@ func isFallbackTier(u common.Upstream) bool {
 	return u.Config() != nil && u.Config().HasTag(common.TagTierFallback)
 }
 
-// partitionUpstreamsByLatestBlock moves upstreams whose polled head is known
-// to be below bn behind the rest, preserving order within each group. An
-// upstream with no known head keeps its place.
-func partitionUpstreamsByLatestBlock(ups []common.Upstream, bn int64) []common.Upstream {
+// partitionUpstreamsByLatestBlock moves upstreams whose head is known to be
+// below bn behind the rest, preserving order within each group. An upstream
+// with no known head keeps its place.
+func (n *Network) partitionUpstreamsByLatestBlock(ups []common.Upstream, bn int64) []common.Upstream {
 	if bn <= 0 || len(ups) < 2 {
 		return ups
 	}
 	return stablePartition(ups, func(u common.Upstream) bool {
-		lb := upstreamLatestBlock(u)
+		lb := n.upstreamHead(u)
 		return lb > 0 && lb < bn
 	})
 }
@@ -3530,13 +3541,13 @@ func stablePartition(ups []common.Upstream, last func(common.Upstream) bool) []c
 // preferTipLeaderForNearTipGetBlock moves the upstream whose head is strictly
 // ahead of every other to the front for eth_getBlockByNumber of that head or
 // the next block, which its siblings may not have imported yet.
-func preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn int64) []common.Upstream {
+func (n *Network) preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn int64) []common.Upstream {
 	if method != "eth_getBlockByNumber" || len(ups) < 2 {
 		return ups
 	}
 	leader, tip, runnerUp := -1, int64(0), int64(0)
 	for i, u := range ups {
-		if lb := upstreamLatestBlock(u); lb > tip {
+		if lb := n.upstreamHead(u); lb > tip {
 			leader, tip, runnerUp = i, lb, tip
 		} else if lb > runnerUp {
 			runnerUp = lb
@@ -3550,6 +3561,24 @@ func preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn 
 	out = append(out, ups[:leader]...)
 	out = append(out, ups[leader+1:]...)
 	return out
+}
+
+// upstreamHead is u's head for ordering: its polled head plus the blocks the
+// tracker presumes it gained since its last report (HeadCredit), never above
+// the corroborated network head. A polled head ages by up to a poll interval;
+// read raw, it made a fast upstream polled every 10s on a 2s chain look blocks
+// behind a slow one polled more often, so tip reads went to the slow one first.
+// An unknown head stays unknown.
+func (n *Network) upstreamHead(u common.Upstream) int64 {
+	lb := upstreamLatestBlock(u)
+	if lb <= 0 || n.metricsTracker == nil {
+		return lb
+	}
+	credit, network := n.metricsTracker.HeadCredit(u)
+	if credit <= 0 {
+		return lb
+	}
+	return max(lb, min(lb+credit, network))
 }
 
 // upstreamLatestBlock is u's polled head, or 0 when unknown.

@@ -638,6 +638,11 @@ func TestExtractJsonRpcError_HyperEvmPrecompileStateGap(t *testing.T) {
 			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
 		{name: "eth_getCode state pruned", method: "eth_getCode", message: "state at block #51672341 is pruned",
 			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		// A node that dropped old history names its floor; an archive upstream can still serve the block.
+		{name: "eth_getLogs pruned history", method: "eth_getLogs", message: "pruned history unavailable: requested 1000, earliest available 5000",
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "eth_getBlockByNumber below earliest available", method: "eth_getBlockByNumber", message: "block 100 is before the earliest available block 200",
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
 	}
 
 	for _, tc := range cases {
