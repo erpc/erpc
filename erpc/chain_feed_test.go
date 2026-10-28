@@ -1477,14 +1477,43 @@ func (s *chaosSeed) halt() {
 	s.occur(fHalt, fmt.Sprintf("no blocks for %d block times; nothing reconnected", chaosBlocksFor(3*time.Minute)))
 }
 
+// throttle answers 429 on every vendor for 2 block times of wall clock, on
+// a chain whose next 2 blocks carry matching logs, and logs of the first
+// reach a client within 2 block times of the burst's end (§19 U5). A key
+// fails at most twice in the burst, backing off 200 then 400 ms, so its
+// next fetch comes at most 2 block times after the burst: burst plus
+// backoff, 4 block times, stays under the 5 of logsReceiptsWait, as
+// 48s + at most 5s stays under 60s in production. A burst in ticks would
+// stretch under load past a third failure, whose 800 ms backoff the wait
+// does not hold. That the capacity backoff ends at the next answered fetch
+// is shown by TestFetchScheduler_CapacityRefusals (chain_fetch_test.go:66).
 func (s *chaosSeed) throttle() {
 	var before []int64
 	for _, v := range s.vendors {
 		before = append(before, v.Stats().Throttled)
 	}
+	first := s.chain.Plan(chainsim.KindMatching, chainsim.KindMatching).Number + 1
 	s.setAll(func(f *chainsim.Faults) { f.Throttled = true })
-	s.blocks(4)
+	time.Sleep(2 * chaosBlock)
 	s.setAll(func(f *chainsim.Faults) { f.Throttled = false })
+	end := time.Now()
+	var resumed time.Duration
+	require.Eventually(s.t, func() bool {
+		b := s.chain.CanonAt(first)
+		if b == nil {
+			return false
+		}
+		for _, cl := range s.openLogs() {
+			cl.mu.Lock()
+			for k, n := range cl.held {
+				if n == first && k.BlockHash == b.Hash {
+					resumed = time.Since(end)
+				}
+			}
+			cl.mu.Unlock()
+		}
+		return resumed != 0
+	}, 2*chaosBlock, 5*time.Millisecond, "logs of block %d, minted in the 429 burst, reach a client within 2 block times of its end", first)
 	s.blocks(2)
 	var got []string
 	for i, v := range s.vendors {
@@ -1492,7 +1521,7 @@ func (s *chaosSeed) throttle() {
 		require.Positive(s.t, n, "%s answers 429 during the burst", v.ID)
 		got = append(got, fmt.Sprintf("%s:%d", v.ID, n))
 	}
-	s.occur(f429, "429s "+strings.Join(got, " "))
+	s.occur(f429, fmt.Sprintf("429s %s for %s; logs of block %d delivered %s after", strings.Join(got, " "), 2*chaosBlock, first, resumed.Round(time.Millisecond)))
 }
 
 // slowAnswers sums the answers a Slow fault delayed on every vendor.
