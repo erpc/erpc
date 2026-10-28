@@ -1,11 +1,22 @@
 package erpc
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/internal/policy"
+	policystdlib "github.com/erpc/erpc/internal/policy/stdlib"
+	"github.com/erpc/erpc/thirdparty"
+	"github.com/erpc/erpc/upstream"
+	"github.com/erpc/erpc/util"
+	"github.com/h2non/gock"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -168,4 +179,147 @@ func TestNetworkConsensus_MethodIgnoredUpstreams_EndToEnd(t *testing.T) {
 			},
 		})
 	})
+}
+
+// TestFilterMethodEligible_StickySurvivorFallsBackToRegistry reproduces
+// erpc#1125: after a sticky selection policy pins a single survivor, the
+// method-eligibility filter must NOT keep that ineligible survivor when the
+// full registry still holds method-eligible upstreams. The pre-fix call site
+// is:
+//
+//	upsList = n.policyEngine.GetOrderedInLane(...)   // sticky: ONE pinned node
+//	if eligible, dropped := filterMethodEligible(upsList, method); dropped > 0 && len(eligible) > 0 {
+//	    upsList = eligible
+//	}
+//
+// When the pinned survivor ignores the requested method, `len(eligible) == 0`
+// so the ineligible survivor is kept and the request never reaches the
+// method-eligible upstreams that are still registered. This test pins the
+// policy survivor set to a single write-ineligible upstream while the
+// registry holds a write-eligible one, and asserts the eligible upstream is
+// the one that serves the request.
+func TestFilterMethodEligible_StickySurvivorFallsBackToRegistry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	setupGockObserver(t)
+
+	upstreamConfigs := []*common.UpstreamConfig{
+		{
+			Id:       "public-read",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://public-read.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+			Routing:  &common.UpstreamRoutingConfig{Probe: common.ProbeModeOff},
+			// The sticky-pinned public node cannot broadcast.
+			IgnoreMethods: []string{"eth_sendRawTransaction", "eth_sendTransaction"},
+		},
+		{
+			Id:       "paid-write",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://paid-write.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+			Routing:  &common.UpstreamRoutingConfig{Probe: common.ProbeModeOff},
+		},
+	}
+	// State-poller mocks: without these the upstreams never finish
+	// bootstrapping and Forward fails with ErrNetworkInitializing.
+	for _, c := range upstreamConfigs {
+		mockStatePollerForHost(c.Endpoint)
+	}
+
+	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+	require.NoError(t, err)
+	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+	require.NoError(t, err)
+
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+	})
+	require.NoError(t, err)
+
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		ctx, &log.Logger, "test", upstreamConfigs, ssr,
+		rateLimitersRegistry, vr, pr, nil, metricsTracker, nil,
+	)
+
+	networkConfig := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		SelectionPolicy: &common.SelectionPolicyConfig{
+			EvalInterval: 0, // frozen — the test pins the order itself
+		},
+		Failsafe: []*common.FailsafeConfig{
+			{
+				MatchMethod: "eth_sendRawTransaction",
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
+					Delay:       common.Duration(10 * time.Millisecond),
+				},
+			},
+		},
+	}
+
+	policyEngine := policy.NewEngine(ctx, &log.Logger, "test", metricsTracker, policystdlib.Install, nil)
+	network, err := NewNetwork(
+		ctx, &log.Logger, "test", networkConfig,
+		rateLimitersRegistry, upstreamsRegistry, metricsTracker, policyEngine,
+	)
+	require.NoError(t, err)
+
+	upstreamsRegistry.Bootstrap(ctx)
+	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	require.Len(t, upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123)), 2,
+		"registry must hold both upstreams")
+
+	// Pin the POLICY SURVIVOR SET to the single write-ineligible node — the
+	// in-test analogue of stickyPrimary pinning `public-read` for the network.
+	// Only the policy engine is pinned here: the upstream registry must keep
+	// BOTH upstreams, because that is precisely the precondition the issue
+	// describes (a narrowed survivor set over an intact full registry).
+	// (`network.PinUpstreamOrderForTest` would reorder the registry itself,
+	// which is not what sticky selection does.)
+	policy.OverrideOrderForTest(policyEngine, network.networkId, "public-read")
+
+	survivors := policyEngine.GetOrderedInLane(network.networkId, "eth_sendRawTransaction", "*", nil)
+	require.Len(t, survivors, 1, "precondition: sticky survivor set is a single node")
+	require.Equal(t, "public-read", survivors[0].Id())
+
+	// Mock only the paid writer: it is the only upstream that can serve the
+	// method, so a correct fallback must reach it. Reject (no mock) any
+	// traffic to the write-ineligible node so a buggy fallback surfaces.
+	gock.New("http://paid-write.localhost").
+		Post("/").
+		Persist().
+		Reply(200).
+		JSON(jsonRpcSuccess("0xdeadbeef"))
+	resetGockHits()
+
+	reqBytes, err := json.Marshal(map[string]interface{}{
+		"method": "eth_sendRawTransaction",
+		"params": []interface{}{"0x02f870018203e8843b9aca0084"},
+	})
+	require.NoError(t, err)
+	req := common.NewNormalizedRequest(reqBytes)
+	req.SetNetwork(network)
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "request must be served by the method-eligible upstream from the full registry")
+	require.NotNil(t, resp)
+	jrr, jrrErr := resp.JsonRpcResponse()
+	require.NoError(t, jrrErr)
+	assert.Contains(t, jrr.GetResultString(), "0xdeadbeef")
+	assert.Greater(t, gockHits("http://paid-write.localhost"), 0,
+		"paid-write (the only method-eligible upstream) must have been called")
+	assert.Equal(t, 0, gockHits("http://public-read.localhost"),
+		"the write-ineligible sticky survivor must never receive the send")
 }
