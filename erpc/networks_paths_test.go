@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/upstream"
@@ -969,22 +970,30 @@ func TestNetworksPaths_PolicyAccessorsAndGroupLanes(t *testing.T) {
 		assert.Equal(t, "1", l, "the shared id token names the lane")
 	})
 
-	t.Run("ServedTipLanesMaterializeOncePerGroupUpToCap", func(t *testing.T) {
+	// Group trackers are the lanes (spec §13): past the cap a selector has
+	// neither, and its integrity reads the network-wide tracker.
+	t.Run("ServedTipLanesAndGroupTrackersMaterializeOncePerGroupUpToCap", func(t *testing.T) {
 		laneCtx := func(sel string) context.Context {
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 			req.SetDirectives(&common.RequestDirectives{UseUpstream: sel})
 			return context.WithValue(ctx, common.RequestContextKey, req)
 		}
+		wide := evm.StartChainTrackers(ctx, network)
 		first := network.laneFor(requestSelector(laneCtx("primary-*")))
 		require.NotNil(t, first)
 		assert.Equal(t, "primary", first.label)
 		assert.Same(t, first, network.laneFor(requestSelector(laneCtx("primary-*"))), "a group reuses its lane")
 		assert.Nil(t, network.laneFor(requestSelector(laneCtx("primary-1"))), "a single upstream is no group")
+		group := evm.ChainTrackerOf(ctx, network, "primary-*")
+		assert.NotSame(t, wide, group, "a lane has its group tracker")
 
 		count := network.servedTipLaneCount.Load()
 		network.servedTipLaneCount.Store(maxServedTipLanes)
-		assert.Nil(t, network.laneFor(requestSelector(laneCtx("fallback-*"))), "beyond the cap a new group gets no lane")
+		// GroupForSelector already gave primary-*, fallback-* and *-1 lanes.
+		assert.Nil(t, network.laneFor(requestSelector(laneCtx("*-2"))), "beyond the cap a new group gets no lane")
+		assert.Same(t, wide, evm.ChainTrackerOf(ctx, network, "*-2"), "beyond the cap a new group gets no tracker")
 		assert.Same(t, first, network.laneFor(requestSelector(laneCtx("primary-*"))), "existing lanes still resolve at the cap")
+		assert.Same(t, group, evm.ChainTrackerOf(ctx, network, "primary-*"), "existing group trackers still resolve at the cap")
 		network.servedTipLaneCount.Store(count)
 	})
 }

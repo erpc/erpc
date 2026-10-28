@@ -3679,7 +3679,8 @@ func startFollow(nt *networkTrackers, n common.Network, t *ChainTracker) {
 // ChainTrackerOf returns the tracker of n's node group for a use-upstream
 // selector, the same grouping as latest-block tracking
 // (EvmUpstreamGroupForSelector). A selector that carves out no real
-// sub-group yields the network-wide tracker. nil while n has no trackers.
+// sub-group, or whose group came past the network's lanes (spec §13),
+// yields the network-wide tracker. nil while n has no trackers.
 func ChainTrackerOf(ctx context.Context, n common.Network, selector string) *ChainTracker {
 	if n == nil {
 		return nil
