@@ -84,13 +84,13 @@ const (
 	// answer and the next request's arrival (§7: one Head read per
 	// request).
 	p6Advance = 1
-	// revertDepth reverts blocks below every vendor's finalized tag and
-	// below Head.Finalized as a finalized-tag read refreshes it just before
-	// the revert, up to W behind the voters' finalized, liveBound /
-	// blockTime = 10 blocks (§6.4 Finality; §19 C12), by 6. Without that
-	// read Head.Finalized trails up to one full poll, and a revert above it
-	// is followed without final_hash_changed (§6.5).
-	revertDepth = chainsim.FinalizedLag + 10 + 6
+	// revertBelowTag: C12's revert starts this many blocks below the lowest
+	// finalized tag the pods answered just before it, each read refreshing
+	// Head.Finalized (§6.4 Finality; §19 C12); its read heights are the
+	// blocks between. Without that read Head.Finalized trails up to one
+	// full poll, and a revert above it is followed without
+	// final_hash_changed (§6.5).
+	revertBelowTag = 5
 	// p7FinalityDepth: http-b finalizes this deep, below Head.Finalized
 	// (§6.4: permanent writes need the serving upstream's finalized).
 	p7FinalityDepth = 200
@@ -442,11 +442,12 @@ func p6() spec {
 	}}
 }
 
-// C12: the majority (every vendor) reverts revertDepth blocks, below each
-// one's finalized tag. Clients follow the new branch from the fork point +
-// 1, no permanent cache entry keeps a reverted block on any pod: by-number
-// reads before the revert do not survive it (§6.5 "every reverted pin at
-// or below Finalized … is read past its permanent cache entry", §15.3).
+// C12: the majority (every vendor) reverts from revertBelowTag blocks below
+// each pod's finalized tag and each vendor's. Clients follow the new branch
+// from the fork point + 1, no permanent cache entry keeps a reverted block
+// on any pod: by-number reads before the revert do not survive it (§6.5
+// "every reverted pin at or below Finalized … is read past its permanent
+// cache entry", §15.3).
 // At least one pod logs final_hash_changed: only a pod whose own finalized
 // polls covered a reverted pin does (§6.5). The revert is deeper than
 // reorgWindow, so newHeads restarts after the reverted batch (a jump) and
@@ -487,9 +488,18 @@ func revertFinalized(s *scenario) {
 	if !slices.Contains(covered, true) {
 		s.violate("harness", "no pod's finalized-tag read polled finalized itself: no pod holds a final pin with its own evidence")
 	}
-	tip := s.chain.Tip().Number
+	// The read heights end below the lowest finalized tag a pod answered
+	// and below every vendor's: a loaded host slows the reads, and a
+	// revert counted back from the tip after them would start above them.
+	from := s.chain.Tip().Number - chainsim.FinalizedLag
+	for _, f := range fins {
+		if f > 0 {
+			from = min(from, f)
+		}
+	}
+	from -= revertBelowTag
 	var heights []uint64
-	for n := tip - revertDepth + 1; n <= tip-revertDepth+5; n++ {
+	for n := from; n < from+revertBelowTag; n++ {
 		heights = append(heights, n)
 	}
 	for pod := range s.h.pods {
@@ -499,7 +509,7 @@ func revertFinalized(s *scenario) {
 			}
 		}
 	}
-	r := s.reorg(revertDepth)
+	r := s.reorg(int(s.chain.Tip().Number - from + 1))
 	replaced := 0
 	for _, n := range heights {
 		if n >= r.old[0].Number {
