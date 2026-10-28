@@ -2436,7 +2436,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	if resp != nil {
-		if n.cacheDal != nil {
+		// A retry-time cache recheck hit is already in the cache: don't write it back.
+		if n.cacheDal != nil && !resp.FromCache() {
 			// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
 			// TODO For other architectures we might need a different approach
 			_, _ = resp.JsonRpcResponse(ctx)

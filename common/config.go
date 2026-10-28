@@ -1723,6 +1723,13 @@ type RetryPolicyConfig struct {
 	// Evm.BlockUnavailableDelayMultiplier); this fixed value is used only before that
 	// estimate warms up. (Supersedes the now-deprecated BlockUnavailableDelay.)
 	EmptyResultDelay Duration `yaml:"emptyResultDelay,omitempty" json:"emptyResultDelay" tstype:"Duration"`
+	// EmptyResultRecheckCache re-reads the cache after a data-not-yet-available
+	// retry delay (empty / missing-data / block-unavailable), before the upstream
+	// sweep runs again. A block-backed cache connector that ingests the tip within
+	// about one block time then serves the retry instead of a remote upstream.
+	// Off by default: for a purely remote cache it is a wasted extra read. Not
+	// applied inside consensus rounds, where a cache hit would carry no upstream vote.
+	EmptyResultRecheckCache *bool `yaml:"emptyResultRecheckCache,omitempty" json:"emptyResultRecheckCache,omitempty"`
 
 	// Deprecated: merged into EmptyResultDelay (same purpose — fixed fallback delay for
 	// data-not-available retries). Retained as a yaml-only key so existing configs that

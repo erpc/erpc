@@ -409,7 +409,7 @@ func TestNetworksPaths_ShouldHandleMethod(t *testing.T) {
 
 func TestNetworksPaths_GetFailsafeExecutor(t *testing.T) {
 	mk := func(cfg *common.FailsafeConfig) *networkExecutor {
-		ex, err := NewNetworkExecutor(cfg, &log.Logger, nil, nil)
+		ex, err := NewNetworkExecutor(cfg, &log.Logger, nil, nil, nil)
 		require.NoError(t, err)
 		return ex
 	}
