@@ -6145,8 +6145,8 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				// Accept any eth_getBlockByNumber user call for rpc1; integrity logic will verify contents
-				return strings.Contains(body, "eth_getBlockByNumber")
+				// The user call only: a background latest or finalized poll racing it must not consume this one-shot mock.
+				return strings.Contains(body, "eth_getBlockByNumber") && !strings.Contains(body, `"latest"`) && !strings.Contains(body, `"finalized"`)
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -6337,8 +6337,8 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				// Accept any eth_getBlockByNumber user call for rpc1; integrity logic will verify contents
-				return strings.Contains(body, "eth_getBlockByNumber")
+				// The user call only: a background latest or finalized poll racing it must not consume this one-shot mock.
+				return strings.Contains(body, "eth_getBlockByNumber") && !strings.Contains(body, `"latest"`) && !strings.Contains(body, `"finalized"`)
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
