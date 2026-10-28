@@ -123,9 +123,10 @@ func TestFileExporter_CloseReleasesSharedHub(t *testing.T) {
 	require.NoError(t, c.AppendWithMetadata([]byte(`{"c":1}`), "eth_call", "evm:1"))
 }
 
-// Append after Close must fail; a new exporter for the same path reuses the
-// retained zero-ref hub rather than installing a second lock.
-func TestFileExporter_AppendAfterCloseFails(t *testing.T) {
+// Append after Close re-attaches to the retained hub and reopens the file —
+// the integrity-export path relies on "close flushes; a later catch reopens
+// its file". A new exporter for the same path still reuses the same hub lock.
+func TestFileExporter_AppendAfterCloseReopens(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &common.MisbehaviorsDestinationConfig{
 		Type:        common.MisbehaviorsDestinationTypeFile,
@@ -138,7 +139,9 @@ func TestFileExporter_AppendAfterCloseFails(t *testing.T) {
 	require.NoError(t, err)
 	hubBefore := a.hub
 	require.NoError(t, a.Close())
-	require.Error(t, a.AppendWithMetadata([]byte(`{"a":1}`), "eth_call", "evm:1"))
+	// Re-attach: refs go 0 → 1 and the append writes a fresh handle.
+	require.NoError(t, a.AppendWithMetadata([]byte(`{"a":1}`), "eth_call", "evm:1"))
+	t.Cleanup(func() { _ = a.Close() })
 
 	b, err := newFileMisbehaviorExporter(cfg, &log, "policy-b")
 	require.NoError(t, err)

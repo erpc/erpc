@@ -91,7 +91,12 @@ func (e *fileMisbehaviorExporter) AppendWithMetadata(line []byte, method string,
 	e.hub.mu.Lock()
 	defer e.hub.mu.Unlock()
 	if e.closed {
-		return fmt.Errorf("misbehavior file exporter closed")
+		// Re-attach on append-after-close: "close flushes every exporter; a
+		// later catch reopens its file" (integrity export path). The hub is
+		// retained in sharedFileHubs at refs==0, so re-incrementing here keeps
+		// the refcount consistent with the matching Close.
+		e.hub.refs++
+		e.closed = false
 	}
 
 	f, exists := e.hub.handles[fullPath]
