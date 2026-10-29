@@ -348,6 +348,8 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 | `servedTip.maxRegressionBlocks` | `int64` | `0` = 1024 | Tolerance of the [regression guard](/reference/evm/block-tracking#regression-guard) below the corroborated live head. `-1` disables; other negatives fail validation. |
 | `servedTip.guaranteedMethods` | `[]string` (glob) | `[]` | Methods whose supporting upstreams must be able to serve the tip ([guarantee subsets](/reference/evm/block-tracking#guarantee-subsets)). Patterns validated at load. |
 | `servedTip.guaranteedFor` | `[]string` (selector) | `[]` | Upstream groups (id/tag selector) that must be able to serve the tip ([guarantee subsets](/reference/evm/block-tracking#guarantee-subsets)). Selectors validated at load. |
+| `servedTip.preferredRefresh.upstreams` | `string` (selector) | unset | Voters each eth_blockNumber answer refreshes first (e.g. `prism-*`). Matching voters within `maxLagBlocks` of the highest head fill the quorum first; other voters fill the rest in routing order. Every upstream's regular state poller keeps running. Selector validated at load. |
+| `servedTip.preferredRefresh.maxLagBlocks` | `int64` | `0` = 10 | How far below the highest head a preferred voter may be and still be refreshed first; a preferred voter further behind is not refreshed on demand. |
 | `servedTip.enabledFor` | — | — | **Removed**; configs that set it fail to load. Use `servedTip.quorum: majority` (with ≤ 3 voters the default quorum already serves the same block). If it listed `latest`, also set `shortCircuitFutureBlocks: true`, which it used to turn on. |
 | `servedTip.clusterDelta`, `servedTip.trajectoryWindow` | — | — | **Removed**; configs that set them fail to load. Delete them; benching replaces the trajectory referee. |
 

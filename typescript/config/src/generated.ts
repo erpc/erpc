@@ -1912,6 +1912,34 @@ export interface EvmServedTipConfig {
    * negative value is accepted.
    */
   maxRegressionBlocks?: number /* int64 */;
+  /**
+   * PreferredRefresh names the upstreams an eth_blockNumber answer refreshes
+   * first. Each local answer asks the ballot's pollers for an on-demand
+   * refresh; without this the first voters in routing order (often paid
+   * vendors) take every refresh. Set, the matching voters within
+   * MaxLagBlocks of the highest known head are refreshed first, and the
+   * rest of the quorum is filled from the others in routing order; a
+   * matching voter further behind is skipped. Every upstream's regular
+   * state poller keeps running, so the ballot still sees their heads.
+   * Nil keeps routing order.
+   */
+  preferredRefresh?: EvmServedTipPreferredRefreshConfig;
+}
+/**
+ * EvmServedTipPreferredRefreshConfig picks the upstreams an on-demand head
+ * refresh goes to first. See EvmServedTipConfig.PreferredRefresh.
+ */
+export interface EvmServedTipPreferredRefreshConfig {
+  /**
+   * Upstreams is an upstream selector (id or tag glob, e.g. "prism-*").
+   */
+  upstreams: string;
+  /**
+   * MaxLagBlocks is how far below the highest known head a matching
+   * upstream may be and still be preferred. 0 uses
+   * DefaultServedTipPreferredMaxLagBlocks.
+   */
+  maxLagBlocks?: number /* int64 */;
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
