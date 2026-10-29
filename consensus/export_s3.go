@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -60,6 +61,7 @@ type s3MisbehaviorExporter struct {
 	closeCh   chan struct{}
 	closeWg   sync.WaitGroup
 	closeOnce sync.Once
+	closed    bool // set under mu before final drain; appends rejected after
 }
 
 // Close stops the flush worker and performs a final flush, so records buffered
@@ -71,6 +73,12 @@ type s3MisbehaviorExporter struct {
 func (e *s3MisbehaviorExporter) Close() error {
 	var err error
 	e.closeOnce.Do(func() {
+		// Mark closed BEFORE the drain so a concurrent AppendWithMetadata is
+		// rejected rather than left buffered forever (Copilot finding: Close
+		// was not terminal).
+		e.mu.Lock()
+		e.closed = true
+		e.mu.Unlock()
 		close(e.closeCh)
 		// Let the worker (if one is running) finish its own final flush first,
 		// then flush again ourselves: flush() is a no-op on an empty batch set,
@@ -255,10 +263,17 @@ func (e *s3MisbehaviorExporter) flush() error {
 		base := resolveFilePatternWithDefaults(e.cfg, b.method, b.networkId, now, e.policyName)
 		// Persist a per-exporter flush counter in the key so two flushes in the
 		// same millisecond never collide even when {timestampMs}+{policy} match.
+		// When the configured pattern omits {instanceId}, fold the instance into
+		// the suffix too, so replicas (or a restart, which resets flushSeq) can't
+		// PutObject-overwrite each other's forensic batches (Copilot finding).
+		suffix := fmt.Sprintf("f%d", seq)
+		if !strings.Contains(e.cfg.FilePattern, "{instanceId}") {
+			suffix = fmt.Sprintf("%s-%s", getInstanceID(), suffix)
+		}
 		if dot := strings.LastIndex(base, "."); dot > 0 {
-			base = fmt.Sprintf("%s-f%d%s", base[:dot], seq, base[dot:])
+			base = fmt.Sprintf("%s-%s%s", base[:dot], suffix, base[dot:])
 		} else {
-			base = fmt.Sprintf("%s-f%d", base, seq)
+			base = fmt.Sprintf("%s-%s", base, suffix)
 		}
 		key := e.keyPrefix + uniqueName(base, used)
 		input := &s3.PutObjectInput{
@@ -303,6 +318,10 @@ func uniqueName(name string, used map[string]struct{}) string {
 func (e *s3MisbehaviorExporter) AppendWithMetadata(line []byte, method string, networkId string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	if e.closed {
+		return errors.New("misbehavior S3 exporter is closed")
+	}
 
 	// Group by the metadata, not by the resolved file name — the name is
 	// resolved at flush time so that records accumulate into one object.

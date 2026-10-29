@@ -76,7 +76,10 @@ func (p *pool) acquire(wait time.Duration) (*vm, error) {
 		return v, nil
 	}
 
-	// Empty: grow on demand unless at the hard cap.
+	// Empty: grow on demand unless at the hard cap. Build off-lock in the
+	// background so a cold build can't run synchronously past the caller's
+	// wait budget (Copilot finding: sync p.build() exceeded evalTimeout). The
+	// slot stays reserved until the build finishes.
 	p.mu.Lock()
 	canGrow := p.alive < poolMaxSize
 	if canGrow {
@@ -85,14 +88,60 @@ func (p *pool) acquire(wait time.Duration) (*vm, error) {
 	p.mu.Unlock()
 
 	if canGrow {
-		v, err := p.build()
-		if err != nil {
-			p.mu.Lock()
-			p.alive--
-			p.mu.Unlock()
-			return nil, err
+		built := make(chan struct {
+			v   *vm
+			err error
+		}, 1)
+		go func() {
+			v, err := p.build()
+			built <- struct {
+				v   *vm
+				err error
+			}{v, err}
+		}()
+		if wait < 0 {
+			r := <-built
+			if r.err != nil {
+				p.mu.Lock()
+				p.alive--
+				p.mu.Unlock()
+				return nil, r.err
+			}
+			return r.v, nil
 		}
-		return v, nil
+		if wait == 0 {
+			wait = poolAcquireWait
+		}
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case r := <-built:
+			if r.err != nil {
+				p.mu.Lock()
+				p.alive--
+				p.mu.Unlock()
+				return nil, r.err
+			}
+			return r.v, nil
+		case <-timer.C:
+			// Build is still running in the background; the slot stays
+			// reserved until it completes and the VM lands in the pool.
+			go func() {
+				r := <-built
+				p.mu.Lock()
+				if r.err != nil {
+					p.alive--
+				} else {
+					select {
+					case p.free <- r.v:
+					default:
+						p.alive--
+					}
+				}
+				p.mu.Unlock()
+			}()
+			return nil, fmt.Errorf("%w: VM build exceeded acquire budget", ErrEvalTimeout)
+		}
 	}
 
 	// At cap: wait for a free VM rather than growing past poolMaxSize.
@@ -137,7 +186,21 @@ func (p *pool) maybeRefill() {
 		return
 	}
 	go func() {
-		defer atomic.StoreInt32(&p.refillN, 0)
+		// Re-check demand AFTER clearing the ownership flag before exiting, so
+		// a discard that ran while we were building (refillN==1) is not lost
+		// (Copilot finding: lost-refill race left cap-waiters blocked).
+		exiting := false
+		defer func() {
+			atomic.StoreInt32(&p.refillN, 0)
+			p.mu.Lock()
+			idle := len(p.free)
+			need := p.size - idle
+			atCap := p.alive >= poolMaxSize
+			p.mu.Unlock()
+			if !exiting && need > 0 && !atCap {
+				p.maybeRefill()
+			}
+		}()
 		for {
 			p.mu.Lock()
 			idle := len(p.free)
@@ -145,6 +208,7 @@ func (p *pool) maybeRefill() {
 			atCap := p.alive >= poolMaxSize
 			if need <= 0 || atCap {
 				p.mu.Unlock()
+				exiting = true
 				return
 			}
 			// Reserve the slot before building. A synchronous acquire that

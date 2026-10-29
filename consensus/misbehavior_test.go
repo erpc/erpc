@@ -589,28 +589,28 @@ func TestSitout_StaleExpiryDoesNotClearNewerPunishment(t *testing.T) {
 		})
 	}
 
-	// Two disputes put bad-c into sit-out; capture the first timer.
+	// Two disputes put bad-c into sit-out; capture the first entry.
 	round()
 	round()
 	v, ok := e.misbehavingUpstreamsSitoutTimer.Load("bad-c")
 	require.True(t, ok)
-	first := v.(*time.Timer)
+	first := v.(*sitoutEntry)
 
-	// Admin uncordon resets the sit-out; a new punishment starts a second timer.
+	// Admin uncordon resets the sit-out; a new punishment starts a second entry.
 	e.misbehavingUpstreamsSitoutTimer.Delete("bad-c")
 	round()
 	v, ok = e.misbehavingUpstreamsSitoutTimer.Load("bad-c")
 	require.True(t, ok)
-	second := v.(*time.Timer)
+	second := v.(*sitoutEntry)
 	require.NotSame(t, first, second)
 
-	// Fire the first timer's expiry callback manually (as if Stop lost the
-	// race): it must NOT delete the second timer's entry.
-	first.Stop()
+	// Fire the first entry's expiry callback manually (as if Stop lost the
+	// race): CompareAndDelete on the stale entry fails, so the newer
+	// punishment's entry survives.
+	first.timer.Stop()
 	if !e.misbehavingUpstreamsSitoutTimer.CompareAndDelete("bad-c", first) {
-		// entry survives — the stale callback's CompareAndDelete fails
 		_, stillThere := e.misbehavingUpstreamsSitoutTimer.Load("bad-c")
 		assert.True(t, stillThere, "stale expiry must not delete the newer punishment's timer")
 	}
-	second.Stop()
+	second.timer.Stop()
 }

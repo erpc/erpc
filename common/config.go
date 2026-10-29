@@ -2179,20 +2179,45 @@ func (c *ConsensusPolicyConfig) UnmarshalYAML(value *yaml.Node) error {
 		return nil
 	}
 	type plain ConsensusPolicyConfig
-	encoded, err := yaml.Marshal(value)
-	if err != nil {
-		return err
-	}
-	dec := yaml.NewDecoder(bytes.NewReader(encoded))
-	dec.KnownFields(true)
+	// Decode directly from the node graph instead of marshal→decode, so YAML
+	// anchors/aliases defined OUTSIDE this subtree resolve correctly (Copilot
+	// finding: re-encoding the subtree dropped anchor definitions and broke a
+	// child policy referencing a parent anchor with "unknown anchor").
 	var raw plain
-	if err := dec.Decode(&raw); err != nil {
-		// The alias type exists only to avoid re-entering UnmarshalYAML.
-		// Startup errors should name the config type operators wrote.
+	if err := value.Decode(&raw); err != nil {
 		return errors.New(strings.ReplaceAll(err.Error(), "common.plain", "common.ConsensusPolicyConfig"))
+	}
+	// Strict unknown-field validation over the node's keys (KnownFields is
+	// not available on node.Decode), preserving the startup-error contract.
+	if err := consensusPolicyRejectUnknownFields(value); err != nil {
+		return err
 	}
 	*c = ConsensusPolicyConfig(raw)
 	c.fireAndForgetSet = yamlMapHasKey(value, "fireAndForget")
+	return nil
+}
+
+// consensusPolicyRejectUnknownFields fails startup on any key in the
+// consensus mapping that is not a known ConsensusPolicyConfig field, matching
+// the strictness yaml KnownFields gave before node-based decode.
+func consensusPolicyRejectUnknownFields(value *yaml.Node) error {
+	if value == nil || value.Kind != yaml.MappingNode {
+		return nil
+	}
+	known := map[string]bool{
+		"maxParticipants": true, "agreementThreshold": true, "disputeBehavior": true,
+		"lowParticipantsBehavior": true, "preferNonEmpty": true, "preferLargerResponses": true,
+		"preferHighestValueFor": true, "ignoreFields": true, "punishMisbehavior": true,
+		"misbehaviorsDestination": true, "requiredParticipants": true, "blockEvidenceFields": true,
+		"fireAndForget": true, "maxWaitOnResult": true, "maxWaitOnEmpty": true,
+		"disputeLogLevel": true, "customPolicy": true, "policies": true, "extends": true,
+	}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		key := value.Content[i].Value
+		if !known[key] {
+			return fmt.Errorf("consensus: unknown field %q", key)
+		}
+	}
 	return nil
 }
 

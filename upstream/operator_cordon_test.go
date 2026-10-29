@@ -116,10 +116,11 @@ func TestCordonAdmin_PropagatesAcrossReplicasAndRestarts(t *testing.T) {
 	require.Equal(t, "incident #2", reason)
 }
 
-// TestUncordonAdmin_ResetsSitoutOnIssuerAndPeer pins Aram's Round-2 partial:
-// the peer recovery callback used to clear class bits only, leaving the
-// consensus sit-out entry behind. Now both the issuing pod and peers fire the
-// reset hook (wired to consensus.ResetSitout in erpc init), scoped by project.
+// TestUncordonAdmin_ResetsSitoutOnIssuerAndPeer pins Aram's Round-2 partial
+// and Copilot's race guard: the sit-out reset hook fires on both the issuing
+// pod and peers, but ONLY when the recovery actually cleared the punishment
+// bit. With no punishment cordon set, no hook fires. With a punishment bit
+// held, both issuer and peer clear it and fire the hook.
 func TestUncordonAdmin_ResetsSitoutOnIssuerAndPeer(t *testing.T) {
 	m, err := miniredis.Run()
 	require.NoError(t, err)
@@ -138,15 +139,7 @@ func TestUncordonAdmin_ResetsSitoutOnIssuerAndPeer(t *testing.T) {
 	a := newCordonTestUpstream(t, m.Addr())
 	b := newCordonTestUpstream(t, m.Addr())
 
-	a.CordonAdmin(ctx, "incident")
-	require.Eventually(t, cordoned(b), 5*time.Second, 20*time.Millisecond)
-
-	a.UncordonAdmin(ctx, "resolved")
-
-	// Both replicas share the test project + upstream ID, so a single hook
-	// call could match both predicates. Require exactly two invocations —
-	// one from the issuer and one from the peer recovery callback.
-	require.Eventually(t, func() bool {
+	hookCount := func() int {
 		mu.Lock()
 		defer mu.Unlock()
 		n := 0
@@ -155,8 +148,28 @@ func TestUncordonAdmin_ResetsSitoutOnIssuerAndPeer(t *testing.T) {
 				n++
 			}
 		}
-		return n == 2
-	}, 5*time.Second, 20*time.Millisecond, "issuer AND peer must each invoke the sit-out reset hook")
+		return n
+	}
+
+	// No punishment bit: admin cordon+uncordon clears operator only, so the
+	// hook must NOT fire (Copilot: unconditional reset raced newer punishment).
+	a.CordonAdmin(ctx, "incident")
+	require.Eventually(t, cordoned(b), 5*time.Second, 20*time.Millisecond)
+	a.UncordonAdmin(ctx, "resolved")
+	require.Eventually(t, notCordoned(b), 5*time.Second, 20*time.Millisecond)
+	require.Never(t, func() bool { return hookCount() > 0 }, 500*time.Millisecond, 20*time.Millisecond,
+		"no punishment bit ⇒ no sit-out reset")
+
+	// Now hold a punishment bit on both replicas and re-cordon+uncordon: the
+	// recovery clears the punishment bit on each, so BOTH issuer and peer
+	// fire the hook (exactly two invocations).
+	a.CordonClass("*", "misbehaving in consensus", common.CordonClassPunishment)
+	b.CordonClass("*", "misbehaving in consensus", common.CordonClassPunishment)
+	a.CordonAdmin(ctx, "incident-2")
+	require.Eventually(t, cordoned(b), 5*time.Second, 20*time.Millisecond)
+	a.UncordonAdmin(ctx, "resolved-2")
+	require.Eventually(t, func() bool { return hookCount() == 2 }, 5*time.Second, 20*time.Millisecond,
+		"issuer AND peer must each invoke the sit-out reset hook when the punishment bit clears")
 }
 
 func TestCordonAdmin_DetectorsCannotLiftAnOperatorCordon(t *testing.T) {

@@ -1113,11 +1113,15 @@ func (t *Tracker) CordonGens(upstream common.Upstream, method string) [3]uint64 
 // UncordonClassesAtMostGens clears each class on the cell only when that
 // class's generation is still <= the snapshot taken before the admin recovery.
 // Classes cordoned after the snapshot keep their bits. Gen check + clear run
-// under one cordonMu hold so a detector Cordon cannot slip between them.
-func (t *Tracker) UncordonClassesAtMostGens(upstream common.Upstream, method, reason string, maxGens [3]uint64) {
+// under one cordonMu hold so a detector Cordon cannot slip between them. It
+// reports the set of classes actually cleared, so a caller can reset detector
+// state (e.g. a consensus sit-out) only for a punishment that was truly
+// lifted — not for a newer punishment that survived the snapshot.
+func (t *Tracker) UncordonClassesAtMostGens(upstream common.Upstream, method, reason string, maxGens [3]uint64) []common.CordonClass {
 	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
 	tm.cordonMu.Lock()
 	defer tm.cordonMu.Unlock()
+	var cleared []common.CordonClass
 	for _, class := range []common.CordonClass{
 		common.CordonClassOperator,
 		common.CordonClassPunishment,
@@ -1134,7 +1138,9 @@ func (t *Tracker) UncordonClassesAtMostGens(upstream common.Upstream, method, re
 			continue
 		}
 		t.uncordonLocked(upstream, method, reason, class, tm)
+		cleared = append(cleared, class)
 	}
+	return cleared
 }
 
 func (t *Tracker) UncordonClass(upstream common.Upstream, method string, reason string, class common.CordonClass) {

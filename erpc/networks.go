@@ -1855,7 +1855,20 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	mlx, resp, err := n.handleMultiplexing(ctx, &lg, req, startTime)
+	// Selector-enabled requests must not share results across callers: the
+	// multiplex hash and the EVM cache key omit the consensus policy and the
+	// caller's auth, so a strict caller could receive a concurrent or cached
+	// fallback / waive-missing result (Copilot finding). Until both keys
+	// carry the policy+auth, disable multiplexing and cache reads/writes for
+	// selector-enabled networks.
+	selectorOn := n.consensusPolicySelectorEnabled()
+
+	var mlx *Multiplexer
+	var resp *common.NormalizedResponse
+	var err error
+	if !selectorOn {
+		mlx, resp, err = n.handleMultiplexing(ctx, &lg, req, startTime)
+	}
 	if err != nil || resp != nil {
 		// When the original request is already fulfilled by multiplexer (follower path)
 		forwardSpan.SetAttributes(
@@ -1875,7 +1888,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		defer n.cleanupMultiplexer(mlx)
 	}
 
-	if n.cacheDal != nil && !req.ShouldSkipCacheRead("") {
+	if n.cacheDal != nil && !selectorOn && !req.ShouldSkipCacheRead("") {
 		lg.Debug().Msgf("checking cache for request")
 		resp, err := n.cacheDal.Get(ctx, req)
 		if err != nil {
@@ -2597,7 +2610,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	if resp != nil {
-		if n.cacheDal != nil {
+		if n.cacheDal != nil && !selectorOn {
 			// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
 			// TODO For other architectures we might need a different approach
 			_, _ = resp.JsonRpcResponse(ctx)

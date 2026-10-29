@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"runtime/debug"
@@ -92,6 +93,21 @@ type executor struct {
 // inner is the per-slot worker signature passed in by the network
 // executor (or directly by *Consensus.Run).
 type inner = func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
+
+// sitoutEntry identifies one punishment sit-out. The id lets a recovery clear
+// only the sit-out its snapshot saw (a newer punishment has a new id), and the
+// timer expiry CompareAndDeletes its own entry so a stale callback cannot tear
+// down a reset or newer punishment.
+type sitoutEntry struct {
+	id    string
+	timer *time.Timer
+}
+
+var sitoutCounter atomic.Uint64
+
+func newSitoutId() string {
+	return strconv.FormatUint(sitoutCounter.Add(1), 36)
+}
 
 // execResult holds the result from a single upstream execution with cached analysis.
 type execResult struct {
@@ -2170,21 +2186,24 @@ func (e *executor) handleMisbehavingUpstream(logger *zerolog.Logger, upstream co
 	// network to the strictest policy while any upstream is punished.
 	common.CordonClassed(upstream, "*", "misbehaving in consensus", common.CordonClassPunishment)
 
-	// Create the timer. The entry is the timer itself, so expiry only clears
-	// the cordon and deletes the entry when this exact timer is still the one
-	// stored — an admin-uncordon reset or a newer punishment that replaced the
-	// entry cannot be torn down by this stale callback (Copilot finding:
-	// Timer.Stop does not wait for an expiry callback already running).
+	// Create the timer. The entry identifies this exact sit-out, so expiry only
+	// clears the cordon and deletes the entry when this exact sit-out is still
+	// the one stored — an admin-uncordon reset or a newer punishment that
+	// replaced the entry cannot be torn down by this stale callback (Copilot
+	// finding: Timer.Stop does not wait for an expiry callback already running).
+	// The id lets a recovery clear only the sit-out its snapshot saw.
+	entry := &sitoutEntry{id: newSitoutId()}
 	var timer *time.Timer
 	timer = time.AfterFunc(e.punishMisbehavior.SitOutPenalty.Duration(), func() {
-		if !e.misbehavingUpstreamsSitoutTimer.CompareAndDelete(upstreamId, timer) {
+		if !e.misbehavingUpstreamsSitoutTimer.CompareAndDelete(upstreamId, entry) {
 			return
 		}
 		common.UncordonClassed(upstream, "*", "end of consensus penalty", common.CordonClassPunishment)
 	})
+	entry.timer = timer
 
-	// Replace the placeholder with the actual timer
-	e.misbehavingUpstreamsSitoutTimer.Store(upstreamId, timer)
+	// Replace the placeholder with the actual entry
+	e.misbehavingUpstreamsSitoutTimer.Store(upstreamId, entry)
 }
 
 func (e *executor) createRateLimiter(logger *zerolog.Logger, upstreamId string) *rate.Limiter {

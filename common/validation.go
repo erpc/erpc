@@ -1538,6 +1538,23 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		}
 	}
 
+	// blockEvidenceFields only supports the shapes extractFieldValues reads:
+	// "result", a flat top-level field of a result object ("blockNumber",
+	// "number"), or an array wildcard "*.field" for array results (eth_getLogs,
+	// eth_getBlockReceipts — max across elements). Nested dotted paths ("a.b")
+	// resolve to nil at runtime and would silently disable the waiver — reject
+	// them at load time.
+	for method, paths := range c.BlockEvidenceFields {
+		for _, ep := range paths {
+			if ep == "result" || strings.HasPrefix(ep, "*.") {
+				continue
+			}
+			if strings.Contains(ep, ".") {
+				return fmt.Errorf("consensus.blockEvidenceFields[%q] path %q is unsupported: use \"result\", a flat top-level field (e.g. \"blockNumber\"), or an array wildcard \"*.field\"; nested paths cannot prove the winner's block and would silently disable the empty-outside-retention waiver", method, ep)
+			}
+		}
+	}
+
 	// Smoke-compile the custom-policy eval function so a syntactically broken
 	// selector fails at load time rather than falling closed on every request.
 	if c.CustomPolicy != nil {
@@ -1564,6 +1581,9 @@ func (c *ConsensusPolicyConfig) Validate() error {
 	for name, p := range c.Policies {
 		if p == nil {
 			return fmt.Errorf("consensus.policies[%q] must not be null", name)
+		}
+		if trimmed := strings.TrimSpace(name); trimmed != name {
+			return fmt.Errorf("consensus.policies[%q] has surrounding whitespace: the header value is trimmed on the wire to %q, so it would be indistinguishable from %q — pick a canonical name", name, trimmed, ConsensusDefaultPolicyName)
 		}
 		if name == ConsensusDefaultPolicyName {
 			return fmt.Errorf("consensus.policies[%q] uses the reserved name %q, which labels the fail-closed inline default in the consensus_policy metric and X-ERPC-Consensus-Policy header; pick another name", name, ConsensusDefaultPolicyName)

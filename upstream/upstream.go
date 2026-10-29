@@ -1723,15 +1723,16 @@ func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
 	if v.GetValue() != 0 {
 		return
 	}
-	u.metricsTracker.UncordonClassesAtMostGens(u, "*", reason, gens)
+	cleared := u.metricsTracker.UncordonClassesAtMostGens(u, "*", reason, gens)
 
-	// Clearing the class bits is not enough: the punishment sit-out entry and
-	// the chain-identity ownership flag are detector state that outlive the
-	// bits (review finding). Reset both so a full admin uncordon actually
-	// releases the upstream — re-punish is possible immediately, and the EVM
-	// poller stops holding this upstream's heads behind a chain-id verify.
-	resetSitout(u.ProjectId, u.Id())
-	if u.evmStatePoller != nil {
+	// Reset detector state only for a class the recovery actually cleared
+	// (Copilot finding: an unconditional reset stopped a newer punishment's
+	// timer / cleared a newer chain-id cordon's ownership). A punishment that
+	// landed after the snapshot keeps its bit AND its sit-out timer.
+	if slices.Contains(cleared, common.CordonClassPunishment) {
+		resetSitout(u.ProjectId, u.Id())
+	}
+	if slices.Contains(cleared, common.CordonClassAvailability) && u.evmStatePoller != nil {
 		u.evmStatePoller.ResetChainIdCordon()
 	}
 }
@@ -1824,21 +1825,31 @@ func (u *Upstream) operatorRecoveryVar() data.CounterInt64SharedVariable {
 				return
 			}
 			// Issuing pod: clear by the snapshot taken before publish, so a
-			// detector cordon during the publish is kept.
+			// detector cordon during the publish is kept. Fire the sit-out /
+			// chain-id reset hooks for classes actually cleared here, since the
+			// explicit UncordonAdmin tail may then find nothing left to clear.
 			if snap := u.uncordonSnap.Load(); snap != nil {
-				u.metricsTracker.UncordonClassesAtMostGens(u, "*", reason, *snap)
+				cleared := u.metricsTracker.UncordonClassesAtMostGens(u, "*", reason, *snap)
+				if slices.Contains(cleared, common.CordonClassPunishment) {
+					resetSitout(u.ProjectId, u.Id())
+				}
+				if slices.Contains(cleared, common.CordonClassAvailability) && u.evmStatePoller != nil {
+					u.evmStatePoller.ResetChainIdCordon()
+				}
 				return
 			}
 			// Peer: this callback is the causal cut. Clear classes present
 			// now. A detector cordon after this snapshot has a higher local
 			// generation and is kept. Do not compare wall clocks.
 			gens := u.metricsTracker.CordonGens(u, "*")
-			u.metricsTracker.UncordonClassesAtMostGens(u, "*", reason, gens)
-			// Peers clear the consensus sit-out too: only the issuing pod did
-			// it before (review finding), so a same-project upstream stayed
-			// cordoned on a peer until its original penalty window ended.
-			resetSitout(u.ProjectId, u.Id())
-			if u.evmStatePoller != nil {
+			cleared := u.metricsTracker.UncordonClassesAtMostGens(u, "*", reason, gens)
+			// Peers reset detector state only for a class actually cleared
+			// (same race guard as the issuer): a newer punishment keeps its
+			// bit and sit-out timer.
+			if slices.Contains(cleared, common.CordonClassPunishment) {
+				resetSitout(u.ProjectId, u.Id())
+			}
+			if slices.Contains(cleared, common.CordonClassAvailability) && u.evmStatePoller != nil {
 				u.evmStatePoller.ResetChainIdCordon()
 			}
 		})

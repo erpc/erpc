@@ -91,6 +91,15 @@ func compileFn(evalFunction string, buildTimeout time.Duration) (*compiled, erro
 		if _, err := rt.RunProgram(freezeProg); err != nil {
 			return nil, fmt.Errorf("consensus policy: freeze sandbox builtins: %w", err)
 		}
+		// Capture the trusted wrapper BEFORE the operator expression runs: a
+		// config can redefine __erpcWrapConsensusCtx with a getter that loops
+		// forever, and rt.Get after the expression would run that getter
+		// outside runProgramBounded, hanging startup (Copilot finding). stdlib
+		// (which defines the wrap) already ran above, so read it now.
+		wrap, ok := sobek.AssertFunction(rt.Get("__erpcWrapConsensusCtx"))
+		if !ok {
+			return nil, fmt.Errorf("consensus policy: stdlib wrap missing")
+		}
 		// Evaluating the operator's function EXPRESSION must be bounded. A
 		// legitimate `(ctx) => …` yields a callable instantly, but a config that
 		// executes code before yielding — e.g. `(() => { while (true) {} })()` —
@@ -105,10 +114,6 @@ func compileFn(evalFunction string, buildTimeout time.Duration) (*compiled, erro
 		fn, ok := sobek.AssertFunction(fnVal)
 		if !ok {
 			return nil, fmt.Errorf("consensus policy: evalFunction is not a function")
-		}
-		wrap, ok := sobek.AssertFunction(rt.Get("__erpcWrapConsensusCtx"))
-		if !ok {
-			return nil, fmt.Errorf("consensus policy: stdlib wrap missing")
 		}
 		// The callable lives in Go, not on a JS global. Binding it via rt.Set
 		// would run any operator-installed setter for that name *outside*
@@ -231,8 +236,11 @@ func (s *Selector) Evaluate(ctx EvalContext, timeout time.Duration) (string, err
 	if evalErr != nil {
 		// A throw can leave mutated builtins (e.g. Array.prototype.filter)
 		// behind; releasing would poison the next eval. Discard and refill.
+		// Do NOT format evalErr: a thrown object's JS toString can loop forever
+		// (Copilot finding), so %v on the exception would hang after the timed
+		// call already returned. Return the safe sentinel instead.
 		s.pool.discard()
-		return "", fmt.Errorf("%w: %v", ErrEvalThrew, evalErr)
+		return "", ErrEvalThrew
 	}
 
 	name, err := resultName(result)

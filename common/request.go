@@ -263,10 +263,10 @@ type NormalizedRequest struct {
 	headsAtError sync.Map
 
 	// Fields for centralized upstream management
-	upstreamList         []Upstream // Available upstreams for this request (post-selection)
-	networkUpstreamList  []Upstream // Unfiltered network registry — consensus-policy fail-closed helpers
-	networkUpstreamsSet  bool       // true after SetNetworkUpstreams (even if the snapshot is empty)
-	ConsumedUpstreams    *sync.Map  // Tracks upstreams that provided valid responses
+	upstreamList        []Upstream // Available upstreams for this request (post-selection)
+	networkUpstreamList []Upstream // Unfiltered network registry — consensus-policy fail-closed helpers
+	networkUpstreamsSet bool       // true after SetNetworkUpstreams (even if the snapshot is empty)
+	ConsumedUpstreams   *sync.Map  // Tracks upstreams that provided valid responses
 
 	// escalatedToFallbacks makes the per-request fallback escape happen at
 	// most once across retries and hedges.
@@ -1275,6 +1275,18 @@ func (r *NormalizedRequest) CopyHttpContextFrom(source *NormalizedRequest) {
 	// Also copy the user if it exists
 	if user := source.User(); user != nil {
 		r.SetUser(user)
+	}
+
+	// Carry the auth strategy stamp so a derived request (e.g. an
+	// eth_getLogs split sub-request) selects the same consensus policy as its
+	// parent instead of falling back to default (Copilot finding: derived
+	// requests got a fresh exec state and lost the strategy name).
+	if name, ok := source.ExecState().AuthStrategy(); ok {
+		if p := source.ExecState().authStrategyPtr(); p != nil {
+			r.ExecState().SetAuthStrategy(p)
+		} else {
+			r.ExecState().SetAuthStrategy(&name)
+		}
 	}
 }
 

@@ -164,12 +164,17 @@ func (c *Consensus) Close() error {
 }
 
 // ResetSitout clears the shared sit-out timer entry for an upstream across
-// the live Consensuses of one project, so a full admin uncordon lets the
-// upstream be re-punished immediately (review finding): without it, an
-// uncleared sit-out entry suppresses re-punish until the original penalty
-// window ends. Scoped by project: upstream IDs are only unique per project,
-// so a bare-ID global reset would stop a same-ID upstream's timer in another
-// project while leaving its punishment bit set (stuck cordon).
+// the live Consensuses of one project. Scoped by project: upstream IDs are
+// only unique per project, so a bare-ID global reset would stop a same-ID
+// upstream's timer in another project while leaving its punishment bit set
+// (stuck cordon).
+//
+// The caller invokes this only when the recovery actually cleared the
+// punishment bit (see upstream: UncordonClassesAtMostGens reports the cleared
+// classes), so a punishment that lands AFTER the recovery snapshot keeps both
+// its bit and its timer (Copilot finding: an unconditional delete stopped a
+// newer punishment's expiry). The timer expiry CompareAndDeletes its own
+// entry, so a stale callback cannot tear down a reset or newer punishment.
 func ResetSitout(projectId, upstreamId string) {
 	liveConsensuses.Range(func(key, _ any) bool {
 		c, ok := key.(*Consensus)
@@ -188,9 +193,13 @@ func clearPolicySitout(p *consensusPolicy, upstreamId string) {
 	if p == nil || p.misbehavingUpstreamsSitoutTimer == nil {
 		return
 	}
-	if v, ok := p.misbehavingUpstreamsSitoutTimer.LoadAndDelete(upstreamId); ok {
-		if t, ok := v.(*time.Timer); ok {
-			t.Stop()
+	if v, ok := p.misbehavingUpstreamsSitoutTimer.Load(upstreamId); ok {
+		if p.misbehavingUpstreamsSitoutTimer.CompareAndDelete(upstreamId, v) {
+			if s, ok := v.(*sitoutEntry); ok {
+				s.timer.Stop()
+			} else if t, ok := v.(*time.Timer); ok {
+				t.Stop()
+			}
 		}
 	}
 }

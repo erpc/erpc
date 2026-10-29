@@ -282,6 +282,15 @@ func (s *ExecState) AuthStrategy() (string, bool) {
 	return *p, true
 }
 
+// authStrategyPtr exposes the stored strategy-name pointer so a derived
+// request can share the parent's stamp without allocating.
+func (s *ExecState) authStrategyPtr() *string {
+	if s == nil {
+		return nil
+	}
+	return s.authStrategy.Load()
+}
+
 // SetConsensusPolicy records the consensus policy the pre-round selector
 // resolved for this request. Called once by the consensus executor before
 // fan-out (both the chosen named policy and the fail-closed default path set

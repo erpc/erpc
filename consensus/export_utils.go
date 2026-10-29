@@ -96,10 +96,16 @@ func resolveFilePattern(pattern string, method string, networkId string, timesta
 		"{policy}":      common.ConsensusPolicyObjectKeyComponent(policyName),
 	}
 
-	result := pattern
+	// One-pass replacement so a substituted value is never scanned again: an
+	// open-ended value that itself looks like a placeholder (e.g. method
+	// "{policy}") must not be re-replaced by a later pass (Copilot finding:
+	// multi-pass map iteration made names nondeterministic). strings.Replacer
+	// scans the input once, left to right, and never re-reads its own output.
+	pairs := make([]string, 0, len(replacements)*2)
 	for placeholder, value := range replacements {
-		result = strings.ReplaceAll(result, placeholder, value)
+		pairs = append(pairs, placeholder, value)
 	}
+	result := strings.NewReplacer(pairs...).Replace(pattern)
 
 	if !strings.HasSuffix(result, ".ndjson") && !strings.HasSuffix(result, ".jsonl") {
 		result += ".jsonl"
