@@ -74,9 +74,6 @@ type PostgreSQLConnector struct {
 	// fires an Error log in the initializer, and during the cascade those
 	// logs were the dominant contributor to stdout fd-lock contention).
 	lastFailureMarkNanos atomic.Int64
-	// legacyKeysWarnOnce limits the deprecation warning for pgx v4 URI keys
-	// to one log line per connector instead of one per reconnect.
-	legacyKeysWarnOnce   sync.Once
 	initializer          *util.Initializer
 	minConns             int32
 	maxConns             int32
@@ -87,6 +84,9 @@ type PostgreSQLConnector struct {
 	setTimeout           time.Duration
 	listeners            sync.Map      // map[string]*pgxListener
 	listenerPool         *pgxpool.Pool // Separate pool for LISTEN connections
+	// legacyKeysWarnOnce limits the deprecation warning for pgx v4 URI keys
+	// to one log line per connector instead of one per reconnect.
+	legacyKeysWarnOnce sync.Once
 }
 
 // failureMarkCooldown bounds how often handleConnectionFailure may trigger a
