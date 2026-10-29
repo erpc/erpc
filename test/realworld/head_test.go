@@ -178,7 +178,7 @@ func u12() spec {
 				from := time.Now()
 				got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
 				s.owe(pod, "retried_missing", 1)
-				switch d := s.dispatches(n, from, time.Now()); {
+				switch d := s.dispatches(n, false, from, time.Now()); {
 				case d == 0:
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered %s with no dispatch, below the ceiling %s raised", pod+1, n, got, up)
 				case d > refusalDispatches:
@@ -218,7 +218,7 @@ func u19() spec {
 					at := time.Now()
 					got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
 					probes++
-					if d := s.dispatches(n, at, time.Now()); got != "null" || d > 0 {
+					if d := s.dispatches(n, false, at, time.Now()); got != "null" || d > 0 {
 						s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), above every voter's head while %s answers 403, answered %s after %d dispatches", pod+1, n, up, got, d)
 					}
 				}
@@ -250,12 +250,12 @@ func (s *scenario) awaitUpstreamHead(pod int, up string, min float64, within tim
 	}
 }
 
-// dispatches counts the eth_getBlockByNumber(n) calls every vendor
-// answered in [from, to].
-func (s *scenario) dispatches(n uint64, from, to time.Time) int {
+// dispatches counts the eth_getBlockByNumber(n) calls with full
+// transactions as full that every vendor answered in [from, to].
+func (s *scenario) dispatches(n uint64, full bool, from, to time.Time) int {
 	d := 0
 	for _, v := range s.vendors {
-		d += v.NumberCalls(n, from, to)
+		d += v.NumberCalls(n, full, from, to)
 	}
 	return d
 }
@@ -295,10 +295,10 @@ func u14() spec {
 					s.logf("pod-%d: Latest %d + %d is above the archive's %d; skipped", pod+1, bn, u14Probe, archive.Head().Number)
 				case got != want.Hash.Hex():
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), Latest %d + %d, answered %s, not the archive's %s", pod+1, n, bn, u14Probe, got, short(want.Hash))
-				case archive.NumberCalls(n, from, to) == 0:
+				case archive.NumberCalls(n, false, from, to) == 0:
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered without asking the archive", pod+1, n)
-				case s.dispatches(n, from, to) > refusalDispatches:
-					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d)", pod+1, n, s.dispatches(n, from, to), refusalDispatches)
+				case s.dispatches(n, false, from, to) > refusalDispatches:
+					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d)", pod+1, n, s.dispatches(n, false, from, to), refusalDispatches)
 				}
 				s.blocks(5)
 			}
@@ -817,6 +817,9 @@ func p9() spec {
 	return sp
 }
 
+// pollNext's polls ask full transactions, so the vendors count their
+// dispatches apart from the scenario's clients, which read each block they
+// receive by number without them at the moment the poll answers it.
 func pollNext(s *scenario, farFuture bool) {
 	s.blocks(10)
 	var bn hexutil.Uint64
@@ -830,8 +833,8 @@ func pollNext(s *scenario, farFuture bool) {
 	for end := time.Now().Add(40 * time.Second); time.Now().Before(end); polls++ {
 		pod := int(next % uint64(len(s.h.pods)))
 		from := time.Now()
-		got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(next), false)
-		if d := s.dispatches(next, from, time.Now()); d > refusalDispatches {
+		got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(next), true)
+		if d := s.dispatches(next, true, from, time.Now()); d > refusalDispatches {
 			s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d); answered %s", pod+1, next, d, refusalDispatches, got)
 		}
 		if got == "null" {
@@ -850,11 +853,11 @@ func pollNext(s *scenario, farFuture bool) {
 			pod := i % len(s.h.pods)
 			n := s.chain.Tip().Number + 1000 + uint64(i)
 			from := time.Now()
-			got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
+			got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), true)
 			if got == "null" {
 				nulls[pod]++
 			}
-			if d := s.dispatches(n, from, time.Now()); got != "null" || d > 0 {
+			if d := s.dispatches(n, true, from, time.Now()); got != "null" || d > 0 {
 				s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), above the ceiling, answered %s after %d dispatches", pod+1, n, got, d)
 			}
 		}

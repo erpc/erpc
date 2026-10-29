@@ -213,7 +213,7 @@ func x8() spec {
 			from := time.Now()
 			got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
 			s.owe(pod, "retried_missing", 1)
-			switch d := s.dispatches(n, from, time.Now()); {
+			switch d := s.dispatches(n, false, from, time.Now()); {
 			case d == 0:
 				s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered %s with no dispatch, below the ceiling the canary's head raised", pod+1, n, got)
 			case d > refusalDispatches:
