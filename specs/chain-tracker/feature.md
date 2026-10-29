@@ -890,7 +890,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_integrity_reorg_depth` | renamed `erpc_chain_tracker_reorg_depth` |
 | `erpc_chain_tracker_reanchor_total{project,network}` | new |
 | `erpc_chain_tracker_reset_total{project,network}` | new: resets after 3 panics of one message kind with no clean one between them |
-| `erpc_chain_tracker_settle_total{project,network,outcome}` | new; outcome: `decided`, `undecided` |
+| `erpc_chain_tracker_settle_total{project,network,reason,outcome}` | new; reason: `tie` (rule 4), `dispute` (rule 6's answer off the pins), `fork` (the §6.3 refresh), `recheck` (`ReconfirmPin`); outcome: `decided`, `undecided`. The `chain tracker settle ended` log names the reason and the key the round started with |
 | `erpc_chain_tracker_fetch_total{project,network,kind,class,outcome}` | new; kind: `header`, `receipts`, `logs`; outcome: `ok`, `error`, `capacity` |
 | `erpc_chain_tracker_fetch_slots{project,network,class}` | new gauge: current share per class |
 | `erpc_source_resubscribe_total{project,network,upstream,topic}` | new: silent pending-transaction topics (§5.2) |
@@ -1006,7 +1006,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | C1 | reorg 1–3 at the tip | `newHeads` gets the new branch; logs `removed:true`; gRPC resends from the fork point |
 | C2 | reorg `reorgWindow` − 1 deep | as C1; no out of range |
 | C3 | reorg `reorgWindow` + 4 deep | re-anchor; `newHeads` and gRPC get the new branch from the fork point + 1; ws `logs` close `1013`, spread over 60s |
-| C4 | 2 wss voters + 1 https; 1-vs-1 tip split | only the settled hash is sent |
+| C4 | 2 wss voters + 1 https; 1-vs-1 tip split | only the settled hash is sent; the split counts decided rounds of reason `tie` |
 | C5 | head rewinds 50 blocks on every upstream | `latest` reads succeed within 2 bt; `latest_regressed` counts the rewind once per instance |
 | C6 | no blocks for 3 min, with gRPC | nothing reconnects; gRPC not cut; `Latest` frozen |
 | C7 | halt, then 100 blocks in 1s | catch-up within `maxBackfill`; batches at most `reorgWindow`; no gap |

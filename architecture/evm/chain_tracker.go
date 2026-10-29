@@ -1435,11 +1435,11 @@ func (t *ChainTracker) choose() {
 	}
 	switch {
 	case len(tie) > 0:
-		if t.startDispute(t.tieKey(tie), "") {
+		if t.startDispute(t.tieKey(tie), "", settleTie) {
 			return
 		}
 	case conflict:
-		if t.startDispute(t.disputeOf(t.ask.vote), t.ask.voter) {
+		if t.startDispute(t.disputeOf(t.ask.vote), t.ask.voter, settleDispute) {
 			return
 		}
 	}

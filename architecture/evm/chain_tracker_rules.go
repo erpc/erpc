@@ -487,17 +487,37 @@ const (
 
 var settleOutcomeNames = [...]string{"unanswered", "tied", "deferred", "moved", "decided"}
 
-// logSettle logs the end of round s (spec §17).
+// settleReason is why a round started (spec §17).
+type settleReason uint8
+
+const (
+	settleTie     settleReason = iota // a tie in rule 4
+	settleDispute                     // a no-source answer off the pins (rule 6)
+	settleFork                        // the refresh of a vote off the pins (§6.3)
+	settleRecheck                     // a client's ReconfirmPin
+)
+
+var settleReasonNames = [...]string{"tie", "dispute", "fork", "recheck"}
+
+// logSettle logs the end of round s (spec §17) under the key it started
+// with: a decided round re-keys on the block it pinned, which names no
+// branch and so hid what the round weighed.
 func (t *ChainTracker) logSettle(s *settleState, o settleOutcome) {
-	ev := t.transition(zerolog.InfoLevel, "settle").Str("outcome", settleOutcomeNames[o]).Int("answers", len(s.answers))
-	if p := s.key.pinned; p != nil {
+	ev := t.transition(zerolog.InfoLevel, "settle").Str("reason", settleReasonNames[s.reason]).
+		Str("outcome", settleOutcomeNames[o]).Int("answers", len(s.answers))
+	if p := s.started.pinned; p != nil {
 		ev = ev.Uint64("pinned", p.h.number).Str("pinnedHash", p.h.hashHex)
 	}
-	if len(s.key.branch) > 0 {
-		b := s.key.branch[0].h
+	if len(s.started.branch) > 0 {
+		b := s.started.branch[0].h
 		ev = ev.Uint64("branch", b.number).Str("branchHash", b.hashHex)
 	}
 	ev.Msg("chain tracker settle ended")
+}
+
+// settleCount counts the end of round s in erpc_chain_tracker_settle_total.
+func (t *ChainTracker) settleCount(s *settleState, outcome string) {
+	telemetry.CounterHandle(telemetry.MetricChainTrackerSettleTotal, t.projectId(), t.networkLabel(), settleReasonNames[s.reason], outcome).Inc()
 }
 
 // settleState is one settle round (§6 rule 5, Settle rounds): an Ask with a
@@ -506,6 +526,8 @@ func (t *ChainTracker) logSettle(s *settleState, o settleOutcome) {
 // a target without a counted vote, one more vote for this decision.
 type settleState struct {
 	key      roundKey
+	started  roundKey // key when the round started
+	reason   settleReason
 	answers  map[string]*node // target id -> its answer
 	out      int              // Asks still out
 	inflight bool
@@ -574,7 +596,7 @@ func (t *ChainTracker) heldAnswer(a common.HeadAnswer) *node {
 // settle. With no target, or every Ask refused, s ends at once and false
 // is returned.
 func (t *ChainTracker) startSettle(s *settleState, targets []string, need common.HeadNeed, waiter chan settleOutcome) bool {
-	s.answers, s.inflight, s.ends = make(map[string]*node), true, time.Now().Add(t.W())
+	s.started, s.answers, s.inflight, s.ends = s.key, make(map[string]*node), true, time.Now().Add(t.W())
 	if waiter != nil {
 		s.waiters = append(s.waiters, waiter)
 	}
@@ -596,8 +618,8 @@ func (t *ChainTracker) startSettle(s *settleState, targets []string, need common
 
 // startDispute starts a round over k, a tie or a conflicting no-source
 // answer, when one may start; skip is the voter whose answer k disputes.
-func (t *ChainTracker) startDispute(k roundKey, skip string) bool {
-	return t.maySettle(k) && t.startSettle(&settleState{key: k}, t.tieTargets(k, skip), common.HeadNeedHash, nil)
+func (t *ChainTracker) startDispute(k roundKey, skip string, reason settleReason) bool {
+	return t.maySettle(k) && t.startSettle(&settleState{key: k, reason: reason}, t.tieTargets(k, skip), common.HeadNeedHash, nil)
 }
 
 // settleAnswered takes target id's answer to round s. A failed Ask, a
@@ -663,7 +685,7 @@ func (t *ChainTracker) endSettle(s *settleState) {
 			s.head = t.pins[len(t.pins)-1]
 		}
 		delete(t.retryAt, s.key.name)
-		telemetry.CounterHandle(telemetry.MetricChainTrackerSettleTotal, t.projectId(), t.networkLabel(), "decided").Inc()
+		t.settleCount(s, "decided")
 		t.logSettle(s, settleDecided)
 		// The decided answers back their branch now: waiters read that.
 		t.gateSend()
@@ -686,7 +708,7 @@ func (t *ChainTracker) undecided(s *settleState, o settleOutcome) {
 		at = now.Add(t.BlockTime())
 	}
 	t.retryAt[s.key.name] = at
-	telemetry.CounterHandle(telemetry.MetricChainTrackerSettleTotal, t.projectId(), t.networkLabel(), "undecided").Inc()
+	t.settleCount(s, "undecided")
 	t.logSettle(s, o)
 	s.notify(o)
 }
@@ -750,7 +772,7 @@ func (t *ChainTracker) requestSettle(settled chan settleOutcome, number int64) {
 	case t.waits(k), s != nil && s.key.name != k.name && t.keepsPlace(s):
 		report(settled, settleDeferred)
 	default:
-		t.startSettle(&settleState{key: k}, t.tieTargets(k, skip), common.HeadNeedHash, settled)
+		t.startSettle(&settleState{key: k, reason: settleRecheck}, t.tieTargets(k, skip), common.HeadNeedHash, settled)
 	}
 }
 
@@ -845,7 +867,7 @@ func (t *ChainTracker) refreshed(u string, nd *node) bool {
 		return true
 	}
 	if t.maySettle(k) {
-		t.startSettle(&settleState{key: k}, targets, common.HeadNeedFork, nil)
+		t.startSettle(&settleState{key: k, reason: settleFork}, targets, common.HeadNeedFork, nil)
 	}
 	return false
 }
