@@ -2429,6 +2429,59 @@ func TestServedTip_Finalized_NeverRegressesWhenTheMajorityFlips(t *testing.T) {
 		"a shared value no voter backs is ignored")
 }
 
+// The finalized floor's two limits: a tip one voter defined alone never
+// enters it, so that voter cannot hold "finalized" up once honest heads
+// arrive; and a held value never exceeds the served "latest", the order every
+// voter's own heads keep.
+func TestServedTip_Finalized_FloorLimits(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	t.Run("a lone voter's tip never enters the floor", func(t *testing.T) {
+		network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+			{id: "rogue", chainID: 123, latestBlock: 1_000},
+			{id: "honest1", chainID: 123, latestBlock: 1_000},
+			{id: "honest2", chainID: 123, latestBlock: 1_000},
+		})
+		setServedTipFinalized(t, ups[0], 900)
+		require.Equal(t, int64(900), network.EvmHighestFinalizedBlockNumber(ctx),
+			"the honest upstreams have no finalized head yet, so the only voter defines it")
+
+		setServedTipFinalized(t, ups[1], 500)
+		setServedTipFinalized(t, ups[2], 500)
+		assert.Equal(t, int64(500), network.EvmHighestFinalizedBlockNumber(ctx),
+			"the rogue still reports 900, but nobody corroborated it")
+	})
+
+	t.Run("a held finalized never exceeds the served latest", func(t *testing.T) {
+		network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+			{id: "lead1", chainID: 123, latestBlock: 1_000},
+			{id: "lead2", chainID: 123, latestBlock: 1_000},
+			{id: "lead3", chainID: 123, latestBlock: 1_000},
+			{id: "lag1", chainID: 123, latestBlock: 180},
+			{id: "lag2", chainID: 123, latestBlock: 180},
+		})
+		for i, u := range ups {
+			fin := int64(201)
+			if i >= 3 {
+				fin = 150
+			}
+			setServedTipFinalized(t, u, fin)
+		}
+		require.Equal(t, int64(201), network.EvmHighestFinalizedBlockNumber(ctx))
+
+		ups[2].EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+		latest := network.EvmHighestLatestBlockNumber(ctx)
+		require.Equal(t, int64(180), latest, "the laggers are now the latest majority too")
+		assert.Equal(t, latest, network.EvmHighestFinalizedBlockNumber(ctx),
+			"the floor backs 201, but finalized must not pass the served latest")
+	})
+}
+
 // The guard's clamp branch: the upstream that backed the remembered pick leaves
 // the eligible set and the best remaining LIVE head is BELOW it, so the held
 // value must be capped to what a live upstream actually has.

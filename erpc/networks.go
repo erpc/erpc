@@ -942,12 +942,22 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 	// lagging cohort, in the lane's ballot or a guarantee subset's — cannot
 	// pull "finalized" below a block this lane, or for the network-wide lane
 	// any instance, already served while a voter of each of those ballots
-	// still reports it. Last, so nothing above lowers it.
+	// still reports it. Only a value two voters had enters a floor, so one
+	// rogue head cannot pin it, and a held value never exceeds the served
+	// "latest": per voter finalized <= latest, so the pick keeps that order and
+	// the floor must too. Last, so nothing above lowers it.
 	if finalized && lane != nil {
-		tip = n.holdFinalized(ctx, anchor, q, tip)
+		corroborated := pick.Inputs >= 2 && tip <= pick.Freshest
+		held := n.holdFinalized(ctx, anchor, q, tip, corroborated)
 		if lane == &n.servedTipAll {
-			tip = n.shareFinalized(ctx, q, tip)
+			held = n.shareFinalized(ctx, q, held, tip, corroborated)
 		}
+		if held > tip {
+			if latest := n.EvmHighestLatestBlockNumber(ctx); latest > 0 && held > latest {
+				held = max(tip, latest)
+			}
+		}
+		tip = held
 	}
 
 	if common.IsTracingDetailed {
@@ -978,22 +988,30 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 // computed tip means the voters changed — a leader left the ballot and a
 // lagging cohort became the quorum — not the chain, so the lane keeps serving
 // it. Once no voter reports it, the floor drops to the computed tip: it never
-// outlives its evidence, so it cannot pin a block no voter has finalized (a
-// wiped testnet, a wrong-chain pair that once formed a quorum), and a voter
-// that returns later does not bring it back.
+// outlives its evidence, and a voter that returns later does not bring it
+// back.
+//
+// Only a corroborated tip, one at least two voters already have, raises the
+// floor. A tip a lone voter defined (the only one with a head at a cold start)
+// is served but not remembered, so a rogue or wrong-chain head cannot raise
+// the floor and then back it on its own forever.
 //
 // The backing is read after the floor: the tip's ballot may predate a floor a
 // concurrent evaluation just raised, and a voter's finalized head only moves
 // up, so only a fresh read tells a voter that left from one read too early.
-// Only served values enter the floor, so a single voter cannot raise it, and
-// the steady state (tip equals floor) is one shared read.
-func (n *Network) holdFinalized(ctx context.Context, anchor *servedTipAnchor, q common.ServedTipQuorum, tip int64) int64 {
+// The steady state (tip equals floor) is one shared read.
+func (n *Network) holdFinalized(ctx context.Context, anchor *servedTipAnchor, q common.ServedTipQuorum, tip int64, corroborated bool) int64 {
 	for {
 		floor := anchor.finalizedFloor.Load()
-		if tip < floor && floor <= n.finalizedBacking(ctx, q) {
+		switch {
+		case tip == floor:
+			return tip
+		case tip < floor && floor <= n.finalizedBacking(ctx, q):
 			return floor
+		case tip > floor && !corroborated:
+			return tip
 		}
-		if tip == floor || anchor.finalizedFloor.CompareAndSwap(floor, tip) {
+		if anchor.finalizedFloor.CompareAndSwap(floor, tip) {
 			return tip
 		}
 	}
@@ -1011,26 +1029,35 @@ func (n *Network) finalizedBacking(ctx context.Context, q common.ServedTipQuorum
 	return backing
 }
 
-// shareFinalized lifts the network-wide finalized tip to the highest one any
-// instance served (servedFinalizedShared), so instances behind one load
+// shareFinalized lifts the network-wide finalized tip `served` to the highest
+// one any instance served (servedFinalizedShared), so instances behind one load
 // balancer agree: under holdFinalized's rule, only while a voter here still
 // reports it (finalizedBacking). A shared value no voter here backs is
-// ignored, as an instance's own floor is, and ages out as the chain passes
-// it, so a stale or rogue one cannot pin this instance. It publishes this
-// instance's raises; the steady state (tip equals the shared value) is one
-// shared read.
-func (n *Network) shareFinalized(ctx context.Context, q common.ServedTipQuorum, tip int64) int64 {
-	if n.servedFinalizedShared == nil || tip <= 0 {
-		return tip
+// ignored, as an instance's own floor is.
+//
+// Under holdFinalized's entry rule, only a corroborated computed tip is
+// published: upward when it passes the shared value, and downward when the
+// shared value has no backing here, so a value the chain left behind (a reset
+// chain, a far-ahead rogue pair) is replaced rather than kept. The counter
+// takes a drop only beyond its rollback tolerance. The steady state (tip equals
+// the shared value) is one shared read.
+func (n *Network) shareFinalized(ctx context.Context, q common.ServedTipQuorum, served, computed int64, corroborated bool) int64 {
+	if n.servedFinalizedShared == nil || served <= 0 {
+		return served
 	}
 	shared := n.servedFinalizedShared.GetValue()
 	switch {
-	case tip > shared:
-		n.servedFinalizedShared.TryUpdate(ctx, tip)
-	case tip < shared && shared <= n.finalizedBacking(ctx, q):
-		return shared
+	case corroborated && computed > shared:
+		n.servedFinalizedShared.TryUpdate(ctx, computed)
+	case served < shared:
+		if shared <= n.finalizedBacking(ctx, q) {
+			return shared
+		}
+		if corroborated {
+			n.servedFinalizedShared.TryUpdate(ctx, computed)
+		}
 	}
-	return tip
+	return served
 }
 
 // guardServedTipRegression returns the tip to serve for `pick`, substituting the
