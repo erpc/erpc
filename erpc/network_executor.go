@@ -433,6 +433,24 @@ func (e *networkExecutor) dataUnavailableCapReached(attempt int) bool {
 	return limit > 0 && attempt+1 >= limit
 }
 
+// blockSkipsAllFinal reports whether every cause of err is a block-availability
+// skip the gate judged final: it wraps those in ErrUpstreamRequestSkipped (see
+// handleBlockSkip). Waiting cannot change such a round, so retrying it only
+// repeats the same skips.
+func blockSkipsAllFinal(err error) bool {
+	causes := []error{err}
+	if ue, ok := err.(*common.ErrUpstreamsExhausted); ok {
+		causes = ue.Errors()
+	}
+	for _, c := range causes {
+		if !common.HasErrorCode(c, common.ErrCodeUpstreamRequestSkipped) ||
+			!common.HasErrorCode(c, common.ErrCodeUpstreamBlockUnavailable) {
+			return false
+		}
+	}
+	return len(causes) > 0
+}
+
 // shouldRetryWithReason returns the reason for retrying, or "" if no
 // retry should fire. The reason becomes the `reason` label of the
 // retry metric so operators can see which retry-path is busy.
@@ -458,6 +476,9 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 			return ""
 		}
 		if common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable) {
+			if blockSkipsAllFinal(err) {
+				return ""
+			}
 			if e.dataUnavailableCapReached(attempt) {
 				return ""
 			}
