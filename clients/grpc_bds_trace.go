@@ -51,6 +51,39 @@ func (c *GenericGrpcBdsClient) handleTraceBlock(ctx context.Context, conn *bdsCo
 	return rawResultResponse(req, jrReq, grpcResp.Result)
 }
 
+// handleParityTraceBlock maps trace_block. Its one param is a block number,
+// a tag, or a 32-byte block hash (Erigon and reth accept a hash).
+func (c *GenericGrpcBdsClient) handleParityTraceBlock(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	params, err := snapshotParams(jrReq)
+	if err != nil {
+		return nil, err
+	}
+	if len(params) != 1 {
+		return nil, unmappable("trace_block: want 1 param, got %d", len(params))
+	}
+	block, ok := params[0].(string)
+	if !ok {
+		return nil, unmappable("trace_block: params[0] must be a string")
+	}
+	grpcReq := &evm.ParityTraceBlockRequest{ChainId: c.chainIdParam()}
+	if len(block) == 66 {
+		hash, err := parseFixedHex(block, 32)
+		if err != nil {
+			return nil, unmappable("trace_block: %v", err)
+		}
+		grpcReq.BlockHash = hash
+	} else {
+		grpcReq.BlockNumber = &block
+	}
+	grpcResp, err := callBoundedT(ctx, func(ctx context.Context) (*evm.TraceResponse, error) {
+		return conn.rpcClient.ParityTraceBlock(ctx, grpcReq)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+	return rawResultResponse(req, jrReq, grpcResp.Result)
+}
+
 func (c *GenericGrpcBdsClient) handleTraceTransaction(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
 	params, err := snapshotParams(jrReq)
 	if err != nil {
