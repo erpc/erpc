@@ -67,8 +67,8 @@ type Network struct {
 	hashStale atomic.Pointer[[]string]
 
 	// servedTipAll is the network-wide lane. A lane publishes its Head and
-	// holds the advance-age watchdog and the regression guard's memory; the
-	// pick itself is stateless (common.PickServedTip).
+	// holds the advance-age watchdog, the regression guard's memory and the
+	// finalized floor; the pick itself is stateless (common.PickServedTip).
 	servedTipAll servedTipLane
 	// servedFinalizedShared is the highest network-wide Finalized any
 	// instance served (shareFinalized). Nil without shared state.

@@ -10309,7 +10309,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		network.cacheDal = slowCache.WithProjectId("prjA")
 
 		// First, make a request that will be cached for the middle range
-		middleRangeRequest := common.NewNormalizedRequest([]byte(`{
+		middleRangeBody := []byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getLogs",
 			"params": [{
@@ -10318,7 +10318,8 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				"address": "0x0000000000000000000000000000000000000000",
 				"topics": ["0x1234567890123456789012345678901234567890123456789012345678901234"]
 			}]
-		}`))
+		}`)
+		middleRangeRequest := common.NewNormalizedRequest(middleRangeBody)
 		middleRangeRequest.SetCacheDal(slowCache)
 		middleRangeRequest.SetNetwork(network)
 
@@ -10345,6 +10346,20 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)
 		resp.Release()
+
+		// Forward stores the response in a background goroutine and the memory
+		// connector applies writes asynchronously, so wait until the middle range
+		// is readable before the split request looks it up.
+		require.Eventually(t, func() bool {
+			probe := common.NewNormalizedRequest(middleRangeBody)
+			probe.SetNetwork(network)
+			cached, err := network.cacheDal.Get(ctx, probe)
+			if err != nil || cached == nil {
+				return false
+			}
+			cached.Release()
+			return true
+		}, 5*time.Second, 5*time.Millisecond, "middle range never became readable from cache")
 
 		// Now make the full request that should be split into three parts
 		fullRangeRequest := common.NewNormalizedRequest([]byte(`{

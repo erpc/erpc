@@ -945,6 +945,13 @@ export interface UpstreamConfig {
    * copied onto every upstream the provider generates.
    */
   creditUnits?: { [key: string]: number /* int64 */};
+  /**
+   * CreditAllowance is the prepaid credit allowance of the vendor account
+   * this upstream bills to. When set and the vendor reports account usage
+   * (common.CreditUsageProvider), the selection policy sees `u.creditPace`:
+   * credits used this billing period over the pro-rata allowance so far.
+   */
+  creditAllowance?: CreditAllowanceConfig;
   shadow?: ShadowUpstreamConfig;
   /**
    * Routing holds per-upstream routing hints consumed by the selection
@@ -1064,6 +1071,15 @@ export interface UpstreamIntegrityEthGetBlockReceiptsConfig {
 }
 export type UJAlias = UpstreamConfig;
 export type UYAlias = UpstreamConfig;
+/**
+ * CreditAllowanceConfig is a vendor account's prepaid credit allowance per
+ * billing period. ApiKey is the account's admin key; the vendor uses it to
+ * read account-wide usage, calls from outside eRPC included.
+ */
+export interface CreditAllowanceConfig {
+  credits: number /* int64 */;
+  apiKey: string;
+}
 export interface RateLimitAutoTuneConfig {
   enabled?: boolean;
   adjustmentPeriod: Duration;

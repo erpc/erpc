@@ -172,14 +172,14 @@ Behind without a break for its stall window (`headStallAfter`), `max(30s, 3 × m
 - **Boundary:** eRPC compares heights and block times, never block hashes, so it cannot tell a live fork from the canonical chain. During a halt, a node that moves within the plausible lead benches the halted ones after their stall window, and then defines `latest` alone. A benched dead-fork node that starts producing blocks again rejoins once its head reaches the corroborated head.
 - **Boundary:** the block-age rule cannot tell two heads frozen above one moving peer (a dead fork the minority left) from two halted honest nodes and one wrong-chain peer. It keeps the frozen pair, so a dead fork that most upstreams stayed on still defines `latest`.
 - **Boundary:** two chains under one chain id (an endpoint pointed at the wrong chain) differ by far more than any plausible lead, so only block age tells them apart. Until the slower chain goes twice its stall window without a block, quorum 2 over the pair serves the lower head; then the slower chain is benched, right or wrong. A wrong chain that makes blocks more often than that is never benched. Exclude such an endpoint in config.
-- **Boundary:** benching a voter that sat between the pick and a slower voter lowers `latest` to that slower voter's head, as any upstream leaving the ballot does. The regression guard holds only drops beyond `maxRegressionBlocks`.
+- **Boundary:** benching a voter that sat between the pick and a slower voter lowers `latest` to that slower voter's head, as any upstream leaving the ballot does. The regression guard holds only drops beyond `maxRegressionBlocks`; `finalized` holds at the [finalized floor](#finalized-floor).
 - **Boundary:** a `latestBlockMinus: N` upstream rejoins on its raw head but votes N below it, so its rejoin can lower `latest` by up to N.
 - **Boundary:** rejoin needs the benched head to reach the bar at one report. A node that always trails the second-highest head by a block or two rejoins late; until then it serves traffic while its lag stays under the policy threshold, but does not vote.
 - **Boundary:** a bench changes the ballots at once, but routing leaves the benched upstream at the selection policy's next evaluation (`evalInterval`, 15s by default). Until then a request for the new `latest` can reach it; without a configured availability bound nothing gates it, so its missing-data error is retried on another upstream.
 
 #### Regression guard
 
-When a pick falls more than `maxRegressionBlocks` (0 = 1024) below the corroborated evidence — the second-highest live head, or the last live-corroborated pick — the lane serves its last corroborated pick instead, never above the highest live head (`guardServedTipRegression`). It holds for at most 1 minute, then fails open and serves the pick as computed. In-process only; selectors without a lane get no guard; `-1` disables it. Each transition increments `erpc_network_served_tip_regression_total`. Source: <SourceLink file="erpc/networks.go" lines="944-1102" />
+When a pick falls more than `maxRegressionBlocks` (0 = 1024) below the corroborated evidence — the second-highest live head, or the last live-corroborated pick — the lane serves its last corroborated pick instead, never above the highest live head (`guardServedTipRegression`). It holds for at most 1 minute, then fails open and serves the pick as computed. In-process only; selectors without a lane get no guard; `-1` disables it. Each transition increments `erpc_network_served_tip_regression_total`. Source: <SourceLink file="erpc/networks.go" lines="1036-1206" />
 
 #### Subscriber delivery
 
@@ -370,6 +370,7 @@ With a `use-upstream` selector, `EvmRoutableUpstreams` narrows the candidates to
 14. **Finalized block polling is given up on unsupported chains.** After 10 consecutive `eth_getBlockByNumber("finalized")` refusals without any prior success, finalized is given up and retried every 10 minutes. `IsBlockFinalized` then falls back exclusively to `latestBlock −` the derived depth, also during the retries. On PoW chains or chains without EIP-4895 finality, this is the only reachable path.
 15. **Finalized trails by up to `finalizedDebounceDepthMultiplier` of the finality window.** Reads and cache hits classify a block as finalized against the request's `Head.Finalized`; an upstream's answer needs that upstream's own finalized block too, and an upstream on a minority fork never makes one final. Only the full poll and a `finalized` tag request move `Head.Finalized`: a request that names the `finalized` tag (any method, any param) takes its `Head` after the lane's finalized refresh. When no voter's finalized poll started within its finalized debounce, it starts one, or joins the one in flight, and waits for it, at most W, before interpolation and the cache lookup; so the tag trails by at most that debounce. A numbered read above `Head.Finalized` polls nothing.
 16. **Instances agree on network-wide `finalized` once their own voters report it.** An instance serves another's value only while one of its voters reports it finalized, so during poll lag two instances behind one load balancer can still differ. Use-upstream lanes keep a separate floor per instance.
+17. **`finalized` steps back when every voter at the floor leaves at once.** For example, one policy evaluation excludes the whole leading group: the floor drops to the pick of the voters left.
 
 ### Observability
 
@@ -420,7 +421,7 @@ Served-tip and bench metrics (`erpc_network_served_tip_*`, `erpc_upstream_head_b
 - [`health/tracker.go:L1937-L2033`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1937-L2033) — `SetFinalizedBlockNumber`, `rederiveNetworkFinalized`, `FinalizationLag` computation
 - [`common/defaults.go:L1718-L1977`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1718-L1977) — `DefaultEvmFinalityDepth=1024`, `DefaultDynamicBlockTimeDebounceMultiplier=0.7`
 - [`common/served_tip_test.go`](https://github.com/erpc/erpc/blob/main/common/served_tip_test.go) — unit tests for `PickServedTip` and quorum parsing
-- [`erpc/networks_served_tip_test.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_served_tip_test.go) — integration tests: quorum, voter ranks, benching, static caps, selector scoping, guarantee floors
+- [`erpc/networks_served_tip_test.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_served_tip_test.go) — integration tests: quorum, voter ranks, benching, static caps, selector scoping, guarantee floors, finalized floor
 
 ### Related pages
 

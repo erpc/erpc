@@ -912,6 +912,13 @@ export interface UpstreamConfig {
     creditUnits?: {
         [key: string]: number;
     };
+    /**
+     * CreditAllowance is the prepaid credit allowance of the vendor account
+     * this upstream bills to. When set and the vendor reports account usage
+     * (common.CreditUsageProvider), the selection policy sees `u.creditPace`:
+     * credits used this billing period over the pro-rata allowance so far.
+     */
+    creditAllowance?: CreditAllowanceConfig;
     shadow?: ShadowUpstreamConfig;
     /**
      * Routing holds per-upstream routing hints consumed by the selection
@@ -1033,6 +1040,15 @@ export interface UpstreamIntegrityEthGetBlockReceiptsConfig {
 }
 export type UJAlias = UpstreamConfig;
 export type UYAlias = UpstreamConfig;
+/**
+ * CreditAllowanceConfig is a vendor account's prepaid credit allowance per
+ * billing period. ApiKey is the account's admin key; the vendor uses it to
+ * read account-wide usage, calls from outside eRPC included.
+ */
+export interface CreditAllowanceConfig {
+    credits: number;
+    apiKey: string;
+}
 export interface RateLimitAutoTuneConfig {
     enabled?: boolean;
     adjustmentPeriod: Duration;
@@ -1115,6 +1131,7 @@ export interface EvmUpstreamConfig {
      * upstream when its blockAvailability upper bound is below that head or the head is unknown.
      * For an upstream whose own head lags the network: it answers only blocks it holds, and a block
      * it lacks fails as missing data so the next upstream answers, instead of an older "latest".
+     * Never a request whose tag reaches upstreams as is (translateLatestTag: false, skip-interpolation).
      */
     pinLatestTag?: boolean;
     /**
@@ -1223,15 +1240,11 @@ export interface FailsafeConfig {
      */
     matchCommitment?: ('none' | 'processed' | 'confirmed' | 'finalized')[];
     /**
-     * MatchRequestKind scopes this policy by who issued the request:
-     * "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
-     * the integrity module's canonical corroboration), or ""/"*" for both.
-     * This is what lets an operator give INTERNAL canonical fetches a
-     * consensus policy (quorum-verified ground truth, deduplicated to ~once
-     * per block by the ChainView) while user data methods rely on integrity
-     * validation instead of per-request fan-out.
+     * MatchRequestKind "user", "*" or "" matches every client request: no
+     * eRPC-own request (tracker fetch, head poll, probe) goes through a
+     * failsafe policy. "internal" is refused at load.
      */
-    matchRequestKind?: 'user' | 'internal' | '*';
+    matchRequestKind?: 'user' | '*';
     retry?: RetryPolicyConfig;
     circuitBreaker?: CircuitBreakerPolicyConfig;
     timeout?: TimeoutPolicyConfig;
@@ -1613,9 +1626,12 @@ export interface DirectiveDefaultsConfig {
      * retained only so existing YAML still parses. At startup the flags that map
      * to a current check are translated into `integrity.checks` by
      * migrateLegacyIntegrityChecks (an explicit `integrity` block wins per check);
-     * they are NOT read at runtime. The receipt-count / expected-block /
-     * receipt-to-transaction flags have no equivalent in the new model and are
-     * accepted but ignored. See docs/pages/config/failsafe/integrity.mdx.
+     * they are NOT read at runtime, except validateTransactionsRoot: false,
+     * which also says the network's roots are not Ethereum's trie, so the
+     * chain tracker takes gasUsed 0 as an empty block. The receipt-count /
+     * expected-block / receipt-to-transaction flags have no equivalent in
+     * the new model and are accepted but ignored. See
+     * docs/pages/config/failsafe/integrity.mdx.
      */
     validateTransactionsRoot?: boolean;
     validateHeaderFieldLengths?: boolean;
@@ -1915,7 +1931,9 @@ export interface EvmChainTrackerConfig {
  * static-capped, then benched and static-capped), and the served block is the
  * highest one at least Quorum of those voters already have. The health
  * tracker benches an upstream whose head stopped moving while another kept
- * advancing, until it catches up again.
+ * advancing, until it catches up again. "finalized" never steps back below a
+ * block already served, by this instance or (network-wide, through shared
+ * state) by another, while a voter here still reports it finalized.
  */
 export interface EvmServedTipConfig {
     /**
@@ -2819,7 +2837,7 @@ export declare const HeadFuture: HeadRule;
 export declare const HeadStale: HeadRule;
 /**
  * HeadRefusal is the refusal rule's verdict for one request's block, taken
- * once (spec §6.4), and the one retryable miss it got since.
+ * once (spec §6.4), and the retryable misses its legs got since.
  */
 export interface HeadRefusal {
     rule: HeadRule;
@@ -2833,10 +2851,15 @@ export interface HeadRefusal {
      * Refreshed: N was decided again after its stale reports were Asked.
      */
     refreshed: boolean;
+    /**
+     * Waited: N, near the ceiling, waited up to W for it (spec §6.4 near
+     * future).
+     */
+    waited: boolean;
 }
 /**
- * RefusalLeg is one execution of a request: a hedge leg, or a retry
- * round's. End it when it returns.
+ * RefusalLeg is one execution of a request: a consensus slot, a hedge
+ * leg, or a retry round's. One goroutine runs it.
  */
 export interface RefusalLeg {
 }
@@ -2846,18 +2869,14 @@ export interface RefusalLeg {
  */
 export type MissVerdict = number;
 /**
- * MissRetry: the request's one retryable miss; the leg retries.
+ * MissRetry: the leg's one retryable miss; the leg retries.
  */
 export declare const MissRetry: MissVerdict;
 /**
- * MissFinal: the answer after the miss, sent as the upstream gave it.
+ * MissFinal: the answer after the leg's miss, sent as the upstream
+ * gave it.
  */
 export declare const MissFinal: MissVerdict;
-/**
- * MissSibling: a leg running beside this one holds the miss; this leg
- * stops with a retryable miss.
- */
-export declare const MissSibling: MissVerdict;
 /**
  * SvmNetwork is the SVM-specific view of a Network. Production Network
  * implementations satisfy this automatically when the underlying network is
