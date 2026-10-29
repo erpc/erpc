@@ -617,7 +617,7 @@ From cursor `c`, first matching case:
 | `c` pinned | Applied: `c + 1` … |
 | `c` held in the pinned tree | Reverted: `c` … fork point + 1; Applied: fork point + 1 … |
 | `c` held in another tree | wait while fill links it, then the row above; fill reaches the window base first → `ErrOutOfRange` |
-| `c` not held, above the confirmed head | wait until the confirmed head reaches it; `c` above the network-wide ceiling for W (no upstream reports its height: a chain that restarted lower, §19 C16) → `ErrOutOfRange` (`cursor_unknown`) |
+| `c` not held, above the confirmed head | wait until the confirmed head reaches it. A cursor at or below the highest ceiling this instance has seen, once the network-wide ceiling has stood below it for W since its last fall (no upstream reports its height any more: a chain that restarted lower, §19 C16) → `ErrOutOfRange` (`cursor_unknown`); a cursor above every height this instance has seen waits (§19 D3) |
 | `c` not held, inside the window | fill down to `c.Number`; `c` pinned → that row. Else fetch `c.Hash` by hash: found → held and walked, and the rows above apply; not found → `ErrOutOfRange` |
 
 - Applied ends at the confirmed head, after `reorgWindow` blocks, or before the first block whose receipts the tap needs and the feed does not hold yet.
