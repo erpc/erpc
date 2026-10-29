@@ -359,30 +359,40 @@ func parsePoolConfig(uri string) (*pgxpool.Config, []string, error) {
 // pgxpool.NewWithConfig in v5 returns at once and dials in the background,
 // so an unreachable server, a bad password or a TLS failure would surface
 // only on the first query, and the initializer would mark the task ready.
-// Here MinConns connections (at least one) are opened and held at the same
-// time before the pool is returned; any failure closes the pool and returns
-// the dial error. This is the v4 contract: checkMinConns, then one Acquire.
+// Here MinConns connections (at least one, at most MaxConns, so the last
+// Acquire cannot wait for a slot that never frees) are opened and held at
+// the same time before the pool is returned; any failure closes the pool and
+// returns the dial error. This is the v4 contract: checkMinConns, then one
+// Acquire.
 func connectPool(ctx context.Context, config *pgxpool.Config) (*pgxpool.Pool, error) {
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, err
 	}
-	n := max(int(config.MinConns), 1)
-	conns := make([]*pgxpool.Conn, n)
-	errs := make([]error, n)
-	var wg sync.WaitGroup
-	for i := range n {
+	n := min(max(int(config.MinConns), 1), int(pool.Config().MaxConns))
+	var (
+		mu   sync.Mutex
+		held []*pgxpool.Conn
+		errs []error
+		wg   sync.WaitGroup
+	)
+	for range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			conns[i], errs[i] = pool.Acquire(ctx)
+			c, err := pool.Acquire(ctx)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+				return
+			}
+			held = append(held, c)
 		}()
 	}
 	wg.Wait()
-	for _, c := range conns {
-		if c != nil {
-			c.Release()
-		}
+	for _, c := range held {
+		c.Release()
 	}
 	if err := errors.Join(errs...); err != nil {
 		pool.Close()
