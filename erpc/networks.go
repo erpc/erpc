@@ -279,7 +279,7 @@ type servedTipAnchor struct {
 	// starts holding, once if it gives up) instead of once per request.
 	guardState atomic.Int32
 
-	// refreshedAtNs is when EvmRefreshHead last walked this axis's voters
+	// refreshedAtNs is when refreshLatest last walked this axis's voters
 	// (UnixNano). It saves each request the voter walk and an Ask per
 	// voter; the Ask paces the fetches, but within one cadence a routing
 	// order that rotates would Ask voters the last walk did not, and the
@@ -848,22 +848,29 @@ func isSimpleGroupSelector(selector string) bool {
 	return true
 }
 
-// EvmRefreshHead asks the pollers that decide the request's Latest for a
-// background refresh: only as many of the ballot's voters (voterSet's
-// number votes) as the quorum needs, in routing order, since a fresher
-// head anywhere else cannot move the served value. A lane walks its voters
-// at most once per poll cadence, the debounce each poller applies anyway,
-// so the per-request call costs no upstream iteration in between.
-func (n *Network) EvmRefreshHead(ctx context.Context) {
-	sel := requestSelector(ctx)
+// refreshLatest refreshes the pollers that decide selector sel's Latest
+// for a request that answers it (spec §6.8): only as many of the ballot's
+// voters (voterSet's number votes) as the quorum needs, in routing order,
+// since a fresher head anywhere else cannot move the served value. A lane
+// walks its voters at most once per poll cadence, the debounce each poller
+// applies anyway, so the per-request call costs no upstream iteration in
+// between. While Latest rests on reports younger than W the Asks run in
+// the background and the request reads Head at once, one refresh behind.
+// Once they are older, after an idle period, the request waits for the
+// Asks, at most W, then reads the Head they moved: else it would answer
+// the last full poll's Latest. A timeout or a failed Ask leaves Head as
+// it is.
+func (n *Network) refreshLatest(ctx context.Context, sel string) {
 	var ec *common.EvmNetworkConfig
 	if n.cfg != nil {
 		ec = n.cfg.Evm
 	}
-	if l := n.laneFor(sel); l != nil {
-		a := &l.latest
-		now, last := time.Now().UnixNano(), a.refreshedAtNs.Load()
-		if now-last < int64(ec.PollCadence(n.blockTimeOrCold())) || !a.refreshedAtNs.CompareAndSwap(last, now) {
+	l := n.laneFor(sel)
+	now := time.Now()
+	var last int64
+	if l != nil {
+		last = l.latest.refreshedAtNs.Load()
+		if now.UnixNano()-last < int64(ec.PollCadence(n.blockTimeOrCold())) {
 			return
 		}
 	}
@@ -872,11 +879,59 @@ func (n *Network) EvmRefreshHead(ctx context.Context) {
 		return
 	}
 	need := ec.ServedTipQuorum().Of(s.count())
+	w := health.FreshnessWindow(n.EvmBlockTime())
+	if now.Sub(latestRestsOn(s, need)) >= w {
+		n.awaitLatestRefresh(ctx, l, s, need, w)
+		return
+	}
+	if l != nil && !l.latest.refreshedAtNs.CompareAndSwap(last, now.UnixNano()) {
+		return
+	}
 	s.each(func(u common.Upstream, _ int64) bool {
 		u.(common.EvmUpstream).EvmStatePoller().AskBackground(common.HeadNeedNumber, 0, common.AskRefresh)
 		need--
 		return need > 0
 	})
+}
+
+// latestRestsOn is when the evidence Latest rests on was taken: the
+// need-th newest report of voters s (spec §6.8). Latest is the need-th
+// highest vote, so it is at least the lowest of the need newest votes, each
+// its node's head when the report was taken. Zero when s walks no voter
+// (the set changed since it was read).
+func latestRestsOn(s voterSet, need int) time.Time {
+	at := make([]time.Time, 0, s.count())
+	s.each(func(u common.Upstream, _ int64) bool {
+		at = append(at, u.(common.EvmUpstream).EvmStatePoller().LatestReportAt())
+		return true
+	})
+	if len(at) == 0 {
+		return time.Time{}
+	}
+	slices.SortFunc(at, func(a, b time.Time) int { return b.Compare(a) })
+	return at[min(need, len(at))-1]
+}
+
+// awaitLatestRefresh Asks the first need voters of s in routing order and
+// waits for their answers, at most w, then publishes lane l's Head (nil:
+// sel forms no lane and its Head is computed per read). No gate: every
+// request that finds Latest stale waits, and the Ask joins the fetch in
+// flight.
+func (n *Network) awaitLatestRefresh(ctx context.Context, l *servedTipLane, s voterSet, need int, w time.Duration) {
+	ctx, cancel := context.WithTimeout(ctx, w)
+	defer cancel()
+	var wg sync.WaitGroup
+	s.each(func(u common.Upstream, _ int64) bool {
+		sp := u.(common.EvmUpstream).EvmStatePoller()
+		wg.Go(func() { sp.Ask(ctx, common.HeadNeedNumber, 0, common.AskRefresh) })
+		need--
+		return need > 0
+	})
+	wg.Wait()
+	if l != nil {
+		l.latest.refreshedAtNs.Store(time.Now().UnixNano())
+		n.refreshLaneRecovered(l)
+	}
 }
 
 // awaitFinalizedRefresh refreshes the finalized numbers of every voter of

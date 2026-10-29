@@ -2207,13 +2207,27 @@ func TestInterpolation_EveryForm(t *testing.T) {
 		network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 		run(t, network, translated)
 
-		// A family-2 tag refreshes its axis's voters before forwarding:
-		// past one poll cadence, the request walks them again.
+		// A family-1 or family-2 latest request refreshes its axis's voters
+		// before it takes its Head, ahead of the cache: past one poll
+		// cadence, the request walks them again.
 		refreshed := &network.servedTipAll.latest.refreshedAtNs
-		time.Sleep(network.cfg.Evm.PollCadence(network.blockTimeOrCold()))
+		cadence := network.cfg.Evm.PollCadence(network.blockTimeOrCold())
+		time.Sleep(cadence)
 		before := refreshed.Load()
 		run(t, network, family2)
 		assert.Greater(t, refreshed.Load(), before, "eth_getBlockReceipts(latest) refreshes the latest head before forwarding")
+
+		time.Sleep(cadence)
+		before = refreshed.Load()
+		bn := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+		bn.SetNetwork(network)
+		bn.SetDirectives(&common.RequestDirectives{EnforceHighestBlock: true})
+		bnResp, err := network.Forward(ctx, bn)
+		require.NoError(t, err)
+		if bnResp != nil {
+			bnResp.Release()
+		}
+		assert.Greater(t, refreshed.Load(), before, "eth_blockNumber refreshes the latest head before it takes its Head")
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
 		req.SetNetwork(network)

@@ -40,7 +40,6 @@ func (n *queryTestNetwork) EvmHead(ctx context.Context, req *common.NormalizedRe
 func (n *queryTestNetwork) EvmLaneHead(string, string) common.EvmHead {
 	return n.EvmHead(context.Background(), nil)
 }
-func (n *queryTestNetwork) EvmRefreshHead(ctx context.Context) {}
 
 // queryTestConfigUpstream is a minimal common.Upstream with a given config.
 type queryTestConfigUpstream struct {

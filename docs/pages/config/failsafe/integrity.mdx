@@ -138,7 +138,8 @@ a lower one raised, with no re-request. The head is resolved request-aware: a
 
 **`eth_getBlockByNumber[latest/finalized]`.** The tag is interpolated to the request's
 `Latest`/`Finalized`, like every method's, before the cache and every attempt; each such
-request also asks the voters' pollers for a debounced refresh, as `eth_blockNumber` does.
+request takes its head after the voters' refresh, as `eth_blockNumber` does: waited for, at
+most W, when the head is older than W, else in the background.
 No answer is re-requested. A `null` for an interpolated tag follows
 `enforceNonNullTaggedBlocks`, which reads the tag the client sent. <SourceLink file="architecture/evm/eth_getBlockByNumber.go" />
 

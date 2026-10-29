@@ -61,9 +61,6 @@ func HandleNetworkPreForward(ctx context.Context, network common.Network, upstre
 	case "trace_filter", "arbtrace_filter":
 		return networkPreForward_trace_filter(ctx, network, upstreams, nq)
 	}
-	if _, ok := blockByTagFamily[m]; ok {
-		return networkPreForward_blockByTag(ctx, network, nq)
-	}
 	return false, nil, nil
 }
 
