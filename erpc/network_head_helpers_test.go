@@ -22,9 +22,11 @@ func laneCeilingOf(n *Network) (int64, bool) {
 }
 
 // freshHeadMemory wipes the network-wide lane's guard, watchdog and
-// finalized-floor memory, as in a process that has evaluated nothing yet:
-// the head loop already evaluated the partial ballots a fixture's setup
-// pushes, head by head.
+// finalized-floor memory, the shared floor included, as in a cluster that
+// has evaluated nothing yet: the head loop already evaluated the partial
+// ballots a fixture's setup pushes, head by head. A max-only counter cannot
+// be lowered, so the network stops sharing; only laneTip of this lane reads
+// it, under l.mu.
 func freshHeadMemory(n *Network) {
 	l := &n.servedTipAll
 	l.mu.Lock()
@@ -37,6 +39,7 @@ func freshHeadMemory(n *Network) {
 		a.guardState.Store(servedTipGuardHealthy)
 	}
 	l.finalizedFloor = 0
+	n.servedFinalizedShared = nil
 	l.head.Store(nil)
 }
 

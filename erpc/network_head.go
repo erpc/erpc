@@ -293,14 +293,15 @@ func (n *Network) computeHead(l *servedTipLane, sel string) common.EvmHead {
 // configured quorum of the lane's eligible voters already has (evmTipBallot,
 // common.PickServedTip), guarded against a regression far below the live
 // heads, clamped to every configured guarantee, held at the lane's finalized
-// floor (finalized only, holdFinalized), then exported on the lane.
+// floor and, network-wide, at the finalized other instances served
+// (finalized only, holdFinalized, shareFinalized), then exported on the lane.
 //
 // The guard is in-process, bounded and one-directional (it can only hold the
 // tip, and only briefly), and it cannot produce a block that no live upstream
-// reports in the very same evaluation. The finalized floor is in-process too,
-// and holds a block only while a voter of the same evaluation reports it.
-// Nothing is persisted and nothing is predicted, so no inherited or rogue
-// value can pin, freeze or poison the result
+// reports in the very same evaluation. The finalized floors hold a block only
+// while a voter of the same evaluation reports it, the shared one included.
+// Nothing else is persisted and nothing is predicted, so no inherited or
+// rogue value can pin, freeze or poison the result
 // (networks_served_tip_invariants_test.go pins those outcomes against
 // the frozen-tip regression).
 func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool) int64 {
@@ -346,12 +347,16 @@ func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool) int64 {
 	}
 
 	// Finalized floor (#1353): a change of voters, in the lane's ballot or a
-	// guarantee subset's, cannot pull "finalized" below a block this lane
-	// served while a voter of each still reports it. laneTip of a lane runs
-	// only under l.mu (refreshLane), so the floor and this evaluation's
-	// backing are read together.
+	// guarantee subset's, cannot pull "finalized" below a block this lane,
+	// or for the network-wide lane any instance, served while a voter of
+	// each still reports it. laneTip of a lane runs only under l.mu
+	// (refreshLane), so the floor and this evaluation's backing are read
+	// together.
 	if finalized && l != nil {
 		tip = l.holdFinalized(tip, backing)
+		if l == &n.servedTipAll {
+			tip = n.shareFinalized(tip, backing)
+		}
 	}
 
 	// Watchdog anchor: when did this process last see the served value change.
