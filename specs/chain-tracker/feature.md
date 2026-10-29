@@ -413,7 +413,7 @@ Fork choice:
 
 1. Hold: an empty tracker holds the first vote as a root. A vote more than `maxBackfill` after the head, by header time, becomes a root at once. Any other vote whose parent is not held is walked (§8, class 1): missing heights by number, each checked against the parentHash of the block above, and a mismatch fetched by hash from its sender. The walk stops at a held header, or after `reorgWindow` blocks, where its lowest header becomes a root. Client and integrity answers inside the window are held; they never walk. A tracker that no history serves (no open tap, integrity follow included, and no integrity check on its network that reads pins) walks and fills nothing: a vote whose parent is not held becomes a root at once and replaces the older trees, and that is no re-anchor. Its first tap or check starts history from its head.
 2. Fill: every root is extended downward (§9) until it joins another tree, reaches the window base, names the all-zero parentHash (the chain's first block), or names a parent no upstream returns by hash in one full sweep: that root is final, never fetched below.
-3. Vote: a voter's hash vote moves to its newest header once that header is held; until then its previous vote stays. An ancestor of the current vote does not move it back.
+3. Vote: a voter's hash vote moves to its newest header once that header is held; until then its previous vote stays. An ancestor of the current vote does not move it back; a lower header with a later timestamp is no ancestor (a chain that restarted lower, §19 C16).
 4. Choose: take the tree with the most votes; a tie keeps the tree of the pins. In it, from the root, follow the child whose subtree holds the most votes; a tie keeps the pinned child; a block with no voted child follows its pinned child. Stop at a block with no child to follow, or at a tie with no pinned child. The last block followed is the head; the path from the root to it is the pins.
 5. Settle: a tie in rule 4, or a hash vote off the pins (§6.3), runs a settle (§6.8). Each answer is walked like a vote; once held, a voter's answer is its hash vote, and a non-voter's adds one vote for this decision only: it counts while the votes alone still meet that tie or dispute, and backs no head above the one decided. The pins stay while a round is out, at most W from its start; walks still out then count as no answer. No answer: the settle runs again after the Ask's backoff; no target: after one block time. A refresh (§6.3) runs once per voter and fork point; any round that ends over a dispute counts as the refresh of every vote it disputes.
 6. No source with a fresh hash vote, with demand: the tracker Asks the first voter in selection order with a hash need, once per cadence and no faster than the demand's pace. That answer is the only vote until the next one: the asked voter's votes no newer than its last answer count as that answer, and a full or catch-up poll of a voter that is no source does not stop the Asks. An answer that conflicts with the pins starts a settle.
@@ -597,7 +597,7 @@ Every tracker fetch goes through one scheduler per (network, instance). Head fet
 
 ## 9. Window
 
-- Network-wide tracker: held headers whose timestamp is within `maxBackfill` of the head's, at least `reorgWindow` blocks below the head.
+- Network-wide tracker: held headers whose timestamp is within `maxBackfill` of the head's, at least `reorgWindow` blocks below the head. A tree above the head (a chain that restarted lower) is held by the same timestamp rule, voted or not.
 - Group trackers: `reorgWindow` blocks.
 - Orphans: at most 4 per height; the oldest goes first.
 - Receipts: held for blocks within `reorgWindow` of the head, orphans included. Older receipts are fetched for the Read that needs them and not kept.
@@ -617,7 +617,7 @@ From cursor `c`, first matching case:
 | `c` pinned | Applied: `c + 1` … |
 | `c` held in the pinned tree | Reverted: `c` … fork point + 1; Applied: fork point + 1 … |
 | `c` held in another tree | wait while fill links it, then the row above; fill reaches the window base first → `ErrOutOfRange` |
-| `c` not held, above the confirmed head | wait until the confirmed head reaches it |
+| `c` not held, above the confirmed head | wait until the confirmed head reaches it; `c` above the network-wide ceiling for W (no upstream reports its height: a chain that restarted lower, §19 C16) → `ErrOutOfRange` (`cursor_unknown`) |
 | `c` not held, inside the window | fill down to `c.Number`; `c` pinned → that row. Else fetch `c.Hash` by hash: found → held and walked, and the rows above apply; not found → `ErrOutOfRange` |
 
 - Applied ends at the confirmed head, after `reorgWindow` blocks, or before the first block whose receipts the tap needs and the feed does not hold yet.
@@ -739,8 +739,8 @@ Cost, measured 2026-10-14 on public RPCs, 5 consecutive blocks each:
 
 ## 14. Shared state
 
-- Per-upstream latest and finalized counters are max-only on every path (pubsub, initial fetch, reconcile, background push): a remote value higher than the local one is accepted whatever its timestamp (#1243). Earliest, cordon and SVM floor counters keep timestamp order.
-- Timestamps decide only large rollbacks (more than 1024 blocks below the current value); smaller drops are noise (#222). While a counter holds a value from such a drop or a rewind, a higher state is accepted only when it is newer than that value, so an older higher state never undoes it.
+- Per-upstream latest and finalized counters are max-only on every path (pubsub, initial fetch, reconcile, background push): a remote value higher than the local one is accepted whatever its timestamp (#1243), unless it is stamped before the counter's last large drop or rewind (below). Earliest, cordon and SVM floor counters keep timestamp order.
+- Timestamps decide only large rollbacks (more than 1024 blocks below the current value); smaller drops are noise (#222). A counter keeps the time of its last such drop or rewind while it rises from there: a higher state stamped before that time never wins, however high, so an older state never undoes a drop, not even one whose publish was lost to another instance's lock (§19 C16).
 - Freshness is this instance's clock, never the writer's: every number need reads the report time (a local report's send time, a remote value's receive time); `IsStale` also counts the end of each refresh attempt, an answer, an error or a timeout, so refreshes are debounced.
 - Connectors deliver every change of a counter's value or timestamp, and the counter decides; the DynamoDB watch no longer drops an older timestamp.
 - A rejected remote state is counted in `erpc_shared_counter_remote_rejected_total{reason}`.
@@ -1018,7 +1018,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | C13 | chain without a `finalized` tag | `finalized` = latest − derived depth (at least 30 min); cache uses it |
 | C14 | 2 of 4 votes on a branch that does not link | canonical stays; no stall |
 | C15 | hashes and roots not Ethereum's (Hedera, Kaia): no header hash recomputes, an empty block's `transactionsRoot` is keccak(""); `validateTransactionsRoot: false` | `gasUsed` 0 is an empty block: its receipts are never fetched; no receipts or logs fetch fails; no tap ends `1013` |
-| C16 | testnet reset: every vendor restarts on a new genesis with the same chainId, its head dropping from millions to 10 | `eth_blockNumber` follows within 2 min (the 60s regression guard, then 60s); every tap restarts on the new chain; every latest counter follows; no read answers from the old chain, its cached final block included |
+| C16 | testnet reset: every vendor restarts on a new genesis with the same chainId, its head dropping from millions to 10 | `eth_blockNumber` follows within 2 min (the 60s regression guard, then 60s); every tap restarts on the new chain; a gRPC stream resumed after the reset from an old-chain cursor ends `OUT_OF_RANGE` within W of the ceiling's drop; every latest counter follows and stays on the new chain; no read answers from the old chain, its cached final block included; a read of an old-chain block at or below `Latest` while the guard holds it may count `retried_missing` |
 | C17 | no block for 30 min, past `maxBackfill`, then 20 blocks on demand, each 0–60s after the last | no upstream benched; W stays under its 60s cap; every tap gets every block within its bound |
 | C18 | one wss upstream that finalizes 2 below its head; chain halted; a reorg 3 deep reverts the block one instance's own finalized poll covered | `final_hash_changed` counted only on that instance; every client told of the reorg |
 | D1 | ws client stops reading for 20 blocks; gRPC client stops reading | `newHeads` restart past `reorgWindow`; gRPC `UNAVAILABLE` after the 10s send wait; other taps unaffected |
