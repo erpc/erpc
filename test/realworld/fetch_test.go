@@ -355,7 +355,7 @@ func c7() spec {
 		reanchor, outOfRange := make([]float64, len(s.h.pods)), make([]float64, len(s.h.pods))
 		for pod := range s.h.pods {
 			reanchor[pod], _ = s.metric(pod, "erpc_chain_tracker_reanchor_total", nil)
-			outOfRange[pod], _ = s.metric(pod, "erpc_tap_out_of_range_total", nil)
+			outOfRange[pod] = s.tapsLost(pod)
 		}
 		s.chain.Halt(true)
 		s.logf("halted at %d for %s", s.chain.Tip().Number, c7Halt)
@@ -370,7 +370,7 @@ func c7() spec {
 			if v, _ := s.metric(pod, "erpc_chain_tracker_reanchor_total", nil); v > reanchor[pod] {
 				s.violate(s.name, "pod-%d: re-anchored %v times catching up %d blocks inside maxBackfill", pod+1, v-reanchor[pod], c7Burst)
 			}
-			if v, _ := s.metric(pod, "erpc_tap_out_of_range_total", nil); v > outOfRange[pod] {
+			if v := s.tapsLost(pod); v > outOfRange[pod] {
 				s.violate(s.name, "pod-%d: %v taps out of range on a %d-block burst", pod+1, v-outOfRange[pod], c7Burst)
 			}
 		}

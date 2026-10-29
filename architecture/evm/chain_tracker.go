@@ -2588,6 +2588,10 @@ func (t *ChainTracker) HashVoting() bool {
 //     below it;
 //   - c not held, above the head: a wait for the head; out of range once
 //     c names a height upstreams reported and no longer do (ceilingLeft);
+//   - c not held, below the lowest pin while fill has not reached the
+//     window base: c fetched by hash once; older than the window below the
+//     head by header time, or null from every upstream, out of range at
+//     once, else as the case below;
 //   - c not held, inside the window: a wait for fill down to c.Number,
 //     then c fetched by hash: found, it is held and filled as above, or
 //     out of range when the window no longer holds it; null from every
@@ -2605,7 +2609,7 @@ func (t *ChainTracker) HashVoting() bool {
 // waits for them, fetched by hash, as it does for the receipts of Reverted
 // blocks. A new head alone does not restart that wait.
 func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, o indexer.ReadOpts) (indexer.Batch, error) {
-	fetched := false
+	fetched, probed := false, false
 	var retryAt time.Time
 	rr := &readReceipts{o: o, got: make(map[[32]byte]*heldReceipts)}
 	var job *receiptsJob
@@ -2624,12 +2628,20 @@ func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, o indexer.Rea
 		if err != nil || len(b.Applied) > 0 || len(b.Reverted) > 0 {
 			return b, err
 		}
+		fills := step == readWaitFill || step == readBelowBase
 		switch {
-		case step == readWaitFill && unfill == nil:
+		case fills && unfill == nil:
 			unfill = t.wantFill(c.Hash)
-		case step != readWaitFill && unfill != nil:
+		case !fills && unfill != nil:
 			unfill()
 			unfill = nil
+		}
+		if step == readBelowBase && !probed {
+			probed = true
+			if err := t.probeBelow(ctx, c, s.head()); err != nil {
+				return indexer.Batch{}, err
+			}
+			continue
 		}
 		var retry <-chan time.Time
 		var receipts <-chan struct{}
@@ -2722,6 +2734,7 @@ const (
 	readWaitTrees                 // until the pins or the held trees change
 	readWaitHead                  // as readWaitTrees, c not held, above the head
 	readWaitFill                  // as readWaitTrees, while fill may place c
+	readBelowBase                 // as readWaitFill, c not held, below the lowest pin
 	readFetch                     // fetch c by hash
 )
 
@@ -2755,7 +2768,7 @@ func (t *ChainTracker) readAt(s *feedState, tr *treeState, c indexer.Cursor, rr 
 		return indexer.Batch{}, readWaitHead, nil
 	}
 	if c.Number < s.base {
-		return indexer.Batch{}, readWaitFill, nil
+		return indexer.Batch{}, readBelowBase, nil
 	}
 	return indexer.Batch{}, readFetch, nil
 }
@@ -2936,6 +2949,31 @@ func (t *ChainTracker) fetchCursor(ctx context.Context, c indexer.Cursor) (retry
 		}
 	}
 	return time.Time{}, nil
+}
+
+// probeBelow fetches c by hash for a Read whose cursor is below the lowest
+// pin while fill has not reached the window base, which can take minutes
+// at one fetch per header. Older than the window below head by header
+// time, or null from every upstream, c is out of range now; any other
+// outcome leaves the Read waiting for fill. No tracker gets the answer, so
+// fill alone places a cursor inside the window, as before.
+func (t *ChainTracker) probeBelow(ctx context.Context, c indexer.Cursor, head *chainHeader) error {
+	if !t.canFetch() {
+		return nil
+	}
+	res := t.fetch.submit(nil, t.headerSpec(classFill, "eth_getBlockByHash", hexHash(c.Hash), "", false)).wait(ctx)
+	h, _ := res.val.(*chainHeader)
+	switch {
+	case ctx.Err() != nil:
+		return ctx.Err()
+	case errors.Is(res.err, errSchedulerClosed):
+		return res.err
+	case errors.Is(res.err, errFetchNotFound), h != nil && h.number != c.Number:
+		return indexer.OutOfRangeError{Reason: indexer.OutOfRangeCursorUnknown}
+	case h != nil && !t.holds(head, h):
+		return indexer.OutOfRangeError{Reason: indexer.OutOfRangeBelowWindow}
+	}
+	return nil
 }
 
 // Want registers a tap's o until release: history serves the tracker while

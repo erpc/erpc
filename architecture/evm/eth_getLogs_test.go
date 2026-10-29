@@ -133,8 +133,6 @@ func (m *mockNetwork) headAxis(method string, ctx context.Context) (v int64) {
 	return m.MethodCalled(method, ctx).Get(0).(int64)
 }
 
-func (m *mockNetwork) EvmRefreshHead(ctx context.Context) {}
-
 var _ common.EvmUpstream = (*mockEvmUpstream)(nil)
 
 type mockEvmUpstream struct {

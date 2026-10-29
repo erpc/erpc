@@ -39,7 +39,7 @@ const (
 	// (architecture/evm/evm_state_poller.go), the bootstrap poll the
 	// first; one vote decides a ballot with fewer votes than the quorum.
 	// Each read refreshes the finalized axis at most once per cadence, on
-	// the quorum (2) of the 4 voters in routing order (EvmRefreshHead,
+	// the quorum (2) of the 4 voters in routing order (refreshLatest,
 	// §6.8), and that order may rotate: one voter's 9 more polls take at
 	// most 9 × 4 / 2 = 18 reads, and the next read answers.
 	c13FinalizedReads = 19

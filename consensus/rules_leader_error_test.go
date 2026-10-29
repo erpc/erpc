@@ -41,7 +41,6 @@ func (n *leaderNetwork) EvmHead(context.Context, *common.NormalizedRequest) comm
 func (n *leaderNetwork) EvmLaneHead(string, string) common.EvmHead {
 	return n.EvmHead(context.Background(), nil)
 }
-func (n *leaderNetwork) EvmRefreshHead(context.Context) {}
 
 // Without this, a new EvmNetwork method makes the fake silently stop being an
 // EvmNetwork and the leader lookup returns nil.
@@ -77,7 +76,7 @@ func TestOnlyBlockHeadLeader_LowParticipants_ReturnsLeaderError(t *testing.T) {
 	require.Len(t, analysis.groups, 1, "both missing-data answers must share one verdict group")
 
 	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
-	winner := e.determineWinner(&lg, analysis)
+	winner := e.determineWinner(context.Background(), &lg, analysis)
 	require.NotNil(t, winner)
 	require.Error(t, winner.Error)
 	var md *common.ErrEndpointMissingData
@@ -109,7 +108,7 @@ func TestOnlyBlockHeadLeader_LowParticipants_LeaderInfraStaysLowParticipants(t *
 	lg := zerolog.Nop()
 	analysis := newConsensusAnalysis(&lg, ctx, cfg, parts)
 	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
-	winner := e.determineWinner(&lg, analysis)
+	winner := e.determineWinner(context.Background(), &lg, analysis)
 	require.NotNil(t, winner)
 	require.Error(t, winner.Error)
 	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusLowParticipants))

@@ -405,6 +405,78 @@ func TestChainTracker(t *testing.T) {
 		assert.True(t, held, "the orphan stays held, a final root")
 	})
 
+	// Fill fetches one header per round trip, so a Read whose cursor lay
+	// below the lowest pin waited for fill to reach the window base before
+	// it said out of range (real world: 12s for 1,500 blocks; minutes in
+	// production). One by-hash fetch of the cursor decides at once by its
+	// header time (spec §10.1); a cursor inside the window still waits.
+	t.Run("a cursor below the lowest pin is out of range at once when older than the window", func(t *testing.T) {
+		ctx := context.Background()
+		net := newServedChain(t, "evm:below-pins")
+		for n := uint64(0); n <= 300; n++ {
+			net.serve(n, testHash("a", n), testHeader(n, testHash("a", n), testHash("a", n-1)))
+		}
+		net.mu.Lock()
+		net.blocks[testHash("e", 150)] = json.RawMessage(`null`)
+		net.mu.Unlock()
+		// 100s of chain time at one block a second: the window base is 200.
+		c := newChainTracker(t.Context(), net, 32, 100*time.Second, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		t.Cleanup(c.Want(indexer.ReadOpts{}))
+		// Fill stalls at 267, below reorgWindow under the head.
+		net.hold("0x10b")
+		for _, src := range []string{"a", "b"} {
+			c.Observe(src, testHeader(300, testHash("a", 300), testHash("a", 299)), true)
+		}
+		require.Eventually(t, func() bool {
+			c.sync(ctx)
+			v, _ := c.HashAt(268)
+			return v == testHash("a", 268)
+		}, 5*time.Second, 5*time.Millisecond, "fill runs reorgWindow below the head")
+		cursor := func(tag string, n uint64) indexer.Cursor {
+			var h [32]byte
+			require.True(t, decodeHex32(testHash(tag, n), &h))
+			return indexer.Cursor{Number: n, Hash: h}
+		}
+		for _, tc := range []struct {
+			what   string
+			c      indexer.Cursor
+			reason string
+		}{
+			{"canonical, 150s below the head", cursor("a", 150), indexer.OutOfRangeBelowWindow},
+			{"null from every upstream", cursor("e", 150), indexer.OutOfRangeCursorUnknown},
+		} {
+			rctx, cancel := context.WithTimeout(ctx, time.Second)
+			_, err := c.Read(rctx, tc.c, indexer.ReadOpts{})
+			cancel()
+			var oor indexer.OutOfRangeError
+			require.ErrorAs(t, err, &oor, "cursor %s: out of range within 1s while fill stalls", tc.what)
+			assert.Equal(t, tc.reason, oor.Reason, tc.what)
+		}
+
+		before := net.byHash.Load()
+		got := make(chan indexer.Batch, 1)
+		go func() {
+			b, err := c.Read(t.Context(), cursor("a", 240), indexer.ReadOpts{})
+			assert.NoError(t, err)
+			got <- b
+		}()
+		require.Eventually(t, func() bool { return net.byHash.Load()-before == 1 }, 2*time.Second, 5*time.Millisecond, "the cursor 60s below the head is fetched by hash")
+		select {
+		case b := <-got:
+			t.Fatalf("cursor 60s below the head: Read returned %d blocks while fill stood at 268", len(b.Applied))
+		case <-time.After(300 * time.Millisecond):
+		}
+		assert.EqualValues(t, 1, net.byHash.Load()-before, "one by-hash fetch per cursor, not one per Read pass")
+		net.release("0x10b")
+		select {
+		case b := <-got:
+			require.NotEmpty(t, b.Applied)
+			assert.Equal(t, uint64(241), b.Applied[0].Number, "the Read resumes after its cursor once fill places it")
+		case <-time.After(5 * time.Second):
+			t.Fatal("cursor 60s below the head: no batch after fill resumed")
+		}
+	})
+
 	// A single upstream pinned a sibling at the finalized height, then its
 	// finalized poll answered that height with another hash before its head
 	// moved to the canonical branch (dev: 19 final_hash_changed on three

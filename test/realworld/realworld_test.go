@@ -96,6 +96,7 @@ func catalogue() []phaseSpec {
 		{"c18", 12601, []spec{c18()}},
 		{"pruned", 12701, []spec{u20(true), u20(false)}},
 		{"p12", 12801, []spec{p12()}},
+		{"p13", 12901, []spec{p13()}},
 		{"z1", 13001, []spec{z1()}},
 		{"z2", 13051, []spec{z2()}},
 		{"z3", 13101, []spec{z3()}},
@@ -491,8 +492,8 @@ func d1() spec {
 		sh := s.addHeads("p1-heads-slow", 0, true, "ws:jump")
 		sg := s.addGrpc("p1-grpc-slow", 0, 0, true, "grpc:Unavailable")
 		s.blocks(25)
-		lag := map[string]string{"transport": "ws", "kind": "newHeads", "reason": "lag"}
-		lag0, _ := s.metric(0, "erpc_tap_out_of_range_total", lag)
+		lag := map[string]string{"transport": "ws", "kind": "newHeads", "reason": "lagging", "detail": "lag"}
+		lag0, _ := s.metric(0, "erpc_tap_end_total", lag)
 		at := time.Now()
 		sh.pause(slowPauseBlocks * blockTime)
 		sg.pause(2 * grpcSendWait)
@@ -506,8 +507,8 @@ func d1() spec {
 		if !restarted {
 			s.violate(sh.name, "no restart past reorgWindow after it stopped reading for %d blocks", slowPauseBlocks)
 		}
-		if v, _ := s.metric(0, "erpc_tap_out_of_range_total", lag); v <= lag0 {
-			s.violate(sh.name, "pod-1: erpc_tap_out_of_range_total{reason=lag} stayed %v", v)
+		if v, _ := s.metric(0, "erpc_tap_end_total", lag); v <= lag0 {
+			s.violate(sh.name, "pod-1: erpc_tap_end_total{reason=lagging,detail=lag} stayed %v", v)
 		}
 		if !sg.endedWith(at, time.Now(), func(e clientEnd) bool { return e.server && strings.HasPrefix(e.reason, "UNAVAILABLE") }) {
 			s.violate(sg.name, "StreamBlocks did not end UNAVAILABLE while the client read nothing for %s", 2*grpcSendWait)

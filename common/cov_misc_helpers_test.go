@@ -12,7 +12,6 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,7 +57,6 @@ type covMiscEvmNetwork struct {
 	*covMiscNetwork
 	latest, finalized int64
 	leader            Upstream
-	refreshed         atomic.Int32
 	routable          []Upstream
 }
 
@@ -68,7 +66,6 @@ func (n *covMiscEvmNetwork) EvmHead(context.Context, *NormalizedRequest) EvmHead
 func (n *covMiscEvmNetwork) EvmLaneHead(string, string) EvmHead {
 	return n.EvmHead(context.Background(), nil)
 }
-func (n *covMiscEvmNetwork) EvmRefreshHead(context.Context) { n.refreshed.Add(1) }
 func (n *covMiscEvmNetwork) EvmRoutableUpstreams(context.Context) iter.Seq[Upstream] {
 	return func(yield func(Upstream) bool) {
 		for _, u := range n.routable {

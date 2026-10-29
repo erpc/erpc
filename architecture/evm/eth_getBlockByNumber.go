@@ -30,18 +30,6 @@ var blockByTagFamily = map[string]struct{}{
 	"arbtrace_block":                          {},
 }
 
-// networkPreForward_blockByTag asks the voters' pollers for a debounced
-// background refresh of Latest when the request names the "latest" tag
-// (spec §7 family 2), as eth_blockNumber does: the tag is interpolated to
-// the request's Head, and the next request reads a fresher one. A
-// "finalized" tag already waited for its refresh (Network.Forward).
-func networkPreForward_blockByTag(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
-	if requestBlockTag(ctx, nq) == "latest" {
-		common.EvmRefreshHead(network, ctx)
-	}
-	return false, nil, nil
-}
-
 func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartDetailSpan(ctx, "Network.PostForward.eth_getBlockByNumber", trace.WithAttributes(
 		attribute.String("request.id", fmt.Sprintf("%v", nq.ID())),

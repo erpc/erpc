@@ -18731,15 +18731,15 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_tap_out_of_range_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\"}[1m])) by (project, network, transport, kind, reason)",
+              "expr": "sum(increase(erpc_tap_end_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\"}[1m])) by (project, network, transport, kind, reason, detail)",
               "format": "time_series",
               "interval": "1m",
-              "legendFormat": "{{project}}, {{network}}, {{transport}}, {{kind}}, {{reason}}",
+              "legendFormat": "{{project}}, {{network}}, {{transport}}, {{kind}}, {{reason}}, {{detail}}",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "Tap Out of Range by Reason",
+          "title": "Tap Ends by Reason",
           "type": "timeseries"
         },
         {

@@ -304,7 +304,8 @@ var tapEndReasons = []string{indexer.OutOfRangeLag, indexer.OutOfRangeBelowWindo
 func tapEndsOf(kind string) tapEnds {
 	out := make(tapEnds, len(tapEndReasons)+1)
 	for _, r := range tapEndReasons {
-		out[r] = testutil.ToFloat64(telemetry.MetricTapOutOfRangeTotal.WithLabelValues("test_ws", "evm:123", "ws", kind, r))
+		out[r] = testutil.ToFloat64(telemetry.MetricTapEndTotal.WithLabelValues("test_ws", "evm:123", "ws", kind,
+			indexer.OutOfRangeError{Reason: r}.EndReason(), r))
 	}
 	ch := make(chan prometheus.Metric, 64)
 	go func() {

@@ -10,8 +10,10 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -87,6 +89,11 @@ func Init(
 				Msg("some metrics.customizations rules do not apply to the family they name")
 		}
 	}
+
+	// Let admin uncordon clear consensus sit-out state without an upstream →
+	// consensus import. Scoped by project: same-ID upstreams in different
+	// projects keep independent sit-outs.
+	upstream.SetSitoutResetHook(consensus.ResetSitout)
 
 	// Install a global networkId -> alias resolver so network-labeled metrics from
 	// components that only know the raw networkId (e.g. the gRPC cache connector,
@@ -224,6 +231,13 @@ func Init(
 	if cfg.Server != nil && cfg.Server.WaitAfterShutdown != nil {
 		time.Sleep(cfg.Server.WaitAfterShutdown.Duration())
 	}
+	// CloseAll waits for in-flight consensus analyzers, then flushes exporters.
+	// Fire-and-forget rounds outlive HTTP shutdown and still export misbehavior.
+	// Bound the wait: one hung analyzer must not block process exit while the
+	// metrics server stays up (review finding). 5s matches the metrics drain.
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	consensus.CloseAll(closeCtx)
 	if metricsSrv != nil {
 		logger.Info().Msg("shutting down metrics server...")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -431,7 +431,7 @@ If you serve [`eth_subscribe`](/operation/websocket) traffic, a few additional n
 - **Upstream load does not grow with clients** — `newHeads` is one upstream subscription per subscription source, from network init; `logs` makes no upstream subscription: each instance fetches `eth_getBlockReceipts` once per block that may match a filter, whatever the number of clients. Budget about 2.5 receipts calls/s per instance on a 0.4s chain, and send them to upstreams that gzip.
 - **No queue or indexer settings** — subscriptions read the chain feed with no per-subscription buffer and no `indexer` block. Strict config decoding rejects `server.webSocket.subscriptionBufferSize` and `indexer`; the tracker's only settings are [`evm.chainTracker`](/config/projects/networks).
 - **Instance-local subscriptions** — a client WS connection lives on one eRPC instance; its subscriptions end when that connection closes, so clients must re-subscribe after reconnecting.
-- **Slow-client policy** — a subscription whose next block has waited more than `chainTracker.reorgWindow` × the block time: `newHeads` restarts after the head (a jump in numbers), `logs` closes the connection with `1013`. Watch `erpc_tap_out_of_range_total{reason="lag"}`.
+- **Slow-client policy** — a subscription whose next block has waited more than `chainTracker.reorgWindow` × the block time: `newHeads` restarts after the head (a jump in numbers), `logs` closes the connection with `1013`. Watch `erpc_tap_end_total{reason="lagging"}`.
 - **Shutdown** — new WS work is refused as soon as shutdown begins; active connections send `1001` after in-flight requests finish or `waitBeforeShutdown` expires, so clients reconnect to another instance while the load balancer drains this one.
 
 ### Observability

@@ -109,8 +109,8 @@ func TestProbeVerdictsEdge_DefaultPolicyMixedPool(t *testing.T) {
 	defer cancel()
 	defer engine.Stop()
 
-	tracker.Cordon(ups[1], "*", "ops cordon") // plain2 cordoned
-	failHard(tracker, ups[0])                 // plain1 erroring
+	tracker.CordonClass(ups[1], "*", "ops cordon", common.CordonClassOperator) // plain2 cordoned
+	failHard(tracker, ups[0])                                                  // plain1 erroring
 	// give the healthy one samples so deviation predicates have peers
 	for i := 0; i < 30; i++ {
 		tracker.RecordUpstreamRequest(ups[2], "*", common.DataFinalityStateUnknown)
