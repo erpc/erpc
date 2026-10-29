@@ -149,7 +149,7 @@ export default createConfig({
 
 ### Observability
 
-Lanes are the `lane` label of the four `erpc_network_served_tip_*` series ([meanings](/reference/metrics#area-3-block-number-and-tip-tracking)): `lane="all"` is the network-wide pick (`servedTipAll`), `lane=<LaneName>` a group's own pick. A named lane's series exist only for networks that receive targeted `use-upstream` traffic; a request without a lane writes no series. Source: <SourceLink file="erpc/networks.go" lines="1649-1679" />
+Lanes are the `lane` label of the four `erpc_network_served_tip_*` series ([meanings](/reference/metrics#area-3-block-number-and-tip-tracking)): `lane="all"` is the network-wide pick (`servedTipAll`), `lane=<LaneName>` a group's own pick. A named lane's series exist only for networks that receive targeted `use-upstream` traffic; a request without a lane writes no series. Source: <SourceLink file="erpc/networks.go" lines="1646-1676" />
 
 ### Source code entry points
 
@@ -159,7 +159,7 @@ Lanes are the `lane` label of the four `erpc_network_served_tip_*` series ([mean
 - [`erpc/networks.go:L641-L668`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L641-L668) — `servedTipLaneFor`: lazy lane materialization with cap and `sync.Map`.
 - [`erpc/networks.go:L670-L759`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L670-L759) — `partitionKeyFor`: selector → SHA-256 key; `EvmUpstreamGroupForSelector`; `isSimpleGroupSelector` filter.
 - [`erpc/networks.go:L883-L981`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L883-L981) — `servedTip`: guard, floors and gauges per lane.
-- [`erpc/networks.go:L1649-L1679`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1649-L1679) — `observeServedTipMetrics`: gauge emission per lane label.
+- [`erpc/networks.go:L1646-L1676`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1646-L1676) — `observeServedTipMetrics`: gauge emission per lane label.
 - [`common/matcher.go:L73-L112`](https://github.com/erpc/erpc/blob/main/common/matcher.go#L73-L112) — `MatchesSelector` + `UpstreamMatchesSelector`: ID + tag matching primitive.
 - [`common/request.go:L739-L741`](https://github.com/erpc/erpc/blob/main/common/request.go#L739-L741) — `X-ERPC-Use-Upstream` header extraction.
 - [`common/request.go:L811-L812`](https://github.com/erpc/erpc/blob/main/common/request.go#L811-L812) — `?use-upstream=` query-param extraction.

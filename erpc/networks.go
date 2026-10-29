@@ -1043,12 +1043,12 @@ func (n *Network) finalizedBacking(ctx context.Context, q common.ServedTipQuorum
 // a voter here still reports it (finalizedBacking). Any other shared value is
 // ignored, as an instance's own floor is.
 //
-// The computed tip is published upward when it passes the shared value, and
-// downward when the shared value is not held here, so a value the chain left
-// behind (a reset chain, a far-ahead rogue) is replaced rather than kept. The
-// counter takes a drop only beyond its rollback tolerance, and a large one
-// only as its rollback rule allows. The steady state (tip equals the shared
-// value) is one shared read.
+// Only raises are published. A value the chain left behind (a reset chain, a
+// far-ahead voter served once) stays in the counter until the chain passes it,
+// but the tolerance bound already keeps it from being served; publishing it
+// down would make instances whose views differ by more than the counter's
+// rollback tolerance overwrite each other on every evaluation. The steady
+// state (tip equals the shared value) is one shared read.
 func (n *Network) shareFinalized(ctx context.Context, q common.ServedTipQuorum, served, computed, tolerance int64) int64 {
 	if n.servedFinalizedShared == nil || served <= 0 {
 		return served
@@ -1057,11 +1057,8 @@ func (n *Network) shareFinalized(ctx context.Context, q common.ServedTipQuorum, 
 	switch {
 	case computed > shared:
 		n.servedFinalizedShared.TryUpdate(ctx, computed)
-	case served < shared:
-		if shared-served <= tolerance && shared <= n.finalizedBacking(ctx, q) {
-			return shared
-		}
-		n.servedFinalizedShared.TryUpdate(ctx, computed)
+	case served < shared && shared-served <= tolerance && shared <= n.finalizedBacking(ctx, q):
+		return shared
 	}
 	return served
 }
