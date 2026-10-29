@@ -535,8 +535,11 @@ type logsConn struct {
 	from, to uint64
 	highest  uint64
 	open     bool
-	opened   time.Time
-	closed   time.Time
+	// serverEnd: the subscription ended by the server (1013, a dead
+	// pod), an end the scenario allows, else it was a violation.
+	serverEnd bool
+	opened    time.Time
+	closed    time.Time
 }
 
 type logJSON struct {
@@ -630,7 +633,7 @@ func (c *logsClient) closeConn(conn int, server, final bool) {
 	case final && lc.from > 0:
 		lc.to = c.s.finalHead(c.selector).Number
 	case server:
-		lc.to = 0
+		lc.to, lc.serverEnd = 0, true
 		for k, l := range c.live {
 			if l.conn == conn {
 				delete(c.live, k)
