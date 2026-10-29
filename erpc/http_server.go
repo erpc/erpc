@@ -1327,6 +1327,11 @@ func writeCounterHeaders(st *common.ExecState, w http.ResponseWriter) {
 	if snap.ConsensusLowParticipants > 0 {
 		setInt(w, "X-ERPC-Consensus-Low-Participants", snap.ConsensusLowParticipants)
 	}
+	// The consensus policy the pre-round selector resolved for this request.
+	// Present only when the custom-policy selector is enabled and ran.
+	if snap.ConsensusPolicy != "" {
+		w.Header().Set("X-ERPC-Consensus-Policy", snap.ConsensusPolicy)
+	}
 }
 
 // writeResponseMetadataHeaders emits X-ERPC-Cache, X-ERPC-Upstream,
@@ -1589,6 +1594,8 @@ func (s *HttpServer) writeBatchExecHeaders(ctx context.Context, w http.ResponseW
 	truncated := 0
 	withMeta, fromCache := 0, 0
 	var maxDurationMs int64
+	var consensusPolicy string
+	consensusPolicyMixed := false
 
 	for _, item := range items {
 		if req := extractRequest(item); req != nil {
@@ -1607,6 +1614,14 @@ func (s *HttpServer) writeBatchExecHeaders(ctx context.Context, w http.ResponseW
 				total.ConsensusSlots += snap.ConsensusSlots
 				total.ConsensusDisputes += snap.ConsensusDisputes
 				total.ConsensusLowParticipants += snap.ConsensusLowParticipants
+				if snap.ConsensusPolicy != "" {
+					switch {
+					case consensusPolicy == "":
+						consensusPolicy = snap.ConsensusPolicy
+					case consensusPolicy != snap.ConsensusPolicy:
+						consensusPolicyMixed = true
+					}
+				}
 				if mode != common.ExecutionHeadersSummary {
 					for _, attempt := range st.UpstreamAttemptLog() {
 						if len(segments) >= maxBatchTraceSegments {
@@ -1651,6 +1666,12 @@ func (s *HttpServer) writeBatchExecHeaders(ctx context.Context, w http.ResponseW
 	}
 	if total.ConsensusLowParticipants > 0 {
 		setInt(w, "X-ERPC-Consensus-Low-Participants", total.ConsensusLowParticipants)
+	}
+	// One header for the whole batch. Emit it only when every sub-request
+	// that ran the selector agreed. Mixed names have no single value; omit
+	// the header rather than name a policy that did not govern every item.
+	if consensusPolicy != "" && !consensusPolicyMixed {
+		w.Header().Set("X-ERPC-Consensus-Policy", consensusPolicy)
 	}
 
 	if withMeta > 0 {

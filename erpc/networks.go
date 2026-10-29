@@ -1803,6 +1803,18 @@ func (n *Network) observeServedTipMetrics(axis string, laneLabel string, tip, fr
 	}
 }
 
+// consensusPolicySelectorEnabled reports whether ANY failsafe executor on this
+// network runs a pre-round customPolicy selector. When none do, the request
+// path must not build selector-only inputs. Scans the pre-built executors
+// (no per-request finality resolution, so no I/O).
+func (n *Network) consensusPolicySelectorEnabled() bool {
+	for _, fe := range n.failsafeExecutors {
+		if fe != nil && fe.consensus != nil && fe.consensus.HasSelector() {
+			return true
+		}
+	}
+	return false
+}
 func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *networkExecutor {
 	if req.UpstreamPolicies() == common.UpstreamPoliciesTimeoutOnly {
 		return n.bareExecutor
@@ -2038,7 +2050,20 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 	forwardSpan.SetAttributes(attribute.String("request.finality", req.Finality(ctx).String()))
 
-	mlx, resp, err := n.handleMultiplexing(ctx, &lg, req, startTime)
+	// Selector-enabled requests must not share results across callers: the
+	// multiplex hash and the EVM cache key omit the consensus policy and the
+	// caller's auth, so a strict caller could receive a concurrent or cached
+	// fallback / waive-missing result (Copilot finding). Until both keys
+	// carry the policy+auth, disable multiplexing and cache reads/writes for
+	// selector-enabled networks.
+	selectorOn := n.consensusPolicySelectorEnabled()
+
+	var mlx *Multiplexer
+	var resp *common.NormalizedResponse
+	var err error
+	if !selectorOn {
+		mlx, resp, err = n.handleMultiplexing(ctx, &lg, req, startTime)
+	}
 	if err != nil || resp != nil {
 		// When the original request is already fulfilled by multiplexer (follower path)
 		forwardSpan.SetAttributes(
@@ -2058,7 +2083,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		defer n.cleanupMultiplexer(mlx)
 	}
 
-	if n.cacheDal != nil && !req.ShouldSkipCacheRead("") {
+	if n.cacheDal != nil && !selectorOn && !req.ShouldSkipCacheRead("") {
 		lg.Debug().Msgf("checking cache for request")
 		resp, err := n.cacheDal.Get(ctx, req)
 		if err != nil {
@@ -2163,8 +2188,28 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	// Set upstreams on the request
+	// Set upstreams on the request. Candidates are the post-selection list;
+	// the registry snapshot is kept separately so the consensus-policy
+	// selector can still see punishment/operator cordons that removeCordoned
+	// already dropped from upsList. Method-ineligible upstreams are filtered
+	// out of that snapshot so a healthy ignoreMethods match cannot keep
+	// allUnavailable()/canServeBlock() from selecting fallback.
 	req.SetUpstreams(upsList)
+	// Only the consensus-policy selector reads this snapshot; building it for
+	// every request contradicts the "zero added per-request cost" contract
+	// when customPolicy is unset (review finding). Skip the copy + method
+	// filter entirely unless any network executor has a customPolicy selector.
+	if n.upstreamsRegistry != nil && n.consensusPolicySelectorEnabled() {
+		reg := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+		all := make([]common.Upstream, 0, len(reg))
+		for _, u := range reg {
+			all = append(all, u)
+		}
+		if eligible, dropped := filterMethodEligible(all, method); dropped > 0 {
+			all = eligible
+		}
+		req.SetNetworkUpstreams(all)
+	}
 
 	// The refusal rule decides the request's block once, before dispatch
 	// (spec §6.4): a stale ceiling is Asked here, a near-future block waits
@@ -2782,7 +2827,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		resp, held = n.holdByHash(ctx, req, resp)
 	}
 	if resp != nil {
-		if n.cacheDal != nil && !held {
+		if n.cacheDal != nil && !held && !selectorOn {
 			n.storeInCache(ctx, forwardSpan.SpanContext(), &lg, method, req, resp)
 		}
 

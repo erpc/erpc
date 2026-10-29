@@ -64,6 +64,7 @@ type Faults struct {
 
 // Stats are what a vendor counted since it started.
 type Stats struct {
+	Calls                                                                   int64 // JSON-RPC calls answered, over HTTP and ws, batch members each
 	Connects, HeadsSubscribes, PendingSubscribes, LogsSubscribes, Throttled int64
 	HeadsRefused                                                            int64 // newHeads subscribes NoNewHeads refused
 	ReceiptsCalls, LogsCalls                                                int64 // eth_getBlockReceipts, eth_getLogs calls
@@ -109,7 +110,7 @@ type Vendor struct {
 
 	connects, headsSubs, pendingSubs, logsSubs, throttled, receiptsCalls  atomic.Int64
 	logsCalls, slowAnswers, forgedHeads, cappedLogs, subSeq, headsRefused atomic.Int64
-	capacityRefused, forbiddenLatest, prunedRefused                       atomic.Int64
+	capacityRefused, forbiddenLatest, prunedRefused, calls                atomic.Int64
 }
 
 // LatestCall is one eth_getBlockByNumber(latest) call a vendor answered.
@@ -303,7 +304,7 @@ func (v *Vendor) NumberCalls(n uint64, full bool, from, to time.Time) int {
 
 // Stats are the vendor's counters.
 func (v *Vendor) Stats() Stats {
-	return Stats{Connects: v.connects.Load(), HeadsSubscribes: v.headsSubs.Load(), PendingSubscribes: v.pendingSubs.Load(),
+	return Stats{Calls: v.calls.Load(), Connects: v.connects.Load(), HeadsSubscribes: v.headsSubs.Load(), PendingSubscribes: v.pendingSubs.Load(),
 		LogsSubscribes: v.logsSubs.Load(), Throttled: v.throttled.Load(), HeadsRefused: v.headsRefused.Load(), ReceiptsCalls: v.receiptsCalls.Load(),
 		LogsCalls: v.logsCalls.Load(), SlowAnswers: v.slowAnswers.Load(), ForgedHeads: v.forgedHeads.Load(), CappedLogs: v.cappedLogs.Load(),
 		CapacityRefused: v.capacityRefused.Load(), ForbiddenLatest: v.forbiddenLatest.Load(), PrunedRefused: v.prunedRefused.Load()}
@@ -740,6 +741,7 @@ func (v *Vendor) byNumberLocked(n uint64) *Block {
 
 // answer serves one JSON-RPC call from the vendor's view and faults.
 func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcError) {
+	v.calls.Add(1)
 	if method == "eth_getBlockReceipts" {
 		if res, ok := v.trapped(params); ok {
 			return res, nil

@@ -35,6 +35,8 @@ func (c *capturingExporter) AppendWithMetadata(line []byte, method, networkId st
 	return c.err
 }
 
+func (c *capturingExporter) Close() error { return nil }
+
 func (c *capturingExporter) records(t *testing.T) []misbehaviorRecord {
 	t.Helper()
 	c.mu.Lock()
@@ -75,7 +77,7 @@ func trackRound(t *testing.T, e *executor, labels metricsLabels, responses []*ex
 	ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
 	lg := zerolog.Nop()
 	analysis := newConsensusAnalysis(&lg, ctx, e.config, responses)
-	winner := e.determineWinner(&lg, analysis)
+	winner := e.determineWinner(ctx, &lg, analysis)
 	e.trackAndPunishMisbehavingUpstreams(&lg, req, labels, winner, analysis)
 	return winner
 }
@@ -406,18 +408,18 @@ func TestFileMisbehaviorExporter_Lifecycle(t *testing.T) {
 	lg := zerolog.Nop()
 
 	t.Run("rejects empty and relative paths", func(t *testing.T) {
-		_, err := newFileMisbehaviorExporter(nil, &lg)
+		_, err := newFileMisbehaviorExporter(nil, &lg, defaultPolicyName)
 		require.Error(t, err)
-		_, err = newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{}, &lg)
+		_, err = newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{}, &lg, defaultPolicyName)
 		require.Error(t, err)
-		_, err = newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{Path: "relative/dir"}, &lg)
+		_, err = newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{Path: "relative/dir"}, &lg, defaultPolicyName)
 		require.ErrorContains(t, err, "must be absolute")
 	})
 
 	t.Run("fails when the base path cannot be created", func(t *testing.T) {
 		blocker := filepath.Join(t.TempDir(), "file")
 		require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
-		_, err := newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{Path: filepath.Join(blocker, "sub")}, &lg)
+		_, err := newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{Path: filepath.Join(blocker, "sub")}, &lg, defaultPolicyName)
 		require.Error(t, err)
 	})
 
@@ -425,13 +427,13 @@ func TestFileMisbehaviorExporter_Lifecycle(t *testing.T) {
 		dir := t.TempDir()
 		exp, err := newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{
 			Path: dir, FilePattern: "{method}-{networkId}",
-		}, &lg)
+		}, &lg, defaultPolicyName)
 		require.NoError(t, err)
 		require.NoError(t, exp.AppendWithMetadata([]byte(`{"n":1}`), "eth_call", "evm:1"))
 		require.NoError(t, exp.AppendWithMetadata([]byte(`{"n":2}`), "eth_call", "evm:1"))
 		require.NoError(t, exp.AppendWithMetadata([]byte(`{"n":3}`), "eth_getLogs", "evm:1"))
 		require.NoError(t, exp.Close())
-		assert.Empty(t, exp.fileHandles)
+		assert.Empty(t, exp.hub.handles)
 
 		readLines := func(name string) []string {
 			f, err := os.Open(filepath.Join(dir, name))
@@ -450,7 +452,7 @@ func TestFileMisbehaviorExporter_Lifecycle(t *testing.T) {
 
 	t.Run("reports an error when the target file cannot be opened", func(t *testing.T) {
 		dir := t.TempDir()
-		exp, err := newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{Path: dir, FilePattern: "{method}"}, &lg)
+		exp, err := newFileMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{Path: dir, FilePattern: "{method}"}, &lg, defaultPolicyName)
 		require.NoError(t, err)
 		// A directory squatting on the resolved file name makes open fail.
 		require.NoError(t, os.Mkdir(filepath.Join(dir, "eth_call.jsonl"), 0o750))
@@ -462,8 +464,8 @@ func TestFileMisbehaviorExporter_Lifecycle(t *testing.T) {
 func TestCreateMisbehaviorExporter_SelectsImplementation(t *testing.T) {
 	lg := zerolog.Nop()
 
-	assert.Nil(t, createMisbehaviorExporter(nil, &lg))
-	assert.Nil(t, createMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{}, &lg))
+	assert.Nil(t, createMisbehaviorExporter(nil, &lg, defaultPolicyName))
+	assert.Nil(t, createMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{}, &lg, defaultPolicyName))
 	assert.Nil(t, NewMisbehaviorExporter(&common.MisbehaviorsDestinationConfig{
 		Type: common.MisbehaviorsDestinationTypeFile, Path: "not-absolute",
 	}, &lg), "a file exporter that fails to initialize is disabled")
@@ -508,7 +510,7 @@ func TestParseS3Path(t *testing.T) {
 func TestNewConsensus_AppliesConfig(t *testing.T) {
 	lg := zerolog.Nop()
 
-	_, err := NewConsensus(nil, &lg)
+	_, err := NewConsensus(nil, &lg, "")
 	require.Error(t, err)
 
 	yes := true
@@ -526,7 +528,7 @@ func TestNewConsensus_AppliesConfig(t *testing.T) {
 		PreferHighestValueFor:   map[string][]string{"eth_getTransactionCount": {"result"}},
 		MisbehaviorsDestination: &common.MisbehaviorsDestinationConfig{Path: dir},
 		RequiredParticipants:    []*common.ConsensusRequiredParticipant{{Tag: "t", MinParticipants: 1}},
-	}, &lg)
+	}, &lg, "")
 	require.NoError(t, err)
 	p := c.policy
 	assert.Equal(t, 3, p.maxParticipants)
@@ -543,7 +545,7 @@ func TestNewConsensus_AppliesConfig(t *testing.T) {
 	assert.NotNil(t, p.exporter, "a valid file destination enables export")
 
 	t.Run("invalid dispute log level keeps the warn default", func(t *testing.T) {
-		c, err := NewConsensus(&common.ConsensusPolicyConfig{MaxParticipants: 1, DisputeLogLevel: "loud"}, &lg)
+		c, err := NewConsensus(&common.ConsensusPolicyConfig{MaxParticipants: 1, DisputeLogLevel: "loud"}, &lg, "")
 		require.NoError(t, err)
 		assert.Equal(t, zerolog.WarnLevel, c.policy.disputeLogLevel)
 		assert.Nil(t, c.policy.exporter)
@@ -557,4 +559,58 @@ func TestNewConsensus_AppliesConfig(t *testing.T) {
 		require.NoError(t, err)
 		assert.Same(t, want, got)
 	})
+}
+
+// TestSitout_StaleExpiryDoesNotClearNewerPunishment pins Copilot's finding:
+// Timer.Stop does not wait for an already-running expiry callback, so an old
+// callback could clear a newer punishment. Expiry now CompareAndDeletes its
+// own timer entry, so a callback whose entry was reset (admin uncordon) or
+// replaced (new punishment) cannot tear down the current state.
+func TestSitout_StaleExpiryDoesNotClearNewerPunishment(t *testing.T) {
+	cfg := &config{
+		maxParticipants:    3,
+		agreementThreshold: 2,
+		punishMisbehavior: &common.PunishMisbehaviorConfig{
+			DisputeThreshold: 1,
+			DisputeWindow:    common.Duration(time.Hour),
+			SitOutPenalty:    common.Duration(time.Hour),
+		},
+	}
+	e := newPunishingExecutor(t, cfg, nil, zerolog.Disabled)
+	a := taggedUpstream("good-a")
+	b := taggedUpstream("good-b")
+	bad := taggedUpstream("bad-c")
+
+	round := func() {
+		trackRound(t, e, metricsLabels{method: "eth_getBalance"}, []*execResult{
+			resultFrom(t, a, "0xaa", 0),
+			resultFrom(t, b, "0xaa", 1),
+			resultFrom(t, bad, "0xbb", 2),
+		})
+	}
+
+	// Two disputes put bad-c into sit-out; capture the first entry.
+	round()
+	round()
+	v, ok := e.misbehavingUpstreamsSitoutTimer.Load("bad-c")
+	require.True(t, ok)
+	first := v.(*sitoutEntry)
+
+	// Admin uncordon resets the sit-out; a new punishment starts a second entry.
+	e.misbehavingUpstreamsSitoutTimer.Delete("bad-c")
+	round()
+	v, ok = e.misbehavingUpstreamsSitoutTimer.Load("bad-c")
+	require.True(t, ok)
+	second := v.(*sitoutEntry)
+	require.NotSame(t, first, second)
+
+	// Fire the first entry's expiry callback manually (as if Stop lost the
+	// race): CompareAndDelete on the stale entry fails, so the newer
+	// punishment's entry survives.
+	first.timer.Stop()
+	if !e.misbehavingUpstreamsSitoutTimer.CompareAndDelete("bad-c", first) {
+		_, stillThere := e.misbehavingUpstreamsSitoutTimer.Load("bad-c")
+		assert.True(t, stillThere, "stale expiry must not delete the newer punishment's timer")
+	}
+	second.timer.Stop()
 }

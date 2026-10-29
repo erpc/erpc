@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"math"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -26,16 +27,17 @@ import (
 // uses before it is accepted. Small keep-fresh advances stay ungated and inline.
 
 // suggestGateUpstream is a common.EvmUpstream double with a fully settable
-// eth_chainId response (value + error) and an observable Cordon.
+// eth_chainId response (value + error). Its cordons go to the poller's health
+// tracker per class, as the real upstream's do, so the poller reads back the
+// cordon it set.
 type suggestGateUpstream struct {
 	id       string
 	cfg      *common.UpstreamConfig
 	logger   zerolog.Logger
+	tracker  *health.Tracker
 	mu       sync.Mutex
 	chainId  string
 	chainErr error
-	cordoned bool
-	reason   string
 }
 
 func newSuggestGateUpstream(configuredChainId int64, detected string, detectErr error) *suggestGateUpstream {
@@ -56,9 +58,11 @@ func (u *suggestGateUpstream) setChainId(detected string, detectErr error) {
 }
 
 func (u *suggestGateUpstream) isCordoned() bool {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	return u.cordoned
+	return u.tracker.IsCordoned(u, "*")
+}
+
+func (u *suggestGateUpstream) cordonClasses() []common.CordonClass {
+	return u.tracker.CordonClasses(u, "*")
 }
 
 // common.Upstream
@@ -71,18 +75,23 @@ func (u *suggestGateUpstream) Logger() *zerolog.Logger        { return &u.logger
 func (u *suggestGateUpstream) Vendor() common.Vendor          { return nil }
 func (u *suggestGateUpstream) Tracker() common.HealthTracker  { return nil }
 func (u *suggestGateUpstream) IgnoreMethod(string)            {}
-func (u *suggestGateUpstream) Uncordon(_, _ string)           {}
+func (u *suggestGateUpstream) Uncordon(method, reason string) {
+	u.UncordonClass(method, reason, common.CordonClassOperator)
+}
+func (u *suggestGateUpstream) UncordonClass(method, reason string, class common.CordonClass) {
+	u.tracker.UncordonClass(u, method, reason, class)
+}
 func (u *suggestGateUpstream) ShouldHandleMethod(string) (bool, error) {
 	return true, nil
 }
 func (u *suggestGateUpstream) Forward(context.Context, *common.NormalizedRequest, bool, bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (u *suggestGateUpstream) Cordon(_, reason string) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.cordoned = true
-	u.reason = reason
+func (u *suggestGateUpstream) Cordon(method, reason string) {
+	u.CordonClass(method, reason, common.CordonClassOperator)
+}
+func (u *suggestGateUpstream) CordonClass(method, reason string, class common.CordonClass) {
+	u.tracker.CordonClass(u, method, reason, class)
 }
 
 // common.EvmUpstream
@@ -107,12 +116,13 @@ func (u *suggestGateUpstream) EvmBlockAvailabilityBounds() (int64, int64) {
 	return math.MinInt64, math.MaxInt64
 }
 
-func newGateTestPoller(t *testing.T, up common.Upstream) *EvmStatePoller {
+func newGateTestPoller(t *testing.T, up *suggestGateUpstream) *EvmStatePoller {
 	t.Helper()
 	appCtx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	logger := zerolog.Nop()
 	tracker := health.NewTracker(&logger, "test", 2*time.Second)
+	up.tracker = tracker
 	ssr, err := data.NewSharedStateRegistry(appCtx, &logger, &common.SharedStateConfig{
 		Connector: &common.ConnectorConfig{
 			Driver: common.DriverMemory,
@@ -165,6 +175,91 @@ func TestSuggestLatestBlock_MajorJumpChainIdMismatchDroppedAndCordoned(t *testin
 	p.SuggestLatestBlock(5_000_000, time.Now()) // MAJOR (another chain's height)
 	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond, "a proven cross-wired endpoint must be cordoned")
 	assert.Equal(t, int64(1000), p.LatestBlock(), "the bogus major jump must NOT enter the shared counter")
+}
+
+// chainIdRecheckFast shortens the chain-identity recheck for one test.
+func chainIdRecheckFast(t *testing.T) {
+	prev := ChainIdCordonRecheck.Load()
+	ChainIdCordonRecheck.Store(20 * time.Millisecond)
+	t.Cleanup(func() { ChainIdCordonRecheck.Store(prev) })
+}
+
+// A fixed endpoint recovers without any further head move: the recheck lifts
+// the availability class it set, and only that class, so an operator cordon
+// placed meanwhile stays.
+func TestChainIdCordon_RecheckLiftsOnlyItsAvailabilityCordon(t *testing.T) {
+	chainIdRecheckFast(t)
+	up := newSuggestGateUpstream(123, "999", nil)
+	p := newGateTestPoller(t, up)
+
+	p.SuggestLatestBlock(1000, time.Now())
+	require.Equal(t, int64(1000), p.LatestBlock())
+
+	p.SuggestLatestBlock(5_000_000, time.Now())
+	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
+	assert.Equal(t, []common.CordonClass{common.CordonClassAvailability}, up.cordonClasses(),
+		"a chain-identity mismatch is an availability cordon")
+	assert.True(t, p.ChainIdCordoned())
+
+	up.Cordon("*", "ops maintenance")
+	up.setChainId("123", nil)
+	require.Eventually(t, func() bool { return !p.ChainIdCordoned() }, 2*time.Second, 10*time.Millisecond,
+		"matching chainId must lift the chain-identity cordon with no head move")
+	assert.Equal(t, []common.CordonClass{common.CordonClassOperator}, up.cordonClasses(),
+		"recovery must clear only the availability class")
+	assert.Equal(t, int64(1000), p.LatestBlock())
+}
+
+// After an operator UncordonAdmin clears every class, an endpoint that still
+// answers for another chain is cordoned again by the recheck, so it does not
+// stay fail-open for routing.
+func TestChainIdCordon_MismatchAfterAdminClearReCordons(t *testing.T) {
+	chainIdRecheckFast(t)
+	up := newSuggestGateUpstream(123, "999", nil)
+	p := newGateTestPoller(t, up)
+
+	p.SuggestLatestBlock(1000, time.Now())
+	p.SuggestLatestBlock(5_000_000, time.Now())
+	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
+
+	up.UncordonClass("*", "ops cleared", common.CordonClassAvailability)
+	require.False(t, up.isCordoned())
+
+	require.Eventually(t, func() bool {
+		return slices.Contains(up.cordonClasses(), common.CordonClassAvailability)
+	}, 2*time.Second, 10*time.Millisecond, "mismatch after admin clear must re-assert the availability cordon")
+	assert.True(t, p.ChainIdCordoned())
+	assert.Equal(t, int64(1000), p.LatestBlock())
+}
+
+// While still cross-wired, a non-major keep-fresh report must be dropped —
+// accepting it would poison the shared counter on every tick (spec §5): a
+// suggestion, a source header and a finalized report alike. Only the
+// recheck's matches lift the cordon; then small advances apply again.
+func TestSuggestLatestBlock_CordonedNonMajorAdvanceRejectedUntilRecovered(t *testing.T) {
+	chainIdRecheckFast(t)
+	up := newSuggestGateUpstream(123, "999", nil)
+	p := newGateTestPoller(t, up)
+
+	p.SuggestLatestBlock(1000, time.Now())
+	p.SuggestFinalizedBlock(900, time.Now())
+	require.Eventually(t, func() bool { return p.FinalizedBlock() == 900 }, 2*time.Second, 10*time.Millisecond)
+	p.SuggestLatestBlock(5_000_000, time.Now())
+	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
+
+	p.SuggestLatestBlock(1000+gateTolerance, time.Now())
+	assert.False(t, p.ObserveHead(1001, time.Now()), "a cordoned source header is not accepted")
+	p.SuggestFinalizedBlock(950, time.Now())
+	require.Never(t, func() bool {
+		return p.LatestBlock() != 1000 || p.FinalizedBlock() != 900
+	}, 300*time.Millisecond, 20*time.Millisecond, "cordoned non-major reports must be rejected while chainId still mismatches")
+	assert.True(t, up.isCordoned())
+
+	up.setChainId("123", nil)
+	require.Eventually(t, func() bool { return !p.ChainIdCordoned() }, 2*time.Second, 10*time.Millisecond,
+		"the recheck lifts the cordon")
+	p.SuggestLatestBlock(1001, time.Now())
+	assert.Equal(t, int64(1001), p.LatestBlock(), "after the lift a small advance applies inline")
 }
 
 func TestSuggestLatestBlock_MajorJumpChainIdErrorDroppedNotCordoned(t *testing.T) {

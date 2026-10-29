@@ -188,6 +188,33 @@ func TestChainTracker(t *testing.T) {
 		assert.Equal(t, testHash("b", 11), v, "a tie keeps the pinned child")
 	})
 
+	// Both voters' votes decide the tie and no other upstream is eligible:
+	// nobody can break it. On a 3-upstream network every such tie ended a
+	// round at once with 0 answers and retried it each block; with no
+	// target no round starts (spec §6.5 rule 5).
+	t.Run("a tie no target can break starts no round", func(t *testing.T) {
+		net := newServedChain(t, "evm:no-target")
+		c := newChainTracker(t.Context(), net, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		t.Cleanup(c.Want(indexer.ReadOpts{}))
+		rounds := func() (n float64) {
+			for _, o := range []string{"decided", "undecided"} {
+				n += testutil.ToFloat64(telemetry.MetricChainTrackerSettleTotal.WithLabelValues("test", "evm:no-target", "tie", o))
+			}
+			return n
+		}
+		before := rounds()
+		voteChain(t, c, "a", "a", 1, 10, testHash("f", 0))
+		voteChain(t, c, "b", "a", 1, 10, testHash("f", 0))
+		voteChain(t, c, "a", "a", 11, 11, testHash("a", 10))
+		voteChain(t, c, "b", "b", 11, 11, testHash("a", 10))
+		v, _ := c.HashAt(11)
+		assert.Equal(t, testHash("a", 11), v, "rule 4 keeps the pinned child")
+		assert.Equal(t, before, rounds(), "a tie with no target starts no round")
+		voteChain(t, c, "a", "b", 11, 11, testHash("a", 10))
+		v, _ = c.HashAt(11)
+		assert.Equal(t, testHash("b", 11), v, "the next vote runs rule 4 again")
+	})
+
 	t.Run("a malformed header is dropped", func(t *testing.T) {
 		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
 		c.Observe("a", json.RawMessage(`{"number":"0x3","hash":"","parentHash":"0x1"}`), true)
@@ -945,13 +972,15 @@ func (n *settleNetwork) forkAsks() int {
 
 // A non-voter's settle answer is one more vote for its decision only
 // (spec §6.5 rule 5): once the voters leave that tie for a branch that forks
-// below it, the answers no longer hold the pins on the old winner.
+// below it, the answers no longer hold the pins on the old winner. A tap
+// makes the tracker walk: one that does not walk settles no tie.
 func TestSettleAnswersCountForTheirDecisionOnly(t *testing.T) {
 	x := testHeader(11, testHash("aa", 11), testHash("0", 10))
 	net := newSettleNetwork(t, HashVoters{Voters: []string{"a", "b"}, Hash: []string{"a", "b"}, Need: 2, Others: []string{"c", "d", "e"},
 		Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "d": "vendor-d", "e": "vendor-e"}, Distinct: 5}},
 		map[string]json.RawMessage{"c": x, "d": x, "e": x})
 	c := newChainTracker(t.Context(), net, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+	t.Cleanup(c.Want(indexer.ReadOpts{}))
 	voteChain(t, c, "a", "0", 0, 10, testHash("f", 0))
 	voteChain(t, c, "b", "0", 0, 10, testHash("f", 0))
 

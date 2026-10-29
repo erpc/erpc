@@ -14,6 +14,13 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// ConsensusDefaultEvalTimeout is the wall-clock cap applied when
+// customPolicy.evalTimeout is omitted (0). Kept in sync with
+// ConsensusPolicyConfig.SetDefaults so NewConsensus (used by tests and any
+// caller that skips SetDefaults) cannot disable the selector timeout by
+// accident.
+const ConsensusDefaultEvalTimeout = 50 * time.Millisecond
+
 // MatchFinalities checks if two finality arrays match.
 // Empty arrays (nil or len=0) match any finality.
 func MatchFinalities(finalities1, finalities2 []DataFinalityState) bool {
@@ -3091,7 +3098,184 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 		}
 	}
 
+	// Custom-policy selector defaults. EvalTimeout bounds the per-request eval;
+	// ConsensusDefaultEvalTimeout is well beyond the observed per-eval cost yet
+	// still fails closed fast if an operator function runs away.
+	if c.CustomPolicy != nil {
+		if c.CustomPolicy.EvalTimeout == 0 {
+			c.CustomPolicy.EvalTimeout = Duration(ConsensusDefaultEvalTimeout)
+		}
+	}
+
+	// Resolve one-level extends on named policies before applying defaults so
+	// each runtime policy is fully merged (feature §2). Unknown base / nested
+	// extends are load-time errors.
+	if err := c.resolveNamedPolicyExtends(); err != nil {
+		return err
+	}
+
+	// Named policies are full consensus configs; apply the same defaults so a
+	// selected policy behaves identically to an inline one. Selection is
+	// top-level only, so any nested CustomPolicy/Policies on a named policy is
+	// inert — we intentionally do not recurse into it.
+	for name, p := range c.Policies {
+		if p == nil {
+			continue
+		}
+		if err := p.SetDefaults(); err != nil {
+			return fmt.Errorf("consensus.policies[%q] defaults: %w", name, err)
+		}
+	}
+
 	return nil
+}
+
+// resolveNamedPolicyExtends merges each named policy that sets `extends` onto
+// a one-level base (another named policy, or "default" = this inline block).
+// The named entry is replaced in place with the fully resolved config; Extends
+// is cleared. Nested extends (base itself declares extends) and unknown bases
+// are errors. Policies without extends are left untouched (stock defaults).
+func (c *ConsensusPolicyConfig) resolveNamedPolicyExtends() error {
+	if len(c.Policies) == 0 {
+		return nil
+	}
+
+	// Pass 1 — validate against the pre-resolve graph so map iteration order
+	// cannot clear a base's Extends before a child is checked. Also reject a
+	// nested selection surface here: overlay + strip would otherwise clear
+	// customPolicy/policies before Validate sees them (SetDefaults runs first).
+	for name, child := range c.Policies {
+		if child == nil {
+			continue
+		}
+		if child.CustomPolicy != nil || len(child.Policies) > 0 {
+			return fmt.Errorf("consensus.policies[%q] must not itself define customPolicy or policies: selection happens once at the top level", name)
+		}
+		baseName := strings.TrimSpace(child.Extends)
+		if baseName == "" {
+			continue
+		}
+		if baseName == ConsensusDefaultPolicyName {
+			continue
+		}
+		b, ok := c.Policies[baseName]
+		if !ok || b == nil {
+			return fmt.Errorf("consensus.policies[%q].extends references unknown base %q", name, baseName)
+		}
+		if strings.TrimSpace(b.Extends) != "" {
+			return fmt.Errorf("consensus.policies[%q].extends %q is itself an extends policy; only one-level extends is supported in v1", name, baseName)
+		}
+	}
+
+	// Pass 2 — merge.
+	for name, child := range c.Policies {
+		if child == nil {
+			continue
+		}
+		baseName := strings.TrimSpace(child.Extends)
+		if baseName == "" {
+			continue
+		}
+
+		var base *ConsensusPolicyConfig
+		switch baseName {
+		case ConsensusDefaultPolicyName:
+			// Inline block as base — strip selection surface so the child cannot
+			// inherit customPolicy/policies/extends.
+			base = c.Copy()
+			base.CustomPolicy = nil
+			base.Policies = nil
+			base.Extends = ""
+		default:
+			b := c.Policies[baseName]
+			base = b.Copy()
+			base.CustomPolicy = nil
+			base.Policies = nil
+			base.Extends = ""
+		}
+
+		overlayConsensusPolicy(base, child)
+		base.Extends = ""
+		base.CustomPolicy = nil
+		base.Policies = nil
+		c.Policies[name] = base
+	}
+	return nil
+}
+
+// overlayConsensusPolicy copies child's set fields onto base (child wins).
+// Pointer / map / slice fields treat non-nil (including empty requiredParticipants
+// []) as set; scalar zeros are treated as unset so an omitted field keeps the
+// base value.
+func overlayConsensusPolicy(base, child *ConsensusPolicyConfig) {
+	if child.MaxParticipants != 0 {
+		base.MaxParticipants = child.MaxParticipants
+	}
+	if child.AgreementThreshold != 0 {
+		base.AgreementThreshold = child.AgreementThreshold
+	}
+	if child.DisputeBehavior != "" {
+		base.DisputeBehavior = child.DisputeBehavior
+	}
+	if child.LowParticipantsBehavior != "" {
+		base.LowParticipantsBehavior = child.LowParticipantsBehavior
+	}
+	if child.PunishMisbehavior != nil {
+		base.PunishMisbehavior = child.PunishMisbehavior.Copy()
+	}
+	if child.DisputeLogLevel != "" {
+		base.DisputeLogLevel = child.DisputeLogLevel
+	}
+	if child.IgnoreFields != nil {
+		base.IgnoreFields = make(map[string][]string, len(child.IgnoreFields))
+		for method, fields := range child.IgnoreFields {
+			base.IgnoreFields[method] = append([]string(nil), fields...)
+		}
+	}
+	if child.PreferNonEmpty != nil {
+		v := *child.PreferNonEmpty
+		base.PreferNonEmpty = &v
+	}
+	if child.PreferLargerResponses != nil {
+		v := *child.PreferLargerResponses
+		base.PreferLargerResponses = &v
+	}
+	if child.MisbehaviorsDestination != nil {
+		base.MisbehaviorsDestination = child.MisbehaviorsDestination.Copy()
+	}
+	if child.PreferHighestValueFor != nil {
+		base.PreferHighestValueFor = make(map[string][]string, len(child.PreferHighestValueFor))
+		for method, fields := range child.PreferHighestValueFor {
+			base.PreferHighestValueFor[method] = append([]string(nil), fields...)
+		}
+	}
+	if child.BlockEvidenceFields != nil {
+		base.BlockEvidenceFields = make(map[string][]string, len(child.BlockEvidenceFields))
+		for method, fields := range child.BlockEvidenceFields {
+			base.BlockEvidenceFields[method] = append([]string(nil), fields...)
+		}
+	}
+	if child.fireAndForgetSet {
+		base.FireAndForget = child.FireAndForget
+		base.fireAndForgetSet = true
+	}
+	if child.MaxWaitOnResult != nil {
+		base.MaxWaitOnResult = child.MaxWaitOnResult.Copy()
+	}
+	if child.MaxWaitOnEmpty != nil {
+		base.MaxWaitOnEmpty = child.MaxWaitOnEmpty.Copy()
+	}
+	// nil = unset (keep base); non-nil including empty slice = explicit clear/replace.
+	if child.RequiredParticipants != nil {
+		base.RequiredParticipants = make([]*ConsensusRequiredParticipant, len(child.RequiredParticipants))
+		for i, rp := range child.RequiredParticipants {
+			if rp == nil {
+				continue
+			}
+			rpCopy := *rp
+			base.RequiredParticipants[i] = &rpCopy
+		}
+	}
 }
 
 // SetDefaults applies defaults for misbehavior export destination
@@ -3102,7 +3286,9 @@ func (c *MisbehaviorsDestinationConfig) SetDefaults() error {
 	}
 	// Default file pattern handled in resolver at use-site; keep here for explicitness
 	if c.FilePattern == "" {
-		c.FilePattern = "{timestampMs}-{method}-{networkId}"
+		// Include {instanceId} so concurrent replicas cannot PutObject-overwrite
+		// the same key when threshold flushes share a millisecond.
+		c.FilePattern = "{timestampMs}-{instanceId}-{method}-{networkId}"
 	}
 	// S3 defaults
 	if c.Type == MisbehaviorsDestinationTypeS3 {

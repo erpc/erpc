@@ -87,6 +87,10 @@ type spec struct {
 	// never make their pollers fetch a head; numbered pods are headless and
 	// get numbered calls only: no by-hash, logs by number.
 	headless, numbered []int
+	// idle: no client request reaches a pod before the body; waitServing
+	// waits for its confirmed head by scrape alone (Z3: history starts at
+	// the first client request).
+	idle bool
 	// onHead runs for each header a newHeads client receives.
 	onHead func(s *scenario, c *headsClient, pod int, n uint64, h hash)
 	// bound is the delivery bound for clients that read (§ per scenario).
@@ -453,7 +457,13 @@ func (s *scenario) waitServing(idx int) {
 	for {
 		var got string
 		var err error
-		if s.isHeadless(idx) {
+		if s.idle {
+			if s.confirmedHeadSeen(idx) {
+				s.tr.logf("pod-%d has a confirmed head", idx+1)
+				return
+			}
+			got = "no confirmed head"
+		} else if s.isHeadless(idx) {
 			got = s.blockAnswer(idx, "", "eth_getBlockByNumber", hexutil.EncodeUint64(want), false)
 			if got == s.chain.CanonAt(want).Hash.Hex() {
 				s.tr.logf("pod-%d serves %d by number", idx+1, want)

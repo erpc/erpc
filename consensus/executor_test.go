@@ -362,6 +362,55 @@ func TestConsensus_ShortCircuit_CallerGetsWinnerBeforeSlowParticipants(t *testin
 	close(slowRelease)
 }
 
+// TestConsensus_AgreedError_ShortCircuitsBeforeSlowStragglers pins the
+// regression Aram caught: with the defaults (disputeBehavior=returnError,
+// preferNonEmpty=true), an agreed ConsensusError at threshold must release
+// the caller without waiting for a slow remaining participant. The blanket
+// preferNonEmpty skip used to hold this round for all upstreams /
+// maxWaitOnEmpty.
+func TestConsensus_AgreedError_ShortCircuitsBeforeSlowStragglers(t *testing.T) {
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+
+	pol := NewConsensusPolicyBuilder().
+		WithMaxParticipants(3).
+		WithAgreementThreshold(2).
+		WithPreferNonEmpty(true). // default; must not block an agreed error
+		WithLogger(&logger).
+		Build()
+
+	req := newTestRequest()
+
+	revertErr := common.NewErrEndpointExecutionException(
+		common.NewErrJsonRpcExceptionInternal(3, 3, "execution reverted", nil, nil),
+	)
+
+	var callCount atomic.Int32
+	slowRelease := make(chan struct{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = context.WithValue(ctx, common.RequestContextKey, req)
+
+	start := time.Now()
+	resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+		n := callCount.Add(1)
+		if n <= 2 {
+			return nil, revertErr // two fast agreeing reverts
+		}
+		<-slowRelease // third participant blocks indefinitely
+		return validResponse(), nil
+	})
+	elapsed := time.Since(start)
+
+	require.Error(t, err, "agreed reverts return the consensus error")
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException), "expected the reverted error, got %v", err)
+	assert.Nil(t, resp)
+	require.Less(t, elapsed, 500*time.Millisecond,
+		"agreed error must short-circuit before the slow participant completes")
+
+	close(slowRelease) // let the analyzer finish; no leaked goroutine
+}
+
 // TestConsensus_ShortCircuit_ReleasesLateResponses verifies the cleanup side of
 // the refactor: once the caller has been released on short-circuit, a later
 // non-winning response still has to be released exactly once. Without this,

@@ -130,6 +130,27 @@ type ExecState struct {
 	// ConsensusLowParticipants counts low-participant events.
 	ConsensusLowParticipants atomic.Int32
 
+	// consensusPolicy holds the name of the consensus policy the pre-round
+	// selector resolved for this request (empty when the selector is disabled).
+	// Set once by the consensus executor before fan-out; read at header-emit
+	// time. atomic.Value so the read is safe even though there is a single
+	// writer in practice.
+	consensusPolicy atomic.Value // string
+
+	// authStrategy is the name of the auth strategy that authenticated this
+	// request (stamped by the auth registry). The consensus-policy selector
+	// reads it instead of copying *User on every authenticated request. A nil
+	// pointer means no auth ran; a non-nil pointer (even to "") means an
+	// authenticated, possibly unnamed, strategy. atomic.Pointer[string] to the
+	// strategy config field avoids the per-request box alloc of atomic.Value.
+	authStrategy atomic.Pointer[string]
+
+	// keepEmptyConsensusSlot is set by the consensus executor when the
+	// selected policy opts into waiveAgreementOnEmptyOutsideRetention. Hedge
+	// keep() reads it so consensus-slot empty votes are preserved only under
+	// that opt-in — waiver-free configs keep prior empty-reject recovery.
+	keepEmptyConsensusSlot atomic.Bool
+
 	StartedAt time.Time
 
 	// upstreamAttempts records every (upstream, attempt) tuple in the
@@ -235,6 +256,85 @@ func (s *ExecState) MarkUpstreamAttemptWon(upstreamId string) {
 	}
 }
 
+// SetAuthStrategy records the auth strategy name for this request. Called by
+// the auth registry even when the strategy is unnamed (""), so the consensus
+// selector can distinguish "no auth" (never set) from "unnamed strategy". The
+// pointer must refer to the strategy config's stable name field, so repeated
+// requests under one strategy do not allocate.
+func (s *ExecState) SetAuthStrategy(name *string) {
+	if s == nil {
+		return
+	}
+	s.authStrategy.Store(name)
+}
+
+// AuthStrategy reports the stamped auth strategy name and whether any
+// authenticated strategy ran. An unnamed strategy yields ("", true); no auth
+// yields ("", false). Callers must not rely on "" alone to mean "no auth".
+func (s *ExecState) AuthStrategy() (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	p := s.authStrategy.Load()
+	if p == nil {
+		return "", false
+	}
+	return *p, true
+}
+
+// authStrategyPtr exposes the stored strategy-name pointer so a derived
+// request can share the parent's stamp without allocating.
+func (s *ExecState) authStrategyPtr() *string {
+	if s == nil {
+		return nil
+	}
+	return s.authStrategy.Load()
+}
+
+// SetConsensusPolicy records the consensus policy the pre-round selector
+// resolved for this request. Called once by the consensus executor before
+// fan-out (both the chosen named policy and the fail-closed default path set
+// it, so the emitted header always reflects the policy that actually governed
+// the round). A no-op on a nil state.
+func (s *ExecState) SetConsensusPolicy(name string) {
+	if s == nil || name == "" {
+		return
+	}
+	s.consensusPolicy.Store(name)
+}
+
+// ConsensusPolicy returns the resolved consensus policy name, or "" when the
+// selector was disabled or never ran.
+func (s *ExecState) ConsensusPolicy() string {
+	if s == nil {
+		return ""
+	}
+	if v, ok := s.consensusPolicy.Load().(string); ok {
+		return v
+	}
+	return ""
+}
+
+// SetKeepEmptyConsensusSlot records whether hedge keep() should accept an
+// empty JSON-RPC result as the consensus slot's vote for this round's method
+// (empty-outside-retention waiver + blockEvidenceFields for the method).
+// Cleared/false leaves prior empty-reject recovery intact.
+func (s *ExecState) SetKeepEmptyConsensusSlot(keep bool) {
+	if s == nil {
+		return
+	}
+	s.keepEmptyConsensusSlot.Store(keep)
+}
+
+// KeepEmptyConsensusSlot reports whether this round should preserve empty
+// consensus-slot hedge votes so the empty-outside-retention waiver can fire.
+func (s *ExecState) KeepEmptyConsensusSlot() bool {
+	if s == nil {
+		return false
+	}
+	return s.keepEmptyConsensusSlot.Load()
+}
+
 // ExecStateSnapshot is a plain-int view of ExecState for log/span
 // labeling — captured at a point in time. Total Attempts/Retries/Hedges
 // are derived as the sum of per-scope counters at snapshot time.
@@ -257,6 +357,7 @@ type ExecStateSnapshot struct {
 	ConsensusSlots           int
 	ConsensusDisputes        int
 	ConsensusLowParticipants int
+	ConsensusPolicy          string
 
 	StartedAt time.Time
 }
@@ -301,6 +402,7 @@ func (s *ExecState) Snapshot() ExecStateSnapshot {
 		ConsensusSlots:           int(s.ConsensusSlots.Load()),
 		ConsensusDisputes:        int(s.ConsensusDisputes.Load()),
 		ConsensusLowParticipants: int(s.ConsensusLowParticipants.Load()),
+		ConsensusPolicy:          s.ConsensusPolicy(),
 		StartedAt:                s.StartedAt,
 	}
 }

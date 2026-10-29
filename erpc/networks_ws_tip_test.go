@@ -454,9 +454,11 @@ func TestNetworkIntake_PolicyExcludedUpstreamNeverReachesClients(t *testing.T) {
 	assert.Equal(t, int64(1002), servedHead(network, ctx).Latest)
 }
 
-// With failover on, a fallback's head votes only while no eligible primary
-// leads as a live source. Its own poller sees every head regardless. A
-// primary leads at once here; the 60s lead runs in TestWebSocket_FallbackPollsUntilPrimaryLeads.
+// With failover on, a fallback's topics are held while an eligible primary
+// leads as a live source (§6.2, #836); its head still votes, as every
+// voter's does (no tier filter on votes), and its own poller sees every
+// head. A primary leads at once here; the 60s lead runs in
+// TestWebSocket_FallbackPollsUntilPrimaryLeads.
 func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 	prevLead := primaryLeadAfter.Load()
 	primaryLeadAfter.Store(0)
@@ -482,12 +484,20 @@ func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 		defer cancel()
 		network, ups := setup(t, ctx, true)
 
+		// The primary's head is pinned in a batch of its own: in one batch
+		// with the fallback's, the two tie with nothing pinned, and rule 4
+		// takes the higher root.
 		network.intake.Polled("primary-2", polledHead(t, "a", 1000), nil, evm.HeaderStreamed, time.Now())
+		eventuallyPinned(t, network, 1000, "the primary's head pins")
 		network.intake.Polled("fallback-1", polledHead(t, "b", 1010), nil, evm.HeaderStreamed, time.Now())
 		assert.Equal(t, int64(1010), ups["fallback-1"].EvmStatePoller().LatestBlock(),
 			"the fallback's poller still sees its head")
 		time.Sleep(100 * time.Millisecond)
-		assert.Less(t, pinned(network), int64(1010), "a held head must not vote")
+		assert.Equal(t, int64(1000), pinned(network), "a 1-vs-1 tie keeps the pins (rule 4)")
+		// The fixture runs no reconciler; its pass is admit.
+		network.intake.admit(time.Now(), network.chainTracker.W())
+		assert.True(t, network.intake.admits("primary-2"), "the primary's topics are admitted")
+		assert.False(t, network.intake.admits("fallback-1"), "the fallback's topics stay held while the primary streams")
 
 		network.intake.Polled("primary-2", polledHead(t, "a", 1001), nil, evm.HeaderStreamed, time.Now())
 		eventuallyLatest(t, ctx, network, 1001, "the primary's head lifts latest")
@@ -541,10 +551,16 @@ func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 
 // A head far past the poller's (a major jump) is verified asynchronously
 // before the poller takes it. Until then it must not vote: a head from an
-// endpoint now answering for another chain must never reach clients.
+// endpoint now answering for another chain must never reach clients. A
+// proven mismatch cordons the upstream, and while it is cordoned even its
+// small advances are withheld (spec §5); only the recheck's 2 matches lift
+// the cordon, after which its heads vote again.
 func TestNetworkIntake_WithholdsUnacceptedMajorJump(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
+	prevRecheck := evm.ChainIdCordonRecheck.Load()
+	evm.ChainIdCordonRecheck.Store(100 * time.Millisecond)
+	defer evm.ChainIdCordonRecheck.Store(prevRecheck)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -552,19 +568,42 @@ func TestNetworkIntake_WithholdsUnacceptedMajorJump(t *testing.T) {
 	u.EvmStatePoller().SuggestLatestBlock(1000, time.Now())
 	require.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
 
-	// From here the endpoint answers for another chain.
+	// From here the endpoint answers for another chain until fixed is set.
+	// Both answers are mocked once: re-registering mocks while the recheck
+	// probes would race on gock's registry.
+	var fixed atomic.Bool
 	util.ResetGock()
 	gock.New("http://rpc2.localhost").Post("").Persist().
-		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), `eth_chainId`) }).
+		Filter(func(r *http.Request) bool {
+			return !fixed.Load() && strings.Contains(util.SafeReadBody(r), `eth_chainId`)
+		}).
 		Reply(200).JSON([]byte(`{"result":"0x1"}`))
+	gock.New("http://rpc2.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			return fixed.Load() && strings.Contains(util.SafeReadBody(r), `eth_chainId`)
+		}).
+		Reply(200).JSON([]byte(`{"result":"0x7b"}`))
 
 	network.intake.Polled("rpc2", polledHead(t, "e", 5_000_000), nil, evm.HeaderStreamed, time.Now())
-	time.Sleep(300 * time.Millisecond) // let the async verification finish (and fail)
+	time.Sleep(300 * time.Millisecond) // let the async verification finish (and fail / cordon)
 	assert.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
 	assert.Less(t, pinned(network), int64(5_000_000))
+
+	// Still cross-wired: small advances must not move the counter or vote.
+	network.intake.Polled("rpc2", polledHead(t, "a", 1001), nil, evm.HeaderStreamed, time.Now())
+	u.EvmStatePoller().SuggestLatestBlock(1001, time.Now())
+	require.Never(t, func() bool {
+		return u.EvmStatePoller().LatestBlock() != 1000 || pinned(network) > 1000
+	}, 300*time.Millisecond, 20*time.Millisecond, "a cordoned upstream's small advances are withheld")
+
+	// Endpoint fixed: the recheck lifts the cordon and its heads vote again.
+	fixed.Store(true)
+	require.Eventually(t, func() bool {
+		return !u.EvmStatePoller().(interface{ ChainIdCordoned() bool }).ChainIdCordoned()
+	}, 5*time.Second, 20*time.Millisecond, "2 matching rechecks lift the cordon")
 	network.intake.Polled("rpc2", polledHead(t, "a", 1001), nil, evm.HeaderStreamed, time.Now())
 	network.intake.Polled("rpc2", polledHead(t, "a", 1002), nil, evm.HeaderStreamed, time.Now())
-	eventuallyPinned(t, network, 1002, "the next heads of the right chain vote")
+	eventuallyPinned(t, network, 1002, "the next heads of the right chain vote after the lift")
 }
 
 // An indexer backfills blocks through the tracker while a source votes:
@@ -779,10 +818,11 @@ func TestNetworkIntake_HeldHashVoteNeedPollsVotersBelowThePin(t *testing.T) {
 }
 
 // A 1-block reorg leaves a healthy HTTP voter's last vote, polled up to 30s
-// ago, on the old branch. The tracker polls it at once; its answer is on
-// the new branch, so it is never demoted. Then a reorg to a shorter branch:
-// the voter's vote, polled across a gap, has no header at the new head's
-// height, so only the fork poll's answer shows that its node moved.
+// ago, on the old branch. No tap reads this tracker, so it does not walk:
+// the new branch is a root of its own, and the voter's vote, below the
+// pins' first block, is no fork evidence (§6.3): no fork poll, never
+// demoted. Then a reorg to a shorter branch: the voter's next poll answer,
+// lower than its vote, moves it.
 func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -817,7 +857,7 @@ func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
 		require.False(t, network.isForkDemoted(byId["z-http"]), "a healthy poller whose last vote a reorg left behind is never demoted")
 		time.Sleep(20 * time.Millisecond)
 	}
-	assert.Greater(t, httpVendor.latestPolls.Load(), polled, "the tracker polled the voter whose vote left the pins")
+	assert.Equal(t, polled, httpVendor.latestPolls.Load(), "a vote below the pins' first block is no fork evidence: no fork poll")
 
 	for range 3 {
 		chain.advance()
