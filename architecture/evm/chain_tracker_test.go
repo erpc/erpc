@@ -940,12 +940,13 @@ func (n *rewindNetwork) rewinds() map[string]int64 {
 // evidence (row N4: Latest fell from 4821 to a 2-minute-old 4212). A vote
 // is fresh by when it arrived, not by hash age: after a rewind on every
 // upstream, intake counts no voter on the new branch a hash voter until
-// the counters fall (row C5), here c.
+// the counters fall (row C5), here c. A polled voter with no vote at the
+// switch, p, is owed it too: its poll never lowers its counter (row C16).
 func TestRollbackWriteOnlyFromFreshVotesOnALowerBranch(t *testing.T) {
-	ids := []string{"a", "b", "c", "s"}
+	ids := []string{"a", "b", "c", "s", "p"}
 	net := &rewindNetwork{capturingNetwork: newCapturingNetwork(t, 0, testHash("f", 0)), rewound: map[string]int64{},
 		hv: HashVoters{Voters: ids, Hash: []string{"a", "b", "s"}, Need: 2,
-			Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "s": "vendor-s"}, Distinct: 4}}}
+			Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "s": "vendor-s", "p": "vendor-p"}, Distinct: 5}}}
 	c := newChainTracker(t.Context(), net, 64, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
 	beforeGap := time.Now().Add(-2 * time.Minute)
 	voteAt := func(at time.Time, src, tag string, from, to uint64, parentOfFirst string) {
@@ -993,8 +994,11 @@ func TestRollbackWriteOnlyFromFreshVotesOnALowerBranch(t *testing.T) {
 	assert.Equal(t, map[string]int64{"a": 48, "b": 48}, net.rewinds())
 	c.Observe("c", fork, true)
 	require.Eventually(t, func() bool { c.sync(context.Background()); return len(net.rewinds()) == 3 }, 5*time.Second, 5*time.Millisecond)
+	c.Observe("p", fork, true)
+	require.Eventually(t, func() bool { c.sync(context.Background()); return len(net.rewinds()) == 4 }, 5*time.Second, 5*time.Millisecond,
+		"a voter with no vote at the switch is rewound once its fresh vote reaches the pins")
 	c.sync(context.Background())
-	assert.Equal(t, map[string]int64{"a": 48, "b": 48, "c": 48}, net.rewinds(), "a stale vote is no evidence for a rewind")
+	assert.Equal(t, map[string]int64{"a": 48, "b": 48, "c": 48, "p": 48}, net.rewinds(), "a stale vote is no evidence for a rewind")
 }
 
 // A group tracker refreshes the votes behind the pins once per off voter and

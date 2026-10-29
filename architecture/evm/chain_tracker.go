@@ -1817,8 +1817,10 @@ func (t *ChainTracker) finalThrough(hs []*chainHeader, fin int64) (through uint6
 // hash vote is on the new pins has its latest counter lowered to that
 // vote's height where the counter is above it (votes), so Latest follows
 // the rewound chain on every instance. Every other voter is owed the
-// rewind once a fresh vote of its reaches the pins (due, rewindLate): a
-// vote from before a gap is no evidence.
+// rewind once a fresh vote of its reaches the pins (due, rewindLate),
+// whether or not it held a vote at the switch: a polled voter's next
+// poll is its first evidence of the new branch, and its own poll never
+// lowers its counter (§19 C16). A vote from before a gap is no evidence.
 func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) (votes map[string]int64, due map[string]bool) {
 	votes, due = make(map[string]int64, len(t.votes)), make(map[string]bool)
 	for u, nd := range t.votes {
@@ -1828,10 +1830,16 @@ func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) (votes map
 			due[u] = true
 		}
 	}
-	for u := range t.pending {
+	owe := func(u string) {
 		if _, written := votes[u]; !written {
 			due[u] = true
 		}
+	}
+	for u := range t.pending {
+		owe(u)
+	}
+	for _, u := range t.voters.Voters {
+		owe(u)
 	}
 	return votes, due
 }
