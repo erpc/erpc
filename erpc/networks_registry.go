@@ -174,6 +174,14 @@ func NewNetwork(
 		initializer:       util.NewInitializer(appCtx, &lg, nil),
 	}
 	network.servedTipAll.label = "all"
+	if upstreamsRegistry != nil {
+		if ssr := upstreamsRegistry.SharedStateRegistry(); ssr != nil {
+			network.servedFinalizedShared = ssr.GetCounterInt64(
+				fmt.Sprintf("network/%s/%s/finalizedBlock", projectId, netId),
+				evm.DefaultToleratedBlockHeadRollback,
+			)
+		}
+	}
 	network.headWake = make(chan struct{}, 1)
 	if metricsTracker != nil {
 		metricsTracker.OnHeadBenchChange(network.networkId, network.headsChanged)

@@ -18,6 +18,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/mempool"
@@ -69,6 +70,9 @@ type Network struct {
 	// holds the advance-age watchdog and the regression guard's memory; the
 	// pick itself is stateless (common.PickServedTip).
 	servedTipAll servedTipLane
+	// servedFinalizedShared is the highest network-wide Finalized any
+	// instance served (shareFinalized). Nil without shared state.
+	servedFinalizedShared data.CounterInt64SharedVariable
 
 	// servedTipLanes holds lazily-materialized per-group lanes for
 	// use-upstream selectors that carve out a real sub-group (e.g.
@@ -193,6 +197,28 @@ func (l *servedTipLane) holdFinalized(tip, backing int64) int64 {
 		return l.finalizedFloor
 	}
 	l.finalizedFloor = tip
+	return tip
+}
+
+// shareFinalized lifts the network-wide lane's Finalized to the highest one
+// any instance served (servedFinalizedShared), so instances behind one load
+// balancer agree (spec §6.4, §14): under holdFinalized's rule, only while
+// backing still reaches it. A shared value no voter here backs is ignored
+// and ages out as the chain passes it, so a stale or rogue one cannot pin
+// this instance. A raise updates the local copy at once and publishes in
+// the background (TryUpdate), so the head computation never waits on the
+// store.
+func (n *Network) shareFinalized(tip, backing int64) int64 {
+	if n.servedFinalizedShared == nil || tip <= 0 {
+		return tip
+	}
+	shared := n.servedFinalizedShared.GetValue()
+	switch {
+	case tip > shared:
+		n.servedFinalizedShared.TryUpdate(context.Background(), tip, time.Now())
+	case tip < shared && shared <= backing:
+		return shared
+	}
 	return tip
 }
 

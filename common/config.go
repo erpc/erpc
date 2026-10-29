@@ -2879,7 +2879,9 @@ type EvmChainTrackerConfig struct {
 // static-capped, then benched and static-capped), and the served block is the
 // highest one at least Quorum of those voters already have. The health
 // tracker benches an upstream whose head stopped moving while another kept
-// advancing, until it catches up again.
+// advancing, until it catches up again. "finalized" never steps back below a
+// block already served, by this instance or (network-wide, through shared
+// state) by another, while a voter here still reports it finalized.
 type EvmServedTipConfig struct {
 	// Quorum is how many eligible upstreams must already have a block before it
 	// is served: an integer >= 1, or "majority" (floor(N/2)+1 of N). Unset
