@@ -3,6 +3,7 @@ package evm
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -116,6 +117,13 @@ func TestExtractJsonRpcError_InsufficientFunds_TracingMethodsRetryable(t *testin
 			message:       "Error: no EVM execution in transaction 0x37c6ca677fb7d9f6fe0d53a72288d89fb37b9483ff90950684de6e697e013a00",
 			wantRetryable: false,
 		},
+		{
+			// Aurora engine system call (to 0x4444…192b) the tracer has no EVM record of.
+			name:          "debug_traceTransaction Aurora TransactionHashNotFound stays non-retried",
+			method:        "debug_traceTransaction",
+			message:       "StandaloneError(TransactionHashNotFound(0x1e5f1daaab9c1e10582a8defeb63f0716e8e1071c8a0327e973ff47732f50141))",
+			wantRetryable: false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -172,6 +180,35 @@ func TestExtractJsonRpcError_MonadReserveBalanceViolation(t *testing.T) {
 	}
 	if common.IsRetryableTowardNetwork(err) {
 		t.Fatalf("eth_call reserve balance violation must not be retried toward the network")
+	}
+}
+
+// TestExtractJsonRpcError_GasRequiredExceedsAllowance verifies that the
+// eth_estimateGas verdict of go-ethereum's gas estimator for a call that runs
+// out of gas at its cap — -32000 "gas required exceeds allowance (N)", as an
+// Arbitrum nitro node returns it for a sender whose balance buys only N gas —
+// is an execution outcome returned to the caller, not a server-side exception
+// that sends the same estimate to every upstream.
+func TestExtractJsonRpcError_GasRequiredExceedsAllowance(t *testing.T) {
+	t.Parallel()
+
+	req := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","method":"eth_estimateGas","params":[],"id":1}`))
+	nr := common.NewNormalizedResponse().WithRequest(req)
+
+	r := &http.Response{StatusCode: 200, Header: http.Header{}}
+	jrErr := common.NewErrJsonRpcExceptionExternal(-32000, "gas required exceeds allowance (6691)", "")
+	jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+	err := ExtractJsonRpcError(r, nr, jr, nil)
+	if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+		t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+	}
+	if common.IsRetryableTowardNetwork(err) {
+		t.Fatalf("eth_estimateGas gas required exceeds allowance must not be retried toward the network")
+	}
+	if !strings.Contains(err.Error(), "gas required exceeds allowance (6691)") {
+		t.Fatalf("expected the node's message to be kept, got: %v", err)
 	}
 }
 
@@ -600,6 +637,11 @@ func TestExtractJsonRpcError_HyperEvmPrecompileStateGap(t *testing.T) {
 		{name: "eth_getProof no state found", method: "eth_getProof", message: "no state found for block number 52938851",
 			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
 		{name: "eth_getCode state pruned", method: "eth_getCode", message: "state at block #51672341 is pruned",
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		// A node that dropped old history names its floor; an archive upstream can still serve the block.
+		{name: "eth_getLogs pruned history", method: "eth_getLogs", message: "pruned history unavailable: requested 1000, earliest available 5000",
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "eth_getBlockByNumber below earliest available", method: "eth_getBlockByNumber", message: "block 100 is before the earliest available block 200",
 			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
 	}
 

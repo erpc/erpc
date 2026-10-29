@@ -167,6 +167,15 @@ export const MaxShredInsertSlotLagThreshold: number /* int64 */ = 100;
  * so pre-multi-chain configs keep producing "svm:<cluster>" IDs.
  */
 export const SvmChainSolana = "solana";
+/**
+ * SvmHistory is the slots from which a cluster's Agave history records block
+ * fields. Below them Agave renders the field null whatever an archive holds;
+ * a nil bound means the cluster records the field from its first slot.
+ */
+export interface SvmHistory {
+  blocktimefrom?: number /* uint64 */;
+  blockheightfrom?: number /* uint64 */;
+}
 
 //////////
 // source: blocktime_adaptive_duration.go
@@ -877,6 +886,13 @@ export interface UpstreamConfig {
    * copied onto every upstream the provider generates.
    */
   creditUnits?: { [key: string]: number /* int64 */};
+  /**
+   * CreditAllowance is the prepaid credit allowance of the vendor account
+   * this upstream bills to. When set and the vendor reports account usage
+   * (common.CreditUsageProvider), the selection policy sees `u.creditPace`:
+   * credits used this billing period over the pro-rata allowance so far.
+   */
+  creditAllowance?: CreditAllowanceConfig;
   shadow?: ShadowUpstreamConfig;
   /**
    * Routing holds per-upstream routing hints consumed by the selection
@@ -996,6 +1012,15 @@ export interface UpstreamIntegrityEthGetBlockReceiptsConfig {
 }
 export type UJAlias = UpstreamConfig;
 export type UYAlias = UpstreamConfig;
+/**
+ * CreditAllowanceConfig is a vendor account's prepaid credit allowance per
+ * billing period. ApiKey is the account's admin key; the vendor uses it to
+ * read account-wide usage, calls from outside eRPC included.
+ */
+export interface CreditAllowanceConfig {
+  credits: number /* int64 */;
+  apiKey: string;
+}
 export interface RateLimitAutoTuneConfig {
   enabled?: boolean;
   adjustmentPeriod: Duration;
@@ -1843,7 +1868,9 @@ export interface EvmNetworkConfig {
  * static-capped, then benched and static-capped), and the served block is the
  * highest one at least Quorum of those voters already have. The health
  * tracker benches an upstream whose head stopped moving while another kept
- * advancing, until it catches up again.
+ * advancing, until it catches up again. "finalized" never steps back below a
+ * block already served, by this instance or (network-wide, through shared
+ * state) by another, while a voter here still reports it finalized.
  */
 export interface EvmServedTipConfig {
   /**
@@ -2236,7 +2263,36 @@ export interface RateLimitStoreConfig {
   redis?: RedisConnectorConfig;
   cacheKeyPrefix?: string;
   nearLimitRatio?: number /* float32 */;
+  /**
+   * OnFailure decides a request the redis store could not: not connected,
+   * erroring, slower than redis.getTimeout, or at its in-flight cap.
+   */
+  onFailure?: RateLimitStoreFailureMode;
+  /**
+   * LocalLimitFactor scales every maxCount for the in-process limiter that
+   * onFailure: local decides with. It counts this replica only, so set it
+   * near 1/replicas. Required for local; must be > 0 and <= 1.
+   */
+  localLimitFactor?: number /* float64 */;
 }
+/**
+ * RateLimitStoreFailureMode is what a redis-backed budget does with a request
+ * its store could not decide.
+ */
+export type RateLimitStoreFailureMode = string;
+/**
+ * RateLimitStoreFailureAllow (default) admits the request.
+ */
+export const RateLimitStoreFailureAllow: RateLimitStoreFailureMode = "allow";
+/**
+ * RateLimitStoreFailureDeny rejects the request as rate limited.
+ */
+export const RateLimitStoreFailureDeny: RateLimitStoreFailureMode = "deny";
+/**
+ * RateLimitStoreFailureLocal decides it with an in-process limiter that
+ * counts every request, at maxCount × localLimitFactor.
+ */
+export const RateLimitStoreFailureLocal: RateLimitStoreFailureMode = "local";
 
 //////////
 // source: config_integrity.go

@@ -217,12 +217,26 @@ func (r *RateLimiterConfig) Validate() error {
 		if r.Store.NearLimitRatio != 0 && (r.Store.NearLimitRatio <= 0 || r.Store.NearLimitRatio >= 1) {
 			return fmt.Errorf("rateLimiters.store.nearLimitRatio must be > 0 and < 1")
 		}
+		switch r.Store.OnFailure {
+		case "", RateLimitStoreFailureAllow, RateLimitStoreFailureDeny:
+			if r.Store.LocalLimitFactor != 0 {
+				return fmt.Errorf("rateLimiters.store.localLimitFactor is only used with onFailure: %s", RateLimitStoreFailureLocal)
+			}
+		case RateLimitStoreFailureLocal:
+			if r.Store.LocalLimitFactor <= 0 || r.Store.LocalLimitFactor > 1 {
+				return fmt.Errorf("rateLimiters.store.localLimitFactor must be > 0 and <= 1 when onFailure is %s", RateLimitStoreFailureLocal)
+			}
+		default:
+			return fmt.Errorf("rateLimiters.store.onFailure '%s' is invalid, must be one of: %s, %s, %s", r.Store.OnFailure, RateLimitStoreFailureAllow, RateLimitStoreFailureDeny, RateLimitStoreFailureLocal)
+		}
 		// Validate redis connector
 		if err := r.Store.Redis.Validate(); err != nil {
 			return fmt.Errorf("rateLimiters.store.redis is invalid: %w", err)
 		}
 	case "memory":
-		// No validation for memory store
+		if r.Store.OnFailure != "" || r.Store.LocalLimitFactor != 0 {
+			return fmt.Errorf("rateLimiters.store.onFailure and localLimitFactor apply only to driver: redis")
+		}
 	case "":
 		fallthrough
 	default:
@@ -1088,6 +1102,9 @@ func (u *ProviderConfig) Validate(c *Config) error {
 func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	if !skipEndpointCheck && u.Endpoint == "" {
 		return fmt.Errorf("upstream.*.endpoint is required")
+	}
+	if ca := u.CreditAllowance; ca != nil && (ca.Credits <= 0 || ca.ApiKey == "") {
+		return fmt.Errorf("upstream '%s': creditAllowance needs credits > 0 and apiKey", u.Id)
 	}
 	if u.Evm != nil {
 		if err := u.Evm.Validate(u); err != nil {

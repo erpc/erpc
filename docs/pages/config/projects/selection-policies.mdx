@@ -214,7 +214,7 @@ The default `evalScope: "network"` creates one slot per network. Setting `evalSc
 
 `errorRate` counts only genuine upstream-quality failures: connection refused, 5xx, genuine timeouts. EVM reverts, rate-limit 429s, client disconnects, and hedge cancellations are deliberately excluded so a misbehaving caller or aggressive hedger cannot inflate a healthy upstream's error rate.
 
-`throttledRate` counts remote 429 responses specifically — vendor quota exhaustion. `misbehaviorRate` tracks upstreams returning semantically wrong data. Latency quantiles are populated only from _successful_ responses — a fast-failing upstream that rejects connections in 1ms has empty quantile sketches and reports `p70 = 0` (unknown quality, not ultra-fast). A well-written policy should guard `latencyAbove` with `samplesAbove(N)`.
+`throttledRate` counts remote 429 responses specifically — vendor quota exhaustion. `misbehaviorRate` tracks upstreams returning semantically wrong data. Latency quantiles come from successful responses plus primary attempts cancelled because another attempt won the hedge race, which count at their elapsed time as a lower bound. Client cancels and deadlines record nothing. An upstream whose every attempt loses the hedge race therefore reads at least the hedge delay, not `0`. A fast-failing upstream that rejects connections in 1ms has empty quantile sketches and reports `p70 = 0` (unknown quality, not ultra-fast). A well-written policy should guard `latencyAbove` with `samplesAbove(N)`.
 
 `blockHeadLag` and `finalizationLag` are atomic point-in-time state, not rolling counters. They persist across window rotations and stay non-zero until the upstream catches up to the network tip. `blockHeadLagSeconds` and `finalizationLagSeconds` multiply the block count by the tracker's EMA-estimated block time (alpha 0.1, minimum 3 samples before publishing). Until the EMA is warm, both seconds fields are `0` — pair `blockSecondsLagAbove` with `blockNumberLagAbove` for cold-start coverage.
 
@@ -261,6 +261,8 @@ Per-upstream `routing.scoreMultipliers` on the upstream config merge with the ch
 **Circuit-breaker interplay.** The selection policy and the [circuit breaker](/config/failsafe/circuit-breaker) are complementary layers that act at different points and timescales. The policy runs per eval tick and excludes upstreams from the ranked list via `excludeIf` predicates over rolling-window metrics. The circuit breaker is a per-upstream state machine *inside the upstream executor*: it is checked only after the sweep has already dispatched to that upstream (selection runs first). When the breaker is open, `TryAcquirePermit()` fails the attempt immediately with `ErrFailsafeCircuitBreakerOpen` — no transport call is made — and the sweep advances to the next upstream in the policy's ordered list. So an upstream can sit at position 0 in the policy list with an open breaker: each request burns one cheap fast-fail attempt there before moving on, until the policy's own metrics demote it on a later tick. Neither mechanism reads the other's state (breaker-open does not cordon or exclude); they only interact through outcomes. If the split bothers you, align breaker thresholds with the policy's `errorRateAbove` so both layers agree on what "broken" means. Source: [`upstream/upstream_executor.go:L345-L366`](https://github.com/erpc/erpc/blob/main/upstream/upstream_executor.go#L345-L366).
 
 **`shadowExcludeIf` — dry-run exclusion rules.** `shadowExcludeIf(predicate)` is the non-destructive counterpart of `excludeIf`. The predicate runs every tick; would-have-been-excluded upstreams stay in the ordered list but each trip increments `erpc_selection_shadow_exclusion_total{upstream, reason}` with the same leaf-slug attribution. Use it to measure a new rule's blast radius before promoting it to `excludeIf`.
+
+**`blockMethods` — per-method exclusion.** `blockMethods({ match, when, probe? })` skips an upstream for single methods while it keeps serving all others. For each upstream and each method with samples that matches `match` (glob or array), `when` runs with `u.metrics` set to that method's numbers (`requestsTotal`, `latencyP`), so `samplesAbove` and `latencyAbove` work; rate predicates do not trip. A trip removes the upstream from that method's list at request time. If blocks would leave a method no upstream, all stay. Blocked upstreams receive probe traffic for that method unless `probe: false`. Each block increments `erpc_selection_method_block_total{method, upstream, reason}`. The step works at `evalScope: 'network'`.
 
 **`includeIf` — conditional re-admission (pool-level quantifiers).** `includeIf(target, condition)` is the dual of `excludeIf`: it ADDS upstreams from the full universe back into the chain when an aggregate condition over the *surviving pool* holds — it never removes anyone. `target` comes first ("include *these* if *condition*"): a tag pattern (`'tier:reserve'`, `!` negation supported) or a selector object `{id, tag, vendor, type, position}` whose facets AND together; an object with no concrete facet (`{}`, `{position:'head'}`) is a deliberate no-op so it can never accidentally admit the entire universe. Admitted upstreams land at the tail by default (`position: 'head'` available in object form), are never duplicated by id, and are ranked by the subsequent `sortByScore` like everyone else. `condition` is a boolean or `(pool, ctx) => boolean` receiving the current chain — which is what enables pool-level ("network-level") questions via native array methods over the per-upstream predicate factories: `p.every(blockSecondsLagAbove(30))`, `p.length < 2`. Mind that native `every` is `true` on an empty array — guard with `p.length > 0 &&` when the empty pool should be handled by a separate explicit `p.length < 1` line. Malformed arguments and throwing conditions degrade to a no-op rather than sinking the eval. Source: [`internal/policy/stdlib/stdlib.js:L1023-L1116`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/stdlib.js#L1023-L1116); tests: [`internal/policy/stdlib/include_if_test.go`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/include_if_test.go).
 
@@ -342,7 +344,16 @@ Global JS helpers available inside every `evalFunc`:
 
 **Exclusion attribution leaf slugs.** `excludeIf` records which leaf predicate actually tripped per upstream. Bounded-cardinality slugs emitted by `erpc_selection_exclusion_total{reason}`:
 
-`error_rate_above`, `error_rate_below`, `throttle_rate_above`, `throttle_rate_below`, `misbehavior_rate_above`, `latency_p<Q>_above`, `latency_p<Q>_deviation_above`, `block_head_lag_above`, `finalization_lag_above`, `block_head_lag_seconds_above`, `finalization_lag_seconds_above`, `samples_below`, `samples_above` (guard — not a failure slug), `not_<child_slug>`, `custom`.
+`error_rate_above`, `error_rate_below`, `throttle_rate_above`, `throttle_rate_below`, `misbehavior_rate_above`, `credit_pace_above`, `credit_pace_below`, `credit_remaining_above`, `credit_remaining_below`, `latency_p<Q>_above`, `latency_p<Q>_deviation_above`, `block_head_lag_above`, `finalization_lag_above`, `block_head_lag_seconds_above`, `finalization_lag_seconds_above`, `samples_below`, `samples_above` (guard — not a failure slug), `not_<child_slug>`, `custom`.
+
+**Prepaid credit pacing.** For an upstream with `creditAllowance`, `u.creditPace` is the vendor account's credits used this billing period over the allowance pro-rated to now (`1.0` spends exactly the allowance by period end), and `u.creditRemaining` is allowance minus credits used. Predicates: `creditPaceAbove(x)`, `creditPaceBelow(x)`, `creditRemainingAbove(n)`, `creditRemainingBelow(n)`. Both fields are absent with no allowance, before the first usage reading, or when the reading is over 30 minutes old; every credit predicate is then false, so the policy keeps its usual order. Fill a prepaid vendor ahead of per-call vendors while behind pace, and stop it near the allowance. Only upstreams whose endpoint is on the allowance account get the fields:
+
+```js
+const live = upstreams.excludeIf(creditRemainingBelow(4e9), { probe: false });
+return live.filter(creditPaceBelow(1.0)).union(live);
+```
+
+Size the `creditRemainingBelow` margin above the credits the account bills during the vendor's usage-reporting lag (QuickNode: 2-3 h of hourly buckets) plus the stale window.
 
 Note: `samplesAbove`/`samplesBelow` predicates are marked `isGuard=true` so they do not appear as primary exclusion reasons when they do NOT trip; they only appear when they are the leaf that fires.
 
@@ -659,6 +670,22 @@ non-obvious choices.
     .probeExcluded({ sampleRate: 0.1, minSamples: 10, timeout: '10s' })
 ```
 
+**5b. Blocking one slow method on one upstream (`blockMethods`).** Keep an upstream for `eth_call` and logs, but skip it for traces while its trace p99 is over 5s:
+
+```js
+(upstreams, ctx) =>
+  upstreams
+    .removeCordoned()
+    .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+    .blockMethods({
+      match: ['debug_trace*', 'trace_*'],
+      when: all(samplesAbove(20), latencyAbove(5000, 99)),
+    })
+    .whenEmpty(() => upstreams)
+    .sortByScore(PREFER_FASTEST)
+    .probeExcluded({ sampleRate: 0.05, minSamples: 10, timeout: '10s' })
+```
+
 **6. Reserve tier — break-glass inclusion (`includeIf`).** Keep a pricier or rate-limited
 provider (tagged `tags: ["tier:reserve"]`) out of normal rotation, and bring it in only
 when the serving pool is *collectively* unfit — every survivor lagging or slow, or none
@@ -750,6 +777,7 @@ reserve upstreams to also keep shadow-probe traffic off them while benched:
 | `erpc_selection_rejection_total` | Counter | `project, network, method, upstream, step` | Per tick × excluded upstream; `step` = first stdlib primitive that dropped the upstream. |
 | `erpc_selection_exclusion_total` | Counter | `project, network, method, upstream, reason` | Per tick × excluded upstream × leaf predicate slug. |
 | `erpc_selection_shadow_exclusion_total` | Counter | `project, network, method, upstream, reason` | `shadowExcludeIf` would-have-excluded; upstream stays in rotation. |
+| `erpc_selection_method_block_total` | Counter | `project, network, method, upstream, reason` | Per tick × `blockMethods` block; `method` is the blocked method. Upstream stays in rotation for other methods. |
 | `erpc_selection_excluded_seconds` | Gauge | `project, network, method, upstream` | Seconds continuously excluded; reset to `0` on readmit. |
 | `erpc_selection_readmit_total` | Counter | `project, network, method, upstream` | Excluded → in-rotation transition. |
 | `erpc_selection_readmit_age_seconds` | Histogram | `project, network, method` | Distribution of exclusion age at readmit. |

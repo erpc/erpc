@@ -978,8 +978,13 @@ type UpstreamConfig struct {
 	// vendor defaults ("*" = fallback for unlisted methods). Normally set
 	// once per provider via `providers[].settings.creditUnits`, which is
 	// copied onto every upstream the provider generates.
-	CreditUnits map[string]int64      `yaml:"creditUnits,omitempty" json:"creditUnits,omitempty"`
-	Shadow      *ShadowUpstreamConfig `yaml:"shadow,omitempty" json:"shadow"`
+	CreditUnits map[string]int64 `yaml:"creditUnits,omitempty" json:"creditUnits,omitempty"`
+	// CreditAllowance is the prepaid credit allowance of the vendor account
+	// this upstream bills to. When set and the vendor reports account usage
+	// (common.CreditUsageProvider), the selection policy sees `u.creditPace`:
+	// credits used this billing period over the pro-rata allowance so far.
+	CreditAllowance *CreditAllowanceConfig `yaml:"creditAllowance,omitempty" json:"creditAllowance,omitempty"`
+	Shadow          *ShadowUpstreamConfig  `yaml:"shadow,omitempty" json:"shadow"`
 
 	// Routing holds per-upstream routing hints consumed by the selection
 	// policy. `scoreMultipliers` bias this upstream's rank inside
@@ -1215,6 +1220,7 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 	if c.RateLimitAutoTune != nil {
 		copied.RateLimitAutoTune = c.RateLimitAutoTune.Copy()
 	}
+	copied.CreditAllowance = c.CreditAllowance.Copy()
 
 	if c.IgnoreMethods != nil {
 		copied.IgnoreMethods = make([]string, len(c.IgnoreMethods))
@@ -1307,6 +1313,30 @@ func (u *UpstreamConfig) MarshalYAML() (interface{}, error) {
 	cp := *u
 	cp.Endpoint = util.RedactEndpoint(u.Endpoint)
 	return (*UYAlias)(&cp), nil
+}
+
+// CreditAllowanceConfig is a vendor account's prepaid credit allowance per
+// billing period. ApiKey is the account's admin key; the vendor uses it to
+// read account-wide usage, calls from outside eRPC included.
+type CreditAllowanceConfig struct {
+	Credits int64  `yaml:"credits" json:"credits"`
+	ApiKey  string `yaml:"apiKey" json:"apiKey"`
+}
+
+func (c *CreditAllowanceConfig) Copy() *CreditAllowanceConfig {
+	if c == nil {
+		return nil
+	}
+	copied := *c
+	return &copied
+}
+
+func (c CreditAllowanceConfig) MarshalJSON() ([]byte, error) {
+	return sonic.Marshal(map[string]interface{}{"credits": c.Credits, "apiKey": "REDACTED"})
+}
+
+func (c CreditAllowanceConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{"credits": c.Credits, "apiKey": "REDACTED"}, nil
 }
 
 type RateLimitAutoTuneConfig struct {
@@ -1574,6 +1604,16 @@ func (c *EvmAvailabilityBoundConfig) Copy() *EvmAvailabilityBoundConfig {
 	}
 	out.Probe = c.Probe
 	return out
+}
+
+// Moves reports whether this bound follows observed chain state, so a block
+// above it now can fall inside it later. exactBlock never moves; an
+// earliestBlockPlus with updateRate 0 freezes at its first evaluation.
+func (c *EvmAvailabilityBoundConfig) Moves() bool {
+	if c == nil {
+		return false
+	}
+	return c.LatestBlockMinus != nil || (c.EarliestBlockPlus != nil && c.UpdateRate > 0)
 }
 
 func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
@@ -2718,6 +2758,24 @@ func (c *SvmAvailabilityBoundConfig) Copy() *SvmAvailabilityBoundConfig {
 	return out
 }
 
+// Moves reports whether this bound follows observed chain state, so a slot
+// above it now can fall inside it later. exactSlot never moves.
+func (c *SvmAvailabilityBoundConfig) Moves() bool {
+	if c == nil {
+		return false
+	}
+	return c.LatestSlotMinus != nil || c.FirstAvailableSlotPlus != nil
+}
+
+// UpperBoundSkipRetryable decides whether a skip above an upstream's declared
+// upper bound is worth another round once every upstream has declined. Waiting
+// helps only when the bound moves, the target stays put, and the gap is within
+// horizon. A target derived from the tip advances with a tip-derived bound, so
+// the gap never closes.
+func UpperBoundSkipRetryable(target, bound, horizon int64, boundMoves, targetFromTip bool) bool {
+	return boundMoves && !targetFromTip && target-bound <= horizon
+}
+
 func (s *SvmUpstreamConfig) Copy() *SvmUpstreamConfig {
 	if s == nil {
 		return nil
@@ -2869,7 +2927,9 @@ type EvmNetworkConfig struct {
 // static-capped, then benched and static-capped), and the served block is the
 // highest one at least Quorum of those voters already have. The health
 // tracker benches an upstream whose head stopped moving while another kept
-// advancing, until it catches up again.
+// advancing, until it catches up again. "finalized" never steps back below a
+// block already served, by this instance or (network-wide, through shared
+// state) by another, while a voter here still reports it finalized.
 type EvmServedTipConfig struct {
 	// Quorum is how many eligible upstreams must already have a block before it
 	// is served: an integer >= 1, or "majority" (floor(N/2)+1 of N). Unset
@@ -3382,7 +3442,28 @@ type RateLimitStoreConfig struct {
 	Redis          *RedisConnectorConfig `yaml:"redis,omitempty" json:"redis,omitempty"`
 	CacheKeyPrefix string                `yaml:"cacheKeyPrefix,omitempty" json:"cacheKeyPrefix"`
 	NearLimitRatio float32               `yaml:"nearLimitRatio,omitempty" json:"nearLimitRatio"`
+	// OnFailure decides a request the redis store could not: not connected,
+	// erroring, slower than redis.getTimeout, or at its in-flight cap.
+	OnFailure RateLimitStoreFailureMode `yaml:"onFailure,omitempty" json:"onFailure,omitempty"`
+	// LocalLimitFactor scales every maxCount for the in-process limiter that
+	// onFailure: local decides with. It counts this replica only, so set it
+	// near 1/replicas. Required for local; must be > 0 and <= 1.
+	LocalLimitFactor float64 `yaml:"localLimitFactor,omitempty" json:"localLimitFactor,omitempty"`
 }
+
+// RateLimitStoreFailureMode is what a redis-backed budget does with a request
+// its store could not decide.
+type RateLimitStoreFailureMode string
+
+const (
+	// RateLimitStoreFailureAllow (default) admits the request.
+	RateLimitStoreFailureAllow RateLimitStoreFailureMode = "allow"
+	// RateLimitStoreFailureDeny rejects the request as rate limited.
+	RateLimitStoreFailureDeny RateLimitStoreFailureMode = "deny"
+	// RateLimitStoreFailureLocal decides it with an in-process limiter that
+	// counts every request, at maxCount × localLimitFactor.
+	RateLimitStoreFailureLocal RateLimitStoreFailureMode = "local"
+)
 
 // CachePartitionKey builds the JSON-RPC cache partition key.
 // Empty suffix keeps {networkId}:{ref}; a set suffix yields {networkId}:{suffix}:{ref}.

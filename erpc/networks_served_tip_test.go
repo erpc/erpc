@@ -48,6 +48,9 @@ type servedTipFixture struct {
 	syncing          bool
 	ignoreMethods    []string
 	tags             []string
+	// statePollerInterval sets evm.statePollerInterval; the tracker credits a
+	// head for one poll period after each report.
+	statePollerInterval time.Duration
 }
 
 // setupServedTipNetwork bootstraps a Network with the supplied upstream
@@ -82,7 +85,7 @@ func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []ser
 			cid = chainID
 		}
 		endpoint := "http://" + f.id + ".localhost"
-		evmCfg := &common.EvmUpstreamConfig{ChainId: cid}
+		evmCfg := &common.EvmUpstreamConfig{ChainId: cid, StatePollerInterval: common.Duration(f.statePollerInterval)}
 		if f.upperExactBlock > 0 {
 			upper := f.upperExactBlock
 			evmCfg.BlockAvailability = &common.EvmBlockAvailabilityConfig{
@@ -859,8 +862,8 @@ func TestServedTip_GuaranteedMethodFloor_DoesNotUndoTheGuardsHold(t *testing.T) 
 	assert.Equal(t, healthy, network.EvmHighestLatestBlockNumber(ctx),
 		"the floor must not undo the guard's hold: live upstreams serve eth_getLogs, "+
 			"they are merely absent, so the cap-only floor is a transient lie")
-	assert.Zero(t, network.guaranteedFloor(ctx, false),
-		"and the method must contribute no floor at all while that is true")
+	floor, _ := network.guaranteedFloor(ctx, false)
+	assert.Zero(t, floor, "and the method must contribute no floor at all while that is true")
 
 	advance(servedTipRegressionTTL + time.Second)
 	assert.Equal(t, legacyCap, network.EvmHighestLatestBlockNumber(ctx),
@@ -2357,6 +2360,126 @@ func TestServedTip_Finalized_RegressionGuardHolds(t *testing.T) {
 	assert.Equal(t, int64(1_002_400), network.EvmHighestFinalizedBlockNumber(ctx),
 		"the guard protects the finalized axis exactly as it protects latest")
 	assert.Equal(t, before+1, servedTipRegressionCount(network, "finalized", "held"))
+}
+
+// Finalized is irreversible, so the served finalized tip must not step back
+// when the voters change (#1353): a leader leaving the ballot hands the
+// majority to a lagging cohort, yet a live voter still reports the served
+// block as finalized. Another instance sharing state serves it too, though it
+// never saw the leaders' majority. Only when no live voter reports it does the
+// tip follow the pick down.
+func TestServedTip_Finalized_NeverRegressesWhenTheMajorityFlips(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "lead1", chainID: 123, latestBlock: 1_000},
+		{id: "lead2", chainID: 123, latestBlock: 1_000},
+		{id: "lead3", chainID: 123, latestBlock: 1_000},
+		{id: "lag1", chainID: 123, latestBlock: 1_000},
+		{id: "lag2", chainID: 123, latestBlock: 1_000},
+	})
+	lead, lag := ups[:3], ups[3:]
+	finalized := func() int64 { return network.EvmHighestFinalizedBlockNumber(ctx) }
+	// A syncing upstream leaves the ballot, as an excluded or benched one does.
+	vote := func(on bool, us ...*upstream.Upstream) {
+		for _, u := range us {
+			state := common.EvmSyncingStateSyncing
+			if on {
+				state = common.EvmSyncingStateNotSyncing
+			}
+			u.EvmStatePoller().SetSyncingState(state)
+		}
+	}
+	for _, u := range lead {
+		setServedTipFinalized(t, u, 201)
+	}
+	for _, u := range lag {
+		setServedTipFinalized(t, u, 150)
+	}
+	require.Equal(t, int64(201), finalized(), "majority of 5: the three leaders")
+
+	vote(false, lead[2])
+	assert.Equal(t, int64(201), finalized(),
+		"the laggers are now the majority of 4, but two live voters still report 201 finalized")
+
+	replica, err := NewNetwork(ctx, &log.Logger, network.projectId, network.cfg,
+		network.rateLimitersRegistry, network.upstreamsRegistry, network.metricsTracker, nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(201), replica.EvmHighestFinalizedBlockNumber(ctx),
+		"a fresh instance's own pick is 150, but the other instance served 201 and a voter here backs it")
+
+	for _, u := range lead[:2] {
+		setServedTipFinalized(t, u, 202)
+	}
+	assert.Equal(t, int64(201), finalized(), "the hold never serves past the served value on its own")
+
+	setServedTipFinalized(t, lead[2], 202)
+	vote(true, lead[2])
+	assert.Equal(t, int64(202), finalized(), "the leaders' majority moves it forward")
+
+	vote(false, lead...)
+	assert.Equal(t, int64(150), finalized(),
+		"no live voter reports 202 finalized any more: the tip follows the pick")
+	assert.Equal(t, int64(150), replica.EvmHighestFinalizedBlockNumber(ctx),
+		"a shared value no voter backs is ignored")
+}
+
+// The finalized floor's two limits: a tip one voter defined alone never
+// enters it, so that voter cannot hold "finalized" up once honest heads
+// arrive; and a held value never exceeds the served "latest", the order every
+// voter's own heads keep.
+func TestServedTip_Finalized_FloorLimits(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	t.Run("a lone voter's tip never enters the floor", func(t *testing.T) {
+		network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+			{id: "rogue", chainID: 123, latestBlock: 1_000},
+			{id: "honest1", chainID: 123, latestBlock: 1_000},
+			{id: "honest2", chainID: 123, latestBlock: 1_000},
+		})
+		setServedTipFinalized(t, ups[0], 900)
+		require.Equal(t, int64(900), network.EvmHighestFinalizedBlockNumber(ctx),
+			"the honest upstreams have no finalized head yet, so the only voter defines it")
+
+		setServedTipFinalized(t, ups[1], 500)
+		setServedTipFinalized(t, ups[2], 500)
+		assert.Equal(t, int64(500), network.EvmHighestFinalizedBlockNumber(ctx),
+			"the rogue still reports 900, but nobody corroborated it")
+	})
+
+	t.Run("a held finalized never exceeds the served latest", func(t *testing.T) {
+		network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+			{id: "lead1", chainID: 123, latestBlock: 1_000},
+			{id: "lead2", chainID: 123, latestBlock: 1_000},
+			{id: "lead3", chainID: 123, latestBlock: 1_000},
+			{id: "lag1", chainID: 123, latestBlock: 180},
+			{id: "lag2", chainID: 123, latestBlock: 180},
+		})
+		for i, u := range ups {
+			fin := int64(201)
+			if i >= 3 {
+				fin = 150
+			}
+			setServedTipFinalized(t, u, fin)
+		}
+		require.Equal(t, int64(201), network.EvmHighestFinalizedBlockNumber(ctx))
+
+		ups[2].EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+		latest := network.EvmHighestLatestBlockNumber(ctx)
+		require.Equal(t, int64(180), latest, "the laggers are now the latest majority too")
+		assert.Equal(t, latest, network.EvmHighestFinalizedBlockNumber(ctx),
+			"the floor backs 201, but finalized must not pass the served latest")
+	})
 }
 
 // The guard's clamp branch: the upstream that backed the remembered pick leaves

@@ -3397,6 +3397,9 @@ func (r *RateLimitStoreConfig) SetDefaults() error {
 		if err := r.Redis.SetDefaults(); err != nil {
 			return fmt.Errorf("failed to set defaults for redis connector: %w", err)
 		}
+		if r.OnFailure == "" {
+			r.OnFailure = RateLimitStoreFailureAllow
+		}
 	}
 	return nil
 }
