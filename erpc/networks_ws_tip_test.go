@@ -789,10 +789,11 @@ func TestNetworkIntake_HeldHashVoteNeedPollsVotersBelowThePin(t *testing.T) {
 }
 
 // A 1-block reorg leaves a healthy HTTP voter's last vote, polled up to 30s
-// ago, on the old branch. The tracker polls it at once; its answer is on
-// the new branch, so it is never demoted. Then a reorg to a shorter branch:
-// the voter's vote, polled across a gap, has no header at the new head's
-// height, so only the fork poll's answer shows that its node moved.
+// ago, on the old branch. No tap reads this tracker, so it does not walk:
+// the new branch is a root of its own, and the voter's vote, below the
+// pins' first block, is no fork evidence (§6.3): no fork poll, never
+// demoted. Then a reorg to a shorter branch: the voter's next poll answer,
+// lower than its vote, moves it.
 func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -827,7 +828,7 @@ func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
 		require.False(t, network.isForkDemoted(byId["z-http"]), "a healthy poller whose last vote a reorg left behind is never demoted")
 		time.Sleep(20 * time.Millisecond)
 	}
-	assert.Greater(t, httpVendor.latestPolls.Load(), polled, "the tracker polled the voter whose vote left the pins")
+	assert.Equal(t, polled, httpVendor.latestPolls.Load(), "a vote below the pins' first block is no fork evidence: no fork poll")
 
 	for range 3 {
 		chain.advance()
