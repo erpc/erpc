@@ -1039,9 +1039,10 @@ func (n *Network) finalizedBacking(ctx context.Context, q common.ServedTipQuorum
 
 // shareFinalized lifts the network-wide finalized tip `served` to the highest
 // one any instance served (servedFinalizedShared), so instances behind one load
-// balancer agree, under holdFinalized's rule: within tolerance, and only while
-// a voter here still reports it (finalizedBacking). Any other shared value is
-// ignored, as an instance's own floor is.
+// balancer agree, under holdFinalized's rule: at most tolerance above the
+// computed tip, so the lane's floor and the shared one together never hold
+// more, and only while a voter here still reports it (finalizedBacking). Any
+// other shared value is ignored, as an instance's own floor is.
 //
 // Only raises are published. A value the chain left behind (a reset chain, a
 // far-ahead voter served once) stays in the counter until the chain passes it,
@@ -1057,7 +1058,7 @@ func (n *Network) shareFinalized(ctx context.Context, q common.ServedTipQuorum, 
 	switch {
 	case computed > shared:
 		n.servedFinalizedShared.TryUpdate(ctx, computed)
-	case served < shared && shared-served <= tolerance && shared <= n.finalizedBacking(ctx, q):
+	case served < shared && shared-computed <= tolerance && shared <= n.finalizedBacking(ctx, q):
 		return shared
 	}
 	return served
