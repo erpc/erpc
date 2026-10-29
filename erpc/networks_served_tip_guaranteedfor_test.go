@@ -178,6 +178,8 @@ func TestGuaranteedFor_MatchesByUpstreamIdGlob(t *testing.T) {
 
 // The guarantee applies to the finalized axis on its own terms: the finalized
 // tip is clamped to the group's finalized majority, not to its latest one.
+// A group member leaving the ballot cannot pull it back down while a live
+// member still reports it finalized (#1353).
 func TestGuaranteedFor_AppliesToTheFinalizedAxis(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -185,19 +187,27 @@ func TestGuaranteedFor_AppliesToTheFinalizedAxis(t *testing.T) {
 	defer cancel()
 
 	util.SetupMocksForEvmStatePoller()
-	fx := mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993})
+	fx := mixedPool([]int64{1000, 1000, 1000, 1000}, []int64{993, 993, 993})
 	network, ups := setupServedTipNetworkWith(t, ctx, fx, &common.EvmServedTipConfig{
 		Quorum:        common.ServedTipQuorumMajority,
 		GuaranteedFor: []string{tagInternal},
 	})
 
-	finalized := []int64{900, 900, 900, 880, 880} // externals first, then internals
+	finalized := []int64{900, 900, 900, 900, 880, 880, 850} // externals first, then internals
 	for i, u := range ups {
 		setServedTipFinalized(t, u, finalized[i])
 	}
 
 	assert.Equal(t, int64(880), network.EvmHighestFinalizedBlockNumber(ctx),
 		"finalized majority is 900; the internals have only finalized 880")
+
+	network.PinUpstreamOrderForTest("ext1", "ext2", "ext3", "ext4", "int1", "int3")
+	assert.Equal(t, int64(880), network.EvmHighestFinalizedBlockNumber(ctx),
+		"the internals' majority is now 850, but int1 still reports 880 finalized")
+
+	network.PinUpstreamOrderForTest("ext1", "ext2", "ext3", "ext4", "int3")
+	assert.Equal(t, int64(850), network.EvmHighestFinalizedBlockNumber(ctx),
+		"no internal reports 880 finalized any more: the guarantee binds")
 }
 
 // A head already delivered to a WebSocket subscriber floors "latest", but it

@@ -183,6 +183,10 @@ func NewNetwork(
 				fmt.Sprintf("network/%s/%s/latestBlock", projectId, netId),
 				evm.DefaultToleratedBlockHeadRollback,
 			)
+			network.servedFinalizedShared = ssr.GetCounterInt64(
+				fmt.Sprintf("network/%s/%s/finalizedBlock", projectId, netId),
+				evm.DefaultToleratedBlockHeadRollback,
+			)
 		}
 	}
 
