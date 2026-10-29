@@ -21,8 +21,8 @@ var errNewHeadsLag = indexer.OutOfRangeError{Reason: indexer.OutOfRangeLag}
 // once it has been deliverable for longer than reorgWindow blocks of chain
 // time. No block is deliverable before floor: the tap's start, when its
 // loop runs and the client has the id, so a loop that starts late begins
-// with no lag; logs raise it to the Ready of each block they send. A burst
-// never lags, since its blocks just arrived.
+// with no lag; each tap raises it to the Ready of each block it sends. A
+// burst never lags, since its blocks just arrived.
 type tapLag struct{ floor time.Time }
 
 // start opens the clock at the tap's first batch once the client has the
@@ -111,6 +111,7 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 			if !pinned || !sendable {
 				return i, sends.hold(ctx, blk, snap)
 			}
+			lag.sent(blk)
 			if err != nil {
 				sm.logger.Warn().Err(err).Uint64("block", blk.Number).Msg("cannot project a held header as newHeads")
 				continue
