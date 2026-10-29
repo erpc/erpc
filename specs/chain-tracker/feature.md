@@ -321,6 +321,7 @@ push u:  newPendingTransactions:<v>     while demand has it and admitted(u)
 - Hashes compare as bytes: `0xAB…` and `0xab…` are one block.
 - Client answers to `eth_getBlockByNumber(latest)` move the head counter where the tag still reaches upstreams (`translateLatestTag: false`, `skip-interpolation`), best-effort and non-blocking (#450), and reach the trackers without a vote.
 - The chain-identity cordon (`cordonForChainIdMismatch`) expires: the poller checks `eth_chainId` every 5 min and uncordons after 2 matching checks in a row; a mismatched major jump cordons again (#997).
+- While an upstream is cordoned for chain identity, every head it reports — poll, push or client answer — is dropped before its counter, so a cross-wired endpoint never moves a counter; only the 5-minute recheck (2 matches) lifts the cordon.
 - Pending transactions pass check 4 and topic admission, then enter the mempool feed.
 
 ## 6. Head model: eleven concepts
@@ -766,7 +767,7 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | any source | the chain makes no blocks | no reference moves | nothing reconnects or resubscribes | — |
 | poll source | errors, 429 | failed polls | backoff up to 60s; never stops for good; failed polls spanning W with no success end its hash vote | 60s |
 | any upstream | poller give-up: a method refused 10 times before any success | the give-up | expires, then retried | 10 min |
-| intake | chain-identity cordon | cordon reason | `eth_chainId` every 5 min; uncordon after 2 matches | 10 min |
+| intake | chain-identity cordon | the `availability` cordon the poller set | every head it reports dropped before its counter; `eth_chainId` every 5 min; uncordon after 2 matches, the only way out | 10 min |
 | intake, integrity | a check no upstream passes | §6.9 | suspended; observe-only after 100 blocks; enforced after 2 passing heights | 2 heights |
 | tracker | voters disagree | split votes | the branch with the most votes; ties settle | 1 settle |
 | tracker | reorg deeper than `reorgWindow`, or a gap past it | the majority's tree is not the pinned one | re-anchor; fill joins the trees at the fork point while the window holds it; taps then get Reverted per §10.2 (a ws `logs` tap that sent more than `reorgWindow` of the reverted blocks ends `1013`, `reorg_depth`); a fork point outside the window ends taps with their transport's signal | `reorgWindow` blocks of walk |

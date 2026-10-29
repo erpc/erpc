@@ -541,10 +541,16 @@ func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 
 // A head far past the poller's (a major jump) is verified asynchronously
 // before the poller takes it. Until then it must not vote: a head from an
-// endpoint now answering for another chain must never reach clients.
+// endpoint now answering for another chain must never reach clients. A
+// proven mismatch cordons the upstream, and while it is cordoned even its
+// small advances are withheld (spec §5); only the recheck's 2 matches lift
+// the cordon, after which its heads vote again.
 func TestNetworkIntake_WithholdsUnacceptedMajorJump(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
+	prevRecheck := evm.ChainIdCordonRecheck.Load()
+	evm.ChainIdCordonRecheck.Store(100 * time.Millisecond)
+	defer evm.ChainIdCordonRecheck.Store(prevRecheck)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -552,19 +558,42 @@ func TestNetworkIntake_WithholdsUnacceptedMajorJump(t *testing.T) {
 	u.EvmStatePoller().SuggestLatestBlock(1000, time.Now())
 	require.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
 
-	// From here the endpoint answers for another chain.
+	// From here the endpoint answers for another chain until fixed is set.
+	// Both answers are mocked once: re-registering mocks while the recheck
+	// probes would race on gock's registry.
+	var fixed atomic.Bool
 	util.ResetGock()
 	gock.New("http://rpc2.localhost").Post("").Persist().
-		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), `eth_chainId`) }).
+		Filter(func(r *http.Request) bool {
+			return !fixed.Load() && strings.Contains(util.SafeReadBody(r), `eth_chainId`)
+		}).
 		Reply(200).JSON([]byte(`{"result":"0x1"}`))
+	gock.New("http://rpc2.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			return fixed.Load() && strings.Contains(util.SafeReadBody(r), `eth_chainId`)
+		}).
+		Reply(200).JSON([]byte(`{"result":"0x7b"}`))
 
 	network.intake.Polled("rpc2", polledHead(t, "e", 5_000_000), nil, evm.HeaderStreamed, time.Now())
-	time.Sleep(300 * time.Millisecond) // let the async verification finish (and fail)
+	time.Sleep(300 * time.Millisecond) // let the async verification finish (and fail / cordon)
 	assert.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
 	assert.Less(t, pinned(network), int64(5_000_000))
+
+	// Still cross-wired: small advances must not move the counter or vote.
+	network.intake.Polled("rpc2", polledHead(t, "a", 1001), nil, evm.HeaderStreamed, time.Now())
+	u.EvmStatePoller().SuggestLatestBlock(1001, time.Now())
+	require.Never(t, func() bool {
+		return u.EvmStatePoller().LatestBlock() != 1000 || pinned(network) > 1000
+	}, 300*time.Millisecond, 20*time.Millisecond, "a cordoned upstream's small advances are withheld")
+
+	// Endpoint fixed: the recheck lifts the cordon and its heads vote again.
+	fixed.Store(true)
+	require.Eventually(t, func() bool {
+		return !u.EvmStatePoller().(interface{ ChainIdCordoned() bool }).ChainIdCordoned()
+	}, 5*time.Second, 20*time.Millisecond, "2 matching rechecks lift the cordon")
 	network.intake.Polled("rpc2", polledHead(t, "a", 1001), nil, evm.HeaderStreamed, time.Now())
 	network.intake.Polled("rpc2", polledHead(t, "a", 1002), nil, evm.HeaderStreamed, time.Now())
-	eventuallyPinned(t, network, 1002, "the next heads of the right chain vote")
+	eventuallyPinned(t, network, 1002, "the next heads of the right chain vote after the lift")
 }
 
 // An indexer backfills blocks through the tracker while a source votes:

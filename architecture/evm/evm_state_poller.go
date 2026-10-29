@@ -1037,6 +1037,12 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64, at time.Time) {
 	// - This must be fast and MUST NOT be blocked by any refresh/thundering-herd coordination.
 	// - TryUpdate is local-only and schedules remote propagation asynchronously via the shared variable's
 	//   deduped publish-first background push.
+	// A cross-wired endpoint never moves a counter (spec §5): while its
+	// chain-identity cordon holds, every head it reports is dropped; only
+	// the recheck lifts the cordon.
+	if e.ChainIdCordoned() {
+		return
+	}
 	currentValue := e.latestBlockShared.GetValue()
 	if blockNumber < currentValue {
 		e.logger.Trace().
@@ -1385,7 +1391,13 @@ func (e *EvmStatePoller) majorHeadMoveThreshold() int64 {
 	return blocks
 }
 
+// verifyChainIdOnMajorHeadMove reports whether a polled head may enter its
+// counter: never while the chain-identity cordon holds, and a major move
+// only after a fresh eth_chainId check.
 func (e *EvmStatePoller) verifyChainIdOnMajorHeadMove(ctx context.Context, tag string, current, polled int64) bool {
+	if e.ChainIdCordoned() {
+		return false
+	}
 	if current <= 0 || absInt64(polled-current) <= e.majorHeadMoveThreshold() {
 		return true
 	}
@@ -1469,11 +1481,12 @@ func (e *EvmStatePoller) cordonForChainIdMismatch(tag string, current, polled in
 }
 
 // ChainIdCordoned reports whether the upstream is cordoned because it
-// answers for another chain: the availability cordon this poller set is
-// still in place. On an EVM upstream only this poller sets that class.
+// answers for another chain: set by cordonForChainIdMismatch, cleared only
+// by the recheck's lift (spec §5), so an admin uncordon that clears the
+// tracker bit does not let a cross-wired endpoint's heads in.
 func (e *EvmStatePoller) ChainIdCordoned() bool {
 	reason, _ := e.chainIdCordonReason.Load().(string)
-	return reason != "" && e.chainIdCordonHeld()
+	return reason != ""
 }
 
 func (e *EvmStatePoller) chainIdCordonHeld() bool {
@@ -1526,6 +1539,7 @@ func (e *EvmStatePoller) recheckChainIdCordon() {
 	e.chainIdMatches = 0
 	e.chainIdRecheck = nil
 	e.chainIdRecheckUnwatch()
+	e.chainIdCordonReason.Store("")
 	if cordoned {
 		common.UncordonClassed(e.upstream, "*", "evm state poller: chain identity re-validated after mismatch", common.CordonClassAvailability)
 		e.chainIdCordonChanged()
@@ -1613,6 +1627,9 @@ func (e *EvmStatePoller) fetchFinalized(ctx context.Context) (int64, error) {
 // SuggestFinalizedBlock reports blockNumber as the upstream's finalized
 // block, its evidence taken at at (a request's send time).
 func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64, at time.Time) {
+	if e.ChainIdCordoned() {
+		return
+	}
 	// Best-effort, non-blocking update to avoid goroutine pile-up
 	// If an update is already in progress, skip this one
 	if !e.finalizedUpdateInProgress.TryLock() {

@@ -232,6 +232,36 @@ func TestChainIdCordon_MismatchAfterAdminClearReCordons(t *testing.T) {
 	assert.Equal(t, int64(1000), p.LatestBlock())
 }
 
+// While still cross-wired, a non-major keep-fresh report must be dropped —
+// accepting it would poison the shared counter on every tick (spec §5): a
+// suggestion, a source header and a finalized report alike. Only the
+// recheck's matches lift the cordon; then small advances apply again.
+func TestSuggestLatestBlock_CordonedNonMajorAdvanceRejectedUntilRecovered(t *testing.T) {
+	chainIdRecheckFast(t)
+	up := newSuggestGateUpstream(123, "999", nil)
+	p := newGateTestPoller(t, up)
+
+	p.SuggestLatestBlock(1000, time.Now())
+	p.SuggestFinalizedBlock(900, time.Now())
+	require.Eventually(t, func() bool { return p.FinalizedBlock() == 900 }, 2*time.Second, 10*time.Millisecond)
+	p.SuggestLatestBlock(5_000_000, time.Now())
+	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
+
+	p.SuggestLatestBlock(1000+gateTolerance, time.Now())
+	assert.False(t, p.ObserveHead(1001, time.Now()), "a cordoned source header is not accepted")
+	p.SuggestFinalizedBlock(950, time.Now())
+	require.Never(t, func() bool {
+		return p.LatestBlock() != 1000 || p.FinalizedBlock() != 900
+	}, 300*time.Millisecond, 20*time.Millisecond, "cordoned non-major reports must be rejected while chainId still mismatches")
+	assert.True(t, up.isCordoned())
+
+	up.setChainId("123", nil)
+	require.Eventually(t, func() bool { return !p.ChainIdCordoned() }, 2*time.Second, 10*time.Millisecond,
+		"the recheck lifts the cordon")
+	p.SuggestLatestBlock(1001, time.Now())
+	assert.Equal(t, int64(1001), p.LatestBlock(), "after the lift a small advance applies inline")
+}
+
 func TestSuggestLatestBlock_MajorJumpChainIdErrorDroppedNotCordoned(t *testing.T) {
 	// A transient eth_chainId failure (not a proven mismatch) drops the sample
 	// for now and does NOT cordon — the next verified poll re-observes it.
