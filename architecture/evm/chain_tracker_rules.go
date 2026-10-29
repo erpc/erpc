@@ -593,9 +593,16 @@ func (t *ChainTracker) heldAnswer(a common.HeadAnswer) *node {
 }
 
 // startSettle starts round s: an Ask of each target with need, reason
-// settle. With no target, or every Ask refused, s ends at once and false
-// is returned.
+// settle. With every Ask refused, s ends at once and false is returned.
+// With no target no round starts, nothing is logged and no retry is set:
+// the next vote runs rule 4 again; a waiter hears unanswered.
 func (t *ChainTracker) startSettle(s *settleState, targets []string, need common.HeadNeed, waiter chan settleOutcome) bool {
+	if len(targets) == 0 {
+		if waiter != nil {
+			report(waiter, settleUnanswered)
+		}
+		return false
+	}
 	s.started, s.answers, s.inflight, s.ends = s.key, make(map[string]*node), true, time.Now().Add(t.W())
 	if waiter != nil {
 		s.waiters = append(s.waiters, waiter)

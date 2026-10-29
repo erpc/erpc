@@ -188,6 +188,33 @@ func TestChainTracker(t *testing.T) {
 		assert.Equal(t, testHash("b", 11), v, "a tie keeps the pinned child")
 	})
 
+	// Both voters' votes decide the tie and no other upstream is eligible:
+	// nobody can break it. On a 3-upstream network every such tie ended a
+	// round at once with 0 answers and retried it each block; with no
+	// target no round starts (spec §6.5 rule 5).
+	t.Run("a tie no target can break starts no round", func(t *testing.T) {
+		net := newServedChain(t, "evm:no-target")
+		c := newChainTracker(t.Context(), net, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		t.Cleanup(c.Want(indexer.ReadOpts{}))
+		rounds := func() (n float64) {
+			for _, o := range []string{"decided", "undecided"} {
+				n += testutil.ToFloat64(telemetry.MetricChainTrackerSettleTotal.WithLabelValues("test", "evm:no-target", "tie", o))
+			}
+			return n
+		}
+		before := rounds()
+		voteChain(t, c, "a", "a", 1, 10, testHash("f", 0))
+		voteChain(t, c, "b", "a", 1, 10, testHash("f", 0))
+		voteChain(t, c, "a", "a", 11, 11, testHash("a", 10))
+		voteChain(t, c, "b", "b", 11, 11, testHash("a", 10))
+		v, _ := c.HashAt(11)
+		assert.Equal(t, testHash("a", 11), v, "rule 4 keeps the pinned child")
+		assert.Equal(t, before, rounds(), "a tie with no target starts no round")
+		voteChain(t, c, "a", "b", 11, 11, testHash("a", 10))
+		v, _ = c.HashAt(11)
+		assert.Equal(t, testHash("b", 11), v, "the next vote runs rule 4 again")
+	})
+
 	t.Run("a malformed header is dropped", func(t *testing.T) {
 		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
 		c.Observe("a", json.RawMessage(`{"number":"0x3","hash":"","parentHash":"0x1"}`), true)
