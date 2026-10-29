@@ -72,16 +72,23 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 
 		// Attach authorizer-level capabilities from the strategy that actually
 		// authenticated this caller. Kept here (rather than in each strategy)
-		// because it is configured on the outer AuthStrategyConfig — the same
-		// place as allowMethods/ignoreMethods — so it applies uniformly to
+		// because they are configured on the outer AuthStrategyConfig — the same
+		// place as allowMethods/ignoreMethods — so they apply uniformly to
 		// every strategy type.
 		//
 		// Stamped onto a COPY, never in place: the database strategy caches one
 		// *User per API key and hands that same pointer to every subsequent
 		// request, so an in-place write would be an unsynchronized mutation of
 		// shared state (racing the handler's read) and would also leak the
-		// capability into the cache entry. The copy is allocated only when an
-		// operator actually configured the capability.
+		// capability into the cache entry.
+		//
+		// Auth (strategy name) is stamped on the request ExecState, not on a
+		// copied User: the consensus-policy eval reads it from there
+		// (feature §4.3), so an authenticated request no longer pays a User
+		// copy unless AllowClientDirectives (main behavior) also needs one.
+		if req != nil {
+			req.ExecState().SetAuthStrategy(&az.cfg.Name)
+		}
 		if user != nil && az.cfg.AllowClientDirectives != nil {
 			stamped := *user
 			stamped.AllowClientDirectives = az.cfg.AllowClientDirectives
