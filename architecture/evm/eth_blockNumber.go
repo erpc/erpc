@@ -90,7 +90,10 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 // network's served head EXACTLY, regardless of its source — a live upstream
 // (cold head at pre-forward time, or a per-request override path) OR the
 // cache. The correction is a pure in-memory synthesis (poller state), never an
-// extra upstream call.
+// extra upstream call. Enforced answers also ask the ballot's pollers for a
+// debounced background refresh here: Network.Forward can return a cache hit
+// before networkPreForward_eth_blockNumber runs, and without this the head a
+// quiet network serves stays at the ticker interval despite frequent polls.
 //
 // Exact, not floor-only, because "latest" interpolation (TagBlockNumber)
 // anchors block-tagged methods (eth_call, eth_getLogs, ...) to that same served
@@ -133,7 +136,8 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 	// The request's own Head, the one its pre-forward and its interpolation
 	// read: a request pinned to a lagging group is never promised a block
 	// that group cannot serve.
-	highestBlock := headNumber(ctx, network, nq, finalized)
+	reqCtx := context.WithValue(ctx, common.RequestContextKey, nq)
+	highestBlock := headNumber(reqCtx, network, nq, finalized)
 	if common.IsTracingDetailed() {
 		blockNumberLag := highestBlock - blockNumber
 		if blockNumberLag < 0 {
@@ -151,6 +155,12 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 		// Unknown tip (pollers cold, all upstreams syncing): fail open like
 		// interpolation — never synthesize a block number from nothing.
 		return nr, re
+	}
+
+	// Same debounced refresh the pre-forward path fires (#1280): a cache hit
+	// returns before networkPreForward_eth_blockNumber runs.
+	if !finalized {
+		common.EvmRefreshHead(network, reqCtx)
 	}
 
 	if blockNumber == highestBlock {

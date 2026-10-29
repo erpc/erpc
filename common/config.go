@@ -1596,6 +1596,16 @@ func (c *EvmAvailabilityBoundConfig) Copy() *EvmAvailabilityBoundConfig {
 	return out
 }
 
+// Moves reports whether this bound follows observed chain state, so a block
+// above it now can fall inside it later. exactBlock never moves; an
+// earliestBlockPlus with updateRate 0 freezes at its first evaluation.
+func (c *EvmAvailabilityBoundConfig) Moves() bool {
+	if c == nil {
+		return false
+	}
+	return c.LatestBlockMinus != nil || (c.EarliestBlockPlus != nil && c.UpdateRate > 0)
+}
+
 func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	if c == nil {
 		return nil
@@ -2748,6 +2758,24 @@ func (c *SvmAvailabilityBoundConfig) Copy() *SvmAvailabilityBoundConfig {
 		out.FirstAvailableSlotPlus = &v
 	}
 	return out
+}
+
+// Moves reports whether this bound follows observed chain state, so a slot
+// above it now can fall inside it later. exactSlot never moves.
+func (c *SvmAvailabilityBoundConfig) Moves() bool {
+	if c == nil {
+		return false
+	}
+	return c.LatestSlotMinus != nil || c.FirstAvailableSlotPlus != nil
+}
+
+// UpperBoundSkipRetryable decides whether a skip above an upstream's declared
+// upper bound is worth another round once every upstream has declined. Waiting
+// helps only when the bound moves, the target stays put, and the gap is within
+// horizon. A target derived from the tip advances with a tip-derived bound, so
+// the gap never closes.
+func UpperBoundSkipRetryable(target, bound, horizon int64, boundMoves, targetFromTip bool) bool {
+	return boundMoves && !targetFromTip && target-bound <= horizon
 }
 
 func (s *SvmUpstreamConfig) Copy() *SvmUpstreamConfig {

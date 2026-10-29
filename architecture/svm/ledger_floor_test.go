@@ -139,32 +139,54 @@ func TestRequestRangeEndSlot(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("getBlocks named end", func(t *testing.T) {
-		end, ok := RequestRangeEndSlot(ctx, reqOf(t, "getBlocks", `[50, 1000]`), 50, 80)
+		end, fromTip, ok := RequestRangeEndSlot(ctx, reqOf(t, "getBlocks", `[50, 1000]`), 50, 80)
 		require.True(t, ok)
 		require.EqualValues(t, 1000, end)
+		require.False(t, fromTip, "a named end does not move with the tip")
 	})
 
 	t.Run("getBlocks omitted end uses tip", func(t *testing.T) {
-		end, ok := RequestRangeEndSlot(ctx, reqOf(t, "getBlocks", `[50]`), 50, 80)
+		end, fromTip, ok := RequestRangeEndSlot(ctx, reqOf(t, "getBlocks", `[50]`), 50, 80)
 		require.True(t, ok)
 		require.EqualValues(t, 80, end)
+		require.True(t, fromTip)
+	})
+
+	t.Run("getBlocks omitted end inside agave span is not the tip", func(t *testing.T) {
+		end, fromTip, ok := RequestRangeEndSlot(ctx, reqOf(t, "getBlocks", `[50]`), 50, 50+maxGetBlocksRange+10)
+		require.True(t, ok)
+		require.EqualValues(t, 50+maxGetBlocksRange, end)
+		require.False(t, fromTip, "start+span is fixed by the request")
+	})
+
+	t.Run("getBlocks null end uses tip like omitted", func(t *testing.T) {
+		end, fromTip, ok := RequestRangeEndSlot(ctx, reqOf(t, "getBlocks", `[50, null]`), 50, 80)
+		require.True(t, ok)
+		require.EqualValues(t, 80, end)
+		require.True(t, fromTip)
+
+		end, fromTip, ok = RequestRangeEndSlot(ctx, reqOf(t, "getBlocks", `[50, null, {"commitment":"finalized"}]`), 50, 80)
+		require.True(t, ok)
+		require.EqualValues(t, 80, end)
+		require.True(t, fromTip)
 	})
 
 	t.Run("getBlocksWithLimit uses tip, not start+limit", func(t *testing.T) {
 		// limit is a confirmed-block COUNT. start+limit would both reject
 		// limit=1 against an upper equal to start, and under-bound ranges
 		// that skip slots.
-		end, ok := RequestRangeEndSlot(ctx, reqOf(t, "getBlocksWithLimit", `[50, 1]`), 50, 80)
+		end, fromTip, ok := RequestRangeEndSlot(ctx, reqOf(t, "getBlocksWithLimit", `[50, 1]`), 50, 80)
 		require.True(t, ok)
 		require.EqualValues(t, 80, end)
+		require.True(t, fromTip)
 
-		end, ok = RequestRangeEndSlot(ctx, reqOf(t, "getBlocksWithLimit", `[50, 2000]`), 50, 80)
+		end, _, ok = RequestRangeEndSlot(ctx, reqOf(t, "getBlocksWithLimit", `[50, 2000]`), 50, 80)
 		require.True(t, ok)
 		require.EqualValues(t, 80, end)
 	})
 
 	t.Run("getBlocksWithLimit unknown tip fails open", func(t *testing.T) {
-		end, ok := RequestRangeEndSlot(ctx, reqOf(t, "getBlocksWithLimit", `[50, 10]`), 50, 0)
+		end, _, ok := RequestRangeEndSlot(ctx, reqOf(t, "getBlocksWithLimit", `[50, 10]`), 50, 0)
 		require.False(t, ok)
 		require.Zero(t, end)
 	})
