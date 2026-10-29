@@ -543,7 +543,7 @@ func (s *streamSession) watchStatus(ctx context.Context, cancel context.CancelCa
 			state = next
 			telemetry.CounterHandle(telemetry.MetricStreamStatusTotal, s.nw.projectId, s.nw.Label(), s.transport, s.kind, state).Inc()
 			common.TransitionLog(s.nw.logger, zerolog.InfoLevel, s.nw.Label(), "stream_status:"+s.kind).
-				Str("transport", s.transport).Str("state", state).Str("reason", reason).Uint64("cursor", s.cursor.Number).
+				Str("transport", s.transport).Str("lane", s.lane).Str("state", state).Str("reason", reason).
 				Msg("stream status changed")
 			if err := s.control.Status(state, reason); err != nil {
 				cancel(err)
