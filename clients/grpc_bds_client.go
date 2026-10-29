@@ -1,6 +1,7 @@
 package clients
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/hex"
@@ -213,6 +214,21 @@ func (c *GenericGrpcBdsClient) chainIdParam() *uint64 {
 // (including unknown chain 0), per execution-apis.
 func (c *GenericGrpcBdsClient) signatureEncoding() evm.SignatureEncoding {
 	return evm.SignatureEncodingForChain(c.expectedChainId.Load())
+}
+
+// renderScratch holds buffers that results are written into. The response
+// keeps its result, so each is copied out at its exact size; the scratch
+// buffer, grown once to the usual result size, goes back to the pool.
+var renderScratch = sync.Pool{New: func() any { return new([]byte) }}
+
+// renderResult returns the JSON that write appends to an empty buffer.
+func renderResult(write func([]byte) []byte) []byte {
+	scratch := renderScratch.Get().(*[]byte)
+	b := write((*scratch)[:0])
+	out := bytes.Clone(b)
+	*scratch = b
+	renderScratch.Put(scratch)
+	return out
 }
 
 // grpcResponseMetadataInterceptor captures all response metadata (headers)
@@ -474,26 +490,14 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn 
 		grpcHashSpan.SetAttributes(attribute.Bool("response_has_block", grpcResp.Block != nil))
 		grpcHashSpan.End()
 
-		var result interface{}
-		if grpcResp.Block != nil {
-			result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
-		}
-
 		jsonRpcResp := &common.JsonRpcResponse{}
 		err = jsonRpcResp.SetID(jrReq.ID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to set ID: %w", err)
 		}
-
-		if result != nil {
-			resultBytes, err := sonic.Marshal(result)
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal result: %w", err)
-			}
-			jsonRpcResp.SetResult(resultBytes)
-		} else {
-			jsonRpcResp.SetResult([]byte("null"))
-		}
+		jsonRpcResp.SetResult(renderResult(func(b []byte) []byte {
+			return evm.AppendBlockJsonRpc(b, grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
+		}))
 
 		return common.NewNormalizedResponse().
 			WithRequest(req).
@@ -540,26 +544,14 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn 
 	}
 	grpcSpan.End()
 
-	var result interface{}
-	if hasBlock {
-		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
-	}
-
 	jsonRpcResp := &common.JsonRpcResponse{}
 	err = jsonRpcResp.SetID(jrReq.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-
-	if result != nil {
-		resultBytes, err := sonic.Marshal(result)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal result: %w", err)
-		}
-		jsonRpcResp.SetResult(resultBytes)
-	} else {
-		jsonRpcResp.SetResult([]byte("null"))
-	}
+	jsonRpcResp.SetResult(renderResult(func(b []byte) []byte {
+		return evm.AppendBlockJsonRpc(b, grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
+	}))
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -615,26 +607,14 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, conn *b
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
 
-	var result interface{}
-	if grpcResp.Block != nil {
-		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
-	}
-
 	jsonRpcResp := &common.JsonRpcResponse{}
 	err = jsonRpcResp.SetID(jrReq.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-
-	if result != nil {
-		resultBytes, err := sonic.Marshal(result)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal result: %w", err)
-		}
-		jsonRpcResp.SetResult(resultBytes)
-	} else {
-		jsonRpcResp.SetResult([]byte("null"))
-	}
+	jsonRpcResp.SetResult(renderResult(func(b []byte) []byte {
+		return evm.AppendBlockJsonRpc(b, grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
+	}))
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -761,11 +741,6 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, conn *bdsConn,
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
 
-	var result []interface{}
-	for _, log := range grpcResp.Logs {
-		result = append(result, evm.LogToJsonRpc(log))
-	}
-
 	jsonRpcResp := &common.JsonRpcResponse{}
 	jrReq.RLock()
 	err = jsonRpcResp.SetID(jrReq.ID)
@@ -773,16 +748,7 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, conn *bdsConn,
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-
-	if len(result) == 0 {
-		jsonRpcResp.SetResult([]byte("[]"))
-	} else {
-		resultBytes, err := sonic.Marshal(result)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal result: %w", err)
-		}
-		jsonRpcResp.SetResult(resultBytes)
-	}
+	jsonRpcResp.SetResult(renderResult(func(b []byte) []byte { return evm.AppendLogsJsonRpc(b, grpcResp.Logs) }))
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -831,26 +797,14 @@ func (c *GenericGrpcBdsClient) handleGetTransactionByHash(ctx context.Context, c
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
 
-	var result interface{}
-	if grpcResp.Transaction != nil {
-		result = evm.TransactionToJsonRpc(grpcResp.Transaction, c.signatureEncoding())
-	}
-
 	jsonRpcResp := &common.JsonRpcResponse{}
 	err = jsonRpcResp.SetID(jrReq.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-
-	if result != nil {
-		resultBytes, err := sonic.Marshal(result)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal result: %w", err)
-		}
-		jsonRpcResp.SetResult(resultBytes)
-	} else {
-		jsonRpcResp.SetResult([]byte("null"))
-	}
+	jsonRpcResp.SetResult(renderResult(func(b []byte) []byte {
+		return evm.AppendTransactionJsonRpc(b, grpcResp.Transaction, c.signatureEncoding())
+	}))
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -899,26 +853,20 @@ func (c *GenericGrpcBdsClient) handleGetTransactionReceipt(ctx context.Context, 
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
 
-	var result interface{}
-	if grpcResp.Receipt != nil {
-		result = evm.ReceiptToJsonRpc(grpcResp.Receipt)
-	}
-
 	jsonRpcResp := &common.JsonRpcResponse{}
 	err = jsonRpcResp.SetID(jrReq.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-
-	if result != nil {
-		resultBytes, err := sonic.Marshal(result)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal result: %w", err)
-		}
-		jsonRpcResp.SetResult(resultBytes)
-	} else {
-		jsonRpcResp.SetResult([]byte("null"))
+	var renderErr error
+	result := renderResult(func(b []byte) []byte {
+		b, renderErr = evm.AppendReceiptJsonRpc(b, grpcResp.Receipt)
+		return b
+	})
+	if renderErr != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", renderErr)
 	}
+	jsonRpcResp.SetResult(result)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -1011,30 +959,20 @@ func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, conn 
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
 
-	// Convert receipts to JSON-RPC format
-	var result []interface{}
-	if grpcResp.Receipts != nil {
-		result = make([]interface{}, len(grpcResp.Receipts))
-		for i, receipt := range grpcResp.Receipts {
-			result[i] = evm.ReceiptToJsonRpc(receipt)
-		}
-	}
-
 	jsonRpcResp := &common.JsonRpcResponse{}
 	err = jsonRpcResp.SetID(jrReq.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-
-	if len(result) > 0 {
-		resultBytes, err := sonic.Marshal(result)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal result: %w", err)
-		}
-		jsonRpcResp.SetResult(resultBytes)
-	} else {
-		jsonRpcResp.SetResult([]byte("[]"))
+	var renderErr error
+	result := renderResult(func(b []byte) []byte {
+		b, renderErr = evm.AppendReceiptsJsonRpc(b, grpcResp.Receipts)
+		return b
+	})
+	if renderErr != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", renderErr)
 	}
+	jsonRpcResp.SetResult(result)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
