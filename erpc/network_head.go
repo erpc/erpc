@@ -42,7 +42,9 @@ func (n *Network) EvmHead(ctx context.Context, req *common.NormalizedRequest) co
 // interpolation all see the same Latest. A request naming the finalized
 // tag takes it after the lane's finalized refresh (spec §6.4 Finality): a
 // Finalized up to one full poll old would serve older blocks than the tag
-// gets live.
+// gets live. A request answering Latest (evm.AnswersLatest) takes it after
+// the latest refresh (refreshLatest, §6.8), before the cache: a cache hit
+// is pinned to that Head too.
 func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest) *common.EvmHead {
 	if h := req.EvmHead(); h != nil {
 		return h
@@ -56,8 +58,11 @@ func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest
 	if d := req.Directives(); d != nil {
 		sel = d.UseUpstream
 	}
-	if evm.NamesFinalizedTag(ctx, req) {
+	switch {
+	case evm.NamesFinalizedTag(ctx, req):
 		n.awaitFinalizedRefresh(ctx, sel)
+	case evm.AnswersLatest(ctx, n, req):
+		n.refreshLatest(ctx, sel)
 	}
 	return req.TakeEvmHead(n.headFor(sel))
 }

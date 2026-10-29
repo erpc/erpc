@@ -310,7 +310,6 @@ func TestCovMiscNetwork_EvmHelpersDegradeForNonEvm(t *testing.T) {
 	ctx := context.Background()
 	plain := &covMiscNetwork{id: "svm:mainnet-beta"}
 	assert.Zero(t, EvmHeadOf(plain, ctx, nil))
-	EvmRefreshHead(plain, ctx) // must not panic
 
 	leader := NewFakeUpstream("leader")
 	evm := &covMiscEvmNetwork{covMiscNetwork: &covMiscNetwork{id: "evm:1"}, latest: 100, finalized: 90, leader: leader}
@@ -318,8 +317,6 @@ func TestCovMiscNetwork_EvmHelpersDegradeForNonEvm(t *testing.T) {
 	assert.Equal(t, int64(100), head.Latest)
 	assert.Equal(t, int64(90), head.Finalized)
 	assert.Same(t, leader, head.Leader)
-	EvmRefreshHead(evm, ctx)
-	assert.Equal(t, int32(1), evm.refreshed.Load())
 }
 
 func TestCovMiscNetwork_Validity(t *testing.T) {

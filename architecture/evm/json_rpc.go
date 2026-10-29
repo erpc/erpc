@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"slices"
+	"strings"
 
 	"github.com/erpc/erpc/common"
 )
@@ -97,6 +98,30 @@ func NamesFinalizedTag(ctx context.Context, nrq *common.NormalizedRequest) bool 
 	jrq.RLock()
 	defer jrq.RUnlock()
 	return namesFinalized(jrq.Params)
+}
+
+// AnswersLatest reports whether nrq answers with its Head's Latest (spec §7
+// families 1-2): eth_blockNumber, or erigon_blockNumber on the latest axis,
+// answered from the Head (enforce-highest-block), or a block-by-tag method
+// whose "latest" tag is interpolated. Such a request takes its Head after
+// the latest refresh (§6.8); a tag that reaches upstreams as is reads no
+// Head, as on main.
+func AnswersLatest(ctx context.Context, network common.Network, nrq *common.NormalizedRequest) bool {
+	method, err := nrq.Method()
+	if err != nil {
+		return false
+	}
+	d := nrq.Directives()
+	switch m := strings.ToLower(method); m {
+	case "eth_blocknumber", "erigon_blocknumber":
+		finalized, ok := headNumberAxis(ctx, nrq)
+		return ok && !finalized && d != nil && d.EnforceHighestBlock
+	default:
+		if _, ok := blockByTagFamily[m]; !ok || d != nil && d.SkipInterpolation || requestBlockTag(ctx, nrq) != "latest" {
+			return false
+		}
+	}
+	return !keepsLatestTag(getMethodConfig(method, network))
 }
 
 func namesFinalized(v interface{}) bool {
