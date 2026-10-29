@@ -2022,6 +2022,96 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		require.Len(t, s.openLogs(), len(chainsim.Filters))
 	})
 
+	// Taps whose loops start after their clients have the ids, and twice
+	// the lag bound of blocks after the subscribes, still send every block
+	// confirmed since, from their start with no lag: neither a newHeads
+	// restart nor a 1013 (spec §10.2). The logs clients opened first keep
+	// receipts wanted, so the late taps' blocks reach the logs head while
+	// their loops wait, as on a loaded instance with many subscribers. Only
+	// the backlog's first and last blocks match, so writing it takes much
+	// less than the lag bound: a backlog whose writes take longer than the
+	// bound is lag (§10.2), and not what this test is about.
+	t.Run("tap loop starts late", func(t *testing.T) {
+		s := newChaosSeed(t, 10, true, chaosOpts{maxBackfill: 20 * time.Second})
+		start(s)
+		defer s.stopERPC()
+		s.blocks(3)
+		s.dialLogs("demand")
+		m := chainsim.KindMatching
+		s.chain.Plan(m, m)
+		s.blocks(4)
+		require.Eventually(t, func() bool {
+			for _, cl := range s.openLogs() {
+				cl.mu.Lock()
+				notes := cl.notes
+				cl.mu.Unlock()
+				if notes == 0 {
+					return false
+				}
+			}
+			return true
+		}, 10*time.Second, 20*time.Millisecond, "the demand clients' taps run")
+
+		hold := make(chan struct{})
+		held := func() { <-hold }
+		wsTapLoopStart.Store(&held)
+		released := false
+		defer func() {
+			wsTapLoopStart.Store(nil)
+			if !released {
+				close(hold)
+			}
+		}()
+		s.dialLogs("late")
+		late := s.openLogs()[len(chainsim.Filters):]
+		heads := s.dialClient("late-heads", nil)
+		q := chainsim.KindQuiet
+		plan := make([]chainsim.Kind, 2*chaosReorgWindow)
+		for i := range plan {
+			plan[i] = q
+		}
+		plan[0], plan[1], plan[len(plan)-2], plan[len(plan)-1] = m, m, m, m
+		from := s.chain.Plan(plan...).Number + 1
+		to := from + uint64(len(plan)) - 1
+		s.blocks(len(plan))
+		tr := s.tracker()
+		require.Eventually(t, func() bool { c, ok := tr.Confirmed(); return ok && c.Number >= to }, 10*time.Second, 10*time.Millisecond, "block %d is sendable before the loops start", to)
+		logsEnds, headsEnds := tapEndsOf(indexer.SubTypeLogs), tapEndsOf(indexer.SubTypeNewHeads)
+		close(hold)
+		released = true
+		s.blocks(3)
+
+		diff := "not checked"
+		for deadline := time.Now().Add(10 * time.Second); diff != "" && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			diff = ""
+			for _, cl := range late {
+				cl.mu.Lock()
+				if d := cl.logsDiffLocked(s, from, to); d != "" {
+					diff = fmt.Sprintf("%s (logs of blocks %d..%d, close %d, logs tap ends %s): %s", cl.name, cl.first, cl.high, cl.closeCode, endsSince(logsEnds, tapEndsOf(indexer.SubTypeLogs)), d)
+				}
+				cl.mu.Unlock()
+			}
+		}
+		require.Empty(t, diff, "the late logs clients hold the matching logs of blocks %d..%d, confirmed before their loops ran", from, to)
+		require.Eventually(t, func() bool {
+			heads.mu.Lock()
+			defer heads.mu.Unlock()
+			return heads.last >= to
+		}, 10*time.Second, 20*time.Millisecond, "the late newHeads client reaches block %d", to)
+		heads.mu.Lock()
+		assert.LessOrEqual(t, heads.first, from, "the late newHeads tap starts at its subscribe, not at its loop")
+		assert.Empty(t, heads.problems, "late newHeads client")
+		heads.mu.Unlock()
+		for _, cl := range late {
+			cl.mu.Lock()
+			assert.Zero(t, cl.closeCode, "logs client %s is not closed: %s", cl.name, cl.why)
+			assert.Empty(t, cl.problems, "logs client %s", cl.name)
+			cl.mu.Unlock()
+		}
+		assert.Equal(t, logsEnds, tapEndsOf(indexer.SubTypeLogs), "no logs tap ended")
+		assert.Equal(t, headsEnds, tapEndsOf(indexer.SubTypeNewHeads), "no newHeads tap ended")
+	})
+
 	t.Run("no upstream serves receipts or eth_getLogs", func(t *testing.T) {
 		s := newChaosSeed(t, 6, true, chaosOpts{})
 		s.ignore = []string{"eth_getBlockReceipts", "eth_getLogs"}

@@ -55,9 +55,10 @@ func parseLogsSubscribe(params []interface{}) (*logfilter.LogsFilter, error) {
 // that left the pins before its logs are written ends the batch there. Any
 // end other than ctx or a failed write closes the connection with 1013
 // after a random delay within logsCloseSpread, so the client reconnects
-// knowing it may have missed logs. lane, when set, holds blocks above the
-// connection's lane's Latest.
-func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane string, f *logfilter.LogsFilter) {
+// knowing it may have missed logs. It starts from head, fixed at subscribe
+// time; lane, when set, holds blocks above the connection's lane's Latest.
+func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane string, head func(context.Context) (indexer.Cursor, error), f *logfilter.LogsFilter) {
+	wsTapLoopStarts()
 	tracker := nw.chainTracker
 	window := tracker.ReorgWindow()
 	sends := newTapSends(nw, lane, "ws", indexer.SubTypeLogs)
@@ -75,11 +76,7 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 	// within the window below the newest.
 	sentFrom, sent := uint64(0), false
 	sentHashes := make(map[uint64][32]byte, window+1)
-	// floor is the latest Ready of the blocks this tap sent: a block is
-	// deliverable to the tap no sooner than the blocks before it, so a
-	// receipts hole it waited on is never lag for the blocks after it
-	// (spec §10.2).
-	var floor time.Time
+	var lag tapLag
 	emit := func(b indexer.Batch) (int, error) {
 		// Nothing is written before the client has the subscription id.
 		select {
@@ -87,6 +84,7 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		}
+		lag.start()
 		// removed:true logs need the sent Reverted blocks' receipts, which
 		// the feed holds only reorgWindow deep.
 		if sent {
@@ -100,14 +98,8 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 				return 0, errLogsReorgDepth
 			}
 		}
-		if len(b.Applied) > 0 {
-			next := b.Applied[0]
-			if next.Ready.Before(floor) {
-				next.Ready = floor
-			}
-			if lagging(tracker, next) {
-				return 0, errLogsLag
-			}
+		if len(b.Applied) > 0 && lag.lagging(tracker, b.Applied[0]) {
+			return 0, errLogsLag
 		}
 		for _, blk := range b.Reverted {
 			if !sent || blk.Number < sentFrom {
@@ -144,9 +136,7 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 			if blk.Number > uint64(window) {
 				delete(sentHashes, blk.Number-uint64(window)-1)
 			}
-			if blk.Ready.After(floor) {
-				floor = blk.Ready
-			}
+			lag.sent(blk)
 			logs := tracker.MatchedLogs(blk, f)
 			if len(logs) == 0 {
 				continue
@@ -164,7 +154,7 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 		}
 		return len(b.Applied), nil
 	}
-	err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeLogs, gated(logsFeed{tracker}, nw, lane), nil,
+	err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeLogs, gated(startedFeed{logsFeed{tracker}, head}, nw, lane), nil,
 		indexer.ReadOpts{MayMatch: f.MayMatch}, emit)
 	var writeErr wsWriteError
 	if ctx.Err() != nil || errors.As(err, &writeErr) {

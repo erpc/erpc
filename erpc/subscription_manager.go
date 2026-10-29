@@ -162,7 +162,8 @@ func (sm *SubscriptionManager) Subscribe(
 			lane := laneSelector(nq)
 			switch kind {
 			case wsclient.KindLog:
-				nw.bg.Go(func() { sm.runLogs(tapCtx, wsc, sub, opened, nw, lane, logsFilter) })
+				head := nw.chainTracker.HeadAsOf()
+				nw.bg.Go(func() { sm.runLogs(tapCtx, wsc, sub, opened, nw, lane, head, logsFilter) })
 			case wsclient.KindPendingTx:
 				release := releaseVariant
 				releaseVariant = func() {}
@@ -172,7 +173,8 @@ func (sm *SubscriptionManager) Subscribe(
 					sm.runPendingTxs(tapCtx, wsc, sub, opened, nw, variant, from)
 				})
 			default:
-				nw.bg.Go(func() { sm.runNewHeads(tapCtx, wsc, sub, opened, nw, lane) })
+				head := nw.chainTracker.HeadAsOf()
+				nw.bg.Go(func() { sm.runNewHeads(tapCtx, wsc, sub, opened, nw, lane, head) })
 			}
 		} else {
 			stop()
