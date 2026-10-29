@@ -90,6 +90,18 @@ the SVM state poller lifts when `getHealth` / shred-insert lag recover.
 Method-scoped `Uncordon` still clears only the requested class bit (feature §4.5).
 Uncordoning a method never lifts a wildcard cordon.
 
+### Behavior changes (upgrade note)
+
+- **One cordon bit per source.** Previously a single flag was shared across operator,
+  consensus-sit-out (punishment), and detector (availability) sources, so one
+  `Uncordon` could clear an unrelated cordon. Now each source holds its own bit and
+  clears only its own; a sit-out ending never releases an operator cordon.
+- **One matching `eth_chainId` lifts the chain-identity cordon.** `main` never lifted
+  it automatically; until a probe matches again, that upstream's heads stay held.
+- **A full `erpc_uncordonUpstream` also resets consensus sit-out state**, so the
+  upstream can be re-punished immediately instead of waiting for the original
+  penalty window to end.
+
 The reason string is kept only on the replica that took the call; peers and restarted
 pods report `"operator cordon (set on another replica)"`. Re-cordoning an already
 cordoned upstream keeps the original start, whichever replica serves it, so

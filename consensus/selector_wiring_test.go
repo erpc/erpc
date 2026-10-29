@@ -46,7 +46,7 @@ func newWiringConsensus(t *testing.T) *Consensus {
 			"standard":   {MaxParticipants: 3},
 		},
 	}
-	c, err := NewConsensus(cfg, &lg)
+	c, err := NewConsensus(cfg, &lg, "")
 	if err != nil {
 		t.Fatalf("NewConsensus: %v", err)
 	}
@@ -60,7 +60,7 @@ func wiringRequest(t *testing.T, method string, auth string) *common.NormalizedR
 	t.Helper()
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + method + `"}`))
 	if auth != "" {
-		req.SetUser(&common.User{Auth: auth})
+		req.ExecState().SetAuthStrategy(&auth)
 	}
 	return req
 }
@@ -142,7 +142,7 @@ func TestResolvePolicy_TimeoutFailsClosed(t *testing.T) {
 		},
 		Policies: map[string]*common.ConsensusPolicyConfig{"standard": {MaxParticipants: 3}},
 	}
-	c, err := NewConsensus(cfg, &lg)
+	c, err := NewConsensus(cfg, &lg, "")
 	if err != nil {
 		t.Fatalf("NewConsensus: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestResolvePolicy_TimeoutFailsClosed(t *testing.T) {
 // the zero-overhead inline-default path.
 func TestNewConsensus_NoSelectorWhenCustomPolicyUnset(t *testing.T) {
 	lg := zerolog.Nop()
-	c, err := NewConsensus(&common.ConsensusPolicyConfig{MaxParticipants: 3}, &lg)
+	c, err := NewConsensus(&common.ConsensusPolicyConfig{MaxParticipants: 3}, &lg, "")
 	if err != nil {
 		t.Fatalf("NewConsensus: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestNewConsensus_ZeroEvalTimeoutUsesDefault(t *testing.T) {
 			// EvalTimeout deliberately omitted (0).
 		},
 	}
-	c, err := NewConsensus(cfg, &lg)
+	c, err := NewConsensus(cfg, &lg, "")
 	if err != nil {
 		t.Fatalf("NewConsensus: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestNewConsensus_SharesPunishMisbehaviorPointer(t *testing.T) {
 			},
 		},
 	}
-	c, err := NewConsensus(cfg, &lg)
+	c, err := NewConsensus(cfg, &lg, "")
 	if err != nil {
 		t.Fatalf("NewConsensus: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestNewConsensus_SharesPunishMisbehaviorPointer(t *testing.T) {
 
 func TestConsensus_CloseUnregistersAndIdempotent(t *testing.T) {
 	lg := zerolog.Nop()
-	c, err := NewConsensus(&common.ConsensusPolicyConfig{MaxParticipants: 3}, &lg)
+	c, err := NewConsensus(&common.ConsensusPolicyConfig{MaxParticipants: 3}, &lg, "")
 	if err != nil {
 		t.Fatalf("NewConsensus: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestResolvePolicy_PunishedAbsentFromCandidatesPinsStandard(t *testing.T) {
 			"standard":   {MaxParticipants: 3},
 		},
 	}
-	c, err := NewConsensus(cfg, &lg)
+	c, err := NewConsensus(cfg, &lg, "")
 	if err != nil {
 		t.Fatalf("NewConsensus: %v", err)
 	}
@@ -510,7 +510,7 @@ func TestResolvePolicy_ReturnDefaultString(t *testing.T) {
 			"historical": {MaxParticipants: 5},
 		},
 	}
-	c, err := NewConsensus(cfg, &lg)
+	c, err := NewConsensus(cfg, &lg, "")
 	if err != nil {
 		t.Fatalf("NewConsensus: %v", err)
 	}

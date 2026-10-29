@@ -70,16 +70,16 @@ func sanitizeForFilename(s string) string {
 
 // resolveFilePattern resolves placeholders in the file pattern.
 // Supported placeholders:
-// - {dateByHour}: formatted as 2006-01-02-15
-// - {dateByDay}: formatted as 2006-01-02
-// - {method}: the RPC method name
-// - {networkId}: the network ID with : replaced by _
-// - {instanceId}: unique instance identifier
-// - {timestampMs}: UTC unix milliseconds
-// - {policy}: injective hex encoding of the consensus policy name via
-//   common.ConsensusPolicyObjectKeyComponent (required when multiple policies
-//   share a destination — sanitizeForFilename alone is non-injective, e.g.
-//   "a/b" and "a_b")
+//   - {dateByHour}: formatted as 2006-01-02-15
+//   - {dateByDay}: formatted as 2006-01-02
+//   - {method}: the RPC method name
+//   - {networkId}: the network ID with : replaced by _
+//   - {instanceId}: unique instance identifier
+//   - {timestampMs}: UTC unix milliseconds
+//   - {policy}: injective hex encoding of the consensus policy name via
+//     common.ConsensusPolicyObjectKeyComponent (required when multiple policies
+//     share a destination — sanitizeForFilename alone is non-injective, e.g.
+//     "a/b" and "a_b")
 func resolveFilePattern(pattern string, method string, networkId string, timestamp time.Time, policyName string) string {
 	// No defaulting here; defaults are applied during config SetDefaults
 	if policyName == "" {

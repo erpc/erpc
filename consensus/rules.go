@@ -946,11 +946,16 @@ var shortCircuitRules = []shortCircuitRule{
 			if _, ok := methodFields(a.config.preferHighestValueFor, a.method); ok {
 				return false
 			}
-			// Don't short-circuit to an error under PreferNonEmpty / PreferLarger:
-			// a NonEmpty that PreferNonEmpty would later dispute→promote (Empty /
-			// MissingData abstention) or AcceptMostCommon would prefer may still
-			// arrive. PreferNonEmpty alone must not early-return ConsensusError.
-			if a.config.preferNonEmpty || a.config.preferLargerResponses {
+			// Don't short-circuit to an error under AcceptMostCommon when a preference
+			// could change the winner (PreferNonEmpty or PreferLargerResponses).
+			// We intentionally avoid early termination even if a non-empty/larger has
+			// not yet arrived, to allow preferred valid results to participate.
+			// PreferNonEmpty alone must not block this: it only promotes non-empty
+			// over Empty / MissingData-abstention results, never over an already-
+			// agreed ConsensusError, so waiting cannot change the winner here.
+			acceptMostCommon := a.config.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult ||
+				a.config.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult
+			if acceptMostCommon && (a.config.preferNonEmpty || a.config.preferLargerResponses) {
 				return false
 			}
 			return true

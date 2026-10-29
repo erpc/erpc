@@ -1137,7 +1137,6 @@ func (t *Tracker) UncordonClassesAtMostGens(upstream common.Upstream, method, re
 	}
 }
 
-
 func (t *Tracker) UncordonClass(upstream common.Upstream, method string, reason string, class common.CordonClass) {
 	lg := upstream.Logger()
 	lg.Debug().

@@ -19,9 +19,10 @@ import (
 // a non-string return, a timeout, or a returned name that isn't a configured
 // policy — falls closed to the inline default policy (the strictest), and is
 // attributed to a metric reason so operators can see why a round didn't run
-// under the selected policy. An explicit null return or `return "default"`
-// chooses the inline default intentionally and is NOT counted as a failure.
-// Lack of a free Sobek VM is never a fail-closed trigger (feature §4.6).
+// under the selected policy. A null/undefined return is also a failure
+// (reason="null"), NOT an intentional default pick; `return "default"` is the
+// intentional default pick. Lack of a free Sobek VM is never a fail-closed
+// trigger (feature §4.6).
 func (c *Consensus) resolvePolicy(req *common.NormalizedRequest) *consensusPolicy {
 	projectId, networkId := reqLabels(req)
 
@@ -44,8 +45,8 @@ func (c *Consensus) resolvePolicy(req *common.NormalizedRequest) *consensusPolic
 		}
 		telemetry.MetricConsensusPolicyEvalFailed.
 			WithLabelValues(projectId, networkId, reason).Inc()
-		// Demote to Debug and rate-limit: a failing eval under load logs one
-		// Warn per request (review finding). The metric already counts every
+		// Rate-limit the Warn: a failing eval under load would otherwise log
+		// once per request (review finding). The metric already counts every
 		// failure; the log is for debugging a bad eval, not per-request noise.
 		if c.logger != nil && c.evalFailLogLimiter.allow(projectId, networkId, reason) {
 			c.logger.Warn().Err(err).Str("networkId", networkId).Str("reason", reason).
@@ -133,15 +134,10 @@ func (c *Consensus) buildEvalContext(req *common.NormalizedRequest) policyengine
 	}
 
 	// Auth is the strategy name stamped by the auth registry onto ExecState
-	// (§4.3). Prefer it over the legacy User.Auth copy so authenticated
-	// requests don't pay a User clone; a nil user is a nil ctx.user.
-	authName := req.ExecState().AuthStrategy()
-	if authName == "" {
-		if u := req.User(); u != nil {
-			authName = u.Auth
-		}
-	}
-	if authName != "" || req.ExecState().AuthStrategy() != "" {
+	// (§4.3). nil ctx.user means "no authenticated strategy ran"; an unnamed
+	// strategy yields ctx.user with an empty auth string.
+	authName, authed := req.ExecState().AuthStrategy()
+	if authed {
 		ectx.User = &policyengine.User{Auth: authName}
 	}
 

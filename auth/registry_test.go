@@ -169,7 +169,9 @@ func TestAuthRegistry_Authenticate_StampsStrategyName(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.NotNil(t, user)
-		assert.Equal(t, "consensus-waive", req.ExecState().AuthStrategy())
+		name, authed := req.ExecState().AuthStrategy()
+		assert.True(t, authed)
+		assert.Equal(t, "consensus-waive", name)
 	})
 
 	t.Run("unnamed strategy stamps empty", func(t *testing.T) {
@@ -181,6 +183,15 @@ func TestAuthRegistry_Authenticate_StampsStrategyName(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.NotNil(t, user)
-		assert.Equal(t, "", req.ExecState().AuthStrategy())
+		name, authed := req.ExecState().AuthStrategy()
+		assert.True(t, authed, "an unnamed strategy is still an authenticated strategy")
+		assert.Equal(t, "", name)
+	})
+
+	t.Run("no auth leaves stamp unset", func(t *testing.T) {
+		req := common.NewNormalizedRequest(nil)
+		name, authed := req.ExecState().AuthStrategy()
+		assert.False(t, authed)
+		assert.Equal(t, "", name)
 	})
 }

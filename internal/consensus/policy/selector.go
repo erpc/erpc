@@ -165,13 +165,14 @@ func Compile(evalFunction string, buildTimeout time.Duration) (*Selector, error)
 
 // Evaluate runs the eval for one request and returns the selected policy name.
 //
-// An empty or null return is the empty string — the caller resolves that to the
-// default policy, as it does an unknown name. Every failure (throw, non-string
-// return, timeout) returns the empty name and a typed error so the caller can
-// attribute the fail-closed reason. Lack of a free VM is never itself a
-// fail-closed trigger while under poolMaxSize — the pool grows on demand
-// (feature §4.6). At the hard cap, acquire waits against the same evalTimeout
-// budget. timeout <= 0 disables the wall-clock cap.
+// A null/undefined return is a failure (ErrEvalNull, reason="null"), NOT an
+// intentional default pick; the operator returns the string "default" for that.
+// Every failure (throw, non-string return, timeout, null) returns the empty
+// name and a typed error so the caller can attribute the fail-closed reason;
+// an unknown returned name is resolved to the default by the caller. Lack of a
+// free VM is never itself a fail-closed trigger while under poolMaxSize — the
+// pool grows on demand (feature §4.6). At the hard cap, acquire waits against
+// the same evalTimeout budget. timeout <= 0 disables the wall-clock cap.
 func (s *Selector) Evaluate(ctx EvalContext, timeout time.Duration) (string, error) {
 	deadline := time.Time{}
 	acquireWait := time.Duration(-1) // unbounded at pool cap when timeout <= 0

@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -113,6 +114,53 @@ func TestCordonAdmin_PropagatesAcrossReplicasAndRestarts(t *testing.T) {
 	require.Equal(t, "operator cordon (set on another replica)", reason)
 	reason, _ = c.CordonedReason("eth_call")
 	require.Equal(t, "incident #2", reason)
+}
+
+// TestUncordonAdmin_ResetsSitoutOnIssuerAndPeer pins Aram's Round-2 partial:
+// the peer recovery callback used to clear class bits only, leaving the
+// consensus sit-out entry behind. Now both the issuing pod and peers fire the
+// reset hook (wired to consensus.ResetSitout in erpc init), scoped by project.
+func TestUncordonAdmin_ResetsSitoutOnIssuerAndPeer(t *testing.T) {
+	m, err := miniredis.Run()
+	require.NoError(t, err)
+	defer m.Close()
+	ctx := context.Background()
+
+	var mu sync.Mutex
+	var got [][2]string
+	SetSitoutResetHook(func(projectId, upstreamId string) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, [2]string{projectId, upstreamId})
+	})
+	t.Cleanup(func() { SetSitoutResetHook(nil) })
+
+	a := newCordonTestUpstream(t, m.Addr())
+	b := newCordonTestUpstream(t, m.Addr())
+
+	a.CordonAdmin(ctx, "incident")
+	require.Eventually(t, cordoned(b), 5*time.Second, 20*time.Millisecond)
+
+	a.UncordonAdmin(ctx, "resolved")
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		seenA, seenB := false, false
+		for _, g := range got {
+			if g[1] != a.Id() {
+				continue
+			}
+			if g[0] == a.ProjectId {
+				seenA = true
+			}
+			if g[0] == b.ProjectId {
+				seenB = true
+			}
+		}
+		// both replicas' projects fire the hook (same test project "main")
+		return seenA && seenB
+	}, 5*time.Second, 20*time.Millisecond, "both issuer and peer must reset sit-out")
 }
 
 func TestCordonAdmin_DetectorsCannotLiftAnOperatorCordon(t *testing.T) {

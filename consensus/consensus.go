@@ -41,6 +41,7 @@ var inflightAnalyzers sync.WaitGroup
 // named policies to govern each round; otherwise the inline default policy
 // governs every round with zero added per-request cost.
 type Consensus struct {
+	projectId   string                      // owning project; "" for test/bare consensus
 	policy      *consensusPolicy            // inline default (strictest fallback)
 	named       map[string]*consensusPolicy // named alternatives the selector can pick
 	selector    *policyengine.Selector      // nil when customPolicy is unset
@@ -59,8 +60,11 @@ func (c *Consensus) HasSelector() bool {
 	return c != nil && c.selector != nil
 }
 
-// NewConsensus constructs a Consensus from config.
-func NewConsensus(cfg *common.ConsensusPolicyConfig, logger *zerolog.Logger) (*Consensus, error) {
+// NewConsensus constructs a Consensus from config. projectId scopes
+// project-keyed recovery (admin uncordon sit-out reset) so same-ID upstreams
+// in different projects are independent; pass "" where a project is unknown
+// (tests).
+func NewConsensus(cfg *common.ConsensusPolicyConfig, logger *zerolog.Logger, projectId string) (*Consensus, error) {
 	if cfg == nil {
 		return nil, errors.New("nil consensus config")
 	}
@@ -97,6 +101,7 @@ func NewConsensus(cfg *common.ConsensusPolicyConfig, logger *zerolog.Logger) (*C
 	sharedSitout := &sync.Map{}
 
 	c := &Consensus{
+		projectId:          projectId,
 		policy:             buildPolicy(cfg, logger, defaultPolicyName),
 		logger:             logger,
 		evalFailLogLimiter: newPolicyLogLimiter(5 * time.Second),
@@ -159,13 +164,16 @@ func (c *Consensus) Close() error {
 }
 
 // ResetSitout clears the shared sit-out timer entry for an upstream across
-// every live Consensus so a full admin uncordon lets the upstream be re-
-// punished immediately (review finding): without it, an uncleared sit-out
-// entry suppresses re-punish until the original penalty window ends.
-func ResetSitout(upstreamId string) {
+// the live Consensuses of one project, so a full admin uncordon lets the
+// upstream be re-punished immediately (review finding): without it, an
+// uncleared sit-out entry suppresses re-punish until the original penalty
+// window ends. Scoped by project: upstream IDs are only unique per project,
+// so a bare-ID global reset would stop a same-ID upstream's timer in another
+// project while leaving its punishment bit set (stuck cordon).
+func ResetSitout(projectId, upstreamId string) {
 	liveConsensuses.Range(func(key, _ any) bool {
 		c, ok := key.(*Consensus)
-		if !ok {
+		if !ok || c.projectId != projectId {
 			return true
 		}
 		clearPolicySitout(c.policy, upstreamId)

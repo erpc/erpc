@@ -510,7 +510,7 @@ func TestParseS3Path(t *testing.T) {
 func TestNewConsensus_AppliesConfig(t *testing.T) {
 	lg := zerolog.Nop()
 
-	_, err := NewConsensus(nil, &lg)
+	_, err := NewConsensus(nil, &lg, "")
 	require.Error(t, err)
 
 	yes := true
@@ -528,7 +528,7 @@ func TestNewConsensus_AppliesConfig(t *testing.T) {
 		PreferHighestValueFor:   map[string][]string{"eth_getTransactionCount": {"result"}},
 		MisbehaviorsDestination: &common.MisbehaviorsDestinationConfig{Path: dir},
 		RequiredParticipants:    []*common.ConsensusRequiredParticipant{{Tag: "t", MinParticipants: 1}},
-	}, &lg)
+	}, &lg, "")
 	require.NoError(t, err)
 	p := c.policy
 	assert.Equal(t, 3, p.maxParticipants)
@@ -545,7 +545,7 @@ func TestNewConsensus_AppliesConfig(t *testing.T) {
 	assert.NotNil(t, p.exporter, "a valid file destination enables export")
 
 	t.Run("invalid dispute log level keeps the warn default", func(t *testing.T) {
-		c, err := NewConsensus(&common.ConsensusPolicyConfig{MaxParticipants: 1, DisputeLogLevel: "loud"}, &lg)
+		c, err := NewConsensus(&common.ConsensusPolicyConfig{MaxParticipants: 1, DisputeLogLevel: "loud"}, &lg, "")
 		require.NoError(t, err)
 		assert.Equal(t, zerolog.WarnLevel, c.policy.disputeLogLevel)
 		assert.Nil(t, c.policy.exporter)

@@ -87,11 +87,10 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 		// (feature §4.3), so an authenticated request no longer pays a User
 		// copy unless AllowClientDirectives (main behavior) also needs one.
 		if req != nil {
-			req.ExecState().SetAuthStrategy(az.cfg.Name)
+			req.ExecState().SetAuthStrategy(&az.cfg.Name)
 		}
 		if user != nil && az.cfg.AllowClientDirectives != nil {
 			stamped := *user
-			stamped.Auth = az.cfg.Name
 			stamped.AllowClientDirectives = az.cfg.AllowClientDirectives
 			user = &stamped
 		}

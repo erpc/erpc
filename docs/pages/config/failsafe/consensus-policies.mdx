@@ -164,13 +164,19 @@ https://docs.erpc.cloud/config/failsafe/consensus-policies.llms.txt`}
 
 **One round, one policy, chosen before fan-out.** A request's consensus round runs under exactly one named `ConsensusPolicyConfig`. Before the round starts, a pre-round selector answers a single question — *which named policy should govern this round?* — from the verified caller, the request, and the candidate upstreams' live health. The selector never sees round outcomes and never grades a round; that stays in the declarative consensus config and the executor.
 
-**Request flow.** (1) Auth resolves the user and stamps the authenticating strategy's name. (2) An `EvalContext` is built from the request, user, and candidate upstreams. (3) `selector.Evaluate(ctx, evalTimeout)` returns a policy name. (4) The name resolves to a `ConsensusPolicyConfig` — an empty/null return or an unknown name resolves to the default policy. (5) The existing executor runs the round under that config, unchanged. (6) The chosen name is emitted as the `X-ERPC-Consensus-Policy` response header and the `consensus_policy` metric label.
+**Request flow.** (1) Auth resolves the user and stamps the authenticating strategy's name. (2) An `EvalContext` is built from the request, user, and candidate upstreams. (3) `selector.Evaluate(ctx, evalTimeout)` returns a policy name. (4) The name resolves to a `ConsensusPolicyConfig` — an unknown name resolves to the default policy; an empty/null return is a selector failure that also fails closed to the default. (5) The existing executor runs the round under that config, unchanged. (6) The chosen name is emitted as the `X-ERPC-Consensus-Policy` response header and the `consensus_policy` metric label.
 
 **Backward compatible.** An inline `consensus:` block with no `policies` map and no `customPolicy` is exactly one anonymous default policy — zero migration, every existing field keeps working. `customPolicy` and `policies` are purely additive.
 
 **Fail closed, always.** The default policy is the fail-closed target and **must be configured as the strictest policy** (the design assumes `standard`). Every selector failure resolves to it and is counted (and rate-limit-logged): a JS throw, a non-string return, a null/undefined return, an eval that overruns `evalTimeout`, or an unknown returned name. A null return is **not** an intentional default pick — return the string `"default"` to select the default deliberately. At pool capacity the selector waits for a free VM and that wait is charged to the same timeout — there is no separate `pool_exhausted` bypass. The selector can never fall *open* to a more permissive policy.
 
 **Selector engine.** The engine is a standalone package that imports nothing from `consensus/`, `health/`, or `auth/` — the caller builds an `EvalContext` from those subsystems and passes plain values in, and the vocabulary those callers populate (cordon classes, health states) is owned by the engine so the two sides cannot drift. `customPolicy.evalFunction` is compiled once at load; each eval borrows a pre-warmed sobek VM from a small bounded pool (8) and binds the per-request context.
+
+### Behavior changes (upgrade note)
+
+- **Consensus config `Validate()` now runs at boot.** A config that boots on `main` but fails consensus validation (broken named policy, missing waiver floor, S3-path collision, bad `evalFunction`) now fails startup instead of the first request.
+- **Misbehavior export keys changed.** The default `filePattern` adds `{instanceId}`, and S3 keys gain a `-f<seq>` suffix, to stop concurrent pods overwriting each other's objects. Readers of the old key shape must update.
+- **Selector fail-closed reasons are explicit.** A null/undefined eval return is a selector failure (counted `reason="null"` and logged), **not** an intentional default pick; return the string `"default"` to select the default deliberately.
 
 **Eval runs once, before fan-out.** It does not extend consensus wait windows. A clean eval returns its VM to the pool, so steady-state cost is the eval itself (tens to low-hundreds of µs) — only a throw, non-string return, null return, or timeout discards and rebuilds. There is no decision cache in v1. **Reuse note:** because the VM is reused, an eval that closes over mutable JS state (a counter, a cached array) keeps it across requests on the same VM. Write evals as pure functions of `ctx` — do not depend on fresh-realm isolation.
 
@@ -214,8 +220,9 @@ All fields under `networks[].failsafe[].consensus.` (or project-level `failsafe[
 //              cordonClasses: ("punishment"|"availability"|"operator")[],
 //              cordonReason?: string }   // diagnostic only — never matched
 //
-// return "name" → run policies[name]  (unknown name → fail closed to default + warn)
-// return null   → default policy
+// return "name"    → run policies[name]  (unknown name → fail closed to default + warn)
+// return "default" → deliberately run the inline default policy
+// return null      → selector failure: fails closed to the default (counted reason="null")
 ```
 
 `ctx.user` is `null` for unauthenticated requests; guard with `ctx.user?.auth === "…"`. `blockNumber` is `null` for methods with no numeric block (tx-hash / block-hash lookups) — the "unknown block" case. An upstream can hold several cordons at once, so `cordonClasses` is a **set**; `state` is `"cordoned"` whenever that set is non-empty, taking precedence over `"unhealthy"`.
@@ -453,7 +460,7 @@ deliberate relaxation of a hard quorum.
 - [`internal/consensus/policy/stdlib.js`](https://github.com/erpc/erpc/blob/main/internal/consensus/policy/stdlib.js) — chainable `upstreams`/`user` helpers bound into each VM
 - [`common/config.go`](https://github.com/erpc/erpc/blob/main/common/config.go) — `ConsensusCustomPolicyConfig`, `ConsensusPolicyConfig.Policies` / `.Extends`, `ConsensusPolicyConfig.BlockEvidenceFields`, `ConsensusRequiredParticipant.WaiveAgreementOnMissingData` / `.WaiveAgreementOnEmptyOutsideRetention` / `.RetentionBlocks`, `AuthStrategyConfig.Name`
 - [`common/validation.go`](https://github.com/erpc/erpc/blob/main/common/validation.go) — waiver-floor, nesting-rejection, S3-path-collision, and evalFunction smoke-compile checks
-- [`auth/registry.go`](https://github.com/erpc/erpc/blob/main/auth/registry.go) — stamps `User.Auth` from the authenticating strategy's `name`
+- [`auth/registry.go`](https://github.com/erpc/erpc/blob/main/auth/registry.go) — stamps the authenticating strategy's `name` onto the request's exec state (the consensus selector reads `ctx.user.auth` from there; `User` carries no auth name)
 
 ### Related pages
 

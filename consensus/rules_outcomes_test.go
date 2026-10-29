@@ -667,6 +667,29 @@ func TestShouldShortCircuit_Reasons(t *testing.T) {
 			},
 		},
 		{
+			name: "agreed error under return-error with prefer-non-empty short-circuits",
+			// Defaults: returnError + preferNonEmpty=true. PreferNonEmpty only
+			// promotes non-empty over Empty / MissingData-abstention results,
+			// never over an already-agreed ConsensusError, so waiting cannot
+			// change the winner. Regression: the blanket preferNonEmpty skip
+			// held agreed reverts for all upstreams / maxWaitOnEmpty.
+			cfg: &config{maxParticipants: 3, agreementThreshold: 2,
+				disputeBehavior: common.ConsensusDisputeBehaviorReturnError, preferNonEmpty: true},
+			results: func(t *testing.T) []*execResult {
+				return []*execResult{errorFrom(a, revertedErr(), 0), errorFrom(b, revertedErr(), 1)}
+			},
+			wantReason: "consensus_error_threshold",
+		},
+		{
+			name: "agreed error under return-error with prefer-larger short-circuits",
+			cfg: &config{maxParticipants: 3, agreementThreshold: 2,
+				disputeBehavior: common.ConsensusDisputeBehaviorReturnError, preferLargerResponses: true},
+			results: func(t *testing.T) []*execResult {
+				return []*execResult{errorFrom(a, revertedErr(), 0), errorFrom(b, revertedErr(), 1)}
+			},
+			wantReason: "consensus_error_threshold",
+		},
+		{
 			name: "unassailable data lead short-circuits",
 			cfg:  &config{maxParticipants: 3, agreementThreshold: 2},
 			results: func(t *testing.T) []*execResult {

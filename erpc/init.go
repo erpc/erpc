@@ -13,6 +13,7 @@ import (
 	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -88,6 +89,11 @@ func Init(
 				Msg("some metrics.customizations rules do not apply to the family they name")
 		}
 	}
+
+	// Let admin uncordon clear consensus sit-out state without an upstream →
+	// consensus import. Scoped by project: same-ID upstreams in different
+	// projects keep independent sit-outs.
+	upstream.SetSitoutResetHook(consensus.ResetSitout)
 
 	// Install a global networkId -> alias resolver so network-labeled metrics from
 	// components that only know the raw networkId (e.g. the gRPC cache connector,

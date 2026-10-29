@@ -2053,7 +2053,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// Only the consensus-policy selector reads this snapshot; building it for
 	// every request contradicts the "zero added per-request cost" contract
 	// when customPolicy is unset (review finding). Skip the copy + method
-	// filter entirely unless the matched network executor will run an eval.
+	// filter entirely unless any network executor has a customPolicy selector.
 	if n.upstreamsRegistry != nil && n.consensusPolicySelectorEnabled() {
 		reg := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
 		all := make([]common.Upstream, 0, len(reg))

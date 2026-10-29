@@ -21,7 +21,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/failsafe"
-	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
@@ -1731,12 +1730,32 @@ func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
 	// bits (review finding). Reset both so a full admin uncordon actually
 	// releases the upstream — re-punish is possible immediately, and the EVM
 	// poller stops holding this upstream's heads behind a chain-id verify.
-	consensus.ResetSitout(u.Id())
+	resetSitout(u.ProjectId, u.Id())
 	if u.evmStatePoller != nil {
 		u.evmStatePoller.ResetChainIdCordon()
 	}
 }
 
+// resetSitoutHook is wired to consensus.ResetSitout from erpc init so
+// upstream does not import consensus. No-op until set.
+var resetSitoutHook atomic.Pointer[func(projectId, upstreamId string)]
+
+// SetSitoutResetHook installs the callback invoked on a full admin uncordon
+// (issuing pod and peers) to clear the consensus sit-out timer for the
+// upstream. Called once at startup.
+func SetSitoutResetHook(fn func(projectId, upstreamId string)) {
+	if fn == nil {
+		resetSitoutHook.Store(nil)
+		return
+	}
+	resetSitoutHook.Store(&fn)
+}
+
+func resetSitout(projectId, upstreamId string) {
+	if fn := resetSitoutHook.Load(); fn != nil && *fn != nil {
+		(*fn)(projectId, upstreamId)
+	}
+}
 
 // operatorCordonVar creates the shared counter on first use; every value it
 // takes — from this pod, a peer, or the bootstrap fetch — flips the "*" cell.
@@ -1815,6 +1834,13 @@ func (u *Upstream) operatorRecoveryVar() data.CounterInt64SharedVariable {
 			// generation and is kept. Do not compare wall clocks.
 			gens := u.metricsTracker.CordonGens(u, "*")
 			u.metricsTracker.UncordonClassesAtMostGens(u, "*", reason, gens)
+			// Peers clear the consensus sit-out too: only the issuing pod did
+			// it before (review finding), so a same-project upstream stayed
+			// cordoned on a peer until its original penalty window ended.
+			resetSitout(u.ProjectId, u.Id())
+			if u.evmStatePoller != nil {
+				u.evmStatePoller.ResetChainIdCordon()
+			}
 		})
 		u.operatorRecovery.Store(v)
 	})

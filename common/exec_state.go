@@ -139,8 +139,11 @@ type ExecState struct {
 
 	// authStrategy is the name of the auth strategy that authenticated this
 	// request (stamped by the auth registry). The consensus-policy selector
-	// reads it instead of copying *User on every authenticated request.
-	authStrategy atomic.Value // string
+	// reads it instead of copying *User on every authenticated request. A nil
+	// pointer means no auth ran; a non-nil pointer (even to "") means an
+	// authenticated, possibly unnamed, strategy. atomic.Pointer[string] to the
+	// strategy config field avoids the per-request box alloc of atomic.Value.
+	authStrategy atomic.Pointer[string]
 
 	// keepEmptyConsensusSlot is set by the consensus executor when the
 	// selected policy opts into waiveAgreementOnEmptyOutsideRetention. Hedge
@@ -255,24 +258,28 @@ func (s *ExecState) MarkUpstreamAttemptWon(upstreamId string) {
 
 // SetAuthStrategy records the auth strategy name for this request. Called by
 // the auth registry even when the strategy is unnamed (""), so the consensus
-// selector can distinguish "no auth" (never set) from "unnamed strategy".
-func (s *ExecState) SetAuthStrategy(name string) {
+// selector can distinguish "no auth" (never set) from "unnamed strategy". The
+// pointer must refer to the strategy config's stable name field, so repeated
+// requests under one strategy do not allocate.
+func (s *ExecState) SetAuthStrategy(name *string) {
 	if s == nil {
 		return
 	}
 	s.authStrategy.Store(name)
 }
 
-// AuthStrategy returns the stamped auth strategy name, or "" when no
-// authenticated strategy ran or the strategy was unnamed.
-func (s *ExecState) AuthStrategy() string {
+// AuthStrategy reports the stamped auth strategy name and whether any
+// authenticated strategy ran. An unnamed strategy yields ("", true); no auth
+// yields ("", false). Callers must not rely on "" alone to mean "no auth".
+func (s *ExecState) AuthStrategy() (string, bool) {
 	if s == nil {
-		return ""
+		return "", false
 	}
-	if v, ok := s.authStrategy.Load().(string); ok {
-		return v
+	p := s.authStrategy.Load()
+	if p == nil {
+		return "", false
 	}
-	return ""
+	return *p, true
 }
 
 // SetConsensusPolicy records the consensus policy the pre-round selector
