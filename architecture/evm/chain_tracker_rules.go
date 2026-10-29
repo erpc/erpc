@@ -966,13 +966,16 @@ func (t *ChainTracker) followInterval() time.Duration {
 	return common.DefaultIntegrityFollowInterval
 }
 
-// conflicts reports whether a vote leaves the pinned branch: neither
-// pinned nor above the head on its branch.
+// conflicts reports whether a vote is off the pins at a height they hold
+// (spec §6.3): neither pinned nor above the head on its branch, and its
+// first block off the pins is at a pinned height. A tree that does not
+// link, above the head or below the pins' first block, is no evidence of
+// a fork: a tracker that does not walk holds every poll's vote that way.
 func (t *ChainTracker) conflicts(nd *node) bool {
-	if len(t.pins) == 0 || t.pinned(nd) {
+	if len(t.pins) == 0 || t.pinned(nd) || isAncestor(t.pins[len(t.pins)-1], nd) {
 		return false
 	}
-	return !isAncestor(t.pins[len(t.pins)-1], nd)
+	return t.pinNode(t.branchOf(nd).h.number) != nil
 }
 
 // rearm ticks the tracker at its next deadline: the no-source voter's next
