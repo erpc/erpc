@@ -71,6 +71,7 @@ var supportedMethods = map[string]struct{}{
 	"debug_traceBlockByNumber": {},
 	"debug_traceBlockByHash":   {},
 	"debug_traceTransaction":   {},
+	"trace_block":              {},
 	"eth_getBalance":           {},
 	// SVM. Solana method names are unprefixed, so they cannot collide with the
 	// eth_* entries above and one allowlist serves both architectures.
