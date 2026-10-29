@@ -1,6 +1,7 @@
 package realworld
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/erpc/erpc/test/chainsim"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"google.golang.org/grpc/codes"
 )
 
 // Bounds of the chain-behaviour scenarios (§19 C2, C6, C8, C10, C11, C14,
@@ -53,6 +55,10 @@ const (
 	c16ResetHead = 10
 	c16Follow    = 2 * time.Minute
 	c16FullPoll  = 30 * time.Second
+	// c16DeadCursor: a stream resumed from an old-chain cursor ends
+	// OUT_OF_RANGE within W of the ceiling's fall (§10.1); the harness
+	// opens it once every counter followed, after the fall.
+	c16DeadCursor = liveBound + reconnectSlack
 
 	// c17Halt: C17's chain makes no block this long, past maxBackfill
 	// (§19 C17). Then c17Blocks blocks come one at a time, each up to
@@ -361,8 +367,11 @@ func c15() spec {
 // follows within c16Follow; every tap restarts on the new chain (ws logs
 // end 1013 and resubscribe, gRPC ends OUT_OF_RANGE and starts over); every
 // pod's latest counter of every upstream, and the shared one, follow the
-// new chain; and no read is answered from the old chain, though its
-// finalized block was cached permanently (§6.4, §14, §10.2; §19 C16).
+// new chain; a stream resumed from an old-chain cursor no tree holds ends
+// OUT_OF_RANGE; and no read is answered from the old chain, though its
+// finalized block was cached permanently. A read of an old-chain block
+// while the regression guard holds Latest may count retried_missing; no
+// other may (§6.4, §14, §10.1, §10.2; §19 C16).
 func c16() spec {
 	return spec{name: "C16", cache: true, bound: healthyDelivery, sim: chainsim.Config{First: c16First},
 		allow: []string{"ws:logs-end", "ws:jump", "grpc:OutOfRange"},
@@ -394,6 +403,13 @@ func c16() spec {
 				}
 			}
 			was := s.chain.Tip()
+			// Below the old tip by more than reorgWindow: the old tree,
+			// held while its top is inside maxBackfill, no longer holds it.
+			dead := s.chain.CanonAt(was.Number - 2*reorgWindow)
+			missing0 := make([]float64, len(s.h.pods))
+			for pod := range s.h.pods {
+				missing0[pod], _ = s.metric(pod, "erpc_head_refusal_total", map[string]string{"rule": "retried_missing"})
+			}
 			at := time.Now()
 			ex := s.excuse(-1, at)
 			tip := s.chain.Reset(c16ResetHead)
@@ -428,11 +444,34 @@ func c16() spec {
 					last = t
 				}
 			}
+			// Reads sent while the guard held Latest end within W of its
+			// release, which the pod's eth_blockNumber showed.
+			time.Sleep(time.Until(last.Add(liveBound)))
+			for pod := range s.h.pods {
+				v, _ := s.metric(pod, "erpc_head_refusal_total", map[string]string{"rule": "retried_missing"})
+				s.logf("pod-%d: %v retried_missing while the guard held Latest", pod+1, v-missing0[pod])
+				s.owe(pod, "retried_missing", v-missing0[pod])
+			}
 			// Taps restart once the pins re-anchor, after Latest follows,
 			// within c16Follow; ws logs then close 1013 over
 			// logsCloseSpread from their end (§10.2).
 			time.Sleep(time.Until(last.Add(logsCloseSpread + reconnectSlack)))
 			s.requireCountersFollow()
+			for pod := range s.h.pods {
+				rctx, cancel := context.WithCancel(s.ctx)
+				n := dead.Number
+				e, ok := next(s.openStream(rctx, pod, &n, dead.Hash.Bytes()), c16DeadCursor)
+				if !ok || e.h != nil || e.code != codes.OutOfRange {
+					got := fmt.Sprintf("end %s %s", e.code, e.msg)
+					if e.h != nil {
+						got = fmt.Sprintf("header %d", e.h.Number)
+					} else if !ok {
+						got = "nothing"
+					}
+					s.violate(s.name, "pod-%d: stream resumed from old-chain cursor %d %s: %s within %s, not OUT_OF_RANGE", pod+1, n, short(dead.Hash), got, c16DeadCursor)
+				}
+				cancel()
+			}
 			for pod := range s.h.pods {
 				var raw json.RawMessage
 				err := s.call(pod, &raw, probeMethod, hexutil.EncodeUint64(old.Number))
