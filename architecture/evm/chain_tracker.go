@@ -2487,19 +2487,36 @@ func (t *ChainTracker) receiptsCap() int {
 // sends every block pinned since; with no pin then, or one a reorg
 // replaced, the new confirmed head is the tap's first block.
 func (t *ChainTracker) Head(ctx context.Context) (indexer.Cursor, error) {
+	return t.HeadAsOf()(ctx)
+}
+
+// HeadAsOf is Head fixed as of the call: the confirmed head then, or the
+// wait for its next change from then. A ws subscribe takes it before the
+// client has the subscription id, so its tap sends every block confirmed
+// after that, however late its loop runs (spec §10.2). It keeps no state
+// past the call but the headers it starts from.
+func (t *ChainTracker) HeadAsOf() func(context.Context) (indexer.Cursor, error) {
 	s := t.state.Load()
 	prev := s.confirmedHead()
 	if prev != nil && s.backing.voters > 0 {
-		return prev.cursor(), nil
+		c := prev.cursor()
+		return func(context.Context) (indexer.Cursor, error) { return c, nil }
 	}
-	known := s.head()
+	known, changed := s.head(), s.changed
+	return func(ctx context.Context) (indexer.Cursor, error) { return t.nextHead(ctx, prev, known, changed) }
+}
+
+// nextHead waits for the confirmed head to move off prev, from the state
+// whose changed channel is changed and whose pins' head was known.
+func (t *ChainTracker) nextHead(ctx context.Context, prev, known *chainHeader, changed <-chan struct{}) (indexer.Cursor, error) {
 	for {
 		select {
 		case <-ctx.Done():
 			return indexer.Cursor{}, ctx.Err()
-		case <-s.changed:
+		case <-changed:
 		}
-		s = t.state.Load()
+		s := t.state.Load()
+		changed = s.changed
 		h := s.confirmedHead()
 		if h == nil || h == prev {
 			continue

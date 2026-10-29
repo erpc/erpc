@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -16,12 +17,56 @@ import (
 // than the lag bound with nothing to revert; it restarts after the head.
 var errNewHeadsLag = indexer.OutOfRangeError{Reason: indexer.OutOfRangeLag}
 
-// lagging reports whether a ws tap is behind (spec §10.2): its next block
-// has been deliverable for longer than reorgWindow blocks of chain time.
-// A burst never is, since its blocks just arrived.
-func lagging(tracker *evm.ChainTracker, next indexer.Block) bool {
-	return time.Since(next.Ready) > time.Duration(tracker.ReorgWindow())*tracker.BlockTime()
+// tapLag is a ws tap's lag clock (spec §10.2): its next block is lagging
+// once it has been deliverable for longer than reorgWindow blocks of chain
+// time. No block is deliverable before floor: the tap's start, when its
+// loop runs and the client has the id, so a loop that starts late begins
+// with no lag; logs raise it to the Ready of each block they send. A burst
+// never lags, since its blocks just arrived.
+type tapLag struct{ floor time.Time }
+
+// start opens the clock at the tap's first batch once the client has the
+// id; later calls keep it.
+func (l *tapLag) start() {
+	if l.floor.IsZero() {
+		l.floor = time.Now()
+	}
 }
+
+// sent raises the floor to blk's Ready: the blocks after a block the tap
+// waited on are deliverable no sooner than it.
+func (l *tapLag) sent(blk indexer.Block) {
+	if blk.Ready.After(l.floor) {
+		l.floor = blk.Ready
+	}
+}
+
+func (l *tapLag) lagging(tracker *evm.ChainTracker, next indexer.Block) bool {
+	ready := next.Ready
+	if ready.Before(l.floor) {
+		ready = l.floor
+	}
+	return time.Since(ready) > time.Duration(tracker.ReorgWindow())*tracker.BlockTime()
+}
+
+// wsTapLoopStart, while set, runs as each ws newHeads or logs tap's loop
+// begins; tests hold it there to start the loop late.
+var wsTapLoopStart atomic.Pointer[func()]
+
+func wsTapLoopStarts() {
+	if hold := wsTapLoopStart.Load(); hold != nil {
+		(*hold)()
+	}
+}
+
+// startedFeed is a ws tap's feed whose start the subscribe fixed
+// (ChainTracker.HeadAsOf).
+type startedFeed struct {
+	indexer.ChainFeed
+	head func(context.Context) (indexer.Cursor, error)
+}
+
+func (f startedFeed) Head(ctx context.Context) (indexer.Cursor, error) { return f.head(ctx) }
 
 // newHeadsRestartDelay spaces restarts of a tap that keeps failing.
 var newHeadsRestartDelay = 100 * time.Millisecond
@@ -37,23 +82,27 @@ func (e wsWriteError) Error() string { return e.err.Error() }
 // runNewHeads is one ws newHeads subscription: a tap on the network-wide
 // tracker that writes each applied block, oldest first, so after a reorg
 // the client gets each head of the new branch; a block that left the pins
-// before its write is never written. It reads from subscribe
-// time but writes only once opened, after the client has its id. It ends
-// only with ctx or a failed write; out of range, lag, a panic or any other
-// error restart it after the head, so the client sees a jump in numbers,
-// as with geth, and never a silent subscription. lane, when set, holds
-// blocks above the connection's lane's Latest.
-func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane string) {
+// before its write is never written. It starts from head, fixed at
+// subscribe time, but writes only once opened, after the client has its
+// id. It ends only with ctx or a failed write; out of range, lag, a panic
+// or any other error restart it after the head at the restart, so the
+// client sees a jump in numbers, as with geth, and never a silent
+// subscription. lane, when set, holds blocks above the connection's lane's
+// Latest.
+func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane string, head func(context.Context) (indexer.Cursor, error)) {
+	wsTapLoopStarts()
 	tracker := nw.chainTracker
 	sends := newTapSends(nw, lane, "ws", indexer.SubTypeNewHeads)
 	notify := wsc.notifier(sub)
+	var lag tapLag
 	emit := func(b indexer.Batch) (int, error) {
 		select {
 		case <-opened:
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		}
-		if len(b.Reverted) == 0 && len(b.Applied) > 0 && lagging(tracker, b.Applied[0]) {
+		lag.start()
+		if len(b.Reverted) == 0 && len(b.Applied) > 0 && lag.lagging(tracker, b.Applied[0]) {
 			return 0, errNewHeadsLag
 		}
 		for i, blk := range b.Applied {
@@ -72,8 +121,10 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 		}
 		return len(b.Applied), nil
 	}
+	var feed indexer.ChainFeed = startedFeed{tracker, head}
 	for {
-		err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeNewHeads, gated(tracker, nw, lane), nil, indexer.ReadOpts{}, emit)
+		err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeNewHeads, gated(feed, nw, lane), nil, indexer.ReadOpts{}, emit)
+		feed, lag = tracker, tapLag{}
 		var writeErr wsWriteError
 		if ctx.Err() != nil || errors.As(err, &writeErr) {
 			return
