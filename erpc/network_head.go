@@ -217,6 +217,11 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	defer l.mu.Unlock()
 	old := l.published()
 	h := n.computeHead(l, l.selector)
+	// A fall through an unknown Ceiling counts at its first known value.
+	h.CeilingPeak, h.CeilingFellAt = max(old.CeilingPeak, h.Ceiling), old.CeilingFellAt
+	if h.Ceiling > 0 && h.Ceiling < old.CeilingPeak && (old.Ceiling == 0 || h.Ceiling < old.Ceiling) {
+		h.CeilingFellAt = time.Now()
+	}
 	left, joined := ballotChange(l.voters, l.ballot)
 	l.voters, l.ballot = l.ballot, l.voters
 	if h == *old {

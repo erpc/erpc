@@ -877,9 +877,12 @@ func (t *ChainTracker) head() *chainHeader {
 // and for the network-wide tracker every header whose timestamp is within
 // maxBackfill of ref's. A header without a timestamp gets the floor only.
 func (t *ChainTracker) holds(ref, h *chainHeader) bool {
-	if h.number+uint64(t.window) >= ref.number {
-		return true
-	}
+	return h.number+uint64(t.window) >= ref.number || t.backfills(ref, h)
+}
+
+// backfills reports whether h's timestamp lies within maxBackfill at or
+// below ref's, on the network-wide tracker.
+func (t *ChainTracker) backfills(ref, h *chainHeader) bool {
 	return t.backfill > 0 && h.timestamp > 0 && ref.timestamp >= h.timestamp &&
 		time.Duration(ref.timestamp-h.timestamp)*time.Second <= t.backfill
 }
@@ -1814,8 +1817,10 @@ func (t *ChainTracker) finalThrough(hs []*chainHeader, fin int64) (through uint6
 // hash vote is on the new pins has its latest counter lowered to that
 // vote's height where the counter is above it (votes), so Latest follows
 // the rewound chain on every instance. Every other voter is owed the
-// rewind once a fresh vote of its reaches the pins (due, rewindLate): a
-// vote from before a gap is no evidence.
+// rewind once a fresh vote of its reaches the pins (due, rewindLate),
+// whether or not it held a vote at the switch: a polled voter's next
+// poll is its first evidence of the new branch, and its own poll never
+// lowers its counter (§19 C16). A vote from before a gap is no evidence.
 func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) (votes map[string]int64, due map[string]bool) {
 	votes, due = make(map[string]int64, len(t.votes)), make(map[string]bool)
 	for u, nd := range t.votes {
@@ -1825,10 +1830,16 @@ func (t *ChainTracker) rewindVoters(pathAt func(uint64) *chainHeader) (votes map
 			due[u] = true
 		}
 	}
-	for u := range t.pending {
+	owe := func(u string) {
 		if _, written := votes[u]; !written {
 			due[u] = true
 		}
+	}
+	for u := range t.pending {
+		owe(u)
+	}
+	for _, u := range t.voters.Voters {
+		owe(u)
 	}
 	return votes, due
 }
@@ -1922,9 +1933,11 @@ func (t *ChainTracker) RevertedFinal(n int64) bool {
 }
 
 // evict drops every held header outside its tree's window (keeps), every
-// tree above the head that holds no vote or awaited answer, and the
-// receipts of blocks more than reorgWindow below the head. The floor of
-// reorgWindow blocks stays through a chain halt.
+// tree above the head that holds no vote or awaited answer, unless its
+// top's timestamp is within the window (§9): the branch a re-anchor down
+// left, which a tap whose cursor it holds must read to its end (§10.1),
+// and the receipts of blocks more than reorgWindow below the head. The
+// floor of reorgWindow blocks stays through a chain halt.
 func (t *ChainTracker) evict() {
 	ref := t.windowRef()
 	if ref == nil {
@@ -1934,16 +1947,16 @@ func (t *ChainTracker) evict() {
 	var voted map[*node]bool
 	var out []*node
 	for r := range t.exts {
+		var top *chainHeader
+		if r != pinRoot {
+			top = t.treeTop(r)
+		}
 		unvotedAbove := false
-		if head != nil && r != pinRoot && r.h.number > head.number {
+		if head != nil && r != pinRoot && r.h.number > head.number && !t.backfills(head, top) {
 			if voted == nil {
 				voted = t.rootsHolding(true)
 			}
 			unvotedAbove = !voted[r]
-		}
-		var top *chainHeader
-		if r != pinRoot {
-			top = t.treeTop(r)
 		}
 		t.walkTree(r, func(n *node) {
 			if unvotedAbove || !t.keeps(top, n.h, r == pinRoot) {
@@ -2359,6 +2372,29 @@ func (t *ChainTracker) finalizedHead() (fin int64) {
 	return fin
 }
 
+// ceilingLeft reports whether a cursor at number n names a height
+// upstreams reported and no longer do (spec §10.1, §19 C16): at or below
+// the highest network-wide ceiling this instance saw, and that ceiling has
+// stood below n for W since its last fall; since a fall it only rose, so
+// it stayed below n. A cursor above every height seen waits (§19 D3).
+// Until then, wait is when to look again, 0 while no fall can end it. The
+// network-wide Head is published, so this takes no lock the tracker holds.
+func (t *ChainTracker) ceilingLeft(n uint64) (left bool, wait time.Duration) {
+	nw, ok := t.network.(common.EvmNetwork)
+	if !ok {
+		return false, 0
+	}
+	var h common.EvmHead
+	t.callNetwork("network-ceiling", func() { h = nw.EvmLaneHead("", "") })
+	if h.Ceiling <= 0 || n <= uint64(h.Ceiling) || n > uint64(h.CeilingPeak) || h.CeilingFellAt.IsZero() {
+		return false, 0
+	}
+	if wait = time.Until(h.CeilingFellAt.Add(t.W())); wait > 0 {
+		return false, wait
+	}
+	return true, 0
+}
+
 // callNetwork runs a call into the network's head code from the tracker's
 // goroutine. A panic there is counted and dropped, so it never fails the
 // message being handled: a bug outside the tracker would otherwise reset it
@@ -2547,7 +2583,8 @@ func (t *ChainTracker) HashVoting() bool {
 //   - c held in another tree: a wait while fill may link it; out of range
 //     once that tree's fill ended and the pins' fill ended or passed
 //     below it;
-//   - c not held, above the head: a wait for the head;
+//   - c not held, above the head: a wait for the head; out of range once
+//     c names a height upstreams reported and no longer do (ceilingLeft);
 //   - c not held, inside the window: a wait for fill down to c.Number,
 //     then c fetched by hash: found, it is held and filled as above, or
 //     out of range when the window no longer holds it; null from every
@@ -2593,6 +2630,16 @@ func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, o indexer.Rea
 		}
 		var retry <-chan time.Time
 		var receipts <-chan struct{}
+		var ceiling <-chan time.Time
+		if step == readWaitHead {
+			left, wait := t.ceilingLeft(c.Number)
+			if left {
+				return indexer.Batch{}, indexer.OutOfRangeError{Reason: indexer.OutOfRangeCursorUnknown}
+			}
+			if wait > 0 {
+				ceiling = time.After(wait)
+			}
+		}
 		if m := rr.missing; m != nil && m != stalled {
 			if job == nil || job.h != m {
 				t.leaveJob(job)
@@ -2624,6 +2671,7 @@ func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, o indexer.Rea
 			stalled = nil
 		case <-trees:
 		case <-retry:
+		case <-ceiling:
 		case <-receipts:
 			if job.res != nil {
 				rr.got[job.h.hash] = job.res
@@ -2669,6 +2717,7 @@ type readStep uint8
 const (
 	readWaitPins  readStep = iota // until the pins change
 	readWaitTrees                 // until the pins or the held trees change
+	readWaitHead                  // as readWaitTrees, c not held, above the head
 	readWaitFill                  // as readWaitTrees, while fill may place c
 	readFetch                     // fetch c by hash
 )
@@ -2700,7 +2749,7 @@ func (t *ChainTracker) readAt(s *feedState, tr *treeState, c indexer.Cursor, rr 
 		return t.revert(s, tr, held, rr)
 	}
 	if c.Number > head.number {
-		return indexer.Batch{}, readWaitTrees, nil
+		return indexer.Batch{}, readWaitHead, nil
 	}
 	if c.Number < s.base {
 		return indexer.Batch{}, readWaitFill, nil
@@ -2774,38 +2823,46 @@ func (t *ChainTracker) applied(s *feedState, from uint64, rr *readReceipts) inde
 // parent of the lowest pin, the fork point: h's branch reverts down to it
 // and the confirmed pins above it apply. A branch that only extends the
 // head, or a fork point at or above the confirmed head, waits instead. Or
-// it meets its tree's root: unlinked.
+// it meets its tree's root: unlinked, which sends nothing, so it waits on
+// no receipts of the branch (spec §10.1).
 func (t *ChainTracker) revert(s *feedState, tr *treeState, h *chainHeader, rr *readReceipts) (indexer.Batch, readStep, error) {
-	var reverted []indexer.Block
+	var branch []*chainHeader
+	var from uint64
 	for x := h; ; {
+		branch = append(branch, x)
+		p := s.pinAt(x.number - 1)
+		if x.number == s.base && x.parentHash == s.pins[0].parentHash {
+			from = s.base
+			break
+		}
+		if x.number == 0 {
+			return t.unlinked(tr, x)
+		}
+		if p != nil && p.hash == x.parentHash {
+			from = p.number + 1
+			break
+		}
+		parent := t.heldHeader(x.parentHash)
+		if parent == nil || parent.number+1 != x.number {
+			return t.unlinked(tr, x)
+		}
+		x = parent
+	}
+	reverted := make([]indexer.Block, 0, len(branch))
+	for _, x := range branch {
 		blk := x.block()
 		if rr.lacks(t, x, &blk) {
 			rr.missing = x
 			return indexer.Batch{}, readWaitPins, nil
 		}
 		reverted = append(reverted, blk)
-		var b indexer.Batch
-		switch p := s.pinAt(x.number - 1); {
-		case x.number == s.base && x.parentHash == s.pins[0].parentHash:
-			b = t.applied(s, s.base, rr)
-		case x.number == 0:
-			return t.unlinked(tr, x)
-		case p != nil && p.hash == x.parentHash:
-			b = t.applied(s, p.number+1, rr)
-		default:
-			parent := t.heldHeader(x.parentHash)
-			if parent == nil || parent.number+1 != x.number {
-				return t.unlinked(tr, x)
-			}
-			x = parent
-			continue
-		}
-		if len(b.Applied) == 0 {
-			return indexer.Batch{}, readWaitPins, nil
-		}
-		b.Reverted = reverted
-		return b, readWaitPins, nil
 	}
+	b := t.applied(s, from, rr)
+	if len(b.Applied) == 0 {
+		return indexer.Batch{}, readWaitPins, nil
+	}
+	b.Reverted = reverted
+	return b, readWaitPins, nil
 }
 
 // unlinked is a held cursor whose tree, rooted at root, does not hold the

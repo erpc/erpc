@@ -64,6 +64,12 @@ type EvmHead struct {
 	// taken: a poll's send time, a push's receive time; zero while one has
 	// none.
 	OldestReportAt time.Time
+	// CeilingPeak is the highest Ceiling this instance published for the
+	// lane, and CeilingFellAt when Ceiling last fell below the one before
+	// it: a cursor between the two heights names a block no upstream
+	// reports any more (spec §10.1, §19 C16).
+	CeilingPeak   int64
+	CeilingFellAt time.Time
 }
 
 // HeadRule is the refusal rule's row for block N on a request (spec §6.4).

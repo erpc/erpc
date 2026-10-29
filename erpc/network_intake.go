@@ -225,7 +225,7 @@ func (in *networkIntake) header(upstreamId string, sh evm.SourceHeader, kind evm
 	in.mu.Lock()
 	path := in.last[upstreamId]
 	current := len(path) > 0 && path[len(path)-1].cur == cur
-	behind := current || !fresh && !path.moves(cur, sh.Parent())
+	behind := current || !fresh && !path.moves(sh)
 	in.mu.Unlock()
 	if behind {
 		// After a reconnect the first header is the current vote; on a
@@ -377,10 +377,12 @@ func (in *networkIntake) upstream(id string) *upstream.Upstream {
 	return nil
 }
 
-// voteLink is one accepted header of an upstream.
+// voteLink is one accepted header of an upstream; ts is its timestamp, 0
+// when it carries none.
 type voteLink struct {
 	cur    indexer.Cursor
 	parent [32]byte
+	ts     int64
 }
 
 // voteLinksKept bounds the path of accepted headers kept per upstream.
@@ -391,12 +393,15 @@ const voteLinksKept = 64
 // proves no reorg below it.
 type votePath []voteLink
 
-// moves reports whether cur, child of parent, moves the vote: it is above
-// the vote, or a rewind, a lower header where the path holds another hash
-// or whose parent breaks the path's ancestry. Its vote or an ancestor of it
-// never moves the vote back (spec §6.5 rule 3), nor does a lower header the
-// path says nothing about, such as a lagging poll's across a gap.
-func (p votePath) moves(cur indexer.Cursor, parent [32]byte) bool {
+// moves reports whether sh moves the vote: it is above the vote, or a
+// rewind, a lower header where the path holds another hash, whose parent
+// breaks the path's ancestry, or whose timestamp is later than the vote's,
+// which no ancestor's is: a testnet reset restarts the chain far below
+// every path. Its vote or an ancestor of it never moves the vote back
+// (spec §6.5 rule 3), nor does a lower header the path cannot place, such
+// as a lagging poll's across a gap.
+func (p votePath) moves(sh evm.SourceHeader) bool {
+	cur, parent := sh.Cursor(), sh.Parent()
 	if len(p) == 0 || cur.Number > p[len(p)-1].cur.Number {
 		return true
 	}
@@ -417,19 +422,20 @@ func (p votePath) moves(cur indexer.Cursor, parent [32]byte) bool {
 			other = other || l.cur.Hash != parent
 		}
 	}
-	return other
+	vote := p[len(p)-1]
+	return other || vote.ts > 0 && sh.Timestamp() > vote.ts
 }
 
-// with is p with cur, child of parent, as its vote: links at or above cur
-// go (a rewind), and so does the link below it that names another hash
-// than parent.
-func (p votePath) with(cur indexer.Cursor, parent [32]byte) votePath {
+// with is p with sh as its vote: links at or above it go (a rewind), and
+// so does the link below it that names another hash than its parent.
+func (p votePath) with(sh evm.SourceHeader) votePath {
+	cur, parent := sh.Cursor(), sh.Parent()
 	i, _ := slices.BinarySearchFunc(p, cur.Number, func(l voteLink, n uint64) int { return cmp.Compare(l.cur.Number, n) })
 	p = p[:i]
 	if n := len(p); n > 0 && p[n-1].cur.Number+1 == cur.Number && p[n-1].cur.Hash != parent {
 		p = p[:n-1]
 	}
-	p = append(p, voteLink{cur, parent})
+	p = append(p, voteLink{cur, parent, sh.Timestamp()})
 	if over := len(p) - voteLinksKept; over > 0 {
 		p = slices.Delete(p, 0, over)
 	}
@@ -447,10 +453,10 @@ func (in *networkIntake) accept(upstreamId string, sh evm.SourceHeader, onlyNewe
 	if n := len(path); n > 0 && (path[n-1].cur == cur || onlyNewer && cur.Number <= path[n-1].cur.Number) {
 		return false
 	}
-	if !fresh && !path.moves(cur, sh.Parent()) {
+	if !fresh && !path.moves(sh) {
 		return false
 	}
-	in.last[upstreamId] = path.with(cur, sh.Parent())
+	in.last[upstreamId] = path.with(sh)
 	return true
 }
 
