@@ -2372,6 +2372,29 @@ func (t *ChainTracker) finalizedHead() (fin int64) {
 	return fin
 }
 
+// ceilingLeft reports whether a cursor at number n names a height
+// upstreams reported and no longer do (spec §10.1, §19 C16): at or below
+// the highest network-wide ceiling this instance saw, and that ceiling has
+// stood below n for W since its last fall; since a fall it only rose, so
+// it stayed below n. A cursor above every height seen waits (§19 D3).
+// Until then, wait is when to look again, 0 while no fall can end it. The
+// network-wide Head is published, so this takes no lock the tracker holds.
+func (t *ChainTracker) ceilingLeft(n uint64) (left bool, wait time.Duration) {
+	nw, ok := t.network.(common.EvmNetwork)
+	if !ok {
+		return false, 0
+	}
+	var h common.EvmHead
+	t.callNetwork("network-ceiling", func() { h = nw.EvmLaneHead("", "") })
+	if h.Ceiling <= 0 || n <= uint64(h.Ceiling) || n > uint64(h.CeilingPeak) || h.CeilingFellAt.IsZero() {
+		return false, 0
+	}
+	if wait = time.Until(h.CeilingFellAt.Add(t.W())); wait > 0 {
+		return false, wait
+	}
+	return true, 0
+}
+
 // callNetwork runs a call into the network's head code from the tracker's
 // goroutine. A panic there is counted and dropped, so it never fails the
 // message being handled: a bug outside the tracker would otherwise reset it
@@ -2543,7 +2566,8 @@ func (t *ChainTracker) HashVoting() bool {
 //   - c held in another tree: a wait while fill may link it; out of range
 //     once that tree's fill ended and the pins' fill ended or passed
 //     below it;
-//   - c not held, above the head: a wait for the head;
+//   - c not held, above the head: a wait for the head; out of range once
+//     c names a height upstreams reported and no longer do (ceilingLeft);
 //   - c not held, inside the window: a wait for fill down to c.Number,
 //     then c fetched by hash: found, it is held and filled as above, or
 //     out of range when the window no longer holds it; null from every
@@ -2589,6 +2613,16 @@ func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, o indexer.Rea
 		}
 		var retry <-chan time.Time
 		var receipts <-chan struct{}
+		var ceiling <-chan time.Time
+		if step == readWaitHead {
+			left, wait := t.ceilingLeft(c.Number)
+			if left {
+				return indexer.Batch{}, indexer.OutOfRangeError{Reason: indexer.OutOfRangeCursorUnknown}
+			}
+			if wait > 0 {
+				ceiling = time.After(wait)
+			}
+		}
 		if m := rr.missing; m != nil && m != stalled {
 			if job == nil || job.h != m {
 				t.leaveJob(job)
@@ -2620,6 +2654,7 @@ func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, o indexer.Rea
 			stalled = nil
 		case <-trees:
 		case <-retry:
+		case <-ceiling:
 		case <-receipts:
 			if job.res != nil {
 				rr.got[job.h.hash] = job.res
@@ -2665,6 +2700,7 @@ type readStep uint8
 const (
 	readWaitPins  readStep = iota // until the pins change
 	readWaitTrees                 // until the pins or the held trees change
+	readWaitHead                  // as readWaitTrees, c not held, above the head
 	readWaitFill                  // as readWaitTrees, while fill may place c
 	readFetch                     // fetch c by hash
 )
@@ -2696,7 +2732,7 @@ func (t *ChainTracker) readAt(s *feedState, tr *treeState, c indexer.Cursor, rr 
 		return t.revert(s, tr, held, rr)
 	}
 	if c.Number > head.number {
-		return indexer.Batch{}, readWaitTrees, nil
+		return indexer.Batch{}, readWaitHead, nil
 	}
 	if c.Number < s.base {
 		return indexer.Batch{}, readWaitFill, nil
