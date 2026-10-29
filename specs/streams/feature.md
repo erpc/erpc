@@ -54,7 +54,7 @@ flowchart LR
 | Event encoding | `erpc/stream_events.go` | control message JSON, shared by ws and SSE |
 | Encoders | `erpc/ws_stream.go`, `erpc/sse_stream.go`, `erpc/grpc_stream_*.go` | wire framing, write deadlines, wire end signals |
 | Final hold | `architecture/evm/chain_tracker.go` | headers from `Finalized` up while a final tap is registered (§4) |
-| `Head.Safe` | `erpc/networks.go`, `common/served_tip.go` | safe ballot (§4) |
+| `Head.Safe` | `erpc/networks.go`, `common/served_tip.go` | safe ballot, computed only while a `safe` tap is registered (§4) |
 | Min block | `erpc/networks.go` (request path) | §9 wait |
 
 - `runNewHeads`, `runLogs` and `StreamBlocks`' emit loop become the session plus three encoders: standard ws subscriptions run the same session with the legacy defaults of §5.4.
@@ -157,9 +157,11 @@ flowchart LR
 - `indexer.ReadOpts.HoldFinalized bool`: while a tap with it is registered (`Want`), the network-wide window also holds every header from `Head.Finalized` up, and fill extends down to it (class 3, CT§8). At most 20,000 headers below the time window (`finalHold`); past that, final subscribes are refused `-32005` / `RESOURCE_EXHAUSTED` (`finality_span`) and open final taps end `out_of_range` (`finality_span`).
   - Why: on eth `Finalized` trails head by 64+ blocks (12.8+ min); the default window is 5 min (CT§16). Without it every eth final tap would be `below_window`.
   - Receipts below `reorgWindow` stay unheld: a final logs Read fetches them by hash (class 3), single-flight, so taps at the same frontier share one fetch (CT§8, §10.1).
-- `Head.Safe`: the `Finalized` ballot over voters' `safe` numbers, polled with each finalized refresh; never below `Finalized`; a voter whose `safe` tag is refused has no safe vote; no safe vote → `Safe = Finalized`. `evm.safeBlockSource` set → only that source's number.
+- `Head.Safe`, demand-driven: voters' `safe` tags are polled only while a `safe` tap is registered on the network, with that tap's finalized refreshes; with none open, no `safe` poll runs and `Head.Safe` is not computed.
+  - Ballot: as `Finalized`, over voters' `safe` numbers; never below `Finalized`; a voter whose `safe` tag is refused has no safe vote; no safe vote → `Safe = Finalized`. `evm.safeBlockSource` set → only that source's number.
+  - The first `safe` tap starts a finalized refresh and waits for its safe ballot, at most W, before its start is fixed.
 - ws `logs` `removed_unsent` invariant: a removed log is a sent log, or a log of a block at or below the tap's start cursor (sent in an earlier connection).
-- `erpc_tap_out_of_range_total` becomes `erpc_tap_end_total` (§13): one home for every end.
+- `erpc_tap_end_total{reason,detail}` replaces `erpc_tap_out_of_range_total` in erpc#1335, before its release (plan prerequisite); §13 is the target label set.
 
 ## 5. ws extended
 
@@ -192,7 +194,7 @@ Data stays `eth_subscription` with the standard payload. Control messages use me
 {"jsonrpc":"2.0","method":"erpc_subscription","params":{"subscription":"0x9cef…","result":{"type":"end","reason":"out_of_range","detail":"below_window","oldest":{"number":"0x1406e10","hash":"0x3e2f…"}}}}
 ```
 
-- Numbers are hex quantities, as JSON-RPC. `safe` is absent when `Safe = Finalized` by default.
+- Numbers are hex quantities, as JSON-RPC. `safe` is absent while `Head.Safe` is not computed (§4).
 - After `end` the subscription is gone; `eth_unsubscribe` of it answers `false`; the connection stays.
 - `geth` mode on heads: each new-branch head, as CT§10.2; `undo` mode: `undo`, then the new branch from fork point + 1.
 
@@ -217,7 +219,7 @@ Data stays `eth_subscription` with the standard payload. Control messages use me
 | Enable | `server.sse.enabled` (default `false`, like ws) |
 | Errors before the stream | HTTP status with a JSON-RPC error body: 400 bad option, 401/403 auth, 429 limit, 503 no source |
 
-Response headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`; `Content-Encoding: gzip` when the request accepts it.
+Response headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`; `Content-Encoding: gzip` only when the request sends `Accept-Encoding: gzip`, never forced. The toolkit's SSE clients send it.
 
 Events (data is one line of compact JSON; the control objects equal the ws `result` minus `type`):
 
@@ -249,7 +251,7 @@ data: {"reason":"out_of_range","detail":"below_window","oldest":{"number":"0x140
 
 - `id` only on events that move the cursor (`block`, `logs`, `undo`); others keep the last id (WHATWG SSE).
 - `logs` is sent for every applied block, `[]` included: it is the block end.
-- Proxies: one flush per tap batch; gzip flushed with it. A heartbeat every 5–30s keeps nginx (`proxy_read_timeout` 60s) and ALB (60s) open.
+- Proxies: one flush per event; with gzip, a deflate flush per event too. A heartbeat every 5–30s keeps nginx (`proxy_read_timeout` 60s) and ALB (60s) open.
 - Deadlines: the stream bypasses `TimeoutHandler` (`server.maxTimeout`, 150s) and the server `WriteTimeout` (120s): each write sets its own 10s deadline (`http.ResponseController`), as ws writes do.
 - Verbatim upstream JSON is compacted once per block per encoding (CT§10.1 shared encodings).
 
@@ -330,7 +332,7 @@ message PendingTransactions {
 }
 
 message Undo { BlockRef forkPoint = 1; }
-message Heartbeat { BlockRef head = 1; uint64 finalized = 2; uint64 safe = 3; }
+message Heartbeat { BlockRef head = 1; uint64 finalized = 2; uint64 safe = 3; } // safe 0 while Head.Safe is not computed
 message StreamStatus {
   enum State { STATE_OK = 0; STATE_DEGRADED = 1; STATE_LAGGING = 2; }
   State state = 1;
@@ -420,7 +422,7 @@ err := streams.Run(ctx, streams.Config{
 }, streams.Handler{Apply: apply, Undo: undo, Status: status})
 ```
 
-- `run` / `Run` return only on stop or a terminal end: `OutOfRangeError{Cursor, Oldest}`, `FinalRevertedError`, auth or option errors.
+- `run` / `Run` return only on stop or a terminal end: `OutOfRangeError{Cursor, Oldest}`, `FinalRevertedError`, auth or option errors. No backfill helper: backfill older than the window is "never".
 - The cursor is saved after `apply` or `undo` returns without error: at-least-once; `Log.Key()` = `blockHash:logIndex`.
 - The library always asks for `undo` (or `none` with `finalized`), so apps see one reorg shape on every transport.
 - Pending: `apply` gets a transaction batch; no cursor, no `undo`.
@@ -440,7 +442,7 @@ err := streams.Run(ctx, streams.Config{
 ### 10.5 Guide
 
 - One page: `docs/pages/operation/streams-integration.mdx`; the docs build emits `/operation/streams-integration.llms.txt` (`docs/scripts/build-llms.mjs`), and both packages ship that file as `INTEGRATION.md`.
-- Written for a coding agent: choose transport and finality (table), install, cursor store, `apply` idempotency, `undo`, merge, out-of-range handling (stop, alert, backfill with `eth_getLogs` + `X-ERPC-Min-Block`, resubscribe), and a check list.
+- Written for a coding agent: choose transport and finality (table), install, cursor store, `apply` idempotency, `undo`, merge, out-of-range handling (the library ends with the cursor and the oldest held block; neither eRPC nor the library backfills older than the window), and a check list.
 - Every code block in it is a file under each package's `examples/`, compiled and run by the toolkit tests (§14 T7).
 
 ## 11. Limits
@@ -478,7 +480,7 @@ No other key: every other bound is a constant (§11).
 
 | Metric | Change |
 |---|---|
-| `erpc_tap_end_total{project,network,transport,kind,reason}` | new; replaces `erpc_tap_out_of_range_total`; reason: `below_window`, `fork_left_window`, `cursor_unknown`, `receipts_timeout`, `reorg_depth`, `finality_span`, `lag`, `stalled`, `final_reverted`, `draining`, `slow_client`, `client` |
+| `erpc_tap_end_total{project,network,transport,kind,reason,detail}` | lands in erpc#1335, replacing `erpc_tap_out_of_range_total`; reason: `out_of_range`, `lagging`, `stalled`, `final_reverted`, `draining`, `slow_client`, `client`; detail: the out-of-range cause (`below_window`, `fork_left_window`, `cursor_unknown`, `receipts_timeout`, `reorg_depth`, `finality_span`), `lag`, else empty. Streams PRs add reasons only |
 | `erpc_stream_messages_total{project,network,transport,kind,type}` | new; type: `data`, `removed`, `undo`, `block_end`, `heartbeat`, `status`, `end` |
 | `erpc_stream_bytes_total{project,network,transport,kind}` | new: bytes written after compression |
 | `erpc_stream_resume_total{project,network,transport,kind,outcome}` | new; outcome: `replayed`, `at_head`, `out_of_range` |
@@ -487,7 +489,7 @@ No other key: every other bound is a constant (§11).
 | `erpc_tap_delivery_seconds{transport,kind,finality}` | `finality` label added; measured from Ready |
 | `erpc_taps{project,network,transport,kind}` | transport `sse`; kind `newPendingTransactions` on gRPC |
 | `erpc_chain_tracker_final_hold_headers{project,network}` | new gauge: headers held for final taps below the time window |
-| `erpc_network_served_tip_block_number{…,axis}` | axis `safe` added |
+| `erpc_network_served_tip_block_number{…,axis}` | axis `safe` added, exported only while `Head.Safe` is computed |
 | `erpc_min_block_total{project,network,outcome}` | new; outcome: `ready`, `waited`, `timeout`, `future` |
 | `erpc_min_block_wait_seconds{project,network}` | new histogram |
 | `erpc_sse_rejected_total{project,reason}` | new; reason: `disabled`, `instance`, `ip`, `bad_request`, `auth` |
@@ -515,7 +517,7 @@ Run on CT§19 baseline B, extended per instance with 2 extended ws logs clients,
 | F2 | s2 | `depth:3`; reorgs 1–3 deep (CT C1), then `reorgWindow` − 1 deep (C2) | C1 never reaches the client; C2 arrives as one `undo` | no depth mode |
 | F3 | s2 | `reorg: undo` on ws logs and heads, C1 | one `undo` with the fork point, no `removed:true`; final log set canonical | no undo mode |
 | F4 | s2 | `reorg: none` without `finalized`; with `finalized` and CT C12 | `-32602`; `end` `final_reverted` | no none mode |
-| F5 | s2 | `SafeDepth` 8, `FinalityDepth` 64; one vendor refuses `safe` | delivered ≤ `Head.Safe`; `Safe` from the others; all refuse → `Safe = Finalized` | no `Head.Safe` |
+| F5 | s2 | `SafeDepth` 8, `FinalityDepth` 64; one vendor refuses `safe`; then the last `safe` tap closes | delivered ≤ `Head.Safe`; `Safe` from the others; all refuse → `Safe = Finalized`; after the close no `safe` poll reaches any vendor | no `Head.Safe` |
 | F6 | s2 | 0.2s blocks, finalized 4,000 below head; then 25,000 below | final tap fills and flows; hold gauge back to 0 when it closes; at 25,000 subscribe refused `finality_span` | `below_window` |
 | F7 | s2 | use-upstream lane trailing the network head, `depth:2` | never above min(lane `Latest`, confirmed − 2) | no composition |
 | E1 | s3 | SSE logs through a Go reverse proxy | each block's `logs` event within CT delivery bound; headers `X-Accel-Buffering: no`, `no-transform` | no SSE |
@@ -547,12 +549,11 @@ Run on CT§19 baseline B, extended per instance with 2 extended ws logs clients,
 
 - Final taps on chains with long finality fill up to 20,000 headers once per instance and network (class 3): about 5,000 fetches on a chain finalizing 20 min at 0.25s blocks `[INFERENCE]`; the first final block waits for that fill.
 - Final logs taps fetch receipts below `reorgWindow` by hash: up to one more receipts call per wanted block per instance when tip taps also run.
-- `Head.Safe` adds one `safe` poll per voter per finalized refresh.
+- `Head.Safe` costs one `safe` tag poll per voter per finalized refresh, only on networks and instances with a `safe` tap open; none otherwise.
 - SSE and gRPC logs send one message per block, empty ones included: about 0.2 KB × blocks/s per stream before gzip.
-- gzip on SSE relies on intermediaries passing flushed chunks; a buffering proxy delays events until its buffer fills.
+- gzip on SSE (only on `Accept-Encoding: gzip`) relies on intermediaries passing flushed chunks; a buffering proxy delays events until its buffer fills.
 - ws URL defaults with `reorg=undo` make standard libraries miss reorgs: they ignore `erpc_subscription`. The docs say so.
 - `StreamBlocksResponse.header` moves into a oneof: Go code that builds the message changes; readers using `GetHeader()` do not.
-- `erpc_tap_out_of_range_total` is renamed: dashboards change in the same release.
 - Resumable ws taps now end `stalled` after 60s on a lagging instance, as gRPC does.
 - Two instances can be on different branches for up to W: a merged client may see one extra `undo` per tie.
 
