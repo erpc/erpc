@@ -2461,8 +2461,9 @@ func TestServedTip_Finalized_NeverRegressesWhenTheMajorityFlips(t *testing.T) {
 // when a lagger rejoins (most voter-change dips are on two-upstream
 // networks), never a drop deeper than the regression tolerance, so a
 // far-ahead voter served alone cannot hold "finalized" up once honest heads
-// arrive; and a held value never exceeds the served "latest", the order
-// every voter's own heads keep.
+// arrive; the lane's floor and the shared one together hold at most that
+// tolerance above the computed tip; and a held value never exceeds the
+// served "latest", the order every voter's own heads keep.
 func TestServedTip_Finalized_FloorLimits(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -2525,6 +2526,39 @@ func TestServedTip_Finalized_FloorLimits(t *testing.T) {
 		require.Equal(t, int64(180), head.Latest, "the laggers are now the latest majority too")
 		assert.Equal(t, head.Latest, head.Finalized,
 			"the floor backs 201, but finalized must not pass the served latest")
+	})
+
+	t.Run("the shared floor holds only within the tolerance above the computed tip", func(t *testing.T) {
+		network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+			{id: "lead1", chainID: 123, latestBlock: 20_000},
+			{id: "lead2", chainID: 123, latestBlock: 20_000},
+			{id: "lag1", chainID: 123, latestBlock: 20_000, syncing: true},
+			{id: "lag2", chainID: 123, latestBlock: 20_000, syncing: true},
+			{id: "lag3", chainID: 123, latestBlock: 20_000, syncing: true},
+		})
+		lead, lag := ups[:2], ups[2:]
+		for _, u := range lead {
+			setServedTipFinalized(t, u, 10_900)
+		}
+		for _, u := range lag {
+			setServedTipFinalized(t, u, 10_000)
+		}
+		require.Equal(t, int64(10_900), servedHead(network, ctx).Finalized, "the syncing laggers do not vote")
+
+		lead[1].EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+		for _, u := range lag {
+			u.EvmStatePoller().SetSyncingState(common.EvmSyncingStateNotSyncing)
+		}
+		require.Equal(t, int64(10_900), servedHead(network, ctx).Finalized,
+			"the pick is 10,000: the lane's floor 900 above it holds")
+
+		// Another instance, whose voters reached 11,800, shares it; here one
+		// voter reports it too, so only the tolerance can refuse it.
+		network.servedFinalizedShared.TryUpdate(ctx, 11_800, time.Now())
+		require.Equal(t, int64(11_800), network.servedFinalizedShared.GetValue())
+		setServedTipFinalized(t, lead[0], 11_800)
+		assert.Equal(t, int64(10_900), servedHead(network, ctx).Finalized,
+			"the pick stays 10,000: the shared 11,800 is 1,800 above it, past the tolerance")
 	})
 }
 
