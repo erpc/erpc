@@ -244,8 +244,8 @@ var (
 	MetricChainTrackerSettleTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "chain_tracker_settle_total",
-		Help:      "Chain tracker settles (latest asked from upstreams that do not vote, to break a tie), by outcome (decided, undecided).",
-	}, []string{"project", "network", "outcome"})
+		Help:      "Chain tracker settle rounds, by why they started (tie, dispute, fork, recheck) and outcome (decided, undecided).",
+	}, []string{"project", "network", "reason", "outcome"})
 
 	MetricChainTrackerFetchTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",

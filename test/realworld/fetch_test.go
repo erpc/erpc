@@ -310,17 +310,17 @@ func awaitRefusalsEnd(s *scenario, v *chainsim.Vendor) (first, last time.Time, n
 
 // C4: two wss voters and one https voter. ws-b moves to a sibling of the
 // next block and stays on that branch for c4SplitBlocks, so the wss voters
-// split 1-vs-1 at every height. Settles ask http-c, which serves the
+// split 1-vs-1 at every height. Tie settles ask http-c, which serves the
 // canonical branch: only the settled hash is sent (§19 C4; §6.5 ties
 // settle; §6.8 settle asks voters without a fresh hash vote, then
-// non-voters).
+// non-voters; §17 settle reason).
 func c4() spec {
 	return spec{name: "C4", bound: settleDelivery,
 		vendors: []vendorSpec{{"ws-a", "vendor-a", true}, {"ws-b", "vendor-b", true}, {"http-c", "vendor-c", false}},
 		body: func(s *scenario) {
 			s.blocks(25)
 			decided := make([]float64, len(s.h.pods))
-			outcome := map[string]string{"outcome": "decided"}
+			outcome := map[string]string{"reason": "tie", "outcome": "decided"}
 			for pod := range s.h.pods {
 				decided[pod], _ = s.metric(pod, "erpc_chain_tracker_settle_total", outcome)
 			}
@@ -337,7 +337,7 @@ func c4() spec {
 			s.requireNoMinorityDelivered()
 			for pod := range s.h.pods {
 				if v, _ := s.metric(pod, "erpc_chain_tracker_settle_total", outcome); v <= decided[pod] {
-					s.violate(s.name, "pod-%d: erpc_chain_tracker_settle_total{decided} stayed %v through %d split heights", pod+1, v, c4SplitBlocks)
+					s.violate(s.name, "pod-%d: erpc_chain_tracker_settle_total{reason=tie,outcome=decided} stayed %v through %d split heights", pod+1, v, c4SplitBlocks)
 				}
 			}
 		}}

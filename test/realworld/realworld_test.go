@@ -97,6 +97,9 @@ func catalogue() []phaseSpec {
 		{"pruned", 12701, []spec{u20(true), u20(false)}},
 		{"p12", 12801, []spec{p12()}},
 		{"p13", 12901, []spec{p13()}},
+		{"z1", 13001, []spec{z1()}},
+		{"z2", 13051, []spec{z2()}},
+		{"z3", 13101, []spec{z3()}},
 	}
 }
 

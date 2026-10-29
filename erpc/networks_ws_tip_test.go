@@ -454,9 +454,11 @@ func TestNetworkIntake_PolicyExcludedUpstreamNeverReachesClients(t *testing.T) {
 	assert.Equal(t, int64(1002), servedHead(network, ctx).Latest)
 }
 
-// With failover on, a fallback's head votes only while no eligible primary
-// leads as a live source. Its own poller sees every head regardless. A
-// primary leads at once here; the 60s lead runs in TestWebSocket_FallbackPollsUntilPrimaryLeads.
+// With failover on, a fallback's topics are held while an eligible primary
+// leads as a live source (§6.2, #836); its head still votes, as every
+// voter's does (no tier filter on votes), and its own poller sees every
+// head. A primary leads at once here; the 60s lead runs in
+// TestWebSocket_FallbackPollsUntilPrimaryLeads.
 func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 	prevLead := primaryLeadAfter.Load()
 	primaryLeadAfter.Store(0)
@@ -482,12 +484,20 @@ func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 		defer cancel()
 		network, ups := setup(t, ctx, true)
 
+		// The primary's head is pinned in a batch of its own: in one batch
+		// with the fallback's, the two tie with nothing pinned, and rule 4
+		// takes the higher root.
 		network.intake.Polled("primary-2", polledHead(t, "a", 1000), nil, evm.HeaderStreamed, time.Now())
+		eventuallyPinned(t, network, 1000, "the primary's head pins")
 		network.intake.Polled("fallback-1", polledHead(t, "b", 1010), nil, evm.HeaderStreamed, time.Now())
 		assert.Equal(t, int64(1010), ups["fallback-1"].EvmStatePoller().LatestBlock(),
 			"the fallback's poller still sees its head")
 		time.Sleep(100 * time.Millisecond)
-		assert.Less(t, pinned(network), int64(1010), "a held head must not vote")
+		assert.Equal(t, int64(1000), pinned(network), "a 1-vs-1 tie keeps the pins (rule 4)")
+		// The fixture runs no reconciler; its pass is admit.
+		network.intake.admit(time.Now(), network.chainTracker.W())
+		assert.True(t, network.intake.admits("primary-2"), "the primary's topics are admitted")
+		assert.False(t, network.intake.admits("fallback-1"), "the fallback's topics stay held while the primary streams")
 
 		network.intake.Polled("primary-2", polledHead(t, "a", 1001), nil, evm.HeaderStreamed, time.Now())
 		eventuallyLatest(t, ctx, network, 1001, "the primary's head lifts latest")
@@ -808,10 +818,11 @@ func TestNetworkIntake_HeldHashVoteNeedPollsVotersBelowThePin(t *testing.T) {
 }
 
 // A 1-block reorg leaves a healthy HTTP voter's last vote, polled up to 30s
-// ago, on the old branch. The tracker polls it at once; its answer is on
-// the new branch, so it is never demoted. Then a reorg to a shorter branch:
-// the voter's vote, polled across a gap, has no header at the new head's
-// height, so only the fork poll's answer shows that its node moved.
+// ago, on the old branch. No tap reads this tracker, so it does not walk:
+// the new branch is a root of its own, and the voter's vote, below the
+// pins' first block, is no fork evidence (§6.3): no fork poll, never
+// demoted. Then a reorg to a shorter branch: the voter's next poll answer,
+// lower than its vote, moves it.
 func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -846,7 +857,7 @@ func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
 		require.False(t, network.isForkDemoted(byId["z-http"]), "a healthy poller whose last vote a reorg left behind is never demoted")
 		time.Sleep(20 * time.Millisecond)
 	}
-	assert.Greater(t, httpVendor.latestPolls.Load(), polled, "the tracker polled the voter whose vote left the pins")
+	assert.Equal(t, polled, httpVendor.latestPolls.Load(), "a vote below the pins' first block is no fork evidence: no fork poll")
 
 	for range 3 {
 		chain.advance()

@@ -1632,7 +1632,7 @@ func (s *chaosSeed) split() {
 	s.httpB.Update(func(f *chainsim.Faults) { f.Down = true })
 	s.httpA.Update(func(f *chainsim.Faults) { f.Held = true })
 	s.blocks(int(health.FreshnessWindow(chaosBlock)/chaosBlock) + 2)
-	settled := telemetry.MetricChainTrackerSettleTotal.WithLabelValues("test_ws", "evm:123", "decided")
+	settled := telemetry.MetricChainTrackerSettleTotal.WithLabelValues("test_ws", "evm:123", "tie", "decided")
 	before := testutil.ToFloat64(settled)
 	// ws-b's sibling of the next canonical block, pushed as it lands.
 	canon, f := s.chain.StartSplit(s.wsB)

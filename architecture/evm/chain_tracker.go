@@ -1426,20 +1426,23 @@ func (t *ChainTracker) decidedAnswers(base []voter) []voter {
 	return t.settleAnswers(s, base)
 }
 
-// choose moves the pins to rule 4's path; a tie, or a no-source answer
-// that conflicts with the pins, starts a settle round when one may start.
+// choose moves the pins to rule 4's path; a tie on a tracker that walks,
+// or a no-source answer that conflicts with the pins, starts a settle
+// round when one may start. A tracker that does not walk takes rule 4's
+// tie-break: its roots never link, so a tie there is the usual state of a
+// chain faster than its polls, not a fork (spec §6.5 rule 5).
 func (t *ChainTracker) choose() {
 	path, tie, conflict := t.decide()
 	if path == nil {
 		return
 	}
 	switch {
-	case len(tie) > 0:
-		if t.startDispute(t.tieKey(tie), "") {
+	case len(tie) > 0 && t.extends():
+		if t.startDispute(t.tieKey(tie), "", settleTie) {
 			return
 		}
 	case conflict:
-		if t.startDispute(t.disputeOf(t.ask.vote), t.ask.voter) {
+		if t.startDispute(t.disputeOf(t.ask.vote), t.ask.voter, settleDispute) {
 			return
 		}
 	}
@@ -3778,8 +3781,9 @@ func (nt *networkTrackers) get(n common.Network, groupKey, selector, lane string
 // ClientRequested starts n's state probes and an integrity follow tap per
 // tracker at the network's first client request, as main started its
 // follower and prober, and keeps them on (spec §6.11 Probe, §13): an idle
-// network sends no follow Asks and no probes. Every client request calls
-// it; after the first it reads one atomic.
+// network sends no follow Asks and no probes, and its trackers serve no
+// history for its integrity checks (readServed), so they walk nothing.
+// Every client request calls it; after the first it reads one atomic.
 func ClientRequested(n common.Network) {
 	nt := registeredTrackers(n)
 	if nt == nil || nt.requested.Load() {
@@ -3802,6 +3806,9 @@ func ClientRequested(n common.Network) {
 	}
 	for _, t := range nt.groups {
 		startFollow(nt, n, t)
+		// The tracker reads that history serves it now, before the first
+		// checked answer reaches it.
+		t.mb.put(trackerMsg{kind: msgTick})
 	}
 }
 
