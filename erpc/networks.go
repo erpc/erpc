@@ -184,42 +184,64 @@ func (l *servedTipLane) anchor(finalized bool) *servedTipAnchor {
 }
 
 // holdFinalized returns the Finalized to serve for the computed tip and
-// keeps the lane's floor (spec §6.4, #1353). Finality never reverts, so a
-// lower tip while backing (the lowest highest finalized vote of the lane's
-// ballot and each constraining guarantee subset) still reaches the floor
-// means the voters changed, not the chain. Without that backing the floor
-// drops to the tip, so it never pins a block no voter reports and a voter
-// that returns later does not restore it. Only served values enter it, so
-// one voter cannot raise it. Callers hold mu: the backing is from the same
-// evaluation as the floor it is compared to.
-func (l *servedTipLane) holdFinalized(tip, backing int64) int64 {
-	if tip < l.finalizedFloor && l.finalizedFloor <= backing {
+// keeps the lane's floor, the highest Finalized it served (spec §6.4,
+// #1353). Finality never reverts, so a lower tip while backing (the lowest
+// highest finalized vote of the lane's ballot and each constraining
+// guarantee subset) still reaches the floor means the voters changed — a
+// leader left the ballot, or a lagger rejoined a lone leader — not the
+// chain. The floor holds only a drop of at most tolerance blocks: voter
+// changes move Finalized by far less, and a deeper drop is the regression
+// guard's to bound, so a far-ahead head once served alone cannot back the
+// floor on its own forever. Outside those bounds the floor drops to the
+// tip, and a voter that returns later does not restore it. Callers hold
+// mu: the backing is from the same evaluation as the floor it is compared
+// to.
+func (l *servedTipLane) holdFinalized(tip, backing, tolerance int64) int64 {
+	if tip < l.finalizedFloor && l.finalizedFloor-tip <= tolerance && l.finalizedFloor <= backing {
 		return l.finalizedFloor
 	}
 	l.finalizedFloor = tip
 	return tip
 }
 
-// shareFinalized lifts the network-wide lane's Finalized to the highest one
-// any instance served (servedFinalizedShared), so instances behind one load
-// balancer agree (spec §6.4, §14): under holdFinalized's rule, only while
-// backing still reaches it. A shared value no voter here backs is ignored
-// and ages out as the chain passes it, so a stale or rogue one cannot pin
-// this instance. A raise updates the local copy at once and publishes in
-// the background (TryUpdate), so the head computation never waits on the
-// store.
-func (n *Network) shareFinalized(tip, backing int64) int64 {
-	if n.servedFinalizedShared == nil || tip <= 0 {
-		return tip
+// finalizedFloorTolerance is the deepest drop a finalized floor holds: the
+// regression guard's tolerance (servedTip.maxRegressionBlocks), the default
+// one when the guard is off, so the two split the drops between them.
+func (n *Network) finalizedFloorTolerance() int64 {
+	if t := n.servedTipMaxRegressionBlocks(); t >= 0 {
+		return t
 	}
-	shared := n.servedFinalizedShared.GetValue()
-	switch {
-	case tip > shared:
-		n.servedFinalizedShared.TryUpdate(context.Background(), tip, time.Now())
-	case tip < shared && shared <= backing:
+	return common.DefaultToleratedBlockHeadRollback
+}
+
+// shareFinalized lifts the network-wide lane's Finalized `served` to the
+// highest one any instance served (servedFinalizedShared), so instances
+// behind one load balancer agree (spec §6.4, §14), under holdFinalized's
+// rule: at most tolerance above the `computed` tip, and only while backing
+// still reaches it. Any other shared value is ignored, and ages out as the
+// chain passes it.
+func (n *Network) shareFinalized(served, computed, backing, tolerance int64) int64 {
+	if n.servedFinalizedShared == nil || served <= 0 {
+		return served
+	}
+	if shared := n.servedFinalizedShared.GetValue(); served < shared && shared-computed <= tolerance && shared <= backing {
 		return shared
 	}
-	return tip
+	return served
+}
+
+// publishFinalized raises the shared network-wide Finalized to `served`,
+// the value this instance serves. Only raises are published: a value the
+// chain left behind stays in the counter until the chain passes it,
+// unserved by shareFinalized's tolerance bound, while publishing it down
+// would make instances whose views differ by more than the counter's
+// rollback tolerance overwrite each other on every evaluation. A raise
+// updates the local copy at once and the store in the background
+// (TryUpdate), so the head computation never waits on it.
+func (n *Network) publishFinalized(served int64) {
+	if n.servedFinalizedShared != nil && served > n.servedFinalizedShared.GetValue() {
+		n.servedFinalizedShared.TryUpdate(context.Background(), served, time.Now())
+	}
 }
 
 // servedTipAnchor tracks, per process, when the served-tip VALUE was last

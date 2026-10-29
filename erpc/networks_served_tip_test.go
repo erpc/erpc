@@ -2457,6 +2457,77 @@ func TestServedTip_Finalized_NeverRegressesWhenTheMajorityFlips(t *testing.T) {
 		"a shared value no voter backs is ignored")
 }
 
+// The finalized floor's limits (spec §6.4): it holds a lone leader's tip
+// when a lagger rejoins (most voter-change dips are on two-upstream
+// networks), never a drop deeper than the regression tolerance, so a
+// far-ahead voter served alone cannot hold "finalized" up once honest heads
+// arrive; and a held value never exceeds the served "latest", the order
+// every voter's own heads keep.
+func TestServedTip_Finalized_FloorLimits(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	t.Run("a lagger rejoining a lone leader does not pull finalized back", func(t *testing.T) {
+		network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+			{id: "lead", chainID: 123, latestBlock: 1_000},
+			{id: "lag", chainID: 123, latestBlock: 1_000, syncing: true},
+		})
+		setServedTipFinalized(t, ups[0], 201)
+		setServedTipFinalized(t, ups[1], 150)
+		require.Equal(t, int64(201), servedHead(network, ctx).Finalized, "the syncing lagger does not vote")
+
+		ups[1].EvmStatePoller().SetSyncingState(common.EvmSyncingStateNotSyncing)
+		assert.Equal(t, int64(201), servedHead(network, ctx).Finalized,
+			"the pair's pick is 150, but the leader still reports 201 finalized")
+	})
+
+	t.Run("a far-ahead voter served alone cannot hold the floor", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+			{id: "rogue", chainID: 123, latestBlock: 10_000},
+			{id: "honest1", chainID: 123, latestBlock: 10_000},
+			{id: "honest2", chainID: 123, latestBlock: 10_000},
+		})
+		setServedTipFinalized(t, ups[0], 9_000)
+		require.Equal(t, int64(9_000), servedHead(network, ctx).Finalized,
+			"the honest upstreams have no finalized head yet, so the only voter defines it")
+
+		setServedTipFinalized(t, ups[1], 500)
+		setServedTipFinalized(t, ups[2], 500)
+		advance(servedTipRegressionTTL + time.Second)
+		assert.Equal(t, int64(500), servedHead(network, ctx).Finalized,
+			"past the guard's window, a drop deeper than the tolerance is not the floor's to hold")
+	})
+
+	t.Run("a held finalized never exceeds the served latest", func(t *testing.T) {
+		network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+			{id: "lead1", chainID: 123, latestBlock: 1_000},
+			{id: "lead2", chainID: 123, latestBlock: 1_000},
+			{id: "lead3", chainID: 123, latestBlock: 1_000},
+			{id: "lag1", chainID: 123, latestBlock: 180},
+			{id: "lag2", chainID: 123, latestBlock: 180},
+		})
+		for i, u := range ups {
+			fin := int64(201)
+			if i >= 3 {
+				fin = 150
+			}
+			setServedTipFinalized(t, u, fin)
+		}
+		require.Equal(t, int64(201), servedHead(network, ctx).Finalized)
+
+		ups[2].EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+		head := servedHead(network, ctx)
+		require.Equal(t, int64(180), head.Latest, "the laggers are now the latest majority too")
+		assert.Equal(t, head.Latest, head.Finalized,
+			"the floor backs 201, but finalized must not pass the served latest")
+	})
+}
+
 // A finalized-tag request's refresh (spec §6.4 Finality, §6.8) polls every
 // voter with a finalized tag and waits for them, at most W, even when a
 // poll outlasts the shared counter's foreground budget (UpdateMaxWait); a

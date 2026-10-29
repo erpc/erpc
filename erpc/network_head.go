@@ -286,9 +286,9 @@ func ballotChange(prev, cur []string) (left, joined string) {
 // gauges, no anchor.
 func (n *Network) computeHead(l *servedTipLane, sel string) common.EvmHead {
 	h := common.EvmHead{
-		Latest:    n.laneTip(l, sel, false),
-		Finalized: n.laneTip(l, sel, true),
+		Latest: n.laneTip(l, sel, false, 0),
 	}
+	h.Finalized = n.laneTip(l, sel, true, h.Latest)
 	h.Leader = n.laneLeader(sel, h.Latest)
 	h.Ceiling, h.OldestReportAt = n.laneCeiling(sel)
 	return h
@@ -300,6 +300,8 @@ func (n *Network) computeHead(l *servedTipLane, sel string) common.EvmHead {
 // heads, clamped to every configured guarantee, held at the lane's finalized
 // floor and, network-wide, at the finalized other instances served
 // (finalized only, holdFinalized, shareFinalized), then exported on the lane.
+// latest is the lane's Latest of the same evaluation, which caps a held
+// Finalized; unused on the latest axis.
 //
 // The guard is in-process, bounded and one-directional (it can only hold the
 // tip, and only briefly), and it cannot produce a block that no live upstream
@@ -309,7 +311,7 @@ func (n *Network) computeHead(l *servedTipLane, sel string) common.EvmHead {
 // rogue value can pin, freeze or poison the result
 // (networks_served_tip_invariants_test.go pins those outcomes against
 // the frozen-tip regression).
-func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool) int64 {
+func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool, latest int64) int64 {
 	axis := "latest"
 	if finalized {
 		axis = "finalized"
@@ -354,13 +356,24 @@ func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool) int64 {
 	// Finalized floor (#1353): a change of voters, in the lane's ballot or a
 	// guarantee subset's, cannot pull "finalized" below a block this lane,
 	// or for the network-wide lane any instance, served while a voter of
-	// each still reports it. laneTip of a lane runs only under l.mu
-	// (refreshLane), so the floor and this evaluation's backing are read
-	// together.
+	// each still reports it. A floor holds only drops within the regression
+	// tolerance, so a far-ahead rogue head cannot pin it, and a held value
+	// never exceeds Latest: per voter finalized <= latest, so the pick keeps
+	// that order and the floor must too. laneTip of a lane runs only under
+	// l.mu (refreshLane), so the floor and this evaluation's backing are
+	// read together.
 	if finalized && l != nil {
-		tip = l.holdFinalized(tip, backing)
+		tolerance := n.finalizedFloorTolerance()
+		held := l.holdFinalized(tip, backing, tolerance)
 		if l == &n.servedTipAll {
-			tip = n.shareFinalized(tip, backing)
+			held = n.shareFinalized(held, tip, backing, tolerance)
+		}
+		if held > tip && latest > 0 && held > latest {
+			held = max(tip, latest)
+		}
+		tip = held
+		if l == &n.servedTipAll {
+			n.publishFinalized(tip)
 		}
 	}
 
