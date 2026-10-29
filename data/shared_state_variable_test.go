@@ -2067,7 +2067,9 @@ func TestCounterInt64_TryUpdateIfStale_AsyncResultWithinExtendedTimeoutIsApplied
 // A remote counter ahead of local by more than ignoreRollbackOf is still
 // forward progress. Reconciling under a newer local timestamp must adopt it,
 // not push the lower local value (which peers would then treat as a large
-// rollback of the head).
+// rollback of the head). Then the chain resets (§19 C16): the drop's push
+// loses the lock, the counter rises from the drop, and the older higher
+// remote state stays the branch the drop left on every path (§14).
 func TestCounterInt64_BackgroundPush_AdoptsFarAheadRemote(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -2086,8 +2088,13 @@ func TestCounterInt64_BackgroundPush_AdoptsFarAheadRemote(t *testing.T) {
 		initializer:     util.NewInitializer(ctx, &log.Logger, nil),
 	}
 
-	var setCount atomic.Int32
+	var stored atomic.Value
+	lockLost := make(chan struct{})
 	connector.On("PublishCounterInt64", mock.Anything, "test/far-ahead", mock.Anything).Return(nil).Maybe()
+	connector.On("Lock", mock.Anything, "test/far-ahead", mock.Anything).Return(lock, nil).Once()
+	connector.On("Lock", mock.Anything, "test/far-ahead", mock.Anything).
+		Run(func(mock.Arguments) { close(lockLost) }).
+		Return(nil, errors.New("lock already taken")).Once()
 	connector.On("Lock", mock.Anything, "test/far-ahead", mock.Anything).Return(lock, nil)
 	lock.On("Unlock", mock.Anything).Return(nil)
 	// Remote is 5000 ahead of local 100; gap > ignoreRollbackOf (1024).
@@ -2095,7 +2102,7 @@ func TestCounterInt64_BackgroundPush_AdoptsFarAheadRemote(t *testing.T) {
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "test/far-ahead", "value", nil).
 		Return([]byte(`{"v":5100,"t":1,"b":"peer"}`), nil)
 	connector.On("Set", mock.Anything, "test/far-ahead", "value", mock.Anything, mock.Anything).
-		Run(func(args mock.Arguments) { setCount.Add(1) }).
+		Run(func(args mock.Arguments) { stored.Store(string(args.Get(3).([]byte))) }).
 		Return(nil).Maybe()
 
 	counter := &counterInt64{
@@ -2111,7 +2118,31 @@ func TestCounterInt64_BackgroundPush_AdoptsFarAheadRemote(t *testing.T) {
 
 	assert.Eventually(t, func() bool { return counter.GetValue() == 5100 }, 2*time.Second, 20*time.Millisecond,
 		"background reconcile must adopt a far-ahead remote instead of keeping the lagging local value")
-	assert.Equal(t, int32(0), setCount.Load(), "must not overwrite remote with the lower local value")
+	assert.Nil(t, stored.Load(), "must not overwrite remote with the lower local value")
+
+	sentBeforeReset := time.Now().Add(-time.Second)
+	assert.Equal(t, int64(10), counter.TryUpdate(ctx, 10, time.Now()), "the reset is a large rollback")
+	<-lockLost
+	assert.Nil(t, stored.Load(), "the drop's push lost the lock")
+	assert.Equal(t, int64(11), counter.TryUpdate(ctx, 11, time.Now()))
+
+	if !assert.Eventually(t, func() bool { s, _ := stored.Load().(string); return s != "" }, 2*time.Second, 20*time.Millisecond,
+		"reconcile pushes the risen value over the older higher remote") {
+		t.Fatalf("counter is %d, remote never written", counter.GetValue())
+	}
+	var st CounterInt64State
+	assert.NoError(t, common.SonicCfg.Unmarshal([]byte(stored.Load().(string)), &st))
+	assert.Equal(t, int64(11), st.Value)
+	assert.Equal(t, int64(11), counter.GetValue(), "reconcile does not take back the state the drop left")
+
+	assert.False(t, counter.processNewState(UpdateSourceRemoteSync, CounterInt64State{Value: 5100, UpdatedAt: 2, UpdatedBy: "peer"}),
+		"a pubsub state stamped before the drop is the branch it left, however high")
+	assert.Equal(t, int64(11), counter.TryUpdate(ctx, 5100, sentBeforeReset),
+		"a poll sent before the drop is the branch it left")
+	assert.Equal(t, int64(11), counter.GetValue())
+	assert.True(t, counter.processNewState(UpdateSourceRemoteSync, CounterInt64State{Value: 12, UpdatedAt: counter.updatedAtMs(), UpdatedBy: "peer"}),
+		"a higher state stamped after the drop is taken whatever its timestamp")
+	assert.Equal(t, int64(12), counter.GetValue())
 }
 
 // A head counter is max-only on the pubsub path too (spec §14): after a

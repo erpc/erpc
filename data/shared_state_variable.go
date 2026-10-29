@@ -111,27 +111,21 @@ func (v *baseSharedVariable) advanceTimestampPast(remoteTs int64) {
 	}
 }
 
-// dropKind is how a head counter's value last moved down; any rise clears it.
-type dropKind int32
-
-const (
-	dropNone dropKind = iota
-	// dropRollback: a rollback larger than ignoreRollbackOf was applied.
-	dropRollback
-	// dropRewind: a rollback write (Rewind), local or remote; the state
-	// carries the rewind mark.
-	dropRewind
-)
-
-// counterState is a counter's value with how it got there, swapped as one
-// pointer so the two never disagree (spec §14). While a head counter holds
-// a drop, a higher remote state stamped no later than the local one, or a
-// local rise whose evidence predates dropAt, is the branch the drop left.
+// counterState is a counter's value with the times of its last large drop
+// or rewind, swapped as one pointer so they never disagree (spec §14). A
+// head counter keeps those times while it rises from the drop: a higher
+// state stamped before dropKey, or a local rise whose evidence predates
+// dropAt, is the branch the drop left.
 type counterState struct {
-	v    int64
-	drop dropKind
+	v int64
+	// rewind: the value is a rollback write (Rewind), local or remote; a
+	// rise clears it.
+	rewind bool
 	// dropAt is this instance's clock, unix ms, when the drop was applied.
 	dropAt int64
+	// dropKey is the drop's order key (UpdatedAt): the remote writer's
+	// stamp, or the key this instance allocated for its own drop.
+	dropKey int64
 }
 
 func (s *counterState) value() int64 {
@@ -141,9 +135,23 @@ func (s *counterState) value() int64 {
 	return s.v
 }
 
-func (s *counterState) dropped() bool { return s != nil && s.drop != dropNone }
+func (s *counterState) rewound() bool { return s != nil && s.rewind }
 
-func (s *counterState) rewound() bool { return s != nil && s.drop == dropRewind }
+// rise is the state of a rise to v: the drop's times stay.
+func (s *counterState) rise(v int64) *counterState {
+	if s == nil {
+		return &counterState{v: v}
+	}
+	return &counterState{v: v, dropAt: s.dropAt, dropKey: s.dropKey}
+}
+
+// stampedBeforeDrop: a remote state with order key ts predates the drop.
+func (s *counterState) stampedBeforeDrop(ts int64) bool { return s != nil && ts < s.dropKey }
+
+// takenBeforeDrop: local evidence taken at at predates the drop.
+func (s *counterState) takenBeforeDrop(at time.Time) bool {
+	return s != nil && at.UnixMilli() < s.dropAt
+}
 
 type counterInt64 struct {
 	baseSharedVariable
@@ -179,13 +187,20 @@ func (c *counterInt64) GetValue() int64 {
 	return c.state.Load().value()
 }
 
-// dropTo is the state of a head counter dropped to v; other counters keep
-// no drop, their decreases are ordinary (earliest, cordon, floors).
-func (c *counterInt64) dropTo(v int64, k dropKind) *counterState {
+// dropTo is the state of a head counter dropped to v; remoteTs is the
+// remote drop's order key, 0 for a local drop, whose key is the one
+// allocateUpdatedAtMs gives next. Other counters keep no drop, their
+// decreases are ordinary (earliest, cordon, floors).
+func (c *counterInt64) dropTo(v int64, rewind bool, remoteTs int64) *counterState {
 	if c.ignoreRollbackOf <= 0 {
 		return &counterState{v: v}
 	}
-	return &counterState{v: v, drop: k, dropAt: time.Now().UnixMilli()}
+	now := time.Now().UnixMilli()
+	key := remoteTs
+	if key <= 0 {
+		key = max(now, c.updatedAtMs()+1)
+	}
+	return &counterState{v: v, rewind: rewind, dropAt: now, dropKey: key}
 }
 
 // IsStale: no report and no refresh attempt within staleness, by this
@@ -219,7 +234,8 @@ func (c *counterInt64) markReported(at time.Time) {
 
 // processNewState applies a remote state (pubsub, initial fetch, reconcile).
 // Head counters (ignoreRollbackOf > 0: latest, finalized) are max-only on
-// every path: a higher value wins whatever its timestamp, a drop of up to
+// every path: a higher value wins whatever its timestamp unless it is
+// stamped before the counter's last large drop or rewind, a drop of up to
 // ignoreRollbackOf is noise, and timestamps decide only larger drops (spec
 // §14, #1243, #222). Other counters (earliest, cordon, floors) take any
 // change, in timestamp order. Each rule reads the state its CAS replaces.
@@ -256,11 +272,11 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 		}
 
 		if newVal > currentValue {
-			if !newer && cur.dropped() {
+			if cur.stampedBeforeDrop(st.UpdatedAt) {
 				countRejected(rejectStaleTimestamp)
 				return false
 			}
-			if !c.state.CompareAndSwap(cur, &counterState{v: newVal}) {
+			if !c.state.CompareAndSwap(cur, cur.rise(newVal)) {
 				continue
 			}
 			if isRemoteUpdate {
@@ -308,7 +324,7 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 				countRejected(rejectStaleTimestamp)
 				return false
 			}
-			if !c.state.CompareAndSwap(cur, c.dropTo(newVal, dropRewind)) {
+			if !c.state.CompareAndSwap(cur, c.dropTo(newVal, true, st.UpdatedAt)) {
 				continue
 			}
 			c.rewound(source, currentValue, newVal, st.UpdatedAt)
@@ -338,7 +354,7 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 			countRejected(rejectStaleTimestamp)
 			return false
 		}
-		if !c.state.CompareAndSwap(cur, c.dropTo(newVal, dropRollback)) {
+		if !c.state.CompareAndSwap(cur, c.dropTo(newVal, false, st.UpdatedAt)) {
 			continue
 		}
 		if isRemoteUpdate {
@@ -359,12 +375,12 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 	}
 }
 
-// processNewValue applies a local report (TryUpdate, a refresh, the
-// reconcile adopt); at is when its evidence was taken (ReportAt). Earliest
-// counters (ignoreRollbackOf 0) take any change; head counters ignore drops
-// of up to ignoreRollbackOf as noise from lagging nodes and take larger ones
-// as rollbacks. While a head counter holds a drop, a rise whose evidence
-// predates it (a poll sent before the switch) is the branch the drop left.
+// processNewValue applies a local report (TryUpdate, a refresh); at is when
+// its evidence was taken (ReportAt). Earliest counters (ignoreRollbackOf 0)
+// take any change; head counters ignore drops of up to ignoreRollbackOf as
+// noise from lagging nodes and take larger ones
+// as rollbacks. A rise whose evidence predates the last large drop or
+// rewind (a poll sent before the switch) is the branch the drop left.
 func (c *counterInt64) processNewValue(source string, newVal int64, at time.Time) bool {
 	for {
 		cur := c.state.Load()
@@ -377,7 +393,7 @@ func (c *counterInt64) processNewValue(source string, newVal int64, at time.Time
 		}
 
 		if newVal > currentValue {
-			if cur.dropped() && at.UnixMilli() < cur.dropAt {
+			if cur.takenBeforeDrop(at) {
 				c.registry.logger.Trace().
 					Str("source", source).
 					Str("key", c.key).
@@ -386,7 +402,7 @@ func (c *counterInt64) processNewValue(source string, newVal int64, at time.Time
 					Msg("rise from evidence older than the drop ignored (local)")
 				return false
 			}
-			if !c.state.CompareAndSwap(cur, &counterState{v: newVal}) {
+			if !c.state.CompareAndSwap(cur, cur.rise(newVal)) {
 				continue
 			}
 			c.allocateUpdatedAtMs()
@@ -425,7 +441,7 @@ func (c *counterInt64) processNewValue(source string, newVal int64, at time.Time
 			return false
 		}
 
-		if !c.state.CompareAndSwap(cur, c.dropTo(newVal, dropRollback)) {
+		if !c.state.CompareAndSwap(cur, c.dropTo(newVal, false, 0)) {
 			continue
 		}
 		c.allocateUpdatedAtMs()
@@ -673,7 +689,7 @@ func (c *counterInt64) Rewind(newValue int64) bool {
 		if newValue >= current {
 			return false
 		}
-		if !c.state.CompareAndSwap(cur, c.dropTo(newValue, dropRewind)) {
+		if !c.state.CompareAndSwap(cur, c.dropTo(newValue, true, 0)) {
 			continue
 		}
 		c.rewound(UpdateSourceRewind, current, newValue, 0)
@@ -934,11 +950,11 @@ func (c *counterInt64) scheduleBackgroundPushCurrent() {
 				// only applies to decreases (see processNewValue); capping
 				// adoption by that threshold let a newer-timestamp lagging
 				// writer push a regression that peers then treated as a
-				// large rollback.
-				// Only head counters are max-only; the others keep timestamp
-				// order, and a drop outranks the older states it left.
-				if remoteOk && c.ignoreRollbackOf > 0 && !c.state.Load().dropped() && remote.Value > local.Value {
-					c.processNewValue(UpdateSourceRemoteCheck, remote.Value, time.Now())
+				// large rollback. Only head counters are max-only; the
+				// others keep timestamp order. A remote state stamped before
+				// the last drop is rejected and the local state pushed over it.
+				if remoteOk && c.ignoreRollbackOf > 0 && remote.Value > local.Value &&
+					c.processNewState(UpdateSourceRemoteCheck, remote) {
 					return
 				}
 
