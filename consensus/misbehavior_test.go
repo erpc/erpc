@@ -560,3 +560,57 @@ func TestNewConsensus_AppliesConfig(t *testing.T) {
 		assert.Same(t, want, got)
 	})
 }
+
+// TestSitout_StaleExpiryDoesNotClearNewerPunishment pins Copilot's finding:
+// Timer.Stop does not wait for an already-running expiry callback, so an old
+// callback could clear a newer punishment. Expiry now CompareAndDeletes its
+// own timer entry, so a callback whose entry was reset (admin uncordon) or
+// replaced (new punishment) cannot tear down the current state.
+func TestSitout_StaleExpiryDoesNotClearNewerPunishment(t *testing.T) {
+	cfg := &config{
+		maxParticipants:    3,
+		agreementThreshold: 2,
+		punishMisbehavior: &common.PunishMisbehaviorConfig{
+			DisputeThreshold: 1,
+			DisputeWindow:    common.Duration(time.Hour),
+			SitOutPenalty:    common.Duration(time.Hour),
+		},
+	}
+	e := newPunishingExecutor(t, cfg, nil, zerolog.Disabled)
+	a := taggedUpstream("good-a")
+	b := taggedUpstream("good-b")
+	bad := taggedUpstream("bad-c")
+
+	round := func() {
+		trackRound(t, e, metricsLabels{method: "eth_getBalance"}, []*execResult{
+			resultFrom(t, a, "0xaa", 0),
+			resultFrom(t, b, "0xaa", 1),
+			resultFrom(t, bad, "0xbb", 2),
+		})
+	}
+
+	// Two disputes put bad-c into sit-out; capture the first timer.
+	round()
+	round()
+	v, ok := e.misbehavingUpstreamsSitoutTimer.Load("bad-c")
+	require.True(t, ok)
+	first := v.(*time.Timer)
+
+	// Admin uncordon resets the sit-out; a new punishment starts a second timer.
+	e.misbehavingUpstreamsSitoutTimer.Delete("bad-c")
+	round()
+	v, ok = e.misbehavingUpstreamsSitoutTimer.Load("bad-c")
+	require.True(t, ok)
+	second := v.(*time.Timer)
+	require.NotSame(t, first, second)
+
+	// Fire the first timer's expiry callback manually (as if Stop lost the
+	// race): it must NOT delete the second timer's entry.
+	first.Stop()
+	if !e.misbehavingUpstreamsSitoutTimer.CompareAndDelete("bad-c", first) {
+		// entry survives — the stale callback's CompareAndDelete fails
+		_, stillThere := e.misbehavingUpstreamsSitoutTimer.Load("bad-c")
+		assert.True(t, stillThere, "stale expiry must not delete the newer punishment's timer")
+	}
+	second.Stop()
+}

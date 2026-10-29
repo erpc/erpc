@@ -2944,14 +2944,6 @@ export interface User {
      * override" — the project-level pattern applies.
      */
     allowclientdirectives?: string;
-    /**
-     * Auth is the name of the auth strategy that authenticated this caller
-     * (feature §4.3). Stamped ONLY by the auth registry from the strategy
-     * config — never from a client-controlled header. Empty when the strategy
-     * is unnamed. The trusted-header path never sets it. The consensus-policy
-     * selector compares this string in operator evals (ctx.user.auth).
-     */
-    auth: string;
 }
 /**
  * MaxGrpcConnPoolSize is the upper bound accepted for a gRPC connection-pool

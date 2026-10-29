@@ -2170,10 +2170,17 @@ func (e *executor) handleMisbehavingUpstream(logger *zerolog.Logger, upstream co
 	// network to the strictest policy while any upstream is punished.
 	common.CordonClassed(upstream, "*", "misbehaving in consensus", common.CordonClassPunishment)
 
-	// Create the timer
-	timer := time.AfterFunc(e.punishMisbehavior.SitOutPenalty.Duration(), func() {
+	// Create the timer. The entry is the timer itself, so expiry only clears
+	// the cordon and deletes the entry when this exact timer is still the one
+	// stored — an admin-uncordon reset or a newer punishment that replaced the
+	// entry cannot be torn down by this stale callback (Copilot finding:
+	// Timer.Stop does not wait for an expiry callback already running).
+	var timer *time.Timer
+	timer = time.AfterFunc(e.punishMisbehavior.SitOutPenalty.Duration(), func() {
+		if !e.misbehavingUpstreamsSitoutTimer.CompareAndDelete(upstreamId, timer) {
+			return
+		}
 		common.UncordonClassed(upstream, "*", "end of consensus penalty", common.CordonClassPunishment)
-		e.misbehavingUpstreamsSitoutTimer.Delete(upstreamId)
 	})
 
 	// Replace the placeholder with the actual timer

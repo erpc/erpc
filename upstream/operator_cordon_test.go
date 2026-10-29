@@ -143,24 +143,20 @@ func TestUncordonAdmin_ResetsSitoutOnIssuerAndPeer(t *testing.T) {
 
 	a.UncordonAdmin(ctx, "resolved")
 
+	// Both replicas share the test project + upstream ID, so a single hook
+	// call could match both predicates. Require exactly two invocations —
+	// one from the issuer and one from the peer recovery callback.
 	require.Eventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		seenA, seenB := false, false
+		n := 0
 		for _, g := range got {
-			if g[1] != a.Id() {
-				continue
-			}
-			if g[0] == a.ProjectId {
-				seenA = true
-			}
-			if g[0] == b.ProjectId {
-				seenB = true
+			if g[0] == a.ProjectId && g[1] == a.Id() {
+				n++
 			}
 		}
-		// both replicas' projects fire the hook (same test project "main")
-		return seenA && seenB
-	}, 5*time.Second, 20*time.Millisecond, "both issuer and peer must reset sit-out")
+		return n == 2
+	}, 5*time.Second, 20*time.Millisecond, "issuer AND peer must each invoke the sit-out reset hook")
 }
 
 func TestCordonAdmin_DetectorsCannotLiftAnOperatorCordon(t *testing.T) {
