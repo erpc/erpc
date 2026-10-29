@@ -1738,6 +1738,9 @@ func determineResponseStatusCode(res interface{}, architectureHint ...common.Net
 		common.ErrCodeNetworkRateLimitRuleExceeded,
 		common.ErrCodeEndpointCapacityExceeded):
 		return http.StatusTooManyRequests
+	// 503 Service Unavailable - the request's min-block is not reached yet
+	case common.HasErrorCode(err, common.ErrCodeMinBlockNotReached):
+		return http.StatusServiceUnavailable
 	// 404 Not Found - no upstream could be initialized for this network at all.
 	// Terminal, not transient, so it is a coverage gap rather than a server fault
 	// (see ErrNetworkNoUpstreamsAvailable). Deliberately last: a more specific

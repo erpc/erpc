@@ -395,6 +395,11 @@ func (wsc *WsConnection) handleRequest(ctx context.Context, raw []byte, startedA
 	}
 	nq.SetNetwork(nw)
 	applyRequestDirectives(project, nw, nq, headers, queryArgs)
+	// Min-block is per request (streams spec §8); the upgrade request's
+	// headers would hold every message of the connection to one block.
+	if d := nq.Directives(); d != nil && d.MinBlock > 0 {
+		d.MinBlock = 0
+	}
 
 	var resp *common.NormalizedResponse
 	switch {

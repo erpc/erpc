@@ -227,6 +227,7 @@ Legend:
 | 71 | `ErrGetLogsExceededMaxAllowedTopics` | yes | yes | 200 | −32012 | — |
 | 72 | `ErrEndpointContentValidation` | no | yes | 200 | −32603 | try different upstream |
 | 73 | `ErrEndpointNonceException` | yes | no | 200 | −32003 | reason: `already_known` or `nonce_too_low`; idempotency |
+| 74 | `ErrMinBlockNotReached` | yes (client retries) | — | 503 | −32015 | `X-ERPC-Min-Block` above the lane's `Latest` after W, or beyond the near-future bound; `message` `block n not reached`, `data` `{"minBlock":"0x…","latest":"0x…"}`; never dispatched |
 
 Non-`StandardError` types: `ErrJsonRpcExceptionExternal` (normalizer input), `TaskFatalError` (initializer stop signal), `ErrDynamicTimeoutExceeded` (sentinel distinguishing failsafe-policy timeout from HTTP server deadline).
 
@@ -249,6 +250,7 @@ All defined at [`common/errors.go:L2151-L2174`](https://github.com/erpc/erpc/blo
 | `JsonRpcErrorEvmLargeRange` | −32012 | eRPC-normalized — request range too large |
 | `JsonRpcErrorMissingData` | −32014 | eRPC-normalized — data not on this node |
 | `JsonRpcErrorNodeTimeout` | −32015 | eRPC-normalized — node-level timeout |
+| `JsonRpcErrorMinBlockNotReached` | −32015 | eRPC — `X-ERPC-Min-Block` not reached within W; shares the number with a node timeout |
 | `JsonRpcErrorUnauthorized` | −32016 | eRPC-normalized — unauthorized/forbidden |
 
 ### Wire HTTP status mapping
@@ -259,6 +261,7 @@ All defined at [`common/errors.go:L2151-L2174`](https://github.com/erpc/erpc/blo
 | 401 | `ErrAuthUnauthorized`, `ErrEndpointUnauthorized` |
 | 404 | `ErrProjectNotFound`, `ErrNetworkNotFound`, `ErrNetworkNotSupported`, `ErrNetworkNoUpstreamsAvailable` |
 | 429 | `ErrAuthRateLimitRuleExceeded`, `ErrProjectRateLimitRuleExceeded`, `ErrNetworkRateLimitRuleExceeded`, `ErrEndpointCapacityExceeded` |
+| 503 | `ErrMinBlockNotReached` (single requests; a batch answers 200 with the error per item) |
 | 200 | everything else |
 
 **`ErrUpstreamRateLimitRuleExceeded` returns 200 on the wire** despite its `ErrorStatusCode()` method returning 429. It is not in the wire 429 switch.

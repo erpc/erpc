@@ -1959,6 +1959,21 @@ func TranslateToJsonRpcException(err error) error {
 			nil,
 		)
 	}
+	var mb *ErrMinBlockNotReached
+	if errors.As(err, &mb) {
+		minBlock, _ := mb.Details["minBlock"].(int64)
+		latest, _ := mb.Details["latest"].(int64)
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorMinBlockNotReached,
+			mb.Message,
+			err,
+			map[string]interface{}{"data": map[string]string{
+				"minBlock": fmt.Sprintf("0x%x", minBlock),
+				"latest":   fmt.Sprintf("0x%x", latest),
+			}},
+		)
+	}
 	// A block outside every upstream's availability window (pruned history, or an
 	// explicit blockAvailability bound) is missing data, not an internal failure.
 	// Without this it falls through to the generic -32603 server-side exception,

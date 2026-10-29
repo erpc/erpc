@@ -1597,6 +1597,29 @@ func (e *ErrUpstreamTagStateStale) ErrorStatusCode() int {
 	return http.StatusServiceUnavailable
 }
 
+// ErrMinBlockNotReached: the request's X-ERPC-Min-Block is above its lane's
+// Latest, after the wait or beyond the near-future bound (streams spec §8).
+type ErrMinBlockNotReached struct{ BaseError }
+
+const ErrCodeMinBlockNotReached ErrorCode = "ErrMinBlockNotReached"
+
+var NewErrMinBlockNotReached = func(minBlock, latest int64) error {
+	return &ErrMinBlockNotReached{
+		BaseError{
+			Code:    ErrCodeMinBlockNotReached,
+			Message: fmt.Sprintf("block %d not reached", minBlock),
+			Details: map[string]interface{}{
+				"minBlock": minBlock,
+				"latest":   latest,
+			},
+		},
+	}
+}
+
+func (e *ErrMinBlockNotReached) ErrorStatusCode() int {
+	return http.StatusServiceUnavailable
+}
+
 type ErrUpstreamMethodIgnored struct{ BaseError }
 
 const ErrCodeUpstreamMethodIgnored ErrorCode = "ErrUpstreamMethodIgnored"
@@ -2420,7 +2443,10 @@ const (
 	JsonRpcErrorEvmLargeRange    JsonRpcErrorNumber = -32012
 	JsonRpcErrorMissingData      JsonRpcErrorNumber = -32014
 	JsonRpcErrorNodeTimeout      JsonRpcErrorNumber = -32015
-	JsonRpcErrorUnauthorized     JsonRpcErrorNumber = -32016
+	// The min-block refusal shares -32015 with a node timeout: both say the
+	// block was not reached in time, and a client retries either.
+	JsonRpcErrorMinBlockNotReached JsonRpcErrorNumber = -32015
+	JsonRpcErrorUnauthorized       JsonRpcErrorNumber = -32016
 )
 
 // This struct represents an json-rpc error with erpc structure (i.e. code is string)

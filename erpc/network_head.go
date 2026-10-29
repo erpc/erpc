@@ -44,7 +44,9 @@ func (n *Network) EvmHead(ctx context.Context, req *common.NormalizedRequest) co
 // Finalized up to one full poll old would serve older blocks than the tag
 // gets live. A request answering Latest (evm.AnswersLatest) takes it after
 // the latest refresh (refreshLatest, §6.8), before the cache: a cache hit
-// is pinned to that Head too.
+// is pinned to that Head too. A request with X-ERPC-Min-Block first waits
+// for its lane's Latest to reach it (awaitMinBlock, streams spec §8), so
+// its tags, cache key and every retry read the waited Head.
 func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest) *common.EvmHead {
 	if h := req.EvmHead(); h != nil {
 		return h
@@ -57,6 +59,9 @@ func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest
 	sel := ""
 	if d := req.Directives(); d != nil {
 		sel = d.UseUpstream
+	}
+	if block := req.MinBlock(); block > 0 {
+		n.awaitMinBlock(ctx, sel, block)
 	}
 	switch {
 	case evm.NamesFinalizedTag(ctx, req):

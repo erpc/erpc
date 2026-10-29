@@ -372,6 +372,9 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 }
 
 func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	if err := network.minBlockErr(ctx, nq); err != nil {
+		return nil, err
+	}
 	resp, err := p.forwardWithHooks(ctx, network, nq)
 	// Post-forward hooks, short-circuits and cache hits build responses from
 	// the typed request id, so the client's id is stamped last, here.

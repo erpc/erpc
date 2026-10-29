@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -109,6 +110,7 @@ const (
 	headerDirectiveEnforceGetLogsRange        = "X-ERPC-Enforce-GetLogs-Range"
 	headerDirectiveEnforceNonNullTaggedBlocks = "X-ERPC-Enforce-Non-Null-Tagged-Blocks"
 	headerDirectiveIntegrity                  = "X-ERPC-Integrity"
+	headerDirectiveMinBlock                   = "X-ERPC-Min-Block"
 )
 
 // HeaderUserId is the request header erpc reads as the caller's user identity
@@ -130,6 +132,7 @@ const (
 	queryDirectiveEnforceGetLogsRange        = "enforce-getlogs-range"
 	queryDirectiveEnforceNonNullTaggedBlocks = "enforce-non-null-tagged-blocks"
 	queryDirectiveIntegrity                  = "integrity"
+	queryDirectiveMinBlock                   = "min-block"
 )
 
 var directiveKeyRegistry = []directiveKeyNames{
@@ -143,6 +146,7 @@ var directiveKeyRegistry = []directiveKeyNames{
 	{header: headerDirectiveEnforceGetLogsRange, query: queryDirectiveEnforceGetLogsRange},
 	{header: headerDirectiveEnforceNonNullTaggedBlocks, query: queryDirectiveEnforceNonNullTaggedBlocks},
 	{header: headerDirectiveIntegrity, query: queryDirectiveIntegrity},
+	{header: headerDirectiveMinBlock, query: queryDirectiveMinBlock},
 }
 
 var DenyAllClientDirectives MatcherFunc = func(_ string) bool { return false }
@@ -222,6 +226,11 @@ type RequestDirectives struct {
 	// level (off/intrinsic/corroborated/authoritative) or a configured profile
 	// name. Honored only when the effective integrity headerMode permits it.
 	IntegritySelector string `json:"integritySelector,omitempty"`
+
+	// MinBlock is the block the request answers at or after
+	// (X-ERPC-Min-Block / min-block, decimal or 0x hex): its Head waits for
+	// the lane's Latest to reach it, at most W (streams spec §8). 0: unset.
+	MinBlock int64 `json:"minBlock,omitempty"`
 }
 
 // UpstreamPolicies selects the upstream failsafe policies a request takes.
@@ -274,6 +283,7 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 		EnforceGetLogsBlockRange:   d.EnforceGetLogsBlockRange,
 		EnforceNonNullTaggedBlocks: d.EnforceNonNullTaggedBlocks,
 		IntegritySelector:          d.IntegritySelector,
+		MinBlock:                   d.MinBlock,
 	}
 }
 
@@ -881,6 +891,9 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if hv := getHeader(headerDirectiveIntegrity); hv != "" {
 		r.directives.IntegritySelector = strings.TrimSpace(hv)
 	}
+	if hv := getHeader(headerDirectiveMinBlock); hv != "" {
+		r.directives.MinBlock = parseMinBlock(hv)
+	}
 
 	// Query parameters come after headers so they can still override when explicitly present in URL.
 
@@ -896,6 +909,9 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	}
 	if useUpstream := getQueryArg(queryDirectiveUseUpstream); useUpstream != "" {
 		r.directives.UseUpstream = strings.TrimSpace(useUpstream)
+	}
+	if v := getQueryArg(queryDirectiveMinBlock); v != "" {
+		r.directives.MinBlock = parseMinBlock(v)
 	}
 
 	if retryEmpty := getQueryArg(queryDirectiveRetryEmpty); retryEmpty != "" {
@@ -928,6 +944,32 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if v := getQueryArg(queryDirectiveEnforceNonNullTaggedBlocks); v != "" {
 		r.directives.EnforceNonNullTaggedBlocks = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
+}
+
+// parseMinBlock reads a min-block value, decimal or 0x hex; 0 (unset) for
+// anything that is not a positive block number.
+func parseMinBlock(v string) int64 {
+	v = strings.TrimSpace(v)
+	var n int64
+	var err error
+	if h, ok := strings.CutPrefix(strings.ToLower(v), "0x"); ok {
+		n, err = strconv.ParseInt(h, 16, 64)
+	} else {
+		n, err = strconv.ParseInt(v, 10, 64)
+	}
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// MinBlock is the block req answers at or after (RequestDirectives.MinBlock),
+// 0 when unset.
+func (r *NormalizedRequest) MinBlock() int64 {
+	if d := r.Directives(); d != nil {
+		return d.MinBlock
+	}
+	return 0
 }
 
 // ShouldSkipCacheRead reports whether a cache read should be skipped for this request.
