@@ -117,6 +117,37 @@ type counterInt64 struct {
 	// bgPushRequested indicates a newer value should be pushed after the current push attempt.
 	// This avoids dropping updates when scheduleBackgroundPushCurrent() is called while a push is in progress.
 	bgPushRequested atomic.Bool
+	// rollbackCandidate is the value the last large rollback proposed since a
+	// reading within ignoreRollbackOf (0 = none); see admitLargeRollback.
+	rollbackCandidate atomic.Int64
+}
+
+// admitLargeRollback reports whether a drop of more than ignoreRollbackOf to
+// newVal applies now. A real deep reorg or a chain restarted lower keeps moving
+// from its new height, so the drop applies once a proposal is above the one
+// before it. A source frozen far behind, such as a provider's load balancer
+// sometimes answering from a stuck node, repeats one value, and its readings
+// at the real head in between clear the count (clearRollbackCandidate), so its
+// drop never applies. Counters with ignoreRollbackOf 0 (earliest blocks,
+// floors, cordons) take every decrease at once.
+func (c *counterInt64) admitLargeRollback(newVal int64) bool {
+	if c.ignoreRollbackOf <= 0 {
+		return true
+	}
+	if prev := c.rollbackCandidate.Swap(newVal); prev > 0 && newVal > prev {
+		c.rollbackCandidate.Store(0)
+		return true
+	}
+	return false
+}
+
+// clearRollbackCandidate forgets a held large rollback once a reading lands
+// within ignoreRollbackOf of the counter: the source answers from the real
+// head again. Steady state is one shared read.
+func (c *counterInt64) clearRollbackCandidate(currentValue, newVal int64) {
+	if c.ignoreRollbackOf > 0 && currentValue-newVal <= c.ignoreRollbackOf && c.rollbackCandidate.Load() != 0 {
+		c.rollbackCandidate.Store(0)
+	}
 }
 
 func (c *counterInt64) GetValue() int64 {
@@ -157,6 +188,7 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 
 	currentValue := c.value.Load()
 	newVal := st.Value
+	c.clearRollbackCandidate(currentValue, newVal)
 
 	if newVal == currentValue {
 		// Values appear equal - no value change needed.
@@ -235,7 +267,8 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 
 	// Rollback handling: only accept rollbacks where gap exceeds the threshold.
 	// - ignoreRollbackOf=0 (earliest): gap > 0 is always true, so ALL rollbacks accepted
-	// - ignoreRollbackOf=1024 (latest/finalized): only accept large rollbacks (real reorgs)
+	// - ignoreRollbackOf=1024 (latest/finalized): only accept large rollbacks (real reorgs),
+	//   and only once the lower side moved (admitLargeRollback)
 	gap := currentValue - newVal
 
 	if gap <= c.ignoreRollbackOf {
@@ -257,7 +290,22 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 		return false
 	}
 
-	// Large rollback exceeds threshold - apply it and trigger callback
+	if !c.admitLargeRollback(newVal) {
+		// Held: same bookkeeping as a small rollback, so our higher value wins
+		// reconciliation.
+		if isRemoteUpdate {
+			c.advanceTimestampPast(st.UpdatedAt)
+		}
+		c.registry.logger.Debug().
+			Str("source", source).
+			Str("key", c.key).
+			Int64("currentValue", currentValue).
+			Int64("newVal", newVal).
+			Msg("large rollback held until the lower head moves (remote)")
+		return false
+	}
+
+	// Large rollback exceeds threshold and the lower side moved - apply it and trigger callback
 	for {
 		if c.value.CompareAndSwap(currentValue, newVal) {
 			// Update timestamp AFTER accepting the value (for remote updates)
@@ -295,12 +343,14 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 
 // processNewValue handles local updates (TryUpdate, applyRefreshResult) where we don't have
 // an external timestamp. The ignoreRollbackOf parameter controls rollback behavior:
-// - ignoreRollbackOf = 0: Accept all changes (used for earliest block - can decrease due to pruning)
-// - ignoreRollbackOf > 0: Ignore small rollbacks (noise from lagging RPCs), trigger callback for large ones
+//   - ignoreRollbackOf = 0: Accept all changes (used for earliest block - can decrease due to pruning)
+//   - ignoreRollbackOf > 0: Ignore small rollbacks (noise from lagging RPCs), and apply a large one
+//     only once the lower side moved (admitLargeRollback), triggering the callback
 //
 // This is different from processNewState which uses timestamp ordering for remote reconciliation.
 func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 	currentValue := c.value.Load()
+	c.clearRollbackCandidate(currentValue, newVal)
 	if newVal == currentValue {
 		// Value is the same, but mark as fresh to prevent repeated refresh attempts
 		c.allocateUpdatedAtMs()
@@ -342,7 +392,8 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 
 	// Rollback handling: only accept rollbacks where gap exceeds the threshold.
 	// - ignoreRollbackOf=0 (earliest): gap > 0 is always true, so ALL rollbacks accepted
-	// - ignoreRollbackOf=1024 (latest/finalized): only accept large rollbacks (real reorgs)
+	// - ignoreRollbackOf=1024 (latest/finalized): only accept large rollbacks (real reorgs),
+	//   and only once the lower side moved (admitLargeRollback)
 	gap := currentValue - newVal
 
 	if gap <= c.ignoreRollbackOf {
@@ -358,7 +409,17 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 		return false
 	}
 
-	// Large rollback exceeds threshold - apply it and trigger callback
+	if !c.admitLargeRollback(newVal) {
+		c.registry.logger.Debug().
+			Str("source", source).
+			Str("key", c.key).
+			Int64("currentValue", currentValue).
+			Int64("newVal", newVal).
+			Msg("large rollback held until the lower head moves (local)")
+		return false
+	}
+
+	// Large rollback exceeds threshold and the lower side moved - apply it and trigger callback
 	for {
 		if c.value.CompareAndSwap(currentValue, newVal) {
 			c.allocateUpdatedAtMs() // Mark as fresh
