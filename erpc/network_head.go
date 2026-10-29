@@ -363,6 +363,7 @@ func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool, latest i
 	// l.mu (refreshLane), so the floor and this evaluation's backing are
 	// read together.
 	if finalized && l != nil {
+		computed := tip
 		tolerance := n.finalizedFloorTolerance()
 		held := l.holdFinalized(tip, backing, tolerance)
 		if l == &n.servedTipAll {
@@ -373,7 +374,7 @@ func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool, latest i
 		}
 		tip = held
 		if l == &n.servedTipAll {
-			n.publishFinalized(tip)
+			n.publishFinalized(computed)
 		}
 	}
 

@@ -230,17 +230,17 @@ func (n *Network) shareFinalized(served, computed, backing, tolerance int64) int
 	return served
 }
 
-// publishFinalized raises the shared network-wide Finalized to `served`,
-// the value this instance serves. Only raises are published: a value the
-// chain left behind stays in the counter until the chain passes it,
-// unserved by shareFinalized's tolerance bound, while publishing it down
-// would make instances whose views differ by more than the counter's
-// rollback tolerance overwrite each other on every evaluation. A raise
-// updates the local copy at once and the store in the background
-// (TryUpdate), so the head computation never waits on it.
-func (n *Network) publishFinalized(served int64) {
-	if n.servedFinalizedShared != nil && served > n.servedFinalizedShared.GetValue() {
-		n.servedFinalizedShared.TryUpdate(context.Background(), served, time.Now())
+// publishFinalized raises the shared network-wide Finalized to `computed`,
+// this evaluation's computed tip, as main does (#1364): a held value never
+// publishes. Only raises are published: a value the chain left behind stays
+// in the counter until the chain passes it, unserved by shareFinalized's
+// tolerance bound, while publishing it down would make instances whose views
+// differ by more than the counter's rollback tolerance overwrite each other on
+// every evaluation. A raise updates the local copy at once and the store in
+// the background (TryUpdate), so the head computation never waits on it.
+func (n *Network) publishFinalized(computed int64) {
+	if n.servedFinalizedShared != nil && computed > n.servedFinalizedShared.GetValue() {
+		n.servedFinalizedShared.TryUpdate(context.Background(), computed, time.Now())
 	}
 }
 
