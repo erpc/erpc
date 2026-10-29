@@ -734,6 +734,21 @@ func (s *scenario) metric(pod int, name string, labels map[string]string) (float
 	return sumOf(ss, name, match)
 }
 
+// tapsLost sums pod's tap ends for this scenario that a client sees as a
+// restart or a close: out of range or lagging, not its own unsubscribe.
+func (s *scenario) tapsLost(pod int) float64 {
+	ss, err := s.h.pods[pod].scrape()
+	if err != nil {
+		return 0
+	}
+	var n float64
+	for _, reason := range []string{"out_of_range", "lagging"} {
+		v, _ := sumOf(ss, "erpc_tap_end_total", map[string]string{"project": s.project, "network": s.network(), "reason": reason})
+		n += v
+	}
+	return n
+}
+
 // confirmedHeadSeen reports whether pod's network-wide tracker has had a
 // confirmed head (spec §17: the gauge is set on each confirmed-head change),
 // false when the scrape fails. A tracker keeps its pins once it has one

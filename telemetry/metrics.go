@@ -265,11 +265,11 @@ var (
 		Help:      "Open taps: consumers reading a chain feed from their own cursor.",
 	}, []string{"project", "network", "transport", "kind"})
 
-	MetricTapOutOfRangeTotal = DefineCounter(prometheus.CounterOpts{
+	MetricTapEndTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "tap_out_of_range_total",
-		Help:      "Taps ended because their cursor went out of range, by reason (below_window, fork_left_window, cursor_unknown, reorg_depth, receipts_timeout, lag).",
-	}, []string{"project", "network", "transport", "kind", "reason"})
+		Name:      "tap_end_total",
+		Help:      "Taps ended, by reason (out_of_range, lagging) and detail (below_window, fork_left_window, cursor_unknown, receipts_timeout, reorg_depth; lag).",
+	}, []string{"project", "network", "transport", "kind", "reason", "detail"})
 
 	MetricChainTrackerInvariantViolationsTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",

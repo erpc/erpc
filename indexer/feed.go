@@ -65,7 +65,8 @@ type ChainFeed interface {
 
 var ErrOutOfRange = errors.New("cursor out of range")
 
-// Why a tap's cursor went out of range; erpc_tap_out_of_range_total labels.
+// Why a tap's cursor went out of range; the detail label of
+// erpc_tap_end_total.
 const (
 	OutOfRangeBelowWindow    = "below_window"
 	OutOfRangeForkLeftWindow = "fork_left_window"
@@ -80,11 +81,25 @@ const (
 	OutOfRangeReceiptsTimeout = "receipts_timeout"
 )
 
+// Why a tap ended; the reason label of erpc_tap_end_total.
+const (
+	TapEndOutOfRange = "out_of_range"
+	TapEndLagging    = "lagging"
+)
+
 // OutOfRangeError is ErrOutOfRange with its reason.
 type OutOfRangeError struct{ Reason string }
 
 func (e OutOfRangeError) Error() string        { return ErrOutOfRange.Error() + ": " + e.Reason }
 func (e OutOfRangeError) Is(target error) bool { return target == ErrOutOfRange }
+
+// EndReason is the reason label of erpc_tap_end_total; e.Reason is its detail.
+func (e OutOfRangeError) EndReason() string {
+	if e.Reason == OutOfRangeLag {
+		return TapEndLagging
+	}
+	return TapEndOutOfRange
+}
 
 // MempoolFeed is the reader side of one network's pending transactions.
 type MempoolFeed interface {

@@ -92,13 +92,13 @@ func c2() spec {
 		s.blocks(50)
 		oor := make([]float64, len(s.h.pods))
 		for pod := range s.h.pods {
-			oor[pod], _ = s.metric(pod, "erpc_tap_out_of_range_total", nil)
+			oor[pod] = s.tapsLost(pod)
 		}
 		s.reorg(reorgWindow - 1)
 		s.blocks(25)
 		s.requireReorgsTold()
 		for pod := range s.h.pods {
-			if v, _ := s.metric(pod, "erpc_tap_out_of_range_total", nil); v > oor[pod] {
+			if v := s.tapsLost(pod); v > oor[pod] {
 				s.violate(s.name, "pod-%d: %v taps out of range on a %d-deep reorg, inside reorgWindow %d", pod+1, v-oor[pod], reorgWindow-1, reorgWindow)
 			}
 		}
@@ -355,7 +355,7 @@ func c15() spec {
 						s.violate(s.name, "pod-%d: %v failed %s fetches on a chain whose empty blocks carry a foreign root", pod+1, v, kind)
 					}
 				}
-				if v, _ := s.metric(pod, "erpc_tap_out_of_range_total", nil); v > 0 {
+				if v := s.tapsLost(pod); v > 0 {
 					s.violate(s.name, "pod-%d: %v taps out of range, 1013 for a logs client", pod+1, v)
 				}
 			}
