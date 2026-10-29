@@ -52,11 +52,8 @@ func headNumber(ctx context.Context, network common.Network, nq *common.Normaliz
 // (headNumberAxis) without dispatching whenever enforce-highest-block is on
 // and the head is known: the post-forward hook below pins every response to
 // that same value EXACTLY, so an upstream's answer is always discarded and
-// the call buys nothing but vendor cost and latency. A Latest answer also
-// asks the ballot's pollers for a debounced background refresh, so on a
-// quiet network the head a client polls for is not held at the ticker
-// interval; a Finalized answer already waited for its refresh
-// (Network.Forward).
+// the call buys nothing but vendor cost and latency. The request took its
+// Head after its refresh (Network.requestHead, spec §6.8).
 // An unknown head (cold pollers) and enforce-highest-block=false keep
 // forwarding.
 func networkPreForward_eth_blockNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
@@ -71,9 +68,6 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 	tip := headNumber(ctx, network, nq, finalized)
 	if tip <= 0 {
 		return false, nil, nil
-	}
-	if !finalized {
-		common.EvmRefreshHead(network, ctx)
 	}
 	hex, err := common.NormalizeHex(tip)
 	if err != nil {
@@ -90,10 +84,7 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 // network's served head EXACTLY, regardless of its source — a live upstream
 // (cold head at pre-forward time, or a per-request override path) OR the
 // cache. The correction is a pure in-memory synthesis (poller state), never an
-// extra upstream call. Enforced answers also ask the ballot's pollers for a
-// debounced background refresh here: Network.Forward can return a cache hit
-// before networkPreForward_eth_blockNumber runs, and without this the head a
-// quiet network serves stays at the ticker interval despite frequent polls.
+// extra upstream call.
 //
 // Exact, not floor-only, because "latest" interpolation (TagBlockNumber)
 // anchors block-tagged methods (eth_call, eth_getLogs, ...) to that same served
@@ -155,12 +146,6 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 		// Unknown tip (pollers cold, all upstreams syncing): fail open like
 		// interpolation — never synthesize a block number from nothing.
 		return nr, re
-	}
-
-	// Same debounced refresh the pre-forward path fires (#1280): a cache hit
-	// returns before networkPreForward_eth_blockNumber runs.
-	if !finalized {
-		common.EvmRefreshHead(network, reqCtx)
 	}
 
 	if blockNumber == highestBlock {
