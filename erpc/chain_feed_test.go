@@ -1734,9 +1734,10 @@ func (s *chaosSeed) orphanCached() {
 		h1, _ = res["hash"].(string)
 		return h1 == tip.Hash.Hex()
 	}, 5*time.Second, 20*time.Millisecond, "a client reads the head by number")
+	// The client reads without full transactions; count those calls only.
 	calls := func() (n int) {
 		for _, v := range s.vendors {
-			n += v.NumberCalls(tip.Number, time.Time{}, time.Now().Add(time.Hour))
+			n += v.NumberCalls(tip.Number, false, time.Time{}, time.Now().Add(time.Hour))
 		}
 		return n
 	}
