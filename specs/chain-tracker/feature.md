@@ -897,7 +897,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_source_resubscribe_total{project,network,upstream,topic}` | new: silent pending-transaction topics (§5.2) |
 | `erpc_upstream_websocket_heads_stall_reconnects_total` | existing; counts silent-`newHeads` reconnects (§5.2) |
 | `erpc_taps{project,network,transport,kind}` | new gauge: open taps; replaces `erpc_websocket_subscriptions_active` |
-| `erpc_tap_out_of_range_total{project,network,transport,kind,reason}` | new; reason: `below_window`, `fork_left_window`, `cursor_unknown`, `receipts_timeout`, `lag`, `reorg_depth`; replaces `erpc_websocket_subscription_notifications_dropped_total` |
+| `erpc_tap_end_total{project,network,transport,kind,reason,detail}` | new; reason `out_of_range` with detail `below_window`, `fork_left_window`, `cursor_unknown`, `receipts_timeout`, `reorg_depth`; reason `lagging` with detail `lag`; replaces `erpc_websocket_subscription_notifications_dropped_total` |
 | `erpc_network_subscription_last_head_timestamp_seconds` | existing; set on each confirmed-head change of the network-wide tracker |
 | `erpc_integrity_check_suspended_total{project,network,check}` | new |
 | `erpc_unexpected_panic_total` | existing; tracker, reconciler, Ask and tap loops report to it |

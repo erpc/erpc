@@ -207,7 +207,7 @@ wss newHeads / http poll → intake → chain tracker → confirmed head → tap
 | ws `newPendingTransactions` | skips to the newest | — |
 | gRPC `StreamBlocks` | 60s of stalled read, or one `Send` over 10s: `UNAVAILABLE` | `OUT_OF_RANGE` |
 
-Every out-of-range end counts in `erpc_tap_out_of_range_total{reason}`.
+Every out-of-range or lagging end counts in `erpc_tap_end_total{reason,detail}`.
 
 **Failure model.**
 

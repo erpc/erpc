@@ -601,7 +601,7 @@ func u20(forbidden bool) spec {
 			s.blocks(25)
 			oor := make([]float64, len(s.h.pods))
 			for pod := range s.h.pods {
-				oor[pod], _ = s.metric(pod, "erpc_tap_out_of_range_total", nil)
+				oor[pod] = s.tapsLost(pod)
 			}
 			for range u20Rounds {
 				for pod := range s.h.pods {
@@ -615,7 +615,7 @@ func u20(forbidden bool) spec {
 				s.logf("http-a refused %d calls for pruned history", n)
 			}
 			for pod := range s.h.pods {
-				if v, _ := s.metric(pod, "erpc_tap_out_of_range_total", nil); v > oor[pod] {
+				if v := s.tapsLost(pod); v > oor[pod] {
 					s.violate(s.name, "pod-%d: %v taps out of range while http-a's history was pruned", pod+1, v-oor[pod])
 				}
 			}

@@ -54,8 +54,7 @@ func (t *Taps) RunChain(ctx context.Context, networkId, transport, kind string,
 	defer func() {
 		var oor OutOfRangeError
 		if errors.As(err, &oor) {
-			telemetry.CounterHandle(telemetry.MetricTapOutOfRangeTotal,
-				t.projectId, networkId, transport, kind, oor.Reason).Inc()
+			t.countEnd(networkId, transport, kind, oor)
 		}
 	}()
 	defer func() {
@@ -198,8 +197,7 @@ func (t *Taps) RunMempool(ctx context.Context, networkId, transport, variant str
 		}
 		txs, next, err := f.Read(ctx, variant, seq)
 		if errors.Is(err, ErrOutOfRange) {
-			telemetry.CounterHandle(telemetry.MetricTapOutOfRangeTotal,
-				t.projectId, networkId, transport, kind, OutOfRangeLag).Inc()
+			t.countEnd(networkId, transport, kind, OutOfRangeError{Reason: OutOfRangeLag})
 			seq = f.Tail(variant)
 			continue
 		}
@@ -212,6 +210,11 @@ func (t *Taps) RunMempool(ctx context.Context, networkId, transport, variant str
 		}
 		seq = next
 	}
+}
+
+func (t *Taps) countEnd(networkId, transport, kind string, e OutOfRangeError) {
+	telemetry.CounterHandle(telemetry.MetricTapEndTotal,
+		t.projectId, networkId, transport, kind, e.EndReason(), e.Reason).Inc()
 }
 
 // Demand returns the topics the open taps of networkId need.
