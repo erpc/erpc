@@ -277,9 +277,9 @@ func (e *cacheExecutor) runHedgeBytes(
 		return e.callBreaker(ctx, inner)
 	}
 	// Quantile-driven delays resolve against this executor's own latency
-	// tracker; with no data yet (or a static config) Resolve falls back to
-	// Base + Min (cold-start semantics) / plain Base respectively.
-	delay := e.cfg.Hedge.Delay.Resolve(e.latency)
+	// tracker; an empty window (pod start, or a tier quiet for a full
+	// window) falls back to Base, then Max, not to the Min floor.
+	delay := e.cfg.Hedge.Delay.ResolveOrColdFallback(e.latency)
 	delayFn := func(idx int) time.Duration { return delay }
 	wrap := func(hctx context.Context) ([]byte, error) {
 		return e.callBreaker(hctx, inner)
@@ -318,7 +318,7 @@ func (e *cacheExecutor) callBreaker(
 	}
 	hasTimeout := false
 	if e.timeoutSpec != nil {
-		td := e.timeoutSpec.Resolve(e.latency)
+		td := e.timeoutSpec.ResolveOrColdFallback(e.latency)
 		if td > 0 {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeoutCause(ctx, td, common.ErrDynamicTimeoutExceeded)
