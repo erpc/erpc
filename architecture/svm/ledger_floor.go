@@ -76,18 +76,22 @@ const maxGetBlocksRange = 500_000
 //     could be returned is the upstream's own tip. A missing/invalid limit
 //     or unknown tip fails open.
 //
+// fromTip reports that the end is the tip itself rather than a slot the
+// request names: such an end advances with the tip, so a tip-relative bound
+// never catches up to it.
+//
 // Anything not a range method resolves to start itself.
-func RequestRangeEndSlot(ctx context.Context, r *common.NormalizedRequest, start, latest int64) (int64, bool) {
+func RequestRangeEndSlot(ctx context.Context, r *common.NormalizedRequest, start, latest int64) (end int64, fromTip bool, ok bool) {
 	method, err := r.Method()
 	if err != nil {
-		return start, true
+		return start, false, true
 	}
 	if _, isRange := rangeSlotMethods[method]; !isRange {
-		return start, true
+		return start, false, true
 	}
 	rpcReq, err := r.JsonRpcRequest(ctx)
 	if err != nil || rpcReq == nil {
-		return 0, false
+		return 0, false, false
 	}
 	rpcReq.RLock()
 	defer rpcReq.RUnlock()
@@ -98,38 +102,41 @@ func RequestRangeEndSlot(ctx context.Context, r *common.NormalizedRequest, start
 			// Commitment injection appends the options object where an omitted
 			// end would sit ([start] becomes [start, {options}]), so a trailing
 			// object means "no end named" and the range extends to the tip.
-			if _, isOptions := rpcReq.Params[1].(map[string]interface{}); !isOptions {
-				// A present-but-invalid end (fractional, string, negative) is
-				// not ours to interpret — fail open and let the node answer
-				// -32602.
-				end, ok := toInt64Exact(rpcReq.Params[1])
-				if !ok || end < 0 {
-					return 0, false
+			// Explicit JSON null is the same omitted end ([start, null] or
+			// [start, null, {options}]) — do not fail-open past the upper gate.
+			if rpcReq.Params[1] != nil {
+				if _, isOptions := rpcReq.Params[1].(map[string]interface{}); !isOptions {
+					// A present-but-invalid end (fractional, string, negative) is
+					// not ours to interpret — fail open and let the node answer
+					// -32602.
+					named, ok := toInt64Exact(rpcReq.Params[1])
+					if !ok || named < 0 {
+						return 0, false, false
+					}
+					return named, false, true
 				}
-				return end, true
 			}
 		}
-		end := start + maxGetBlocksRange
-		if latest > 0 && latest < end {
-			end = latest
+		if limit := start + maxGetBlocksRange; latest <= 0 || limit <= latest {
+			return limit, false, true
 		}
-		return end, true
+		return latest, true, true
 	case "getBlocksWithLimit":
 		if len(rpcReq.Params) < 2 {
-			return 0, false
+			return 0, false, false
 		}
 		// Validate the limit is a non-negative integer so a malformed call
 		// fails open to the node's -32602, but do not treat it as a span:
 		// the end is the tip (see comment above).
 		if limit, ok := toInt64Exact(rpcReq.Params[1]); !ok || limit < 0 {
-			return 0, false
+			return 0, false, false
 		}
 		if latest <= 0 {
-			return 0, false
+			return 0, false, false
 		}
-		return latest, true
+		return latest, true, true
 	}
-	return start, true
+	return start, false, true
 }
 
 // RequestLowerBoundSlot extracts the slot a request asks us to read at or

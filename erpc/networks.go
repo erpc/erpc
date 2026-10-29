@@ -3282,19 +3282,20 @@ func (n *Network) checkEvmUpstreamBlockAvailability(ctx context.Context, u commo
 		return common.NewErrUpstreamBlockUnavailable(eu.Id(), bn, latestBlock, finalizedBlock), false
 	}
 
-	// Above the configured upper bound. Classify retryability by distance to the live
-	// head: a block just ahead of the head (e.g. upper=latestBlockMinus:0) may become
-	// serveable shortly, so it is retryable within MaxRetryableBlockDistance.
+	// Above the configured upper bound. Normalization pins "latest"/"finalized"
+	// to a number, so the target never moves; waiting helps only when the bound
+	// itself moves and the gap is within MaxRetryableBlockDistance.
 	if maxBound != math.MaxInt64 && bn > maxBound {
 		telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
 			n.projectId, eu.VendorName(), n.Label(), eu.Id(), method, common.AvailbilityConfidenceBlockHead.String(),
 		).Inc()
 		latestBlock, finalizedBlock := n.upstreamHeads(eu)
 		blockErr := common.NewErrUpstreamBlockUnavailable(eu.Id(), bn, latestBlock, finalizedBlock)
-		if bn > latestBlock && latestBlock > 0 {
-			return blockErr, bn-latestBlock <= n.maxRetryableBlockDistance()
+		var upper *common.EvmAvailabilityBoundConfig
+		if cfg := eu.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.BlockAvailability != nil {
+			upper = cfg.Evm.BlockAvailability.Upper
 		}
-		return blockErr, false
+		return blockErr, common.UpperBoundSkipRetryable(bn, maxBound, n.maxRetryableBlockDistance(), upper.Moves(), false)
 	}
 
 	return nil, false
