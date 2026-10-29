@@ -9,6 +9,7 @@ import (
 	"math"
 	"runtime/debug"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,6 +42,13 @@ var mailboxHeaderCap = 1024
 // none of that kind handled cleanly between them, before the tracker resets
 // to empty (handleBatch).
 const trackerPanicsToReset = 3
+
+// FinalHoldMax is the most headers the final hold keeps below the window
+// it holds without (streams spec §4, §10); past it final taps are refused
+// and end finality_span. A var so tests run fast.
+var FinalHoldMax atomic.Uint64
+
+func init() { FinalHoldMax.Store(20_000) }
 
 // TrackerMessageHook, when set, runs on a tracker's goroutine before each
 // message is applied, with the message's header when it carries one and
@@ -103,6 +111,14 @@ type ChainTracker struct {
 	// while any is, fill runs down to the window base, else it stops
 	// reorgWindow blocks below the head.
 	deepFill atomic.Int32
+	// finalWants counts the open HoldFinalized taps. While any is, the
+	// network-wide tracker's window also keeps every header from holdFrom
+	// up (holdFinal; streams spec §4); holdFrom is 0 while it keeps none.
+	// finalSpan: such a hold would keep more than FinalHoldMax headers
+	// below the window. Any goroutine reads them; holdFinal writes them.
+	finalWants atomic.Int32
+	holdFrom   atomic.Uint64
+	finalSpan  atomic.Bool
 	// fillReads counts, by cursor hash, the Reads that wait on fill: fill
 	// of a tree holding one runs past its reorgWindow cap (fillRoots).
 	fillMu    sync.Mutex
@@ -737,7 +753,9 @@ func (t *ChainTracker) guard(step string, fn func(), onPanic func()) (ok bool) {
 // the no-source Ask runs (rule 6), the next deadline is armed and the
 // trees are published for Reads outside the pins.
 func (t *ChainTracker) update() bool {
-	ok := t.guard("choose", func() {
+	// The hold is set before the pins move, so their eviction keeps it.
+	ok := t.guard("hold", t.holdFinal, nil)
+	ok = t.guard("choose", func() {
 		t.moveVotes()
 		if s := t.settle; s != nil && s.inflight && (s.out == 0 && !t.anyWalking(s.answers) || !time.Now().Before(s.ends)) {
 			t.endSettle(s)
@@ -875,10 +893,87 @@ func (t *ChainTracker) head() *chainHeader {
 
 // holds is the window (spec §8) below ref: at least reorgWindow blocks,
 // and for the network-wide tracker every header whose timestamp is within
-// maxBackfill of ref's. A header without a timestamp gets the floor only.
+// maxBackfill of ref's, and while a final tap is open every header from
+// the final hold's base up (holdFinal). A header without a timestamp gets
+// the floor and the hold only.
 func (t *ChainTracker) holds(ref, h *chainHeader) bool {
-	return h.number+uint64(t.window) >= ref.number || t.backfills(ref, h)
+	return h.number+uint64(t.window) >= ref.number || t.backfills(ref, h) || t.finalHolds(h.number)
 }
+
+// finalHolds reports whether the final hold keeps height n.
+func (t *ChainTracker) finalHolds(n uint64) bool {
+	from := t.holdFrom.Load()
+	return from > 0 && n >= from
+}
+
+// windowBase is the lowest height the window below ref keeps without the
+// final hold. Below the lowest pin the time window's base is estimated
+// from the block time.
+func (t *ChainTracker) windowBase(ref *chainHeader) uint64 {
+	base := ref.number - min(ref.number, uint64(t.window))
+	i := sort.Search(len(t.pins), func(i int) bool { return t.backfills(ref, t.pins[i].h) })
+	if i == len(t.pins) {
+		return base
+	}
+	n := t.pins[i].h.number
+	if bt := t.BlockTime(); i == 0 && bt > 0 {
+		n = min(n, ref.number-min(ref.number, uint64(t.backfill/bt)))
+	}
+	return min(base, n)
+}
+
+// holdFinal is the final hold (streams spec §4) of the network-wide
+// tracker: while a HoldFinalized tap is open the window also keeps every
+// header from the lane's Finalized up, unless that is more than
+// FinalHoldMax headers below the window it keeps without; then the hold
+// keeps none, and finalSpan refuses final taps and ends the open ones. A
+// hold that grows down reopens the fill the window's base ended.
+func (t *ChainTracker) holdFinal() {
+	if t.selector != "" {
+		return
+	}
+	var from, below uint64
+	span := false
+	if ref, fin := t.windowRef(), t.finalizedHead(); ref != nil && fin > 0 {
+		// A final tap's cursor trails Finalized by its delivery: the hold
+		// keeps reorgWindow blocks below it too, so a moving Finalized
+		// never evicts the block a tap reads next.
+		f := uint64(fin) - min(uint64(fin), uint64(t.window))
+		base := t.windowBase(ref)
+		switch {
+		case f < base && base-f > FinalHoldMax.Load():
+			span = true
+		case t.finalWants.Load() > 0:
+			from = max(f, 1)
+			if len(t.pins) > 0 {
+				if lo := max(f, t.pins[0].h.number); lo < base {
+					below = base - lo
+				}
+			}
+		}
+	}
+	if prev := t.holdFrom.Swap(from); from > 0 && (prev == 0 || from < prev) {
+		for _, e := range t.exts {
+			if e.atBase && e.windowEnd {
+				e.atBase, e.windowEnd, t.treesDirty = false, false, true
+			}
+		}
+	}
+	telemetry.GaugeHandle(telemetry.MetricChainTrackerFinalHoldHeaders, t.projectId(), t.networkLabel()).Set(float64(below))
+	if t.finalSpan.Swap(span) != span {
+		// Final taps waiting on a Read or on the bound read it at once.
+		pub := t.state.Load()
+		s := *pub
+		s.changed = make(chan struct{})
+		t.state.Store(&s)
+		close(pub.changed)
+	}
+}
+
+// FinalitySpan reports whether a final tap's hold would keep more than
+// FinalHoldMax headers below the window: final subscribes are refused and
+// open final taps end (streams spec §4).
+func (t *ChainTracker) FinalitySpan() bool { return t.finalSpan.Load() }
 
 // backfills reports whether h's timestamp lies within maxBackfill at or
 // below ref's, on the network-wide tracker.
@@ -1191,7 +1286,7 @@ func (t *ChainTracker) drop(n *node, base bool) {
 	for _, c := range n.children {
 		c.parent = nil
 		t.waiting[c.h.parentHash] = append(t.waiting[c.h.parentHash], c)
-		t.exts[c] = &extension{atBase: base, capped: !base}
+		t.exts[c] = &extension{atBase: base, windowEnd: base, capped: !base}
 	}
 	n.children = nil
 	for u, v := range t.votes {
@@ -2622,6 +2717,9 @@ func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, o indexer.Rea
 		}
 	}()
 	for {
+		if o.HoldFinalized && t.finalSpan.Load() {
+			return indexer.Batch{}, indexer.OutOfRangeError{Reason: indexer.OutOfRangeFinalitySpan}
+		}
 		s, tr := t.state.Load(), t.trees.Load()
 		rr.missing = nil
 		b, step, err := t.readAt(s, tr, c, rr)
@@ -2994,6 +3092,9 @@ func (t *ChainTracker) Want(o indexer.ReadOpts) (release func()) {
 	if o.Resumable {
 		t.deepFill.Add(1)
 	}
+	if o.HoldFinalized {
+		t.finalWants.Add(1)
+	}
 	t.mb.put(trackerMsg{kind: msgTick})
 	var once sync.Once
 	return func() {
@@ -3006,6 +3107,9 @@ func (t *ChainTracker) Want(o indexer.ReadOpts) (release func()) {
 			}
 			if o.Resumable {
 				t.deepFill.Add(-1)
+			}
+			if o.HoldFinalized {
+				t.finalWants.Add(-1)
 			}
 			t.taps.Add(-1)
 			t.mb.put(trackerMsg{kind: msgTick})
@@ -3059,6 +3163,17 @@ func (t *ChainTracker) Confirmed() (indexer.Cursor, bool) {
 		return h.cursor(), true
 	}
 	return indexer.Cursor{}, false
+}
+
+// ConfirmedAt is when the pin at n first stood at or below the confirmed
+// head; zero while n is not pinned or not yet confirmed.
+func (t *ChainTracker) ConfirmedAt(n uint64) time.Time {
+	if p := t.state.Load().pinAt(n); p != nil {
+		if at := p.confirmedAt.Load(); at != 0 {
+			return time.Unix(0, at)
+		}
+	}
+	return time.Time{}
 }
 
 // Pinned reports whether c is pinned now. A tap checks each block just

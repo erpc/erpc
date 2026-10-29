@@ -390,6 +390,8 @@ func (p *FakeEvmStatePoller) AskReaching(context.Context, int64, time.Duration, 
 }
 
 func (p *FakeEvmStatePoller) RefreshFinalized(context.Context) bool { return true }
+func (p *FakeEvmStatePoller) RefreshSafe(context.Context) bool      { return true }
+func (p *FakeEvmStatePoller) SafeBlock() int64                      { return 0 }
 
 func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown

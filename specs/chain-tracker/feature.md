@@ -188,6 +188,9 @@ type ReadOpts struct {
     // Pace: the slowest this tap needs heads at; 0 is every block. The
     // tap's demand carries it (§3 demand); a Read ignores it.
     Pace time.Duration
+    // HoldFinalized: the window also holds every header from Finalized up
+    // while the tap is registered (streams spec §4).
+    HoldFinalized bool
 }
 
 // ChainFeed is the reader side of one tracker.
@@ -257,6 +260,7 @@ func (e *EvmStatePoller) ObserveHead(number int64, at time.Time) (accepted bool)
 // erpc: one per (network, lane), published atomically on each change (§6.4).
 type Head struct {
     Latest, Finalized int64
+    Safe              int64     // only while a safe stream is open (streams spec §4)
     Leader            string    // upstream id
     Ceiling           int64     // raw max of the counted reports
     OldestReportAt    time.Time // when the oldest counted report's evidence was taken (§6.4)

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
@@ -113,8 +114,17 @@ func (sm *SubscriptionManager) Subscribe(
 	if err == nil {
 		opts, err = parseStreamOptions(subType, own, wsc.streamDefaults)
 	}
+	if w := nw.reorgWindow(); err == nil && opts.Finality.Kind == finalityDepth && opts.Finality.Depth > w {
+		err = errStreamOption("finality", fmt.Sprintf("depth must be at most the reorg window, %d; use finalized", w))
+	}
 	if err != nil {
 		err = common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument, err.Error(), nil, nil)
+		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
+		return nil, nil, err
+	}
+	if opts.Finality.final() && nw.chainTracker != nil && nw.chainTracker.FinalitySpan() {
+		err = common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorCapacityExceeded,
+			fmt.Sprintf("finality_span: the finalized block is more than %d headers below the chain tracker's window", evm.FinalHoldMax.Load()), nil, nil)
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 		return nil, nil, err
 	}
@@ -182,10 +192,17 @@ func (sm *SubscriptionManager) Subscribe(
 					wsc.ends.Done()
 				}
 			}
+			// A safe tap waits here, at most W, for its first Safe, so its
+			// start is fixed before the client has the id.
+			closeSafe := func() {}
+			if kind != wsclient.KindPendingTx && opts.Finality.Kind == finalitySafe {
+				closeSafe = nw.openSafe(ctx)
+			}
 			switch kind {
 			case wsclient.KindLog:
-				head := nw.chainTracker.HeadAsOf()
+				head := nw.tapStart(opts.Finality, lane)
 				goTap(func() {
+					defer closeSafe()
 					sm.runWsTap(tapCtx, wsc, sub, opened, nw, lane, indexer.SubTypeLogs, head, logsFilter, opts)
 				})
 			case wsclient.KindPendingTx:
@@ -197,8 +214,9 @@ func (sm *SubscriptionManager) Subscribe(
 					sm.runPendingTxs(tapCtx, wsc, sub, opened, nw, variant, from, opts)
 				})
 			default:
-				head := nw.chainTracker.HeadAsOf()
+				head := nw.tapStart(opts.Finality, lane)
 				goTap(func() {
+					defer closeSafe()
 					sm.runWsTap(tapCtx, wsc, sub, opened, nw, lane, indexer.SubTypeNewHeads, head, nil, opts)
 				})
 			}

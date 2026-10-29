@@ -1772,6 +1772,8 @@ func (p *fixedPoller) AskBackground(common.HeadNeed, time.Duration, common.AskRe
 	return time.Time{}
 }
 func (p *fixedPoller) RefreshFinalized(context.Context) bool { return true }
+func (p *fixedPoller) RefreshSafe(context.Context) bool      { return true }
+func (p *fixedPoller) SafeBlock() int64                      { return 0 }
 func (p *fixedPoller) LatestReportAt() time.Time             { return time.Time{} }
 func (p *fixedPoller) LatestAskAt() time.Time                { return time.Time{} }
 

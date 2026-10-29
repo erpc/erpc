@@ -9,22 +9,22 @@ import (
 
 // Session events a stream writes besides its data (streams spec §3.2).
 // The append functions write each one's JSON object (§5.2) with its
-// "type" first; SSE sends the same object without it, so typ "" leaves it
-// out.
+// "type" first.
 
 // streamHeartbeat is a heartbeat's content: the confirmed head and the
-// lane's finalized number.
+// lane's finalized and safe numbers, safe 0 while not computed.
 type streamHeartbeat struct {
-	head      indexer.Cursor
-	finalized uint64
+	head            indexer.Cursor
+	finalized, safe uint64
 }
 
 // streamEnd is why a stream ended (§3.4): reason and detail label
-// erpc_tap_end_total; oldest is the lowest pin for out_of_range. An end
-// with no reason is an error no row of §3.4 names (a tap panic, ...): err.
+// erpc_tap_end_total; oldest is the lowest pin for out_of_range, block the
+// reverted block for final_reverted. An end with no reason is an error no
+// row of §3.4 names (a tap panic, ...): err.
 type streamEnd struct {
 	reason, detail string
-	oldest         *indexer.Cursor
+	oldest, block  *indexer.Cursor
 	err            error
 }
 
@@ -72,7 +72,7 @@ func appendBlockEnd(b []byte, typ string, blk indexer.Block, logs int) []byte {
 	return append(b, '}')
 }
 
-// appendHeartbeat: {"type":"heartbeat","head":{number,hash},"finalized":n};
+// appendHeartbeat: {"type":"heartbeat","head":{number,hash},"finalized":n,"safe":n};
 // safe is absent while Head.Safe is not computed (§5.2).
 func appendHeartbeat(b []byte, typ string, hb streamHeartbeat) []byte {
 	b = appendType(b, typ)
@@ -80,6 +80,18 @@ func appendHeartbeat(b []byte, typ string, hb streamHeartbeat) []byte {
 	b = appendRef(b, hb.head.Number, hb.head.Hash)
 	b = append(b, `,"finalized":`...)
 	b = appendQuantity(b, hb.finalized)
+	if hb.safe > 0 {
+		b = append(b, `,"safe":`...)
+		b = appendQuantity(b, hb.safe)
+	}
+	return append(b, '}')
+}
+
+// appendUndo: {"type":"undo","forkPoint":{number,hash}}.
+func appendUndo(b []byte, typ string, forkPoint indexer.Cursor) []byte {
+	b = appendType(b, typ)
+	b = append(b, `"forkPoint":`...)
+	b = appendRef(b, forkPoint.Number, forkPoint.Hash)
 	return append(b, '}')
 }
 
@@ -97,7 +109,7 @@ func appendStatus(b []byte, typ, state, reason string) []byte {
 	return append(b, '}')
 }
 
-// appendEnd: {"type":"end","reason":r,"detail":d,"oldest":{number,hash}}.
+// appendEnd: {"type":"end","reason":r,"detail":d,"oldest":{number,hash},"block":{number,hash}}.
 func appendEnd(b []byte, typ string, e streamEnd) []byte {
 	b = appendType(b, typ)
 	b = append(b, `"reason":"`...)
@@ -111,6 +123,10 @@ func appendEnd(b []byte, typ string, e streamEnd) []byte {
 	if e.oldest != nil {
 		b = append(b, `,"oldest":`...)
 		b = appendRef(b, e.oldest.Number, e.oldest.Hash)
+	}
+	if e.block != nil {
+		b = append(b, `,"block":`...)
+		b = appendRef(b, e.block.Number, e.block.Hash)
 	}
 	return append(b, '}')
 }

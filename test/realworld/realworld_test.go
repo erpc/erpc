@@ -102,6 +102,8 @@ func catalogue() []phaseSpec {
 		{"z3", 13101, []spec{z3()}},
 		{"streams", 13201, []spec{w1(), w2(), w3(), w4(), w5(), w6(), w7(), w8()}},
 		{"w9", 13301, []spec{w9()}},
+		{"streams-final", 13401, []spec{f1(), f2(), f3(), f4(), f5(), f7()}},
+		{"f6", 13501, []spec{f6()}},
 	}
 }
 

@@ -77,6 +77,9 @@ type extension struct {
 	byHash bool   // the next height's by-number answer did not link
 	busy   bool
 	atBase bool // the window below the head ends here, for good
+	// windowEnd: atBase because the window ended here; a final hold that
+	// grows the window down reopens it (holdFinal).
+	windowEnd bool
 	// capped: reorgWindow below the top of a tree without the pins. Fill
 	// goes on once the tree holds the pins, or while a Read waits on fill
 	// in it (fillRoots).
@@ -302,7 +305,7 @@ func (t *ChainTracker) nearTop(top, h *chainHeader) bool {
 func (t *ChainTracker) outside(e *extension, r *node, h *chainHeader, uncapped bool) bool {
 	switch {
 	case !t.keeps(nil, h, true):
-		e.atBase = true
+		e.atBase, e.windowEnd = true, true
 	case uncapped || t.nearTop(t.treeTop(r), h):
 		return false
 	default:
@@ -344,12 +347,13 @@ func (t *ChainTracker) extendRoots() {
 
 // fillsBelow reports whether fill fetches height n: within reorgWindow
 // blocks below the window's reference, or deeper while a Resumable tap is
-// open or a Read waits on fill. Only consumers that resume from their own
-// cursor read below reorgWindow, so the rest of the window is fetched for
-// them alone.
+// open or a Read waits on fill, or down to the final hold's base. Only
+// consumers that resume from their own cursor, or apply final blocks,
+// read below reorgWindow, so the rest of the window is fetched for them
+// alone.
 func (t *ChainTracker) fillsBelow(n uint64) bool {
 	ref := t.windowRef()
-	return ref == nil || n+uint64(t.window) >= ref.number || t.deepFill.Load() > 0
+	return ref == nil || n+uint64(t.window) >= ref.number || t.deepFill.Load() > 0 || t.finalHolds(n)
 }
 
 // windowRef is the header the window hangs from: the head, or the highest

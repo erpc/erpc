@@ -46,6 +46,11 @@ type ReadOpts struct {
 	// Pace is how often the tap needs a newer head: 0 every block. The
 	// tap's demand carries it (Taps.Pace); a Read ignores it.
 	Pace time.Duration
+	// HoldFinalized: the tap applies no block above Head.Finalized or
+	// Head.Safe, so while it is registered the feed also holds every
+	// header from Head.Finalized up, and fills down to it (streams spec
+	// §4). Past the hold's bound its Reads end OutOfRangeFinalitySpan.
+	HoldFinalized bool
 }
 
 // ChainFeed is the reader side of one tracker.
@@ -79,6 +84,9 @@ const (
 	// OutOfRangeReceiptsTimeout: a logs tap waited too long on one block's
 	// receipts (spec §9.2).
 	OutOfRangeReceiptsTimeout = "receipts_timeout"
+	// OutOfRangeFinalitySpan: a final tap's hold would keep more than its
+	// bound of headers below the window (streams spec §4).
+	OutOfRangeFinalitySpan = "finality_span"
 )
 
 // Why a tap ended; the reason label of erpc_tap_end_total.
@@ -88,6 +96,8 @@ const (
 	// TapEndStalled: a resumable tap waited the read wait while this
 	// instance lags (CT§10.2).
 	TapEndStalled = "stalled"
+	// TapEndFinalReverted: a reorg none tap saw a block it sent reverted.
+	TapEndFinalReverted = "final_reverted"
 	// TapEndDraining: the instance shuts down.
 	TapEndDraining = "draining"
 	// TapEndSlowClient: one write to the client took its write bound.

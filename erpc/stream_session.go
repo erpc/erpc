@@ -45,6 +45,14 @@ var (
 	errLogsReceiptsTimeout = indexer.OutOfRangeError{Reason: indexer.OutOfRangeReceiptsTimeout}
 )
 
+// finalRevertedError is a reorg none stream's end: a reorg reverted
+// block, a block the client applied (§3.4).
+type finalRevertedError struct{ block indexer.Cursor }
+
+func (e finalRevertedError) Error() string {
+	return "a reorg reverted a final block the client applied"
+}
+
 // streamWriteError is a write to the client that failed; slow: it spent
 // the write bound (10s), so the client is slow_client (§3.4).
 type streamWriteError struct {
@@ -83,6 +91,9 @@ type controlEncoder interface {
 	Heartbeat(hb streamHeartbeat) error
 	Status(state, reason string) error
 	End(e streamEnd) error
+	// Undo tells the client to drop every block above forkPoint (reorg
+	// undo).
+	Undo(forkPoint indexer.Cursor) error
 }
 
 // streamSession is one client stream (§2): its options, its feed
@@ -137,7 +148,7 @@ type streamSession struct {
 
 func newStreamSession(nw *Network, transport, kind, lane string, opts StreamOptions) *streamSession {
 	s := &streamSession{nw: nw, transport: transport, kind: kind, lane: lane, opts: opts, priorTop: -1,
-		sends: newTapSends(nw, lane, transport, kind), kick: make(chan struct{}, 1)}
+		sends: newTapSends(nw, lane, transport, kind, opts.Finality.label()), kick: make(chan struct{}, 1)}
 	if kind == indexer.SubTypeLogs {
 		s.sentHashes = make(map[uint64][32]byte, nw.chainTracker.ReorgWindow()+1)
 		if opts.From != nil {
@@ -262,12 +273,16 @@ func (s *streamSession) runOnce(ctx context.Context) *streamEnd {
 	if s.resumable {
 		feed = stallFeed{ChainFeed: feed, tracker: tracker, wait: streamStallWait.Load(), lastVote: s.nw.newestHashVoteAt}
 	}
-	o := indexer.ReadOpts{Resumable: s.resumable}
+	o := indexer.ReadOpts{Resumable: s.resumable, HoldFinalized: s.opts.Finality.final()}
 	if s.filter != nil {
 		o.MayMatch = s.filter.MayMatch
 	}
+	feed = gated(feed, s.nw, s.lane)
+	if s.opts.Finality.Kind != finalityLatest {
+		feed = finalityFeed{ChainFeed: feed, nw: s.nw, lane: s.lane, finality: s.opts.Finality}
+	}
 	var lag tapLag
-	err := s.nw.taps.RunChain(ctx, s.nw.Label(), s.transport, s.kind, gated(feed, s.nw, s.lane), start, o,
+	err := s.nw.taps.RunChain(ctx, s.nw.Label(), s.transport, s.kind, feed, start, o,
 		func(b indexer.Batch) (int, error) { return s.emit(ctx, &lag, b) })
 	return s.endOf(ctx, err)
 }
@@ -307,6 +322,10 @@ func (s *streamSession) endOf(ctx context.Context, err error) *streamEnd {
 	}
 	if errors.Is(err, errStreamStalled) {
 		return s.counted(streamEnd{reason: indexer.TapEndStalled})
+	}
+	var fr finalRevertedError
+	if errors.As(err, &fr) {
+		return s.counted(streamEnd{reason: indexer.TapEndFinalReverted, block: &fr.block})
 	}
 	return &streamEnd{err: err}
 }
@@ -380,6 +399,17 @@ func (s *streamSession) emit(ctx context.Context, lag *tapLag, b indexer.Batch) 
 			s.lagging.Store(false)
 		}
 	}
+	if len(b.Reverted) > 0 && s.opts.Reorg != reorgGeth && (s.delivered || s.opts.From != nil) {
+		fork := b.Reverted[len(b.Reverted)-1]
+		if s.opts.Reorg == reorgNone {
+			top := b.Reverted[0]
+			return 0, finalRevertedError{block: indexer.Cursor{Number: top.Number, Hash: top.Hash}}
+		}
+		if err := s.control.Undo(indexer.Cursor{Number: fork.Number - min(fork.Number, 1), Hash: fork.ParentHash}); err != nil {
+			return 0, err
+		}
+		s.beat.wrote()
+	}
 	if s.kind == indexer.SubTypeLogs {
 		return s.emitLogs(ctx, lag, b)
 	}
@@ -409,43 +439,47 @@ func (s *streamSession) emitHeads(ctx context.Context, lag *tapLag, b indexer.Ba
 	return len(b.Applied), nil
 }
 
-// emitLogs writes, for a reorg, the removed:true logs of each Reverted
-// block the client applied, newest first, then each Applied block's logs
-// and blockEnd.
+// emitLogs writes, for a reorg in geth mode, the removed:true logs of each
+// Reverted block the client applied, newest first, then each Applied
+// block's logs and blockEnd. In undo mode the undo before it told the
+// client.
 func (s *streamSession) emitLogs(ctx context.Context, lag *tapLag, b indexer.Batch) (int, error) {
 	tracker := s.nw.chainTracker
 	window := tracker.ReorgWindow()
-	// removed:true logs need the Reverted blocks' receipts, which the feed
-	// holds only reorgWindow deep.
-	need := 0
-	for _, blk := range b.Reverted {
-		if s.sentState(blk) != blockUnsent {
-			need++
+	if s.opts.Reorg != reorgGeth {
+		for _, blk := range b.Reverted {
+			s.forget(blk)
 		}
-	}
-	if need > window {
-		return 0, errLogsReorgDepth
-	}
-	for _, blk := range b.Reverted {
-		switch s.sentState(blk) {
-		case blockUnsent:
-			continue
-		case blockOtherSent:
-			h := s.sentHashes[blk.Number]
-			common.ViolateInvariant(s.nw.logger, s.nw.projectId, s.nw.Label(), common.InvariantRemovedUnsent).
-				Str("lane", s.lane).Uint64("block", blk.Number).Hex("blockHash", blk.Hash[:]).Hex("sentHash", h[:]).
-				Msg("logs tap reverts a block it never applied; it sends no removed:true for it")
-			continue
-		}
-		delete(s.sentHashes, blk.Number)
-		if int64(blk.Number) <= s.priorTop {
-			s.priorTop = int64(blk.Number) - 1
-		}
-		if logs := tracker.MatchedLogs(blk, s.filter); len(logs) > 0 {
-			if err := s.logs.Removed(blk, logs); err != nil {
-				return 0, err
+	} else {
+		// removed:true logs need the Reverted blocks' receipts, which the
+		// feed holds only reorgWindow deep.
+		need := 0
+		for _, blk := range b.Reverted {
+			if s.sentState(blk) != blockUnsent {
+				need++
 			}
-			s.beat.wrote()
+		}
+		if need > window {
+			return 0, errLogsReorgDepth
+		}
+		for _, blk := range b.Reverted {
+			switch s.sentState(blk) {
+			case blockUnsent:
+				continue
+			case blockOtherSent:
+				h := s.sentHashes[blk.Number]
+				common.ViolateInvariant(s.nw.logger, s.nw.projectId, s.nw.Label(), common.InvariantRemovedUnsent).
+					Str("lane", s.lane).Uint64("block", blk.Number).Hex("blockHash", blk.Hash[:]).Hex("sentHash", h[:]).
+					Msg("logs tap reverts a block it never applied; it sends no removed:true for it")
+				continue
+			}
+			s.forget(blk)
+			if logs := tracker.MatchedLogs(blk, s.filter); len(logs) > 0 {
+				if err := s.logs.Removed(blk, logs); err != nil {
+					return 0, err
+				}
+				s.beat.wrote()
+			}
 		}
 	}
 	s.reverted(b)
@@ -509,6 +543,14 @@ func (s *streamSession) sentState(blk indexer.Block) blockSentState {
 		return blockOtherSent
 	}
 	return blockUnsent
+}
+
+// forget drops a reverted block from what the client applied.
+func (s *streamSession) forget(blk indexer.Block) {
+	delete(s.sentHashes, blk.Number)
+	if int64(blk.Number) <= s.priorTop {
+		s.priorTop = int64(blk.Number) - 1
+	}
 }
 
 // reverted moves the client's cursor to a reorg's fork point.
@@ -632,7 +674,8 @@ func streamHeartbeatEvery(nw *Network, o StreamOptions) time.Duration {
 }
 
 // streamHeartbeat is a heartbeat's content now: the confirmed head and the
-// lane's Finalized; false before a confirmed head.
+// lane's Finalized and Safe (0 while not computed); false before a
+// confirmed head.
 func (n *Network) streamHeartbeat(lane string) (streamHeartbeat, bool) {
 	if n.chainTracker == nil {
 		return streamHeartbeat{}, false
@@ -641,7 +684,8 @@ func (n *Network) streamHeartbeat(lane string) (streamHeartbeat, bool) {
 	if !ok {
 		return streamHeartbeat{}, false
 	}
-	return streamHeartbeat{head: head, finalized: uint64(max(n.headFor(lane).Finalized, 0))}, true
+	h := n.headFor(lane)
+	return streamHeartbeat{head: head, finalized: uint64(max(h.Finalized, 0)), safe: uint64(max(h.Safe, 0))}, true
 }
 
 // tapLag is a ws tap's lag clock (CT§10.2): its next block is lagging

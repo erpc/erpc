@@ -131,6 +131,10 @@ func (e *wsStream) Status(state, reason string) error {
 	return e.control(streamStatus, func(b []byte) []byte { return appendStatus(b, "status", state, reason) })
 }
 
+func (e *wsStream) Undo(forkPoint indexer.Cursor) error {
+	return e.control(streamUndo, func(b []byte) []byte { return appendUndo(b, "undo", forkPoint) })
+}
+
 // End writes the end as the subscription's last message, then removes
 // the subscription; the connection stays (§5.2).
 func (e *wsStream) End(end streamEnd) error {
@@ -341,6 +345,7 @@ type streamMsgType uint8
 const (
 	streamData streamMsgType = iota
 	streamRemoved
+	streamUndo
 	streamBlockEnd
 	streamHeartbeatMsg
 	streamStatus
@@ -348,7 +353,7 @@ const (
 	streamMsgTypes
 )
 
-var streamMsgTypeNames = [streamMsgTypes]string{"data", "removed", "block_end", "heartbeat", "status", "end"}
+var streamMsgTypeNames = [streamMsgTypes]string{"data", "removed", "undo", "block_end", "heartbeat", "status", "end"}
 
 // streamMeter counts one stream's messages by type and its bytes; each
 // series binds on the stream's first message of it.

@@ -42,6 +42,7 @@ type Faults struct {
 	NoNewHeads    bool          // eth_subscribe newHeads answers unsupported
 	RefuseLatest  bool          // eth_getBlockByNumber(latest) answers unsupported
 	NoFinalized   bool          // the finalized and safe tags answer invalid, as on a chain with none
+	NoSafe        bool          // the safe tag answers invalid; finalized still answers
 	Slow          time.Duration // every answer waits this long
 	SlowReceipts  time.Duration // receipts and logs answers wait this long more
 	SlowHistory   time.Duration // answers by hash, and by number below its head, wait this long more
@@ -50,6 +51,7 @@ type Faults struct {
 	Ahead         uint64        // eth_blockNumber and the latest tag claim a head this far above its own
 	Syncing       bool          // eth_syncing answers in progress; still serves what it holds
 	FinalityDepth uint64        // finalized tag this far below its head; 0 is FinalizedLag
+	SafeDepth     uint64        // safe tag this far below its head; 0 is the finalized tag's depth
 	StaleState    uint64        // eth_call at latest (or no block) executes this far below its head; numbered calls are right
 	Forbidden     bool          // HTTP 403 with an HTML body on every call and ws upgrade, as a CDN ban or a revoked key
 	// Pruned: history more than this far below its head is gone, as on a
@@ -74,6 +76,7 @@ type Stats struct {
 	CapacityRefused                                                         int64 // calls a Capacity fault refused
 	ForbiddenLatest                                                         int64 // eth_getBlockByNumber(latest) calls a Forbidden fault refused
 	PrunedRefused                                                           int64 // calls or HTTP requests a Pruned fault answered null or 403
+	SafeCalls                                                               int64 // eth_getBlockByNumber(safe) calls, refused ones included
 }
 
 // Vendor is one simulated node of a chain, on its own listener.
@@ -110,7 +113,7 @@ type Vendor struct {
 
 	connects, headsSubs, pendingSubs, logsSubs, throttled, receiptsCalls  atomic.Int64
 	logsCalls, slowAnswers, forgedHeads, cappedLogs, subSeq, headsRefused atomic.Int64
-	capacityRefused, forbiddenLatest, prunedRefused, calls                atomic.Int64
+	capacityRefused, forbiddenLatest, prunedRefused, calls, safeCalls     atomic.Int64
 }
 
 // LatestCall is one eth_getBlockByNumber(latest) call a vendor answered.
@@ -307,7 +310,8 @@ func (v *Vendor) Stats() Stats {
 	return Stats{Calls: v.calls.Load(), Connects: v.connects.Load(), HeadsSubscribes: v.headsSubs.Load(), PendingSubscribes: v.pendingSubs.Load(),
 		LogsSubscribes: v.logsSubs.Load(), Throttled: v.throttled.Load(), HeadsRefused: v.headsRefused.Load(), ReceiptsCalls: v.receiptsCalls.Load(),
 		LogsCalls: v.logsCalls.Load(), SlowAnswers: v.slowAnswers.Load(), ForgedHeads: v.forgedHeads.Load(), CappedLogs: v.cappedLogs.Load(),
-		CapacityRefused: v.capacityRefused.Load(), ForbiddenLatest: v.forbiddenLatest.Load(), PrunedRefused: v.prunedRefused.Load()}
+		CapacityRefused: v.capacityRefused.Load(), ForbiddenLatest: v.forbiddenLatest.Load(), PrunedRefused: v.prunedRefused.Load(),
+		SafeCalls: v.safeCalls.Load()}
 }
 
 // ReceiptsOf are the eth_getBlockReceipts calls the vendor got for block h,
@@ -821,12 +825,18 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 			}
 			b = v.tip
 		case "finalized", "safe":
-			if c.cfg.NoFinalized || f.NoFinalized {
+			if tag == "safe" {
+				v.safeCalls.Add(1)
+			}
+			if c.cfg.NoFinalized || f.NoFinalized || tag == "safe" && f.NoSafe {
 				return nil, &rpcError{-32602, "invalid block number tag " + tag}
 			}
 			depth := uint64(FinalizedLag)
 			if f.FinalityDepth > 0 {
 				depth = f.FinalityDepth
+			}
+			if tag == "safe" && f.SafeDepth > 0 {
+				depth = f.SafeDepth
 			}
 			n := c.canon[0].Number
 			if v.tip.Number > depth && v.tip.Number-depth > n {

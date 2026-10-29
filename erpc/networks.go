@@ -115,6 +115,14 @@ type Network struct {
 	taps         *indexer.Taps
 	mempool      *mempool.Feed
 	bg           util.Goroutines
+
+	// safeTaps counts the open safe streams (openSafe): while any is, the
+	// safe loop polls the voters' safe tags and every lane computes
+	// Head.Safe (streams spec §4). safeStop ends the loop; safeMu orders
+	// its start and stop with the count.
+	safeTaps atomic.Int32
+	safeMu   sync.Mutex
+	safeStop context.CancelFunc
 }
 
 // wait waits, once the app ctx ended, until no goroutine of the network's
@@ -149,6 +157,12 @@ type servedTipLane struct {
 	moved atomic.Pointer[chan struct{}]
 	// reached is when Latest first reached each recent number.
 	reached latestReached
+	// finalMoved is closed and replaced when Finalized or Safe changes;
+	// finalReached and safeReached are when each first reached each
+	// recent number: a final tap's block is deliverable from then
+	// (finalityFeed).
+	finalMoved                atomic.Pointer[chan struct{}]
+	finalReached, safeReached latestReached
 	// sent is the highest block this instance's taps of the lane wrote,
 	// on any transport: a Latest below it is latest_regressed.
 	sent atomic.Uint64

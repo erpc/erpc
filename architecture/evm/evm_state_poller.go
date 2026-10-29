@@ -130,6 +130,17 @@ type EvmStatePoller struct {
 	// when a node is actively syncing and timestamp is always way in the past.
 	latestBlockShared data.CounterInt64SharedVariable
 
+	// safe is the upstream's safe tag as this instance last polled it
+	// (RefreshSafe), 0 before an answer and while the tag is refused: it
+	// is polled only while a safe stream is open (streams spec §4), so it
+	// is never shared. safeAt is when the last safe poll began; safeRun is
+	// closed when the poll in flight ends, nil while none is; safeMu
+	// guards both.
+	safe    atomic.Int64
+	safeMu  sync.Mutex
+	safeAt  time.Time
+	safeRun chan struct{}
+
 	// pollSrc is set once the network binds this poller as a poll source;
 	// while pollHeads is on, the poll loop Asks once per backed-off
 	// cadence (spec §6.8). pollWake starts a pass at once.
@@ -1025,6 +1036,67 @@ func (e *EvmStatePoller) RefreshFinalized(ctx context.Context) (polls bool) {
 	}
 	e.finalizedBlockShared.UpdateIfStale(ctx, e.finalizedDebounce(), e.fetchFinalized)
 	return true
+}
+
+// safePollTimeout bounds one safe poll, which runs on the app's context.
+const safePollTimeout = 30 * time.Second
+
+// RefreshSafe polls the upstream's safe tag when the last poll began
+// longer ago than the finalized debounce, or joins the poll in flight, and
+// waits for it until ctx ends (streams spec §4). The network calls it only
+// while a safe stream is open. polls is false for a null poller.
+func (e *EvmStatePoller) RefreshSafe(ctx context.Context) (polls bool) {
+	if e.IsObjectNull() {
+		return false
+	}
+	e.safeMu.Lock()
+	run := e.safeRun
+	if run == nil {
+		if time.Since(e.safeAt) < e.finalizedDebounce() {
+			e.safeMu.Unlock()
+			return true
+		}
+		run = make(chan struct{})
+		e.safeRun, e.safeAt = run, time.Now()
+		go e.pollSafe(run)
+	}
+	e.safeMu.Unlock()
+	select {
+	case <-run:
+	case <-ctx.Done():
+	}
+	return true
+}
+
+// pollSafe fetches the safe tag and closes run. A refusal leaves the
+// upstream no safe vote; a failure keeps the last one.
+func (e *EvmStatePoller) pollSafe(run chan struct{}) {
+	defer func() {
+		e.safeMu.Lock()
+		e.safeRun = nil
+		e.safeMu.Unlock()
+		close(run)
+	}()
+	ctx, cancel := context.WithTimeout(e.appCtx, safePollTimeout)
+	defer cancel()
+	b, err := e.fetchBlock(ctx, "safe", common.UpstreamPoliciesTimeoutOnly)
+	switch {
+	case err == nil && b.number > 0:
+		e.safe.Store(b.number)
+	case refusedPoll(err):
+		e.safe.Store(0)
+	default:
+		e.logger.Debug().Err(err).Msg("failed to get safe block number in evm state poller")
+	}
+}
+
+// SafeBlock is the upstream's safe tag as last polled; 0 before an answer
+// and while the tag is refused.
+func (e *EvmStatePoller) SafeBlock() int64 {
+	if e.IsObjectNull() {
+		return 0
+	}
+	return e.safe.Load()
 }
 
 // SuggestLatestBlock reports blockNumber as the upstream's latest, its

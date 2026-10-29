@@ -75,6 +75,8 @@ func (m *mockEvmStatePollerEnhanced) AskReaching(context.Context, int64, time.Du
 	return common.HeadAnswer{}
 }
 func (m *mockEvmStatePollerEnhanced) RefreshFinalized(context.Context) bool      { return true }
+func (m *mockEvmStatePollerEnhanced) RefreshSafe(context.Context) bool           { return true }
+func (m *mockEvmStatePollerEnhanced) SafeBlock() int64                           { return 0 }
 func (m *mockEvmStatePollerEnhanced) LatestReportAt() time.Time                  { return time.Time{} }
 func (m *mockEvmStatePollerEnhanced) LatestAskAt() time.Time                     { return time.Time{} }
 func (m *mockEvmStatePollerEnhanced) SetNetworkConfig(cfg *common.NetworkConfig) {}
@@ -654,6 +656,8 @@ func (m *mockEvmStatePollerWithCustomBehavior) AskReaching(context.Context, int6
 	return common.HeadAnswer{}
 }
 func (m *mockEvmStatePollerWithCustomBehavior) RefreshFinalized(context.Context) bool      { return true }
+func (m *mockEvmStatePollerWithCustomBehavior) RefreshSafe(context.Context) bool           { return true }
+func (m *mockEvmStatePollerWithCustomBehavior) SafeBlock() int64                           { return 0 }
 func (m *mockEvmStatePollerWithCustomBehavior) LatestReportAt() time.Time                  { return time.Time{} }
 func (m *mockEvmStatePollerWithCustomBehavior) LatestAskAt() time.Time                     { return time.Time{} }
 func (m *mockEvmStatePollerWithCustomBehavior) SetNetworkConfig(cfg *common.NetworkConfig) {}

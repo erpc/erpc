@@ -22,9 +22,10 @@ type tapSends struct {
 	delivery        prometheus.Observer
 }
 
-func newTapSends(nw *Network, selector, transport, kind string) *tapSends {
+// newTapSends times delivery under finality, the tap's finality label.
+func newTapSends(nw *Network, selector, transport, kind, finality string) *tapSends {
 	return &tapSends{nw: nw, selector: selector, lane: nw.laneFor(selector), transport: transport, kind: kind,
-		delivery: telemetry.ObserverHandle(telemetry.MetricTapDeliverySeconds, transport, kind)}
+		delivery: telemetry.ObserverHandle(telemetry.MetricTapDeliverySeconds, transport, kind, finality)}
 }
 
 // sendSnapshot is one decision to write a block: the tracker's state and

@@ -28,7 +28,48 @@ type StreamOptions struct {
 	Heartbeat time.Duration
 	// BlockEnd: a blockEnd after each applied block's logs.
 	BlockEnd bool
+	// Finality bounds what the stream applies; Reorg is how a reorg of
+	// blocks the client applied reaches it.
+	Finality StreamFinality
+	Reorg    streamReorg
 }
+
+// finalityKind is a finality mode (§3.1).
+type finalityKind uint8
+
+const (
+	finalityLatest finalityKind = iota
+	finalitySafe
+	finalityFinalized
+	finalityDepth
+)
+
+var finalityNames = [...]string{"latest", "safe", "finalized", "depth"}
+
+// StreamFinality is a stream's bound: the confirmed head, Head.Safe,
+// Head.Finalized, or the confirmed head − Depth.
+type StreamFinality struct {
+	Kind  finalityKind
+	Depth uint64
+}
+
+// final: the bound is Safe or Finalized, which the tracker's final hold
+// keeps in the window (§4).
+func (f StreamFinality) final() bool { return f.Kind == finalitySafe || f.Kind == finalityFinalized }
+
+// label is the finality label of erpc_tap_delivery_seconds.
+func (f StreamFinality) label() string { return finalityNames[f.Kind] }
+
+// streamReorg is a reorg mode (§3.1): geth sends new-branch heads and
+// removed:true logs; undo one undo message to the fork point; none ends
+// the stream final_reverted.
+type streamReorg uint8
+
+const (
+	reorgGeth streamReorg = iota
+	reorgUndo
+	reorgNone
+)
 
 // streamOption is one row of §3.1: its name, the kinds it applies to,
 // whether a ws URL may set it, and how its value sets StreamOptions.
@@ -63,6 +104,42 @@ var streamOptions = []streamOption{
 			return fmt.Errorf("must be true or false")
 		}
 		o.BlockEnd = b
+		return nil
+	}},
+	{name: "finality", kinds: []string{indexer.SubTypeNewHeads, indexer.SubTypeLogs}, url: true, set: func(o *StreamOptions, v any) error {
+		const want = "must be latest, safe, finalized or depth:N with N from 1"
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf(want)
+		}
+		switch s {
+		case "latest":
+			o.Finality = StreamFinality{Kind: finalityLatest}
+		case "safe":
+			o.Finality = StreamFinality{Kind: finalitySafe}
+		case "finalized":
+			o.Finality = StreamFinality{Kind: finalityFinalized}
+		default:
+			n, ok := strings.CutPrefix(s, "depth:")
+			d, err := strconv.ParseUint(n, 10, 64)
+			if !ok || err != nil || d == 0 {
+				return fmt.Errorf(want)
+			}
+			o.Finality = StreamFinality{Kind: finalityDepth, Depth: d}
+		}
+		return nil
+	}},
+	{name: "reorg", kinds: []string{indexer.SubTypeNewHeads, indexer.SubTypeLogs}, url: true, set: func(o *StreamOptions, v any) error {
+		switch v {
+		case "geth":
+			o.Reorg = reorgGeth
+		case "undo":
+			o.Reorg = reorgUndo
+		case "none":
+			o.Reorg = reorgNone
+		default:
+			return fmt.Errorf("must be geth, undo or none")
+		}
 		return nil
 	}},
 }
@@ -167,6 +244,9 @@ func parseStreamOptions(kind string, own map[string]any, defaults streamDefaults
 			return o, errStreamOption(opt.name, err.Error())
 		}
 		o.Extended = true
+	}
+	if o.Reorg == reorgNone && o.Finality.Kind != finalityFinalized {
+		return o, errStreamOption("reorg", "none needs finality finalized")
 	}
 	return o, nil
 }
