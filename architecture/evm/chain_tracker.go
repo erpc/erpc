@@ -3743,8 +3743,9 @@ func (nt *networkTrackers) get(n common.Network, groupKey, selector, lane string
 // ClientRequested starts n's state probes and an integrity follow tap per
 // tracker at the network's first client request, as main started its
 // follower and prober, and keeps them on (spec §6.11 Probe, §13): an idle
-// network sends no follow Asks and no probes. Every client request calls
-// it; after the first it reads one atomic.
+// network sends no follow Asks and no probes, and its trackers serve no
+// history for its integrity checks (readServed), so they walk nothing.
+// Every client request calls it; after the first it reads one atomic.
 func ClientRequested(n common.Network) {
 	nt := registeredTrackers(n)
 	if nt == nil || nt.requested.Load() {
@@ -3767,6 +3768,9 @@ func ClientRequested(n common.Network) {
 	}
 	for _, t := range nt.groups {
 		startFollow(nt, n, t)
+		// The tracker reads that history serves it now, before the first
+		// checked answer reaches it.
+		t.mb.put(trackerMsg{kind: msgTick})
 	}
 }
 

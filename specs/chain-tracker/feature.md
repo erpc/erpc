@@ -412,7 +412,7 @@ Each tracker runs one goroutine. It holds headers by hash; a header whose parent
 
 Fork choice:
 
-1. Hold: an empty tracker holds the first vote as a root. A vote more than `maxBackfill` after the head, by header time, becomes a root at once. Any other vote whose parent is not held is walked (§8, class 1): missing heights by number, each checked against the parentHash of the block above, and a mismatch fetched by hash from its sender. The walk stops at a held header, or after `reorgWindow` blocks, where its lowest header becomes a root. Client and integrity answers inside the window are held; they never walk. A tracker that no history serves (no open tap, integrity follow included, and no integrity check on its network that reads pins) walks and fills nothing: a vote whose parent is not held becomes a root at once and replaces the older trees, and that is no re-anchor. Its first tap or check starts history from its head.
+1. Hold: an empty tracker holds the first vote as a root. A vote more than `maxBackfill` after the head, by header time, becomes a root at once. Any other vote whose parent is not held is walked (§8, class 1): missing heights by number, each checked against the parentHash of the block above, and a mismatch fetched by hash from its sender. The walk stops at a held header, or after `reorgWindow` blocks, where its lowest header becomes a root. Client and integrity answers inside the window are held; they never walk. History serves a tracker from its first tap, integrity follow included, or, on a network whose integrity config runs a check that reads pins, from the network's first client request (`ClientRequested`), never from boot: the first checked client request, as main started its chain view (`f9d1885e` `hooks.go:175`, `integrity_chainview.go:795-801`). A tracker that no history serves walks and fills nothing: a vote whose parent is not held becomes a root at once and replaces the older trees, and that is no re-anchor. Its first tap or checked client request starts history from its head.
 2. Fill: every root is extended downward (§9) until it joins another tree, reaches the window base, names the all-zero parentHash (the chain's first block), or names a parent no upstream returns by hash in one full sweep: that root is final, never fetched below.
 3. Vote: a voter's hash vote moves to its newest header once that header is held; until then its previous vote stays. An ancestor of the current vote does not move it back; a lower header with a later timestamp is no ancestor (a chain that restarted lower, §19 C16).
 4. Choose: take the tree with the most votes; a tie keeps the tree of the pins, else takes the root with the highest block. In it, from the root, follow the child whose subtree holds the most votes; a tie keeps the pinned child; a block with no voted child follows its pinned child. Stop at a block with no child to follow, or at a tie with no pinned child. The last block followed is the head; the path from the root to it is the pins.
@@ -973,8 +973,8 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | Cross-instance | 9 | X1–X9 |
 | Config | 7 | K1–K7 |
 | HTTP consistency | 13 | P1–P12, P11-nitro |
-| Vendor cost | 2 | Z1–Z2 |
-| Total | 85 | |
+| Vendor cost | 3 | Z1–Z3 |
+| Total | 86 | |
 
 | ID | Setup and fault | Expected |
 |---|---|---|
@@ -1063,6 +1063,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | P12 | 0.3s blocks; clients ask `eth_getLogs` and `eth_getBlockByNumber` 1–5 blocks above every vendor's head, through consensus slots and hedges, with fresh reports and with one vendor's reports older than 1 bt; one slot's upstream misses a block at or below `Latest` | each answered once the chain reaches its block, within W, with no block-unavailable error; the missing slot retries in head-first order and its siblings are not stopped; a block more than W of chain ahead gets an error: refused, counted `future`, or after the band's retry when a report stays older than 1 bt |
 | Z1 | 1 instance; 4 https vendors of 4 vendors, none a source; 0.25s blocks; full poll every 10s; integrity off; no client | no settle, fork poll or demotion; vendor calls per block at most main's (0.200) + 10% |
 | Z2 | Z1 with one client `eth_getBlockByNumber(latest)` per second | no tie settle, fork refresh or demotion |
+| Z3 | Z1 with integrity on and no client request, boot included; then one `latest` request | no walk fetch (`erpc_chain_tracker_fetch_total{class="head"}`) before the request; walks after it |
 
 - The in-process chaos test `TestChainFeed_ConvergesUnderFaults` (`erpc/chain_feed_test.go`) stays as the fast CI test and uses the `test/chainsim` simulator. Panic recovery (`TrackerMessageHook`) is tested only there: no black-box trigger exists.
 

@@ -90,13 +90,14 @@ func (t *ChainTracker) canFetch() bool {
 }
 
 // readServed reads whether history serves the tracker (spec §6.5 rule 1):
-// a tap is open on it, or its network runs an integrity check that reads
-// its history. A tracker that history starts serving extends its roots
-// from the head.
+// a tap is open on it, or its network has had a client request
+// (ClientRequested) and runs an integrity check that reads its history,
+// as main started its chain view at the first checked request. A tracker
+// that history starts serving extends its roots from the head.
 func (t *ChainTracker) readServed() {
 	served := t.taps.Load() > 0
 	if !served && t.network != nil {
-		if nt := registeredTrackers(t.network); nt != nil {
+		if nt := registeredTrackers(t.network); nt != nil && nt.requested.Load() {
 			served = nt.headerChecksOf(t.network).readsHistory
 		}
 	}

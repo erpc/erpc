@@ -54,6 +54,7 @@ var (
 	tieSettles  = costProbe{"erpc_chain_tracker_settle_total", map[string]string{"reason": "tie"}}
 	forkSettles = costProbe{"erpc_chain_tracker_settle_total", map[string]string{"reason": "fork"}}
 	refreshAsks = costProbe{"erpc_head_ask_total", map[string]string{"reason": "refresh"}}
+	headFetches = costProbe{"erpc_chain_tracker_fetch_total", map[string]string{"class": "head"}}
 )
 
 // vendorCalls are the JSON-RPC calls every vendor answered.
@@ -169,4 +170,30 @@ func z2() spec {
 			s.violate(s.name, "pod-1: %v tie settle rounds on a tracker that does not walk", inc[0])
 		}
 	})
+}
+
+// Z3: Z1 with integrity on, which reads the tracker's history, and no
+// client request at all, the pod's boot included. History starts at the
+// network's first client request, as main started its chain view
+// (§6.5 rule 1): until then the tracker walks nothing; that request starts
+// the walks.
+func z3() spec {
+	sp := costSpec("Z3", true, nil, func(s *scenario) {
+		time.Sleep(costWarm)
+		perBlock, inc := s.costSpan(costMeasure, headFetches)
+		s.logf("Z3: %.3f vendor calls per block; head-class fetches %v with no client", perBlock, inc[0])
+		if inc[0] > 0 {
+			s.violate(s.name, "pod-1: %v head-class fetches (walks) before any client request", inc[0])
+		}
+		before, _ := s.metric(0, headFetches.name, headFetches.labels)
+		var res map[string]interface{}
+		if err := s.call(0, &res, "eth_getBlockByNumber", "latest", false); err != nil {
+			s.violate(s.name, "pod-1: the first client request failed: %v", err)
+		}
+		if v, ok := s.waitMetric(0, headFetches.name, headFetches.labels, 3*costFullPoll, func(v float64) bool { return v > before }); !ok {
+			s.violate(s.name, "pod-1: head-class fetches stayed %v for %s after the first client request", v, 3*costFullPoll)
+		}
+	})
+	sp.idle = true
+	return sp
 }
