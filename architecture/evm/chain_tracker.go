@@ -1426,15 +1426,18 @@ func (t *ChainTracker) decidedAnswers(base []voter) []voter {
 	return t.settleAnswers(s, base)
 }
 
-// choose moves the pins to rule 4's path; a tie, or a no-source answer
-// that conflicts with the pins, starts a settle round when one may start.
+// choose moves the pins to rule 4's path; a tie on a tracker that walks,
+// or a no-source answer that conflicts with the pins, starts a settle
+// round when one may start. A tracker that does not walk takes rule 4's
+// tie-break: its roots never link, so a tie there is the usual state of a
+// chain faster than its polls, not a fork (spec §6.5 rule 5).
 func (t *ChainTracker) choose() {
 	path, tie, conflict := t.decide()
 	if path == nil {
 		return
 	}
 	switch {
-	case len(tie) > 0:
+	case len(tie) > 0 && t.extends():
 		if t.startDispute(t.tieKey(tie), "", settleTie) {
 			return
 		}

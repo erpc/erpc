@@ -50,6 +50,8 @@ type costProbe struct {
 }
 
 var (
+	settles     = costProbe{"erpc_chain_tracker_settle_total", nil}
+	tieSettles  = costProbe{"erpc_chain_tracker_settle_total", map[string]string{"reason": "tie"}}
 	forkSettles = costProbe{"erpc_chain_tracker_settle_total", map[string]string{"reason": "fork"}}
 	refreshAsks = costProbe{"erpc_head_ask_total", map[string]string{"reason": "refresh"}}
 )
@@ -121,16 +123,50 @@ func (s *scenario) requireNoForkEvidence(forkSettles float64) {
 }
 
 // Z1: idle, integrity off, no client. The tracker does not walk, so each
-// poll's vote is a root of its own, above the head or below it; none is
-// evidence of a fork.
+// poll's vote is a root of its own, above the head or below it: none is
+// evidence of a fork, and a tie between them is rule 4's to break, with
+// no settle. The pod costs its vendors at most main's calls per block
+// plus 10%.
 func z1() spec {
 	return costSpec("Z1", false, nil, func(s *scenario) {
 		time.Sleep(costWarm)
-		perBlock, inc := s.costSpan(costMeasure, forkSettles, refreshAsks)
-		s.logf("Z1: %.3f vendor calls per block; fork settles %v, refresh Asks %v", perBlock, inc[0], inc[1])
-		s.requireNoForkEvidence(inc[0])
-		if inc[1] > 0 {
-			s.violate(s.name, "pod-1: %v fork polls (refresh Asks) with no client", inc[1])
+		perBlock, inc := s.costSpan(costMeasure, settles, forkSettles, refreshAsks)
+		s.logf("Z1: %.3f vendor calls per block (main %.3f); settles %v, fork settles %v, refresh Asks %v", perBlock, costMainPerBlock, inc[0], inc[1], inc[2])
+		s.requireNoForkEvidence(inc[1])
+		if inc[2] > 0 {
+			s.violate(s.name, "pod-1: %v fork polls (refresh Asks) with no client", inc[2])
+		}
+		if inc[0] > 0 {
+			s.violate(s.name, "pod-1: %v settle rounds on an idle tracker that does not walk", inc[0])
+		}
+		if limit := costMainPerBlock * 1.1; perBlock > limit {
+			s.violate(s.name, "pod-1: %.3f vendor calls per block, above main's %.3f + 10%%", perBlock, costMainPerBlock)
+		}
+	})
+}
+
+// Z2: Z1 with one client asking `latest` every second. Its pre-forward
+// refreshes vote too (§6.8), and still no tie settles and nothing is
+// demoted.
+func z2() spec {
+	clients := func(s *scenario) {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			for s.ctx.Err() == nil {
+				var res map[string]interface{}
+				_ = s.call(0, &res, "eth_getBlockByNumber", "latest", false)
+				sleepCtx(s.ctx, time.Second)
+			}
+		}()
+	}
+	return costSpec("Z2", false, clients, func(s *scenario) {
+		time.Sleep(costWarm)
+		perBlock, inc := s.costSpan(costMeasure, tieSettles, forkSettles)
+		s.logf("Z2: %.3f vendor calls per block; tie settles %v, fork settles %v", perBlock, inc[0], inc[1])
+		s.requireNoForkEvidence(inc[1])
+		if inc[0] > 0 {
+			s.violate(s.name, "pod-1: %v tie settle rounds on a tracker that does not walk", inc[0])
 		}
 	})
 }

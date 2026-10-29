@@ -873,13 +873,15 @@ func (n *settleNetwork) forkAsks() int {
 
 // A non-voter's settle answer is one more vote for its decision only
 // (spec §6.5 rule 5): once the voters leave that tie for a branch that forks
-// below it, the answers no longer hold the pins on the old winner.
+// below it, the answers no longer hold the pins on the old winner. A tap
+// makes the tracker walk: one that does not walk settles no tie.
 func TestSettleAnswersCountForTheirDecisionOnly(t *testing.T) {
 	x := testHeader(11, testHash("aa", 11), testHash("0", 10))
 	net := newSettleNetwork(t, HashVoters{Voters: []string{"a", "b"}, Hash: []string{"a", "b"}, Need: 2, Others: []string{"c", "d", "e"},
 		Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "d": "vendor-d", "e": "vendor-e"}, Distinct: 5}},
 		map[string]json.RawMessage{"c": x, "d": x, "e": x})
 	c := newChainTracker(t.Context(), net, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+	t.Cleanup(c.Want(indexer.ReadOpts{}))
 	voteChain(t, c, "a", "0", 0, 10, testHash("f", 0))
 	voteChain(t, c, "b", "0", 0, 10, testHash("f", 0))
 
