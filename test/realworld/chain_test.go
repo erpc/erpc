@@ -46,10 +46,13 @@ const (
 	// c16ResetHead: every vendor's head after it (§19 C16). c16Follow:
 	// Latest follows a fall past the regression guard's 1024 blocks once
 	// the guard's 60s hold fails open (§6.4, erpc/networks.go
-	// servedTipRegressionTTL), plus 60s.
+	// servedTipRegressionTTL), plus 60s. c16FullPoll: statePollerInterval's
+	// default, the full poll that moves the counter of an upstream no
+	// source, Ask or client request moves (§6.8).
 	c16First     = 5_000_000
 	c16ResetHead = 10
 	c16Follow    = 2 * time.Minute
+	c16FullPoll  = 30 * time.Second
 
 	// c17Halt: C17's chain makes no block this long, past maxBackfill
 	// (§19 C17). Then c17Blocks blocks come one at a time, each up to
@@ -365,7 +368,18 @@ func c16() spec {
 		allow: []string{"ws:logs-end", "ws:jump", "grpc:OutOfRange"},
 		body: func(s *scenario) {
 			s.blocks(25)
-			old := s.probeAt(s.chain.Tip().Number - chainsim.FinalizedLag - 20)
+			// Finalized trails the vendors' tag by up to one full poll
+			// (§6.5); a request naming the tag waits for its refresh (§6.4).
+			fin := s.chain.Tip().Number - chainsim.FinalizedLag
+			for pod := range s.h.pods {
+				b := s.blockOf(s.blockAnswer(pod, "", "eth_getBlockByNumber", "finalized", false))
+				if b == nil {
+					s.violate(s.name, "pod-%d: eth_getBlockByNumber(finalized) answered no block", pod+1)
+					return
+				}
+				fin = min(fin, b.Number)
+			}
+			old := s.probeAt(fin - 20)
 			if old == nil {
 				s.violate("harness", "no old block below the finalized tag holds transactions")
 				return
@@ -414,9 +428,9 @@ func c16() spec {
 					last = t
 				}
 			}
-			// Taps restart once Latest follows; ws logs close 1013 over
-			// logsCloseSpread (§10.2).
-			s.endExcuse(ex, last.Add(logsCloseSpread+reconnectSlack))
+			// Taps restart once the pins re-anchor, after Latest follows,
+			// within c16Follow; ws logs then close 1013 over
+			// logsCloseSpread from their end (§10.2).
 			time.Sleep(time.Until(last.Add(logsCloseSpread + reconnectSlack)))
 			s.requireCountersFollow()
 			for pod := range s.h.pods {
@@ -442,11 +456,18 @@ func c16() spec {
 			for _, c := range s.logs {
 				taps = append(taps, &c.clientBase)
 			}
-			for _, c := range taps {
+			restarted := func(c *clientBase) bool {
 				c.mu.Lock()
-				restarted := slices.ContainsFunc(c.deliveries, func(d delivery) bool { return d.number < c16First && d.at.After(at) })
-				c.mu.Unlock()
-				if !restarted {
+				defer c.mu.Unlock()
+				return slices.ContainsFunc(c.deliveries, func(d delivery) bool { return d.number < c16First && d.at.After(at) })
+			}
+			waiting := func(c *clientBase) bool { return !restarted(c) }
+			for tapsBy := at.Add(c16Follow + logsCloseSpread + reconnectSlack); time.Now().Before(tapsBy) && slices.ContainsFunc(taps, waiting); {
+				time.Sleep(scrapeEvery)
+			}
+			s.endExcuse(ex, time.Now())
+			for _, c := range taps {
+				if !restarted(c) {
 					s.violate(c.name, "received no block of the new chain within %s of the reset", time.Since(at).Round(time.Second))
 				}
 			}
@@ -460,22 +481,23 @@ func c16() spec {
 }
 
 // requireCountersFollow: on every pod, each upstream's latest block, and
-// its shared counter, reach the chain's tip within W and stand at or
-// below it: no instance keeps a counter of the old chain (§14).
+// its shared counter, reach the chain's tip within one full poll and stand
+// at or below it: no instance keeps a counter of the old chain (§14).
 func (s *scenario) requireCountersFollow() {
 	near := func(v float64) bool {
 		tip := s.chain.Tip().Number
 		return uint64(v) <= tip && uint64(v)+headSlackBlocks >= tip
 	}
+	within := c16FullPoll + liveBound + reconnectSlack
 	for key := range s.vendors {
 		up := s.upstream(key)
 		for pod := range s.h.pods {
-			if v, ok := s.waitMetric(pod, "erpc_upstream_latest_block_number", map[string]string{"upstream": up}, liveBound+reconnectSlack, near); !ok {
+			if v, ok := s.waitMetric(pod, "erpc_upstream_latest_block_number", map[string]string{"upstream": up}, within, near); !ok {
 				s.violate(s.name, "pod-%d: %s's latest block %v, not within %d of the tip %d", pod+1, up, v, headSlackBlocks, s.chain.Tip().Number)
 			}
 		}
 		redisKey := upstreamCounterKey(s.upSpec(key), "latestBlock")
-		deadline := time.Now().Add(liveBound + reconnectSlack)
+		deadline := time.Now().Add(within)
 		for {
 			st, err := s.h.redis.counter(redisKey)
 			if err == nil && near(float64(st.Value)) {

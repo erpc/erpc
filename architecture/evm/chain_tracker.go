@@ -877,9 +877,12 @@ func (t *ChainTracker) head() *chainHeader {
 // and for the network-wide tracker every header whose timestamp is within
 // maxBackfill of ref's. A header without a timestamp gets the floor only.
 func (t *ChainTracker) holds(ref, h *chainHeader) bool {
-	if h.number+uint64(t.window) >= ref.number {
-		return true
-	}
+	return h.number+uint64(t.window) >= ref.number || t.backfills(ref, h)
+}
+
+// backfills reports whether h's timestamp lies within maxBackfill at or
+// below ref's, on the network-wide tracker.
+func (t *ChainTracker) backfills(ref, h *chainHeader) bool {
 	return t.backfill > 0 && h.timestamp > 0 && ref.timestamp >= h.timestamp &&
 		time.Duration(ref.timestamp-h.timestamp)*time.Second <= t.backfill
 }
@@ -1922,9 +1925,11 @@ func (t *ChainTracker) RevertedFinal(n int64) bool {
 }
 
 // evict drops every held header outside its tree's window (keeps), every
-// tree above the head that holds no vote or awaited answer, and the
-// receipts of blocks more than reorgWindow below the head. The floor of
-// reorgWindow blocks stays through a chain halt.
+// tree above the head that holds no vote or awaited answer, unless its
+// top's timestamp is within the window (§9): the branch a re-anchor down
+// left, which a tap whose cursor it holds must read to its end (§10.1),
+// and the receipts of blocks more than reorgWindow below the head. The
+// floor of reorgWindow blocks stays through a chain halt.
 func (t *ChainTracker) evict() {
 	ref := t.windowRef()
 	if ref == nil {
@@ -1934,16 +1939,16 @@ func (t *ChainTracker) evict() {
 	var voted map[*node]bool
 	var out []*node
 	for r := range t.exts {
+		var top *chainHeader
+		if r != pinRoot {
+			top = t.treeTop(r)
+		}
 		unvotedAbove := false
-		if head != nil && r != pinRoot && r.h.number > head.number {
+		if head != nil && r != pinRoot && r.h.number > head.number && !t.backfills(head, top) {
 			if voted == nil {
 				voted = t.rootsHolding(true)
 			}
 			unvotedAbove = !voted[r]
-		}
-		var top *chainHeader
-		if r != pinRoot {
-			top = t.treeTop(r)
 		}
 		t.walkTree(r, func(n *node) {
 			if unvotedAbove || !t.keeps(top, n.h, r == pinRoot) {
@@ -2757,38 +2762,46 @@ func (t *ChainTracker) applied(s *feedState, from uint64, rr *readReceipts) inde
 // parent of the lowest pin, the fork point: h's branch reverts down to it
 // and the confirmed pins above it apply. A branch that only extends the
 // head, or a fork point at or above the confirmed head, waits instead. Or
-// it meets its tree's root: unlinked.
+// it meets its tree's root: unlinked, which sends nothing, so it waits on
+// no receipts of the branch (spec §10.1).
 func (t *ChainTracker) revert(s *feedState, tr *treeState, h *chainHeader, rr *readReceipts) (indexer.Batch, readStep, error) {
-	var reverted []indexer.Block
+	var branch []*chainHeader
+	var from uint64
 	for x := h; ; {
+		branch = append(branch, x)
+		p := s.pinAt(x.number - 1)
+		if x.number == s.base && x.parentHash == s.pins[0].parentHash {
+			from = s.base
+			break
+		}
+		if x.number == 0 {
+			return t.unlinked(tr, x)
+		}
+		if p != nil && p.hash == x.parentHash {
+			from = p.number + 1
+			break
+		}
+		parent := t.heldHeader(x.parentHash)
+		if parent == nil || parent.number+1 != x.number {
+			return t.unlinked(tr, x)
+		}
+		x = parent
+	}
+	reverted := make([]indexer.Block, 0, len(branch))
+	for _, x := range branch {
 		blk := x.block()
 		if rr.lacks(t, x, &blk) {
 			rr.missing = x
 			return indexer.Batch{}, readWaitPins, nil
 		}
 		reverted = append(reverted, blk)
-		var b indexer.Batch
-		switch p := s.pinAt(x.number - 1); {
-		case x.number == s.base && x.parentHash == s.pins[0].parentHash:
-			b = t.applied(s, s.base, rr)
-		case x.number == 0:
-			return t.unlinked(tr, x)
-		case p != nil && p.hash == x.parentHash:
-			b = t.applied(s, p.number+1, rr)
-		default:
-			parent := t.heldHeader(x.parentHash)
-			if parent == nil || parent.number+1 != x.number {
-				return t.unlinked(tr, x)
-			}
-			x = parent
-			continue
-		}
-		if len(b.Applied) == 0 {
-			return indexer.Batch{}, readWaitPins, nil
-		}
-		b.Reverted = reverted
-		return b, readWaitPins, nil
 	}
+	b := t.applied(s, from, rr)
+	if len(b.Applied) == 0 {
+		return indexer.Batch{}, readWaitPins, nil
+	}
+	b.Reverted = reverted
+	return b, readWaitPins, nil
 }
 
 // unlinked is a held cursor whose tree, rooted at root, does not hold the
