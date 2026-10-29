@@ -1644,15 +1644,41 @@ func TestWebSocket_GracefulShutdown(t *testing.T) {
 
 		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
 		require.NotNil(t, resp["result"])
+		// An extended subscription ends draining before the close (streams
+		// spec §3.4); the standard one gets the close only.
+		resp = sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":2,"method":"eth_subscribe","params":["newHeads",{"erpc":{}}]}`)
+		extended, _ := resp["result"].(string)
+		require.NotEmpty(t, extended, "extended subscribe: %v", resp)
 
 		cleanup()
 
 		// After shutdown, the client connection should be closed
-		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		_, _, err := conn.ReadMessage()
+		var ends []map[string]interface{}
+		var err error
+		for {
+			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			var raw []byte
+			if _, raw, err = conn.ReadMessage(); err != nil {
+				break
+			}
+			var m struct {
+				Method string `json:"method"`
+				Params struct {
+					Subscription string                 `json:"subscription"`
+					Result       map[string]interface{} `json:"result"`
+				} `json:"params"`
+			}
+			require.NoError(t, json.Unmarshal(raw, &m))
+			if m.Method == "erpc_subscription" && m.Params.Result["type"] == "end" {
+				assert.Equal(t, extended, m.Params.Subscription)
+				ends = append(ends, m.Params.Result)
+			}
+		}
 		var closeErr *websocket.CloseError
 		require.ErrorAs(t, err, &closeErr)
 		assert.Equal(t, websocket.CloseGoingAway, closeErr.Code)
+		require.Len(t, ends, 1, "one end before the close")
+		assert.Equal(t, "draining", ends[0]["reason"])
 	})
 
 	// Verifies all connections are closed when the server shuts down

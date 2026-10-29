@@ -108,9 +108,19 @@ func (sm *SubscriptionManager) Subscribe(
 	}
 
 	subType := wsclient.ExtractSubscriptionType(jrReq.Params)
+	params, own, err := splitStreamParams(jrReq.Params)
+	var opts StreamOptions
+	if err == nil {
+		opts, err = parseStreamOptions(subType, own, wsc.streamDefaults)
+	}
+	if err != nil {
+		err = common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument, err.Error(), nil, nil)
+		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
+		return nil, nil, err
+	}
 	var logsFilter *logfilter.LogsFilter
 	if subType == indexer.SubTypeLogs {
-		if logsFilter, err = parseLogsSubscribe(jrReq.Params); err != nil {
+		if logsFilter, err = parseLogsSubscribe(params); err != nil {
 			sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 			return nil, nil, err
 		}
@@ -135,7 +145,7 @@ func (sm *SubscriptionManager) Subscribe(
 	var variant string
 	releaseVariant := func() {}
 	if kind == wsclient.KindPendingTx {
-		if variant, releaseVariant, err = sm.openPendingVariant(ctx, nw, jrReq.Params); err != nil {
+		if variant, releaseVariant, err = sm.openPendingVariant(ctx, nw, params); err != nil {
 			sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 			return nil, nil, err
 		}
@@ -160,21 +170,37 @@ func (sm *SubscriptionManager) Subscribe(
 		var sub wsclient.Subscription
 		if sub, opened, addErr = conn.AddSubscription(clientSubID, key, kind, maxSubs, stop); addErr == nil {
 			lane := laneSelector(nq)
+			// An extended tap's end at shutdown is written before the
+			// connection closes (WsConnection.teardown).
+			goTap := func(run func()) {
+				if !opts.Extended {
+					nw.bg.Go(run)
+					return
+				}
+				wsc.ends.Add(1)
+				if !nw.bg.Go(func() { defer wsc.ends.Done(); run() }) {
+					wsc.ends.Done()
+				}
+			}
 			switch kind {
 			case wsclient.KindLog:
 				head := nw.chainTracker.HeadAsOf()
-				nw.bg.Go(func() { sm.runLogs(tapCtx, wsc, sub, opened, nw, lane, head, logsFilter) })
+				goTap(func() {
+					sm.runWsTap(tapCtx, wsc, sub, opened, nw, lane, indexer.SubTypeLogs, head, logsFilter, opts)
+				})
 			case wsclient.KindPendingTx:
 				release := releaseVariant
 				releaseVariant = func() {}
 				from := nw.mempool.Tail(variant)
-				nw.bg.Go(func() {
+				goTap(func() {
 					defer release()
-					sm.runPendingTxs(tapCtx, wsc, sub, opened, nw, variant, from)
+					sm.runPendingTxs(tapCtx, wsc, sub, opened, nw, variant, from, opts)
 				})
 			default:
 				head := nw.chainTracker.HeadAsOf()
-				nw.bg.Go(func() { sm.runNewHeads(tapCtx, wsc, sub, opened, nw, lane, head) })
+				goTap(func() {
+					sm.runWsTap(tapCtx, wsc, sub, opened, nw, lane, indexer.SubTypeNewHeads, head, nil, opts)
+				})
 			}
 		} else {
 			stop()
@@ -249,6 +275,12 @@ func (sm *SubscriptionManager) Unsubscribe(
 		kind, existed = conn.RemoveSubscription(clientSubID)
 	}
 	if !existed {
+		// A subscription whose stream ended answers false (streams spec
+		// §5.2).
+		if conn != nil && conn.Ended(clientSubID) {
+			sm.recordSuccessMetrics(project, nw, method, reqFinality, start, nq)
+			return newJsonRpcResultResponse(nq, jrReq, []byte("false")), nil
+		}
 		err := common.NewErrSubscriptionNotFound(clientSubID)
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 		return nil, err
@@ -259,6 +291,17 @@ func (sm *SubscriptionManager) Unsubscribe(
 
 	sm.recordSuccessMetrics(project, nw, method, reqFinality, start, nq)
 	return newJsonRpcResultResponse(nq, jrReq, []byte("true")), nil
+}
+
+// endSubscription removes a subscription its stream ended (streams spec
+// §5.2); its connection stays.
+func (sm *SubscriptionManager) endSubscription(wsc *WsConnection, clientSubID string) {
+	sm.connMu.Lock()
+	conn := sm.conns[wsc.id]
+	sm.connMu.Unlock()
+	if conn != nil && conn.End(clientSubID) {
+		sm.activeSubs.Add(-1)
+	}
 }
 
 // CleanupConnection removes every subscription of a closed connection.

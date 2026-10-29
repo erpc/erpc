@@ -503,7 +503,7 @@ func (s *chaosSeed) streamAhead() {
 		err error
 		in  time.Duration
 	}
-	readWait := streamBlocksReadWait.Load()
+	readWait := streamStallWait.Load()
 	stalled := make(chan stallEnd, 1)
 	go func() {
 		opened := time.Now()
@@ -537,7 +537,7 @@ func (s *chaosSeed) streamAhead() {
 	}
 	st := <-stalled
 	require.Equal(s.t, codes.Unavailable, status.Code(st.err), "a resume that waits past the read wait with vendors held: %v", st.err)
-	require.Contains(s.t, status.Convert(st.err).Message(), errStreamBlocksStalled.Error())
+	require.Contains(s.t, status.Convert(st.err).Message(), errStreamStalled.Error())
 	require.Empty(s.t, st.got, "the stalled resume sends nothing")
 	require.GreaterOrEqual(s.t, st.in, readWait, "the stalled resume waits the read wait")
 	_, _, held := s.hook.firstHeader(tr)

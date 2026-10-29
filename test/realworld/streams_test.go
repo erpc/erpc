@@ -81,7 +81,7 @@ type extControl struct {
 
 // extResult is an erpc_subscription result (§5.2).
 type extResult struct {
-	Type   string `json:"type"`
+	Type   string  `json:"type"`
 	Block  *extRef `json:"block"`
 	Logs   int     `json:"logs"`
 	Head   *extRef `json:"head"`

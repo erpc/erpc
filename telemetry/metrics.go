@@ -638,6 +638,37 @@ var (
 		Buckets:   []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60},
 	}, []string{"transport", "kind"})
 
+	MetricStreamMessagesTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "stream_messages_total",
+		Help:      "Messages streams wrote to clients, by type (data, removed, block_end, heartbeat, status, end).",
+	}, []string{"project", "network", "transport", "kind", "type"})
+
+	MetricStreamBytesTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "stream_bytes_total",
+		Help:      "Bytes streams wrote to clients, after compression.",
+	}, []string{"project", "network", "transport", "kind"})
+
+	MetricStreamResumeTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "stream_resume_total",
+		Help:      "Streams opened from a client's cursor, by outcome (replayed, at_head, out_of_range).",
+	}, []string{"project", "network", "transport", "kind", "outcome"})
+
+	MetricStreamReplayBlocks = DefineLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "stream_replay_blocks",
+		Help:      "Blocks a resumed stream's cursor stood behind the confirmed head when it opened.",
+		Buckets:   []float64{0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 4096, 16384},
+	}, []string{"project", "network", "transport", "kind"})
+
+	MetricStreamStatusTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "stream_status_total",
+		Help:      "Stream status transitions, by the state entered (ok, degraded, lagging).",
+	}, []string{"project", "network", "transport", "kind", "state"})
+
 	// MetricIntegrityCheck counts EVERY integrity check evaluation by outcome:
 	// pass (ran, no violation), skip (could not evaluate — unmodeled field /
 	// hashes-only response / missing data), reject (failed → response failed

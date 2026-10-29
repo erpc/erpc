@@ -68,6 +68,16 @@ type WsConnection struct {
 
 	// subsClosed is guarded by SubscriptionManager.connMu.
 	subsClosed bool
+
+	// streamDefaults are the stream options of the upgrade URL, every
+	// subscription's defaults (streams spec §5.1).
+	streamDefaults streamDefaults
+	// draining is closed at instance shutdown, before the connection
+	// closes: extended subscriptions write their end draining, and
+	// teardown waits for them (ends) before the close.
+	draining  chan struct{}
+	drainOnce sync.Once
+	ends      sync.WaitGroup
 }
 
 // handleWebSocket upgrades an HTTP connection to WebSocket and runs the
@@ -81,6 +91,12 @@ func (s *HttpServer) handleWebSocket(
 	chainId string,
 ) {
 	wsCfg := s.serverCfg.WebSocket
+
+	defaults, err := parseStreamURL(r.URL.Query())
+	if err != nil {
+		writeStreamOptionRefusal(w, err)
+		return
+	}
 
 	// Checked before the upgrade so a refused client gets a plain 429.
 	clientIP := s.resolveRealClientIP(r)
@@ -122,8 +138,10 @@ func (s *HttpServer) handleWebSocket(
 		httpReq:      r,
 		costFrames:   s.costHeadersEnabled() && r.Header.Get(headerCostFrames) == "1",
 		sem:          make(chan struct{}, wsCfg.MaxConcurrentRequestsPerConnection),
-		stopped:      make(chan struct{}),
-		done:         make(chan struct{}),
+		stopped:        make(chan struct{}),
+		done:           make(chan struct{}),
+		streamDefaults: defaults,
+		draining:       make(chan struct{}),
 	}
 
 	lg.Info().Str("connId", wsc.id).Str("remoteAddr", r.RemoteAddr).Msg("websocket connection established")
@@ -677,6 +695,12 @@ func (wsc *WsConnection) teardown() {
 	// Cancelled requests still write their JSON-RPC error before the close.
 	wsc.cancel()
 	wsc.waitInflight(wsWriteDeadline)
+	select {
+	case <-wsc.draining:
+		// Extended subscriptions write their end draining first.
+		waitGroup(&wsc.ends, wsWriteDeadline)
+	default:
+	}
 	wsc.closed.Store(true)
 
 	wsc.server.subscriptionManager.CleanupConnection(wsc)
@@ -696,16 +720,35 @@ func (wsc *WsConnection) teardown() {
 	wsc.logger.Info().Str("connId", wsc.id).Int("closeCode", wsc.closeCode).Msg("websocket connection closed")
 }
 
-func (wsc *WsConnection) waitInflight(timeout time.Duration) {
+func (wsc *WsConnection) waitInflight(timeout time.Duration) { waitGroup(&wsc.inflight, timeout) }
+
+// waitGroup waits for wg, at most timeout.
+func waitGroup(wg *sync.WaitGroup, timeout time.Duration) {
 	idle := make(chan struct{})
 	go func() {
-		wsc.inflight.Wait()
+		wg.Wait()
 		close(idle)
 	}()
 	select {
 	case <-idle:
 	case <-time.After(timeout):
 	}
+}
+
+// drain tells the connection's extended subscriptions the instance is
+// shutting down; stop closes the connection after.
+func (wsc *WsConnection) drain() { wsc.drainOnce.Do(func() { close(wsc.draining) }) }
+
+// writeStreamOptionRefusal answers a ws upgrade whose URL sets an option
+// wrong: 400 with the JSON-RPC error naming it (streams spec §5.1).
+func writeStreamOptionRefusal(w http.ResponseWriter, err error) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0", "id": nil,
+		"error": map[string]interface{}{"code": int(common.JsonRpcErrorInvalidArgument), "message": err.Error()},
+	})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write(body)
 }
 
 // wsNotifier writes one subscription's eth_subscription notifications. The

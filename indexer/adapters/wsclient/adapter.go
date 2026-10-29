@@ -20,6 +20,48 @@ type Adapter struct {
 	mu      sync.RWMutex
 	drained bool
 	subs    map[string]*clientSub // clientSubId -> sub
+	// ended are subscriptions their stream ended, until an unsubscribe
+	// asks for them; at most maxEnded.
+	ended map[string]struct{}
+}
+
+// maxEnded bounds the ended ids a connection keeps for unsubscribes that
+// never come.
+const maxEnded = 1024
+
+// End removes a subscription its stream ended, as RemoveSubscription
+// does, and keeps its id for Ended. It reports whether it removed one.
+func (a *Adapter) End(clientSubID string) bool {
+	a.mu.Lock()
+	sub, ok := a.subs[clientSubID]
+	if ok {
+		delete(a.subs, clientSubID)
+		if a.ended == nil {
+			a.ended = make(map[string]struct{})
+		}
+		if len(a.ended) >= maxEnded {
+			for id := range a.ended {
+				delete(a.ended, id)
+				break
+			}
+		}
+		a.ended[clientSubID] = struct{}{}
+	}
+	a.mu.Unlock()
+	if ok {
+		sub.removed.Store(true)
+		sub.stop()
+	}
+	return ok
+}
+
+// Ended reports, once, whether End removed clientSubID.
+func (a *Adapter) Ended(clientSubID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.ended[clientSubID]
+	delete(a.ended, clientSubID)
+	return ok
 }
 
 type clientSub struct {

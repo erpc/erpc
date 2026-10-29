@@ -13,21 +13,16 @@ import (
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
-	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
-// Wait bounds of a StreamBlocks stream (spec §9.2); vars so tests run fast.
-var (
-	streamBlocksReadWait = util.NewDuration(60 * time.Second)
-	streamBlocksSendWait = util.NewDuration(10 * time.Second)
-)
+// streamBlocksSendWait: one Send blocked this long ends the stream
+// slow_client (CT§10.2); a var so tests run fast.
+var streamBlocksSendWait = util.NewDuration(10 * time.Second)
 
-var (
-	errStreamBlocksStalled = errors.New("no block within the read wait")
-	errStreamBlocksSlow    = errors.New("the client took no block within the send wait")
-)
+var errStreamBlocksSlow = errors.New("the client took no block within the send wait")
 
 // streamBlocksAuthMethod is the method consumer auth checks a StreamBlocks
 // open against: the stream serves blocks by number, so allowlists that
@@ -48,10 +43,12 @@ func (e streamEncodeError) Error() string {
 	return fmt.Sprintf("cannot encode block %d: %v", e.number, e.err)
 }
 
-// StreamBlocks is one tap on the network-wide chain tracker (spec §9.2,
-// §9.3): it sends each applied block, oldest first. After a reorg the
-// next block sent is the fork point + 1; reverted blocks are never sent,
-// nor is a block that left the pins before its send.
+// StreamBlocks is a stream session on the network-wide chain tracker
+// (CT§10.2, §10.3; streams spec §2): it sends each applied block, oldest
+// first. After a reorg the next block sent is the fork point + 1;
+// reverted blocks are never sent, nor is a block that left the pins before
+// its send. Every StreamBlocks tap is resumable: it ends stalled after the
+// read wait while this instance lags.
 // Auth and rate limits run once, at open: auth as eth_getBlockByNumber,
 // rate limits as for ws newHeads subscriptions.
 func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsevm.StreamService_StreamBlocksServer) error {
@@ -78,33 +75,15 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 	defer context.AfterFunc(ctx, stop)()
 	sender := newStreamSender(stream)
 	defer sender.stop()
-	tracker := nw.chainTracker
-	feed := waitBoundedFeed{ChainTracker: tracker, wait: streamBlocksReadWait.Load(), lastVote: nw.newestHashVoteAt}
-	sends := newTapSends(nw, "", "grpc", indexer.SubTypeNewHeads)
-	sendWait := streamBlocksSendWait.Load()
-	emit := func(b indexer.Batch) (int, error) {
-		for i, blk := range b.Applied {
-			resp, pinned, err := streamBlocksEncoding.Of(tracker, blk)
-			snap, sendable := sends.gate(blk)
-			if !pinned || !sendable {
-				return i, sends.hold(tapCtx, blk, snap)
-			}
-			if err != nil {
-				return i, streamEncodeError{blk.Number, err}
-			}
-			if err := sends.write(blk, snap, func() error { return sender.send(resp, sendWait) }); err != nil {
-				return i, err
-			}
-		}
-		return len(b.Applied), nil
-	}
-	done := make(chan error, 1)
-	if !nw.bg.Go(func() {
-		done <- nw.taps.RunChain(tapCtx, nw.Label(), "grpc", indexer.SubTypeNewHeads, feed, start, indexer.ReadOpts{Resumable: true}, emit)
-	}) {
+	s := newStreamSession(nw, "grpc", indexer.SubTypeNewHeads, "", StreamOptions{From: start})
+	s.headers = &grpcBlocksEncoder{tracker: nw.chainTracker, sender: sender, wait: streamBlocksSendWait.Load(),
+		meter: newStreamMeter(nw, "grpc", indexer.SubTypeNewHeads)}
+	s.resumable = true
+	done := make(chan *streamEnd, 1)
+	if !nw.bg.Go(func() { done <- s.run(tapCtx) }) {
 		return status.Error(codes.Unavailable, "network is stopping")
 	}
-	err = <-done
+	e := <-done
 
 	var encErr streamEncodeError
 	switch {
@@ -112,25 +91,49 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 		return status.FromContextError(ctx.Err()).Err()
 	case tapCtx.Err() != nil:
 		return status.Error(codes.Unavailable, "network is stopping")
-	case errors.Is(err, indexer.ErrOutOfRange):
-		ev := common.TransitionLog(gs.logger, zerolog.InfoLevel, nw.Label(), "out_of_range").Err(err)
-		if start != nil {
-			ev = ev.Uint64("fromBlock", start.Number).Hex("fromHash", start.Hash[:])
-		}
-		ev.Msg("StreamBlocks out of range")
-		return status.Error(codes.OutOfRange, err.Error())
-	case errors.As(err, &encErr):
-		gs.logger.Error().Err(err).Str("network", nw.Label()).Msg("StreamBlocks cannot encode a held header")
-		return status.Error(codes.Internal, err.Error())
+	case e == nil:
+		return status.Error(codes.Unavailable, "stream ended")
+	case e.reason == indexer.TapEndOutOfRange:
+		return status.Error(codes.OutOfRange, indexer.OutOfRangeError{Reason: e.detail}.Error())
+	case e.reason == indexer.TapEndStalled:
+		return status.Error(codes.Unavailable, errStreamStalled.Error())
+	case e.reason == indexer.TapEndSlowClient:
+		return status.Error(codes.Unavailable, errStreamBlocksSlow.Error())
+	case errors.As(e.err, &encErr):
+		gs.logger.Error().Err(e.err).Str("network", nw.Label()).Msg("StreamBlocks cannot encode a held header")
+		return status.Error(codes.Internal, e.err.Error())
 	default:
-		// A wait bound, a failed send or a tap panic: the client resumes
-		// from its last header.
-		gs.logger.Debug().Err(err).Str("network", nw.Label()).Msg("StreamBlocks tap ended")
-		return status.Error(codes.Unavailable, err.Error())
+		// A tap panic or a failed send: the client resumes from its last
+		// header.
+		gs.logger.Debug().Err(e.err).Str("network", nw.Label()).Msg("StreamBlocks tap ended")
+		return status.Error(codes.Unavailable, fmt.Sprint(e.err))
 	}
 }
 
-// streamBlocksStart is a request's resume cursor (spec §9.3); nil starts
+// grpcBlocksEncoder is the StreamBlocks encoder: one header message per
+// block, sent within the send wait.
+type grpcBlocksEncoder struct {
+	tracker *evm.ChainTracker
+	sender  *streamSender
+	wait    time.Duration
+	meter   *streamMeter
+}
+
+func (e *grpcBlocksEncoder) Header(blk indexer.Block) (func() error, bool, error) {
+	resp, pinned, err := streamBlocksEncoding.Of(e.tracker, blk)
+	if err != nil {
+		return nil, pinned, streamEncodeError{blk.Number, err}
+	}
+	return func() error {
+		if err := e.sender.send(resp, e.wait); err != nil {
+			return streamWriteError{err: err, slow: errors.Is(err, errStreamBlocksSlow)}
+		}
+		e.meter.wrote(streamData, proto.Size(resp))
+		return nil
+	}, pinned, nil
+}
+
+// streamBlocksStart is a request's resume cursor (CT§10.3); nil starts
 // after the head.
 func streamBlocksStart(req *bdsevm.StreamBlocksRequest) (*indexer.Cursor, error) {
 	switch {
@@ -190,93 +193,6 @@ func streamBlocksResponse(header json.RawMessage) (*bdsevm.StreamBlocksResponse,
 		return nil, err
 	}
 	return &bdsevm.StreamBlocksResponse{Header: h}, nil
-}
-
-// waitBoundedFeed ends a wait the client should not sit through with
-// errStreamBlocksStalled, so a pod that lags, restarted or fills slowly
-// tells the client to reconnect (spec §10.2): a Head wait longer than
-// wait, and a Read wait that spends wait while the confirmed head is not the
-// cursor and stands at or above it, or while no hash voter exists. A Read
-// at the head of a chain that makes no blocks waits without end: no lag
-// reference moves, so its hash voters stay.
-type waitBoundedFeed struct {
-	*evm.ChainTracker
-	wait time.Duration
-	// lastVote is when the newest hash vote reached this instance; zero
-	// before one.
-	lastVote func() time.Time
-}
-
-func (f waitBoundedFeed) Head(ctx context.Context) (indexer.Cursor, error) {
-	ctx, cancel := context.WithTimeoutCause(ctx, f.wait, errStreamBlocksStalled)
-	defer cancel()
-	c, err := f.ChainTracker.Head(ctx)
-	if err != nil && errors.Is(context.Cause(ctx), errStreamBlocksStalled) {
-		return c, errStreamBlocksStalled
-	}
-	return c, err
-}
-
-func (f waitBoundedFeed) Read(ctx context.Context, c indexer.Cursor, o indexer.ReadOpts) (indexer.Batch, error) {
-	rctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
-	go f.watchStall(rctx, c, cancel)
-	b, err := f.ChainTracker.Read(rctx, c, o)
-	if err != nil && context.Cause(rctx) == errStreamBlocksStalled && ctx.Err() == nil {
-		return indexer.Batch{}, errStreamBlocksStalled
-	}
-	return b, err
-}
-
-// watchStall ends a Read on c with errStreamBlocksStalled once it waited
-// f.wait in a row while stalled; it is checked on each published state
-// and every quarter of the wait. Without a hash voter the wait counts from
-// the newest hash vote: a cut-off pod's sockets close only at their
-// liveness deadline, well after its last header.
-func (f waitBoundedFeed) watchStall(ctx context.Context, c indexer.Cursor, cancel context.CancelCauseFunc) {
-	recheck := f.wait / 4
-	timer := time.NewTimer(recheck)
-	defer timer.Stop()
-	var since time.Time
-	for {
-		changed := f.Changed()
-		next := recheck
-		voting := f.HashVoting()
-		if f.stalled(c, voting) {
-			if since.IsZero() {
-				since = time.Now()
-				if at := f.lastVote(); !voting && !at.IsZero() && at.Before(since) {
-					since = at
-				}
-			}
-			left := f.wait - time.Since(since)
-			if left <= 0 {
-				cancel(errStreamBlocksStalled)
-				return
-			}
-			next = min(next, left)
-		} else {
-			since = time.Time{}
-		}
-		timer.Reset(next)
-		select {
-		case <-ctx.Done():
-			return
-		case <-changed:
-		case <-timer.C:
-		}
-	}
-}
-
-// stalled reports whether a Read on c waits on this pod rather than on the
-// chain: no hash voter exists (voting false), or the confirmed head stands
-// above c, or at c's number on another branch.
-func (f waitBoundedFeed) stalled(c indexer.Cursor, voting bool) bool {
-	if !voting {
-		return true
-	}
-	send, ok := f.Confirmed()
-	return ok && (send.Number > c.Number || send.Number == c.Number && send.Hash != c.Hash)
 }
 
 // streamSender sends on a stream from its own goroutine, so a client that
