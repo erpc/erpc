@@ -742,6 +742,12 @@ func c9() spec {
 				s.t.Fatalf("pod-1 restart: %v", err)
 			}
 			s.logf("pod-1 restarted cold")
+			// A read adds the counts before the restart; the cold process's
+			// own are those above them.
+			voted0 := map[string]float64{}
+			for key := range s.vendors {
+				voted0[key] = p.counters.carriedSum("erpc_chain_tracker_source_heads_total", map[string]string{"project": s.project, "network": s.network(), "upstream": s.upstream(key), "outcome": "voted"})
+			}
 			want := float64(c9BlockTime.Milliseconds())
 			firstAt := -1.0
 			deadline := time.Now().Add(podBootWait)
@@ -758,7 +764,7 @@ func c9() spec {
 				most := 0.0
 				for key := range s.vendors {
 					v, _ := sumOf(ss, "erpc_chain_tracker_source_heads_total", map[string]string{"project": s.project, "network": s.network(), "upstream": s.upstream(key), "outcome": "voted"})
-					most = math.Max(most, v)
+					most = math.Max(most, v-voted0[key])
 				}
 				bt, found := sumOf(ss, "erpc_network_dynamic_block_time_milliseconds", map[string]string{"project": s.project, "network": s.network()})
 				if !found {
@@ -865,15 +871,11 @@ func pollNext(s *scenario, farFuture bool) {
 // exceeds it.
 func oweBandProbes(s *scenario, nulls []float64) {
 	for pod, n := range nulls {
-		p := s.h.pods[pod]
-		ss, err := p.scrape()
+		ss, err := s.h.pods[pod].scrape()
 		if err != nil {
 			s.violate("harness", "pod-%d: scrape: %v", pod+1, err)
 			continue
 		}
-		p.carriedMu.Lock()
-		ss = append(ss, p.carried...)
-		p.carriedMu.Unlock()
 		future := 0.0
 		for _, rule := range []string{"future", "future_after_refresh", "future_after_wait"} {
 			v, _ := sumOf(ss, "erpc_head_refusal_total", map[string]string{"project": s.project, "network": s.network(), "rule": rule})
