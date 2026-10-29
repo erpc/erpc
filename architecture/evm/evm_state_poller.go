@@ -1452,7 +1452,7 @@ func (e *EvmStatePoller) cordonForChainIdMismatch(tag string, current, polled in
 	defer e.chainIdRecheckMu.Unlock()
 	e.chainIdCordonReason.Store(reason)
 	e.chainIdMatches = 0
-	e.upstream.Cordon("*", reason)
+	common.CordonClassed(e.upstream, "*", reason, common.CordonClassAvailability)
 	e.chainIdCordonChanged()
 	if e.chainIdRecheck != nil || e.appCtx.Err() != nil {
 		return
@@ -1469,22 +1469,27 @@ func (e *EvmStatePoller) cordonForChainIdMismatch(tag string, current, polled in
 }
 
 // ChainIdCordoned reports whether the upstream is cordoned because it
-// answers for another chain: the cordon this poller set is still in place.
+// answers for another chain: the availability cordon this poller set is
+// still in place. On an EVM upstream only this poller sets that class.
 func (e *EvmStatePoller) ChainIdCordoned() bool {
 	reason, _ := e.chainIdCordonReason.Load().(string)
-	if reason == "" || e.tracker == nil {
+	return reason != "" && e.chainIdCordonHeld()
+}
+
+func (e *EvmStatePoller) chainIdCordonHeld() bool {
+	if e.tracker == nil {
 		return false
 	}
-	current, cordoned := e.tracker.CordonedReason(e.upstream, "*")
-	return cordoned && current == reason
+	return slices.Contains(e.tracker.CordonClasses(e.upstream, "*"), common.CordonClassAvailability)
 }
 
 // recheckChainIdCordon lifts the chain-identity cordon once eth_chainId
 // matched chainIdCordonMatches checks in a row, as the consensus sit-out
-// lifts its own, unless a cordon with another reason replaced it. A
-// mismatch cordons again if something lifted the cordon meanwhile. Until
-// then it checks every ChainIdCordonRecheck. A major head move after the
-// lift still passes verifyChainIdOnMajorHeadMove first.
+// lifts its own; it clears only the availability class, so an operator or
+// punishment cordon stays. A mismatch cordons again if something (an admin
+// uncordon) lifted the cordon meanwhile. Until then it checks every
+// ChainIdCordonRecheck. A major head move after the lift still passes
+// verifyChainIdOnMajorHeadMove first.
 func (e *EvmStatePoller) recheckChainIdCordon() {
 	if e.appCtx.Err() != nil {
 		return
@@ -1499,11 +1504,11 @@ func (e *EvmStatePoller) recheckChainIdCordon() {
 		return
 	}
 	reason, _ := e.chainIdCordonReason.Load().(string)
-	current, cordoned := e.tracker.CordonedReason(e.upstream, "*")
+	cordoned := e.chainIdCordonHeld()
 	if mismatch != nil || err != nil {
 		e.chainIdMatches = 0
 		if mismatch != nil && !cordoned {
-			e.upstream.Cordon("*", reason)
+			common.CordonClassed(e.upstream, "*", reason, common.CordonClassAvailability)
 			e.chainIdCordonChanged()
 			e.logger.Warn().Err(mismatch).Msg("upstream still answers for another chain after its cordon was lifted, cordoning it again")
 		}
@@ -1521,8 +1526,8 @@ func (e *EvmStatePoller) recheckChainIdCordon() {
 	e.chainIdMatches = 0
 	e.chainIdRecheck = nil
 	e.chainIdRecheckUnwatch()
-	if cordoned && current == reason {
-		e.upstream.Uncordon("*", reason)
+	if cordoned {
+		common.UncordonClassed(e.upstream, "*", "evm state poller: chain identity re-validated after mismatch", common.CordonClassAvailability)
 		e.chainIdCordonChanged()
 		e.logger.Info().Msg("upstream answers for its configured chain again, uncordoned")
 	}

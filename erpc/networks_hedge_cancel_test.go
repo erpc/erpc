@@ -386,6 +386,94 @@ func TestHedgeConsensus_OneUpstreamMissingData_OthersSucceed_StillWorks(t *testi
 	assert.Contains(t, jrr.GetResultString(), "0xabc")
 }
 
+func TestHedgeConsensus_EmptyTxLookupIsKeptAsSlotVote(t *testing.T) {
+	// Live smokebox shape: two internals return JSON-RPC null for a pruned
+	// eth_getTransactionByHash; two archives agree on the tx. Hedge keep()
+	// used to reject that null (method not in emptyResultAccept) and the
+	// recovery leg then returned n/a ErrUpstreamsExhausted, so the empty
+	// vote never reached analysis.groups and the empty-outside-retention
+	// waiver could not fire.
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	tx := map[string]interface{}{
+		"hash":        "0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060",
+		"blockNumber": "0x10",
+	}
+	nullBody := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil}
+	txBody := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": tx}
+	isHashLookup := func(r *http.Request) bool {
+		return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+	}
+	for _, host := range []string{"rpc1", "rpc2"} {
+		gock.New(fmt.Sprintf("http://%s.localhost", host)).
+			Post("").
+			Filter(isHashLookup).
+			Persist().
+			Reply(200).
+			JSON(nullBody)
+	}
+	for _, host := range []string{"rpc3", "rpc4"} {
+		gock.New(fmt.Sprintf("http://%s.localhost", host)).
+			Post("").
+			Filter(isHashLookup).
+			Persist().
+			Reply(200).
+			JSON(txBody)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	upstreamConfigs := []*common.UpstreamConfig{
+		{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Tags: []string{"type:internal"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Tags: []string{"type:internal"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Type: common.UpstreamTypeEvm, Id: "rpc3", Endpoint: "http://rpc3.localhost", Tags: []string{"type:external"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Type: common.UpstreamTypeEvm, Id: "rpc4", Endpoint: "http://rpc4.localhost", Tags: []string{"type:external"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+	}
+	consensusCfg := &common.ConsensusPolicyConfig{
+		MaxParticipants:       4,
+		AgreementThreshold:    2,
+		DisputeBehavior:       common.ConsensusDisputeBehaviorReturnError,
+		PreferNonEmpty:        &common.TRUE,
+		PreferLargerResponses: &common.TRUE,
+		BlockEvidenceFields: map[string][]string{
+			"eth_getTransactionByHash": {"blockNumber"},
+		},
+		RequiredParticipants: []*common.ConsensusRequiredParticipant{
+			{Tag: "type:internal", MinParticipants: 2, MinAgreement: 1, WaiveAgreementOnEmptyOutsideRetention: true, RetentionBlocks: 100},
+			{Tag: "type:external", MinParticipants: 2, MinAgreement: 1},
+		},
+	}
+	require.NoError(t, consensusCfg.SetDefaults())
+
+	networkConfig := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "*",
+			Hedge: &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(50 * time.Millisecond),
+				MaxCount: 1,
+			},
+			Retry:     &common.RetryPolicyConfig{MaxAttempts: 1},
+			Consensus: consensusCfg,
+		}},
+	}
+
+	network := setupTestNetwork(t, ctx, upstreamConfigs, networkConfig)
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060"]}`))
+	req.SetDirectives(&common.RequestDirectives{RetryEmpty: false})
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "empty internals must remain consensus votes so the empty-outside-retention waiver can fire, got: %v", err)
+	require.NotNil(t, resp)
+	jrr, jrrErr := resp.JsonRpcResponse()
+	require.NoError(t, jrrErr)
+	assert.Contains(t, jrr.GetResultString(), `"blockNumber":"0x10"`)
+}
+
 func setupTestNetworkWithHedgeAndConsensus(
 	t *testing.T,
 	ctx context.Context,

@@ -625,7 +625,7 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 		LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
 	}
 	require.NoError(t, consCfg.SetDefaults())
-	cons, err := consensus.NewConsensus(consCfg, slots.logger)
+	cons, err := consensus.NewConsensus(consCfg, slots.logger, "test")
 	require.NoError(t, err)
 	ex, err = NewNetworkExecutor(&common.FailsafeConfig{MatchMethod: "*", Consensus: consCfg}, slots.logger, cons, nil)
 	require.NoError(t, err)
@@ -645,7 +645,7 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 		{id: "cf2", chainID: 123, latestBlock: 100},
 		{id: "cf3", chainID: 123, latestBlock: 100},
 	})
-	cons, err = consensus.NewConsensus(consCfg, final.logger)
+	cons, err = consensus.NewConsensus(consCfg, final.logger, "test")
 	require.NoError(t, err)
 	ex, err = NewNetworkExecutor(&common.FailsafeConfig{MatchMethod: "*", Consensus: consCfg}, final.logger, cons, nil)
 	require.NoError(t, err)
