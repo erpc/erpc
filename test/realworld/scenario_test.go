@@ -130,6 +130,7 @@ type scenario struct {
 	heads      []*headsClient
 	logs       []*logsClient
 	grpcs      []*grpcClient
+	exts       []*extLogsClient
 	reorgs     []reorg
 	memo       map[string]*memoEntry
 	allowSet   map[string]bool
@@ -907,7 +908,7 @@ func (s *scenario) finish() {
 	s.chain.Halt(true)
 	s.mu.Lock()
 	s.haltAt = time.Now()
-	heads, grpcs := slices.Clone(s.heads), slices.Clone(s.grpcs)
+	heads, grpcs, exts := slices.Clone(s.heads), slices.Clone(s.grpcs), slices.Clone(s.exts)
 	s.mu.Unlock()
 	tip := s.chain.Tip()
 	s.logf("halted at %d %s", tip.Number, short(tip.Hash))
@@ -931,6 +932,9 @@ func (s *scenario) finish() {
 	}
 	for _, g := range grpcs {
 		await(&g.clientBase, &g.hc)
+	}
+	for _, c := range exts {
+		await(&c.clientBase, &c.hc)
 	}
 	// Logs follow one receipts fetch after their head (§10).
 	time.Sleep(3 * liveBound)
@@ -1003,6 +1007,11 @@ func (s *scenario) judge(wall time.Duration) {
 	}
 	for _, c := range s.logs {
 		s.judgeLogs(c)
+		lat = append(lat, s.judgeDelivery(&c.clientBase, false)...)
+		c.tr.close()
+	}
+	for _, c := range s.exts {
+		s.judgeExt(c)
 		lat = append(lat, s.judgeDelivery(&c.clientBase, false)...)
 		c.tr.close()
 	}
