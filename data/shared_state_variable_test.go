@@ -2017,6 +2017,20 @@ func TestCounterInt64_ZeroIsNotAHeadObservation(t *testing.T) {
 		assert.Equal(t, 1, rollbacks)
 	})
 
+	t.Run("a chain that restarted lower and halted is followed after the hold", func(t *testing.T) {
+		counter := newHeadCounter(1_000_000)
+
+		for range 3 {
+			assert.False(t, counter.processNewValue(UpdateSourceTryUpdate, 995_000), "a halted lower value is held")
+		}
+		assert.Equal(t, int64(1_000_000), counter.GetValue())
+
+		// Only lower readings for the whole hold: the source is the chain now.
+		counter.rollbackHeldSince.Store(int64(rollbackClock() - largeRollbackMaxHold))
+		assert.True(t, counter.processNewValue(UpdateSourceTryUpdate, 995_000), "a hold never lasts forever")
+		assert.Equal(t, int64(995_000), counter.GetValue())
+	})
+
 	t.Run("earliest-block counters may still hold zero", func(t *testing.T) {
 		// evm_state_poller creates the earliest-block counter with
 		// ignoreRollbackOf=0. An archive node's earliest block IS 0, so the floor

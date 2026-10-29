@@ -118,9 +118,25 @@ type counterInt64 struct {
 	// This avoids dropping updates when scheduleBackgroundPushCurrent() is called while a push is in progress.
 	bgPushRequested atomic.Bool
 	// rollbackCandidate is the value the last large rollback proposed since a
-	// reading within ignoreRollbackOf (0 = none); see admitLargeRollback.
+	// reading within ignoreRollbackOf (0 = none), and rollbackHeldSince
+	// (rollbackClock) when that run of large rollbacks began; see
+	// admitLargeRollback.
 	rollbackCandidate atomic.Int64
+	rollbackHeldSince atomic.Int64
 }
+
+// largeRollbackMaxHold bounds how long a large rollback waits for its lower
+// side to move. Readings at the real head in between restart the wait, so a
+// provider that only now and then answers from a node stuck far behind never
+// reaches it, while a chain that restarted lower and halted there is followed
+// after it: a hold that could last forever would be a frozen head.
+const largeRollbackMaxHold = 5 * time.Minute
+
+// rollbackClockBase anchors rollbackClock, a monotonic clock: a wall-clock
+// step must not end or stretch a hold.
+var rollbackClockBase = time.Now()
+
+func rollbackClock() time.Duration { return time.Since(rollbackClockBase) }
 
 // admitLargeRollback reports whether a drop of more than ignoreRollbackOf to
 // newVal applies now. A real deep reorg or a chain restarted lower keeps moving
@@ -128,13 +144,20 @@ type counterInt64 struct {
 // before it. A source frozen far behind, such as a provider's load balancer
 // sometimes answering from a stuck node, repeats one value, and its readings
 // at the real head in between clear the count (clearRollbackCandidate), so its
-// drop never applies. Counters with ignoreRollbackOf 0 (earliest blocks,
-// floors, cordons) take every decrease at once.
+// drop never applies. Lower readings alone for largeRollbackMaxHold also
+// apply. Counters with ignoreRollbackOf 0 (earliest blocks, floors, cordons)
+// take every decrease at once.
 func (c *counterInt64) admitLargeRollback(newVal int64) bool {
 	if c.ignoreRollbackOf <= 0 {
 		return true
 	}
-	if prev := c.rollbackCandidate.Swap(newVal); prev > 0 && newVal > prev {
+	now := int64(rollbackClock())
+	prev := c.rollbackCandidate.Swap(newVal)
+	if prev <= 0 {
+		c.rollbackHeldSince.Store(now)
+		return false
+	}
+	if newVal > prev || time.Duration(now-c.rollbackHeldSince.Load()) >= largeRollbackMaxHold {
 		c.rollbackCandidate.Store(0)
 		return true
 	}
