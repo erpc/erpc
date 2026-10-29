@@ -82,12 +82,17 @@ func extractFieldValues(resp *common.NormalizedResponse, fields []string) []*big
 // parseNumericValue converts various types to big.Int.
 // Handles hex strings (0x...), decimal strings, json.Number, and numeric types.
 // For float64, converts via string representation to preserve precision for large values.
+// A *big.Int passes through (used by the array-wildcard max path).
 func parseNumericValue(v interface{}) *big.Int {
 	if v == nil {
 		return nil
 	}
 
 	switch val := v.(type) {
+	case *big.Int:
+		// Already converted (e.g. array-wildcard max): pass through. Without
+		// this case a pre-computed *big.Int falls through to nil.
+		return val
 	case string:
 		val = strings.TrimSpace(val)
 		if val == "" {
