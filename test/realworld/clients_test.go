@@ -254,6 +254,9 @@ func (hc *headerChain) restart(n uint64, h hash) {
 			delete(hc.m, k)
 		}
 	}
+	if hc.m == nil {
+		hc.m = make(map[uint64]hash)
+	}
 	hc.m[n], hc.last, hc.segStart, hc.started = h, n, n, true
 }
 
