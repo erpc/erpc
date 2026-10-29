@@ -618,6 +618,7 @@ From cursor `c`, first matching case:
 | `c` held in the pinned tree | Reverted: `c` … fork point + 1; Applied: fork point + 1 … |
 | `c` held in another tree | wait while fill links it, then the row above; fill reaches the window base first → `ErrOutOfRange` |
 | `c` not held, above the confirmed head | wait until the confirmed head reaches it. A cursor at or below the highest ceiling this instance has seen, once the network-wide ceiling has stood below it for W since its last fall (no upstream reports its height any more: a chain that restarted lower, §19 C16) → `ErrOutOfRange` (`cursor_unknown`); a cursor above every height this instance has seen waits (§19 D3) |
+| `c` not held, below the lowest pin, fill short of the window base | fetch `c.Hash` by hash, once per Read: a header older than the window below the head (§9: `maxBackfill`, by header time) → `ErrOutOfRange` (`below_window`) at once; null from every upstream → `ErrOutOfRange` (`cursor_unknown`, §10.3); else the row below |
 | `c` not held, inside the window | fill down to `c.Number`; `c` pinned → that row. Else fetch `c.Hash` by hash: found → held and walked, and the rows above apply; not found → `ErrOutOfRange` |
 
 - Applied ends at the confirmed head, after `reorgWindow` blocks, or before the first block whose receipts the tap needs and the feed does not hold yet.
@@ -1023,7 +1024,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | C18 | one wss upstream that finalizes 2 below its head; chain halted; a reorg 3 deep reverts the block one instance's own finalized poll covered | `final_hash_changed` counted only on that instance; every client told of the reorg |
 | D1 | ws client stops reading for 20 blocks; gRPC client stops reading | `newHeads` restart past `reorgWindow`; gRPC `UNAVAILABLE` after the 10s send wait; other taps unaffected |
 | D2 | ws clients reconnect every 10 blocks | `newHeads` restart = number jump only; logs resubscribe |
-| D3 | gRPC resume on the other instance; orphan cursor; cursor below window; cursor above head | resend from fork point; `OUT_OF_RANGE`; `OUT_OF_RANGE`; wait |
+| D3 | gRPC resume on the other instance; orphan cursor; cursor below window while fill is short of its base; cursor above head | resend from fork point; `OUT_OF_RANGE`; `OUT_OF_RANGE` after one by-hash fetch, without waiting for fill; wait |
 | D4 | 1,000 subscribers × 3 filters, 1 instance | 1 receipts call per wanted block; delivery p99 within 2 bt |
 | D5 | 1k subscribe+unsubscribe/s; unsubscribe during a send | `erpc_taps` back to 0; no write after unsubscribe |
 | D6 | bad logs filter; `fromHash` without `fromBlock` | `-32602`; `INVALID_ARGUMENT` |
