@@ -43,7 +43,10 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 // network's served head EXACTLY, regardless of its source — a live upstream
 // (cold head at pre-forward time, or a per-request override path) OR the
 // cache. The correction is a pure in-memory synthesis (poller state), never an
-// extra upstream call.
+// extra upstream call. Enforced answers also ask the ballot's pollers for a
+// debounced background refresh here: Network.Forward can return a cache hit
+// before networkPreForward_eth_blockNumber runs, and without this the head a
+// quiet network serves stays at the ticker interval despite frequent polls.
 //
 // Exact, not floor-only, because "latest" interpolation (resolveBlockTagToHex)
 // anchors block-tagged methods (eth_call, eth_getLogs, ...) to that same served
@@ -82,7 +85,8 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 	// use-upstream selector scopes the tip to the targeted subset (the
 	// selector-scoped served-tip semantics): a request pinned to a lagging
 	// group must not be promised a block that group cannot serve.
-	highestBlock := common.EvmHighestLatestBlockNumber(network, context.WithValue(ctx, common.RequestContextKey, nq))
+	reqCtx := context.WithValue(ctx, common.RequestContextKey, nq)
+	highestBlock := common.EvmHighestLatestBlockNumber(network, reqCtx)
 	if common.IsTracingDetailed {
 		blockNumberLag := highestBlock - blockNumber
 		if blockNumberLag < 0 {
@@ -101,6 +105,10 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 		// resolveBlockTagToHex — never synthesize a block number from nothing.
 		return nr, re
 	}
+
+	// Same debounced refresh the pre-forward path fires: covers cache hits
+	// (and equality returns) that never reached networkPreForward_eth_blockNumber.
+	common.EvmRefreshLatestBlock(network, reqCtx)
 
 	if blockNumber == highestBlock {
 		return nr, re
