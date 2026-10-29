@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -283,10 +284,9 @@ type pod struct {
 	name string
 	idx  int
 	old  bool
-	// carried are the invariant and refusal series scraped before each
-	// restart a stall dump forced; the end-of-scenario check adds them.
-	carriedMu                       sync.Mutex
-	carried                         []series
+	// counters carries each counter series across the pod's restarts
+	// (pod.counted).
+	counters                        counterCarry
 	httpPort, grpcPort, metricsPort int
 	cfgPath                         string
 	logs                            []string
@@ -373,10 +373,14 @@ func (h *harness) recordSeries() {
 			if !p.running() {
 				continue
 			}
+			gen := p.counters.generation()
 			body, err := p.metricsText()
 			if err != nil {
 				continue
 			}
+			// Each read keeps a crashed process's counters as of its
+			// last seriesEvery.
+			_, _ = p.counted(gen, body)
 			at := time.Now().Format("15:04:05.000")
 			for _, line := range strings.Split(string(body), "\n") {
 				for _, name := range seriesNames {
@@ -392,6 +396,7 @@ func (h *harness) recordSeries() {
 // start boots the pod from its config and waits until its HTTP, gRPC and
 // metrics ports accept connections.
 func (p *pod) start() error {
+	p.counters.restart()
 	p.mu.Lock()
 	gen := len(p.logs)/2 + 1
 	base := filepath.Join(p.h.dir, fmt.Sprintf("%s.%d", p.name, gen))
@@ -504,7 +509,8 @@ func (p *pod) quit() string {
 }
 
 // saveMetrics writes the running process's /metrics next to its logs, so
-// counters such as selection exclusions survive the process (triage).
+// counters such as selection exclusions survive the process (triage), and
+// keeps its counters' last values for the next process's reads.
 func (p *pod) saveMetrics() {
 	p.mu.Lock()
 	if p.cmd == nil {
@@ -513,8 +519,10 @@ func (p *pod) saveMetrics() {
 	}
 	path := strings.TrimSuffix(p.logs[len(p.logs)-1], ".stderr.log") + ".metrics.prom"
 	p.mu.Unlock()
+	gen := p.counters.generation()
 	if body, err := p.metricsText(); err == nil {
 		_ = os.WriteFile(path, body, 0o644)
+		_, _ = p.counted(gen, body)
 	}
 }
 
@@ -556,14 +564,78 @@ type series struct {
 
 var scrapeClient = &http.Client{Timeout: 5 * time.Second}
 
-// scrape reads the pod's /metrics.
+// scrape reads the pod's /metrics; a counter adds its values before each
+// restart of the pod (counted).
 func (p *pod) scrape() ([]series, error) {
+	gen := p.counters.generation()
 	body, err := p.metricsText()
 	if err != nil {
 		return nil, err
 	}
+	return p.counted(gen, body)
+}
+
+// counterCarry holds a pod's counters across its process restarts, as
+// Prometheus increase() treats a counter reset: carried sums each series'
+// last value in every ended process, latest is the running process's, and
+// gen counts the processes, so a body read from an ended one is told apart.
+type counterCarry struct {
+	mu      sync.Mutex
+	gen     int
+	latest  map[string]series
+	carried map[string]series
+}
+
+func (c *counterCarry) generation() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.gen
+}
+
+// restart ends the running process's generation: its last read counters
+// join carried.
+func (c *counterCarry) restart() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.carried == nil {
+		c.carried = map[string]series{}
+	}
+	for k, s := range c.latest {
+		if prev, ok := c.carried[k]; ok {
+			s.value += prev.value
+		}
+		c.carried[k] = s
+	}
+	c.latest = nil
+	c.gen++
+}
+
+// carriedSum adds the carried values of name's series whose labels include
+// match: what the pod's ended processes counted.
+func (c *counterCarry) carriedSum(name string, match map[string]string) float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ss := make([]series, 0, len(c.carried))
+	for _, s := range c.carried {
+		ss = append(ss, s)
+	}
+	v, _ := sumOf(ss, name, match)
+	return v
+}
+
+// counted parses a /metrics body the pod's process of generation gen
+// rendered. Each counter sample adds the carried value of its series, and
+// a carried series the process has not exported yet is added as carried;
+// gauges, histograms and summaries stay as read.
+func (p *pod) counted(gen int, body []byte) ([]series, error) {
+	isCounter := map[string]bool{}
 	var out []series
 	for _, line := range strings.Split(string(body), "\n") {
+		if name, ok := strings.CutPrefix(line, "# TYPE "); ok {
+			if name, ok = strings.CutSuffix(name, " counter"); ok {
+				isCounter[name] = true
+			}
+		}
 		if line == "" || line[0] == '#' {
 			continue
 		}
@@ -572,7 +644,45 @@ func (p *pod) scrape() ([]series, error) {
 			out = append(out, s)
 		}
 	}
+	c := &p.counters
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if gen != c.gen {
+		return nil, fmt.Errorf("%s restarted during the scrape", p.name)
+	}
+	latest := map[string]series{}
+	for i, s := range out {
+		if !isCounter[s.name] {
+			continue
+		}
+		k := s.key()
+		latest[k] = s
+		if prev, ok := c.carried[k]; ok {
+			out[i].value += prev.value
+		}
+	}
+	c.latest = latest
+	for k, s := range c.carried {
+		if _, ok := latest[k]; !ok {
+			out = append(out, s)
+		}
+	}
 	return out, nil
+}
+
+// key names a series by its name and sorted labels.
+func (s series) key() string {
+	keys := make([]string, 0, len(s.labels))
+	for k := range s.labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString(s.name)
+	for _, k := range keys {
+		fmt.Fprintf(&b, "|%s=%s", k, s.labels[k])
+	}
+	return b.String()
 }
 
 // parseSeries parses one text-format sample: name{k="v",...} value.

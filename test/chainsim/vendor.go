@@ -97,8 +97,9 @@ type Vendor struct {
 	// heldTip is the tip when Held was set: a release pushes a tip that
 	// moved since.
 	heldTip *Block
-	// numberCalls are when eth_getBlockByNumber asked each explicit number.
-	numberCalls map[uint64][]time.Time
+	// numberCalls are the eth_getBlockByNumber calls for each explicit
+	// number.
+	numberCalls map[uint64][]numberCall
 	// receipts counts eth_getBlockReceipts calls per block; served are the
 	// blocks answered with their receipts in full.
 	receipts map[Hash]int
@@ -187,7 +188,7 @@ func (c *Chain) AddVendor(id, name string, ws bool) (*Vendor, error) {
 		return nil, err
 	}
 	v := &Vendor{ID: id, Name: name, WS: ws, chain: c, ln: ln, seen: make(map[Hash]bool), conns: make(map[*wsConn]bool),
-		numberCalls: make(map[uint64][]time.Time), receipts: make(map[Hash]int), served: make(map[Hash]bool)}
+		numberCalls: make(map[uint64][]numberCall), receipts: make(map[Hash]int), served: make(map[Hash]bool)}
 	v.srv = &http.Server{Handler: v, ReadHeaderTimeout: 10 * time.Second}
 	c.mu.Lock()
 	v.setTipLocked(c.tipLocked())
@@ -278,14 +279,22 @@ func (v *Vendor) LatestCalls(from, to time.Time) []LatestCall {
 	return out
 }
 
+// numberCall is one eth_getBlockByNumber call for an explicit number: when,
+// and whether it asked for full transactions.
+type numberCall struct {
+	at   time.Time
+	full bool
+}
+
 // NumberCalls counts the eth_getBlockByNumber calls for explicit number n
-// the vendor answered in [from, to].
-func (v *Vendor) NumberCalls(n uint64, from, to time.Time) int {
+// with full transactions as full that the vendor answered in [from, to].
+// The flag tells a client's own requests apart from other readers of n.
+func (v *Vendor) NumberCalls(n uint64, full bool, from, to time.Time) int {
 	v.chain.mu.Lock()
 	defer v.chain.mu.Unlock()
 	k := 0
-	for _, at := range v.numberCalls[n] {
-		if !at.Before(from) && !at.After(to) {
+	for _, c := range v.numberCalls[n] {
+		if c.full == full && !c.at.Before(from) && !c.at.After(to) {
 			k++
 		}
 	}
@@ -829,7 +838,8 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 			if !ok {
 				return nil, &rpcError{-32602, "invalid block number"}
 			}
-			v.numberCalls[n] = append(v.numberCalls[n], time.Now())
+			full := len(params) > 1 && params[1] == true
+			v.numberCalls[n] = append(v.numberCalls[n], numberCall{at: time.Now(), full: full})
 			if f.NullHeld {
 				return nil, nil
 			}

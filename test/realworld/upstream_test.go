@@ -468,8 +468,8 @@ func u7() spec {
 						}
 					}
 				}
-				asked += hv.NumberCalls(b.Number, from, time.Now())
-				dispatched += s.dispatches(b.Number, from, time.Now())
+				asked += hv.NumberCalls(b.Number, false, from, time.Now())
+				dispatched += s.dispatches(b.Number, false, from, time.Now())
 			}
 			hv.Update(func(f *chainsim.Faults) { f.NullHeld = false })
 			s.logf("probe reads reached %s %d times, every vendor %d times", s.upstream("http-a"), asked, dispatched)
@@ -546,7 +546,7 @@ func (s *scenario) requireCeiling(in bool, when string) {
 		if in {
 			s.owe(pod, "retried_missing", 1)
 		}
-		d := s.dispatches(n, from, time.Now())
+		d := s.dispatches(n, false, from, time.Now())
 		switch {
 		case in && d == 0:
 			s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) short-circuited %s: the ceiling left it out", pod+1, n, when)

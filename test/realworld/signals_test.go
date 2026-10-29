@@ -149,18 +149,14 @@ next:
 // its row says otherwise), and
 // erpc_head_refusal_total{rule=retried_missing} at the scenario's own band
 // probes, each a retried miss by definition (§6.4, §17, §19; owe). The
-// harness runs it on every new-image pod after each scenario; series from
-// before a stall restart count too (carryCounters).
+// harness runs it on every new-image pod after each scenario; a scrape
+// adds the counts from before each restart of the pod (pod.counted).
 func (s *scenario) requireNoInvariantViolation(pod int) {
-	p := s.h.pods[pod]
-	ss, err := p.scrape()
+	ss, err := s.h.pods[pod].scrape()
 	if err != nil {
 		s.violate(s.name, "pod-%d: scrape: %v", pod+1, err)
 		return
 	}
-	p.carriedMu.Lock()
-	ss = append(ss, p.carried...)
-	p.carriedMu.Unlock()
 	counts := map[string]float64{}
 	for _, x := range ss {
 		if x.name == "erpc_chain_tracker_invariant_violations_total" && x.labels["project"] == s.project && x.labels["network"] == s.network() {
@@ -217,7 +213,7 @@ func x8() spec {
 			from := time.Now()
 			got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
 			s.owe(pod, "retried_missing", 1)
-			switch d := s.dispatches(n, from, time.Now()); {
+			switch d := s.dispatches(n, false, from, time.Now()); {
 			case d == 0:
 				s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered %s with no dispatch, below the ceiling the canary's head raised", pod+1, n, got)
 			case d > refusalDispatches:
@@ -230,21 +226,4 @@ func x8() spec {
 		stop()
 		s.blocks(25)
 	}}
-}
-
-// carryCounters keeps p's invariant and refusal series before a restart
-// resets them, so the end-of-scenario check still counts them.
-func (p *pod) carryCounters() error {
-	ss, err := p.scrape()
-	if err != nil {
-		return err
-	}
-	p.carriedMu.Lock()
-	defer p.carriedMu.Unlock()
-	for _, x := range ss {
-		if x.name == "erpc_chain_tracker_invariant_violations_total" || x.name == "erpc_head_refusal_total" {
-			p.carried = append(p.carried, x)
-		}
-	}
-	return nil
 }

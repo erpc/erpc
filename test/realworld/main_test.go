@@ -51,6 +51,11 @@ const (
 	// grpcSendWait: one StreamBlocks Send blocked this long ends UNAVAILABLE
 	// (§9.2).
 	grpcSendWait = 10 * time.Second
+	// grpcConnAge: the server's connection age, 10 min less grpc-go's 10%
+	// jitter, ends every stream with UNAVAILABLE; a client resumes from
+	// its cursor and misses nothing (§10.2, #977). An UNAVAILABLE end of a
+	// stream younger than this is a stall or send wait.
+	grpcConnAge = 9 * time.Minute
 	// logsCloseSpread: 1013 closes from one event spread over 60s (§9.2).
 	logsCloseSpread = 60 * time.Second
 	// silentReconnect: a half-open wss source reconnects within 30s of its

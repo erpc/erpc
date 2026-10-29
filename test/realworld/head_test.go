@@ -178,7 +178,7 @@ func u12() spec {
 				from := time.Now()
 				got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
 				s.owe(pod, "retried_missing", 1)
-				switch d := s.dispatches(n, from, time.Now()); {
+				switch d := s.dispatches(n, false, from, time.Now()); {
 				case d == 0:
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered %s with no dispatch, below the ceiling %s raised", pod+1, n, got, up)
 				case d > refusalDispatches:
@@ -218,7 +218,7 @@ func u19() spec {
 					at := time.Now()
 					got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
 					probes++
-					if d := s.dispatches(n, at, time.Now()); got != "null" || d > 0 {
+					if d := s.dispatches(n, false, at, time.Now()); got != "null" || d > 0 {
 						s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), above every voter's head while %s answers 403, answered %s after %d dispatches", pod+1, n, up, got, d)
 					}
 				}
@@ -250,12 +250,12 @@ func (s *scenario) awaitUpstreamHead(pod int, up string, min float64, within tim
 	}
 }
 
-// dispatches counts the eth_getBlockByNumber(n) calls every vendor
-// answered in [from, to].
-func (s *scenario) dispatches(n uint64, from, to time.Time) int {
+// dispatches counts the eth_getBlockByNumber(n) calls with full
+// transactions as full that every vendor answered in [from, to].
+func (s *scenario) dispatches(n uint64, full bool, from, to time.Time) int {
 	d := 0
 	for _, v := range s.vendors {
-		d += v.NumberCalls(n, from, to)
+		d += v.NumberCalls(n, full, from, to)
 	}
 	return d
 }
@@ -295,10 +295,10 @@ func u14() spec {
 					s.logf("pod-%d: Latest %d + %d is above the archive's %d; skipped", pod+1, bn, u14Probe, archive.Head().Number)
 				case got != want.Hash.Hex():
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), Latest %d + %d, answered %s, not the archive's %s", pod+1, n, bn, u14Probe, got, short(want.Hash))
-				case archive.NumberCalls(n, from, to) == 0:
+				case archive.NumberCalls(n, false, from, to) == 0:
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered without asking the archive", pod+1, n)
-				case s.dispatches(n, from, to) > refusalDispatches:
-					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d)", pod+1, n, s.dispatches(n, from, to), refusalDispatches)
+				case s.dispatches(n, false, from, to) > refusalDispatches:
+					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d)", pod+1, n, s.dispatches(n, false, from, to), refusalDispatches)
 				}
 				s.blocks(5)
 			}
@@ -742,6 +742,12 @@ func c9() spec {
 				s.t.Fatalf("pod-1 restart: %v", err)
 			}
 			s.logf("pod-1 restarted cold")
+			// A read adds the counts before the restart; the cold process's
+			// own are those above them.
+			voted0 := map[string]float64{}
+			for key := range s.vendors {
+				voted0[key] = p.counters.carriedSum("erpc_chain_tracker_source_heads_total", map[string]string{"project": s.project, "network": s.network(), "upstream": s.upstream(key), "outcome": "voted"})
+			}
 			want := float64(c9BlockTime.Milliseconds())
 			firstAt := -1.0
 			deadline := time.Now().Add(podBootWait)
@@ -758,7 +764,7 @@ func c9() spec {
 				most := 0.0
 				for key := range s.vendors {
 					v, _ := sumOf(ss, "erpc_chain_tracker_source_heads_total", map[string]string{"project": s.project, "network": s.network(), "upstream": s.upstream(key), "outcome": "voted"})
-					most = math.Max(most, v)
+					most = math.Max(most, v-voted0[key])
 				}
 				bt, found := sumOf(ss, "erpc_network_dynamic_block_time_milliseconds", map[string]string{"project": s.project, "network": s.network()})
 				if !found {
@@ -811,6 +817,9 @@ func p9() spec {
 	return sp
 }
 
+// pollNext's polls ask full transactions, so the vendors count their
+// dispatches apart from the scenario's clients, which read each block they
+// receive by number without them at the moment the poll answers it.
 func pollNext(s *scenario, farFuture bool) {
 	s.blocks(10)
 	var bn hexutil.Uint64
@@ -824,8 +833,8 @@ func pollNext(s *scenario, farFuture bool) {
 	for end := time.Now().Add(40 * time.Second); time.Now().Before(end); polls++ {
 		pod := int(next % uint64(len(s.h.pods)))
 		from := time.Now()
-		got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(next), false)
-		if d := s.dispatches(next, from, time.Now()); d > refusalDispatches {
+		got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(next), true)
+		if d := s.dispatches(next, true, from, time.Now()); d > refusalDispatches {
 			s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d); answered %s", pod+1, next, d, refusalDispatches, got)
 		}
 		if got == "null" {
@@ -844,11 +853,11 @@ func pollNext(s *scenario, farFuture bool) {
 			pod := i % len(s.h.pods)
 			n := s.chain.Tip().Number + 1000 + uint64(i)
 			from := time.Now()
-			got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
+			got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), true)
 			if got == "null" {
 				nulls[pod]++
 			}
-			if d := s.dispatches(n, from, time.Now()); got != "null" || d > 0 {
+			if d := s.dispatches(n, true, from, time.Now()); got != "null" || d > 0 {
 				s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), above the ceiling, answered %s after %d dispatches", pod+1, n, got, d)
 			}
 		}
@@ -865,15 +874,11 @@ func pollNext(s *scenario, farFuture bool) {
 // exceeds it.
 func oweBandProbes(s *scenario, nulls []float64) {
 	for pod, n := range nulls {
-		p := s.h.pods[pod]
-		ss, err := p.scrape()
+		ss, err := s.h.pods[pod].scrape()
 		if err != nil {
 			s.violate("harness", "pod-%d: scrape: %v", pod+1, err)
 			continue
 		}
-		p.carriedMu.Lock()
-		ss = append(ss, p.carried...)
-		p.carriedMu.Unlock()
 		future := 0.0
 		for _, rule := range []string{"future", "future_after_refresh", "future_after_wait"} {
 			v, _ := sumOf(ss, "erpc_head_refusal_total", map[string]string{"project": s.project, "network": s.network(), "rule": rule})

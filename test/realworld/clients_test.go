@@ -701,7 +701,9 @@ func (c *logsClient) onLog(pod, conn int, raw json.RawMessage) {
 
 // grpcClient applies StreamBlocks headers by the gRPC client rule (§9.2)
 // and resumes from its last header, on the other pod, every few blocks and
-// whenever a stream ends UNAVAILABLE.
+// whenever a stream ends UNAVAILABLE. An UNAVAILABLE end at the server's
+// connection age is the resume a real client makes (§10.2); any other is
+// a violation unless the scenario allows it.
 type grpcClient struct {
 	clientBase
 	// switchEvery: resume on the other pod after this many blocks, at
@@ -716,7 +718,7 @@ type grpcClient struct {
 func (g *grpcClient) run(ctx context.Context) {
 	for ctx.Err() == nil {
 		pod := g.currentPod()
-		code, msg, planned := g.stream(ctx, pod)
+		code, msg, lived, planned := g.stream(ctx, pod)
 		switch {
 		case ctx.Err() != nil:
 			return
@@ -725,7 +727,7 @@ func (g *grpcClient) run(ctx context.Context) {
 			g.otherPod()
 		case code == codes.Unavailable:
 			g.ended(pod, "UNAVAILABLE: "+msg, true)
-			if !g.allows("grpc:Unavailable", pod) {
+			if lived < grpcConnAge && !g.allows("grpc:Unavailable", pod) {
 				g.s.violate(g.name, "pod-%d: StreamBlocks ended UNAVAILABLE: %s", pod+1, msg)
 			}
 			g.otherPod()
@@ -747,9 +749,10 @@ func (g *grpcClient) run(ctx context.Context) {
 	}
 }
 
-// stream runs one StreamBlocks call on pod; planned is true when the
-// client ended it to resume on the other pod.
-func (g *grpcClient) stream(ctx context.Context, pod int) (codes.Code, string, bool) {
+// stream runs one StreamBlocks call on pod; lived is how long the stream
+// was open, and planned is true when the client ended it to resume on the
+// other pod.
+func (g *grpcClient) stream(ctx context.Context, pod int) (codes.Code, string, time.Duration, bool) {
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 	if g.slow {
 		// A fixed 64 KiB window: a client that stops reading stops the
@@ -758,7 +761,7 @@ func (g *grpcClient) stream(ctx context.Context, pod int) (codes.Code, string, b
 	}
 	conn, err := grpc.NewClient(g.s.h.pods[pod].grpcAddr(), opts...)
 	if err != nil {
-		return codes.Unavailable, err.Error(), false
+		return codes.Unavailable, err.Error(), 0, false
 	}
 	defer conn.Close()
 	sctx, cancel := context.WithCancel(ctx)
@@ -775,7 +778,7 @@ func (g *grpcClient) stream(ctx context.Context, pod int) (codes.Code, string, b
 	stream, err := bdsevm.NewStreamServiceClient(conn).StreamBlocks(sctx, req)
 	if err != nil {
 		st, _ := status.FromError(err)
-		return st.Code(), st.Message(), false
+		return st.Code(), st.Message(), 0, false
 	}
 	if req.FromBlock != nil {
 		g.tr.logf("resume pod=%d from=%d %s", pod+1, *req.FromBlock, short(gethcommon.BytesToHash(req.FromHash)))
@@ -795,15 +798,15 @@ func (g *grpcClient) stream(ctx context.Context, pod int) (codes.Code, string, b
 		resp, err := stream.Recv()
 		if err != nil {
 			if ctx.Err() != nil {
-				return codes.Canceled, "", false
+				return codes.Canceled, "", time.Since(start), false
 			}
 			st, _ := status.FromError(err)
-			return st.Code(), st.Message(), false
+			return st.Code(), st.Message(), time.Since(start), false
 		}
 		g.onHeader(pod, resp.GetHeader(), start)
 		got++
 		if limit > 0 && got >= limit {
-			return codes.Canceled, "", true
+			return codes.Canceled, "", time.Since(start), true
 		}
 	}
 }
