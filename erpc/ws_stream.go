@@ -131,22 +131,35 @@ func (e *wsStream) Status(state, reason string) error {
 	return e.control(streamStatus, func(b []byte) []byte { return appendStatus(b, "status", state, reason) })
 }
 
-// End writes the end, then removes the subscription; the connection
-// stays (§5.2).
+// End writes the end as the subscription's last message, then removes
+// the subscription; the connection stays (§5.2).
 func (e *wsStream) End(end streamEnd) error {
-	err := e.control(streamEndMsg, func(b []byte) []byte { return appendEnd(b, "end", end) })
+	err := e.write(streamEndMsg, true, func(b []byte) []byte { return appendEnd(b, "end", end) })
 	e.sm.endSubscription(e.wsc, e.sub.ClientSubID)
 	return err
 }
 
 // control writes one erpc_subscription frame whose result body appends.
 func (e *wsStream) control(t streamMsgType, body func([]byte) []byte) error {
+	return e.write(t, false, body)
+}
+
+// write writes one erpc_subscription frame; last: nothing of the
+// subscription follows it.
+func (e *wsStream) write(t streamMsgType, last bool, body func([]byte) []byte) error {
 	msg := body(append(make([]byte, 0, len(e.ctrl)+192), e.ctrl...))
 	msg = append(msg, wsNotificationSuffix...)
-	written, err := e.wsc.writeNotification(e.sub, nil, func(w io.Writer) error {
+	put := func(w io.Writer) error {
 		_, err := w.Write(msg)
 		return err
-	})
+	}
+	var written bool
+	var err error
+	if last {
+		written, err = e.wsc.writeLastNotification(e.sub, put)
+	} else {
+		written, err = e.wsc.writeNotification(e.sub, nil, put)
+	}
 	if err != nil {
 		return writeFailed(err)
 	}
@@ -185,7 +198,7 @@ func (sm *SubscriptionManager) runWsTap(ctx context.Context, wsc *WsConnection, 
 	wsTapLoopStarts()
 	enc := sm.wsStream(wsc, sub, nw, kind)
 	s := newStreamSession(nw, "ws", kind, lane, opts)
-	s.start, s.filter, s.opened, s.lag, s.resumable = head, f, opened, true, opts.From != nil
+	s.start, s.filter, s.opened, s.gone, s.lag, s.resumable = head, f, opened, wsc.done, true, opts.From != nil
 	s.headers, s.logs = enc, enc
 	if opts.Extended {
 		s.control, s.drain = enc, wsc.draining
@@ -300,7 +313,9 @@ func (sm *SubscriptionManager) runPendingTxs(ctx context.Context, wsc *WsConnect
 		switch {
 		case opts.Extended && (errors.Is(cause, errStreamDraining) || ctx.Err() != nil && nw.appCtx.Err() != nil):
 			end(indexer.TapEndDraining)
-			_ = enc.End(streamEnd{reason: indexer.TapEndDraining})
+			if streamOpened(wsc.done, opened) {
+				_ = enc.End(streamEnd{reason: indexer.TapEndDraining})
+			}
 			return
 		case errors.As(cause, &we), errors.As(err, &we):
 			if we.slow {

@@ -99,7 +99,8 @@ type streamSession struct {
 	start  func(context.Context) (indexer.Cursor, error)
 	filter *logfilter.LogsFilter
 	// opened is closed once the client has the stream's id; nil: now.
-	opened <-chan struct{}
+	// gone is closed once the client's connection is gone.
+	opened, gone <-chan struct{}
 	// drain is closed at instance shutdown; nil: the transport ends the
 	// stream itself.
 	drain   <-chan struct{}
@@ -212,10 +213,31 @@ func (s *streamSession) run(ctx context.Context) *streamEnd {
 			}
 			ev.Msg("stream ended")
 		}
-		if s.control != nil && e.reason != indexer.TapEndSlowClient {
+		if s.control != nil && e.reason != indexer.TapEndSlowClient && streamOpened(s.gone, s.opened) {
 			_ = s.control.End(*e)
 		}
 		return e
+	}
+}
+
+// streamOpened waits until the client has the stream's id (§5.3: the id
+// comes before any message), even past the tap's end: a subscribe's
+// answer is written after its tap starts. False once gone closes first:
+// the connection is gone, so the answer never comes.
+func streamOpened(gone, opened <-chan struct{}) bool {
+	if opened == nil {
+		return true
+	}
+	select {
+	case <-opened:
+		return true
+	default:
+	}
+	select {
+	case <-opened:
+		return true
+	case <-gone:
+		return false
 	}
 }
 

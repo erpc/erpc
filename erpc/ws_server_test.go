@@ -1645,40 +1645,68 @@ func TestWebSocket_GracefulShutdown(t *testing.T) {
 		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
 		require.NotNil(t, resp["result"])
 		// An extended subscription ends draining before the close (streams
-		// spec §3.4); the standard one gets the close only.
-		resp = sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":2,"method":"eth_subscribe","params":["newHeads",{"erpc":{}}]}`)
-		extended, _ := resp["result"].(string)
-		require.NotEmpty(t, extended, "extended subscribe: %v", resp)
+		// spec §3.4); the standard one gets the close only. Its answer is
+		// held until the drain began, so its tap ends first: the id still
+		// comes before the end (§5.3), and nothing of it follows the end
+		// (§3.2), heartbeats included.
+		release := make(chan struct{})
+		hold := func() { <-release }
+		wsSubscribeAnswerHold.Store(&hold)
+		defer wsSubscribeAnswerHold.Store(nil)
+		require.NoError(t, conn.WriteMessage(websocket.TextMessage,
+			[]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_subscribe","params":["newHeads",{"erpc":{"heartbeat":1}}]}`)))
+		time.Sleep(200 * time.Millisecond)
+		shut := make(chan struct{})
+		go func() { defer close(shut); cleanup() }()
+		time.Sleep(500 * time.Millisecond)
+		wsSubscribeAnswerHold.Store(nil)
+		close(release)
 
-		cleanup()
-
-		// After shutdown, the client connection should be closed
-		var ends []map[string]interface{}
+		type frame struct {
+			ID     *int   `json:"id"`
+			Result any    `json:"result"`
+			Method string `json:"method"`
+			Params struct {
+				Subscription string                 `json:"subscription"`
+				Result       map[string]interface{} `json:"result"`
+			} `json:"params"`
+		}
+		var frames []frame
 		var err error
 		for {
-			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 			var raw []byte
 			if _, raw, err = conn.ReadMessage(); err != nil {
 				break
 			}
-			var m struct {
-				Method string `json:"method"`
-				Params struct {
-					Subscription string                 `json:"subscription"`
-					Result       map[string]interface{} `json:"result"`
-				} `json:"params"`
-			}
-			require.NoError(t, json.Unmarshal(raw, &m))
-			if m.Method == "erpc_subscription" && m.Params.Result["type"] == "end" {
-				assert.Equal(t, extended, m.Params.Subscription)
-				ends = append(ends, m.Params.Result)
-			}
+			var f frame
+			require.NoError(t, json.Unmarshal(raw, &f), "%s", raw)
+			frames = append(frames, f)
 		}
+		<-shut
 		var closeErr *websocket.CloseError
 		require.ErrorAs(t, err, &closeErr)
 		assert.Equal(t, websocket.CloseGoingAway, closeErr.Code)
-		require.Len(t, ends, 1, "one end before the close")
-		assert.Equal(t, "draining", ends[0]["reason"])
+		answered, extended, ended := -1, "", -1
+		for i, f := range frames {
+			switch {
+			case f.ID != nil && *f.ID == 2:
+				answered = i
+				extended, _ = f.Result.(string)
+			case f.Method == "erpc_subscription" && f.Params.Result["type"] == "end":
+				require.Equal(t, -1, ended, "one end: %+v", frames)
+				ended = i
+				assert.Equal(t, "draining", f.Params.Result["reason"])
+			}
+		}
+		require.NotEqual(t, -1, answered, "the extended subscribe is answered: %+v", frames)
+		require.NotEmpty(t, extended, "extended subscribe: %+v", frames[answered])
+		require.NotEqual(t, -1, ended, "one end before the close: %+v", frames)
+		assert.Less(t, answered, ended, "the id reaches the client before the end")
+		assert.Equal(t, extended, frames[ended].Params.Subscription)
+		for _, f := range frames[ended+1:] {
+			assert.NotEqual(t, extended, f.Params.Subscription, "a message of the subscription after its end: %+v", f)
+		}
 	})
 
 	// Verifies all connections are closed when the server shuts down

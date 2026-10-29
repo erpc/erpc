@@ -312,6 +312,9 @@ func (wsc *WsConnection) handleMessage(raw []byte) {
 		}
 		return
 	}
+	if hold := wsSubscribeAnswerHold.Load(); hold != nil && open != nil {
+		(*hold)()
+	}
 	var err error
 	switch v := out.(type) {
 	case *common.NormalizedResponse:
@@ -812,3 +815,20 @@ func (wsc *WsConnection) writeNotification(sub wsclient.Subscription, costs []by
 	}
 	return true, wsc.writeMessageLocked(costs, write)
 }
+
+// writeLastNotification writes sub's last message as writeNotification
+// does and marks sub removed under the same lock, so nothing of sub
+// follows it (streams spec §3.2: end is the last message).
+func (wsc *WsConnection) writeLastNotification(sub wsclient.Subscription, write func(w io.Writer) error) (written bool, err error) {
+	wsc.writeMu.Lock()
+	defer wsc.writeMu.Unlock()
+	if sub.Removed() {
+		return false, nil
+	}
+	sub.MarkRemoved()
+	return true, wsc.writeMessageLocked(nil, write)
+}
+
+// wsSubscribeAnswerHold, while set, runs before a subscribe's answer is
+// written; tests hold it there so the subscription's tap runs first.
+var wsSubscribeAnswerHold atomic.Pointer[func()]

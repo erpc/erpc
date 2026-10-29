@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -684,6 +685,23 @@ func (ec *extConn) controls(sub, typ string, from time.Time) []extControl {
 
 func (ec *extConn) close() { _ = ec.conn.Close() }
 
+// answeredFirst reports whether the subscribe answer carrying sub came
+// before every message of sub.
+func (ec *extConn) answeredFirst(sub string) bool {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	id := `"` + sub + `"`
+	for _, tf := range ec.frames {
+		if tf.f.ID != nil && string(tf.f.Result) == id {
+			return true
+		}
+		if tf.f.Params.Subscription == sub {
+			return false
+		}
+	}
+	return false
+}
+
 // requireBeats: sub's heartbeats in [from, to] come every want, idle
 // only, each with the halted chain's head and a finalized number.
 func (s *scenario) requireBeats(ec *extConn, name, sub string, want time.Duration, from, to time.Time, tip *chainsim.Block) {
@@ -903,8 +921,13 @@ func w5() spec {
 		case ends[0].msg.Oldest == nil || uint64(ends[0].msg.Oldest.Number) <= low.Number || s.chain.Block(ends[0].msg.Oldest.Hash) == nil:
 			s.violate(s.name, "logs end out_of_range with oldest %+v, not a held block above %d", ends[0].msg.Oldest, low.Number)
 		}
-		if f, err := ec.call("eth_unsubscribe", logs); err != nil || string(f.Result) != "false" {
-			s.violate(s.name, "eth_unsubscribe of an ended subscription answered %s %+v (%v), not false", f.Result, f.Error, err)
+		if !ec.answeredFirst(logs) {
+			s.violate(s.name, "a message of subscription %s came before its id (§5.3)", logs)
+		}
+		for i := range 2 {
+			if f, err := ec.call("eth_unsubscribe", logs); err != nil || string(f.Result) != "false" {
+				s.violate(s.name, "eth_unsubscribe %d of an ended subscription answered %s %+v (%v), not false", i+1, f.Result, f.Error, err)
+			}
 		}
 		heads, err := ec.subscribe("newHeads", map[string]interface{}{"erpc": map[string]interface{}{}})
 		if err != nil {
@@ -929,13 +952,23 @@ func w5() spec {
 	}}
 }
 
-// W6 (guard): standard subscriptions, geth's rpc.Client (baseline B) and
-// raw JSON clients, see only eth_subscription notifications of the
-// standard shape: no erpc_subscription frame (§14 W6; §5.4).
+// W6 (guard): standard subscriptions keep today's transcript (CT§10.2):
+// newHeads sends each canonical head once, oldest first, its payload the
+// vendor's header fields, and after a reorg the new branch from the fork
+// point + 1; logs sends each matching log once, in block and logIndex
+// order, the vendor's fields, and after a reorg removed:true for exactly
+// the orphan logs it sent, newest first, before the new branch's. No
+// erpc_subscription frame. geth's rpc.Client runs as baseline B (§14 W6;
+// §5.4).
 func w6() spec {
 	return spec{name: "W6", bound: healthyDelivery, body: func(s *scenario) {
 		s.blocks(10)
-		var conns []*extConn
+		type raw struct {
+			pod         int
+			ec          *extConn
+			heads, logs string
+		}
+		var conns []raw
 		for pod := range s.h.pods {
 			ec, _, err := s.dialExt(pod, "", websocket.DefaultDialer)
 			if err != nil {
@@ -943,36 +976,148 @@ func w6() spec {
 				continue
 			}
 			defer ec.close()
-			if _, err := ec.subscribe("newHeads"); err != nil {
-				s.violate(s.name, "pod-%d: newHeads subscribe: %v", pod+1, err)
+			heads, err1 := ec.subscribe("newHeads")
+			logs, err2 := ec.subscribe("logs", chainsim.Filters[0].Params())
+			if err1 != nil || err2 != nil {
+				s.violate(s.name, "pod-%d: subscribes: %v, %v", pod+1, err1, err2)
+				ec.close()
+				continue
 			}
-			if _, err := ec.subscribe("logs", chainsim.Filters[0].Params()); err != nil {
-				s.violate(s.name, "pod-%d: logs subscribe: %v", pod+1, err)
-			}
-			conns = append(conns, ec)
+			conns = append(conns, raw{pod, ec, heads, logs})
 		}
 		s.blocks(20)
-		s.reorg(2)
+		r := s.reorg(2)
 		s.blocks(20)
-		for pod, ec := range conns {
+		for _, c := range conns {
+			name := fmt.Sprintf("%s/pod-%d", s.name, c.pod+1)
+			ec := c.ec
 			ec.mu.Lock()
 			frames := append([]timedFrame(nil), ec.frames...)
 			ec.mu.Unlock()
-			notes := 0
 			for _, tf := range frames {
-				if tf.f.ID != nil {
-					continue
-				}
-				notes++
-				if tf.f.Method != "eth_subscription" || tf.f.Params.Subscription == "" || len(tf.f.Params.Result) == 0 {
-					s.violate(s.name, "pod-%d: standard subscription frame %q for %q: not an eth_subscription notification", pod+1, tf.f.Method, tf.f.Params.Subscription)
+				if tf.f.ID == nil && (tf.f.Method != "eth_subscription" || len(tf.f.Params.Result) == 0) {
+					s.violate(name, "frame %q for %q: not an eth_subscription notification", tf.f.Method, tf.f.Params.Subscription)
 				}
 			}
-			if notes == 0 {
-				s.violate(s.name, "pod-%d: no notification", pod+1)
-			}
+			s.requireHeadsTranscript(name, ec.of(c.heads, "eth_subscription", time.Time{}), r)
+			s.requireLogsTranscript(name, ec.of(c.logs, "eth_subscription", time.Time{}), r)
 		}
 	}}
+}
+
+// requireHeadsTranscript: each head is a canonical or orphan block whose
+// fields equal the vendor's header, one per number, linked, and the reorg
+// r shows as the new branch from its fork point + 1 when the client had
+// an orphan.
+func (s *scenario) requireHeadsTranscript(name string, frames []timedFrame, r reorg) {
+	if len(frames) == 0 {
+		s.violate(name, "no newHeads notification")
+		return
+	}
+	var hc headerChain
+	gotOrphan, toldAt := false, uint64(0)
+	orphan := map[hash]bool{}
+	for _, b := range r.old {
+		orphan[b.Hash] = true
+	}
+	for i, tf := range frames {
+		var fields map[string]json.RawMessage
+		var h headJSON
+		if json.Unmarshal(tf.f.Params.Result, &fields) != nil || json.Unmarshal(tf.f.Params.Result, &h) != nil {
+			s.violate(name, "head %d does not parse: %.200s", i, tf.f.Params.Result)
+			return
+		}
+		b := s.chain.Block(h.Hash)
+		if b == nil {
+			s.violate(name, "head %d %s is no block of the chain", h.Number, short(h.Hash))
+			return
+		}
+		var vendor map[string]json.RawMessage
+		_ = json.Unmarshal(b.JSON(), &vendor)
+		for k, v := range fields {
+			if want, ok := vendor[k]; !ok || string(want) != string(v) {
+				s.violate(name, "head %d field %s is %.80s, the vendor's %.80s", h.Number, k, v, want)
+			}
+		}
+		gotOrphan = gotOrphan || orphan[h.Hash]
+		switch kind := hc.apply(uint64(h.Number), h.Hash, h.ParentHash); kind {
+		case appliedStart, appliedNext:
+		case appliedReplace:
+			if !gotOrphan || toldAt != 0 {
+				s.violate(name, "head %d replaces a branch outside the reorg", h.Number)
+			}
+			toldAt = uint64(h.Number)
+		default:
+			s.violate(name, "head %d %s %s", h.Number, short(h.Hash), kind)
+		}
+	}
+	if gotOrphan && toldAt != r.old[0].Number {
+		s.violate(name, "received orphan heads, then no new branch from the fork point + 1 (%d): replaced at %d", r.old[0].Number, toldAt)
+	}
+}
+
+// requireLogsTranscript: each log equals the chain's, sent once, in block
+// and logIndex order; the reorg r sends removed:true for exactly the
+// orphan logs sent, newest first, before any new-branch log at or above
+// its fork point + 1.
+func (s *scenario) requireLogsTranscript(name string, frames []timedFrame, r reorg) {
+	if len(frames) == 0 {
+		s.violate(name, "no logs notification")
+		return
+	}
+	orphan := map[hash]bool{}
+	for _, b := range r.old {
+		orphan[b.Hash] = true
+	}
+	sent := map[chainsim.LogKey]bool{}
+	var sentOrphans, removed []chainsim.LogKey
+	var lastN uint64
+	lastI := -1
+	inRemoval, removalDone := false, false
+	for _, tf := range frames {
+		var l logJSON
+		if err := json.Unmarshal(tf.f.Params.Result, &l); err != nil {
+			s.violate(name, "log does not parse: %v: %.200s", err, tf.f.Params.Result)
+			return
+		}
+		b := s.chain.Block(l.BlockHash)
+		if b == nil || int(l.LogIndex) >= len(b.Logs()) {
+			s.violate(name, "log %d of %s is no log of the chain", l.LogIndex, short(l.BlockHash))
+			return
+		}
+		want := b.Logs()[l.LogIndex]
+		if l.Data != "0x" || l.Address != want.Address || !slicesEqual(l.Topics, want.Topics) || l.TxHash != want.TxHash || uint64(l.BlockNumber) != b.Number {
+			s.violate(name, "log %d of block %d differs from the chain's", l.LogIndex, b.Number)
+		}
+		key := want.Key()
+		if l.Removed {
+			if removalDone {
+				s.violate(name, "removed:true for log %d of block %d after the new branch began", l.LogIndex, b.Number)
+			}
+			inRemoval = true
+			removed = append(removed, key)
+			continue
+		}
+		if inRemoval {
+			inRemoval, removalDone = false, true
+			lastN, lastI = 0, -1
+		}
+		switch {
+		case sent[key]:
+			s.violate(name, "log %d of block %d twice", l.LogIndex, b.Number)
+		case b.Number < lastN || b.Number == lastN && int(l.LogIndex) <= lastI:
+			s.violate(name, "log %d of block %d after log %d of block %d", l.LogIndex, b.Number, lastI, lastN)
+		}
+		sent[key] = true
+		lastN, lastI = b.Number, int(l.LogIndex)
+		if orphan[b.Hash] {
+			sentOrphans = append(sentOrphans, key)
+		}
+	}
+	slices.Reverse(sentOrphans)
+	if !slices.Equal(sentOrphans, removed) {
+		s.violate(name, "removed:true for %v, want the sent orphan logs newest first %v", removed, sentOrphans)
+	}
 }
 
 // W7: the URL sets heartbeat=10 for every subscription on the connection;
