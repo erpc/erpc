@@ -46,7 +46,7 @@ const (
 // pod, and on the other ≥ N within r1CatchUp, its lower answers counted
 // apart.
 func r1() spec {
-	ra := &readAfter{stats: map[string]*raStat{}}
+	ra := &readAfter{stats: map[string]*raStat{}, own: map[string]time.Time{}}
 	return spec{name: "R1", bound: healthyDelivery,
 		faults:    map[string]chainsim.Faults{"http-a": {Lag: r1Behind}, "http-b": {StaleState: r1Stale}},
 		onDeliver: ra.onDeliver,
@@ -69,6 +69,15 @@ type readAfter struct {
 	mu    sync.Mutex
 	stats map[string]*raStat // "<check>/<same|other>"
 	gaps  []raGap
+	// own: when a client on a pod first received a block, by "pod/hash".
+	own map[string]time.Time
+}
+
+// ownAt is when a client on pod first received block h; zero not yet.
+func (ra *readAfter) ownAt(pod int, h hash) time.Time {
+	ra.mu.Lock()
+	defer ra.mu.Unlock()
+	return ra.own[fmt.Sprintf("%d/%s", pod, h.Hex())]
 }
 
 type raStat struct {
@@ -76,12 +85,15 @@ type raStat struct {
 	lat             []time.Duration
 }
 
-// raGap: another pod's latest answered blocks below a delivered N, and
-// reached N catchUp after the delivery (0: never within httpCheckWait).
+// raGap: another pod's latest answered blocks below a delivered N. A read
+// reads Head after it is sent, so its pod's Latest was still below N at
+// least trailed after the delivery (the send of its last lower read), and
+// reached N by caught (the send of its first read at N or above; 0 never
+// within httpCheckWait). Read latency is in neither.
 type raGap struct {
-	check   string
-	blocks  uint64
-	catchUp time.Duration
+	check           string
+	blocks          uint64
+	trailed, caught time.Duration
 }
 
 // raCheck is one read: its answer's block number, or a problem.
@@ -176,10 +188,15 @@ var raLogs = raCheck{"logs-hash", false, func(s *scenario, t int, b *chainsim.Bl
 // client kind and pod, every read at once, to every pod.
 func (ra *readAfter) onDeliver(s *scenario, c *clientBase, pod int, b *chainsim.Block) {
 	kind, filter := s.clientKind(c)
+	delivered := time.Now()
+	ra.mu.Lock()
+	if key := fmt.Sprintf("%d/%s", pod, b.Hash.Hex()); ra.own[key].IsZero() {
+		ra.own[key] = delivered
+	}
+	ra.mu.Unlock()
 	if !s.first(fmt.Sprintf("r1/%s/%d/%s", kind, pod, b.Hash.Hex())) {
 		return
 	}
-	delivered := time.Now()
 	checks := raChecks
 	if kind == "logs" {
 		checks = append(slices.Clone(raChecks), raLogs)
@@ -217,12 +234,17 @@ func (ra *readAfter) run(s *scenario, client string, ck raCheck, pod, target int
 		s.violate(client, "%s answered %d, below the delivered block", where, got)
 	case ck.latest && got < b.Number:
 		result = "lower"
-		caught := ra.follow(s, ck, target, b, delivered)
+		g := ra.follow(s, ck, target, b, delivered, start)
+		g.blocks = b.Number - got
 		ra.mu.Lock()
-		ra.gaps = append(ra.gaps, raGap{check: ck.name, blocks: b.Number - got, catchUp: caught})
+		ra.gaps = append(ra.gaps, g)
 		ra.mu.Unlock()
-		if caught == 0 || caught > r1CatchUp {
-			s.violate(client, "%s", s.h.host.verdict(delivered, time.Now(), fmt.Sprintf("%s answered %d, %d below; reached it after %s (bound %s)", where, got, b.Number-got, caught.Round(time.Millisecond), r1CatchUp)))
+		if g.caught == 0 || g.trailed > r1CatchUp {
+			s.violate(client, "%s", s.h.host.verdict(delivered, time.Now(), fmt.Sprintf("%s answered %d, %d below; a read sent %s after the delivery still answered below it, the first at or above it %s after (bound %s)",
+				where, got, g.blocks, g.trailed.Round(time.Millisecond), g.caught.Round(time.Millisecond), r1CatchUp)))
+		}
+		if own := ra.ownAt(target, b.Hash); !own.IsZero() && delivered.Add(g.trailed).After(own) {
+			s.violate(client, "%s: a read sent %s after pod-%d itself delivered the block answered below it", where, delivered.Add(g.trailed).Sub(own).Round(time.Millisecond), target+1)
 		}
 	}
 	if result == "ok" && took > r1ReadBound {
@@ -246,16 +268,23 @@ func (ra *readAfter) run(s *scenario, client string, ck raCheck, pod, target int
 	ra.mu.Unlock()
 }
 
-// follow reads a lower latest again until it reaches N; the time since
-// delivery, 0 when it never does within httpCheckWait.
-func (ra *readAfter) follow(s *scenario, ck raCheck, target int, b *chainsim.Block, delivered time.Time) time.Duration {
+// follow reads a lower latest again until it reaches N; first is the send
+// time of the read that answered lower.
+func (ra *readAfter) follow(s *scenario, ck raCheck, target int, b *chainsim.Block, delivered, first time.Time) raGap {
+	g := raGap{check: ck.name, trailed: first.Sub(delivered)}
 	for time.Since(delivered) < httpCheckWait {
 		time.Sleep(r1Follow)
-		if got, problem := ck.read(s, target, b, 0); problem == "" && got >= b.Number {
-			return time.Since(delivered)
+		sent := time.Now()
+		got, problem := ck.read(s, target, b, 0)
+		switch {
+		case problem == "" && got >= b.Number:
+			g.caught = sent.Sub(delivered)
+			return g
+		case problem == "":
+			g.trailed = sent.Sub(delivered)
 		}
 	}
-	return 0
+	return g
 }
 
 // report logs R1's counts and latencies per check and side, and the
@@ -277,19 +306,21 @@ func (ra *readAfter) report(s *scenario) {
 	}
 	if len(ra.gaps) > 0 {
 		blocks := map[uint64]int{}
-		var catch []time.Duration
+		var trailed, caught []time.Duration
 		never := 0
 		for _, g := range ra.gaps {
 			blocks[g.blocks]++
-			if g.catchUp == 0 {
+			trailed = append(trailed, g.trailed)
+			if g.caught == 0 {
 				never++
 				continue
 			}
-			catch = append(catch, g.catchUp)
+			caught = append(caught, g.caught)
 		}
-		slices.Sort(catch)
-		fmt.Fprintf(&b, "other pod latest lower: %d (blocks below N: %v); reached N after p50 %s p99 %s max %s; never %d\n",
-			len(ra.gaps), blocks, pctl(catch, 50), pctl(catch, 99), pctl(catch, 100), never)
+		slices.Sort(trailed)
+		slices.Sort(caught)
+		fmt.Fprintf(&b, "other pod latest lower: %d (blocks below N: %v); still lower at a read sent p50 %s p99 %s max %s after delivery; at N by a read sent p50 %s p99 %s max %s after; never %d\n",
+			len(ra.gaps), blocks, pctl(trailed, 50), pctl(trailed, 99), pctl(trailed, 100), pctl(caught, 50), pctl(caught, 99), pctl(caught, 100), never)
 	}
 	s.logf("R1 reads:\n%s", b.String())
 	_ = os.WriteFile(filepath.Join(s.dir, "r1-stats.txt"), []byte(b.String()), 0o644)
