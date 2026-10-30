@@ -492,10 +492,10 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 			}
 			return ""
 		}
-		if common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable) {
-			if blockSkipsAllFinal(err) {
-				return ""
-			}
+		if blockSkipsAllFinal(err) {
+			return ""
+		}
+		if common.HasRetryableBlockUnavailable(err) {
 			if e.dataUnavailableCapReached(attempt) {
 				return ""
 			}
@@ -647,7 +647,7 @@ func (e *networkExecutor) computeDelay(req *common.NormalizedRequest, resp *comm
 	// (blockTime × BlockUnavailableDelayMultiplier) once it's warmed up, else the
 	// relevant fixed fallback. One mechanism covers both cases; there is no
 	// separate per-policy empty-result multiplier.
-	isBlockUnavailable := err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable)
+	isBlockUnavailable := common.HasRetryableBlockUnavailable(err)
 	method, _ := req.Method()
 	isEmptyResult := (resp != nil && !resp.IsObjectNull() && isEmptyNetworkResult(method, resp)) ||
 		(err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData))

@@ -2735,6 +2735,37 @@ func IsHistorySweepContinuation(err error) bool {
 	return false
 }
 
+// HasRetryableBlockUnavailable reports whether err carries an
+// ErrUpstreamBlockUnavailable that waiting for the chain can resolve. A verdict
+// wrapped in ErrUpstreamRequestSkipped was already judged non-retryable on that
+// upstream (outside its configured bounds) and never counts.
+func HasRetryableBlockUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if se, ok := err.(StandardError); ok {
+		base := se.Base()
+		if base == nil {
+			return false
+		}
+		switch base.Code {
+		case ErrCodeUpstreamRequestSkipped:
+			return false
+		case ErrCodeUpstreamBlockUnavailable:
+			return true
+		}
+		return HasRetryableBlockUnavailable(base.Cause)
+	}
+	if arr, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, e := range arr.Unwrap() {
+			if HasRetryableBlockUnavailable(e) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func IsRetryableTowardsUpstream(err error) bool {
 	// Check if this is an exhausted upstreams error with retryable underlying errors
 	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
