@@ -2585,6 +2585,28 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 	return false
 }
 
+// PreDispatchErrorCodes are failures that PROVE the request never reached the
+// upstream's wire: selection/policy rejections, local rate-limit rejections and
+// an open circuit breaker are all produced before any bytes are sent. They are
+// properties of the ROUTE, not of the transaction, so the single-dispatch
+// guarantee is not at stake and the sweep must be free to try the next upstream.
+//
+// Deliberately excluded: transport errors, timeouts and upstream 5xx. Those
+// mean the request may well have been received and executed before the failure
+// surfaced — "the server failed" is not permission to run a mint again.
+//
+// Shared by the svm write guard and the jsonrpc replay guard so the set cannot
+// drift between architectures.
+var PreDispatchErrorCodes = []ErrorCode{
+	ErrCodeUpstreamRequestSkipped,
+	ErrCodeUpstreamMethodIgnored,
+	ErrCodeUpstreamShadowing,
+	ErrCodeUpstreamNotAllowed,
+	ErrCodeUpstreamExcludedByPolicy,
+	ErrCodeUpstreamRateLimitRuleExceeded,
+	ErrCodeFailsafeCircuitBreakerOpen,
+}
+
 // IsRetryableTowardNetwork reports whether err should be retried at network
 // scope (i.e. against a different upstream). Returns true by default; returns
 // false only when:

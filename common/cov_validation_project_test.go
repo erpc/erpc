@@ -84,6 +84,19 @@ func TestCovValidation_Project(t *testing.T) {
 			})
 			p.Networks = append(p.Networks, &NetworkConfig{Architecture: ArchitectureSvm, Svm: &SvmNetworkConfig{Cluster: "mainnet-beta"}})
 		}, "upstream.*.svm.chain 'eclipse' (upstream 'sol') matches no network.*.svm.chain for cluster 'mainnet-beta'"},
+		{"jsonrpc upstream slug mismatch", func(p *ProjectConfig) {
+			p.Upstreams = append(p.Upstreams, &UpstreamConfig{
+				Id: "stark", Type: UpstreamTypeJsonRpc, Endpoint: "http://stark",
+				Generic: &GenericUpstreamConfig{Slug: "starknet-sepolia"},
+			})
+			p.Networks = append(p.Networks, &NetworkConfig{Architecture: ArchitectureJsonRpc, Generic: &GenericNetworkConfig{Slug: "starknet"}})
+		}, "upstream.*.generic.slug 'starknet-sepolia' (upstream 'stark') matches no network.*.generic.slug"},
+		{"jsonrpc upstream without network is lazy", func(p *ProjectConfig) {
+			p.Upstreams = append(p.Upstreams, &UpstreamConfig{
+				Id: "stark", Type: UpstreamTypeJsonRpc, Endpoint: "http://stark",
+				Generic: &GenericUpstreamConfig{Slug: "starknet-sepolia"},
+			})
+		}, ""},
 		{"invalid auth", func(p *ProjectConfig) { p.Auth.Strategies = nil }, "project.*.auth.strategies is required"},
 		{"invalid cors", func(p *ProjectConfig) { p.CORS.AllowedOrigins = nil }, "*.cors.allowedOrigins is required"},
 		{"bad allowClientDirectives", func(p *ProjectConfig) { p.AllowClientDirectives = util.StringPtr("(use-upstream") }, "project.*.allowClientDirectives pattern is invalid"},
@@ -202,6 +215,24 @@ func TestCovValidation_Upstream(t *testing.T) {
 		{"svm invalid", func(u *UpstreamConfig) {
 			u.Type, u.Evm, u.Svm = UpstreamTypeSvm, nil, &SvmUpstreamConfig{}
 		}, "upstream.*.svm.cluster is required for svm upstreams"},
+		{"jsonrpc without slug", func(u *UpstreamConfig) {
+			u.Type, u.Evm = UpstreamTypeJsonRpc, nil
+		}, "upstream.*.generic.slug is required for jsonrpc upstreams"},
+		{"jsonrpc bad slug", func(u *UpstreamConfig) {
+			u.Type, u.Evm, u.Generic = UpstreamTypeJsonRpc, nil, &GenericUpstreamConfig{Slug: "star:net"}
+		}, "upstream.*.generic.slug 'star:net' is invalid"},
+		{"jsonrpc rejects evm block", func(u *UpstreamConfig) {
+			u.Type, u.Generic = UpstreamTypeJsonRpc, &GenericUpstreamConfig{Slug: "starknet"}
+		}, "upstream.*.evm is not supported on jsonrpc upstreams"},
+		{"jsonrpc rejects svm block", func(u *UpstreamConfig) {
+			u.Type, u.Evm, u.Svm, u.Generic = UpstreamTypeJsonRpc, nil, &SvmUpstreamConfig{}, &GenericUpstreamConfig{Slug: "starknet"}
+		}, "upstream.*.svm is not supported on jsonrpc upstreams"},
+		{"generic block on evm upstream", func(u *UpstreamConfig) {
+			u.Generic = &GenericUpstreamConfig{Slug: "starknet"}
+		}, "upstream.*.generic is only valid on upstreams with type: jsonrpc"},
+		{"jsonrpc valid", func(u *UpstreamConfig) {
+			u.Type, u.Evm, u.Generic = UpstreamTypeJsonRpc, nil, &GenericUpstreamConfig{Slug: "starknet"}
+		}, ""},
 		{"failsafe invalid", func(u *UpstreamConfig) { u.Failsafe[0].MatchMethod = "" }, "failsafe.matchMethod cannot be empty"},
 		{"failsafe consensus", func(u *UpstreamConfig) {
 			u.Failsafe[0].Consensus = &ConsensusPolicyConfig{MaxParticipants: 3, AgreementThreshold: 2}

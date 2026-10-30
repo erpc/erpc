@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/jsonrpc"
 	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/consensus"
@@ -121,6 +122,7 @@ func Init(
 	logger.Info().Msg("initializing eRPC core")
 	var evmJsonRpcCache *evm.EvmJsonRpcCache
 	var svmJsonRpcCache *svm.SvmJsonRpcCache
+	var genericJsonRpcCache *jsonrpc.GenericJsonRpcCache
 	var sharedState data.SharedStateRegistry
 	if cfg.Database != nil {
 		if cfg.Database.EvmJsonRpcCache != nil {
@@ -135,6 +137,12 @@ func Init(
 				logger.Warn().Msgf("failed to initialize svm json rpc cache: %v", err)
 			}
 		}
+		if cfg.Database.GenericJsonRpcCache != nil {
+			genericJsonRpcCache, err = jsonrpc.NewGenericJsonRpcCache(appCtx, &logger, cfg.Database.GenericJsonRpcCache)
+			if err != nil {
+				logger.Warn().Msgf("failed to initialize generic json rpc cache: %v", err)
+			}
+		}
 		if cfg.Database.SharedState != nil {
 			sharedState, err = data.NewSharedStateRegistry(appCtx, &logger, cfg.Database.SharedState)
 			if err != nil {
@@ -145,6 +153,9 @@ func Init(
 	erpcInstance, err := NewERPC(appCtx, &logger, sharedState, evmJsonRpcCache, svmJsonRpcCache, cfg)
 	if err != nil {
 		return err
+	}
+	if genericJsonRpcCache != nil {
+		erpcInstance.SetGenericJsonRpcCache(genericJsonRpcCache)
 	}
 
 	// Bootstrap core before starting servers so routes are ready

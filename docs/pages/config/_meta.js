@@ -8,6 +8,9 @@ module.exports = {
 	projects: {
 		title: "Projects",
 	},
+	architectures: {
+		title: "Architectures",
+	},
 	failsafe: {
 		title: "Failsafe",
 	},

@@ -24,6 +24,12 @@ func SvmNetworkId(chain, cluster string) string {
 	return "svm:" + chain + ":" + cluster
 }
 
+// JsonRpcNetworkId derives the "jsonrpc:<slug>" network ID of a generic
+// JSON-RPC network from its user-chosen slug.
+func JsonRpcNetworkId(slug string) string {
+	return "jsonrpc:" + slug
+}
+
 var validIdentifierRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 func IsValidIdentifier(s string) bool {
@@ -35,6 +41,11 @@ func IsValidNetworkId(s string) bool {
 		_, err := strconv.Atoi(s[4:])
 		return err == nil
 	}
+	if strings.HasPrefix(s, "jsonrpc:") {
+		// Single user-chosen slug, no sub-segments.
+		slug := s[8:]
+		return slug != "" && !strings.Contains(slug, ":") && isIdentifierSegment(slug)
+	}
 	if strings.HasPrefix(s, "svm:") {
 		// Two accepted shapes: "svm:<cluster>" (implicit solana, back-compat)
 		// and "svm:<chain>:<cluster>" (explicit chain prefix). Validate each
@@ -45,16 +56,8 @@ func IsValidNetworkId(s string) bool {
 			return false
 		}
 		for _, segment := range strings.Split(rest, ":") {
-			if segment == "" {
+			if segment == "" || !isIdentifierSegment(segment) {
 				return false
-			}
-			for _, r := range segment {
-				if !(r == '-' || r == '_' || r == '.' ||
-					(r >= 'a' && r <= 'z') ||
-					(r >= 'A' && r <= 'Z') ||
-					(r >= '0' && r <= '9')) {
-					return false
-				}
 			}
 		}
 		// Reject more than 2 segments — no use case for svm:a:b:c today.
@@ -64,6 +67,18 @@ func IsValidNetworkId(s string) bool {
 		return true
 	}
 	return false
+}
+
+func isIdentifierSegment(segment string) bool {
+	for _, r := range segment {
+		if !(r == '-' || r == '_' || r == '.' ||
+			(r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 var counters = make(map[string]int)

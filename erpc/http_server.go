@@ -1149,7 +1149,7 @@ func (s *HttpServer) parseUrlPath(
 	}
 
 	if (chainId != "" || architecture != "") && !common.IsValidArchitecture(architecture) {
-		return "", "", "", false, false, common.NewErrInvalidUrlPath("architecture is not valid (must be 'evm' or 'svm')", ps)
+		return "", "", "", false, false, common.NewErrInvalidUrlPath("architecture is not valid (must be 'evm', 'svm' or 'jsonrpc')", ps)
 	}
 
 	if !isPost && !isOptions && !isWebSocketUpgradeRequest(r, s.webSocketEnabled()) {

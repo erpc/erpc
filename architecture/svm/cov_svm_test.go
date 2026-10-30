@@ -113,7 +113,7 @@ func TestCovSvm_UnparseableRequest_EveryEntryPoint(t *testing.T) {
 	require.True(t, common.HasErrorCode(err, common.ErrCodeJsonRpcRequestUnmarshal), "got %v", err)
 	_, err = RequestKey(ctx, nil)
 	require.ErrorContains(t, err, "nil request")
-	_, err = svmRequestKey(nil)
+	_, err = (*common.JsonRpcRequest)(nil).CanonicalKey()
 	require.ErrorContains(t, err, "nil json-rpc request")
 }
 
@@ -590,7 +590,7 @@ func TestCovSvm_CacheKeyEncodingFailure(t *testing.T) {
 	jrr, err := common.NewJsonRpcResponse(1, map[string]interface{}{"blockhash": "x"}, nil)
 	require.NoError(t, err)
 	err = c.Set(ctx, req, common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr))
-	require.ErrorContains(t, err, "failed to encode svm cache key params")
+	require.ErrorContains(t, err, "failed to encode canonical key params")
 	conn.AssertNotCalled(t, "Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	conn.AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
@@ -699,9 +699,9 @@ func TestCovSvm_SlotRefAndNilParamsKeys(t *testing.T) {
 	require.Equal(t, "svm:test:*", pk([]interface{}{"Abc", map[string]interface{}{"minContextSlot": ""}}))
 	require.Equal(t, "*", extractSlotRef(nil))
 
-	nilKey, err := svmRequestKey(common.NewJsonRpcRequest("getSlot", nil))
+	nilKey, err := common.NewJsonRpcRequest("getSlot", nil).CanonicalKey()
 	require.NoError(t, err)
-	emptyKey, err := svmRequestKey(common.NewJsonRpcRequest("getSlot", []interface{}{}))
+	emptyKey, err := common.NewJsonRpcRequest("getSlot", []interface{}{}).CanonicalKey()
 	require.NoError(t, err)
 	require.Equal(t, emptyKey, nilKey, "absent and empty params are the same call")
 }

@@ -1794,7 +1794,12 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	}
 	// IMPORTANT: Some of the configs must be copied vs referenced, because the object might be updated in runtime only for this specific upstream
 	// TODO Should we refactor so this won't happen?
-	if u.Evm == nil && defaults.Evm != nil {
+	//
+	// A jsonrpc upstream never inherits the evm/svm templates: those blocks are
+	// rejected on it at validation, so copying them in would turn a shared
+	// upstreamDefaults into a load-time error for every generic upstream.
+	chainTemplates := u.Type != UpstreamTypeJsonRpc
+	if chainTemplates && u.Evm == nil && defaults.Evm != nil {
 		u.Evm = &EvmUpstreamConfig{
 			ChainId:             defaults.Evm.ChainId,
 			NodeType:            defaults.Evm.NodeType,
@@ -1814,7 +1819,7 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if err := u.Evm.SetDefaults(defaults.Evm); err != nil {
 			return fmt.Errorf("failed to set defaults for evm upstream: %w", err)
 		}
-	} else if u.Evm != nil && defaults.Evm != nil {
+	} else if chainTemplates && u.Evm != nil && defaults.Evm != nil {
 		if u.Evm.StatePollerInterval == 0 && defaults.Evm.StatePollerInterval != 0 {
 			u.Evm.StatePollerInterval = defaults.Evm.StatePollerInterval
 		}
@@ -1849,9 +1854,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	// Cluster IS inherited here, unlike mergeSvmNetworkDefaults where it is
 	// network identity: on an upstream it only says "which cluster do I serve",
 	// and a pool homogeneous across one cluster is the common case.
-	if u.Svm == nil && defaults.Svm != nil {
+	if chainTemplates && u.Svm == nil && defaults.Svm != nil {
 		u.Svm = defaults.Svm.Copy()
-	} else if u.Svm != nil && defaults.Svm != nil {
+	} else if chainTemplates && u.Svm != nil && defaults.Svm != nil {
 		if u.Svm.Chain == "" && defaults.Svm.Chain != "" {
 			u.Svm.Chain = defaults.Svm.Chain
 		}
@@ -1868,6 +1873,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Svm.BlockAvailability == nil && defaults.Svm.BlockAvailability != nil {
 			u.Svm.BlockAvailability = defaults.Svm.BlockAvailability.Copy()
 		}
+	}
+	if u.Generic == nil && defaults.Generic != nil {
+		u.Generic = defaults.Generic.Copy()
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
 		u.JsonRpc = &JsonRpcUpstreamConfig{
@@ -2312,12 +2320,14 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 					n.Evm.LocalAnswers[method] = on
 				}
 			}
-		} else if n.Evm == nil && defaults.Evm != nil && n.Svm == nil && n.Architecture != ArchitectureSvm {
+		} else if n.Evm == nil && defaults.Evm != nil && n.Svm == nil && n.Architecture != ArchitectureSvm &&
+			n.Generic == nil && n.Architecture != ArchitectureJsonRpc {
 			// Copy EVM defaults only onto networks that are (or can become) EVM.
 			// Without the SVM guard, a mixed project with networkDefaults.evm
 			// would inject an evm block into every svm network — and the
 			// architecture derivation below checks n.Evm BEFORE n.Svm, silently
-			// flipping an `svm:`-authored network to architecture=evm.
+			// flipping an `svm:`-authored network to architecture=evm. The same
+			// holds for jsonrpc networks, where an evm block is a validation error.
 			n.Evm = &EvmNetworkConfig{}
 			*n.Evm = *defaults.Evm
 		}

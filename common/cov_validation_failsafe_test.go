@@ -187,6 +187,39 @@ func TestCovValidation_Network(t *testing.T) {
 			n.StaticResponses[0].Response = &StaticResponseBodyConfig{Error: &StaticResponseErrorConfig{Code: -32601, Message: "disabled"}}
 		}, ""},
 		{"integrity invalid", func(n *NetworkConfig) { n.Integrity.HeaderMode = "verbose" }, "network.*: integrity.headerMode 'verbose' is invalid"},
+		{"generic block on evm network", func(n *NetworkConfig) { n.Generic = &GenericNetworkConfig{Slug: "starknet"} }, "network.*.generic is only valid with architecture: jsonrpc"},
+		{"jsonrpc without slug", func(n *NetworkConfig) {
+			n.Architecture, n.Evm, n.Integrity = ArchitectureJsonRpc, nil, nil
+		}, "network.*.generic.slug is required for jsonrpc networks"},
+		{"jsonrpc bad slug", func(n *NetworkConfig) {
+			n.Architecture, n.Evm, n.Integrity = ArchitectureJsonRpc, nil, nil
+			n.Generic = &GenericNetworkConfig{Slug: "star:net"}
+		}, "network.*.generic.slug 'star:net' is invalid"},
+		{"jsonrpc bad replaySafeMethods pattern", func(n *NetworkConfig) {
+			n.Architecture, n.Evm, n.Integrity = ArchitectureJsonRpc, nil, nil
+			n.Generic = &GenericNetworkConfig{Slug: "starknet", ReplaySafeMethods: []string{"(starknet_get*"}}
+		}, "network.*.generic.replaySafeMethods pattern '(starknet_get*' is invalid"},
+		{"jsonrpc rejects evm block", func(n *NetworkConfig) {
+			n.Architecture, n.Integrity = ArchitectureJsonRpc, nil
+			n.Generic = &GenericNetworkConfig{Slug: "starknet"}
+		}, "network.*.evm is not supported on jsonrpc networks (no block tracking or finality)"},
+		{"jsonrpc rejects svm block", func(n *NetworkConfig) {
+			n.Architecture, n.Evm, n.Integrity, n.Svm = ArchitectureJsonRpc, nil, nil, &SvmNetworkConfig{}
+			n.Generic = &GenericNetworkConfig{Slug: "starknet"}
+		}, "network.*.svm is not supported on jsonrpc networks (no block tracking or finality)"},
+		{"jsonrpc rejects integrity block", func(n *NetworkConfig) {
+			n.Architecture, n.Evm = ArchitectureJsonRpc, nil
+			n.Generic = &GenericNetworkConfig{Slug: "starknet"}
+		}, "network.*.integrity is not supported on jsonrpc networks (no block tracking or finality)"},
+		{"jsonrpc rejects consensus", func(n *NetworkConfig) {
+			n.Architecture, n.Evm, n.Integrity = ArchitectureJsonRpc, nil, nil
+			n.Generic = &GenericNetworkConfig{Slug: "starknet"}
+			n.Failsafe[0].Consensus = &ConsensusPolicyConfig{MaxParticipants: 2, AgreementThreshold: 2}
+		}, "network.*.failsafe.consensus is not supported on jsonrpc networks (no block tracking or finality)"},
+		{"jsonrpc valid", func(n *NetworkConfig) {
+			n.Architecture, n.Evm, n.Integrity = ArchitectureJsonRpc, nil, nil
+			n.Generic = &GenericNetworkConfig{Slug: "starknet", ReplaySafeMethods: []string{"starknet_get*"}}
+		}, ""},
 	})
 }
 

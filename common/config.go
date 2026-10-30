@@ -318,9 +318,13 @@ type AliasingRuleConfig struct {
 }
 
 type DatabaseConfig struct {
-	EvmJsonRpcCache *CacheConfig       `yaml:"evmJsonRpcCache,omitempty" json:"evmJsonRpcCache"`
-	SvmJsonRpcCache *CacheConfig       `yaml:"svmJsonRpcCache,omitempty" json:"svmJsonRpcCache"`
-	SharedState     *SharedStateConfig `yaml:"sharedState,omitempty" json:"sharedState"`
+	EvmJsonRpcCache *CacheConfig `yaml:"evmJsonRpcCache,omitempty" json:"evmJsonRpcCache"`
+	SvmJsonRpcCache *CacheConfig `yaml:"svmJsonRpcCache,omitempty" json:"svmJsonRpcCache"`
+	// GenericJsonRpcCache is the opt-in cache for `jsonrpc` networks. Policies
+	// should key on `finality: unknown` since generic networks derive no block
+	// finality; a TTL on the policy is what bounds staleness.
+	GenericJsonRpcCache *CacheConfig       `yaml:"genericJsonRpcCache,omitempty" json:"genericJsonRpcCache"`
+	SharedState         *SharedStateConfig `yaml:"sharedState,omitempty" json:"sharedState"`
 }
 
 type SharedStateConfig struct {
@@ -961,6 +965,7 @@ type UpstreamConfig struct {
 	Endpoint                     string                   `yaml:"endpoint,omitempty" json:"endpoint"`
 	Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty" json:"evm"`
 	Svm                          *SvmUpstreamConfig       `yaml:"svm,omitempty" json:"svm"`
+	Generic                      *GenericUpstreamConfig   `yaml:"generic,omitempty" json:"generic,omitempty"`
 	JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc,omitempty" json:"jsonRpc"`
 	Grpc                         *GrpcUpstreamConfig      `yaml:"grpc,omitempty" json:"grpc"`
 	IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
@@ -1205,6 +1210,9 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 	}
 	if c.Svm != nil {
 		copied.Svm = c.Svm.Copy()
+	}
+	if c.Generic != nil {
+		copied.Generic = c.Generic.Copy()
 	}
 	if c.Failsafe != nil {
 		copied.Failsafe = make([]*FailsafeConfig, len(c.Failsafe))
@@ -2649,6 +2657,7 @@ type NetworkConfig struct {
 	Failsafe          []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`
 	Svm               *SvmNetworkConfig        `yaml:"svm,omitempty" json:"svm"`
+	Generic           *GenericNetworkConfig    `yaml:"generic,omitempty" json:"generic,omitempty"`
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Alias             string                   `yaml:"alias,omitempty" json:"alias"`
@@ -2993,6 +3002,41 @@ func (s *SvmUpstreamConfig) Copy() *SvmUpstreamConfig {
 	if s.BlockAvailability != nil {
 		out.BlockAvailability = s.BlockAvailability.Copy()
 	}
+	return &out
+}
+
+// GenericNetworkConfig is the identity + replay policy of a `jsonrpc` network.
+type GenericNetworkConfig struct {
+	// Slug is the user-chosen network name; network id = "jsonrpc:<slug>".
+	Slug string `yaml:"slug,omitempty" json:"slug"`
+	// ReplaySafeMethods lists method patterns (wildcards, same matcher as
+	// allowMethods) that may be retried, hedged and failed over. Every other
+	// method is dispatched exactly once: after an upstream error its outcome is
+	// surfaced as-is with no second physical call.
+	ReplaySafeMethods []string `yaml:"replaySafeMethods,omitempty" json:"replaySafeMethods,omitempty"`
+}
+
+func (c *GenericNetworkConfig) Copy() *GenericNetworkConfig {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	if c.ReplaySafeMethods != nil {
+		out.ReplaySafeMethods = append([]string(nil), c.ReplaySafeMethods...)
+	}
+	return &out
+}
+
+// GenericUpstreamConfig names which `jsonrpc:<slug>` network an upstream serves.
+type GenericUpstreamConfig struct {
+	Slug string `yaml:"slug,omitempty" json:"slug"`
+}
+
+func (c *GenericUpstreamConfig) Copy() *GenericUpstreamConfig {
+	if c == nil {
+		return nil
+	}
+	out := *c
 	return &out
 }
 
@@ -3741,6 +3785,11 @@ func (c *NetworkConfig) NetworkId() string {
 			return ""
 		}
 		return util.SvmNetworkId(c.Svm.Chain, c.Svm.Cluster)
+	case ArchitectureJsonRpc:
+		if c.Generic == nil || c.Generic.Slug == "" {
+			return ""
+		}
+		return util.JsonRpcNetworkId(c.Generic.Slug)
 	default:
 		return ""
 	}

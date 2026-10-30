@@ -1,0 +1,255 @@
+---
+title: Generic JSON-RPC
+description: Put any JSON-RPC 2.0 endpoint — Starknet, Stellar RPC, NEAR, your own service — behind eRPC's load balancing, failover, rate limiting and monitoring, with no chain-specific logic and a replay-safety contract you declare per method.
+---
+
+import { LLMsTxtLink, AISection, ConfigTabs, PromptExample } from "../../../components";
+import { Callout } from "nextra/components";
+
+<LLMsTxtLink />
+
+# Generic JSON-RPC
+
+The `jsonrpc` architecture is eRPC's protocol-agnostic mode. It registers on the same pipeline as `evm` and `svm` but with **no protocol knowledge**: no block tracking, no finality, no consensus, no integrity checks, no endpoint probing. What is left is everything that does not need chain semantics — and that is most of eRPC.
+
+**What you get**
+
+- Load balancing, retry / hedge / timeout / circuit breaker, rate limiting, singleflight, metrics and auth for any JSON-RPC 2.0 endpoint over HTTP(S).
+- A **replay-safety contract** you declare per method: only methods you list may be retried, hedged or failed over; every other method is dispatched exactly once.
+- Upstream error `code`, `message` and `data` forwarded verbatim, so protocol-specific application errors reach your client unchanged.
+- Opt-in caching through a dedicated `database.genericJsonRpcCache` block.
+
+Verified targets: **Starknet**, **Stellar RPC**, **NEAR**. Anything that speaks JSON-RPC 2.0 over HTTP POST works the same way.
+
+## Quick taste
+
+Illustrative, not a tuned production config — a Starknet network with two upstreams and a read-only replay-safe set:
+
+<ConfigTabs
+  path="projects[].networks[]"
+  focusYaml="4-9,13-18"
+  focusTs="4-9,13-18"
+  yaml={`projects:
+  - id: main
+    networks:
+      - architecture: jsonrpc
+        generic:
+          slug: starknet
+          # Only these may be retried, hedged or sent to another upstream.
+          replaySafeMethods: ["starknet_blockNumber", "starknet_get*", "starknet_call"]
+        failsafe:
+          - matchMethod: "*"
+            retry: { maxAttempts: 3 }
+            hedge: { delay: 200ms, maxCount: 1 }
+    upstreams:
+      - id: starknet-a
+        type: jsonrpc
+        generic: { slug: starknet }
+        endpoint: https://starknet-mainnet.example-a.com/rpc/v0_8
+      - id: starknet-b
+        type: jsonrpc
+        generic: { slug: starknet }
+        endpoint: https://starknet-mainnet.example-b.com/rpc/v0_8`}
+  ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "jsonrpc",
+    generic: {
+      slug: "starknet",
+      // Only these may be retried, hedged or sent to another upstream.
+      replaySafeMethods: ["starknet_blockNumber", "starknet_get*", "starknet_call"],
+    },
+    failsafe: [{ matchMethod: "*", retry: { maxAttempts: 3 }, hedge: { delay: "200ms", maxCount: 1 } }],
+  }],
+  upstreams: [
+    { id: "starknet-a", type: "jsonrpc", generic: { slug: "starknet" }, endpoint: "https://starknet-mainnet.example-a.com/rpc/v0_8" },
+    { id: "starknet-b", type: "jsonrpc", generic: { slug: "starknet" }, endpoint: "https://starknet-mainnet.example-b.com/rpc/v0_8" },
+  ],
+}]`}
+/>
+
+Then send requests to `POST /main/jsonrpc/starknet`:
+
+```bash
+curl -X POST http://localhost:4000/main/jsonrpc/starknet \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"starknet_blockNumber","params":[]}'
+```
+
+<Callout type="warning">
+`type: jsonrpc` and `architecture: jsonrpc` are never inferred. An upstream with no `type` is still an EVM upstream, and a network with a `generic:` block but no `architecture` is rejected at load time.
+</Callout>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="put Starknet behind eRPC"
+	defaultOpen
+	prompt={`Add a Starknet network to my eRPC config using the generic jsonrpc architecture with two
+upstreams, retry + hedge failsafe, and a replaySafeMethods list that covers reads only
+(never starknet_addInvokeTransaction or other write methods). Work with my existing
+config. Read the full reference first:
+https://docs.erpc.cloud/config/architectures/jsonrpc.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="explain why a method was not retried"
+	prompt={`My eRPC jsonrpc network has retry maxAttempts: 3 but a failing NEAR "query" call was
+sent to one upstream exactly once and the error came straight back. Explain the
+replay-safety contract and tell me what to add so reads can fail over while
+"send_tx" is still dispatched once. Reference:
+https://docs.erpc.cloud/config/architectures/jsonrpc.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="cache Stellar RPC reads with a TTL"
+	prompt={`Configure database.genericJsonRpcCache in eRPC so getLedgerEntries and getLatestLedger on my
+Stellar RPC jsonrpc network are cached for 2 seconds in memory while everything else
+stays uncached. Explain why the policy must use finality: unknown. Reference:
+https://docs.erpc.cloud/config/architectures/jsonrpc.llms.txt`}
+/>
+
+<AISection title="Generic JSON-RPC architecture — full agent reference">
+
+### Identity and routing
+
+| Item | Value |
+|---|---|
+| Network `architecture` | `jsonrpc` (explicit, never inferred) |
+| Network block | `generic: { slug, replaySafeMethods }` |
+| Network id | `jsonrpc:<slug>` |
+| Route | `POST /<project>/jsonrpc/<slug>` (or `/<project>/<alias>`) |
+| Upstream `type` | `jsonrpc` (explicit, never inferred) |
+| Upstream block | `generic: { slug }` — must equal the network's slug |
+| Allowed endpoint schemes | `http://`, `https://` |
+
+The `slug` is any user-chosen name of `[a-zA-Z0-9._-]`; it cannot contain `:`. A request to `/main/jsonrpc/<slug>` for a slug with no declared network bootstraps a lazy network from `networkDefaults`, exactly like unknown EVM chain ids. The upstream-side block is named `generic` (not `jsonRpc`) because `jsonRpc` is already the transport block (`supportsBatch`, `proxyPool`, …) on every upstream type.
+
+### What works unchanged
+
+Load balancing and scoring, retry / hedge / timeout / circuit-breaker failsafe policies at network and upstream scope, rate-limit budgets and auto-tune, singleflight (in-flight deduplication keyed on the exact method + params bytes, case-preserving), Prometheus metrics, auth strategies, upstream batching, network aliases, `allowMethods` / `ignoreMethods`, and `staticResponses`.
+
+### Replay-safety contract
+
+eRPC cannot know which methods of an unknown protocol have side effects. It therefore treats **every method as a write unless you declare otherwise** through `generic.replaySafeMethods`, a list of [matcher patterns](/config/matcher) (the same syntax as `allowMethods`).
+
+| Method | Upstream error (HTTP 5xx, timeout, 429, …) | Application error under HTTP 200 |
+|---|---|---|
+| **declared** in `replaySafeMethods` | normal retry → hedge → next-upstream policy applies | normal retry → hedge → next-upstream policy applies |
+| **undeclared** (default) | surfaced to the caller after **exactly one physical call**; no retry, hedge or failover; the outcome is reported as the upstream failure it was, never as "rejected before execution" | returned verbatim after exactly one call: `code`, `message`, `data` untouched |
+
+Physical calls are counted across both failsafe scopes and across upstream sweeps: an undeclared method hits one upstream once, no matter how `retry.maxAttempts`, `hedge.maxCount` or the number of upstreams are set. Errors raised *before* dispatch (upstream rate-limit budget exceeded, method ignored, circuit breaker open, upstream excluded by policy) do not count as a call and still let the selector move to another upstream.
+
+The guard is implemented in `HandleUpstreamPostForward`, plus a gate in the retry executors at both scopes, so the counting rule holds for retry, hedge and upstream sweeps alike.
+
+<Callout type="info">
+An undeclared write that produces one side effect and then loses its response (timeout, connection reset) is reported as that uncertain outcome. eRPC never re-submits it and never claims it failed before execution — that decision belongs to the caller, who may have an idempotency key the proxy does not.
+</Callout>
+
+### Error mapping
+
+The extractor uses only the JSON-RPC 2.0 specification and the HTTP status. The `code`, `message` and `data` the client sees are always the upstream's own.
+
+| Upstream answer | eRPC class | Retryable toward another upstream |
+|---|---|---|
+| HTTP 401 / 403 (any body) | `ErrEndpointUnauthorized` | yes (credential is per upstream) |
+| HTTP 429, no parseable error body | `ErrEndpointCapacityExceeded` | yes |
+| HTTP 5xx, no parseable error body | `ErrEndpointServerSideException` | yes |
+| HTTP 4xx (other), no parseable error body | `ErrEndpointClientSideException` | no |
+| `-32700` parse error, `-32600` invalid request, `-32601` method not found, `-32602` invalid params | `ErrEndpointClientSideException` | no — the same bytes get the same verdict everywhere |
+| `-32603`, `-32000..-32099`, any application code (e.g. Starknet `20 Contract not found`) under any status | `ErrEndpointServerSideException` with the original HTTP status | yes **by class** — but only if the method is declared replay-safe |
+
+"Retryable by class" and the replay guard are independent layers: the class says whether a second attempt *could* help; the guard says whether a second physical call is *allowed*.
+
+### Caching (opt-in)
+
+Caching is off unless `database.genericJsonRpcCache` is set. The block takes the same `connectors` / `policies` schema as [`evmJsonRpcCache`](/config/database/evm-json-rpc-cache), with these differences:
+
+- Every request on a `jsonrpc` network has finality `unknown` (there is no block to pin to), so a policy must say `finality: unknown` to match. Set a `ttl` — with no finality there is no other staleness bound.
+- Responses carrying a JSON-RPC `error` member are never stored.
+- The request key is a case-preserving hash of method + params; the partition key is prefixed with `jsonrpc:<slug>`, so sharing a Redis connector with EVM/SVM caches is safe.
+- No compression, no never-cache list, no commitment or slot logic.
+
+```yaml
+database:
+  genericJsonRpcCache:
+    connectors:
+      - id: mem
+        driver: memory
+        memory: { maxItems: 10000 }
+    policies:
+      - connector: mem
+        network: "jsonrpc:starknet"
+        method: "starknet_getBlockWithTxHashes"
+        finality: unknown
+        ttl: 2s
+```
+
+### Rejected configuration
+
+These blocks have no meaning without block tracking and are rejected at load time with the exact messages below:
+
+| Config | Error |
+|---|---|
+| `network.evm` on a jsonrpc network | `network.*.evm is not supported on jsonrpc networks (no block tracking or finality)` |
+| `network.svm` on a jsonrpc network | `network.*.svm is not supported on jsonrpc networks (no block tracking or finality)` |
+| `network.integrity` on a jsonrpc network | `network.*.integrity is not supported on jsonrpc networks (no block tracking or finality)` |
+| `network.failsafe[].consensus` on a jsonrpc network | `network.*.failsafe.consensus is not supported on jsonrpc networks (no block tracking or finality)` |
+| `generic` block with another architecture | `network.*.generic is only valid with architecture: jsonrpc` |
+| jsonrpc network without `generic.slug` | `network.*.generic.slug is required for jsonrpc networks` |
+| `upstream.evm` / `upstream.svm` on a jsonrpc upstream | `upstream.*.evm is not supported on jsonrpc upstreams` (same for `svm`) |
+| `generic` block on a non-jsonrpc upstream | `upstream.*.generic is only valid on upstreams with type: jsonrpc` |
+| jsonrpc upstream without `generic.slug` | `upstream.*.generic.slug is required for jsonrpc upstreams` |
+| jsonrpc upstream whose slug matches no declared jsonrpc network | `upstream.*.generic.slug '<slug>' (upstream '<id>') matches no network.*.generic.slug; the upstream would never be selected` |
+
+The last check fires only when at least one jsonrpc network is declared, so projects that rely on lazy networks are unaffected.
+
+### Limitations
+
+- No finality classification; every request is `unknown`.
+- No block / slot tracking, so no `latest`-head serving, no block-availability guards, no integrity header checks.
+- No endpoint probing at startup: an upstream is assumed to serve its declared slug.
+- No consensus policy.
+- HTTP(S) only; `grpc://` and `ws://` endpoints are rejected for `type: jsonrpc`.
+
+### Examples
+
+**Stellar RPC**
+
+```yaml
+networks:
+  - architecture: jsonrpc
+    generic:
+      slug: stellar
+      replaySafeMethods: ["getHealth", "getLatestLedger", "getLedgerEntries", "getEvents", "getTransaction*", "simulateTransaction"]
+upstreams:
+  - id: stellar-a
+    type: jsonrpc
+    generic: { slug: stellar }
+    endpoint: https://soroban-rpc.example.com
+```
+
+**NEAR**
+
+```yaml
+networks:
+  - architecture: jsonrpc
+    generic:
+      slug: near
+      replaySafeMethods: ["status", "block", "chunk", "query", "gas_price", "tx", "EXPERIMENTAL_*"]
+upstreams:
+  - id: near-a
+    type: jsonrpc
+    generic: { slug: near }
+    endpoint: https://rpc.mainnet.near.org
+```
+
+In both, the transaction-submitting methods (`sendTransaction`, `send_tx`, `broadcast_tx_*`) are deliberately absent: they are dispatched exactly once.
+
+</AISection>
