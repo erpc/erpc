@@ -132,7 +132,7 @@ type wsConn struct {
 	done   chan struct{}
 	// Guarded by chain.mu.
 	heads   map[string]bool
-	pending map[string]bool
+	pending map[string]bool // true: full transactions
 }
 
 // wsPushQueue is how many notifications a connection may owe its peer;
@@ -436,13 +436,17 @@ func (v *Vendor) pendingPushesLocked(b *Block, out []push) []push {
 	for i := range b.txs {
 		h := txHash(b.Hash, i)
 		for w := range v.conns {
-			for sub := range w.pending {
+			for sub, full := range w.pending {
 				times := 1
 				if c.cfg.PendingNoise {
 					times = []int{0, 2, 1, 1}[c.noise.IntN(4)]
 				}
+				var res interface{} = h.Hex()
+				if full {
+					res = pendingTx(c.cfg.ChainID, h)
+				}
 				for range times {
-					out = append(out, push{w, sub, h.Hex()})
+					out = append(out, push{w, sub, res})
 					c.pushed[h] = true
 				}
 			}
@@ -683,7 +687,7 @@ func (v *Vendor) handleWS(wc *wsConn, req map[string]interface{}) {
 		case topic == "newPendingTransactions":
 			v.pendingSubs.Add(1)
 			if open {
-				wc.pending[sub] = true
+				wc.pending[sub] = len(params) > 1 && params[1] == true
 			}
 		case topic == "logs":
 			v.logsSubs.Add(1)

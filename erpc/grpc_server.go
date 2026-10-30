@@ -104,8 +104,16 @@ func NewGrpcServer(
 		grpc.MaxRecvMsgSize(*cfg.GrpcMaxRecvMsgSize),
 		grpc.MaxSendMsgSize(*cfg.GrpcMaxSendMsgSize),
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		grpc.StatsHandler(grpcConnStreams{}),
 		grpc.ChainUnaryInterceptor(gs.panicRecoveryUnary()),
-		grpc.ChainStreamInterceptor(gs.panicRecoveryStream()),
+		grpc.ChainStreamInterceptor(gs.panicRecoveryStream(), gs.streamCap()),
+		// Streams spec §6.2, §6.3: stream messages encoded once per block,
+		// fixed flow-control windows, write buffers released between
+		// writes.
+		grpc.ForceServerCodecV2(newGrpcCodec()),
+		grpc.InitialWindowSize(grpcStreamWindow),
+		grpc.InitialConnWindowSize(grpcConnWindow),
+		grpc.SharedWriteBuffer(true),
 		// MaxConnectionAge forces long-lived client channels to reconnect
 		// periodically (GOAWAY + grace for in-flight streams). Clients that
 		// dial through DNS re-resolve on reconnect, so a connection pinned to

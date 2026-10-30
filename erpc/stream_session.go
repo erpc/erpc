@@ -78,11 +78,15 @@ type headerEncoder interface {
 
 // logsEncoder writes a logs stream's data.
 type logsEncoder interface {
-	Logs(blk indexer.Block, logs []json.RawMessage) error
-	// Removed writes logs of a reverted block the client applied, with
-	// removed:true, newest first (geth mode).
+	// Block is the write of blk's logs that f matches and, with end, of
+	// its block end; nil when it writes nothing.
+	Block(blk indexer.Block, f *logfilter.LogsFilter, end bool) (send func() error, err error)
+}
+
+// removedEncoder writes the logs of a reverted block the client applied,
+// with removed:true, newest first (geth mode, ws only).
+type removedEncoder interface {
 	Removed(blk indexer.Block, logs []json.RawMessage) error
-	BlockEnd(blk indexer.Block, logs int) error
 }
 
 // controlEncoder writes control messages; a stream without one, as a
@@ -117,6 +121,7 @@ type streamSession struct {
 	drain   <-chan struct{}
 	headers headerEncoder
 	logs    logsEncoder
+	removed removedEncoder
 	control controlEncoder
 	// lag: the ws lag bound ends the tap (CT§10.2); resumable: the tap
 	// reads with ReadOpts.Resumable and ends stalled after
@@ -173,16 +178,16 @@ func (s *streamSession) run(ctx context.Context) *streamEnd {
 		}
 		s.resumePending = true
 	}
+	if s.drain != nil {
+		go func() {
+			select {
+			case <-s.drain:
+				cancel(errStreamDraining)
+			case <-ctx.Done():
+			}
+		}()
+	}
 	if s.control != nil {
-		if s.drain != nil {
-			go func() {
-				select {
-				case <-s.drain:
-					cancel(errStreamDraining)
-				case <-ctx.Done():
-				}
-			}()
-		}
 		go func() {
 			every := streamHeartbeatEvery(s.nw, s.opts)
 			err := s.beat.run(ctx, every, s.opened, func() error {
@@ -203,7 +208,9 @@ func (s *streamSession) run(ctx context.Context) *streamEnd {
 		if e == nil {
 			return nil
 		}
-		if e.reason == "" && s.control != nil {
+		// A block the stream cannot encode stays so: a restart would fail
+		// on it again.
+		if e.reason == "" && s.control != nil && !errors.As(e.err, new(streamEncodeError)) {
 			s.nw.logger.Warn().Err(e.err).Str("transport", s.transport).Str("kind", s.kind).
 				Uint64("cursor", s.cursor.Number).Msg("stream tap ended, restarting from the client's cursor")
 			select {
@@ -475,7 +482,7 @@ func (s *streamSession) emitLogs(ctx context.Context, lag *tapLag, b indexer.Bat
 			}
 			s.forget(blk)
 			if logs := tracker.MatchedLogs(blk, s.filter); len(logs) > 0 {
-				if err := s.logs.Removed(blk, logs); err != nil {
+				if err := s.removed.Removed(blk, logs); err != nil {
 					return 0, err
 				}
 				s.beat.wrote()
@@ -496,19 +503,12 @@ func (s *streamSession) emitLogs(ctx context.Context, lag *tapLag, b indexer.Bat
 			delete(s.sentHashes, blk.Number-uint64(window)-1)
 		}
 		lag.sent(blk)
-		logs := tracker.MatchedLogs(blk, s.filter)
-		if len(logs) > 0 || s.opts.BlockEnd {
-			if err := s.sends.write(blk, snap, func() error {
-				if len(logs) > 0 {
-					if err := s.logs.Logs(blk, logs); err != nil {
-						return err
-					}
-				}
-				if s.opts.BlockEnd {
-					return s.logs.BlockEnd(blk, len(logs))
-				}
-				return nil
-			}); err != nil {
+		send, err := s.logs.Block(blk, s.filter, s.opts.BlockEnd)
+		if err != nil {
+			return i, err
+		}
+		if send != nil {
+			if err := s.sends.write(blk, snap, send); err != nil {
 				return i, err
 			}
 			s.beat.wrote()
@@ -858,6 +858,102 @@ func (f logsFeed) watchReceipts(ctx context.Context, c indexer.Cursor, cancel co
 		case <-timeout:
 			cancel(errLogsReceiptsTimeout)
 			return
+		}
+	}
+}
+
+// mempoolFrom is a mempool feed whose first Tail is from: the tail when
+// the subscribe was answered, so a transaction that arrives before the tap
+// goroutine runs still reaches it. Used by one tap goroutine only.
+type mempoolFrom struct {
+	indexer.MempoolFeed
+	from    uint64
+	started bool
+}
+
+func (m *mempoolFrom) Tail(variant string) uint64 {
+	if !m.started {
+		m.started = true
+		return m.from
+	}
+	return m.MempoolFeed.Tail(variant)
+}
+
+// runPendingTap is one newPendingTransactions stream (CT§12; streams spec
+// §3.1: heartbeat only): a tap on nw's mempool feed after from, the
+// variant's tail at subscribe, that hands data each Read's batch once
+// opened (nil: now). A start older than the ring skips to the newest,
+// counted as lag. A panic or any end but ctx or a failed write restarts it
+// after the newest entry, so the stream never goes silent. With beat, an
+// idle stream gets heartbeats; with drain, it ends draining at shutdown.
+// Its end is draining, slow_client, or nil: ctx ended or a write failed.
+func runPendingTap(ctx context.Context, nw *Network, transport, variant string, from uint64, opened, drain <-chan struct{},
+	opts StreamOptions, beat func(streamHeartbeat) error, data func([]json.RawMessage) error) *streamEnd {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	feed := &mempoolFrom{MempoolFeed: nw.mempool, from: from}
+	var idle streamBeat
+	if drain != nil {
+		go func() {
+			select {
+			case <-drain:
+				cancel(errStreamDraining)
+			case <-ctx.Done():
+			}
+		}()
+	}
+	if beat != nil {
+		go func() {
+			if err := idle.run(ctx, streamHeartbeatEvery(nw, opts), opened, func() error {
+				hb, ok := nw.streamHeartbeat("")
+				if !ok {
+					return nil
+				}
+				return beat(hb)
+			}); err != nil {
+				cancel(err)
+			}
+		}()
+	}
+	emit := func(txs []json.RawMessage) error {
+		if opened != nil {
+			select {
+			case <-opened:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		if err := data(txs); err != nil {
+			return err
+		}
+		idle.wrote()
+		return nil
+	}
+	end := func(reason string) *streamEnd {
+		telemetry.CounterHandle(telemetry.MetricTapEndTotal, nw.projectId, nw.Label(), transport, indexer.SubTypeNewPendingTransactions, reason, "").Inc()
+		return &streamEnd{reason: reason}
+	}
+	for {
+		err := nw.taps.RunMempool(ctx, nw.Label(), transport, variant, feed, emit)
+		cause := context.Cause(ctx)
+		var we streamWriteError
+		switch {
+		case drain != nil && (errors.Is(cause, errStreamDraining) || ctx.Err() != nil && nw.appCtx.Err() != nil):
+			return end(indexer.TapEndDraining)
+		case errors.As(cause, &we), errors.As(err, &we):
+			if we.slow {
+				return end(indexer.TapEndSlowClient)
+			}
+			return nil
+		case ctx.Err() != nil:
+			return nil
+		}
+		nw.logger.Warn().Err(err).Str("transport", transport).Str("variant", variant).
+			Msg("newPendingTransactions tap ended, restarting after the newest")
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(streamRestartDelay):
 		}
 	}
 }

@@ -376,6 +376,12 @@ var (
 		Help:      "Client WebSocket connections and subscriptions refused by server.webSocket caps, by reason (conn_global, conn_per_ip, sub_global).",
 	}, []string{"project", "reason"})
 
+	MetricGrpcStreamsRejectedTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "grpc_streams_rejected_total",
+		Help:      "gRPC StreamService streams refused RESOURCE_EXHAUSTED, by reason (per_connection: past 100 long-lived streams on one connection).",
+	}, []string{"project", "reason"})
+
 	MetricUpstreamCordoned = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordoned",

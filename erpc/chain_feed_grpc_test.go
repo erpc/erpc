@@ -435,7 +435,7 @@ func openOnce(g *grpcInstance, req *bdsevm.StreamBlocksRequest, within time.Dura
 	for err == nil {
 		var resp *bdsevm.StreamBlocksResponse
 		if resp, err = stream.Recv(); err == nil {
-			got = append(got, resp.Header)
+			got = append(got, resp.GetHeader())
 		}
 	}
 	return got, err
@@ -525,7 +525,7 @@ func (s *chaosSeed) streamAhead() {
 				ended <- err
 				return
 			}
-			got <- resp.Header
+			got <- resp.GetHeader()
 		}
 	}()
 	select {
@@ -581,7 +581,7 @@ func (s *chaosSeed) streamSlow() {
 	// Wait for the headers to arrive, then hold them unread past the send wait.
 	_, err = stream.Header()
 	require.NoError(s.t, err)
-	time.Sleep(streamBlocksSendWait.Load() + 5*chaosBlock)
+	time.Sleep(grpcSendWait.Load() + 5*chaosBlock)
 	read := 0
 	for {
 		if _, err = stream.Recv(); err != nil {
@@ -590,7 +590,7 @@ func (s *chaosSeed) streamSlow() {
 		read++
 	}
 	require.Equal(s.t, codes.Unavailable, status.Code(err), "a client that stops reading ends with UNAVAILABLE: %v", err)
-	require.Contains(s.t, status.Convert(err).Message(), errStreamBlocksSlow.Error())
+	require.Contains(s.t, status.Convert(err).Message(), errGrpcSendSlow.Error())
 	require.Less(s.t, read, 12, "the stream ended before it sent the replay")
 	s.occur(fStreamSlow, fmt.Sprintf("UNAVAILABLE after %d headers, read %s after open", read, time.Since(opened).Round(time.Millisecond)))
 }
@@ -655,7 +655,7 @@ func (s *chaosSeed) resumeOrphan(g *grpcInstance, orphan *chainsim.Block, fork u
 	require.NoError(s.t, err)
 	resp, err := stream.Recv()
 	require.NoError(s.t, err, "resume from orphan %d on %s", orphan.Number, g.name)
-	h := resp.Header
+	h := resp.GetHeader()
 	require.Equal(s.t, fork+1, h.Number, "the resume from orphan %d starts after the fork point", orphan.Number)
 	require.Equal(s.t, hex.EncodeToString(forkAt.Hash[:]), hex.EncodeToString(h.ParentHash), "block %d links to the fork point", h.Number)
 	return fmt.Sprintf("resume from orphan %d on the fresh %s started at %d", orphan.Number, g.name, h.Number)

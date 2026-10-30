@@ -233,6 +233,9 @@ type heldReceipts struct {
 	byAddr    map[string][]int32
 	byTopic0  map[string][]int32
 	matches   sync.Map // filter key -> []int32
+	// encodings are the LogsEncodings of these receipts: each one's
+	// per-log conversions, and its encoding per filter.
+	encodings sync.Map
 
 	view     sync.Once
 	receipts []integrity.Receipt
@@ -525,20 +528,25 @@ func (r *heldReceipts) integrityView() []integrity.Receipt {
 	return r.receipts
 }
 
-// match is the logs f matches, verbatim and in order. Their positions are
-// computed once per (block, filter): candidates from the address index,
-// else the topic0 index, else every log, each checked with f.Matches.
-func (r *heldReceipts) match(f *logfilter.LogsFilter) []json.RawMessage {
+// matched is the positions of the logs f matches, computed once per
+// (block, filter): candidates from the address index, else the topic0
+// index, else every log, each checked with f.Matches. False when a log of
+// the receipts does not parse.
+func (r *heldReceipts) matched(f *logfilter.LogsFilter) ([]int32, bool) {
 	if !r.index() {
-		return nil
+		return nil, false
 	}
-	var pos []int32
 	if v, ok := r.matches.Load(f.Key()); ok {
-		pos = v.([]int32)
-	} else {
-		pos = r.positions(f)
-		r.matches.Store(f.Key(), pos)
+		return v.([]int32), true
 	}
+	pos := r.positions(f)
+	r.matches.Store(f.Key(), pos)
+	return pos, true
+}
+
+// match is the logs f matches, verbatim and in order.
+func (r *heldReceipts) match(f *logfilter.LogsFilter) []json.RawMessage {
+	pos, _ := r.matched(f)
 	out := make([]json.RawMessage, len(pos))
 	for i, p := range pos {
 		out[i] = r.logs[p]
