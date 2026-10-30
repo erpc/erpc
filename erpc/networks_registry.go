@@ -176,6 +176,7 @@ func NewNetwork(
 		initializer:       util.NewInitializer(appCtx, &lg, nil),
 	}
 	network.servedTipAll.label = "all"
+	network.servedTipAll.wake = make(chan struct{}, 1)
 	if upstreamsRegistry != nil {
 		if ssr := upstreamsRegistry.SharedStateRegistry(); ssr != nil {
 			network.servedFinalizedShared = ssr.GetCounterInt64(
