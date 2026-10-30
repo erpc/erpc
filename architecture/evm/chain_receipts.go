@@ -55,6 +55,18 @@ func wrongAnswer(err error) bool {
 	return errors.Is(err, errReceiptsAnswer) || errors.Is(err, errBloomMismatch) || errors.Is(err, errReceiptsCheck)
 }
 
+// cutShort reports whether a failed sweep ran out of time on an upstream:
+// the fetch's deadline, or an attempt cut at its share of the sweep. An
+// answer that takes longer than a share, as a big block's receipts can,
+// never arrives by sweeping again.
+func cutShort(err error) bool {
+	var ex *common.ErrUpstreamsExhausted
+	if !errors.As(err, &ex) {
+		return common.IsTimeout(err)
+	}
+	return slices.ContainsFunc(ex.Errors(), common.IsTimeout)
+}
+
 type bloomVerdict uint8
 
 const (
@@ -715,6 +727,10 @@ type receiptsJob struct {
 	mismatched   map[string]bool // vendors whose answer mismatched, this round
 	tried        map[string]bool // upstreams asked by name, this round
 	agree        []logsVote      // the logs digests vendors answered, this round
+	// slow: a sweep this round was cut short on an upstream (cutShort),
+	// so the next attempts name one upstream each, with the whole fetch
+	// timeout.
+	slow bool
 	// failed holds the upstreams that failed this block on the job's
 	// method, every round; exhausted closes once every upstream serving
 	// it did: a check waiting on the job can no longer be verified (spec
@@ -738,7 +754,7 @@ func (t *ChainTracker) startJob(h *chainHeader, keep bool) *receiptsJob {
 }
 
 func (j *receiptsJob) newRound() {
-	j.mismatched, j.tried, j.agree = make(map[string]bool), make(map[string]bool), nil
+	j.mismatched, j.tried, j.agree, j.slow = make(map[string]bool), make(map[string]bool), nil, false
 }
 
 // answered reports whether vendor answered logs this round.
@@ -751,12 +767,13 @@ func (j *receiptsJob) answered(vendor string) bool {
 	return false
 }
 
-// runJob makes the job's next attempt: a sweep, or after a mismatch an
-// upstream of a vendor not yet asked this round. With every vendor asked,
-// a new round sweeps once the key's backoff ends; a bloom check the
-// network suspended meanwhile accepts it. Logs waiting for agreement ask a
-// vendor that has not answered them; with every vendor asked, a new round
-// starts a block time later.
+// runJob makes the job's next attempt: a sweep, or after a mismatch or a
+// sweep cut short an upstream of a vendor not yet asked this round, alone
+// so it has the fetch's whole timeout. With every vendor asked, a new
+// round sweeps once the key's backoff ends; a bloom check the network
+// suspended meanwhile accepts it. Logs waiting for agreement ask a vendor
+// that has not answered them; with every vendor asked, a new round starts
+// a block time later.
 func (t *ChainTracker) runJob(j *receiptsJob) {
 	if j.cancel != nil {
 		j.cancel()
@@ -781,9 +798,9 @@ func (t *ChainTracker) runJob(j *receiptsJob) {
 	}
 	spec := t.receiptsSpec(t.fetchClassAt(int64(j.h.number), classTipReceipts), j.h.hash, j.h, j.logs)
 	spec.fresh = j.fresh
-	if len(j.mismatched) > 0 {
+	if len(j.mismatched) > 0 || j.slow {
 		// A wrong answer may sit in the cache under this key.
-		spec.fresh = true
+		spec.fresh = spec.fresh || len(j.mismatched) > 0
 		if spec.upstream = t.nextVendorUpstream(j, spec.method); spec.upstream == "" {
 			j.newRound()
 		}
@@ -909,6 +926,10 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 					j.mismatched[v] = true
 				}
 			}
+		}
+		// A sweep cut short moves the next attempts to one upstream each.
+		if spec.upstream == "" && cutShort(res.err) {
+			j.slow = true
 		}
 		for _, u := range []string{spec.upstream, res.upstream} {
 			if u != "" {

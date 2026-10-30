@@ -1980,6 +1980,33 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 			return true
 		}, 10*time.Second, 20*time.Millisecond, "both clients hold the canonical logs through the reorg")
 		requireInvariantsHeld(t, "test_ws", "evm:123")
+
+		// Receipts every vendor answers 4s late: later than one attempt's
+		// share of a sweep (10s over 4 upstreams, plus 1s), well within
+		// the fetch's 10s. A sweep cuts every attempt; the block's next
+		// attempt names one upstream with the whole 10s, so both clients
+		// get the logs of the blocks minted meanwhile, and no tap ends.
+		// The chain halts so no block leaves the window during the wait.
+		s.setAll(func(f *chainsim.Faults) { f.SlowReceipts = 4 * time.Second })
+		slowFrom := s.chain.Plan(chainsim.KindMatching, chainsim.KindMatching).Number + 1
+		s.blocks(3)
+		s.chain.Halt(true)
+		slowTo := s.chain.Tip().Number
+		require.GreaterOrEqual(t, slowTo, slowFrom+1, "both slow blocks minted before the halt")
+		require.Eventually(t, func() bool {
+			for _, cl := range s.openLogs() {
+				cl.mu.Lock()
+				d := cl.logsDiffLocked(s, from, slowTo)
+				cl.mu.Unlock()
+				if d != "" {
+					return false
+				}
+			}
+			return true
+		}, 30*time.Second, 50*time.Millisecond, "both clients hold the logs of blocks %d..%d, whose receipts every vendor answers 4s late", slowFrom, slowTo)
+		require.Len(t, s.openLogs(), len(chainsim.Filters), "no logs tap ended while receipts were slow")
+		s.setAll(func(f *chainsim.Faults) { f.SlowReceipts = 0 })
+		s.chain.Halt(false)
 	})
 
 	// A cold instance pins ws-a's heads while the other sources, held,
