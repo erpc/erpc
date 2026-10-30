@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/reflection/grpc_reflection_v1"
 )
 
 func TestGrpcClientIP_IgnoresForwardedHeaderFromUntrustedPeer(t *testing.T) {
@@ -107,6 +108,10 @@ func TestHttpServer_CanSharePortWithGrpc(t *testing.T) {
 			ListenV4:    util.BoolPtr(true),
 			HttpPortV4:  &httpPort,
 			GrpcEnabled: util.BoolPtr(true),
+			// Shorter than the stream kept open below: net/http resets HTTP/2
+			// streams at these timeouts unless the shared handler clears them.
+			ReadTimeout:  common.Duration(1 * time.Second).Ptr(),
+			WriteTimeout: common.Duration(1 * time.Second).Ptr(),
 		},
 		Projects: []*common.ProjectConfig{
 			{
@@ -197,4 +202,26 @@ func TestHttpServer_CanSharePortWithGrpc(t *testing.T) {
 	require.NotNil(t, grpcResp.Block)
 	assert.Equal(t, uint64(1), grpcResp.Block.Number)
 	assert.Empty(t, grpcResp.FullTransactions)
+
+	stream, err := grpc_reflection_v1.NewServerReflectionClient(conn).ServerReflectionInfo(grpcCtx)
+	require.NoError(t, err)
+	listServices := &grpc_reflection_v1.ServerReflectionRequest{
+		MessageRequest: &grpc_reflection_v1.ServerReflectionRequest_ListServices{ListServices: ""},
+	}
+	require.NoError(t, stream.Send(listServices))
+	_, err = stream.Recv()
+	require.NoError(t, err)
+	time.Sleep(3 * time.Second)
+	// io.EOF from Send means the stream ended; Recv returns its status.
+	if err := stream.Send(listServices); err != io.EOF {
+		require.NoError(t, err)
+	}
+	reflResp, err := stream.Recv()
+	require.NoError(t, err, "reflection stream must outlive the HTTP read and write timeouts")
+	var names []string
+	for _, s := range reflResp.GetListServicesResponse().GetService() {
+		names = append(names, s.GetName())
+	}
+	assert.Contains(t, names, "grpc.reflection.v1.ServerReflection")
+	require.NoError(t, stream.CloseSend())
 }
