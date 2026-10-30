@@ -574,22 +574,22 @@ func report(ch chan settleOutcome, o settleOutcome) {
 
 // headAsker is the network's Ask of one upstream's head (spec §6.8).
 type headAsker interface {
-	EvmAskHead(ctx context.Context, upstreamId string, need common.HeadNeed, pace time.Duration, reason common.AskReason) common.HeadAnswer
+	EvmAskHead(ctx context.Context, upstreamId string, need common.HeadNeed, pace time.Duration, after time.Time, reason common.AskReason) common.HeadAnswer
 }
 
 var errHeadAskPanicked = errors.New("head ask panicked")
 
-// askHead Asks upstream id's head at pace off the tracker's goroutine;
-// done runs on it with the answer. A panic in the Ask is a failed answer.
-// false: the network has no Ask.
-func (t *ChainTracker) askHead(id string, need common.HeadNeed, pace time.Duration, reason common.AskReason, done func(common.HeadAnswer)) bool {
+// askHead Asks upstream id's head at pace, after after (common.EvmStatePoller
+// Ask), off the tracker's goroutine; done runs on it with the answer. A
+// panic in the Ask is a failed answer. false: the network has no Ask.
+func (t *ChainTracker) askHead(id string, need common.HeadNeed, pace time.Duration, after time.Time, reason common.AskReason, done func(common.HeadAnswer)) bool {
 	n, ok := t.network.(headAsker)
 	if !ok || t.fetch == nil {
 		return false
 	}
 	t.fetch.bg.Go(func() {
 		a := common.HeadAnswer{Err: errHeadAskPanicked}
-		t.callNetwork("head-ask", func() { a = n.EvmAskHead(t.ctx, id, need, pace, reason) })
+		t.callNetwork("head-ask", func() { a = n.EvmAskHead(t.ctx, id, need, pace, after, reason) })
 		t.mb.put(trackerMsg{kind: msgCall, fn: func() { done(a) }})
 	})
 	return true
@@ -605,9 +605,11 @@ func (t *ChainTracker) heldAnswer(a common.HeadAnswer) *node {
 }
 
 // startSettle starts round s: an Ask of each target with need, reason
-// settle. With every Ask refused, s ends at once and false is returned.
-// With no target no round starts, nothing is logged and no retry is set:
-// the next vote runs rule 4 again; a waiter hears unanswered.
+// settle, after the answer the last round took from it, so a retry at the
+// soonest target's Next never takes another target's previous answer.
+// With every Ask refused, s ends at once and false is returned. With no
+// target no round starts, nothing is logged and no retry is set: the next
+// vote runs rule 4 again; a waiter hears unanswered.
 func (t *ChainTracker) startSettle(s *settleState, targets []string, need common.HeadNeed, waiter chan settleOutcome) bool {
 	if len(targets) == 0 {
 		if waiter != nil {
@@ -622,7 +624,7 @@ func (t *ChainTracker) startSettle(s *settleState, targets []string, need common
 	t.settle = s
 	for _, id := range targets {
 		s.asked++
-		if t.askHead(id, need, 0, common.AskSettle, func(a common.HeadAnswer) { t.settleAnswered(s, id, a) }) {
+		if t.askHead(id, need, 0, t.settleTaken[id], common.AskSettle, func(a common.HeadAnswer) { t.settleAnswered(s, id, a) }) {
 			s.out++
 		} else {
 			s.deferred++
@@ -649,6 +651,9 @@ func (t *ChainTracker) settleAnswered(s *settleState, id string, a common.HeadAn
 		return
 	}
 	s.out--
+	if !a.At.IsZero() {
+		t.settleTaken[id] = a.At
+	}
 	if !a.Next.IsZero() && (s.next.IsZero() || a.Next.Before(s.next)) {
 		s.next = a.Next
 	}
@@ -661,7 +666,7 @@ func (t *ChainTracker) settleAnswered(s *settleState, id string, a common.HeadAn
 	}
 	s.answers[id] = nd
 	if t.votes[id] == nd {
-		t.voteAt[id] = maxTime(t.voteAt[id], a.Sent)
+		t.voteAt[id] = maxTime(t.voteAt[id], a.At)
 	}
 	t.walkFrom(nd, id)
 }
@@ -942,7 +947,7 @@ func (t *ChainTracker) askNoSource() {
 	}
 	pace, _ := t.demand()
 	id, seq := t.voters.Voters[0], t.askSeq
-	t.ask.out = t.askHead(id, common.HeadNeedHash, pace, common.AskNoSource, func(a common.HeadAnswer) {
+	t.ask.out = t.askHead(id, common.HeadNeedHash, pace, time.Time{}, common.AskNoSource, func(a common.HeadAnswer) {
 		if seq != t.askSeq {
 			return
 		}

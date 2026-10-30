@@ -186,8 +186,12 @@ type ChainTracker struct {
 	// retryAt is, per settle round key, when a round over it may run again
 	// after one that did not decide.
 	retryAt map[string]time.Time
-	demoted []string
-	forkAt  time.Time
+	// settleTaken is, per upstream, the At of the last settle answer taken
+	// from it: its next settle Ask passes it as after (spec §6.8), so a
+	// retry never takes the round before's answer.
+	settleTaken map[string]time.Time
+	demoted     []string
+	forkAt      time.Time
 	// sampled is the confirmed head last fed to the block time.
 	sampled *chainHeader
 
@@ -507,6 +511,7 @@ func (t *ChainTracker) clear() {
 	t.offPins = make(map[string]time.Time)
 	t.refreshedAt = make(map[string]string)
 	t.retryAt = make(map[string]time.Time)
+	t.settleTaken = make(map[string]time.Time)
 	t.treesDirty = true
 	for _, j := range t.jobs {
 		t.endJob(j, nil)

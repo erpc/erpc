@@ -393,7 +393,7 @@ func TestForward_FutureBlock_OptInWithoutServedTip_OnlyMostAheadHasBlock_Dispatc
 
 	sampleBlockTime(t, network)
 	rateLimited.Store(true)
-	a := ups[0].EvmStatePoller().Ask(ctx, common.HeadNeedFork, 0, common.AskRefresh)
+	a := ups[0].EvmStatePoller().Ask(ctx, common.HeadNeedFork, 0, time.Time{}, common.AskRefresh)
 	rateLimited.Store(false)
 	require.Error(t, a.Err, "fb1's latest poll answered 429")
 	network.refreshHeads()

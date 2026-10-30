@@ -888,7 +888,7 @@ func (n *Network) refreshLatest(ctx context.Context, sel string) {
 		return
 	}
 	s.each(func(u common.Upstream, _ int64) bool {
-		u.(common.EvmUpstream).EvmStatePoller().AskBackground(common.HeadNeedNumber, 0, common.AskRefresh)
+		u.(common.EvmUpstream).EvmStatePoller().AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
 		need--
 		return need > 0
 	})
@@ -923,7 +923,7 @@ func (n *Network) awaitLatestRefresh(ctx context.Context, l *servedTipLane, s vo
 	var wg sync.WaitGroup
 	s.each(func(u common.Upstream, _ int64) bool {
 		sp := u.(common.EvmUpstream).EvmStatePoller()
-		wg.Go(func() { sp.Ask(ctx, common.HeadNeedNumber, 0, common.AskRefresh) })
+		wg.Go(func() { sp.Ask(ctx, common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh) })
 		need--
 		return need > 0
 	})
@@ -975,7 +975,7 @@ func (n *Network) awaitFinalizedRefresh(ctx context.Context, sel string) {
 // catch-up).
 func (n *Network) EvmRefreshHeadsBelow(selector string, block int64, pace time.Duration) {
 	for _, sp := range n.lackingVoters(selector, block) {
-		sp.AskBackground(common.HeadNeedNumber, pace, common.AskCatchUp)
+		sp.AskBackground(common.HeadNeedNumber, pace, time.Time{}, common.AskCatchUp)
 	}
 }
 
@@ -1104,7 +1104,7 @@ func (n *Network) pollHeads(ids []string, need common.HeadNeed, pace time.Durati
 		if p == nil || p.IsObjectNull() {
 			continue
 		}
-		if at := p.AskBackground(need, pace, reason); !at.IsZero() && (next.IsZero() || at.Before(next)) {
+		if at := p.AskBackground(need, pace, time.Time{}, reason).Next; !at.IsZero() && (next.IsZero() || at.Before(next)) {
 			next = at
 		}
 	}
@@ -1133,17 +1133,17 @@ func (n *Network) EvmLatestAskAt(ids []string) map[string]time.Time {
 	return out
 }
 
-// EvmAskHead is the Ask of upstreamId's head at pace for a chain
-// tracker's settle or no-source Ask (spec §6.5 rules 5 and 6, §6.8);
-// AskBackoff when the network has no such upstream with a poller.
-func (n *Network) EvmAskHead(ctx context.Context, upstreamId string, need common.HeadNeed, pace time.Duration, reason common.AskReason) common.HeadAnswer {
+// EvmAskHead is the Ask of upstreamId's head at pace, after after, for a
+// chain tracker's settle or no-source Ask (spec §6.5 rules 5 and 6,
+// §6.8); AskBackoff when the network has no such upstream with a poller.
+func (n *Network) EvmAskHead(ctx context.Context, upstreamId string, need common.HeadNeed, pace time.Duration, after time.Time, reason common.AskReason) common.HeadAnswer {
 	if n.upstreamsRegistry != nil {
 		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
 			if u.Id() != upstreamId {
 				continue
 			}
 			if p := u.EvmStatePoller(); p != nil && !p.IsObjectNull() {
-				return p.Ask(ctx, need, pace, reason)
+				return p.Ask(ctx, need, pace, after, reason)
 			}
 			break
 		}
@@ -3222,7 +3222,7 @@ func (n *Network) handleBlockSkip(
 	if isRetryable {
 		if eu, ok := u.(common.EvmUpstream); ok {
 			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-				sp.AskBackground(common.HeadNeedNumber, 0, common.AskRefresh)
+				sp.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
 			}
 		}
 	}
