@@ -63,8 +63,8 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 	window := tracker.ReorgWindow()
 	sends := newTapSends(nw, lane, "ws", indexer.SubTypeLogs)
 	notify := wsc.notifier(sub)
-	write := func(log json.RawMessage) error {
-		if err := notify.write(log); err != nil {
+	write := func(log json.RawMessage, d tapDelivery) error {
+		if err := notify.write(log, d); err != nil {
 			return wsWriteError{err}
 		}
 		return nil
@@ -120,7 +120,7 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 					sm.logger.Warn().Err(err).Uint64("block", blk.Number).Msg("cannot mark a held log removed")
 					continue
 				}
-				if err := write(removed); err != nil {
+				if err := write(removed, tapDelivery{}); err != nil {
 					return 0, err
 				}
 			}
@@ -142,9 +142,14 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 			if len(logs) == 0 {
 				continue
 			}
-			if err := sends.write(blk, snap, func() error {
-				for _, log := range logs {
-					if err := write(log); err != nil {
+			if err := sends.write(blk, snap, func(d tapDelivery) error {
+				for j, log := range logs {
+					// The block is delivered with its last log.
+					var last tapDelivery
+					if j == len(logs)-1 {
+						last = d
+					}
+					if err := write(log, last); err != nil {
 						return err
 					}
 				}

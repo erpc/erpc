@@ -92,7 +92,13 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 			if err != nil {
 				return i, streamEncodeError{blk.Number, err}
 			}
-			if err := sends.write(blk, snap, func() error { return sender.send(resp, sendWait) }); err != nil {
+			if err := sends.write(blk, snap, func(d tapDelivery) error {
+				if err := sender.send(resp, sendWait); err != nil {
+					return err
+				}
+				d.done()
+				return nil
+			}); err != nil {
 				return i, err
 			}
 		}

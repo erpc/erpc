@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -2196,6 +2198,63 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		assert.Equal(t, headsEnds, tapEndsOf(indexer.SubTypeNewHeads), "no newHeads tap ended")
 	})
 
+	// A newHeads or logs subscribe on a topic the last source pass found
+	// fed answers while a pass is running: it waits for a pass only to find
+	// a source it lacks. Under load one pass took up to 645ms, and every
+	// subscribe of the network queued behind it.
+	t.Run("subscribe on a fed topic waits for no source pass", func(t *testing.T) {
+		s := newChaosSeed(t, 11, true, chaosOpts{})
+		start(s)
+		defer s.stopERPC()
+		s.blocks(3)
+		s.dialClient("fed", nil)
+		s.dialLogs("fed")
+
+		entered := make(chan struct{}, 1)
+		hold := make(chan struct{})
+		held := func() {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			<-hold
+		}
+		sourcePassStart.Store(&held)
+		released := false
+		defer func() {
+			sourcePassStart.Store(nil)
+			if !released {
+				close(hold)
+			}
+		}()
+		select {
+		case <-entered:
+		case <-time.After(15 * time.Second):
+			t.Fatal("no source pass started")
+		}
+
+		const answerWithin = 2 * time.Second
+		logsParams, _ := json.Marshal([]interface{}{"logs", chainsim.Filters[0].Params()})
+		for _, params := range []string{`["newHeads"]`, string(logsParams)} {
+			conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", s.addr), nil)
+			require.NoError(t, err)
+			begin := time.Now()
+			require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":`+params+`}`)))
+			require.NoError(t, conn.SetReadDeadline(begin.Add(answerWithin)))
+			_, msg, err := conn.ReadMessage()
+			require.NoError(t, err, "subscribe %s answered within %s while a source pass is held", params, answerWithin)
+			var resp struct {
+				Result string          `json:"result"`
+				Error  json.RawMessage `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(msg, &resp))
+			assert.NotEmpty(t, resp.Result, "subscribe %s: %s", params, msg)
+			_ = conn.Close()
+		}
+		close(hold)
+		released = true
+	})
+
 	t.Run("no upstream serves receipts or eth_getLogs", func(t *testing.T) {
 		s := newChaosSeed(t, 6, true, chaosOpts{})
 		s.ignore = []string{"eth_getBlockReceipts", "eth_getLogs"}
@@ -2263,6 +2322,206 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		defer conn.Close()
 		s.blocks(5)
 		assert.Positive(t, receiptsAndLogsCalls(s), "logs fetched by eth_getLogs")
+	})
+}
+
+// TestWebSocket_WriterOrderAndBackpressure: a connection's one writer keeps
+// the ws guarantees (spec §10.2). On a connection that churns newHeads and
+// logs subscriptions while blocks flow, each id answer comes before any
+// notification of its subscription, a subscription's blocks rise, and none
+// comes after its unsubscribe answer. A client that stops reading holds up
+// only its own connection, which closes after the send wait, as after a
+// write that failed its deadline: no tap stops silently and no answer is
+// dropped on a connection that stays open.
+func TestWebSocket_WriterOrderAndBackpressure(t *testing.T) {
+	t.Run("order on one connection", func(t *testing.T) {
+		s := newChaosSeed(t, 12, true, chaosOpts{})
+		s.startERPC()
+		s.chain.Start()
+		defer s.stopERPC()
+		s.blocks(3)
+		_, taps0, _ := wsGauges("newHeads")
+
+		conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", s.addr), nil)
+		require.NoError(t, err)
+		defer conn.Close()
+		var wmu sync.Mutex
+		write := func(v interface{}) {
+			wmu.Lock()
+			defer wmu.Unlock()
+			_ = conn.WriteJSON(v)
+		}
+		var (
+			mu                       sync.Mutex
+			subOf                    = map[int]string{} // unsubscribe id -> subscription
+			answered, gone           = map[string]bool{}, map[string]bool{}
+			last                     = map[string]uint64{}
+			subscribed, unsubscribed int
+			problems                 []string
+		)
+		readDone := make(chan struct{})
+		go func() {
+			defer close(readDone)
+			for {
+				_, raw, err := conn.ReadMessage()
+				if err != nil {
+					return
+				}
+				var m struct {
+					ID     *int            `json:"id"`
+					Result json.RawMessage `json:"result"`
+					Error  json.RawMessage `json:"error"`
+					Params struct {
+						Subscription string `json:"subscription"`
+						Result       struct {
+							Number      string `json:"number"`
+							BlockNumber string `json:"blockNumber"`
+						} `json:"result"`
+					} `json:"params"`
+				}
+				if err := json.Unmarshal(raw, &m); err != nil {
+					mu.Lock()
+					problems = append(problems, fmt.Sprintf("unparsable message %s", raw))
+					mu.Unlock()
+					continue
+				}
+				mu.Lock()
+				switch {
+				case m.ID == nil:
+					sub := m.Params.Subscription
+					num := m.Params.Result.Number
+					if num == "" {
+						num = m.Params.Result.BlockNumber
+					}
+					n, _ := common.HexToInt64(num)
+					switch {
+					case !answered[sub]:
+						problems = append(problems, fmt.Sprintf("notification of %s before its id answer", sub))
+					case gone[sub]:
+						problems = append(problems, fmt.Sprintf("notification of %s after its unsubscribe answer", sub))
+					case uint64(n) < last[sub]:
+						problems = append(problems, fmt.Sprintf("%s: block %d after %d", sub, n, last[sub]))
+					}
+					last[sub] = uint64(n)
+				case *m.ID%2 == 1:
+					var sub string
+					if json.Unmarshal(m.Result, &sub) != nil {
+						problems = append(problems, fmt.Sprintf("subscribe %d refused: %s", *m.ID, m.Error))
+						break
+					}
+					subscribed++
+					answered[sub] = true
+					subOf[*m.ID+1] = sub
+					uid := *m.ID + 1
+					time.AfterFunc(time.Duration(rand.IntN(3*int(chaosBlock))), func() {
+						write(map[string]interface{}{"jsonrpc": "2.0", "id": uid, "method": "eth_unsubscribe", "params": []string{sub}})
+					})
+				default:
+					unsubscribed++
+					gone[subOf[*m.ID]] = true
+				}
+				mu.Unlock()
+			}
+		}()
+
+		sent := 0
+		for end := time.Now().Add(30 * chaosBlock); time.Now().Before(end); sent++ {
+			params := []interface{}{"newHeads"}
+			if k := sent % 3; k > 0 {
+				params = []interface{}{"logs", chainsim.Filters[k-1].Params()}
+			}
+			write(map[string]interface{}{"jsonrpc": "2.0", "id": 2*sent + 1, "method": "eth_subscribe", "params": params})
+			time.Sleep(10 * time.Millisecond)
+		}
+		require.Eventually(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return unsubscribed == sent || len(problems) > 0
+		}, 10*time.Second, 10*time.Millisecond, "every subscribe and unsubscribe is answered")
+		mu.Lock()
+		assert.Equal(t, sent, subscribed, "subscribes answered")
+		assert.Empty(t, problems)
+		notified := 0
+		for _, n := range last {
+			if n > 0 {
+				notified++
+			}
+		}
+		assert.Positive(t, notified, "subscriptions got notifications")
+		mu.Unlock()
+		require.Eventually(t, func() bool {
+			_, taps, _ := wsGauges("newHeads")
+			return taps == taps0
+		}, 5*time.Second, 10*time.Millisecond, "every newHeads tap ended")
+		_ = conn.Close()
+		<-readDone
+	})
+
+	t.Run("a client that stops reading sees its connection close", func(t *testing.T) {
+		prev := wsWriteDeadline
+		wsWriteDeadline = time.Second
+		defer func() { wsWriteDeadline = prev }()
+		// 16 KiB headers fill the kernel's socket buffers in about 32 blocks.
+		s := newChaosSeed(t, 13, true, chaosOpts{grpc: true})
+		s.startERPC()
+		s.chain.Start()
+		defer s.stopERPC()
+		s.blocks(3)
+		_, taps0, _ := wsGauges("newHeads")
+		fast := s.dialClient("fast", nil)
+
+		// quiet reads nothing more after its subscribe; asking also sends
+		// a request once its tap ended, whose answer cannot queue.
+		stall := func() *websocket.Conn {
+			c, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", s.addr), nil)
+			require.NoError(t, err)
+			require.NoError(t, c.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)))
+			require.NoError(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
+			_, msg, err := c.ReadMessage()
+			require.NoError(t, err)
+			require.Contains(t, string(msg), `"result"`, "subscribe answered: %s", msg)
+			return c
+		}
+		quiet, asking := stall(), stall()
+		defer quiet.Close()
+		defer asking.Close()
+		require.Eventually(t, func() bool {
+			_, taps, _ := wsGauges("newHeads")
+			return taps == taps0+3
+		}, 5*time.Second, 10*time.Millisecond, "all 3 taps run")
+
+		require.Eventually(t, func() bool {
+			_, taps, _ := wsGauges("newHeads")
+			return taps == taps0+1
+		}, 30*time.Second, 50*time.Millisecond, "the stalled clients' taps end")
+		_ = asking.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":99,"method":"eth_unsubscribe","params":["0xdead"]}`))
+
+		// readToEnd reads until the connection ends or an answer to id 99
+		// comes; a read that times out is a connection left open and silent.
+		readToEnd := func(c *websocket.Conn) (answered bool, err error) {
+			for {
+				_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+				_, msg, err := c.ReadMessage()
+				if err != nil {
+					return false, err
+				}
+				if strings.Contains(string(msg), `"id":99`) {
+					return true, nil
+				}
+			}
+		}
+		_, err := readToEnd(quiet)
+		var ne net.Error
+		assert.False(t, errors.As(err, &ne) && ne.Timeout(), "the stalled connection closes, not stays open and silent: %v", err)
+		answered, err := readToEnd(asking)
+		assert.True(t, answered || !(errors.As(err, &ne) && ne.Timeout()), "the request is answered or its connection closes: %v", err)
+
+		tip := s.chain.Tip().Number
+		s.blocks(5)
+		fast.mu.Lock()
+		defer fast.mu.Unlock()
+		assert.Empty(t, fast.problems, "the reading client")
+		assert.Greater(t, fast.last, tip, "the reading client gets heads after the stalled connections ended")
 	})
 }
 
