@@ -223,10 +223,10 @@ func (g *bloomGate) noted(h *chainHeader, v bloomVerdict) {
 }
 
 // heldReceipts is one block's receipts as the feed holds them: verbatim,
-// checked once; the first logs tap that reads them builds the index by
-// address and topic0, with the logs each filter matched as positions.
-// Receipts only client checks read keep no index and no copy of a log
-// (spec §10.1).
+// checked once. Their logs index comes from the fetch's one parse when a
+// registered MayMatch wants the block, else from the first logs tap that
+// reads them. Receipts only client checks read keep no index and no copy
+// of a log (spec §10.1).
 type heldReceipts struct {
 	hash     [32]byte
 	h        *chainHeader // the header the answer was checked against; nil when none was held
@@ -238,16 +238,38 @@ type heldReceipts struct {
 	digest logsDigest
 
 	indexOnce sync.Once
-	indexOK   bool // every log of raw parsed into the index
-	logs      []json.RawMessage
-	addr      []string   // per log, lowercase
-	topics    [][]string // per log, lowercase
-	byAddr    map[string][]int32
-	byTopic0  map[string][]int32
-	matches   sync.Map // filter key -> []int32
+	idx       *logsIndex // nil until built, and after a build a log of raw failed
+	matches   sync.Map   // filter key -> []int32
 
 	view     sync.Once
 	receipts []integrity.Receipt
+}
+
+// logsIndex is one block's logs, verbatim, by address and topic0.
+type logsIndex struct {
+	logs     []json.RawMessage
+	addr     []string   // per log, lowercase
+	topics   [][]string // per log, lowercase
+	byAddr   map[string][]int32
+	byTopic0 map[string][]int32
+}
+
+func newLogsIndex() *logsIndex {
+	return &logsIndex{byAddr: make(map[string][]int32), byTopic0: make(map[string][]int32)}
+}
+
+// add indexes raw, which parsed as l.
+func (x *logsIndex) add(raw json.RawMessage, l logLite) {
+	p := int32(len(x.logs))
+	addr := strings.ToLower(l.Address)
+	topics := lowerAll(l.Topics)
+	x.logs = append(x.logs, raw)
+	x.addr = append(x.addr, addr)
+	x.topics = append(x.topics, topics)
+	x.byAddr[addr] = append(x.byAddr[addr], p)
+	if len(topics) > 0 {
+		x.byTopic0[topics[0]] = append(x.byTopic0[topics[0]], p)
+	}
 }
 
 type receiptLite struct {
@@ -303,38 +325,33 @@ func parseLog(raw json.RawMessage) (logLite, error) {
 	return l, nil
 }
 
-// index builds the logs index from raw once, for the first logs tap that
-// reads the receipts, and reports whether every log parsed.
-func (r *heldReceipts) index() bool {
+// index is the logs index: the one the fetch's parse built, else built
+// from raw once, for the first logs tap that reads the receipts; nil when
+// a log does not parse.
+func (r *heldReceipts) index() *logsIndex {
 	r.indexOnce.Do(func() {
+		if r.idx != nil {
+			return
+		}
 		var rs []struct {
 			Logs []json.RawMessage `json:"logs"`
 		}
 		if common.SonicCfg.Unmarshal(r.raw, &rs) != nil {
 			return
 		}
-		r.byAddr, r.byTopic0 = make(map[string][]int32), make(map[string][]int32)
+		x := newLogsIndex()
 		for i := range rs {
 			for _, raw := range rs[i].Logs {
 				l, err := parseLog(raw)
 				if err != nil {
 					return
 				}
-				p := int32(len(r.logs))
-				addr := strings.ToLower(l.Address)
-				topics := lowerAll(l.Topics)
-				r.logs = append(r.logs, raw)
-				r.addr = append(r.addr, addr)
-				r.topics = append(r.topics, topics)
-				r.byAddr[addr] = append(r.byAddr[addr], p)
-				if len(topics) > 0 {
-					r.byTopic0[topics[0]] = append(r.byTopic0[topics[0]], p)
-				}
+				x.add(raw, l)
 			}
 		}
-		r.indexOK = true
+		r.idx = x
 	})
-	return r.indexOK
+	return r.idx
 }
 
 func lowerAll(ss []string) []string {
@@ -364,8 +381,9 @@ func judgedBloom(h *chainHeader) []byte {
 // block hash (spec §11): non-null, every receipt names hash, and non-empty
 // unless the block is empty (bloomGate.empty). Anything else fails the
 // fetch; it never reads as "no logs". With h's judgedBloom, the verdict
-// compares the OR of the receipt blooms with it.
-func parseReceipts(result []byte, hash [32]byte, h *chainHeader, empty bool) (*heldReceipts, error) {
+// compares the OR of the receipt blooms with it. With index, the logs the
+// check parses are indexed as they pass.
+func parseReceipts(result []byte, hash [32]byte, h *chainHeader, empty, index bool) (*heldReceipts, error) {
 	if isNullResult(result) {
 		return nil, fmt.Errorf("%w: null", errReceiptsAnswer)
 	}
@@ -383,6 +401,10 @@ func parseReceipts(result []byte, hash [32]byte, h *chainHeader, empty bool) (*h
 		bloom = make([]byte, logfilter.BloomLen)
 	}
 	bloomBad := false
+	var x *logsIndex
+	if index {
+		x = newLogsIndex()
+	}
 	for i := range rs {
 		if !strings.EqualFold(rs[i].BlockHash, key) {
 			return nil, fmt.Errorf("%w: receipt %d names block %q", errReceiptsAnswer, i, rs[i].BlockHash)
@@ -397,9 +419,13 @@ func parseReceipts(result []byte, hash [32]byte, h *chainHeader, empty bool) (*h
 				}
 			}
 		}
-		for _, l := range rs[i].Logs {
-			if _, err := parseLog(l); err != nil {
+		for _, raw := range rs[i].Logs {
+			l, err := parseLog(raw)
+			if err != nil {
 				return nil, err
+			}
+			if x != nil {
+				x.add(raw, l)
 			}
 		}
 	}
@@ -411,6 +437,7 @@ func parseReceipts(result []byte, hash [32]byte, h *chainHeader, empty bool) (*h
 	if bloom != nil {
 		r.bloom = verdictOf(!bloomBad && bytes.Equal(bloom, h.bloom))
 	}
+	r.idx = x
 	return r, nil
 }
 
@@ -428,8 +455,8 @@ type synthReceipt struct {
 // logs" only when the bloom check proves it (checking, with h's
 // judgedBloom) or the block is empty. Its logs are grouped into receipts
 // by transaction; the bloom verdict compares the bloom of the logs with h's
-// judgedBloom.
-func parseLogs(result []byte, hash [32]byte, h *chainHeader, empty, checking, logIndexes bool) (*heldReceipts, error) {
+// judgedBloom. With index, the logs are indexed as they pass.
+func parseLogs(result []byte, hash [32]byte, h *chainHeader, empty, checking, logIndexes, index bool) (*heldReceipts, error) {
 	if isNullResult(result) {
 		return nil, fmt.Errorf("%w: null", errReceiptsAnswer)
 	}
@@ -452,6 +479,10 @@ func parseLogs(result []byte, hash [32]byte, h *chainHeader, empty, checking, lo
 	indexes := make([]string, 0, len(raws))
 	set := sha256.New()
 	r.digest = logsDigest{count: len(raws), last: -1}
+	var x *logsIndex
+	if index {
+		x = newLogsIndex()
+	}
 	for i, raw := range raws {
 		l, err := parseLog(raw)
 		if err != nil {
@@ -487,6 +518,9 @@ func parseLogs(result []byte, hash [32]byte, h *chainHeader, empty, checking, lo
 			set.Write([]byte{','})
 		}
 		set.Write([]byte{'\n'})
+		if x != nil {
+			x.add(raw, l)
+		}
 	}
 	if logIndexes {
 		if err := integrity.LogIndexesContiguous(len(indexes), func(i int) string { return indexes[i] }); err != nil {
@@ -507,6 +541,7 @@ func parseLogs(result []byte, hash [32]byte, h *chainHeader, empty, checking, lo
 	if bloom != nil {
 		r.bloom = verdictOf(!bloomBad && bytes.Equal(bloom, h.bloom))
 	}
+	r.idx = x
 	return r, nil
 }
 
@@ -521,7 +556,7 @@ func verdictOf(match bool) bloomVerdict {
 // without the answer check; nil when a log does not parse.
 func indexReceipts(hash [32]byte, raw json.RawMessage) *heldReceipts {
 	r := newHeldReceipts(hash, nil, raw)
-	if !r.index() {
+	if r.index() == nil {
 		return nil
 	}
 	return r
@@ -541,36 +576,37 @@ func (r *heldReceipts) integrityView() []integrity.Receipt {
 // computed once per (block, filter): candidates from the address index,
 // else the topic0 index, else every log, each checked with f.Matches.
 func (r *heldReceipts) match(f *logfilter.LogsFilter) []json.RawMessage {
-	if !r.index() {
+	x := r.index()
+	if x == nil {
 		return nil
 	}
 	var pos []int32
 	if v, ok := r.matches.Load(f.Key()); ok {
 		pos = v.([]int32)
 	} else {
-		pos = r.positions(f)
+		pos = x.positions(f)
 		r.matches.Store(f.Key(), pos)
 	}
 	out := make([]json.RawMessage, len(pos))
 	for i, p := range pos {
-		out[i] = r.logs[p]
+		out[i] = x.logs[p]
 	}
 	return out
 }
 
-func (r *heldReceipts) positions(f *logfilter.LogsFilter) []int32 {
+func (x *logsIndex) positions(f *logfilter.LogsFilter) []int32 {
 	var cand []int32
 	switch addrs, t0 := f.Addresses(), f.Topic0(); {
 	case len(addrs) > 0:
 		for _, a := range addrs {
-			cand = append(cand, r.byAddr[a]...)
+			cand = append(cand, x.byAddr[a]...)
 		}
 	case len(t0) > 0:
 		for _, tp := range t0 {
-			cand = append(cand, r.byTopic0[tp]...)
+			cand = append(cand, x.byTopic0[tp]...)
 		}
 	default:
-		cand = make([]int32, len(r.logs))
+		cand = make([]int32, len(x.logs))
 		for i := range cand {
 			cand[i] = int32(i)
 		}
@@ -579,7 +615,7 @@ func (r *heldReceipts) positions(f *logfilter.LogsFilter) []int32 {
 	cand = slices.Compact(cand)
 	out := cand[:0]
 	for _, p := range cand {
-		if f.Matches(r.addr[p], r.topics[p]) {
+		if f.Matches(x.addr[p], x.topics[p]) {
 			out = append(out, p)
 		}
 	}
@@ -615,9 +651,11 @@ func (t *ChainTracker) heldReceiptsOf(hash [32]byte) *heldReceipts {
 // on, and counts against its upstream. Any answer the decode refuses fails
 // only its upstream: the sweep goes on, to another vendor first (spec
 // §11). h is nil when the caller holds no header; the decode then reads the
-// held one. A receipts answer's integrity checks run after its decode, so
-// a client check waiting on it takes it at once (spec §11); only an answer
-// that passes them is held.
+// held one. The decode indexes the logs when the feed needs the block's
+// receipts for a registered MayMatch, so a logs tap never parses them
+// again (spec §10.1). A receipts answer's integrity checks run after its
+// decode, so a client check waiting on it takes it at once (spec §11);
+// only an answer that passes them is held.
 func (t *ChainTracker) receiptsSpec(class fetchClass, hash [32]byte, h *chainHeader, logs bool) fetchSpec {
 	key := hexHash(hash)
 	spec := fetchSpec{
@@ -630,13 +668,13 @@ func (t *ChainTracker) receiptsSpec(class fetchClass, hash [32]byte, h *chainHea
 		deferChecks: !logs,
 	}
 	gate := t.fetch.bloom
-	parse := func(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts, error) {
-		return parseReceipts(result, hash, h, gate.empty(h))
+	parse := func(result []byte, hash [32]byte, h *chainHeader, index bool) (*heldReceipts, error) {
+		return parseReceipts(result, hash, h, gate.empty(h), index)
 	}
 	if logs {
 		spec.kind, spec.method, spec.params = "logs", "eth_getLogs", `[{"blockHash":"`+key+`"}]`
-		parse = func(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts, error) {
-			return parseLogs(result, hash, h, gate.empty(h), gate.checking(), gate.prof().logIndexes)
+		parse = func(result []byte, hash [32]byte, h *chainHeader, index bool) (*heldReceipts, error) {
+			return parseLogs(result, hash, h, gate.empty(h), gate.checking(), gate.prof().logIndexes, index)
 		}
 	}
 	spec.decode = func(result []byte, from common.Upstream) (any, error) {
@@ -644,7 +682,7 @@ func (t *ChainTracker) receiptsSpec(class fetchClass, hash [32]byte, h *chainHea
 		if hdr == nil {
 			hdr = t.heldHeader(hash)
 		}
-		r, err := parse(result, hash, hdr)
+		r, err := parse(result, hash, hdr, hdr != nil && t.needsOf(hdr, t.wantsSnapshot()))
 		if err == nil && r.bloom == bloomMismatch && gate.checking() {
 			err = errBloomMismatch
 			if from != nil {

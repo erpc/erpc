@@ -628,7 +628,7 @@ From cursor `c`, first matching case:
 - Receipts a logs tap needs for a Reverted block, and the feed lacks, are fetched by hash; Read waits for them as for Applied.
 - Read returns once the batch is not empty. Until then it waits for the next confirmed-head change, a fill or those receipts; a new head alone does not restart a receipts wait.
 - A tap at the confirmed head reads one block per head.
-- Per-block work is shared: one receipts parse, one match per filter, one encoding per transport, cached per network and bounded by the window. The index by address and topic0 is built the first time a logs tap reads the block; prefetched receipts that only client checks read keep no index and no copies of their logs.
+- Per-block work is shared: one receipts parse, one match per filter, one encoding per transport, cached per network and bounded by the window. The fetch's answer check builds the index by address and topic0 in that parse when a registered `MayMatch` wants the block, so its time counts as receipts wait, before the logs head; receipts fetched while none wanted the block are indexed the first time a logs tap reads them. Prefetched receipts that only client checks read keep no index and no copies of their logs.
 
 ### 10.2 Per transport
 
@@ -880,7 +880,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `retried_found`, `retried_missing` (the promise broke on this instance), `future`, `future_after_refresh`, `future_after_wait` (near future, §6.4); the by-hash wait (§6.4): `held_served`, `held_null` |
 | `erpc_head_ask_total{project,network,reason,outcome}` | new; reason: the §6.8 caller (`poll`, `catch_up`, `refusal`, `refresh`, `settle`, `no_source`); outcome: `fetched`, `shared_fresh`, `inflight`, `backoff` |
 | `erpc_chain_tracker_confirm_lag_blocks{project,network}` | new: pins head − confirmed head; with no confirmed pin, the number of pins |
-| `erpc_tap_delivery_seconds{transport,kind}` | new: confirmed-head change → write |
+| `erpc_tap_delivery_seconds{transport,kind}` | new: block ready (confirmed-head stamp; logs-head stamp for logs taps) → end of the tap's write |
 | `erpc_served_tip_voters{project,network,lane,rank}` | new gauge: voters per rank |
 | `erpc_served_tip_quorum{project,network,lane}` | new gauge: effective q |
 | `erpc_upstream_report_age_seconds{project,network,upstream,evidence}` | new gauge; evidence: `number`, `hash` (§6.1) |
