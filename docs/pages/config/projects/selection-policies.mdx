@@ -218,6 +218,8 @@ The default `evalScope: "network"` creates one slot per network. Setting `evalSc
 
 `blockHeadLag` and `finalizationLag` are atomic point-in-time state, not rolling counters. They persist across window rotations and stay non-zero until the upstream catches up to the network tip. `blockHeadLagSeconds` and `finalizationLagSeconds` multiply the block count by the tracker's EMA-estimated block time (alpha 0.1, minimum 3 samples before publishing). Until the EMA is warm, both seconds fields are `0` — pair `blockSecondsLagAbove` with `blockNumberLagAbove` for cold-start coverage.
 
+`blockHeadMissing` is `true` when the network has a block head but this upstream has never reported one (its poll never succeeded, or it answers block `0`, e.g. a node syncing from genesis). The tracker never writes a lag for such an upstream, so `blockHeadLag` reads `0` by absence — identical to "at the tip". `blockNumberLagAbove`, `blockSecondsLagAbove`, `removeByLag({ blockHead })` and `keepHealthy()` treat it as unbounded lag and exclude the upstream until it reports a head. Before any upstream on the network has reported a head there is nothing to lag behind, so the flag stays `false` and nobody is excluded.
+
 **The default policy chain.** Omitting `evalFunc` applies the production-hardened default embedded at compile time:
 
 ```js
@@ -314,6 +316,7 @@ Per-upstream `routing.scoreMultipliers` on the upstream config merge with the ch
 | `finalizationLag` | `int64` | Finalization blocks behind tip |
 | `blockHeadLagSeconds` | `float64` | `blockHeadLag × networkBlockTime`; `0` until EMA warms |
 | `finalizationLagSeconds` | `float64` | `finalizationLag × networkBlockTime`; `0` until EMA warms |
+| `blockHeadMissing` | `bool` | Network has a head, this upstream never reported one; head-lag gates trip on it |
 | `p50ResponseSeconds` | `float64` | p50 latency in seconds |
 | `p70ResponseSeconds` | `float64` | p70 latency in seconds |
 | `p90ResponseSeconds` | `float64` | p90 latency in seconds |
@@ -764,6 +767,8 @@ reserve upstreams to also keep shadow-probe traffic off them while benched:
 15. **`ErrUpstreamExcludedByPolicy` error code exists but has no production call site.** Defined at [`common/errors.go:L1823-L1836`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1823-L1836); error code string: `"ErrUpstreamExcludedByPolicy"`. The health tracker silently ignores it (does NOT penalize the upstream's error rate). The policy engine achieves exclusion structurally — upstreams absent from the ordered list are never attempted by `NextUpstream` — rather than by returning this error. The error type is forward-compatible scaffolding.
 
 16. **Idle slot eviction sweep runs every 1 minute.** The engine's `sweepIdleSlots` fires every `engineSweepInterval = 1 minute`. A narrow slot with `idleEvictionAfter = 1 h` may persist for up to 1 h + 1 min after its last access. The health tracker's own idle eviction threshold is separate and shorter: `DefaultIdleEvictionAfter = 30 minutes` for per-`(upstream, method, finality)` metric entries. [`internal/policy/engine.go:engineSweepInterval:L208`](https://github.com/erpc/erpc/blob/main/internal/policy/engine.go#L208)
+
+17. **A never-reported head is not lag `0`.** The tracker skips non-positive heads, so an upstream that never answered a head poll (or answers block `0`) keeps `blockHeadLag = 0` — the same value as an upstream at the tip. `blockHeadMissing` carries the difference and the head-lag gates (`blockNumberLagAbove`, `blockSecondsLagAbove`, `removeByLag`, `keepHealthy`) exclude it once the network has a head. A custom `where(u => u.metrics.blockHeadLag <= N)` does not; add `!u.metrics.blockHeadMissing`. Covered by `TestNetworkPolicy_RealPoll_NeverReportedHeadExcluded`. [`health/tracker.go:BlockHeadMissing`](https://github.com/erpc/erpc/blob/main/health/tracker.go)
 
 ### Observability
 
