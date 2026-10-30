@@ -277,6 +277,7 @@ func (t *ChainTracker) walkTreeWhile(r *node, fn func(*node) bool) {
 	stack := append(t.stack[:0], r)
 	for len(stack) > 0 {
 		n := stack[len(stack)-1]
+		stack[len(stack)-1] = nil // the scratch keeps no dropped header alive
 		stack = stack[:len(stack)-1]
 		if fn(n) {
 			stack = append(stack, n.children...)

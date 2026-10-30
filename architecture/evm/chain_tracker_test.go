@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
@@ -877,6 +879,82 @@ func BenchmarkDeepFill(b *testing.B) {
 			b.ReportMetric(float64(spent.Nanoseconds())/float64(b.N)/float64(depth), "cpu-ns/header")
 		})
 	}
+}
+
+// Eviction below a deep maxBackfill window (spec §9): a pin with no
+// timestamp, or one newer than the head, drops once it leaves reorgWindow,
+// even above pins maxBackfill keeps; a dropped header is no longer
+// reachable from the tracker; and pins that stay unlinked count on every
+// move.
+func TestChainTracker_DeepWindow(t *testing.T) {
+	const base = uint64(1_700_000_000)
+	header := func(n, ts uint64) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(`{"number":"0x%x","hash":"%s","parentHash":"%s","timestamp":"0x%x"}`, n, testHash("a", n), testHash("a", n-1), ts))
+	}
+	t.Run("odd timestamps drop and dropped headers are freed", func(t *testing.T) {
+		ctx := context.Background()
+		c := newChainTracker(t.Context(), nil, 4, 100*time.Second, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		ts := func(n uint64) uint64 {
+			switch n {
+			case 250:
+				return 0
+			case 260:
+				return base + 10_000
+			}
+			return base + n
+		}
+		vote := func(from, to uint64) {
+			for n := from; n <= to; n++ {
+				c.Observe("a", header(n, ts(n)), true)
+				c.sync(ctx)
+			}
+		}
+		vote(1, 200)
+		var freed []weak.Pointer[node]
+		for n := uint64(110); n < 200; n++ {
+			var k [32]byte
+			require.True(t, decodeHex32(testHash("a", n), &k))
+			require.NotNil(t, c.nodes[k], "block %d held", n)
+			freed = append(freed, weak.Make(c.nodes[k]))
+		}
+		vote(201, 300)
+		for _, tc := range []struct {
+			n    uint64
+			held bool
+		}{{150, false}, {250, false}, {260, false}, {270, true}, {300, true}} {
+			_, held := c.HeldNumber(testHash("a", tc.n))
+			assert.Equal(t, tc.held, held, "block %d held", tc.n)
+		}
+		runtime.GC()
+		for i, w := range freed {
+			assert.Nil(t, w.Value(), "block %d's dropped node is freed", 110+i)
+		}
+	})
+	t.Run("unlinked pins count on every move", func(t *testing.T) {
+		c := newChainTracker(t.Context(), nil, 4, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		hs := make([]*chainHeader, 6)
+		for n := uint64(1); n < 6; n++ {
+			h, err := parseChainHeader(header(n, base+n))
+			require.NoError(t, err)
+			hs[n] = h
+		}
+		bad, err := parseChainHeader(json.RawMessage(fmt.Sprintf(`{"number":"0x2","hash":"%s","parentHash":"%s","timestamp":"0x%x"}`, testHash("b", 2), testHash("b", 1), base+2)))
+		require.NoError(t, err)
+		counted := func() float64 {
+			return testutil.ToFloat64(telemetry.MetricChainTrackerInvariantViolationsTotal.WithLabelValues(c.projectId(), c.networkLabel(), string(common.InvariantPinsUnlinked)))
+		}
+		state := func(pins ...*chainHeader) *feedState {
+			return &feedState{base: pins[0].number, pins: pins, confirmed: -1, changed: make(chan struct{})}
+		}
+		was := counted()
+		s1 := state(hs[1], bad, hs[3])
+		c.published(&feedState{confirmed: -1}, s1, true)
+		s2 := state(hs[1], bad, hs[3], hs[4])
+		c.published(s1, s2, true)
+		s3 := state(hs[1], hs[2], hs[3], hs[4], hs[5])
+		c.published(s2, s3, true)
+		assert.Equal(t, 2.0, counted()-was, "the bad link counts on both moves that hold it, not after")
+	})
 }
 
 // The hash anchor: a by-hash fetch must never trust (or cache) receipts that
