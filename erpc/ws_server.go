@@ -46,7 +46,7 @@ type WsConnection struct {
 	// writeMessage); set at upgrade from headerCostFrames and costHeaders.
 	costFrames bool
 	// notifyCostBlocks caches each subscription kind's notification block.
-	notifyCostBlocks [indexer.KindPendingTx + 1]atomic.Pointer[[]byte]
+	notifyCostBlocks [indexer.KindFlashblock + 1]atomic.Pointer[[]byte]
 
 	// Write synchronization (gorilla/websocket requires synchronized writes)
 	writeMu sync.Mutex

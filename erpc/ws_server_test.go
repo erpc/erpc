@@ -1289,6 +1289,106 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 	})
 }
 
+func TestWebSocket_NewFlashblocks(t *testing.T) {
+	// Two clients share one upstream newFlashblocks subscription. The
+	// notification result is the upstream payload, with the client sub id.
+	subscribeCount := 0
+	var subMu sync.Mutex
+	upstreamSubId := "0xflashsub"
+	payload := map[string]interface{}{
+		"payload_id": "0xABC",
+		"index":      0,
+		"diff":       map[string]interface{}{"gas_used": "0x1"},
+	}
+
+	mockUpstream := mockWsUpstream(t, func(conn *websocket.Conn) {
+		standardMockWsHandler(conn, func(method string, id interface{}, req map[string]interface{}) {
+			if method != "eth_subscribe" {
+				mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0x1"})
+				return
+			}
+			params, _ := req["params"].([]interface{})
+			if len(params) == 0 || params[0] != "newFlashblocks" {
+				mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0xothersub"})
+				return
+			}
+			subMu.Lock()
+			subscribeCount++
+			count := subscribeCount
+			subMu.Unlock()
+			mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": upstreamSubId})
+			if count == 1 {
+				go func() {
+					time.Sleep(500 * time.Millisecond)
+					mockWriteJSON(conn, map[string]interface{}{
+						"jsonrpc": "2.0",
+						"method":  "eth_subscription",
+						"params": map[string]interface{}{
+							"subscription": upstreamSubId,
+							"result":       payload,
+						},
+					})
+				}()
+			}
+		})
+	})
+	defer mockUpstream.Close()
+
+	setupGock()
+	defer util.ResetGock()
+
+	wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
+	addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
+	defer cleanup()
+	time.Sleep(2 * time.Second)
+
+	conn1 := dialWs(t, addr)
+	defer conn1.Close()
+	resp1 := sendAndReceive(t, conn1, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newFlashblocks"]}`)
+	require.NotNil(t, resp1["result"])
+	require.Nil(t, resp1["error"])
+	clientSubId1 := resp1["result"].(string)
+	assert.True(t, strings.HasPrefix(clientSubId1, "0x"))
+	assert.NotEqual(t, upstreamSubId, clientSubId1)
+
+	conn2 := dialWs(t, addr)
+	defer conn2.Close()
+	resp2 := sendAndReceive(t, conn2, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newFlashblocks"]}`)
+	require.NotNil(t, resp2["result"])
+	clientSubId2 := resp2["result"].(string)
+	assert.NotEqual(t, clientSubId1, clientSubId2)
+
+	subMu.Lock()
+	assert.Equal(t, 1, subscribeCount, "upstream should only receive one newFlashblocks eth_subscribe")
+	subMu.Unlock()
+
+	readNotif := func(conn *websocket.Conn) map[string]interface{} {
+		t.Helper()
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, msg, err := conn.ReadMessage()
+		require.NoError(t, err)
+		var notif map[string]interface{}
+		require.NoError(t, json.Unmarshal(msg, &notif))
+		return notif
+	}
+	n1 := readNotif(conn1)
+	n2 := readNotif(conn2)
+	assert.Equal(t, "eth_subscription", n1["method"])
+	assert.Equal(t, "eth_subscription", n2["method"])
+
+	p1 := n1["params"].(map[string]interface{})
+	p2 := n2["params"].(map[string]interface{})
+	assert.Equal(t, clientSubId1, p1["subscription"])
+	assert.Equal(t, clientSubId2, p2["subscription"])
+	want := map[string]interface{}{
+		"payload_id": "0xABC",
+		"index":      float64(0),
+		"diff":       map[string]interface{}{"gas_used": "0x1"},
+	}
+	assert.Equal(t, want, p1["result"])
+	assert.Equal(t, want, p2["result"])
+}
+
 //
 // --- Tests: rate limiting ---
 //

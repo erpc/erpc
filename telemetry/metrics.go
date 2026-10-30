@@ -202,7 +202,7 @@ var (
 	MetricSubscriptionDedupEntries = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "subscription_dedup_entries",
-		Help:      "Event keys held by the network's logs and newPendingTransactions dedup windows; each filter's window holds at most indexer.dedupWindowSize keys (default 8192).",
+		Help:      "Event keys held by the network's logs, newPendingTransactions, and newFlashblocks dedup windows; each filter's window holds at most indexer.dedupWindowSize keys (default 8192).",
 	}, []string{"project", "network"})
 
 	MetricSubscriptionWithheldHeadsTotal = DefineCounter(prometheus.CounterOpts{
