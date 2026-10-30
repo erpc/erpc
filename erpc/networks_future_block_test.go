@@ -787,6 +787,10 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	}
 	ids := []string{"fm1", "fm2", "fm3"}
 	var first, second, nearCalls atomic.Int64
+	latestCalls := map[string]*atomic.Int64{}
+	for _, id := range ids {
+		latestCalls[id] = &atomic.Int64{}
+	}
 	mockGetBlockByNumberAt("0x69", "null", &first, "fm1")
 	mockGetBlockByNumberAt("0x69", futureBlockSentinel, &second, "fm2", "fm3")
 	for _, id := range ids {
@@ -795,7 +799,11 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 			Persist().
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
-				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"latest"`) {
+					return false
+				}
+				latestCalls[id].Add(1)
+				return true
 			}).
 			Reply(200).
 			Map(func(res *http.Response) *http.Response {
@@ -933,6 +941,29 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	assert.GreaterOrEqual(t, time.Since(start), 850*time.Millisecond, "it waited for the chain")
 	assert.Less(t, time.Since(start), 3*time.Second, "within W")
 	assert.Equal(t, refused+1, afterWait(), "not refused")
+
+	// On a 100ms chain, W 2s, a block that never comes waits all of W
+	// while every tick Asks each voter below it for a head fetched after
+	// the previous tick: about 20 fetches each. A tick that took the
+	// previous tick's fetch, sent a few µs less than 1 bt before, would
+	// see a new head only every 2 bt.
+	now := time.Now().Unix()
+	for i := int64(0); i <= 1000; i++ {
+		network.metricsTracker.SampleConfirmedHeaderTime(network.networkId, network.Label(), 5000+i, now+1000+i/10)
+	}
+	require.InDelta(t, float64(100*time.Millisecond), float64(network.EvmBlockTime()), float64(5*time.Millisecond))
+	before := map[string]int64{}
+	for _, id := range ids {
+		before[id] = latestCalls[id].Load()
+	}
+	start = time.Now()
+	_, err = logs("0x70")
+	require.Error(t, err, "a range 5 above a ceiling that stays")
+	assert.GreaterOrEqual(t, time.Since(start), 1900*time.Millisecond, "refused once W ended")
+	assert.Equal(t, refused+2, afterWait(), "counted future_after_wait")
+	for _, id := range ids {
+		assert.GreaterOrEqual(t, latestCalls[id].Load()-before[id], int64(16), "%s fetched once per tick", id)
+	}
 }
 
 // mockMethodAnswer makes every listed upstream answer method with result,
