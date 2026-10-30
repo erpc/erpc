@@ -25,7 +25,7 @@ await s.run({
 ```
 
 - The cursor is saved after `apply` or `undo` returns: delivery is at-least-once.
-- `run` resolves when `options.signal` aborts; it rejects on a terminal end: an error your handler threw or the gRPC error for auth or invalid options, at once; `OutOfRangeError` (`endpoint`, `cursor`, `oldest`) or `FinalRevertedError` from an endpoint while no other endpoint streams.
+- `run` resolves when `options.signal` aborts; it rejects on a terminal end: an error your handler threw, the gRPC error for auth or invalid options, or `MessageTooLargeError` (`endpoint`, `block`), at once; `OutOfRangeError` (`endpoint`, `cursor`, `oldest`) or `FinalRevertedError` from an endpoint while no other endpoint streams.
 - Reconnects, the heartbeat watchdog, deduplication and the two-endpoint merge are the library's.
 
 More: [examples/](examples/). The full contract is the eRPC docs' streams pages.

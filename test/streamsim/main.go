@@ -8,7 +8,7 @@
 //	{"op":"reorg","depth":d}          the top d canonical blocks are replaced
 //	{"op":"halt","on":b}              block production stops or resumes
 //	{"op":"kill","pod":i}             SIGKILL
-//	{"op":"start","pod":i}            boots it again on its ports
+//	{"op":"start","pod":i}            boots it again on its ports; with "maxSendBytes":n its server.grpcMaxSendMsgSize is n until the next start
 //	{"op":"cut","pod":i,"on":b}       its client link forwards nothing, sockets kept
 //	{"op":"pin","pod":i,"on":b}       its vendors stay on the current tip's branch, which grows apart from the canonical one; off: back to canonical
 //	{"op":"canon","from":a,"to":b,"filter":k,"view":i}  canonical blocks, or with view those pod i's vendors serve, and their logs' keys (k -1: every log)
@@ -41,6 +41,7 @@ type pod struct {
 	idx                int
 	httpPort, grpcPort int
 	cfg, log           string
+	conf               map[string]interface{}
 	link               *link
 	cmd                *exec.Cmd
 	exited             chan struct{}
@@ -77,7 +78,7 @@ func main() {
 			ups = append(ups, map[string]interface{}{"id": v.id, "endpoint": vd.URL(), "vendorName": v.name,
 				"evm": map[string]interface{}{"chainId": *chainID}})
 		}
-		cfg := map[string]interface{}{
+		p.conf = map[string]interface{}{
 			"logLevel": "warn",
 			"server": map[string]interface{}{
 				"listenV4": true, "httpHostV4": "127.0.0.1", "httpPortV4": p.httpPort,
@@ -92,13 +93,6 @@ func main() {
 				"upstreams": ups,
 			}},
 		}
-		out, err := yaml.Marshal(cfg)
-		if err == nil {
-			err = os.WriteFile(p.cfg, out, 0o644)
-		}
-		if err != nil {
-			fatal(err.Error())
-		}
 		ps = append(ps, p)
 	}
 	chain.Start()
@@ -109,7 +103,7 @@ func main() {
 		link, err := newLink(fmt.Sprintf("127.0.0.1:%d", p.grpcPort))
 		if err == nil {
 			p.link = link
-			err = p.start(*bin)
+			err = p.start(*bin, 0)
 		}
 		if err != nil {
 			fatal(err.Error())
@@ -126,6 +120,7 @@ func main() {
 		var c struct {
 			Op                 string
 			Blocks, Depth, Pod int
+			MaxSendBytes       int
 			On                 bool
 			From, To           uint64
 			Filter             int
@@ -151,7 +146,7 @@ func main() {
 		case "kill":
 			p.kill()
 		case "start":
-			if err := p.start(*bin); err != nil {
+			if err := p.start(*bin, c.MaxSendBytes); err != nil {
 				reply["error"] = err.Error()
 			}
 		case "cut":
@@ -213,9 +208,21 @@ func freePort() int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-// start boots the pod and waits until its HTTP and gRPC ports accept
-// connections.
-func (p *pod) start(bin string) error {
+// start writes the pod's config, maxSend its gRPC send limit unless 0,
+// boots it and waits until its HTTP and gRPC ports accept connections.
+func (p *pod) start(bin string, maxSend int) error {
+	server := p.conf["server"].(map[string]interface{})
+	delete(server, "grpcMaxSendMsgSize")
+	if maxSend > 0 {
+		server["grpcMaxSendMsgSize"] = maxSend
+	}
+	out, err := yaml.Marshal(p.conf)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(p.cfg, out, 0o644); err != nil {
+		return err
+	}
 	log, err := os.OpenFile(p.log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err

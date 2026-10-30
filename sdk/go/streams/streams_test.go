@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -261,4 +262,35 @@ func TestMergeLeaderDiesOnAnotherBranch(t *testing.T) {
 		t.Fatal("no undo across the branch switch")
 	}
 	a.requireServed(t, s, 1, 1)
+}
+
+// A pod whose send limit is below one log's message ends each logs stream
+// RESOURCE_EXHAUSTED MESSAGE_TOO_LARGE naming the block; a resume meets
+// the same block, so Run must stop with *MessageTooLargeError, never
+// reconnect.
+func TestMessageTooLargeEndsRun(t *testing.T) {
+	s := startSim(t)
+	s.send(t, map[string]interface{}{"op": "kill", "pod": 0})
+	s.send(t, map[string]interface{}{"op": "start", "pod": 0, "maxSendBytes": 160})
+	a := &app{}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	err := streams.Run(ctx, streams.Config{Endpoints: s.endpoints[:1], Kind: streams.Logs, Filter: s.filter(0),
+		HeartbeatSeconds: 1}, a.handler())
+	var tl *streams.MessageTooLargeError
+	if !errors.As(err, &tl) {
+		t.Fatalf("Run ended %v within 30s, want *MessageTooLargeError", err)
+	}
+	if tl.Block == nil || tl.MaxBytes != 160 || tl.MessageBytes <= 160 {
+		t.Fatalf("Run: %v", tl)
+	}
+	r := s.send(t, map[string]interface{}{"op": "canon", "from": tl.Block.Number, "to": tl.Block.Number})
+	if len(r.Blocks) != 1 || r.Blocks[0].Hash != tl.Block.Hash.String() {
+		t.Fatalf("Run names block %s, the chain holds %v", tl.Block.Token(), r.Blocks)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if n := len(a.chain); n > 0 && a.chain[n-1].Number >= tl.Block.Number {
+		t.Fatalf("applied block %d, at or above the block too large", a.chain[n-1].Number)
+	}
 }

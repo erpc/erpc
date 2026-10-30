@@ -414,7 +414,7 @@ err := streams.Run(ctx, streams.Config{
 ```
 
 - Endpoint `grpc(s)://host:port/<project>/evm/<chainId>`: the library dials `host:port` and sends the path as `x-erpc-project`, `x-erpc-chain-id` metadata (`erpc/grpc_server.go` `extractRequestInput`).
-- `run` / `Run` return only on stop or a terminal end (§9.5): `OutOfRangeError{Endpoint, Cursor, Oldest}` (`Cursor`: the one that endpoint's stream resumed from), `FinalRevertedError{Endpoint}`, auth or option errors, or the handler's error. No handler call starts after stop or after a terminal end. No backfill helper: backfill older than the window is "never".
+- `run` / `Run` return only on stop or a terminal end (§9.5): `OutOfRangeError{Endpoint, Cursor, Oldest}` (`Cursor`: the one that endpoint's stream resumed from), `FinalRevertedError{Endpoint}`, `MessageTooLargeError{Endpoint, Block}`, auth or option errors, or the handler's error. No handler call starts after stop or after a terminal end. No backfill helper: backfill older than the window is "never".
 - The cursor is saved after `apply` or `undo` returns without error: at-least-once; `Log.Key()` = `blockHash:logIndex`.
 - The library asks for `undo` (or `none` with `finalized`), so apps see one reorg shape; `StreamBlocks`' resend from fork point + 1 becomes an `undo` call.
 - Pending: `apply` gets a transaction batch; no cursor, no `undo`.

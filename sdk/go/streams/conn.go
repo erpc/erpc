@@ -368,31 +368,48 @@ func (r *runner) terminal(l *link, from *BlockRef, err error) (t error, perEndpo
 	if !ok {
 		return nil, false
 	}
+	var info *errdetails.ErrorInfo
+	for _, d := range st.Details() {
+		if i, ok := d.(*errdetails.ErrorInfo); ok {
+			info = i
+		}
+	}
 	switch st.Code() {
 	case codes.OutOfRange:
 		e := &OutOfRangeError{Endpoint: l.ep.raw, Reason: st.Message()}
 		if from != nil {
 			e.Cursor = from.Token()
 		}
-		for _, d := range st.Details() {
-			info, ok := d.(*errdetails.ErrorInfo)
-			if !ok {
-				continue
-			}
+		if info != nil {
 			e.Reason = info.Reason
-			n, nerr := strconv.ParseUint(info.Metadata["oldestBlock"], 10, 64)
-			raw, herr := hexBytes(info.Metadata["oldestHash"], 32)
-			if nerr == nil && herr == nil {
-				e.Oldest = &BlockRef{Number: n, Hash: Hash(raw)}
-			}
+			e.Oldest = metadataRef(info.Metadata, "oldestBlock", "oldestHash")
 		}
 		return e, true
 	case codes.Aborted:
 		return &FinalRevertedError{Endpoint: l.ep.raw, Message: st.Message()}, true
 	case codes.Unauthenticated, codes.PermissionDenied, codes.InvalidArgument:
 		return fmt.Errorf("%s: %w", l.ep.raw, err), false
+	case codes.ResourceExhausted:
+		if info == nil || info.Reason != "MESSAGE_TOO_LARGE" {
+			return nil, false
+		}
+		e := &MessageTooLargeError{Endpoint: l.ep.raw, Block: metadataRef(info.Metadata, "blockNumber", "blockHash")}
+		e.MessageBytes, _ = strconv.Atoi(info.Metadata["messageBytes"])
+		e.MaxBytes, _ = strconv.Atoi(info.Metadata["maxBytes"])
+		return e, false
 	}
 	return nil, false
+}
+
+// metadataRef is the block an ErrorInfo's metadata names under the keys
+// number (decimal) and hash, nil when it names none.
+func metadataRef(md map[string]string, number, hash string) *BlockRef {
+	n, nerr := strconv.ParseUint(md[number], 10, 64)
+	raw, herr := hexBytes(md[hash], 32)
+	if nerr != nil || herr != nil {
+		return nil
+	}
+	return &BlockRef{Number: n, Hash: Hash(raw)}
 }
 
 // codeName is a gRPC code as the protocol names it: UNAVAILABLE.

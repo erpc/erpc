@@ -1,5 +1,5 @@
 export { fileCursor } from "./cursor";
-export { FinalRevertedError, OutOfRangeError } from "./errors";
+export { FinalRevertedError, MessageTooLargeError, OutOfRangeError } from "./errors";
 export { type Stream, stream } from "./stream";
 export { formatToken, parseToken } from "./token";
 export type {

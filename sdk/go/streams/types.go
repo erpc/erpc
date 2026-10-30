@@ -123,3 +123,21 @@ type FinalRevertedError struct {
 }
 
 func (e *FinalRevertedError) Error() string { return e.Endpoint + ": " + e.Message }
+
+// MessageTooLargeError ends Run when Endpoint cannot send one message of
+// Block within its message bound (spec §3.4 message_too_large): a resume
+// from the cursor meets the same block.
+type MessageTooLargeError struct {
+	Endpoint     string
+	Block        *BlockRef
+	MessageBytes int
+	MaxBytes     int
+}
+
+func (e *MessageTooLargeError) Error() string {
+	b := "unknown"
+	if e.Block != nil {
+		b = e.Block.Token()
+	}
+	return fmt.Sprintf("%s: block %s needs a %d-byte message, over the %d-byte bound", e.Endpoint, b, e.MessageBytes, e.MaxBytes)
+}

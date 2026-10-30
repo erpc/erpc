@@ -13,6 +13,7 @@ import { status } from "@grpc/grpc-js";
 import {
   FinalRevertedError,
   fileCursor,
+  MessageTooLargeError,
   OutOfRangeError,
   stream,
 } from "../lib/index.js";
@@ -62,9 +63,11 @@ try {
         ? "OUT_OF_RANGE"
         : err instanceof FinalRevertedError
           ? "ABORTED"
-          : typeof err.code === "number"
-            ? status[err.code]
-            : null,
+          : err instanceof MessageTooLargeError
+            ? "RESOURCE_EXHAUSTED"
+            : typeof err.code === "number"
+              ? status[err.code]
+              : null,
     cursor: err.cursor ?? null,
     oldest: err.oldest ? { number: Number(err.oldest.number), hash: err.oldest.hash } : null,
   };
