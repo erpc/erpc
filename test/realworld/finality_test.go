@@ -444,10 +444,11 @@ func f5() spec {
 // F6: 0.2s blocks, finalized 4,000 below the head: a final tap fills down
 // to Finalized and flows, and the hold gauge is back to 0 once it
 // closes. Then 25,000 below: once Head.Finalized follows (the finalized
-// poll's debounce grows with the finality depth), an open final tap ends
-// out_of_range/finality_span and a final subscribe is refused. The 5s
-// window ends baseline gRPC resumes below_window, so F6 runs no baseline
-// clients.
+// poll's debounce grows with the finality depth), a final subscribe is
+// refused, and an open final tap, whose cursor stays 4,000 below, keeps
+// its place without an end: the hold follows cursors, not Finalized. The
+// 5s window ends baseline gRPC resumes below_window, so F6 runs no
+// baseline clients.
 func f6() spec {
 	faults := map[string]chainsim.Faults{}
 	for _, v := range baseVendors {
@@ -460,8 +461,8 @@ func f6() spec {
 			if ec == nil {
 				return
 			}
-			// The first final block waits for the fill down to Finalized,
-			// one header fetch at a time (streams spec §14).
+			// The first final block waits for the fill down to Finalized
+			// (32 fetches at once, CT§9) and for Finalized to move.
 			for deadline := time.Now().Add(10 * time.Minute); len(s.applyFinalHeads(ec, sub).chain) < 10 && time.Now().Before(deadline); {
 				time.Sleep(time.Second)
 			}
@@ -490,8 +491,8 @@ func f6() spec {
 				return
 			}
 			s.blocks(25)
-			if ends := ec.controls(sub, "end", time.Time{}); len(ends) != 1 || ends[0].msg.Reason != "out_of_range" || ends[0].msg.Detail != "finality_span" {
-				s.violate(s.name, "open final tap ends %+v, want out_of_range/finality_span", ends)
+			if ends := ec.controls(sub, "end", time.Time{}); len(ends) != 0 {
+				s.violate(s.name, "open final tap 4,000 below the window ends %+v, want no end", ends)
 			}
 			if _, err := ec.subscribe("newHeads", erpcOpts("finality", "finalized")); err == nil || !containsAll(err.Error(), "-32005", "finality_span") {
 				s.violate(s.name, "final subscribe at a %d span: %v, want -32005 finality_span", f6Span, err)

@@ -44,11 +44,17 @@ var mailboxHeaderCap = 1024
 const trackerPanicsToReset = 3
 
 // FinalHoldMax is the most headers the final hold keeps below the window
-// it holds without (streams spec §4, §10); past it final taps are refused
-// and end finality_span. A var so tests run fast.
+// it holds without (streams spec §4, §10): an open final tap whose place
+// lies further below ends finality_span, and a final subscribe whose start
+// lies more than FinalHoldAdmit below is refused, so a tap just
+// admitted never ends at once. A var so tests run fast.
 var FinalHoldMax atomic.Uint64
 
 func init() { FinalHoldMax.Store(20_000) }
+
+// FinalHoldAdmit is how far below the window a final subscribe's start
+// may lie: 9/10 of FinalHoldMax.
+func FinalHoldAdmit() uint64 { return FinalHoldMax.Load() / 10 * 9 }
 
 // TrackerMessageHook, when set, runs on a tracker's goroutine before each
 // message is applied, with the message's header when it carries one and
@@ -111,14 +117,14 @@ type ChainTracker struct {
 	// while any is, fill runs down to the window base, else it stops
 	// reorgWindow blocks below the head.
 	deepFill atomic.Int32
-	// finalWants counts the open HoldFinalized taps. While any is, the
-	// network-wide tracker's window also keeps every header from holdFrom
-	// up (holdFinal; streams spec §4); holdFrom is 0 while it keeps none.
-	// finalSpan: such a hold would keep more than FinalHoldMax headers
-	// below the window. Any goroutine reads them; holdFinal writes them.
-	finalWants atomic.Int32
-	holdFrom   atomic.Uint64
-	finalSpan  atomic.Bool
+	// finalTaps are the open final taps' places (Want with a Hold), each
+	// with its registrations. While any is, the network-wide tracker's
+	// window also keeps every header from holdFrom up (holdFinal; streams
+	// spec §4); holdFrom is 0 while it keeps none. Want and release write
+	// finalTaps; holdFinal writes holdFrom; any goroutine reads it.
+	finalMu   sync.Mutex
+	finalTaps map[*indexer.FinalHold]int
+	holdFrom  atomic.Uint64
 	// fillReads counts, by cursor hash, the Reads that wait on fill: fill
 	// of a tree holding one runs past its reorgWindow cap (fillRoots).
 	fillMu    sync.Mutex
@@ -155,6 +161,13 @@ type ChainTracker struct {
 	votes        map[string]*node     // source upstream id -> its vote
 	// finals is each upstream's newest finalized evidence (finalThrough).
 	finals map[string]finalEvidence
+	// ahead holds fill's by-number answers fetched ahead of the root they
+	// extend, by height, until fill reaches them (fetchAhead); aheadBusy
+	// the heights in flight; aheadGen moves on clear, so an answer of an
+	// older generation is dropped.
+	ahead     map[uint64]aheadAnswer
+	aheadBusy map[uint64]bool
+	aheadGen  uint64
 	// rewindDue holds the voters without a fresh hash vote on the new pins
 	// at the last move to a lower head: each is owed one rewind once a
 	// fresh vote of its reaches the pins (spec §14).
@@ -500,6 +513,8 @@ func (t *ChainTracker) clear() {
 	t.waiting = make(map[[32]byte][]*node)
 	t.heights = make(map[uint64][]*node)
 	t.exts = make(map[*node]*extension)
+	t.ahead, t.aheadBusy = make(map[uint64]aheadAnswer), make(map[uint64]bool)
+	t.aheadGen++
 	t.votes = make(map[string]*node)
 	t.finals = make(map[string]finalEvidence)
 	t.rewindDue = nil
@@ -763,7 +778,7 @@ func (t *ChainTracker) update() bool {
 			t.choose()
 		}
 		t.rewindLate()
-	}, nil)
+	}, nil) && ok
 	ok = t.guard("forks", t.trackForks, nil) && ok
 	ok = t.guard("fill", t.extendRoots, nil) && ok
 	ok = t.guard("ask", t.askNoSource, nil) && ok
@@ -894,7 +909,7 @@ func (t *ChainTracker) head() *chainHeader {
 // holds is the window (spec §8) below ref: at least reorgWindow blocks,
 // and for the network-wide tracker every header whose timestamp is within
 // maxBackfill of ref's, and while a final tap is open every header from
-// the final hold's base up (holdFinal). A header without a timestamp gets
+// the final hold's from up (holdFinal). A header without a timestamp gets
 // the floor and the hold only.
 func (t *ChainTracker) holds(ref, h *chainHeader) bool {
 	return h.number+uint64(t.window) >= ref.number || t.backfills(ref, h) || t.finalHolds(h.number)
@@ -906,52 +921,75 @@ func (t *ChainTracker) finalHolds(n uint64) bool {
 	return from > 0 && n >= from
 }
 
-// windowBase is the lowest height the window below ref keeps without the
-// final hold. Below the lowest pin the time window's base is estimated
-// from the block time.
-func (t *ChainTracker) windowBase(ref *chainHeader) uint64 {
-	base := ref.number - min(ref.number, uint64(t.window))
-	i := sort.Search(len(t.pins), func(i int) bool { return t.backfills(ref, t.pins[i].h) })
-	if i == len(t.pins) {
-		return base
+// windowBase is the lowest height the window below the head of pins keeps
+// without the final hold. ok is false while it is unknown: no pins, or
+// every pin inside the time window and the pins spanning no time to tell
+// their block time from. A cold network's block time is a guess, often
+// far slower than the chain, which would put the base too high.
+func (t *ChainTracker) windowBase(pins []*chainHeader) (base uint64, ok bool) {
+	if len(pins) == 0 {
+		return 0, false
 	}
-	n := t.pins[i].h.number
-	if bt := t.BlockTime(); i == 0 && bt > 0 {
-		n = min(n, ref.number-min(ref.number, uint64(t.backfill/bt)))
+	ref := pins[len(pins)-1]
+	base = ref.number - min(ref.number, uint64(t.window))
+	i := sort.Search(len(pins), func(i int) bool { return t.backfills(ref, pins[i]) })
+	switch {
+	case i == len(pins):
+		return base, true
+	case i > 0:
+		return min(base, pins[i].number), true
 	}
-	return min(base, n)
+	// The time window's base lies below the lowest pin, as many blocks
+	// further down as the pins' own block time puts in the time left.
+	lo := pins[0]
+	if lo.number >= ref.number || lo.timestamp >= ref.timestamp {
+		return 0, false
+	}
+	spanned := time.Duration(ref.timestamp-lo.timestamp) * time.Second
+	blocks := uint64(float64(t.backfill-spanned) / float64(spanned) * float64(ref.number-lo.number))
+	return min(base, lo.number-min(lo.number, blocks)), true
 }
 
 // holdFinal is the final hold (streams spec §4) of the network-wide
-// tracker: while a HoldFinalized tap is open the window also keeps every
-// header from the lane's Finalized up, unless that is more than
-// FinalHoldMax headers below the window it keeps without; then the hold
-// keeps none, and finalSpan refuses final taps and ends the open ones. A
+// tracker: while final taps are open the window also keeps every header
+// from reorgWindow below the lowest of their places up, so a reorg under
+// a final cursor reaches it as Reverted, as it reaches a latest tap. A
+// place is the tap's cursor, or its start before the first Read: a lane
+// tap's start is its lane's Finalized, which may lie below the network's.
+// A tap whose place lies more than FinalHoldMax below the window it
+// keeps without is spanned: it ends finality_span, and holds nothing. A
 // hold that grows down reopens the fill the window's base ended.
 func (t *ChainTracker) holdFinal() {
 	if t.selector != "" {
 		return
 	}
 	var from, below uint64
-	span := false
-	if ref, fin := t.windowRef(), t.finalizedHead(); ref != nil && fin > 0 {
-		// A final tap's cursor trails Finalized by its delivery: the hold
-		// keeps reorgWindow blocks below it too, so a moving Finalized
-		// never evicts the block a tap reads next.
-		f := uint64(fin) - min(uint64(fin), uint64(t.window))
-		base := t.windowBase(ref)
-		switch {
-		case f < base && base-f > FinalHoldMax.Load():
-			span = true
-		case t.finalWants.Load() > 0:
-			from = max(f, 1)
-			if len(t.pins) > 0 {
-				if lo := max(f, t.pins[0].h.number); lo < base {
+	spanned := false
+	t.finalMu.Lock()
+	if len(t.finalTaps) > 0 {
+		pins := t.state.Load().pins
+		base, known := t.windowBase(pins)
+		for h := range t.finalTaps {
+			at := h.At()
+			switch {
+			case at == 0 || h.Spanned():
+			case known && at < base && base-at > FinalHoldMax.Load():
+				h.Span()
+				spanned = true
+			case from == 0 || at < from:
+				from = at
+			}
+		}
+		if from > 0 {
+			from = max(from-min(from, uint64(t.window)), 1)
+			if known {
+				if lo := max(from, pins[0].number); lo < base {
 					below = base - lo
 				}
 			}
 		}
 	}
+	t.finalMu.Unlock()
 	if prev := t.holdFrom.Swap(from); from > 0 && (prev == 0 || from < prev) {
 		for _, e := range t.exts {
 			if e.atBase && e.windowEnd {
@@ -960,7 +998,7 @@ func (t *ChainTracker) holdFinal() {
 		}
 	}
 	telemetry.GaugeHandle(telemetry.MetricChainTrackerFinalHoldHeaders, t.projectId(), t.networkLabel()).Set(float64(below))
-	if t.finalSpan.Swap(span) != span {
+	if spanned {
 		// Final taps waiting on a Read or on the bound read it at once.
 		pub := t.state.Load()
 		s := *pub
@@ -970,10 +1008,13 @@ func (t *ChainTracker) holdFinal() {
 	}
 }
 
-// FinalitySpan reports whether a final tap's hold would keep more than
-// FinalHoldMax headers below the window: final subscribes are refused and
-// open final taps end (streams spec §4).
-func (t *ChainTracker) FinalitySpan() bool { return t.finalSpan.Load() }
+// FinalitySpan reports whether a final tap starting at block n would
+// hold more than FinalHoldAdmit headers below the window: its subscribe is
+// refused (streams spec §4). False while n or the window is unknown.
+func (t *ChainTracker) FinalitySpan(n uint64) bool {
+	base, ok := t.windowBase(t.state.Load().pins)
+	return n > 0 && ok && n < base && base-n > FinalHoldAdmit()
+}
 
 // backfills reports whether h's timestamp lies within maxBackfill at or
 // below ref's, on the network-wide tracker.
@@ -2717,7 +2758,7 @@ func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, o indexer.Rea
 		}
 	}()
 	for {
-		if o.HoldFinalized && t.finalSpan.Load() {
+		if o.Hold != nil && o.Hold.Spanned() {
 			return indexer.Batch{}, indexer.OutOfRangeError{Reason: indexer.OutOfRangeFinalitySpan}
 		}
 		s, tr := t.state.Load(), t.trees.Load()
@@ -3076,8 +3117,8 @@ func (t *ChainTracker) probeBelow(ctx context.Context, c indexer.Cursor, head *c
 
 // Want registers a tap's o until release: history serves the tracker while
 // any tap is open (spec §6.5 rule 1); the tracker fetches, at pin time, the
-// receipts of each block o.MayMatch wants (spec §10), and fills the whole
-// window while o is Resumable.
+// receipts of each block o.MayMatch wants (spec §10), fills the whole
+// window while o is Resumable, and holds from o.Hold's place (holdFinal).
 func (t *ChainTracker) Want(o indexer.ReadOpts) (release func()) {
 	t.taps.Add(1)
 	var id uint64
@@ -3092,8 +3133,13 @@ func (t *ChainTracker) Want(o indexer.ReadOpts) (release func()) {
 	if o.Resumable {
 		t.deepFill.Add(1)
 	}
-	if o.HoldFinalized {
-		t.finalWants.Add(1)
+	if h := o.Hold; h != nil {
+		t.finalMu.Lock()
+		if t.finalTaps == nil {
+			t.finalTaps = make(map[*indexer.FinalHold]int)
+		}
+		t.finalTaps[h]++
+		t.finalMu.Unlock()
 	}
 	t.mb.put(trackerMsg{kind: msgTick})
 	var once sync.Once
@@ -3108,8 +3154,12 @@ func (t *ChainTracker) Want(o indexer.ReadOpts) (release func()) {
 			if o.Resumable {
 				t.deepFill.Add(-1)
 			}
-			if o.HoldFinalized {
-				t.finalWants.Add(-1)
+			if h := o.Hold; h != nil {
+				t.finalMu.Lock()
+				if t.finalTaps[h]--; t.finalTaps[h] == 0 {
+					delete(t.finalTaps, h)
+				}
+				t.finalMu.Unlock()
 			}
 			t.taps.Add(-1)
 			t.mb.put(trackerMsg{kind: msgTick})

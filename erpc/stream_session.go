@@ -107,7 +107,10 @@ type streamSession struct {
 	opts            StreamOptions
 	// start is the tap's start without opts.From, fixed at subscribe
 	// (ChainTracker.HeadAsOf); nil starts at the tracker's Head.
-	start  func(context.Context) (indexer.Cursor, error)
+	start func(context.Context) (indexer.Cursor, error)
+	// hold is a final stream's place in the final hold (streams spec §4),
+	// set at subscribe to its start; nil for any other finality.
+	hold   *indexer.FinalHold
 	filter *logfilter.LogsFilter
 	// opened is closed once the client has the stream's id; nil: now.
 	// gone is closed once the client's connection is gone.
@@ -273,7 +276,7 @@ func (s *streamSession) runOnce(ctx context.Context) *streamEnd {
 	if s.resumable {
 		feed = stallFeed{ChainFeed: feed, tracker: tracker, wait: streamStallWait.Load(), lastVote: s.nw.newestHashVoteAt}
 	}
-	o := indexer.ReadOpts{Resumable: s.resumable, HoldFinalized: s.opts.Finality.final()}
+	o := indexer.ReadOpts{Resumable: s.resumable, Hold: s.hold}
 	if s.filter != nil {
 		o.MayMatch = s.filter.MayMatch
 	}

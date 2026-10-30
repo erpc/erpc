@@ -405,7 +405,7 @@ func TestChainTracker(t *testing.T) {
 		assert.True(t, held, "the orphan stays held, a final root")
 	})
 
-	// Fill fetches one header per round trip, so a Read whose cursor lay
+	// Fill links one header per answer, so a Read whose cursor lay
 	// below the lowest pin waited for fill to reach the window base before
 	// it said out of range (real world: 12s for 1,500 blocks; minutes in
 	// production). One by-hash fetch of the cursor decides at once by its
@@ -701,6 +701,79 @@ func TestChainTracker_GroupScoping(t *testing.T) {
 		assert.Equal(t, common.UpstreamPoliciesTracker, d.UpstreamPolicies)
 		assert.Equal(t, "", d.UseUpstream)
 	})
+}
+
+// Streams spec §4: the final hold keeps every header from the lowest open
+// final cursor up. Finalized jumping far past reorgWindow in one step (an
+// L2 batch finalizing), or unknown for a moment (0), never evicts a final
+// tap's cursor.
+func TestChainTracker_FinalHoldKeepsTheCursor(t *testing.T) {
+	for _, tc := range []struct {
+		what string
+		next uint64 // Finalized while the chain grows to 120
+	}{
+		{"Finalized jumps 80 blocks", 100},
+		{"Finalized unknown", 0},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			ctx := context.Background()
+			net := newServedChain(t, "evm:final-hold-"+strings.ReplaceAll(tc.what, " ", "-"))
+			for n := uint64(0); n <= 120; n++ {
+				net.serve(n, testHash("a", n), testHeader(n, testHash("a", n), testHash("a", n-1)))
+			}
+			var fin atomic.Int64
+			fin.Store(20)
+			head := func() common.EvmHead { return common.EvmHead{Latest: 1 << 40, Finalized: fin.Load()} }
+			c := newChainTracker(t.Context(), net, 4, 0, "", "", "", head, newFetchScheduler(t.Context(), net))
+			var h [32]byte
+			require.True(t, decodeHex32(testHash("a", 20), &h))
+			cursor := indexer.Cursor{Number: 20, Hash: h}
+			// The tap stands at 20, as RunChain sets its place.
+			o := indexer.ReadOpts{Hold: new(indexer.FinalHold)}
+			o.Hold.Set(20)
+			t.Cleanup(c.Want(o))
+			read := func(when string) {
+				t.Helper()
+				rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				defer cancel()
+				b, err := c.Read(rctx, cursor, o)
+				require.NoError(t, err, "a final tap at 20 reads on %s", when)
+				require.NotEmpty(t, b.Applied, when)
+				assert.EqualValues(t, 21, b.Applied[0].Number, when)
+			}
+			// Both voters vote each block as it comes, as pushes do.
+			grow := func(from, to uint64) {
+				t.Helper()
+				for n := from; n <= to; n++ {
+					for _, src := range []string{"a", "b"} {
+						c.Observe(src, testHeader(n, testHash("a", n), testHash("a", n-1)), true)
+					}
+				}
+				c.sync(ctx)
+			}
+			// A tracker counts no vote before it read its voters.
+			require.Eventually(t, func() bool {
+				grow(0, 0)
+				_, held := c.HeldNumber(testHash("a", 0))
+				return held
+			}, 5*time.Second, 5*time.Millisecond, "the voters' first vote is held")
+			grow(1, 30)
+			confirmed := func(n uint64) {
+				t.Helper()
+				require.Eventually(t, func() bool {
+					c.sync(ctx)
+					h, ok := c.Confirmed()
+					return ok && h.Number == n
+				}, 5*time.Second, 5*time.Millisecond, "the confirmed head reaches %d", n)
+			}
+			confirmed(30)
+			read("a hold from Finalized 20")
+			fin.Store(int64(tc.next))
+			grow(31, 120)
+			confirmed(120)
+			read("the head 100 blocks above it")
+		})
+	}
 }
 
 func TestChainTracker_FinalityLabel(t *testing.T) {

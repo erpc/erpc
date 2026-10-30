@@ -198,11 +198,11 @@ func removedLog(log json.RawMessage) (json.RawMessage, error) {
 // within logsCloseSpread, so the client reconnects knowing it may have
 // missed logs. A write that spends the write bound closes the connection.
 func (sm *SubscriptionManager) runWsTap(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{},
-	nw *Network, lane, kind string, head func(context.Context) (indexer.Cursor, error), f *logfilter.LogsFilter, opts StreamOptions) {
+	nw *Network, lane, kind string, head func(context.Context) (indexer.Cursor, error), hold *indexer.FinalHold, f *logfilter.LogsFilter, opts StreamOptions) {
 	wsTapLoopStarts()
 	enc := sm.wsStream(wsc, sub, nw, kind)
 	s := newStreamSession(nw, "ws", kind, lane, opts)
-	s.start, s.filter, s.opened, s.gone, s.lag, s.resumable = head, f, opened, wsc.done, true, opts.From != nil
+	s.start, s.hold, s.filter, s.opened, s.gone, s.lag, s.resumable = head, hold, f, opened, wsc.done, true, opts.From != nil
 	s.headers, s.logs = enc, enc
 	if opts.Extended {
 		s.control, s.drain = enc, wsc.draining

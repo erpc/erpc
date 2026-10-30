@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -46,12 +47,33 @@ type ReadOpts struct {
 	// Pace is how often the tap needs a newer head: 0 every block. The
 	// tap's demand carries it (Taps.Pace); a Read ignores it.
 	Pace time.Duration
-	// HoldFinalized: the tap applies no block above Head.Finalized or
-	// Head.Safe, so while it is registered the feed also holds every
-	// header from Head.Finalized up, and fills down to it (streams spec
-	// §4). Past the hold's bound its Reads end OutOfRangeFinalitySpan.
-	HoldFinalized bool
+	// Hold: the tap applies no block above Head.Finalized or Head.Safe,
+	// so while it is registered the feed also holds every header from
+	// reorgWindow below the tap's place up, and fills down to it (streams
+	// spec §4). Past the hold's bound its Reads end OutOfRangeFinalitySpan.
+	Hold *FinalHold
 }
+
+// FinalHold is a final tap's place in its feed's final hold (streams spec
+// §4): the lowest block it may still read, its cursor once it has one,
+// before that its start. The tap moves it; the feed reads it, and marks
+// it spanned once it lies more than the hold's bound below the window.
+type FinalHold struct {
+	at      atomic.Uint64
+	spanned atomic.Bool
+}
+
+// Set moves the tap's place to block n; 0 is unknown.
+func (h *FinalHold) Set(n uint64) { h.at.Store(n) }
+
+// At is the tap's place, 0 while unknown.
+func (h *FinalHold) At() uint64 { return h.at.Load() }
+
+// Span marks the hold past its bound, for good: the tap ends.
+func (h *FinalHold) Span() { h.spanned.Store(true) }
+
+// Spanned reports whether the tap ends OutOfRangeFinalitySpan.
+func (h *FinalHold) Spanned() bool { return h.spanned.Load() }
 
 // ChainFeed is the reader side of one tracker.
 type ChainFeed interface {
@@ -64,7 +86,8 @@ type ChainFeed interface {
 	// Want registers a tap's ReadOpts until release; every tap registers.
 	// The feed keeps history while any tap is registered, fetches receipts
 	// when a block is pinned and any registered MayMatch wants it, and
-	// fills the whole window while any registered tap is Resumable.
+	// fills the whole window while any registered tap is Resumable, and
+	// from each registered Hold's place up.
 	Want(o ReadOpts) (release func())
 }
 
