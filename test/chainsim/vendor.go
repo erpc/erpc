@@ -731,10 +731,18 @@ func parseNumber(s string) (uint64, bool) {
 	return n, true
 }
 
-// byNumberLocked walks the vendor's own branch down to n.
+// byNumberLocked walks the vendor's own branch down to n; from the first
+// canonical block on it, the canonical chain is an index by number.
 func (v *Vendor) byNumberLocked(n uint64) *Block {
+	canon := v.chain.canon
 	b := v.tip
 	for b != nil && b.Number > n {
+		if i := b.Number - canon[0].Number; b.Number >= canon[0].Number && i < uint64(len(canon)) && canon[i] == b {
+			if n < canon[0].Number {
+				return nil
+			}
+			return canon[n-canon[0].Number]
+		}
 		b = b.Parent
 	}
 	if b == nil || b.Number != n {
