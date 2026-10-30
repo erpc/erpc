@@ -96,6 +96,9 @@ type spec struct {
 	idle bool
 	// onHead runs for each header a newHeads client receives.
 	onHead func(s *scenario, c *headsClient, pod int, n uint64, h hash)
+	// onDeliver runs for each block any client receives: a header of
+	// newHeads or StreamBlocks, the block of a log.
+	onDeliver func(s *scenario, c *clientBase, pod int, b *chainsim.Block)
 	// bound is the delivery bound for clients that read (§ per scenario).
 	bound time.Duration
 	// allow names the ends and jumps the scenario's faults may cause.
