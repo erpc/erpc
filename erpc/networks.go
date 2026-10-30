@@ -962,19 +962,28 @@ func (n *Network) awaitLatest(ctx context.Context, l *servedTipLane, sel string,
 // awaitMinBlock waits for selector sel's Latest to reach block, the
 // request's X-ERPC-Min-Block, at most W, Asking the voters Latest lacks
 // for it (streams spec §8; the CT §6.8 latest refresh): ready when
-// Latest is there; future, with no wait, above the near-future bound of
-// a known ceiling (CT §6.4); else waited or timeout. The request then
-// takes the Head it moved; minBlockErr refuses it below block.
+// Latest is there; future, with no wait, above the near-future bound
+// (minBlockFuture); else waited or timeout. The request then takes the
+// Head it moved; minBlockErr refuses it below block.
 func (n *Network) awaitMinBlock(ctx context.Context, sel string, block int64) {
 	start := time.Now()
 	outcome := "ready"
 	switch h := n.headFor(sel); {
 	case h.Latest >= block:
-	case h.Ceiling > 0 && block > evm.NearFutureCeiling(n, *h, start):
+	case n.minBlockFuture(ctx, sel, *h, block, start):
 		outcome = "future"
 	default:
-		n.awaitLatest(ctx, n.laneFor(sel), sel, block, health.FreshnessWindow(n.EvmBlockTime()), func() []common.EvmStatePoller {
-			return n.lackingVoters(sel, block)
+		// Every voter below block, as the near-future wait Asks
+		// (EvmAwaitCeiling): a lagging voter re-fetching a header intake
+		// already holds keeps its old report and would be picked again.
+		n.awaitLatest(ctx, n.laneFor(sel), sel, block, health.FreshnessWindow(n.EvmBlockTime()), func() (out []common.EvmStatePoller) {
+			n.voters(sel, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
+				if sp := u.(common.EvmUpstream).EvmStatePoller(); head < block && sp != nil && !sp.IsObjectNull() {
+					out = append(out, sp)
+				}
+				return true
+			})
+			return out
 		})
 		telemetry.ObserverHandle(telemetry.MetricMinBlockWaitSeconds, n.projectId, n.Label()).Observe(time.Since(start).Seconds())
 		outcome = "waited"
@@ -983,6 +992,24 @@ func (n *Network) awaitMinBlock(ctx context.Context, sel string, block int64) {
 		}
 	}
 	telemetry.CounterHandle(telemetry.MetricMinBlockTotal, n.projectId, n.Label(), outcome).Inc()
+}
+
+// minBlockFuture reports whether block is above the near-future bound of
+// selector sel's ceiling, by the refusal rule (CT §6.4): only on reports
+// all younger than 1 bt at at; older ones are Asked first (EvmAskStale)
+// and block decided again, their ages taken at at. A report still older,
+// or an unknown block time, keeps block waiting.
+func (n *Network) minBlockFuture(ctx context.Context, sel string, h common.EvmHead, block int64, at time.Time) bool {
+	bt := n.EvmBlockTime()
+	beyond := func() bool { return h.Ceiling > 0 && block > evm.NearFutureCeiling(n, h, at) }
+	fresh := func() bool { return bt > 0 && !h.OldestReportAt.IsZero() && at.Sub(h.OldestReportAt) < bt }
+	if !beyond() {
+		return false
+	}
+	if !fresh() {
+		h.Ceiling, h.OldestReportAt = n.EvmAskStale(ctx, sel)
+	}
+	return beyond() && fresh()
 }
 
 // minBlockErr refuses req, -32015, when the Head it took is below its

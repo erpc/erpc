@@ -200,6 +200,8 @@ func TestHttpServer_MinBlock(t *testing.T) {
 	require.NoError(t, err)
 	require.Eventually(t, func() bool { return servedHead(ntw, context.Background()).Latest == 100 },
 		5*time.Second, 50*time.Millisecond, "eRPC learns the nodes' head 100")
+	// bt 1s, W 3s: before the first sample no block is future (CT §6.4).
+	sampleBlockTime(t, ntw)
 
 	const call = `{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xca11bde05977b3631167028862be2a173976ca11","data":"0x42cbb15c"},"latest"]}`
 	ask := func(headers, query map[string]string) (int, map[string]string, minBlockAnswer) {
@@ -250,6 +252,12 @@ func TestHttpServer_MinBlock(t *testing.T) {
 	})
 
 	t.Run("FarFutureRefusedWithoutDispatch", func(t *testing.T) {
+		// The chain made a block since eRPC last heard it, and the last
+		// Ask is a block time old: the Ask of the stale reports fetches
+		// that block, fresh, and the block is future. On a halted chain
+		// the reports stay stale and the request waits.
+		setHeads(103, ids...)
+		time.Sleep(1100 * time.Millisecond)
 		before, future := calls(), outcome("future")
 		start := time.Now()
 		status, _, a := ask(minBlock("1000000"), nil)
@@ -299,5 +307,15 @@ func TestHttpServer_MinBlock(t *testing.T) {
 		}
 		polls := nodes["slow-1"].polls.Load() + nodes["slow-2"].polls.Load() - polls0
 		assert.LessOrEqual(t, polls, int64(10), "20 waiting calls share each Ask round of the lane's 2 voters")
+	})
+
+	t.Run("StaleReportsAskedBeforeFuture", func(t *testing.T) {
+		// The nodes moved 20 blocks since eRPC last heard them: far above
+		// the ceiling it holds, yet its reports are older than 1 bt, so they
+		// are Asked before the block is called future (CT §6.4).
+		setHeads(130, ids...)
+		status, _, a := ask(minBlock("130"), nil)
+		require.Equal(t, http.StatusOK, status, "%+v", a.Error)
+		assert.Equal(t, int64(130), a.block(t))
 	})
 }
