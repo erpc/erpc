@@ -446,13 +446,20 @@ func openOnce(g *grpcInstance, req *bdsevm.StreamBlocksRequest, within time.Dura
 // served, on either instance: each ends with OUT_OF_RANGE and sends
 // nothing. A resume with one field alone is INVALID_ARGUMENT.
 func (s *chaosSeed) streamOutOfRange() {
-	tip := s.chain.Tip()
-	// Header times are whole seconds: 2s clear of the window's edge.
-	edge := tip.Time - uint64(s.maxBackfill()/time.Second) - 2
-	var old *chainsim.Block
-	for b := tip; b != nil && old == nil; b = b.Parent {
-		if b.Time < edge && b.Number+uint64(chaosReorgWindow) < tip.Number {
-			old = b
+	// The chain's history is shorter than this seed's window: run early on
+	// a fast host, the fault finds no header old enough, so it mints blocks
+	// until one is (header times are whole seconds: 2s clear of the edge).
+	var tip, old *chainsim.Block
+	for minted := 0; old == nil && minted <= int((s.maxBackfill()+3*time.Second)/chaosBlock); minted++ {
+		if minted > 0 {
+			s.blocks(1)
+		}
+		tip = s.chain.Tip()
+		edge := tip.Time - uint64(s.maxBackfill()/time.Second) - 2
+		for b := tip; b != nil && old == nil; b = b.Parent {
+			if b.Time < edge && b.Number+uint64(chaosReorgWindow) < tip.Number {
+				old = b
+			}
 		}
 	}
 	require.NotNil(s.t, old, "the chain holds a header older than the window")
