@@ -219,8 +219,14 @@ type ChainTracker struct {
 	// forks are the heights holding two headers or more: only below one
 	// may a header hold two children.
 	forks map[uint64]struct{}
+	// odd are the held headers whose timestamp is 0 or older than their
+	// parent's (markOdd).
+	odd map[*node]struct{}
 	// pinRun is the array published pins share (pinHeaders).
 	pinRun pinRun
+	// badLink is the pin of the bad parentHash link published last
+	// (published); nil while the pins are linked.
+	badLink *chainHeader
 	// treesDirty: a header was held or dropped, or a walk or fill ended,
 	// since trees was last published.
 	treesDirty bool
@@ -490,8 +496,9 @@ func (t *ChainTracker) clear() {
 	t.nodes = make(map[[32]byte]*node)
 	t.waiting = make(map[[32]byte][]*node)
 	t.heights, t.forks = make(map[uint64][]*node), make(map[uint64]struct{})
+	t.odd = make(map[*node]struct{})
 	t.spine.cut(t.spine.len() - 1)
-	t.pinRun = pinRun{}
+	t.pinRun, t.badLink = pinRun{}, nil
 	t.exts = make(map[*node]*extension)
 	t.votes = make(map[string]*node)
 	t.finals = make(map[string]finalEvidence)
@@ -1111,6 +1118,7 @@ func (t *ChainTracker) hold(h *chainHeader) *node {
 		}
 		c.parent = nd
 		nd.children = append(nd.children, c)
+		t.markOdd(c)
 		if e := t.exts[c]; e != nil && e.walk > 0 && !e.atBase && (walk == nil || e.walk > walk.walk) {
 			walk = e
 		}
@@ -1128,6 +1136,7 @@ func (t *ChainTracker) hold(h *chainHeader) *node {
 	if len(t.heights[h.number]) == 2 {
 		t.forks[h.number] = struct{}{}
 	}
+	t.markOdd(nd)
 	if t.maxHeld == nil || h.number > t.maxHeld.number {
 		t.maxHeld = h
 	}
@@ -1140,6 +1149,15 @@ func (t *ChainTracker) hold(h *chainHeader) *node {
 	}
 	t.capOrphans(h.number, nd)
 	return nd
+}
+
+// markOdd records n in odd when its timestamp is 0 or older than its
+// parent's: only such a header breaks a chain's time order, which
+// eviction's walk relies on (evict).
+func (t *ChainTracker) markOdd(n *node) {
+	if n.h.timestamp == 0 || n.parent != nil && n.h.timestamp < n.parent.h.timestamp {
+		t.odd[n] = struct{}{}
+	}
 }
 
 // capOrphans keeps at most maxOrphansPerHeight unpinned headers at a
@@ -1192,8 +1210,14 @@ func (t *ChainTracker) drop(n *node, base bool) {
 	t.held.Delete(n.h.hashHex)
 	t.treesDirty = true
 	if i, ok := t.spine.at(n); ok {
+		// The pins may be a slice of the spine (pick): a pin dropped
+		// before the pins move keeps them, so they leave the spine first.
+		if t.pinned(n) && t.spine.holds(t.pins) {
+			t.pins = slices.Clone(t.pins)
+		}
 		t.spine.cut(i)
 	}
+	delete(t.odd, n)
 	t.heights[n.h.number] = slices.DeleteFunc(t.heights[n.h.number], func(o *node) bool { return o == n })
 	switch len(t.heights[n.h.number]) {
 	case 0:
@@ -1670,12 +1694,20 @@ func (s *spine) len() int { return s.hi - s.lo }
 func (s *spine) at(n *node) (int, bool) { return spineIndex(s.nodes(), n) }
 
 // cut drops the spine's nodes at index i and below: dropping one makes
-// the node above it a root.
+// the node above it a root. Their slots are cleared, so the spine keeps
+// no dropped header alive.
 func (s *spine) cut(i int) {
+	clear(s.buf[s.lo : s.lo+i+1])
 	s.lo += i + 1
 	if s.lo == s.hi {
 		s.lo, s.hi = 0, 0
 	}
+}
+
+// holds reports whether pins is a slice of the spine's array.
+func (s *spine) holds(pins []*node) bool {
+	i, ok := s.at(pins[0])
+	return ok && &s.buf[s.lo+i] == &pins[0]
 }
 
 // push adds n, a child of the spine's top, above it.
@@ -2121,27 +2153,33 @@ func (t *ChainTracker) evict() {
 	var voted map[*node]bool
 	var out []*node
 	floor := ref.number - min(ref.number, uint64(t.window))
-	var deepForks []uint64
+	var deepForks, oddHeights []uint64
 	for n := range t.forks {
 		if n <= floor {
 			deepForks = append(deepForks, n)
 		}
 	}
 	slices.Sort(deepForks)
+	for n := range t.odd {
+		oddHeights = append(oddHeights, n.h.number)
+	}
+	slices.Sort(oddHeights)
 	// In the pins' tree a header within reorgWindow of ref keeps every
 	// header above it. A pin maxBackfill keeps does too while no fork
-	// below reorgWindow lies above it: a block is no older than its parent,
-	// so the pins above it, up to ref, are within maxBackfill of ref. The
-	// walk stops there, so it costs what leaves the window.
+	// below reorgWindow and no odd header up to ref lies above it: then
+	// every pin above it is no older than it and no newer than ref, so
+	// within maxBackfill of ref. The walk stops there, so it costs what
+	// leaves the window.
+	above := func(hs []uint64, n, to uint64) bool {
+		k, _ := slices.BinarySearch(hs, n+1)
+		return k < len(hs) && hs[k] <= to
+	}
 	keepsAbove := func(n *node) bool {
 		if n.h.number >= floor {
 			return true
 		}
-		if !t.pinned(n) || !t.backfills(ref, n.h) {
-			return false
-		}
-		k, _ := slices.BinarySearch(deepForks, n.h.number+1)
-		return k == len(deepForks)
+		return t.pinned(n) && t.backfills(ref, n.h) &&
+			!above(deepForks, n.h.number, floor) && !above(oddHeights, n.h.number, ref.number)
 	}
 	for r := range t.exts {
 		var top *chainHeader
@@ -2295,7 +2333,8 @@ func (t *ChainTracker) publish() {
 // §17) and feeds the block time. pinsMoved: s holds new pins, checked for
 // parentHash linkage. A pin old held at its number was checked when old
 // was published, so only the new pins at the top and at the bottom are
-// checked against the pin below them.
+// checked against the pin below them, and the bad link last found while s
+// still holds it: each move counts while the pins stay unlinked.
 func (t *ChainTracker) published(old, s *feedState, pinsMoved bool) {
 	if pinsMoved {
 		fresh := func(i int) bool { return old.pinAt(s.pins[i].number) != s.pins[i] }
@@ -2312,8 +2351,13 @@ func (t *ChainTracker) published(old, s *feedState, pinsMoved bool) {
 				bad = j + 1
 			}
 		}
+		if p := t.badLink; bad == 0 && p != nil && s.pinAt(p.number) == p && p.number > s.base && unlinked(int(p.number-s.base)) {
+			bad = int(p.number - s.base)
+		}
+		t.badLink = nil
 		if bad > 0 {
 			below, p := s.pins[bad-1], s.pins[bad]
+			t.badLink = p
 			common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantPinsUnlinked).
 				Str("group", t.group).Uint64("block", p.number).Str("blockHash", hexHash(p.hash)).
 				Str("parentHash", hexHash(p.parentHash)).Uint64("below", below.number).Str("belowHash", hexHash(below.hash)).
