@@ -1089,7 +1089,8 @@ var (
 
 	// `reason` distinguishes a connector that genuinely had no entry
 	// ("connector_miss"), one that failed or timed out ("connector_error"), an
-	// entry rejected by the freshness/TTL guard ("ttl_rejected"), and a stored
+	// entry rejected by the freshness/TTL guard ("ttl_rejected"), an entry
+	// naming a block a reorg replaced ("orphaned"), and a stored
 	// empty result under CacheEmptyBehaviorIgnore ("empty_result"). Without it
 	// a slow or erroring cache backend is indistinguishable from a cold cache,
 	// which reads as a hit-rate problem instead of a latency problem.
