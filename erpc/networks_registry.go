@@ -172,6 +172,18 @@ func NewNetwork(
 		initializer:       util.NewInitializer(appCtx, &lg, nil),
 	}
 	network.servedTipAll.label = "all"
+	if nwCfg.Evm != nil && nwCfg.Evm.ServedTip != nil && nwCfg.Evm.ServedTip.PreferredRefresh != nil {
+		pr := nwCfg.Evm.ServedTip.PreferredRefresh
+		match, err := common.CompileSelector(pr.Upstreams)
+		if err != nil {
+			return nil, fmt.Errorf("servedTip.preferredRefresh.upstreams: %w", err)
+		}
+		network.preferredRefresh = match
+		network.preferredRefreshMaxLag = pr.MaxLagBlocks
+		if network.preferredRefreshMaxLag <= 0 {
+			network.preferredRefreshMaxLag = common.DefaultServedTipPreferredMaxLagBlocks
+		}
+	}
 
 	if nwCfg.Architecture == "" {
 		nwCfg.Architecture = common.ArchitectureEvm

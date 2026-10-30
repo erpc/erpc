@@ -3174,6 +3174,29 @@ type EvmServedTipConfig struct {
 	// deep correction. -1 disables the regression guard entirely; no other
 	// negative value is accepted.
 	MaxRegressionBlocks int64 `yaml:"maxRegressionBlocks,omitempty" json:"maxRegressionBlocks,omitempty"`
+
+	// PreferredRefresh names the upstreams an eth_blockNumber answer refreshes
+	// first. Each local answer asks the ballot's pollers for an on-demand
+	// refresh; without this the first voters in routing order (often paid
+	// vendors) take every refresh. Set, the matching voters within
+	// MaxLagBlocks of the highest known head are refreshed first, and the
+	// rest of the quorum is filled from the others in routing order; a
+	// matching voter further behind is skipped. Every upstream's regular
+	// state poller keeps running, so the ballot still sees their heads.
+	// Nil keeps routing order.
+	PreferredRefresh *EvmServedTipPreferredRefreshConfig `yaml:"preferredRefresh,omitempty" json:"preferredRefresh,omitempty"`
+}
+
+// EvmServedTipPreferredRefreshConfig picks the upstreams an on-demand head
+// refresh goes to first. See EvmServedTipConfig.PreferredRefresh.
+type EvmServedTipPreferredRefreshConfig struct {
+	// Upstreams is an upstream selector (id or tag glob, e.g. "prism-*").
+	Upstreams string `yaml:"upstreams" json:"upstreams"`
+
+	// MaxLagBlocks is how far below the highest known head a matching
+	// upstream may be and still be preferred. 0 uses
+	// DefaultServedTipPreferredMaxLagBlocks.
+	MaxLagBlocks int64 `yaml:"maxLagBlocks,omitempty" json:"maxLagBlocks,omitempty"`
 }
 
 // ShortCircuitFutureBlocksEnabled reports whether a numbered eth_getBlockByNumber
