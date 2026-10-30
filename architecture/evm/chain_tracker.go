@@ -1856,6 +1856,7 @@ func (s *spine) holds(pins []*node) bool {
 	i, ok := s.at(pins[0])
 	return ok && &s.buf[s.lo+i] == &pins[0]
 }
+
 // push adds n, a child of the spine's top, above it.
 func (s *spine) push(n *node) {
 	if s.hi == len(s.buf) {
