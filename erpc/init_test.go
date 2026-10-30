@@ -362,9 +362,10 @@ func TestInit_CounterDropLabels_EndToEnd(t *testing.T) {
 			HttpPortV4: &httpPort,
 		},
 		Metrics: &common.MetricsConfig{
-			Enabled: util.BoolPtr(true),
-			HostV4:  &localHost,
-			Port:    &metricsPort,
+			Enabled:  util.BoolPtr(true),
+			ListenV4: util.BoolPtr(true),
+			HostV4:   &localHost,
+			Port:     &metricsPort,
 			// Drop agent_name fleet-wide on counters, then spare the received
 			// counter so we can prove overrides still work end-to-end.
 			CounterDropLabels: []string{"agent_name"},
@@ -514,6 +515,105 @@ func TestInit_CounterDropLabels_EndToEnd(t *testing.T) {
 	if len(upLines) == 0 {
 		t.Fatal("expected upstream_request_total samples after traffic")
 	}
+}
+
+// The metrics listener must bind exactly the configured host, the way the
+// main server honours server.httpHostV4 (#1259): with hostV4 127.0.0.1 and
+// listenV4 only, /metrics answers on loopback IPv4 and nowhere else. Before
+// the fix Init bound ":<port>", a dual-stack wildcard, so the same port also
+// answered on [::1] and on every LAN address.
+func TestInit_MetricsBindsConfiguredHostOnly(t *testing.T) {
+	mainMutex.Lock()
+	defer mainMutex.Unlock()
+	t.Cleanup(telemetry.ResetHandleCache)
+
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	metricsPort := probe.Addr().(*net.TCPAddr).Port
+	require.NoError(t, probe.Close())
+
+	cfg := &common.Config{
+		LogLevel: "ERROR",
+		Server: &common.ServerConfig{
+			HttpHostV4: util.StringPtr("127.0.0.1"),
+			ListenV4:   util.BoolPtr(true),
+			HttpPortV4: util.IntPtr(0),
+		},
+		Metrics: &common.MetricsConfig{
+			Enabled:  util.BoolPtr(true),
+			ListenV4: util.BoolPtr(true),
+			HostV4:   util.StringPtr("127.0.0.1"),
+			ListenV6: util.BoolPtr(false),
+			HostV6:   util.StringPtr("::1"),
+			Port:     &metricsPort,
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	initDone := make(chan error, 1)
+	go func() { initDone <- Init(ctx, cfg, log.Logger) }()
+
+	loopback := net.JoinHostPort("127.0.0.1", fmt.Sprint(metricsPort))
+	initReturned := false
+	var earlyExit error
+	require.Eventually(t, func() bool {
+		select {
+		case earlyExit = <-initDone:
+			initReturned = true
+			return true
+		default:
+		}
+		resp, err := http.Get("http://" + loopback + "/metrics")
+		if err != nil {
+			return false
+		}
+		resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, 10*time.Second, 20*time.Millisecond, "metrics never answered on %s", loopback)
+	require.False(t, initReturned, "Init returned before metrics came up: %v", earlyExit)
+
+	refused := func(addr string) {
+		t.Helper()
+		c, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if err == nil {
+			c.Close()
+			t.Errorf("metrics port reachable on %s; must bind %s only", addr, loopback)
+		}
+	}
+	refused(net.JoinHostPort("::1", fmt.Sprint(metricsPort)))
+	for _, ip := range nonLoopbackIPv4s(t) {
+		refused(net.JoinHostPort(ip, fmt.Sprint(metricsPort)))
+	}
+
+	cancel()
+	select {
+	case err := <-initDone:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Init did not return after cancel")
+	}
+}
+
+// nonLoopbackIPv4s lists the host's unicast IPv4 addresses other than loopback:
+// the LAN addresses a wildcard bind would expose.
+func nonLoopbackIPv4s(t *testing.T) []string {
+	t.Helper()
+	addrs, err := net.InterfaceAddrs()
+	require.NoError(t, err)
+	var out []string
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip4 := ipn.IP.To4()
+		if ip4 == nil || ip4.IsLoopback() || !ip4.IsGlobalUnicast() && !ip4.IsPrivate() {
+			continue
+		}
+		out = append(out, ip4.String())
+	}
+	return out
 }
 
 func metricSampleLines(scrape, name string) []string {

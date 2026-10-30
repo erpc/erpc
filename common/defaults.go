@@ -939,6 +939,12 @@ func (m *MetricsConfig) SetDefaults() error {
 	if m.Enabled == nil && !util.IsTest() {
 		m.Enabled = util.BoolPtr(true)
 	}
+	// Mirrors ServerConfig: IPv4 on by default, IPv6 opt-in. Unlike the
+	// server there is no test gate here, because Enabled already stays nil
+	// under go test, so nothing binds unless a test asks for it.
+	if m.ListenV4 == nil {
+		m.ListenV4 = util.BoolPtr(true)
+	}
 	if m.HostV4 == nil {
 		m.HostV4 = util.StringPtr("0.0.0.0")
 	}

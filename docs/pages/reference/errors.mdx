@@ -122,7 +122,7 @@ StandardError interface
     │   ├── ErrGetLogsExceededMaxAllowedAddresses, ErrGetLogsExceededMaxAllowedTopics
     │
     ├── JSON-RPC (carriers)
-    │   ├── ErrJsonRpcRequestUnmarshal, ErrJsonRpcRequestUnresolvableMethod
+    │   ├── ErrJsonRpcRequestUnmarshal, ErrJsonRpcRequestInvalidId, ErrJsonRpcRequestUnresolvableMethod
     │   ├── ErrJsonRpcRequestPreparation
     │   └── ErrJsonRpcExceptionInternal (normalized carrier)
     │
@@ -227,6 +227,7 @@ Legend:
 | 71 | `ErrGetLogsExceededMaxAllowedTopics` | yes | yes | 200 | −32012 | — |
 | 72 | `ErrEndpointContentValidation` | no | yes | 200 | −32603 | try different upstream |
 | 73 | `ErrEndpointNonceException` | yes | no | 200 | −32003 | reason: `already_known` or `nonce_too_low`; idempotency |
+| 74 | `ErrJsonRpcRequestInvalidId` | no | no | 400 | −32600 | numeric `id` not exactly representable as int64 (`1.5`, `1e19`, `9223372036854775808`); body is well-formed, so Invalid Request rather than Parse error; message names the id |
 
 Non-`StandardError` types: `ErrJsonRpcExceptionExternal` (normalizer input), `TaskFatalError` (initializer stop signal), `ErrDynamicTimeoutExceeded` (sentinel distinguishing failsafe-policy timeout from HTTP server deadline).
 
