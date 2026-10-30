@@ -226,7 +226,7 @@ var (
 	MetricSharedCounterRemoteRejectedTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "shared_counter_remote_rejected_total",
-		Help:      "Remote shared counter states this instance rejected, by reason (non_positive, small_rollback, stale_timestamp, malformed).",
+		Help:      "Remote shared counter states this instance rejected, by reason (non_positive, small_rollback, held_rollback, stale_timestamp, malformed).",
 	}, []string{"reason"})
 
 	MetricChainTrackerReanchorTotal = DefineCounter(prometheus.CounterOpts{

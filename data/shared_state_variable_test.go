@@ -2047,6 +2047,22 @@ func TestCounterInt64_ZeroIsNotAHeadObservation(t *testing.T) {
 		assert.Equal(t, 1, rollbacks)
 	})
 
+	t.Run("a chain that restarted lower and halted is followed after the hold", func(t *testing.T) {
+		counter := newHeadCounter(1_000_000)
+
+		for range 3 {
+			assert.False(t, counter.processNewValue(UpdateSourceTryUpdate, 995_000, time.Now()), "a halted lower value is held")
+		}
+		assert.Equal(t, int64(1_000_000), counter.GetValue())
+
+		// Only lower readings for the whole hold: the source is the chain now.
+		held := *counter.state.Load()
+		held.heldSince = rollbackClock() - largeRollbackMaxHold
+		counter.state.Store(&held)
+		assert.True(t, counter.processNewValue(UpdateSourceTryUpdate, 995_000, time.Now()), "a hold never lasts forever")
+		assert.Equal(t, int64(995_000), counter.GetValue())
+	})
+
 	t.Run("earliest-block counters may still hold zero", func(t *testing.T) {
 		// evm_state_poller creates the earliest-block counter with
 		// ignoreRollbackOf=0. An archive node's earliest block IS 0, so the floor
@@ -2161,7 +2177,8 @@ func TestCounterInt64_BackgroundPush_AdoptsFarAheadRemote(t *testing.T) {
 	assert.Nil(t, stored.Load(), "must not overwrite remote with the lower local value")
 
 	sentBeforeReset := time.Now().Add(-time.Second)
-	assert.Equal(t, int64(10), counter.TryUpdate(ctx, 10, time.Now()), "the reset is a large rollback")
+	assert.Equal(t, int64(5100), counter.TryUpdate(ctx, 9, time.Now()), "the reset's first reading is held")
+	assert.Equal(t, int64(10), counter.TryUpdate(ctx, 10, time.Now()), "the reset moved on: a large rollback")
 	<-lockLost
 	assert.Nil(t, stored.Load(), "the drop's push lost the lock")
 	assert.Equal(t, int64(11), counter.TryUpdate(ctx, 11, time.Now()))
@@ -2221,11 +2238,14 @@ func TestCounterInt64_PubsubHeadCounterIsMaxOnly(t *testing.T) {
 	assert.Equal(t, 1.0, rejectedTotal(rejectStaleTimestamp)-stale)
 	assert.Equal(t, 1.0, rejectedTotal(rejectSmallRollback)-small)
 
+	held := rejectedTotal(rejectHeldRollback)
 	send(1000, skewed+1)
+	send(1001, skewed+10)
 	// The rollback callback runs after the value is stored; wait for it.
 	assert.Eventually(t, func() bool { return rollbacks.Load() == 1 }, time.Second, 5*time.Millisecond,
-		"a newer large drop is a rollback")
-	assert.Equal(t, int64(1000), counter.GetValue())
+		"a newer large drop is a rollback once its lower side moved")
+	assert.Equal(t, int64(1001), counter.GetValue())
+	assert.Equal(t, 1.0, rejectedTotal(rejectHeldRollback)-held, "its first reading is held")
 	connector.AssertExpectations(t)
 }
 

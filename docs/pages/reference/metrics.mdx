@@ -359,7 +359,7 @@ One chain tracker per network follows the canonical chain from source headers an
 | `erpc_upstream_tag_state_stale` | gauge | project, network, upstream | `1` while the upstream's `latest` state is stale against the network-wide `Latest`. The tag-state gate judges each tag request against its own `Latest`. |
 | `erpc_upstream_tag_state_all_stale_total` | counter | project, network, outcome | Tag requests whose every routed upstream had stale `latest` state. `outcome` ∈ `"routed"`, `"refused"`. |
 | `erpc_source_resubscribe_total` | counter | project, network, upstream, topic | Pending-transaction topics a push source subscribed again after 60s without a message while heads carried transactions. |
-| `erpc_shared_counter_remote_rejected_total` | counter | reason | Remote shared-counter states this instance rejected. `reason` ∈ `"non_positive"`, `"small_rollback"`, `"stale_timestamp"`, `"malformed"`. |
+| `erpc_shared_counter_remote_rejected_total` | counter | reason | Remote shared-counter states this instance rejected. `reason` ∈ `"non_positive"`, `"small_rollback"`, `"held_rollback"`, `"stale_timestamp"`, `"malformed"`. |
 | `erpc_integrity_check_suspended_total` | counter | project, network, check | Integrity checks suspended for a network: no answer passed them at heights in a row, from vendors that meet the evidence quorum. |
 
 #### Area 3: Block number and tip tracking
