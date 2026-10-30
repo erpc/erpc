@@ -28,7 +28,7 @@ await s.run({
 - `run` resolves when `options.signal` aborts; it rejects on a terminal end: `OutOfRangeError` (`cursor`, `oldest`), `FinalRevertedError`, the gRPC error for auth or invalid options, or an error your handler threw.
 - Reconnects, the heartbeat watchdog, deduplication and the two-endpoint merge are the library's.
 
-More: [examples/](examples/). The full contract is the eRPC docs' streams pages.
+More: [examples/](examples/). Integration guide (cursor storage, reorgs, merge, out of range): [INTEGRATION.md](INTEGRATION.md), generated from the eRPC docs page [Streams integration](https://docs.erpc.cloud/operation/streams-integration).
 
 ## Development
 

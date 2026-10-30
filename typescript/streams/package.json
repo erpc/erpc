@@ -18,7 +18,8 @@
   },
   "files": [
     "lib",
-    "src"
+    "src",
+    "INTEGRATION.md"
   ],
   "engines": {
     "node": ">=22"
@@ -30,7 +31,7 @@
     "build:types": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p examples/tsconfig.json",
     "test": "pnpm build && node --test test/streams.test.mjs",
-    "prepack": "pnpm build"
+    "prepack": "node ../../docs/scripts/streams-guide.mjs write INTEGRATION.md && pnpm build"
   },
   "keywords": [
     "erpc",

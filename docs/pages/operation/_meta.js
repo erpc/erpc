@@ -5,6 +5,9 @@ module.exports = {
 	"websocket": {
 		title: "WebSocket",
 	},
+	"streams-integration": {
+		title: "Streams integration",
+	},
 	"healthcheck": {
 		title: "Healthcheck",
 	},
