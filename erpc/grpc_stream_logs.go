@@ -9,6 +9,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/mem"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -20,8 +21,9 @@ import (
 const streamLogsAuthMethod = "eth_getLogs"
 
 // grpcLogsEncoding is each held block's StreamLogs messages per filter:
-// each log converted to proto once per block, each (block, filter)
-// encoded once, shared by every StreamLogs stream (§6.2).
+// each log converted to proto once per block, each (block, filter)'s
+// messages referencing those conversions, shared by every StreamLogs
+// stream (§6.2).
 var grpcLogsEncoding = evm.NewLogsEncoding("grpc", grpcLog, grpcBlockLogs)
 
 // The wire fields grpcBlockLogs writes.
@@ -31,6 +33,11 @@ var (
 	fieldBlockLogsLogs     = fieldNumber(&bdsevm.BlockLogs{}, "logs")
 	fieldBlockLogsComplete = fieldNumber(&bdsevm.BlockLogs{}, "complete")
 )
+
+// blockLogsComplete is BlockLogs' complete field, set: the tail of a
+// block's last message.
+var blockLogsComplete mem.Buffer = mem.SliceBuffer(protowire.AppendVarint(
+	protowire.AppendTag(nil, fieldBlockLogsComplete, protowire.VarintType), 1))
 
 func fieldNumber(m proto.Message, name string) protowire.Number {
 	return m.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(name)).Number()
@@ -78,7 +85,7 @@ func (gs *GrpcServer) StreamLogs(req *bdsevm.StreamLogsRequest, stream bdsevm.St
 	}
 	sender := newStreamSender(stream, "StreamLogs")
 	defer sender.stop()
-	w := &grpcWriter{sender: sender, wait: grpcSendWait.Load(), meter: newStreamMeter(nw, "grpc", indexer.SubTypeLogs)}
+	w := &grpcWriter{sender: sender, wait: grpcSendWait.Load(), max: gs.maxMessage, meter: newStreamMeter(nw, "grpc", indexer.SubTypeLogs)}
 	s := newStreamSession(nw, "grpc", indexer.SubTypeLogs, "", opts)
 	s.filter = filter
 	s.logs = &grpcLogsEncoder{tracker: nw.chainTracker, w: w}
@@ -130,7 +137,7 @@ func grpcLogsFilter(f *bdsevm.LogFilter) (*logfilter.LogsFilter, error) {
 
 // grpcLogsEncoder is the StreamLogs encoder: a block's messages, each
 // within the send wait. Every block is written: its last message is its
-// block end.
+// block end. A block with a message past the bound is never written.
 type grpcLogsEncoder struct {
 	tracker *evm.ChainTracker
 	w       *grpcWriter
@@ -140,6 +147,11 @@ func (e *grpcLogsEncoder) Block(blk indexer.Block, f *logfilter.LogsFilter, _ bo
 	msgs, err := grpcLogsEncoding.Of(e.tracker, blk, f)
 	if err != nil {
 		return nil, streamEncodeError{blk.Number, err}
+	}
+	for _, m := range msgs {
+		if err := e.w.fits(blk, m); err != nil {
+			return nil, err
+		}
 	}
 	return func() error {
 		for _, m := range msgs {
@@ -151,8 +163,8 @@ func (e *grpcLogsEncoder) Block(blk indexer.Block, f *logfilter.LogsFilter, _ bo
 	}, nil
 }
 
-// grpcLog is one held log as a proto Log, encoded.
-func grpcLog(raw json.RawMessage) ([]byte, error) {
+// grpcLog is one held log as a BlockLogs logs element, encoded.
+func grpcLog(raw json.RawMessage) (mem.Buffer, error) {
 	var l bdsevm.JsonRpcLog
 	if err := common.SonicCfg.Unmarshal(raw, &l); err != nil {
 		return nil, err
@@ -161,48 +173,31 @@ func grpcLog(raw json.RawMessage) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return proto.Marshal(p)
+	return grpcItem(fieldBlockLogsLogs, p)
 }
 
 // grpcBlockLogs is a block's StreamLogs messages from its matched logs,
 // each already encoded: BlockLogs of grpcBatches runs, the last complete;
-// one with no logs for a block with none.
-func grpcBlockLogs(b indexer.Block, logs [][]byte) ([]*grpcEncoded, error) {
+// one with no logs for a block with none. It reports the bytes the
+// messages hold beyond the logs they share.
+func grpcBlockLogs(b indexer.Block, logs []mem.Buffer) ([]*grpcEncoded, int, error) {
 	ref, err := proto.Marshal(&bdsevm.BlockRef{Number: b.Number, Hash: b.Hash[:], ParentHash: b.ParentHash[:]})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
+	head := protowire.AppendBytes(protowire.AppendTag(make([]byte, 0, 2+protowire.SizeBytes(len(ref))), fieldBlockLogsBlock, protowire.BytesType), ref)
 	var out []*grpcEncoded
-	err = grpcBatches(len(logs), func(i int) int { return protowire.SizeTag(fieldBlockLogsLogs) + protowire.SizeBytes(len(logs[i])) },
+	held := 0
+	err = grpcBatches(len(logs), func(i int) int { return logs[i].Len() },
 		func(from, to int) error {
-			out = append(out, &grpcEncoded{blockLogsMessage(ref, logs[from:to], to == len(logs))})
+			var tail mem.Buffer
+			if to == len(logs) {
+				tail = blockLogsComplete
+			}
+			m := grpcMessage(fieldLogsResponseBlock, head, logs[from:to], tail)
+			held += m.held()
+			out = append(out, m)
 			return nil
 		})
-	return out, err
-}
-
-// blockLogsMessage is StreamLogsResponse{block: BlockLogs{block, logs,
-// complete}}, written from the encoded ref and logs.
-func blockLogsMessage(ref []byte, logs [][]byte, complete bool) []byte {
-	n := protowire.SizeTag(fieldBlockLogsBlock) + protowire.SizeBytes(len(ref))
-	for _, l := range logs {
-		n += protowire.SizeTag(fieldBlockLogsLogs) + protowire.SizeBytes(len(l))
-	}
-	if complete {
-		n += protowire.SizeTag(fieldBlockLogsComplete) + protowire.SizeVarint(1)
-	}
-	b := make([]byte, 0, protowire.SizeTag(fieldLogsResponseBlock)+protowire.SizeBytes(n))
-	b = protowire.AppendTag(b, fieldLogsResponseBlock, protowire.BytesType)
-	b = protowire.AppendVarint(b, uint64(n))
-	b = protowire.AppendTag(b, fieldBlockLogsBlock, protowire.BytesType)
-	b = protowire.AppendBytes(b, ref)
-	for _, l := range logs {
-		b = protowire.AppendTag(b, fieldBlockLogsLogs, protowire.BytesType)
-		b = protowire.AppendBytes(b, l)
-	}
-	if complete {
-		b = protowire.AppendTag(b, fieldBlockLogsComplete, protowire.VarintType)
-		b = protowire.AppendVarint(b, 1)
-	}
-	return b
+	return out, held, err
 }

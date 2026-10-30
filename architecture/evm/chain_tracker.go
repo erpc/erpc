@@ -85,6 +85,7 @@ type ChainTracker struct {
 	// goroutine writes them.
 	held     sync.Map // lowercase hash -> *chainHeader
 	receipts sync.Map // lowercase block hash -> *heldReceipts
+	filters  filterStates
 	// anchors are the finalized narrow anchors, read by any goroutine.
 	// Integrity records them on the request path under anchorMu, never
 	// through the mailbox, so a burst of them never grows it (spec §3);
@@ -2547,7 +2548,7 @@ func (t *ChainTracker) reset() {
 	}
 	t.clear()
 	t.held.Range(func(k, _ any) bool { t.held.Delete(k); return true })
-	t.receipts.Range(func(k, _ any) bool { t.receipts.Delete(k); return true })
+	t.receipts.Range(func(k, _ any) bool { t.releaseReceipts(k.(string)); return true })
 	t.receiptsOrder = nil
 	t.anchorMu.Lock()
 	t.anchors.Range(func(k, _ any) bool { t.anchors.Delete(k); return true })

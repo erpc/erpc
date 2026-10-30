@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -37,42 +38,93 @@ var (
 	errGrpcSenderStopped = errors.New("the stream ended")
 )
 
-// gRPC stream bounds (streams spec §6.2, §6.3, §10).
+// gRPC stream bounds (streams spec §6.2, §10).
 const (
 	// grpcBatchMax logs or transactions at most in one message.
 	grpcBatchMax = 1000
-	// grpcBatchBytes bounds a message's logs or transactions, well under
-	// the 4 MiB a client takes by default; a larger item goes alone.
-	grpcBatchBytes = 1 << 20
+	// grpcBatchBytes bounds a message's logs or transactions, so a message
+	// of several stays within 1 MiB; a larger item goes alone.
+	grpcBatchBytes = 1<<20 - 4<<10
+	// grpcMessageMax is the client default receive limit: a larger message
+	// fails at a client that keeps it, whatever the server sends.
+	grpcMessageMax = 4 << 20
 	// grpcStreamsPerConn long-lived streams at most on one connection.
 	grpcStreamsPerConn = 100
-	// Fixed flow-control windows: setting them turns off BDP estimation,
-	// whose 64 KiB start paces log bursts on links with RTT.
-	grpcStreamWindow = 4 << 20
-	grpcConnWindow   = 16 << 20
 )
 
+// grpcErrorDomain is the google.rpc.ErrorInfo domain of every gRPC error
+// eRPC details (AIP-193).
+const grpcErrorDomain = "erpc.cloud"
+
 // grpcEncoded is a stream message encoded once and sent as is by every
-// stream that sends it (§6.2): grpcCodec writes its bytes.
-type grpcEncoded struct{ b []byte }
+// stream that sends it (§6.2): its buffers, in order. An item (a log, a
+// transaction) is a buffer of its own, shared by every message that holds
+// it, so no message copies it.
+type grpcEncoded struct {
+	bufs mem.BufferSlice
+	size int
+}
 
 func encodeGrpc(m proto.Message) (*grpcEncoded, error) {
 	b, err := proto.Marshal(m)
 	if err != nil {
 		return nil, err
 	}
-	return &grpcEncoded{b}, nil
+	return &grpcEncoded{bufs: mem.BufferSlice{mem.SliceBuffer(b)}, size: len(b)}, nil
+}
+
+// grpcItem is p as one element of the repeated field, tag and length
+// included: one buffer, in one allocation, for messages to share.
+func grpcItem(field protowire.Number, p proto.Message) (mem.Buffer, error) {
+	n := proto.Size(p)
+	b := make([]byte, 0, protowire.SizeTag(field)+protowire.SizeVarint(uint64(n))+n)
+	b = protowire.AppendTag(b, field, protowire.BytesType)
+	b = protowire.AppendVarint(b, uint64(n))
+	b, err := proto.MarshalOptions{UseCachedSize: true}.MarshalAppend(b, p)
+	if err != nil {
+		return nil, err
+	}
+	return mem.SliceBuffer(b), nil
+}
+
+// grpcMessage is a message whose field outer holds head, then items, then
+// tail, all already encoded; items are referenced, not copied.
+func grpcMessage(outer protowire.Number, head []byte, items []mem.Buffer, tail mem.Buffer) *grpcEncoded {
+	n := len(head)
+	for _, it := range items {
+		n += it.Len()
+	}
+	if tail != nil {
+		n += tail.Len()
+	}
+	prefix := make([]byte, 0, protowire.SizeTag(outer)+protowire.SizeVarint(uint64(n))+len(head))
+	prefix = protowire.AppendTag(prefix, outer, protowire.BytesType)
+	prefix = protowire.AppendVarint(prefix, uint64(n))
+	prefix = append(prefix, head...)
+	bufs := make(mem.BufferSlice, 0, len(items)+2)
+	bufs = append(bufs, mem.SliceBuffer(prefix))
+	bufs = append(bufs, items...)
+	if tail != nil {
+		bufs = append(bufs, tail)
+	}
+	return &grpcEncoded{bufs: bufs, size: len(prefix) + n - len(head)}
+}
+
+// held is the bytes m itself holds, beyond the items it shares.
+func (m *grpcEncoded) held() int {
+	const iface, header = 16, 64 // a buffer in bufs; the struct and slice headers
+	return header + iface*cap(m.bufs) + m.bufs[0].Len()
 }
 
 // grpcCodec is the server's codec: proto, except that a grpcEncoded
-// message goes out as its bytes, with no copy.
+// message goes out as its buffers, with no copy.
 type grpcCodec struct{ encoding.CodecV2 }
 
 func newGrpcCodec() grpcCodec { return grpcCodec{encoding.GetCodecV2("proto")} }
 
 func (c grpcCodec) Marshal(v any) (mem.BufferSlice, error) {
 	if m, ok := v.(*grpcEncoded); ok {
-		return mem.BufferSlice{mem.SliceBuffer(m.b)}, nil
+		return m.bufs, nil
 	}
 	return c.CodecV2.Marshal(v)
 }
@@ -91,7 +143,13 @@ type streamSender struct {
 	stop  func()
 }
 
+// newStreamSender is stream's sender. Its messages go out uncompressed
+// whatever the client asks (§6.3): each is encoded once for every
+// stream, and compressing it per stream would spend that saving.
 func newStreamSender(stream grpc.ServerStream, method string) *streamSender {
+	// Fails only without a transport stream in the context, which a
+	// server handler's stream always has.
+	_ = grpc.SetSendCompressor(stream.Context(), encoding.Identity)
 	s := &streamSender{msgs: make(chan *grpcEncoded), sent: make(chan error, 1), done: make(chan struct{})}
 	s.stop = sync.OnceFunc(func() { close(s.done) })
 	go func() {
@@ -149,18 +207,28 @@ func (s *streamSender) send(m *grpcEncoded, wait time.Duration) error {
 }
 
 // grpcWriter writes one gRPC stream's messages within the send wait and
-// meters them.
+// meters them; max is the server's message bound (§6.2).
 type grpcWriter struct {
 	sender *streamSender
 	wait   time.Duration
+	max    int
 	meter  *streamMeter
+}
+
+// fits is nil when m is within the message bound, else blk's
+// messageTooLargeError.
+func (w *grpcWriter) fits(blk indexer.Block, m *grpcEncoded) error {
+	if m.size <= w.max {
+		return nil
+	}
+	return messageTooLargeError{block: indexer.Cursor{Number: blk.Number, Hash: blk.Hash}, size: m.size, max: w.max}
 }
 
 func (w *grpcWriter) write(t streamMsgType, m *grpcEncoded) error {
 	if err := w.sender.send(m, w.wait); err != nil {
 		return streamWriteError{err: err, slow: errors.Is(err, errGrpcSendSlow)}
 	}
-	w.meter.wrote(t, len(m.b))
+	w.meter.wrote(t, m.size)
 	return nil
 }
 
@@ -352,11 +420,13 @@ func (gs *GrpcServer) runGrpcSession(ctx context.Context, nw *Network, s *stream
 
 // grpcEnd is the status a stream ends with (§3.4): out_of_range is
 // OUT_OF_RANGE with an ErrorInfo naming the detail and the oldest block a
-// client can resume from; final_reverted ABORTED; draining, stalled,
-// slow_client and lagging UNAVAILABLE, which a client resumes from its
-// cursor.
+// client can resume from; message_too_large RESOURCE_EXHAUSTED with an
+// ErrorInfo naming the block and the sizes; final_reverted ABORTED;
+// draining, stalled, slow_client and lagging UNAVAILABLE, which a client
+// resumes from its cursor.
 func (gs *GrpcServer) grpcEnd(ctx, tapCtx context.Context, nw *Network, kind string, e *streamEnd) error {
 	var encErr streamEncodeError
+	var tooLarge messageTooLargeError
 	switch {
 	case e != nil && e.reason == indexer.TapEndDraining:
 		return status.Error(codes.Unavailable, errStreamDraining.Error())
@@ -367,18 +437,21 @@ func (gs *GrpcServer) grpcEnd(ctx, tapCtx context.Context, nw *Network, kind str
 	case e == nil:
 		return status.Error(codes.Unavailable, "stream ended")
 	case e.reason == indexer.TapEndOutOfRange:
-		st := status.New(codes.OutOfRange, indexer.OutOfRangeError{Reason: e.detail}.Error())
-		info := &errdetails.ErrorInfo{Reason: e.detail, Domain: "erpc"}
+		var md map[string]string
 		if e.oldest != nil {
-			info.Metadata = map[string]string{
+			md = map[string]string{
 				"oldestBlock": strconv.FormatUint(e.oldest.Number, 10),
 				"oldestHash":  "0x" + hex.EncodeToString(e.oldest.Hash[:]),
 			}
 		}
-		if d, err := st.WithDetails(info); err == nil {
-			st = d
-		}
-		return st.Err()
+		return grpcErrorWithInfo(codes.OutOfRange, indexer.OutOfRangeError{Reason: e.detail}.Error(), e.detail, md)
+	case e.reason == indexer.TapEndMessageTooLarge && errors.As(e.err, &tooLarge):
+		return grpcErrorWithInfo(codes.ResourceExhausted, tooLarge.Error(), indexer.TapEndMessageTooLarge, map[string]string{
+			"blockNumber":  strconv.FormatUint(tooLarge.block.Number, 10),
+			"blockHash":    "0x" + hex.EncodeToString(tooLarge.block.Hash[:]),
+			"messageBytes": strconv.Itoa(tooLarge.size),
+			"maxBytes":     strconv.Itoa(tooLarge.max),
+		})
 	case e.reason == indexer.TapEndFinalReverted:
 		return status.Errorf(codes.Aborted, "final_reverted: a reorg reverted block %d 0x%x, which the client applied", e.block.Number, e.block.Hash)
 	case e.reason == indexer.TapEndStalled:
@@ -395,6 +468,17 @@ func (gs *GrpcServer) grpcEnd(ctx, tapCtx context.Context, nw *Network, kind str
 		gs.logger.Debug().Err(e.err).Str("network", nw.Label()).Str("kind", kind).Msg("gRPC stream tap ended")
 		return status.Error(codes.Unavailable, fmt.Sprint(e.err))
 	}
+}
+
+// grpcErrorWithInfo is a status of code and msg with a google.rpc.ErrorInfo
+// as AIP-193 has it: reason, a snake_case end reason or detail, in
+// UPPER_SNAKE; eRPC's domain; metadata md.
+func grpcErrorWithInfo(code codes.Code, msg, reason string, md map[string]string) error {
+	st := status.New(code, msg)
+	if d, err := st.WithDetails(&errdetails.ErrorInfo{Reason: strings.ToUpper(reason), Domain: grpcErrorDomain, Metadata: md}); err == nil {
+		st = d
+	}
+	return st.Err()
 }
 
 // grpcBatches splits n items into runs of at most grpcBatchMax items whose

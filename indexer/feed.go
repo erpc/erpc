@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -102,6 +103,9 @@ const (
 	TapEndDraining = "draining"
 	// TapEndSlowClient: one write to the client took its write bound.
 	TapEndSlowClient = "slow_client"
+	// TapEndMessageTooLarge: one item's message passes the transport's
+	// message bound (streams spec §6.2); a resume meets it again.
+	TapEndMessageTooLarge = "message_too_large"
 )
 
 // OutOfRangeError is ErrOutOfRange with its reason.
@@ -123,7 +127,16 @@ type MempoolFeed interface {
 	Tail(variant string) uint64 // newest sequence; a new tap starts after it
 	// Read waits for payloads after seq, bounded by ctx.
 	// ErrOutOfRange: seq left the ring.
-	Read(ctx context.Context, variant string, after uint64) (txs []json.RawMessage, next uint64, err error)
+	Read(ctx context.Context, variant string, after uint64) (txs []*PendingTx, next uint64, err error)
+}
+
+// PendingTx is one pending transaction as a feed holds it: Raw is the
+// source's payload, verbatim. Encodings holds each transport's encoding of
+// it, keyed by the transport, so every tap reading the entry shares one
+// conversion (streams spec §6.2); it goes with the entry.
+type PendingTx struct {
+	Raw       json.RawMessage
+	Encodings sync.Map
 }
 
 // Topic is what a source feeds: newHeads, or

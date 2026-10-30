@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"sync/atomic"
 	"time"
@@ -51,6 +52,18 @@ type finalRevertedError struct{ block indexer.Cursor }
 
 func (e finalRevertedError) Error() string {
 	return "a reorg reverted a final block the client applied"
+}
+
+// messageTooLargeError is a block whose message passes the transport's
+// message bound (§6.2): the client cannot take it, so a resume from its
+// cursor meets it again; the stream ends message_too_large (§3.4).
+type messageTooLargeError struct {
+	block     indexer.Cursor
+	size, max int
+}
+
+func (e messageTooLargeError) Error() string {
+	return fmt.Sprintf("message_too_large: block %d 0x%x needs a %d-byte message, over the %d-byte bound", e.block.Number, e.block.Hash, e.size, e.max)
 }
 
 // streamWriteError is a write to the client that failed; slow: it spent
@@ -333,6 +346,10 @@ func (s *streamSession) endOf(ctx context.Context, err error) *streamEnd {
 	var fr finalRevertedError
 	if errors.As(err, &fr) {
 		return s.counted(streamEnd{reason: indexer.TapEndFinalReverted, block: &fr.block})
+	}
+	var tl messageTooLargeError
+	if errors.As(err, &tl) {
+		return s.counted(streamEnd{reason: indexer.TapEndMessageTooLarge, block: &tl.block, err: tl})
 	}
 	return &streamEnd{err: err}
 }
@@ -888,7 +905,7 @@ func (m *mempoolFrom) Tail(variant string) uint64 {
 // idle stream gets heartbeats; with drain, it ends draining at shutdown.
 // Its end is draining, slow_client, or nil: ctx ended or a write failed.
 func runPendingTap(ctx context.Context, nw *Network, transport, variant string, from uint64, opened, drain <-chan struct{},
-	opts StreamOptions, beat func(streamHeartbeat) error, data func([]json.RawMessage) error) *streamEnd {
+	opts StreamOptions, beat func(streamHeartbeat) error, data func([]*indexer.PendingTx) error) *streamEnd {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	feed := &mempoolFrom{MempoolFeed: nw.mempool, from: from}
@@ -915,7 +932,7 @@ func runPendingTap(ctx context.Context, nw *Network, transport, variant string, 
 			}
 		}()
 	}
-	emit := func(txs []json.RawMessage) error {
+	emit := func(txs []*indexer.PendingTx) error {
 		if opened != nil {
 			select {
 			case <-opened:

@@ -215,7 +215,14 @@ type MempoolFeed interface {
     Tail(variant string) uint64 // newest sequence; a new tap starts after it
     // Read waits for payloads after seq, bounded by ctx.
     // ErrOutOfRange: seq left the ring.
-    Read(ctx context.Context, variant string, after uint64) (txs []json.RawMessage, next uint64, err error)
+    Read(ctx context.Context, variant string, after uint64) (txs []*PendingTx, next uint64, err error)
+}
+
+// PendingTx is one ring entry: the source's payload verbatim, and each
+// transport's encoding of it, made once for every tap (streams spec §6.2).
+type PendingTx struct {
+    Raw       json.RawMessage
+    Encodings sync.Map
 }
 
 // Taps runs read loops: read, emit, repeat. A loop ends when ctx ends, emit
@@ -224,7 +231,7 @@ func NewTaps(projectId string, onDemandChange func(networkId string)) *Taps // t
 func (t *Taps) RunChain(ctx context.Context, networkId, transport, kind string,
     f ChainFeed, start *Cursor, o ReadOpts, emit func(Batch) error) error // start nil: f.Head
 func (t *Taps) RunMempool(ctx context.Context, networkId, transport, variant string,
-    f MempoolFeed, emit func([]json.RawMessage) error) error
+    f MempoolFeed, emit func([]*PendingTx) error) error
 func (t *Taps) Demand(networkId string) []Topic
 // Pace is the fastest pace the open taps of networkId need topic at;
 // ok is false while no tap needs it.

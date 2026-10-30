@@ -260,9 +260,9 @@ func (sm *SubscriptionManager) runPendingTxs(ctx context.Context, wsc *WsConnect
 	if opts.Extended {
 		beat, drain = enc.Heartbeat, wsc.draining
 	}
-	e := runPendingTap(ctx, nw, "ws", variant, from, opened, drain, opts, beat, func(txs []json.RawMessage) error {
+	e := runPendingTap(ctx, nw, "ws", variant, from, opened, drain, opts, beat, func(txs []*indexer.PendingTx) error {
 		for _, tx := range txs {
-			if err := enc.data(streamData, tx); err != nil {
+			if err := enc.data(streamData, tx.Raw); err != nil {
 				return err
 			}
 		}

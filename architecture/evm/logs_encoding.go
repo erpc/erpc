@@ -14,18 +14,21 @@ import (
 // LogsEncoding is one transport's encoding of the logs a filter matches in
 // a block (streams spec §6.2): each log is converted once per block and
 // shared by every filter; each (block, filter) is encoded once from those
-// conversions and shared by every tap with that filter. It lives on the
-// held receipts, so it lasts as long as the tracker holds them.
+// conversions and shared by every tap with that filter. Conversions live
+// on the held receipts; a filter's encoding lives in its filterState,
+// within the tracker's FilterStateBytes.
 type LogsEncoding[L, T any] struct {
 	transport string
 	convert   func(log json.RawMessage) (L, error)
-	encode    func(b indexer.Block, logs []L) (T, error)
+	encode    func(b indexer.Block, logs []L) (T, int, error)
 }
 
-// NewLogsEncoding is transport's encoding: convert converts one log,
-// encode a block's matched logs, in order; transport labels panics.
+// NewLogsEncoding is transport's encoding: convert converts one log;
+// encode encodes a block's matched logs, in order, and reports the bytes
+// the encoding holds beyond the conversions it shares; transport labels
+// panics.
 func NewLogsEncoding[L, T any](transport string, convert func(log json.RawMessage) (L, error),
-	encode func(b indexer.Block, logs []L) (T, error)) *LogsEncoding[L, T] {
+	encode func(b indexer.Block, logs []L) (T, int, error)) *LogsEncoding[L, T] {
 	return &LogsEncoding[L, T]{transport: transport, convert: convert, encode: encode}
 }
 
@@ -35,43 +38,38 @@ type logConverted[L any] struct {
 	err  error
 }
 
-// logsEncodingKey keys one filter's encoding on the receipts.
-type logsEncodingKey struct {
-	enc    any
-	filter string
-}
-
 // Of is the encoding of b's logs that f matches, from the receipts the
 // tracker holds for b, else from b.Receipts, encoded for this call alone:
 // a Read's own fetch below the window. A block without receipts, or whose
 // logs do not parse, encodes no logs, as MatchedLogs reads none. A
 // conversion's error, or panic, is the encoding's, for every later tap too.
 func (e *LogsEncoding[L, T]) Of(t *ChainTracker, b indexer.Block, f *logfilter.LogsFilter) (T, error) {
-	r := t.heldReceiptsOf(b.Hash)
-	if r == nil && len(b.Receipts) > 0 {
-		r = indexReceipts(b.Hash, b.Receipts)
-	}
-	var pos []int32
+	r := t.receiptsOf(b)
+	var s *filterState
 	if r != nil {
-		pos, _ = r.matched(f)
+		s = t.filterOf(r, f)
 	}
-	if len(pos) == 0 {
-		return e.encode(b, nil)
+	if s == nil || len(s.pos) == 0 {
+		v, _, err := e.encode(b, nil)
+		return v, err
 	}
-	x, ok := r.encodings.Load(logsEncodingKey{e, f.Key()})
+	x, ok := s.encodings.Load(e)
 	if !ok {
-		x, _ = r.encodings.LoadOrStore(logsEncodingKey{e, f.Key()}, &headerEncoded[T]{})
+		x, _ = s.encodings.LoadOrStore(e, &headerEncoded[T]{})
 	}
 	enc := x.(*headerEncoded[T])
 	enc.once.Do(func() {
 		defer e.recover(t, &enc.err)
-		logs := make([]L, len(pos))
-		for i, p := range pos {
+		logs := make([]L, len(s.pos))
+		for i, p := range s.pos {
 			if logs[i], enc.err = e.log(t, r, p); enc.err != nil {
 				return
 			}
 		}
-		enc.v, enc.err = e.encode(b, logs)
+		var held int
+		if enc.v, held, enc.err = e.encode(b, logs); enc.err == nil {
+			t.grewFilter(s, held)
+		}
 	})
 	return enc.v, enc.err
 }

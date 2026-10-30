@@ -87,14 +87,15 @@ Sizes: S < 400 lines, M 400–1,200, L > 1,200, tests included. One writer per w
 
 - Add:
   - `go.mod` to MP's manifesto commit.
-  - `erpc/grpc_stream_logs.go`: one `BlockLogs` per applied block, at most 1,000 logs per message, `complete` on the last; `Undo`; proto logs converted once per block and cached with the block's encodings (spec §6.2).
-  - `erpc/grpc_stream_pending.go`: one `PendingTransactions` per mempool Read, at most 1,000.
-  - `StreamBlocks` fields 5–7 and control messages; `ErrorInfo` on `OUT_OF_RANGE`.
-  - Server options (spec §6.3): `InitialWindowSize` 4 MiB, `InitialConnWindowSize` 16 MiB, `SharedWriteBuffer(true)`; `MaxConnectionAge` stays 10 min.
+  - `erpc/grpc_stream_logs.go`: one `BlockLogs` per applied block, at most 1,000 logs and 1 MiB per message, `complete` on the last; `Undo`; proto logs converted once per block and cached with the block's receipts; a filter's messages reference them, no copy (spec §6.2).
+  - `architecture/evm/filter_state.go`: per-filter state on held receipts (positions, encodings) bounded at 32 MiB per network, oldest out; `erpc_chain_tracker_filter_state_bytes`, `erpc_chain_tracker_filter_state_evicted_total`.
+  - `erpc/grpc_stream_pending.go`: one `PendingTransactions` per mempool Read, at most 1,000; each transaction converted once on its ring entry (`indexer.PendingTx`, CT§4).
+  - `StreamBlocks` fields 5–7 and control messages; AIP-193 `ErrorInfo` on `OUT_OF_RANGE` and `message_too_large` (spec §3.4).
+  - Server options (spec §6.3): `SharedWriteBuffer(true)`, default windows; streams send uncompressed; `MaxConnectionAge` stays 10 min.
   - A stream interceptor capping long-lived streams at 100 per connection; `erpc_grpc_streams_rejected_total`.
 - Change: `streamBlocksResponse` to the oneof; `docs/pages/reference/grpc-bds.mdx` (messages per block, connection age, resume).
 - Harness: `StreamLogs` and pending drivers; client-link RTT; an HTTP/2 idle-60s proxy that ignores PING.
-- Tests: G1–G8, and F1, F2 through `StreamLogs`.
+- Tests: G1–G10, and F1, F2 through `StreamLogs`.
 
 ## K1: Go library
 

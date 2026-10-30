@@ -61,7 +61,7 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 	}
 	sender := newStreamSender(stream, "StreamBlocks")
 	defer sender.stop()
-	w := &grpcWriter{sender: sender, wait: grpcSendWait.Load(), meter: newStreamMeter(nw, "grpc", indexer.SubTypeNewHeads)}
+	w := &grpcWriter{sender: sender, wait: grpcSendWait.Load(), max: gs.maxMessage, meter: newStreamMeter(nw, "grpc", indexer.SubTypeNewHeads)}
 	s := newStreamSession(nw, "grpc", indexer.SubTypeNewHeads, "", opts)
 	s.headers = &grpcBlocksEncoder{tracker: nw.chainTracker, w: w}
 	if req.HeartbeatSeconds != nil {
@@ -88,6 +88,9 @@ func (e *grpcBlocksEncoder) Header(blk indexer.Block) (func() error, bool, error
 	msg, pinned, err := streamBlocksEncoding.Of(e.tracker, blk)
 	if err != nil {
 		return nil, pinned, streamEncodeError{blk.Number, err}
+	}
+	if err := e.w.fits(blk, msg); err != nil {
+		return nil, pinned, err
 	}
 	return func() error { return e.w.write(streamData, msg) }, pinned, nil
 }
