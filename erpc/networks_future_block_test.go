@@ -995,7 +995,8 @@ func mockMethodAnswer(method, result string, dispatched *atomic.Int64, ids ...st
 // request that ends during the wait gets null too. The wait Asks the
 // voters Latest lacks for a head fetched after it began: on instance 3,
 // whose voters' counters are fresh but whose nodes already hold the block,
-// the answer is served. Each wait counts its outcome.
+// the answer is served; on instance 4, whose voters already hold it while
+// the head pass has not published it, too. Each wait counts its outcome.
 func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -1129,6 +1130,45 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the wait's fetch finds 101 on both voters: the receipt is served")
 	assert.Equal(t, int64(101), servedHead(fresh, ctx).Latest)
 	assert.Equal(t, served+1, held("held_served"), "the wait on instance 3 ended served")
+	assert.Equal(t, nulls, held("held_null"))
+
+	// Instance 4: the voters of lane hs* already hold 101, but the head
+	// pass that would publish it is still on the network-wide lane, as a
+	// pass under load takes longer than 1 bt. Latest is the voters' quorum,
+	// not the last publish: the receipt is served.
+	stalled, stalledUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "hs1", chainID: 123, latestBlock: 100},
+		{id: "hs2", chainID: 123, latestBlock: 100},
+		{id: "hx1", chainID: 123, latestBlock: 100},
+	})
+	for _, u := range stalledUps {
+		setServedTipFinalized(t, u, 90)
+	}
+	var stalledCalls atomic.Int64
+	mockMethodAnswer("eth_getTransactionReceipt", receipt, &stalledCalls, "hs1", "hs2", "hx1")
+	lane := stalled.laneFor("hs*")
+	require.NotNil(t, lane)
+	stalled.refreshHeads()
+	require.Equal(t, int64(100), lane.published().Latest)
+	stalled.servedTipAll.mu.Lock()
+	defer stalled.servedTipAll.mu.Unlock()
+	for _, u := range stalledUps[:2] {
+		u.EvmStatePoller().SuggestLatestBlock(101, time.Now())
+	}
+	require.Eventually(t, func() bool {
+		return stalledUps[0].EvmStatePoller().LatestBlock() == 101 && stalledUps[1].EvmStatePoller().LatestBlock() == 101
+	}, 2*time.Second, 10*time.Millisecond, "both voters of hs* hold 101")
+	require.Equal(t, int64(100), lane.published().Latest, "the head pass has not published it")
+	nulls, served = held("held_null"), held("held_served")
+	req = common.NewNormalizedRequest([]byte(receiptReq))
+	req.SetDirectives(&common.RequestDirectives{UseUpstream: "hs*"})
+	resp, err = stalled.Forward(ctx, req)
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the voters' quorum holds 101: the receipt is served")
+	assert.Positive(t, stalledCalls.Load(), "dispatched to an upstream")
+	assert.Equal(t, served+1, held("held_served"), "the wait on instance 4 ended served")
 	assert.Equal(t, nulls, held("held_null"))
 }
 
