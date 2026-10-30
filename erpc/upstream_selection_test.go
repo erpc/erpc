@@ -806,6 +806,8 @@ func setupTestNetworkWithFourUpstreams(t *testing.T, ctx context.Context, failsa
 // Helper to setup network with specific config
 func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfigs []*common.UpstreamConfig, failsafeConfig *common.FailsafeConfig) *Network {
 	t.Helper()
+	// The network lives as long as t, not the caller's ctx (stopAtEnd).
+	ctx, cancel := context.WithCancel(ctx)
 
 	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	require.NoError(t, err)
@@ -860,6 +862,7 @@ func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfi
 		nil,
 	)
 	stopAtEnd(t, network)
+	t.Cleanup(cancel)
 	require.NoError(t, err)
 
 	upstreamsRegistry.Bootstrap(ctx)

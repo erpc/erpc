@@ -12,8 +12,9 @@ const stopWait = 10 * time.Second
 
 // stopAtEnd waits, when t ends, until no goroutine of network runs, so
 // none outlives t: no poller sends through gock while the next test resets
-// it. The test's deferred cancel has ended network's app ctx by then; a
-// gock reset runs after when registered first (t.Cleanup(util.ResetGock)).
+// it. Network's app ctx must have ended by then: a deferred cancel, or a
+// t.Cleanup(cancel) registered after this call, so it runs first. A gock
+// reset runs after when registered first (t.Cleanup(util.ResetGock)).
 func stopAtEnd(t testing.TB, network *Network) {
 	t.Helper()
 	if network == nil {

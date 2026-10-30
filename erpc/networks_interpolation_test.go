@@ -30,6 +30,8 @@ func init() {
 
 // Helper to create a test network with mocked state poller
 func setupTestNetworkForInterpolation(t *testing.T, ctx context.Context, networkConfig *common.NetworkConfig) (*Network, *upstream.UpstreamsRegistry) {
+	// The network lives as long as t, not the caller's ctx (stopAtEnd).
+	ctx, cancel := context.WithCancel(ctx)
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
 		Type:     common.UpstreamTypeEvm,
@@ -76,6 +78,7 @@ func setupTestNetworkForInterpolation(t *testing.T, ctx context.Context, network
 
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt, nil)
 	stopAtEnd(t, network)
+	t.Cleanup(cancel)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 	network.PinUpstreamOrderForTest()
