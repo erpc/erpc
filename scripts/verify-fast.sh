@@ -12,7 +12,7 @@ echo "verify: logs in $dir"
 cpus=$(getconf _NPROCESSORS_ONLN)
 erpc_procs=${VERIFY_ERPC_PROCS:-$cpus}
 chaos='^TestChainFeed_ConvergesUnderFaults$'
-# Tests that start containers (testcontainers): no Docker on this laptop.
+# Tests that start containers (testcontainers): they need Docker, so this script skips them.
 docker='^(TestDynamoDB|TestPostgre|TestEvmJsonRpcCache_(DynamoDB|Redis)$)'
 table=$dir/table.txt
 : >"$table"
@@ -81,7 +81,7 @@ if part build go build ./... && part vet go vet ./...; then
 fi
 row go-total 0 $(($(date +%s) - start)) ""
 rw=$(date +%s)
-# A busy laptop never reaches the quiet limit: run anyway; verdicts label load (REALWORLD_LOADED_HOST).
+# A busy host may never reach the quiet limit: run anyway; verdicts label load (REALWORLD_LOADED_HOST).
 part realworld bash -c "cd test/realworld && REALWORLD_TIER=fast REALWORLD_LOADED_HOST=${REALWORLD_LOADED_HOST:-1} '$dir/realworld.test' -test.run TestRealWorld -test.count 1 -test.v -test.timeout 9m"
 for tier in full long; do
 	n=$(awk -v t="$tier tier" '$3 == "skip" && index($0, t) {print $2}' "$dir/realworld.log" | sort -u | wc -l | tr -d ' ')
