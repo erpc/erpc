@@ -173,9 +173,12 @@ require (
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
+	github.com/erpc/erpc/sdk/go/streams v0.0.0-00010101000000-000000000000
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/testcontainers/testcontainers-go v0.43.0
 	golang.org/x/sys v0.49.0
 	gopkg.in/yaml.v2 v2.4.0
 )
+
+replace github.com/erpc/erpc/sdk/go/streams => ./sdk/go/streams

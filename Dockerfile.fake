@@ -5,6 +5,7 @@ WORKDIR /app
 
 # Copy go mod and sum files
 COPY go.mod go.sum ./
+COPY sdk/go/streams/go.mod sdk/go/streams/go.sum ./sdk/go/streams/
 RUN go mod download
 
 # Copy the source code

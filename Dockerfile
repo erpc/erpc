@@ -15,6 +15,8 @@ WORKDIR /build
 
 # Copy go mod and sum files first for better layer caching
 COPY go.mod go.sum ./
+# go.mod replaces the streams library, used by tests, with its directory.
+COPY sdk/go/streams/go.mod sdk/go/streams/go.sum ./sdk/go/streams/
 RUN go mod download
 
 # Copy the source code
