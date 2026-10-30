@@ -45,8 +45,6 @@ type HttpServer struct {
 	serverV4                *http.Server
 	serverV6                *http.Server
 	sharedGrpcServer        *GrpcServer
-	// stopGrpcStreams ends the shared port's open gRPC streams: their cleared
-	// deadlines would otherwise hold Shutdown for its whole budget.
 	stopGrpcStreams         context.CancelFunc
 	erpc                    *ERPC
 	logger                  *zerolog.Logger
@@ -2224,6 +2222,8 @@ func (s *HttpServer) createTLSConfig() (*tls.Config, error) {
 func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	logger.Info().Msg("stopping http servers...")
 
+	// Streams on the shared port have no deadlines, so nothing else ends an
+	// idle one and it would hold Shutdown for its whole budget.
 	if s.stopGrpcStreams != nil {
 		s.stopGrpcStreams()
 	}
