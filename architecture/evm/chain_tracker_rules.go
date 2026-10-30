@@ -122,10 +122,10 @@ func (t *ChainTracker) extends() bool {
 // or awaited answer. The pins of a replaced tree go with it; choose moves
 // them. Trees another voter's vote holds stay, and rule 4 weighs them.
 func (t *ChainTracker) replaceOlder(nd *node, u string) {
-	keep := map[*node]bool{rootOf(nd): true}
+	keep := map[*node]bool{t.rootOf(nd): true}
 	hold := func(n *node) {
 		if t.alive(n) {
-			keep[rootOf(n)] = true
+			keep[t.rootOf(n)] = true
 		}
 	}
 	for _, v := range t.baseVotes() {
@@ -167,7 +167,7 @@ func (t *ChainTracker) replaceOlder(nd *node, u string) {
 
 // walking reports whether n's tree is still being walked; votes in it wait.
 func (t *ChainTracker) walking(n *node) bool {
-	e := t.exts[rootOf(n)]
+	e := t.exts[t.rootOf(n)]
 	return e != nil && e.walk > 0 && !e.atBase
 }
 
@@ -185,7 +185,7 @@ func (t *ChainTracker) pinRoot() *node {
 	if len(t.pins) == 0 {
 		return nil
 	}
-	return rootOf(t.pins[0])
+	return t.rootOf(t.pins[0])
 }
 
 // walkFrom is rule 1 for a vote nd whose tree does not reach the pins: walk
@@ -196,7 +196,7 @@ func (t *ChainTracker) walkFrom(nd *node, sender string) {
 	if !t.extends() || len(t.pins) == 0 || t.farAhead(nd.h) {
 		return
 	}
-	r := rootOf(nd)
+	r := t.rootOf(nd)
 	e := t.exts[r]
 	if e == nil || e.atBase || e.capped || e.walked || r == t.pinRoot() {
 		return
@@ -234,7 +234,7 @@ func (t *ChainTracker) rootsHolding(votes bool) map[*node]bool {
 	roots := make(map[*node]bool)
 	add := func(n *node) {
 		if t.alive(n) {
-			roots[rootOf(n)] = true
+			roots[t.rootOf(n)] = true
 		}
 	}
 	for _, n := range t.pending {
@@ -268,11 +268,22 @@ func (t *ChainTracker) treeTop(r *node) *chainHeader {
 
 // walkTree calls fn for every node of r's tree; fn must not walk a tree.
 func (t *ChainTracker) walkTree(r *node, fn func(*node)) {
+	t.walkTreeWhile(r, func(n *node) bool {
+		fn(n)
+		return true
+	})
+}
+
+// walkTreeWhile calls fn for the nodes of r's tree that no node fn
+// returned false for lies below; fn must not walk a tree.
+func (t *ChainTracker) walkTreeWhile(r *node, fn func(*node) bool) {
 	stack := append(t.stack[:0], r)
 	for len(stack) > 0 {
 		n := stack[len(stack)-1]
-		stack = append(stack[:len(stack)-1], n.children...)
-		fn(n)
+		stack = stack[:len(stack)-1]
+		if fn(n) {
+			stack = append(stack, n.children...)
+		}
 	}
 	t.stack = stack[:0]
 }
@@ -326,20 +337,32 @@ func (t *ChainTracker) fillRoots() map[*node]bool {
 			if roots == nil {
 				roots = make(map[*node]bool)
 			}
-			roots[rootOf(n)] = true
+			roots[t.rootOf(n)] = true
 		}
 	}
 	return roots
 }
 
 // extendRoots starts the next step of every root's walk or fill, and
-// drops the answers fetched ahead that no fill will reach.
+// drops the answers fetched ahead that no fill will reach. It steps the
+// roots held when it starts: a parent extend links becomes a root while
+// the loop runs, and extend goes on from it at once; met again as a root
+// of its own, it would be judged against the pins' old root, capped and
+// its tree walked.
 func (t *ChainTracker) extendRoots() {
 	if !t.extends() {
 		return
 	}
 	pinRoot, reads := t.pinRoot(), t.fillRoots()
-	for r, e := range t.exts {
+	roots := make([]*node, 0, len(t.exts))
+	for r := range t.exts {
+		roots = append(roots, r)
+	}
+	for _, r := range roots {
+		e := t.exts[r]
+		if e == nil {
+			continue
+		}
 		if uncapped := r == pinRoot || reads[r]; !e.busy && !e.atBase && (!e.capped || uncapped) {
 			t.extend(r, e, uncapped)
 		}
