@@ -4,6 +4,7 @@ package data
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
 	"time"
 
@@ -24,9 +25,15 @@ func (m *MockConnector) Id() string {
 	return m.id
 }
 
-// Get mocks the Get method of the Connector interface
+// Get mocks the Get method of the Connector interface. testify formats every
+// argument with %v to match a call, which reads a live request's fields while
+// cache fan-out peers update them; metadata is recorded by its type instead.
 func (m *MockConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, metadata interface{}) ([]byte, error) {
-	args := m.Called(ctx, index, partitionKey, rangeKey, metadata)
+	var meta interface{}
+	if metadata != nil {
+		meta = fmt.Sprintf("%T", metadata)
+	}
+	args := m.Called(ctx, index, partitionKey, rangeKey, meta)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}

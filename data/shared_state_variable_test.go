@@ -377,7 +377,7 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 
 			result := counter.TryUpdate(ctx, tt.updateValue, time.Now())
 			assert.Equal(t, tt.expectedValue, result)
-			time.Sleep(50 * time.Millisecond)
+			waitBackgroundPush(t, counter)
 			if tt.eventual {
 				assert.Eventually(t, func() bool {
 					return counter.GetValue() == tt.eventualValue
@@ -517,8 +517,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 				assert.NoError(t, err)
 			}
 			assert.Equal(t, tt.expectedValue, result)
-			// Give background goroutines (remote reconciliation/push) time to run when applicable.
-			time.Sleep(100 * time.Millisecond)
+			waitBackgroundPush(t, counter)
 			if tt.eventual {
 				assert.Eventually(t, func() bool {
 					return counter.GetValue() == tt.eventualValue
@@ -810,14 +809,11 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 				"After TryUpdate(%d) with ignoreRollbackOf=%d, value should be %d",
 				tt.updateValue, tt.ignoreRollbackOf, tt.expectedValue,
 			)
-
-			// Give async goroutines (the Set/Publish calls) time to complete
+			waitBackgroundPush(t, counter)
 			if tt.eventual {
 				assert.Eventually(t, func() bool {
 					return counter.GetValue() == tt.eventualValue
 				}, 500*time.Millisecond, 10*time.Millisecond)
-			} else {
-				time.Sleep(20 * time.Millisecond)
 			}
 
 			connector.AssertExpectations(t)

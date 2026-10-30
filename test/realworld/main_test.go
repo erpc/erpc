@@ -1,7 +1,7 @@
 // Package realworld runs the chain tracker end to end: real eRPC binaries
-// built with -race, a real redis-server, real sockets through fault
-// proxies, and real clients. Only the vendor nodes are simulated
-// (test/chainsim).
+// (built with -race when REALWORLD_RACE=1), a real redis-server, real
+// sockets through fault proxies, and real clients. Only the vendor nodes
+// are simulated (test/chainsim).
 package realworld
 
 import (
@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -77,10 +78,14 @@ const (
 	finalSettle   = 30 * time.Second
 )
 
-// erpcBin is the -race eRPC binary built from this worktree, with
+// erpcBin is the eRPC binary built from this worktree, with
 // testdata/realworld_vars.go added to cmd/erpc; oldBin, built only when a
 // selected phase runs old pods (X7), is oldImageRef's.
 var erpcBin, oldBin string
+
+// raceBuild: REALWORLD_RACE=1 builds erpcBin with -race; a pod's data race
+// report then fails its phase (harness.stop).
+var raceBuild = os.Getenv("REALWORLD_RACE") == "1"
 
 // oldImageRef is the image the branch replaces (§18 rollout).
 const oldImageRef = "origin/main"
@@ -111,15 +116,21 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	build := exec.Command("go", "build", "-race", "-overlay", filepath.Join(dir, "overlay.json"), "-o", erpcBin, "./cmd/erpc")
+	// Race coverage lives in the Go packages' -race tests; a -race pod costs
+	// several times the CPU and memory, which caps how many phases run at once.
+	args := []string{"build", "-overlay", filepath.Join(dir, "overlay.json"), "-o", erpcBin, "./cmd/erpc"}
+	if raceBuild {
+		args = slices.Insert(args, 1, "-race")
+	}
+	build := exec.Command("go", args...)
 	build.Dir = root
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	start := time.Now()
 	if err := build.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "realworld: building the -race eRPC binary failed:", err)
+		fmt.Fprintln(os.Stderr, "realworld: building the eRPC binary failed:", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "realworld: built %s in %s\n", erpcBin, time.Since(start).Round(time.Second))
+	fmt.Fprintf(os.Stderr, "realworld: built %s (race %t) in %s\n", erpcBin, raceBuild, time.Since(start).Round(time.Second))
 	if needsOldImage() {
 		oldBin = filepath.Join(dir, "erpc-old")
 		start := time.Now()
@@ -137,7 +148,7 @@ func TestMain(m *testing.M) {
 // needsOldImage reports whether a phase this run selects runs old pods; a
 // selection error is TestRealWorld's to report.
 func needsOldImage() bool {
-	phases, _ := selectedPhases()
+	phases, _, _ := selectedPhases()
 	for _, ph := range phases {
 		if len(ph.specs[0].oldPods) > 0 {
 			return true
