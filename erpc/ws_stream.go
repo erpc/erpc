@@ -136,7 +136,6 @@ func (e *wsStream) Removed(blk indexer.Block, logs []json.RawMessage) error {
 	return nil
 }
 
-
 func (e *wsStream) Heartbeat(hb streamHeartbeat) error {
 	return e.write(streamHeartbeatMsg, false, tapDelivery{}, func(b []byte) []byte { return appendHeartbeat(b, "heartbeat", hb) })
 }
