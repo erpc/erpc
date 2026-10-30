@@ -160,7 +160,7 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 		{pendingSilentAfter, chaosScaled(60 * time.Second)},
 		// Above the waits of the gRPC seed's other faults, so only the
 		// faults that test them end a stream with UNAVAILABLE.
-		{streamBlocksReadWait, 15 * chaosBlock},
+		{streamStallWait, 15 * chaosBlock},
 		{streamBlocksSendWait, 5 * chaosBlock},
 	}
 	orig := make([]time.Duration, len(scale))

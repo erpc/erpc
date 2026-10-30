@@ -68,6 +68,16 @@ type WsConnection struct {
 
 	// subsClosed is guarded by SubscriptionManager.connMu.
 	subsClosed bool
+
+	// streamDefaults are the stream options of the upgrade URL, every
+	// subscription's defaults (streams spec §5.1).
+	streamDefaults streamDefaults
+	// draining is closed at instance shutdown, before the connection
+	// closes: extended subscriptions write their end draining, and
+	// teardown waits for them (ends) before the close.
+	draining  chan struct{}
+	drainOnce sync.Once
+	ends      sync.WaitGroup
 }
 
 // handleWebSocket upgrades an HTTP connection to WebSocket and runs the
@@ -81,6 +91,12 @@ func (s *HttpServer) handleWebSocket(
 	chainId string,
 ) {
 	wsCfg := s.serverCfg.WebSocket
+
+	defaults, err := parseStreamURL(r.URL.Query())
+	if err != nil {
+		writeStreamOptionRefusal(w, err)
+		return
+	}
 
 	// Checked before the upgrade so a refused client gets a plain 429.
 	clientIP := s.resolveRealClientIP(r)
@@ -110,20 +126,22 @@ func (s *HttpServer) handleWebSocket(
 	// so in-flight requests still get their response.
 	connCtx, connCancel := context.WithCancel(context.Background())
 	wsc := &WsConnection{
-		id:           fmt.Sprintf("ws-%d", atomic.AddInt64(&wsConnCounter, 1)),
-		conn:         wsConn,
-		ctx:          connCtx,
-		cancel:       connCancel,
-		logger:       lg,
-		server:       s,
-		project:      project,
-		networkId:    fmt.Sprintf("%s:%s", architecture, chainId),
-		architecture: common.NetworkArchitecture(architecture),
-		httpReq:      r,
-		costFrames:   s.costHeadersEnabled() && r.Header.Get(headerCostFrames) == "1",
-		sem:          make(chan struct{}, wsCfg.MaxConcurrentRequestsPerConnection),
-		stopped:      make(chan struct{}),
-		done:         make(chan struct{}),
+		id:             fmt.Sprintf("ws-%d", atomic.AddInt64(&wsConnCounter, 1)),
+		conn:           wsConn,
+		ctx:            connCtx,
+		cancel:         connCancel,
+		logger:         lg,
+		server:         s,
+		project:        project,
+		networkId:      fmt.Sprintf("%s:%s", architecture, chainId),
+		architecture:   common.NetworkArchitecture(architecture),
+		httpReq:        r,
+		costFrames:     s.costHeadersEnabled() && r.Header.Get(headerCostFrames) == "1",
+		sem:            make(chan struct{}, wsCfg.MaxConcurrentRequestsPerConnection),
+		stopped:        make(chan struct{}),
+		done:           make(chan struct{}),
+		streamDefaults: defaults,
+		draining:       make(chan struct{}),
 	}
 
 	lg.Info().Str("connId", wsc.id).Str("remoteAddr", r.RemoteAddr).Msg("websocket connection established")
@@ -294,6 +312,9 @@ func (wsc *WsConnection) handleMessage(raw []byte) {
 			open()
 		}
 		return
+	}
+	if hold := wsSubscribeAnswerHold.Load(); hold != nil && open != nil {
+		(*hold)()
 	}
 	var err error
 	switch v := out.(type) {
@@ -642,6 +663,12 @@ func (wsc *WsConnection) teardown() {
 	// Cancelled requests still write their JSON-RPC error before the close.
 	wsc.cancel()
 	wsc.waitInflight(wsWriteDeadline)
+	select {
+	case <-wsc.draining:
+		// Extended subscriptions write their end draining first.
+		waitGroup(&wsc.ends, wsWriteDeadline)
+	default:
+	}
 	wsc.closed.Store(true)
 
 	wsc.server.subscriptionManager.CleanupConnection(wsc)
@@ -663,10 +690,13 @@ func (wsc *WsConnection) teardown() {
 	wsc.logger.Info().Str("connId", wsc.id).Int("closeCode", wsc.closeCode).Msg("websocket connection closed")
 }
 
-func (wsc *WsConnection) waitInflight(timeout time.Duration) {
+func (wsc *WsConnection) waitInflight(timeout time.Duration) { waitGroup(&wsc.inflight, timeout) }
+
+// waitGroup waits for wg, at most timeout.
+func waitGroup(wg *sync.WaitGroup, timeout time.Duration) {
 	idle := make(chan struct{})
 	go func() {
-		wsc.inflight.Wait()
+		wg.Wait()
 		close(idle)
 	}()
 	select {
@@ -675,10 +705,26 @@ func (wsc *WsConnection) waitInflight(timeout time.Duration) {
 	}
 }
 
-// wsNotifier writes one subscription's eth_subscription notifications. The
-// envelope is spliced around the payload bytes as they came, so no
-// notification is encoded again per subscriber, and the metric handles are
-// bound once.
+// drain tells the connection's extended subscriptions the instance is
+// shutting down; stop closes the connection after.
+func (wsc *WsConnection) drain() { wsc.drainOnce.Do(func() { close(wsc.draining) }) }
+
+// writeStreamOptionRefusal answers a ws upgrade whose URL sets an option
+// wrong: 400 with the JSON-RPC error naming it (streams spec §5.1).
+func writeStreamOptionRefusal(w http.ResponseWriter, err error) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0", "id": nil,
+		"error": map[string]interface{}{"code": int(common.JsonRpcErrorInvalidArgument), "message": err.Error()},
+	})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write(body)
+}
+
+// wsNotifier writes one subscription's messages: eth_subscription
+// notifications, whose envelope is spliced around the payload bytes as they
+// came, so no notification is encoded again per subscriber, and its
+// erpc_subscription frames (wsStream). Metric handles are bound once.
 type wsNotifier struct {
 	wsc *WsConnection
 	sub wsclient.Subscription
@@ -686,6 +732,7 @@ type wsNotifier struct {
 	// {"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"<id>","result":
 	prefix      []byte
 	sent, bytes *telemetry.BoundCounter
+	meter       *streamMeter
 }
 
 var wsNotificationSuffix = []byte("}}\n")
@@ -704,10 +751,10 @@ func (wsc *WsConnection) notifier(sub wsclient.Subscription) *wsNotifier {
 	}
 }
 
-// write queues one notification carrying result, valid JSON as is; the
-// writer skips it once the subscription is removed, and calls d.done once
-// it is written.
-func (n *wsNotifier) write(result json.RawMessage, d tapDelivery) error {
+// write queues one notification of type t carrying result, valid JSON as
+// is; the writer skips it once the subscription is removed, and calls
+// d.done once it is written.
+func (n *wsNotifier) write(t streamMsgType, result json.RawMessage, d tapDelivery) error {
 	if n.sub.Removed() {
 		return nil
 	}
@@ -720,5 +767,32 @@ func (n *wsNotifier) write(result json.RawMessage, d tapDelivery) error {
 	if err != nil {
 		return err
 	}
-	return n.wsc.queue(wsOut{msg: msg, note: n, size: len(n.prefix) + len(result) + len(wsNotificationSuffix), delivery: d})
+	return n.wsc.queue(wsOut{msg: msg, note: n, typ: t, size: len(n.prefix) + len(result) + len(wsNotificationSuffix), delivery: d})
 }
+
+// admit decides, on the writer, whether m of n's subscription is written:
+// nothing once the subscription is removed; its last message removes it in
+// the same step, so nothing of it follows (streams spec §3.2).
+func (n *wsNotifier) admit(m wsOut) bool {
+	if m.last {
+		return n.sub.Remove()
+	}
+	return !n.sub.Removed()
+}
+
+// wrote counts m once written: data in the notification metrics, every
+// message in the stream's.
+func (n *wsNotifier) wrote(m wsOut) {
+	if m.typ == streamData || m.typ == streamRemoved {
+		n.sent.Inc()
+		n.bytes.Add(float64(m.size))
+	}
+	if n.meter != nil {
+		n.meter.wrote(m.typ, m.size)
+	}
+	m.delivery.done()
+}
+
+// wsSubscribeAnswerHold, while set, runs before a subscribe's answer is
+// written; tests hold it there so the subscription's tap runs first.
+var wsSubscribeAnswerHold atomic.Pointer[func()]

@@ -85,6 +85,13 @@ const (
 const (
 	TapEndOutOfRange = "out_of_range"
 	TapEndLagging    = "lagging"
+	// TapEndStalled: a resumable tap waited the read wait while this
+	// instance lags (CT§10.2).
+	TapEndStalled = "stalled"
+	// TapEndDraining: the instance shuts down.
+	TapEndDraining = "draining"
+	// TapEndSlowClient: one write to the client took its write bound.
+	TapEndSlowClient = "slow_client"
 )
 
 // OutOfRangeError is ErrOutOfRange with its reason.

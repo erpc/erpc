@@ -15,6 +15,24 @@ func add(a *Adapter, id string, kind EventKind) error {
 	return err
 }
 
+// An ended subscription answers Ended for the connection's life, however
+// often asked; past maxEnded the oldest ended id leaves first (streams
+// spec §5.2: eth_unsubscribe of an ended subscription answers false).
+func TestAdapter_EndedIdsStayOldestOut(t *testing.T) {
+	a := New()
+	for i := range maxEnded + 1 {
+		id := fmt.Sprintf("s%d", i)
+		require.NoError(t, add(a, id, KindLog))
+		require.True(t, a.End(id))
+	}
+	assert.False(t, a.Ended("s0"), "the oldest ended id left past the cap")
+	for range 2 {
+		assert.True(t, a.Ended("s1"), "an ended id answers on every ask")
+	}
+	assert.True(t, a.Ended(fmt.Sprintf("s%d", maxEnded)))
+	assert.Equal(t, 0, a.Count())
+}
+
 func TestAdapter_AddAfterDrainIsRefused(t *testing.T) {
 	a := New()
 	require.NoError(t, add(a, "s1", KindLog))

@@ -56,10 +56,13 @@ type wsWriter struct {
 type wsOut struct {
 	msg    *bytes.Buffer
 	weight int64
-	// note is set for a notification, skipped once its subscription is
-	// removed; size is its bytes for the sent metrics.
+	// note is set for a message of a subscription, skipped as note.admit
+	// decides; typ is its stream type, size its bytes for the sent
+	// metrics, last whether nothing of the subscription follows it.
 	note *wsNotifier
+	typ  streamMsgType
 	size int
+	last bool
 	// done, when set, gets the write's outcome.
 	done chan error
 	// delivery times the block whose last message this is (§17).
@@ -111,7 +114,7 @@ func (wsc *WsConnection) writeOut(m wsOut) {
 	err := w.err
 	switch {
 	case err != nil:
-	case m.note != nil && m.note.sub.Removed():
+	case m.note != nil && !m.note.admit(m):
 	default:
 		deadline := time.Now().Add(wsWriteDeadline)
 		if by := w.drainBy.Load(); by != 0 && by < deadline.UnixNano() {
@@ -120,9 +123,7 @@ func (wsc *WsConnection) writeOut(m wsOut) {
 		if err = wsc.writeFrame(m.msg.Bytes(), deadline); err != nil {
 			wsc.endWrites(err)
 		} else if m.note != nil {
-			m.note.sent.Inc()
-			m.note.bytes.Add(float64(m.size))
-			m.delivery.done()
+			m.note.wrote(m)
 		}
 	}
 	w.budget.Release(m.weight)
@@ -191,10 +192,11 @@ func (wsc *WsConnection) queue(m wsOut) error {
 	return nil
 }
 
-// send queues msg and waits for its write.
-func (wsc *WsConnection) send(msg *bytes.Buffer) error {
+// send queues m and waits for its write.
+func (wsc *WsConnection) send(m wsOut) error {
 	done := make(chan error, 1)
-	if err := wsc.queue(wsOut{msg: msg, done: done}); err != nil {
+	m.done = done
+	if err := wsc.queue(m); err != nil {
 		return err
 	}
 	select {
@@ -251,5 +253,5 @@ func (wsc *WsConnection) writeMessage(costs []byte, write func(w io.Writer) erro
 	if err != nil {
 		return err
 	}
-	return wsc.send(msg)
+	return wsc.send(wsOut{msg: msg})
 }

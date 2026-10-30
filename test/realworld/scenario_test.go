@@ -139,6 +139,7 @@ type scenario struct {
 	heads      []*headsClient
 	logs       []*logsClient
 	grpcs      []*grpcClient
+	exts       []*extLogsClient
 	reorgs     []reorg
 	memo       map[string]*memoEntry
 	allowSet   map[string]bool
@@ -958,7 +959,7 @@ func (s *scenario) finish() {
 	s.chain.Halt(true)
 	s.mu.Lock()
 	s.haltAt = time.Now()
-	heads, grpcs, logs := slices.Clone(s.heads), slices.Clone(s.grpcs), slices.Clone(s.logs)
+	heads, grpcs, exts, logs := slices.Clone(s.heads), slices.Clone(s.grpcs), slices.Clone(s.exts), slices.Clone(s.logs)
 	s.mu.Unlock()
 	tip := s.chain.Tip()
 	s.logf("halted at %d %s", tip.Number, short(tip.Hash))
@@ -982,6 +983,9 @@ func (s *scenario) finish() {
 	}
 	for _, g := range grpcs {
 		await(&g.clientBase, &g.hc)
+	}
+	for _, c := range exts {
+		await(&c.clientBase, &c.hc)
 	}
 	// A logs subscription behind the final head is owed its logs or, once
 	// its tap ended, a 1013 within logsCloseSpread (§9.2); judging it
@@ -1080,6 +1084,11 @@ func (s *scenario) judge(wall time.Duration) {
 	}
 	for _, c := range s.logs {
 		s.judgeLogs(c)
+		lat = append(lat, s.judgeDelivery(&c.clientBase, false)...)
+		c.tr.close()
+	}
+	for _, c := range s.exts {
+		s.judgeExt(c)
 		lat = append(lat, s.judgeDelivery(&c.clientBase, false)...)
 		c.tr.close()
 	}

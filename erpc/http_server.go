@@ -2203,6 +2203,7 @@ func (s *HttpServer) shutdownWebSockets(logger *zerolog.Logger, grace time.Durat
 	var conns []*WsConnection
 	s.activeWsConns.Range(func(_, value interface{}) bool {
 		wsc := value.(*WsConnection)
+		wsc.drain()
 		wsc.stop(websocket.CloseGoingAway, "server shutting down", grace)
 		conns = append(conns, wsc)
 		return true

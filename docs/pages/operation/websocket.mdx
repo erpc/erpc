@@ -142,7 +142,7 @@ ws.send(JSON.stringify({
 - **No surprise disconnects** — upstream reconnects, scoring changes and brief outages never close your connection; eRPC re-subscribes upstream behind the scenes. eRPC closes a connection only on shutdown (`1001`), when the client stops answering pings, or with `1013` when a `logs` subscription cannot continue (see below).
 - **Deduplication** — each block, log and pending transaction reaches a subscription once, however many upstreams report it.
 - **Shared work** — every subscription reads the same feed: one receipts fetch, parse and encoding per block, shared by every client.
-- **Slow-client safety** — a slow reader never blocks other clients or the chain tracker. A `logs` subscription whose next block has waited more than `chainTracker.reorgWindow` × the block time closes the connection with `1013`, so the client knows it may have missed logs and can re-subscribe and backfill with `eth_getLogs`; a `newHeads` subscription restarts after the confirmed head, which the client sees as a jump in numbers.
+- **Slow-client safety** — a slow reader never blocks other clients or the chain tracker. A `logs` subscription whose next block has waited more than `chainTracker.reorgWindow` × the block time closes the connection with `1013`, so the client knows it may have missed logs and can re-subscribe and backfill with `eth_getLogs`; a `newHeads` subscription restarts after the confirmed head, which the client sees as a jump in numbers. A write blocked for 10s closes the connection. [Extended subscriptions](#extended-subscriptions) end with a reason instead and keep the connection.
 - **Connection-scoped IDs** — eRPC issues its own subscription IDs, so they stay the same across upstream reconnects and upstream switches. They belong to the connection that created them: `eth_unsubscribe` only works on that connection, and subscriptions end when it closes.
 - **Rate limiting** — subscribe/unsubscribe calls count against the same project and network rate limits as regular RPC.
 
@@ -173,6 +173,46 @@ ws.onmessage = (event) => {
 - the request is rate limited.
 
 A failed `eth_subscribe` leaves your WebSocket connection open. You can retry on the same connection.
+
+### Extended subscriptions
+
+Add an `erpc` object as the last `eth_subscribe` param to make a subscription resumable, with block ends, heartbeats, status and a reason when it ends. Data frames stay standard `eth_subscription` notifications; control frames use the method `erpc_subscription`, which standard libraries ignore.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["logs",{"address":"0xa0b8…"},{"erpc":{"from":"0x1406f3c:0x5c1e…","heartbeat":15,"blockEnd":true}}]}
+```
+
+| Option | Kinds | Values | Rule |
+|---|---|---|---|
+| `from` | `newHeads`, `logs` | `<numberHex>:<hash>` or `{number, hash}` | the last block the client applied; the subscription resumes after it, on any instance |
+| `heartbeat` | all | whole seconds 1–30; `0` = default | a `heartbeat` after that many idle seconds; default: the chain's freshness window, clamped to 5–30s |
+| `blockEnd` | `logs` | `true`, `false` | a `blockEnd` after each block's logs, also for blocks with none |
+
+`{"erpc":{}}` opts in with every default. The same options in the URL (`wss://host/main/evm/1?heartbeat=15`) apply to every subscription on the connection that takes them; a subscription's own keys win per key. `from` is per subscription only: in a URL the upgrade fails with `400`. An unknown key, a bad value, or an option on a kind that does not take it fails with `-32602` naming the key. For `newPendingTransactions` the `erpc` object never reaches an upstream.
+
+Control frames:
+
+```json
+{"jsonrpc":"2.0","method":"erpc_subscription","params":{"subscription":"0x9cef…","result":{"type":"blockEnd","block":{"number":"0x1406f40","hash":"0x77aa…","parentHash":"0x5c1e…"},"logs":3}}}
+{"jsonrpc":"2.0","method":"erpc_subscription","params":{"subscription":"0x9cef…","result":{"type":"heartbeat","head":{"number":"0x1406f41","hash":"0x91b0…"},"finalized":"0x1406f00"}}}
+{"jsonrpc":"2.0","method":"erpc_subscription","params":{"subscription":"0x9cef…","result":{"type":"status","state":"degraded","reason":"no_fresh_source"}}}
+{"jsonrpc":"2.0","method":"erpc_subscription","params":{"subscription":"0x9cef…","result":{"type":"end","reason":"out_of_range","detail":"below_window","oldest":{"number":"0x1406e10","hash":"0x3e2f…"}}}}
+```
+
+**Cursor.** Keep the last `blockEnd` block (logs) or the last head (`newHeads`) as `<numberHex>:<hash>`, and pass it as `from` when you reconnect. Logs of a block whose `blockEnd` you did not get come again; drop repeats by `(blockHash, logIndex)`. After a reorg the subscription sends `"removed": true` for the logs you applied of the dropped blocks, including blocks sent on an earlier connection, then the new branch.
+
+**Status.** `degraded` (`no_fresh_source`): the subscription waits and no upstream has given this instance a fresh head for the freshness window. `lagging` (`lag`): the next block has waited more than half the lag bound (`chainTracker.reorgWindow` × block time). `ok` after either.
+
+**Ends.** An `end` frame is the subscription's last message; it is then gone (`eth_unsubscribe` answers `false`) and the connection stays open.
+
+| `reason` | Cause | Client action |
+|---|---|---|
+| `out_of_range` | the cursor left the window (`detail`: `below_window`, `fork_left_window`, `cursor_unknown`, `receipts_timeout`, `reorg_depth`); `oldest` is the oldest block held | backfill up to `oldest`, then resubscribe |
+| `lagging` | the next block waited past the lag bound | resubscribe with `from` |
+| `stalled` | a subscription with `from` waited 60s while this instance lags | resubscribe with `from`, on another instance |
+| `draining` | the instance shuts down; the connection then closes `1001` | reconnect with `from` |
+
+A write blocked for 10s closes the connection, extended or not.
 
 ## How heads reach subscribers
 

@@ -128,6 +128,8 @@ func catalogue() []phaseSpec {
 		{"z1", 13001, []spec{z1()}},
 		{"z2", 13051, []spec{z2()}},
 		{"z3", 13101, []spec{z3()}},
+		{"streams", 13201, []spec{w1(), w2(), w3(), w4(), w5(), w6(), w7(), w8()}},
+		{"w9", 13301, []spec{w9()}},
 	}
 }
 
@@ -695,10 +697,11 @@ func n4Lone() spec {
 		}}
 }
 
-// cutPod1 cuts pod-1 from every vendor for 2 minutes. Each voter in
-// channels must stop being a hash voter on pod-1 (its hash-age gauge
-// +Inf: its channel stopped answering) before a stream there ends.
-func cutPod1(s *scenario, channels ...string) {
+// cutPod1 cuts pod-1 from every vendor for 2 minutes and returns when
+// the cut began. Each voter in channels must stop being a hash voter on
+// pod-1 (its hash-age gauge +Inf: its channel stopped answering) before a
+// stream there ends.
+func cutPod1(s *scenario, channels ...string) time.Time {
 	s.blocks(50)
 	p1 := s.h.pods[0]
 	resumeOn := 1 % len(s.h.pods)
@@ -778,6 +781,7 @@ func cutPod1(s *scenario, channels ...string) {
 			s.violate(g.name, "never resumed from a cursor")
 		}
 	}
+	return cut
 }
 
 // X4: pod-1 is killed with SIGKILL during a 3-block reorg. Its clients
