@@ -3,10 +3,12 @@ package auth
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,9 +52,9 @@ func TestRecordAuthFailed_MetersOncePerClientDenial(t *testing.T) {
 		assert.Equal(t, beforeSecret, authFailedCount("secret", "invalid_secret"))
 		assert.Equal(t, beforeJoined, authFailedCount("n/a", "unauthorized"))
 		RecordAuthFailed(req, err)
-		// Two strategies failed → joined ErrAuthUnauthorized(strategy=n/a).
-		assert.Equal(t, beforeJoined+1, authFailedCount("n/a", "unauthorized"))
-		assert.Equal(t, beforeSecret, authFailedCount("secret", "invalid_secret"))
+		// Two secret strategies both reject with invalid_secret → keep those labels.
+		assert.Equal(t, beforeSecret+1, authFailedCount("secret", "invalid_secret"))
+		assert.Equal(t, beforeJoined, authFailedCount("n/a", "unauthorized"))
 	})
 
 	t.Run("single strategy denial keeps strategy reason labels", func(t *testing.T) {
@@ -87,4 +89,66 @@ func TestRecordAuthFailed_IgnoresNonAuthErrors(t *testing.T) {
 	before := authFailedCount("n/a", "unauthorized")
 	RecordAuthFailed(nil, common.NewErrInvalidRequest(context.Canceled))
 	assert.Equal(t, before, authFailedCount("n/a", "unauthorized"))
+}
+
+func TestUnauthorized_PreservesAgreedJwtTokenExpired(t *testing.T) {
+	reg := newSecretAuthRegistry(t, &common.AuthConfig{
+		Strategies: []*common.AuthStrategyConfig{
+			{
+				Type: common.AuthTypeJwt,
+				Jwt: &common.JwtStrategyConfig{
+					VerificationKeys:  map[string]string{"a": testJwtHMACSecret},
+					AllowedAlgorithms: []string{"HS256"},
+				},
+			},
+			{
+				Type: common.AuthTypeJwt,
+				Jwt: &common.JwtStrategyConfig{
+					VerificationKeys:  map[string]string{"b": testJwtHMACSecret},
+					AllowedAlgorithms: []string{"HS256"},
+				},
+			},
+		},
+	})
+	token := signTestJWT(t, jwt.MapClaims{
+		"sub": "service-a",
+		"exp": time.Now().Add(-time.Hour).Unix(),
+	})
+	_, err := reg.Authenticate(context.Background(), nil, "eth_chainId", &AuthPayload{
+		Type: common.AuthTypeJwt,
+		Jwt:  &JwtPayload{Token: token},
+	})
+	require.Error(t, err)
+	var authErr *common.ErrAuthUnauthorized
+	require.ErrorAs(t, err, &authErr)
+	assert.Equal(t, "jwt", authErr.Details["strategy"])
+	assert.Equal(t, common.AuthUnauthorizedReasonTokenExpired, authErr.Reason())
+
+	before := authFailedCount("jwt", "token_expired")
+	RecordAuthFailed(nil, err)
+	assert.Equal(t, before+1, authFailedCount("jwt", "token_expired"))
+}
+
+func TestUnauthorized_PrefersTokenExpiredAmongJwtAttempts(t *testing.T) {
+	errs := []error{
+		common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonInvalidSignature),
+		common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonTokenExpired),
+	}
+	err := unauthorized(errs)
+	var authErr *common.ErrAuthUnauthorized
+	require.ErrorAs(t, err, &authErr)
+	assert.Equal(t, "jwt", authErr.Details["strategy"])
+	assert.Equal(t, common.AuthUnauthorizedReasonTokenExpired, authErr.Reason())
+}
+
+func TestUnauthorized_DivergentNonExpiryReasonsStayUnauthorized(t *testing.T) {
+	errs := []error{
+		common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonInvalidSignature),
+		common.NewErrAuthUnauthorized("secret", "invalid_secret", "invalid secret"),
+	}
+	err := unauthorized(errs)
+	var authErr *common.ErrAuthUnauthorized
+	require.ErrorAs(t, err, &authErr)
+	assert.Equal(t, "n/a", authErr.Details["strategy"])
+	assert.Equal(t, common.AuthUnauthorizedReason("unauthorized"), authErr.Reason())
 }
