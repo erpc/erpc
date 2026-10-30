@@ -42,7 +42,7 @@ type WsConnection struct {
 	architecture common.NetworkArchitecture
 	httpReq      *http.Request // the upgrade request, for auth and headers
 	// costFrames: every text message starts with a cost header block (see
-	// writeMessage); set at upgrade from headerCostFrames and costHeaders.
+	// encodeMessage); set at upgrade from headerCostFrames and costHeaders.
 	costFrames bool
 	// notifyCostBlocks caches each subscription kind's notification block.
 	notifyCostBlocks [wsclient.KindPendingTx + 1]atomic.Pointer[[]byte]
@@ -545,16 +545,54 @@ func (wsc *WsConnection) notificationCostBlock(sub wsclient.Subscription) []byte
 	return b
 }
 
-// writeMessage writes one text message produced by write. With cost frames
-// on, the message starts with costs (a header block, possibly empty) and the
-// blank line ending it, so the block and its body are one message.
-func (wsc *WsConnection) writeMessage(costs []byte, write func(w io.Writer) error) error {
-	wsc.writeMu.Lock()
-	defer wsc.writeMu.Unlock()
-	return wsc.writeMessageLocked(costs, write)
+// wsMessages holds message buffers. Every message is encoded before
+// writeMu is taken, so nothing allocates while the lock is held: a GC
+// assist would park the holder with every other answer of the connection
+// queued behind it.
+var wsMessages = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+// wsMessagePooledMax: a larger buffer is dropped after its write, so one
+// large response does not stay pinned in the pool.
+const wsMessagePooledMax = 64 << 10
+
+func releaseMessage(b *bytes.Buffer) {
+	if b.Cap() <= wsMessagePooledMax {
+		wsMessages.Put(b)
+	}
 }
 
-func (wsc *WsConnection) writeMessageLocked(costs []byte, write func(w io.Writer) error) error {
+// encodeMessage is one text message produced by write. With cost frames on,
+// the message starts with costs (a header block, possibly empty) and the
+// blank line ending it, so the block and its body are one message.
+func (wsc *WsConnection) encodeMessage(costs []byte, write func(w io.Writer) error) (*bytes.Buffer, error) {
+	b := wsMessages.Get().(*bytes.Buffer)
+	b.Reset()
+	if wsc.costFrames {
+		b.Write(costs)
+		b.Write(crlf)
+	}
+	if err := write(b); err != nil {
+		releaseMessage(b)
+		return nil, err
+	}
+	return b, nil
+}
+
+// writeMessage writes the message write produces (see encodeMessage).
+func (wsc *WsConnection) writeMessage(costs []byte, write func(w io.Writer) error) error {
+	msg, err := wsc.encodeMessage(costs, write)
+	if err != nil {
+		return err
+	}
+	defer releaseMessage(msg)
+	wsc.writeMu.Lock()
+	defer wsc.writeMu.Unlock()
+	return wsc.writeEncodedLocked(msg.Bytes())
+}
+
+// writeEncodedLocked writes msg under writeMu; gorilla's WriteMessage on a
+// server connection without compression allocates nothing.
+func (wsc *WsConnection) writeEncodedLocked(msg []byte) error {
 	if wsc.closed.Load() {
 		return errWsConnClosed
 	}
@@ -562,23 +600,7 @@ func (wsc *WsConnection) writeMessageLocked(costs []byte, write func(w io.Writer
 		return err
 	}
 	defer wsc.conn.SetWriteDeadline(time.Time{})
-
-	w, err := wsc.conn.NextWriter(websocket.TextMessage)
-	if err != nil {
-		return err
-	}
-	if wsc.costFrames {
-		if _, err = w.Write(costs); err == nil {
-			_, err = w.Write(crlf)
-		}
-	}
-	if err == nil {
-		err = write(w)
-	}
-	if closeErr := w.Close(); err == nil {
-		err = closeErr
-	}
-	return err
+	return wsc.conn.WriteMessage(websocket.TextMessage, msg)
 }
 
 func (wsc *WsConnection) writeJSON(costs []byte, v interface{}) error {
@@ -762,10 +784,15 @@ func (n *wsNotifier) write(result json.RawMessage) error {
 // Unsubscribe marks the subscription removed before its answer takes
 // writeMu, so no notification follows the answer.
 func (wsc *WsConnection) writeNotification(sub wsclient.Subscription, costs []byte, write func(w io.Writer) error) (written bool, err error) {
+	msg, err := wsc.encodeMessage(costs, write)
+	if err != nil {
+		return false, err
+	}
+	defer releaseMessage(msg)
 	wsc.writeMu.Lock()
 	defer wsc.writeMu.Unlock()
 	if sub.Removed() {
 		return false, nil
 	}
-	return true, wsc.writeMessageLocked(costs, write)
+	return true, wsc.writeEncodedLocked(msg.Bytes())
 }
