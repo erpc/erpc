@@ -112,14 +112,32 @@ func (n *Network) laneSafe(l *servedTipLane, sel string, latest, finalized int64
 		safe = min(safe, latest)
 	}
 	if l != nil && safe > 0 {
-		n.observeServedTipMetrics("safe", l.label, safe, safe, -1)
+		n.safeGauges(l).observe(safe, safe, -1)
 	}
 	return safe
+}
+
+// safeGauges are lane l's safe-axis gauges, bound at the first Safe it
+// computes; Safe has no advance age.
+func (n *Network) safeGauges(l *servedTipLane) *servedTipGauges {
+	if l.gauges == nil {
+		l.gauges = n.bindLaneGauges(l.label)
+	}
+	if l.gauges.safe == nil {
+		l.gauges.safe = &servedTipGauges{
+			block: telemetry.MetricNetworkServedTipBlockNumber.WithLabelValues(n.projectId, n.Label(), l.label, "safe"),
+			lag:   telemetry.MetricNetworkServedTipLagBlocks.WithLabelValues(n.projectId, n.Label(), l.label, "safe"),
+		}
+	}
+	return l.gauges.safe
 }
 
 // forgetSafeAxis removes lane l's safe series once Safe is no longer
 // computed: the axis is exported only while it is (streams spec §12).
 func (n *Network) forgetSafeAxis(l *servedTipLane) {
+	if l.gauges != nil {
+		l.gauges.safe = nil
+	}
 	telemetry.MetricNetworkServedTipBlockNumber.DeleteLabelValues(n.projectId, n.Label(), l.label, "safe")
 	telemetry.MetricNetworkServedTipLagBlocks.DeleteLabelValues(n.projectId, n.Label(), l.label, "safe")
 }

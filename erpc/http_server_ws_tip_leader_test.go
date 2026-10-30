@@ -84,7 +84,7 @@ func setupTipLeaderServer(t *testing.T, evmCfg *common.EvmNetworkConfig, maxAtte
 // the lagging sibling preferred by selection order.
 func TestHttpServer_GetBlockByNumberLatest_InterpolatedReachesTipUpstream(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -145,7 +145,7 @@ func TestHttpServer_GetBlockByNumberLatest_InterpolatedReachesTipUpstream(t *tes
 // tip, not to a lagging sibling preferred by selection order.
 func TestHttpServer_GetBlockByNumber_NearTipPrefersTipUpstream(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	// rpc1 tip-null Persist mock is intentionally unused.
 	defer util.AssertNoPendingMocks(t, 1)

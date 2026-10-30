@@ -43,7 +43,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardCorrectlyRateLimitedOnNetworkLevel", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -140,6 +140,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -177,7 +178,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("EmptyResultMaxAttempts_CapsEmptyRetries", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -277,6 +278,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -301,7 +303,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("EmptyResultMaxAttempts_UnsetEqualsMaxAttempts", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -411,6 +413,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup3.Client = cl3
 
 		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -434,7 +437,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("EmptyResultMaxAttempts_DoesNotAffectErrorRetries", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -509,6 +512,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -538,7 +542,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("EmptyResultMaxAttempts_IgnoredWhenRetryEmptyDisabled", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -604,6 +608,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// RetryEmpty disabled
 		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.FALSE}}, rlr, upr, mt, nil)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -624,7 +629,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("EmptyResultMaxAttempts_IgnoredWhenMethodInIgnoreList", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -689,6 +694,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -709,7 +715,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("EmptyResultDelay_AppliedForEmptyResultRetries", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -798,6 +804,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -826,7 +833,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("EmptyResultDelay_DoesNotAffectErrorRetries", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -901,6 +908,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -929,7 +937,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("EmptyResultDelay_NotSetUsesNormalDelay", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1016,6 +1024,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1044,7 +1053,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardNotRateLimitedOnNetworkLevel", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1136,6 +1145,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1162,7 +1172,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("ForwardUpstreamRetryIntermittentFailuresWithoutSuccessAndNoErrCode", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1265,6 +1275,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1284,7 +1295,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardRetryFailuresWithoutSuccessErrorWithCode", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1)
 
@@ -1393,6 +1404,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1415,7 +1427,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardSkipsNonRetryableFailuresFromUpstreams", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1556,6 +1568,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1571,7 +1584,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardNotSkipsRetryableFailuresFromUpstreams", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1721,6 +1734,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1735,7 +1749,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("NotRetryWhenBlockIsFinalizedNodeIsSynced", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1894,6 +1908,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1931,7 +1946,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("RetryWhenNodeIsNotSynced", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -2094,6 +2109,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2143,7 +2159,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardRetriesOnPendingBlockIsNotAvailableClientError", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// We expect no leftover mocks after both calls
 		defer util.AssertNoPendingMocks(t, 0)
@@ -2303,6 +2319,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2345,7 +2362,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardRetriesOnInvalidArgumentCodeClientError", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// We expect no leftover mocks after both calls
 		defer util.AssertNoPendingMocks(t, 0)
@@ -2495,6 +2512,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2536,7 +2554,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("HedgeRequestsBlockedBySharedJsonRpcLock", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -2648,6 +2666,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm:          &common.EvmNetworkConfig{ChainId: 123},
 			Failsafe:     []*common.FailsafeConfig{fsCfg},
 		}, rlr, upr, mt, nil)
+		stopAtEnd(t, ntw)
 
 		_ = ntw.Bootstrap(ctx)
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
@@ -2691,7 +2710,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("RetryWhenWeDoNotKnowNodeSyncState", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -2852,6 +2871,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2902,7 +2922,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("RetryWhenBlockIsNotFinalized", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -3055,6 +3075,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3095,7 +3116,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("RetryWhenBlockFinalizationIsNotAvailable", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -3248,6 +3269,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3287,7 +3309,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("RetryPendingTXsWhenDirectiveIsSet", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -3433,6 +3455,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3487,7 +3510,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("RetryEmptyAndUseLastNonEmptyResponse", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -3657,6 +3680,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3726,7 +3750,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("RetryPendingDirectiveFromDefaults", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -3866,6 +3890,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3913,7 +3938,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("ReturnPendingDataEvenAfterRetryingExhaustedWhenDirectiveIsSet", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -4054,6 +4079,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4111,7 +4137,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("NotRetryPendingTXsWhenDirectiveIsNotSet", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -4242,6 +4268,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4299,7 +4326,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardMustNotReadFromCacheIfDirectiveIsSet", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -4398,6 +4425,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4429,7 +4457,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardDynamicallyAddsIgnoredMethods", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -4526,6 +4554,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4548,7 +4577,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("ForwardMustNotRetryRevertedEthCallsMultiUpstreams", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 2) // 2 not-called upstreams
 
@@ -4701,6 +4730,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4724,7 +4754,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardMustNotRetryRevertedEthCallsSingleUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // 1 not-called upstream
 
@@ -4833,6 +4863,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4855,7 +4886,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("ForwardMustNotRetryBillingIssues", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -4964,6 +4995,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 10*time.Second), nil)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4986,7 +5018,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardNotRateLimitedOnNetworkLevel", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5083,6 +5115,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5104,7 +5137,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardRetryFailuresWithoutSuccess", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5208,6 +5241,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5227,7 +5261,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("ForwardRetryFailuresWithSuccess", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5341,6 +5375,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5369,7 +5404,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardTimeoutPolicyFail", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5474,6 +5509,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5501,7 +5537,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardTimeoutPolicyPass", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5604,6 +5640,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5624,7 +5661,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("ForwardHedgePolicyTriggered", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5755,6 +5792,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5785,7 +5823,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardHedgePolicyNotTriggered", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5908,6 +5946,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5936,7 +5975,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("ForwardHedgePolicySkipsWriteMethods", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -6059,6 +6098,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -6088,7 +6128,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardCBOpensAfterConstantFailure", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -6199,6 +6239,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -6223,7 +6264,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardSkipsOpenedCB", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -6335,6 +6376,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -6357,7 +6399,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("ForwardCBClosesAfterUpstreamIsBackUp", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -6476,6 +6518,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -6522,7 +6565,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardCorrectResultForUnknownEndpointError", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -6621,6 +6664,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -6649,7 +6693,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("ForwardEndpointServerSideExceptionRetrySuccess", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -6776,6 +6820,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -6806,7 +6851,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardIgnoredMethod", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -6904,6 +6949,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -6924,7 +6970,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardEthGetLogsEmptyArrayResponseSuccessWithRetryOnEmpty", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -7054,6 +7100,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -7084,7 +7131,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("ForwardEthGetLogsEmptyArrayResponseSuccessWithoutRetryOnEmpty", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -7203,6 +7250,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -7232,7 +7280,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardEthGetLogsBothEmptyArrayResponse", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -7349,6 +7397,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatalf("Failed to create network: %v", err)
 		}
@@ -7381,7 +7430,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("ForwardQuicknodeEndpointRateLimitResponse", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -7475,6 +7524,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -7501,7 +7551,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardLlamaRPCEndpointRateLimitResponseSingle", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -7597,6 +7647,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -7623,7 +7674,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardLlamaRPCEndpointRateLimitResponseBatch", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -7719,6 +7770,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -7745,7 +7797,7 @@ func TestNetwork_Forward(t *testing.T) {
 	t.Run("DynamicMethodSpecificLatencyPreference", func(t *testing.T) {
 		t.Skip("TODO(phase-10): rewrite against new policy engine — needs `evalPerMethod: true` + per-method weight branching in the eval, or a custom selectionPolicy.eval that switches on ctx.method.")
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 9)
 
@@ -7916,7 +7968,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardEnvioUnsupportedNetwork", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -8029,6 +8081,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -8061,7 +8114,7 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 	t.Run("ResponseReleasedBeforeCacheSet", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -8212,7 +8265,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("MultiplexerCloneUnderLock_PreventsNoBodyParse", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1)
 
@@ -8288,7 +8341,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("BatchRequestValidationAndRetry", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -8384,7 +8437,7 @@ func TestNetwork_Forward(t *testing.T) {
 	t.Run("ForwardWithMinimumMemoryAllocation", func(t *testing.T) {
 		// reset any previous gock state, and assert at the end that all mocks were exercised
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// Don't assert pending mocks as SetupMocksForEvmStatePoller uses Persist()
 
@@ -8598,7 +8651,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		testMu.Lock()
 		defer testMu.Unlock()
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1)
 
@@ -8635,7 +8688,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		testMu.Lock()
 		defer testMu.Unlock()
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -8672,7 +8725,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		testMu.Lock()
 		defer testMu.Unlock()
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1)
 
@@ -8729,7 +8782,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		testMu.Lock()
 		defer testMu.Unlock()
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -8785,7 +8838,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		testMu.Lock()
 		defer testMu.Unlock()
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -8821,7 +8874,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		testMu.Lock()
 		defer testMu.Unlock()
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1)
 
@@ -8882,7 +8935,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		testMu.Lock()
 		defer testMu.Unlock()
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -8933,7 +8986,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		testMu.Lock()
 		defer testMu.Unlock()
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -8987,7 +9040,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 
 	t.Run("NotSkippedRecentBlockNumberForFullNodeUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -9031,7 +9084,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 
 	t.Run("SkippedHistoricalBlockNumberForFullNodeUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1)
 
@@ -9084,7 +9137,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 
 	t.Run("NotSkippedHistoricalBlockNumberForArchiveNodeUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -9128,7 +9181,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 
 	t.Run("NotSkippedHistoricalBlockForUnknowneNodeUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -9173,7 +9226,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 func TestNetwork_EvmGetLogs(t *testing.T) {
 	t.Run("EnforceLatestBlockUpdateWhenRangeEndIsHigherThanLatestBlock", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		// Mock eth_getLogs request with toBlock higher than latest block
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x11118899","address":"0x0000000000000000000000000000000000000000"}]}`)
@@ -9309,7 +9362,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 	// head with the part it has.
 	t.Run("FailEvenAfterEnforceLatestBlockUpdateWhenRangeEndIsHigherThanLatestBlock", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		// Mock eth_getLogs request with toBlock higher than latest block
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x11118899","address":"0x0000000000000000000000000000000000000000"}]}`)
@@ -9384,7 +9437,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 	t.Run("AvoidLatestBlockUpdateWhenRangeEndIsLowerThanLatestBlock", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		// Mock eth_getLogs request with toBlock lower than latest block
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x100","address":"0x0000000000000000000000000000000000000000"}]}`)
@@ -9450,7 +9503,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 	t.Run("SkipToUpstreamWithCorrectLatestBlockToCoverBlockRangeEnd", func(t *testing.T) {
 		util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		defer util.AssertNoPendingMocks(t, 0)
 
 		// Mock eth_getLogs request with a block range
@@ -9517,7 +9570,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 	t.Run("FailsDueToMaxAvailableRecentBlocksWhenLowerEndTooEarlWithNoRetry", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -9546,7 +9599,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 	t.Run("SkipsDueToMaxAvailableRecentBlocksWhenLowerEndTooEarlWithRetry", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1)
 
@@ -9579,7 +9632,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 		t.Run("SlowLatestUpdate_RangeCheckWaitsForTheAsk", func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 
 			// Mock eth_chainId
 			gock.New("http://rpc1.localhost").
@@ -9665,6 +9718,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				},
 			}
 			network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
+			stopAtEnd(t, network)
 			require.NoError(t, err)
 
 			upstreamsRegistry.Bootstrap(ctx)
@@ -9723,7 +9777,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 	t.Run("BypassMaxAvailableRecentBlocksIfLowerEndStillInRange", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -9770,7 +9824,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 	t.Run("SplitIntoSubRequestsIfRangeTooBig", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		// Mock eth_getLogs request with a large block range
@@ -9958,7 +10012,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 	})
 	t.Run("SplitCorrectlyWhenMaxRangeIsOne", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -10090,7 +10144,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 	t.Run("SkipSplitWhenRangeIsWithinBounds", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -10173,7 +10227,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 	t.Run("SkipSplitWhenRangeIsExactlyEqualToMaxRange", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -10258,7 +10312,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 	t.Run("UseCacheWhenOneOfSubRequestsIsAlreadyCached", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -10474,11 +10528,11 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 }
 func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	t.Run("ForwardThunderingHerdGetLatestBlockWithErrors", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		gock.Off()
 		gock.Clean()
 		telemetry.MetricUpstreamLatestBlockPolled.Reset()
@@ -10639,6 +10693,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			Failsafe:     []*common.FailsafeConfig{fsCfg},
 		}
 		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, nil)
+		stopAtEnd(t, ntw)
 		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 		require.NoError(t, ntw.Bootstrap(ctx)) // This starts the poller ticker
 
@@ -10709,7 +10764,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 
 	t.Run("ForwardThunderingHerdGetLatestBlockWithoutErrors", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		telemetry.MetricUpstreamLatestBlockPolled.Reset()
 
 		//------------------------------------------------------------
@@ -10829,6 +10884,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			},
 		}
 		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, nil)
+		stopAtEnd(t, ntw)
 		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 		require.NoError(t, ntw.Bootstrap(ctx))
 
@@ -10891,7 +10947,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 
 	t.Run("ForwardThunderingHerdSyncing", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		//------------------------------------------------------------
 		// 1.  RPC stubs
@@ -11022,6 +11078,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			mt,
 			nil,
 		)
+		stopAtEnd(t, ntw)
 
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -11135,6 +11192,7 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 		metricsTracker,
 		nil,
 	)
+	stopAtEnd(t, network)
 	assert.NoError(t, err)
 
 	upstreamsRegistry.Bootstrap(ctx)
@@ -11257,6 +11315,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 		metricsTracker,
 		nil,
 	)
+	stopAtEnd(t, network)
 	assert.NoError(t, err)
 
 	upstreamsRegistry.Bootstrap(ctx)
@@ -11295,7 +11354,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 	t.Run("HeadLatest_ExcludesSyncingNodeFromHighestBlock", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -11389,6 +11448,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			metricsTracker,
 			nil,
 		)
+		stopAtEnd(t, network)
 		require.NoError(t, err)
 
 		upstreamsRegistry.Bootstrap(ctx)
@@ -11435,7 +11495,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 	t.Run("HeadLatest_ExcludesSelectionPolicyExcludedNodeFromHighestBlock", func(t *testing.T) {
 		t.Skip("TODO(phase-10): rewrite against new policy engine; legacy EvalFunction + Resample* gone")
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -11535,6 +11595,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			metricsTracker,
 			nil,
 		)
+		stopAtEnd(t, network)
 		require.NoError(t, err)
 
 		upstreamsRegistry.Bootstrap(ctx)
@@ -11589,7 +11650,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 	t.Run("HeadLatest_UsesEffectiveBlockWhenUpperBoundConfigured", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -11693,6 +11754,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			metricsTracker,
 			nil,
 		)
+		stopAtEnd(t, network)
 		require.NoError(t, err)
 
 		upstreamsRegistry.Bootstrap(ctx)
@@ -11739,7 +11801,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 	t.Run("HeadLatest_ReturnsRawValueWhenUpperBoundExceedsLatest", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -11822,6 +11884,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			metricsTracker,
 			nil,
 		)
+		stopAtEnd(t, network)
 		require.NoError(t, err)
 
 		upstreamsRegistry.Bootstrap(ctx)
@@ -11852,7 +11915,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 	t.Run("HeadFinalized_UsesEffectiveBlockWhenUpperBoundConfigured", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -11957,6 +12020,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			metricsTracker,
 			nil,
 		)
+		stopAtEnd(t, network)
 		require.NoError(t, err)
 
 		upstreamsRegistry.Bootstrap(ctx)
@@ -12009,7 +12073,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 
 	t.Run("HeadFinalized_ReturnsRawValueWhenUpperBoundExceedsFinalizedBlock", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -12092,6 +12156,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			metricsTracker,
 			nil,
 		)
+		stopAtEnd(t, network)
 		require.NoError(t, err)
 
 		upstreamsRegistry.Bootstrap(ctx)
@@ -12121,7 +12186,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 
 	t.Run("HeadFinalized_ExcludesSyncingNodesEvenWithUpperBound", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -12222,6 +12287,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			metricsTracker,
 			nil,
 		)
+		stopAtEnd(t, network)
 		require.NoError(t, err)
 
 		upstreamsRegistry.Bootstrap(ctx)
@@ -12273,7 +12339,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 	t.Run("ServeCachedEmptyWhenAllowed", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -12308,7 +12374,7 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 
 	t.Run("SkipCachedEmptyWhenIgnored", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 

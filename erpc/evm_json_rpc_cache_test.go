@@ -527,7 +527,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	t.Run("ShouldCacheEmptyResponseIfNodeSyncedAndBlockFinalized", func(t *testing.T) {
 		util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -2040,7 +2040,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 	// so this test is self-contained instead of freeloading on persist mocks
 	// leaked by whichever test happens to run before it in the same process.
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2425,7 +2425,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 	// bootstraps against rpc1.localhost, so this test must register its own
 	// poller mocks rather than depend on leftovers from earlier tests.
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())

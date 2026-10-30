@@ -397,7 +397,7 @@ func (s *scenario) execute(t *testing.T) {
 
 // stallDump: a header tap silent this long, or past its scenario's bound
 // when that is longer, on a pod that should serve it gets the pod a SIGQUIT
-// goroutine dump (triage, not a bound).
+// goroutine dump (triage, not a bound) while the host is below its load limit.
 const stallDump = 10 * time.Second
 
 // watchStalls dumps a pod's goroutines, once per pod and phase, when one of
@@ -406,7 +406,11 @@ const stallDump = 10 * time.Second
 // mints and no fault excuses the pod; it then restarts the pod. Silence
 // counts from the later of the tap's last block and the mint of the block
 // after it, so a halted chain silences no tap. Verdicts of the phase's
-// other scenarios on that pod after the dump carry the restart.
+// other scenarios on that pod after the dump carry the restart. On an
+// overloaded host the pod keeps running: a host that pages the -race pods
+// out stalls both at once, and restarting them turned that one stall into
+// connection failures in every scenario of the phase; the tap's gap verdict
+// still fails, labelled.
 func (s *scenario) watchStalls() {
 	after := max(stallDump, s.bound)
 	for {
@@ -434,6 +438,10 @@ func (s *scenario) watchStalls() {
 				since = min(since, time.Since(next.MintedAt))
 			}
 			if !ok || c.slow || since < after || s.excused(pod, time.Now().Add(-since), time.Now()) || !s.h.claimDump(pod) {
+				continue
+			}
+			if load, over := s.h.host.overloaded(time.Now().Add(-since), time.Now()); over {
+				s.logf("host overloaded (load %.1f): %s silent %s on pod-%d; no dump, pod-%d kept", load, c.name, since.Round(time.Second), pod+1, pod+1)
 				continue
 			}
 			p := s.h.pods[pod]
@@ -866,7 +874,7 @@ func (s *scenario) checkHead(c *headsClient, pod int, n uint64, h hash, delivere
 		}
 		for target := range s.h.pods {
 			if !s.isNumbered(target) {
-				got := s.oracleMemo(target, fmt.Sprintf("hash/%d/%s/%s", target, sel, h.Hex()), func() string {
+				got := s.oracleMemo(target, fmt.Sprintf("hash/%d/%s/%s/from-%d", target, sel, h.Hex(), pod), func() string {
 					return s.blockAnswer(target, sel, "eth_getBlockByHash", h.Hex(), false)
 				})
 				if got != h.Hex() && !s.excused(target, start, time.Now()) {
@@ -904,7 +912,7 @@ func (s *scenario) checkLog(c *logsClient, pod int, l chainsim.Log) {
 			if s.isNumbered(target) {
 				by = "number"
 			}
-			got := s.oracleMemo(target, fmt.Sprintf("logs/%d/%s/%d", target, l.BlockHash.Hex(), c.filter), func() string {
+			got := s.oracleMemo(target, fmt.Sprintf("logs/%d/%s/%d/from-%d", target, l.BlockHash.Hex(), c.filter, pod), func() string {
 				q := chainsim.Filters[c.filter].Params()
 				if by == "number" {
 					q["fromBlock"] = hexutil.EncodeUint64(l.BlockNumber)

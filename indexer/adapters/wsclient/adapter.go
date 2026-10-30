@@ -165,9 +165,10 @@ func (s Subscription) Removed() bool {
 	return s.removed.Load()
 }
 
-// MarkRemoved stops the subscription's writes, as removal does, while the
-// caller holds the connection's write lock after its last message.
-func (s Subscription) MarkRemoved() { s.removed.Store(true) }
+// Remove stops the subscription's writes, as removal does, and reports
+// whether this call stopped them: the connection's writer removes it as it
+// writes its last message.
+func (s Subscription) Remove() bool { return s.removed.CompareAndSwap(false, true) }
 
 // Count returns the number of active subscriptions.
 func (a *Adapter) Count() int {

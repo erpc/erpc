@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
@@ -532,7 +534,7 @@ func putReceipts(c *ChainTracker, blockHash string, receipts []integrity.Receipt
 	if err != nil {
 		panic(err)
 	}
-	r, err := parseReceipts(raw, hash, nil, false)
+	r, err := parseReceipts(raw, hash, nil, false, false)
 	if err != nil {
 		panic(err)
 	}
@@ -901,57 +903,153 @@ func BenchmarkObserveLatestAnswer(b *testing.B) {
 	})
 }
 
-// BenchmarkDeepFill is a final tap whose start lies depth headers below
-// the head, filled from a chain that answers at once: the CPU the process
-// spends per header filled. A cost per update that grows with the headers
-// held shows as cpu-ns/header growing with depth.
+// BenchmarkDeepFill is a tap whose start lies depth headers below the
+// head, filled from a chain that answers at once: a final tap (final hold)
+// and a Resumable tap with a maxBackfill depth blocks deep. It reports the
+// CPU the process spends per header filled. A cost per update that grows
+// with the headers held shows as cpu-ns/header growing with depth.
 func BenchmarkDeepFill(b *testing.B) {
 	cpu := func() time.Duration {
 		var ru syscall.Rusage
 		_ = syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
 		return time.Duration(syscall.TimevalToNsec(ru.Utime) + syscall.TimevalToNsec(ru.Stime))
 	}
-	for _, depth := range []uint64{1000, 4000, 16000} {
-		b.Run(fmt.Sprintf("depth=%d", depth), func(b *testing.B) {
-			top := depth + 20
-			net := newServedChain(b, "evm:deep-fill")
-			for n := uint64(0); n <= top; n++ {
-				net.serve(n, testHash("a", n), testHeader(n, testHash("a", n), testHash("a", n-1)))
-			}
-			start := top - depth
-			head := func() common.EvmHead { return common.EvmHead{Latest: 1 << 40, Finalized: int64(start)} }
-			var spent time.Duration
-			for b.Loop() {
-				ctx, cancel := context.WithCancel(context.Background())
-				c := newChainTracker(ctx, net, 4, 0, "", "", "", head, newFetchScheduler(ctx, net))
-				// A tracker counts no vote before it read its voters.
-				for {
-					for _, src := range []string{"a", "b"} {
-						c.Observe(src, testHeader(top, testHash("a", top), testHash("a", top-1)), true)
-					}
-					c.sync(ctx)
-					if _, _, ok := c.FollowedRange(); ok {
-						break
-					}
-					time.Sleep(time.Millisecond)
-				}
-				was := cpu()
-				o := indexer.ReadOpts{Hold: new(indexer.FinalHold)}
-				o.Hold.Set(start)
-				release := c.Want(o)
-				for {
-					if from, _, _ := c.FollowedRange(); uint64(from) <= start {
-						break
-					}
-					time.Sleep(time.Millisecond)
-				}
-				spent += cpu() - was
-				release()
-				cancel()
-			}
-			b.ReportMetric(float64(spent.Nanoseconds())/float64(b.N)/float64(depth), "cpu-ns/header")
-		})
+	for _, final := range []bool{true, false} {
+		for _, depth := range []uint64{1000, 4000, 16000} {
+			benchmarkDeepFill(b, cpu, final, depth)
+		}
 	}
+}
+
+func benchmarkDeepFill(b *testing.B, cpu func() time.Duration, final bool, depth uint64) {
+	mode := "backfill"
+	if final {
+		mode = "final"
+	}
+	b.Run(fmt.Sprintf("%s/depth=%d", mode, depth), func(b *testing.B) {
+		top := depth + 20
+		net := newServedChain(b, "evm:deep-fill")
+		for n := uint64(0); n <= top; n++ {
+			net.serve(n, testHash("a", n), testHeader(n, testHash("a", n), testHash("a", n-1)))
+		}
+		start := top - depth
+		var spent time.Duration
+		for b.Loop() {
+			ctx, cancel := context.WithCancel(context.Background())
+			var c *ChainTracker
+			if final {
+				head := func() common.EvmHead { return common.EvmHead{Latest: 1 << 40, Finalized: int64(start)} }
+				c = newChainTracker(ctx, net, 4, 0, "", "", "", head, newFetchScheduler(ctx, net))
+			} else {
+				// testHeader's blocks are one second apart.
+				c = newChainTracker(ctx, net, 4, time.Duration(depth)*time.Second, "", "", "", nil, newFetchScheduler(ctx, net))
+			}
+			// A tracker counts no vote before it read its voters.
+			for {
+				for _, src := range []string{"a", "b"} {
+					c.Observe(src, testHeader(top, testHash("a", top), testHash("a", top-1)), true)
+				}
+				c.sync(ctx)
+				if _, _, ok := c.FollowedRange(); ok {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			was := cpu()
+			o := indexer.ReadOpts{Resumable: true}
+			if final {
+				o = indexer.ReadOpts{Hold: new(indexer.FinalHold)}
+				o.Hold.Set(start)
+			}
+			release := c.Want(o)
+			for {
+				if from, _, _ := c.FollowedRange(); uint64(from) <= start {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			spent += cpu() - was
+			release()
+			cancel()
+		}
+		b.ReportMetric(float64(spent.Nanoseconds())/float64(b.N)/float64(depth), "cpu-ns/header")
+	})
+}
+
+// Eviction below a deep maxBackfill window (spec §9): a pin with no
+// timestamp, or one newer than the head, drops once it leaves reorgWindow,
+// even above pins maxBackfill keeps; a dropped header is no longer
+// reachable from the tracker; and pins that stay unlinked count on every
+// move.
+func TestChainTracker_DeepWindow(t *testing.T) {
+	const base = uint64(1_700_000_000)
+	header := func(n, ts uint64) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(`{"number":"0x%x","hash":"%s","parentHash":"%s","timestamp":"0x%x"}`, n, testHash("a", n), testHash("a", n-1), ts))
+	}
+	t.Run("odd timestamps drop and dropped headers are freed", func(t *testing.T) {
+		ctx := context.Background()
+		c := newChainTracker(t.Context(), nil, 4, 100*time.Second, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		ts := func(n uint64) uint64 {
+			switch n {
+			case 250:
+				return 0
+			case 260:
+				return base + 10_000
+			}
+			return base + n
+		}
+		vote := func(from, to uint64) {
+			for n := from; n <= to; n++ {
+				c.Observe("a", header(n, ts(n)), true)
+				c.sync(ctx)
+			}
+		}
+		vote(1, 200)
+		var freed []weak.Pointer[node]
+		for n := uint64(110); n < 200; n++ {
+			var k [32]byte
+			require.True(t, decodeHex32(testHash("a", n), &k))
+			require.NotNil(t, c.nodes[k], "block %d held", n)
+			freed = append(freed, weak.Make(c.nodes[k]))
+		}
+		vote(201, 300)
+		for _, tc := range []struct {
+			n    uint64
+			held bool
+		}{{150, false}, {250, false}, {260, false}, {270, true}, {300, true}} {
+			_, held := c.HeldNumber(testHash("a", tc.n))
+			assert.Equal(t, tc.held, held, "block %d held", tc.n)
+		}
+		runtime.GC()
+		for i, w := range freed {
+			assert.Nil(t, w.Value(), "block %d's dropped node is freed", 110+i)
+		}
+	})
+	t.Run("unlinked pins count on every move", func(t *testing.T) {
+		c := newChainTracker(t.Context(), nil, 4, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		hs := make([]*chainHeader, 6)
+		for n := uint64(1); n < 6; n++ {
+			h, err := parseChainHeader(header(n, base+n))
+			require.NoError(t, err)
+			hs[n] = h
+		}
+		bad, err := parseChainHeader(json.RawMessage(fmt.Sprintf(`{"number":"0x2","hash":"%s","parentHash":"%s","timestamp":"0x%x"}`, testHash("b", 2), testHash("b", 1), base+2)))
+		require.NoError(t, err)
+		counted := func() float64 {
+			return testutil.ToFloat64(telemetry.MetricChainTrackerInvariantViolationsTotal.WithLabelValues(c.projectId(), c.networkLabel(), string(common.InvariantPinsUnlinked)))
+		}
+		state := func(pins ...*chainHeader) *feedState {
+			return &feedState{base: pins[0].number, pins: pins, confirmed: -1, changed: make(chan struct{})}
+		}
+		was := counted()
+		s1 := state(hs[1], bad, hs[3])
+		c.published(&feedState{confirmed: -1}, s1, true)
+		s2 := state(hs[1], bad, hs[3], hs[4])
+		c.published(s1, s2, true)
+		s3 := state(hs[1], hs[2], hs[3], hs[4], hs[5])
+		c.published(s2, s3, true)
+		assert.Equal(t, 2.0, counted()-was, "the bad link counts on both moves that hold it, not after")
+	})
 }
 
 // The hash anchor: a by-hash fetch must never trust (or cache) receipts that
@@ -963,7 +1061,7 @@ func TestReceiptsMatchBlock(t *testing.T) {
 	var hash [32]byte
 	require.True(t, decodeHex32(h, &hash))
 	check := func(body string) error {
-		_, err := parseReceipts([]byte(body), hash, nil, false)
+		_, err := parseReceipts([]byte(body), hash, nil, false, false)
 		return err
 	}
 	t.Run("all receipts on the requested hash (case-insensitive) → ok", func(t *testing.T) {
@@ -1080,7 +1178,7 @@ func newSettleNetwork(t *testing.T, hv HashVoters, latest map[string]json.RawMes
 
 func (n *settleNetwork) EvmHashVoters(string, time.Duration, bool) HashVoters { return n.hv }
 
-func (n *settleNetwork) EvmAskHead(_ context.Context, id string, need common.HeadNeed, _ time.Duration, _ common.AskReason) common.HeadAnswer {
+func (n *settleNetwork) EvmAskHead(_ context.Context, id string, need common.HeadNeed, _ time.Duration, _ time.Time, _ common.AskReason) common.HeadAnswer {
 	n.smu.Lock()
 	if need == common.HeadNeedFork {
 		n.forks++
@@ -1088,7 +1186,7 @@ func (n *settleNetwork) EvmAskHead(_ context.Context, id string, need common.Hea
 	h := n.latest[id]
 	n.smu.Unlock()
 	sent := time.Now()
-	return common.HeadAnswer{Outcome: common.AskFetched, Sent: sent, Next: sent.Add(time.Hour), Header: askedHeader(h)}
+	return common.HeadAnswer{Outcome: common.AskFetched, At: sent, Next: sent.Add(time.Hour), Header: askedHeader(h)}
 }
 
 func (n *settleNetwork) forkAsks() int {
@@ -1140,7 +1238,7 @@ type rewindNetwork struct {
 
 func (n *rewindNetwork) EvmHashVoters(string, time.Duration, bool) HashVoters { return n.hv }
 
-func (n *rewindNetwork) EvmAskHead(context.Context, string, common.HeadNeed, time.Duration, common.AskReason) common.HeadAnswer {
+func (n *rewindNetwork) EvmAskHead(context.Context, string, common.HeadNeed, time.Duration, time.Time, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{Outcome: common.AskBackoff, Next: time.Now().Add(time.Hour)}
 }
 
