@@ -462,7 +462,7 @@ func f6() spec {
 				return
 			}
 			// The first final block waits for the fill down to Finalized
-			// (32 fetches at once, CT§9) and for Finalized to move.
+			// (8 fetches in flight, CT§9) and for Finalized to move.
 			for deadline := time.Now().Add(10 * time.Minute); len(s.applyFinalHeads(ec, sub).chain) < 10 && time.Now().Before(deadline); {
 				time.Sleep(time.Second)
 			}

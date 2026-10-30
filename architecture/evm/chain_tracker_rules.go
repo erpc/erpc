@@ -347,13 +347,16 @@ func (t *ChainTracker) extendRoots() {
 	t.pruneAhead()
 }
 
-// fillAhead is how many heights below a filling root fill fetches by
-// number at once, below reorgWindow under the head, in the pins' tree or
-// a tree a Read waits on fill in (CT spec §9): fill links one header per
-// answer, so one fetch at a time made a deep final hold wait thousands
-// of round trips. Near the head, and in a capped tree, which may never
-// join, fill still fetches one at a time. A var so tests can change it.
-var fillAhead = uint64(32)
+// fillAhead is how many by-number fill fetches run ahead of fill at once,
+// across the tracker's roots, below reorgWindow under the head, in the
+// pins' tree or a tree a Read waits on fill in (CT spec §9): fill links
+// one header per answer, so one fetch at a time made a deep final hold
+// wait thousands of round trips. It is half the scheduler's 16 slots, so
+// a Read's cursor fetch and a final logs tap's receipts, in fill's class
+// too, always find a slot. Near the head, and in a capped tree, which may
+// never join, fill still fetches one at a time. A var so tests can change
+// it.
+var fillAhead = uint64(fetchSlots / 2)
 
 // aheadAnswer is a by-number answer fetched ahead of fill.
 type aheadAnswer struct {
@@ -373,6 +376,9 @@ func (t *ChainTracker) fetchAhead(r *node) {
 		if _, ok := t.ahead[n]; ok || t.aheadBusy[n] {
 			continue
 		}
+		if uint64(len(t.aheadBusy)) >= fillAhead {
+			return
+		}
 		// No header below r is newer than r: r's time bounds the window.
 		if !t.keeps(nil, &chainHeader{number: n, timestamp: r.h.timestamp}, true) || !t.fillsBelow(n) {
 			return
@@ -388,12 +394,14 @@ func (t *ChainTracker) fetchAhead(r *node) {
 	}
 }
 
-// pruneAhead drops the answers fetched ahead below no filling root.
+// pruneAhead drops the answers fetched ahead below no filling root. A
+// root that asks by hash for a while keeps them: fill by number goes on
+// from the parent it links.
 func (t *ChainTracker) pruneAhead() {
 	for n := range t.ahead {
 		reached := false
 		for r, e := range t.exts {
-			if !e.atBase && e.walk == 0 && !e.byHash && n < r.h.number && n+fillAhead >= r.h.number {
+			if !e.atBase && e.walk == 0 && n < r.h.number && n+fillAhead >= r.h.number {
 				reached = true
 				break
 			}

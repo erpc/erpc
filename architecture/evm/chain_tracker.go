@@ -986,6 +986,12 @@ func (t *ChainTracker) holdFinal() {
 				if lo := max(from, pins[0].number); lo < base {
 					below = base - lo
 				}
+			} else if ref := t.windowRef(); ref != nil {
+				// The base is unknown, so no tap is spanned yet; the hold
+				// still keeps at most FinalHoldMax headers below the
+				// reorgWindow floor, which lies at or above the base.
+				floor := ref.number - min(ref.number, uint64(t.window))
+				from = max(from, floor-min(floor, FinalHoldMax.Load()))
 			}
 		}
 	}

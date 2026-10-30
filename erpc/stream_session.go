@@ -170,6 +170,12 @@ func (s *streamSession) run(ctx context.Context) *streamEnd {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	tracker := s.nw.chainTracker
+	// The final hold stays registered across the tap's restarts, so the
+	// headers under the client's cursor are not evicted while the next
+	// RunChain waits out its restart delay (streams spec §4).
+	if s.hold != nil {
+		defer tracker.Want(indexer.ReadOpts{Hold: s.hold})()
+	}
 	if s.opts.From != nil {
 		if c, ok := tracker.Confirmed(); ok && c.Number > s.opts.From.Number {
 			s.resumeBehind = c.Number - s.opts.From.Number
