@@ -46,7 +46,8 @@ func (n *Network) EvmHead(ctx context.Context, req *common.NormalizedRequest) co
 // the latest refresh (refreshLatest, §6.8), before the cache: a cache hit
 // is pinned to that Head too. A request with X-ERPC-Min-Block first waits
 // for its lane's Latest to reach it (awaitMinBlock, streams spec §8), so
-// its tags, cache key and every retry read the waited Head.
+// its tags, cache key and every retry read the waited Head; that wait and
+// the refresh after it share one W.
 func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest) *common.EvmHead {
 	if h := req.EvmHead(); h != nil {
 		return h
@@ -60,7 +61,10 @@ func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest
 	if d := req.Directives(); d != nil {
 		sel = d.UseUpstream
 	}
-	if block := req.MinBlock(); block > 0 {
+	if block := minBlockOf(ctx, req); block > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
+		defer cancel()
 		n.awaitMinBlock(ctx, sel, block)
 	}
 	switch {

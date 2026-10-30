@@ -24,11 +24,13 @@ import (
 )
 
 // minBlockNode is one vendor node: its head, the head polls it answered
-// and the eth_calls it served.
+// and the eth_calls it served. A head poll waits while stall holds a
+// channel, until it is closed: a node whose link hangs.
 type minBlockNode struct {
 	head  atomic.Int64
 	polls atomic.Int64
 	calls atomic.Int64
+	stall atomic.Pointer[chan struct{}]
 }
 
 var minBlockCallBlock = regexp.MustCompile(`"(0x[0-9a-fA-F]+|latest)"\s*\]`)
@@ -68,7 +70,12 @@ func mockMinBlockNode(id string, n *minBlockNode) {
 			n.polls.Add(1)
 			return true
 		}).
-		Reply(200).Map(func(res *http.Response) *http.Response { return reply(res, header(n.head.Load())) })
+		Reply(200).Map(func(res *http.Response) *http.Response {
+			if c := n.stall.Load(); c != nil {
+				<-*c
+			}
+			return reply(res, header(n.head.Load()))
+		})
 	gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return has(r, "eth_getBlockByNumber", `"finalized"`) }).
 		Reply(200).Map(func(res *http.Response) *http.Response { return reply(res, header(n.head.Load()-10)) })
 	gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return has(r, "eth_getBlockByNumber", `"safe"`) }).
@@ -216,6 +223,21 @@ func TestHttpServer_MinBlock(t *testing.T) {
 	outcome := func(o string) float64 {
 		return promUtil.ToFloat64(telemetry.MetricMinBlockTotal.WithLabelValues("test_project", ntw.Label(), o))
 	}
+	critical := func() float64 {
+		return metricSum(telemetry.MetricNetworkFailedRequests, map[string]string{"network": ntw.Label(), "severity": "critical"})
+	}
+	stall := func(ids ...string) (release func()) {
+		c := make(chan struct{})
+		for _, id := range ids {
+			nodes[id].stall.Store(&c)
+		}
+		return func() {
+			for _, id := range ids {
+				nodes[id].stall.Store(nil)
+			}
+			close(c)
+		}
+	}
 
 	t.Run("ServedAtOrAfterN_CacheKeyedByWaitedBlock", func(t *testing.T) {
 		_, _, a := ask(nil, nil)
@@ -240,7 +262,7 @@ func TestHttpServer_MinBlock(t *testing.T) {
 	})
 
 	t.Run("RefusedPastW", func(t *testing.T) {
-		start, timeouts := time.Now(), outcome("timeout")
+		start, timeouts, alerts := time.Now(), outcome("timeout"), critical()
 		status, _, a := ask(minBlock("104"), nil)
 		assert.Equal(t, http.StatusServiceUnavailable, status)
 		require.NotNil(t, a.Error, "result %q", a.Result)
@@ -249,6 +271,7 @@ func TestHttpServer_MinBlock(t *testing.T) {
 		assert.JSONEq(t, `{"minBlock":"0x68","latest":"0x66"}`, string(a.Error.Data))
 		assert.GreaterOrEqual(t, time.Since(start), 2500*time.Millisecond, "refused once W ended")
 		assert.Equal(t, timeouts+1, outcome("timeout"))
+		assert.Equal(t, alerts, critical(), "a block the client asked too early for is no critical failure")
 	})
 
 	t.Run("FarFutureRefusedWithoutDispatch", func(t *testing.T) {
@@ -317,5 +340,97 @@ func TestHttpServer_MinBlock(t *testing.T) {
 		status, _, a := ask(minBlock("130"), nil)
 		require.Equal(t, http.StatusOK, status, "%+v", a.Error)
 		assert.Equal(t, int64(130), a.block(t))
+	})
+
+	t.Run("FinalizedAndSafeUnaffected", func(t *testing.T) {
+		// Neither tag reads Latest: the header neither holds nor refuses
+		// it (streams spec §8), though 131 is above every head.
+		for _, tag := range []string{"finalized", "safe"} {
+			start := time.Now()
+			status, _, body := send(strings.Replace(call, `"latest"`, `"`+tag+`"`, 1), minBlock("131"), nil)
+			require.Equal(t, http.StatusOK, status, "%s: %s", tag, body)
+			var a minBlockAnswer
+			require.NoError(t, json.Unmarshal([]byte(body), &a), body)
+			a.block(t)
+			assert.Less(t, time.Since(start), time.Second, "%s: no wait for block 131", tag)
+		}
+	})
+
+	t.Run("MalformedValueRefused", func(t *testing.T) {
+		// Served without its block, the answer would look like one at or
+		// after it: a value that is no block number is refused.
+		before := calls()
+		for _, v := range []string{"abc", "0x", "-5", "0x-1"} {
+			status, _, a := ask(minBlock(v), nil)
+			assert.Equal(t, http.StatusBadRequest, status, v)
+			require.NotNil(t, a.Error, "%s: result %q", v, a.Result)
+			assert.Equal(t, -32602, a.Error.Code, v)
+		}
+		status, _, a := ask(nil, map[string]string{"min-block": "1e3"})
+		assert.Equal(t, http.StatusBadRequest, status)
+		require.NotNil(t, a.Error, "result %q", a.Result)
+		assert.Equal(t, -32602, a.Error.Code)
+		assert.Equal(t, before, calls(), "no dispatch")
+	})
+
+	t.Run("OrderedByMinBlockOnlyForLatestSentAsIs", func(t *testing.T) {
+		// 132 is within the near-future bound of 130 (3 blocks at 1s, W 3s).
+		setHeads(132, "fast-1", "fast-2")
+		_, _, a := ask(minBlock("132"), nil)
+		require.Equal(t, int64(132), a.block(t), "eRPC hears fast-* at 132, slow-* at 130")
+		ups := map[string]common.Upstream{}
+		for _, u := range ntw.AllUpstreams() {
+			ups[u.Id()] = u
+		}
+		order := func(body string, d *common.RequestDirectives) []string {
+			req := common.NewNormalizedRequest([]byte(body))
+			req.SetNetwork(ntw)
+			req.SetDirectives(d)
+			method, err := req.Method()
+			require.NoError(t, err)
+			var out []string
+			for _, u := range ntw.preferUpstreams(context.Background(), req, method, []common.Upstream{ups["slow-1"], ups["fast-1"]}) {
+				out = append(out, u.Id())
+			}
+			return out
+		}
+		old := `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x64",false]}`
+		assert.Equal(t, []string{"slow-1", "fast-1"}, order(old, &common.RequestDirectives{MinBlock: 132}),
+			"block 100 is on both: the policy's order, never the tip's")
+		assert.Equal(t, []string{"fast-1", "slow-1"}, order(call, &common.RequestDirectives{MinBlock: 132, SkipInterpolation: true}),
+			"latest sent as is: upstreams at or past 132 first")
+	})
+
+	t.Run("OneSlowVoterHoldsNoRequest", func(t *testing.T) {
+		// fast-1 and fast-2 are the quorum at 133; slow-1's head poll
+		// hangs. The request goes on once Latest has 133 (spec §8).
+		release := stall("slow-1")
+		defer release()
+		time.Sleep(1100 * time.Millisecond)
+		setHeads(133, "fast-1", "fast-2")
+		start, waited := time.Now(), outcome("waited")
+		status, _, a := ask(minBlock("133"), nil)
+		require.Equal(t, http.StatusOK, status, "%+v", a.Error)
+		assert.Equal(t, int64(133), a.block(t))
+		assert.Less(t, time.Since(start), 2*time.Second, "never waits for every Ask, at most W (3s)")
+		assert.Equal(t, waited+1, outcome("waited"))
+	})
+
+	t.Run("OneWForWaitAndRefresh", func(t *testing.T) {
+		// slow-1|slow-2 forms no lane and both hang: the min-block wait
+		// ends at W, and the latest refresh of a read that answers Latest
+		// (§6.8), on reports older than W, gets none of its own.
+		release := stall("slow-1", "slow-2")
+		defer release()
+		start := time.Now()
+		status, _, body := send(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`,
+			map[string]string{"X-ERPC-Min-Block": "131", "X-ERPC-Use-Upstream": "slow-1|slow-2"}, nil)
+		took := time.Since(start)
+		var a minBlockAnswer
+		require.NoError(t, json.Unmarshal([]byte(body), &a), body)
+		assert.Equal(t, http.StatusServiceUnavailable, status)
+		require.NotNil(t, a.Error, "result %q", a.Result)
+		assert.Equal(t, -32015, a.Error.Code)
+		assert.Less(t, took, 3*time.Second+700*time.Millisecond, "one W (3s), never two")
 	})
 }

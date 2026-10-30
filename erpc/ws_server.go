@@ -394,9 +394,10 @@ func (wsc *WsConnection) handleRequest(ctx context.Context, raw []byte, startedA
 		return fail(err, wsc.server.serverCfg.IncludeErrorDetails), notification, nil
 	}
 	nq.SetNetwork(nw)
-	applyRequestDirectives(project, nw, nq, headers, queryArgs)
-	// Min-block is per request (streams spec §8); the upgrade request's
-	// headers would hold every message of the connection to one block.
+	// Min-block is per HTTP request (streams spec §8): the upgrade request's
+	// headers would hold every message of the connection to one block, so
+	// its value, and the refusal of a malformed one, are dropped.
+	_ = applyRequestDirectives(project, nw, nq, headers, queryArgs)
 	if d := nq.Directives(); d != nil && d.MinBlock > 0 {
 		d.MinBlock = 0
 	}

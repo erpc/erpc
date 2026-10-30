@@ -822,7 +822,11 @@ func (r *NormalizedRequest) isDirectiveAllowed(queryKey string) bool {
 	return r.allowClientDirectiveMatcher(queryKey)
 }
 
-func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) {
+// EnrichFromHttp reads the client's directives from headers and query
+// args. It applies every valid one and returns an ErrInvalidRequest for a
+// min-block that is not a block number: a request served without the
+// block the client asked for would look like an answer at or after it.
+func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) error {
 	hasDirectives := hasDirectiveInHeaders(headers) || hasDirectiveInQueryParams(queryArgs)
 
 	// Extract user agent (always needed)
@@ -836,7 +840,7 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	}
 
 	if !hasDirectives {
-		return
+		return nil
 	}
 
 	r.Lock()
@@ -891,8 +895,17 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if hv := getHeader(headerDirectiveIntegrity); hv != "" {
 		r.directives.IntegritySelector = strings.TrimSpace(hv)
 	}
+	var invalid error
+	minBlock := func(v string) {
+		n, err := parseMinBlock(v)
+		if err != nil {
+			invalid = NewErrInvalidRequest(err)
+			return
+		}
+		r.directives.MinBlock = n
+	}
 	if hv := getHeader(headerDirectiveMinBlock); hv != "" {
-		r.directives.MinBlock = parseMinBlock(hv)
+		minBlock(hv)
 	}
 
 	// Query parameters come after headers so they can still override when explicitly present in URL.
@@ -911,7 +924,7 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 		r.directives.UseUpstream = strings.TrimSpace(useUpstream)
 	}
 	if v := getQueryArg(queryDirectiveMinBlock); v != "" {
-		r.directives.MinBlock = parseMinBlock(v)
+		minBlock(v)
 	}
 
 	if retryEmpty := getQueryArg(queryDirectiveRetryEmpty); retryEmpty != "" {
@@ -944,23 +957,23 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if v := getQueryArg(queryDirectiveEnforceNonNullTaggedBlocks); v != "" {
 		r.directives.EnforceNonNullTaggedBlocks = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
+	return invalid
 }
 
-// parseMinBlock reads a min-block value, decimal or 0x hex; 0 (unset) for
-// anything that is not a positive block number.
-func parseMinBlock(v string) int64 {
-	v = strings.TrimSpace(v)
+// parseMinBlock reads a min-block value, decimal or 0x hex, at least 0.
+func parseMinBlock(v string) (int64, error) {
+	s := strings.TrimSpace(v)
 	var n int64
 	var err error
-	if h, ok := strings.CutPrefix(strings.ToLower(v), "0x"); ok {
+	if h, ok := strings.CutPrefix(strings.ToLower(s), "0x"); ok {
 		n, err = strconv.ParseInt(h, 16, 64)
 	} else {
-		n, err = strconv.ParseInt(v, 10, 64)
+		n, err = strconv.ParseInt(s, 10, 64)
 	}
 	if err != nil || n < 0 {
-		return 0
+		return 0, fmt.Errorf("min-block %q is not a block number", v)
 	}
-	return n
+	return n, nil
 }
 
 // MinBlock is the block req answers at or after (RequestDirectives.MinBlock),

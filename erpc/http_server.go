@@ -776,7 +776,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}
 				nq.SetNetwork(nw)
 
-				applyRequestDirectives(project, nw, nq, headers, queryArgs)
+				if err := applyRequestDirectives(project, nw, nq, headers, queryArgs); err != nil {
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
+					common.EndRequestSpan(requestCtx, nil, err)
+					return
+				}
 				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
 
 				resp, err := project.Forward(requestCtx, networkId, nq)
@@ -2536,8 +2540,9 @@ func isMethodAllowed(project *PreparedProject, method string) (bool, error) {
 
 // applyRequestDirectives applies network directive defaults and then the
 // client's own directives from headers/query, subject to the project's
-// allowClientDirectives for the resolved user.
-func applyRequestDirectives(project *PreparedProject, nw *Network, nq *common.NormalizedRequest, headers http.Header, queryArgs map[string][]string) {
+// allowClientDirectives for the resolved user; an error for a directive
+// value it refuses (EnrichFromHttp).
+func applyRequestDirectives(project *PreparedProject, nw *Network, nq *common.NormalizedRequest, headers http.Header, queryArgs map[string][]string) error {
 	nq.ApplyDirectiveDefaults(nw.Config().DirectiveDefaults)
 	// Configure how to store User-Agent (raw vs simplified) based on project config
 	uaMode := common.UserAgentTrackingModeSimplified
@@ -2547,7 +2552,7 @@ func applyRequestDirectives(project *PreparedProject, nw *Network, nq *common.No
 		}
 		nq.SetAllowClientDirectiveMatcher(project.clientDirectiveMatcherFor(nq.User()))
 	}
-	nq.EnrichFromHttp(headers, queryArgs, uaMode)
+	return nq.EnrichFromHttp(headers, queryArgs, uaMode)
 }
 
 // isAdminMethodBlocked returns true when the admin config's DenyMethods/AllowMethods
