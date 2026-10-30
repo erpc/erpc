@@ -181,15 +181,43 @@ func TestGrpcStreamLogs_ResumeUndoAndSplit(t *testing.T) {
 		Filter: filterOf(chainsim.Filters[0]), FromBlock: &from, FromHash: cursor.Hash, HeartbeatSeconds: new(uint32(0))})))
 	require.Eventually(t, func() bool { n, _ := completeBlocks(b.all()); return n >= 8 }, 20*time.Second, 20*time.Millisecond, "the resumed stream flows")
 	s.reorg(2)
-	s.chain.BigBlocks(1400)
+	// About 1,050 logs a block: past one message. Larger blocks hit the
+	// tracker's receipts_timeout on the base too (1 run in 5 at 1,400).
+	s.chain.BigBlocks(700)
 	s.blocks(3)
 	s.chain.BigBlocks(0)
-	s.blocks(6)
+	// Big blocks' receipts take their time to fetch and check: wait until
+	// both streams pass them.
+	target, since := s.chain.Tip().Number+3, time.Now()
+	passed := assert.Eventually(t, func() bool {
+		_, last := completeBlocks(b.all())
+		_, lastAll := completeBlocks(all.all())
+		return last != nil && last.Number >= target && lastAll != nil && lastAll.Number >= target
+	}, 2*time.Minute, 50*time.Millisecond, "both streams pass the big blocks")
+	if !passed {
+		_, last := completeBlocks(b.all())
+		_, lastAll := completeBlocks(all.all())
+		confirmed, _ := s.nw.Load().chainTracker.Confirmed()
+		t.Fatalf("stalled: filter stream at %d (end %v), match-all at %d (end %v), confirmed %d, target %d",
+			last.GetNumber(), b.ended(), lastAll.GetNumber(), all.ended(), confirmed.Number, target)
+	}
+	t.Logf("streams passed the big blocks %s after the last one", time.Since(since).Round(time.Millisecond))
 
 	runB := b.all()
 	require.NotNil(t, runB[0].m.GetUndo(), "the resume past a reverted cursor starts with an Undo: %v", runB[0].m)
 	applied := applyGrpcLogs(t, runA, runB)
 	applied.requireCanonical(t, s, "resumed StreamLogs", 0)
+	if t.Failed() {
+		for i, run := range [][]grpcMsg[bdsevm.StreamLogsResponse]{runA, runB} {
+			for _, m := range run {
+				if blk := m.m.GetBlock(); blk != nil {
+					t.Logf("run %d: block %d %x parent %x logs %d tip %d", i, blk.Block.Number, blk.Block.Hash[:4], blk.Block.ParentHash[:4], len(blk.Logs), m.tip)
+				} else if u := m.m.GetUndo(); u != nil {
+					t.Logf("run %d: undo to %d %x tip %d", i, u.ForkPoint.Number, u.ForkPoint.Hash[:4], m.tip)
+				}
+			}
+		}
+	}
 	assert.GreaterOrEqual(t, len(applied.undos), 2, "an Undo at resume and one for the live reorg")
 	for _, m := range runB {
 		if blk := m.m.GetBlock(); blk != nil {
@@ -444,7 +472,12 @@ func TestGrpcStreamBlocks_FinalityHeartbeatsAndLimits(t *testing.T) {
 	s.setAll(func(f *chainsim.Faults) { f.Down = false })
 	require.Eventually(t, func() bool { return len(states()) == 2 && states()[1] == bdsevm.StreamStatus_STATE_OK },
 		30*time.Second, 50*time.Millisecond, "OK once vendors answer: %v", states())
-	require.NoError(t, beating.ended())
+	// The chain ran on during the outage, past the 3s window: the stream
+	// may end below_window once the tracker holds the head again.
+	if err := beating.ended(); err != nil {
+		assert.Equal(t, codes.OutOfRange, status.Code(err), "%v", err)
+		assert.Contains(t, status.Convert(err).Message(), "below_window")
+	}
 }
 
 // G3 (streams spec §6.2): StreamPendingTransactions sends hashes, or with
