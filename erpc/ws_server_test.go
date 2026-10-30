@@ -2009,6 +2009,62 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		s.chain.Halt(false)
 	})
 
+	// N7 in-process: block a's receipts answer later than the window (16
+	// blocks of 200ms) while the chain moves. Block a+1's come at once, so
+	// it reaches the logs head as a leaves the window, and its receipts
+	// leave the feed a block later, before a's arrive. Each tap then
+	// refetches a+1's receipts, as late as a's (spec §9): that wait is a
+	// receipts wait, never lag, so no tap ends and both clients get the
+	// logs of a and a+1 (§10.2).
+	t.Run("receipts refetched after they left the window", func(t *testing.T) {
+		s := newChaosSeed(t, 11, true, chaosOpts{maxBackfill: 20 * time.Second})
+		start(s)
+		defer s.stopERPC()
+		s.blocks(3)
+		s.dialLogs("refetch")
+		s.blocks(4)
+		m := chainsim.KindMatching
+		a := s.chain.Plan(m, m).Number + 1
+		// Well past the lag bound (16 block times, with the block-time
+		// EMA above 200ms on a loaded host), well within the fetch's 10s.
+		late := 6 * time.Second
+		var nextCalls atomic.Int32
+		hook := func(method, params string) {
+			if method != "eth_getBlockReceipts" {
+				return
+			}
+			slow, next := s.chain.CanonAt(a), s.chain.CanonAt(a+1)
+			p := strings.ToLower(params)
+			switch {
+			case slow != nil && strings.Contains(p, strings.ToLower(slow.Hash.Hex())):
+				time.Sleep(late)
+			case next != nil && strings.Contains(p, strings.ToLower(next.Hash.Hex())):
+				if nextCalls.Add(1) > 1 {
+					time.Sleep(late)
+				}
+			}
+		}
+		evm.TrackerFetchHook.Store(&hook)
+		defer evm.TrackerFetchHook.Store(nil)
+		ends := tapEndsOf(indexer.SubTypeLogs)
+		s.blocks(2)
+		require.Eventually(t, func() bool {
+			for _, cl := range s.openLogs() {
+				cl.mu.Lock()
+				d := cl.logsDiffLocked(s, a, a+1)
+				cl.mu.Unlock()
+				if d != "" {
+					return false
+				}
+			}
+			return len(s.openLogs()) == len(chainsim.Filters)
+		}, 30*time.Second, 50*time.Millisecond, "both clients hold the logs of blocks %d and %d", a, a+1)
+		evm.TrackerFetchHook.Store(nil)
+		assert.GreaterOrEqual(t, nextCalls.Load(), int32(2), "block %d's receipts were fetched again after they left the feed", a+1)
+		assert.Equal(t, ends, tapEndsOf(indexer.SubTypeLogs), "no logs tap ended")
+		require.Len(t, s.openLogs(), len(chainsim.Filters))
+	})
+
 	// A cold instance pins ws-a's heads while the other sources, held,
 	// have not reported: the delivery gate stays shut, then opens several
 	// blocks up at once. A logs client subscribed while it was shut gets
