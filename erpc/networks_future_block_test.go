@@ -71,6 +71,53 @@ func TestForward_FutureBlock_ShortCircuitsToNull(t *testing.T) {
 		"block 105 > max head 100 must short-circuit to null without dispatch")
 }
 
+// A block far above the ceiling whose reports are older than 1 bt is
+// decided again after the stale ones are Asked (spec §6.4). A report that
+// was fresh when the Ask began, and so was not Asked, ages past 1 bt while
+// the Ask runs; the block is still future, null with no dispatch (row K7):
+// the Ask refreshed what was stale at its start.
+func TestForward_FutureBlock_ShortCircuitSurvivesSlowStaleAsk(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "fs1", chainID: 123, latestBlock: 100},
+		{id: "fs2", chainID: 123, latestBlock: 100},
+		{id: "fs3", chainID: 123, latestBlock: 100},
+	})
+	network.cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
+	sampleBlockTime(t, network) // bt 1s
+	// fs2 and fs3 answer an Ask half a block time later.
+	for _, id := range []string{"fs2", "fs3"} {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			Delay(500 * time.Millisecond).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x65","timestamp":"0x6702a8f0"}}`))
+	}
+	var dispatched atomic.Int64
+	mockGetBlockByNumberAt("0x44d", futureBlockSentinel, &dispatched, "fs1", "fs2", "fs3")
+
+	// fs2 and fs3 last reported at setup, more than 1 bt ago; fs1 reports
+	// now and is 0.7 bt old when the request arrives.
+	time.Sleep(1200 * time.Millisecond)
+	ups[0].EvmStatePoller().SuggestLatestBlock(101, time.Now())
+	time.Sleep(700 * time.Millisecond)
+
+	resp := forwardGetBlockByNumber(t, ctx, network, "0x44d") // 1101
+	assert.True(t, resp.IsResultEmptyish(ctx), "a block 1000 above the ceiling is null")
+	assert.Zero(t, dispatched.Load(), "and never dispatched")
+}
+
 // A request at (or below) the max observed head must dispatch normally — the
 // short-circuit must not over-fire and swallow blocks an upstream actually has.
 func TestForward_FutureBlock_AtMaxHead_Dispatches(t *testing.T) {

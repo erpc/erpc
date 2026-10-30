@@ -62,9 +62,11 @@ func ShortCircuitsFuture(rq *common.NormalizedRequest) bool {
 
 // DecideHeadRefusal applies the refusal rule to block n on head h of
 // selector sel's lane: above the ceiling with a report 1 bt old or older,
-// those reports are Asked first and n decided again; still stale after
-// the Ask, n is in the band, the cheaper way to be wrong. Until the first
-// block time sample, every report counts as older than 1 bt (spec §6.4).
+// those reports are Asked first and n decided again, each report's age
+// taken at the Ask's start: a report fresh then was not Asked, and must
+// not turn stale by the Ask's own duration. Still stale after the Ask, n
+// is in the band, the cheaper way to be wrong. Until the first block time
+// sample, every report counts as older than 1 bt (spec §6.4).
 // With wait, an n at most nearFutureBlocks above the ceiling, future or
 // kept in the band by a stale report, waits for the ceiling to reach it,
 // at most W, and is decided again on the ceiling the wait saw; Latest
@@ -81,13 +83,14 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 	if cold {
 		h.OldestReportAt = time.Time{}
 	}
-	v := &common.HeadRefusal{Block: n, Rule: h.Rule(n, bt, time.Now())}
+	asked := time.Now()
+	v := &common.HeadRefusal{Block: n, Rule: h.Rule(n, bt, asked)}
 	if v.Rule == common.HeadStale && net != nil {
 		h.Ceiling, h.OldestReportAt = net.EvmAskStale(ctx, sel)
 		if cold {
 			h.OldestReportAt = time.Time{}
 		}
-		v.Rule, v.Refreshed = h.Rule(n, bt, time.Now()), true
+		v.Rule, v.Refreshed = h.Rule(n, bt, asked), true
 	}
 	if aboveCeiling := v.Rule == common.HeadFuture || v.Rule == common.HeadStale; aboveCeiling && wait && net != nil && n-h.Ceiling <= nearFutureBlocks(bt, h.OldestReportAt, time.Now()) {
 		kept := v.Rule == common.HeadStale
