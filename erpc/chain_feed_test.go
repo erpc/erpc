@@ -1758,10 +1758,27 @@ func (s *chaosSeed) orphanCached() {
 		return res["hash"] == h1 && calls() == before
 	}, 2*time.Second, 20*time.Millisecond, "a repeat answer for block %d comes from the cache", tip.Number)
 	before := calls()
+	// The chain rolls back below the block and mints a sibling at its
+	// height: the new head's parent is held, so the tracker follows the
+	// reorg with no fetch of that height by number.
 	depth := int(c.Tip().Number-tip.Number) + 1
-	s.reorg(depth)
+	c.Rewind(depth)
+	require.Eventually(s.t, func() bool {
+		b := c.CanonAt(tip.Number)
+		return b != nil && b.Hash != tip.Hash
+	}, 5*time.Second, 20*time.Millisecond, "a sibling of block %d is minted", tip.Number)
+	canon := c.CanonAt(tip.Number).Hash.Hex()
+	// Once the tracker pins the new block, a client reading the height by
+	// number gets it, never the orphan cached before the reorg (§19 P8).
+	require.Eventually(s.t, func() bool {
+		got, ok := s.tracker().HashAt(int64(tip.Number))
+		return ok && got == canon
+	}, 5*time.Second, 20*time.Millisecond, "the tracker pins the new block %d", tip.Number)
+	out, _, err := s.rpc("eth_getBlockByNumber", fmt.Sprintf("0x%x", tip.Number), false)
+	require.NoError(s.t, err)
+	res, _ := out["result"].(map[string]interface{})
+	require.Equal(s.t, canon, res["hash"], "block %d by number after the reorg; the orphan %s was cached", tip.Number, h1[:10])
 	s.blocks(3)
-	require.NotEqual(s.t, tip.Hash, c.CanonAt(tip.Number).Hash)
 	s.occur(fOrphanCached, fmt.Sprintf("block %d %s cached by number, then reorged out (depth %d); vendors served %d by-number fetches of it after", tip.Number, h1[:10], depth, calls()-before))
 }
 

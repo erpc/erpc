@@ -823,7 +823,7 @@ in `erpc_cache_set_success_total`:
 
 Span attributes on `Cache.Get`: `network.id`, `request.method`, `request.finality`, `cache.policies_matched`, `cache.hit` (bool), `cache.miss_reason`, `cache.miss_connector_id`, `cache.miss_policy`.
 
-Span attributes on `Cache.GetForPolicy`: `cache.policy_summary`, `cache.connector_id`, `cache.method`, `cache.get_outcome` (`found`/`miss`/`ttl_rejected`/`empty_ignored`/`error`/`cancelled`), `cache.block_ref`, `cache.group_key`, `cache.request_key`.
+Span attributes on `Cache.GetForPolicy`: `cache.policy_summary`, `cache.connector_id`, `cache.method`, `cache.get_outcome` (`found`/`miss`/`ttl_rejected`/`orphaned`/`empty_ignored`/`error`/`cancelled`), `cache.block_ref`, `cache.group_key`, `cache.request_key`. `orphaned`: an unfinalized entry names a block the chain tracker no longer pins at its number (a reorg replaced it); the read goes to an upstream and its answer replaces the entry.
 
 ### Debug log messages
 
