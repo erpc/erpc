@@ -121,7 +121,7 @@ test-race:
 
 .PHONY: test-realworld
 test-realworld:
-	@go test ./test/realworld/... -count=1 -v -timeout 60m
+	@go test ./test/realworld/... -count=1 -v -timeout 120m
 
 .PHONY: bench
 bench:

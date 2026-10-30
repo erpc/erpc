@@ -452,16 +452,28 @@ func (s *scenario) judgeExt(c *extLogsClient) {
 
 // clientLink stands between one client and every pod: while down it
 // refuses new connections and has closed the open ones, as a client whose
-// network dropped.
+// network dropped; while held it forwards nothing and keeps every socket
+// open, as a black-holed path.
 type clientLink struct {
 	h     *harness
 	lns   []net.Listener
 	down  atomic.Bool
+	held  atomic.Bool
 	mu    sync.Mutex
 	conns map[net.Conn]bool
 }
 
+// newClientLink links to the pods' HTTP and ws port.
 func (s *scenario) newClientLink() *clientLink {
+	return s.newLink(func(p *pod) int { return p.httpPort })
+}
+
+// newGrpcLink links to the pods' gRPC port.
+func (s *scenario) newGrpcLink() *clientLink {
+	return s.newLink(func(p *pod) int { return p.grpcPort })
+}
+
+func (s *scenario) newLink(port func(*pod) int) *clientLink {
 	cl := &clientLink{h: s.h, conns: map[net.Conn]bool{}}
 	for _, p := range s.h.pods {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -469,13 +481,22 @@ func (s *scenario) newClientLink() *clientLink {
 			s.t.Fatal(err)
 		}
 		cl.lns = append(cl.lns, ln)
-		target := fmt.Sprintf("127.0.0.1:%d", p.httpPort)
+		target := fmt.Sprintf("127.0.0.1:%d", port(p))
 		go cl.serve(ln, target)
 	}
 	s.wg.Add(1)
 	go func() { defer s.wg.Done(); <-s.ctx.Done(); cl.close() }()
 	return cl
 }
+
+// grpcEndpoint is the streams library endpoint of pod's project and chain
+// through the link.
+func (cl *clientLink) grpcEndpoint(s *scenario, pod int) string {
+	return fmt.Sprintf("grpc://%s/%s/evm/%d", cl.lns[pod].Addr(), s.project, s.chain.ID())
+}
+
+// hold black-holes the link, open and new connections alike, or ends it.
+func (cl *clientLink) hold(on bool) { cl.held.Store(on) }
 
 func (cl *clientLink) wsURL(pod int, project string, chainID int64) string {
 	return fmt.Sprintf("ws://%s/%s/evm/%d", cl.lns[pod].Addr(), project, chainID)
@@ -500,6 +521,7 @@ func (cl *clientLink) close() {
 	for _, ln := range cl.lns {
 		_ = ln.Close()
 	}
+	cl.held.Store(false)
 	cl.set(true)
 }
 
@@ -531,6 +553,9 @@ func (cl *clientLink) pipe(c net.Conn, target string) {
 		buf := make([]byte, 32<<10)
 		for {
 			n, err := src.Read(buf)
+			for cl.held.Load() {
+				time.Sleep(10 * time.Millisecond)
+			}
 			if n > 0 {
 				if _, werr := dst.Write(buf[:n]); werr != nil {
 					break
