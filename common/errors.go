@@ -1152,7 +1152,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeFailsafeCircuitBreakerOpen) {
 				cbOpen++
 				continue
-			} else if errors.Is(e, context.DeadlineExceeded) || HasErrorCode(e, ErrCodeEndpointRequestTimeout, ErrCodeNetworkRequestTimeout, ErrCodeFailsafeTimeoutExceeded) {
+			} else if IsTimeout(e) {
 				timeout++
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointServerSideException) {
@@ -1259,6 +1259,12 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 	}
 
 	return ""
+}
+
+// IsTimeout reports whether err is a deadline that ran out: the request's,
+// the network's, or a failsafe timeout.
+func IsTimeout(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || HasErrorCode(err, ErrCodeEndpointRequestTimeout, ErrCodeNetworkRequestTimeout, ErrCodeFailsafeTimeoutExceeded)
 }
 
 func (e *ErrUpstreamsExhausted) Errors() []error {

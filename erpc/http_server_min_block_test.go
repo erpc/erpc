@@ -275,10 +275,9 @@ func TestHttpServer_MinBlock(t *testing.T) {
 	})
 
 	t.Run("FarFutureRefusedWithoutDispatch", func(t *testing.T) {
-		// The chain made a block since eRPC last heard it, and the last
-		// Ask is a block time old: the Ask of the stale reports fetches
-		// that block, fresh, and the block is future. On a halted chain
-		// the reports stay stale and the request waits.
+		// The last Ask is a block time old: the Ask of the stale reports
+		// dates them fresh, whether or not the chain made a block (on a
+		// halted chain too), and the block is future: refused at once.
 		setHeads(103, ids...)
 		time.Sleep(1100 * time.Millisecond)
 		before, future := calls(), outcome("future")

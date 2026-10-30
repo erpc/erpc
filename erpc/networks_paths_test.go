@@ -803,7 +803,7 @@ func TestNetworksPaths_BoundaryLaneAndFutureBlockGuards(t *testing.T) {
 
 func TestNetworksPaths_ForwardOnLiveNetwork(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	gock.New("http://rpc1.localhost").
 		Post("").
@@ -914,7 +914,7 @@ func TestNetworksPaths_ForwardOnLiveNetwork(t *testing.T) {
 }
 
 func TestNetworksPaths_PolicyAccessorsAndGroupLanes(t *testing.T) {
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{primaryLatest: "0x3e8", fallbackLatest: "0x3e8"})
@@ -1000,7 +1000,7 @@ func TestNetworksPaths_PolicyAccessorsAndGroupLanes(t *testing.T) {
 
 func TestNetworksPaths_SvmSlotReadouts(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	const host = "svm-paths-rpc1.localhost"
 	util.SetupMocksForSvmStatePollerWithShred(host, 1000, 990, 1005)
 	gock.New("http://" + host).

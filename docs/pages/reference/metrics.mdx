@@ -317,7 +317,7 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 | `erpc_websocket_connections_active` | gauge | project | Open client WebSocket connections. |
 | `erpc_taps` | gauge | project, network, transport, kind | Open taps: client consumers (ws `newHeads` / `logs` subscriptions, gRPC `StreamBlocks` streams, the integrity follow tap) reading the chain feed from their own cursor. `transport` ∈ `"ws"`, `"grpc"`, `"integrity"`. |
 | `erpc_tap_end_total` | counter | project, network, transport, kind, reason, detail | Taps ended by the server. `reason="out_of_range"`: the cursor left the feed; `detail` ∈ `"below_window"`, `"fork_left_window"`, `"cursor_unknown"`, `"receipts_timeout"`, `"reorg_depth"`; ws closes such a connection with `1013`, gRPC ends the stream with `OUT_OF_RANGE`. `reason="lagging"`, `detail="lag"`: the client read slower than the transport's wait bound. |
-| `erpc_tap_delivery_seconds` | histogram | transport, kind | Seconds from a block's confirmed-head change to a tap's write of it. |
+| `erpc_tap_delivery_seconds` | histogram | transport, kind | Seconds from a block's ready stamp (confirmed head; logs head for a logs tap) to the end of a tap's write of it. |
 | `erpc_websocket_notifications_sent_total` | counter | project, network, kind | Subscription notifications written to clients. |
 | `erpc_websocket_notification_bytes_total` | counter | project, network, kind | JSON bytes of those notifications, without cost frame headers. |
 | `erpc_upstream_subscriptions_active` | gauge | project, network, upstream, kind | `eth_subscribe` subscriptions live on upstream WebSocket connections: `newHeads` on each subscription source, plus `newPendingTransactions` while a client subscribes to it. |
@@ -361,7 +361,7 @@ One chain tracker per network follows the canonical chain from source headers an
 | `erpc_upstream_tag_state_stale` | gauge | project, network, upstream | `1` while the upstream's `latest` state is stale against the network-wide `Latest`. The tag-state gate judges each tag request against its own `Latest`. |
 | `erpc_upstream_tag_state_all_stale_total` | counter | project, network, outcome | Tag requests whose every routed upstream had stale `latest` state. `outcome` ∈ `"routed"`, `"refused"`. |
 | `erpc_source_resubscribe_total` | counter | project, network, upstream, topic | Pending-transaction topics a push source subscribed again after 60s without a message while heads carried transactions. |
-| `erpc_shared_counter_remote_rejected_total` | counter | reason | Remote shared-counter states this instance rejected. `reason` ∈ `"non_positive"`, `"small_rollback"`, `"stale_timestamp"`, `"malformed"`. |
+| `erpc_shared_counter_remote_rejected_total` | counter | reason | Remote shared-counter states this instance rejected. `reason` ∈ `"non_positive"`, `"small_rollback"`, `"held_rollback"`, `"stale_timestamp"`, `"malformed"`. |
 | `erpc_integrity_check_suspended_total` | counter | project, network, check | Integrity checks suspended for a network: no answer passed them at heights in a row, from vendors that meet the evidence quorum. |
 
 #### Area 3: Block number and tip tracking

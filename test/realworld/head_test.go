@@ -296,7 +296,11 @@ func u14() spec {
 				case got != want.Hash.Hex():
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), Latest %d + %d, answered %s, not the archive's %s", pod+1, n, bn, u14Probe, got, short(want.Hash))
 				case archive.NumberCalls(n, false, from, to) == 0:
-					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered without asking the archive", pod+1, n)
+					// The right block with no archive dispatch came from a
+					// vendor that caught up, u14Ahead - u14Probe blocks
+					// after the probe: the archive's answer took longer, a
+					// latency verdict.
+					s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("pod-%d: eth_getBlockByNumber(%d) answered without asking the archive, after %s", pod+1, n, to.Sub(from).Round(time.Millisecond))))
 				case s.dispatches(n, false, from, to) > refusalDispatches:
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d)", pod+1, n, s.dispatches(n, false, from, to), refusalDispatches)
 				}

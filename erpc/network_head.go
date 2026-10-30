@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"fmt"
+	"iter"
 	"runtime/debug"
 	"slices"
 	"sync"
@@ -119,8 +120,8 @@ func (l *servedTipLane) latestMoved() <-chan struct{} {
 	}
 }
 
-// headsComputed returns a channel closed after the next pass over every
-// lane, for a reader whose selector forms no lane.
+// headsComputed returns a channel closed after the head loop's next pass,
+// for a reader whose selector forms no lane.
 func (n *Network) headsComputed() <-chan struct{} {
 	for {
 		if c := n.headPass.Load(); c != nil {
@@ -133,10 +134,33 @@ func (n *Network) headsComputed() <-chan struct{} {
 	}
 }
 
-// headsChanged asks for every lane's Head to be computed again: an upstream
-// head counter moved (local or remote), a bench changed, or the policy's
-// eligible set changed. It never blocks.
+// headsChanged asks for every lane's Head to be computed again: a bench
+// changed, the policy's eligible set changed, an upstream joined or its
+// polls started or stopped failing. It never blocks.
 func (n *Network) headsChanged() {
+	n.markLanes(nil)
+}
+
+// headMoved asks for the Heads of the lanes u is in to be computed again:
+// one of its head counters or its chain-identity cordon moved, which no
+// other lane's ballot or ceiling counts. It never blocks.
+func (n *Network) headMoved(u common.Upstream) {
+	n.markLanes(u)
+}
+
+// markLanes marks every lane u is in (every lane for nil) dirty and wakes
+// the head loop, whose next pass computes only the dirty lanes.
+func (n *Network) markLanes(u common.Upstream) {
+	n.servedTipAll.dirty.Store(true)
+	n.servedTipLanes.Range(func(_, v any) bool {
+		l := v.(*servedTipLane)
+		if u == nil {
+			l.dirty.Store(true)
+		} else if m, _ := common.UpstreamMatchesSelector(l.selector, u); m {
+			l.dirty.Store(true)
+		}
+		return true
+	})
 	select {
 	case n.headWake <- struct{}{}:
 	default:
@@ -144,9 +168,10 @@ func (n *Network) headsChanged() {
 }
 
 // startHeads computes every lane's Head now, so a network bootstrapped on
-// upstreams with known heads serves its first request with a Head, then on
-// each headsChanged and every headRefresh until the app stops. Once per
-// network: its bootstrap can run again after it succeeded.
+// upstreams with known heads serves its first request with a Head, then
+// computes the dirty lanes on each wake (markLanes) and marks every lane
+// each headRefresh until the app stops. Once per network: its bootstrap
+// can run again after it succeeded.
 func (n *Network) startHeads() {
 	if n.cfg == nil || n.cfg.Architecture != common.ArchitectureEvm || n.appCtx == nil {
 		return
@@ -165,9 +190,10 @@ func (n *Network) startHeads() {
 				case <-n.appCtx.Done():
 					return
 				case <-ticker.C:
+					n.headsChanged()
 				case <-n.headWake:
+					n.refreshDirtyHeads()
 				}
-				n.refreshHeads()
 			}
 		})
 	})
@@ -175,37 +201,55 @@ func (n *Network) startHeads() {
 
 // watchHeadCounters makes every move of ups's head counters, by a poll, a
 // push or another instance, and every change of its chain-identity cordon,
-// which moves it in or out of the ceiling, wake the head loop (spec §6.4).
-// The registry calls it once per upstream as it joins the network, which
-// is itself a change of the voters.
+// which moves it in or out of the ceiling, mark its lanes dirty (spec
+// §6.4). The registry calls it once per upstream as it joins the network,
+// which is itself a change of the voters.
 func (n *Network) watchHeadCounters(ups *upstream.Upstream) {
 	if p, ok := ups.EvmStatePoller().(*evm.EvmStatePoller); ok && !p.IsObjectNull() {
-		p.OnLatestBlock(func(int64) { n.headsChanged() })
-		p.OnFinalizedBlock(func(int64) { n.headsChanged() })
-		p.OnChainIdCordonChanged(n.headsChanged)
+		p.OnLatestBlock(func(int64) { n.headMoved(ups) })
+		p.OnFinalizedBlock(func(int64) { n.headMoved(ups) })
+		p.OnChainIdCordonChanged(func() { n.headMoved(ups) })
 	}
 	n.headsChanged()
 }
 
-// refreshHeads computes and publishes every lane's Head. A panic on one
-// lane leaves the others computed, and the pass ends for its waiters. The
-// stateless heads of selectors that form no lane are picked again after
-// each pass.
+// refreshHeads computes and publishes every lane's Head now, then ends the
+// pass. A panic on one lane leaves the others computed.
 func (n *Network) refreshHeads() {
-	defer func() {
-		n.statelessMu.Lock()
-		n.statelessGen.Add(1)
-		n.statelessHeads.Clear()
-		n.statelessMu.Unlock()
-		if c := n.headPass.Swap(nil); c != nil {
-			close(*c)
-		}
-	}()
+	defer n.endHeadPass()
 	n.refreshLaneRecovered(&n.servedTipAll)
 	n.servedTipLanes.Range(func(_, v any) bool {
 		n.refreshLaneRecovered(v.(*servedTipLane))
 		return true
 	})
+}
+
+// refreshDirtyHeads is refreshHeads over the dirty lanes only. A lane is
+// clean before its computation, so a change during it marks it again.
+func (n *Network) refreshDirtyHeads() {
+	defer n.endHeadPass()
+	if n.servedTipAll.dirty.Swap(false) {
+		n.refreshLaneRecovered(&n.servedTipAll)
+	}
+	n.servedTipLanes.Range(func(_, v any) bool {
+		if l := v.(*servedTipLane); l.dirty.Swap(false) {
+			n.refreshLaneRecovered(l)
+		}
+		return true
+	})
+}
+
+// endHeadPass drops the stateless heads of selectors that form no lane,
+// picked again at their next read, and wakes the readers waiting on the
+// pass (headsComputed).
+func (n *Network) endHeadPass() {
+	n.statelessMu.Lock()
+	n.statelessGen.Add(1)
+	n.statelessHeads.Clear()
+	n.statelessMu.Unlock()
+	if c := n.headPass.Swap(nil); c != nil {
+		close(*c)
+	}
 }
 
 func (n *Network) refreshLaneRecovered(l *servedTipLane) {
@@ -245,7 +289,9 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	if h.Latest != old.Latest {
 		l.reached.note(h.Latest, time.Now(), n.latestReachedKept())
 	}
-	l.head.Store(&h)
+	// A copy, so only a changed Head reaches the heap.
+	pub := h
+	l.head.Store(&pub)
 	if h.Latest != old.Latest {
 		// Latest 0 is unknown, not a served number: eth_blockNumber then
 		// errors. A fall through unknown counts at its first known value.
@@ -397,16 +443,23 @@ func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool, latest i
 		if tip > 0 {
 			anchor.observe(tip)
 		}
-		n.observeServedTipMetrics(axis, l.label, tip, pick.Freshest, anchor.age())
+		if l.gauges == nil {
+			l.gauges = n.bindLaneGauges(l.label)
+		}
+		g := &l.gauges.latest
+		if finalized {
+			g = &l.gauges.finalized
+		}
+		g.observe(tip, pick.Freshest, anchor.age())
 		if !finalized {
 			for rank, voters := range ranks {
-				telemetry.GaugeHandle(telemetry.MetricServedTipVoters, n.projectId, n.Label(), l.label, tipRankLabels[rank]).Set(float64(voters))
+				l.gauges.voters[rank].Set(float64(voters))
 			}
 			quorum := 0
 			if pick.Inputs > 0 {
 				quorum = q.Of(pick.Inputs)
 			}
-			telemetry.GaugeHandle(telemetry.MetricServedTipQuorum, n.projectId, n.Label(), l.label).Set(float64(quorum))
+			l.gauges.quorum.Set(float64(quorum))
 		}
 	}
 	return tip
@@ -442,8 +495,8 @@ func (n *Network) laneLeader(sel string, latest int64) common.Upstream {
 // upstream or any one's head is unknown. oldest is when the oldest counted
 // report's evidence was taken (LatestReportAt), zero when one has none.
 func (n *Network) laneCeiling(sel string) (ceiling int64, oldest time.Time) {
-	ups := n.countedUpstreams(sel)
-	for i, u := range ups {
+	first := true
+	for u := range n.countedUpstreams(sel) {
 		sp := u.EvmStatePoller()
 		if sp == nil {
 			return 0, time.Time{}
@@ -457,8 +510,8 @@ func (n *Network) laneCeiling(sel string) (ceiling int64, oldest time.Time) {
 		if !sp.IsObjectNull() {
 			at = sp.LatestReportAt()
 		}
-		if i == 0 || at.Before(oldest) {
-			oldest = at
+		if first || at.Before(oldest) {
+			oldest, first = at, false
 		}
 	}
 	return ceiling, oldest
@@ -469,11 +522,15 @@ func (n *Network) laneCeiling(sel string) (ceiling int64, oldest time.Time) {
 // another chain and those whose polls are failing (spec §6.1, §6.4;
 // networkIntake.pollsFailing): one failed poll, a 429 included, keeps an
 // upstream counted, so a block it reports is never called future.
-func (n *Network) countedUpstreams(sel string) []*upstream.Upstream {
+func (n *Network) countedUpstreams(sel string) iter.Seq[*upstream.Upstream] {
+	// Kept this small so it inlines, as tipCandidates.
+	return func(yield func(*upstream.Upstream) bool) { n.walkCounted(sel, yield) }
+}
+
+func (n *Network) walkCounted(sel string, yield func(*upstream.Upstream) bool) {
 	if n.upstreamsRegistry == nil {
-		return nil
+		return
 	}
-	var out []*upstream.Upstream
 	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
 		if sel != "" {
 			if m, _ := common.UpstreamMatchesSelector(sel, u); !m {
@@ -486,9 +543,10 @@ func (n *Network) countedUpstreams(sel string) []*upstream.Upstream {
 		if n.intake != nil && n.intake.pollsFailing(u.Id()) {
 			continue
 		}
-		out = append(out, u)
+		if !yield(u) {
+			return
+		}
 	}
-	return out
 }
 
 // EvmAskStale Asks, with a number need at 1 bt (spec §6.8), each of
@@ -501,7 +559,7 @@ func (n *Network) EvmAskStale(ctx context.Context, selector string) (ceiling int
 	bt, cold := n.blockTimeOrCold(), n.EvmBlockTime() <= 0
 	now := time.Now()
 	var stale []common.EvmStatePoller
-	for _, u := range n.countedUpstreams(selector) {
+	for u := range n.countedUpstreams(selector) {
 		if sp := u.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 			if cold || now.Sub(sp.LatestReportAt()) >= bt {
 				stale = append(stale, sp)
@@ -516,18 +574,23 @@ func (n *Network) EvmAskStale(ctx context.Context, selector string) (ceiling int
 
 // EvmAwaitCeiling waits for selector sel's lane ceiling to reach block, at
 // most W or until ctx ends, Asking the lane's number voters below block
-// at once and every bt after (spec §6.4 near future). The Ask is
-// single-flight at pace bt, so many waiting requests fetch each voter at
-// most once per bt. It returns the ceiling and oldest report it last saw.
+// at once and every bt after (spec §6.4 near future), each after the
+// answer it last took from that voter: a tick never takes the fetch the
+// one before took, so it sees each new head within a bt. The Ask is
+// single-flight at pace bt, so many waiting requests fetch each voter
+// about once per bt. It returns the ceiling and oldest report it last saw.
 func (n *Network) EvmAwaitCeiling(ctx context.Context, sel string, block int64) (ceiling int64, oldestReportAt time.Time) {
 	bt := n.blockTimeOrCold()
 	wait, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
 	defer cancel()
+	taken := map[string]time.Time{}
 	ask := func() {
 		n.voters(sel, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
 			if head < block {
 				if sp := u.(common.EvmUpstream).EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-					sp.AskBackground(common.HeadNeedNumber, bt, common.AskRefusal)
+					if at := sp.AskBackground(common.HeadNeedNumber, bt, taken[u.Id()], common.AskRefusal).At; !at.IsZero() {
+						taken[u.Id()] = at
+					}
 				}
 			}
 			return true
@@ -561,7 +624,7 @@ func (n *Network) EvmAwaitCeiling(ctx context.Context, sel string, block int64) 
 func (n *Network) EvmAskBand(selector string, block int64) {
 	bt := n.blockTimeOrCold()
 	for _, sp := range n.bandPollers(selector, block) {
-		sp.AskBackground(common.HeadNeedNumber, bt, common.AskRefusal)
+		sp.AskBackground(common.HeadNeedNumber, bt, time.Time{}, common.AskRefusal)
 	}
 }
 
@@ -583,7 +646,7 @@ func (n *Network) awaitBandAsk(ctx context.Context, sel string, block int64) {
 // bandPollers are the pollers of the upstreams sel's lane ceiling counts
 // whose head is below block, number voters (voterSet) first.
 func (n *Network) bandPollers(sel string, block int64) []common.EvmStatePoller {
-	ups := n.countedUpstreams(sel)
+	ups := slices.Collect(n.countedUpstreams(sel))
 	s := n.voters(sel, voterQuery{kind: numberVote})
 	voters := s.list()
 	out := make([]common.EvmStatePoller, 0, len(ups))
@@ -608,7 +671,7 @@ func (n *Network) bandPollers(sel string, block int64) []common.EvmStatePoller {
 func askAll(ctx context.Context, pollers []common.EvmStatePoller, pace time.Duration, reason common.AskReason) {
 	var wg sync.WaitGroup
 	for _, sp := range pollers {
-		wg.Go(func() { sp.Ask(ctx, common.HeadNeedNumber, pace, reason) })
+		wg.Go(func() { sp.Ask(ctx, common.HeadNeedNumber, pace, time.Time{}, reason) })
 	}
 	wg.Wait()
 }
@@ -635,12 +698,14 @@ var byHashFamily = map[string][]interface{}{
 
 // holdByHash returns the answer to send for resp, an answer to req, from
 // an upstream or the cache (spec §6.4): a by-hash answer from a block
-// above its lane's Latest waits up to 1 bt while the voters Latest lacks
-// are Asked for a head fetched after the wait began (AskReaching: a
+// above its lane's Latest waits at least 1 bt while the voters Latest
+// lacks are Asked for a head fetched after the wait began (AskReaching: a
 // counter fresher than 1 bt is no evidence their nodes lack the block),
-// then is sent if Latest includes the block, else it is null, as it is
-// when ctx ends first. Each wait counts its outcome. held: resp was
-// replaced by null.
+// and past 1 bt until those Asks answered, at most W: a fetch over a slow
+// link or on a loaded host answers after 1 bt, and only its answer is
+// evidence. It is then sent if Latest includes the block, else it is
+// null, as it is when ctx ends first. Each wait counts its outcome. held:
+// resp was replaced by null.
 func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (out *common.NormalizedResponse, held bool) {
 	bn := byHashBlock(ctx, req, resp)
 	if bn <= 0 {
@@ -650,32 +715,56 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 	if d := req.Directives(); d != nil {
 		sel = d.UseUpstream
 	}
-	latest := func() (int64, <-chan struct{}) {
+	// computed: the lane's Head is computed and published first. Under
+	// load the head loop can trail the voters' counters by more than 1 bt,
+	// and Latest is their quorum, not the last publish.
+	latest := func(computed bool) (int64, <-chan struct{}) {
 		if l := n.laneFor(sel); l != nil {
+			if computed {
+				n.refreshLaneRecovered(l)
+			}
 			moved := l.latestMoved()
 			return l.published().Latest, moved
 		}
-		computed := n.headsComputed()
-		return n.headFor(sel).Latest, computed
+		pass := n.headsComputed()
+		return n.headFor(sel).Latest, pass
 	}
-	at, moved := latest()
+	at, moved := latest(false)
 	if at <= 0 || bn <= at {
 		return resp, false
 	}
+	at, moved = latest(true)
 	bt := n.blockTimeOrCold()
-	wait, cancel := context.WithTimeout(ctx, bt)
+	asks, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
 	defer cancel()
+	var wg sync.WaitGroup
 	for _, sp := range n.lackingVoters(sel, bn) {
-		go sp.AskReaching(wait, bn, bt, common.AskRefusal)
+		wg.Go(func() { sp.AskReaching(asks, bn, bt, common.AskRefusal) })
 	}
+	answered := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(answered)
+	}()
+	minWait := time.NewTimer(bt)
+	defer minWait.Stop()
+	// settled is the Asks' answers once 1 bt passed.
+	var settled <-chan struct{}
 	for at < bn {
 		select {
 		case <-moved:
-		case <-wait.Done():
+			at, moved = latest(false)
+			continue
+		case <-minWait.C:
+			settled = answered
+			continue
+		case <-settled:
+		case <-asks.Done():
+		}
+		if at, _ = latest(true); at < bn {
 			n.countHeadRefusal("held_null")
 			return nullAnswer(req, resp)
 		}
-		at, moved = latest()
 	}
 	n.countHeadRefusal("held_served")
 	return resp, false

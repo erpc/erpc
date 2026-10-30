@@ -859,12 +859,15 @@ func TestCovSvmPoller_LargeRollbackIsRecorded(t *testing.T) {
 	p := newPollerWithUpstream(t, up)
 
 	p.SuggestLatestSlot(5000)
-	p.SuggestLatestSlot(1000) // 4000 back: beyond DefaultToleratedSlotRollback
-	require.EqualValues(t, 1000, p.LatestSlot(), "a large rollback is applied, not ignored")
+	p.SuggestLatestSlot(999) // 4001 back: beyond DefaultToleratedSlotRollback, held until it moves
+	require.EqualValues(t, 5000, p.LatestSlot(), "a first large rollback is held")
+	p.SuggestLatestSlot(1000) // moved on from its new height
+	require.EqualValues(t, 1000, p.LatestSlot(), "a large rollback that moved is applied, not ignored")
 	require.Equal(t, 4000.0, promUtil.ToFloat64(
 		telemetry.MetricUpstreamBlockHeadLargeRollback.WithLabelValues("test", "", "", id, "latest")))
 
 	p.SuggestFinalizedSlot(3000)
+	p.SuggestFinalizedSlot(99)
 	p.SuggestFinalizedSlot(100)
 	require.EqualValues(t, 100, p.FinalizedSlot())
 	require.Equal(t, 2900.0, promUtil.ToFloat64(

@@ -104,6 +104,7 @@ func buildIntegrityNetwork(t *testing.T, ctx context.Context, integrity *common.
 		Failsafe:     []*common.FailsafeConfig{fsCfg},
 		Integrity:    integrity,
 	}, rlr, upr, mt, nil)
+	stopAtEnd(t, ntw)
 	require.NoError(t, err)
 	ntw.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
@@ -136,7 +137,7 @@ var underflowedIdx = []string{"0xfffffff7", "0xfffffff8", "0xfffffff9", "0xfffff
 // fails over to the second upstream and the canonical receipt is served.
 func TestIntegrity_Network_CorruptReceiptFailsOver(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -161,7 +162,7 @@ func TestIntegrity_Network_CorruptReceiptFailsOver(t *testing.T) {
 // untouched (the engine does not over-reject real data).
 func TestIntegrity_Network_CleanReceiptPasses(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -186,7 +187,7 @@ func TestIntegrity_Network_CleanReceiptPasses(t *testing.T) {
 // integrity_saved_total (a wrong response was prevented).
 func TestIntegrity_Network_SavedRequestFlagged(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -243,7 +244,7 @@ func mockMethod(url, method, body string) {
 // but-wrong receipt is force-fetched, rejected, and failed over.
 func TestIntegrity_Network_ConfigLevelDrivesCorroboration(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -279,7 +280,7 @@ func TestIntegrity_Network_ConfigLevelDrivesCorroboration(t *testing.T) {
 // returns corrupt data the request fails (rather than serving garbage).
 func TestIntegrity_Network_AllUpstreamsCorrupt(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
