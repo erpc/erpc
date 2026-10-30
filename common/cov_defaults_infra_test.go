@@ -591,7 +591,7 @@ func TestCovDefaults_MisbehaviorsDestinationAndAutoTune(t *testing.T) {
 	f := &MisbehaviorsDestinationConfig{}
 	require.NoError(t, f.SetDefaults())
 	assert.Equal(t, MisbehaviorsDestinationTypeFile, f.Type)
-	assert.Equal(t, "{timestampMs}-{method}-{networkId}", f.FilePattern)
+	assert.Equal(t, "{timestampMs}-{instanceId}-{method}-{networkId}", f.FilePattern)
 	assert.Nil(t, f.S3, "file destinations get no s3 block")
 
 	s3 := &MisbehaviorsDestinationConfig{Type: MisbehaviorsDestinationTypeS3, FilePattern: "x"}

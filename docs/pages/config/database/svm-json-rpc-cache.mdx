@@ -24,8 +24,8 @@ Illustrative, not a tuned production config — cache slot-pinned finalized read
 
 <ConfigTabs
   path="database.svmJsonRpcCache"
-  focusYaml="2-3,8-11,13-17"
-  focusTs="2-4,7-9,10-13"
+  focusYaml="2-3,8-11,13-21"
+  focusTs="2-4,7-9,10-15"
   yaml={`database:
   svmJsonRpcCache:
     connectors:
@@ -41,11 +41,12 @@ Illustrative, not a tuned production config — cache slot-pinned finalized read
         finality: finalized
         ttl: 0
       # Everything else tracks the rooted head. TTL is the ONLY staleness bound.
+      # Object form tracks observed slot time; scalar "2s" is a fixed alternative.
       - connector: mem
         network: "*"
         method: "*"
         finality: realtime
-        ttl: 2s`}
+        ttl: { blockTimeMultiplier: 1, fallback: 200ms }`}
   ts={`database: {
   svmJsonRpcCache: {
     connectors: [{ id: "mem", driver: "memory", memory: { maxItems: 100000 } }],
@@ -54,7 +55,9 @@ Illustrative, not a tuned production config — cache slot-pinned finalized read
       // that is already rooted — genuinely immutable, safe to keep forever.
       { connector: "mem", network: "*", method: "*", finality: "finalized", ttl: 0 },
       // Everything else tracks the rooted head. TTL is the ONLY staleness bound.
-      { connector: "mem", network: "*", method: "*", finality: "realtime", ttl: "2s" },
+      // Object form tracks observed slot time; scalar "2s" is a fixed alternative.
+      { connector: "mem", network: "*", method: "*", finality: "realtime",
+        ttl: { blockTimeMultiplier: 1, fallback: "200ms" } },
     ],
   },
 }`}
@@ -161,7 +164,7 @@ Three categories live in `neverCacheMethods`: **mutating or effectful** calls, w
 
 **Cache keys are case-preserving, and this is a correctness requirement.** The shared EVM hasher lowercases every string param, which is the right normalization for hex but catastrophic for Solana: base58 pubkeys and transaction signatures are **case-sensitive**, so two distinct valid accounts differing only by letter case would collapse onto one key and be served each other's data. `svmRequestKey` preserves case exactly. It marshals params with `encoding/json` (not sonic) on purpose — the standard library documents that it sorts map keys, which is what makes the key deterministic across runs and across Go map iteration order, and its grammar is both type- and structure-delimiting, so `"abc"`, `["a","bc"]`, and `{"a":"bc"}` cannot collide, nor can the number `1` and the string `"1"`. The method name is both hashed and prefixed, so a method name containing `:` cannot forge another method's key. Params `nil` and `params: []` normalize to the same key.
 
-**No block-timestamp age guard.** EVM re-checks a realtime hit's block timestamp against the policy TTL before accepting it. SVM has no equivalent: because only genuinely immutable responses are classified `finalized`, the **TTL on the realtime policy is the staleness bound** — the same lever EVM uses for `latest`. There is consequently no `erpc_cache_get_age_guard_reject_total` traffic on SVM networks.
+**No block-timestamp age guard.** EVM re-checks a realtime hit's block timestamp against the policy TTL before accepting it. SVM has no equivalent: because only genuinely immutable responses are classified `finalized`, the **connector storage TTL on the realtime policy is the staleness bound** — the same lever EVM uses for `latest`. That TTL may be a fixed duration or derived from the network's slot-time EMA via `ttl: { blockTimeMultiplier, fallback }` (see config schema). There is consequently no `erpc_cache_get_age_guard_reject_total` traffic on SVM networks.
 
 **Get is sequential, not a parallel fan-out.** `Get` walks the matched policies in list order and returns the first non-empty hit; there is no goroutine race, no `fanCtx`, and no peer cancellation. **Order your policies fastest-connector-first** — with SVM this is not a tie-break hint, it is the actual probe order. `Set` likewise writes to matched connectors sequentially.
 
@@ -177,7 +180,7 @@ All fields live under `database.svmJsonRpcCache` and use the **same `CacheConfig
 |---|---|---|---|
 | `database.svmJsonRpcCache` | `*CacheConfig` | `nil` (no SVM caching) | Independent of `evmJsonRpcCache`. Validated at startup; a broken block fails config validation rather than silently disabling the cache. |
 | `policies[*].finality` | enum | `finalized` (Go zero value) | `finalized` matches only `getBlock`/`getTransaction` at commitment `finalized`, plus `getInflationReward`/`getBlockTime`. **Every other SVM read is `realtime`.** |
-| `policies[*].ttl` | Duration | `0` (no expiry) | On a `realtime` SVM policy this is the *only* staleness bound — there is no block-timestamp age guard to catch an over-long TTL. |
+| `policies[*].ttl` | Duration \| `{ blockTimeMultiplier, fallback }` | `0` (no expiry) | On a `realtime` SVM policy this is the *only* staleness bound — there is no block-timestamp age guard. Scalar form is a fixed storage TTL. Object form resolves storage TTL as `slotTimeEMA × blockTimeMultiplier` once the tracker has warmed (≥3 samples from accepted head advances: wall-clock Δ / slot gap); until then `fallback` applies, or a built-in **200ms** cold-start default when `fallback` is omitted (Alpenglow ~200ms slot target; EVM's analogous default remains 2s). Metric labels always use the fixed/`fallback` component so cardinality stays stable. `blockTimeMultiplier` is validated only on `finality: realtime`. |
 | `policies[*].network` | string | `"*"` | Matches the SVM network id: `svm:<cluster>` or `svm:<chain>:<cluster>`. |
 | `policies[*].method` | string | `"*"` | Matches Solana method names (`getBlock`, `getAccountInfo`, …). Methods in `neverCacheMethods` are excluded before matching and cannot be re-enabled by any policy. |
 
@@ -375,14 +378,14 @@ All fields live under `database.svmJsonRpcCache` and use the **same `CacheConfig
 - **`neverCacheMethods` short-circuit both directions.** `Get` returns a miss and `Set` returns without writing, before any policy is consulted.
 - **Responses with a JSON-RPC `error` field are never cached.** Native Solana error codes and `error.data` are preserved to the client instead — see the [error reference](/reference/errors#svm-solana-error-contract).
 - **A `getSlot` response is corrected after the cache read.** The post-forward hook enforces the highest known slot for the request's commitment even on a cache hit, so a cached value can never make the slot number appear to move backwards. See [slot tracking](/reference/svm/slot-tracking).
-- **No realtime age gate.** A `realtime` hit is accepted on TTL alone. There is no block-timestamp cross-check and no `ttl_rejected` outcome on SVM.
+- **No realtime age gate.** A `realtime` hit is accepted on connector TTL alone. There is no block-timestamp cross-check and no `ttl_rejected` outcome on SVM. When `ttl` uses `blockTimeMultiplier`, `Set` stores with the resolved slot-time TTL (or cold-start fallback); `Get` still trusts connector expiry.
 - **`X-ERPC-Skip-Cache-Read`** works identically to EVM — `"true"` skips every connector, a glob pattern skips matching connector ids.
 
 ### Best practices
 
 - **Always define a `realtime` policy.** It is not an edge case on SVM — it is the majority of your traffic. `getAccountInfo`, `getProgramAccounts`, `getSlot`, `getBlockHeight`, and `getSignaturesForAddress` are all `realtime` at *every* commitment level, including `finalized`. (`getBalance` / `getTokenAccountBalance` are hard-skipped via `neverCacheMethods` and never match a policy.) A config with only a `finality: finalized` policy caches almost nothing.
 - **Never "fix" a low hit rate by forcing state reads to `finalized`.** There is no config knob to do this on SVM, and that is deliberate — it would be a permanent-cache correctness bug, not a tuning win. If you need higher hit rates on account reads, raise the `realtime` TTL knowingly.
-- **Keep `realtime` TTL in the 1–3 s range.** One Solana slot is ~400 ms. A 2 s TTL means a caller may observe state up to ~5 slots old; anything much larger starts to surface visibly stale balances.
+- **Prefer `ttl: { blockTimeMultiplier: 1, fallback: 200ms }` for realtime** when you want storage expiry to track observed slot time (including as slot cadence changes). Once warm, multiplier `1` is roughly one slot of head staleness (~200ms under Alpenglow; historically ~400ms) — expect a lower realtime hit rate than a fixed multi-second TTL and watch upstream load on soak. Raise the multiplier or set a wider `fallback` if callers need a longer cold-start window. Omitting `fallback` uses the built-in 200ms cold-start default. Second-granularity connectors (e.g. DynamoDB) quantize sub-second TTLs to whole seconds.
 - **Set `unfinalized` TTL to roughly two slots (≈800 ms).** That bucket only ever holds `getBlock`/`getTransaction` below `finalized` commitment, where a fork switch is the risk being bounded.
 - **Order policies fastest-connector-first.** SVM's `Get` is a sequential walk, so a slow remote connector listed before a local memory connector adds its full latency to every hit.
 - **Leave compression enabled.** `getBlock` payloads regularly exceed a megabyte; zstd at the default threshold pays for itself immediately.
@@ -404,6 +407,8 @@ All fields live under `database.svmJsonRpcCache` and use the **same `CacheConfig
 12. **Constructor failures are downgraded to a warning at startup.** `erpc/init.go` logs a WARN and continues if `NewSvmJsonRpcCache` fails, which would leave the cache silently absent — this is exactly why the config block is schema-validated eagerly at startup instead.
 13. **Same-chain networks share partition keys unless `cacheKeySuffix` is set.** Same rule as EVM: empty suffix keeps `<networkId>:<slotRef>`. A `:` or `\` inside `slotRef` (a string `minContextSlot` is passed through) is backslash-escaped so the key cannot collide with another suffix split. A suffix on `svm:<cluster>` would otherwise spell the unsuffixed key of `svm:<cluster>:<suffix>`, which is a valid network id, so that case escapes the network id's colons (`svm\:<cluster>:<suffix>:<slotRef>`). A suffix on `svm:<chain>:<cluster>` cannot spell a network id, and keeps `<networkId>:<suffix>:<slotRef>`. Source: [`architecture/svm/json_rpc_cache.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/json_rpc_cache.go), [`common/config.go`](https://github.com/erpc/erpc/blob/main/common/config.go).
 14. **Upgrading the partition encoding does not remove collided entries.** Previously, `svm:foo` with suffix `bar` and unsuffixed `svm:foo:bar` both used `svm:foo:bar:<slotRef>`. The new suffixed key changes, but the unsuffixed reader still accepts old entries, including responses from the other network. If these networks shared a cache, stop all old-version writers before purging the affected partitions from every configured cache connector. Alternatively, move both networks to clean, isolated namespaces. Do not resume affected cache reads until cleanup or isolation is complete. A rolling upgrade or suffixed-cache refill alone is insufficient.
+15. **`policies[*].ttl.blockTimeMultiplier` is a no-op until the slot-time EMA warms.** The SVM state poller does not have on-chain slot timestamps; the tracker feeds the EMA from wall-clock Δ divided by the accepted slot gap on corroborated head advances. Until ≥3 samples land, `ResolveTTL` uses `ttl.fallback` (or the built-in 200ms cold-start default). Empty polls and non-advancing tips do not sample — that is intentional so poller cadence is not mistaken for chain production rate.
+16. **Warming `GetNetworkBlockTime` for `svm:*` is shared, not cache-only.** This change reuses the existing EMA rather than a parallel SVM TTL stack, so other consumers that already call `GetNetworkBlockTime` / `EvmBlockTime` leave their cold path once the estimate warms: failsafe block-unavailable retry delay becomes `slotTime × BlockUnavailableDelayMultiplier` (default multiplier `1.0`; overrides a static `emptyResultDelay` when the dynamic provider returns non-zero), selection-policy `*LagSeconds` thresholds start converting head/finalization lag into wall time, and `maxRetryableBlockDistance`'s derived floor can widen from the slot-time horizon. This PR only starts feeding the estimate those paths already read.
 
 ### Observability
 
@@ -420,6 +425,7 @@ The SVM cache emits the **same `erpc_cache_*` metric family** as the EVM cache, 
 | `erpc_cache_set_error_total` | counter | A connector `Set` errored (logged at WARN, swallowed) |
 | `erpc_cache_set_original_bytes_total` / `erpc_cache_set_compressed_bytes_total` | counter | Pre- and post-zstd payload accounting; the compressed counter only advances when compression actually shrank the value |
 | `erpc_cache_get_success_hit_duration_seconds` / `erpc_cache_get_success_miss_duration_seconds` / `erpc_cache_set_success_duration_seconds` / `erpc_cache_set_error_duration_seconds` | histogram | Hit, miss, successful-set, and failed-set latency |
+| `erpc_network_dynamic_block_time_milliseconds` | gauge | Tracker EMA slot/block time for the network (`project`, `network` labels). Zero/absent until ≥3 samples; this is the input `ResolveTTL` multiplies when `policies[*].ttl.blockTimeMultiplier` is set. |
 
 Use the `*_total` **counters** (not duration histograms) for hit/miss rates. `neverCacheMethods` short-circuits stay silent — they are not cache skips and do not inflate skipped counters.
 

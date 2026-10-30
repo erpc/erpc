@@ -119,6 +119,25 @@ func TestBatchExecHeaders_AggregateCountersAndPartialCache(t *testing.T) {
 	assert.Empty(t, h.Get("X-ERPC-Upstreams-Truncated"))
 }
 
+func TestBatchExecHeaders_ConsensusPolicyAgreesOrOmitsMixed(t *testing.T) {
+	s := costTestServer(&common.ServerConfig{})
+
+	a := routedResponse(t, "eth_call")
+	b := routedResponse(t, "eth_getBalance")
+	a.Request().ExecState().SetConsensusPolicy("waive-missing")
+	b.Request().ExecState().SetConsensusPolicy("waive-missing")
+
+	w := httptest.NewRecorder()
+	s.writeBatchExecHeaders(context.Background(), w, []interface{}{a, b})
+	assert.Equal(t, "waive-missing", w.Header().Get("X-ERPC-Consensus-Policy"))
+
+	c := routedResponse(t, "eth_getBlockByNumber")
+	c.Request().ExecState().SetConsensusPolicy("default")
+	w = httptest.NewRecorder()
+	s.writeBatchExecHeaders(context.Background(), w, []interface{}{a, c})
+	assert.Empty(t, w.Header().Get("X-ERPC-Consensus-Policy"), "mixed policies have no single batch value")
+}
+
 // routedResponseOnNetwork is routedResponse with the request bound to a
 // network, the way a real forward resolves one from the URL before routing.
 func routedResponseOnNetwork(t *testing.T, method, networkId, networkLabel string) *common.NormalizedResponse {

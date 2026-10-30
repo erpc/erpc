@@ -345,6 +345,8 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		resp, err = c.handleTraceBlock(ctx, conn, req, jrReq)
 	case "debug_traceTransaction":
 		resp, err = c.handleTraceTransaction(ctx, conn, req, jrReq)
+	case "trace_block":
+		resp, err = c.handleParityTraceBlock(ctx, conn, req, jrReq)
 	case "eth_getBalance":
 		resp, err = c.handleGetBalance(ctx, conn, req, jrReq)
 	case "eth_chainId":
