@@ -322,6 +322,7 @@ func (m *mockEvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe 
 	return 0, nil
 }
 
+func (m *mockEvmStatePoller) Wait() {}
 func (m *mockEvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	return &common.EvmStatePollerDiagnostics{
 		Enabled:        true,
@@ -651,6 +652,7 @@ func (m *mockEvmStatePollerWithUpdate) EarliestBlock(probe common.EvmAvailabilit
 	return 0
 }
 
+func (m *mockEvmStatePollerWithUpdate) Wait() {}
 func (m *mockEvmStatePollerWithUpdate) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	return &common.EvmStatePollerDiagnostics{
 		Enabled:        true,

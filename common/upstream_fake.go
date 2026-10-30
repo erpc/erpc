@@ -395,6 +395,8 @@ func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown
 }
 
+func (p *FakeEvmStatePoller) Wait() {}
+
 func (p *FakeEvmStatePoller) GetDiagnostics() *EvmStatePollerDiagnostics {
 	return &EvmStatePollerDiagnostics{
 		Enabled:        true,

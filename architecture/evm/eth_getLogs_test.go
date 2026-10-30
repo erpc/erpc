@@ -217,6 +217,8 @@ func (m *mockStatePoller) IsObjectNull() bool {
 	return false
 }
 
+func (m *mockStatePoller) Wait() {}
+
 func (m *mockStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	return &common.EvmStatePollerDiagnostics{
 		Enabled:      true,

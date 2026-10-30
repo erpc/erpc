@@ -621,7 +621,7 @@ func (c *counterInt64) startRefresh(ctx context.Context, executeNewValueFn func(
 	}
 
 	resultCh := make(chan refreshResult, 1)
-	go func() {
+	if !c.registry.refreshes.Go(func() {
 		fnCtx, fnCancel := context.WithTimeout(c.registry.appCtx, fnTimeout)
 		defer fnCancel()
 
@@ -657,7 +657,9 @@ func (c *counterInt64) startRefresh(ctx context.Context, executeNewValueFn func(
 		fnSpan.End()
 
 		resultCh <- refreshResult{val: value, err: err, started: started}
-	}()
+	}) {
+		resultCh <- refreshResult{err: fmt.Errorf("shared counter refresh of %s: registry stopped", c.key), started: time.Now()}
+	}
 	return resultCh, fnTimeout
 }
 
@@ -750,9 +752,9 @@ func (c *counterInt64) applyRefreshResult(initialVal int64, r refreshResult) (in
 }
 
 // continueAsyncRefresh applies the refresh's result when it lands, then
-// closes done, which c.refreshing holds until then.
+// closes done, which c.refreshing holds until then. Caller holds updateMu.
 func (c *counterInt64) continueAsyncRefresh(resultCh <-chan refreshResult, fnTimeout time.Duration, done chan struct{}) {
-	go func() {
+	if !c.registry.refreshes.Go(func() {
 		defer func() {
 			c.updateMu.Lock()
 			if c.refreshing == done {
@@ -783,7 +785,10 @@ func (c *counterInt64) continueAsyncRefresh(resultCh <-chan refreshResult, fnTim
 		case <-c.registry.appCtx.Done():
 			return
 		}
-	}()
+	}) {
+		c.refreshing = nil
+		close(done)
+	}
 }
 
 func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {

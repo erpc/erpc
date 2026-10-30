@@ -291,6 +291,9 @@ type EvmStatePoller interface {
 	IsObjectNull() bool
 	EarliestBlock(probe EvmAvailabilityProbeType) int64
 	GetDiagnostics() *EvmStatePollerDiagnostics
+	// Wait waits, once the app ctx ended, until no goroutine of the poller
+	// runs; none starts after.
+	Wait()
 }
 
 // EvmStatePollerDiagnostics contains diagnostic information about the state poller

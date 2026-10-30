@@ -118,11 +118,15 @@ type Network struct {
 }
 
 // wait waits, once the app ctx ended, until no goroutine of the network's
-// intake, reconciler, taps, trackers or tracker fetches runs.
+// intake, reconciler, taps, trackers or tracker fetches runs, nor any of
+// its upstreams registry's (UpstreamsRegistry.Wait).
 func (n *Network) wait() {
 	n.bg.Wait()
 	if n.chainTracker != nil {
 		n.chainTracker.Wait()
+	}
+	if n.upstreamsRegistry != nil {
+		n.upstreamsRegistry.Wait()
 	}
 }
 
