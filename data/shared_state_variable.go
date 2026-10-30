@@ -162,11 +162,11 @@ type counterInt64 struct {
 	// started (UpdateIfStale): it debounces the next refresh, since a
 	// report dated by a slow fetch's send time can be older than the
 	// debounce at once.
-	attemptAtUnixMs        atomic.Int64
-	registry               *sharedStateRegistry
-	key                    string
-	state                  atomic.Pointer[counterState]
-	updateMu               sync.Mutex
+	attemptAtUnixMs atomic.Int64
+	registry        *sharedStateRegistry
+	key             string
+	state           atomic.Pointer[counterState]
+	updateMu        sync.Mutex
 	// refreshing is closed when the refresh that outlived its caller's
 	// foreground wait lands; nil while none does. updateMu guards it.
 	refreshing             chan struct{}
