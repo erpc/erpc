@@ -81,7 +81,8 @@ if part build go build ./... && part vet go vet ./...; then
 fi
 row go-total 0 $(($(date +%s) - start)) ""
 rw=$(date +%s)
-part realworld bash -c "cd test/realworld && REALWORLD_TIER=fast '$dir/realworld.test' -test.run TestRealWorld -test.count 1 -test.v -test.timeout 9m"
+# A busy laptop never reaches the quiet limit: run anyway; verdicts label load (REALWORLD_LOADED_HOST).
+part realworld bash -c "cd test/realworld && REALWORLD_TIER=fast REALWORLD_LOADED_HOST=${REALWORLD_LOADED_HOST:-1} '$dir/realworld.test' -test.run TestRealWorld -test.count 1 -test.v -test.timeout 9m"
 for tier in full long; do
 	n=$(awk -v t="$tier tier" '$3 == "skip" && index($0, t) {print $2}' "$dir/realworld.log" | sort -u | wc -l | tr -d ' ')
 	row "realworld-$tier" 0 0 "not run: $n scenarios (make test-realworld$([ $tier = long ] && echo -long))"
