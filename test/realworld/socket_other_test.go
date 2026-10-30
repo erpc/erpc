@@ -15,4 +15,4 @@ func init() {
 	os.Exit(1)
 }
 
-func socketOwner(int, int, []int) int { return 0 }
+func socketOwners([]int) map[sockKey]int { return nil }

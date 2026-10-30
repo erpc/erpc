@@ -47,6 +47,8 @@ type harness struct {
 	webSocket map[string]interface{}
 	// lookups time how long the proxies take to tell pods apart.
 	lookups *lookups
+	// owners tells the proxies which pod a connection comes from.
+	owners *ownerTable
 	// series ends the per-second record of the pods' vote gauges;
 	// seriesDone, set once it runs, closes when it ended.
 	series     chan struct{}
@@ -118,7 +120,7 @@ func newHarness(t *testing.T, dir string, withRedis bool) *harness {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, dir: dir, pids: make(map[int]*pod), dumped: make(map[int]bool), start: time.Now(), cpu0: selfCPU(), lookups: &lookups{},
+	h := &harness{t: t, dir: dir, pids: make(map[int]*pod), dumped: make(map[int]bool), start: time.Now(), cpu0: selfCPU(), lookups: &lookups{}, owners: newOwnerTable(),
 		series: make(chan struct{}), headers: make(map[int]map[hash]time.Time), lasts: make(map[int]map[hash]time.Time),
 		latests: make(map[int]map[hash]time.Time)}
 	if withRedis {
