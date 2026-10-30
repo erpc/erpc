@@ -45,6 +45,9 @@ type HttpServer struct {
 	serverV4                *http.Server
 	serverV6                *http.Server
 	sharedGrpcServer        *GrpcServer
+	// stopGrpcStreams ends the shared port's open gRPC streams: their cleared
+	// deadlines would otherwise hold Shutdown for its whole budget.
+	stopGrpcStreams         context.CancelFunc
 	erpc                    *ERPC
 	logger                  *zerolog.Logger
 	healthCheckAuthRegistry *auth.AuthRegistry
@@ -189,6 +192,8 @@ func NewHttpServer(
 			return nil, err
 		}
 		srv.sharedGrpcServer = sharedGrpcServer
+		streamsCtx, stopStreams := context.WithCancel(context.Background())
+		srv.stopGrpcStreams = stopStreams
 		streamingMethods := make(map[string]struct{})
 		for svc, info := range sharedGrpcServer.server.GetServiceInfo() {
 			for _, m := range info.Methods {
@@ -209,6 +214,11 @@ func NewHttpServer(
 					if err := rc.SetWriteDeadline(time.Time{}); err != nil {
 						logger.Warn().Err(err).Str("method", r.URL.Path).Msg("failed to clear write deadline of gRPC stream")
 					}
+					ctx, cancel := context.WithCancel(r.Context())
+					defer cancel()
+					stop := context.AfterFunc(streamsCtx, cancel)
+					defer stop()
+					r = r.WithContext(ctx)
 				}
 				sharedGrpcServer.server.ServeHTTP(w, r)
 				return
@@ -2214,6 +2224,9 @@ func (s *HttpServer) createTLSConfig() (*tls.Config, error) {
 func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	logger.Info().Msg("stopping http servers...")
 
+	if s.stopGrpcStreams != nil {
+		s.stopGrpcStreams()
+	}
 	s.shutdownWebSockets(logger, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

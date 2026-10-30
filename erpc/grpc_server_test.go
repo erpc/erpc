@@ -1,12 +1,14 @@
 package erpc
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -89,7 +91,7 @@ func TestHttpServer_CanSharePortWithGrpc(t *testing.T) {
 	})
 
 	util.SetupMocksForEvmStatePoller()
-	gock.New("http://rpc1.localhost").
+	block1 := gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
 		Filter(func(request *http.Request) bool {
@@ -98,6 +100,24 @@ func TestHttpServer_CanSharePortWithGrpc(t *testing.T) {
 		}).
 		Reply(200).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x1","hash":"0x0000000000000000000000000000000000000000000000000000000000000001","parentHash":"0x0000000000000000000000000000000000000000000000000000000000000000","sha3Uncles":"0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347","miner":"0x0000000000000000000000000000000000000000","stateRoot":"0x0000000000000000000000000000000000000000000000000000000000000000","transactionsRoot":"0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421","receiptsRoot":"0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421","logsBloom":"0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","difficulty":"0x0","gasLimit":"0x5208","gasUsed":"0x0","timestamp":"0x1","extraData":"0x","mixHash":"0x0000000000000000000000000000000000000000000000000000000000000000","nonce":"0x0000000000000000","baseFeePerGas":"0x7","size":"0x1","transactions":[]}}`))
+	// Slow enough to still be in flight when Shutdown starts below, yet within
+	// the 1 s write timeout that applies to unary calls.
+	slowUpstreamReached := make(chan struct{})
+	var slowUpstreamOnce sync.Once
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Times(1).
+		Filter(func(request *http.Request) bool {
+			body := util.SafeReadBody(request)
+			if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, "\"0x2\"") {
+				return false
+			}
+			slowUpstreamOnce.Do(func() { close(slowUpstreamReached) })
+			return true
+		}).
+		Reply(200).
+		Delay(500 * time.Millisecond).
+		JSON(bytes.Replace(block1.BodyBuffer, []byte(`"number":"0x1"`), []byte(`"number":"0x2"`), 1))
 
 	localHost := "127.0.0.1"
 	httpPort := 4000
@@ -223,5 +243,46 @@ func TestHttpServer_CanSharePortWithGrpc(t *testing.T) {
 		names = append(names, s.GetName())
 	}
 	assert.Contains(t, names, "grpc.reflection.v1.ServerReflection")
-	require.NoError(t, stream.CloseSend())
+
+	// On shutdown the open stream ends at once instead of holding Shutdown for
+	// its whole budget, while a unary call already in flight still completes.
+	unaryDone := make(chan error, 1)
+	go func() {
+		resp, err := grpcClient.GetBlockByNumber(grpcCtx, &evm.GetBlockByNumberRequest{BlockNumber: "0x2"})
+		if err == nil && resp.GetBlock().GetNumber() != 2 {
+			err = fmt.Errorf("unexpected block: %v", resp.GetBlock())
+		}
+		unaryDone <- err
+	}()
+	select {
+	case <-slowUpstreamReached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("unary call never reached the upstream")
+	}
+	streamDone := make(chan error, 1)
+	go func() {
+		_, err := stream.Recv()
+		streamDone <- err
+	}()
+	shutdownStarted := time.Now()
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- httpServer.Shutdown(&logger) }()
+	select {
+	case err := <-streamDone:
+		require.Error(t, err)
+	case <-time.After(time.Until(shutdownStarted.Add(1 * time.Second))):
+		t.Fatal("open stream must end within 1s of shutdown starting")
+	}
+	select {
+	case err := <-unaryDone:
+		require.NoError(t, err, "unary call in flight during shutdown must complete")
+	case <-time.After(5 * time.Second):
+		t.Fatal("unary call in flight during shutdown never completed")
+	}
+	select {
+	case err := <-shutdownDone:
+		require.NoError(t, err)
+	case <-time.After(time.Until(shutdownStarted.Add(5 * time.Second))):
+		t.Fatal("Shutdown must return well before its 30s budget")
+	}
 }
