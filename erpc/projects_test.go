@@ -22,7 +22,7 @@ import (
 func TestProject_Forward(t *testing.T) {
 	t.Run("ForwardCorrectlyRateLimitedOnProjectLevel", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -133,7 +133,7 @@ func TestProject_Forward(t *testing.T) {
 func TestProject_TimeoutScenarios(t *testing.T) {
 	t.Run("UpstreamTimeout", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -246,7 +246,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 
 	t.Run("NetworkTimeout", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -360,7 +360,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 	t.Run("LazyLoadEvmNetwork_WithDefaultConfigs", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		// Begin mocking an upstream response for a brand new chain "evm:9999"
 		// that isn't explicitly defined in prjConfig.Networks:
@@ -522,7 +522,7 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 func TestProject_NetworkAlias(t *testing.T) {
 	t.Run("NetworkAliasResolution", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 

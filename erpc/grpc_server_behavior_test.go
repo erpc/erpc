@@ -182,8 +182,9 @@ func newGrpcBehaviorFixture(t *testing.T) *grpcBehaviorFixture {
 	require.NoError(t, cfg.SetDefaults(nil))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 	erpcInstance, err := NewERPC(ctx, &log.Logger, nil, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
+	t.Cleanup(cancel)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 

@@ -79,6 +79,7 @@ func setupWsTipNetwork(t *testing.T, ctx context.Context, id, endpoint string) (
 		Architecture: common.ArchitectureEvm,
 		Evm:          &common.EvmNetworkConfig{ChainId: 123},
 	}, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	upstreamsRegistry.Bootstrap(ctx)
@@ -136,7 +137,7 @@ func eventuallyPinned(t *testing.T, network *Network, want int64, msg string) {
 // StreamBlocks stop at 1001, and reach 1005 once a second source has it.
 func TestNetworkIntake_HeaderAdvancesNetworkTip(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx := context.Background()
 
 	ids := []string{"rpc-a", "rpc-b", "rpc-c"}
@@ -344,7 +345,7 @@ func TestNetworkIntake_NonSourceVoterNeverHoldsTaps(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setupGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 
 			chain := newMockChain(1000, false)
 			httpVendor, srv := newMockHttpVendor(t, chain)
@@ -384,7 +385,7 @@ func TestNetworkIntake_NonSourceVoterNeverHoldsTaps(t *testing.T) {
 // An unknown source lifts nothing, nor does one eligible source alone; a
 // quorum of eligible ones does.
 func TestNetworkIntake_EligibleSourceLiftsLatest(t *testing.T) {
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -405,7 +406,7 @@ func TestNetworkIntake_EligibleSourceLiftsLatest(t *testing.T) {
 // An upstream the selection policy excludes never reaches clients: its own
 // poller sees its heads, but they never vote, so no tap receives them.
 func TestNetworkIntake_PolicyExcludedUpstreamNeverReachesClients(t *testing.T) {
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -479,7 +480,7 @@ func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 	}
 
 	t.Run("HeldWhileAPrimaryStreams", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		network, ups := setup(t, ctx, true)
@@ -504,7 +505,7 @@ func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 	})
 
 	t.Run("DeliveredWhenNoPrimaryStreams", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		network, _ := setup(t, ctx, true)
@@ -514,7 +515,7 @@ func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 	})
 
 	t.Run("DeliveredWhenPolicyExcludesPrimaries", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		network, ups := setup(t, ctx, false)
@@ -534,7 +535,7 @@ func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 	})
 
 	t.Run("DeliveredWithFailoverOff", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
@@ -557,7 +558,7 @@ func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 // the cordon, after which its heads vote again.
 func TestNetworkIntake_WithholdsUnacceptedMajorJump(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	prevRecheck := evm.ChainIdCordonRecheck.Load()
 	evm.ChainIdCordonRecheck.Store(100 * time.Millisecond)
 	defer evm.ChainIdCordonRecheck.Store(prevRecheck)
@@ -613,7 +614,7 @@ func TestNetworkIntake_WithholdsUnacceptedMajorJump(t *testing.T) {
 // rest of its batch at most (spec §3).
 func TestNetworkIntake_VoteBehindClientAnswersWaitsOneBatch(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -694,7 +695,7 @@ func TestNetworkIntake_VoteBehindClientAnswersWaitsOneBatch(t *testing.T) {
 // no client.
 func TestNetworkIntake_WithholdsUnverifiableSource(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -737,7 +738,7 @@ func pollerUpstream(id, endpoint string) *common.UpstreamConfig {
 // header.
 func TestNetworkIntake_GroupLaneConfirmsWhenLatestMovesWithoutHeader(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx := context.Background()
 
 	chain := newMockChain(1000, false)
@@ -781,7 +782,7 @@ func TestNetworkIntake_GroupLaneConfirmsWhenLatestMovesWithoutHeader(t *testing.
 // their heads instead of waiting for their 30s polls or for W.
 func TestNetworkIntake_HeldHashVoteNeedPollsVotersBelowThePin(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx := context.Background()
 
 	chain := newMockChain(1000, false)
@@ -825,7 +826,7 @@ func TestNetworkIntake_HeldHashVoteNeedPollsVotersBelowThePin(t *testing.T) {
 // lower than its vote, moves it.
 func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	chain := newMockChain(1000, false)
 	aVendor, aURL := newMockWsVendor(t, chain, nil)
@@ -887,7 +888,7 @@ func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
 // so the source neither stays last in routing nor stops being a hash voter.
 func TestNetworkIntake_ReconnectOnHaltedChainRenewsVote(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	chain := newMockChain(1000, false)
 	aVendor, aURL := newMockWsVendor(t, chain, nil)
@@ -927,7 +928,7 @@ func TestNetworkIntake_ReconnectOnHaltedChainRenewsVote(t *testing.T) {
 //     Asks take no permit, so they reach the node and the vote holds.
 func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx := context.Background()
 
 	chain := newMockChain(1000, false)

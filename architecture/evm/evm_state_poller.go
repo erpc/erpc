@@ -84,6 +84,9 @@ type EvmStatePoller struct {
 	// ticker goroutine is bound to appCtx and has no other stop mechanism, so
 	// spawning a duplicate would poll the upstream forever.
 	started atomic.Bool
+	// bg runs every goroutine of the poller: its loop, Ask fetches,
+	// verifications and probes. Wait waits for them once appCtx ended.
+	bg util.Goroutines
 
 	projectId    string
 	appCtx       context.Context
@@ -282,8 +285,15 @@ func (e *EvmStatePoller) startLoop(interval time.Duration) bool {
 	if !e.started.CompareAndSwap(false, true) {
 		return false
 	}
-	go e.pollLoop(interval)
-	return true
+	return e.bg.Go(func() { e.pollLoop(interval) })
+}
+
+// Wait waits, once appCtx ended, until no goroutine of the poller runs;
+// none starts after.
+func (e *EvmStatePoller) Wait() {
+	if e != nil {
+		e.bg.Wait()
+	}
 }
 
 // pollLoop runs a full state poll every interval (none while it is 0), and
@@ -753,34 +763,77 @@ func (e *EvmStatePoller) askFetch(parent trace.SpanContext, need common.HeadNeed
 			return nil, common.AskSharedFresh, at
 		}
 	}
-	a := &e.headAsk
+	f, outcome, at, start := e.headAsk.meet(need, pace, after, now, cadence, parent)
+	if start {
+		e.startFetch(f)
+	}
+	return f, outcome, at
+}
+
+// meet returns the fetch that meets need at pace after after, under a.mu;
+// start: f is new, sent now, and the caller starts it.
+func (a *headAsk) meet(need common.HeadNeed, pace time.Duration, after, now time.Time, cadence time.Duration, parent trace.SpanContext) (f *headFetch, outcome common.AskOutcome, at time.Time, start bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	f := a.last
+	f = a.last
 	switch {
 	case need == common.HeadNeedFork && a.lastFork != nil && withinPace(a.lastFork.sent, after, now, pace):
-		return a.lastFork, common.AskInflight, a.lastFork.sent
+		return a.lastFork, common.AskInflight, a.lastFork.sent, false
 	case f != nil && !f.answered && need == common.HeadNeedFork:
 		if f.next == nil {
 			f.next = &headFetch{fork: true, done: make(chan struct{}), parent: parent}
 		}
-		return f.next, common.AskFetched, time.Time{}
+		return f.next, common.AskFetched, time.Time{}, false
 	case f != nil && !f.answered:
-		return f, common.AskInflight, f.sent
+		return f, common.AskInflight, f.sent, false
 	// Any outcome debounces for the pace; only node failures back off
 	// further.
 	case f != nil && need != common.HeadNeedFork && withinPace(f.sent, after, now, pace):
-		return f, common.AskInflight, f.sent
+		return f, common.AskInflight, f.sent, false
 	case f != nil && a.failures > 0 && withinPace(f.sent, after, now, backoffDelay(cadence, a.failures)):
-		return nil, common.AskBackoff, time.Time{}
+		return nil, common.AskBackoff, time.Time{}, false
 	}
 	f = &headFetch{sent: now, fork: need == common.HeadNeedFork, done: make(chan struct{}), parent: parent}
 	a.last = f
 	if f.fork {
 		a.lastFork = f
 	}
-	go e.runFetch(f)
-	return f, common.AskFetched, now
+	return f, common.AskFetched, now, true
+}
+
+// errPollerStopped fails a fetch the poller can no longer start: its app
+// ctx ended and Wait began.
+var errPollerStopped = errors.New("evm state poller stopped")
+
+// startFetch runs f on the poller's goroutines; once they are refused, it
+// fails f, so every waiter hears an outcome.
+func (e *EvmStatePoller) startFetch(f *headFetch) {
+	if !e.bg.Go(func() { e.runFetch(f) }) {
+		e.endFetch(f, nil, false, errPollerStopped)
+	}
+}
+
+// endFetch gives f's outcome to every waiter and starts the fork fetch
+// queued behind it.
+func (e *EvmStatePoller) endFetch(f *headFetch, header common.EvmHeader, answered bool, err error) {
+	a := &e.headAsk
+	a.mu.Lock()
+	f.answered, f.header, f.err = true, header, err
+	switch {
+	case nodeFailedPoll(err):
+		a.failures++
+	case answered:
+		a.failures = 0
+	}
+	next := f.next
+	if next != nil {
+		next.sent, a.last, a.lastFork = time.Now(), next, next
+	}
+	a.mu.Unlock()
+	close(f.done)
+	if next != nil {
+		e.startFetch(next)
+	}
 }
 
 // runFetch runs f and gives its outcome to every waiter; a panic fails
@@ -794,24 +847,7 @@ func (e *EvmStatePoller) runFetch(f *headFetch) {
 			e.countHeadPanic("fetch", rec)
 			header, answered, err = nil, false, fmt.Errorf("head ask of upstream %s panicked: %v", e.upstream.Id(), rec)
 		}
-		a := &e.headAsk
-		a.mu.Lock()
-		f.answered, f.header, f.err = true, header, err
-		switch {
-		case nodeFailedPoll(err):
-			a.failures++
-		case answered:
-			a.failures = 0
-		}
-		next := f.next
-		if next != nil {
-			next.sent, a.last, a.lastFork = time.Now(), next, next
-		}
-		a.mu.Unlock()
-		close(f.done)
-		if next != nil {
-			go e.runFetch(next)
-		}
+		e.endFetch(f, header, answered, err)
 	}()
 	ctx := e.appCtx
 	// A background Ask has no caller span: its fetch starts no root trace.
@@ -1243,7 +1279,7 @@ func (e *EvmStatePoller) verifyThenSuggestLatestBlock(blockNumber int64, at time
 	if !e.latestMajorVerifyInProgress.TryLock() {
 		return
 	}
-	go func() {
+	if !e.bg.Go(func() {
 		defer e.latestMajorVerifyInProgress.Unlock()
 
 		ctx, cancel := context.WithTimeout(e.appCtx, 5*time.Second)
@@ -1269,7 +1305,9 @@ func (e *EvmStatePoller) verifyThenSuggestLatestBlock(blockNumber int64, at time
 			Int64("previousValue", currentValue).
 			Int64("newValue", newValue).
 			Msg("verified major latest block suggestion applied")
-	}()
+	}) {
+		e.latestMajorVerifyInProgress.Unlock()
+	}
 }
 
 func (e *EvmStatePoller) LatestBlock() int64 {
@@ -1647,7 +1685,7 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64, at time.Time) 
 	}
 
 	// We acquired the lock, perform the update and release when done
-	go func() {
+	if !e.bg.Go(func() {
 		defer e.finalizedUpdateInProgress.Unlock()
 
 		// Check if this update is still relevant (not older than current value)
@@ -1686,7 +1724,9 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64, at time.Time) 
 		e.logger.Trace().
 			Int64("blockNumber", blockNumber).
 			Msg("finalized block suggestion applied")
-	}()
+	}) {
+		e.finalizedUpdateInProgress.Unlock()
+	}
 }
 
 // FinalizedBlock is the upstream's finalized tag. Only an upstream known to
@@ -1937,7 +1977,7 @@ func (e *EvmStatePoller) initializeEarliestBlockDetectionAndStartScheduler(ctx c
 				Str("updateRate", ps.rate.String()).
 				Str("upstreamId", e.upstream.Config().Id).
 				Msg("started periodic scheduler for earliest block availability bound")
-			go e.runPeriodicEarliestBlockBoundUpdateLoop(probe, ps.rate)
+			e.bg.Go(func() { e.runPeriodicEarliestBlockBoundUpdateLoop(probe, ps.rate) })
 		}
 	}
 }

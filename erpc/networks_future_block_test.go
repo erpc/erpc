@@ -46,7 +46,7 @@ func mockGetBlockByNumberNonNull(ids ...string) {
 // dispatching + hedging across upstreams that all return empty.
 func TestForward_FutureBlock_ShortCircuitsToNull(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -78,7 +78,7 @@ func TestForward_FutureBlock_ShortCircuitsToNull(t *testing.T) {
 // the Ask refreshed what was stale at its start.
 func TestForward_FutureBlock_ShortCircuitSurvivesSlowStaleAsk(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -125,7 +125,7 @@ func TestForward_FutureBlock_ShortCircuitSurvivesSlowStaleAsk(t *testing.T) {
 // report time only a new head would move.
 func TestForward_FutureBlock_HaltedChainAskDatesReport(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -176,7 +176,7 @@ func TestForward_FutureBlock_HaltedChainAskDatesReport(t *testing.T) {
 // short-circuit must not over-fire and swallow blocks an upstream actually has.
 func TestForward_FutureBlock_AtMaxHead_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -203,7 +203,7 @@ func TestForward_FutureBlock_AtMaxHead_Dispatches(t *testing.T) {
 
 func TestForward_FutureBlock_MixedStaticCapDispatchesWithinAvailableRange(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -229,7 +229,7 @@ func TestForward_FutureBlock_MixedStaticCapDispatchesWithinAvailableRange(t *tes
 // config (here: nil servedTip, no flag) must dispatch.
 func TestForward_FutureBlock_ServedTipDisabled_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -257,7 +257,7 @@ func TestForward_FutureBlock_ServedTipDisabled_Dispatches(t *testing.T) {
 // the upstream has), so it must never be short-circuited.
 func TestForward_FutureBlock_LatestTag_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -323,7 +323,7 @@ func forwardGetBlockByNumber(t *testing.T, ctx context.Context, network *Network
 // block above every head returns null and reaches no upstream.
 func TestForward_FutureBlock_OptInWithoutServedTip_ShortCircuitsToNull(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x69", "null", &dispatched, "fb1", "fb2", "fb3")
@@ -354,7 +354,7 @@ func TestForward_FutureBlock_OptInWithoutServedTip_ShortCircuitsToNull(t *testin
 // ceiling, so the block is still dispatched.
 func TestForward_FutureBlock_OptInWithoutServedTip_OnlyMostAheadHasBlock_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x64", futureBlockSentinel, &dispatched, "fb1", "fb2", "fb3")
@@ -409,7 +409,7 @@ func TestForward_FutureBlock_OptInWithoutServedTip_OnlyMostAheadHasBlock_Dispatc
 // included: a block at or below a syncing upstream's head must be dispatched.
 func TestForward_FutureBlock_OptIn_SyncingUpstreamAhead_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x69", futureBlockSentinel, &dispatched, "fb1", "fb2", "sync1")
@@ -436,7 +436,7 @@ func TestForward_FutureBlock_OptIn_SyncingUpstreamAhead_Dispatches(t *testing.T)
 // short-circuit fails open and the request is dispatched.
 func TestForward_FutureBlock_OptIn_UpstreamWithUnknownHead_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x65", futureBlockSentinel, &dispatched, "fb1", "fb2", "nohead")
@@ -466,7 +466,7 @@ func TestForward_FutureBlock_OptIn_UpstreamWithUnknownHead_Dispatches(t *testing
 // finalized and latest heads must still be dispatched.
 func TestForward_FutureBlock_OptIn_FinalizedConfidence_UnfinalizedBlock_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x5f", futureBlockSentinel, &dispatched, "fb1", "fb2", "fb3")
@@ -499,7 +499,7 @@ func TestForward_FutureBlock_OptIn_FinalizedConfidence_UnfinalizedBlock_Dispatch
 func TestForward_FutureBlock_OptIn_CordonedFallbackAhead_Dispatches(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	var dispatched atomic.Int64
 	network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
@@ -526,7 +526,7 @@ func TestForward_FutureBlock_OptIn_CordonedFallbackAhead_Dispatches(t *testing.T
 func TestForward_FutureBlock_OptIn_ShortCircuitNotMirroredToExcluded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	var dispatched atomic.Int64
 	network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
@@ -564,7 +564,7 @@ func TestForward_FutureBlock_OptIn_ShortCircuitNotMirroredToExcluded(t *testing.
 // (#1348) is not asked again.
 func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -768,7 +768,7 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 // future_after_wait.
 func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -999,7 +999,7 @@ func mockMethodAnswer(method, result string, dispatched *atomic.Int64, ids ...st
 // the head pass has not published it, too. Each wait counts its outcome.
 func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())

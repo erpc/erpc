@@ -204,6 +204,8 @@ func mockQueryChain(blockDelay time.Duration) {
 // ignoreMethods, selected in the order given.
 func setupQueryTestNetwork(t *testing.T, ctx context.Context, queryShim *common.EvmQueryShimConfig, ignoreMethods []string, ids ...string) *Network {
 	t.Helper()
+	// The network lives as long as t, not the caller's ctx (stopAtEnd).
+	ctx, cancel := context.WithCancel(ctx)
 
 	clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 	rlr, err := upstream.NewRateLimitersRegistry(ctx, &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
@@ -254,6 +256,8 @@ func setupQueryTestNetwork(t *testing.T, ctx context.Context, queryShim *common.
 		Evm:          &common.EvmNetworkConfig{ChainId: 123},
 		Failsafe:     []*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{MaxAttempts: 1}}},
 	}, rlr, upr, mt, nil)
+	stopAtEnd(t, ntw)
+	t.Cleanup(cancel)
 	require.NoError(t, err)
 	ntw.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
@@ -362,7 +366,7 @@ func qtField(rows []map[string]interface{}, key string) []interface{} {
 
 func TestNetworkQuery_Shim(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	mockQueryChain(0)
 
@@ -633,7 +637,7 @@ func TestNetworkQuery_Shim(t *testing.T) {
 
 func TestNetworkQuery_ShimLimits(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	mockQueryChain(time.Second)
 

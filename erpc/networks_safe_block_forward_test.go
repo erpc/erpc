@@ -35,7 +35,7 @@ func (*seededSafeCache) IsObjectNull() bool { return false }
 
 func TestNetwork_Forward_RoutesSafeBeforeCacheAndSelection(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	var sourceBody string
@@ -100,7 +100,7 @@ func TestNetwork_Forward_RoutesSafeBeforeCacheAndSelection(t *testing.T) {
 // serves, though the project reads the Head before Network.Forward.
 func TestHttpServer_SafeGetLogsTakesTheSafeLaneHead(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	// Both upstreams sit on rpc1's poller mocks (head 0x11118888); the path

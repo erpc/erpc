@@ -23,7 +23,7 @@ import (
 func TestStaticResponses(t *testing.T) {
 	t.Run("MatchingRequestServedWithoutContactingUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		var rpcCalls atomic.Int32
@@ -93,7 +93,7 @@ func TestStaticResponses(t *testing.T) {
 
 	t.Run("NonMatchingParamsFallThroughToUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		var rpcCalls atomic.Int32
@@ -147,7 +147,7 @@ func TestStaticResponses(t *testing.T) {
 
 	t.Run("ErrorShapedStubReturnsJsonRpcError", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -189,7 +189,7 @@ func TestStaticResponses(t *testing.T) {
 
 	t.Run("StringRequestIdEchoedOnStaticHit", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())

@@ -24,7 +24,7 @@ import (
 // and returns a merged response when the upstream responds with a 413-like large-range error.
 func TestHttp_EvmGetLogs_SplitOnError_MergedResponse(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	gock.EnableNetworking()
 	gock.NetworkingFilter(func(req *http.Request) bool {
 		// Allow localhost connections for the test HTTP server; mock only upstream
@@ -114,6 +114,7 @@ func TestHttp_EvmGetLogs_SplitOnError_MergedResponse(t *testing.T) {
 	require.NoError(t, err)
 
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
@@ -167,7 +168,7 @@ func TestHttp_EvmGetLogs_SplitOnError_MergedResponse(t *testing.T) {
 // eth_getLogs is broken into contiguous block sub-requests and the merged response is returned.
 func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	gock.EnableNetworking()
 	gock.NetworkingFilter(func(req *http.Request) bool {
 		// Allow localhost connections for the test HTTP server; mock only upstream
@@ -259,6 +260,7 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 	require.NoError(t, err)
 
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
@@ -312,7 +314,7 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 // wide Prism scan) first. A within-cap request is still served from the cache.
 func TestHttp_EvmGetLogs_MaxRange_EnforcedBeforeCache(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	gock.EnableNetworking()
 	gock.NetworkingFilter(func(req *http.Request) bool {
 		return strings.Split(req.URL.Host, ":")[0] == "localhost"
@@ -423,7 +425,7 @@ func TestHttp_EvmGetLogs_MaxRange_EnforcedBeforeCache(t *testing.T) {
 // On-error split by addresses for single-block range; ensure merged output contains both halves
 func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	gock.EnableNetworking()
 	gock.NetworkingFilter(func(req *http.Request) bool {
 		return strings.Split(req.URL.Host, ":")[0] == "localhost"
@@ -499,6 +501,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
 	require.NoError(t, err)
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
@@ -531,7 +534,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 // On-error split by topics[0] OR-list for single-block range
 func TestHttp_EvmGetLogs_SplitOnError_ByTopic0ORList_MergedResponse(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	gock.EnableNetworking()
 	gock.NetworkingFilter(func(req *http.Request) bool { return strings.Split(req.URL.Host, ":")[0] == "localhost" })
 	util.SetupMocksForEvmStatePoller()
@@ -597,6 +600,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByTopic0ORList_MergedResponse(t *testing.T
 	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
 	require.NoError(t, err)
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
@@ -628,7 +632,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByTopic0ORList_MergedResponse(t *testing.T
 // Merged response should include only non-empty results.
 func TestHttp_EvmGetLogs_SplitOnError_EmptyAndNonEmptyMergedSkipsEmpty(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	gock.EnableNetworking()
 	gock.NetworkingFilter(func(req *http.Request) bool { return strings.Split(req.URL.Host, ":")[0] == "localhost" })
 	util.SetupMocksForEvmStatePoller()
@@ -683,6 +687,7 @@ func TestHttp_EvmGetLogs_SplitOnError_EmptyAndNonEmptyMergedSkipsEmpty(t *testin
 	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
 	require.NoError(t, err)
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
@@ -714,7 +719,7 @@ func TestHttp_EvmGetLogs_SplitOnError_EmptyAndNonEmptyMergedSkipsEmpty(t *testin
 // Ensures no client ever receives a parse error like "no body available to parse JsonRpcResponse".
 func TestHttp_ConcurrentIdenticalRequests_NoEmptyBodyParse(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	gock.EnableNetworking()
 	gock.NetworkingFilter(func(req *http.Request) bool { return strings.Split(req.URL.Host, ":")[0] == "localhost" })
 	util.SetupMocksForEvmStatePoller()
@@ -751,6 +756,7 @@ func TestHttp_ConcurrentIdenticalRequests_NoEmptyBodyParse(t *testing.T) {
 	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
 	require.NoError(t, err)
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
