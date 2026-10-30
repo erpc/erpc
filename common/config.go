@@ -2010,15 +2010,6 @@ type ConsensusPolicyConfig struct {
 	// or field name for nested result objects (e.g., "nonce" for result.nonce).
 	// When multiple fields are specified, they act as tie-breakers in order.
 	PreferHighestValueFor map[string][]string `yaml:"preferHighestValueFor,omitempty" json:"preferHighestValueFor"`
-	// BlockEvidenceFields names, per method, the response field paths that
-	// carry the winner's own block number (e.g. eth_getTransactionByHash →
-	// ["blockNumber"]). It follows the same shape as PreferHighestValueFor:
-	// "result" for the direct result, or a field name for a nested result
-	// object. This is the block proof consumed by the empty-outside-retention
-	// waiver (requiredParticipants[].waiveAgreementOnEmptyOutsideRetention):
-	// the first resolved value is taken as the winner's block. A method not
-	// listed here has no proof, so the waiver never fires for it (dispute).
-	BlockEvidenceFields map[string][]string `yaml:"blockEvidenceFields,omitempty" json:"blockEvidenceFields,omitempty"`
 	// FireAndForget when true, allows consensus to return a response to the client immediately
 	// upon short-circuit, but does NOT cancel in-flight requests to other upstreams.
 	// This is useful for write operations like eth_sendRawTransaction where you want to
@@ -2149,25 +2140,24 @@ type ConsensusRequiredParticipant struct {
 	// WaiveAgreementOnEmptyOutsideRetention, when true, waives this entry's
 	// MinAgreement quota for a round in which at least MinAgreement distinct
 	// tag-matching participants returned an EMPTY result, no matching
-	// participant returned a non-empty result, AND the winning group's block
-	// (extracted via the policy's blockEvidenceFields) is older than
-	// RetentionBlocks behind the observed chain head. This is the v1.1
-	// empty-waiver: it lets an abstainer that legitimately pruned old history
-	// (e.g. post-EIP-4444) fall out of the quota when the winner proves the
-	// data is outside the abstainer's retained range, without weakening the
-	// quota for recent data — a null on a recent block still holds the quota
-	// and disputes. A matching sibling that returned data also holds the
-	// quota (that is a real vote, not a prune). Sibling errors do not block
-	// the empty count. Requires RetentionBlocks > 0 and a policy-level
-	// blockEvidenceFields entry for the method. Default false = the quota is
-	// never waived on empty (strict).
+	// participant returned a non-empty result, AND the block number the
+	// client's request names is older than RetentionBlocks behind the observed
+	// chain head. It lets an abstainer that legitimately pruned old history
+	// (e.g. post-EIP-4444) fall out of the quota without weakening the quota
+	// for recent data — a null on a recent block still holds the quota and
+	// disputes. The block comes from the request, never from an answer, so
+	// agreeing upstreams cannot fabricate the proof. Requests that name no
+	// concrete block (hash lookups, tags) never waive. A matching sibling that
+	// returned data also holds the quota (that is a real vote, not a prune).
+	// Sibling errors do not block the empty count. Requires RetentionBlocks > 0.
+	// Default false = the quota is never waived on empty (strict).
 	WaiveAgreementOnEmptyOutsideRetention bool `yaml:"waiveAgreementOnEmptyOutsideRetention,omitempty" json:"waiveAgreementOnEmptyOutsideRetention,omitempty"`
 	// RetentionBlocks is the depth, in blocks behind the observed chain head,
 	// that this participant is expected to retain. It defines the boundary for
-	// WaiveAgreementOnEmptyOutsideRetention: a winner block is "outside
-	// retention" when head - winnerBlock > RetentionBlocks. Only meaningful when
-	// WaiveAgreementOnEmptyOutsideRetention is set. Default 0 = no retention
-	// boundary (the empty-waiver never fires).
+	// WaiveAgreementOnEmptyOutsideRetention: a requested block is "outside
+	// retention" when head - requestedBlock > RetentionBlocks. Only meaningful
+	// when WaiveAgreementOnEmptyOutsideRetention is set. Default 0 = no
+	// retention boundary (the empty-waiver never fires).
 	RetentionBlocks int64 `yaml:"retentionBlocks,omitempty" json:"retentionBlocks,omitempty"`
 }
 
@@ -2208,7 +2198,7 @@ func consensusPolicyRejectUnknownFields(value *yaml.Node) error {
 		"maxParticipants": true, "agreementThreshold": true, "disputeBehavior": true,
 		"lowParticipantsBehavior": true, "preferNonEmpty": true, "preferLargerResponses": true,
 		"preferHighestValueFor": true, "ignoreFields": true, "punishMisbehavior": true,
-		"misbehaviorsDestination": true, "requiredParticipants": true, "blockEvidenceFields": true,
+		"misbehaviorsDestination": true, "requiredParticipants": true,
 		"fireAndForget": true, "maxWaitOnResult": true, "maxWaitOnEmpty": true,
 		"disputeLogLevel": true, "customPolicy": true, "policies": true, "extends": true,
 	}
@@ -2278,14 +2268,6 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 		for method, fields := range c.PreferHighestValueFor {
 			copied.PreferHighestValueFor[method] = make([]string, len(fields))
 			copy(copied.PreferHighestValueFor[method], fields)
-		}
-	}
-
-	if c.BlockEvidenceFields != nil {
-		copied.BlockEvidenceFields = make(map[string][]string, len(c.BlockEvidenceFields))
-		for method, fields := range c.BlockEvidenceFields {
-			copied.BlockEvidenceFields[method] = make([]string, len(fields))
-			copy(copied.BlockEvidenceFields[method], fields)
 		}
 	}
 

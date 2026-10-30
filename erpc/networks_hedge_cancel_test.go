@@ -386,30 +386,30 @@ func TestHedgeConsensus_OneUpstreamMissingData_OthersSucceed_StillWorks(t *testi
 	assert.Contains(t, jrr.GetResultString(), "0xabc")
 }
 
-func TestHedgeConsensus_EmptyTxLookupIsKeptAsSlotVote(t *testing.T) {
+func TestHedgeConsensus_EmptyOldBlockIsKeptAsSlotVote(t *testing.T) {
 	// Live smokebox shape: two internals return JSON-RPC null for a pruned
-	// eth_getTransactionByHash; two archives agree on the tx. Hedge keep()
-	// used to reject that null (method not in emptyResultAccept) and the
-	// recovery leg then returned n/a ErrUpstreamsExhausted, so the empty
-	// vote never reached analysis.groups and the empty-outside-retention
+	// block; two archives agree on it. Hedge keep() used to reject that null
+	// and the recovery leg then returned n/a ErrUpstreamsExhausted, so the
+	// empty vote never reached analysis.groups and the empty-outside-retention
 	// waiver could not fire.
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 
-	tx := map[string]interface{}{
-		"hash":        "0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060",
-		"blockNumber": "0x10",
+	block := map[string]interface{}{
+		"hash":   "0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060",
+		"number": "0x10",
 	}
 	nullBody := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil}
-	txBody := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": tx}
-	isHashLookup := func(r *http.Request) bool {
-		return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+	blockBody := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": block}
+	isOldBlock := func(r *http.Request) bool {
+		body := util.SafeReadBody(r)
+		return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"0x10"`)
 	}
 	for _, host := range []string{"rpc1", "rpc2"} {
 		gock.New(fmt.Sprintf("http://%s.localhost", host)).
 			Post("").
-			Filter(isHashLookup).
+			Filter(isOldBlock).
 			Persist().
 			Reply(200).
 			JSON(nullBody)
@@ -417,10 +417,10 @@ func TestHedgeConsensus_EmptyTxLookupIsKeptAsSlotVote(t *testing.T) {
 	for _, host := range []string{"rpc3", "rpc4"} {
 		gock.New(fmt.Sprintf("http://%s.localhost", host)).
 			Post("").
-			Filter(isHashLookup).
+			Filter(isOldBlock).
 			Persist().
 			Reply(200).
-			JSON(txBody)
+			JSON(blockBody)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -438,9 +438,8 @@ func TestHedgeConsensus_EmptyTxLookupIsKeptAsSlotVote(t *testing.T) {
 		DisputeBehavior:       common.ConsensusDisputeBehaviorReturnError,
 		PreferNonEmpty:        &common.TRUE,
 		PreferLargerResponses: &common.TRUE,
-		BlockEvidenceFields: map[string][]string{
-			"eth_getTransactionByHash": {"blockNumber"},
-		},
+		// Head 0x11118888 (util.SetupMocksForEvmStatePoller): block 16 is far
+		// past retention 100, proven from the request, not from an answer.
 		RequiredParticipants: []*common.ConsensusRequiredParticipant{
 			{Tag: "type:internal", MinParticipants: 2, MinAgreement: 1, WaiveAgreementOnEmptyOutsideRetention: true, RetentionBlocks: 100},
 			{Tag: "type:external", MinParticipants: 2, MinAgreement: 1},
@@ -463,7 +462,7 @@ func TestHedgeConsensus_EmptyTxLookupIsKeptAsSlotVote(t *testing.T) {
 	}
 
 	network := setupTestNetwork(t, ctx, upstreamConfigs, networkConfig)
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060"]}`))
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x10",false]}`))
 	req.SetDirectives(&common.RequestDirectives{RetryEmpty: false})
 
 	resp, err := network.Forward(ctx, req)
@@ -471,7 +470,7 @@ func TestHedgeConsensus_EmptyTxLookupIsKeptAsSlotVote(t *testing.T) {
 	require.NotNil(t, resp)
 	jrr, jrrErr := resp.JsonRpcResponse()
 	require.NoError(t, jrrErr)
-	assert.Contains(t, jrr.GetResultString(), `"blockNumber":"0x10"`)
+	assert.Contains(t, jrr.GetResultString(), `"number":"0x10"`)
 }
 
 func setupTestNetworkWithHedgeAndConsensus(

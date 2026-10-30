@@ -105,7 +105,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 	method = jrq.Method
 	reqId = jrq.ID
 	network := nrq.Network()
-	methodCfg := getMethodConfig(method, network)
+	methodCfg := common.ResolveMethodConfig(method, network)
 	if methodCfg == nil || len(methodCfg.ReqRefs) == 0 {
 		jrq.RUnlock()
 		return
@@ -175,7 +175,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		}
 
 		// Use composite parser to distinguish block numbers, tags, and hashes.
-		blockRef, blockNum, err := parseCompositeBlockParam(p.value)
+		blockRef, blockNum, err := common.ParseEvmBlockParam(p.value)
 		if err == nil {
 			// Cache numeric block number (for single-ref methods)
 			if blockNum > 0 {

@@ -138,8 +138,8 @@ func (e *networkExecutor) HasConsensus() bool {
 // opted into empty-outside-retention waiver for this request's method, so a
 // consensus-slot hedge must keep an emptyish result as the slot's vote
 // (feature §7.1.4). The flag is stamped by consensus.executor once the
-// policy for the round is known — only when the method has blockEvidenceFields
-// so the waiver can actually prove — before participant hedges run.
+// policy for the round is known — only when the request names a concrete
+// block so the waiver can actually prove — before participant hedges run.
 func (e *networkExecutor) consensusKeepsEmptyAsSlotVote(req *common.NormalizedRequest) bool {
 	if req == nil {
 		return false

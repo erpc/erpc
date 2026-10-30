@@ -10,11 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Empty-as-slot-vote must only arm when the current method has
-// blockEvidenceFields — a policy-wide empty-waiver opt-in alone is not
-// enough, or eth_getBalance would keep a fast null just because
-// eth_getTransactionByHash is waiver-eligible.
-func TestKeepEmptyConsensusSlot_RequiresMethodBlockEvidence(t *testing.T) {
+// Empty-as-slot-vote must only arm when the request names a concrete block —
+// a policy-wide empty-waiver opt-in alone is not enough, or a hash lookup
+// would keep a fast null that the waiver can never prove.
+func TestKeepEmptyConsensusSlot_RequiresRequestBlock(t *testing.T) {
 	lg := zerolog.Nop()
 	cfg := &config{
 		maxParticipants:    1,
@@ -28,18 +27,16 @@ func TestKeepEmptyConsensusSlot_RequiresMethodBlockEvidence(t *testing.T) {
 				RetentionBlocks:                       100,
 			},
 		},
-		blockEvidenceFields: map[string][]string{
-			"eth_getTransactionByHash": {"blockNumber"},
-		},
 	}
 	ex := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
 
 	ups := []common.Upstream{common.NewFakeUpstream("u1", common.WithTags("type:internal"))}
 	probeErr := errors.New("probe-done")
 
-	t.Run("method with evidence keeps empty", func(t *testing.T) {
+	t.Run("request with a block number keeps empty", func(t *testing.T) {
 		req := common.NewNormalizedRequestFromJsonRpcRequest(&common.JsonRpcRequest{
-			Method: "eth_getTransactionByHash",
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"0x10", false},
 		})
 		req.SetUpstreams(ups)
 		inner := func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -50,14 +47,15 @@ func TestKeepEmptyConsensusSlot_RequiresMethodBlockEvidence(t *testing.T) {
 		require.ErrorIs(t, err, probeErr)
 	})
 
-	t.Run("method without evidence rejects empty keep", func(t *testing.T) {
+	t.Run("hash lookup rejects empty keep", func(t *testing.T) {
 		req := common.NewNormalizedRequestFromJsonRpcRequest(&common.JsonRpcRequest{
-			Method: "eth_getBalance",
+			Method: "eth_getTransactionByHash",
+			Params: []interface{}{"0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060"},
 		})
 		req.SetUpstreams(ups)
 		inner := func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			require.False(t, r.ExecState().KeepEmptyConsensusSlot(),
-				"empty keep must not arm for methods without blockEvidenceFields")
+				"empty keep must not arm for requests that name no block")
 			return nil, probeErr
 		}
 		_, err := ex.Run(context.Background(), req, inner)

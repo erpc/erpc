@@ -317,7 +317,7 @@ func (s *ExecState) ConsensusPolicy() string {
 
 // SetKeepEmptyConsensusSlot records whether hedge keep() should accept an
 // empty JSON-RPC result as the consensus slot's vote for this round's method
-// (empty-outside-retention waiver + blockEvidenceFields for the method).
+// (empty-outside-retention waiver + a concrete block in the request).
 // Cleared/false leaves prior empty-reject recovery intact.
 func (s *ExecState) SetKeepEmptyConsensusSlot(keep bool) {
 	if s == nil {
