@@ -3730,18 +3730,23 @@ func (n *Network) shouldHandleMethod(req *common.NormalizedRequest, method strin
 		}
 	}
 	if isStateful {
-		// Determine targeted upstream count
-		targeted := 0
+		targeted := upsList
 		if dr := req.Directives(); dr != nil && dr.UseUpstream != "" {
+			targeted = nil
 			for _, u := range upsList {
 				if match, _ := common.UpstreamMatchesSelector(dr.UseUpstream, u); match {
-					targeted++
+					targeted = append(targeted, u)
 				}
 			}
-		} else {
-			targeted = len(upsList)
 		}
-		if targeted > 1 {
+		// Forward keeps the full list when no upstream serves the method, so
+		// this is "unsupported", not a multi-upstream problem.
+		if len(targeted) > 0 {
+			if eligible, _ := filterMethodEligible(targeted, method); len(eligible) == 0 {
+				return common.NewErrNotImplemented(fmt.Sprintf("method %s is not supported by any targeted upstream", method))
+			}
+		}
+		if len(targeted) > 1 {
 			return common.NewErrNotImplemented("stateful method requires a single targeted upstream; either configure only 1 upstream or set Use-Upstream to a single upstream id")
 		}
 	}

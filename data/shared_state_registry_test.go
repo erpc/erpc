@@ -43,6 +43,20 @@ func setupTest(clusterKey string) (*sharedStateRegistry, *MockConnector, context
 	return registry, connector, context.Background()
 }
 
+// waitBackgroundPush waits until the counter's background push loop has
+// ended with no push pending, so mock expectations on its remote calls hold
+// however slowly the scheduler runs it.
+func waitBackgroundPush(t *testing.T, c *counterInt64) {
+	t.Helper()
+	assert.Eventually(t, func() bool {
+		if !c.bgPushInProgress.TryLock() {
+			return false
+		}
+		c.bgPushInProgress.Unlock()
+		return !c.bgPushRequested.Load()
+	}, 10*time.Second, time.Millisecond, "background push never ended")
+}
+
 func TestSharedStateRegistry_UpdateCounter_Success(t *testing.T) {
 	registry, connector, ctx := setupTest("my-dev")
 

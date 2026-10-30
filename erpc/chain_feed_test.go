@@ -37,6 +37,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -2717,7 +2718,7 @@ func (s *chaosSeed) receiptsDown13() {
 // awaitCloses waits until every logs client of open was closed with 1013,
 // then opens new ones.
 func (s *chaosSeed) awaitCloses(open []*chaosLogsClient, name string) {
-	require.Eventually(s.t, func() bool {
+	all1013 := func() bool {
 		for _, cl := range open {
 			cl.mu.Lock()
 			closed := cl.closeCode == websocket.CloseTryAgainLater
@@ -2727,7 +2728,16 @@ func (s *chaosSeed) awaitCloses(open []*chaosLogsClient, name string) {
 			}
 		}
 		return true
-	}, logsCloseBound()+5*time.Second, 20*time.Millisecond, "every logs client is closed with 1013")
+	}
+	if !assert.Eventually(s.t, all1013, logsCloseBound()+5*time.Second, 20*time.Millisecond) {
+		var got []string
+		for _, cl := range open {
+			cl.mu.Lock()
+			got = append(got, fmt.Sprintf("%s code %d ended %s tip %d: %s", cl.name, cl.closeCode, cl.ended.Format(time.StampMilli), cl.endTip, cl.why))
+			cl.mu.Unlock()
+		}
+		require.FailNow(s.t, "every logs client is closed with 1013", strings.Join(got, "\n"))
+	}
 	s.dialLogs(name)
 }
 

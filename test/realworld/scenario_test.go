@@ -61,6 +61,9 @@ type spec struct {
 	oldPods   []int
 	cold      []int
 	webSocket map[string]interface{}
+	// long: the phase runs in the long tier only (selectedPhases), as a
+	// row whose own timeline takes more than a few minutes.
+	long bool
 	// sim configures the chain; ChainID, unless set, and Seed come from the
 	// phase (P11-nitro needs a Nitro chain's id), a zero BlockTime is
 	// blockTime.
@@ -93,6 +96,9 @@ type spec struct {
 	idle bool
 	// onHead runs for each header a newHeads client receives.
 	onHead func(s *scenario, c *headsClient, pod int, n uint64, h hash)
+	// onDeliver runs for each block any client receives: a header of
+	// newHeads or StreamBlocks, the block of a log.
+	onDeliver func(s *scenario, c *clientBase, pod int, b *chainsim.Block)
 	// bound is the delivery bound for clients that read (§ per scenario).
 	bound time.Duration
 	// allow names the ends and jumps the scenario's faults may cause.
@@ -116,9 +122,8 @@ type scenario struct {
 	net     *netSpec
 	dir     string
 	// rpcs are HTTP clients per pod, by use-upstream selector ("" none).
-	rpcs  map[string][]*rpc.Client
-	httpc *http.Client
-	tr    *transcript
+	rpcs map[string][]*rpc.Client
+	tr   *transcript
 	// graceServed counts reads the minority grace allowed (U18).
 	graceServed atomic.Int64
 
@@ -295,14 +300,12 @@ type summaryRow struct {
 	load                string
 }
 
-// phase waits for a quiet host, boots fresh redis and pods for specs, then
-// runs every spec concurrently on them, each on its own chain id from
-// firstChain.
+// phase boots fresh redis and pods for specs, then runs every spec
+// concurrently on them, each on its own chain id from firstChain. Each
+// scenario runs in its own goroutine rather than as a t.Parallel subtest,
+// so -test.parallel never holds a scenario back while its chain runs.
 func (r *run) phase(t *testing.T, name string, firstChain int64, specs []spec) {
 	t.Run(name, func(t *testing.T) {
-		if err := r.host.waitQuiet(t.Logf); err != nil {
-			t.Fatal(err)
-		}
 		h := newHarness(t, filepath.Join(r.root, name), !specs[0].memory)
 		h.host = r.host
 		h.vars = map[string]time.Duration{}
@@ -327,29 +330,36 @@ func (r *run) phase(t *testing.T, name string, firstChain int64, specs []spec) {
 		}
 		h.webSocket = specs[0].webSocket
 		h.startPods(pods, specs[0].oldPods, specs[0].cold, nets)
+		var wg sync.WaitGroup
 		for _, sc := range scs {
-			t.Run(sc.name, func(t *testing.T) {
-				t.Parallel()
-				start := time.Now()
-				defer func() {
-					result := "pass"
-					if t.Failed() {
-						result = "fail"
-					}
-					r.mu.Lock()
-					r.rows = append(r.rows, summaryRow{phase: name, name: sc.name, result: result, wall: time.Since(start), load: r.host.record(start, time.Now())})
-					r.mu.Unlock()
-				}()
-				sc.execute(t)
-			})
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				t.Run(sc.name, func(t *testing.T) {
+					start := time.Now()
+					defer func() {
+						result := "pass"
+						if t.Failed() {
+							result = "fail"
+						}
+						r.mu.Lock()
+						r.rows = append(r.rows, summaryRow{phase: name, name: sc.name, result: result, wall: time.Since(start), load: r.host.record(start, time.Now())})
+						r.mu.Unlock()
+					}()
+					sc.execute(t)
+				})
+			}()
 		}
+		wg.Wait()
 	})
 }
 
-// summary prints one line per scenario: result, wall time, load record.
+// summary prints one line per scenario, by phase and name: result, wall
+// time, load record.
 func (r *run) summary(t *testing.T) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	slices.SortFunc(r.rows, func(a, b summaryRow) int { return cmp.Or(cmp.Compare(a.phase, b.phase), cmp.Compare(a.name, b.name)) })
 	var b strings.Builder
 	b.WriteString("run summary:\n")
 	for _, row := range r.rows {
@@ -363,7 +373,6 @@ func (s *scenario) execute(t *testing.T) {
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	defer s.chain.Close()
 	defer s.cancel()
-	s.httpc = &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 64}, Timeout: httpCheckWait}
 	for _, p := range s.h.pods {
 		if p.running() {
 			s.waitServing(p.idx)
@@ -520,7 +529,7 @@ func (s *scenario) client(pod int, sel string) *rpc.Client {
 	cs := s.rpcs[sel]
 	if cs == nil {
 		for _, p := range s.h.pods {
-			opts := []rpc.ClientOption{rpc.WithHTTPClient(s.httpc)}
+			opts := []rpc.ClientOption{rpc.WithHTTPClient(p.httpc)}
 			if sel != "" {
 				opts = append(opts, rpc.WithHeader("X-ERPC-Use-Upstream", sel))
 			}
