@@ -122,9 +122,8 @@ type scenario struct {
 	net     *netSpec
 	dir     string
 	// rpcs are HTTP clients per pod, by use-upstream selector ("" none).
-	rpcs  map[string][]*rpc.Client
-	httpc *http.Client
-	tr    *transcript
+	rpcs map[string][]*rpc.Client
+	tr   *transcript
 	// graceServed counts reads the minority grace allowed (U18).
 	graceServed atomic.Int64
 
@@ -373,7 +372,6 @@ func (s *scenario) execute(t *testing.T) {
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	defer s.chain.Close()
 	defer s.cancel()
-	s.httpc = &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 64}, Timeout: httpCheckWait}
 	for _, p := range s.h.pods {
 		if p.running() {
 			s.waitServing(p.idx)
@@ -530,7 +528,7 @@ func (s *scenario) client(pod int, sel string) *rpc.Client {
 	cs := s.rpcs[sel]
 	if cs == nil {
 		for _, p := range s.h.pods {
-			opts := []rpc.ClientOption{rpc.WithHTTPClient(s.httpc)}
+			opts := []rpc.ClientOption{rpc.WithHTTPClient(p.httpc)}
 			if sel != "" {
 				opts = append(opts, rpc.WithHeader("X-ERPC-Use-Upstream", sel))
 			}

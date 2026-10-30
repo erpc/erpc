@@ -96,6 +96,7 @@ func catalogue() []phaseSpec {
 		{"c16", 12401, []spec{c16()}},
 		{"voters", 9701, []spec{n3(), u10(), u11(), u18(), k6()}},
 		{"shared", 9101, []spec{x1(), c1(), c3(), u3(), n5(), k2(), d1(), d2()}},
+		{"r1", 13201, []spec{r1()}},
 		{"upstream", 11301, []spec{u2(), u4(), u5(), u6(), u7(), u13(), u15()}},
 		{"clients", 11601, []spec{d3(), d5(), d6(), d9()}},
 		{"integrity", 10601, []spec{u8(false), u8(true), u9(), u9Trunc(1), u9Trunc(2), u9Bloom(1), u9Bloom(2), k5()}},
@@ -127,12 +128,11 @@ func catalogue() []phaseSpec {
 		{"z1", 13001, []spec{z1()}},
 		{"z2", 13051, []spec{z2()}},
 		{"z3", 13101, []spec{z3()}},
-		{"r1", 13201, []spec{r1()}},
 	}
 }
 
-// fastScenarios are the fast tier, longest first: one or two scenarios per
-// spec area, each alone in its own phase.
+// fastScenarios are the fast tier: one or two scenarios per spec area,
+// each run in its catalogue phase beside the phase's other fast ones.
 var fastScenarios = []string{
 	"P12",   // near-future reads above every vendor's head (§6.4)
 	"N4",    // pod cut from every vendor 2 min; gRPC resume on the peer (§9.2, §10.3)
@@ -190,19 +190,30 @@ func selectedPhases() (phases, skipped []phaseSpec, err error) {
 	}
 	switch tier := cmp.Or(os.Getenv("REALWORLD_TIER"), "full"); tier {
 	case "fast":
-		if phases, err = alone(fastScenarios); err != nil {
-			return nil, nil, err
-		}
 		for _, ph := range all {
-			var rest []spec
+			var in, out []spec
 			for _, sp := range ph.specs {
-				if !slices.Contains(fastScenarios, sp.name) {
-					rest = append(rest, sp)
+				if slices.Contains(fastScenarios, sp.name) {
+					in = append(in, sp)
+				} else {
+					out = append(out, sp)
 				}
 			}
-			if len(rest) > 0 {
-				skipped = append(skipped, phaseSpec{ph.name, ph.chain, rest})
+			// A phase's pods follow its first spec; every phase holding a
+			// fast scenario boots default pods, so a subset boots the same.
+			if len(in) > 0 {
+				phases = append(phases, phaseSpec{ph.name, ph.chain, in})
 			}
+			if len(out) > 0 {
+				skipped = append(skipped, phaseSpec{ph.name, ph.chain, out})
+			}
+		}
+		if n := slices.IndexFunc(fastScenarios, func(name string) bool {
+			return !slices.ContainsFunc(phases, func(ph phaseSpec) bool {
+				return slices.ContainsFunc(ph.specs, func(sp spec) bool { return sp.name == name })
+			})
+		}); n >= 0 {
+			return nil, nil, fmt.Errorf("fastScenarios names %q, no scenario", fastScenarios[n])
 		}
 	case "full", "long":
 		for _, ph := range all {
@@ -515,7 +526,7 @@ func k2() spec {
 			hb := s.vendors["http-b"]
 			hb.Update(func(f *chainsim.Faults) { f.Lag = 5 })
 			for pod, p := range s.h.pods {
-				c, err := rpc.DialOptions(s.ctx, p.httpURL(s.project, s.chain.ID()), rpc.WithHeader("X-ERPC-Use-Upstream", "k2-*"))
+				c, err := rpc.DialOptions(s.ctx, p.httpURL(s.project, s.chain.ID()), rpc.WithHTTPClient(p.httpc), rpc.WithHeader("X-ERPC-Use-Upstream", "k2-*"))
 				if err != nil {
 					s.t.Fatal(err)
 				}

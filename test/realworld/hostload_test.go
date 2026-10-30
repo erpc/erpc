@@ -191,9 +191,10 @@ func (hl *hostLoad) record(from, to time.Time) string {
 // phaseCores and phaseMemory are what one running phase takes, room for
 // other work on the host included: 18 phases at once (1 core each) gave
 // this process 4.8 s scheduling delays and pods 10 s answers at load 30-67,
-// failing 80 scenarios on harness time, not eRPC's.
+// failing 80 scenarios on harness time, not eRPC's; 4 at once (18 CPUs)
+// leaves each phase's 2 pods and harness share several idle cores.
 const (
-	phaseCores  = 6.0
+	phaseCores  = 4.5
 	phaseMemory = 1 << 30
 )
 

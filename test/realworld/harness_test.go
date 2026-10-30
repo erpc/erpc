@@ -2,6 +2,7 @@ package realworld
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -47,6 +49,8 @@ type harness struct {
 	webSocket map[string]interface{}
 	// lookups time how long the proxies take to tell pods apart.
 	lookups *lookups
+	// dials counts the TCP connections the harness's clients opened to pods.
+	dials atomic.Int64
 	// owners tells the proxies which pod a connection comes from.
 	owners *ownerTable
 	// series ends the per-second record of the pods' vote gauges;
@@ -157,7 +161,7 @@ func (h *harness) stop() {
 		h.redis.stop()
 	}
 	wall := time.Since(h.start)
-	h.t.Logf("the test process (harness and simulators of every phase running beside this one) used %s CPU over this phase's %s wall; proxies: %s", (selfCPU() - h.cpu0).Round(time.Second), wall.Round(time.Second), h.lookups.summary())
+	h.t.Logf("the test process (harness and simulators of every phase running beside this one) used %s CPU over this phase's %s wall; proxies: %s; harness HTTP clients dialed %d TCP connections to pods", (selfCPU() - h.cpu0).Round(time.Second), wall.Round(time.Second), h.lookups.summary(), h.dials.Load())
 	for _, p := range h.pods {
 		p.mu.Lock()
 		h.t.Logf("%s used %s CPU (%.1f cores)", p.name, p.cpu.Round(time.Second), p.cpu.Seconds()/wall.Seconds())
@@ -311,9 +315,13 @@ type pod struct {
 	// (pod.counted).
 	counters                        counterCarry
 	httpPort, grpcPort, metricsPort int
-	cfgPath                         string
-	logs                            []string
-	cpu                             time.Duration // CPU time of every exited process of the pod
+	// httpc is every harness HTTP request to the pod (JSON-RPC, metrics),
+	// over at most podConns kept-alive connections per port: requests
+	// beyond them wait for one, never dial.
+	httpc   *http.Client
+	cfgPath string
+	logs    []string
+	cpu     time.Duration // CPU time of every exited process of the pod
 
 	mu     sync.Mutex
 	cmd    *exec.Cmd
@@ -324,7 +332,7 @@ type pod struct {
 // a scenario boots later (pod.start); pods in old run the old image.
 func (h *harness) startPods(n int, old, cold []int, nets []*netSpec) {
 	for i := range n {
-		p := &pod{h: h, idx: i, name: fmt.Sprintf("pod-%d", i+1), old: slices.Contains(old, i)}
+		p := &pod{h: h, idx: i, name: fmt.Sprintf("pod-%d", i+1), old: slices.Contains(old, i), httpc: h.podClient()}
 		p.cfgPath = filepath.Join(h.dir, p.name+".yaml")
 		h.pods = append(h.pods, p)
 	}
@@ -551,7 +559,13 @@ func (p *pod) saveMetrics() {
 
 // metricsText is the pod's /metrics body.
 func (p *pod) metricsText() ([]byte, error) {
-	resp, err := scrapeClient.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", p.metricsPort))
+	ctx, cancel := context.WithTimeout(context.Background(), scrapeWait)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/metrics", p.metricsPort), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.httpc.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -585,7 +599,30 @@ type series struct {
 	value  float64
 }
 
-var scrapeClient = &http.Client{Timeout: 5 * time.Second}
+// scrapeWait bounds one /metrics read.
+const scrapeWait = 5 * time.Second
+
+// podConns: most connections the harness keeps to one pod port; requests
+// beyond them wait for a free one instead of dialing. Unbounded, each
+// burst past the idle pool dialed and then closed its connection, and the
+// TIME_WAIT sockets of 18 phases used up the ephemeral ports ("can't
+// assign requested address", 4,293 violations in run new-2).
+const podConns = 64
+
+// podClient is an HTTP client for one pod: kept-alive connections, at
+// most podConns per port, each dial counted in h.dials.
+func (h *harness) podClient() *http.Client {
+	d := &net.Dialer{Timeout: 5 * time.Second}
+	return &http.Client{Timeout: httpCheckWait, Transport: &http.Transport{
+		MaxConnsPerHost:     podConns,
+		MaxIdleConnsPerHost: podConns,
+		IdleConnTimeout:     time.Minute,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			h.dials.Add(1)
+			return d.DialContext(ctx, network, addr)
+		},
+	}}
+}
 
 // scrape reads the pod's /metrics; a counter adds its values before each
 // restart of the pod (counted).
