@@ -707,9 +707,10 @@ func (r *sourceReconciler) stopAll() {
 // on the network can feed subType, after the sources caught up with the
 // network's upstreams. logs need heads and a feed that serves receipts or
 // their fallback (spec §10); pending transactions need a push source (§11).
-// A subscribe skips the wait for a source pass when the last pass found a
-// source and one feeds now (sourceReconciler.live): every subscribe on a
-// fed topic would queue behind each pass.
+// A subscribe skips the source pass when the last pass found a source and
+// one feeds now (sourceReconciler.live), so subscribes on a fed topic never
+// queue behind a pass. The first subscribe on an idle polled network waits
+// one pass: its tap is the demand that turns polling on.
 func (n *Network) requireSubscriptionSource(ctx context.Context, subType string) error {
 	if n.sources == nil {
 		return common.NewErrNoSubscriptionSource(n.networkId, subType)

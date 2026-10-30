@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -45,9 +46,10 @@ type wsWriter struct {
 	endCtx        context.Context
 	endCancel     context.CancelFunc
 	stop, stopped chan struct{}
-	// drainBy, set once stop closed, bounds the writes of what was queued
-	// before teardown.
-	drainBy time.Time
+	// drainBy, in unix nanoseconds, is set by stopWriter: what was queued
+	// before teardown is written by then. A write in progress at the stop
+	// started before it, so its own deadline ends earlier.
+	drainBy atomic.Int64
 }
 
 // wsOut is one queued message.
@@ -75,9 +77,10 @@ func (wsc *WsConnection) startWriter() {
 }
 
 // stopWriter lets the writer write what is still queued (teardown set
-// closed first, so nothing more queues) within wsWriteDeadline, and waits
-// for it to return.
+// closed first, so nothing more queues) within wsWriteDeadline of now, and
+// waits for it to return.
 func (wsc *WsConnection) stopWriter() {
+	wsc.w.drainBy.Store(time.Now().Add(wsWriteDeadline).UnixNano())
 	close(wsc.w.stop)
 	<-wsc.w.stopped
 }
@@ -91,7 +94,6 @@ func (wsc *WsConnection) writeLoop() {
 		case m := <-w.out:
 			wsc.writeOut(m)
 		case <-w.stop:
-			w.drainBy = time.Now().Add(wsWriteDeadline)
 			for {
 				select {
 				case m := <-w.out:
@@ -112,8 +114,8 @@ func (wsc *WsConnection) writeOut(m wsOut) {
 	case m.note != nil && m.note.sub.Removed():
 	default:
 		deadline := time.Now().Add(wsWriteDeadline)
-		if !w.drainBy.IsZero() && w.drainBy.Before(deadline) {
-			deadline = w.drainBy
+		if by := w.drainBy.Load(); by != 0 && by < deadline.UnixNano() {
+			deadline = time.Unix(0, by)
 		}
 		if err = wsc.writeFrame(m.msg.Bytes(), deadline); err != nil {
 			wsc.endWrites(err)
