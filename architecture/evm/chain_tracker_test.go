@@ -227,6 +227,34 @@ func TestChainTracker(t *testing.T) {
 		assert.False(t, ok)
 	})
 
+	// U12: a voter reports its tip's header under a number 30M ahead,
+	// before the other voter pushes that tip. The real header takes its
+	// place in the chain; the chain below it stays pinned and linked.
+	t.Run("a header far ahead under the tip's hash keeps the chain linked", func(t *testing.T) {
+		net := newServedChain(t, "evm:ahead-hash")
+		c := newChainTracker(t.Context(), net, 16, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		t.Cleanup(c.Want(indexer.ReadOpts{}))
+		parent := testHash("f", 0)
+		for n := uint64(1); n <= 30; n++ {
+			h := testHash("a", n)
+			hdr := testHeader(n, h, parent)
+			net.serve(n, h, hdr)
+			if n == 21 {
+				c.Observe("b", testHeader(n+30_000_000, h, parent), true)
+				c.sync(context.Background())
+			}
+			c.Observe("a", hdr, true)
+			c.Observe("b", hdr, true)
+			c.sync(context.Background())
+			parent = h
+		}
+		for n := uint64(15); n <= 30; n++ {
+			v, ok := c.HashAt(int64(n))
+			require.True(t, ok, "block %d is pinned", n)
+			assert.Equal(t, testHash("a", n), v, "block %d", n)
+		}
+	})
+
 	t.Run("evicts below the head minus the window", func(t *testing.T) {
 		c := newChainTracker(t.Context(), nil, 2, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
 		voteChain(t, c, "a", "a", 1, 5, testHash("f", 0))
