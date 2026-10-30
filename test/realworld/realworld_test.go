@@ -134,21 +134,21 @@ func catalogue() []phaseSpec {
 // fastScenarios are the fast tier, longest first: one or two scenarios per
 // spec area, each alone in its own phase.
 var fastScenarios = []string{
-	"P12",    // near-future reads above every vendor's head (§6.4)
-	"N4",     // pod cut from every vendor 2 min; gRPC resume on the peer (§9.2, §10.3)
-	"R1",     // read at once at a delivered block, on either pod (§19 oracle)
-	"D1",     // slow ws and gRPC readers: tap restart, send wait (§9.2)
-	"C1",     // tip reorgs told to newHeads, logs, gRPC (§10.2)
-	"X4",     // pod SIGKILL during a reorg; clients resume on the peer
-	"P1",     // head latency: catch-up asks, no stall (§6.8)
-	"C7",     // halt then 100-block burst: fetch and receipts catch-up (§8)
-	"C18",    // finality: final_hash_changed only on own evidence (§6.5)
-	"U8-on",  // integrity: forged header hashes dropped and counted (§7)
-	"U3",     // half-open wss voter reconnects within 30 s (§13.1)
-	"K2",     // minimal config: 1 wss + 1 https, quorum 2 (§6.3)
-	"D5",     // subscribe/unsubscribe churn: no send after unsubscribe, taps drain (§17)
-	"N3",     // voters: a vendor cut leaves the voter set (§6)
-	"U18",    // minority fork answers only within W (§6.3)
+	"P12",   // near-future reads above every vendor's head (§6.4)
+	"N4",    // pod cut from every vendor 2 min; gRPC resume on the peer (§9.2, §10.3)
+	"R1",    // read at once at a delivered block, on either pod (§19 oracle)
+	"D1",    // slow ws and gRPC readers: tap restart, send wait (§9.2)
+	"C1",    // tip reorgs told to newHeads, logs, gRPC (§10.2)
+	"X4",    // pod SIGKILL during a reorg; clients resume on the peer
+	"P1",    // head latency: catch-up asks, no stall (§6.8)
+	"C7",    // halt then 100-block burst: fetch and receipts catch-up (§8)
+	"C18",   // finality: final_hash_changed only on own evidence (§6.5)
+	"U8-on", // integrity: forged header hashes dropped and counted (§7)
+	"U3",    // half-open wss voter reconnects within 30 s (§13.1)
+	"K2",    // minimal config: 1 wss + 1 https, quorum 2 (§6.3)
+	"D5",    // subscribe/unsubscribe churn: no send after unsubscribe, taps drain (§17)
+	"N3",    // voters: a vendor cut leaves the voter set (§6)
+	"U18",   // minority fork answers only within W (§6.3)
 }
 
 // selectedPhases are the phases this run runs, and the phases its tier
