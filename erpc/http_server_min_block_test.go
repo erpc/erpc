@@ -71,11 +71,11 @@ func mockMinBlockNode(id string, n *minBlockNode) {
 			return true
 		}).
 		Reply(200).Map(func(res *http.Response) *http.Response {
-			if c := n.stall.Load(); c != nil {
-				<-*c
-			}
-			return reply(res, header(n.head.Load()))
-		})
+		if c := n.stall.Load(); c != nil {
+			<-*c
+		}
+		return reply(res, header(n.head.Load()))
+	})
 	gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return has(r, "eth_getBlockByNumber", `"finalized"`) }).
 		Reply(200).Map(func(res *http.Response) *http.Response { return reply(res, header(n.head.Load()-10)) })
 	gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return has(r, "eth_getBlockByNumber", `"safe"`) }).
