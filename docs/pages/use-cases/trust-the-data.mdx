@@ -149,7 +149,7 @@ tables and exact defaults live in each page's agent section.
 
 **Syncing state.** A self-hosted node must return `eth_syncing: false` **four consecutive times** (`FullySyncedThreshold = 4` at [`architecture/evm/evm_state_poller.go:L21`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L21)) before eRPC stops syncing-check requests. One `syncing=true` resets the counter to 1.
 
-**Block-head rollback tolerance.** `DefaultToleratedBlockHeadRollback = 1024` at [`architecture/evm/evm_state_poller.go:L26`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L26) — the maximum block-head rollback the poller tolerates before treating it as a large rollback event (emits `erpc_upstream_block_head_large_rollback` gauge).
+**Block-head rollback tolerance.** `DefaultToleratedBlockHeadRollback = 1024` at [`architecture/evm/evm_state_poller.go:L26`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L26) — the maximum block-head rollback the poller tolerates before treating it as a large rollback event (emits `erpc_upstream_block_head_large_rollback` gauge). A large rollback applies only once the lower head moves on, so a provider's node stuck far behind never pulls a head back.
 
 **Error normalizer precedence.** [`ExtractJsonRpcError`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L20) uses text-based matching in strict order:
 
