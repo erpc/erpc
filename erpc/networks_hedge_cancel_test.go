@@ -438,6 +438,12 @@ func TestHedgeConsensus_EmptyTxLookupIsKeptAsSlotVote(t *testing.T) {
 		DisputeBehavior:       common.ConsensusDisputeBehaviorReturnError,
 		PreferNonEmpty:        &common.TRUE,
 		PreferLargerResponses: &common.TRUE,
+		// The waiver needs every internal's vote, and a wait cap seals a
+		// partial bag fail-closed. The default 5 ms result cap arms once one
+		// internal and one external answered, so a slot scheduled late on a
+		// busy host lost its vote.
+		MaxWaitOnResult: common.NewStaticDuration(5 * time.Second),
+		MaxWaitOnEmpty:  common.NewStaticDuration(5 * time.Second),
 		BlockEvidenceFields: map[string][]string{
 			"eth_getTransactionByHash": {"blockNumber"},
 		},

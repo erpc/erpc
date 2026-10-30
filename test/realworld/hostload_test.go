@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,10 +18,10 @@ const (
 	// schedTick: the ticker whose oversleep is the harness's own
 	// scheduling delay.
 	schedTick = 10 * time.Millisecond
-	// quietLoadPerCPU: a phase starts once the 1-min load average is below
+	// quietLoadPerCPU: the run starts once the 1-min load average is below
 	// this times the CPU count; a latency verdict taken above it is labelled.
 	quietLoadPerCPU = 0.75
-	// quietWait: how long a phase waits for a quiet host before it fails.
+	// quietWait: how long the run waits for a quiet host before it fails.
 	quietWait = 10 * time.Minute
 )
 
@@ -33,7 +34,7 @@ type hostSample struct {
 }
 
 // hostLoad records the host's load every hostSampleEvery for the run.
-// loaded (REALWORLD_LOADED_HOST=1): phases start at any load, on a host
+// loaded (REALWORLD_LOADED_HOST=1): the run starts at any load, on a host
 // other work keeps busy; latency verdicts above the limit stay labelled.
 type hostLoad struct {
 	limit  float64
@@ -185,4 +186,50 @@ func (hl *hostLoad) record(from, to time.Time) string {
 		lo, hi, delay = min(lo, s.load), max(hi, s.load), max(delay, s.delay)
 	}
 	return fmt.Sprintf("load %.1f–%.1f (limit %.1f), scheduling delay max %s, %d samples", lo, hi, hl.limit, delay.Round(time.Millisecond), len(ss))
+}
+
+// phaseCores and phaseMemory are what one running phase takes, room for
+// other work on the host included: 18 phases at once (1 core each) gave
+// this process 4.8 s scheduling delays and pods 10 s answers at load 30-67,
+// failing 80 scenarios on harness time, not eRPC's; 4 at once (18 CPUs)
+// leaves each phase's 2 pods and harness share several idle cores.
+const (
+	phaseCores  = 4.5
+	phaseMemory = 1 << 30
+)
+
+// phaseLimit is how many phases run at once: as many as the host's cores
+// and memory hold, at least one.
+func phaseLimit() (int, string) {
+	cpus := runtime.NumCPU()
+	byCPU := int(float64(cpus) / phaseCores)
+	mem, err := memoryBytes()
+	if err != nil {
+		return max(1, byCPU), fmt.Sprintf("%d CPUs at %.1f per phase; memory unknown: %v", cpus, phaseCores, err)
+	}
+	byMem := int(mem / phaseMemory)
+	return max(1, min(byCPU, byMem)), fmt.Sprintf("%d CPUs at %.1f per phase, %d GiB at %d GiB per phase", cpus, phaseCores, mem>>30, phaseMemory>>30)
+}
+
+// memoryBytes is the host's physical memory: hw.memsize on macOS,
+// MemTotal on Linux.
+func memoryBytes() (uint64, error) {
+	if runtime.GOOS == "darwin" {
+		out, err := exec.Command("/usr/sbin/sysctl", "-n", "hw.memsize").Output()
+		if err != nil {
+			return 0, fmt.Errorf("sysctl hw.memsize: %w", err)
+		}
+		return strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
+	}
+	b, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if kb, ok := strings.CutPrefix(line, "MemTotal:"); ok {
+			n, err := strconv.ParseUint(strings.TrimSuffix(strings.TrimSpace(kb), " kB"), 10, 64)
+			return n << 10, err
+		}
+	}
+	return 0, fmt.Errorf("/proc/meminfo has no MemTotal")
 }

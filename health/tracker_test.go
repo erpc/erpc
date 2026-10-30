@@ -829,6 +829,7 @@ func TestRecordUpstreamFailure_AllSkipCodesIgnored(t *testing.T) {
 		{"Unsupported", common.NewErrEndpointUnsupported(fmt.Errorf("not supported"))},
 		{"CapacityExceeded", common.NewErrEndpointCapacityExceeded(fmt.Errorf("429"))},
 		{"ClientSideException", common.NewErrEndpointClientSideException(fmt.Errorf("400"))},
+		{"RequestTooLarge", common.NewErrEndpointRequestTooLarge(fmt.Errorf("exceeds max results"), common.EvmBlockRangeTooLarge)},
 		{"RequestCanceled", common.NewErrEndpointRequestCanceled(fmt.Errorf("context canceled"))},
 		{"UpstreamHedgeCancelled", common.NewErrUpstreamHedgeCancelled("ups", fmt.Errorf("context canceled"))},
 		{"BlockUnavailable", common.NewErrUpstreamBlockUnavailable("ups", 1000, 999, 990)},

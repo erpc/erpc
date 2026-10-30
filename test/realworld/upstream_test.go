@@ -437,7 +437,7 @@ func u7() spec {
 			s.blocks(25)
 			fresh := make([]*rpc.Client, len(s.h.pods))
 			for pod, p := range s.h.pods {
-				c, err := rpc.DialOptions(s.ctx, p.httpURL(s.project, s.chain.ID()), rpc.WithHTTPClient(s.httpc), rpc.WithHeader("X-ERPC-Skip-Cache-Read", "true"))
+				c, err := rpc.DialOptions(s.ctx, p.httpURL(s.project, s.chain.ID()), rpc.WithHTTPClient(p.httpc), rpc.WithHeader("X-ERPC-Skip-Cache-Read", "true"))
 				if err != nil {
 					s.t.Fatal(err)
 				}

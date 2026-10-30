@@ -8,20 +8,11 @@ import (
 	"strings"
 )
 
-// socketOwner is the pid, among pids, that holds the TCP socket with local
-// port lport and foreign port fport; 0 if none. /proc/net/tcp{,6} name the
-// socket's inode, and the owner's /proc/<pid>/fd links to "socket:[inode]".
-func socketOwner(lport, fport int, pids []int) int {
-	inode := ""
-	for _, f := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
-		if inode = socketInode(f, lport, fport); inode != "" {
-			break
-		}
-	}
-	if inode == "" {
-		return 0
-	}
-	want := "socket:[" + inode + "]"
+// socketOwners is the pid, among pids, that holds each TCP socket, by local
+// and foreign port. /proc/net/tcp{,6} name each socket's inode, and the
+// owner's /proc/<pid>/fd links to "socket:[inode]".
+func socketOwners(pids []int) map[sockKey]int {
+	byInode := map[string]int{}
 	for _, pid := range pids {
 		dir := fmt.Sprintf("/proc/%d/fd", pid)
 		fds, err := os.ReadDir(dir)
@@ -29,21 +20,30 @@ func socketOwner(lport, fport int, pids []int) int {
 			continue
 		}
 		for _, fd := range fds {
-			if l, err := os.Readlink(dir + "/" + fd.Name()); err == nil && l == want {
-				return pid
+			if l, err := os.Readlink(dir + "/" + fd.Name()); err == nil {
+				if inode, ok := strings.CutPrefix(l, "socket:["); ok {
+					byInode[strings.TrimSuffix(inode, "]")] = pid
+				}
 			}
 		}
 	}
-	return 0
+	out := map[sockKey]int{}
+	for _, f := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		readSockets(f, func(k sockKey, inode string) {
+			if pid, ok := byInode[inode]; ok {
+				out[k] = pid
+			}
+		})
+	}
+	return out
 }
 
-// socketInode is the inode of the socket in table f (/proc/net/tcp
-// format: "sl local rem st … inode", addresses as HEXIP:HEXPORT) with
-// local port lport and remote port fport; "" if none.
-func socketInode(f string, lport, fport int) string {
+// readSockets calls fn for each socket in table f (/proc/net/tcp format:
+// "sl local rem st … inode", addresses as HEXIP:HEXPORT).
+func readSockets(f string, fn func(sockKey, string)) {
 	fh, err := os.Open(f)
 	if err != nil {
-		return ""
+		return
 	}
 	defer fh.Close()
 	sc := bufio.NewScanner(fh)
@@ -53,11 +53,8 @@ func socketInode(f string, lport, fport int) string {
 		if len(fields) < 10 {
 			continue
 		}
-		if hexPort(fields[1]) == lport && hexPort(fields[2]) == fport {
-			return fields[9]
-		}
+		fn(sockKey{lport: hexPort(fields[1]), fport: hexPort(fields[2])}, fields[9])
 	}
-	return ""
 }
 
 func hexPort(addr string) int {
