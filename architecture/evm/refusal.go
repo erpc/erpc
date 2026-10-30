@@ -117,15 +117,16 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 }
 
 // nearFutureBlocks is how far above the ceiling a block waits for it:
-// (W + A) / bt blocks, at least 1, A the age of the ceiling's evidence,
-// unknown (0) while a report has none (spec §6.4 near future). The chain
-// kept making blocks since those reports were taken.
+// (W + A) / bt + 1 blocks, A the age of the ceiling's evidence, unknown (0)
+// while a report has none (spec §6.4 near future). The chain kept making
+// blocks since those reports were taken, and may have made one more right
+// after: a fresh report can trail the chain by a block.
 func nearFutureBlocks(bt time.Duration, oldestReportAt, now time.Time) int64 {
 	var age time.Duration
 	if !oldestReportAt.IsZero() {
 		age = max(0, now.Sub(oldestReportAt))
 	}
-	return max(1, int64((health.FreshnessWindow(bt)+age)/bt))
+	return int64((health.FreshnessWindow(bt)+age)/bt) + 1
 }
 
 // EmptyResultBeyondConfidence reports whether an empty answer for rq is its answer rather

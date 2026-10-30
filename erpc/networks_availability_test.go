@@ -1632,7 +1632,7 @@ func TestHandleBlockSkip_RetryableTriggersStatePollerRefresh(t *testing.T) {
 	require.Greater(t, pollBaseline.Load(), int64(0), "state poller should have polled during bootstrap")
 
 	// Request block 0x11118898: 16 ahead of latest 0x11118888, within the
-	// retryable distance (128), above the near future (W / bt = 3 blocks).
+	// retryable distance (128), above the near future (W / bt + 1 = 4 blocks).
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x11118898"]}`))
 	req.SetNetwork(network)
 
