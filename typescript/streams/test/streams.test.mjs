@@ -1,9 +1,9 @@
 // The library against real eRPC pods over a simulated chain
 // (test/streamsim): resume after a pod restart, undo on reorgs, the
 // heartbeat watchdog on a black-holed link, a two-endpoint merge, the
-// out-of-range end, stops on abort and on a handler error, and a merge
-// whose leader dies on another branch. ERPC_BIN names a built cmd/erpc;
-// else it is built.
+// out-of-range end, stops on abort and on a handler error, a merge whose
+// leader dies on another branch, and the message-too-large end.
+// ERPC_BIN names a built cmd/erpc; else it is built.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -13,7 +13,13 @@ import { createInterface } from "node:readline";
 import { after, before, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { fileCursor, formatToken, OutOfRangeError, stream } from "../lib/index.js";
+import {
+  fileCursor,
+  formatToken,
+  MessageTooLargeError,
+  OutOfRangeError,
+  stream,
+} from "../lib/index.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const dir = mkdtempSync(join(tmpdir(), "erpc-streams-"));
@@ -303,4 +309,44 @@ test("two endpoints on different branches: a reorg, then the leader dies", async
   await r.stop();
   assert.ok(a.undos >= 1, "no undo across the branch switch");
   await requireCanonical(a, 1, 1);
+});
+
+// A pod whose send limit is below one log's message ends each logs stream
+// RESOURCE_EXHAUSTED MESSAGE_TOO_LARGE naming the block; a resume meets
+// the same block, so the run must stop with MessageTooLargeError, never
+// reconnect.
+test("a log over the server's message bound ends MessageTooLargeError", async () => {
+  await send({ op: "kill", pod: 0 });
+  await send({ op: "start", pod: 0, maxSendBytes: 160 });
+  try {
+    const a = app("logs");
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 30_000);
+    let err;
+    try {
+      await stream({
+        endpoints: [ready.endpoints[0]],
+        kind: "logs",
+        filter: ready.filters[0],
+        heartbeatSeconds: 1,
+      }).run(a.handler, { signal: ac.signal });
+    } catch (e) {
+      err = e;
+    } finally {
+      clearTimeout(timer);
+    }
+    assert.ok(err instanceof MessageTooLargeError, `run ended ${err ?? "by the 30s abort"}`);
+    assert.equal(err.maxBytes, 160);
+    assert.ok(err.messageBytes > 160, `${err.messageBytes} bytes`);
+    const n = Number(err.block.number);
+    const { blocks } = await send({ op: "canon", from: n, to: n });
+    assert.equal(err.block.hash, blocks[0].hash);
+    assert.ok(
+      a.chain.every((b) => b.number < err.block.number),
+      `applied ${a.chain.at(-1)?.number}, at or above ${n}`,
+    );
+  } finally {
+    await send({ op: "kill", pod: 0 });
+    await send({ op: "start", pod: 0 });
+  }
 });

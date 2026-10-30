@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { type ServiceError, status as Code } from "@grpc/grpc-js";
 import { dial, type Endpoint, metadataOf, parseEndpoint } from "./endpoint";
-import { errorInfo, FinalRevertedError, OutOfRangeError } from "./errors";
+import { errorInfo, FinalRevertedError, MessageTooLargeError, OutOfRangeError } from "./errors";
 import { Finality } from "./gen/stream";
 import { type Apply, Lane, Merger, PendingDedup } from "./merge";
 import { type Event, open, parseFilter, parseFinality, type Request } from "./session";
@@ -31,8 +31,8 @@ export interface Stream {
   /**
    * Streams until the signal aborts (resolves) or a terminal end (rejects
    * with the handler's own error, the gRPC ServiceError for auth or
-   * options, or OutOfRangeError or FinalRevertedError from an endpoint
-   * while no other endpoint streams).
+   * options, or MessageTooLargeError, at once; OutOfRangeError or
+   * FinalRevertedError from an endpoint while no other endpoint streams).
    */
   run(handler: Handler, options?: RunOptions): Promise<void>;
 }
@@ -251,27 +251,40 @@ function terminal(
   endpoint: string,
   from: BlockRef | undefined,
 ): { err: Error; perEndpoint: boolean } | undefined {
+  const info = errorInfo(err);
+  const ref = (number: string, hash: string): BlockRef | undefined => {
+    const n = info?.metadata[number];
+    const h = info?.metadata[hash];
+    return n && h ? { number: BigInt(n), hash: h.toLowerCase() } : undefined;
+  };
   switch (err.code) {
-    case Code.OUT_OF_RANGE: {
-      const info = errorInfo(err);
-      const block = info?.metadata.oldestBlock;
-      const hash = info?.metadata.oldestHash;
+    case Code.OUT_OF_RANGE:
       return {
         err: new OutOfRangeError(
           endpoint,
           from && formatToken(from),
           info?.reason ?? err.details,
-          block && hash ? { number: BigInt(block), hash: hash.toLowerCase() } : undefined,
+          ref("oldestBlock", "oldestHash"),
         ),
         perEndpoint: true,
       };
-    }
     case Code.ABORTED:
       return { err: new FinalRevertedError(endpoint, err.details), perEndpoint: true };
     case Code.UNAUTHENTICATED:
     case Code.PERMISSION_DENIED:
     case Code.INVALID_ARGUMENT:
       return { err, perEndpoint: false };
+    case Code.RESOURCE_EXHAUSTED:
+      if (info?.reason !== "MESSAGE_TOO_LARGE") return undefined;
+      return {
+        err: new MessageTooLargeError(
+          endpoint,
+          ref("blockNumber", "blockHash"),
+          Number(info.metadata.messageBytes),
+          Number(info.metadata.maxBytes),
+        ),
+        perEndpoint: false,
+      };
   }
   return undefined;
 }

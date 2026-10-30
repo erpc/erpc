@@ -24,8 +24,9 @@ const (
 
 // Run streams cfg into h until ctx ends, then returns nil, or until a
 // terminal end (spec §9.5): an authentication, permission or option error
-// from the server, or an error h returned, at once; *OutOfRangeError or
-// *FinalRevertedError from an endpoint while no other endpoint streams.
+// from the server, *MessageTooLargeError, or an error h returned, at once;
+// *OutOfRangeError or *FinalRevertedError from an endpoint while no other
+// endpoint streams.
 // Every other end reconnects from the cursor: at once after a stream that
 // flowed ended UNAVAILABLE or went silent for 3 heartbeats, else after a
 // jittered backoff. With two endpoints both stream from the merged cursor

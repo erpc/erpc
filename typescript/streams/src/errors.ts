@@ -38,6 +38,25 @@ export class FinalRevertedError extends Error {
   }
 }
 
+/**
+ * `endpoint` cannot send one message of `block` within its message bound
+ * (spec §3.4 `message_too_large`): a resume from the cursor meets the same
+ * block, so the run stops.
+ */
+export class MessageTooLargeError extends Error {
+  constructor(
+    readonly endpoint: string,
+    readonly block: BlockRef | undefined,
+    readonly messageBytes: number,
+    readonly maxBytes: number,
+  ) {
+    super(
+      `${endpoint}: block ${block ? `0x${block.number.toString(16)}:${block.hash}` : "unknown"} needs a ${messageBytes}-byte message, over the ${maxBytes}-byte bound`,
+    );
+    this.name = "MessageTooLargeError";
+  }
+}
+
 const errorInfoType = "type.googleapis.com/google.rpc.ErrorInfo";
 
 /**

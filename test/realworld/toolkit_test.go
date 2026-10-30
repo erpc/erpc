@@ -198,6 +198,7 @@ func endRecord(err error) toolkitRecord {
 	r.Error = &msg
 	var oor *streams.OutOfRangeError
 	var fr *streams.FinalRevertedError
+	var tl *streams.MessageTooLargeError
 	switch {
 	case errors.As(err, &oor):
 		r.Code, r.Cursor = "OUT_OF_RANGE", oor.Cursor
@@ -206,6 +207,8 @@ func endRecord(err error) toolkitRecord {
 		}
 	case errors.As(err, &fr):
 		r.Code = "ABORTED"
+	case errors.As(err, &tl):
+		r.Code = "RESOURCE_EXHAUSTED"
 	default:
 		if st, ok := status.FromError(err); ok {
 			var b strings.Builder
