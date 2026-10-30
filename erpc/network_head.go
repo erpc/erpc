@@ -641,18 +641,26 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 	if d := req.Directives(); d != nil {
 		sel = d.UseUpstream
 	}
-	latest := func() (int64, <-chan struct{}) {
+	// computed: the lane's Head is computed and published first. The head
+	// loop runs one pass over every lane per counter move; under load a
+	// pass trails the voters' counters by more than 1 bt, and Latest is
+	// their quorum, not the last publish.
+	latest := func(computed bool) (int64, <-chan struct{}) {
 		if l := n.laneFor(sel); l != nil {
+			if computed {
+				n.refreshLaneRecovered(l)
+			}
 			moved := l.latestMoved()
 			return l.published().Latest, moved
 		}
-		computed := n.headsComputed()
-		return n.headFor(sel).Latest, computed
+		pass := n.headsComputed()
+		return n.headFor(sel).Latest, pass
 	}
-	at, moved := latest()
+	at, moved := latest(false)
 	if at <= 0 || bn <= at {
 		return resp, false
 	}
+	at, moved = latest(true)
 	bt := n.blockTimeOrCold()
 	wait, cancel := context.WithTimeout(ctx, bt)
 	defer cancel()
@@ -662,11 +670,13 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 	for at < bn {
 		select {
 		case <-moved:
+			at, moved = latest(false)
 		case <-wait.Done():
-			n.countHeadRefusal("held_null")
-			return nullAnswer(req, resp)
+			if at, _ = latest(true); at < bn {
+				n.countHeadRefusal("held_null")
+				return nullAnswer(req, resp)
+			}
 		}
-		at, moved = latest()
 	}
 	n.countHeadRefusal("held_served")
 	return resp, false
