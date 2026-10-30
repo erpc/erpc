@@ -47,12 +47,15 @@ erpc_tests() {
 	cd erpc || return 1
 	"$dir/erpc.test" -test.list '.*' | grep -E '^Test' | grep -vE "$chaos" >"$dir/erpc/tests.txt"
 	: >"$dir/erpc/results.txt"
-	xargs -P "$erpc_procs" -I{} bash -c '
-		s=$(date +%s)
-		"$0" -test.run "^{}\$" -test.count 1 -test.timeout 8m -test.v >"$1/{}.log" 2>&1
-		printf "%s %d %ds\n" {} $? $(($(date +%s) - s)) >>"$1/results.txt"
-	' "$dir/erpc.test" "$dir/erpc" <"$dir/erpc/tests.txt"
-	echo "$(wc -l <"$dir/erpc/results.txt") of $(wc -l <"$dir/erpc/tests.txt") tests ran"
+	xargs -P "$erpc_procs" -n 1 bash -c '
+		bin=$1 out=$2 t=$3 s=$(date +%s)
+		"$bin" -test.run "^$t\$" -test.count 1 -test.timeout 8m -test.v >"$out/$t.log" 2>&1
+		printf "%s %d %ds\n" "$t" $? $(($(date +%s) - s)) >>"$out/results.txt"
+	' _ "$dir/erpc.test" "$dir/erpc" <"$dir/erpc/tests.txt"
+	local ran listed
+	ran=$(wc -l <"$dir/erpc/results.txt") listed=$(wc -l <"$dir/erpc/tests.txt")
+	echo "$ran of $listed tests ran"
+	[ "$ran" -eq "$listed" ] || { echo "FAIL	$((listed - ran)) tests never ran"; return 1; }
 	local fails
 	fails=$(awk '$2 != 0 {print $1}' "$dir/erpc/results.txt")
 	[ -z "$fails" ] && return 0
