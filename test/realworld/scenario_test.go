@@ -396,7 +396,7 @@ func (s *scenario) execute(t *testing.T) {
 
 // stallDump: a header tap silent this long, or past its scenario's bound
 // when that is longer, on a pod that should serve it gets the pod a SIGQUIT
-// goroutine dump (triage, not a bound).
+// goroutine dump (triage, not a bound) while the host is below its load limit.
 const stallDump = 10 * time.Second
 
 // watchStalls dumps a pod's goroutines, once per pod and phase, when one of
@@ -405,7 +405,11 @@ const stallDump = 10 * time.Second
 // mints and no fault excuses the pod; it then restarts the pod. Silence
 // counts from the later of the tap's last block and the mint of the block
 // after it, so a halted chain silences no tap. Verdicts of the phase's
-// other scenarios on that pod after the dump carry the restart.
+// other scenarios on that pod after the dump carry the restart. On an
+// overloaded host the pod keeps running: a host that pages the -race pods
+// out stalls both at once, and restarting them turned that one stall into
+// connection failures in every scenario of the phase; the tap's gap verdict
+// still fails, labelled.
 func (s *scenario) watchStalls() {
 	after := max(stallDump, s.bound)
 	for {
@@ -433,6 +437,10 @@ func (s *scenario) watchStalls() {
 				since = min(since, time.Since(next.MintedAt))
 			}
 			if !ok || c.slow || since < after || s.excused(pod, time.Now().Add(-since), time.Now()) || !s.h.claimDump(pod) {
+				continue
+			}
+			if load, over := s.h.host.overloaded(time.Now().Add(-since), time.Now()); over {
+				s.logf("host overloaded (load %.1f): %s silent %s on pod-%d; no dump, pod-%d kept", load, c.name, since.Round(time.Second), pod+1, pod+1)
 				continue
 			}
 			p := s.h.pods[pod]
