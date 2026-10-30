@@ -234,7 +234,7 @@ func (s *scenario) openFinal(pod int, name string, params ...interface{}) (*extC
 // below Finalized when sent, never an undo, logs canonical; the hold
 // gauge is up while they run and back to 0 once they close.
 func f1() spec {
-	return spec{name: "F1", bound: healthyDelivery, evm: finalityEvm(), body: func(s *scenario) {
+	return spec{name: "F1", bound: healthyDelivery, evm: finalityEvm(), clients: func(*scenario) {}, body: func(s *scenario) {
 		s.blocks(chainsim.FinalizedLag + 10)
 		type pair struct {
 			ec          *extConn
@@ -443,22 +443,30 @@ func f5() spec {
 
 // F6: 0.2s blocks, finalized 4,000 below the head: a final tap fills down
 // to Finalized and flows, and the hold gauge is back to 0 once it
-// closes. Then 25,000 below: a final subscribe is refused finality_span
-// and an open final tap ends out_of_range/finality_span.
+// closes. Then 25,000 below: once Head.Finalized follows (the finalized
+// poll's debounce grows with the finality depth), an open final tap ends
+// out_of_range/finality_span and a final subscribe is refused. The 5s
+// window ends baseline gRPC resumes below_window, so F6 runs no baseline
+// clients.
 func f6() spec {
 	faults := map[string]chainsim.Faults{}
 	for _, v := range baseVendors {
 		faults[v.key] = chainsim.Faults{FinalityDepth: f6Depth}
 	}
 	return spec{name: "F6", bound: healthyDelivery, evm: finalityEvm(), faults: faults, sim: chainsim.Config{History: f6Span + 1000},
-		allow: []string{"ws:logs-end", "ws:jump"}, body: func(s *scenario) {
+		clients: func(*scenario) {}, allow: []string{"ws:logs-end", "ws:jump"}, body: func(s *scenario) {
 			s.blocks(25)
 			ec, sub := s.openFinal(0, s.name, "newHeads", erpcOpts("finality", "finalized"))
 			if ec == nil {
 				return
 			}
-			if v, ok := s.waitMetric(0, "erpc_chain_tracker_final_hold_headers", nil, 10*time.Minute, func(v float64) bool { return v > f6Depth/2 }); !ok {
-				s.violate(s.name, "hold gauge %v, want about %d headers", v, f6Depth)
+			// The first final block waits for the fill down to Finalized,
+			// one header fetch at a time (streams spec §14).
+			for deadline := time.Now().Add(10 * time.Minute); len(s.applyFinalHeads(ec, sub).chain) < 10 && time.Now().Before(deadline); {
+				time.Sleep(time.Second)
+			}
+			if v, ok := s.metric(0, "erpc_chain_tracker_final_hold_headers", nil); !ok || v < f6Depth/2 {
+				s.violate(s.name, "hold gauge %v while the final tap flows, want about %d headers", v, f6Depth)
 			}
 			s.blocks(50)
 			s.requireFinal(s.name, s.applyFinalHeads(ec, sub), f6Depth)
@@ -471,12 +479,18 @@ func f6() spec {
 				return
 			}
 			defer ec.close()
-			at := time.Now()
 			for _, v := range s.vendors {
 				v.Update(func(f *chainsim.Faults) { f.FinalityDepth = f6Span })
 			}
+			finalized := map[string]string{"lane": "all", "axis": "finalized"}
+			if v, ok := s.waitMetric(1, "erpc_network_served_tip_block_number", finalized, 10*time.Minute, func(v float64) bool {
+				return uint64(v)+f6Span-1000 < s.chain.Tip().Number
+			}); !ok {
+				s.violate(s.name, "Head.Finalized %v never fell %d below the tip %d", v, f6Span, s.chain.Tip().Number)
+				return
+			}
 			s.blocks(25)
-			if ends := ec.controls(sub, "end", at); len(ends) != 1 || ends[0].msg.Reason != "out_of_range" || ends[0].msg.Detail != "finality_span" {
+			if ends := ec.controls(sub, "end", time.Time{}); len(ends) != 1 || ends[0].msg.Reason != "out_of_range" || ends[0].msg.Detail != "finality_span" {
 				s.violate(s.name, "open final tap ends %+v, want out_of_range/finality_span", ends)
 			}
 			if _, err := ec.subscribe("newHeads", erpcOpts("finality", "finalized")); err == nil || !containsAll(err.Error(), "-32005", "finality_span") {
