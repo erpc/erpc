@@ -187,6 +187,9 @@ func (c *clientBase) deliver(pod int, b *chainsim.Block, connStart time.Time) {
 	c.mu.Lock()
 	c.deliveries = append(c.deliveries, delivery{pod: pod, number: b.Number, minted: b.MintedAt, at: time.Now(), connStart: connStart, hash: b.Hash})
 	c.mu.Unlock()
+	if c.s.onDeliver != nil {
+		c.s.onDeliver(c.s, c, pod, b)
+	}
 }
 
 func (c *clientBase) ended(pod int, reason string, server bool) {

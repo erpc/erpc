@@ -980,7 +980,8 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | Config | 7 | K1–K7 |
 | HTTP consistency | 14 | P1–P13, P11-nitro |
 | Vendor cost | 3 | Z1–Z3 |
-| Total | 87 | |
+| Read after event | 1 | R1 |
+| Total | 88 | |
 
 | ID | Setup and fault | Expected |
 |---|---|---|
@@ -1071,6 +1072,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | Z1 | 1 instance; 4 https vendors of 4 vendors, none a source; 0.25s blocks; full poll every 10s; integrity off; no client | no settle, fork poll or demotion; vendor calls per block at most main's (0.200) + 10% |
 | Z2 | Z1 with one client `eth_getBlockByNumber(latest)` per second | no tie settle, fork refresh or demotion |
 | Z3 | Z1 with integrity on and no client request, boot included; then one `latest` request | no walk fetch (`erpc_chain_tracker_fetch_total{class="head"}`) before the request; walks after it |
+| R1 | per pod a ws `newHeads`, a ws `logs` and a gRPC `StreamBlocks` client; one vendor 2 blocks behind, one whose `eth_call(latest)` executes 5 blocks stale; reorgs 1–3 deep. At each block N a client receives, at once, to the delivering pod and to the other: `eth_call` Multicall3 `getBlockNumber()` at `latest`, at N, at N's hash (EIP-1898), `eth_getBlockByNumber(latest)`, `eth_blockNumber`; logs clients also `eth_getLogs` by N's `blockHash` | no error, no `null`; at N and at its hash: N; logs by hash: exactly N's matching logs; `latest` reads ≥ N on the delivering pod; on the other ≥ N, or lower and ≥ N within 1 bt, counted apart; each read within W |
 
 - The in-process chaos test `TestChainFeed_ConvergesUnderFaults` (`erpc/chain_feed_test.go`) stays as the fast CI test and uses the `test/chainsim` simulator. Panic recovery (`TrackerMessageHook`) is tested only there: no black-box trigger exists.
 
