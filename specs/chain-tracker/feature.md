@@ -997,7 +997,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | U11 | 2 upstreams only; one head frozen, still answering | taps and `latest` wait for the bench (at most 90s), then flow: the held blocks were not deliverable during the wait, so they arrive in batches of at most `reorgWindow`, no gap, no `newHeads` restart and no `1013` (§10.2, as C7); gRPC resumes at most once |
 | U12 | one upstream reports +30M, same chainId | `Latest`, `Leader`, lag unchanged; ceiling raised, no short-circuit; its band probe counts one `retried_missing` |
 | U13 | one endpoint answers another chainId | cordoned, out of ceiling; uncordoned after 2 matches 5 min apart |
-| U14 | archive syncing at head+5; `eth_getBlockByNumber(head+3)` | served by the archive in the refusal band, not `null` |
+| U14 | archive syncing at head+5; `eth_getBlockByNumber(head+3)` | served by the archive in the refusal band, not `null`; an answer that lands after the other vendors reach head+3 (2 blocks later) comes from them: a latency verdict |
 | U15 | one vendor lacks `eth_getBlockReceipts` | logs from the other vendor; subscribe accepted |
 | U16 | wss refuses `newHeads` as unsupported | polled at cadence; asked again on reconnect and every 10 min |
 | U17 | https refuses `latest` 10 times | give-up; re-probed after 10 min; never a stuck poll source |
