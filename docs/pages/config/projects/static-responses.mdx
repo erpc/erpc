@@ -114,6 +114,11 @@ JSON-RPC method — before multiplexing, cache reads, and upstream selection
 pipeline and returns the configured reply in microseconds. A miss falls through to the
 normal path unmodified.
 
+A static response also takes precedence over eRPC's built-in local answers
+(`eth_chainId`, `net_version`, `web3_clientVersion`, ...): the local-answer hook runs earlier, at
+project pre-forward, and steps aside when a static response matches the method and params
+(<SourceLink file="architecture/evm/local_answer.go" />).
+
 Matching is performed by `FindStaticResponseMatch` (<SourceLink file="common/static_response.go" lines="14-24" />),
 which iterates the `staticResponses` slice in declaration order and returns the first entry
 whose `method` equals the request method (exact, case-sensitive string match) AND whose

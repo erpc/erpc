@@ -701,3 +701,51 @@ func TestExtractJsonRpcError_TooManySubscriptions_IsCapacityExceeded(t *testing.
 		t.Fatalf("expected ErrEndpointCapacityExceeded, got %T: %v", err, err)
 	}
 }
+
+// TestExtractJsonRpcError_InvalidChainID verifies that an "invalid chain ID"
+// upstream error — a client submitting a transaction whose chainId does not
+// match the network, via eth_estimateGas or eth_sendRawTransaction — normalizes
+// to a non-retryable ExecutionException. Left as the server-side (retryable)
+// default it retry-storms across every upstream into a false
+// ErrUpstreamsExhausted critical. Unlike "gas required exceeds allowance", it is
+// non-retryable for eth_sendRawTransaction too: the chainId mismatch is
+// deterministic on every correctly-configured upstream.
+func TestExtractJsonRpcError_InvalidChainID(t *testing.T) {
+	t.Parallel()
+
+	messages := map[string]string{
+		"reth": "invalid chain ID",
+		"geth": "invalid sender: invalid chain id for signer: have 1 want 137",
+	}
+	for client, msg := range messages {
+		for _, method := range []string{"eth_estimateGas", "eth_call", "eth_sendRawTransaction"} {
+			client, msg, method := client, msg, method
+			t.Run(client+"/"+method, func(t *testing.T) {
+				t.Parallel()
+
+				req := common.NewNormalizedRequest([]byte(
+					`{"jsonrpc":"2.0","method":"` + method + `","params":[],"id":1}`))
+				nr := common.NewNormalizedResponse().WithRequest(req)
+
+				r := &http.Response{StatusCode: 200, Header: http.Header{}}
+				jrErr := common.NewErrJsonRpcExceptionExternal(
+					int(common.JsonRpcErrorCallException),
+					msg,
+					"",
+				)
+				jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+				err := ExtractJsonRpcError(r, nr, jr, nil)
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+					t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+				}
+				if common.IsRetryableTowardNetwork(err) {
+					t.Fatalf("invalid chain ID must be non-retryable toward network (method=%s)", method)
+				}
+			})
+		}
+	}
+}

@@ -193,3 +193,50 @@ func TestNetworkExecutor_ShouldRetry_SinglePermanentIsTerminal(t *testing.T) {
 	assert.Equal(t, "missing_data", e.shouldRetryWithReason(nil, nil, transient, 0),
 		"a single transient MissingData must still retry (wait-and-retry may surface it)")
 }
+
+// Pruned nodes skip the block (ErrUpstreamRequestSkipped wrapping
+// ErrUpstreamBlockUnavailable) while the archive fails with a retryable 503.
+// Waiting a block cannot make the skips serveable, so the retry must neither
+// take the block_unavailable reason nor the block-time delay.
+func TestNetworkExecutor_PrunedBlockSkipsDoNotWaitForChain(t *testing.T) {
+	cfg := &common.NetworkFailsafeConfig{
+		Retry: &common.RetryPolicyConfig{MaxAttempts: 2, EmptyResultMaxAttempts: 2},
+	}
+	e := &networkExecutor{
+		cfg:                          cfg,
+		method:                       "*",
+		dynamicBlockUnavailableDelay: func() time.Duration { return 500 * time.Millisecond },
+	}
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1",false]}`))
+
+	pruned := func(id string) error {
+		return common.NewErrUpstreamRequestSkipped(common.NewErrUpstreamBlockUnavailable(id, 1, 1000, 990), id)
+	}
+	archive := common.NewErrEndpointServerSideException(common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorServerSideException, "archive down", nil, nil), nil, 503)
+	exhausted := common.NewErrUpstreamsExhaustedWithCause(errors.Join(pruned("node1"), pruned("node2"), archive))
+
+	assert.Equal(t, "retryable_error", e.shouldRetryWithReason(req, nil, exhausted, 0))
+	assert.Equal(t, time.Duration(0), e.computeDelay(req, nil, exhausted, 0),
+		"pruned-block skips must not wait for the chain")
+}
+
+// One upstream that is merely behind the head still warrants the catch-up wait,
+// even when its siblings skipped the block as pruned.
+func TestNetworkExecutor_LaggingSiblingStillWaitsForChain(t *testing.T) {
+	cfg := &common.NetworkFailsafeConfig{
+		Retry: &common.RetryPolicyConfig{MaxAttempts: 2, EmptyResultMaxAttempts: 2},
+	}
+	e := &networkExecutor{
+		cfg:                          cfg,
+		method:                       "*",
+		dynamicBlockUnavailableDelay: func() time.Duration { return 500 * time.Millisecond },
+	}
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x3e9",false]}`))
+
+	pruned := common.NewErrUpstreamRequestSkipped(common.NewErrUpstreamBlockUnavailable("node1", 1001, 1000, 990), "node1")
+	behind := common.NewErrUpstreamBlockUnavailable("node2", 1001, 1000, 990)
+	exhausted := common.NewErrUpstreamsExhaustedWithCause(errors.Join(pruned, behind))
+
+	assert.Equal(t, "block_unavailable", e.shouldRetryWithReason(req, nil, exhausted, 0))
+	assert.Equal(t, 500*time.Millisecond, e.computeDelay(req, nil, exhausted, 0))
+}
