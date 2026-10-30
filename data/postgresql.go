@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,9 +18,9 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
-	"github.com/jackc/pgconn"
-	"github.com/jackc/pgx/v4"
-	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -83,6 +84,9 @@ type PostgreSQLConnector struct {
 	setTimeout           time.Duration
 	listeners            sync.Map      // map[string]*pgxListener
 	listenerPool         *pgxpool.Pool // Separate pool for LISTEN connections
+	// legacyKeysWarnOnce limits the deprecation warning for pgx v4 URI keys
+	// to one log line per connector instead of one per reconnect.
+	legacyKeysWarnOnce sync.Once
 }
 
 // failureMarkCooldown bounds how often handleConnectionFailure may trigger a
@@ -164,7 +168,7 @@ func NewPostgreSQLConnector(
 // the util.Initializer auto-retry loop whenever handleConnectionFailure
 // marks the task as failed.
 //
-// All the slow work below — pgxpool.ConnectConfig (TCP dial, TLS, auth,
+// All the slow work below — connectPool (TCP dial, TLS, auth,
 // opening MinConns connections) and the one-time schema setup — runs WITHOUT
 // the connMu write lock. The previous design held connMu.Lock() for the
 // entire ~5s body of this function, which serialized every Get/Set/Lock
@@ -181,9 +185,17 @@ func NewPostgreSQLConnector(
 // call). Old pools are closed AFTER releasing the lock so a slow Close
 // (drain of in-flight queries) cannot stall the hot read path.
 func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.PostgreSQLConnectorConfig) error {
-	config, err := pgxpool.ParseConfig(cfg.ConnectionUri)
+	config, legacyKeys, err := parsePoolConfig(cfg.ConnectionUri)
 	if err != nil {
 		return common.NewTaskFatal(fmt.Errorf("failed to parse connection URI: %w", err))
+	}
+	if len(legacyKeys) > 0 {
+		p.legacyKeysWarnOnce.Do(func() {
+			p.logger.Warn().
+				Strs("keys", legacyKeys).
+				Str("queryExecMode", config.ConnConfig.DefaultQueryExecMode.String()).
+				Msg("postgresql connectionUri uses pgx v4 keys; they are translated for now, replace them with default_query_exec_mode")
+		})
 	}
 	config.MinConns = p.minConns
 	config.MaxConns = p.maxConns
@@ -209,7 +221,7 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 	connectCtx, cancel := context.WithTimeout(ctx, p.initTimeout)
 	defer cancel()
 
-	newConn, err := pgxpool.ConnectConfig(connectCtx, config)
+	newConn, err := connectPool(connectCtx, config)
 	if err != nil {
 		return err
 	}
@@ -277,6 +289,116 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 		}
 	})
 	return nil
+}
+
+// parsePoolConfig parses a connection URI into a pgxpool config and keeps
+// URIs written for pgx v4 working. pgx v5 dropped `statement_cache_mode` and
+// `prefer_simple_protocol`; left alone they stay in RuntimeParams, are sent
+// as startup parameters, and the server refuses the connection with
+// "unrecognized configuration parameter". They are removed here and mapped
+// to the v5 query exec mode. A `default_query_exec_mode` given in the URI
+// wins over them. The returned slice names the legacy keys that were found.
+//
+// A cache mode whose cache is disabled (`statement_cache_capacity=0`, or
+// `description_cache_capacity=0` with cache_describe) fails every query
+// with arguments in v5. In v4 a zero capacity meant "no cache": each query
+// described an unnamed statement first. That is v5's describe_exec, so the
+// mode falls back to it.
+func parsePoolConfig(uri string) (*pgxpool.Config, []string, error) {
+	config, err := pgxpool.ParseConfig(uri)
+	if err != nil {
+		return nil, nil, err
+	}
+	cc := config.ConnConfig
+	// pgx.ParseConfig consumes default_query_exec_mode, so an explicit
+	// choice is visible only as a non-default mode. An explicit
+	// cache_statement next to a legacy key cannot be told apart from the
+	// default; the legacy key then decides, as it did on v4.
+	explicitMode := cc.DefaultQueryExecMode != pgx.QueryExecModeCacheStatement
+
+	var legacyKeys []string
+	if s, ok := cc.RuntimeParams["statement_cache_mode"]; ok {
+		delete(cc.RuntimeParams, "statement_cache_mode")
+		legacyKeys = append(legacyKeys, "statement_cache_mode")
+		var mode pgx.QueryExecMode
+		switch s {
+		case "prepare":
+			mode = pgx.QueryExecModeCacheStatement
+		case "describe":
+			mode = pgx.QueryExecModeCacheDescribe
+		default:
+			return nil, nil, fmt.Errorf("invalid statement_cache_mode %q: must be prepare or describe", s)
+		}
+		if !explicitMode {
+			cc.DefaultQueryExecMode = mode
+		}
+	}
+	if s, ok := cc.RuntimeParams["prefer_simple_protocol"]; ok {
+		delete(cc.RuntimeParams, "prefer_simple_protocol")
+		legacyKeys = append(legacyKeys, "prefer_simple_protocol")
+		simple, err := strconv.ParseBool(s)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid prefer_simple_protocol %q: %w", s, err)
+		}
+		// v4 checked PreferSimpleProtocol before the statement cache, so it
+		// overrides statement_cache_mode.
+		if simple && !explicitMode {
+			cc.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+		}
+	}
+
+	switch {
+	case cc.DefaultQueryExecMode == pgx.QueryExecModeCacheStatement && cc.StatementCacheCapacity <= 0,
+		cc.DefaultQueryExecMode == pgx.QueryExecModeCacheDescribe && cc.DescriptionCacheCapacity <= 0:
+		cc.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
+	}
+	return config, legacyKeys, nil
+}
+
+// connectPool opens a pool and fails fast like pgx v4's ConnectConfig did.
+// pgxpool.NewWithConfig in v5 returns at once and dials in the background,
+// so an unreachable server, a bad password or a TLS failure would surface
+// only on the first query, and the initializer would mark the task ready.
+// Here MinConns connections (at least one, at most MaxConns, so the last
+// Acquire cannot wait for a slot that never frees) are opened and held at
+// the same time before the pool is returned; any failure closes the pool and
+// returns the dial error. This is the v4 contract: checkMinConns, then one
+// Acquire.
+func connectPool(ctx context.Context, config *pgxpool.Config) (*pgxpool.Pool, error) {
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	n := min(max(int(config.MinConns), 1), int(pool.Config().MaxConns))
+	var (
+		mu   sync.Mutex
+		held []*pgxpool.Conn
+		errs []error
+		wg   sync.WaitGroup
+	)
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c, err := pool.Acquire(ctx)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+				return
+			}
+			held = append(held, c)
+		}()
+	}
+	wg.Wait()
+	for _, c := range held {
+		c.Release()
+	}
+	if err := errors.Join(errs...); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
 }
 
 // ensureSchema runs applySchema at most once successfully per process
@@ -537,7 +659,7 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 		common.SetTraceSpanError(span, err)
 	}
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		err := common.NewErrRecordNotFound(partitionKey, rangeKey, PostgreSQLDriverName)
 		common.SetTraceSpanError(span, err)
 		return nil, err
@@ -891,8 +1013,11 @@ func (p *PostgreSQLConnector) getOrCreateListener(ctx context.Context, key strin
 
 			notification, err := conn.Conn().WaitForNotification(ctx)
 			if err != nil {
-				// Try to reconnect
+				// Try to reconnect. Release the dead conn first: pgxpool
+				// destroys a closed conn on Release, and without it every
+				// lost backend would hold one listener-pool slot forever.
 				p.logger.Warn().Err(err).Str("key", key).Msg("lost postgres connection, attempting reconnect")
+				conn.Release()
 				if newConn, err := p.connectListener(ctx, channel); err == nil {
 					p.logger.Debug().Str("key", key).Msg("successfully reconnected to postgres channel")
 					conn = newConn
@@ -933,7 +1058,7 @@ func (p *PostgreSQLConnector) connectListener(ctx context.Context, channel strin
 		p.logger.Trace().Str("channel", channel).Msg("attempting to connect to postgres channel")
 
 		// Snapshot the current pool state under RLock so we don't hold the
-		// WRITE lock across the slow pgxpool.ConnectConfig dial below. The
+		// WRITE lock across the slow connectPool dial below. The
 		// previous design held connMu.Lock() for the entire body of this
 		// function — including ConnectConfig and Acquire — which
 		// serialized every Get/Set/Lock behind any listener that needed to
@@ -949,14 +1074,17 @@ func (p *PostgreSQLConnector) connectListener(ctx context.Context, channel strin
 				time.Sleep(5 * time.Second)
 				continue
 			}
-			lcfg, err := pgxpool.ParseConfig(mainConn.Config().ConnString())
+			// Reparse through parsePoolConfig so pgx v4 URI keys are
+			// translated here too; plain ParseConfig would send them to the
+			// server as startup parameters.
+			lcfg, _, err := parsePoolConfig(mainConn.Config().ConnString())
 			if err != nil {
 				return nil, err
 			}
 			lcfg.MaxConns = p.maxConns
 			// Build the new listener pool OUTSIDE any lock — this is the
 			// slow operation (TCP dial + TLS + auth + MinConns conns).
-			newPool, err := pgxpool.ConnectConfig(ctx, lcfg)
+			newPool, err := connectPool(ctx, lcfg)
 			if err != nil {
 				time.Sleep(5 * time.Second)
 				continue
@@ -1097,7 +1225,7 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, pool *pgxpool
 	var value []byte
 	err := pool.QueryRow(ctx, query, args...).Scan(&value)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		err := common.NewErrRecordNotFound(partitionKey, rangeKey, PostgreSQLDriverName)
 		common.SetTraceSpanError(span, err)
 		return nil, err
