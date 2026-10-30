@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -2329,7 +2330,9 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 // logs subscriptions while blocks flow, each id answer comes before any
 // notification of its subscription, a subscription's blocks rise, and none
 // comes after its unsubscribe answer. A client that stops reading holds up
-// only its own tap, which ends after the send wait, as a blocked write did.
+// only its own connection, which closes after the send wait, as after a
+// write that failed its deadline: no tap stops silently and no answer is
+// dropped on a connection that stays open.
 func TestWebSocket_WriterOrderAndBackpressure(t *testing.T) {
 	t.Run("order on one connection", func(t *testing.T) {
 		s := newChaosSeed(t, 12, true, chaosOpts{})
@@ -2454,7 +2457,7 @@ func TestWebSocket_WriterOrderAndBackpressure(t *testing.T) {
 		<-readDone
 	})
 
-	t.Run("a client that stops reading holds up only its own tap", func(t *testing.T) {
+	t.Run("a client that stops reading sees its connection close", func(t *testing.T) {
 		prev := wsWriteDeadline
 		wsWriteDeadline = time.Second
 		defer func() { wsWriteDeadline = prev }()
@@ -2467,31 +2470,58 @@ func TestWebSocket_WriterOrderAndBackpressure(t *testing.T) {
 		_, taps0, _ := wsGauges("newHeads")
 		fast := s.dialClient("fast", nil)
 
-		stalled, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", s.addr), nil)
-		require.NoError(t, err)
-		defer stalled.Close()
-		require.NoError(t, stalled.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)))
-		require.NoError(t, stalled.SetReadDeadline(time.Now().Add(5*time.Second)))
-		_, msg, err := stalled.ReadMessage()
-		require.NoError(t, err)
-		require.Contains(t, string(msg), `"result"`, "subscribe answered: %s", msg)
+		// quiet reads nothing more after its subscribe; asking also sends
+		// a request once its tap ended, whose answer cannot queue.
+		stall := func() *websocket.Conn {
+			c, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", s.addr), nil)
+			require.NoError(t, err)
+			require.NoError(t, c.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)))
+			require.NoError(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
+			_, msg, err := c.ReadMessage()
+			require.NoError(t, err)
+			require.Contains(t, string(msg), `"result"`, "subscribe answered: %s", msg)
+			return c
+		}
+		quiet, asking := stall(), stall()
+		defer quiet.Close()
+		defer asking.Close()
 		require.Eventually(t, func() bool {
 			_, taps, _ := wsGauges("newHeads")
-			return taps == taps0+2
-		}, 5*time.Second, 10*time.Millisecond, "both taps run")
+			return taps == taps0+3
+		}, 5*time.Second, 10*time.Millisecond, "all 3 taps run")
 
-		// The stalled client reads nothing more: its tap waits on the full
-		// queue, then ends; the other client's tap goes on.
 		require.Eventually(t, func() bool {
 			_, taps, _ := wsGauges("newHeads")
 			return taps == taps0+1
-		}, 30*time.Second, 50*time.Millisecond, "the stalled client's tap ends")
+		}, 30*time.Second, 50*time.Millisecond, "the stalled clients' taps end")
+		_ = asking.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":99,"method":"eth_unsubscribe","params":["0xdead"]}`))
+
+		// readToEnd reads until the connection ends or an answer to id 99
+		// comes; a read that times out is a connection left open and silent.
+		readToEnd := func(c *websocket.Conn) (answered bool, err error) {
+			for {
+				_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+				_, msg, err := c.ReadMessage()
+				if err != nil {
+					return false, err
+				}
+				if strings.Contains(string(msg), `"id":99`) {
+					return true, nil
+				}
+			}
+		}
+		_, err := readToEnd(quiet)
+		var ne net.Error
+		assert.False(t, errors.As(err, &ne) && ne.Timeout(), "the stalled connection closes, not stays open and silent: %v", err)
+		answered, err := readToEnd(asking)
+		assert.True(t, answered || !(errors.As(err, &ne) && ne.Timeout()), "the request is answered or its connection closes: %v", err)
+
 		tip := s.chain.Tip().Number
 		s.blocks(5)
 		fast.mu.Lock()
 		defer fast.mu.Unlock()
 		assert.Empty(t, fast.problems, "the reading client")
-		assert.Greater(t, fast.last, tip, "the reading client gets heads after the stalled tap ended")
+		assert.Greater(t, fast.last, tip, "the reading client gets heads after the stalled connections ended")
 	})
 }
 

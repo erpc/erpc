@@ -30,7 +30,8 @@ const (
 	wsOutCap = 256
 )
 
-// errWsSendWait ends a producer that could not queue for wsWriteDeadline.
+// errWsSendWait ends a producer that could not queue for wsWriteDeadline;
+// it ends the connection, as a write that failed its deadline does.
 var errWsSendWait = errors.New("websocket send wait elapsed")
 
 // wsWriter is the state of a connection's writer.
@@ -44,6 +45,9 @@ type wsWriter struct {
 	endCtx        context.Context
 	endCancel     context.CancelFunc
 	stop, stopped chan struct{}
+	// drainBy, set once stop closed, bounds the writes of what was queued
+	// before teardown.
+	drainBy time.Time
 }
 
 // wsOut is one queued message.
@@ -56,6 +60,8 @@ type wsOut struct {
 	size int
 	// done, when set, gets the write's outcome.
 	done chan error
+	// delivery times the block whose last message this is (§17).
+	delivery tapDelivery
 }
 
 func (wsc *WsConnection) startWriter() {
@@ -68,8 +74,9 @@ func (wsc *WsConnection) startWriter() {
 	go wsc.writeLoop()
 }
 
-// stopWriter lets the writer fail what is still queued (teardown set
-// closed first) and waits for it to return.
+// stopWriter lets the writer write what is still queued (teardown set
+// closed first, so nothing more queues) within wsWriteDeadline, and waits
+// for it to return.
 func (wsc *WsConnection) stopWriter() {
 	close(wsc.w.stop)
 	<-wsc.w.stopped
@@ -84,6 +91,7 @@ func (wsc *WsConnection) writeLoop() {
 		case m := <-w.out:
 			wsc.writeOut(m)
 		case <-w.stop:
+			w.drainBy = time.Now().Add(wsWriteDeadline)
 			for {
 				select {
 				case m := <-w.out:
@@ -101,16 +109,18 @@ func (wsc *WsConnection) writeOut(m wsOut) {
 	err := w.err
 	switch {
 	case err != nil:
-	case wsc.closed.Load():
-		err = errWsConnClosed
-		wsc.endWrites(err)
 	case m.note != nil && m.note.sub.Removed():
 	default:
-		if err = wsc.writeFrame(m.msg.Bytes()); err != nil {
+		deadline := time.Now().Add(wsWriteDeadline)
+		if !w.drainBy.IsZero() && w.drainBy.Before(deadline) {
+			deadline = w.drainBy
+		}
+		if err = wsc.writeFrame(m.msg.Bytes(), deadline); err != nil {
 			wsc.endWrites(err)
 		} else if m.note != nil {
 			m.note.sent.Inc()
 			m.note.bytes.Add(float64(m.size))
+			m.delivery.done()
 		}
 	}
 	w.budget.Release(m.weight)
@@ -120,17 +130,20 @@ func (wsc *WsConnection) writeOut(m wsOut) {
 	}
 }
 
+// endWrites fails every later message and ends the connection: a write
+// that failed leaves the websocket unusable.
 func (wsc *WsConnection) endWrites(err error) {
 	w := &wsc.w
 	w.err = err
 	close(w.ended)
 	w.endCancel()
+	wsc.stop(websocket.CloseGoingAway, "", 0)
 }
 
-// writeFrame writes msg; gorilla's WriteMessage on a server connection
-// without compression allocates nothing.
-func (wsc *WsConnection) writeFrame(msg []byte) error {
-	if err := wsc.conn.SetWriteDeadline(time.Now().Add(wsWriteDeadline)); err != nil {
+// writeFrame writes msg by deadline; gorilla's WriteMessage on a server
+// connection without compression allocates nothing.
+func (wsc *WsConnection) writeFrame(msg []byte, deadline time.Time) error {
+	if err := wsc.conn.SetWriteDeadline(deadline); err != nil {
 		return err
 	}
 	defer wsc.conn.SetWriteDeadline(time.Time{})
@@ -138,8 +151,9 @@ func (wsc *WsConnection) writeFrame(msg []byte) error {
 }
 
 // queue hands m to the writer. A producer that cannot queue waits up to
-// wsWriteDeadline, as long as one write may take; it fails at once once the
-// connection closed or a write failed. m.msg belongs to the writer after.
+// wsWriteDeadline, as long as one write may take, then ends the connection;
+// it fails at once once the connection closed or a write failed. m.msg
+// belongs to the writer after.
 func (wsc *WsConnection) queue(m wsOut) error {
 	w := &wsc.w
 	if wsc.closed.Load() {
@@ -167,6 +181,7 @@ func (wsc *WsConnection) queue(m wsOut) error {
 			if w.endCtx.Err() != nil {
 				return errWsConnClosed
 			}
+			wsc.stop(websocket.CloseGoingAway, "", 0)
 			return errWsSendWait
 		}
 	}

@@ -44,7 +44,7 @@ func (sm *SubscriptionManager) runPendingTxs(ctx context.Context, wsc *WsConnect
 			return ctx.Err()
 		}
 		for _, tx := range txs {
-			if err := notify.write(tx); err != nil {
+			if err := notify.write(tx, tapDelivery{}); err != nil {
 				return wsWriteError{err}
 			}
 		}

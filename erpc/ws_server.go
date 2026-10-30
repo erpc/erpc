@@ -63,7 +63,7 @@ type WsConnection struct {
 	closeGrace  time.Duration
 	done        chan struct{}
 
-	closed     atomic.Bool // no more writes once set
+	closed     atomic.Bool // nothing more queues once set; the writer drains what did
 	peerClosed atomic.Bool // the peer's close frame was already answered
 
 	// subsClosed is guarded by SubscriptionManager.connMu.
@@ -705,8 +705,9 @@ func (wsc *WsConnection) notifier(sub wsclient.Subscription) *wsNotifier {
 }
 
 // write queues one notification carrying result, valid JSON as is; the
-// writer skips it once the subscription is removed.
-func (n *wsNotifier) write(result json.RawMessage) error {
+// writer skips it once the subscription is removed, and calls d.done once
+// it is written.
+func (n *wsNotifier) write(result json.RawMessage, d tapDelivery) error {
 	if n.sub.Removed() {
 		return nil
 	}
@@ -719,5 +720,5 @@ func (n *wsNotifier) write(result json.RawMessage) error {
 	if err != nil {
 		return err
 	}
-	return n.wsc.queue(wsOut{msg: msg, note: n, size: len(n.prefix) + len(result) + len(wsNotificationSuffix)})
+	return n.wsc.queue(wsOut{msg: msg, note: n, size: len(n.prefix) + len(result) + len(wsNotificationSuffix), delivery: d})
 }

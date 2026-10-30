@@ -707,13 +707,14 @@ func (r *sourceReconciler) stopAll() {
 // on the network can feed subType, after the sources caught up with the
 // network's upstreams. logs need heads and a feed that serves receipts or
 // their fallback (spec §10); pending transactions need a push source (§11).
-// A subscribe waits for a source pass only when the last pass found no
-// source: every subscribe on a fed topic would queue behind each pass.
+// A subscribe skips the wait for a source pass when the last pass found a
+// source and one feeds now (sourceReconciler.live): every subscribe on a
+// fed topic would queue behind each pass.
 func (n *Network) requireSubscriptionSource(ctx context.Context, subType string) error {
 	if n.sources == nil {
 		return common.NewErrNoSubscriptionSource(n.networkId, subType)
 	}
-	if n.subscriptionSourced(subType) {
+	if n.subscriptionSourced(subType) && n.sources.live(subType) {
 		return nil
 	}
 	if err := n.sources.sync(ctx); err != nil {
@@ -741,6 +742,28 @@ func (n *Network) subscriptionSourced(subType string) bool {
 	default:
 		return true
 	}
+}
+
+// live reports whether a source the last pass set feeds subType now: a
+// connected push source, or for heads a polling one.
+func (r *sourceReconciler) live(subType string) bool {
+	switch subType {
+	case indexer.SubTypeNewHeads, indexer.SubTypeLogs, indexer.SubTypeNewPendingTransactions:
+	default:
+		return true
+	}
+	if p := r.pushes.Load(); p != nil {
+		for _, a := range *p {
+			if a.Connected() {
+				return true
+			}
+		}
+	}
+	if subType == indexer.SubTypeNewPendingTransactions {
+		return false
+	}
+	p := r.polls.Load()
+	return p != nil && len(*p) > 0
 }
 
 func later(a, b time.Time) time.Time {
