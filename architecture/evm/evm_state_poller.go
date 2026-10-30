@@ -717,6 +717,21 @@ func (e *EvmStatePoller) askable() bool {
 	return e.latestBlockShared != nil
 }
 
+// AskHook, when set, hears how each Ask of a poller was met. Tests use it
+// to check the evidence a caller's floor let in; production never sets it.
+var AskHook atomic.Pointer[func(e *EvmStatePoller, m AskMet)]
+
+// AskMet is how one Ask was met, for AskHook.
+type AskMet struct {
+	Reason  common.AskReason
+	After   time.Time
+	Outcome common.AskOutcome
+	At      time.Time
+	// InHand: the evidence was taken before the Ask came, a shared report
+	// or an answered fetch; not a fetch in flight or started for it.
+	InHand bool
+}
+
 // ask counts an Ask and returns the fetch that meets need at pace after
 // after, started when none does, under ctx's span, and its evidence time;
 // no fetch when the shared counter meets it or the upstream backs off, as
@@ -724,11 +739,15 @@ func (e *EvmStatePoller) askable() bool {
 func (e *EvmStatePoller) ask(ctx context.Context, need common.HeadNeed, pace time.Duration, after time.Time, reason common.AskReason) (*headFetch, common.AskOutcome, time.Time) {
 	var f *headFetch
 	var at time.Time
+	var inHand bool
 	outcome := common.AskBackoff
 	if e.askable() {
-		f, outcome, at = e.askFetch(trace.SpanContextFromContext(ctx), need, pace, after)
+		f, outcome, at, inHand = e.askFetch(trace.SpanContextFromContext(ctx), need, pace, after)
 	}
 	e.askCounts.Inc(telemetry.MetricHeadAskTotal, askCount{e.projectId, e.netLabel(), reason, outcome}, askCountLabels)
+	if hook := AskHook.Load(); hook != nil {
+		(*hook)(e, AskMet{Reason: reason, After: after, Outcome: outcome, At: at, InHand: inHand})
+	}
 	return f, outcome, at
 }
 
@@ -761,55 +780,56 @@ func withinPace(at, after, now time.Time, d time.Duration) bool {
 	return at.After(after) && now.Sub(at) < d
 }
 
-func (e *EvmStatePoller) askFetch(parent trace.SpanContext, need common.HeadNeed, pace time.Duration, after time.Time) (*headFetch, common.AskOutcome, time.Time) {
+func (e *EvmStatePoller) askFetch(parent trace.SpanContext, need common.HeadNeed, pace time.Duration, after time.Time) (f *headFetch, outcome common.AskOutcome, at time.Time, inHand bool) {
 	if e.givenUp(&e.latestGiveUp) {
 		// The give-up after latest was refused as unsupported backs off
 		// until its re-check.
-		return nil, common.AskBackoff, time.Time{}
+		return nil, common.AskBackoff, time.Time{}, false
 	}
 	cadence, now := e.pollCadence(), time.Now()
 	pace = askPace(need, pace, cadence)
 	if need == common.HeadNeedNumber {
 		if at := e.latestBlockShared.ReportAt(); withinPace(at, after, now, pace) {
-			return nil, common.AskSharedFresh, at
+			return nil, common.AskSharedFresh, at, true
 		}
 	}
-	f, outcome, at, start := e.headAsk.meet(need, pace, after, now, cadence, parent)
+	f, outcome, at, inHand, start := e.headAsk.meet(need, pace, after, now, cadence, parent)
 	if start {
 		e.startFetch(f)
 	}
-	return f, outcome, at
+	return f, outcome, at, inHand
 }
 
 // meet returns the fetch that meets need at pace after after, under a.mu;
-// start: f is new, sent now, and the caller starts it.
-func (a *headAsk) meet(need common.HeadNeed, pace time.Duration, after, now time.Time, cadence time.Duration, parent trace.SpanContext) (f *headFetch, outcome common.AskOutcome, at time.Time, start bool) {
+// inHand: f was answered already; start: f is new, sent now, and the
+// caller starts it.
+func (a *headAsk) meet(need common.HeadNeed, pace time.Duration, after, now time.Time, cadence time.Duration, parent trace.SpanContext) (f *headFetch, outcome common.AskOutcome, at time.Time, inHand, start bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	f = a.last
 	switch {
 	case need == common.HeadNeedFork && a.lastFork != nil && withinPace(a.lastFork.sent, after, now, pace):
-		return a.lastFork, common.AskInflight, a.lastFork.sent, false
+		return a.lastFork, common.AskInflight, a.lastFork.sent, a.lastFork.answered, false
 	case f != nil && !f.answered && need == common.HeadNeedFork:
 		if f.next == nil {
 			f.next = &headFetch{fork: true, done: make(chan struct{}), parent: parent}
 		}
-		return f.next, common.AskFetched, time.Time{}, false
+		return f.next, common.AskFetched, time.Time{}, false, false
 	case f != nil && !f.answered:
-		return f, common.AskInflight, f.sent, false
+		return f, common.AskInflight, f.sent, false, false
 	// Any outcome debounces for the pace; only node failures back off
 	// further.
 	case f != nil && need != common.HeadNeedFork && withinPace(f.sent, after, now, pace):
-		return f, common.AskInflight, f.sent, false
+		return f, common.AskInflight, f.sent, true, false
 	case f != nil && a.failures > 0 && withinPace(f.sent, after, now, backoffDelay(cadence, a.failures)):
-		return nil, common.AskBackoff, time.Time{}, false
+		return nil, common.AskBackoff, time.Time{}, false, false
 	}
 	f = &headFetch{sent: now, fork: need == common.HeadNeedFork, done: make(chan struct{}), parent: parent}
 	a.last = f
 	if f.fork {
 		a.lastFork = f
 	}
-	return f, common.AskFetched, now, true
+	return f, common.AskFetched, now, false, true
 }
 
 // errPollerStopped fails a fetch the poller can no longer start: its app

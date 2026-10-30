@@ -7,7 +7,9 @@ help:
 	@echo " build                         Build the eRPC server + simulator"
 	@echo " fmt                           Format source code"
 	@echo " test                          Run unit tests"
-	@echo " test-realworld                Run the chain tracker real-world suite (-race eRPC pods, redis-server, node >= 22 with pnpm install done; row T7 also needs uv, cargo, mvn with JDK >= 17, and MANIFESTO_DIR = a manifesto checkout with the python, rust and java stubs); REALWORLD_LOADED_HOST=1 starts phases at any host load"
+	@echo " test-realworld                Run the chain tracker real-world suite, every tier (eRPC pods, redis-server, node >= 22 with pnpm install done; row T7 also needs uv, cargo, mvn with JDK >= 17, and MANIFESTO_DIR = a manifesto checkout with the python, rust and java stubs); REALWORLD_LOADED_HOST=1 starts at any host load, REALWORLD_RACE=1 builds pods with -race"
+	@echo " test-realworld-long           Run only the real-world suite's long tier (C17, ~40 min)"
+	@echo " verify-fast                   Build, vet, -race every package, chaos once, real-world fast tier; prints a pass/fail table (VERIFY_DIR=<dir> for logs)"
 	@echo " check-streams-guide           Fail when the streams guide's code blocks or INTEGRATION.md copies drift from their files"
 	@echo
 	@echo " run-k6                        Run k6 tests"
@@ -127,6 +129,14 @@ check-streams-guide:
 .PHONY: test-realworld
 test-realworld:
 	@go test ./test/realworld/... -count=1 -v -timeout 120m
+
+.PHONY: test-realworld-long
+test-realworld-long:
+	@REALWORLD_TIER=long go test ./test/realworld/... -count=1 -v -timeout 60m
+
+.PHONY: verify-fast
+verify-fast:
+	@./scripts/verify-fast.sh
 
 .PHONY: bench
 bench:

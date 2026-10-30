@@ -1406,6 +1406,8 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, final
 	// - Unsupported: capability, not quality
 	// - CapacityExceeded: remote 429, already penalized via ThrottledRate
 	// - ClientSideException: user sent a bad request, not upstream's fault
+	// - RequestTooLarge: the request exceeds this upstream's cap (range, result
+	//   count, size); deterministic and request-shaped, not a quality fault
 	// - RequestCanceled / HedgeCancelled: indistinguishable from a client
 	//   disconnect at this layer (both surface as context cancellation). Hedge
 	//   attempts are excluded from RequestsTotal / ErrorsTotal at the call
@@ -1425,6 +1427,7 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, final
 		common.ErrCodeEndpointUnsupported,
 		common.ErrCodeEndpointCapacityExceeded,
 		common.ErrCodeEndpointClientSideException,
+		common.ErrCodeEndpointRequestTooLarge,
 		common.ErrCodeEndpointRequestCanceled,
 		common.ErrCodeUpstreamHedgeCancelled,
 		common.ErrCodeUpstreamBlockUnavailable,
