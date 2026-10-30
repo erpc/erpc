@@ -186,7 +186,7 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Configure responses for each upstream
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 			util.SetupMocksForEvmStatePoller()
 
 			// Setup test-specific mocks
@@ -263,7 +263,7 @@ func TestCentralizedUpstreamRotation(t *testing.T) {
 
 	// Mock 4 upstreams to test rotation
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	// All upstreams are slow (to trigger hedging)
@@ -486,7 +486,7 @@ func TestMixedResponseTypes(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 			util.SetupMocksForEvmStatePoller()
 
 			// Setup test-specific mocks
@@ -564,7 +564,7 @@ func TestFourAttemptScenario(t *testing.T) {
 
 	// Configure responses for each upstream
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	// Upstream 1: Fails immediately (connection refused) - triggers retry
@@ -859,6 +859,7 @@ func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfi
 		metricsTracker,
 		nil,
 	)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	upstreamsRegistry.Bootstrap(ctx)

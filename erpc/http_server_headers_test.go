@@ -20,7 +20,7 @@ import (
 func TestHttpServer_HeadersCoverage(t *testing.T) {
 	t.Run("success path carries full header set", func(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		gock.New("http://rpc1.localhost").
 			Post("").

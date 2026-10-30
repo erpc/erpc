@@ -75,6 +75,7 @@ func setupTestNetworkForInterpolation(t *testing.T, ctx context.Context, network
 	}
 
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt, nil)
+	stopAtEnd(t, network)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 	network.PinUpstreamOrderForTest()
@@ -88,7 +89,7 @@ func setupTestNetworkForInterpolation(t *testing.T, ctx context.Context, network
 // Test "latest" tag translation to hex number
 func TestInterpolation_LatestTag_ToHex(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -143,7 +144,7 @@ func TestInterpolation_LatestTag_ToHex(t *testing.T) {
 // is there, so enrichStatePoller never moves its latest counter (spec §6.4).
 func TestEnrichment_AfterInterpolation_NeverMovesTheCounter(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -195,7 +196,7 @@ func TestEnrichment_AfterInterpolation_NeverMovesTheCounter(t *testing.T) {
 // due to conflicting refs ({0} and {0,"blockNumber"}).
 func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Latest_PreservesObject(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -238,7 +239,7 @@ func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Latest_PreservesO
 // Same as above but with "finalized" tag; should still preserve object shape and translate nested field.
 func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Finalized_PreservesObject(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -277,7 +278,7 @@ func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Finalized_Preserv
 // Mixed tags should collapse EvmBlockRef to "*"
 func TestInterpolation_EthGetLogs_MixedTags_EvmBlockRefCollapsed(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -325,7 +326,7 @@ func TestInterpolation_EthGetLogs_MixedTags_EvmBlockRefCollapsed(t *testing.T) {
 // Same tags should preserve that tag in EvmBlockRef
 func TestInterpolation_EthGetLogs_SameTags_EvmBlockRefPreserved(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -372,7 +373,7 @@ func TestInterpolation_EthGetLogs_SameTags_EvmBlockRefPreserved(t *testing.T) {
 // SkipInterpolation should keep params unchanged but still warm/collapse EvmBlockRef
 func TestInterpolation_EthGetLogs_MixedTags_SkipInterpolation_WarmsRef(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -435,7 +436,7 @@ func TestInterpolation_EthGetLogs_MixedTags_SkipInterpolation_WarmsRef(t *testin
 // Mixing with semantic tags (safe/pending) should not collapse; preserve known tag
 func TestInterpolation_EthGetLogs_MixedWithSemanticTags_NoCollapse(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -483,7 +484,7 @@ func TestInterpolation_EthGetLogs_MixedWithSemanticTags_NoCollapse(t *testing.T)
 // Ensure EvmBlockRef is cleared per-request (no leak across requests)
 func TestInterpolation_EvmBlockRef_IsPerRequest(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -535,7 +536,7 @@ func TestInterpolation_EvmBlockRef_IsPerRequest(t *testing.T) {
 // Test "finalized" tag translation to hex number
 func TestInterpolation_FinalizedTag_ToHex(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -584,7 +585,7 @@ func TestInterpolation_FinalizedTag_ToHex(t *testing.T) {
 // Test "safe" tag NOT translated (passed through)
 func TestInterpolation_SafeTag_PassThrough(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -632,7 +633,7 @@ func TestInterpolation_SafeTag_PassThrough(t *testing.T) {
 // Test that deep copy prevents race conditions
 func TestInterpolation_DeepCopyPreventsRace(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -711,7 +712,7 @@ func TestInterpolation_DeepCopyPreventsRace(t *testing.T) {
 // Test that safe and pending tags preserve their semantic meaning
 func TestInterpolation_PreservesSemanticTags(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -760,7 +761,7 @@ func TestInterpolation_PreservesSemanticTags(t *testing.T) {
 // Test "pending" tag NOT translated (passed through)
 func TestInterpolation_PendingTag_PassThrough(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -808,7 +809,7 @@ func TestInterpolation_PendingTag_PassThrough(t *testing.T) {
 // Test numeric block parameter normalization (float64 from JSON)
 func TestInterpolation_NumericBlock_ToHex(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -857,7 +858,7 @@ func TestInterpolation_NumericBlock_ToHex(t *testing.T) {
 // Test eth_getLogs with fromBlock and toBlock
 func TestInterpolation_EthGetLogs_MultipleParams(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -915,7 +916,7 @@ func TestInterpolation_EthGetLogs_MultipleParams(t *testing.T) {
 // Test eth_getLogs with numeric fromBlock/toBlock
 func TestInterpolation_EthGetLogs_NumericBlocks(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -967,7 +968,7 @@ func TestInterpolation_EthGetLogs_NumericBlocks(t *testing.T) {
 // Test hex normalization (e.g., "0x0a" -> "0xa")
 func TestInterpolation_HexNormalization(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1016,7 +1017,7 @@ func TestInterpolation_HexNormalization(t *testing.T) {
 // Test with translation disabled for latest tag
 func TestInterpolation_DisabledLatestTranslation(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1081,7 +1082,7 @@ func TestInterpolation_DisabledLatestTranslation(t *testing.T) {
 // Test with translation disabled for finalized tag
 func TestInterpolation_DisabledFinalizedTranslation(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1147,7 +1148,7 @@ func TestInterpolation_DisabledFinalizedTranslation(t *testing.T) {
 // This ensures our change to eth_getBlockByNumber doesn't affect other methods.
 func TestInterpolation_OtherMethods_StillInterpolateLatest(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1201,7 +1202,7 @@ func TestInterpolation_OtherMethods_StillInterpolateLatest(t *testing.T) {
 // Test methods without block parameters (should not be affected)
 func TestInterpolation_MethodsWithoutBlockParams(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1242,7 +1243,7 @@ func TestInterpolation_MethodsWithoutBlockParams(t *testing.T) {
 // Test eth_getStorageAt with third parameter
 func TestInterpolation_EthGetStorageAt_ThirdParam(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1292,7 +1293,7 @@ func TestInterpolation_EthGetStorageAt_ThirdParam(t *testing.T) {
 // Test trace_call with second parameter
 func TestInterpolation_TraceCall_SecondParam(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1341,7 +1342,7 @@ func TestInterpolation_TraceCall_SecondParam(t *testing.T) {
 // Test debug_traceCall with second parameter
 func TestInterpolation_DebugTraceCall_SecondParam(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1391,7 +1392,7 @@ func TestInterpolation_DebugTraceCall_SecondParam(t *testing.T) {
 // the network's latest block number, the same as eth_call.
 func TestInterpolation_EthEstimateGas_MissingBlockParamPinnedToLatestNumber(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1428,7 +1429,7 @@ func TestInterpolation_EthEstimateGas_MissingBlockParamPinnedToLatestNumber(t *t
 // Test eth_estimateGas with second parameter
 func TestInterpolation_EthEstimateGas_SecondParam(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1520,7 +1521,7 @@ func TestInterpolation_NoStatePollerData(t *testing.T) {
 // Test mixed parameters in eth_getLogs
 func TestInterpolation_EthGetLogs_MixedParams(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1563,7 +1564,7 @@ func TestInterpolation_EthGetLogs_MixedParams(t *testing.T) {
 // Test large numeric values
 func TestInterpolation_LargeNumericValues(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1612,7 +1613,7 @@ func TestInterpolation_LargeNumericValues(t *testing.T) {
 // Test eth_getBlockReceipts with object parameter
 func TestInterpolation_EthGetBlockReceipts_ObjectParam(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1665,7 +1666,7 @@ func TestInterpolation_EthGetBlockReceipts_ObjectParam(t *testing.T) {
 // Benchmark tag translation performance with deep copy
 func BenchmarkInterpolation_TagTranslationWithDeepCopy(b *testing.B) {
 	util.ResetGock()
-	defer util.ResetGock()
+	b.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx := context.Background()
@@ -1699,7 +1700,7 @@ func BenchmarkInterpolation_TagTranslationWithDeepCopy(b *testing.B) {
 // Benchmark tag translation performance (simple params)
 func BenchmarkInterpolation_TagTranslation(b *testing.B) {
 	util.ResetGock()
-	defer util.ResetGock()
+	b.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx := context.Background()
@@ -1718,7 +1719,7 @@ func BenchmarkInterpolation_TagTranslation(b *testing.B) {
 // Benchmark numeric normalization performance
 func BenchmarkInterpolation_NumericNormalization(b *testing.B) {
 	util.ResetGock()
-	defer util.ResetGock()
+	b.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx := context.Background()
@@ -1811,7 +1812,7 @@ func TestInterpolation_AllMethodsCoverage(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 			util.SetupMocksForEvmStatePoller()
 			defer util.AssertNoPendingMocks(t, 0)
 
@@ -1856,7 +1857,7 @@ func TestInterpolation_AllMethodsCoverage(t *testing.T) {
 // When interpolating "latest", only upstreams whose latest >= interpolated block should be used.
 func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1943,6 +1944,7 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 		},
 	}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt, nil)
+	stopAtEnd(t, network)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 	network.PinUpstreamOrderForTest()
@@ -1984,7 +1986,7 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 // When method-level enforcement is disabled, upstreams are not skipped even if their head is behind interpolated block.
 func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -2072,6 +2074,7 @@ func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
 		},
 	}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt, nil)
+	stopAtEnd(t, network)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 	network.PinUpstreamOrderForTest()
@@ -2099,7 +2102,7 @@ func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
 // an absent one spelled out.
 func TestInterpolation_EveryForm(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 

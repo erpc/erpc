@@ -236,6 +236,7 @@ func setupRateLimitStoreNetwork(t *testing.T, a rlStoreArch, level, budget, redi
 	upsReg := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "test",
 		[]*common.UpstreamConfig{ups}, ssr, rlr, vr, pr, nil, mt, nil)
 	ntw, err := NewNetwork(ctx, &log.Logger, "test", netCfg, rlr, upsReg, mt, nil)
+	stopAtEnd(t, ntw)
 	require.NoError(t, err)
 	upsReg.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)

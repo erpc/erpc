@@ -116,7 +116,7 @@ func TestWebSocket_UpstreamDiesUngracefully_SelfHeals(t *testing.T) {
 	defer mockSrv.Close()
 
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	wsUpstreamURL := "ws" + strings.TrimPrefix(mockSrv.URL, "http")
 	addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))

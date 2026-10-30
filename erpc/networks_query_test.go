@@ -254,6 +254,7 @@ func setupQueryTestNetwork(t *testing.T, ctx context.Context, queryShim *common.
 		Evm:          &common.EvmNetworkConfig{ChainId: 123},
 		Failsafe:     []*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{MaxAttempts: 1}}},
 	}, rlr, upr, mt, nil)
+	stopAtEnd(t, ntw)
 	require.NoError(t, err)
 	ntw.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
@@ -362,7 +363,7 @@ func qtField(rows []map[string]interface{}, key string) []interface{} {
 
 func TestNetworkQuery_Shim(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	mockQueryChain(0)
 
@@ -633,7 +634,7 @@ func TestNetworkQuery_Shim(t *testing.T) {
 
 func TestNetworkQuery_ShimLimits(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	mockQueryChain(time.Second)
 

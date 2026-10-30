@@ -68,11 +68,11 @@ func bniServedTipBoot(t *testing.T, cfg *common.Config, order ...string) (
 
 func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	t.Run("Bug_FreshResponseAboveTipMustBePinnedToServedTip", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -97,7 +97,7 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 
 	t.Run("Bug_CacheHitAboveTipMustBePinnedToServedTip", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -117,7 +117,7 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 
 	t.Run("Baseline_ResponseAtServedTipPassesThrough", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -131,7 +131,7 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 
 	t.Run("Baseline_PerRequestOverrideServesRawValue", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -146,7 +146,7 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 
 	t.Run("LocalAnswerRefreshesBallotPollers", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		// Heads move up 5 blocks once `moved` flips. Registered before the
 		// static bootstrap mocks so gock matches them first; until the flip

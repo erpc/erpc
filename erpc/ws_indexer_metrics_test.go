@@ -44,7 +44,7 @@ func TestWebSocket_LastHeadTimestampCarriesProjectAndNetwork(t *testing.T) {
 	mockUpstream := pushingHeadsUpstream(t)
 	defer mockUpstream.Close()
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	addr, cleanup := setupTestERPCServer(t, standardWsConfig("ws"+strings.TrimPrefix(mockUpstream.URL, "http")))
 	defer cleanup()
