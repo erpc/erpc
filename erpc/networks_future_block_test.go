@@ -118,6 +118,60 @@ func TestForward_FutureBlock_ShortCircuitSurvivesSlowStaleAsk(t *testing.T) {
 	assert.Zero(t, dispatched.Load(), "and never dispatched")
 }
 
+// On a halted chain every Ask answers the head each upstream already
+// voted for. That answer is still evidence taken at its send time (spec
+// §6.4 ceiling): after one Ask, a block far above the ceiling is future,
+// null with no dispatch, on every request, not kept in the band by a
+// report time only a new head would move.
+func TestForward_FutureBlock_HaltedChainAskDatesReport(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ids := []string{"hc1", "hc2", "hc3"}
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: ids[0], chainID: 123, latestBlock: 100},
+		{id: ids[1], chainID: 123, latestBlock: 100},
+		{id: ids[2], chainID: 123, latestBlock: 100},
+	})
+	network.cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
+	sampleBlockTime(t, network) // bt 1s
+	// As a registry's network does: every poll's header goes through intake.
+	network.sources.start(ctx)
+	var polls atomic.Int64
+	for _, id := range ids {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"latest"`) {
+					return false
+				}
+				polls.Add(1)
+				return true
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":` + string(tipHead("a", 100)) + `}`))
+	}
+	var dispatched atomic.Int64
+	mockGetBlockByNumberAt("0x44d", futureBlockSentinel, &dispatched, ids...)
+
+	for round := 1; round <= 3; round++ {
+		// Every report is older than 1 bt and the last Ask's fetch is
+		// older than its pace: the request Asks each upstream once.
+		time.Sleep(1200 * time.Millisecond)
+		before := polls.Load()
+		resp := forwardGetBlockByNumber(t, ctx, network, "0x44d") // 1101
+		require.GreaterOrEqual(t, polls.Load()-before, int64(len(ids)), "round %d: the request Asks each stale upstream", round)
+		assert.True(t, resp.IsResultEmptyish(ctx), "round %d: a block 1001 above a halted chain is null", round)
+		assert.Zero(t, dispatched.Load(), "round %d: and never dispatched", round)
+	}
+}
+
 // A request at (or below) the max observed head must dispatch normally — the
 // short-circuit must not over-fire and swallow blocks an upstream actually has.
 func TestForward_FutureBlock_AtMaxHead_Dispatches(t *testing.T) {
@@ -707,7 +761,7 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 // A future block dispatched (shortCircuitFutureBlocks off) takes one
 // retryable miss too (spec §6.4): the first null is never final, and the
 // answer after it goes to the client as the upstream gave it. Once the
-// block time is known, a block at most W / bt above the ceiling waits for
+// block time is known, a block at most W / bt + 1 above the ceiling waits for
 // it, at most W, while the voters are Asked every bt (near future): a
 // numbered read and a log range are served once the nodes reach them,
 // and a range still above the ceiling after W is refused, counted
@@ -783,7 +837,7 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 			})
 	}
 
-	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
 		{id: "fm1", chainID: 123, latestBlock: 100},
 		{id: "fm2", chainID: 123, latestBlock: 100},
 		{id: "fm3", chainID: 123, latestBlock: 100},
@@ -796,7 +850,8 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	assert.Positive(t, first.Load(), "the first upstream answered null")
 	assert.Equal(t, int64(1), second.Load(), "one retry")
 
-	// bt 1s: W 3s, so the near future is 3 blocks above the ceiling.
+	// bt 1s: W 3s, so the near future is 4 blocks above the ceiling: W of
+	// chain, and the block the chain may have made since the report.
 	sampleBlockTime(t, network)
 	afterWait := func() float64 {
 		return promUtil.ToFloat64(telemetry.MetricHeadRefusalTotal.WithLabelValues("test", network.Label(), "future_after_wait"))
@@ -835,6 +890,49 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable), "got %v", err)
 	assert.GreaterOrEqual(t, time.Since(start), 2500*time.Millisecond, "refused once W ended")
 	assert.Equal(t, refused+1, afterWait(), "counted future_after_wait")
+
+	// A report taken just now can still trail the chain by a block: the
+	// nodes made 0x68 right after it. 0x6b is 4 above the ceiling, yet
+	// only 3 blocks, W of chain, above the nodes' head (§19 P12): it waits,
+	// and is served once they reach it, never answered null before.
+	var farCalls atomic.Int64
+	for _, id := range ids {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x6b"`) {
+					return false
+				}
+				farCalls.Add(1)
+				return true
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				body := `{"jsonrpc":"2.0","id":1,"result":` + held("0x6b", futureBlockSentinel) + `}`
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+	}
+	head.Store(0x68)
+	for _, u := range ups {
+		u.EvmStatePoller().SuggestLatestBlock(0x67, time.Now())
+	}
+	// Faster than the 1s block time sampled: the wait's Asks, one per bt,
+	// see 0x6b at the latest at 2s.
+	reach(0x69, 300*time.Millisecond)
+	reach(0x6a, 600*time.Millisecond)
+	reach(0x6b, 900*time.Millisecond)
+	start = time.Now()
+	resp = forwardGetBlockByNumber(t, ctx, network, "0x6b")
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), "0x270f", "a block W of chain above the nodes, served once they reach it")
+	assert.GreaterOrEqual(t, time.Since(start), 850*time.Millisecond, "it waited for the chain")
+	assert.Less(t, time.Since(start), 3*time.Second, "within W")
+	assert.Equal(t, refused+1, afterWait(), "not refused")
 }
 
 // mockMethodAnswer makes every listed upstream answer method with result,
