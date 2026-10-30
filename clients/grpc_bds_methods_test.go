@@ -56,6 +56,7 @@ type scriptedBdsServer struct {
 	logsReq    *evm.GetLogsRequest
 	traceBlock *evm.TraceBlockRequest
 	traceTx    *evm.TraceTransactionRequest
+	parity     *evm.ParityTraceBlockRequest
 	balanceReq *evm.GetBalanceRequest
 }
 
@@ -128,6 +129,13 @@ func (s *scriptedBdsServer) TraceBlock(ctx context.Context, req *evm.TraceBlockR
 
 func (s *scriptedBdsServer) TraceTransaction(ctx context.Context, req *evm.TraceTransactionRequest) (*evm.TraceResponse, error) {
 	if err := s.enter(ctx, func() { s.traceTx = req }); err != nil {
+		return nil, err
+	}
+	return orEmpty(s.trace, &evm.TraceResponse{}), nil
+}
+
+func (s *scriptedBdsServer) ParityTraceBlock(ctx context.Context, req *evm.ParityTraceBlockRequest) (*evm.TraceResponse, error) {
+	if err := s.enter(ctx, func() { s.parity = req }); err != nil {
 		return nil, err
 	}
 	return orEmpty(s.trace, &evm.TraceResponse{}), nil
@@ -394,6 +402,31 @@ func TestGrpcBdsClient_RequestResponseMapping(t *testing.T) {
 			},
 		},
 		{
+			name:   "trace_block maps a block number to ParityTraceBlock",
+			method: "trace_block",
+			params: `["0x10"]`,
+			setup: func(s *scriptedBdsServer) {
+				s.trace = &evm.TraceResponse{Result: []byte(`[{"type":"reward"}]`)}
+			},
+			check: func(t *testing.T, s *scriptedBdsServer, result []byte) {
+				require.NotNil(t, s.parity)
+				assert.Equal(t, "0x10", s.parity.GetBlockNumber())
+				assert.Nil(t, s.parity.BlockHash)
+				assert.Equal(t, chainID, s.parity.GetChainId())
+				assert.Equal(t, `[{"type":"reward"}]`, string(result))
+			},
+		},
+		{
+			name:   "trace_block maps a block hash to ParityTraceBlock",
+			method: "trace_block",
+			params: fmt.Sprintf(`[%q]`, hashHex),
+			check: func(t *testing.T, s *scriptedBdsServer, result []byte) {
+				require.NotNil(t, s.parity)
+				assert.Equal(t, hashBytes, s.parity.BlockHash)
+				assert.Nil(t, s.parity.BlockNumber)
+			},
+		},
+		{
 			name:   "traceTransaction maps hash and tracer",
 			method: "debug_traceTransaction",
 			params: fmt.Sprintf(`[%q,{"tracer":"callTracer"}]`, hashHex),
@@ -511,6 +544,9 @@ func TestGrpcBdsClient_InvalidParamsNeverReachServer(t *testing.T) {
 		{"traceBlockByHash short hash", "debug_traceBlockByHash", `["0xabcd"]`, common.ErrCodeEndpointUnsupported, "want 32"},
 		{"traceTransaction no params", "debug_traceTransaction", `[]`, common.ErrCodeEndpointUnsupported, "missing transaction hash"},
 		{"traceTransaction bad hex", "debug_traceTransaction", `["0xzz"]`, common.ErrCodeEndpointUnsupported, "debug_traceTransaction"},
+		{"trace_block no params", "trace_block", `[]`, common.ErrCodeEndpointUnsupported, "want 1 param"},
+		{"trace_block numeric block", "trace_block", `[16]`, common.ErrCodeEndpointUnsupported, "must be a string"},
+		{"trace_block bad hash", "trace_block", fmt.Sprintf(`["0x%s"]`, strings.Repeat("zz", 32)), common.ErrCodeEndpointUnsupported, "trace_block"},
 		{"getBalance no block", "eth_getBalance", `["0x00000000000000000000000000000000000000aa"]`, common.ErrCodeEndpointUnsupported, "needs an address and a block"},
 		{"getBalance short address", "eth_getBalance", `["0xaa","latest"]`, common.ErrCodeEndpointUnsupported, "want 20"},
 		{"getBalance bool block", "eth_getBalance", `["0x00000000000000000000000000000000000000aa",true]`, common.ErrCodeEndpointUnsupported, "must be a string or an object"},
@@ -582,6 +618,7 @@ func TestGrpcBdsClient_EveryMethodPropagatesGrpcStatus(t *testing.T) {
 		{"debug_traceBlockByNumber", `["0x1",{"tracer":"callTracer"}]`},
 		{"debug_traceBlockByHash", fmt.Sprintf(`[%q]`, hashHex)},
 		{"debug_traceTransaction", fmt.Sprintf(`[%q]`, hashHex)},
+		{"trace_block", `["0x1"]`},
 		{"eth_getBalance", `["0x00000000000000000000000000000000000000aa","0x1"]`},
 	}
 	s := &scriptedBdsServer{err: status.Error(codes.NotFound, "block not indexed")}

@@ -383,9 +383,10 @@ func TestNetworkAvailability_Issue934_NoBounds_EnforceTrue_AboveTip_Allowed(t *t
 		"an upstream with no configured bounds must not be head-gated, even with enforceBlockAvailability:true (issue #934)")
 }
 
-// (2) An explicit upper cap (latestBlockMinus:5) is a real structural bound: a block
-// above the cap but still at/below the live head must be rejected (non-retryable,
-// since waiting will not help), while a block at/below the cap is served.
+// (2) An explicit upper cap is a real structural bound: a block above the cap is
+// skipped and a block at/below it is served. A latestBlockMinus cap moves with the
+// head, so a block 3 above it is servable 3 blocks later (retryable); an exactBlock
+// cap never moves, so the same skip is final.
 func TestNetworkAvailability_Issue934_ExplicitUpperCap_BelowHead_Enforced(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -402,17 +403,39 @@ func TestNetworkAvailability_Issue934_ExplicitUpperCap_BelowHead_Enforced(t *tes
 		}, nil,
 	)
 
-	// tip-2 (0x11118886) is above the cap (tip-5) but at/below the head → reject, not retryable.
+	// tip-2 (0x11118886) is above the cap (tip-5): skipped, reopens as the head advances.
 	above := balanceReqAt(network, "0x11118886", issue934MockTip-2)
 	skipErr, retryable := network.checkUpstreamBlockAvailability(ctx, ups, above, "eth_getBalance")
 	require.Error(t, skipErr, "block above the configured upper cap must be skipped")
 	require.True(t, common.HasErrorCode(skipErr, common.ErrCodeUpstreamBlockUnavailable))
-	require.False(t, retryable, "above the cap but not ahead of the live head → not retryable")
+	require.True(t, retryable, "a moving cap 3 below the block reaches it within MaxRetryableBlockDistance")
 
 	// tip-8 (0x11118880) is at/below the cap → served.
 	below := balanceReqAt(network, "0x11118880", issue934MockTip-8)
 	skipErr2, _ := network.checkUpstreamBlockAvailability(ctx, ups, below, "eth_getBalance")
 	require.NoError(t, skipErr2, "block within the configured upper cap must be served")
+}
+
+func TestNetworkAvailability_Issue934_ExactUpperCap_NeverRetryable(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups := setupDirectAvailabilityNetwork(t, ctx,
+		&common.EvmUpstreamConfig{
+			BlockAvailability: &common.EvmBlockAvailabilityConfig{
+				Upper: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(issue934MockTip - 5)},
+			},
+		}, nil,
+	)
+
+	above := balanceReqAt(network, "0x11118886", issue934MockTip-2)
+	skipErr, retryable := network.checkUpstreamBlockAvailability(ctx, ups, above, "eth_getBalance")
+	require.Error(t, skipErr)
+	require.False(t, retryable, "a fixed cap never reaches the block, so waiting cannot help")
 }
 
 // (3) The migration path / opt-in head gating: blockAvailability.upper.latestBlockMinus:0

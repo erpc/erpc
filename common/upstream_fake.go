@@ -58,6 +58,15 @@ func WithTags(tags ...string) func(*FakeUpstream) {
 	}
 }
 
+// WithHealthTracker replaces the fake's HealthTracker. Used by consensus-
+// policy selector tests that need CordonClasses to return a fixed set
+// (FakeHealthTracker.CordonClasses is a no-op).
+func WithHealthTracker(tr HealthTracker) func(*FakeUpstream) {
+	return func(u *FakeUpstream) {
+		u.tracker = tr
+	}
+}
+
 // WithGrpcConfig sets the upstream's grpc config block (headers, etc.). Used by
 // client tests that exercise grpc.headers handling.
 func WithGrpcConfig(cfg *GrpcUpstreamConfig) func(*FakeUpstream) {
@@ -153,6 +162,10 @@ func (u *FakeUpstream) Forward(ctx context.Context, nq *NormalizedRequest, skipS
 }
 
 func (u *FakeUpstream) Cordon(method string, reason string) {
+	u.CordonClass(method, reason, CordonClassOperator)
+}
+
+func (u *FakeUpstream) CordonClass(method string, reason string, class CordonClass) {
 	u.cordonMu.Lock()
 	defer u.cordonMu.Unlock()
 	u.cordoned = true
@@ -174,6 +187,10 @@ func (u *FakeUpstream) ShouldHandleMethod(method string) (bool, error) {
 }
 
 func (u *FakeUpstream) Uncordon(method string, reason string) {
+	u.UncordonClass(method, reason, CordonClassOperator)
+}
+
+func (u *FakeUpstream) UncordonClass(method string, reason string, class CordonClass) {
 	u.cordonMu.Lock()
 	defer u.cordonMu.Unlock()
 	u.cordoned = false
@@ -220,13 +237,48 @@ func (u *FakeUpstream) EvmBlockAvailabilityBounds() (int64, int64) {
 		return math.MinInt64, math.MaxInt64
 	}
 	minVal, maxVal := int64(math.MinInt64), int64(math.MaxInt64)
-	if cfg.Evm.BlockAvailability.Lower != nil && cfg.Evm.BlockAvailability.Lower.ExactBlock != nil {
-		minVal = *cfg.Evm.BlockAvailability.Lower.ExactBlock
-	}
-	if cfg.Evm.BlockAvailability.Upper != nil && cfg.Evm.BlockAvailability.Upper.ExactBlock != nil {
-		maxVal = *cfg.Evm.BlockAvailability.Upper.ExactBlock
-	}
+	minVal = fakeBoundValue(cfg.Evm.BlockAvailability.Lower, u.evmStatePoller, true)
+	maxVal = fakeBoundValue(cfg.Evm.BlockAvailability.Upper, u.evmStatePoller, false)
 	return minVal, maxVal
+}
+
+// fakeBoundValue mirrors the production ExactBlock / LatestBlockMinus shapes used
+// by empty-outside-retention tests. Unresolvable latestBlockMinus (no poller /
+// latest 0) stays unbounded so the waiver fail-closes.
+func fakeBoundValue(bound *EvmAvailabilityBoundConfig, poller EvmStatePoller, isLower bool) int64 {
+	unbounded := int64(math.MaxInt64)
+	if isLower {
+		unbounded = math.MinInt64
+	}
+	if bound == nil {
+		return unbounded
+	}
+	if bound.ExactBlock != nil {
+		return *bound.ExactBlock
+	}
+	if bound.LatestBlockMinus != nil {
+		if poller == nil || poller.IsObjectNull() {
+			return unbounded
+		}
+		latest := poller.LatestBlock()
+		if latest <= 0 {
+			return unbounded
+		}
+		return latest - *bound.LatestBlockMinus
+	}
+	return unbounded
+}
+
+// WithEvmBlockAvailability sets BlockAvailability on the fake (ExactBlock and/or
+// LatestBlockMinus). Pair LatestBlockMinus with WithEvmStatePoller so lower
+// bounds resolve the way production does.
+func WithEvmBlockAvailability(ba *EvmBlockAvailabilityConfig) func(*FakeUpstream) {
+	return func(u *FakeUpstream) {
+		if u.config.Evm == nil {
+			u.config.Evm = &EvmUpstreamConfig{}
+		}
+		u.config.Evm.BlockAvailability = ba
+	}
 }
 
 type FakeEvmStatePoller struct {
@@ -302,6 +354,7 @@ func (p *FakeEvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 }
 
 func (p *FakeEvmStatePoller) RefreshLatestBlock() {}
+func (p *FakeEvmStatePoller) ResetChainIdCordon() {}
 
 func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown
@@ -342,10 +395,17 @@ func (t *FakeHealthTracker) RecordUpstreamFailure(up Upstream, method string, fi
 	// No-op for testing
 }
 
-func (t *FakeHealthTracker) Cordon(upstream Upstream, method string, reason string) {
-	// No-op for testing
+func (t *FakeHealthTracker) Cordon(upstream Upstream, method string, reason string) {}
+
+func (t *FakeHealthTracker) Uncordon(upstream Upstream, method string, reason string) {}
+
+func (t *FakeHealthTracker) CordonClass(upstream Upstream, method string, reason string, class CordonClass) {
 }
 
-func (t *FakeHealthTracker) Uncordon(upstream Upstream, method string, reason string) {
+func (t *FakeHealthTracker) UncordonClass(upstream Upstream, method string, reason string, class CordonClass) {
+}
+
+func (t *FakeHealthTracker) CordonClasses(upstream Upstream, method string) []CordonClass {
 	// No-op for testing
+	return nil
 }

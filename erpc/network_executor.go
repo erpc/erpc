@@ -52,6 +52,9 @@ type consensusRunner interface {
 		req *common.NormalizedRequest,
 		inner func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error),
 	) (*common.NormalizedResponse, error)
+	// HasSelector reports whether a pre-round customPolicy selector is
+	// configured. The request path skips building selector inputs when false.
+	HasSelector() bool
 }
 
 // NewNetworkExecutor builds a per-(method, finality) network executor.
@@ -129,6 +132,19 @@ func (e *networkExecutor) HasConsensus() bool {
 		return false
 	}
 	return e.cfg.Consensus != nil
+}
+
+// consensusKeepsEmptyAsSlotVote reports whether the selected consensus policy
+// opted into empty-outside-retention waiver for this request's method, so a
+// consensus-slot hedge must keep an emptyish result as the slot's vote
+// (feature §7.1.4). The flag is stamped by consensus.executor once the
+// policy for the round is known — only when the method has blockEvidenceFields
+// so the waiver can actually prove — before participant hedges run.
+func (e *networkExecutor) consensusKeepsEmptyAsSlotVote(req *common.NormalizedRequest) bool {
+	if req == nil {
+		return false
+	}
+	return req.ExecState().KeepEmptyConsensusSlot()
 }
 
 // EmptyResultAccept returns the configured empty-result accept list.
@@ -247,22 +263,23 @@ func (e *networkExecutor) Run(
 	}
 	if e.HasConsensus() && e.consensus != nil && !skipConsensus && !singleDispatchWrite {
 		slotInner := func(slotCtx context.Context, slotReq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-			return e.runRetryHedge(slotCtx, slotReq, tryOneUpstream)
+			return e.runRetryHedge(slotCtx, slotReq, tryOneUpstream, true)
 		}
 		return e.consensus.Run(ctx, req, slotInner)
 	}
 
 	// Non-consensus branch: retry(hedge(runUpstreamSweep)).
-	return e.runRetryHedge(ctx, req, runUpstreamSweep)
+	return e.runRetryHedge(ctx, req, runUpstreamSweep, false)
 }
 
 func (e *networkExecutor) runRetryHedge(
 	ctx context.Context,
 	req *common.NormalizedRequest,
 	inner func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error),
+	consensusSlot bool,
 ) (*common.NormalizedResponse, error) {
 	hedgeWrapped := func(ctx context.Context) (*common.NormalizedResponse, error) {
-		return e.runHedge(ctx, req, inner)
+		return e.runHedge(ctx, req, inner, consensusSlot)
 	}
 	return e.runRetry(ctx, req, hedgeWrapped)
 }
@@ -433,6 +450,24 @@ func (e *networkExecutor) dataUnavailableCapReached(attempt int) bool {
 	return limit > 0 && attempt+1 >= limit
 }
 
+// blockSkipsAllFinal reports whether every cause of err is a block-availability
+// skip the gate judged final: it wraps those in ErrUpstreamRequestSkipped (see
+// handleBlockSkip). Waiting cannot change such a round, so retrying it only
+// repeats the same skips.
+func blockSkipsAllFinal(err error) bool {
+	causes := []error{err}
+	if ue, ok := err.(*common.ErrUpstreamsExhausted); ok {
+		causes = ue.Errors()
+	}
+	for _, c := range causes {
+		if !common.HasErrorCode(c, common.ErrCodeUpstreamRequestSkipped) ||
+			!common.HasErrorCode(c, common.ErrCodeUpstreamBlockUnavailable) {
+			return false
+		}
+	}
+	return len(causes) > 0
+}
+
 // shouldRetryWithReason returns the reason for retrying, or "" if no
 // retry should fire. The reason becomes the `reason` label of the
 // retry metric so operators can see which retry-path is busy.
@@ -458,6 +493,9 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 			return ""
 		}
 		if common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable) {
+			if blockSkipsAllFinal(err) {
+				return ""
+			}
 			if e.dataUnavailableCapReached(attempt) {
 				return ""
 			}
@@ -636,6 +674,7 @@ func (e *networkExecutor) runHedge(
 	ctx context.Context,
 	req *common.NormalizedRequest,
 	inner func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error),
+	consensusSlot bool,
 ) (*common.NormalizedResponse, error) {
 	if e.cfg == nil || e.cfg.Hedge == nil || e.cfg.Hedge.MaxCount <= 0 {
 		return inner(ctx, req)
@@ -718,8 +757,15 @@ func (e *networkExecutor) runHedge(
 			return false
 		}
 		// Reject unavailable empty results without cancelling usable siblings.
+		// Consensus slots keep an empty vote only when the selected policy
+		// opts into waiveAgreementOnEmptyOutsideRetention and the method
+		// has block evidence the waiver can prove.
 		method, _ := req.Method()
 		if isEmptyNetworkResult(method, r) {
+			if consensusSlot && r.IsResultEmptyish(ctx) && e.consensusKeepsEmptyAsSlotVote(req) {
+				kept = true
+				return true
+			}
 			if !e.acceptsEmptyResult(method, r) {
 				return false
 			}

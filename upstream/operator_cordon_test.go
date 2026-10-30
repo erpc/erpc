@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,6 +61,7 @@ func newCordonTestUpstream(t *testing.T, redisAddr string) *Upstream {
 	ups, err := reg.NewUpstream(upsCfg)
 	require.NoError(t, err)
 	ups.operatorCordonVar()
+	ups.operatorRecoveryVar()
 	return ups
 }
 
@@ -114,6 +116,62 @@ func TestCordonAdmin_PropagatesAcrossReplicasAndRestarts(t *testing.T) {
 	require.Equal(t, "incident #2", reason)
 }
 
+// TestUncordonAdmin_ResetsSitoutOnIssuerAndPeer pins Aram's Round-2 partial
+// and Copilot's race guard: the sit-out reset hook fires on both the issuing
+// pod and peers, but ONLY when the recovery actually cleared the punishment
+// bit. With no punishment cordon set, no hook fires. With a punishment bit
+// held, both issuer and peer clear it and fire the hook.
+func TestUncordonAdmin_ResetsSitoutOnIssuerAndPeer(t *testing.T) {
+	m, err := miniredis.Run()
+	require.NoError(t, err)
+	defer m.Close()
+	ctx := context.Background()
+
+	var mu sync.Mutex
+	var got [][2]string
+	SetSitoutResetHook(func(projectId, upstreamId string) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, [2]string{projectId, upstreamId})
+	})
+	t.Cleanup(func() { SetSitoutResetHook(nil) })
+
+	a := newCordonTestUpstream(t, m.Addr())
+	b := newCordonTestUpstream(t, m.Addr())
+
+	hookCount := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		n := 0
+		for _, g := range got {
+			if g[0] == a.ProjectId && g[1] == a.Id() {
+				n++
+			}
+		}
+		return n
+	}
+
+	// No punishment bit: admin cordon+uncordon clears operator only, so the
+	// hook must NOT fire (Copilot: unconditional reset raced newer punishment).
+	a.CordonAdmin(ctx, "incident")
+	require.Eventually(t, cordoned(b), 5*time.Second, 20*time.Millisecond)
+	a.UncordonAdmin(ctx, "resolved")
+	require.Eventually(t, notCordoned(b), 5*time.Second, 20*time.Millisecond)
+	require.Never(t, func() bool { return hookCount() > 0 }, 500*time.Millisecond, 20*time.Millisecond,
+		"no punishment bit ⇒ no sit-out reset")
+
+	// Now hold a punishment bit on both replicas and re-cordon+uncordon: the
+	// recovery clears the punishment bit on each, so BOTH issuer and peer
+	// fire the hook (exactly two invocations).
+	a.CordonClass("*", "misbehaving in consensus", common.CordonClassPunishment)
+	b.CordonClass("*", "misbehaving in consensus", common.CordonClassPunishment)
+	a.CordonAdmin(ctx, "incident-2")
+	require.Eventually(t, cordoned(b), 5*time.Second, 20*time.Millisecond)
+	a.UncordonAdmin(ctx, "resolved-2")
+	require.Eventually(t, func() bool { return hookCount() == 2 }, 5*time.Second, 20*time.Millisecond,
+		"issuer AND peer must each invoke the sit-out reset hook when the punishment bit clears")
+}
+
 func TestCordonAdmin_DetectorsCannotLiftAnOperatorCordon(t *testing.T) {
 	m, err := miniredis.Run()
 	require.NoError(t, err)
@@ -125,7 +183,7 @@ func TestCordonAdmin_DetectorsCannotLiftAnOperatorCordon(t *testing.T) {
 
 	// B holds an automatic cordon (consensus sit-out) while an operator
 	// cordons the same upstream from A.
-	b.Cordon("*", "misbehaving in consensus")
+	b.CordonClass("*", "misbehaving in consensus", common.CordonClassPunishment)
 	a.CordonAdmin(ctx, "operator")
 	require.Eventually(t, func() bool {
 		r, _ := b.CordonedReason("*")
@@ -133,19 +191,20 @@ func TestCordonAdmin_DetectorsCannotLiftAnOperatorCordon(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond)
 
 	// The sit-out ends on B: the operator cordon holds there and on A.
-	b.Uncordon("*", "end of consensus penalty")
+	b.UncordonClass("*", "end of consensus penalty", common.CordonClassPunishment)
 	require.True(t, cordoned(b)(), "consensus timer must not lift an operator cordon")
 	require.True(t, cordoned(a)())
 
-	// Operator lifts from A: the override clears the upstream on every
-	// replica, automatic wildcard cordons included.
-	b.Cordon("*", "misbehaving in consensus")
+	// Operator lifts from A: UncordonAdmin is the fleet-wide override and
+	// clears every class bit (including a live punishment sitout) so
+	// availability cordons without an automatic recovery path can be lifted.
+	b.CordonClass("*", "misbehaving in consensus", common.CordonClassPunishment)
 	a.UncordonAdmin(ctx, "resolved")
-	require.Eventually(t, notCordoned(b), 5*time.Second, 20*time.Millisecond, "operator uncordon is fleet-wide")
+	require.Eventually(t, notCordoned(b), 5*time.Second, 20*time.Millisecond, "UncordonAdmin clears all cordon classes fleet-wide")
 
 	// With no operator cordon held, detectors work as before.
-	b.Cordon("*", "misbehaving in consensus")
-	b.Uncordon("*", "end of consensus penalty")
+	b.CordonClass("*", "misbehaving in consensus", common.CordonClassPunishment)
+	b.UncordonClass("*", "end of consensus penalty", common.CordonClassPunishment)
 	require.True(t, notCordoned(b)())
 }
 
@@ -160,4 +219,153 @@ func TestCordonAdmin_MemoryDriverStaysInProcess(t *testing.T) {
 	require.False(t, cordoned(b)(), "memory driver shares nothing")
 	a.UncordonAdmin(ctx, "done")
 	require.True(t, notCordoned(a)())
+}
+
+// When the shared operator counter is already zero, UncordonAdmin must still
+// clear peer availability/punishment bits via a distinct recovery epoch —
+// TryUpdate(0) is a no-op and a zero→epoch→zero pulse can coalesce away.
+func TestUncordonAdmin_RecoveryEpochClearsPeerAvailability(t *testing.T) {
+	m, err := miniredis.Run()
+	require.NoError(t, err)
+	defer m.Close()
+	ctx := context.Background()
+
+	a := newCordonTestUpstream(t, m.Addr())
+	b := newCordonTestUpstream(t, m.Addr())
+
+	require.Equal(t, int64(0), a.operatorCordonVar().GetValue())
+	b.CordonClass("*", "chain identity mismatch", common.CordonClassAvailability)
+	require.True(t, cordoned(b)())
+	require.False(t, cordoned(a)())
+
+	a.UncordonAdmin(ctx, "ops cleared availability")
+	require.True(t, notCordoned(a)())
+	require.Eventually(t, notCordoned(b), 5*time.Second, 20*time.Millisecond,
+		"recovery epoch must clear peer availability when operator counter is already zero")
+}
+
+// A detector cordon that lands after UncordonAdmin snapshots generations must
+// survive the local clear — otherwise a concurrent sitout/availability verdict
+// is erased by the admin recovery that started earlier.
+func TestUncordonAdmin_PreservesPostSnapshotDetectorCordon(t *testing.T) {
+	a := newCordonTestUpstream(t, "")
+
+	a.CordonClass("*", "old availability", common.CordonClassAvailability)
+	require.True(t, cordoned(a)())
+
+	gens := a.metricsTracker.CordonGens(a, "*")
+	a.CordonClass("*", "new punishment after snapshot", common.CordonClassPunishment)
+	require.Greater(t, a.metricsTracker.CordonGens(a, "*")[0], gens[0])
+
+	// Simulate the generation-gated clear UncordonAdmin performs after publish.
+	a.metricsTracker.UncordonClassesAtMostGens(a, "*", "admin recovery", gens)
+	classes := a.metricsTracker.CordonClasses(a, "*")
+	require.Contains(t, classes, common.CordonClassPunishment,
+		"punishment cordoned after the snapshot must survive the gated clear")
+	require.NotContains(t, classes, common.CordonClassAvailability,
+		"availability present at snapshot must be cleared")
+}
+
+// A peer applies recovery without the issuer's snapshot and without a
+// wall-clock watermark. Classes present when the callback runs are cleared.
+// A cordon after that callback is a later local generation and stays.
+func TestRecovery_PeerClearsByLocalGenerationNotWallClock(t *testing.T) {
+	ctx := context.Background()
+	a := newCordonTestUpstream(t, "")
+	a.CordonClass("*", "old availability", common.CordonClassAvailability)
+
+	// Epoch 1 is not a timestamp. The old path treated a non-positive
+	// millisecond watermark as time.Now() and compared clocks.
+	a.operatorRecoveryVar().TryUpdate(ctx, 1)
+
+	classes := a.metricsTracker.CordonClasses(a, "*")
+	require.NotContains(t, classes, common.CordonClassAvailability,
+		"classes present when recovery is applied must be cleared")
+
+	a.CordonClass("*", "after recovery", common.CordonClassPunishment)
+	classes = a.metricsTracker.CordonClasses(a, "*")
+	require.Contains(t, classes, common.CordonClassPunishment,
+		"a cordon after recovery was applied must stay")
+}
+
+// A shared operator generation newer than the recovery epoch is a later
+// CordonAdmin. Recovery must not clear it, and must not consult wall clocks
+// to decide that.
+func TestRecovery_SkipsWhenOperatorGenerationIsNewer(t *testing.T) {
+	ctx := context.Background()
+	a := newCordonTestUpstream(t, "")
+	a.CordonAdmin(ctx, "incident")
+	require.Greater(t, a.operatorCordonVar().GetValue(), int64(1))
+	a.CordonClass("*", "availability", common.CordonClassAvailability)
+
+	a.operatorRecoveryVar().TryUpdate(ctx, 1)
+
+	classes := a.metricsTracker.CordonClasses(a, "*")
+	require.Contains(t, classes, common.CordonClassOperator)
+	require.Contains(t, classes, common.CordonClassAvailability)
+}
+
+// A detector cordon during UncordonAdmin's clock wait does not take
+// adminCordonMu, so its set time can still fall on the recovery watermark.
+// The generation snapshot must keep it; the time watermark must not.
+func TestUncordonAdmin_RecoveryKeepsPostSnapshotDetectorCordon(t *testing.T) {
+	ctx := context.Background()
+	a := newCordonTestUpstream(t, "")
+	a.CordonClass("*", "old availability", common.CordonClassAvailability)
+
+	gens := a.metricsTracker.CordonGens(a, "*")
+	snap := gens
+	a.uncordonSnap.Store(&snap)
+	a.CordonClass("*", "new punishment after snapshot", common.CordonClassPunishment)
+
+	epoch := time.Now().UnixMilli() * int64(time.Millisecond)
+	a.operatorRecoveryVar().TryUpdate(ctx, epoch)
+
+	classes := a.metricsTracker.CordonClasses(a, "*")
+	require.Contains(t, classes, common.CordonClassPunishment,
+		"punishment cordoned after the snapshot must survive recovery")
+	require.NotContains(t, classes, common.CordonClassAvailability,
+		"availability present at the snapshot must be cleared")
+}
+
+// A CordonAdmin that arrives after UncordonAdmin has snapshotted generations
+// must publish a new shared timestamp and keep the operator bit when that
+// uncordon then publishes zero.
+func TestCordonAdmin_ReassertSurvivesInFlightUncordon(t *testing.T) {
+	ctx := context.Background()
+	a := newCordonTestUpstream(t, "")
+	a.CordonAdmin(ctx, "incident")
+	require.True(t, cordoned(a)())
+
+	gens := a.metricsTracker.CordonGens(a, "*")
+	a.uncordonInFlight.Store(true)
+	a.uncordonMaxOperatorGen.Store(gens[operatorCordonGenIndex])
+	before := a.operatorCordonVar().GetValue()
+
+	a.CordonAdmin(ctx, "incident again")
+	require.Greater(t, a.operatorCordonVar().GetValue(), before, "in-flight re-assert must advance the shared counter")
+	require.Greater(t, a.metricsTracker.CordonGens(a, "*")[operatorCordonGenIndex], gens[operatorCordonGenIndex])
+
+	a.operatorCordonVar().TryUpdate(ctx, 0)
+	classes := a.metricsTracker.CordonClasses(a, "*")
+	require.Contains(t, classes, common.CordonClassOperator, "stale zero must not clear a re-asserted operator cordon")
+}
+
+// After UncordonAdmin completes, a subsequent CordonAdmin must stick
+// (shared counter + local operator bit). Mid-clear injection is covered by
+// the post-publish GetValue()!=0 guard in UncordonAdmin / recovery ordering.
+func TestUncordonAdmin_AllowsSequentialReCordonAfterClear(t *testing.T) {
+	ctx := context.Background()
+	a := newCordonTestUpstream(t, "")
+
+	a.CordonClass("*", "availability", common.CordonClassAvailability)
+	a.CordonAdmin(ctx, "incident")
+	require.True(t, cordoned(a)())
+
+	a.UncordonAdmin(ctx, "resolved")
+	require.True(t, notCordoned(a)())
+	a.CordonAdmin(ctx, "incident again")
+	require.Eventually(t, cordoned(a), 2*time.Second, 10*time.Millisecond)
+	classes := a.metricsTracker.CordonClasses(a, "*")
+	require.Contains(t, classes, common.CordonClassOperator)
 }

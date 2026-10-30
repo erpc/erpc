@@ -12,7 +12,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
-	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -55,7 +55,7 @@ func newReadyPgConnector(t *testing.T, cfg *common.PostgreSQLConnectorConfig) (c
 // rows the connector API cannot produce (already-expired rows, legacy schema).
 func rawPgPool(t *testing.T, uri string) *pgxpool.Pool {
 	t.Helper()
-	pool, err := pgxpool.Connect(context.Background(), uri)
+	pool, err := pgxpool.New(context.Background(), uri)
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 	return pool

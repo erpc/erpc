@@ -129,6 +129,7 @@ https://docs.erpc.cloud/config/database/shared-state.llms.txt`}
 3. `v2/earliestBlock/<upstreamKey>/<probeType>` — earliest available block per upstream per probe type (`ignoreRollbackOf=0`; all decreases accepted because node pruning genuinely shifts the historical anchor).
 4. `v2/operatorCordon/<projectId>/<upstreamKey>` — operator cordon state per upstream.
 5. `network/<projectId>/<networkId>/latestBlock` — the network's delivered-head floor: the highest head pushed to a WebSocket subscriber (see [WebSocket](/operation/websocket)).
+6. `network/<projectId>/<networkId>/finalizedBlock` — the highest network-wide `finalized` any instance served (see [Finalized floor](/reference/evm/block-tracking#finalized-floor)) (`ignoreRollbackOf=1024`).
 
 `<upstreamKey>` is `common.UniqueUpstreamKey(up)`: the upstream id followed by a hash of its id, endpoint and JSON-RPC headers. It does not depend on chain detection, so it stays the same for the upstream's lifetime. Two upstreams share a key only when they call the same endpoint with the same headers, and so report the same chain. Changing an upstream's endpoint or headers starts a new counter, and so does upgrading from a version that also hashed the network id; the old keys are left behind in the store. Source: <SourceLink file="common/upstream.go" lines="68-82" />
 
@@ -144,7 +145,7 @@ https://docs.erpc.cloud/config/database/shared-state.llms.txt`}
 
 **Bootstrap task retry.** If `WatchCounterInt64` fails at startup (connector not ready, network error), `initCounterSync` marks the watch task as failed and the `Initializer` retries it in the background. During this window the counter operates in local-only mode. Source: <SourceLink file="data/shared_state_registry.go" lines="168-222" />
 
-**Served tip.** The served tip itself is not shared: each instance computes it from the shared per-upstream counters (see [Block tracking](/reference/evm/block-tracking)). The only network-level counter is `network/<project>/<network>/latestBlock`: the highest head any instance has delivered to a WebSocket `newHeads` subscriber, used as a bounded floor for `latest`. Per-group served-tip lanes are in-process telemetry, not shared state.
+**Served tip.** Each instance computes the served tip from the shared per-upstream counters (see [Block tracking](/reference/evm/block-tracking)). Two network-level counters bound it: `network/<project>/<network>/latestBlock`, the highest head any instance has delivered to a WebSocket `newHeads` subscriber, a bounded floor for `latest`; and `network/<project>/<network>/finalizedBlock`, the highest network-wide `finalized` any instance served, a floor for `finalized` only while a voter of the reading instance reports it. Per-group served-tip lanes are in-process, not shared state.
 
 **Fallback when absent.** `erpc/erpc.go:L49-L66` synthesises an in-memory registry if `sharedState == nil`; the same `GetCounterInt64` API works identically but no cross-pod propagation occurs. Init failures are non-fatal: `erpc/init.go` logs a warning and continues with a synthesised in-memory registry. A broken Redis config therefore produces degraded per-pod behavior, not a hard startup failure.
 
@@ -341,6 +342,7 @@ The shared-state layer has no effect on JSON-RPC request or response shapes visi
 - **Block-number reads** (`latestBlock`, `finalizedBlock`) used by the upstream selector and tag-aware routing come from the in-process atomic copy — zero latency on the request path.
 - **Block-number refreshes** are debounced via `TryUpdateIfStale`; the foreground caller waits at most `updateMaxWait` (default 50 ms). If the refresh completes within that window the fresh value influences the current request; otherwise the stale value is used and the refresh completes asynchronously for the next request.
 - **Delivered-head counter** (`network/<project>/<network>/latestBlock`) is updated before a `newHeads` notification is delivered and does not add request latency. Other instances honor it as a floor for `latest` only within `maxRetryableBlockDistance` of their freshest live head.
+- **Served-finalized counter** (`network/<project>/<network>/finalizedBlock`) is updated when an instance serves a higher network-wide `finalized`; reads use the in-process copy. Other instances serve it only while one of their own voters reports it finalized, so a value no voter backs is ignored.
 - A broken or unreachable shared-state connector degrades to per-pod local state — no error is returned to the client; routing quality degrades silently.
 - **Operator cordons** (`erpc_cordonUpstream`) are one more shared counter per upstream (`operatorCordon`, value = cordon time in unix-ms, `0` = lifted), with the same propagation, bootstrap fetch and local-first semantics as the block counters. See [Cordoning](/operation/cordoning).
 

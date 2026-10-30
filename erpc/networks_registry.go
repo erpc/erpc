@@ -97,7 +97,9 @@ func NewNetwork(
 ) (*Network, error) {
 	lg := logger.With().Str("component", "proxy").Str("networkId", nwCfg.NetworkId()).Logger()
 
-	_ = projectId // network executor scope is per-network; project label comes from the metrics tracker.
+	// projectId is threaded into consensus so project-keyed recovery (admin
+	// uncordon sit-out reset) can scope same-ID upstreams per project.
+	// The per-network executor itself keeps using the metrics-tracker label.
 
 	// Build a provider that resolves the dynamic block-unavailable retry delay
 	// from the network's EMA-estimated block time. Returns 0 before warmup so
@@ -124,7 +126,7 @@ func NewNetwork(
 		for _, fsCfg := range nwCfg.Failsafe {
 			var cons consensusRunner
 			if fsCfg.Consensus != nil {
-				c, err := consensus.NewConsensus(fsCfg.Consensus, &lg)
+				c, err := consensus.NewConsensus(fsCfg.Consensus, &lg, projectId)
 				if err != nil {
 					return nil, err
 				}
@@ -181,6 +183,10 @@ func NewNetwork(
 		if ssr := upstreamsRegistry.SharedStateRegistry(); ssr != nil {
 			network.latestBlockShared = ssr.GetCounterInt64(
 				fmt.Sprintf("network/%s/%s/latestBlock", projectId, netId),
+				evm.DefaultToleratedBlockHeadRollback,
+			)
+			network.servedFinalizedShared = ssr.GetCounterInt64(
+				fmt.Sprintf("network/%s/%s/finalizedBlock", projectId, netId),
 				evm.DefaultToleratedBlockHeadRollback,
 			)
 		}
