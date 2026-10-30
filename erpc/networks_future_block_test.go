@@ -996,7 +996,10 @@ func mockMethodAnswer(method, result string, dispatched *atomic.Int64, ids ...st
 // voters Latest lacks for a head fetched after it began: on instance 3,
 // whose voters' counters are fresh but whose nodes already hold the block,
 // the answer is served; on instance 4, whose voters already hold it while
-// the head pass has not published it, too. Each wait counts its outcome.
+// the head pass has not published it, too; on instance 5, whose nodes hold
+// it but answer that fetch only after 1 bt, as a loaded host or a slow link
+// does, the wait waits for the answer and serves it. Each wait counts its
+// outcome.
 func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
@@ -1169,6 +1172,55 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the voters' quorum holds 101: the receipt is served")
 	assert.Positive(t, stalledCalls.Load(), "dispatched to an upstream")
 	assert.Equal(t, served+1, held("held_served"), "the wait on instance 4 ended served")
+	assert.Equal(t, nulls, held("held_null"))
+
+	// Instance 5: as instance 3, but its nodes answer the wait's fetch of
+	// latest 1.5 bt after it is sent (bt is the cold 1s here, W 3s). The
+	// fetch is the only evidence that the nodes lack the block, so the wait
+	// outlives 1 bt until it answers.
+	var slowHead atomic.Int64
+	slowHead.Store(100)
+	var slowAnswers atomic.Bool
+	for _, id := range []string{"hl1", "hl2"} {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				if slowAnswers.Load() {
+					time.Sleep(1500 * time.Millisecond)
+				}
+				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x%x","timestamp":"0x6702a8f0"}}`, slowHead.Load())
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+	}
+	slow, slowUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "hl1", chainID: 123, latestBlock: 100, debounce: time.Hour},
+		{id: "hl2", chainID: 123, latestBlock: 100, debounce: time.Hour},
+	})
+	for _, u := range slowUps {
+		setServedTipFinalized(t, u, 90)
+	}
+	require.Equal(t, int64(100), servedHead(slow, ctx).Latest)
+	var slowCalls atomic.Int64
+	mockMethodAnswer("eth_getTransactionReceipt", receipt, &slowCalls, "hl1", "hl2")
+	slowHead.Store(101)
+	slowAnswers.Store(true)
+	nulls, served = held("held_null"), held("held_served")
+	start = time.Now()
+	resp, err = slow.Forward(ctx, common.NewNormalizedRequest([]byte(receiptReq)))
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the wait's fetch answers 101 after 1 bt: the receipt is served")
+	assert.GreaterOrEqual(t, time.Since(start), 1500*time.Millisecond, "held until the fetch answered")
+	assert.Equal(t, served+1, held("held_served"), "the wait on instance 5 ended served")
 	assert.Equal(t, nulls, held("held_null"))
 }
 
