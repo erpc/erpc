@@ -135,8 +135,12 @@ type NetworkMetadata struct {
 	evmBlockTimeMu            sync.Mutex   // protects EMA state below
 	evmBlockTimePrevBlock     int64        // last block number fed to EMA
 	evmBlockTimePrevTimestamp int64        // block.timestamp (seconds) of that block
-	evmBlockTimeEmaNs         float64      // current EMA value in nanoseconds
-	evmBlockTimeSamples       int          // number of EMA samples collected
+	// The block time is the EMA of the samples' seconds over the EMA of
+	// their blocks. An EMA of each sample's ratio weighs a 3-block span as
+	// much as a 4-block one and reads 2–8% long on a 0.3s chain.
+	evmBlockTimeEmaSpanNs float64
+	evmBlockTimeEmaBlocks float64
+	evmBlockTimeSamples   int // number of EMA samples collected
 	// evmBlockTimeSpanStart: prev is a timestamp change, so a sample may
 	// span from it.
 	evmBlockTimeSpanStart bool
@@ -2569,7 +2573,10 @@ func (t *Tracker) setLatestBlockNumber(upstream common.Upstream, blockNumber int
 // samples.
 const blockTimeEmaAlpha = 0.1
 
-// blockTimeSampleCap bounds a block time sample to this many times the EMA.
+// blockTimeSampleCap bounds a block time sample to this many times the
+// EMA's seconds per block, and its weight to this many times the EMA's
+// blocks per sample: one span over many blocks, after downtime or a bogus
+// head, weighs as much as 3 usual spans, never as all the EMA holds.
 const blockTimeSampleCap = 3
 
 // reportAgesEvery is how often a head update sets every reporter's
@@ -2652,35 +2659,40 @@ func (m *NetworkMetadata) sampleBlockTime(blockNumber int64, blockTimestamp int6
 		return false
 	}
 
-	sampleNs := float64(timestampDeltaSec) * 1e9 / float64(blockGap)
+	spanNs, blocks := float64(timestampDeltaSec)*1e9, float64(blockGap)
+	prevSpanNs, prevBlocks := m.evmBlockTimeEmaSpanNs, m.evmBlockTimeEmaBlocks
 	if m.evmBlockTimeSamples == 0 {
 		// No EMA yet tells a halt apart, so the seed never enters the
 		// floor: it restarts at the seed's end, as the halt clip does.
-		m.evmBlockTimeEmaNs = sampleNs
+		m.evmBlockTimeEmaSpanNs, m.evmBlockTimeEmaBlocks = spanNs, blocks
 		m.evmBlockTimeAnchorBlock, m.evmBlockTimeAnchorTimestamp = blockNumber, blockTimestamp
 	} else {
 		// One span across a halt counts as 3× the EMA, so it never sets W
 		// to its cap (spec §6.7). The floor restarts at its end: a pause
 		// adds seconds without blocks, so an average across it overstates
 		// the block time while blocks are made.
-		if halt := blockTimeSampleCap * m.evmBlockTimeEmaNs; sampleNs > halt {
-			sampleNs = halt
+		if halt := blockTimeSampleCap * blocks * prevSpanNs / prevBlocks; spanNs > halt {
+			spanNs = halt
 			m.evmBlockTimeAnchorBlock, m.evmBlockTimeAnchorTimestamp = blockNumber, blockTimestamp
 		}
-		m.evmBlockTimeEmaNs = blockTimeEmaAlpha*sampleNs + (1-blockTimeEmaAlpha)*m.evmBlockTimeEmaNs
+		if most := blockTimeSampleCap * prevBlocks; blocks > most {
+			spanNs, blocks = spanNs*most/blocks, most
+		}
+		m.evmBlockTimeEmaSpanNs = blockTimeEmaAlpha*spanNs + (1-blockTimeEmaAlpha)*prevSpanNs
+		m.evmBlockTimeEmaBlocks = blockTimeEmaAlpha*blocks + (1-blockTimeEmaAlpha)*prevBlocks
 	}
 	m.evmBlockTimeSamples++
 	if dts, dn := blockTimestamp-m.evmBlockTimeAnchorTimestamp, blockNumber-m.evmBlockTimeAnchorBlock; dts >= 2 && dn > 0 {
 		m.evmBlockTimeFloor.Store((dts - 1) * int64(time.Second) / dn)
 	}
 
-	if !m.storeBlockTime(int64(m.evmBlockTimeEmaNs)) {
-		// Reset the internal EMA to the last published value so that recovery
+	if !m.storeBlockTime(int64(m.evmBlockTimeEmaSpanNs / m.evmBlockTimeEmaBlocks)) {
+		// Drop the sample once a value was published, so that recovery
 		// from a prolonged halt doesn't create a delayed spike when the EMA
 		// first crosses back below the threshold (e.g. jumping from 2s to
 		// ~119s).
-		if lastGood := m.evmBlockTime.Load(); lastGood > 0 {
-			m.evmBlockTimeEmaNs = float64(lastGood)
+		if m.evmBlockTime.Load() > 0 {
+			m.evmBlockTimeEmaSpanNs, m.evmBlockTimeEmaBlocks = prevSpanNs, prevBlocks
 		}
 		return false
 	}

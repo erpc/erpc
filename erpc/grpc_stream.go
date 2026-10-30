@@ -385,7 +385,7 @@ func (gs *GrpcServer) openGrpcStream(ctx context.Context, authMethod, kind strin
 	if kind != indexer.SubTypeNewPendingTransactions && nw.chainTracker == nil {
 		return nil, status.Errorf(codes.Unimplemented, "%s streams need an evm network", kind)
 	}
-	if err := nw.admitStream(opts, "depth"); err != nil {
+	if err := nw.admitStream(opts, "depth", ""); err != nil {
 		if errors.As(err, new(finalitySpanError)) {
 			return nil, status.Error(codes.ResourceExhausted, err.Error())
 		}
@@ -407,8 +407,11 @@ func (gs *GrpcServer) runGrpcSession(ctx context.Context, nw *Network, s *stream
 	if s.opts.Finality.Kind == finalitySafe {
 		defer nw.openSafe(ctx)()
 	}
+	if s.opts.Finality.final() {
+		s.hold = new(indexer.FinalHold)
+	}
 	if s.opts.From == nil {
-		s.start = nw.tapStart(s.opts.Finality, "")
+		s.start = nw.tapStart(s.opts.Finality, "", s.hold)
 	}
 	s.resumable, s.drain = true, gs.appCtx.Done()
 	done := make(chan *streamEnd, 1)

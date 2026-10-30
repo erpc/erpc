@@ -84,15 +84,25 @@ type grpcBlocksEncoder struct {
 	w       *grpcWriter
 }
 
-func (e *grpcBlocksEncoder) Header(blk indexer.Block) (func() error, bool, error) {
+func (e *grpcBlocksEncoder) Header(blk indexer.Block) (func(tapDelivery) error, bool, error) {
 	msg, pinned, err := streamBlocksEncoding.Of(e.tracker, blk)
 	if err != nil {
 		return nil, pinned, streamEncodeError{blk.Number, err}
 	}
+	if !pinned {
+		// The session holds blk: no message.
+		return nil, false, nil
+	}
 	if err := e.w.fits(blk, msg); err != nil {
 		return nil, pinned, err
 	}
-	return func() error { return e.w.write(streamData, msg) }, pinned, nil
+	return func(d tapDelivery) error {
+		if err := e.w.write(streamData, msg); err != nil {
+			return err
+		}
+		d.done()
+		return nil
+	}, pinned, nil
 }
 
 // streamBlocksResponse is the StreamBlocks message of a held header.

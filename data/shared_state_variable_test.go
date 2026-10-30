@@ -105,7 +105,7 @@ func TestSharedVariable(t *testing.T) {
 		}
 	})
 
-	t.Run("remote updates respect ignoreRollbackOf (small rollbacks ignored, large applied)", func(t *testing.T) {
+	t.Run("remote updates respect ignoreRollbackOf (small rollbacks ignored, large applied once they move)", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -144,11 +144,26 @@ func TestSharedVariable(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		assert.Equal(t, int64(10000), counter.GetValue(), "small rollback should be ignored")
 
-		// Large rollback (gap=2000 > 1024) should be APPLIED (real reorg)
-		// Use a timestamp that's definitely in the future to ensure it's not rejected as stale
-		updates <- CounterInt64State{Value: 8000, UpdatedAt: time.Now().UnixMilli() + 1000, UpdatedBy: "test"}
-		time.Sleep(100 * time.Millisecond)
-		assert.Equal(t, int64(8000), counter.GetValue(), "large rollback should be applied")
+		// Large rollback (gap=2000 > 1024): held until the lower side moves.
+		// Use timestamps that are definitely in the future so none is rejected as stale.
+		send := func(v int64) {
+			updates <- CounterInt64State{Value: v, UpdatedAt: time.Now().UnixMilli() + 1000, UpdatedBy: "test"}
+			time.Sleep(100 * time.Millisecond)
+		}
+		send(8000)
+		assert.Equal(t, int64(10000), counter.GetValue(), "a first large rollback is held")
+		send(8000)
+		assert.Equal(t, int64(10000), counter.GetValue(), "a source frozen behind repeats one value and never applies")
+
+		// A reading at the real head in between starts the count again: a load
+		// balancer that sometimes answers from a node far behind never moves us.
+		send(10000)
+		send(8005)
+		assert.Equal(t, int64(10000), counter.GetValue(), "a head reading in between clears the held rollback")
+
+		// A real deep reorg keeps moving from its new height.
+		send(8010)
+		assert.Equal(t, int64(8010), counter.GetValue(), "a large rollback that moved is applied")
 	})
 
 	t.Run("stale remote updates are rejected", func(t *testing.T) {
@@ -650,9 +665,11 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 		initialValue     int64
 		updateValue      int64
 		ignoreRollbackOf int64
-		expectedValue    int64
-		eventual         bool
-		eventualValue    int64
+		// heldRollback is a large rollback proposed before updateValue (0 = none).
+		heldRollback  int64
+		expectedValue int64
+		eventual      bool
+		eventualValue int64
 	}{
 		{
 			name: "remote lock fails, fallback local, higher update => update",
@@ -679,17 +696,28 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 			expectedValue:    100,
 		},
 		{
-			name: "remote lock fails, fallback local, lower update exceeds rollback range => applied",
+			name: "remote lock fails, fallback local, lower update exceeds rollback range and moved => applied",
 			setupMocks: func(conn *MockConnector, lock *MockLock) {
-				// Large rollback exceeding ignoreRollbackOf is APPLIED
+				// Large rollback exceeding ignoreRollbackOf is APPLIED once it moved
 				conn.On("Lock", mock.Anything, "test", mock.Anything).
 					Return(nil, errors.New("lock failed"))
 				conn.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil)
 			},
 			initialValue:     100,
+			heldRollback:     45,
 			updateValue:      50,
-			ignoreRollbackOf: 40, // gap=50 > 40, so rollback is APPLIED
+			ignoreRollbackOf: 40, // gap=50 > 40 and 50 > the held 45, so rollback is APPLIED
 			expectedValue:    50,
+		},
+		{
+			name: "lower update exceeds rollback range, first time => held",
+			setupMocks: func(conn *MockConnector, lock *MockLock) {
+				// A held rollback changes nothing, so no remote work
+			},
+			initialValue:     100,
+			updateValue:      50,
+			ignoreRollbackOf: 40,
+			expectedValue:    100,
 		},
 		{
 			name: "remote lock succeeds, remote higher => override local; push reconciled value",
@@ -740,9 +768,9 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 			expectedValue:    100,
 		},
 		{
-			name: "remote lock succeeds, remote is lower, newValue exceeds rollback range => applied",
+			name: "remote lock succeeds, remote is lower, newValue exceeds rollback range and moved => applied",
 			setupMocks: func(conn *MockConnector, lock *MockLock) {
-				// Large rollback exceeding ignoreRollbackOf is APPLIED
+				// Large rollback exceeding ignoreRollbackOf is APPLIED once it moved
 				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
 				lock.On("Unlock", mock.Anything).Return(nil)
 				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
@@ -751,8 +779,9 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 				conn.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil)
 			},
 			initialValue:     100,
+			heldRollback:     45,
 			updateValue:      50,
-			ignoreRollbackOf: 40, // gap=50 > 40, so rollback is APPLIED
+			ignoreRollbackOf: 40, // gap=50 > 40 and 50 > the held 45, so rollback is APPLIED
 			expectedValue:    50,
 		},
 	}
@@ -772,6 +801,9 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 				ignoreRollbackOf: tt.ignoreRollbackOf,
 			}
 			counter.storeValue(tt.initialValue)
+			if tt.heldRollback > 0 {
+				counter.processNewValue(UpdateSourceTryUpdate, tt.heldRollback, time.Now())
+			}
 
 			actualValue := counter.TryUpdate(ctx, tt.updateValue, time.Now())
 			assert.Equal(t, tt.expectedValue, actualValue,
@@ -1294,10 +1326,12 @@ func TestSharedVariableTimeoutHandling(t *testing.T) {
 			callbackMu.Unlock()
 		})
 
-		// Process a value with large rollback (gap=100 > ignoreRollbackOf=10)
-		counter.processNewValue(UpdateSourceRemoteSync, 100, time.Now())
+		// A large rollback (gap > ignoreRollbackOf=10) is held at first: no value change, no callback
+		counter.processNewValue(UpdateSourceRemoteSync, 99, time.Now())
+		assert.Equal(t, int64(200), counter.GetValue())
 
-		// Value SHOULD be rolled back (large rollback is applied)
+		// Once the lower side moved, it SHOULD be rolled back
+		counter.processNewValue(UpdateSourceRemoteSync, 100, time.Now())
 		assert.Equal(t, int64(100), counter.GetValue())
 
 		// And callback SHOULD have been triggered
@@ -1392,6 +1426,8 @@ func TestCounterInt64_RemoteRollbackCallback(t *testing.T) {
 		}
 		counter.storeValue(10000)
 		counter.updatedAtUnixMs.Store(1)
+		// A large rollback to 4990 was held before; 5000 shows the lower side moved
+		counter.processNewValue(UpdateSourceTryUpdate, 4990, time.Now())
 
 		var callbackMu sync.Mutex
 		var callbackCalls []struct{ current, new int64 }
@@ -1504,6 +1540,8 @@ func TestCounterInt64_RemoteRollbackCallback(t *testing.T) {
 		// Local has value=10000 with timestamp=50
 		counter.storeValue(10000)
 		counter.updatedAtUnixMs.Store(50)
+		// A large rollback to 4990 was held before; 5000 shows the lower side moved
+		counter.processNewValue(UpdateSourceTryUpdate, 4990, time.Now())
 
 		// Remote sends a large rollback with newer timestamp
 		// Value: 5000 (gap=5000 > 100, large rollback - should be accepted)
@@ -1999,12 +2037,30 @@ func TestCounterInt64_ZeroIsNotAHeadObservation(t *testing.T) {
 		counter.OnLargeRollback(func(int64, int64) { rollbacks++ })
 
 		// The guard must not blunt the behaviour it sits next to: a genuine deep
-		// reorg is a positive value and still exceeds ignoreRollbackOf.
-		updated := counter.processNewValue(UpdateSourceTryUpdate, 995_000, time.Now())
+		// reorg is a positive value, still exceeds ignoreRollbackOf, and keeps
+		// moving from its new height, so its second reading applies.
+		assert.False(t, counter.processNewValue(UpdateSourceTryUpdate, 995_000, time.Now()), "a first large rollback is held")
+		updated := counter.processNewValue(UpdateSourceTryUpdate, 995_002, time.Now())
 
 		assert.True(t, updated, "a real reorg must still be applied")
-		assert.Equal(t, int64(995_000), counter.GetValue())
+		assert.Equal(t, int64(995_002), counter.GetValue())
 		assert.Equal(t, 1, rollbacks)
+	})
+
+	t.Run("a chain that restarted lower and halted is followed after the hold", func(t *testing.T) {
+		counter := newHeadCounter(1_000_000)
+
+		for range 3 {
+			assert.False(t, counter.processNewValue(UpdateSourceTryUpdate, 995_000, time.Now()), "a halted lower value is held")
+		}
+		assert.Equal(t, int64(1_000_000), counter.GetValue())
+
+		// Only lower readings for the whole hold: the source is the chain now.
+		held := *counter.state.Load()
+		held.heldSince = rollbackClock() - largeRollbackMaxHold
+		counter.state.Store(&held)
+		assert.True(t, counter.processNewValue(UpdateSourceTryUpdate, 995_000, time.Now()), "a hold never lasts forever")
+		assert.Equal(t, int64(995_000), counter.GetValue())
 	})
 
 	t.Run("earliest-block counters may still hold zero", func(t *testing.T) {
@@ -2121,7 +2177,8 @@ func TestCounterInt64_BackgroundPush_AdoptsFarAheadRemote(t *testing.T) {
 	assert.Nil(t, stored.Load(), "must not overwrite remote with the lower local value")
 
 	sentBeforeReset := time.Now().Add(-time.Second)
-	assert.Equal(t, int64(10), counter.TryUpdate(ctx, 10, time.Now()), "the reset is a large rollback")
+	assert.Equal(t, int64(5100), counter.TryUpdate(ctx, 9, time.Now()), "the reset's first reading is held")
+	assert.Equal(t, int64(10), counter.TryUpdate(ctx, 10, time.Now()), "the reset moved on: a large rollback")
 	<-lockLost
 	assert.Nil(t, stored.Load(), "the drop's push lost the lock")
 	assert.Equal(t, int64(11), counter.TryUpdate(ctx, 11, time.Now()))
@@ -2181,11 +2238,14 @@ func TestCounterInt64_PubsubHeadCounterIsMaxOnly(t *testing.T) {
 	assert.Equal(t, 1.0, rejectedTotal(rejectStaleTimestamp)-stale)
 	assert.Equal(t, 1.0, rejectedTotal(rejectSmallRollback)-small)
 
+	held := rejectedTotal(rejectHeldRollback)
 	send(1000, skewed+1)
+	send(1001, skewed+10)
 	// The rollback callback runs after the value is stored; wait for it.
 	assert.Eventually(t, func() bool { return rollbacks.Load() == 1 }, time.Second, 5*time.Millisecond,
-		"a newer large drop is a rollback")
-	assert.Equal(t, int64(1000), counter.GetValue())
+		"a newer large drop is a rollback once its lower side moved")
+	assert.Equal(t, int64(1001), counter.GetValue())
+	assert.Equal(t, 1.0, rejectedTotal(rejectHeldRollback)-held, "its first reading is held")
 	connector.AssertExpectations(t)
 }
 

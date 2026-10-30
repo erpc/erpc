@@ -53,14 +53,15 @@ type filterStateRef struct {
 // filterOf is f's state on r, made once per (receipts, filter); nil when a
 // log of r does not parse.
 func (t *ChainTracker) filterOf(r *heldReceipts, f *logfilter.LogsFilter) *filterState {
-	if !r.index() {
+	x := r.index()
+	if x == nil {
 		return nil
 	}
 	key := f.Key()
 	if v, ok := r.filters.Load(key); ok {
 		return v.(*filterState)
 	}
-	s := &filterState{key: key, pos: r.positions(f)}
+	s := &filterState{key: key, pos: x.positions(f)}
 	if v, loaded := r.filters.LoadOrStore(key, s); loaded {
 		return v.(*filterState)
 	}

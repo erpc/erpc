@@ -78,12 +78,12 @@ func (e *LogsEncoding[L, T]) Of(t *ChainTracker, b indexer.Block, f *logfilter.L
 func (e *LogsEncoding[L, T]) log(t *ChainTracker, r *heldReceipts, p int32) (L, error) {
 	x, ok := r.encodings.Load(e)
 	if !ok {
-		x, _ = r.encodings.LoadOrStore(e, make([]logConverted[L], len(r.logs)))
+		x, _ = r.encodings.LoadOrStore(e, make([]logConverted[L], len(r.idx.logs)))
 	}
 	c := &x.([]logConverted[L])[p]
 	c.once.Do(func() {
 		defer e.recover(t, &c.err)
-		c.v, c.err = e.convert(r.logs[p])
+		c.v, c.err = e.convert(r.idx.logs[p])
 	})
 	return c.v, c.err
 }

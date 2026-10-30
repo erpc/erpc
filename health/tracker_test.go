@@ -3,6 +3,8 @@ package health
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1112,6 +1114,51 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		assert.Greater(t, d, time.Duration(0), "fast chain should produce a block time")
 		assert.Less(t, d, 1*time.Second, "fast chain block time should be sub-second")
 		assert.InDelta(t, 0.25, d.Seconds(), 0.05, "should converge to ~250ms")
+	})
+
+	t.Run("FastChain_PolledHeads_ConvergeUnbiased", func(t *testing.T) {
+		// A steady 300 ms chain with integer-second timestamps, through the
+		// poll path: three upstreams each polled every 210 ms (the 0.7 bt
+		// cadence) plus up to 200 ms of jitter, answering with the head as of
+		// up to 200 ms before the poll. The network head is their
+		// corroborated head, so each sample spans 3 or more blocks across a
+		// truncated second at either end.
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+		tracker.Bootstrap(context.Background())
+		start := time.Unix(1700000000, 0)
+		var clock time.Duration
+		tracker.SetClockForTest(func() time.Time { return start.Add(clock) })
+		ups := []common.Upstream{common.NewFakeUpstream("a"), common.NewFakeUpstream("b"), common.NewFakeUpstream("c")}
+		const bt, offset = 300 * time.Millisecond, 137 * time.Millisecond
+		rng := rand.New(rand.NewPCG(1, 2))
+		jitter := func() time.Duration { return time.Duration(rng.Int64N(int64(200 * time.Millisecond))) }
+		next := []time.Duration{time.Second, time.Second + 70*time.Millisecond, time.Second + 130*time.Millisecond}
+		var published []time.Duration
+		for clock < 10*time.Minute {
+			i := 0
+			for k := range next {
+				if next[k] < next[i] {
+					i = k
+				}
+			}
+			clock = next[i]
+			next[i] += 210*time.Millisecond + jitter()
+			n := int64((clock - jitter() - offset) / bt)
+			tracker.SetLatestBlockNumber(ups[i], 1000+n, start.Add(offset+time.Duration(n)*bt).Unix())
+			if clock > time.Minute {
+				published = append(published, tracker.GetNetworkBlockTime(ups[i].NetworkId()))
+			}
+		}
+		var sum time.Duration
+		for _, d := range published {
+			sum += d
+		}
+		mean := sum / time.Duration(len(published))
+		assert.InDelta(t, bt.Seconds(), mean.Seconds(), 0.003, "mean block time %v over %d reads", mean, len(published))
+		slices.Sort(published)
+		p1, p99 := published[len(published)/100], published[len(published)*99/100]
+		assert.InDelta(t, bt.Seconds(), p1.Seconds(), 0.005, "p1 %v", p1)
+		assert.InDelta(t, bt.Seconds(), p99.Seconds(), 0.005, "p99 %v", p99)
 	})
 
 	t.Run("RejectsAbsurdValues", func(t *testing.T) {

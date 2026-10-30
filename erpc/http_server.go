@@ -181,8 +181,27 @@ func NewHttpServer(
 			return nil, err
 		}
 		srv.sharedGrpcServer = sharedGrpcServer
+		streamingMethods := make(map[string]struct{})
+		for svc, info := range sharedGrpcServer.server.GetServiceInfo() {
+			for _, m := range info.Methods {
+				if m.IsServerStream || m.IsClientStream {
+					streamingMethods["/"+svc+"/"+m.Name] = struct{}{}
+				}
+			}
+		}
 		handlerV4 = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.ProtoMajor == 2 && strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/grpc") {
+				// net/http applies ReadTimeout and WriteTimeout to each HTTP/2 stream
+				// and resets it on expiry; long-lived gRPC streams must outlive them.
+				if _, ok := streamingMethods[r.URL.Path]; ok {
+					rc := http.NewResponseController(w)
+					if err := rc.SetReadDeadline(time.Time{}); err != nil {
+						logger.Warn().Err(err).Str("method", r.URL.Path).Msg("failed to clear read deadline of gRPC stream")
+					}
+					if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+						logger.Warn().Err(err).Str("method", r.URL.Path).Msg("failed to clear write deadline of gRPC stream")
+					}
+				}
 				sharedGrpcServer.server.ServeHTTP(w, r)
 				return
 			}

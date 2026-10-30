@@ -36,7 +36,7 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 			for _, first := range []string{"[]", "[ \t\r\n ]", "[" + strings.Repeat(" ", 128) + "]", "{}", `""`, "null", "missing"} {
 				t.Run(mode+"/"+first, func(t *testing.T) {
 					util.ResetGock()
-					defer util.ResetGock()
+					t.Cleanup(util.ResetGock)
 					util.SetupMocksForEvmStatePoller()
 					var calls atomic.Int32
 					for i, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
@@ -89,7 +89,7 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 	})
 	t.Run("EthGetLogs_EmptyArray_OnlyFirstUpstreamCalled", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		var rpc1Calls, rpc2Calls atomic.Int32
@@ -158,7 +158,7 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 
 	t.Run("EthCall_EmptyHex_OnlyFirstUpstreamCalled", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		var rpc1Calls, rpc2Calls atomic.Int32
@@ -227,7 +227,7 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 
 	t.Run("MethodNotInAcceptList_BothUpstreamsTried", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		var rpc1Calls, rpc2Calls atomic.Int32
@@ -292,7 +292,7 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 
 	t.Run("NonEmptyResult_ReturnsImmediately_RegardlessOfAcceptList", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		var rpc1Calls, rpc2Calls atomic.Int32
@@ -363,7 +363,7 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 
 	t.Run("DefaultAcceptList_EthGetLogs_ShortCircuitsWithoutExplicitConfig", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		var rpc1Calls, rpc2Calls atomic.Int32
@@ -433,7 +433,7 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 
 	t.Run("ExplicitEmptyAcceptList_OverridesDefaults_BothUpstreamsTried", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		var rpc1Calls, rpc2Calls atomic.Int32
@@ -498,7 +498,7 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 
 func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	fillFetches := func() float64 {
 		return metricSum(telemetry.MetricChainTrackerFetchTotal, map[string]string{"project": "test", "class": "fill"})
 	}

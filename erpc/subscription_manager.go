@@ -114,7 +114,7 @@ func (sm *SubscriptionManager) Subscribe(
 		opts, err = parseStreamOptions(subType, own, wsc.streamDefaults)
 	}
 	if err == nil {
-		err = nw.admitStream(opts, "finality")
+		err = nw.admitStream(opts, "finality", laneSelector(nq))
 	}
 	if err != nil {
 		code := common.JsonRpcErrorInvalidArgument
@@ -178,16 +178,18 @@ func (sm *SubscriptionManager) Subscribe(
 		if sub, opened, addErr = conn.AddSubscription(clientSubID, key, kind, maxSubs, stop); addErr == nil {
 			lane := laneSelector(nq)
 			// An extended tap's end at shutdown is written before the
-			// connection closes (WsConnection.teardown).
-			goTap := func(run func()) {
+			// connection closes (WsConnection.teardown). goTap reports
+			// whether run will run: once the network ended, bg refuses it.
+			goTap := func(run func()) bool {
 				if !opts.Extended {
-					nw.bg.Go(run)
-					return
+					return nw.bg.Go(run)
 				}
 				wsc.ends.Add(1)
 				if !nw.bg.Go(func() { defer wsc.ends.Done(); run() }) {
 					wsc.ends.Done()
+					return false
 				}
+				return true
 			}
 			// A safe tap waits here, at most W, for its first Safe, so its
 			// start is fixed before the client has the id.
@@ -195,27 +197,37 @@ func (sm *SubscriptionManager) Subscribe(
 			if kind != wsclient.KindPendingTx && opts.Finality.Kind == finalitySafe {
 				closeSafe = nw.openSafe(ctx)
 			}
+			var hold *indexer.FinalHold
+			if opts.Finality.final() {
+				hold = new(indexer.FinalHold)
+			}
 			switch kind {
 			case wsclient.KindLog:
-				head := nw.tapStart(opts.Finality, lane)
-				goTap(func() {
+				head := nw.tapStart(opts.Finality, lane, hold)
+				if !goTap(func() {
 					defer closeSafe()
-					sm.runWsTap(tapCtx, wsc, sub, opened, nw, lane, indexer.SubTypeLogs, head, logsFilter, opts)
-				})
+					sm.runWsTap(tapCtx, wsc, sub, opened, nw, lane, indexer.SubTypeLogs, head, hold, logsFilter, opts)
+				}) {
+					closeSafe()
+				}
 			case wsclient.KindPendingTx:
 				release := releaseVariant
 				releaseVariant = func() {}
 				from := nw.mempool.Tail(variant)
-				goTap(func() {
+				if !goTap(func() {
 					defer release()
 					sm.runPendingTxs(tapCtx, wsc, sub, opened, nw, variant, from, opts)
-				})
+				}) {
+					release()
+				}
 			default:
-				head := nw.tapStart(opts.Finality, lane)
-				goTap(func() {
+				head := nw.tapStart(opts.Finality, lane, hold)
+				if !goTap(func() {
 					defer closeSafe()
-					sm.runWsTap(tapCtx, wsc, sub, opened, nw, lane, indexer.SubTypeNewHeads, head, nil, opts)
-				})
+					sm.runWsTap(tapCtx, wsc, sub, opened, nw, lane, indexer.SubTypeNewHeads, head, hold, nil, opts)
+				}) {
+					closeSafe()
+				}
 			}
 		} else {
 			stop()

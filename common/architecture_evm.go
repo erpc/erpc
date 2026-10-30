@@ -68,9 +68,10 @@ type HeadAnswer struct {
 	// Header is the fetched latest header, parsed once at its fetch; nil
 	// with no fetch answer.
 	Header EvmHeader `tstype:"-"`
-	// Sent is when the fetch that answered was sent: the header's
-	// evidence time; zero with no fetch answer.
-	Sent time.Time
+	// At is when the evidence that met the Ask was taken: the meeting
+	// fetch's send, or the shared counter's report; zero with no evidence
+	// (backoff, a fork fetch queued and not yet sent).
+	At time.Time
 	// Next is when an Ask at the same pace may fetch again: the meeting
 	// fetch's send plus the pace or its backed-off cadence, the longer;
 	// zero when it may now.
@@ -269,15 +270,17 @@ type EvmStatePoller interface {
 	// outcome to every waiter; it waits for the answer or ctx's end. pace
 	// is the oldest evidence the caller accepts, never below the cadence
 	// (0 is the cadence; a fork need's pace is as given): callers keep no
-	// fetch pacer of their own.
-	Ask(ctx context.Context, need HeadNeed, pace time.Duration, reason AskReason) HeadAnswer
+	// fetch pacer of their own. A caller that Asks again passes as after
+	// the At of the answer it last took from this upstream: evidence taken
+	// at or before it never meets the Ask; zero for any.
+	Ask(ctx context.Context, need HeadNeed, pace time.Duration, after time.Time, reason AskReason) HeadAnswer
 	// AskReaching is a number-need Ask at pace for a caller that needs
 	// block: a joined fetch that answers below it is followed by one fork
 	// Ask; at most W in all.
 	AskReaching(ctx context.Context, block int64, pace time.Duration, reason AskReason) HeadAnswer
-	// AskBackground is Ask without waiting for the answer; next is the
-	// answer's Next.
-	AskBackground(need HeadNeed, pace time.Duration, reason AskReason) (next time.Time)
+	// AskBackground is Ask without waiting for the answer: the answer's
+	// Outcome, Block, Next and At, no header.
+	AskBackground(need HeadNeed, pace time.Duration, after time.Time, reason AskReason) HeadAnswer
 	// RefreshFinalized polls the finalized block when the stored one is
 	// older than the finalized poll's debounce, or joins the poll in
 	// flight, and waits for it until ctx ends. polls is false when the
@@ -294,6 +297,9 @@ type EvmStatePoller interface {
 	IsObjectNull() bool
 	EarliestBlock(probe EvmAvailabilityProbeType) int64
 	GetDiagnostics() *EvmStatePollerDiagnostics
+	// Wait waits, once the app ctx ended, until no goroutine of the poller
+	// runs; none starts after.
+	Wait()
 }
 
 // EvmStatePollerDiagnostics contains diagnostic information about the state poller

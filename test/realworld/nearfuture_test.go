@@ -13,7 +13,7 @@ import (
 
 const (
 	// p12BlockTime: a 0.3s chain, so W is its 2s floor and the near future
-	// W / bt = 6 blocks (§6.4).
+	// W / bt + 1 = 7 blocks (§6.4).
 	p12BlockTime = 300 * time.Millisecond
 	// p12Ahead: clients ask 1 to p12Ahead blocks above every vendor's
 	// head; p12Far is more than W of chain above it (§19 P12).

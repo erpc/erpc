@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -286,6 +288,7 @@ func startTestERPCServer(t *testing.T, cfg *common.Config) (*HttpServer, string,
 	}
 
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, evmCache, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 
 	erpcInstance.Bootstrap(ctx)
@@ -384,7 +387,7 @@ func TestWebSocket_BasicRPC(t *testing.T) {
 	// Verifies a single JSON-RPC request/response over a WebSocket connection
 	t.Run("SingleRequestOverWebSocket", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -401,7 +404,7 @@ func TestWebSocket_BasicRPC(t *testing.T) {
 	// Verifies sequential requests on the same connection work correctly
 	t.Run("MultipleRequestsOnSameConnection", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -433,7 +436,7 @@ func TestWebSocket_BasicRPC(t *testing.T) {
 	// Verifies many concurrent writes/reads on a single connection
 	t.Run("ConcurrentRequestsOnSameConnection", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -472,7 +475,7 @@ func TestWebSocket_BasicRPC(t *testing.T) {
 	// Verifies JSON array batch requests work over WebSocket
 	t.Run("BatchRequestOverWebSocket", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -511,7 +514,7 @@ func TestWebSocket_BasicRPC(t *testing.T) {
 	// Verifies the server handles client disconnect and allows reconnection
 	t.Run("WebSocketClientDisconnect", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -536,7 +539,7 @@ func TestWebSocket_BasicRPC(t *testing.T) {
 	// Verifies HTTP and WebSocket work simultaneously on the same server
 	t.Run("HTTPStillWorksAlongsideWebSocket", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -565,7 +568,7 @@ func TestWebSocket_ErrorHandling(t *testing.T) {
 	// Verifies invalid JSON returns a parse error response
 	t.Run("InvalidJSON", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -588,7 +591,7 @@ func TestWebSocket_ErrorHandling(t *testing.T) {
 	// Verifies an empty message body returns an error response
 	t.Run("EmptyBody", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -612,7 +615,7 @@ func TestWebSocket_ErrorHandling(t *testing.T) {
 	t.Run("UpstreamError", func(t *testing.T) {
 		util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -647,7 +650,7 @@ func TestWebSocket_ErrorHandling(t *testing.T) {
 	t.Run("UnknownMethodFailsFast", func(t *testing.T) {
 		util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		var calls [2]atomic.Int32
 		for i, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
@@ -733,7 +736,7 @@ func TestWebSocket_MultipleConnections(t *testing.T) {
 	// Verifies multiple simultaneous connections each get correct responses
 	t.Run("IndependentConnections", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -760,7 +763,7 @@ func TestWebSocket_MultipleConnections(t *testing.T) {
 	// Verifies closing one connection does not affect others
 	t.Run("OneDisconnectDoesNotAffectOthers", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -809,7 +812,7 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -923,7 +926,7 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		cfg := standardWsConfig("ws" + strings.TrimPrefix(mockUpstream.URL, "http"))
 		cfg.Server.CostHeaders = util.BoolPtr(true)
@@ -1038,7 +1041,7 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 	// nothing to feed newHeads.
 	t.Run("SubscribeWithoutSubscriptionSourceFails", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -1055,7 +1058,7 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 	// Verifies eth_unsubscribe with a nonexistent ID fails as geth's does
 	t.Run("UnsubscribeUnknownIDFails", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -1086,7 +1089,7 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -1134,7 +1137,7 @@ func TestWebSocket_UpstreamClient(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 
@@ -1224,7 +1227,7 @@ func TestWebSocket_UpstreamClient(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -1258,7 +1261,7 @@ func TestWebSocket_SubscriptionRecovery(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -1311,7 +1314,7 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -1362,7 +1365,7 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 	// each once, in order.
 	t.Run("TwoSourcesPushOnePendingTransactionOnce", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		chain := newMockChain(0x100, false)
 		a, urlA := newMockWsVendor(t, chain, nil)
 		b, urlB := newMockWsVendor(t, chain, nil)
@@ -1394,7 +1397,7 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 	// same variant while the first waits for the answers.
 	t.Run("EverySourceRefusesNewVariant", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		chain := newMockChain(0x100, false)
 		answer := make(chan struct{})
 		refuse := func(v *mockWsVendor) {
@@ -1439,7 +1442,7 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 	// subscribe is still in flight, as on a fresh or reconnected socket.
 	t.Run("CapacityAnswersOpenAndRetryDelivers", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		chain := newMockChain(0x100, false)
 		held := make(chan struct{})
 		busyOnce := func(v *mockWsVendor) {
@@ -1509,7 +1512,7 @@ func TestWebSocket_RateLimiting(t *testing.T) {
 	// Verifies project-level rate limits are enforced on WebSocket requests
 	t.Run("ProjectRateLimitAppliedOverWs", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1596,7 +1599,7 @@ func TestWebSocket_GracefulShutdown(t *testing.T) {
 	// Verifies clients receive a GoingAway close frame on server shutdown
 	t.Run("ServerShutdownClosesWsWithGoingAway", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 
@@ -1633,7 +1636,7 @@ func TestWebSocket_GracefulShutdown(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -1712,7 +1715,7 @@ func TestWebSocket_GracefulShutdown(t *testing.T) {
 	// Verifies all connections are closed when the server shuts down
 	t.Run("MultipleConnectionsClosedOnShutdown", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 
@@ -1750,7 +1753,7 @@ func TestWebSocket_MethodFiltering(t *testing.T) {
 	// Verifies ignored methods return an unsupported error over WebSocket
 	t.Run("IgnoredMethodReturnsError", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1795,7 +1798,7 @@ func TestWebSocket_MethodFiltering(t *testing.T) {
 // not close the connection and its other subscriptions.
 func TestWebSocket_FailedSubscribeKeepsConnectionOpen(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 	defer cleanup()
@@ -1857,7 +1860,7 @@ func TestWebSocket_EveryUpstreamHeadReachesItsPoller(t *testing.T) {
 	defer mock2.Close()
 
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	url1 := "ws" + strings.TrimPrefix(mock1.URL, "http")
 	url2 := "ws" + strings.TrimPrefix(mock2.URL, "http")
@@ -2034,6 +2037,89 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 			return true
 		}, 10*time.Second, 20*time.Millisecond, "both clients hold the canonical logs through the reorg")
 		requireInvariantsHeld(t, "test_ws", "evm:123")
+
+		// Receipts every vendor answers 4s late: later than one attempt's
+		// share of a sweep (10s over 4 upstreams, plus 1s), well within
+		// the fetch's 10s. A sweep cuts every attempt; the block's next
+		// attempt names one upstream with the whole 10s, so both clients
+		// get the logs of the blocks minted meanwhile, and no tap ends.
+		// The chain halts so no block leaves the window during the wait.
+		s.setAll(func(f *chainsim.Faults) { f.SlowReceipts = 4 * time.Second })
+		slowFrom := s.chain.Plan(chainsim.KindMatching, chainsim.KindMatching).Number + 1
+		s.blocks(3)
+		s.chain.Halt(true)
+		slowTo := s.chain.Tip().Number
+		require.GreaterOrEqual(t, slowTo, slowFrom+1, "both slow blocks minted before the halt")
+		require.Eventually(t, func() bool {
+			for _, cl := range s.openLogs() {
+				cl.mu.Lock()
+				d := cl.logsDiffLocked(s, from, slowTo)
+				cl.mu.Unlock()
+				if d != "" {
+					return false
+				}
+			}
+			return true
+		}, 30*time.Second, 50*time.Millisecond, "both clients hold the logs of blocks %d..%d, whose receipts every vendor answers 4s late", slowFrom, slowTo)
+		require.Len(t, s.openLogs(), len(chainsim.Filters), "no logs tap ended while receipts were slow")
+		s.setAll(func(f *chainsim.Faults) { f.SlowReceipts = 0 })
+		s.chain.Halt(false)
+	})
+
+	// N7 in-process: block a's receipts answer later than the window (16
+	// blocks of 200ms) while the chain moves. Block a+1's come at once, so
+	// it reaches the logs head as a leaves the window, and its receipts
+	// leave the feed a block later, before a's arrive. Each tap then
+	// refetches a+1's receipts, as late as a's (spec §9): that wait is a
+	// receipts wait, never lag, so no tap ends and both clients get the
+	// logs of a and a+1 (§10.2).
+	t.Run("receipts refetched after they left the window", func(t *testing.T) {
+		s := newChaosSeed(t, 11, true, chaosOpts{maxBackfill: 20 * time.Second})
+		start(s)
+		defer s.stopERPC()
+		s.blocks(3)
+		s.dialLogs("refetch")
+		s.blocks(4)
+		m := chainsim.KindMatching
+		a := s.chain.Plan(m, m).Number + 1
+		// Well past the lag bound (16 block times, with the block-time
+		// EMA above 200ms on a loaded host), well within the fetch's 10s.
+		late := 6 * time.Second
+		var nextCalls atomic.Int32
+		hook := func(method, params string) {
+			if method != "eth_getBlockReceipts" {
+				return
+			}
+			slow, next := s.chain.CanonAt(a), s.chain.CanonAt(a+1)
+			p := strings.ToLower(params)
+			switch {
+			case slow != nil && strings.Contains(p, strings.ToLower(slow.Hash.Hex())):
+				time.Sleep(late)
+			case next != nil && strings.Contains(p, strings.ToLower(next.Hash.Hex())):
+				if nextCalls.Add(1) > 1 {
+					time.Sleep(late)
+				}
+			}
+		}
+		evm.TrackerFetchHook.Store(&hook)
+		defer evm.TrackerFetchHook.Store(nil)
+		ends := tapEndsOf(indexer.SubTypeLogs)
+		s.blocks(2)
+		require.Eventually(t, func() bool {
+			for _, cl := range s.openLogs() {
+				cl.mu.Lock()
+				d := cl.logsDiffLocked(s, a, a+1)
+				cl.mu.Unlock()
+				if d != "" {
+					return false
+				}
+			}
+			return len(s.openLogs()) == len(chainsim.Filters)
+		}, 30*time.Second, 50*time.Millisecond, "both clients hold the logs of blocks %d and %d", a, a+1)
+		evm.TrackerFetchHook.Store(nil)
+		assert.GreaterOrEqual(t, nextCalls.Load(), int32(2), "block %d's receipts were fetched again after they left the feed", a+1)
+		assert.Equal(t, ends, tapEndsOf(indexer.SubTypeLogs), "no logs tap ended")
+		require.Len(t, s.openLogs(), len(chainsim.Filters))
 	})
 
 	// A cold instance pins ws-a's heads while the other sources, held,
@@ -2166,6 +2252,63 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		assert.Equal(t, headsEnds, tapEndsOf(indexer.SubTypeNewHeads), "no newHeads tap ended")
 	})
 
+	// A newHeads or logs subscribe on a topic the last source pass found
+	// fed answers while a pass is running: it waits for a pass only to find
+	// a source it lacks. Under load one pass took up to 645ms, and every
+	// subscribe of the network queued behind it.
+	t.Run("subscribe on a fed topic waits for no source pass", func(t *testing.T) {
+		s := newChaosSeed(t, 11, true, chaosOpts{})
+		start(s)
+		defer s.stopERPC()
+		s.blocks(3)
+		s.dialClient("fed", nil)
+		s.dialLogs("fed")
+
+		entered := make(chan struct{}, 1)
+		hold := make(chan struct{})
+		held := func() {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			<-hold
+		}
+		sourcePassStart.Store(&held)
+		released := false
+		defer func() {
+			sourcePassStart.Store(nil)
+			if !released {
+				close(hold)
+			}
+		}()
+		select {
+		case <-entered:
+		case <-time.After(15 * time.Second):
+			t.Fatal("no source pass started")
+		}
+
+		const answerWithin = 2 * time.Second
+		logsParams, _ := json.Marshal([]interface{}{"logs", chainsim.Filters[0].Params()})
+		for _, params := range []string{`["newHeads"]`, string(logsParams)} {
+			conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", s.addr), nil)
+			require.NoError(t, err)
+			begin := time.Now()
+			require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":`+params+`}`)))
+			require.NoError(t, conn.SetReadDeadline(begin.Add(answerWithin)))
+			_, msg, err := conn.ReadMessage()
+			require.NoError(t, err, "subscribe %s answered within %s while a source pass is held", params, answerWithin)
+			var resp struct {
+				Result string          `json:"result"`
+				Error  json.RawMessage `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(msg, &resp))
+			assert.NotEmpty(t, resp.Result, "subscribe %s: %s", params, msg)
+			_ = conn.Close()
+		}
+		close(hold)
+		released = true
+	})
+
 	t.Run("no upstream serves receipts or eth_getLogs", func(t *testing.T) {
 		s := newChaosSeed(t, 6, true, chaosOpts{})
 		s.ignore = []string{"eth_getBlockReceipts", "eth_getLogs"}
@@ -2236,6 +2379,206 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 	})
 }
 
+// TestWebSocket_WriterOrderAndBackpressure: a connection's one writer keeps
+// the ws guarantees (spec §10.2). On a connection that churns newHeads and
+// logs subscriptions while blocks flow, each id answer comes before any
+// notification of its subscription, a subscription's blocks rise, and none
+// comes after its unsubscribe answer. A client that stops reading holds up
+// only its own connection, which closes after the send wait, as after a
+// write that failed its deadline: no tap stops silently and no answer is
+// dropped on a connection that stays open.
+func TestWebSocket_WriterOrderAndBackpressure(t *testing.T) {
+	t.Run("order on one connection", func(t *testing.T) {
+		s := newChaosSeed(t, 12, true, chaosOpts{})
+		s.startERPC()
+		s.chain.Start()
+		defer s.stopERPC()
+		s.blocks(3)
+		_, taps0, _ := wsGauges("newHeads")
+
+		conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", s.addr), nil)
+		require.NoError(t, err)
+		defer conn.Close()
+		var wmu sync.Mutex
+		write := func(v interface{}) {
+			wmu.Lock()
+			defer wmu.Unlock()
+			_ = conn.WriteJSON(v)
+		}
+		var (
+			mu                       sync.Mutex
+			subOf                    = map[int]string{} // unsubscribe id -> subscription
+			answered, gone           = map[string]bool{}, map[string]bool{}
+			last                     = map[string]uint64{}
+			subscribed, unsubscribed int
+			problems                 []string
+		)
+		readDone := make(chan struct{})
+		go func() {
+			defer close(readDone)
+			for {
+				_, raw, err := conn.ReadMessage()
+				if err != nil {
+					return
+				}
+				var m struct {
+					ID     *int            `json:"id"`
+					Result json.RawMessage `json:"result"`
+					Error  json.RawMessage `json:"error"`
+					Params struct {
+						Subscription string `json:"subscription"`
+						Result       struct {
+							Number      string `json:"number"`
+							BlockNumber string `json:"blockNumber"`
+						} `json:"result"`
+					} `json:"params"`
+				}
+				if err := json.Unmarshal(raw, &m); err != nil {
+					mu.Lock()
+					problems = append(problems, fmt.Sprintf("unparsable message %s", raw))
+					mu.Unlock()
+					continue
+				}
+				mu.Lock()
+				switch {
+				case m.ID == nil:
+					sub := m.Params.Subscription
+					num := m.Params.Result.Number
+					if num == "" {
+						num = m.Params.Result.BlockNumber
+					}
+					n, _ := common.HexToInt64(num)
+					switch {
+					case !answered[sub]:
+						problems = append(problems, fmt.Sprintf("notification of %s before its id answer", sub))
+					case gone[sub]:
+						problems = append(problems, fmt.Sprintf("notification of %s after its unsubscribe answer", sub))
+					case uint64(n) < last[sub]:
+						problems = append(problems, fmt.Sprintf("%s: block %d after %d", sub, n, last[sub]))
+					}
+					last[sub] = uint64(n)
+				case *m.ID%2 == 1:
+					var sub string
+					if json.Unmarshal(m.Result, &sub) != nil {
+						problems = append(problems, fmt.Sprintf("subscribe %d refused: %s", *m.ID, m.Error))
+						break
+					}
+					subscribed++
+					answered[sub] = true
+					subOf[*m.ID+1] = sub
+					uid := *m.ID + 1
+					time.AfterFunc(time.Duration(rand.IntN(3*int(chaosBlock))), func() {
+						write(map[string]interface{}{"jsonrpc": "2.0", "id": uid, "method": "eth_unsubscribe", "params": []string{sub}})
+					})
+				default:
+					unsubscribed++
+					gone[subOf[*m.ID]] = true
+				}
+				mu.Unlock()
+			}
+		}()
+
+		sent := 0
+		for end := time.Now().Add(30 * chaosBlock); time.Now().Before(end); sent++ {
+			params := []interface{}{"newHeads"}
+			if k := sent % 3; k > 0 {
+				params = []interface{}{"logs", chainsim.Filters[k-1].Params()}
+			}
+			write(map[string]interface{}{"jsonrpc": "2.0", "id": 2*sent + 1, "method": "eth_subscribe", "params": params})
+			time.Sleep(10 * time.Millisecond)
+		}
+		require.Eventually(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return unsubscribed == sent || len(problems) > 0
+		}, 10*time.Second, 10*time.Millisecond, "every subscribe and unsubscribe is answered")
+		mu.Lock()
+		assert.Equal(t, sent, subscribed, "subscribes answered")
+		assert.Empty(t, problems)
+		notified := 0
+		for _, n := range last {
+			if n > 0 {
+				notified++
+			}
+		}
+		assert.Positive(t, notified, "subscriptions got notifications")
+		mu.Unlock()
+		require.Eventually(t, func() bool {
+			_, taps, _ := wsGauges("newHeads")
+			return taps == taps0
+		}, 5*time.Second, 10*time.Millisecond, "every newHeads tap ended")
+		_ = conn.Close()
+		<-readDone
+	})
+
+	t.Run("a client that stops reading sees its connection close", func(t *testing.T) {
+		prev := wsWriteDeadline
+		wsWriteDeadline = time.Second
+		defer func() { wsWriteDeadline = prev }()
+		// 16 KiB headers fill the kernel's socket buffers in about 32 blocks.
+		s := newChaosSeed(t, 13, true, chaosOpts{grpc: true})
+		s.startERPC()
+		s.chain.Start()
+		defer s.stopERPC()
+		s.blocks(3)
+		_, taps0, _ := wsGauges("newHeads")
+		fast := s.dialClient("fast", nil)
+
+		// quiet reads nothing more after its subscribe; asking also sends
+		// a request once its tap ended, whose answer cannot queue.
+		stall := func() *websocket.Conn {
+			c, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", s.addr), nil)
+			require.NoError(t, err)
+			require.NoError(t, c.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)))
+			require.NoError(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
+			_, msg, err := c.ReadMessage()
+			require.NoError(t, err)
+			require.Contains(t, string(msg), `"result"`, "subscribe answered: %s", msg)
+			return c
+		}
+		quiet, asking := stall(), stall()
+		defer quiet.Close()
+		defer asking.Close()
+		require.Eventually(t, func() bool {
+			_, taps, _ := wsGauges("newHeads")
+			return taps == taps0+3
+		}, 5*time.Second, 10*time.Millisecond, "all 3 taps run")
+
+		require.Eventually(t, func() bool {
+			_, taps, _ := wsGauges("newHeads")
+			return taps == taps0+1
+		}, 30*time.Second, 50*time.Millisecond, "the stalled clients' taps end")
+		_ = asking.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":99,"method":"eth_unsubscribe","params":["0xdead"]}`))
+
+		// readToEnd reads until the connection ends or an answer to id 99
+		// comes; a read that times out is a connection left open and silent.
+		readToEnd := func(c *websocket.Conn) (answered bool, err error) {
+			for {
+				_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+				_, msg, err := c.ReadMessage()
+				if err != nil {
+					return false, err
+				}
+				if strings.Contains(string(msg), `"id":99`) {
+					return true, nil
+				}
+			}
+		}
+		_, err := readToEnd(quiet)
+		var ne net.Error
+		assert.False(t, errors.As(err, &ne) && ne.Timeout(), "the stalled connection closes, not stays open and silent: %v", err)
+		answered, err := readToEnd(asking)
+		assert.True(t, answered || !(errors.As(err, &ne) && ne.Timeout()), "the request is answered or its connection closes: %v", err)
+
+		tip := s.chain.Tip().Number
+		s.blocks(5)
+		fast.mu.Lock()
+		defer fast.mu.Unlock()
+		assert.Empty(t, fast.problems, "the reading client")
+		assert.Greater(t, fast.last, tip, "the reading client gets heads after the stalled connections ended")
+	})
+}
+
 // TestWebSocket_ReconnectAfterUnsubscribe: an upstream reconnect after the
 // last newPendingTransactions subscriber left must not touch the released
 // filter.
@@ -2256,7 +2599,7 @@ func TestWebSocket_ReconnectAfterUnsubscribe(t *testing.T) {
 	defer mockUpstream.Close()
 
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 	addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -2309,7 +2652,7 @@ func TestWebSocket_InternalRequestIdsAreUnique(t *testing.T) {
 	defer mockUpstream.Close()
 
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 	addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -2923,7 +3266,7 @@ func pollsSettle(t *testing.T, polls *atomic.Int64, window time.Duration, msg st
 // (#240). The client's heads stay contiguous throughout.
 func TestWebSocket_HttpSourcePolledHeads(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	prevBackoff, prevExpiry := evm.AskMaxBackoff.Load(), evm.PollerGiveUpExpiry.Load()
 	evm.AskMaxBackoff.Store(200 * time.Millisecond)
 	evm.PollerGiveUpExpiry.Store(3 * time.Second)
@@ -3006,7 +3349,7 @@ func TestWebSocket_HttpSourcePolledHeads(t *testing.T) {
 // head never reaches it.
 func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	prevRecheck := evm.ChainIdCordonRecheck.Load()
 	evm.ChainIdCordonRecheck.Store(500 * time.Millisecond)
 	defer evm.ChainIdCordonRecheck.Store(prevRecheck)
@@ -3073,7 +3416,7 @@ func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
 // client is subscribed, none after it leaves.
 func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	chain := newMockChain(0x100, false)
 	httpVendor, srv := newMockHttpVendor(t, chain)
@@ -3181,7 +3524,7 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 // newPendingTransactions only while topic admission admits it too.
 func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	prevLead := primaryLeadAfter.Load()
 	primaryLeadAfter.Store(1500 * time.Millisecond)
 	defer primaryLeadAfter.Store(prevLead)
@@ -3269,7 +3612,7 @@ func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 // made while nobody polled.
 func TestWebSocket_PollsStopWhenIdle(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	prevIdle := sourceIdleStop.Load()
 	sourceIdleStop.Store(500 * time.Millisecond)
 	defer sourceIdleStop.Store(prevIdle)
@@ -3322,7 +3665,7 @@ func TestWebSocket_PollsStopWhenIdle(t *testing.T) {
 // evalInterval.
 func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	chain := newMockChain(0x100, false)
 	stale := func(v *mockWsVendor) { v.staleRPC = true }
@@ -3381,7 +3724,7 @@ func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
 // and is asked again once per re-ask interval.
 func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	prevReask := wsupstream.HeadsReaskInterval.Load()
 	wsupstream.HeadsReaskInterval.Store(time.Second)
 	defer wsupstream.HeadsReaskInterval.Store(prevReask)
@@ -3432,7 +3775,7 @@ func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
 // twice in a row while the voters that could move Latest wait.
 func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	chain := newMockChain(0x100, false)
 	var vendors []*mockHttpVendor

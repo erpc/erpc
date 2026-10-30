@@ -44,11 +44,17 @@ var mailboxHeaderCap = 1024
 const trackerPanicsToReset = 3
 
 // FinalHoldMax is the most headers the final hold keeps below the window
-// it holds without (streams spec §4, §10); past it final taps are refused
-// and end finality_span. A var so tests run fast.
+// it holds without (streams spec §4, §10): an open final tap whose place
+// lies further below ends finality_span, and a final subscribe whose start
+// lies more than FinalHoldAdmit below is refused, so a tap just
+// admitted never ends at once. A var so tests run fast.
 var FinalHoldMax atomic.Uint64
 
 func init() { FinalHoldMax.Store(20_000) }
+
+// FinalHoldAdmit is how far below the window a final subscribe's start
+// may lie: 9/10 of FinalHoldMax.
+func FinalHoldAdmit() uint64 { return FinalHoldMax.Load() / 10 * 9 }
 
 // TrackerMessageHook, when set, runs on a tracker's goroutine before each
 // message is applied, with the message's header when it carries one and
@@ -112,14 +118,14 @@ type ChainTracker struct {
 	// while any is, fill runs down to the window base, else it stops
 	// reorgWindow blocks below the head.
 	deepFill atomic.Int32
-	// finalWants counts the open HoldFinalized taps. While any is, the
-	// network-wide tracker's window also keeps every header from holdFrom
-	// up (holdFinal; streams spec §4); holdFrom is 0 while it keeps none.
-	// finalSpan: such a hold would keep more than FinalHoldMax headers
-	// below the window. Any goroutine reads them; holdFinal writes them.
-	finalWants atomic.Int32
-	holdFrom   atomic.Uint64
-	finalSpan  atomic.Bool
+	// finalTaps are the open final taps' places (Want with a Hold), each
+	// with its registrations. While any is, the network-wide tracker's
+	// window also keeps every header from holdFrom up (holdFinal; streams
+	// spec §4); holdFrom is 0 while it keeps none. Want and release write
+	// finalTaps; holdFinal writes holdFrom; any goroutine reads it.
+	finalMu   sync.Mutex
+	finalTaps map[*indexer.FinalHold]int
+	holdFrom  atomic.Uint64
 	// fillReads counts, by cursor hash, the Reads that wait on fill: fill
 	// of a tree holding one runs past its reorgWindow cap (fillRoots).
 	fillMu    sync.Mutex
@@ -156,6 +162,13 @@ type ChainTracker struct {
 	votes        map[string]*node     // source upstream id -> its vote
 	// finals is each upstream's newest finalized evidence (finalThrough).
 	finals map[string]finalEvidence
+	// ahead holds fill's by-number answers fetched ahead of the root they
+	// extend, by height, until fill reaches them (fetchAhead); aheadBusy
+	// the heights in flight; aheadGen moves on clear, so an answer of an
+	// older generation is dropped.
+	ahead     map[uint64]aheadAnswer
+	aheadBusy map[uint64]bool
+	aheadGen  uint64
 	// rewindDue holds the voters without a fresh hash vote on the new pins
 	// at the last move to a lower head: each is owed one rewind once a
 	// fresh vote of its reaches the pins (spec §14).
@@ -203,8 +216,12 @@ type ChainTracker struct {
 	// retryAt is, per settle round key, when a round over it may run again
 	// after one that did not decide.
 	retryAt map[string]time.Time
-	demoted []string
-	forkAt  time.Time
+	// settleTaken is, per upstream, the At of the last settle answer taken
+	// from it: its next settle Ask passes it as after (spec §6.8), so a
+	// retry never takes the round before's answer.
+	settleTaken map[string]time.Time
+	demoted     []string
+	forkAt      time.Time
 	// sampled is the confirmed head last fed to the block time.
 	sampled *chainHeader
 
@@ -228,9 +245,22 @@ type ChainTracker struct {
 	// was last handled cleanly (handleBatch).
 	panics [panicSlots]int
 	stack  []*node // walkTree's scratch
-	// pick's scratch (countVotes)
-	spine      []*node
-	spineVotes []int
+	// spine is the head pin's ancestors, followed from update to update
+	// (countVotes); spineTop and forkScratch are pick's scratch.
+	spine       spine
+	spineTop    []*node
+	forkScratch []uint64
+	// forks are the heights holding two headers or more: only below one
+	// may a header hold two children.
+	forks map[uint64]struct{}
+	// odd are the held headers whose timestamp is 0 or older than their
+	// parent's (markOdd).
+	odd map[*node]struct{}
+	// pinRun is the array published pins share (pinHeaders).
+	pinRun pinRun
+	// badLink is the pin of the bad parentHash link published last
+	// (published); nil while the pins are linked.
+	badLink *chainHeader
 	// treesDirty: a header was held or dropped, or a walk or fill ended,
 	// since trees was last published.
 	treesDirty bool
@@ -499,8 +529,13 @@ func (t *ChainTracker) Wait() {
 func (t *ChainTracker) clear() {
 	t.nodes = make(map[[32]byte]*node)
 	t.waiting = make(map[[32]byte][]*node)
-	t.heights = make(map[uint64][]*node)
+	t.heights, t.forks = make(map[uint64][]*node), make(map[uint64]struct{})
+	t.odd = make(map[*node]struct{})
+	t.spine.cut(t.spine.len() - 1)
+	t.pinRun, t.badLink = pinRun{}, nil
 	t.exts = make(map[*node]*extension)
+	t.ahead, t.aheadBusy = make(map[uint64]aheadAnswer), make(map[uint64]bool)
+	t.aheadGen++
 	t.votes = make(map[string]*node)
 	t.finals = make(map[string]finalEvidence)
 	t.rewindDue = nil
@@ -515,6 +550,7 @@ func (t *ChainTracker) clear() {
 	t.offPins = make(map[string]time.Time)
 	t.refreshedAt = make(map[string]string)
 	t.retryAt = make(map[string]time.Time)
+	t.settleTaken = make(map[string]time.Time)
 	t.treesDirty = true
 	for _, j := range t.jobs {
 		t.endJob(j, nil)
@@ -764,7 +800,7 @@ func (t *ChainTracker) update() bool {
 			t.choose()
 		}
 		t.rewindLate()
-	}, nil)
+	}, nil) && ok
 	ok = t.guard("forks", t.trackForks, nil) && ok
 	ok = t.guard("fill", t.extendRoots, nil) && ok
 	ok = t.guard("ask", t.askNoSource, nil) && ok
@@ -832,7 +868,7 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 	// and it replaces the older trees. Votes earlier in the batch move
 	// first, as an update after each message would move them, so another
 	// voter's vote that left an old tree no longer keeps it.
-	if !t.served && t.counts(msg.upstream) && rootOf(nd) != t.pinRoot() {
+	if !t.served && t.counts(msg.upstream) && t.rootOf(nd) != t.pinRoot() {
 		t.moveVotes()
 		t.replaceOlder(nd, msg.upstream)
 	}
@@ -895,7 +931,7 @@ func (t *ChainTracker) head() *chainHeader {
 // holds is the window (spec §8) below ref: at least reorgWindow blocks,
 // and for the network-wide tracker every header whose timestamp is within
 // maxBackfill of ref's, and while a final tap is open every header from
-// the final hold's base up (holdFinal). A header without a timestamp gets
+// the final hold's from up (holdFinal). A header without a timestamp gets
 // the floor and the hold only.
 func (t *ChainTracker) holds(ref, h *chainHeader) bool {
 	return h.number+uint64(t.window) >= ref.number || t.backfills(ref, h) || t.finalHolds(h.number)
@@ -907,52 +943,81 @@ func (t *ChainTracker) finalHolds(n uint64) bool {
 	return from > 0 && n >= from
 }
 
-// windowBase is the lowest height the window below ref keeps without the
-// final hold. Below the lowest pin the time window's base is estimated
-// from the block time.
-func (t *ChainTracker) windowBase(ref *chainHeader) uint64 {
-	base := ref.number - min(ref.number, uint64(t.window))
-	i := sort.Search(len(t.pins), func(i int) bool { return t.backfills(ref, t.pins[i].h) })
-	if i == len(t.pins) {
-		return base
+// windowBase is the lowest height the window below the head of pins keeps
+// without the final hold. ok is false while it is unknown: no pins, or
+// every pin inside the time window and the pins spanning no time to tell
+// their block time from. A cold network's block time is a guess, often
+// far slower than the chain, which would put the base too high.
+func (t *ChainTracker) windowBase(pins []*chainHeader) (base uint64, ok bool) {
+	if len(pins) == 0 {
+		return 0, false
 	}
-	n := t.pins[i].h.number
-	if bt := t.BlockTime(); i == 0 && bt > 0 {
-		n = min(n, ref.number-min(ref.number, uint64(t.backfill/bt)))
+	ref := pins[len(pins)-1]
+	base = ref.number - min(ref.number, uint64(t.window))
+	i := sort.Search(len(pins), func(i int) bool { return t.backfills(ref, pins[i]) })
+	switch {
+	case i == len(pins):
+		return base, true
+	case i > 0:
+		return min(base, pins[i].number), true
 	}
-	return min(base, n)
+	// The time window's base lies below the lowest pin, as many blocks
+	// further down as the pins' own block time puts in the time left.
+	lo := pins[0]
+	if lo.number >= ref.number || lo.timestamp >= ref.timestamp {
+		return 0, false
+	}
+	spanned := time.Duration(ref.timestamp-lo.timestamp) * time.Second
+	blocks := uint64(float64(t.backfill-spanned) / float64(spanned) * float64(ref.number-lo.number))
+	return min(base, lo.number-min(lo.number, blocks)), true
 }
 
 // holdFinal is the final hold (streams spec §4) of the network-wide
-// tracker: while a HoldFinalized tap is open the window also keeps every
-// header from the lane's Finalized up, unless that is more than
-// FinalHoldMax headers below the window it keeps without; then the hold
-// keeps none, and finalSpan refuses final taps and ends the open ones. A
+// tracker: while final taps are open the window also keeps every header
+// from reorgWindow below the lowest of their places up, so a reorg under
+// a final cursor reaches it as Reverted, as it reaches a latest tap. A
+// place is the tap's cursor, or its start before the first Read: a lane
+// tap's start is its lane's Finalized, which may lie below the network's.
+// A tap whose place lies more than FinalHoldMax below the window it
+// keeps without is spanned: it ends finality_span, and holds nothing. A
 // hold that grows down reopens the fill the window's base ended.
 func (t *ChainTracker) holdFinal() {
 	if t.selector != "" {
 		return
 	}
 	var from, below uint64
-	span := false
-	if ref, fin := t.windowRef(), t.finalizedHead(); ref != nil && fin > 0 {
-		// A final tap's cursor trails Finalized by its delivery: the hold
-		// keeps reorgWindow blocks below it too, so a moving Finalized
-		// never evicts the block a tap reads next.
-		f := uint64(fin) - min(uint64(fin), uint64(t.window))
-		base := t.windowBase(ref)
-		switch {
-		case f < base && base-f > FinalHoldMax.Load():
-			span = true
-		case t.finalWants.Load() > 0:
-			from = max(f, 1)
-			if len(t.pins) > 0 {
-				if lo := max(f, t.pins[0].h.number); lo < base {
+	spanned := false
+	t.finalMu.Lock()
+	if len(t.finalTaps) > 0 {
+		pins := t.state.Load().pins
+		base, known := t.windowBase(pins)
+		for h := range t.finalTaps {
+			at := h.At()
+			switch {
+			case at == 0 || h.Spanned():
+			case known && at < base && base-at > FinalHoldMax.Load():
+				h.Span()
+				spanned = true
+			case from == 0 || at < from:
+				from = at
+			}
+		}
+		if from > 0 {
+			from = max(from-min(from, uint64(t.window)), 1)
+			if known {
+				if lo := max(from, pins[0].number); lo < base {
 					below = base - lo
 				}
+			} else if ref := t.windowRef(); ref != nil {
+				// The base is unknown, so no tap is spanned yet; the hold
+				// still keeps at most FinalHoldMax headers below the
+				// reorgWindow floor, which lies at or above the base.
+				floor := ref.number - min(ref.number, uint64(t.window))
+				from = max(from, floor-min(floor, FinalHoldMax.Load()))
 			}
 		}
 	}
+	t.finalMu.Unlock()
 	if prev := t.holdFrom.Swap(from); from > 0 && (prev == 0 || from < prev) {
 		for _, e := range t.exts {
 			if e.atBase && e.windowEnd {
@@ -961,7 +1026,7 @@ func (t *ChainTracker) holdFinal() {
 		}
 	}
 	telemetry.GaugeHandle(telemetry.MetricChainTrackerFinalHoldHeaders, t.projectId(), t.networkLabel()).Set(float64(below))
-	if t.finalSpan.Swap(span) != span {
+	if spanned {
 		// Final taps waiting on a Read or on the bound read it at once.
 		pub := t.state.Load()
 		s := *pub
@@ -971,10 +1036,13 @@ func (t *ChainTracker) holdFinal() {
 	}
 }
 
-// FinalitySpan reports whether a final tap's hold would keep more than
-// FinalHoldMax headers below the window: final subscribes are refused and
-// open final taps end (streams spec §4).
-func (t *ChainTracker) FinalitySpan() bool { return t.finalSpan.Load() }
+// FinalitySpan reports whether a final tap starting at block n would
+// hold more than FinalHoldAdmit headers below the window: its subscribe is
+// refused (streams spec §4). False while n or the window is unknown.
+func (t *ChainTracker) FinalitySpan(n uint64) bool {
+	base, ok := t.windowBase(t.state.Load().pins)
+	return n > 0 && ok && n < base && base-n > FinalHoldAdmit()
+}
 
 // backfills reports whether h's timestamp lies within maxBackfill at or
 // below ref's, on the network-wide tracker.
@@ -1198,6 +1266,7 @@ func (t *ChainTracker) hold(h *chainHeader) *node {
 		}
 		c.parent = nd
 		nd.children = append(nd.children, c)
+		t.markOdd(c)
 		if e := t.exts[c]; e != nil && e.walk > 0 && !e.atBase && (walk == nil || e.walk > walk.walk) {
 			walk = e
 		}
@@ -1212,11 +1281,15 @@ func (t *ChainTracker) hold(h *chainHeader) *node {
 	t.held.Store(h.hashHex, h)
 	t.treesDirty = true
 	t.heights[h.number] = append(t.heights[h.number], nd)
+	if len(t.heights[h.number]) == 2 {
+		t.forks[h.number] = struct{}{}
+	}
+	t.markOdd(nd)
 	if t.maxHeld == nil || h.number > t.maxHeld.number {
 		t.maxHeld = h
 	}
 	if walk != nil {
-		r := rootOf(nd)
+		r := t.rootOf(nd)
 		if e := t.exts[r]; e != nil && !e.atBase && !e.capped && r != t.pinRoot() {
 			e.sender, e.walked = walk.sender, true
 			e.walk = max(e.walk, walk.walk-int(h.number+1-r.h.number))
@@ -1224,6 +1297,15 @@ func (t *ChainTracker) hold(h *chainHeader) *node {
 	}
 	t.capOrphans(h.number, nd)
 	return nd
+}
+
+// markOdd records n in odd when its timestamp is 0 or older than its
+// parent's: only such a header breaks a chain's time order, which
+// eviction's walk relies on (evict).
+func (t *ChainTracker) markOdd(n *node) {
+	if n.h.timestamp == 0 || n.parent != nil && n.h.timestamp < n.parent.h.timestamp {
+		t.odd[n] = struct{}{}
+	}
 }
 
 // capOrphans keeps at most maxOrphansPerHeight unpinned headers at a
@@ -1272,11 +1354,25 @@ func (t *ChainTracker) pendingVote(n *node) bool {
 // §10.1: a cursor held in the other tree waits while fill links it).
 func (t *ChainTracker) drop(n *node, base bool) {
 	delete(t.nodes, n.h.hash)
+	delete(t.needs, n.h.hash)
 	t.held.Delete(n.h.hashHex)
 	t.treesDirty = true
+	if i, ok := t.spine.at(n); ok {
+		// The pins may be a slice of the spine (pick): a pin dropped
+		// before the pins move keeps them, so they leave the spine first.
+		if t.pinned(n) && t.spine.holds(t.pins) {
+			t.pins = slices.Clone(t.pins)
+		}
+		t.spine.cut(i)
+	}
+	delete(t.odd, n)
 	t.heights[n.h.number] = slices.DeleteFunc(t.heights[n.h.number], func(o *node) bool { return o == n })
-	if len(t.heights[n.h.number]) == 0 {
+	switch len(t.heights[n.h.number]) {
+	case 0:
 		delete(t.heights, n.h.number)
+		fallthrough
+	case 1:
+		delete(t.forks, n.h.number)
 	}
 	if p := n.parent; p != nil {
 		p.children = slices.DeleteFunc(p.children, func(o *node) bool { return o == n })
@@ -1307,8 +1403,10 @@ func (t *ChainTracker) unwait(n *node) {
 	}
 }
 
+// isAncestor reports whether a is an ancestor of b: a parent is one block
+// lower, so the walk stops at a's height.
 func isAncestor(a, b *node) bool {
-	for n := b.parent; n != nil; n = n.parent {
+	for n := b.parent; n != nil && n.h.number >= a.h.number; n = n.parent {
 		if n == a {
 			return true
 		}
@@ -1316,8 +1414,16 @@ func isAncestor(a, b *node) bool {
 	return false
 }
 
-func rootOf(n *node) *node {
+// rootOf is the root of n's tree. A walk that meets the spine goes on from
+// the spine's root, so it costs n's distance to the spine and the parents
+// fill linked below the spine since it was followed.
+func (t *ChainTracker) rootOf(n *node) *node {
+	sp := t.spine.nodes()
 	for n.parent != nil {
+		if i, ok := spineIndex(sp, n); ok && i > 0 {
+			n = sp[0]
+			continue
+		}
 		n = n.parent
 	}
 	return n
@@ -1582,8 +1688,52 @@ func (t *ChainTracker) pick(counted []voter) (path []*node, tie []*node) {
 		tie = nil
 	}
 
-	path = []*node{root}
+	// Below the lowest fork above it, a spine header holds one child, the
+	// next spine header, which the descent follows while a vote reaches it
+	// or it is pinned: such a run is taken at once, so the descent costs
+	// the forks it meets, not the depth held.
+	spine := counts.spine
+	run := len(spine) - 1
+	forks := t.forkScratch[:0]
+	if len(spine) > 0 {
+		reached := -1
+		for _, i := range counts.reach {
+			reached = max(reached, i)
+		}
+		if pinned := int(t.pins[0].h.number) - int(spine[0].h.number); reached+1 < pinned {
+			run = reached
+		}
+		for n := range t.forks {
+			if n > spine[0].h.number && n <= spine[len(spine)-1].h.number {
+				forks = append(forks, n)
+			}
+		}
+		slices.Sort(forks)
+	}
+	t.forkScratch = forks
+	// A path from the spine's root that stays on it is its first n nodes, a
+	// slice of it: the descent copies the path only where it leaves the
+	// spine, on a new head or a reorg, never in fill.
+	n, onSpine := 1, len(spine) > 0 && root == spine[0]
+	if !onSpine {
+		path = []*node{root}
+	}
 	for cur := root; ; {
+		if i, ok := spineIndex(spine, cur); ok && i < run {
+			j := run
+			if k, _ := slices.BinarySearch(forks, cur.h.number+1); k < len(forks) {
+				j = min(j, int(forks[k]-1-spine[0].h.number))
+			}
+			if j > i {
+				if onSpine {
+					n += j - i
+				} else {
+					path = append(path, spine[i+1:j+1]...)
+				}
+				cur = spine[j]
+				continue
+			}
+		}
 		most := 0
 		for _, c := range cur.children {
 			most = max(most, counts.of(c))
@@ -1620,8 +1770,19 @@ func (t *ChainTracker) pick(counted []voter) (path []*node, tie []*node) {
 		if next == nil {
 			break
 		}
-		path = append(path, next)
+		switch {
+		case !onSpine:
+			path = append(path, next)
+		case n < len(spine) && spine[n] == next:
+			n++
+		default:
+			path = append(slices.Clip(spine[:n]), next)
+			onSpine = false
+		}
 		cur = next
+	}
+	if onSpine {
+		path = slices.Clip(spine[:n])
 	}
 	return path, tie
 }
@@ -1632,27 +1793,121 @@ func (t *ChainTracker) pick(counted []voter) (path []*node, tie []*node) {
 // count costs what the votes sit off the spine, not the window's depth.
 type voteCounts struct {
 	spine []*node // root first; consecutive numbers
-	above []int   // above[i]: votes reaching the spine at spine[i] or higher
+	reach []int   // per vote that reaches the spine, the index it reaches
 	off   map[*node]int
 	roots map[*node]struct{} // the roots of the trees holding a vote
 }
 
 func (c *voteCounts) of(n *node) int {
-	if i, ok := c.spineAt(n); ok {
-		return c.above[i]
+	i, ok := spineIndex(c.spine, n)
+	if !ok {
+		return c.off[n]
 	}
-	return c.off[n]
+	k := 0
+	for _, r := range c.reach {
+		if r >= i {
+			k++
+		}
+	}
+	return k
 }
 
-func (c *voteCounts) spineAt(n *node) (int, bool) {
-	if len(c.spine) == 0 || n.h.number < c.spine[0].h.number {
+// spineIndex is n's index in ns, consecutive headers root first.
+func spineIndex(ns []*node, n *node) (int, bool) {
+	if len(ns) == 0 || n.h.number < ns[0].h.number {
 		return 0, false
 	}
-	i := n.h.number - c.spine[0].h.number
-	if i >= uint64(len(c.spine)) || c.spine[i] != n {
+	i := n.h.number - ns[0].h.number
+	if i >= uint64(len(ns)) || ns[i] != n {
 		return 0, false
 	}
 	return int(i), true
+}
+
+// spine is the head pin's ancestors, root first, kept across updates in
+// buf[lo:hi]. It changes at its ends only: the head moves, fill links a
+// parent below its root, eviction drops its lowest headers (cut). So
+// following it costs what changed, not the depth held below the head.
+// The pins are a slice of buf while pick finds them on it: buf is written
+// only above the head pin and below lo, never under the pins.
+type spine struct {
+	buf    []*node
+	lo, hi int
+}
+
+func (s *spine) nodes() []*node { return s.buf[s.lo:s.hi] }
+
+func (s *spine) len() int { return s.hi - s.lo }
+
+func (s *spine) at(n *node) (int, bool) { return spineIndex(s.nodes(), n) }
+
+// cut drops the spine's nodes at index i and below: dropping one makes
+// the node above it a root. Their slots are cleared, so the spine keeps
+// no dropped header alive.
+func (s *spine) cut(i int) {
+	clear(s.buf[s.lo : s.lo+i+1])
+	s.lo += i + 1
+	if s.lo == s.hi {
+		s.lo, s.hi = 0, 0
+	}
+}
+
+// holds reports whether pins is a slice of the spine's array.
+func (s *spine) holds(pins []*node) bool {
+	i, ok := s.at(pins[0])
+	return ok && &s.buf[s.lo+i] == &pins[0]
+}
+
+// push adds n, a child of the spine's top, above it.
+func (s *spine) push(n *node) {
+	if s.hi == len(s.buf) {
+		s.grow()
+	}
+	s.buf[s.hi] = n
+	s.hi++
+}
+
+// follow makes the spine head's ancestors: head and its ancestors down to
+// the first one on the spine replace what lies above that one, and the
+// parents fill linked below the spine's root are added under it. top is
+// scratch, returned for reuse.
+func (s *spine) follow(head *node, top []*node) []*node {
+	top = top[:0]
+	i := -1
+	for a := head; a != nil; a = a.parent {
+		if j, ok := s.at(a); ok {
+			i = j
+			break
+		}
+		top = append(top, a)
+	}
+	if i < 0 {
+		s.cut(s.len() - 1)
+	} else {
+		clear(s.buf[s.lo+i+1 : s.hi])
+		s.hi = s.lo + i + 1
+	}
+	for k := len(top) - 1; k >= 0; k-- {
+		s.push(top[k])
+	}
+	clear(top)
+	for s.len() > 0 && s.buf[s.lo].parent != nil {
+		if s.lo == 0 {
+			s.grow()
+		}
+		s.lo--
+		s.buf[s.lo] = s.buf[s.lo+1].parent
+	}
+	return top
+}
+
+// grow doubles buf with the spine in its middle, room at both ends.
+func (s *spine) grow() {
+	n := s.len()
+	buf := make([]*node, 2*n+64)
+	lo := (len(buf) - n) / 2
+	copy(buf[lo:], s.nodes())
+	s.buf, s.lo, s.hi = buf, lo, lo+n
 }
 
 // countVotes counts counted for pick. Every ancestor of a spine node is on
@@ -1660,21 +1915,16 @@ func (c *voteCounts) spineAt(n *node) (int, bool) {
 // before it reaches the spine.
 func (t *ChainTracker) countVotes(counted []voter) *voteCounts {
 	c := &voteCounts{off: make(map[*node]int), roots: make(map[*node]struct{})}
+	var head *node
 	if len(t.pins) > 0 {
-		spine := t.spine[:0]
-		for a := t.pins[len(t.pins)-1]; a != nil; a = a.parent {
-			spine = append(spine, a)
-		}
-		slices.Reverse(spine)
-		above := slices.Grow(t.spineVotes[:0], len(spine))[:len(spine)]
-		clear(above)
-		t.spine, t.spineVotes = spine, above
-		c.spine, c.above = spine, above
+		head = t.pins[len(t.pins)-1]
 	}
+	t.spineTop = t.spine.follow(head, t.spineTop)
+	c.spine = t.spine.nodes()
 	for _, v := range counted {
 		for a := v.n; a != nil; a = a.parent {
-			if i, ok := c.spineAt(a); ok {
-				c.above[i]++
+			if i, ok := spineIndex(c.spine, a); ok {
+				c.reach = append(c.reach, i)
 				break
 			}
 			c.off[a]++
@@ -1683,10 +1933,7 @@ func (t *ChainTracker) countVotes(counted []voter) *voteCounts {
 			}
 		}
 	}
-	for i := len(c.above) - 2; i >= 0; i-- {
-		c.above[i] += c.above[i+1]
-	}
-	if len(c.above) > 0 && c.above[0] > 0 {
+	if len(c.reach) > 0 {
 		c.roots[c.spine[0]] = struct{}{}
 	}
 	return c
@@ -1708,7 +1955,7 @@ func (t *ChainTracker) apply(path []*node) {
 	if len(pub.pins) == len(path) && pub.pins[0] == path[0].h && pub.head() == head {
 		return
 	}
-	s := newFeedState(path)
+	s := t.newFeedState(path)
 	b := t.gate(path)
 	s.confirmed, s.backing = b.confirmed(), b
 	s.logs = t.logsHeadOf(s)
@@ -1818,7 +2065,8 @@ func (t *ChainTracker) moveOf(old []*chainHeader, path []*node) move {
 			mv.alarm = mv.alarm.with(int64(h.number))
 		}
 	}
-	for _, h := range old {
+	// At and below the fork point old and path are one parentHash chain.
+	for _, h := range old[fork+1:] {
 		replaced(h, h.number <= finalOld)
 	}
 	for _, u := range t.unlinkedPins {
@@ -1891,19 +2139,26 @@ type unlinkedPin struct {
 }
 
 // finalThrough is the number of the highest final pin of hs, pins oldest
-// first, 0 while none is (spec §6.5): at most fin, and covered by a voter's
-// finalized evidence on this instance. A header its finalized poll answered
-// covers the pins at and below it while hs holds that header; a derived
-// finalized number covers the pins at and below it.
+// first at consecutive numbers, 0 while none is (spec §6.5): at most fin,
+// and covered by a voter's finalized evidence on this instance. A header
+// its finalized poll answered covers the pins at and below it while hs
+// holds that header; a derived finalized number covers the pins at and
+// below it.
 func (t *ChainTracker) finalThrough(hs []*chainHeader, fin int64) (through uint64) {
 	if fin <= 0 {
 		return 0
+	}
+	holds := func(ev finalEvidence) bool {
+		if len(hs) == 0 || ev.number < hs[0].number || ev.number-hs[0].number >= uint64(len(hs)) {
+			return false
+		}
+		return hs[ev.number-hs[0].number].hash == ev.hash
 	}
 	for u, ev := range t.finals {
 		if !t.voters.all && !slices.Contains(t.voters.Voters, u) {
 			continue
 		}
-		if ev.derived || slices.ContainsFunc(hs, func(h *chainHeader) bool { return h.number == ev.number && h.hash == ev.hash }) {
+		if ev.derived || holds(ev) {
 			through = max(through, ev.number)
 		}
 	}
@@ -2045,6 +2300,35 @@ func (t *ChainTracker) evict() {
 	head, pinRoot := t.head(), t.pinRoot()
 	var voted map[*node]bool
 	var out []*node
+	floor := ref.number - min(ref.number, uint64(t.window))
+	var deepForks, oddHeights []uint64
+	for n := range t.forks {
+		if n <= floor {
+			deepForks = append(deepForks, n)
+		}
+	}
+	slices.Sort(deepForks)
+	for n := range t.odd {
+		oddHeights = append(oddHeights, n.h.number)
+	}
+	slices.Sort(oddHeights)
+	// In the pins' tree a header within reorgWindow of ref or in the final
+	// hold keeps every header above it. A pin maxBackfill keeps does too
+	// while no fork below reorgWindow and no odd header up to ref lies
+	// above it: then every pin above it is no older than it and no newer
+	// than ref, so within maxBackfill of ref. The walk stops there, so it
+	// costs what leaves the window.
+	above := func(hs []uint64, n, to uint64) bool {
+		k, _ := slices.BinarySearch(hs, n+1)
+		return k < len(hs) && hs[k] <= to
+	}
+	keepsAbove := func(n *node) bool {
+		if n.h.number >= floor || t.finalHolds(n.h.number) {
+			return true
+		}
+		return t.pinned(n) && t.backfills(ref, n.h) &&
+			!above(deepForks, n.h.number, floor) && !above(oddHeights, n.h.number, ref.number)
+	}
 	for r := range t.exts {
 		var top *chainHeader
 		if r != pinRoot {
@@ -2057,10 +2341,11 @@ func (t *ChainTracker) evict() {
 			}
 			unvotedAbove = !voted[r]
 		}
-		t.walkTree(r, func(n *node) {
+		t.walkTreeWhile(r, func(n *node) bool {
 			if unvotedAbove || !t.keeps(top, n.h, r == pinRoot) {
 				out = append(out, n)
 			}
+			return r != pinRoot || !keepsAbove(n)
 		})
 	}
 	for _, n := range out {
@@ -2071,15 +2356,60 @@ func (t *ChainTracker) evict() {
 	t.evictReceipts()
 }
 
-func newFeedState(pins []*node) *feedState {
-	s := &feedState{pins: make([]*chainHeader, len(pins)), changed: make(chan struct{})}
-	for i, n := range pins {
-		s.pins[i] = n.h
-	}
+func (t *ChainTracker) newFeedState(pins []*node) *feedState {
+	s := &feedState{pins: t.pinHeaders(pins), changed: make(chan struct{})}
 	if len(s.pins) > 0 {
 		s.base = s.pins[0].number
 	}
 	return s
+}
+
+// pinRun is the array the published pins' headers share: buf[lo:hi] holds
+// every slot a state was given, never written again, and buf[off:off+n]
+// the pins given last.
+type pinRun struct {
+	buf            []*chainHeader
+	lo, hi, off, n int
+}
+
+// pinHeaders is the headers of pins for a state. Pins that hold the last
+// pins given at one height share their array, its slots written only
+// where pins extend them below or above into slots no state was given:
+// fill and a new head write the headers they add, not the pins.
+func (t *ChainTracker) pinHeaders(pins []*node) []*chainHeader {
+	if len(pins) == 0 {
+		return []*chainHeader{}
+	}
+	r := &t.pinRun
+	base, top := pins[0].h.number, pins[len(pins)-1].h.number
+	if r.n > 0 {
+		last := r.buf[r.off : r.off+r.n]
+		lb, lt := last[0].number, last[r.n-1].number
+		// One shared header makes every height below it, down to the
+		// lower base, one chain in both.
+		m := min(top, lt)
+		start := r.off + int(base) - int(lb)
+		end := start + len(pins)
+		if m >= max(base, lb) && pins[m-base].h == last[m-lb] &&
+			(start >= r.off || start >= 0 && r.off == r.lo) &&
+			(end <= r.off+r.n || end <= len(r.buf) && r.off+r.n == r.hi) {
+			for i := start; i < r.off; i++ {
+				r.buf[i] = pins[i-start].h
+			}
+			for i := r.off + r.n; i < end; i++ {
+				r.buf[i] = pins[i-start].h
+			}
+			r.lo, r.hi, r.off, r.n = min(r.lo, start), max(r.hi, end), start, len(pins)
+			return r.buf[start:end:end]
+		}
+	}
+	buf := make([]*chainHeader, 2*len(pins)+64)
+	off := (len(buf) - len(pins)) / 2
+	for i, n := range pins {
+		buf[off+i] = n.h
+	}
+	*r = pinRun{buf: buf, lo: off, hi: off + len(pins), off: off, n: len(pins)}
+	return buf[off : off+len(pins) : off+len(pins)]
 }
 
 // stamp marks each pin that first stands at or below s's confirmed head
@@ -2137,7 +2467,7 @@ func (t *ChainTracker) unstamp(old []*chainHeader, s *feedState) {
 }
 
 func (t *ChainTracker) publish() {
-	s := newFeedState(t.pins)
+	s := t.newFeedState(t.pins)
 	b := t.gate(t.pins)
 	s.confirmed, s.backing = b.confirmed(), b
 	s.logs = t.logsHeadOf(s)
@@ -2149,17 +2479,37 @@ func (t *ChainTracker) publish() {
 
 // published records the signals of a state swap from old to s (spec §15.3,
 // §17) and feeds the block time. pinsMoved: s holds new pins, checked for
-// parentHash linkage.
+// parentHash linkage. A pin old held at its number was checked when old
+// was published, so only the new pins at the top and at the bottom are
+// checked against the pin below them, and the bad link last found while s
+// still holds it: each move counts while the pins stay unlinked.
 func (t *ChainTracker) published(old, s *feedState, pinsMoved bool) {
 	if pinsMoved {
-		for i := 1; i < len(s.pins); i++ {
-			if below, p := s.pins[i-1], s.pins[i]; p.parentHash != below.hash {
-				common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantPinsUnlinked).
-					Str("group", t.group).Uint64("block", p.number).Str("blockHash", hexHash(p.hash)).
-					Str("parentHash", hexHash(p.parentHash)).Uint64("below", below.number).Str("belowHash", hexHash(below.hash)).
-					Msg("chain tracker published pins that are not one parentHash chain")
-				break
+		fresh := func(i int) bool { return old.pinAt(s.pins[i].number) != s.pins[i] }
+		unlinked := func(i int) bool { return s.pins[i].parentHash != s.pins[i-1].hash }
+		bad := 0
+		i := len(s.pins) - 1
+		for ; i > 0 && fresh(i) && bad == 0; i-- {
+			if unlinked(i) {
+				bad = i
 			}
+		}
+		for j := 0; j < i && fresh(j) && bad == 0; j++ {
+			if unlinked(j + 1) {
+				bad = j + 1
+			}
+		}
+		if p := t.badLink; bad == 0 && p != nil && s.pinAt(p.number) == p && p.number > s.base && unlinked(int(p.number-s.base)) {
+			bad = int(p.number - s.base)
+		}
+		t.badLink = nil
+		if bad > 0 {
+			below, p := s.pins[bad-1], s.pins[bad]
+			t.badLink = p
+			common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantPinsUnlinked).
+				Str("group", t.group).Uint64("block", p.number).Str("blockHash", hexHash(p.hash)).
+				Str("parentHash", hexHash(p.parentHash)).Uint64("below", below.number).Str("belowHash", hexHash(below.hash)).
+				Msg("chain tracker published pins that are not one parentHash chain")
 		}
 	}
 	t.sampleConfirmed(s)
@@ -2718,7 +3068,7 @@ func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, o indexer.Rea
 		}
 	}()
 	for {
-		if o.HoldFinalized && t.finalSpan.Load() {
+		if o.Hold != nil && o.Hold.Spanned() {
 			return indexer.Batch{}, indexer.OutOfRangeError{Reason: indexer.OutOfRangeFinalitySpan}
 		}
 		s, tr := t.state.Load(), t.trees.Load()
@@ -2992,10 +3342,14 @@ func (t *ChainTracker) unlinked(tr *treeState, root *chainHeader) (indexer.Batch
 }
 
 // baseFinal reports whether the lowest pin is the window's base for good:
-// block 0, or its tree's fill ended there.
+// block 0, or the pins' tree's fill ended, at the lowest pin or at a root
+// below it that fill ahead or the final hold keeps.
 func (t *ChainTracker) baseFinal(s *feedState, tr *treeState) bool {
-	_, ended := tr.ended[s.pins[0].hash]
-	return s.base == 0 || ended
+	if s.base == 0 {
+		return true
+	}
+	_, ended := tr.ended[tr.pinRoot.hash]
+	return ended
 }
 
 // heldHeader is the held header with hash h, nil when none is.
@@ -3077,8 +3431,8 @@ func (t *ChainTracker) probeBelow(ctx context.Context, c indexer.Cursor, head *c
 
 // Want registers a tap's o until release: history serves the tracker while
 // any tap is open (spec §6.5 rule 1); the tracker fetches, at pin time, the
-// receipts of each block o.MayMatch wants (spec §10), and fills the whole
-// window while o is Resumable.
+// receipts of each block o.MayMatch wants (spec §10), fills the whole
+// window while o is Resumable, and holds from o.Hold's place (holdFinal).
 func (t *ChainTracker) Want(o indexer.ReadOpts) (release func()) {
 	t.taps.Add(1)
 	var id uint64
@@ -3093,8 +3447,13 @@ func (t *ChainTracker) Want(o indexer.ReadOpts) (release func()) {
 	if o.Resumable {
 		t.deepFill.Add(1)
 	}
-	if o.HoldFinalized {
-		t.finalWants.Add(1)
+	if h := o.Hold; h != nil {
+		t.finalMu.Lock()
+		if t.finalTaps == nil {
+			t.finalTaps = make(map[*indexer.FinalHold]int)
+		}
+		t.finalTaps[h]++
+		t.finalMu.Unlock()
 	}
 	t.mb.put(trackerMsg{kind: msgTick})
 	var once sync.Once
@@ -3109,8 +3468,12 @@ func (t *ChainTracker) Want(o indexer.ReadOpts) (release func()) {
 			if o.Resumable {
 				t.deepFill.Add(-1)
 			}
-			if o.HoldFinalized {
-				t.finalWants.Add(-1)
+			if h := o.Hold; h != nil {
+				t.finalMu.Lock()
+				if t.finalTaps[h]--; t.finalTaps[h] == 0 {
+					delete(t.finalTaps, h)
+				}
+				t.finalMu.Unlock()
 			}
 			t.taps.Add(-1)
 			t.mb.put(trackerMsg{kind: msgTick})

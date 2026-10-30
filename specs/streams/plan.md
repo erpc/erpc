@@ -71,7 +71,7 @@ Sizes: S < 400 lines, M 400–1,200, L > 1,200, tests included. One writer per w
 - Add:
   - Options `finality`, `reorg` (spec §3.1).
   - `erpc/tap_finality.go`: `finalityFeed`, composed over `laneFeed`; start at `HashAt(bound)`.
-  - `indexer.ReadOpts.HoldFinalized`; the tracker holds headers from `Head.Finalized` up while one is registered, at most 20,000 (`finality_span`); `erpc_chain_tracker_final_hold_headers`.
+  - `indexer.ReadOpts.Hold` (`FinalHold`, the tap's place); the tracker holds headers from `reorgWindow` below the lowest place up while one is registered, at most 20,000 below the window per tap, 18,000 at subscribe (`finality_span`); `erpc_chain_tracker_final_hold_headers`.
   - `Head.Safe`, demand-driven: `safe` tags polled only while a `safe` tap is registered, with its finalized refreshes; not computed otherwise; ballot as `Finalized`; `evm.safeBlockSource` honoured; served-tip gauge `axis="safe"` while computed.
   - ws encoder: `undo` and `none` rules; `final_reverted`.
   - chainsim: `SafeDepth`; `FinalityDepth` above the window.

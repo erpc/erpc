@@ -5,7 +5,10 @@ import "sync"
 // Goroutines runs the goroutines of one owner whose ctx ends them, so the
 // owner can wait until none runs. The zero value is ready.
 type Goroutines struct {
-	mu    sync.Mutex
+	// Go only read-locks and starts fn after unlocking: a start that parks
+	// (a GC assist in its allocation) never holds up the next one, and
+	// every ws subscribe starts its tap here while it holds a slot.
+	mu    sync.RWMutex
 	ended bool
 	wg    sync.WaitGroup
 }
@@ -13,12 +16,17 @@ type Goroutines struct {
 // Go runs fn on a new goroutine and reports true, or reports false once
 // Wait began: the owner ended, so fn must not start.
 func (g *Goroutines) Go(fn func()) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+	g.mu.RLock()
 	if g.ended {
+		g.mu.RUnlock()
 		return false
 	}
-	g.wg.Go(fn)
+	g.wg.Add(1)
+	g.mu.RUnlock()
+	go func() {
+		defer g.wg.Done()
+		fn()
+	}()
 	return true
 }
 

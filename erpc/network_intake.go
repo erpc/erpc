@@ -239,7 +239,15 @@ func (in *networkIntake) header(upstreamId string, sh evm.SourceHeader, kind evm
 			in.noteStream(upstreamId, int64(cur.Number))
 		}
 		in.count(upstreamId, "duplicate")
-		return current || evm.CheckSourceHeader(in.nw, u, sh)
+		passed = current || evm.CheckSourceHeader(in.nw, u, sh)
+		// A header at the counter's height is evidence of the node's head
+		// when it was taken, so it dates the report (spec §6.4 ceiling); on
+		// a halted chain no newer header would. One below the counter never
+		// does (§6.8).
+		if p := u.EvmStatePoller(); passed && p != nil && !p.IsObjectNull() && int64(cur.Number) >= p.LatestBlock() {
+			p.ObserveHead(int64(cur.Number), at)
+		}
+		return passed
 	}
 	if !evm.CheckSourceHeader(in.nw, u, sh) {
 		in.mu.Lock()

@@ -76,16 +76,26 @@ func (s *tapSends) hold(ctx context.Context, blk indexer.Block, snap sendSnapsho
 	return nil
 }
 
+// tapDelivery times one block's delivery (§17): its transport calls done
+// once the write of the block's last message returned.
+type tapDelivery struct {
+	obs   prometheus.Observer
+	ready time.Time
+}
+
+func (d tapDelivery) done() {
+	if d.obs != nil && !d.ready.IsZero() {
+		d.obs.Observe(time.Since(d.ready).Seconds())
+	}
+}
+
 // write writes blk, gated on snap, with fn. A block above the snapshot's
 // Latest or confirmed head is a violation; a written one raises the lane's
 // highest sent block (latest_regressed).
-func (s *tapSends) write(blk indexer.Block, snap sendSnapshot, fn func() error) error {
+func (s *tapSends) write(blk indexer.Block, snap sendSnapshot, fn func(tapDelivery) error) error {
 	s.check(blk, snap)
-	if err := fn(); err != nil {
+	if err := fn(tapDelivery{obs: s.delivery, ready: blk.Ready}); err != nil {
 		return err
-	}
-	if !blk.Ready.IsZero() {
-		s.delivery.Observe(time.Since(blk.Ready).Seconds())
 	}
 	if s.lane != nil {
 		s.lane.noteSent(blk.Number)

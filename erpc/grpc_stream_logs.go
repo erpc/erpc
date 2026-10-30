@@ -143,7 +143,7 @@ type grpcLogsEncoder struct {
 	w       *grpcWriter
 }
 
-func (e *grpcLogsEncoder) Block(blk indexer.Block, f *logfilter.LogsFilter, _ bool) (func() error, error) {
+func (e *grpcLogsEncoder) Block(blk indexer.Block, f *logfilter.LogsFilter, _ bool) (func(tapDelivery) error, error) {
 	msgs, err := grpcLogsEncoding.Of(e.tracker, blk, f)
 	if err != nil {
 		return nil, streamEncodeError{blk.Number, err}
@@ -153,12 +153,13 @@ func (e *grpcLogsEncoder) Block(blk indexer.Block, f *logfilter.LogsFilter, _ bo
 			return nil, err
 		}
 	}
-	return func() error {
+	return func(d tapDelivery) error {
 		for _, m := range msgs {
 			if err := e.w.write(streamData, m); err != nil {
 				return err
 			}
 		}
+		d.done()
 		return nil
 	}, nil
 }
