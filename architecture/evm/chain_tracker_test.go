@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -56,7 +57,7 @@ type servedChain struct {
 	byHash  atomic.Int32
 }
 
-func newServedChain(t *testing.T, id string) *servedChain {
+func newServedChain(t testing.TB, id string) *servedChain {
 	n := &servedChain{blocks: map[string]json.RawMessage{}, gates: map[string]chan struct{}{}, refuse: map[string]int{}}
 	n.On("Forward", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -898,6 +899,59 @@ func BenchmarkObserveLatestAnswer(b *testing.B) {
 			i++
 		}
 	})
+}
+
+// BenchmarkDeepFill is a final tap whose start lies depth headers below
+// the head, filled from a chain that answers at once: the CPU the process
+// spends per header filled. A cost per update that grows with the headers
+// held shows as cpu-ns/header growing with depth.
+func BenchmarkDeepFill(b *testing.B) {
+	cpu := func() time.Duration {
+		var ru syscall.Rusage
+		_ = syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
+		return time.Duration(syscall.TimevalToNsec(ru.Utime) + syscall.TimevalToNsec(ru.Stime))
+	}
+	for _, depth := range []uint64{1000, 4000, 16000} {
+		b.Run(fmt.Sprintf("depth=%d", depth), func(b *testing.B) {
+			top := depth + 20
+			net := newServedChain(b, "evm:deep-fill")
+			for n := uint64(0); n <= top; n++ {
+				net.serve(n, testHash("a", n), testHeader(n, testHash("a", n), testHash("a", n-1)))
+			}
+			start := top - depth
+			head := func() common.EvmHead { return common.EvmHead{Latest: 1 << 40, Finalized: int64(start)} }
+			var spent time.Duration
+			for b.Loop() {
+				ctx, cancel := context.WithCancel(context.Background())
+				c := newChainTracker(ctx, net, 4, 0, "", "", "", head, newFetchScheduler(ctx, net))
+				// A tracker counts no vote before it read its voters.
+				for {
+					for _, src := range []string{"a", "b"} {
+						c.Observe(src, testHeader(top, testHash("a", top), testHash("a", top-1)), true)
+					}
+					c.sync(ctx)
+					if _, _, ok := c.FollowedRange(); ok {
+						break
+					}
+					time.Sleep(time.Millisecond)
+				}
+				was := cpu()
+				o := indexer.ReadOpts{Hold: new(indexer.FinalHold)}
+				o.Hold.Set(start)
+				release := c.Want(o)
+				for {
+					if from, _, _ := c.FollowedRange(); uint64(from) <= start {
+						break
+					}
+					time.Sleep(time.Millisecond)
+				}
+				spent += cpu() - was
+				release()
+				cancel()
+			}
+			b.ReportMetric(float64(spent.Nanoseconds())/float64(b.N)/float64(depth), "cpu-ns/header")
+		})
+	}
 }
 
 // The hash anchor: a by-hash fetch must never trust (or cache) receipts that
