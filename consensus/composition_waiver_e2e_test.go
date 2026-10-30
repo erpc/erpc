@@ -229,25 +229,22 @@ func TestEmptyOutsideRetentionWaiver_PromotesLoneNonEmpty(t *testing.T) {
 		assert.Equal(t, 0.0, waivedMetricValue()-before, "no waiver may fire inside retention")
 	})
 
-	// Live mixed-node rounds can have a working poller latest on the archives
-	// even when the network served tip is still 0 (cold start, or the request
-	// selector scoped the gather away from the tip). The waiver must still
-	// prove "outside retention" from that participant poller signal rather
-	// than fail-closed on an unknown network head — that's the 1-empty +
-	// 2-archive shape that composition-disputed in smokebox with the metric
-	// absent, because v1.1 needs a head and v1 (MissingData) does not.
-	t.Run("1 empty + 2 archives fires when head comes from participant pollers", func(t *testing.T) {
+	// Live mixed-node rounds can have working poller latests even when the
+	// network served tip is still 0 (cold start, or the request selector scoped
+	// the gather away from the tip). The waiver proves "outside retention" from
+	// participant pollers when at least one non-winner (here the empty
+	// internal) corroborates the head.
+	t.Run("1 empty + 2 archives fires when a non-winner poller corroborates the head", func(t *testing.T) {
 		cfg := newCfg()
 		cfg.maxParticipants = 3
 		before := waivedMetricValue()
 
 		poller := common.NewFakeEvmStatePoller(head, head)
-		internal := common.NewFakeUpstream("internal-1", common.WithTags("type:internal"))
+		internal := common.NewFakeUpstream("internal-1", common.WithTags("type:internal"), common.WithEvmStatePoller(poller))
 		ext1 := common.NewFakeUpstream("external-1", common.WithTags("type:external"), common.WithEvmStatePoller(poller))
 		ext2 := common.NewFakeUpstream("external-2", common.WithTags("type:external"), common.WithEvmStatePoller(poller))
 
-		// Network reports 0 — the served tip is unknown. The poller latest on
-		// the archives is the only proof source.
+		// Network reports 0 — the served tip is unknown.
 		winner := winnerWithHead(t, cfg, method, 0, []*execResult{
 			emptyResultFrom(t, internal, 0),
 			objResultFrom(t, ext1, tx, 1),
@@ -256,10 +253,35 @@ func TestEmptyOutsideRetentionWaiver_PromotesLoneNonEmpty(t *testing.T) {
 
 		require.NotNil(t, winner)
 		require.Nil(t, winner.Error,
-			"poller latest on the archives must supply the head when the network tip is unknown, got: %v", winner.Error)
+			"participant pollers must supply the head when the network tip is unknown, got: %v", winner.Error)
 		require.NotNil(t, winner.Result)
 		assert.Equal(t, 1.0, waivedMetricValue()-before,
 			"exactly one empty_outside_retention waiver must be recorded")
+	})
+
+	// Guard (issue 1363): two colluding archives inflate their poller latest
+	// to 50M while the empty internal has no poller. Their MIN is still 50M,
+	// so without a non-winner source a recent tx would look 30M deep.
+	t.Run("head reported only by the winning group fails closed", func(t *testing.T) {
+		cfg := newCfg()
+		cfg.maxParticipants = 3
+		before := waivedMetricValue()
+
+		inflated := common.NewFakeEvmStatePoller(50_000_000, 50_000_000)
+		internal := common.NewFakeUpstream("internal-1", common.WithTags("type:internal"))
+		ext1 := common.NewFakeUpstream("external-1", common.WithTags("type:external"), common.WithEvmStatePoller(inflated))
+		ext2 := common.NewFakeUpstream("external-2", common.WithTags("type:external"), common.WithEvmStatePoller(inflated))
+		recentTx := map[string]interface{}{"blockNumber": "0x1312cb0"} // depth 80 from the real 20M
+
+		winner := winnerOnNetwork(t, cfg, method, &headNetwork{latest: 50_000_000, maxMode: true}, []*execResult{
+			emptyResultFrom(t, internal, 0),
+			objResultFrom(t, ext1, recentTx, 1),
+			objResultFrom(t, ext2, recentTx, 2),
+		})
+
+		require.NotNil(t, winner)
+		require.NotNil(t, winner.Error, "a head only the winners report must not prove outside retention")
+		assert.Equal(t, 0.0, waivedMetricValue()-before, "no waiver may fire on winner-only head evidence")
 	})
 
 	// Guard: a single archive inflating its poller latest must not raise the

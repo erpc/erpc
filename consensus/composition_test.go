@@ -1319,7 +1319,7 @@ func TestParticipantLatestBlock(t *testing.T) {
 			resultFrom(t, a, "0x1", 0),
 			resultFrom(t, b, "0x1", 1),
 		})
-		assert.Equal(t, int64(20_000_000), participantLatestBlock(analysis),
+		assert.Equal(t, int64(20_000_000), participantLatestBlock(analysis, nil),
 			"an inflated poller must not raise the fallback head")
 	})
 
@@ -1331,7 +1331,7 @@ func TestParticipantLatestBlock(t *testing.T) {
 			resultFrom(t, a, "0x1", 0),
 			resultFrom(t, b, "0x1", 1),
 		})
-		assert.Equal(t, int64(0), participantLatestBlock(analysis),
+		assert.Equal(t, int64(0), participantLatestBlock(analysis, nil),
 			"one uncorroborated poller is not a chain head")
 	})
 
@@ -1342,7 +1342,7 @@ func TestParticipantLatestBlock(t *testing.T) {
 			resultFrom(t, a, "0x1", 0),
 			resultFrom(t, a, "0x2", 1),
 		})
-		assert.Equal(t, int64(0), participantLatestBlock(analysis),
+		assert.Equal(t, int64(0), participantLatestBlock(analysis, nil),
 			"two results from one upstream are still a single poller")
 	})
 }

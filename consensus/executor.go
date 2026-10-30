@@ -1320,7 +1320,7 @@ const (
 // entry qualifies for both, since it is the stronger explicit abstention signal.
 func (e *executor) waivedQuotas(ctx context.Context, analysis *consensusAnalysis, g *responseGroup) map[*common.ConsensusRequiredParticipant]string {
 	reasons := make(map[*common.ConsensusRequiredParticipant]string)
-	for req := range emptyOutsideRetentionWaivedQuotas(analysis, e.config.requiredParticipants, e.winnerBlockEvidence(analysis, g), e.chainHead(ctx, analysis)) {
+	for req := range emptyOutsideRetentionWaivedQuotas(analysis, e.config.requiredParticipants, e.winnerBlockEvidence(analysis, g), e.chainHead(ctx, analysis, g)) {
 		reasons[req] = waiverReasonEmptyOutsideRetention
 	}
 	for req := range missingDataWaivedQuotas(analysis, e.config.requiredParticipants) {
@@ -1338,10 +1338,10 @@ func (e *executor) waivedQuotas(ctx context.Context, analysis *consensusAnalysis
 // the fabrication hole the poller fallback closes. When majority quorum is
 // off, or the majority tip is still 0, fall back to the MIN poller latest
 // among this round's own EVM participants (at least two distinct upstreams
-// with a positive latest). A zero head from both sources means the
-// empty-outside-retention waiver cannot prove a block is outside range, so
-// it holds the quota — fail closed.
-func (e *executor) chainHead(ctx context.Context, analysis *consensusAnalysis) int64 {
+// with a positive latest, at least one outside the winning group). A zero
+// head from both sources means the empty-outside-retention waiver cannot
+// prove a block is outside range, so it holds the quota — fail closed.
+func (e *executor) chainHead(ctx context.Context, analysis *consensusAnalysis, winner *responseGroup) int64 {
 	if analysis == nil {
 		return 0
 	}
@@ -1352,7 +1352,11 @@ func (e *executor) chainHead(ctx context.Context, analysis *consensusAnalysis) i
 			}
 		}
 	}
-	return participantLatestBlock(analysis)
+	var agreeing []*execResult
+	if winner != nil {
+		agreeing = e.agreeingResults(analysis, winner)
+	}
+	return participantLatestBlock(analysis, agreeing)
 }
 
 // majorityServedLatestEnabled reports whether this network's served tip uses
@@ -1399,7 +1403,7 @@ func (e *executor) logEmptyWaiverUnproven(ctx context.Context, lg *zerolog.Logge
 			Msg("empty-outside-retention waiver deferred — responses still outstanding")
 		return
 	}
-	head := e.chainHead(ctx, analysis)
+	head := e.chainHead(ctx, analysis, g)
 	winnerBlock := e.winnerBlockEvidence(analysis, g)
 	finiteBounds, matchingEmpties := countFiniteAvailLowerBounds(analysis, e.config.requiredParticipants)
 	// Proven evaluation paths: winner block + (finite avail bounds for every
@@ -1482,21 +1486,25 @@ const (
 
 // participantLatestBlock is the chain-head fallback when the network served
 // tip is 0. It requires at least two distinct EVM participants to have reported
-// a positive latest (corroboration), then takes the MIN — a single misbehaving
-// upstream cannot inflate the head to make a recent winner look outside
-// retention. Returns 0 (fail closed) when fewer than two pollers have spoken.
-//
-// The two sources can still be the winning group's own upstreams: excluding
-// them would leave only the pruned internals, whose poller latest is often 0
-// and would make this fallback unusable on the mixed-node shape it exists for.
-// Two colluders reporting the same inflated latest can still raise the min.
-// When majority served-tip is enabled for "latest", chainHead prefers that
-// network-wide majority instead; default max-mode served tip is not trusted.
-func participantLatestBlock(analysis *consensusAnalysis) int64 {
+// a positive latest, at least one of them outside the winning group, then takes
+// the MIN. Neither a single inflator nor the winning group alone can raise the
+// head the winner's own block is judged against. Returns 0 (fail closed)
+// otherwise, e.g. when the only non-winners are pruned internals without a
+// poller; operators then need servedTip quorum "majority" or a finite
+// blockAvailability lower bound on those internals.
+func participantLatestBlock(analysis *consensusAnalysis, agreeing []*execResult) int64 {
 	if analysis == nil {
 		return 0
 	}
-	var heads []int64
+	winners := make(map[string]struct{}, len(agreeing))
+	for _, r := range agreeing {
+		if r != nil && r.Upstream != nil {
+			winners[r.Upstream.Id()] = struct{}{}
+		}
+	}
+	var min int64
+	pollers := 0
+	outside := false
 	seen := make(map[string]struct{})
 	for _, g := range analysis.groups {
 		if g == nil {
@@ -1515,19 +1523,21 @@ func participantLatestBlock(analysis *consensusAnalysis) int64 {
 			if !ok {
 				continue
 			}
-			if b := eu.EvmEffectiveLatestBlock(); b > 0 {
-				heads = append(heads, b)
+			b := eu.EvmEffectiveLatestBlock()
+			if b <= 0 {
+				continue
 			}
+			if _, in := winners[id]; !in {
+				outside = true
+			}
+			if pollers == 0 || b < min {
+				min = b
+			}
+			pollers++
 		}
 	}
-	if len(heads) < 2 {
+	if pollers < 2 || !outside {
 		return 0
-	}
-	min := heads[0]
-	for _, h := range heads[1:] {
-		if h < min {
-			min = h
-		}
 	}
 	return min
 }
