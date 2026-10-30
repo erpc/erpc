@@ -84,7 +84,8 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		}
-		lag.start()
+		lag.got()
+		defer lag.ask()
 		// removed:true logs need the sent Reverted blocks' receipts, which
 		// the feed holds only reorgWindow deep.
 		if sent {

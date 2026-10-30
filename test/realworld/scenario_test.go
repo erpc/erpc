@@ -873,7 +873,7 @@ func (s *scenario) checkHead(c *headsClient, pod int, n uint64, h hash, delivere
 		}
 		for target := range s.h.pods {
 			if !s.isNumbered(target) {
-				got := s.oracleMemo(target, fmt.Sprintf("hash/%d/%s/%s", target, sel, h.Hex()), func() string {
+				got := s.oracleMemo(target, fmt.Sprintf("hash/%d/%s/%s/from-%d", target, sel, h.Hex(), pod), func() string {
 					return s.blockAnswer(target, sel, "eth_getBlockByHash", h.Hex(), false)
 				})
 				if got != h.Hex() && !s.excused(target, start, time.Now()) {
@@ -911,7 +911,7 @@ func (s *scenario) checkLog(c *logsClient, pod int, l chainsim.Log) {
 			if s.isNumbered(target) {
 				by = "number"
 			}
-			got := s.oracleMemo(target, fmt.Sprintf("logs/%d/%s/%d", target, l.BlockHash.Hex(), c.filter), func() string {
+			got := s.oracleMemo(target, fmt.Sprintf("logs/%d/%s/%d/from-%d", target, l.BlockHash.Hex(), c.filter, pod), func() string {
 				q := chainsim.Filters[c.filter].Params()
 				if by == "number" {
 					q["fromBlock"] = hexutil.EncodeUint64(l.BlockNumber)

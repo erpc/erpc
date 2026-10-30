@@ -167,6 +167,7 @@ func setupRealPollLagNetwork(t *testing.T, ctx context.Context, fixtures []realP
 
 	policyEngine := policy.NewEngine(ctx, &log.Logger, "test", metricsTracker, policystdlib.Install, nil)
 	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, policyEngine)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	upstreamsRegistry.Bootstrap(ctx)
@@ -244,7 +245,7 @@ func blockHeadLagOf(t *testing.T, network *Network, id string) int64 {
 // BlockHeadLag.Store would have masked the rollup bug.
 func TestNetworkPolicy_RealPoll_LaggingUpstreamExcluded(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -297,7 +298,7 @@ func TestNetworkPolicy_RealPoll_LaggingUpstreamExcluded(t *testing.T) {
 // blockNumberLagAbove(16). Same real-poll path, no exclusion expected.
 func TestNetworkPolicy_RealPoll_WithinTolerance_NoneExcluded(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -329,7 +330,7 @@ func TestNetworkPolicy_RealPoll_WithinTolerance_NoneExcluded(t *testing.T) {
 // reports stop must still be excluded once a poll period has passed.
 func TestNetworkPolicy_RealPoll_SlowPolledUpstreamAtTipStaysIn(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

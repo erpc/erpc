@@ -104,7 +104,7 @@ func TestSvm_NonRetryableWrite_NeverDispatchedToSecondUpstream(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// No t.Parallel: gock's mock registry is process-global.
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 
 			h1 := "svm-nrw-" + tc.host + "-rpc1.localhost"
 			h2 := "svm-nrw-" + tc.host + "-rpc2.localhost"
@@ -156,7 +156,7 @@ func TestSvm_NonRetryableWrite_NeverDispatchedToSecondUpstream(t *testing.T) {
 // architecture.
 func TestSvm_ReadMethod_StillFailsOverInTheSameSetup(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	h1 := "svm-nrw-read-rpc1.localhost"
 	h2 := "svm-nrw-read-rpc2.localhost"
@@ -244,7 +244,7 @@ func svmMinimalCachePolicyNetwork(t *testing.T, ctx context.Context, net *Networ
 //     against the same policy — a fix in either direction alone fails this test.
 func TestSvm_MinimalCachePolicy_MovingHeadReadNeverGoesStaleForever(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	host := "svm-stale-rpc1.localhost"
 	util.SetupMocksForSvmStatePoller(host, 1000, 990)
@@ -371,6 +371,7 @@ func setupSvmSelectionPolicyNetwork(t *testing.T, ctx context.Context, upstreamC
 		ctx, &log.Logger, "test", networkConfig,
 		rateLimitersRegistry, upstreamsRegistry, metricsTracker, policyEngine,
 	)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	upstreamsRegistry.Bootstrap(ctx)
@@ -462,7 +463,7 @@ func svmRepolicy(t *testing.T, net *Network, reg *upstream.UpstreamsRegistry, ct
 // against the 400ms background ticker.
 func TestSvm_UnhealthyUpstream_ExcludedFromRouting(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	h1 := "svm-cordon-rpc1.localhost"
 	h2 := "svm-cordon-rpc2.localhost"
@@ -625,7 +626,7 @@ func TestSvm_HttpStatusClassification_WithJsonRpcErrorBody(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// No t.Parallel: gock's mock registry is process-global.
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 
 			host := "svm-http-" + tc.host + ".localhost"
 			util.SetupMocksForSvmStatePoller(host, 1000, 990)
@@ -746,7 +747,7 @@ func TestSvm_BareHttpFailure_ClassifiedFromStatusAndFailsOver(t *testing.T) {
 			func() {
 				// No t.Parallel: gock's mock registry is process-global.
 				util.ResetGock()
-				defer util.ResetGock()
+				t.Cleanup(util.ResetGock)
 
 				host := "svm-bare-" + tc.host + ".localhost"
 				util.SetupMocksForSvmStatePoller(host, 1000, 990)
@@ -785,7 +786,7 @@ func TestSvm_BareHttpFailure_ClassifiedFromStatusAndFailsOver(t *testing.T) {
 
 			// --- routing consequence: the request must reach a healthy node ---
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 
 			h1 := "svm-bare-" + tc.host + "-p.localhost"
 			h2 := "svm-bare-" + tc.host + "-s.localhost"

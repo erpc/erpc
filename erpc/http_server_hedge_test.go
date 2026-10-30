@@ -31,7 +31,7 @@ func matchesGetBalanceTestReq(request *http.Request) bool {
 func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("SimpleHedgePolicyDifferentUpstreams", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -126,7 +126,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// With try-all-upstreams, loop continues past rpc1's failure
 		// to rpc2 (503) then rpc3 (success). All mocks are consumed.
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -243,7 +243,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// When hedge is already running, failures don't cancel other attempts
 		// This ensures resilience - other hedges might succeed even if one fails
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -360,7 +360,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// When primary fails before hedge delay, retry kicks in immediately
 		// No waiting for hedge since it never starts
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -467,7 +467,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("RetryWaitsForHedgeWhenHedgeIsRunning", func(t *testing.T) {
 		// When hedge is already running and primary fails, retry waits for hedge to complete
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// The hedge mock is persisted (see below) because whether the hedge fires
 		// before a fast retry is timing-dependent; it remains pending by design (1).
@@ -590,7 +590,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("HedgeCancelsOnSuccess", func(t *testing.T) {
 		// Test that successful response cancels other hedges
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 3) // primary + 2 hedge mocks all persisted by design
 
@@ -714,7 +714,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("PrimaryFastSuccessHedgeNotTriggered", func(t *testing.T) {
 		// Primary succeeds before hedge delay - hedge never starts
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 2) // persisted primary + the never-called second upstream
 
@@ -815,7 +815,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("PrimarySlowSuccessHedgeFastSuccess", func(t *testing.T) {
 		// Primary is slow but succeeds, hedge is fast and succeeds - hedge wins
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // Primary mock cancelled when hedge succeeds
 
@@ -910,7 +910,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("PrimarySlowSuccessHedgeFastFail", func(t *testing.T) {
 		// Primary is slow but succeeds, hedge is fast but fails - primary wins
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// The fast-failing hedge (retryable 500) triggers retries that, on a loaded
 		// runner, can exhaust single-use mocks before the 300ms primary succeeds.
@@ -1010,7 +1010,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("PrimaryFastFailBeforeHedge", func(t *testing.T) {
 		// With try-all-upstreams, rpc1 fails → loop continues to rpc2 (success).
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1105,7 +1105,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("PrimaryFailsAfterHedgeStartsAndSucceeds", func(t *testing.T) {
 		// Primary fails after hedge starts, hedge succeeds - request succeeds
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1200,7 +1200,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("PrimarySlowFailHedgeFastSuccess", func(t *testing.T) {
 		// Primary is slow and fails, hedge is fast and succeeds - hedge wins
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1293,7 +1293,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("BothFailDifferentErrorsBeforeHedge", func(t *testing.T) {
 		// Primary fails before hedge starts - should return immediately with primary error
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // rpc2 never called
 
@@ -1394,7 +1394,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("BothFailDifferentErrorsWithHedgeRunning", func(t *testing.T) {
 		// When hedge is already running and both fail, should wait for both
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1488,7 +1488,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// Test that with a single upstream, when hedge can't find an available upstream
 		// (because primary is using it), the primary continues and succeeds
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1558,7 +1558,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// Test that with a single upstream, when hedge can't find an available upstream
 		// (because primary is using it), the primary continues and succeeds
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1626,7 +1626,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("BothSuccessPrimaryWins", func(t *testing.T) {
 		// Both primary and hedge succeed, but primary is faster
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// Persist both mocks so the fast primary result is always available and
 		// deterministically wins the race regardless of loaded-CI scheduling; the
@@ -1724,7 +1724,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("BothSuccessHedgeWins", func(t *testing.T) {
 		// Both primary and hedge succeed, but hedge is faster
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1815,7 +1815,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("HedgeWithRetryOnPrimaryFailure", func(t *testing.T) {
 		// Primary fails, hedge fails, then retry kicks in and succeeds
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// The hedge (rpc2) only fires when the 50ms hedge delay elapses before the
 		// primary settles; the primary here fails fast (~20ms), so whether the
@@ -1930,7 +1930,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 	t.Run("SimpleHedgePolicyAvoidSameUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1)
 
@@ -2082,7 +2082,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -2202,7 +2202,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -2316,7 +2316,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -2433,7 +2433,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -2526,7 +2526,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -2631,7 +2631,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 2) // both result mocks persisted by design
 
@@ -2739,7 +2739,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// Persist both mocks: the primary (rpc1) result must remain available even
 		// if a structural race retries it, so the fast 90ms response always wins

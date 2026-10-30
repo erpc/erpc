@@ -81,6 +81,7 @@ func httpPathsStart(t *testing.T, cfg *common.Config) (*HttpServer, string) {
 	})
 	require.NoError(t, err)
 	instance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+	stopERPCAtEnd(t, instance, ctx)
 	require.NoError(t, err)
 	instance.Bootstrap(ctx)
 
@@ -144,7 +145,7 @@ const httpPathsBalanceBody = `{"jsonrpc":"2.0","id":7,"method":"eth_getBalance",
 
 func TestHttpPaths_MainServerRouting(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	httpPathsMockBalance()
 
@@ -352,7 +353,7 @@ func TestHttpPaths_MainServerRouting(t *testing.T) {
 
 func TestHttpPaths_AuxServerOptions(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	httpPathsMockBalance()
 

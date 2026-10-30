@@ -60,6 +60,7 @@ func TestHttpServer_WebSocketUpgradeReachesDispatch(t *testing.T) {
 	require.NoError(t, err)
 
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 

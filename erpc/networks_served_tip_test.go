@@ -187,6 +187,7 @@ func setupServedTipNetworkEvery(t *testing.T, ctx context.Context, fixtures []se
 		metricsTracker,
 		nil,
 	)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 	network.headRefresh = headRefresh
 	t.Cleanup(func() {
@@ -241,7 +242,7 @@ func setupServedTipNetworkEvery(t *testing.T, ctx context.Context, fixtures []se
 // Three close upstreams: the majority head (2nd of 3), not MAX, is served.
 func TestServedTip_ThreeUpstreams_AllClose_ReturnsMajority(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -262,7 +263,7 @@ func TestServedTip_ThreeUpstreams_AllClose_ReturnsMajority(t *testing.T) {
 // single leader cannot define "latest" for the whole network.
 func TestServedTip_OneLeader_TwoLaggers_ReturnsMajority(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -284,7 +285,7 @@ func TestServedTip_OneLeader_TwoLaggers_ReturnsMajority(t *testing.T) {
 // fresh enough to be useful, held by a strict majority. MAX would return 100.
 func TestServedTip_FiveUpstreams_ThreeClose_TwoBehind(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -310,7 +311,7 @@ func TestServedTip_FiveUpstreams_ThreeClose_TwoBehind(t *testing.T) {
 // majority of monotonic inputs is monotonic while the set is stable.
 func TestServedTip_NoRegressionOnUpstreamRetreat(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -344,7 +345,7 @@ func TestServedTip_NoRegressionOnUpstreamRetreat(t *testing.T) {
 // Cold start: no upstreams populated yet. Returns 0.
 func TestServedTip_NoUpstreamsHaveBlock_ReturnsZero(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -362,7 +363,7 @@ func TestServedTip_NoUpstreamsHaveBlock_ReturnsZero(t *testing.T) {
 // All upstreams syncing → filtered out → 0.
 func TestServedTip_AllSyncing_ReturnsZero(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -383,7 +384,7 @@ func TestServedTip_AllSyncing_ReturnsZero(t *testing.T) {
 // not MAX and not the majority pick.
 func TestServedTip_DefaultQuorum_ServesSecondHighest(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -405,7 +406,7 @@ func TestServedTip_DefaultQuorum_ServesSecondHighest(t *testing.T) {
 // cache's known-highest-block all read this accessor.
 func TestServedTip_DefaultQuorum_LoneFarAheadUpstreamDoesNotDefineHead(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -431,7 +432,7 @@ func TestServedTip_DefaultQuorum_LoneFarAheadUpstreamDoesNotDefineHead(t *testin
 // the eligible cluster min (99) and never reflect u3's block.
 func TestServedTip_ExcludedUpstreamDropsOutOfTip(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -461,7 +462,7 @@ func TestServedTip_ExcludedUpstreamDropsOutOfTip(t *testing.T) {
 // a block u3 actually has.
 func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -509,7 +510,7 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		// Empty ServedTip config => default MAX mode.
 		nw, _ := setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{})
 
@@ -528,7 +529,7 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		// Majority served tip enabled for latest+finalized.
 		nw, _ := setupServedTipNetwork(t, ctx, fixtures)
 
@@ -553,7 +554,7 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		nw, _ := setupServedTipNetwork(t, ctx, fixtures) // cluster mode; 2 fast(2000) + 2 slow(1000)
 
 		// A pattern and its negation form the two groups — each tracked among
@@ -601,7 +602,7 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 // becomes live.
 func TestServedTip_AnchorStampsOnServedValueChange(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -636,7 +637,7 @@ func TestServedTip_AnchorStampsOnServedValueChange(t *testing.T) {
 // most the spread, and the per-upstream poller counters are monotonic).
 func TestServedTip_EligibleSetChurn_DipBoundedBySpread(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -672,7 +673,7 @@ func TestServedTip_EligibleSetChurn_DipBoundedBySpread(t *testing.T) {
 // "heads got lower" condition via eligibility instead.)
 func TestServedTip_NoNetworkLevelStickiness(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -708,7 +709,7 @@ func TestServedTip_NoNetworkLevelStickiness(t *testing.T) {
 // no window to outrun.
 func TestServedTip_HaltedChainResume_CatchesUpImmediately(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -741,7 +742,7 @@ func TestServedTip_HaltedChainResume_CatchesUpImmediately(t *testing.T) {
 // pulling "latest" down to a block years in the past.
 func TestServedTip_BoundCappedUpstreamsDoNotVote(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -770,7 +771,7 @@ func TestServedTip_BoundCappedUpstreamsDoNotVote(t *testing.T) {
 // upstreams could serve became one only one of them could.
 func TestServedTip_LatestBlockMinusUpstreamsStillVote(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -809,7 +810,7 @@ func TestServedTip_LatestBlockMinusUpstreamsStillVote(t *testing.T) {
 // The floor now builds its per-method ballot with the same rule.
 func TestServedTip_GuaranteedMethodFloorCannotReadmitTheCap(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -849,7 +850,7 @@ func TestServedTip_GuaranteedMethodFloorCannotReadmitTheCap(t *testing.T) {
 // is transient rather than the operator's configuration.
 func TestServedTip_GuaranteedMethodFloor_DoesNotUndoTheGuardsHold(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -893,7 +894,7 @@ func TestServedTip_GuaranteedMethodFloor_DoesNotUndoTheGuardsHold(t *testing.T) 
 // all, so their cap is exactly the floor the tip must respect.
 func TestServedTip_GuaranteedMethodFloor_CapsStillSetTheFloorWhenAloneOnAMethod(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -929,7 +930,7 @@ func TestServedTip_GuaranteedMethodFloor_CapsStillSetTheFloorWhenAloneOnAMethod(
 // this process last saw corroborated.
 func TestServedTip_CapFilterMayShrinkTheBallotToOneLiveUpstream(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -951,7 +952,7 @@ func TestServedTip_CapFilterMayShrinkTheBallotToOneLiveUpstream(t *testing.T) {
 // IS the freshest block anyone can serve. Unchanged by the filter.
 func TestServedTip_AllCappedPool_ServesTheCap(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -977,7 +978,7 @@ func TestServedTip_AllCappedPool_ServesTheCap(t *testing.T) {
 // the frozen tip served from memory that this design forbids.
 func TestServedTip_AllInputsFiltered_FailsOpenToZero(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1036,7 +1037,7 @@ func pinServedTipClock(t *testing.T) func(time.Duration) {
 // exists independently of the bounds filter).
 func TestServedTip_RegressionGuard_HoldsLastCorroboratedPick(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1072,7 +1073,7 @@ func TestServedTip_RegressionGuard_HoldsLastCorroboratedPick(t *testing.T) {
 // freeze the tip.
 func TestServedTip_RegressionGuard_FailsOpenAfterTTL(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1105,7 +1106,7 @@ func TestServedTip_RegressionGuard_FailsOpenAfterTTL(t *testing.T) {
 // never ratchet the tip upward across small legitimate steps back).
 func TestServedTip_RegressionGuard_SmallReorgPassesThrough(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1138,7 +1139,7 @@ func TestServedTip_RegressionGuard_SmallReorgPassesThrough(t *testing.T) {
 // cap must never become the value it later holds the network to.
 func TestServedTip_RegressionGuard_SkippedWithoutLiveHead(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1171,7 +1172,7 @@ func TestServedTip_RegressionGuard_SkippedWithoutLiveHead(t *testing.T) {
 // TTL, and only then fails open to the cap.
 func TestServedTip_RegressionGuard_HoldsWhenEveryLiveUpstreamLeaves(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1214,7 +1215,7 @@ func TestServedTip_RegressionGuard_HoldsWhenEveryLiveUpstreamLeaves(t *testing.T
 // while emitting no metric and no log at all.
 func TestServedTip_RegressionGuard_SingleRogueUpstreamDoesNotDisarmIt(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1287,7 +1288,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 	// The armed case: a fresh memory refuses an uncorroborated leap.
 	t.Run("WhileArmed", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		network, eligible, advance := fantasyFleet(t, ctx)
@@ -1324,7 +1325,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 	// so that is precisely where the continuity check is needed.
 	t.Run("AfterFailOpenDisarm", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		network, eligible, advance := fantasyFleet(t, ctx)
@@ -1383,7 +1384,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 	// with the honest fleet.
 	t.Run("AtColdBoot", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		network, eligible, advance := fantasyFleet(t, ctx)
@@ -1417,7 +1418,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 // shape needs a memory the fleet has long since left behind.
 func TestServedTip_RegressionGuard_AHoldNeverLowersTheTip(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1450,7 +1451,7 @@ func TestServedTip_RegressionGuard_AHoldNeverLowersTheTip(t *testing.T) {
 // evaluation.
 func TestServedTip_RegressionGuard_HealthyPathDoesNotAllocate(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1483,7 +1484,7 @@ func TestServedTip_RegressionGuard_HealthyPathDoesNotAllocate(t *testing.T) {
 // The off switch.
 func TestServedTip_RegressionGuard_DisabledByNegativeOne(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1513,7 +1514,7 @@ func TestServedTip_RegressionGuard_DisabledByNegativeOne(t *testing.T) {
 // freshest view it must read 0, not a negative number no dashboard can plot.
 func TestServedTip_LagGaugeNeverReadsNegative(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1571,7 +1572,7 @@ func suggestServedTipHead(u *upstream.Upstream, head int64) {
 // moving for its stall window.
 func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2327,7 +2328,7 @@ func setServedTipFinalized(t *testing.T, u *upstream.Upstream, head int64) {
 // same per-axis head comparison.
 func TestServedTip_Finalized_BoundCappedUpstreamsDoNotVote(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2359,7 +2360,7 @@ func TestServedTip_Finalized_BoundCappedUpstreamsDoNotVote(t *testing.T) {
 // the last corroborated finalized tip.
 func TestServedTip_Finalized_RegressionGuardHolds(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2397,7 +2398,7 @@ func TestServedTip_Finalized_RegressionGuardHolds(t *testing.T) {
 // tip follow the pick down.
 func TestServedTip_Finalized_NeverRegressesWhenTheMajorityFlips(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2436,6 +2437,7 @@ func TestServedTip_Finalized_NeverRegressesWhenTheMajorityFlips(t *testing.T) {
 
 	replica, err := NewNetwork(ctx, &log.Logger, network.projectId, network.cfg,
 		network.rateLimitersRegistry, network.upstreamsRegistry, network.metricsTracker, nil)
+	stopAtEnd(t, replica)
 	require.NoError(t, err)
 	t.Cleanup(replica.wait)
 	assert.Equal(t, int64(201), servedHead(replica, ctx).Finalized,
@@ -2466,7 +2468,7 @@ func TestServedTip_Finalized_NeverRegressesWhenTheMajorityFlips(t *testing.T) {
 // served "latest", the order every voter's own heads keep.
 func TestServedTip_Finalized_FloorLimits(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2568,7 +2570,7 @@ func TestServedTip_Finalized_FloorLimits(t *testing.T) {
 // voter whose finalized tag is given up has no finalized poll and gets none.
 func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2671,7 +2673,7 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 // value must be capped to what a live upstream actually has.
 func TestServedTip_RegressionGuard_HeldValueIsClampedToTheLiveHead(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2705,7 +2707,7 @@ func TestServedTip_RegressionGuard_HeldValueIsClampedToTheLiveHead(t *testing.T)
 // one sustained regression as thousands of them.
 func TestServedTip_MetricsCountTransitionsNotEvaluations(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2746,7 +2748,7 @@ func TestServedTip_MetricsCountTransitionsNotEvaluations(t *testing.T) {
 // timer pass, which is off here.
 func TestServedTip_ForkDemotionMovesTheHeadAtOnce(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

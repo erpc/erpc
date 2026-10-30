@@ -46,7 +46,7 @@ func mockGetBlockByNumberNonNull(ids ...string) {
 // dispatching + hedging across upstreams that all return empty.
 func TestForward_FutureBlock_ShortCircuitsToNull(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -78,7 +78,7 @@ func TestForward_FutureBlock_ShortCircuitsToNull(t *testing.T) {
 // the Ask refreshed what was stale at its start.
 func TestForward_FutureBlock_ShortCircuitSurvivesSlowStaleAsk(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -125,7 +125,7 @@ func TestForward_FutureBlock_ShortCircuitSurvivesSlowStaleAsk(t *testing.T) {
 // report time only a new head would move.
 func TestForward_FutureBlock_HaltedChainAskDatesReport(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -176,7 +176,7 @@ func TestForward_FutureBlock_HaltedChainAskDatesReport(t *testing.T) {
 // short-circuit must not over-fire and swallow blocks an upstream actually has.
 func TestForward_FutureBlock_AtMaxHead_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -203,7 +203,7 @@ func TestForward_FutureBlock_AtMaxHead_Dispatches(t *testing.T) {
 
 func TestForward_FutureBlock_MixedStaticCapDispatchesWithinAvailableRange(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -229,7 +229,7 @@ func TestForward_FutureBlock_MixedStaticCapDispatchesWithinAvailableRange(t *tes
 // config (here: nil servedTip, no flag) must dispatch.
 func TestForward_FutureBlock_ServedTipDisabled_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -257,7 +257,7 @@ func TestForward_FutureBlock_ServedTipDisabled_Dispatches(t *testing.T) {
 // the upstream has), so it must never be short-circuited.
 func TestForward_FutureBlock_LatestTag_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -323,7 +323,7 @@ func forwardGetBlockByNumber(t *testing.T, ctx context.Context, network *Network
 // block above every head returns null and reaches no upstream.
 func TestForward_FutureBlock_OptInWithoutServedTip_ShortCircuitsToNull(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x69", "null", &dispatched, "fb1", "fb2", "fb3")
@@ -354,7 +354,7 @@ func TestForward_FutureBlock_OptInWithoutServedTip_ShortCircuitsToNull(t *testin
 // ceiling, so the block is still dispatched.
 func TestForward_FutureBlock_OptInWithoutServedTip_OnlyMostAheadHasBlock_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x64", futureBlockSentinel, &dispatched, "fb1", "fb2", "fb3")
@@ -393,7 +393,7 @@ func TestForward_FutureBlock_OptInWithoutServedTip_OnlyMostAheadHasBlock_Dispatc
 
 	sampleBlockTime(t, network)
 	rateLimited.Store(true)
-	a := ups[0].EvmStatePoller().Ask(ctx, common.HeadNeedFork, 0, common.AskRefresh)
+	a := ups[0].EvmStatePoller().Ask(ctx, common.HeadNeedFork, 0, time.Time{}, common.AskRefresh)
 	rateLimited.Store(false)
 	require.Error(t, a.Err, "fb1's latest poll answered 429")
 	network.refreshHeads()
@@ -409,7 +409,7 @@ func TestForward_FutureBlock_OptInWithoutServedTip_OnlyMostAheadHasBlock_Dispatc
 // included: a block at or below a syncing upstream's head must be dispatched.
 func TestForward_FutureBlock_OptIn_SyncingUpstreamAhead_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x69", futureBlockSentinel, &dispatched, "fb1", "fb2", "sync1")
@@ -436,7 +436,7 @@ func TestForward_FutureBlock_OptIn_SyncingUpstreamAhead_Dispatches(t *testing.T)
 // short-circuit fails open and the request is dispatched.
 func TestForward_FutureBlock_OptIn_UpstreamWithUnknownHead_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x65", futureBlockSentinel, &dispatched, "fb1", "fb2", "nohead")
@@ -466,7 +466,7 @@ func TestForward_FutureBlock_OptIn_UpstreamWithUnknownHead_Dispatches(t *testing
 // finalized and latest heads must still be dispatched.
 func TestForward_FutureBlock_OptIn_FinalizedConfidence_UnfinalizedBlock_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x5f", futureBlockSentinel, &dispatched, "fb1", "fb2", "fb3")
@@ -499,7 +499,7 @@ func TestForward_FutureBlock_OptIn_FinalizedConfidence_UnfinalizedBlock_Dispatch
 func TestForward_FutureBlock_OptIn_CordonedFallbackAhead_Dispatches(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	var dispatched atomic.Int64
 	network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
@@ -526,7 +526,7 @@ func TestForward_FutureBlock_OptIn_CordonedFallbackAhead_Dispatches(t *testing.T
 func TestForward_FutureBlock_OptIn_ShortCircuitNotMirroredToExcluded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	var dispatched atomic.Int64
 	network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
@@ -564,7 +564,7 @@ func TestForward_FutureBlock_OptIn_ShortCircuitNotMirroredToExcluded(t *testing.
 // (#1348) is not asked again.
 func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -768,7 +768,7 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 // future_after_wait.
 func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -787,6 +787,10 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	}
 	ids := []string{"fm1", "fm2", "fm3"}
 	var first, second, nearCalls atomic.Int64
+	latestCalls := map[string]*atomic.Int64{}
+	for _, id := range ids {
+		latestCalls[id] = &atomic.Int64{}
+	}
 	mockGetBlockByNumberAt("0x69", "null", &first, "fm1")
 	mockGetBlockByNumberAt("0x69", futureBlockSentinel, &second, "fm2", "fm3")
 	for _, id := range ids {
@@ -795,7 +799,11 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 			Persist().
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
-				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"latest"`) {
+					return false
+				}
+				latestCalls[id].Add(1)
+				return true
 			}).
 			Reply(200).
 			Map(func(res *http.Response) *http.Response {
@@ -933,6 +941,29 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	assert.GreaterOrEqual(t, time.Since(start), 850*time.Millisecond, "it waited for the chain")
 	assert.Less(t, time.Since(start), 3*time.Second, "within W")
 	assert.Equal(t, refused+1, afterWait(), "not refused")
+
+	// On a 100ms chain, W 2s, a block that never comes waits all of W
+	// while every tick Asks each voter below it for a head fetched after
+	// the previous tick: about 20 fetches each. A tick that took the
+	// previous tick's fetch, sent a few µs less than 1 bt before, would
+	// see a new head only every 2 bt.
+	now := time.Now().Unix()
+	for i := int64(0); i <= 1000; i++ {
+		network.metricsTracker.SampleConfirmedHeaderTime(network.networkId, network.Label(), 5000+i, now+1000+i/10)
+	}
+	require.InDelta(t, float64(100*time.Millisecond), float64(network.EvmBlockTime()), float64(5*time.Millisecond))
+	before := map[string]int64{}
+	for _, id := range ids {
+		before[id] = latestCalls[id].Load()
+	}
+	start = time.Now()
+	_, err = logs("0x70")
+	require.Error(t, err, "a range 5 above a ceiling that stays")
+	assert.GreaterOrEqual(t, time.Since(start), 1900*time.Millisecond, "refused once W ended")
+	assert.Equal(t, refused+2, afterWait(), "counted future_after_wait")
+	for _, id := range ids {
+		assert.GreaterOrEqual(t, latestCalls[id].Load()-before[id], int64(16), "%s fetched once per tick", id)
+	}
 }
 
 // mockMethodAnswer makes every listed upstream answer method with result,
@@ -964,10 +995,11 @@ func mockMethodAnswer(method, result string, dispatched *atomic.Int64, ids ...st
 // request that ends during the wait gets null too. The wait Asks the
 // voters Latest lacks for a head fetched after it began: on instance 3,
 // whose voters' counters are fresh but whose nodes already hold the block,
-// the answer is served. Each wait counts its outcome.
+// the answer is served; on instance 4, whose voters already hold it while
+// the head pass has not published it, too. Each wait counts its outcome.
 func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1098,6 +1130,45 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the wait's fetch finds 101 on both voters: the receipt is served")
 	assert.Equal(t, int64(101), servedHead(fresh, ctx).Latest)
 	assert.Equal(t, served+1, held("held_served"), "the wait on instance 3 ended served")
+	assert.Equal(t, nulls, held("held_null"))
+
+	// Instance 4: the voters of lane hs* already hold 101, but the head
+	// pass that would publish it is still on the network-wide lane, as a
+	// pass under load takes longer than 1 bt. Latest is the voters' quorum,
+	// not the last publish: the receipt is served.
+	stalled, stalledUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "hs1", chainID: 123, latestBlock: 100},
+		{id: "hs2", chainID: 123, latestBlock: 100},
+		{id: "hx1", chainID: 123, latestBlock: 100},
+	})
+	for _, u := range stalledUps {
+		setServedTipFinalized(t, u, 90)
+	}
+	var stalledCalls atomic.Int64
+	mockMethodAnswer("eth_getTransactionReceipt", receipt, &stalledCalls, "hs1", "hs2", "hx1")
+	lane := stalled.laneFor("hs*")
+	require.NotNil(t, lane)
+	stalled.refreshHeads()
+	require.Equal(t, int64(100), lane.published().Latest)
+	stalled.servedTipAll.mu.Lock()
+	defer stalled.servedTipAll.mu.Unlock()
+	for _, u := range stalledUps[:2] {
+		u.EvmStatePoller().SuggestLatestBlock(101, time.Now())
+	}
+	require.Eventually(t, func() bool {
+		return stalledUps[0].EvmStatePoller().LatestBlock() == 101 && stalledUps[1].EvmStatePoller().LatestBlock() == 101
+	}, 2*time.Second, 10*time.Millisecond, "both voters of hs* hold 101")
+	require.Equal(t, int64(100), lane.published().Latest, "the head pass has not published it")
+	nulls, served = held("held_null"), held("held_served")
+	req = common.NewNormalizedRequest([]byte(receiptReq))
+	req.SetDirectives(&common.RequestDirectives{UseUpstream: "hs*"})
+	resp, err = stalled.Forward(ctx, req)
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the voters' quorum holds 101: the receipt is served")
+	assert.Positive(t, stalledCalls.Load(), "dispatched to an upstream")
+	assert.Equal(t, served+1, held("held_served"), "the wait on instance 4 ended served")
 	assert.Equal(t, nulls, held("held_null"))
 }
 

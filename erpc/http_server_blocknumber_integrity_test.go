@@ -313,7 +313,7 @@ func bniSeedCache(t *testing.T, ntw *Network, hexValue string) {
 
 func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	integrityOn := func() *common.EvmIntegrityConfig {
 		return &common.EvmIntegrityConfig{EnforceHighestBlock: util.BoolPtr(true)}
@@ -326,7 +326,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Baseline_FreshStaleResponseIsCorrectedForClient", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -340,7 +340,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Baseline_EnforcementExplicitlyDisabledServesRawValue", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -356,7 +356,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Bug_CacheHitMustNotServeBlockBelowAlreadyServedTip", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -389,7 +389,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Bug_StaleUpstreamValueMustNotPoisonCache", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -419,7 +419,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Bug_StaleCacheEntryMustBeEnforcedOnRead", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -443,7 +443,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Bug_UseUpstreamPinnedRequestMustUseSelectorScopedTip", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -465,7 +465,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Baseline_EnforcementEnabledByDefaultOnModernConfig", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -484,7 +484,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Bug_PerRequestDirectiveOverrideMustBeHonored", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 

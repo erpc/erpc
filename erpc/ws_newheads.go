@@ -19,34 +19,66 @@ var errNewHeadsLag = indexer.OutOfRangeError{Reason: indexer.OutOfRangeLag}
 
 // tapLag is a ws tap's lag clock (spec §10.2): its next block is lagging
 // once it has been deliverable for longer than reorgWindow blocks of chain
-// time. No block is deliverable before floor: the tap's start, when its
-// loop runs and the client has the id, so a loop that starts late begins
-// with no lag; each tap raises it to the Ready of each block it sends. A
-// burst never lags, since its blocks just arrived.
-type tapLag struct{ floor time.Time }
-
-// start opens the clock at the tap's first batch once the client has the
-// id; later calls keep it.
-func (l *tapLag) start() {
-	if l.floor.IsZero() {
-		l.floor = time.Now()
-	}
+// time while the tap was not waiting in its Read. No block is deliverable
+// before floor: the tap's start, when its loop runs and the client has the
+// id, so a loop that starts late begins with no lag; each tap raises it to
+// when each block it sends became deliverable. A burst never lags, since
+// its blocks just arrived. A Read that waits, as on receipts the feed let
+// go and refetches (§9), stops the clock: a block deliverable when the tap
+// asked counts as deliverable that much later, a block that became
+// deliverable during the Read counts from its return.
+type tapLag struct {
+	floor time.Time
+	// asked is when the tap last asked for a batch, the end of its last
+	// emit; read is when that Read returned and wait how long it took.
+	asked, read time.Time
+	wait        time.Duration
 }
 
-// sent raises the floor to blk's Ready: the blocks after a block the tap
-// waited on are deliverable no sooner than it.
+// got opens the clock on a batch once the client has the id: at the first
+// it starts the tap; at the next the floor moves on by the Read's wait.
+func (l *tapLag) got() {
+	l.read = time.Now()
+	if l.floor.IsZero() {
+		l.floor = l.read
+		return
+	}
+	if !l.asked.IsZero() {
+		l.wait = l.read.Sub(l.asked)
+	}
+	l.floor = l.shift(l.floor)
+}
+
+// ask notes that the tap asks for its next batch.
+func (l *tapLag) ask() { l.asked = time.Now() }
+
+// shift moves at, a time before the Read returned, on by the Read's wait,
+// never past its return.
+func (l *tapLag) shift(at time.Time) time.Time {
+	if at = at.Add(l.wait); at.After(l.read) {
+		return l.read
+	}
+	return at
+}
+
+// ready is when blk became deliverable to the tap, its Read's wait left out.
+func (l *tapLag) ready(blk indexer.Block) time.Time {
+	if ready := l.shift(blk.Ready); ready.After(l.floor) {
+		return ready
+	}
+	return l.floor
+}
+
+// sent raises the floor to when blk became deliverable: the blocks after a
+// block the tap waited on are deliverable no sooner than it.
 func (l *tapLag) sent(blk indexer.Block) {
-	if blk.Ready.After(l.floor) {
-		l.floor = blk.Ready
+	if ready := l.ready(blk); ready.After(l.floor) {
+		l.floor = ready
 	}
 }
 
 func (l *tapLag) lagging(tracker *evm.ChainTracker, next indexer.Block) bool {
-	ready := next.Ready
-	if ready.Before(l.floor) {
-		ready = l.floor
-	}
-	return time.Since(ready) > time.Duration(tracker.ReorgWindow())*tracker.BlockTime()
+	return time.Since(l.ready(next)) > time.Duration(tracker.ReorgWindow())*tracker.BlockTime()
 }
 
 // wsTapLoopStart, while set, runs as each ws newHeads or logs tap's loop
@@ -101,7 +133,8 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		}
-		lag.start()
+		lag.got()
+		defer lag.ask()
 		if len(b.Reverted) == 0 && len(b.Applied) > 0 && lag.lagging(tracker, b.Applied[0]) {
 			return 0, errNewHeadsLag
 		}

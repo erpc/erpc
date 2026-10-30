@@ -1201,12 +1201,14 @@ func (t *ChainTracker) wantsSnapshot() []func([]byte) bool {
 // feedNeeds reports whether the feed fetches block h's receipts at pin
 // time: a MayMatch is registered, the block has transactions, and either a
 // registered MayMatch wants it or its bloom cannot skip it yet. Decided once
-// per block while the registry and the skip stay.
+// per held block while the registry and the skip stay; drop forgets it.
 func (t *ChainTracker) feedNeeds(h *chainHeader) bool {
 	v, ok := t.needs[h.hash]
 	if !ok {
 		v = t.needsOf(h, t.needsWants)
-		t.needs[h.hash] = v
+		if _, held := t.nodes[h.hash]; held {
+			t.needs[h.hash] = v
+		}
 	}
 	return v
 }
@@ -1295,11 +1297,6 @@ func (t *ChainTracker) planReceipts() {
 			if j.readers == 0 {
 				t.endJob(j, nil)
 			}
-		}
-	}
-	for hash := range t.needs {
-		if _, held := t.nodes[hash]; !held {
-			delete(t.needs, hash)
 		}
 	}
 	t.publishLogsHead()

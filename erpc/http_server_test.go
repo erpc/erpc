@@ -40,7 +40,7 @@ import (
 func TestHttpServer_RaceTimeouts(t *testing.T) {
 	t.Run("ConcurrentRequestsWithTimeouts", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		gock.EnableNetworking()
 		gock.NetworkingFilter(func(req *http.Request) bool {
 			shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
@@ -107,6 +107,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			panic(err)
 		}
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+		stopERPCAtEnd(t, erpcInstance, ctx)
 		require.NoError(t, err)
 
 		erpcInstance.Bootstrap(ctx)
@@ -182,7 +183,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 
 	t.Run("RapidSuccessiveRequests", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		gock.EnableNetworking()
 		gock.NetworkingFilter(func(req *http.Request) bool {
 			shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
@@ -249,6 +250,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			panic(err)
 		}
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+		stopERPCAtEnd(t, erpcInstance, ctx)
 		require.NoError(t, err)
 
 		erpcInstance.Bootstrap(ctx)
@@ -314,7 +316,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 
 	t.Run("MixedTimeoutAndNonTimeoutRequests", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		gock.EnableNetworking()
 		gock.NetworkingFilter(func(req *http.Request) bool {
 			shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
@@ -395,6 +397,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			panic(err)
 		}
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+		stopERPCAtEnd(t, erpcInstance, ctx)
 		require.NoError(t, err)
 
 		erpcInstance.Bootstrap(ctx)
@@ -524,7 +527,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -606,7 +609,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -687,7 +690,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -764,7 +767,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -850,7 +853,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -927,7 +930,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1006,7 +1009,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1087,7 +1090,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1117,7 +1120,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 	t.Run("GetLogsShouldNotRetryWhenRetryEmptyDisabled", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1249,7 +1252,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 }
 func TestHttpServer_SingleUpstream(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	type testCase struct {
 		name      string
@@ -1311,7 +1314,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 
 			// t.Run("ConcurrentRequests", func(t *testing.T) {
 			// 	cfg := &common.Config{
@@ -1857,7 +1860,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				}
 
 				util.ResetGock()
-				defer util.ResetGock()
+				t.Cleanup(util.ResetGock)
 				util.SetupMocksForEvmStatePoller()
 				defer util.AssertNoPendingMocks(t, 0)
 
@@ -2670,7 +2673,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// The default selection policy probes the directive-excluded upstream in
 		// the background, so rpc1 is hit by the rpc2-directed request (as a probe)
@@ -2790,7 +2793,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// The default selection policy probes the directive-excluded rpc1 in the
 		// background (re-issuing the same eth_getBalance request), so rpc1 is hit
@@ -2840,7 +2843,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 
 	t.Run("ShouldReturnEmptyArrayWhenHedgeAndRetryDefinedOnBothNetworkAndUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -2995,7 +2998,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 
 	t.Run("ShouldNotRetryWhenRetryEmptyDisabled", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -3152,7 +3155,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -3212,7 +3215,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -3275,7 +3278,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		_, sendOptionsRequest, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
@@ -4074,7 +4077,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			name: "Eval strategy - any:evm:eth_chainId with incorrect chain ID",
 			setupServer: func(ctx context.Context) *HttpServer {
 				util.ResetGock()
-				defer util.ResetGock()
+				t.Cleanup(util.ResetGock)
 
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
@@ -4496,7 +4499,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 			util.SetupMocksForEvmStatePoller()
 
 			ctx, ctxCancel := context.WithCancel(testCtx)
@@ -4558,7 +4561,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		_ = util.SetupMocksForUpstream("https://eth-mainnet.g.alchemy.com", map[string]interface{}{
 			"chainId": "0x1",
 		})
@@ -4608,7 +4611,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		_ = util.SetupMocksForUpstream("https://eth-mainnet.g.alchemy.com", map[string]interface{}{
 			"chainId": "0x1",
 		})
@@ -4659,7 +4662,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		_ = util.SetupMocksForUpstream("https://eth-mainnet.g.alchemy.com", map[string]interface{}{
 			"chainId": "0x1",
 		})
@@ -4700,7 +4703,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		_ = util.SetupMocksForUpstream("https://eth-mainnet.g.alchemy.com", map[string]interface{}{
 			"chainId": "0x1",
 		})
@@ -4748,7 +4751,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		gock.New("https://12340001234.rpc.hypersync.xyz").
 			Post("/").
@@ -4857,7 +4860,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		gock.New("https://eth-mainnet.g.alchemy.com").
 			Post("/v2/test-key").
@@ -4976,7 +4979,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		gock.New("https://eth-mainnet.g.alchemy.com").
 			Post("/v2/test-key").
@@ -5095,7 +5098,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 func TestHttpServer_EvmGetLogs(t *testing.T) {
 	t.Run("SuccessfulSplitIfOneOfSubRequestsNeedsRetries", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5284,7 +5287,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 
 	t.Run("FailSplitIfOneOfSubRequestsFailsServerSide", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5403,7 +5406,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 	})
 	t.Run("FailSplitIfOneOfSubRequestsFailsMissingData", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1)
 
@@ -5532,11 +5535,11 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 
 func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	t.Run("ReturnBlockIfUpstreamReturnsNewerBlock", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5608,7 +5611,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ReturnsHigherAvailableBlockFromLaggingUpstreamWhenItSyncs", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5703,7 +5706,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ReturnsHigherAvailableBlockFromUpToDateUpstreamWhenOneIsLagging", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5818,7 +5821,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// survives; post-hook sees EnforceHighestBlock=false and returns early,
 		// preserving rpc1's lagging block (0x11118888).
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5913,7 +5916,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 	t.Run("ReturnsMissingDataIfAllUpstreamsReturnNull", func(t *testing.T) {
 		util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		defer util.AssertNoPendingMocks(t, 0)
 
 		// Create a config with 1 upstream and enforce highest block.
@@ -6003,7 +6006,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("FailFastIfSharedStateIsTooSlow", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		// Create a config with 1 upstream and enforce highest block.
 		cfg := &common.Config{
@@ -6195,7 +6198,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("FailFastIfSharedStateIsDown", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		// Create a config with 1 upstream and enforce highest block.
 		cfg := &common.Config{
@@ -6387,7 +6390,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldSkipHookIfHighestBlockCheckDisabled", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0) // We use Times(2) not Persist() for the user call
 
@@ -6463,7 +6466,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldReturnSuccessWithRealStatePoller", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -6535,7 +6538,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldNoopIfParamIsDirectHex", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -6624,7 +6627,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldNoopIfParamIsEarliestOrPending", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -6756,7 +6759,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldOverrideIfUpstreamReturnsOlderBlockOnFinalized", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -6849,7 +6852,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldStickWithUpstreamBlockIfItMatchesHighestOnFinalized", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		// Use a config with 2 upstreams, EnforceHighestBlock = true,
 		// so we can confirm that even with multiple upstreams, no fallback request is triggered if
@@ -7060,7 +7063,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldHandleInvalidBlockTag", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		// Provide a config with EnforceHighestBlock = true so we can confirm that
 		// the logic still skips override if the block tag is not one of the recognized keywords.
@@ -7183,7 +7186,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldHandleSuccessfulConsensus", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -7330,7 +7333,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldHandleConsensusFailureDueToLowParticipants", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -7462,7 +7465,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldHandleConsensusFailureDueToDispute", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -7658,6 +7661,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	}
 
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, evmJsonRpcCache, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 
 	// Callback now set at construction; do not mutate in tests
@@ -7765,7 +7769,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 	t.Skip("Skipping memory profile test in CI - run locally for profiling")
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	gock.EnableNetworking()
 	gock.NetworkingFilter(func(req *http.Request) bool {
 		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
@@ -7858,7 +7862,7 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 
 	// Setup mocks for state poller initialization
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	// We need to set up mocks for each upstream for the state poller
 	for _, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost", "http://rpc3.localhost", "http://rpc4.localhost"} {
@@ -7951,6 +7955,7 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 	require.NoError(t, err)
 
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 
@@ -8029,7 +8034,7 @@ func TestHttpServer_DrainStampsConnectionClose(t *testing.T) {
 	// (this also resets gock and re-allows real localhost calls, which the
 	// assertions below depend on).
 	util.SetupMocksForEvmStatePoller()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
@@ -8073,6 +8078,7 @@ func TestHttpServer_DrainStampsConnectionClose(t *testing.T) {
 	})
 	require.NoError(t, err)
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 
@@ -8125,7 +8131,7 @@ func TestHttpServer_DrainStampsConnectionClose(t *testing.T) {
 
 func TestHttpServer_IgnoredMethodKeepsRequestId(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	cfg := &common.Config{
@@ -8210,6 +8216,7 @@ func TestHttpServer_AdminMethodFilter(t *testing.T) {
 		require.NoError(t, err)
 
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+		stopERPCAtEnd(t, erpcInstance, ctx)
 		require.NoError(t, err)
 		erpcInstance.Bootstrap(ctx)
 
@@ -8418,7 +8425,7 @@ func TestHttpServer_RejectsSubscriptionMethodsOverHttp(t *testing.T) {
 	}
 
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)

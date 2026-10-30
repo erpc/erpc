@@ -286,6 +286,7 @@ func startTestERPCServer(t *testing.T, cfg *common.Config) (*HttpServer, string,
 	}
 
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, evmCache, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 
 	erpcInstance.Bootstrap(ctx)
@@ -384,7 +385,7 @@ func TestWebSocket_BasicRPC(t *testing.T) {
 	// Verifies a single JSON-RPC request/response over a WebSocket connection
 	t.Run("SingleRequestOverWebSocket", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -401,7 +402,7 @@ func TestWebSocket_BasicRPC(t *testing.T) {
 	// Verifies sequential requests on the same connection work correctly
 	t.Run("MultipleRequestsOnSameConnection", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -433,7 +434,7 @@ func TestWebSocket_BasicRPC(t *testing.T) {
 	// Verifies many concurrent writes/reads on a single connection
 	t.Run("ConcurrentRequestsOnSameConnection", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -472,7 +473,7 @@ func TestWebSocket_BasicRPC(t *testing.T) {
 	// Verifies JSON array batch requests work over WebSocket
 	t.Run("BatchRequestOverWebSocket", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -511,7 +512,7 @@ func TestWebSocket_BasicRPC(t *testing.T) {
 	// Verifies the server handles client disconnect and allows reconnection
 	t.Run("WebSocketClientDisconnect", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -536,7 +537,7 @@ func TestWebSocket_BasicRPC(t *testing.T) {
 	// Verifies HTTP and WebSocket work simultaneously on the same server
 	t.Run("HTTPStillWorksAlongsideWebSocket", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -565,7 +566,7 @@ func TestWebSocket_ErrorHandling(t *testing.T) {
 	// Verifies invalid JSON returns a parse error response
 	t.Run("InvalidJSON", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -588,7 +589,7 @@ func TestWebSocket_ErrorHandling(t *testing.T) {
 	// Verifies an empty message body returns an error response
 	t.Run("EmptyBody", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -612,7 +613,7 @@ func TestWebSocket_ErrorHandling(t *testing.T) {
 	t.Run("UpstreamError", func(t *testing.T) {
 		util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -647,7 +648,7 @@ func TestWebSocket_ErrorHandling(t *testing.T) {
 	t.Run("UnknownMethodFailsFast", func(t *testing.T) {
 		util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		var calls [2]atomic.Int32
 		for i, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
@@ -733,7 +734,7 @@ func TestWebSocket_MultipleConnections(t *testing.T) {
 	// Verifies multiple simultaneous connections each get correct responses
 	t.Run("IndependentConnections", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -760,7 +761,7 @@ func TestWebSocket_MultipleConnections(t *testing.T) {
 	// Verifies closing one connection does not affect others
 	t.Run("OneDisconnectDoesNotAffectOthers", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -809,7 +810,7 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -923,7 +924,7 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		cfg := standardWsConfig("ws" + strings.TrimPrefix(mockUpstream.URL, "http"))
 		cfg.Server.CostHeaders = util.BoolPtr(true)
@@ -1038,7 +1039,7 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 	// nothing to feed newHeads.
 	t.Run("SubscribeWithoutSubscriptionSourceFails", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -1055,7 +1056,7 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 	// Verifies eth_unsubscribe with a nonexistent ID fails as geth's does
 	t.Run("UnsubscribeUnknownIDFails", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 		defer cleanup()
@@ -1086,7 +1087,7 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -1134,7 +1135,7 @@ func TestWebSocket_UpstreamClient(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 
@@ -1224,7 +1225,7 @@ func TestWebSocket_UpstreamClient(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -1258,7 +1259,7 @@ func TestWebSocket_SubscriptionRecovery(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -1311,7 +1312,7 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -1362,7 +1363,7 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 	// each once, in order.
 	t.Run("TwoSourcesPushOnePendingTransactionOnce", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		chain := newMockChain(0x100, false)
 		a, urlA := newMockWsVendor(t, chain, nil)
 		b, urlB := newMockWsVendor(t, chain, nil)
@@ -1394,7 +1395,7 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 	// same variant while the first waits for the answers.
 	t.Run("EverySourceRefusesNewVariant", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		chain := newMockChain(0x100, false)
 		answer := make(chan struct{})
 		refuse := func(v *mockWsVendor) {
@@ -1439,7 +1440,7 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 	// subscribe is still in flight, as on a fresh or reconnected socket.
 	t.Run("CapacityAnswersOpenAndRetryDelivers", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		chain := newMockChain(0x100, false)
 		held := make(chan struct{})
 		busyOnce := func(v *mockWsVendor) {
@@ -1509,7 +1510,7 @@ func TestWebSocket_RateLimiting(t *testing.T) {
 	// Verifies project-level rate limits are enforced on WebSocket requests
 	t.Run("ProjectRateLimitAppliedOverWs", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1596,7 +1597,7 @@ func TestWebSocket_GracefulShutdown(t *testing.T) {
 	// Verifies clients receive a GoingAway close frame on server shutdown
 	t.Run("ServerShutdownClosesWsWithGoingAway", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 
@@ -1633,7 +1634,7 @@ func TestWebSocket_GracefulShutdown(t *testing.T) {
 		defer mockUpstream.Close()
 
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -1658,7 +1659,7 @@ func TestWebSocket_GracefulShutdown(t *testing.T) {
 	// Verifies all connections are closed when the server shuts down
 	t.Run("MultipleConnectionsClosedOnShutdown", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 
@@ -1696,7 +1697,7 @@ func TestWebSocket_MethodFiltering(t *testing.T) {
 	// Verifies ignored methods return an unsupported error over WebSocket
 	t.Run("IgnoredMethodReturnsError", func(t *testing.T) {
 		setupGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1741,7 +1742,7 @@ func TestWebSocket_MethodFiltering(t *testing.T) {
 // not close the connection and its other subscriptions.
 func TestWebSocket_FailedSubscribeKeepsConnectionOpen(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 	defer cleanup()
@@ -1803,7 +1804,7 @@ func TestWebSocket_EveryUpstreamHeadReachesItsPoller(t *testing.T) {
 	defer mock2.Close()
 
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	url1 := "ws" + strings.TrimPrefix(mock1.URL, "http")
 	url2 := "ws" + strings.TrimPrefix(mock2.URL, "http")
@@ -2007,6 +2008,62 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		require.Len(t, s.openLogs(), len(chainsim.Filters), "no logs tap ended while receipts were slow")
 		s.setAll(func(f *chainsim.Faults) { f.SlowReceipts = 0 })
 		s.chain.Halt(false)
+	})
+
+	// N7 in-process: block a's receipts answer later than the window (16
+	// blocks of 200ms) while the chain moves. Block a+1's come at once, so
+	// it reaches the logs head as a leaves the window, and its receipts
+	// leave the feed a block later, before a's arrive. Each tap then
+	// refetches a+1's receipts, as late as a's (spec §9): that wait is a
+	// receipts wait, never lag, so no tap ends and both clients get the
+	// logs of a and a+1 (§10.2).
+	t.Run("receipts refetched after they left the window", func(t *testing.T) {
+		s := newChaosSeed(t, 11, true, chaosOpts{maxBackfill: 20 * time.Second})
+		start(s)
+		defer s.stopERPC()
+		s.blocks(3)
+		s.dialLogs("refetch")
+		s.blocks(4)
+		m := chainsim.KindMatching
+		a := s.chain.Plan(m, m).Number + 1
+		// Well past the lag bound (16 block times, with the block-time
+		// EMA above 200ms on a loaded host), well within the fetch's 10s.
+		late := 6 * time.Second
+		var nextCalls atomic.Int32
+		hook := func(method, params string) {
+			if method != "eth_getBlockReceipts" {
+				return
+			}
+			slow, next := s.chain.CanonAt(a), s.chain.CanonAt(a+1)
+			p := strings.ToLower(params)
+			switch {
+			case slow != nil && strings.Contains(p, strings.ToLower(slow.Hash.Hex())):
+				time.Sleep(late)
+			case next != nil && strings.Contains(p, strings.ToLower(next.Hash.Hex())):
+				if nextCalls.Add(1) > 1 {
+					time.Sleep(late)
+				}
+			}
+		}
+		evm.TrackerFetchHook.Store(&hook)
+		defer evm.TrackerFetchHook.Store(nil)
+		ends := tapEndsOf(indexer.SubTypeLogs)
+		s.blocks(2)
+		require.Eventually(t, func() bool {
+			for _, cl := range s.openLogs() {
+				cl.mu.Lock()
+				d := cl.logsDiffLocked(s, a, a+1)
+				cl.mu.Unlock()
+				if d != "" {
+					return false
+				}
+			}
+			return len(s.openLogs()) == len(chainsim.Filters)
+		}, 30*time.Second, 50*time.Millisecond, "both clients hold the logs of blocks %d and %d", a, a+1)
+		evm.TrackerFetchHook.Store(nil)
+		assert.GreaterOrEqual(t, nextCalls.Load(), int32(2), "block %d's receipts were fetched again after they left the feed", a+1)
+		assert.Equal(t, ends, tapEndsOf(indexer.SubTypeLogs), "no logs tap ended")
+		require.Len(t, s.openLogs(), len(chainsim.Filters))
 	})
 
 	// A cold instance pins ws-a's heads while the other sources, held,
@@ -2229,7 +2286,7 @@ func TestWebSocket_ReconnectAfterUnsubscribe(t *testing.T) {
 	defer mockUpstream.Close()
 
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 	addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -2282,7 +2339,7 @@ func TestWebSocket_InternalRequestIdsAreUnique(t *testing.T) {
 	defer mockUpstream.Close()
 
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
 	addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
@@ -2896,7 +2953,7 @@ func pollsSettle(t *testing.T, polls *atomic.Int64, window time.Duration, msg st
 // (#240). The client's heads stay contiguous throughout.
 func TestWebSocket_HttpSourcePolledHeads(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	prevBackoff, prevExpiry := evm.AskMaxBackoff.Load(), evm.PollerGiveUpExpiry.Load()
 	evm.AskMaxBackoff.Store(200 * time.Millisecond)
 	evm.PollerGiveUpExpiry.Store(3 * time.Second)
@@ -2979,7 +3036,7 @@ func TestWebSocket_HttpSourcePolledHeads(t *testing.T) {
 // head never reaches it.
 func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	prevRecheck := evm.ChainIdCordonRecheck.Load()
 	evm.ChainIdCordonRecheck.Store(500 * time.Millisecond)
 	defer evm.ChainIdCordonRecheck.Store(prevRecheck)
@@ -3046,7 +3103,7 @@ func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
 // client is subscribed, none after it leaves.
 func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	chain := newMockChain(0x100, false)
 	httpVendor, srv := newMockHttpVendor(t, chain)
@@ -3154,7 +3211,7 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 // newPendingTransactions only while topic admission admits it too.
 func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	prevLead := primaryLeadAfter.Load()
 	primaryLeadAfter.Store(1500 * time.Millisecond)
 	defer primaryLeadAfter.Store(prevLead)
@@ -3242,7 +3299,7 @@ func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 // made while nobody polled.
 func TestWebSocket_PollsStopWhenIdle(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	prevIdle := sourceIdleStop.Load()
 	sourceIdleStop.Store(500 * time.Millisecond)
 	defer sourceIdleStop.Store(prevIdle)
@@ -3295,7 +3352,7 @@ func TestWebSocket_PollsStopWhenIdle(t *testing.T) {
 // evalInterval.
 func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	chain := newMockChain(0x100, false)
 	stale := func(v *mockWsVendor) { v.staleRPC = true }
@@ -3354,7 +3411,7 @@ func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
 // and is asked again once per re-ask interval.
 func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	prevReask := wsupstream.HeadsReaskInterval.Load()
 	wsupstream.HeadsReaskInterval.Store(time.Second)
 	defer wsupstream.HeadsReaskInterval.Store(prevReask)
@@ -3405,7 +3462,7 @@ func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
 // twice in a row while the voters that could move Latest wait.
 func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	chain := newMockChain(0x100, false)
 	var vendors []*mockHttpVendor
