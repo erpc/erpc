@@ -155,7 +155,7 @@ func (h *harness) stop() {
 		h.redis.stop()
 	}
 	wall := time.Since(h.start)
-	h.t.Logf("phase used %s CPU in the harness and simulators over %s wall; proxies: %s", (selfCPU() - h.cpu0).Round(time.Second), wall.Round(time.Second), h.lookups.summary())
+	h.t.Logf("the test process (harness and simulators of every phase running beside this one) used %s CPU over this phase's %s wall; proxies: %s", (selfCPU() - h.cpu0).Round(time.Second), wall.Round(time.Second), h.lookups.summary())
 	for _, p := range h.pods {
 		p.mu.Lock()
 		h.t.Logf("%s used %s CPU (%.1f cores)", p.name, p.cpu.Round(time.Second), p.cpu.Seconds()/wall.Seconds())
@@ -206,10 +206,12 @@ func (h *harness) claimDump(pod int) bool {
 	return true
 }
 
-// freePort is a port no listener holds on any address: pods bind HTTP and
-// gRPC on 127.0.0.1 and metrics on every interface. On macOS a ":0" probe
-// (the IPv6 dual-stack wildcard) may return a port an IPv4 listener holds,
-// and the pod's wildcard bind then succeeds beside it while that listener
+// freePort is a port no listener holds on any address and no phase of this
+// run was handed before: phases run concurrently, and a port probed free
+// stays unbound until its pod or redis boots. Pods bind HTTP and gRPC on
+// 127.0.0.1 and metrics on every interface. On macOS a ":0" probe (the
+// IPv6 dual-stack wildcard) may return a port an IPv4 listener holds, and
+// the pod's wildcard bind then succeeds beside it while that listener
 // takes every 127.0.0.1 connection (N6: pod-1's scrapes got EOF all
 // phase), so the port is probed on the IPv4 addresses too.
 func freePort(t *testing.T) int {
@@ -220,10 +222,29 @@ func freePort(t *testing.T) int {
 		}
 		port := ln.Addr().(*net.TCPAddr).Port
 		_ = ln.Close()
-		if ipv4Free(port) {
+		if ipv4Free(port) && handedPorts.claim(port) {
 			return port
 		}
 	}
+}
+
+// handedPorts are the ports freePort returned in this process.
+var handedPorts = &portSet{ports: map[int]bool{}}
+
+type portSet struct {
+	mu    sync.Mutex
+	ports map[int]bool
+}
+
+// claim reports whether port was not handed out before, and marks it.
+func (ps *portSet) claim(port int) bool {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	if ps.ports[port] {
+		return false
+	}
+	ps.ports[port] = true
+	return true
 }
 
 func ipv4Free(port int) bool {
@@ -277,7 +298,7 @@ func scanFatal(path string) []string {
 // --- pods ---
 //
 
-// pod is one eRPC process: the -race binary with its own YAML config, or
+// pod is one eRPC process: erpcBin with its own YAML config, or
 // the old image (X7).
 type pod struct {
 	h    *harness

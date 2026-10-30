@@ -1,6 +1,7 @@
 package realworld
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,11 +21,13 @@ import (
 
 // TestRealWorld runs the catalogue scenarios (review §3): network-scoped
 // ones concurrently on shared pods, pod-scoped ones each in their own phase
-// with fresh pods and redis (selectedPhases). Each phase waits for a quiet
-// host; REALWORLD_LOADED_HOST=1 starts it at any load, and every latency
-// verdict taken above the limit still fails, labelled "host overloaded".
+// with fresh pods and redis (selectedPhases). Phases run concurrently, up to
+// phaseLimit at once, each on its own ports, pods, redis and simulators.
+// The run waits for a quiet host before its first phase;
+// REALWORLD_LOADED_HOST=1 starts it at any load, and every latency verdict
+// taken above the limit still fails, labelled "host overloaded".
 func TestRealWorld(t *testing.T) {
-	phases, err := selectedPhases()
+	phases, skipped, err := selectedPhases()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,6 +36,11 @@ func TestRealWorld(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &run{root: root, host: startHostLoad()}
+	for _, ph := range skipped {
+		for _, sp := range ph.specs {
+			r.rows = append(r.rows, summaryRow{phase: ph.name, name: sp.name, result: "skip", load: "long tier: REALWORLD_TIER=long runs it"})
+		}
+	}
 	t.Cleanup(func() {
 		r.host.stop()
 		r.summary(t)
@@ -41,9 +50,22 @@ func TestRealWorld(t *testing.T) {
 		}
 		_ = os.RemoveAll(root)
 	})
-	for _, ph := range phases {
-		r.phase(t, ph.name, ph.chain, ph.specs)
+	if err := r.host.waitQuiet(t.Logf); err != nil {
+		t.Fatal(err)
 	}
+	limit, why := phaseLimit()
+	t.Logf("%d phases, at most %d at once (%s)", len(phases), limit, why)
+	slots := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for _, ph := range phases {
+		slots <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer func() { <-slots; wg.Done() }()
+			r.phase(t, ph.name, ph.chain, ph.specs)
+		}()
+	}
+	wg.Wait()
 }
 
 // phaseSpec is one phase: its scenarios share fresh pods and redis, each on
@@ -54,48 +76,49 @@ type phaseSpec struct {
 	specs []spec
 }
 
-// catalogue is every phase of the suite, in run order.
+// catalogue is every phase of the suite, longest first, so the phases that
+// set the run's wall start at once.
 func catalogue() []phaseSpec {
 	return []phaseSpec{
-		{"shared", 9101, []spec{x1(), c1(), c3(), u3(), n5(), k2(), d1(), d2()}},
-		{"n4", 9201, []spec{n4()}},
-		{"x4", 9301, []spec{x4()}},
-		{"u3-lone", 9501, []spec{u3Lone()}},
-		{"n4-lone", 9601, []spec{n4Lone()}},
-		{"voters", 9701, []spec{n3(), u10(), u11(), u18(), k6()}},
-		{"x9", 9801, []spec{x9()}},
+		{"c17", 12501, []spec{c17()}},
+		{"p12", 12801, []spec{p12()}},
 		{"head", 9901, []spec{u12(), u14(), u19(), p1(), p5(), p6(), p10()}},
+		{"n4-lone", 9601, []spec{n4Lone()}},
+		{"n4", 9201, []spec{n4()}},
+		{"chain", 11501, []spec{c2(), c6(), c8(), c10(), c11(), c14()}},
 		{"finality", 10001, []spec{c12(), p7(), c13()}},
-		{"polling", 10101, []spec{k7(true), k7(false), p9()}},
-		{"x2", 10201, []spec{x2()}},
-		{"c9", 10301, []spec{c9()}},
+		{"pruned", 12701, []spec{u20(true), u20(false)}},
+		{"n6", 11001, []spec{n6()}},
+		{"c16", 12401, []spec{c16()}},
+		{"voters", 9701, []spec{n3(), u10(), u11(), u18(), k6()}},
+		{"shared", 9101, []spec{x1(), c1(), c3(), u3(), n5(), k2(), d1(), d2()}},
+		{"upstream", 11301, []spec{u2(), u4(), u5(), u6(), u7(), u13(), u15()}},
+		{"clients", 11601, []spec{d3(), d5(), d6(), d9()}},
+		{"integrity", 10601, []spec{u8(false), u8(true), u9(), u9Trunc(1), u9Trunc(2), u9Bloom(1), u9Bloom(2), k5()}},
 		{"fetch", 10401, []spec{u1(), c4(), c7(), d8()}},
 		{"fetch-vars", 10501, []spec{u16(), u17()}},
-		{"integrity", 10601, []spec{u8(false), u8(true), u9(), u9Trunc(1), u9Trunc(2), u9Bloom(1), u9Bloom(2), k5()}},
-		{"tagstate", 10701, []spec{p11()}},
-		{"nitro", 10751, []spec{p11Nitro()}},
-		{"counters", 10801, []spec{c5()}},
-		{"x5", 10901, []spec{x5()}},
-		{"n6", 11001, []spec{n6()}},
-		{"x7", 11101, []spec{x7()}},
-		{"x8", 11201, []spec{x8()}},
-		{"upstream", 11301, []spec{u2(), u4(), u5(), u6(), u7(), u13(), u15()}},
-		{"network", 11401, []spec{n1(), n2(), n7()}},
-		{"chain", 11501, []spec{c2(), c6(), c8(), c10(), c11(), c14()}},
 		{"c15", 11551, []spec{c15()}},
-		{"clients", 11601, []spec{d3(), d5(), d6(), d9()}},
+		{"consistency", 12301, []spec{p2(), p3(), p4(), p8()}},
+		{"counters", 10801, []spec{c5()}},
+		{"config", 12201, []spec{k3(64), k3(32), k4()}},
+		{"x7", 11101, []spec{x7()}},
+		{"x4", 9301, []spec{x4()}},
+		{"polling", 10101, []spec{k7(true), k7(false), p9()}},
+		{"tagstate", 10701, []spec{p11()}},
+		{"x5", 10901, []spec{x5()}},
+		{"c18", 12601, []spec{c18()}},
+		{"u3-lone", 9501, []spec{u3Lone()}},
+		{"x9", 9801, []spec{x9()}},
+		{"x2", 10201, []spec{x2()}},
+		{"c9", 10301, []spec{c9()}},
+		{"network", 11401, []spec{n1(), n2(), n7()}},
+		{"nitro", 10751, []spec{p11Nitro()}},
+		{"x8", 11201, []spec{x8()}},
 		{"d4", 11701, []spec{d4()}},
 		{"d7", 11801, []spec{d7()}},
 		{"x3", 11901, []spec{x3()}},
 		{"x6", 12001, []spec{x6()}},
 		{"k1", 12101, []spec{k1()}},
-		{"config", 12201, []spec{k3(64), k3(32), k4()}},
-		{"consistency", 12301, []spec{p2(), p3(), p4(), p8()}},
-		{"c16", 12401, []spec{c16()}},
-		{"c17", 12501, []spec{c17()}},
-		{"c18", 12601, []spec{c18()}},
-		{"pruned", 12701, []spec{u20(true), u20(false)}},
-		{"p12", 12801, []spec{p12()}},
 		{"p13", 12901, []spec{p13()}},
 		{"z1", 13001, []spec{z1()}},
 		{"z2", 13051, []spec{z2()}},
@@ -103,10 +126,12 @@ func catalogue() []phaseSpec {
 	}
 }
 
-// selectedPhases are the phases this run runs: REALWORLD_ALONE=C1,X4 runs
-// only the named scenarios, each alone in its own phase;
-// REALWORLD_PHASES=shared,n4 runs only the named phases; else every phase.
-func selectedPhases() ([]phaseSpec, error) {
+// selectedPhases are the phases this run runs, and the long-tier phases
+// REALWORLD_TIER=fast skips: REALWORLD_ALONE=C1,X4 runs only the named
+// scenarios, each alone in its own phase; REALWORLD_PHASES=shared,n4 runs
+// only the named phases; else every phase of REALWORLD_TIER: fast (no long
+// phase), long (only long phases) or all (default).
+func selectedPhases() (phases, skipped []phaseSpec, err error) {
 	all := catalogue()
 	if alone := os.Getenv("REALWORLD_ALONE"); alone != "" {
 		known := map[string]spec{}
@@ -115,25 +140,44 @@ func selectedPhases() ([]phaseSpec, error) {
 				known[sp.name] = sp
 			}
 		}
-		var out []phaseSpec
 		for i, name := range strings.Split(alone, ",") {
 			sp, ok := known[name]
 			if !ok {
-				return nil, fmt.Errorf("REALWORLD_ALONE names %q, no scenario", name)
+				return nil, nil, fmt.Errorf("REALWORLD_ALONE names %q, no scenario", name)
 			}
 			// The index keeps a scenario named twice in its own run dir.
-			out = append(out, phaseSpec{fmt.Sprintf("alone-%d-%s", i+1, name), 9401 + int64(i), []spec{sp}})
+			phases = append(phases, phaseSpec{fmt.Sprintf("alone-%d-%s", i+1, name), 9401 + int64(i), []spec{sp}})
 		}
-		return out, nil
+		return phases, nil, nil
 	}
-	only := os.Getenv("REALWORLD_PHASES")
-	var out []phaseSpec
+	if only := os.Getenv("REALWORLD_PHASES"); only != "" {
+		for _, ph := range all {
+			if slices.Contains(strings.Split(only, ","), ph.name) {
+				phases = append(phases, ph)
+			}
+		}
+		return phases, nil, nil
+	}
+	tier := cmp.Or(os.Getenv("REALWORLD_TIER"), "all")
 	for _, ph := range all {
-		if only == "" || slices.Contains(strings.Split(only, ","), ph.name) {
-			out = append(out, ph)
+		switch long := ph.specs[0].long; tier {
+		case "all":
+			phases = append(phases, ph)
+		case "fast":
+			if long {
+				skipped = append(skipped, ph)
+			} else {
+				phases = append(phases, ph)
+			}
+		case "long":
+			if long {
+				phases = append(phases, ph)
+			}
+		default:
+			return nil, nil, fmt.Errorf("REALWORLD_TIER is %q: fast, long or all", tier)
 		}
 	}
-	return out, nil
+	return phases, skipped, nil
 }
 
 // reconnectSlack is harness time, not spec: a scrape, a dial, a backoff
