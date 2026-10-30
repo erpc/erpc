@@ -311,7 +311,9 @@ func NewUpstream(
 	pup.initRateLimitAutoTuner()
 
 	if vn != nil {
-		cfgs, err := vn.GenerateConfigs(appCtx, &lg, cfg, nil)
+		// A vendor keeps this logger for async refreshes; lg is rewritten below.
+		vendorLg := lg
+		cfgs, err := vn.GenerateConfigs(appCtx, &vendorLg, cfg, nil)
 		if err != nil {
 			return nil, err
 		}
