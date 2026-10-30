@@ -815,7 +815,18 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 	if msg.vote == voteSource && !t.counts(msg.upstream) && !slices.Contains(t.voters.Voters, msg.upstream) {
 		return
 	}
+	// A block hash commits to its number, so a header naming a held hash,
+	// or a held parent, under another number does not hash to what it
+	// names: the held header stands. Held, it would take the real block's
+	// place, and the chain would no longer link through it (a node that
+	// reports its tip's header under a number far ahead, §19 U12).
+	if p := t.nodes[h.parentHash]; p != nil && p.h.number+1 != h.number {
+		return
+	}
 	nd := t.nodes[h.hash]
+	if nd != nil && nd.h.number != h.number {
+		return
+	}
 	if nd == nil {
 		// Rule 1: every vote is held. Answers are held only inside the
 		// window, and never walk.
@@ -3409,7 +3420,7 @@ func (t *ChainTracker) W() time.Duration {
 // HashAt is the pin at a number, or a finalized anchor below the window:
 // inside the window the pins win.
 func (t *ChainTracker) HashAt(number int64) (string, bool) {
-	if number < 0 {
+	if t == nil || number < 0 {
 		return "", false
 	}
 	s := t.state.Load()
