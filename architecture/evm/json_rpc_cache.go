@@ -366,6 +366,14 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				}
 				return
 			}
+			if finState != common.DataFinalityStateFinalized && orphaned(ctx, req, jrr) {
+				policySpan.SetAttributes(attribute.String("cache.get_outcome", "orphaned"))
+				select {
+				case results <- fanResult{policy: policy, connector: connector, missReason: "orphaned"}:
+				case <-fanCtx.Done():
+				}
+				return
+			}
 			// An emptyish result under EmptyState=Ignore is a miss for THIS
 			// policy — report as miss and let peer connectors keep racing.
 			// Without this, the first emptyish result would win the fan-out,
@@ -416,7 +424,7 @@ drain:
 				continue
 			}
 			switch r.missReason {
-			case "ttl_rejected":
+			case "ttl_rejected", "orphaned":
 				rr := r
 				lastReject = &rr
 			case "empty_result":
@@ -462,7 +470,7 @@ drain:
 						connector = rr.connector
 					} else {
 						switch r.missReason {
-						case "ttl_rejected":
+						case "ttl_rejected", "orphaned":
 							rr := r
 							lastReject = &rr
 						case "empty_result":
@@ -508,7 +516,7 @@ drain:
 		case lastReject != nil:
 			labelConnector = lastReject.connector
 			labelPolicy = lastReject.policy
-			missReason = "ttl_rejected"
+			missReason = lastReject.missReason
 		case lastMiss != nil:
 			labelConnector = lastMiss.connector
 			labelPolicy = lastMiss.policy
@@ -1244,6 +1252,47 @@ func revertedFinal(ctx context.Context, req *common.NormalizedRequest) bool {
 	}
 	sel := useUpstreamSelector(req)
 	return sel != "" && ChainTrackerOf(ctx, n, sel).RevertedFinal(bn)
+}
+
+// answerBlockPaths are where a cached answer names its block: a block, or
+// the first receipt or log of one.
+var answerBlockPaths = [][2][]interface{}{
+	{{"number"}, {"hash"}},
+	{{0, "blockNumber"}, {0, "blockHash"}},
+}
+
+// orphaned reports whether jrr, a cached answer to req, names a block that
+// the network-wide tracker or the request's lane tracker no longer pins at
+// its number: a reorg replaced it after the entry was written, so the read
+// skips the cache and the fresh answer replaces it (spec §19 P8). Whether
+// the tracker re-fetches that height by number, which also rewrites the
+// entry, depends on how it learned the new branch.
+func orphaned(ctx context.Context, req *common.NormalizedRequest, jrr *common.JsonRpcResponse) bool {
+	for _, p := range answerBlockPaths {
+		num, err := jrr.PeekStringByPath(ctx, p[0]...)
+		if err != nil {
+			continue
+		}
+		hash, err := jrr.PeekStringByPath(ctx, p[1]...)
+		if err != nil {
+			continue
+		}
+		bn, err := common.HexToInt64(num)
+		if err != nil || bn <= 0 {
+			return false
+		}
+		n := req.Network()
+		if pin, ok := ChainTrackerOf(ctx, n, "").HashAt(bn); ok && !strings.EqualFold(pin, hash) {
+			return true
+		}
+		sel := useUpstreamSelector(req)
+		if sel == "" {
+			return false
+		}
+		pin, ok := ChainTrackerOf(ctx, n, sel).HashAt(bn)
+		return ok && !strings.EqualFold(pin, hash)
+	}
+	return false
 }
 
 // useUpstreamSelector returns the request's use-upstream directive, used to gate
