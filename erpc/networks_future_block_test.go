@@ -118,6 +118,60 @@ func TestForward_FutureBlock_ShortCircuitSurvivesSlowStaleAsk(t *testing.T) {
 	assert.Zero(t, dispatched.Load(), "and never dispatched")
 }
 
+// On a halted chain every Ask answers the head each upstream already
+// voted for. That answer is still evidence taken at its send time (spec
+// §6.4 ceiling): after one Ask, a block far above the ceiling is future,
+// null with no dispatch, on every request, not kept in the band by a
+// report time only a new head would move.
+func TestForward_FutureBlock_HaltedChainAskDatesReport(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ids := []string{"hc1", "hc2", "hc3"}
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: ids[0], chainID: 123, latestBlock: 100},
+		{id: ids[1], chainID: 123, latestBlock: 100},
+		{id: ids[2], chainID: 123, latestBlock: 100},
+	})
+	network.cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
+	sampleBlockTime(t, network) // bt 1s
+	// As a registry's network does: every poll's header goes through intake.
+	network.sources.start(ctx)
+	var polls atomic.Int64
+	for _, id := range ids {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"latest"`) {
+					return false
+				}
+				polls.Add(1)
+				return true
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":` + string(tipHead("a", 100)) + `}`))
+	}
+	var dispatched atomic.Int64
+	mockGetBlockByNumberAt("0x44d", futureBlockSentinel, &dispatched, ids...)
+
+	for round := 1; round <= 3; round++ {
+		// Every report is older than 1 bt and the last Ask's fetch is
+		// older than its pace: the request Asks each upstream once.
+		time.Sleep(1200 * time.Millisecond)
+		before := polls.Load()
+		resp := forwardGetBlockByNumber(t, ctx, network, "0x44d") // 1101
+		require.GreaterOrEqual(t, polls.Load()-before, int64(len(ids)), "round %d: the request Asks each stale upstream", round)
+		assert.True(t, resp.IsResultEmptyish(ctx), "round %d: a block 1001 above a halted chain is null", round)
+		assert.Zero(t, dispatched.Load(), "round %d: and never dispatched", round)
+	}
+}
+
 // A request at (or below) the max observed head must dispatch normally — the
 // short-circuit must not over-fire and swallow blocks an upstream actually has.
 func TestForward_FutureBlock_AtMaxHead_Dispatches(t *testing.T) {
