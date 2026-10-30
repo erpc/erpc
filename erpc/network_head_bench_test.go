@@ -123,6 +123,7 @@ func BenchmarkHeadChangeToPublish(b *testing.B) {
 			}
 			slices.Sort(took)
 			b.ReportMetric(float64(took[len(took)/2].Nanoseconds()), "p50-ns")
+			b.ReportMetric(float64(took[len(took)*99/100].Nanoseconds()), "p99-ns")
 			b.ReportMetric(float64(took[len(took)-1].Nanoseconds()), "max-ns")
 		})
 	}

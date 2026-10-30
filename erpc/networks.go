@@ -86,13 +86,11 @@ type Network struct {
 	servedTipLanes     sync.Map // map[string]*servedTipLane (key = "grp:<hash>")
 	servedTipLaneCount atomic.Int32
 
-	// headWake asks the network's head loop to end a pass (endHeadPass);
-	// headPass is closed and replaced after each, for readers on a
-	// selector with no lane. headsStarted: startHeads ran, so a new lane
-	// starts its own head loop.
-	headWake     chan struct{}
-	headPass     atomic.Pointer[chan struct{}]
-	headsStarted atomic.Bool
+	// headWake wakes the head loop to compute the dirty lanes
+	// (refreshDirtyHeads); headPass is closed and replaced after each
+	// pass, for taps on a selector with no lane.
+	headWake chan struct{}
+	headPass atomic.Pointer[chan struct{}]
 	// statelessHeads is each laneless selector's Latest (uint64), picked
 	// once per head pass for its taps (laneLatest); statelessGen counts the
 	// passes' clears, and statelessMu orders a store after its check of it.
@@ -148,10 +146,9 @@ type servedTipLane struct {
 
 	mu   sync.Mutex
 	head atomic.Pointer[common.EvmHead]
-	// wake asks the lane's head loop (runLane) to compute its Head again;
-	// looping: that loop started.
-	wake    chan struct{}
-	looping atomic.Bool
+	// dirty: a change since the lane's last computation began
+	// (markLanes).
+	dirty atomic.Bool
 	// gauges are bound at the first computation. Guarded by mu.
 	gauges *laneGauges
 	// moved is closed and replaced when Latest changes.
@@ -757,14 +754,11 @@ func (n *Network) laneFor(sel string) *servedTipLane {
 	if n.servedTipLaneCount.Load() >= maxServedTipLanes {
 		return nil
 	}
-	l := &servedTipLane{key: key, selector: sel, label: common.LaneName(ids), wake: make(chan struct{}, 1)}
+	l := &servedTipLane{key: key, selector: sel, label: common.LaneName(ids)}
 	n.refreshLane(l)
 	actual, loaded := n.servedTipLanes.LoadOrStore(key, l)
 	if !loaded {
 		n.servedTipLaneCount.Add(1)
-		if n.headsStarted.Load() {
-			n.runLane(l)
-		}
 	}
 	return actual.(*servedTipLane)
 }

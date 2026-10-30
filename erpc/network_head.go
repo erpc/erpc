@@ -111,9 +111,8 @@ func (l *servedTipLane) latestMoved() <-chan struct{} {
 	}
 }
 
-// headsComputed returns a channel closed once the head loop noted the next
-// change of any upstream's head counters, bench or eligibility, for a
-// reader whose selector forms no lane: its Head is picked per read.
+// headsComputed returns a channel closed after the head loop's next pass,
+// for a reader whose selector forms no lane.
 func (n *Network) headsComputed() <-chan struct{} {
 	for {
 		if c := n.headPass.Load(); c != nil {
@@ -130,27 +129,26 @@ func (n *Network) headsComputed() <-chan struct{} {
 // changed, the policy's eligible set changed, an upstream joined or its
 // polls started or stopped failing. It never blocks.
 func (n *Network) headsChanged() {
-	n.wakeLanes(nil)
+	n.markLanes(nil)
 }
 
 // headMoved asks for the Heads of the lanes u is in to be computed again:
 // one of its head counters or its chain-identity cordon moved, which no
 // other lane's ballot or ceiling counts. It never blocks.
 func (n *Network) headMoved(u common.Upstream) {
-	n.wakeLanes(u)
+	n.markLanes(u)
 }
 
-// wakeLanes wakes the head loop of every lane u is in (every lane for
-// nil), each its own, so a lane never waits behind another's computation,
-// and the pass that laneless readers wait on.
-func (n *Network) wakeLanes(u common.Upstream) {
-	n.servedTipAll.wakeUp()
+// markLanes marks every lane u is in (every lane for nil) dirty and wakes
+// the head loop, whose next pass computes only the dirty lanes.
+func (n *Network) markLanes(u common.Upstream) {
+	n.servedTipAll.dirty.Store(true)
 	n.servedTipLanes.Range(func(_, v any) bool {
 		l := v.(*servedTipLane)
 		if u == nil {
-			l.wakeUp()
+			l.dirty.Store(true)
 		} else if m, _ := common.UpstreamMatchesSelector(l.selector, u); m {
-			l.wakeUp()
+			l.dirty.Store(true)
 		}
 		return true
 	})
@@ -160,18 +158,11 @@ func (n *Network) wakeLanes(u common.Upstream) {
 	}
 }
 
-func (l *servedTipLane) wakeUp() {
-	select {
-	case l.wake <- struct{}{}:
-	default:
-	}
-}
-
 // startHeads computes every lane's Head now, so a network bootstrapped on
 // upstreams with known heads serves its first request with a Head, then
-// runs each lane's head loop (runLane) and wakes every lane each
-// headRefresh until the app stops. Once per network: its bootstrap can run
-// again after it succeeded.
+// computes the dirty lanes on each wake (markLanes) and marks every lane
+// each headRefresh until the app stops. Once per network: its bootstrap
+// can run again after it succeeded.
 func (n *Network) startHeads() {
 	if n.cfg == nil || n.cfg.Architecture != common.ArchitectureEvm || n.appCtx == nil {
 		return
@@ -182,14 +173,6 @@ func (n *Network) startHeads() {
 	}
 	n.headLoopOnce.Do(func() {
 		n.refreshHeads()
-		// A lane laneFor stores from here on starts its own loop; one
-		// stored before is started by this walk.
-		n.headsStarted.Store(true)
-		n.runLane(&n.servedTipAll)
-		n.servedTipLanes.Range(func(_, v any) bool {
-			n.runLane(v.(*servedTipLane))
-			return true
-		})
 		n.bg.Go(func() {
 			ticker := time.NewTicker(every)
 			defer ticker.Stop()
@@ -200,36 +183,18 @@ func (n *Network) startHeads() {
 				case <-ticker.C:
 					n.headsChanged()
 				case <-n.headWake:
-					n.endHeadPass()
+					n.refreshDirtyHeads()
 				}
 			}
 		})
 	})
 }
 
-// runLane starts l's head loop, once: it computes and publishes l's Head
-// at each wake until the app stops.
-func (n *Network) runLane(l *servedTipLane) {
-	if l.wake == nil || !l.looping.CompareAndSwap(false, true) {
-		return
-	}
-	n.bg.Go(func() {
-		for {
-			select {
-			case <-n.appCtx.Done():
-				return
-			case <-l.wake:
-			}
-			n.refreshLaneRecovered(l)
-		}
-	})
-}
-
 // watchHeadCounters makes every move of ups's head counters, by a poll, a
 // push or another instance, and every change of its chain-identity cordon,
-// which moves it in or out of the ceiling, wake the head loops of its
-// lanes (spec §6.4). The registry calls it once per upstream as it joins
-// the network, which is itself a change of the voters.
+// which moves it in or out of the ceiling, mark its lanes dirty (spec
+// §6.4). The registry calls it once per upstream as it joins the network,
+// which is itself a change of the voters.
 func (n *Network) watchHeadCounters(ups *upstream.Upstream) {
 	if p, ok := ups.EvmStatePoller().(*evm.EvmStatePoller); ok && !p.IsObjectNull() {
 		p.OnLatestBlock(func(int64) { n.headMoved(ups) })
@@ -246,6 +211,21 @@ func (n *Network) refreshHeads() {
 	n.refreshLaneRecovered(&n.servedTipAll)
 	n.servedTipLanes.Range(func(_, v any) bool {
 		n.refreshLaneRecovered(v.(*servedTipLane))
+		return true
+	})
+}
+
+// refreshDirtyHeads is refreshHeads over the dirty lanes only. A lane is
+// clean before its computation, so a change during it marks it again.
+func (n *Network) refreshDirtyHeads() {
+	defer n.endHeadPass()
+	if n.servedTipAll.dirty.Swap(false) {
+		n.refreshLaneRecovered(&n.servedTipAll)
+	}
+	n.servedTipLanes.Range(func(_, v any) bool {
+		if l := v.(*servedTipLane); l.dirty.Swap(false) {
+			n.refreshLaneRecovered(l)
+		}
 		return true
 	})
 }
@@ -611,18 +591,18 @@ func (n *Network) EvmAwaitCeiling(ctx context.Context, sel string, block int64) 
 	tick := time.NewTicker(bt)
 	defer tick.Stop()
 	for {
-		// The ceiling is the counters' raw max, read now: a lane's
-		// published one may trail the pass that wakes this wait.
 		computed := n.headsComputed()
-		if c, at := n.laneCeiling(sel); c >= block {
-			return c, at
+		h := n.headFor(sel)
+		if h.Ceiling >= block {
+			return h.Ceiling, h.OldestReportAt
 		}
 		select {
 		case <-computed:
 		case <-tick.C:
 			ask()
 		case <-wait.Done():
-			return n.laneCeiling(sel)
+			h = n.headFor(sel)
+			return h.Ceiling, h.OldestReportAt
 		}
 	}
 }
@@ -725,8 +705,8 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 		sel = d.UseUpstream
 	}
 	// computed: the lane's Head is computed and published first. Under
-	// load the lane's head loop can trail the voters' counters by more
-	// than 1 bt, and Latest is their quorum, not the last publish.
+	// load the head loop can trail the voters' counters by more than 1 bt,
+	// and Latest is their quorum, not the last publish.
 	latest := func(computed bool) (int64, <-chan struct{}) {
 		if l := n.laneFor(sel); l != nil {
 			if computed {
