@@ -122,10 +122,10 @@ func (t *ChainTracker) extends() bool {
 // or awaited answer. The pins of a replaced tree go with it; choose moves
 // them. Trees another voter's vote holds stay, and rule 4 weighs them.
 func (t *ChainTracker) replaceOlder(nd *node, u string) {
-	keep := map[*node]bool{rootOf(nd): true}
+	keep := map[*node]bool{t.rootOf(nd): true}
 	hold := func(n *node) {
 		if t.alive(n) {
-			keep[rootOf(n)] = true
+			keep[t.rootOf(n)] = true
 		}
 	}
 	for _, v := range t.baseVotes() {
@@ -167,7 +167,7 @@ func (t *ChainTracker) replaceOlder(nd *node, u string) {
 
 // walking reports whether n's tree is still being walked; votes in it wait.
 func (t *ChainTracker) walking(n *node) bool {
-	e := t.exts[rootOf(n)]
+	e := t.exts[t.rootOf(n)]
 	return e != nil && e.walk > 0 && !e.atBase
 }
 
@@ -185,7 +185,7 @@ func (t *ChainTracker) pinRoot() *node {
 	if len(t.pins) == 0 {
 		return nil
 	}
-	return rootOf(t.pins[0])
+	return t.rootOf(t.pins[0])
 }
 
 // walkFrom is rule 1 for a vote nd whose tree does not reach the pins: walk
@@ -196,7 +196,7 @@ func (t *ChainTracker) walkFrom(nd *node, sender string) {
 	if !t.extends() || len(t.pins) == 0 || t.farAhead(nd.h) {
 		return
 	}
-	r := rootOf(nd)
+	r := t.rootOf(nd)
 	e := t.exts[r]
 	if e == nil || e.atBase || e.capped || e.walked || r == t.pinRoot() {
 		return
@@ -234,7 +234,7 @@ func (t *ChainTracker) rootsHolding(votes bool) map[*node]bool {
 	roots := make(map[*node]bool)
 	add := func(n *node) {
 		if t.alive(n) {
-			roots[rootOf(n)] = true
+			roots[t.rootOf(n)] = true
 		}
 	}
 	for _, n := range t.pending {
@@ -268,11 +268,23 @@ func (t *ChainTracker) treeTop(r *node) *chainHeader {
 
 // walkTree calls fn for every node of r's tree; fn must not walk a tree.
 func (t *ChainTracker) walkTree(r *node, fn func(*node)) {
+	t.walkTreeWhile(r, func(n *node) bool {
+		fn(n)
+		return true
+	})
+}
+
+// walkTreeWhile calls fn for the nodes of r's tree that no node fn
+// returned false for lies below; fn must not walk a tree.
+func (t *ChainTracker) walkTreeWhile(r *node, fn func(*node) bool) {
 	stack := append(t.stack[:0], r)
 	for len(stack) > 0 {
 		n := stack[len(stack)-1]
-		stack = append(stack[:len(stack)-1], n.children...)
-		fn(n)
+		stack[len(stack)-1] = nil // the scratch keeps no dropped header alive
+		stack = stack[:len(stack)-1]
+		if fn(n) {
+			stack = append(stack, n.children...)
+		}
 	}
 	t.stack = stack[:0]
 }
@@ -326,21 +338,100 @@ func (t *ChainTracker) fillRoots() map[*node]bool {
 			if roots == nil {
 				roots = make(map[*node]bool)
 			}
-			roots[rootOf(n)] = true
+			roots[t.rootOf(n)] = true
 		}
 	}
 	return roots
 }
 
-// extendRoots starts the next step of every root's walk or fill.
+// extendRoots starts the next step of every root's walk or fill, and
+// drops the answers fetched ahead that no fill will reach. It steps the
+// roots held when it starts: a parent extend links becomes a root while
+// the loop runs, and extend goes on from it at once; met again as a root
+// of its own, it would be judged against the pins' old root, capped and
+// its tree walked.
 func (t *ChainTracker) extendRoots() {
 	if !t.extends() {
 		return
 	}
 	pinRoot, reads := t.pinRoot(), t.fillRoots()
-	for r, e := range t.exts {
+	roots := make([]*node, 0, len(t.exts))
+	for r := range t.exts {
+		roots = append(roots, r)
+	}
+	for _, r := range roots {
+		e := t.exts[r]
+		if e == nil {
+			continue
+		}
 		if uncapped := r == pinRoot || reads[r]; !e.busy && !e.atBase && (!e.capped || uncapped) {
 			t.extend(r, e, uncapped)
+		}
+	}
+	t.pruneAhead()
+}
+
+// fillAhead is how many by-number fill fetches run ahead of fill at once,
+// across the tracker's roots, below reorgWindow under the head, in the
+// pins' tree or a tree a Read waits on fill in (CT spec §9): fill links
+// one header per answer, so one fetch at a time made a deep final hold
+// wait thousands of round trips. It is half the scheduler's 16 slots, so
+// a Read's cursor fetch and a final logs tap's receipts, in fill's class
+// too, always find a slot. Near the head, and in a capped tree, which may
+// never join, fill still fetches one at a time. A var so tests can change
+// it.
+var fillAhead = uint64(fetchSlots / 2)
+
+// aheadAnswer is a by-number answer fetched ahead of fill.
+type aheadAnswer struct {
+	h   *chainHeader
+	err error
+}
+
+// fetchAhead keeps fill's by-number fetches of the fillAhead heights below
+// root r in flight, down to where fill would stop. Their answers wait in
+// ahead until fill reaches them, each checked then against the
+// parentHash of the block above, as a single fetch's answer is. At the
+// window's time base it may fetch up to fillAhead headers past it, once.
+func (t *ChainTracker) fetchAhead(r *node) {
+	gen := t.aheadGen
+	for k := uint64(1); k <= fillAhead && k <= r.h.number; k++ {
+		n := r.h.number - k
+		if _, ok := t.ahead[n]; ok || t.aheadBusy[n] {
+			continue
+		}
+		if uint64(len(t.aheadBusy)) >= fillAhead {
+			return
+		}
+		// No header below r is newer than r: r's time bounds the window.
+		if !t.keeps(nil, &chainHeader{number: n, timestamp: r.h.timestamp}, true) || !t.fillsBelow(n) {
+			return
+		}
+		t.aheadBusy[n] = true
+		t.submitHeader(t.headerSpec(classFill, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), "", false), func(h *chainHeader, err error) {
+			if t.aheadGen != gen {
+				return
+			}
+			delete(t.aheadBusy, n)
+			t.ahead[n] = aheadAnswer{h: h, err: err}
+		})
+	}
+}
+
+// pruneAhead drops the answers fetched ahead below no filling root. A
+// root that asks by hash for a while keeps them: fill by number goes on
+// from the parent it links.
+func (t *ChainTracker) pruneAhead() {
+	for n := range t.ahead {
+		reached := false
+		for r, e := range t.exts {
+			if !e.atBase && e.walk == 0 && n < r.h.number && n+fillAhead >= r.h.number {
+				reached = true
+				break
+			}
+		}
+		if !reached {
+			delete(t.ahead, n)
 		}
 	}
 }
@@ -365,28 +456,71 @@ func (t *ChainTracker) windowRef() *chainHeader {
 	return t.maxHeld
 }
 
+// extend runs the next step of root r's walk or fill. Fill by number
+// links every answer fetched ahead that has arrived, root after root;
+// fill runs after the pins move in an update, so a link here asks for
+// one more update, which moves the pins onto it.
 func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
+	linked := false
+	defer func() {
+		if linked {
+			t.mb.put(trackerMsg{kind: msgTick})
+		}
+	}()
+	for r != nil {
+		var used bool
+		r, used = t.extendOnce(r, e, uncapped)
+		linked = linked || used
+		if r != nil {
+			if e = t.exts[r]; e == nil || e.busy || e.atBase {
+				return
+			}
+		}
+	}
+}
+
+// extendOnce is one step of root r's walk or fill; it returns the root
+// that goes on at once, as the parent an answer fetched ahead linked, and
+// whether such an answer linked.
+func (t *ChainTracker) extendOnce(r *node, e *extension, uncapped bool) (*node, bool) {
 	// Block 0, or the chain's first block, which names the all-zero
 	// parentHash: the root is final (spec §6.5 rule 2).
 	if r.h.number == 0 || r.h.parentHash == ([32]byte{}) {
 		e.atBase, e.walk, t.treesDirty = true, 0, true
-		return
+		return nil, false
 	}
 	// The parent is no newer than r: when even r's time puts its height
 	// outside the window, the parent is outside too.
 	if t.outside(e, r, &chainHeader{number: r.h.number - 1, timestamp: r.h.timestamp}, uncapped) {
-		return
+		return nil, false
 	}
 	class := classFill
 	if e.walk > 0 {
 		class = classHead
 	} else if !t.fillsBelow(r.h.number - 1) {
-		return
+		return nil, false
 	}
-	want := r.h.parentHash
+	if ref := t.windowRef(); class == classFill && !e.byHash && uncapped && ref != nil && r.h.number+uint64(t.window) <= ref.number {
+		t.fetchAhead(r)
+		a, ok := t.ahead[r.h.number-1]
+		if !ok {
+			return nil, false
+		}
+		delete(t.ahead, r.h.number-1)
+		links := a.err == nil && a.h.hash == r.h.parentHash
+		if a.err == nil && !links {
+			// The number path moved under the answers fetched ahead.
+			for n := range t.ahead {
+				if n < r.h.number {
+					delete(t.ahead, n)
+				}
+			}
+		}
+		return t.answered(r, e, a.h, a.err), links
+	}
 	method, ref, upstream := "eth_getBlockByNumber", fmt.Sprintf("0x%x", r.h.number-1), ""
 	if e.byHash {
-		method, ref, upstream = "eth_getBlockByHash", fmt.Sprintf("0x%x", want), e.sender
+		method, ref, upstream = "eth_getBlockByHash", fmt.Sprintf("0x%x", r.h.parentHash), e.sender
 	}
 	e.busy = true
 	t.submitHeader(t.headerSpec(class, method, ref, upstream, false), func(h *chainHeader, err error) {
@@ -394,25 +528,34 @@ func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
 			return
 		}
 		e.busy = false
-		switch {
-		case err == nil && h.hash == want && h.number+1 == r.h.number:
-			t.extended(r, e, h)
-		case err == nil && h.hash == want:
-			// The parent's hash under another number: no answer joins this
-			// root, so its extension ends and it stays a root.
-			e.atBase, e.walk, t.treesDirty = true, 0, true
-		case !e.byHash && againstNumber(err):
-			e.byHash = true
-		case e.byHash && e.walk > 0:
-			// The sender does not serve its own parent: the walk ends here,
-			// its lowest header stays a root, and fill sweeps for the rest.
-			e.walk, e.sender = 0, ""
-		case e.byHash && errors.Is(err, errFetchNotFound):
-			// Every upstream of a full sweep answered null for the parent:
-			// the root is final (spec §6.5 rule 2), never asked again.
-			e.atBase, t.treesDirty = true, true
-		}
+		t.answered(r, e, h, err)
 	})
+	return nil, false
+}
+
+// answered applies the answer of a fetch of root r's parent; it returns
+// the parent once held as a root that goes on.
+func (t *ChainTracker) answered(r *node, e *extension, h *chainHeader, err error) *node {
+	want := r.h.parentHash
+	switch {
+	case err == nil && h.hash == want && h.number+1 == r.h.number:
+		return t.extended(r, e, h)
+	case err == nil && h.hash == want:
+		// The parent's hash under another number: no answer joins this
+		// root, so its extension ends and it stays a root.
+		e.atBase, e.walk, t.treesDirty = true, 0, true
+	case !e.byHash && againstNumber(err):
+		e.byHash = true
+	case e.byHash && e.walk > 0:
+		// The sender does not serve its own parent: the walk ends here,
+		// its lowest header stays a root, and fill sweeps for the rest.
+		e.walk, e.sender = 0, ""
+	case e.byHash && errors.Is(err, errFetchNotFound):
+		// Every upstream of a full sweep answered null for the parent:
+		// the root is final (spec §6.5 rule 2), never asked again.
+		e.atBase, t.treesDirty = true, true
+	}
+	return nil
 }
 
 // againstNumber reports whether a by-number fetch's outcome is evidence
@@ -438,22 +581,26 @@ func againstNumber(err error) bool {
 }
 
 // extended holds a root's fetched parent; the root joins under it, and the
-// walk or fill moves to the parent while the parent is itself a root.
-func (t *ChainTracker) extended(r *node, e *extension, h *chainHeader) {
+// walk or fill moves to the parent while the parent is itself a root,
+// which it returns.
+func (t *ChainTracker) extended(r *node, e *extension, h *chainHeader) *node {
 	if t.outside(e, r, h, r == t.pinRoot() || t.fillRoots()[r]) {
-		return
+		return nil
 	}
 	p := t.nodes[h.hash]
 	if p == nil {
 		p = t.hold(h)
 	}
 	if p.parent != nil {
-		return
+		return nil
 	}
-	if ne := t.exts[p]; ne != nil {
-		ne.sender, ne.walked = e.sender, e.walked
-		ne.walk = max(0, e.walk-1)
+	ne := t.exts[p]
+	if ne == nil {
+		return nil
 	}
+	ne.sender, ne.walked = e.sender, e.walked
+	ne.walk = max(0, e.walk-1)
+	return p
 }
 
 // submitHeader queues a tracker-owned header fetch; the tracker waits on it
@@ -567,22 +714,22 @@ func report(ch chan settleOutcome, o settleOutcome) {
 
 // headAsker is the network's Ask of one upstream's head (spec §6.8).
 type headAsker interface {
-	EvmAskHead(ctx context.Context, upstreamId string, need common.HeadNeed, pace time.Duration, reason common.AskReason) common.HeadAnswer
+	EvmAskHead(ctx context.Context, upstreamId string, need common.HeadNeed, pace time.Duration, after time.Time, reason common.AskReason) common.HeadAnswer
 }
 
 var errHeadAskPanicked = errors.New("head ask panicked")
 
-// askHead Asks upstream id's head at pace off the tracker's goroutine;
-// done runs on it with the answer. A panic in the Ask is a failed answer.
-// false: the network has no Ask.
-func (t *ChainTracker) askHead(id string, need common.HeadNeed, pace time.Duration, reason common.AskReason, done func(common.HeadAnswer)) bool {
+// askHead Asks upstream id's head at pace, after after (common.EvmStatePoller
+// Ask), off the tracker's goroutine; done runs on it with the answer. A
+// panic in the Ask is a failed answer. false: the network has no Ask.
+func (t *ChainTracker) askHead(id string, need common.HeadNeed, pace time.Duration, after time.Time, reason common.AskReason, done func(common.HeadAnswer)) bool {
 	n, ok := t.network.(headAsker)
 	if !ok || t.fetch == nil {
 		return false
 	}
 	t.fetch.bg.Go(func() {
 		a := common.HeadAnswer{Err: errHeadAskPanicked}
-		t.callNetwork("head-ask", func() { a = n.EvmAskHead(t.ctx, id, need, pace, reason) })
+		t.callNetwork("head-ask", func() { a = n.EvmAskHead(t.ctx, id, need, pace, after, reason) })
 		t.mb.put(trackerMsg{kind: msgCall, fn: func() { done(a) }})
 	})
 	return true
@@ -598,9 +745,11 @@ func (t *ChainTracker) heldAnswer(a common.HeadAnswer) *node {
 }
 
 // startSettle starts round s: an Ask of each target with need, reason
-// settle. With every Ask refused, s ends at once and false is returned.
-// With no target no round starts, nothing is logged and no retry is set:
-// the next vote runs rule 4 again; a waiter hears unanswered.
+// settle, after the answer the last round took from it, so a retry at the
+// soonest target's Next never takes another target's previous answer.
+// With every Ask refused, s ends at once and false is returned. With no
+// target no round starts, nothing is logged and no retry is set: the next
+// vote runs rule 4 again; a waiter hears unanswered.
 func (t *ChainTracker) startSettle(s *settleState, targets []string, need common.HeadNeed, waiter chan settleOutcome) bool {
 	if len(targets) == 0 {
 		if waiter != nil {
@@ -615,7 +764,7 @@ func (t *ChainTracker) startSettle(s *settleState, targets []string, need common
 	t.settle = s
 	for _, id := range targets {
 		s.asked++
-		if t.askHead(id, need, 0, common.AskSettle, func(a common.HeadAnswer) { t.settleAnswered(s, id, a) }) {
+		if t.askHead(id, need, 0, t.settleTaken[id], common.AskSettle, func(a common.HeadAnswer) { t.settleAnswered(s, id, a) }) {
 			s.out++
 		} else {
 			s.deferred++
@@ -642,6 +791,9 @@ func (t *ChainTracker) settleAnswered(s *settleState, id string, a common.HeadAn
 		return
 	}
 	s.out--
+	if !a.At.IsZero() {
+		t.settleTaken[id] = a.At
+	}
 	if !a.Next.IsZero() && (s.next.IsZero() || a.Next.Before(s.next)) {
 		s.next = a.Next
 	}
@@ -654,7 +806,7 @@ func (t *ChainTracker) settleAnswered(s *settleState, id string, a common.HeadAn
 	}
 	s.answers[id] = nd
 	if t.votes[id] == nd {
-		t.voteAt[id] = maxTime(t.voteAt[id], a.Sent)
+		t.voteAt[id] = maxTime(t.voteAt[id], a.At)
 	}
 	t.walkFrom(nd, id)
 }
@@ -935,7 +1087,7 @@ func (t *ChainTracker) askNoSource() {
 	}
 	pace, _ := t.demand()
 	id, seq := t.voters.Voters[0], t.askSeq
-	t.ask.out = t.askHead(id, common.HeadNeedHash, pace, common.AskNoSource, func(a common.HeadAnswer) {
+	t.ask.out = t.askHead(id, common.HeadNeedHash, pace, time.Time{}, common.AskNoSource, func(a common.HeadAnswer) {
 		if seq != t.askSeq {
 			return
 		}

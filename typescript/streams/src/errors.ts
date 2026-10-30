@@ -3,27 +3,37 @@ import type { ServiceError } from "@grpc/grpc-js";
 import type { BlockRef } from "./types";
 
 /**
- * The server cannot continue from the cursor (spec §3.4 `out_of_range`):
- * the app was away longer than the window. Neither eRPC nor the library
- * backfills; `oldest` is the oldest block a stream can resume from.
+ * `endpoint` cannot continue from the cursor (spec §3.4 `out_of_range`)
+ * and no other endpoint streams: the app was away longer than the window.
+ * `cursor` is the one that endpoint's stream resumed from. Neither eRPC
+ * nor the library backfills; `oldest` is the oldest block it can resume
+ * from.
  */
 export class OutOfRangeError extends Error {
   constructor(
+    readonly endpoint: string,
     readonly cursor: string | undefined,
     readonly reason: string,
     readonly oldest: BlockRef | undefined,
   ) {
     super(
-      `out of range (${reason}): cursor ${cursor ?? "none"}, oldest ${oldest ? `0x${oldest.number.toString(16)}:${oldest.hash}` : "unknown"}`,
+      `${endpoint}: cursor ${cursor ?? ""} out of range (${reason})${oldest ? `; oldest resumable 0x${oldest.number.toString(16)}:${oldest.hash}` : ""}`,
     );
     this.name = "OutOfRangeError";
   }
 }
 
-/** A reorg reverted a finalized block the app applied (`final_reverted`). */
+/**
+ * A reorg reverted a block the app applied that it cannot undo: a
+ * finalized block (`final_reverted`), or a branch switch with no
+ * `handler.undo`.
+ */
 export class FinalRevertedError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(
+    readonly endpoint: string,
+    message: string,
+  ) {
+    super(`${endpoint}: ${message}`);
     this.name = "FinalRevertedError";
   }
 }

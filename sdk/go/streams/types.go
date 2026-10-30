@@ -95,10 +95,11 @@ type Status struct {
 	Endpoint string
 }
 
-// OutOfRangeError ends Run when the server holds no block the cursor can
-// resume from: Cursor is the last block applied, Oldest the lowest block
-// the server could resume from, when it named one. Nothing older than the
-// server's window is backfilled.
+// OutOfRangeError ends Run when Endpoint holds no block the cursor can
+// resume from and no other endpoint streams: Cursor is the cursor that
+// endpoint's stream resumed from, Oldest the lowest block it could resume
+// from, when it named one. Nothing older than the server's window is
+// backfilled.
 type OutOfRangeError struct {
 	Endpoint string
 	Cursor   string

@@ -3,16 +3,23 @@ package erpc
 import (
 	"context"
 	"encoding/json"
+	"math/big"
+	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
+	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/test/chainsim"
 	"github.com/erpc/erpc/test/h2idle"
+	"github.com/erpc/erpc/util"
 	gethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -20,7 +27,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/encoding"
+	"google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/mem"
+	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -153,19 +162,45 @@ func dialGrpc(t *testing.T, addr string, opts ...grpc.DialOption) *grpc.ClientCo
 	return conn
 }
 
-// G1 and G2 (streams spec §6.2, §13): StreamLogs sends one complete
+// logsPerBlock counts each block's logs over its BlockLogs messages.
+func logsPerBlock(msgs []grpcMsg[bdsevm.StreamLogsResponse]) map[[32]byte]int {
+	out := map[[32]byte]int{}
+	for _, m := range msgs {
+		if b := m.m.GetBlock(); b != nil {
+			out[[32]byte(b.Block.Hash)] += len(b.Logs)
+		}
+	}
+	return out
+}
+
+// G1 and G2 (streams spec §6.2, §10, §13): StreamLogs sends one complete
 // BlockLogs per block; a client that drops and resumes from its cursor on
 // the other instance, across a reorg, gets an Undo then the new branch,
 // and holds the canonical logs; another reorg reaches the live stream as
 // one Undo. A block with more matched logs than one message takes spans
 // messages of at most 1,000 logs, only the last complete, each under 4 MB.
+// Clients with distinct filters that each match every log get every log,
+// while the per-filter state the tracker holds stays within its byte
+// bound, oldest out.
 func TestGrpcStreamLogs_ResumeUndoAndSplit(t *testing.T) {
+	const bound = 256 << 10
+	prevBound := evm.FilterStateBytes.Load()
+	evm.FilterStateBytes.Store(bound)
+	t.Cleanup(func() { evm.FilterStateBytes.Store(prevBound) })
 	s := startFinalitySeed(t, 211, chainsim.Faults{})
 	g0 := s.startGrpc(0, s.srv, nil, s.nw.Load())
 	g1 := s.startSecond()
 	s.blocks(10)
 
 	all := readGrpc(s, opened(g0.client.StreamLogs(streamMD(context.Background()), &bdsevm.StreamLogsRequest{Filter: &bdsevm.LogFilter{}})))
+	var distinct []*grpcRead[bdsevm.StreamLogsResponse]
+	for i := range 12 {
+		f := &bdsevm.LogFilter{Address: [][]byte{gethcommon.BigToAddress(big.NewInt(int64(0xdead00 + i))).Bytes()}}
+		for _, a := range chainsim.Addrs {
+			f.Address = append(f.Address, a.Bytes())
+		}
+		distinct = append(distinct, readGrpc(s, opened(g0.client.StreamLogs(streamMD(context.Background()), &bdsevm.StreamLogsRequest{Filter: f}))))
+	}
 	ctxA, cutA := context.WithCancel(context.Background())
 	a := readGrpc(s, opened(g0.client.StreamLogs(streamMD(ctxA), &bdsevm.StreamLogsRequest{Filter: filterOf(chainsim.Filters[0])})))
 	require.Eventually(t, func() bool { n, _ := completeBlocks(a.all()); return n >= 6 }, 20*time.Second, 20*time.Millisecond, "logs flow")
@@ -257,6 +292,28 @@ func TestGrpcStreamLogs_ResumeUndoAndSplit(t *testing.T) {
 		}
 	}
 	assert.Positive(t, split, "a block of more than 1,000 logs spans messages")
+
+	want := logsPerBlock(all.all())
+	for i, d := range distinct {
+		require.NoError(t, d.ended(), "distinct filter %d", i)
+		shared, big := 0, 0
+		for h, n := range logsPerBlock(d.all()) {
+			if w, ok := want[h]; ok {
+				assert.Equal(t, w, n, "distinct filter %d: every log of block %x", i, h[:4])
+				shared++
+				if n > 1000 {
+					big++
+				}
+			}
+		}
+		assert.GreaterOrEqual(t, shared, 20, "distinct filter %d flows", i)
+		assert.Positive(t, big, "distinct filter %d passes a big block", i)
+	}
+	held, _ := gathered(t, telemetry.MetricChainTrackerFilterStateBytes, trackerLabels)
+	evicted, _ := gathered(t, telemetry.MetricChainTrackerFilterStateEvictedTotal, trackerLabels)
+	assert.Positive(t, evicted, "13 filters matching every log of big blocks pass the bound: oldest state out")
+	assert.Positive(t, held, "per-filter state is counted")
+	assert.LessOrEqual(t, held, float64(bound), "per-filter state stays within its bound")
 }
 
 // F1 and F2 through StreamLogs: a FINALITY_FINALIZED, REORG_NONE stream
@@ -305,6 +362,64 @@ func TestGrpcStreamLogs_Finality(t *testing.T) {
 	}
 	require.NoError(t, final.ended())
 	require.NoError(t, depth.ended())
+
+	// A server whose send limit is below one log's message: the stream ends
+	// RESOURCE_EXHAUSTED naming the block, and a resume from before it ends
+	// so again at once, sending nothing of that block.
+	gs, err := NewGrpcServer(context.Background(), &log.Logger, &common.ServerConfig{
+		GrpcMaxRecvMsgSize: util.IntPtr(1 << 20),
+		GrpcMaxSendMsgSize: util.IntPtr(160),
+		GrpcReflection:     util.BoolPtr(false),
+	}, s.srv.erpc)
+	require.NoError(t, err)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = gs.server.Serve(lis) }()
+	t.Cleanup(gs.server.Stop)
+	small := bdsevm.NewStreamServiceClient(dialGrpc(t, lis.Addr().String()))
+	tooLarge := func(req *bdsevm.StreamLogsRequest) (uint64, []grpcMsg[bdsevm.StreamLogsResponse]) {
+		t.Helper()
+		r := readGrpc(s, opened(small.StreamLogs(ctx, req)))
+		select {
+		case <-r.done:
+		case <-time.After(20 * time.Second):
+			t.Fatal("the stream never ends")
+		}
+		err := r.ended()
+		require.Equal(t, codes.ResourceExhausted, status.Code(err), "%v", err)
+		info := errorInfoOf(err)
+		require.NotNil(t, info, "%v", err)
+		assert.Equal(t, "MESSAGE_TOO_LARGE", info.Reason)
+		assert.Equal(t, "erpc.cloud", info.Domain)
+		assert.Equal(t, "160", info.Metadata["maxBytes"])
+		size, _ := strconv.Atoi(info.Metadata["messageBytes"])
+		assert.Greater(t, size, 160)
+		n, err := strconv.ParseUint(info.Metadata["blockNumber"], 10, 64)
+		require.NoError(t, err, "%v", info.Metadata)
+		assert.Equal(t, s.chain.CanonAt(n).Hash.Hex(), info.Metadata["blockHash"])
+		for _, m := range r.all() {
+			if b := m.m.GetBlock(); b != nil {
+				assert.Less(t, b.Block.Number, n, "nothing of block %d or later", n)
+			}
+		}
+		return n, r.all()
+	}
+	n, _ := tooLarge(&bdsevm.StreamLogsRequest{Filter: &bdsevm.LogFilter{}})
+	before := s.chain.CanonAt(n - 1)
+	from := before.Number
+	again, msgs := tooLarge(&bdsevm.StreamLogsRequest{Filter: &bdsevm.LogFilter{}, FromBlock: &from, FromHash: before.Hash[:]})
+	assert.Equal(t, n, again, "the resume ends on the same block")
+	assert.Empty(t, msgs, "the resume sends nothing past its cursor")
+}
+
+// errorInfoOf is the google.rpc.ErrorInfo of a status error, if any.
+func errorInfoOf(err error) *errdetails.ErrorInfo {
+	for _, d := range status.Convert(err).Details() {
+		if e, ok := d.(*errdetails.ErrorInfo); ok {
+			return e
+		}
+	}
+	return nil
 }
 
 // G4–G7 on StreamBlocks (streams spec §3.4, §3.6, §6, §10): a request with
@@ -314,8 +429,7 @@ func TestGrpcStreamLogs_Finality(t *testing.T) {
 // block; bad options are INVALID_ARGUMENT naming the field. The 101st
 // stream on a connection is RESOURCE_EXHAUSTED. Through a proxy that cuts
 // connections idle 3s and ignores PING, a quiet chain keeps a stream with
-// heartbeatSeconds open on heartbeats and cuts one without; the server
-// announces fixed 4 MiB stream and 16 MiB connection windows. With every
+// heartbeatSeconds open on heartbeats and cuts one without. With every
 // vendor down the heartbeat stream reads DEGRADED, then OK.
 func TestGrpcStreamBlocks_FinalityHeartbeatsAndLimits(t *testing.T) {
 	s := startFinalitySeed(t, 227, chainsim.Faults{})
@@ -369,7 +483,8 @@ func TestGrpcStreamBlocks_FinalityHeartbeatsAndLimits(t *testing.T) {
 		}
 	}
 	require.NotNil(t, info, "OUT_OF_RANGE carries an ErrorInfo: %v", err)
-	assert.Equal(t, "below_window", info.Reason)
+	assert.Equal(t, "BELOW_WINDOW", info.Reason, "AIP-193: UPPER_SNAKE reason")
+	assert.Equal(t, "erpc.cloud", info.Domain, "AIP-193: the service's domain")
 	oldest, err := strconv.ParseUint(info.Metadata["oldestBlock"], 10, 64)
 	require.NoError(t, err, "oldestBlock %q", info.Metadata["oldestBlock"])
 	assert.Greater(t, oldest, old.Number)
@@ -449,9 +564,6 @@ func TestGrpcStreamBlocks_FinalityHeartbeatsAndLimits(t *testing.T) {
 	}
 	assert.Equal(t, codes.Unavailable, status.Code(silent.ended()), "the idle proxy cuts a stream without heartbeats: %v", silent.ended())
 	assert.Positive(t, p.Cuts())
-	streamWindow, connIncrement := p.ServerWindows()
-	assert.EqualValues(t, 4<<20, streamWindow, "fixed 4 MiB stream window")
-	assert.EqualValues(t, 16<<20-65535, connIncrement, "fixed 16 MiB connection window")
 
 	// Status: degraded while no vendor answers, then ok.
 	states := func() (out []bdsevm.StreamStatus_State) {
@@ -480,11 +592,34 @@ func TestGrpcStreamBlocks_FinalityHeartbeatsAndLimits(t *testing.T) {
 	}
 }
 
-// G3 (streams spec §6.2): StreamPendingTransactions sends hashes, or with
-// fullTransactions whole transactions, in batches of at most 1,000; a ws
-// subscriber of the same params shares the variant, so each push source
-// holds one upstream subscription per variant.
+// payloadSizes sums what a client received: payload bytes, and as they
+// came off the wire, compressed.
+type payloadSizes struct{ raw, wire atomic.Int64 }
+
+func (p *payloadSizes) TagRPC(ctx context.Context, _ *stats.RPCTagInfo) context.Context { return ctx }
+func (p *payloadSizes) HandleRPC(_ context.Context, s stats.RPCStats) {
+	if in, ok := s.(*stats.InPayload); ok {
+		p.raw.Add(int64(in.Length))
+		p.wire.Add(int64(in.CompressedLength))
+	}
+}
+func (p *payloadSizes) TagConn(ctx context.Context, _ *stats.ConnTagInfo) context.Context { return ctx }
+func (p *payloadSizes) HandleConn(context.Context, stats.ConnStats)                       {}
+
+// G3 (streams spec §6.2, §6.3): StreamPendingTransactions sends hashes, or
+// with fullTransactions whole transactions, in batches of at most 1,000; a
+// ws subscriber of the same params shares the variant, so each push source
+// holds one upstream subscription per variant. Each transaction converts
+// to proto once, whatever the subscriber count; a client that compresses
+// its request gets the messages uncompressed.
 func TestGrpcStreamPending_HashesAndFull(t *testing.T) {
+	var conversions atomic.Int64
+	convert := grpcPendingTx
+	grpcPendingTx = func(raw json.RawMessage) (*bdsevm.Transaction, error) {
+		conversions.Add(1)
+		return convert(raw)
+	}
+	t.Cleanup(func() { grpcPendingTx = convert })
 	s := startFinalitySeed(t, 229, chainsim.Faults{})
 	g := s.startGrpc(0, s.srv, nil, s.nw.Load())
 	c, _, err := dialStream(t, s, "", nil)
@@ -493,7 +628,29 @@ func TestGrpcStreamPending_HashesAndFull(t *testing.T) {
 	ctx := streamMD(context.Background())
 	hashes := readGrpc(s, opened(g.client.StreamPendingTransactions(ctx, &bdsevm.StreamPendingTransactionsRequest{})))
 	full := readGrpc(s, opened(g.client.StreamPendingTransactions(ctx, &bdsevm.StreamPendingTransactionsRequest{FullTransactions: true, HeartbeatSeconds: new(uint32(1))})))
+	sizes := &payloadSizes{}
+	gzipped := bdsevm.NewStreamServiceClient(dialGrpc(t, g.addr, grpc.WithStatsHandler(sizes),
+		grpc.WithDefaultCallOptions(grpc.UseCompressor(gzip.Name))))
+	others := []*grpcRead[bdsevm.StreamPendingTransactionsResponse]{
+		readGrpc(s, opened(g.client.StreamPendingTransactions(ctx, &bdsevm.StreamPendingTransactionsRequest{FullTransactions: true}))),
+		readGrpc(s, opened(gzipped.StreamPendingTransactions(ctx, &bdsevm.StreamPendingTransactionsRequest{FullTransactions: true}))),
+	}
 	s.blocks(15)
+	s.chain.Halt(true)
+	time.Sleep(time.Second)
+
+	union := map[gethcommon.Hash]bool{}
+	for _, r := range append(others, full) {
+		for _, m := range r.all() {
+			for _, tx := range m.m.GetTransactions().GetTransactions() {
+				union[gethcommon.BytesToHash(tx.Hash)] = true
+			}
+		}
+	}
+	require.NotEmpty(t, union)
+	assert.Equal(t, int64(len(union)), conversions.Load(), "each transaction converts once for 3 subscribers")
+	assert.Positive(t, sizes.raw.Load())
+	assert.Equal(t, sizes.raw.Load(), sizes.wire.Load(), "no per-stream compression")
 
 	got := map[gethcommon.Hash]bool{}
 	for _, m := range hashes.all() {
@@ -539,4 +696,7 @@ func TestGrpcStreamPending_HashesAndFull(t *testing.T) {
 	}
 	require.NoError(t, hashes.ended())
 	require.NoError(t, full.ended())
+	for _, r := range others {
+		require.NoError(t, r.ended())
+	}
 }

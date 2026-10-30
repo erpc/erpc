@@ -89,6 +89,9 @@ type Chain struct {
 	// bigTxs, while set, is how many transactions each non-empty block
 	// minted holds (BigBlocks).
 	bigTxs int
+	// history counts answers SlowHistory holds now, across the vendors;
+	// historyPeak is its most since ResetHistoryPeak.
+	history, historyPeak atomic.Int64
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -147,6 +150,23 @@ func (c *Chain) ID() int64 { return c.cfg.ChainID }
 
 // BlockTime is the chain's block time.
 func (c *Chain) BlockTime() time.Duration { return c.cfg.BlockTime }
+
+// HistoryPeak is the most answers SlowHistory held at once, across the
+// chain's vendors, since ResetHistoryPeak: a client's history fetches in
+// flight together.
+func (c *Chain) HistoryPeak() int64 { return c.historyPeak.Load() }
+
+// ResetHistoryPeak restarts HistoryPeak from the answers held now.
+func (c *Chain) ResetHistoryPeak() { c.historyPeak.Store(c.history.Load()) }
+
+// historyWait holds a history answer for d, counted in HistoryPeak.
+func (c *Chain) historyWait(d time.Duration) {
+	n := c.history.Add(1)
+	for p := c.historyPeak.Load(); n > p && !c.historyPeak.CompareAndSwap(p, n); p = c.historyPeak.Load() {
+	}
+	time.Sleep(d)
+	c.history.Add(-1)
+}
 
 // Start makes a block every block time until Stop or Close.
 func (c *Chain) Start() {
@@ -300,6 +320,20 @@ func (c *Chain) CanonAt(n uint64) *Block {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.canonAtLocked(n)
+}
+
+// ServedAt is the block at n on the branch v serves, nil above its tip.
+func (c *Chain) ServedAt(v *Vendor, n uint64) *Block {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	b := v.targetLocked()
+	for b != nil && b.Number > n {
+		b = b.Parent
+	}
+	if b == nil || b.Number != n {
+		return nil
+	}
+	return b
 }
 
 // MintedBetween are the canonical blocks minted in [from, to], oldest

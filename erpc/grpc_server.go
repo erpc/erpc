@@ -38,6 +38,10 @@ type GrpcServer struct {
 	trustedForwarderNets []net.IPNet
 	trustedForwarderIPs  map[string]struct{}
 	trustedIPHeaders     []string
+	// maxMessage is the stream message bound (streams spec §6.2): no
+	// stream message passes the client default receive limit or the
+	// server's own send limit.
+	maxMessage int
 
 	evm.UnimplementedRPCQueryServiceServer
 	evm.UnimplementedQueryServiceServer
@@ -64,11 +68,12 @@ func NewGrpcServer(
 	erpcInstance *ERPC,
 ) (*GrpcServer, error) {
 	gs := &GrpcServer{
-		appCtx:    ctx,
-		serverCfg: cfg,
-		erpc:      erpcInstance,
-		processor: NewRequestProcessor(erpcInstance, logger),
-		logger:    logger,
+		appCtx:     ctx,
+		serverCfg:  cfg,
+		erpc:       erpcInstance,
+		processor:  NewRequestProcessor(erpcInstance, logger),
+		logger:     logger,
+		maxMessage: min(grpcMessageMax, *cfg.GrpcMaxSendMsgSize),
 	}
 	if cfg != nil {
 		gs.trustedForwarderIPs = make(map[string]struct{}, len(cfg.TrustedIPForwarders))
@@ -108,11 +113,10 @@ func NewGrpcServer(
 		grpc.ChainUnaryInterceptor(gs.panicRecoveryUnary()),
 		grpc.ChainStreamInterceptor(gs.panicRecoveryStream(), gs.streamCap()),
 		// Streams spec §6.2, §6.3: stream messages encoded once per block,
-		// fixed flow-control windows, write buffers released between
-		// writes.
+		// write buffers released between writes. No fixed flow-control
+		// windows: the server's bound only what clients send it; the
+		// client's window paces the server's sends.
 		grpc.ForceServerCodecV2(newGrpcCodec()),
-		grpc.InitialWindowSize(grpcStreamWindow),
-		grpc.InitialConnWindowSize(grpcConnWindow),
 		grpc.SharedWriteBuffer(true),
 		// MaxConnectionAge forces long-lived client channels to reconnect
 		// periodically (GOAWAY + grace for in-flight streams). Clients that

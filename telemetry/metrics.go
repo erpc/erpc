@@ -226,7 +226,7 @@ var (
 	MetricSharedCounterRemoteRejectedTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "shared_counter_remote_rejected_total",
-		Help:      "Remote shared counter states this instance rejected, by reason (non_positive, small_rollback, stale_timestamp, malformed).",
+		Help:      "Remote shared counter states this instance rejected, by reason (non_positive, small_rollback, held_rollback, stale_timestamp, malformed).",
 	}, []string{"reason"})
 
 	MetricChainTrackerReanchorTotal = DefineCounter(prometheus.CounterOpts{
@@ -287,6 +287,18 @@ var (
 		Namespace: "erpc",
 		Name:      "chain_tracker_final_hold_headers",
 		Help:      "Headers the network-wide chain tracker holds below its window for open safe and finalized taps.",
+	}, []string{"project", "network"})
+
+	MetricChainTrackerFilterStateBytes = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "chain_tracker_filter_state_bytes",
+		Help:      "Bytes of per-filter state (matched log positions, per-filter log encodings) the network-wide chain tracker holds on its receipts.",
+	}, []string{"project", "network"})
+
+	MetricChainTrackerFilterStateEvictedTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "chain_tracker_filter_state_evicted_total",
+		Help:      "Per-filter state entries the chain tracker dropped, oldest first, to stay within its byte bound.",
 	}, []string{"project", "network"})
 
 	MetricServedTipVoters = DefineGauge(prometheus.GaugeOpts{
@@ -646,7 +658,7 @@ var (
 	MetricTapDeliverySeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "tap_delivery_seconds",
-		Help:      "Seconds from when a block became deliverable to a tap (its confirmed-head change, or its finality bound reaching it) to the tap's write of it.",
+		Help:      "Seconds from when a block became deliverable to a tap (its ready stamp, or its finality bound reaching it) to the end of the tap's write of it.",
 		Buckets:   []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60},
 	}, []string{"transport", "kind", "finality"})
 
@@ -1132,7 +1144,8 @@ var (
 
 	// `reason` distinguishes a connector that genuinely had no entry
 	// ("connector_miss"), one that failed or timed out ("connector_error"), an
-	// entry rejected by the freshness/TTL guard ("ttl_rejected"), and a stored
+	// entry rejected by the freshness/TTL guard ("ttl_rejected"), an entry
+	// naming a block a reorg replaced ("orphaned"), and a stored
 	// empty result under CacheEmptyBehaviorIgnore ("empty_result"). Without it
 	// a slow or erroring cache backend is indistinguishable from a cold cache,
 	// which reads as a hit-rate problem instead of a latency problem.

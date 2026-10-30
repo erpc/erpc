@@ -642,3 +642,70 @@ func TestStreamFinality_DepthOnLane(t *testing.T) {
 	}
 	assert.False(t, strings.Contains(fmt.Sprint(c.controls(sub, "end")), "reason"), "the tap keeps flowing")
 }
+
+// A finalized tap on a use-upstream lane whose upstream finalizes 50
+// blocks below its head, while the others finalize 8 below: the lane's
+// Finalized sits far below the network-wide one, so the final hold must
+// cover the lane tap's start and cursor, not the network's Finalized.
+// The tap starts, flows canonical, at or below the lane's Finalized,
+// and never ends.
+func TestStreamFinality_FinalizedOnLaneBelowTheNetwork(t *testing.T) {
+	s := startFinalitySeed(t, 137, chainsim.Faults{FinalityDepth: 8})
+	s.httpA.Update(func(f *chainsim.Faults) { f.FinalityDepth = 50 })
+	s.blocks(60)
+	hdr := http.Header{}
+	hdr.Set("X-ERPC-Use-Upstream", s.httpA.ID)
+	c, _, err := dialStream(t, s, "", hdr)
+	require.NoError(t, err)
+	sub := c.subscribe("newHeads", ext(map[string]interface{}{"finality": "finalized"}))
+	require.Eventually(t, func() bool { return len(c.applyHeads(sub).chain) >= 10 }, 20*time.Second, 50*time.Millisecond,
+		"the lane's final tap flows: %v", c.controls(sub, "end"))
+	h := c.applyHeads(sub)
+	h.requireCanonical(t, s, "lane finalized heads")
+	for n, tip := range h.tips {
+		assert.LessOrEqual(t, n+50, tip, "head %d at or below the lane's Finalized (tip %d)", n, tip)
+	}
+	assert.Empty(t, c.controls(sub, "end"), "the tap keeps flowing")
+}
+
+// F6's shape: 0.2s blocks, every vendor finalizes 4,000 blocks below its
+// head, far below a 5s window, and answers history 25ms late, as a remote
+// vendor's round trip. A finalized subscribe's start is the Finalized
+// block, pinned once fill reaches it. Fill keeps fillAhead (8) by-number
+// fetches in flight (CT spec §9): the vendors see 8 history answers at
+// once, never more, and fill takes under half the 100s one fetch at a
+// time takes. Its first block comes when Finalized next moves. Fill takes
+// a rate permit only while half the budget is free: 500 per second per
+// upstream here, so the round trip, not the budget, bounds it.
+func TestStreamFinality_DeepFinalityFirstBlock(t *testing.T) {
+	const depth = 4000
+	s := newChaosSeed(t, 139, true, chaosOpts{history: depth + 200, maxBackfill: 5 * time.Second, budget: 1000})
+	s.setAll(func(f *chainsim.Faults) { f.FinalityDepth, f.SlowHistory = depth, 25*time.Millisecond })
+	s.startERPC()
+	s.chain.Start()
+	s.blocks(10)
+	c, _, err := dialStream(t, s, "", nil)
+	require.NoError(t, err)
+	nw := s.nw.Load()
+	fin := nw.headFor("").Finalized
+	require.Positive(t, fin)
+	s.chain.ResetHistoryPeak()
+	start := time.Now()
+	sub := c.subscribe("newHeads", ext(map[string]interface{}{"finality": "finalized"}))
+	require.Eventually(t, func() bool {
+		from, _, ok := nw.chainTracker.FollowedRange()
+		return ok && from <= fin
+	}, 2*time.Minute, 10*time.Millisecond, "fill pins Finalized %d", fin)
+	took, peak := time.Since(start), s.chain.HistoryPeak()
+	t.Logf("fill held Finalized %s after subscribe, %d headers below the head, %d history fetches in flight at most", took, depth, peak)
+	assert.EqualValues(t, 8, peak, "fill keeps fillAhead history fetches in flight")
+	assert.Less(t, took, depth*25*time.Millisecond/2, "fill takes under half the one-at-a-time time")
+	require.Eventually(t, func() bool { return len(c.applyHeads(sub).chain) > 0 }, 2*time.Minute, 20*time.Millisecond,
+		"the first final block once Finalized moves: %v", c.controls(sub, "end"))
+	h := c.applyHeads(sub)
+	h.requireCanonical(t, s, "deep finalized heads")
+	for n, tip := range h.tips {
+		assert.LessOrEqual(t, n+depth, tip, "head %d at or below Finalized (tip %d)", n, tip)
+	}
+	assert.Empty(t, c.controls(sub, "end"))
+}

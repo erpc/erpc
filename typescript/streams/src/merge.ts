@@ -1,156 +1,237 @@
+import { FinalRevertedError } from "./errors";
 import type { Block, BlockRef } from "./types";
 
-/** Refs of the merged chain kept: far deeper than any reorg window. */
-const mergedRefs = 4096;
-/** Blocks of each connection's branch kept. */
-const laneBlocks = 256;
+/** Refs of the applied chain kept to find fork points. */
+const chainKeep = 4096;
+/**
+ * Blocks kept per connection, which a switch to it applies (spec §9.5). A
+ * connection whose fork lies deeper restarts from the merged cursor, and
+ * its server sends the undo.
+ */
+const branchKeep = 256;
 
-interface Entry {
-  number: bigint;
-  hash: string;
-  /** Held only while the app has not applied this block. */
-  block?: Block;
-}
+const same = (a: BlockRef, b: BlockRef) => a.number === b.number && a.hash === b.hash;
+const refOf = (b: BlockRef): BlockRef => ({ number: b.number, hash: b.hash });
 
-/** One endpoint's connection as the merge sees it (spec §9.5). */
+/**
+ * One endpoint's connection as the run sees it: what its current session
+ * delivered, blocks linked from `base`, the block it resumed from or the
+ * parent of its first.
+ */
 export class Lane {
-  /** Its branch this session, oldest first, contiguous. */
-  chain: Entry[] = [];
-  /** Highest number it delivered this session; an Undo does not lower it. */
-  tip: bigint | undefined;
-  /** It sent an Undo and no block since. */
+  /** The current session; events of an older one are dropped. */
+  sess = 0;
+  /** Its stream is open and the library did not restart it. */
+  live = false;
+  base: BlockRef | undefined;
+  blocks: Block[] = [];
+  /** Highest number the session delivered: an undo does not lower it. */
+  high = 0n;
+  /**
+   * The session's last word was an undo, which drops the chain above the
+   * lane's top even before the new branch arrives; cleared by the follow
+   * it triggers.
+   */
   undone = false;
+  /** `base` is a fork point the server named, by undo or resend. */
+  trusted = false;
+  /** Ends the current session's stream; the run resumes it. */
+  cancel: () => void = () => {};
 
-  constructor(
-    readonly endpoint: string,
-    /** Ends its stream; the run loop resumes it from the merged cursor. */
-    readonly restart: () => void,
-  ) {}
+  constructor(readonly endpoint: string) {}
+
+  get ready(): boolean {
+    return this.live && this.base !== undefined;
+  }
+
+  /** Starts a session resuming from `from`; returns its id. */
+  open(from: BlockRef | undefined): number {
+    this.sess++;
+    this.live = true;
+    this.base = from && refOf(from);
+    this.blocks = [];
+    this.high = from?.number ?? 0n;
+    this.undone = false;
+    this.trusted = false;
+    return this.sess;
+  }
+
+  /**
+   * Appends b, dropping the blocks at and above its number: a resend after
+   * a reorg names its new parent. False when b links to nothing the lane
+   * holds.
+   */
+  add(b: Block): boolean {
+    if (b.number === 0n) return false;
+    const parent: BlockRef = { number: b.number - 1n, hash: b.parentHash };
+    if (!this.base) {
+      this.base = parent;
+      this.blocks = [b];
+    } else if (parent.number < this.base.number) {
+      // A resend from below the resume cursor: an undo to the parent.
+      this.base = parent;
+      this.blocks = [b];
+      this.trusted = true;
+    } else if (same(parent, this.base)) {
+      this.blocks = [b];
+    } else if (parent.number === this.base.number) {
+      return false;
+    } else {
+      const i = Number(parent.number - this.base.number - 1n);
+      if (i >= this.blocks.length || !same(this.blocks[i], parent)) return false;
+      this.blocks.length = i + 1;
+      this.blocks.push(b);
+    }
+    if (b.number > this.high) this.high = b.number;
+    this.undone = false;
+    if (this.blocks.length > branchKeep) {
+      const cut = this.blocks.length - branchKeep;
+      this.base = refOf(this.blocks[cut - 1]);
+      this.blocks = this.blocks.slice(cut);
+      this.trusted = false;
+    }
+    return true;
+  }
+
+  /** Drops the blocks above fp. */
+  undo(fp: BlockRef): void {
+    this.undone = true;
+    if (this.base && fp.number > this.base.number) {
+      const i = Number(fp.number - this.base.number - 1n);
+      if (i < this.blocks.length && same(this.blocks[i], fp)) {
+        this.blocks.length = i + 1;
+        return;
+      }
+    }
+    if (this.base && same(this.base, fp)) {
+      this.blocks = [];
+      return;
+    }
+    this.base = refOf(fp);
+    this.blocks = [];
+    this.trusted = true;
+  }
 }
 
 export interface Apply {
   apply(block: Block): Promise<void>;
-  undo(forkPoint: BlockRef): Promise<void>;
+  /** Absent when the handler has none (finalized streams). */
+  undo?(forkPoint: BlockRef): Promise<void>;
 }
 
 /**
- * The chain the app applied, merged from one or two connections: it
- * follows the connection with the highest tip (ties keep the current one),
- * undoes to the fork point when it switches branch, and skips blocks it
- * already applied.
+ * The chain the app applied, merged from one or two lanes (spec §9.5): it
+ * follows the lane with the highest block, the current one on a tie, else
+ * the next ready one; undoes to the fork point when it switches branch;
+ * never applies a block the chain holds. No app call starts once `signal`
+ * aborted.
  */
 export class Merger {
-  readonly lanes: Lane[] = [];
-  private merged: BlockRef[];
+  /** Oldest first, each the parent of the next; empty until the first block. */
+  private chain: BlockRef[];
   private leader: Lane | undefined;
 
   constructor(
+    private readonly lanes: Lane[],
     cursor: BlockRef | undefined,
     private readonly app: Apply,
+    private readonly signal: AbortSignal,
   ) {
-    this.merged = cursor ? [cursor] : [];
+    this.chain = cursor ? [cursor] : [];
   }
 
-  /** The merged cursor: every connection resumes after it. */
+  /** The merged cursor: every session resumes from it. */
   get cursor(): BlockRef | undefined {
-    return this.merged.at(-1);
-  }
-
-  connected(lane: Lane): void {
-    const c = this.cursor;
-    lane.chain = c ? [{ number: c.number, hash: c.hash }] : [];
-    lane.tip = c?.number;
-    lane.undone = false;
+    return this.chain.at(-1);
   }
 
   async block(lane: Lane, b: Block): Promise<void> {
-    let i = lane.chain.length;
-    while (i > 0 && lane.chain[i - 1].number >= b.number) i--;
-    lane.chain.length = i;
-    const applied = this.at(b.number)?.hash === b.hash;
-    lane.chain.push({ number: b.number, hash: b.hash, block: applied ? undefined : b });
-    if (lane.chain.length > laneBlocks) lane.chain.splice(0, lane.chain.length - laneBlocks);
-    if (lane.tip === undefined || b.number > lane.tip) lane.tip = b.number;
-    lane.undone = false;
+    if (!lane.add(b)) this.restart(lane);
     await this.follow();
   }
 
   async undo(lane: Lane, fp: BlockRef): Promise<void> {
-    let i = lane.chain.length;
-    while (i > 0 && lane.chain[i - 1].number > fp.number) i--;
-    lane.chain.length = i;
-    const last = lane.chain.at(-1);
-    if (last && last.number === fp.number && last.hash !== fp.hash) lane.chain.pop();
-    if (lane.chain.at(-1)?.number !== fp.number) {
-      lane.chain.push({ number: fp.number, hash: fp.hash });
-    }
-    lane.undone = true;
+    lane.undo(fp);
     await this.follow();
   }
 
-  private at(n: bigint): BlockRef | undefined {
-    const first = this.merged[0];
-    if (!first || n < first.number) return undefined;
-    const r = this.merged[Number(n - first.number)];
-    return r?.number === n ? r : undefined;
-  }
-
-  private async follow(): Promise<void> {
-    for (const l of this.lanes) {
-      if (l.tip === undefined) continue;
-      if (!this.leader || this.leader.tip === undefined || l.tip > this.leader.tip) {
-        this.leader = l;
+  /** Applies the leader's branch; a lane that shares no block with the chain restarts. */
+  async follow(): Promise<void> {
+    try {
+      const lead = this.leader;
+      const order: Lane[] = lead?.ready ? [lead] : [];
+      for (const l of this.lanes) {
+        if (l === lead || !l.ready) continue;
+        if (order.length > 0 && l.high > order[0].high) order.unshift(l);
+        else order.push(l);
       }
-    }
-    const lane = this.leader;
-    const last = lane?.chain.at(-1);
-    if (!lane || !last) return;
-    const top = this.cursor;
-    if (top && this.at(last.number)?.hash === last.hash) {
-      // Behind or level, unless its Undo says the merged top left its chain.
-      if (lane.undone && last.number < top.number) await this.undoTo(last);
-      lane.undone = false;
-      return;
-    }
-    let fork: Entry | undefined;
-    if (top) {
-      for (let i = lane.chain.length - 1; i >= 0 && !fork; i--) {
-        if (this.at(lane.chain[i].number)?.hash === lane.chain[i].hash) fork = lane.chain[i];
-      }
-      if (!fork) {
-        const base = lane.chain[0];
-        if (base.block || base.number >= this.merged[0].number) {
-          lane.restart();
+      for (const l of order) {
+        if (await this.followLane(l)) {
+          this.leader = l;
           return;
         }
-        // The server placed the fork below every ref kept: trust it.
-        fork = base;
+        this.restart(l);
       }
-      if (fork.number < top.number) await this.undoTo(fork);
+    } finally {
+      for (const l of this.lanes) l.undone = false;
     }
-    for (const e of lane.chain) {
-      if (fork && e.number <= fork.number) continue;
-      if (!e.block) continue;
-      await this.app.apply(e.block);
-      this.push({ number: e.number, hash: e.hash });
-      e.block = undefined;
-    }
+  }
+
+  private restart(lane: Lane): void {
+    lane.live = false;
+    lane.cancel();
+  }
+
+  /**
+   * Moves the chain onto lane's branch: undo to the fork point when the
+   * chain holds blocks above it, then apply each block above it. False
+   * when the branch shares no block with the chain.
+   */
+  private async followLane(lane: Lane): Promise<boolean> {
+    const base = lane.base!;
+    let k = lane.blocks.length - 1;
+    while (k >= 0 && !this.has(lane.blocks[k])) k--;
+    let fork: BlockRef;
+    if (k >= 0) fork = refOf(lane.blocks[k]);
+    else if (this.chain.length === 0) {
+      fork = base;
+      this.chain = [fork];
+    } else if (this.has(base)) fork = base;
+    else if (lane.trusted && base.number <= this.chain[0].number) {
+      // Below every block the chain holds: the server's undo, or resend,
+      // to a block this client applied before.
+      fork = base;
+    } else return false;
+    const above = lane.blocks.slice(k + 1);
+    if (above.length === 0 && !lane.undone) return true;
     lane.undone = false;
-  }
-
-  private async undoTo(fp: BlockRef): Promise<void> {
-    await this.app.undo({ number: fp.number, hash: fp.hash });
-    const first = this.merged[0];
-    if (first && fp.number >= first.number) {
-      this.merged.length = Number(fp.number - first.number) + 1;
-    } else {
-      this.merged = [{ number: fp.number, hash: fp.hash }];
+    if (!same(this.chain.at(-1)!, fork)) {
+      if (!this.app.undo) {
+        throw new FinalRevertedError(
+          lane.endpoint,
+          `final_reverted: blocks above ${fork.number} were reverted`,
+        );
+      }
+      if (this.signal.aborted) return true;
+      await this.app.undo(fork);
+      this.chain = this.has(fork)
+        ? this.chain.slice(0, Number(fork.number - this.chain[0].number) + 1)
+        : [fork];
     }
+    for (const b of above) {
+      if (this.signal.aborted) return true;
+      await this.app.apply(b);
+      this.chain.push(refOf(b));
+      if (this.chain.length > 2 * chainKeep) this.chain = this.chain.slice(-chainKeep);
+    }
+    return true;
   }
 
-  private push(r: BlockRef): void {
-    this.merged.push(r);
-    if (this.merged.length > mergedRefs) this.merged.splice(0, this.merged.length - mergedRefs);
+  private has(ref: BlockRef): boolean {
+    const first = this.chain[0];
+    if (!first || ref.number < first.number) return false;
+    const r = this.chain[Number(ref.number - first.number)];
+    return r !== undefined && same(r, ref);
   }
 }
 

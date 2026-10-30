@@ -13,7 +13,9 @@ import (
 const (
 	// chainKeep: refs of the applied chain kept to find fork points.
 	chainKeep = 4096
-	// branchKeep: blocks kept per endpoint, which a switch to it applies.
+	// branchKeep: blocks kept per endpoint, which a switch to it applies
+	// (spec §9.5). An endpoint whose fork lies deeper restarts from the
+	// merged cursor, and its server sends the Undo.
 	branchKeep = 256
 	// pendingKeep: transaction hashes kept to drop the second endpoint's
 	// copies.
@@ -21,12 +23,14 @@ const (
 )
 
 // Run streams cfg into h until ctx ends, then returns nil, or until a
-// terminal end: *OutOfRangeError, *FinalRevertedError, an authentication,
-// permission or option error from the server, or an error h returned.
+// terminal end (spec §9.5): an authentication, permission or option error
+// from the server, or an error h returned, at once; *OutOfRangeError or
+// *FinalRevertedError from an endpoint while no other endpoint streams.
 // Every other end reconnects from the cursor: at once after a stream that
 // flowed ended UNAVAILABLE or went silent for 3 heartbeats, else after a
 // jittered backoff. With two endpoints both stream from the merged cursor
-// and Run follows the one with the highest block (spec §9.5).
+// and Run follows the one with the highest block. No handler call starts
+// after ctx ends.
 func Run(ctx context.Context, cfg Config, h Handler) error {
 	p, err := cfg.plan(h)
 	if err != nil {
@@ -66,6 +70,9 @@ func Run(ctx context.Context, cfg Config, h Handler) error {
 		case <-ctx.Done():
 			return nil
 		case ev := <-r.events:
+			if ctx.Err() != nil {
+				return nil
+			}
 			if err := r.handle(ctx, ev); err != nil {
 				if ctx.Err() != nil {
 					return nil
@@ -120,10 +127,10 @@ func (r *runner) handle(ctx context.Context, ev event) error {
 	case ev.sess != b.sess:
 		return nil
 	case ev.kind == evEnd:
-		if ev.terminal {
+		b.live = false
+		if ev.err != nil && (!ev.perEndpoint || !r.streaming()) {
 			return ev.err
 		}
-		b.live = false
 		r.status(Status{State: StateReconnecting, Reason: ev.reason, Endpoint: r.links[ev.link].ep.raw})
 		return r.follow(ctx)
 	case !b.live:
@@ -144,17 +151,34 @@ func (r *runner) handle(ctx context.Context, ev event) error {
 }
 
 // restart drops endpoint i's branch and resumes its stream from the
-// applied chain's top.
+// applied chain's top after the reconnect backoff.
 func (r *runner) restart(i int) {
 	b := &r.branches[i]
 	b.live = false
 	r.links[i].restart(b.sess)
 }
 
+// streaming: some endpoint's stream is open.
+func (r *runner) streaming() bool {
+	for i := range r.branches {
+		if r.branches[i].live {
+			return true
+		}
+	}
+	return false
+}
+
 // follow applies the leader's branch: the endpoint with the highest block,
-// the current one on a tie. A branch with no block in common with the
-// applied chain restarts from its top.
+// the current one on a tie, else the next ready one. A branch with no
+// block in common with the applied chain restarts from its top. An Undo
+// counts only in the follow it triggers: a branch that does not lead then
+// waits for its next block.
 func (r *runner) follow(ctx context.Context) error {
+	defer func() {
+		for i := range r.branches {
+			r.branches[i].undone = false
+		}
+	}()
 	var order []int
 	if r.leader >= 0 && r.branches[r.leader].ready() {
 		order = append(order, r.leader)
@@ -218,6 +242,9 @@ func (r *runner) followBranch(ctx context.Context, i int) (bool, error) {
 			return false, &FinalRevertedError{Endpoint: r.links[i].ep.raw,
 				Message: fmt.Sprintf("final_reverted: blocks above %d were reverted", fork.Number)}
 		}
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		if err := r.h.Undo(ctx, fork); err != nil {
 			return false, err
 		}
@@ -231,6 +258,9 @@ func (r *runner) followBranch(ctx context.Context, i int) (bool, error) {
 		}
 	}
 	for _, blk := range above {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		if err := r.h.Apply(ctx, blk); err != nil {
 			return false, err
 		}
@@ -294,7 +324,7 @@ func (r *runner) applyPending(ctx context.Context, b Block) error {
 			out.Transactions = append(out.Transactions, tx)
 		}
 	}
-	if len(out.Hashes) == 0 && len(out.Transactions) == 0 {
+	if len(out.Hashes) == 0 && len(out.Transactions) == 0 || ctx.Err() != nil {
 		return nil
 	}
 	return r.h.Apply(ctx, out)
@@ -311,7 +341,8 @@ type branch struct {
 	// does not lower it, so the endpoint keeps the lead while it resends.
 	high uint64
 	// undone: the session's last word was an Undo, which drops the chain
-	// above the branch's top even before the new branch arrives.
+	// above the branch's top even before the new branch arrives; cleared
+	// by the follow it triggers.
 	undone bool
 	// trusted: base is a fork point the server named, by Undo or resend.
 	trusted bool

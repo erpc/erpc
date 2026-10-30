@@ -14,29 +14,25 @@ import type {
   StreamConfig,
 } from "./types";
 
-/** Ends that stop the run with an error (spec §9.5); any other reconnects. */
-const terminal = new Set<number>([
-  Code.OUT_OF_RANGE,
-  Code.ABORTED,
-  Code.UNAUTHENTICATED,
-  Code.PERMISSION_DENIED,
-  Code.INVALID_ARGUMENT,
-]);
-
 const backoffMin = 500;
 const backoffMax = 30_000;
 /** A connection that lasted this long resets the backoff. */
 const backoffReset = 60_000;
-/** The heartbeat the watchdog assumes when the server picks it: its cap. */
-const serverHeartbeatCap = 30;
+/**
+ * The heartbeat asked for when the config leaves it 0 (spec §9.5): the
+ * server's lowest default. The library always sends one, so its watchdog
+ * runs on the server's actual interval.
+ */
+const defaultHeartbeatSeconds = 5;
 
 const kinds: Kind[] = ["newHeads", "logs", "newPendingTransactions"];
 
 export interface Stream {
   /**
    * Streams until the signal aborts (resolves) or a terminal end (rejects
-   * with OutOfRangeError, FinalRevertedError, the gRPC ServiceError, or
-   * the handler's own error).
+   * with the handler's own error, the gRPC ServiceError for auth or
+   * options, or OutOfRangeError or FinalRevertedError from an endpoint
+   * while no other endpoint streams).
    */
   run(handler: Handler, options?: RunOptions): Promise<void>;
 }
@@ -62,13 +58,13 @@ export function stream(config: StreamConfig): Stream {
   }
   const hb = config.heartbeatSeconds ?? 0;
   if (!Number.isInteger(hb) || hb < 0 || hb > 30) {
-    throw new TypeError("heartbeatSeconds: 0 (server default) or 1–30");
+    throw new TypeError("heartbeatSeconds: 0 (5) or 1–30");
   }
   const req: Request = {
     kind: config.kind,
     ...parseFinality(config.finality),
     filter: config.kind === "logs" ? parseFilter(config.filter ?? {}) : undefined,
-    heartbeatSeconds: hb,
+    heartbeatSeconds: hb || defaultHeartbeatSeconds,
     fullTransactions: config.fullTransactions ?? false,
   };
   return {
@@ -89,21 +85,24 @@ async function run(
   }
   const cursor = config.cursor;
   const saved = cursor && (await cursor.load());
+  const undo = handler.undo?.bind(handler);
   const app: Apply = {
     apply: async (b) => {
       await handler.apply(b);
       await cursor?.save(formatToken(b));
     },
-    undo: async (fp) => {
-      if (!handler.undo) throw new Error(`undo to ${formatToken(fp)}: handler has no undo`);
-      await handler.undo(fp);
+    undo: undo && (async (fp) => {
+      await undo(fp);
       await cursor?.save(formatToken(fp));
-    },
+    }),
   };
-  const merger = pending ? undefined : new Merger(saved ? parseToken(saved) : undefined, app);
+  const stop = new AbortController();
+  const lanes = endpoints.map((e) => new Lane(e.url));
+  const merger = pending
+    ? undefined
+    : new Merger(lanes, saved ? parseToken(saved) : undefined, app, stop.signal);
   const dedup = pending ? new PendingDedup() : undefined;
 
-  const stop = new AbortController();
   let failure: { err: unknown } | undefined;
   const fail = (err: unknown) => {
     failure ??= { err };
@@ -113,12 +112,19 @@ async function run(
   if (signal?.aborted) return;
   signal?.addEventListener("abort", onAbort);
 
-  // Events of every connection reach the app one at a time, in order.
-  let queue: Promise<unknown> = Promise.resolve();
-  const serial = (fn: () => Promise<void>): Promise<void> => {
-    const p = queue.then(fn);
-    queue = p.catch(() => {});
-    return p;
+  // Every lane's events reach the app one at a time, in order. None runs
+  // once the run stopped, and an error stops it before the next one runs.
+  let queue: Promise<void> = Promise.resolve();
+  const serial = (fn: () => Promise<void> | void): Promise<void> => {
+    queue = queue.then(async () => {
+      if (stop.signal.aborted) return;
+      try {
+        await fn();
+      } catch (err) {
+        fail(err);
+      }
+    });
+    return queue;
   };
 
   const handle = async (lane: Lane, ev: Event): Promise<void> => {
@@ -140,21 +146,23 @@ async function run(
     }
   };
 
-  const watchdog = 3 * (req.heartbeatSeconds || serverHeartbeatCap) * 1000;
+  const watchdog = 3 * req.heartbeatSeconds * 1000;
 
-  const connect = async (e: Endpoint): Promise<void> => {
-    let restart: (() => void) | undefined;
-    const lane = new Lane(e.url, () => restart?.());
-    merger?.lanes.push(lane);
+  const connect = async (e: Endpoint, lane: Lane): Promise<void> => {
     let backoff = backoffMin;
     const md = metadataOf(e, config.metadata);
     while (!stop.signal.aborted) {
-      merger?.connected(lane);
-      const from: BlockRef | undefined = merger?.cursor;
+      let from: BlockRef | undefined;
+      let sess = 0;
+      await serial(() => {
+        from = merger?.cursor;
+        sess = lane.open(from);
+      });
+      if (stop.signal.aborted) return;
       const client = dial(e);
       const { call, events } = open(client, md, req, from);
       let why: "watchdog" | "restart" | undefined;
-      restart = () => {
+      lane.cancel = () => {
         why ??= "restart";
         call.cancel();
       };
@@ -175,20 +183,17 @@ async function run(
           } finally {
             clearTimeout(timer);
           }
-          if (r.done) break;
+          // A cancelled call still yields what it buffered: drop it.
+          if (r.done || why || stop.signal.aborted) break;
           flowed = true;
-          try {
-            await serial(() => handle(lane, r.value));
-          } catch (appErr) {
-            fail(appErr);
-            break;
-          }
+          const ev = r.value;
+          await serial(() => (lane.live && lane.sess === sess ? handle(lane, ev) : undefined));
         }
       } catch (e) {
         err = e;
       } finally {
         stop.signal.removeEventListener("abort", cancel);
-        restart = undefined;
+        lane.cancel = () => {};
         call.cancel();
         client.close();
       }
@@ -198,16 +203,26 @@ async function run(
         fail(err);
         return;
       }
-      if (se && terminal.has(se.code)) {
-        fail(terminalError(se, merger?.cursor));
-        return;
-      }
-      if (Date.now() - started >= backoffReset) backoff = backoffMin;
+      const end = se && terminal(se, e.url, from);
       const reason = why ?? (se ? Code[se.code] : "ended");
-      handler.status?.({ state: "reconnecting", reason, endpoint: e.url });
+      await serial(async () => {
+        lane.live = false;
+        if (end && (!end.perEndpoint || !lanes.some((l) => l.live))) {
+          fail(end.err);
+          return;
+        }
+        handler.status?.({ state: "reconnecting", reason, endpoint: e.url });
+        await merger?.follow();
+      });
+      if (stop.signal.aborted) return;
+      if (Date.now() - started >= backoffReset) backoff = backoffMin;
+      // A session the library restarted backs off as any other, so a
+      // server that keeps breaking the chain linkage is not dialled in a loop.
       const atOnce =
-        why === "restart" ||
-        (flowed && (why === "watchdog" || !se || se.code === Code.UNAVAILABLE));
+        !end &&
+        why !== "restart" &&
+        flowed &&
+        (why === "watchdog" || !se || se.code === Code.UNAVAILABLE);
       if (!atOnce) {
         const jittered = backoff / 2 + Math.random() * (backoff / 2);
         await sleep(jittered, undefined, { signal: stop.signal }).catch(() => {});
@@ -217,7 +232,7 @@ async function run(
   };
 
   try {
-    await Promise.all(endpoints.map(connect));
+    await Promise.all(endpoints.map((e, i) => connect(e, lanes[i])));
   } finally {
     signal?.removeEventListener("abort", onAbort);
   }
@@ -225,21 +240,38 @@ async function run(
   if (failure) throw failure.err;
 }
 
-function terminalError(err: ServiceError, cursor: BlockRef | undefined): Error {
+/**
+ * The error a session's end stops the run with (spec §9.5), undefined
+ * when it reconnects. perEndpoint: the error is this endpoint's view of
+ * the chain, so it stops the run only while no other endpoint streams.
+ * from is the cursor the session resumed from.
+ */
+function terminal(
+  err: ServiceError,
+  endpoint: string,
+  from: BlockRef | undefined,
+): { err: Error; perEndpoint: boolean } | undefined {
   switch (err.code) {
     case Code.OUT_OF_RANGE: {
       const info = errorInfo(err);
       const block = info?.metadata.oldestBlock;
       const hash = info?.metadata.oldestHash;
-      return new OutOfRangeError(
-        cursor && formatToken(cursor),
-        info?.reason ?? "",
-        block && hash ? { number: BigInt(block), hash: hash.toLowerCase() } : undefined,
-      );
+      return {
+        err: new OutOfRangeError(
+          endpoint,
+          from && formatToken(from),
+          info?.reason ?? err.details,
+          block && hash ? { number: BigInt(block), hash: hash.toLowerCase() } : undefined,
+        ),
+        perEndpoint: true,
+      };
     }
     case Code.ABORTED:
-      return new FinalRevertedError(err.details);
-    default:
-      return err;
+      return { err: new FinalRevertedError(endpoint, err.details), perEndpoint: true };
+    case Code.UNAUTHENTICATED:
+    case Code.PERMISSION_DENIED:
+    case Code.INVALID_ARGUMENT:
+      return { err, perEndpoint: false };
   }
+  return undefined;
 }

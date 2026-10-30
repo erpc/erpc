@@ -56,7 +56,7 @@ type Cursor interface {
 // Config is one stream. Endpoints are grpc(s)://host:port/<project>/evm/<chainId>;
 // two endpoints are merged into one chain. Cursor nil keeps the cursor in
 // memory only: a new Run starts at the server's bound. HeartbeatSeconds 0
-// asks the server's default.
+// is 5, the server's lowest default.
 type Config struct {
 	Endpoints        []string
 	Kind             Kind
@@ -101,9 +101,10 @@ type plan struct {
 	watchdog  time.Duration
 }
 
-// defaultHeartbeat is the watchdog's interval when the server picks it: the
-// server's largest default.
-const defaultHeartbeat = 30 * time.Second
+// defaultHeartbeatSeconds is the heartbeat asked for when Config leaves it
+// 0 (spec §9.5): the library always sends one, so its watchdog runs on the
+// server's actual interval.
+const defaultHeartbeatSeconds = 5
 
 func (c Config) plan(h Handler) (*plan, error) {
 	if n := len(c.Endpoints); n < 1 || n > 2 {
@@ -112,14 +113,14 @@ func (c Config) plan(h Handler) (*plan, error) {
 	if h.Apply == nil {
 		return nil, errors.New("streams: Handler.Apply is required")
 	}
-	p := &plan{kind: c.Kind, heartbeat: c.HeartbeatSeconds, full: c.FullTransactions}
 	if c.HeartbeatSeconds > 30 {
 		return nil, fmt.Errorf("streams: HeartbeatSeconds %d, want 0 to 30", c.HeartbeatSeconds)
 	}
-	p.watchdog = 3 * defaultHeartbeat
-	if c.HeartbeatSeconds > 0 {
-		p.watchdog = 3 * time.Duration(c.HeartbeatSeconds) * time.Second
+	p := &plan{kind: c.Kind, heartbeat: c.HeartbeatSeconds, full: c.FullTransactions}
+	if p.heartbeat == 0 {
+		p.heartbeat = defaultHeartbeatSeconds
 	}
+	p.watchdog = 3 * time.Duration(p.heartbeat) * time.Second
 	for _, raw := range c.Endpoints {
 		ep, err := parseEndpoint(raw, c.Metadata)
 		if err != nil {

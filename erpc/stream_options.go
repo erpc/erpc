@@ -252,23 +252,23 @@ func parseStreamOptions(kind string, own map[string]any, defaults streamDefaults
 	return o, nil
 }
 
-// finalitySpanError refuses a final stream while the final hold is past
-// FinalHoldMax (§4): -32005 on ws, RESOURCE_EXHAUSTED on gRPC.
+// finalitySpanError refuses a final stream whose start lies past what the
+// final hold admits (§4): -32005 on ws, RESOURCE_EXHAUSTED on gRPC.
 type finalitySpanError struct{}
 
 func (finalitySpanError) Error() string {
-	return fmt.Sprintf("finality_span: the finalized block is more than %d headers below the chain tracker's window", evm.FinalHoldMax.Load())
+	return fmt.Sprintf("finality_span: the finalized block is more than %d headers below the chain tracker's window", evm.FinalHoldAdmit())
 }
 
-// admitStream checks opts against n (§3.1, §4): depth:N at most the reorg
-// window, else a streamOptionError named depthKey, the transport's name
-// for it; a final stream while the final hold is past FinalHoldMax,
-// finalitySpanError.
-func (n *Network) admitStream(opts StreamOptions, depthKey string) error {
+// admitStream checks opts of a stream on selector lane against n (§3.1,
+// §4): depth:N at most the reorg window, else a streamOptionError named
+// depthKey, the transport's name for it; a final stream whose bound lies
+// past what the final hold admits, finalitySpanError.
+func (n *Network) admitStream(opts StreamOptions, depthKey, lane string) error {
 	if w := n.reorgWindow(); opts.Finality.Kind == finalityDepth && opts.Finality.Depth > w {
 		return errStreamOption(depthKey, fmt.Sprintf("depth must be at most the reorg window, %d; use finalized", w))
 	}
-	if opts.Finality.final() && n.chainTracker != nil && n.chainTracker.FinalitySpan() {
+	if opts.Finality.final() && n.chainTracker != nil && n.chainTracker.FinalitySpan(n.finalBound(opts.Finality, lane)) {
 		return finalitySpanError{}
 	}
 	return nil

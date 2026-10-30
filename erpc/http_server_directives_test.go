@@ -99,7 +99,7 @@ func authStrategyDirectivesCfg() *common.Config {
 // ops caller and be silently dropped for everyone else.
 func TestHttpServer_AuthStrategyClientDirectives(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	// Both result mocks are persisted so every subtest (plus the selection
 	// policy's background probe of the non-pinned upstream) is served
@@ -183,7 +183,7 @@ func TestHttpServer_AuthStrategyClientDirectives(t *testing.T) {
 // requests alike.
 func TestWebSocket_AuthStrategyClientDirectives(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	gock.New("http://rpc1.localhost").

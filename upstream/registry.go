@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +66,33 @@ type UpstreamsRegistry struct {
 	// networkUpstreamHooks are the networks' OnNetworkUpstream callbacks,
 	// guarded by upstreamsMu.
 	networkUpstreamHooks map[string]func(*Upstream)
+
+	// bg runs the registry's background registrations and their
+	// callbacks; Wait waits for them.
+	bg util.Goroutines
+}
+
+// Wait waits, once appCtx ended, until no goroutine of the registry, its
+// bootstrap tasks, its upstreams' state pollers or their shared counter
+// refreshes runs, so none sends an upstream request after.
+func (u *UpstreamsRegistry) Wait() {
+	u.bg.Wait()
+	u.initializer.Wait()
+	u.upstreamsMu.RLock()
+	all := slices.Clone(u.allUpstreams)
+	u.upstreamsMu.RUnlock()
+	u.pendingUpstreams.Range(func(_, v any) bool {
+		all = append(all, v.(*Upstream))
+		return true
+	})
+	for _, ups := range all {
+		if p := ups.EvmStatePoller(); p != nil {
+			p.Wait()
+		}
+	}
+	if u.sharedStateRegistry != nil {
+		u.sharedStateRegistry.Wait()
+	}
 }
 
 type UpstreamsHealth struct {
@@ -112,13 +140,13 @@ func NewUpstreamsRegistry(
 
 func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) {
 	// Fire-and-forget: register upstreams in background to avoid blocking service startup
-	go func() {
+	u.bg.Go(func() {
 		if err := u.registerUpstreams(u.appCtx, u.upsCfg...); err != nil {
 			u.logger.Error().Err(err).Msg("failed to register upstreams in background")
 		} else {
 			u.logger.Info().Msg("upstreams registration completed")
 		}
-	}()
+	})
 }
 
 func (u *UpstreamsRegistry) NewUpstream(cfg *common.UpstreamConfig) (*Upstream, error) {
@@ -199,7 +227,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 			t := u.buildProviderBootstrapTask(p, networkId)
 			tasks = append(tasks, t)
 		}
-		go func() {
+		u.bg.Go(func() {
 			if err := u.initializer.ExecuteTasks(u.appCtx, tasks...); err != nil {
 				u.logger.Error().
 					Err(err).
@@ -212,7 +240,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 					Interface("status", u.initializer.Status()).
 					Msg("provider bootstrap tasks executed successfully")
 			}
-		}()
+		})
 	})
 
 	// Require only one ready upstream to start handling requests.
@@ -590,12 +618,11 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 			if u.onUpstreamRegistered != nil {
 				// TODO Refactor the upstream<->network relationship to avoid circular dependency. Then we can remove this goroutine.
 				// We need this now at the moment so that lazy-loaded networks and lazy-loaded upstreams (from Providers) can work together.
-				go func() {
-					err = u.onUpstreamRegistered(ups)
-					if err != nil {
+				u.bg.Go(func() {
+					if err := u.onUpstreamRegistered(ups); err != nil {
 						u.logger.Error().Err(err).Str("upstreamId", cfg.Id).Msg("failed to call onUpstreamRegistered")
 					}
-				}()
+				})
 			}
 
 			u.logger.Debug().Str("upstreamId", cfg.Id).Msg("upstream bootstrap completed")

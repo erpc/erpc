@@ -397,7 +397,7 @@ func (s *scenario) execute(t *testing.T) {
 
 // stallDump: a header tap silent this long, or past its scenario's bound
 // when that is longer, on a pod that should serve it gets the pod a SIGQUIT
-// goroutine dump (triage, not a bound).
+// goroutine dump (triage, not a bound) while the host is below its load limit.
 const stallDump = 10 * time.Second
 
 // watchStalls dumps a pod's goroutines, once per pod and phase, when one of
@@ -406,7 +406,11 @@ const stallDump = 10 * time.Second
 // mints and no fault excuses the pod; it then restarts the pod. Silence
 // counts from the later of the tap's last block and the mint of the block
 // after it, so a halted chain silences no tap. Verdicts of the phase's
-// other scenarios on that pod after the dump carry the restart.
+// other scenarios on that pod after the dump carry the restart. On an
+// overloaded host the pod keeps running: a host that pages the -race pods
+// out stalls both at once, and restarting them turned that one stall into
+// connection failures in every scenario of the phase; the tap's gap verdict
+// still fails, labelled.
 func (s *scenario) watchStalls() {
 	after := max(stallDump, s.bound)
 	for {
@@ -434,6 +438,10 @@ func (s *scenario) watchStalls() {
 				since = min(since, time.Since(next.MintedAt))
 			}
 			if !ok || c.slow || since < after || s.excused(pod, time.Now().Add(-since), time.Now()) || !s.h.claimDump(pod) {
+				continue
+			}
+			if load, over := s.h.host.overloaded(time.Now().Add(-since), time.Now()); over {
+				s.logf("host overloaded (load %.1f): %s silent %s on pod-%d; no dump, pod-%d kept", load, c.name, since.Round(time.Second), pod+1, pod+1)
 				continue
 			}
 			p := s.h.pods[pod]
@@ -806,6 +814,15 @@ func (s *scenario) memoize(key string, fn func() string) string {
 	return e.val
 }
 
+// oracleMemo memoizes an oracle answer from target per excuse state: an
+// answer taken while target was excused (cut, killed) says nothing about
+// it after the excuse, so a check that starts later asks again (N4: pod-2
+// delivers a block while pod-1 is cut; pod-1 delivers it after the heal).
+func (s *scenario) oracleMemo(target int, key string, fn func() string) string {
+	now := time.Now()
+	return s.memoize(fmt.Sprintf("%s/excused-%t", key, s.excused(target, now, now)), fn)
+}
+
 // first reports whether this is the first call with key.
 func (s *scenario) first(key string) bool {
 	ran := false
@@ -857,7 +874,7 @@ func (s *scenario) checkHead(c *headsClient, pod int, n uint64, h hash, delivere
 		}
 		for target := range s.h.pods {
 			if !s.isNumbered(target) {
-				got := s.memoize(fmt.Sprintf("hash/%d/%s/%s", target, sel, h.Hex()), func() string {
+				got := s.oracleMemo(target, fmt.Sprintf("hash/%d/%s/%s/from-%d", target, sel, h.Hex(), pod), func() string {
 					return s.blockAnswer(target, sel, "eth_getBlockByHash", h.Hex(), false)
 				})
 				if got != h.Hex() && !s.excused(target, start, time.Now()) {
@@ -865,7 +882,7 @@ func (s *scenario) checkHead(c *headsClient, pod int, n uint64, h hash, delivere
 				}
 			}
 			read := time.Now()
-			got := s.memoize(fmt.Sprintf("number/%d/%s/%d/%s/from-%d", target, sel, n, h.Hex(), pod), func() string {
+			got := s.oracleMemo(target, fmt.Sprintf("number/%d/%s/%d/%s/from-%d", target, sel, n, h.Hex(), pod), func() string {
 				got := s.blockAnswer(target, sel, "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
 				if got != h.Hex() && target != pod {
 					// Another instance may still be on the branch the
@@ -895,7 +912,7 @@ func (s *scenario) checkLog(c *logsClient, pod int, l chainsim.Log) {
 			if s.isNumbered(target) {
 				by = "number"
 			}
-			got := s.memoize(fmt.Sprintf("logs/%d/%s/%d", target, l.BlockHash.Hex(), c.filter), func() string {
+			got := s.oracleMemo(target, fmt.Sprintf("logs/%d/%s/%d/from-%d", target, l.BlockHash.Hex(), c.filter, pod), func() string {
 				q := chainsim.Filters[c.filter].Params()
 				if by == "number" {
 					q["fromBlock"] = hexutil.EncodeUint64(l.BlockNumber)
@@ -933,7 +950,7 @@ func (s *scenario) finish() {
 	s.chain.Halt(true)
 	s.mu.Lock()
 	s.haltAt = time.Now()
-	heads, grpcs, exts := slices.Clone(s.heads), slices.Clone(s.grpcs), slices.Clone(s.exts)
+	heads, grpcs, exts, logs := slices.Clone(s.heads), slices.Clone(s.grpcs), slices.Clone(s.exts), slices.Clone(s.logs)
 	s.mu.Unlock()
 	tip := s.chain.Tip()
 	s.logf("halted at %d %s", tip.Number, short(tip.Hash))
@@ -960,6 +977,32 @@ func (s *scenario) finish() {
 	}
 	for _, c := range exts {
 		await(&c.clientBase, &c.hc)
+	}
+	// A logs subscription behind the final head is owed its logs or, once
+	// its tap ended, a 1013 within logsCloseSpread (§9.2); judging it
+	// earlier counts logs the server may still close over as missing.
+	logsDeadline := time.Now().Add(logsCloseSpread + reconnectSlack)
+	for _, c := range logs {
+		f := chainsim.Filters[c.filter]
+		last := uint64(0)
+		for n := s.finalHead(c.selector).Number; n > 0 && last == 0; n-- {
+			if len(s.chain.CanonicalLogs(f, n, n)) > 0 {
+				last = n
+			}
+		}
+		owed := func() bool {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			for _, lc := range c.conns {
+				if lc.open && lc.from > 0 && lc.from <= last && lc.highest < last {
+					return true
+				}
+			}
+			return false
+		}
+		for owed() && time.Now().Before(logsDeadline) {
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 	// Logs follow one receipts fetch after their head (§10).
 	time.Sleep(3 * liveBound)
@@ -1170,7 +1213,17 @@ func (s *scenario) judgeLogs(c *logsClient) {
 		}
 	}
 	if len(covered) == 0 {
-		s.violate(c.name, "covered no block")
+		// A subscription the server ended covers nothing, and one opened
+		// after the halt has nothing left to cover: with only those, the
+		// client could not be judged (N4: a pod-1 tap ends late in its
+		// catch-up after the heal; its 1013 comes after the halt).
+		for _, lc := range c.conns {
+			if !lc.serverEnd && !lc.opened.After(s.haltAt) {
+				s.violate(c.name, "covered no block")
+				return
+			}
+		}
+		s.logf("%s covered no block: each subscription ended by the server or opened after the halt", c.name)
 		return
 	}
 	want := map[chainsim.LogKey]bool{}

@@ -54,8 +54,8 @@ func parseLogsSubscribe(params []interface{}) (*logfilter.LogsFilter, error) {
 // wsStream is the ws encoder of one subscription (streams spec §5.2):
 // data stay eth_subscription notifications; control messages are
 // erpc_subscription frames, which standard libraries ignore. Control and
-// data share the connection's write lock, so a blockEnd follows its
-// block's last log.
+// data go through the connection's one writer in the order they are
+// queued, so a blockEnd follows its block's last log.
 type wsStream struct {
 	sm      *SubscriptionManager
 	wsc     *WsConnection
@@ -64,8 +64,7 @@ type wsStream struct {
 	notify  *wsNotifier
 	// ctrl is the control envelope up to the result:
 	// {"jsonrpc":"2.0","method":"erpc_subscription","params":{"subscription":"<id>","result":
-	ctrl  []byte
-	meter *streamMeter
+	ctrl []byte
 }
 
 func (sm *SubscriptionManager) wsStream(wsc *WsConnection, sub wsclient.Subscription, nw *Network, kind string) *wsStream {
@@ -74,42 +73,50 @@ func (sm *SubscriptionManager) wsStream(wsc *WsConnection, sub wsclient.Subscrip
 	ctrl = append(ctrl, `{"jsonrpc":"2.0","method":"erpc_subscription","params":{"subscription":`...)
 	ctrl = append(ctrl, id...)
 	ctrl = append(ctrl, `,"result":`...)
-	return &wsStream{sm: sm, wsc: wsc, sub: sub, tracker: nw.chainTracker, notify: wsc.notifier(sub), ctrl: ctrl,
-		meter: newStreamMeter(nw, "ws", kind)}
+	notify := wsc.notifier(sub)
+	notify.meter = newStreamMeter(nw, "ws", kind)
+	return &wsStream{sm: sm, wsc: wsc, sub: sub, tracker: nw.chainTracker, notify: notify, ctrl: ctrl}
 }
 
-func (e *wsStream) data(t streamMsgType, payload json.RawMessage) error {
-	if err := e.notify.write(payload); err != nil {
+func (e *wsStream) data(t streamMsgType, payload json.RawMessage, d tapDelivery) error {
+	if err := e.notify.write(t, payload, d); err != nil {
 		return writeFailed(err)
 	}
-	e.meter.wrote(t, len(e.notify.prefix)+len(payload)+len(wsNotificationSuffix))
 	return nil
 }
 
-func (e *wsStream) Header(blk indexer.Block) (func() error, bool, error) {
+func (e *wsStream) Header(blk indexer.Block) (func(tapDelivery) error, bool, error) {
 	payload, pinned, err := newHeadsEncoding.Of(e.tracker, blk)
 	if err != nil {
 		e.sm.logger.Warn().Err(err).Uint64("block", blk.Number).Msg("cannot project a held header as newHeads")
 		return nil, pinned, nil
 	}
-	return func() error { return e.data(streamData, payload) }, pinned, nil
+	return func(d tapDelivery) error { return e.data(streamData, payload, d) }, pinned, nil
 }
 
 // Block writes blk's matched logs, each an eth_subscription notification,
-// then with end its blockEnd.
-func (e *wsStream) Block(blk indexer.Block, f *logfilter.LogsFilter, end bool) (func() error, error) {
+// then with end its blockEnd; the block is delivered with its last message.
+func (e *wsStream) Block(blk indexer.Block, f *logfilter.LogsFilter, end bool) (func(tapDelivery) error, error) {
 	logs := e.tracker.MatchedLogs(blk, f)
 	if len(logs) == 0 && !end {
 		return nil, nil
 	}
-	return func() error {
-		for _, l := range logs {
-			if err := e.data(streamData, l); err != nil {
+	return func(d tapDelivery) error {
+		logsDelivery := d
+		if end {
+			logsDelivery = tapDelivery{}
+		}
+		for i, l := range logs {
+			var last tapDelivery
+			if i == len(logs)-1 {
+				last = logsDelivery
+			}
+			if err := e.data(streamData, l, last); err != nil {
 				return err
 			}
 		}
 		if end {
-			return e.control(streamBlockEnd, func(b []byte) []byte { return appendBlockEnd(b, "blockEnd", blk, len(logs)) })
+			return e.write(streamBlockEnd, false, d, func(b []byte) []byte { return appendBlockEnd(b, "blockEnd", blk, len(logs)) })
 		}
 		return nil
 	}, nil
@@ -122,7 +129,7 @@ func (e *wsStream) Removed(blk indexer.Block, logs []json.RawMessage) error {
 			e.sm.logger.Warn().Err(err).Uint64("block", blk.Number).Msg("cannot mark a held log removed")
 			continue
 		}
-		if err := e.data(streamRemoved, removed); err != nil {
+		if err := e.data(streamRemoved, removed, tapDelivery{}); err != nil {
 			return err
 		}
 	}
@@ -130,51 +137,49 @@ func (e *wsStream) Removed(blk indexer.Block, logs []json.RawMessage) error {
 }
 
 func (e *wsStream) Heartbeat(hb streamHeartbeat) error {
-	return e.control(streamHeartbeatMsg, func(b []byte) []byte { return appendHeartbeat(b, "heartbeat", hb) })
+	return e.write(streamHeartbeatMsg, false, tapDelivery{}, func(b []byte) []byte { return appendHeartbeat(b, "heartbeat", hb) })
 }
 
 func (e *wsStream) Status(state, reason string) error {
-	return e.control(streamStatus, func(b []byte) []byte { return appendStatus(b, "status", state, reason) })
+	return e.write(streamStatus, false, tapDelivery{}, func(b []byte) []byte { return appendStatus(b, "status", state, reason) })
 }
 
 func (e *wsStream) Undo(forkPoint indexer.Cursor) error {
-	return e.control(streamUndo, func(b []byte) []byte { return appendUndo(b, "undo", forkPoint) })
+	return e.write(streamUndo, false, tapDelivery{}, func(b []byte) []byte { return appendUndo(b, "undo", forkPoint) })
 }
 
 // End writes the end as the subscription's last message, then removes
 // the subscription; the connection stays (§5.2).
 func (e *wsStream) End(end streamEnd) error {
-	err := e.write(streamEndMsg, true, func(b []byte) []byte { return appendEnd(b, "end", end) })
+	err := e.write(streamEndMsg, true, tapDelivery{}, func(b []byte) []byte { return appendEnd(b, "end", end) })
 	e.sm.endSubscription(e.wsc, e.sub.ClientSubID)
 	return err
 }
 
-// control writes one erpc_subscription frame whose result body appends.
-func (e *wsStream) control(t streamMsgType, body func([]byte) []byte) error {
-	return e.write(t, false, body)
-}
-
-// write writes one erpc_subscription frame; last: nothing of the
-// subscription follows it.
-func (e *wsStream) write(t streamMsgType, last bool, body func([]byte) []byte) error {
+// write queues one erpc_subscription frame whose result body appends;
+// last: nothing of the subscription follows it, and write waits until the
+// writer wrote or skipped it.
+func (e *wsStream) write(t streamMsgType, last bool, d tapDelivery, body func([]byte) []byte) error {
+	if e.sub.Removed() {
+		return nil
+	}
 	msg := body(append(make([]byte, 0, len(e.ctrl)+192), e.ctrl...))
 	msg = append(msg, wsNotificationSuffix...)
-	put := func(w io.Writer) error {
+	buf, err := e.wsc.encodeMessage(nil, func(w io.Writer) error {
 		_, err := w.Write(msg)
 		return err
-	}
-	var written bool
-	var err error
-	if last {
-		written, err = e.wsc.writeLastNotification(e.sub, put)
-	} else {
-		written, err = e.wsc.writeNotification(e.sub, nil, put)
-	}
+	})
 	if err != nil {
 		return writeFailed(err)
 	}
-	if written {
-		e.meter.wrote(t, len(msg))
+	out := wsOut{msg: buf, note: e.notify, typ: t, last: last, size: len(msg), delivery: d}
+	if last {
+		err = e.wsc.send(out)
+	} else {
+		err = e.wsc.queue(out)
+	}
+	if err != nil {
+		return writeFailed(err)
 	}
 	return nil
 }
@@ -204,11 +209,11 @@ func removedLog(log json.RawMessage) (json.RawMessage, error) {
 // within logsCloseSpread, so the client reconnects knowing it may have
 // missed logs. A write that spends the write bound closes the connection.
 func (sm *SubscriptionManager) runWsTap(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{},
-	nw *Network, lane, kind string, head func(context.Context) (indexer.Cursor, error), f *logfilter.LogsFilter, opts StreamOptions) {
+	nw *Network, lane, kind string, head func(context.Context) (indexer.Cursor, error), hold *indexer.FinalHold, f *logfilter.LogsFilter, opts StreamOptions) {
 	wsTapLoopStarts()
 	enc := sm.wsStream(wsc, sub, nw, kind)
 	s := newStreamSession(nw, "ws", kind, lane, opts)
-	s.start, s.filter, s.opened, s.gone, s.lag, s.resumable = head, f, opened, wsc.done, true, opts.From != nil
+	s.start, s.hold, s.filter, s.opened, s.gone, s.lag, s.resumable = head, hold, f, opened, wsc.done, true, opts.From != nil
 	s.headers, s.logs, s.removed = enc, enc, enc
 	if opts.Extended {
 		s.control, s.drain = enc, wsc.draining
@@ -260,9 +265,9 @@ func (sm *SubscriptionManager) runPendingTxs(ctx context.Context, wsc *WsConnect
 	if opts.Extended {
 		beat, drain = enc.Heartbeat, wsc.draining
 	}
-	e := runPendingTap(ctx, nw, "ws", variant, from, opened, drain, opts, beat, func(txs []json.RawMessage) error {
+	e := runPendingTap(ctx, nw, "ws", variant, from, opened, drain, opts, beat, func(txs []*indexer.PendingTx) error {
 		for _, tx := range txs {
-			if err := enc.data(streamData, tx); err != nil {
+			if err := enc.data(streamData, tx.Raw, tapDelivery{}); err != nil {
 				return err
 			}
 		}

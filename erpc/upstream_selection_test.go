@@ -186,7 +186,7 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Configure responses for each upstream
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 			util.SetupMocksForEvmStatePoller()
 
 			// Setup test-specific mocks
@@ -263,7 +263,7 @@ func TestCentralizedUpstreamRotation(t *testing.T) {
 
 	// Mock 4 upstreams to test rotation
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	// All upstreams are slow (to trigger hedging)
@@ -486,7 +486,7 @@ func TestMixedResponseTypes(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 			util.SetupMocksForEvmStatePoller()
 
 			// Setup test-specific mocks
@@ -564,7 +564,7 @@ func TestFourAttemptScenario(t *testing.T) {
 
 	// Configure responses for each upstream
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	// Upstream 1: Fails immediately (connection refused) - triggers retry
@@ -806,6 +806,8 @@ func setupTestNetworkWithFourUpstreams(t *testing.T, ctx context.Context, failsa
 // Helper to setup network with specific config
 func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfigs []*common.UpstreamConfig, failsafeConfig *common.FailsafeConfig) *Network {
 	t.Helper()
+	// The network lives as long as t, not the caller's ctx (stopAtEnd).
+	ctx, cancel := context.WithCancel(ctx)
 
 	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	require.NoError(t, err)
@@ -859,6 +861,8 @@ func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfi
 		metricsTracker,
 		nil,
 	)
+	stopAtEnd(t, network)
+	t.Cleanup(cancel)
 	require.NoError(t, err)
 
 	upstreamsRegistry.Bootstrap(ctx)

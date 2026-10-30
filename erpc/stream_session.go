@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"sync/atomic"
 	"time"
@@ -53,6 +54,18 @@ func (e finalRevertedError) Error() string {
 	return "a reorg reverted a final block the client applied"
 }
 
+// messageTooLargeError is a block whose message passes the transport's
+// message bound (§6.2): the client cannot take it, so a resume from its
+// cursor meets it again; the stream ends message_too_large (§3.4).
+type messageTooLargeError struct {
+	block     indexer.Cursor
+	size, max int
+}
+
+func (e messageTooLargeError) Error() string {
+	return fmt.Sprintf("message_too_large: block %d 0x%x needs a %d-byte message, over the %d-byte bound", e.block.Number, e.block.Hash, e.size, e.max)
+}
+
 // streamWriteError is a write to the client that failed; slow: it spent
 // the write bound (10s), so the client is slow_client (§3.4).
 type streamWriteError struct {
@@ -63,24 +76,27 @@ type streamWriteError struct {
 func (e streamWriteError) Error() string { return e.err.Error() }
 func (e streamWriteError) Unwrap() error { return e.err }
 
-// writeFailed wraps a failed write; a timeout is the write bound.
+// writeFailed wraps a failed write; a timeout, of the write or of the
+// wait to queue it, is the write bound.
 func writeFailed(err error) error {
 	var ne net.Error
-	return streamWriteError{err: err, slow: errors.As(err, &ne) && ne.Timeout()}
+	return streamWriteError{err: err, slow: errors.Is(err, errWsSendWait) || errors.As(err, &ne) && ne.Timeout()}
 }
 
 // headerEncoder writes a heads stream's data: the send of blk's header
 // message, and whether blk is still pinned (HeaderEncoding.Of). A nil
-// send skips blk.
+// send skips blk; send calls its delivery's done once the message is
+// written.
 type headerEncoder interface {
-	Header(blk indexer.Block) (send func() error, pinned bool, err error)
+	Header(blk indexer.Block) (send func(tapDelivery) error, pinned bool, err error)
 }
 
 // logsEncoder writes a logs stream's data.
 type logsEncoder interface {
 	// Block is the write of blk's logs that f matches and, with end, of
-	// its block end; nil when it writes nothing.
-	Block(blk indexer.Block, f *logfilter.LogsFilter, end bool) (send func() error, err error)
+	// its block end; nil when it writes nothing. The write calls its
+	// delivery's done once the block's last message is written.
+	Block(blk indexer.Block, f *logfilter.LogsFilter, end bool) (send func(tapDelivery) error, err error)
 }
 
 // removedEncoder writes the logs of a reverted block the client applied,
@@ -111,7 +127,10 @@ type streamSession struct {
 	opts            StreamOptions
 	// start is the tap's start without opts.From, fixed at subscribe
 	// (ChainTracker.HeadAsOf); nil starts at the tracker's Head.
-	start  func(context.Context) (indexer.Cursor, error)
+	start func(context.Context) (indexer.Cursor, error)
+	// hold is a final stream's place in the final hold (streams spec §4),
+	// set at subscribe to its start; nil for any other finality.
+	hold   *indexer.FinalHold
 	filter *logfilter.LogsFilter
 	// opened is closed once the client has the stream's id; nil: now.
 	// gone is closed once the client's connection is gone.
@@ -172,6 +191,12 @@ func (s *streamSession) run(ctx context.Context) *streamEnd {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	tracker := s.nw.chainTracker
+	// The final hold stays registered across the tap's restarts, so the
+	// headers under the client's cursor are not evicted while the next
+	// RunChain waits out its restart delay (streams spec §4).
+	if s.hold != nil {
+		defer tracker.Want(indexer.ReadOpts{Hold: s.hold})()
+	}
 	if s.opts.From != nil {
 		if c, ok := tracker.Confirmed(); ok && c.Number > s.opts.From.Number {
 			s.resumeBehind = c.Number - s.opts.From.Number
@@ -280,7 +305,7 @@ func (s *streamSession) runOnce(ctx context.Context) *streamEnd {
 	if s.resumable {
 		feed = stallFeed{ChainFeed: feed, tracker: tracker, wait: streamStallWait.Load(), lastVote: s.nw.newestHashVoteAt}
 	}
-	o := indexer.ReadOpts{Resumable: s.resumable, HoldFinalized: s.opts.Finality.final()}
+	o := indexer.ReadOpts{Resumable: s.resumable, Hold: s.hold}
 	if s.filter != nil {
 		o.MayMatch = s.filter.MayMatch
 	}
@@ -333,6 +358,10 @@ func (s *streamSession) endOf(ctx context.Context, err error) *streamEnd {
 	var fr finalRevertedError
 	if errors.As(err, &fr) {
 		return s.counted(streamEnd{reason: indexer.TapEndFinalReverted, block: &fr.block})
+	}
+	var tl messageTooLargeError
+	if errors.As(err, &tl) {
+		return s.counted(streamEnd{reason: indexer.TapEndMessageTooLarge, block: &tl.block, err: tl})
 	}
 	return &streamEnd{err: err}
 }
@@ -393,7 +422,8 @@ func (s *streamSession) emit(ctx context.Context, lag *tapLag, b indexer.Batch) 
 			s.countResume("at_head")
 		}
 	}
-	lag.start()
+	lag.got()
+	defer lag.ask()
 	// newHeads sends the new branch of a reorg however long it waited.
 	if s.lag && len(b.Applied) > 0 && (s.kind == indexer.SubTypeLogs || len(b.Reverted) == 0) {
 		age, bound := lag.age(b.Applied[0]), lagBound(s.nw.chainTracker)
@@ -690,35 +720,67 @@ func (n *Network) streamHeartbeat(lane string) (streamHeartbeat, bool) {
 
 // tapLag is a ws tap's lag clock (CT§10.2): its next block is lagging
 // once it has been deliverable for longer than reorgWindow blocks of chain
-// time. No block is deliverable before floor: the tap's start, when its
-// loop runs and the client has the id, so a loop that starts late begins
-// with no lag; each tap raises it to the Ready of each block it sends. A
-// burst never lags, since its blocks just arrived.
-type tapLag struct{ floor time.Time }
-
-// start opens the clock at the tap's first batch once the client has the
-// id; later calls keep it.
-func (l *tapLag) start() {
-	if l.floor.IsZero() {
-		l.floor = time.Now()
-	}
+// time while the tap was not waiting in its Read. No block is deliverable
+// before floor: the tap's start, when its loop runs and the client has the
+// id, so a loop that starts late begins with no lag; each tap raises it to
+// when each block it sends became deliverable. A burst never lags, since
+// its blocks just arrived. A Read that waits, as on receipts the feed let
+// go and refetches (§9), stops the clock: a block deliverable when the tap
+// asked counts as deliverable that much later, a block that became
+// deliverable during the Read counts from its return.
+type tapLag struct {
+	floor time.Time
+	// asked is when the tap last asked for a batch, the end of its last
+	// emit; read is when that Read returned and wait how long it took.
+	asked, read time.Time
+	wait        time.Duration
 }
 
-// sent raises the floor to blk's Ready: the blocks after a block the tap
-// waited on are deliverable no sooner than it.
+// got opens the clock on a batch once the client has the id: at the first
+// it starts the tap; at the next the floor moves on by the Read's wait.
+func (l *tapLag) got() {
+	l.read = time.Now()
+	if l.floor.IsZero() {
+		l.floor = l.read
+		return
+	}
+	if !l.asked.IsZero() {
+		l.wait = l.read.Sub(l.asked)
+	}
+	l.floor = l.shift(l.floor)
+}
+
+// ask notes that the tap asks for its next batch.
+func (l *tapLag) ask() { l.asked = time.Now() }
+
+// shift moves at, a time before the Read returned, on by the Read's wait,
+// never past its return.
+func (l *tapLag) shift(at time.Time) time.Time {
+	if at = at.Add(l.wait); at.After(l.read) {
+		return l.read
+	}
+	return at
+}
+
+// ready is when blk became deliverable to the tap, its Read's wait left out.
+func (l *tapLag) ready(blk indexer.Block) time.Time {
+	if ready := l.shift(blk.Ready); ready.After(l.floor) {
+		return ready
+	}
+	return l.floor
+}
+
+// sent raises the floor to when blk became deliverable: the blocks after a
+// block the tap waited on are deliverable no sooner than it.
 func (l *tapLag) sent(blk indexer.Block) {
-	if blk.Ready.After(l.floor) {
-		l.floor = blk.Ready
+	if ready := l.ready(blk); ready.After(l.floor) {
+		l.floor = ready
 	}
 }
 
 // age is how long next has been deliverable.
 func (l *tapLag) age(next indexer.Block) time.Duration {
-	ready := next.Ready
-	if ready.Before(l.floor) {
-		ready = l.floor
-	}
-	return time.Since(ready)
+	return time.Since(l.ready(next))
 }
 
 // lagBound is the ws lag bound: reorgWindow blocks of chain time.
@@ -888,7 +950,7 @@ func (m *mempoolFrom) Tail(variant string) uint64 {
 // idle stream gets heartbeats; with drain, it ends draining at shutdown.
 // Its end is draining, slow_client, or nil: ctx ended or a write failed.
 func runPendingTap(ctx context.Context, nw *Network, transport, variant string, from uint64, opened, drain <-chan struct{},
-	opts StreamOptions, beat func(streamHeartbeat) error, data func([]json.RawMessage) error) *streamEnd {
+	opts StreamOptions, beat func(streamHeartbeat) error, data func([]*indexer.PendingTx) error) *streamEnd {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	feed := &mempoolFrom{MempoolFeed: nw.mempool, from: from}
@@ -915,7 +977,7 @@ func runPendingTap(ctx context.Context, nw *Network, transport, variant string, 
 			}
 		}()
 	}
-	emit := func(txs []json.RawMessage) error {
+	emit := func(txs []*indexer.PendingTx) error {
 		if opened != nil {
 			select {
 			case <-opened:
