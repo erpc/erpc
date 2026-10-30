@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,6 +52,21 @@ func TestCacheExecutor_DynamicHedge_ResolvesFromSeededQuantile(t *testing.T) {
 	}
 	assert.Equal(t, 50*time.Millisecond, cold.Resolve(nil),
 		"cold tracker must resolve to Base+Min exactly")
+
+	// Executor path, empty window: the delay falls back to Max (no Base),
+	// not Min(0), so a primary well under Max is never hedged.
+	var calls atomic.Int32
+	_, err = ex.RunBytes(ctx, func(cctx context.Context) ([]byte, error) {
+		calls.Add(1)
+		select {
+		case <-cctx.Done():
+		case <-time.After(50 * time.Millisecond):
+		}
+		return []byte("ok"), nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), calls.Load(), "cold hedge delay must fall back to Max, not fire at Min=0")
+	ex.latency.Reset()
 
 	// Seeded tracker: p95 of uniform 50ms samples is ~50ms (DDSketch
 	// relative accuracy is a few percent).
@@ -170,6 +186,25 @@ func TestCacheExecutor_DynamicTimeout_MinAutoFloor(t *testing.T) {
 	assert.Equal(t, common.Duration(0), cfg.Timeout.Duration.Min,
 		"auto-floor must not mutate the user config")
 
+	// Executor path, empty window: the timeout falls back to Base (100ms),
+	// not Base+Min (150ms) — same cold fallback as NewTimeoutFunc.
+	coldDeadline := func(ex *cacheExecutor) (time.Duration, bool) {
+		var left time.Duration
+		var has bool
+		_, err := ex.RunBytes(ctx, func(cctx context.Context) ([]byte, error) {
+			var dl time.Time
+			dl, has = cctx.Deadline()
+			left = time.Until(dl)
+			return nil, nil
+		})
+		require.NoError(t, err)
+		return left, has
+	}
+	left, has := coldDeadline(ex)
+	require.True(t, has, "cold timeout must still apply")
+	assert.LessOrEqual(t, left, 100*time.Millisecond, "cold timeout must fall back to Base")
+	assert.Greater(t, left, 50*time.Millisecond, "cold timeout must fall back to Base")
+
 	// Base==0 → Min auto-floors to 500ms.
 	cfgNoBase := &common.FailsafeConfig{
 		Timeout: &common.TimeoutPolicyConfig{
@@ -180,6 +215,8 @@ func TestCacheExecutor_DynamicTimeout_MinAutoFloor(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 500*time.Millisecond, ex2.timeoutSpec.Resolve(nil),
 		"zero Base must auto-floor Min to 500ms")
+	_, has = coldDeadline(ex2)
+	assert.False(t, has, "no Base or Max: cold timeout fails open like NewTimeoutFunc")
 }
 
 func TestCacheFailsafe_LatencyRecording_Classification(t *testing.T) {

@@ -83,11 +83,7 @@ func NewTimeoutFunc(logger *zerolog.Logger, cfg *TimeoutPolicyConfig) TimeoutFun
 }
 
 func coldStartFallback(spec *AdaptiveDuration) *time.Duration {
-	fallback := spec.Base.Duration()
-	if fallback == 0 {
-		fallback = spec.Max.Duration()
-	}
-	if fallback > 0 {
+	if fallback := spec.coldFallback(); fallback > 0 {
 		return &fallback
 	}
 	return nil
