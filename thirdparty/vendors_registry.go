@@ -34,6 +34,7 @@ func NewVendorsRegistry() *VendorsRegistry {
 	r.Register(CreateBlockdaemonVendor())
 	r.Register(CreateSatelinkVendor())
 	r.Register(CreateSpectrumVendor())
+	r.Register(CreateWillowVendor())
 	return r
 }
 

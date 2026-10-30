@@ -1,6 +1,6 @@
 ---
 title: Providers & vendors
-description: One API key, every chain — declare a single provider entry and eRPC auto-generates upstreams for each network on first request, with 23 built-in vendor integrations.
+description: One API key, every chain — declare a single provider entry and eRPC auto-generates upstreams for each network on first request, with 26 built-in vendor integrations.
 ---
 
 import {
@@ -17,7 +17,7 @@ import {
 
 One API key, every chain. Instead of wiring one upstream per (vendor, network) pair, you
 declare a single provider and eRPC lazy-generates concrete upstreams the moment a new
-network is first requested. 23 vendor integrations are built in — from general-purpose node
+network is first requested. 26 vendor integrations are built in — from general-purpose node
 providers to ERC-4337 bundlers to public-endpoint catalogs — and a project with no config
 at all gets a sensible zero-cost default automatically.
 
@@ -109,14 +109,14 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 
 ### How it works
 
-**Two distinct concepts.** A *vendor* (`common.Vendor` interface) is stateless integration logic: `Name()`, `OwnsUpstream(cfg)`, `SupportsNetwork(ctx, logger, settings, networkId)`, `GenerateConfigs(...)`, and `GetVendorSpecificErrorIfAny(...)`. A *provider* is a configured instance of a vendor: `ProviderConfig{Id, Vendor, Settings, OnlyNetworks, IgnoreNetworks, UpstreamIdTemplate, Overrides}`. All 23 vendors are registered in a global `VendorsRegistry` at startup; a per-project `ProvidersRegistry` resolves each `providers[].vendor` string and fails startup if the name is unknown. <SourceLink file="thirdparty/vendors_registry.go" lines="9-36" /> <SourceLink file="thirdparty/providers_registry.go" lines="15-34" />
+**Two distinct concepts.** A *vendor* (`common.Vendor` interface) is stateless integration logic: `Name()`, `OwnsUpstream(cfg)`, `SupportsNetwork(ctx, logger, settings, networkId)`, `GenerateConfigs(...)`, and `GetVendorSpecificErrorIfAny(...)`. A *provider* is a configured instance of a vendor: `ProviderConfig{Id, Vendor, Settings, OnlyNetworks, IgnoreNetworks, UpstreamIdTemplate, Overrides}`. All 26 vendors are registered in a global `VendorsRegistry` at startup; a per-project `ProvidersRegistry` resolves each `providers[].vendor` string and fails startup if the name is unknown. <SourceLink file="thirdparty/vendors_registry.go" lines="9-39" /> <SourceLink file="thirdparty/providers_registry.go" lines="15-34" />
 
 **Lazy upstream generation.** When a request arrives for a network with no prepared upstreams, `UpstreamsRegistry.PrepareUpstreamsForNetwork` schedules — exactly once per network via `sync.Once` — one bootstrap task per declared provider named `network/<networkId>/provider/<providerId>`. Each task: (1) calls `Provider.SupportsNetwork`, applying `ignoreNetworks` deny-list first, then `onlyNetworks` allow-list, then delegating to the vendor; (2) calls `Provider.GenerateUpstreamConfigs`, which copies the first wildcard-matching `overrides` entry (or creates a fresh defaults-filled config), stamps `VendorName`, renders the upstream id from `upstreamIdTemplate`, and runs `os.ExpandEnv` over every generated endpoint; (3) registers the resulting configs as ordinary upstream bootstrap tasks. The caller waits up to 30 seconds (polling every 200 ms) for at least one upstream to become ready. While tasks run, clients receive the retryable `ErrNetworkInitializing`; if all tasks finish without producing any upstreams, the error becomes the retryable `ErrNetworkNotSupported`. Failed tasks auto-retry with exponential backoff (factor 1.5, 3 s → 130 s). <SourceLink file="upstream/registry.go" lines="155-293" />
 
 **Vendor chain-support strategies.** Vendors answer "do you support this network?" in four ways:
 
 1. **Static in-code map** (ankr, blastapi, blockdaemon, blockpi, dwellir, infura, llama, onfinality, etherspot, spectrum): instant, no I/O, works on cold start.
-2. **Remote catalog with static fallback** (alchemy — 134-chain map; drpc — 150-chain map): fetches on warm paths; cold start falls back to the built-in map so the first request never blocks on I/O.
+2. **Remote catalog with static fallback** (alchemy — 134-chain map; drpc — 150-chain map; willow — 7-chain map): fetches on warm paths; cold start falls back to the built-in map so the first request never blocks on I/O.
 3. **Remote catalog, no fallback** (conduit, superchain, tenderly, quicknode, chainstack, repository): cold start returns the retryable sentinel `ErrRemoteCacheCold`; the initializer retries with 3 s → 130 s exponential backoff until the first fetch lands.
 4. **Live `eth_chainId` probe** (envio for unknown chains, erpc, pimlico for unknown chains, routemesh, thirdweb): sends a real JSON-RPC call to the candidate endpoint with a 10 s timeout; probe clients are cached per chain id in `sync.Map`.
 
@@ -135,7 +135,7 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 | field | type | default | behavior / footguns |
 |---|---|---|---|
 | `id` | string | vendor name (`p.Id = p.Vendor`) | Unique handle; appears in `<PROVIDER>` placeholder and bootstrap task names `network/<networkId>/provider/<id>`. Shorthand-converted providers get `<vendor>-<n>` (process-wide counter). No duplicate-id check — two providers with the same default id both run and may produce upstream-id collisions. <SourceLink file="common/defaults.go" lines="1474-1476" /> <SourceLink file="util/ids.go" lines="32-41" /> |
-| `vendor` | string | — (required) | Must exactly match one of 25 registered `Name()` strings: `goldsky, alchemy, blastapi, conduit, drpc, dwellir, envio, etherspot, infura, pimlico, quicknode, llama, thirdweb, repository, superchain, tenderly, chainstack, onfinality, erpc, blockpi, ankr, routemesh, blockdaemon, satelink, spectrum`. Unknown vendor → startup error. <SourceLink file="thirdparty/vendors_registry.go" lines="12-36" /> |
+| `vendor` | string | — (required) | Must exactly match one of 26 registered `Name()` strings: `goldsky, alchemy, blastapi, conduit, drpc, dwellir, envio, etherspot, infura, pimlico, quicknode, llama, thirdweb, repository, superchain, tenderly, chainstack, onfinality, erpc, blockpi, ankr, routemesh, blockdaemon, satelink, spectrum, willow`. Unknown vendor → startup error. <SourceLink file="thirdparty/vendors_registry.go" lines="12-37" /> |
 | `settings` | `map[string]any` (VendorSettings) | `nil` | Free-form, vendor-interpreted. Redacted in JSON/YAML marshaling (never echoed in admin dump). See per-vendor tables below. <SourceLink file="common/config.go" lines="667-700" /> |
 | `settings.creditUnits` | `map[string]int64` | `nil` | Vendor-generic (works for every vendor): per-method **credit-unit** overrides for the cost accounting behind `X-ERPC-Credits` (`server.costHeaders`). Merged per method over the vendor's built-in `CreditUnitsProvider` table (alchemy and quicknode ship their public pricing); `"*"` = the vendor's fallback for unlisted methods. Vendors with no table default to a flat **1 credit per request** — set `"*": 0` to opt a vendor out entirely. Overriding one method keeps the rest; copied onto every upstream the provider generates. <SourceLink file="thirdparty/provider.go" lines="59-77" /> |
 | `onlyNetworks` | `[]string` | `nil` | Exhaustive allow-list (`evm:<positiveInt>` format, validated). If set, vendor's own `SupportsNetwork` is **not** called. Mutually exclusive with `ignoreNetworks` (validation error). <SourceLink file="thirdparty/provider.go" lines="42-49" /> |
@@ -173,6 +173,7 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 | `superchain://<spec>` | `{registryUrl: host+path}` |
 | `tenderly://<key>` | `{apiKey: key}` |
 | `thirdweb://<clientId>` | `{clientId: host}` |
+| `willow://<key>` | `{apiKey: key}` |
 | unknown scheme | config-load error: `unsupported vendor name in vendor.settings: <scheme>` |
 
 ### Vendor catalog
@@ -452,6 +453,18 @@ No chain catalog — SupportsNetwork always probes live `eth_chainId`. Missing `
 
 <SourceLink file="thirdparty/thirdweb.go" lines="35-141" />
 
+#### willow
+
+Remote catalog (default `https://api.willow.tech/v1/rpc/chains`) with a 7-chain static fallback (1, 10, 130, 4663, 8453, 42161, 57073); after a successful fetch the fallback is **fully replaced** (no merge). The catalog is `{"chains":[{"id":…,"name":…},…]}` and only `id` is read: an entry without a positive integer `id` is skipped (debug log), and a failed fetch (a connection error, a non-2xx status, unparseable JSON, or a response with no readable entry) keeps the previous snapshot or the fallback (warn log). The URL is built for any chain id, so `onlyNetworks` can add one the catalog lacks. URL: `https://api.willow.tech/v1/rpc/{chainId}/{escapedKey}`. No method list and no vendor error mapping: Willow answers `-32601` for a method the key's plan does not serve, and the generic normalizer maps its other errors (pinned in `willow_test.go`, <SourceLink file="thirdparty/willow_test.go" lines="252-308" />). OwnsUpstream: scheme prefixes or an endpoint containing `://api.willow.tech/`.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes | — |
+| `chainsUrl` | no | `https://api.willow.tech/v1/rpc/chains` |
+| `recheckInterval` | no | `24h` |
+
+<SourceLink file="thirdparty/willow.go" lines="17-191" />
+
 ### Worked examples
 
 All patterns below are distilled from real production fleets; comments explain the
@@ -717,8 +730,8 @@ export default createConfig({
 ### Edge cases & gotchas
 
 1. **`recheckInterval` from YAML is silently ignored** — every vendor reads it with `.(time.Duration)`. YAML scalars decode to `string`/`int64` so the assertion fails and the vendor default applies. Only Go programmatic config can set it. <SourceLink file="thirdparty/repository.go" lines="56-59" />
-2. **Cold-start contract differs by vendor**: alchemy/drpc fall back to built-in maps; conduit/superchain/tenderly/quicknode/chainstack/repository return `ErrRemoteCacheCold` and block until the first remote fetch lands. <SourceLink file="thirdparty/remote_cache.go" lines="85" />
-3. **drpc replaces its fallback after a successful fetch** (no merge); alchemy merges fetched data with its static defaults (API wins on conflict, static fills gaps). <SourceLink file="thirdparty/drpc.go" lines="360-422" /> <SourceLink file="thirdparty/alchemy.go" lines="386-405" />
+2. **Cold-start contract differs by vendor**: alchemy/drpc/willow fall back to built-in maps; conduit/superchain/tenderly/quicknode/chainstack/repository return `ErrRemoteCacheCold` and block until the first remote fetch lands. <SourceLink file="thirdparty/remote_cache.go" lines="85" />
+3. **drpc and willow replace their fallback after a successful fetch** (no merge); alchemy merges fetched data with its static defaults (API wins on conflict, static fills gaps). <SourceLink file="thirdparty/drpc.go" lines="269-283" /> <SourceLink file="thirdparty/alchemy.go" lines="628-633" /> <SourceLink file="thirdparty/willow.go" lines="90-104" />
 4. **Missing-apiKey behavior is inconsistent**: pimlico/routemesh/thirdweb `SupportsNetwork` return an error (provider task retries forever); quicknode/chainstack return `(false, nil)` and are silently skipped. <SourceLink file="thirdparty/pimlico.go" lines="120-123" />
 5. **blockdaemon requires `apiKey` even with a preset endpoint** — static upstreams pointing at `svc.blockdaemon.com` fail at `NewUpstream` because `GenerateConfigs` is called with `settings=nil`. <SourceLink file="thirdparty/blockdaemon.go" lines="85-88" />
 6. **Impossible range conditions in alchemy/conduit error mapping**: alchemy's `code >= -32099 && code <= -32599` can never be true; only the message-match and code-3 branches actually fire. <SourceLink file="thirdparty/alchemy.go" lines="275-326" />
@@ -735,9 +748,10 @@ export default createConfig({
 17. **dwellir `OwnsUpstream` only matches `dwellir://` prefix** (not `evm+dwellir://`) or `.dwellir.com` domain; the `evm+` shorthand still works because shorthand conversion runs before vendor lookup. <SourceLink file="thirdparty/dwellir.go" lines="173-180" />
 18. **Live-probe vendors dial out during routing decisions**: envio/erpc/pimlico/routemesh/thirdweb perform a real `eth_chainId` HTTP call (10 s timeout) on the provider bootstrap path. Probe clients are cached forever in `sync.Map`s keyed by chain id or `"{url}-{chainId}"`.
 19. **`PrepareUpstreamsForNetwork` succeeds as soon as one upstream registers** (`minReady=1`). Slow providers continue adding upstreams in the background without blocking the first request. If all provider tasks finish with zero upstreams, there is a 100 ms grace re-check before the retryable `ErrNetworkNotSupported` is returned; if tasks are still running, the caller receives `ErrNetworkInitializing`. <SourceLink file="upstream/registry.go" lines="188-293" />
-20. **`LookupByUpstream` with an explicit but non-existent `vendorName` returns nil** — it does not fall through to `OwnsUpstream` matching. If `upstream.vendorName` is set to an unregistered name, vendor error-mapping is silently lost. Registration order of the 23 vendors determines which vendor wins when multiple `OwnsUpstream` checks return true for the same endpoint. <SourceLink file="thirdparty/vendors_registry.go" lines="54-71" />
+20. **`LookupByUpstream` with an explicit but non-existent `vendorName` returns nil** — it does not fall through to `OwnsUpstream` matching. If `upstream.vendorName` is set to an unregistered name, vendor error-mapping is silently lost. Registration order of the 26 vendors determines which vendor wins when multiple `OwnsUpstream` checks return true for the same endpoint. <SourceLink file="thirdparty/vendors_registry.go" lines="58-75" />
 21. **`llama` and `routemesh` `OwnsUpstream` do not check their own scheme prefixes**: `llama.OwnsUpstream` only matches `.llamarpc.com`; `routemesh.OwnsUpstream` only matches `vendorName=="routemesh"` or endpoint containing `routemes.sh`. Both shorthands (`llama://`, `routemesh://`) work only because shorthand conversion in `common/defaults.go` runs before vendor lookup. <SourceLink file="thirdparty/llama.go" lines="95-97" /> <SourceLink file="thirdparty/routemesh.go" lines="135-140" />
 22. **dwellir `SupportsNetwork` returns `(false, nil)` for an unparseable chain id** — unlike every other static-map vendor which propagates the parse error. <SourceLink file="thirdparty/dwellir.go" lines="109-113" />
+23. **A willow key enabled for only some chains still gets an upstream on any other catalog chain that eRPC prepares.** Willow answers the other chains with HTTP 403, so their `eth_chainId` detection fails and the initializer keeps retrying them. Set `onlyNetworks` to the key's chains. <SourceLink file="upstream/upstream.go" lines="1349-1361" />
 
 ### Observability
 
@@ -762,11 +776,12 @@ Notable log messages:
 - warn `some quicknode chain ID fetches failed; continuing with available data` / warn `failed to fetch chain IDs for some QuickNode endpoints`
 - warn `some chainstack chain ID fetches failed; continuing with available data` / warn `failed to fetch chain IDs for some Chainstack nodes`
 - info `successfully fetched dRPC network names` (with count + url)
+- info `successfully fetched Willow chains` (with count + url) / debug `skipping unreadable Willow chain entry`
 - debug `generated upstream from alchemy provider` / `generated upstream from conduit provider` / `generated upstreams from repository provider` / `generated upstreams from superchain provider`
 
 ### Source code entry points
 
-- <SourceLink file="thirdparty/vendors_registry.go" lines="9-36" /> — global 23-vendor registry; `LookupByName` / `LookupByUpstream` / `SupportedVendors`
+- <SourceLink file="thirdparty/vendors_registry.go" lines="9-39" /> — global 26-vendor registry; `LookupByName` / `LookupByUpstream` / `SupportedVendors`
 - <SourceLink file="thirdparty/providers_registry.go" lines="15-34" /> — per-project ProviderConfig → Provider binding; unknown-vendor startup error
 - <SourceLink file="thirdparty/provider.go" lines="13-162" /> — `SupportsNetwork` gating, `GenerateUpstreamConfigs`, id templating, env expansion
 - <SourceLink file="thirdparty/remote_cache.go" lines="13-78" /> — `RemoteDataCache[T]` algorithm; request-path safety rationale; `ErrRemoteCacheCold`
