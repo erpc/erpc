@@ -47,11 +47,12 @@ func (s *scenario) minBlockCall(pod int, sel string, n uint64) (uint64, error) {
 }
 
 func (s *scenario) minBlockClient(pod int, sel string, n uint64) (*rpc.Client, error) {
-	opts := []rpc.ClientOption{rpc.WithHTTPClient(s.httpc), rpc.WithHeader("X-ERPC-Min-Block", hexutil.EncodeUint64(n))}
+	p := s.h.pods[pod]
+	opts := []rpc.ClientOption{rpc.WithHTTPClient(p.httpc), rpc.WithHeader("X-ERPC-Min-Block", hexutil.EncodeUint64(n))}
 	if sel != "" {
 		opts = append(opts, rpc.WithHeader("X-ERPC-Use-Upstream", sel))
 	}
-	return rpc.DialOptions(context.Background(), s.h.pods[pod].httpURL(s.project, s.chain.ID()), opts...)
+	return rpc.DialOptions(context.Background(), p.httpURL(s.project, s.chain.ID()), opts...)
 }
 
 // isMinBlockRefusal: err is the -32015 refusal, over HTTP 503.
