@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -109,6 +110,7 @@ const (
 	headerDirectiveEnforceGetLogsRange        = "X-ERPC-Enforce-GetLogs-Range"
 	headerDirectiveEnforceNonNullTaggedBlocks = "X-ERPC-Enforce-Non-Null-Tagged-Blocks"
 	headerDirectiveIntegrity                  = "X-ERPC-Integrity"
+	headerDirectiveMinBlock                   = "X-ERPC-Min-Block"
 )
 
 // HeaderUserId is the request header erpc reads as the caller's user identity
@@ -130,6 +132,7 @@ const (
 	queryDirectiveEnforceGetLogsRange        = "enforce-getlogs-range"
 	queryDirectiveEnforceNonNullTaggedBlocks = "enforce-non-null-tagged-blocks"
 	queryDirectiveIntegrity                  = "integrity"
+	queryDirectiveMinBlock                   = "min-block"
 )
 
 var directiveKeyRegistry = []directiveKeyNames{
@@ -143,6 +146,7 @@ var directiveKeyRegistry = []directiveKeyNames{
 	{header: headerDirectiveEnforceGetLogsRange, query: queryDirectiveEnforceGetLogsRange},
 	{header: headerDirectiveEnforceNonNullTaggedBlocks, query: queryDirectiveEnforceNonNullTaggedBlocks},
 	{header: headerDirectiveIntegrity, query: queryDirectiveIntegrity},
+	{header: headerDirectiveMinBlock, query: queryDirectiveMinBlock},
 }
 
 var DenyAllClientDirectives MatcherFunc = func(_ string) bool { return false }
@@ -222,6 +226,11 @@ type RequestDirectives struct {
 	// level (off/intrinsic/corroborated/authoritative) or a configured profile
 	// name. Honored only when the effective integrity headerMode permits it.
 	IntegritySelector string `json:"integritySelector,omitempty"`
+
+	// MinBlock is the block the request answers at or after
+	// (X-ERPC-Min-Block / min-block, decimal or 0x hex): its Head waits for
+	// the lane's Latest to reach it, at most W (streams spec §8). 0: unset.
+	MinBlock int64 `json:"minBlock,omitempty"`
 }
 
 // UpstreamPolicies selects the upstream failsafe policies a request takes.
@@ -274,6 +283,7 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 		EnforceGetLogsBlockRange:   d.EnforceGetLogsBlockRange,
 		EnforceNonNullTaggedBlocks: d.EnforceNonNullTaggedBlocks,
 		IntegritySelector:          d.IntegritySelector,
+		MinBlock:                   d.MinBlock,
 	}
 }
 
@@ -812,7 +822,11 @@ func (r *NormalizedRequest) isDirectiveAllowed(queryKey string) bool {
 	return r.allowClientDirectiveMatcher(queryKey)
 }
 
-func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) {
+// EnrichFromHttp reads the client's directives from headers and query
+// args. It applies every valid one and returns an ErrInvalidRequest for a
+// min-block that is not a block number: a request served without the
+// block the client asked for would look like an answer at or after it.
+func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) error {
 	hasDirectives := hasDirectiveInHeaders(headers) || hasDirectiveInQueryParams(queryArgs)
 
 	// Extract user agent (always needed)
@@ -826,7 +840,7 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	}
 
 	if !hasDirectives {
-		return
+		return nil
 	}
 
 	r.Lock()
@@ -881,6 +895,18 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if hv := getHeader(headerDirectiveIntegrity); hv != "" {
 		r.directives.IntegritySelector = strings.TrimSpace(hv)
 	}
+	var invalid error
+	minBlock := func(v string) {
+		n, err := parseMinBlock(v)
+		if err != nil {
+			invalid = NewErrInvalidRequest(err)
+			return
+		}
+		r.directives.MinBlock = n
+	}
+	if hv := getHeader(headerDirectiveMinBlock); hv != "" {
+		minBlock(hv)
+	}
 
 	// Query parameters come after headers so they can still override when explicitly present in URL.
 
@@ -896,6 +922,9 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	}
 	if useUpstream := getQueryArg(queryDirectiveUseUpstream); useUpstream != "" {
 		r.directives.UseUpstream = strings.TrimSpace(useUpstream)
+	}
+	if v := getQueryArg(queryDirectiveMinBlock); v != "" {
+		minBlock(v)
 	}
 
 	if retryEmpty := getQueryArg(queryDirectiveRetryEmpty); retryEmpty != "" {
@@ -928,6 +957,32 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if v := getQueryArg(queryDirectiveEnforceNonNullTaggedBlocks); v != "" {
 		r.directives.EnforceNonNullTaggedBlocks = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
+	return invalid
+}
+
+// parseMinBlock reads a min-block value, decimal or 0x hex, at least 0.
+func parseMinBlock(v string) (int64, error) {
+	s := strings.TrimSpace(v)
+	var n int64
+	var err error
+	if h, ok := strings.CutPrefix(strings.ToLower(s), "0x"); ok {
+		n, err = strconv.ParseInt(h, 16, 64)
+	} else {
+		n, err = strconv.ParseInt(s, 10, 64)
+	}
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("min-block %q is not a block number", v)
+	}
+	return n, nil
+}
+
+// MinBlock is the block req answers at or after (RequestDirectives.MinBlock),
+// 0 when unset.
+func (r *NormalizedRequest) MinBlock() int64 {
+	if d := r.Directives(); d != nil {
+		return d.MinBlock
+	}
+	return 0
 }
 
 // ShouldSkipCacheRead reports whether a cache read should be skipped for this request.

@@ -976,6 +976,25 @@ var (
 		Help:      "Total head Asks, by caller (poll, catch_up, refusal, refresh, settle, no_source) and outcome (fetched, shared_fresh, inflight, backoff).",
 	}, []string{"project", "network", "reason", "outcome"})
 
+	// MetricMinBlockTotal counts requests carrying X-ERPC-Min-Block (streams
+	// spec §8, §12) by outcome: ready (Latest already there), waited
+	// (reached within W), timeout (W ended first), future (beyond the
+	// near-future bound, refused at once).
+	MetricMinBlockTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "min_block_total",
+		Help:      "Total requests with X-ERPC-Min-Block, by outcome: ready, waited, timeout, future.",
+	}, []string{"project", "network", "outcome"})
+
+	// MetricMinBlockWaitSeconds observes each min-block wait for the lane's
+	// Latest, at most W.
+	MetricMinBlockWaitSeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "min_block_wait_seconds",
+		Help:      "Seconds a request with X-ERPC-Min-Block waited for its lane's Latest to reach the block.",
+		Buckets:   []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60},
+	}, []string{"project", "network"})
+
 	// MetricCacheExecutorAttempt counts every attempt a cache-connector
 	// failsafe executor governs, keyed by the executor's identity (the
 	// matchMethod / matchFinality it was configured with) and the outcome

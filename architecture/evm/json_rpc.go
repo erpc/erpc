@@ -117,7 +117,7 @@ func AnswersLatest(ctx context.Context, network common.Network, nrq *common.Norm
 		finalized, ok := headNumberAxis(ctx, nrq)
 		return ok && !finalized && d != nil && d.EnforceHighestBlock
 	default:
-		if _, ok := blockByTagFamily[m]; !ok || d != nil && d.SkipInterpolation || requestBlockTag(ctx, nrq) != "latest" {
+		if _, ok := blockByTagFamily[m]; !ok || d != nil && d.SkipInterpolation || RequestBlockTag(ctx, nrq) != "latest" {
 			return false
 		}
 	}

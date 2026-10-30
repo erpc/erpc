@@ -891,7 +891,18 @@ func (n *Network) refreshLatest(ctx context.Context, sel string) {
 	need := ec.ServedTipQuorum().Of(s.count())
 	w := health.FreshnessWindow(n.EvmBlockTime())
 	if now.Sub(latestRestsOn(s, need)) >= w {
-		n.awaitLatestRefresh(ctx, l, s, need, w)
+		ctx, cancel := context.WithTimeout(ctx, w)
+		defer cancel()
+		asked := make([]common.EvmStatePoller, 0, need)
+		s.each(func(u common.Upstream, _ int64) bool {
+			asked = append(asked, u.(common.EvmUpstream).EvmStatePoller())
+			return len(asked) < need
+		})
+		askAll(ctx, asked, 0, common.AskRefresh)
+		if l != nil {
+			l.latest.refreshedAtNs.Store(time.Now().UnixNano())
+			n.refreshLaneRecovered(l)
+		}
 		return
 	}
 	if l != nil && !l.latest.refreshedAtNs.CompareAndSwap(last, now.UnixNano()) {
@@ -922,26 +933,114 @@ func latestRestsOn(s voterSet, need int) time.Time {
 	return at[min(need, len(at))-1]
 }
 
-// awaitLatestRefresh Asks the first need voters of s in routing order and
-// waits for their answers, at most w, then publishes lane l's Head (nil:
-// sel forms no lane and its Head is computed per read). No gate: every
-// request that finds Latest stale waits, and the Ask joins the fetch in
-// flight.
-func (n *Network) awaitLatestRefresh(ctx context.Context, l *servedTipLane, s voterSet, need int, w time.Duration) {
-	ctx, cancel := context.WithTimeout(ctx, w)
-	defer cancel()
-	var wg sync.WaitGroup
-	s.each(func(u common.Upstream, _ int64) bool {
-		sp := u.(common.EvmUpstream).EvmStatePoller()
-		wg.Go(func() { sp.Ask(ctx, common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh) })
-		need--
-		return need > 0
-	})
-	wg.Wait()
-	if l != nil {
-		l.latest.refreshedAtNs.Store(time.Now().UnixNano())
-		n.refreshLaneRecovered(l)
+// awaitMinBlock waits for selector sel's Latest to reach block, the
+// request's X-ERPC-Min-Block, until ctx ends (requestHead gives it W;
+// streams spec §8): ready when Latest is there; future, with no wait,
+// above the near-future bound (minBlockFuture); else waited or timeout.
+// The request then takes the Head it moved; minBlockErr refuses it below
+// block.
+func (n *Network) awaitMinBlock(ctx context.Context, sel string, block int64) {
+	start := time.Now()
+	outcome := "ready"
+	switch h := n.headFor(sel); {
+	case h.Latest >= block:
+	case n.minBlockFuture(ctx, sel, *h, block, start):
+		outcome = "future"
+	default:
+		outcome = "timeout"
+		if n.awaitLatestReaches(ctx, sel, block) {
+			outcome = "waited"
+		}
+		telemetry.ObserverHandle(telemetry.MetricMinBlockWaitSeconds, n.projectId, n.Label()).Observe(time.Since(start).Seconds())
 	}
+	telemetry.CounterHandle(telemetry.MetricMinBlockTotal, n.projectId, n.Label(), outcome).Inc()
+}
+
+// awaitLatestReaches reports whether selector sel's Latest reaches block
+// before ctx ends. It Asks the voters below block in the background (CT
+// §6.8, single-flight) at once, at each move of Latest and every bt, and
+// returns at the first Head that has block: it never waits for an Ask's
+// answer, so a slow voter holds no request whose quorum already has the
+// block. Every voter below block, as the near-future wait Asks
+// (EvmAwaitCeiling): a lagging voter re-fetching a header intake already
+// holds keeps its old report and would be picked again.
+func (n *Network) awaitLatestReaches(ctx context.Context, sel string, block int64) bool {
+	l := n.laneFor(sel)
+	tick := time.NewTicker(n.blockTimeOrCold())
+	defer tick.Stop()
+	for {
+		var moved <-chan struct{}
+		if l != nil {
+			moved = l.latestMoved()
+		} else {
+			moved = n.headsComputed()
+		}
+		if n.headFor(sel).Latest >= block {
+			return true
+		}
+		n.voters(sel, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
+			if sp := u.(common.EvmUpstream).EvmStatePoller(); head < block && sp != nil && !sp.IsObjectNull() {
+				sp.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
+			}
+			return true
+		})
+		select {
+		case <-moved:
+		case <-tick.C:
+		case <-ctx.Done():
+			return n.headFor(sel).Latest >= block
+		}
+	}
+}
+
+// minBlockFuture reports whether block is above the near-future bound of
+// selector sel's ceiling, by the refusal rule (CT §6.4): only on reports
+// all younger than 1 bt at at; older ones are Asked first (EvmAskStale)
+// and block decided again, their ages taken at at. A report still older,
+// or an unknown block time, keeps block waiting.
+func (n *Network) minBlockFuture(ctx context.Context, sel string, h common.EvmHead, block int64, at time.Time) bool {
+	bt := n.EvmBlockTime()
+	beyond := func() bool { return h.Ceiling > 0 && block > evm.NearFutureCeiling(n, h, at) }
+	fresh := func() bool { return bt > 0 && !h.OldestReportAt.IsZero() && at.Sub(h.OldestReportAt) < bt }
+	if !beyond() {
+		return false
+	}
+	if !fresh() {
+		h.Ceiling, h.OldestReportAt = n.EvmAskStale(ctx, sel)
+	}
+	return beyond() && fresh()
+}
+
+// minBlockOf is the X-ERPC-Min-Block req waits for, 0 when unset or when
+// req reads the finalized or safe tag, which the header leaves unaffected
+// (streams spec §8): eRPC serves neither from Latest.
+func minBlockOf(ctx context.Context, req *common.NormalizedRequest) int64 {
+	block := req.MinBlock()
+	if block <= 0 {
+		return 0
+	}
+	switch evm.RequestBlockTag(ctx, req) {
+	case "finalized", "safe":
+		return 0
+	}
+	return block
+}
+
+// minBlockErr refuses req, -32015, when the Head it took is below its
+// X-ERPC-Min-Block (streams spec §8), before any dispatch or cache read;
+// the first Head read waited for it (requestHead).
+func (n *Network) minBlockErr(ctx context.Context, req *common.NormalizedRequest) error {
+	if req.MinBlock() <= 0 || n.cfg.Architecture != common.ArchitectureEvm {
+		return nil
+	}
+	block := minBlockOf(ctx, req)
+	if block <= 0 {
+		return nil
+	}
+	if latest := n.requestHead(ctx, req).Latest; latest < block {
+		return common.NewErrMinBlockNotReached(block, latest)
+	}
+	return nil
 }
 
 // awaitFinalizedRefresh refreshes the finalized numbers of every voter of
@@ -1949,10 +2048,15 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 // eligible: upstreams whose poller has the block first, then failover tiers,
 // then voters with a stale hash vote, and voters on a minority fork last.
 func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedRequest, method string, upsList []common.Upstream) []common.Upstream {
-	// For a specific block, try upstreams whose poller already has it first.
-	// Ordering hints only: every upstream stays eligible.
+	// For a specific block, try upstreams whose poller already has it first;
+	// for a "latest" tag sent as is with X-ERPC-Min-Block, those at or past
+	// it (streams spec §8). Ordering hints only: every upstream stays eligible.
 	if n.Architecture() == common.ArchitectureEvm {
-		if bn := n.routingBlockNumber(ctx, req); bn > 0 {
+		bn := n.routingBlockNumber(ctx, req)
+		if bn <= 0 && req.MinBlock() > 0 && evm.RequestBlockTag(ctx, req) == "latest" {
+			bn = req.MinBlock()
+		}
+		if bn > 0 {
 			head := n.requestHead(ctx, req)
 			upsList = n.partitionUpstreamsByLatestBlock(upsList, bn, head.Latest)
 			upsList = n.preferTipLeaderForNearTipGetBlock(upsList, method, bn, head.Leader, head.Latest)

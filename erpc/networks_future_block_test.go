@@ -172,7 +172,6 @@ func TestForward_FutureBlock_HaltedChainAskDatesReport(t *testing.T) {
 		assert.Zero(t, dispatched.Load(), "round %d: and never dispatched", round)
 	}
 }
-
 // A request at (or below) the max observed head must dispatch normally — the
 // short-circuit must not over-fire and swallow blocks an upstream actually has.
 func TestForward_FutureBlock_AtMaxHead_Dispatches(t *testing.T) {

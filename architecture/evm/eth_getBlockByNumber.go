@@ -43,7 +43,7 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 	}
 
 	// Track timestamp distance for "latest" blocks and add lag metrics to detailed spans
-	if nr != nil && requestBlockTag(ctx, nq) == "latest" {
+	if nr != nil && RequestBlockTag(ctx, nq) == "latest" {
 		_, respBlockNumber, bnErr := ExtractBlockReferenceFromResponse(ctx, nr)
 		blockTimestamp, tsErr := ExtractBlockTimestampFromResponse(ctx, nr)
 
@@ -97,7 +97,7 @@ func enforceNonNullBlock(ctx context.Context, nq *common.NormalizedRequest, nr *
 		}
 		rqj.RUnlock()
 	}
-	isTag := requestBlockTag(ctx, nq) != ""
+	isTag := RequestBlockTag(ctx, nq) != ""
 
 	// For tagged blocks, check directive
 	if isTag {

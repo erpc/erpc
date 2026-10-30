@@ -129,6 +129,20 @@ func nearFutureBlocks(bt time.Duration, oldestReportAt, now time.Time) int64 {
 	return int64((health.FreshnessWindow(bt)+age)/bt) + 1
 }
 
+// NearFutureCeiling is the highest block that waits for head h's ceiling
+// on nw instead of being refused at once: the ceiling plus
+// nearFutureBlocks, the evidence age unknown until the first block time
+// sample (spec §6.4 near future).
+func NearFutureCeiling(nw common.Network, h common.EvmHead, now time.Time) int64 {
+	bt, at := health.ColdBlockTime, time.Time{}
+	if net, ok := nw.(headRefuser); ok {
+		if b := net.EvmBlockTime(); b > 0 {
+			bt, at = b, h.OldestReportAt
+		}
+	}
+	return h.Ceiling + nearFutureBlocks(bt, at, now)
+}
+
 // EmptyResultBeyondConfidence reports whether an empty answer for rq is its answer rather
 // than missing data, so it is neither retried nor marked: a block the
 // refusal rule calls future, or a band block after its one miss (spec
