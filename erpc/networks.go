@@ -26,6 +26,7 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -85,9 +86,9 @@ type Network struct {
 	servedTipLanes     sync.Map // map[string]*servedTipLane (key = "grp:<hash>")
 	servedTipLaneCount atomic.Int32
 
-	// headWake asks the head loop to compute every lane's Head again
-	// (headsChanged); headPass is closed and replaced after each pass, for
-	// taps on a selector with no lane.
+	// headWake wakes the head loop to compute the dirty lanes
+	// (refreshDirtyHeads); headPass is closed and replaced after each
+	// pass, for taps on a selector with no lane.
 	headWake chan struct{}
 	headPass atomic.Pointer[chan struct{}]
 	// statelessHeads is each laneless selector's Latest (uint64), picked
@@ -149,6 +150,11 @@ type servedTipLane struct {
 
 	mu   sync.Mutex
 	head atomic.Pointer[common.EvmHead]
+	// dirty: a change since the lane's last computation began
+	// (markLanes).
+	dirty atomic.Bool
+	// gauges are bound at the first computation. Guarded by mu.
+	gauges *laneGauges
 	// moved is closed and replaced when Latest changes.
 	moved atomic.Pointer[chan struct{}]
 	// reached is when Latest first reached each recent number.
@@ -1775,35 +1781,56 @@ func (n *Network) anyRegisteredLiveHead(member func(common.Upstream) bool, useFi
 	return false
 }
 
-// observeServedTipMetrics exports one lane's served-tip gauges. axis
-// ("latest"|"finalized") is a label rather than part of the metric name to
-// keep the gauge set small. lane="all" is the network-wide pick; a named lane
-// is a use-upstream group's own pick.
-func (n *Network) observeServedTipMetrics(axis string, laneLabel string, tip, freshest int64, advanceAge time.Duration) {
+// laneGauges are one lane's served-tip gauges, bound once to their labels,
+// so a computation sets them with no label lookup. axis ("latest" |
+// "finalized") is a label rather than part of the metric name to keep the
+// gauge set small. lane="all" is the network-wide pick; a named lane is a
+// use-upstream group's own pick.
+type laneGauges struct {
+	latest, finalized servedTipGauges
+	voters            [len(tipRankLabels)]prometheus.Gauge
+	quorum            prometheus.Gauge
+}
+
+type servedTipGauges struct {
+	block, lag, advanceAge prometheus.Gauge
+}
+
+func (n *Network) bindLaneGauges(lane string) *laneGauges {
+	axis := func(axis string) servedTipGauges {
+		return servedTipGauges{
+			block:      telemetry.MetricNetworkServedTipBlockNumber.WithLabelValues(n.projectId, n.Label(), lane, axis),
+			lag:        telemetry.MetricNetworkServedTipLagBlocks.WithLabelValues(n.projectId, n.Label(), lane, axis),
+			advanceAge: telemetry.MetricNetworkServedTipAdvanceAgeSeconds.WithLabelValues(n.projectId, n.Label(), lane, axis),
+		}
+	}
+	g := &laneGauges{
+		latest:    axis("latest"),
+		finalized: axis("finalized"),
+		quorum:    telemetry.MetricServedTipQuorum.WithLabelValues(n.projectId, n.Label(), lane),
+	}
+	for rank, label := range tipRankLabels {
+		g.voters[rank] = telemetry.MetricServedTipVoters.WithLabelValues(n.projectId, n.Label(), lane, label)
+	}
+	return g
+}
+
+// observe exports one axis of a lane's pick.
+func (g *servedTipGauges) observe(tip, freshest int64, advanceAge time.Duration) {
 	if tip > 0 {
-		telemetry.MetricNetworkServedTipBlockNumber.
-			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
-			Set(float64(tip))
+		g.block.Set(float64(tip))
 		// Deliberate lag: how far the served tip sits behind the corroborated
 		// freshest upstream view in the same set. Clamped at 0 because the tip
 		// can legitimately sit ABOVE that view while the regression guard
 		// holds its last corroborated pick, and a lag gauge that reads
 		// negative is a broken dashboard, not a signal; the hold has its own
 		// counter (…_regression_total).
-		lag := freshest - tip
-		if lag < 0 {
-			lag = 0
-		}
-		telemetry.MetricNetworkServedTipLagBlocks.
-			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
-			Set(float64(lag))
+		g.lag.Set(float64(max(freshest-tip, 0)))
 	}
 	// Universal stuck-tip signal: seconds since this process last saw the
 	// served value change. Skipped until a first change is observed.
 	if advanceAge >= 0 {
-		telemetry.MetricNetworkServedTipAdvanceAgeSeconds.
-			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
-			Set(advanceAge.Seconds())
+		g.advanceAge.Set(advanceAge.Seconds())
 	}
 }
 

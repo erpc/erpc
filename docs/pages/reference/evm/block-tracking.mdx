@@ -413,9 +413,9 @@ Served-tip and bench metrics (`erpc_network_served_tip_*`, `erpc_upstream_head_b
 
 - [`architecture/evm/evm_state_poller.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go) — `Bootstrap`, `Poll`, `Ask`, `PollLatestBlockNumber`, `PollFinalizedBlockNumber`; debounce resolution; syncing state machine
 - [`common/served_tip.go:L36-L157`](https://github.com/erpc/erpc/blob/main/common/served_tip.go#L36-L157) — `ServedTipQuorum`, `PickServedTip`
-- [`erpc/networks.go`](https://github.com/erpc/erpc/blob/main/erpc/networks.go) — `evmTipBallot`, `EvmRoutableUpstreams`, `requestSelector`, `laneFor`, `refreshLatest`, `EvmAskHead`, `guardServedTipRegression`, `holdFinalized`, `guaranteedFloor`, `guaranteedSubsetPick`, `anyRegisteredLiveHead`, `observeServedTipMetrics`
+- [`erpc/networks.go`](https://github.com/erpc/erpc/blob/main/erpc/networks.go) — `evmTipBallot`, `EvmRoutableUpstreams`, `requestSelector`, `laneFor`, `refreshLatest`, `EvmAskHead`, `guardServedTipRegression`, `holdFinalized`, `guaranteedFloor`, `guaranteedSubsetPick`, `anyRegisteredLiveHead`, `bindLaneGauges`
 - [`erpc/network_intake.go`](https://github.com/erpc/erpc/blob/main/erpc/network_intake.go) — `voterSet`, `tipVoterRank`
-- [`erpc/network_head.go`](https://github.com/erpc/erpc/blob/main/erpc/network_head.go) — `EvmHead`, `EvmLaneHead`, `computeHead`
+- [`erpc/network_head.go`](https://github.com/erpc/erpc/blob/main/erpc/network_head.go) — `EvmHead`, `EvmLaneHead`, `computeHead`, `markLanes`, `refreshDirtyHeads`
 - [`architecture/evm/eth_blockNumber.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_blockNumber.go) — `eth_blockNumber` pre-forward answer and post-forward pin
 - [`health/tracker.go:L1428-L1664`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1428-L1664) — `corroboratedNetworkHead`, `headStallAfter`, `evaluateHeadBench`, `movedSinceBench`, `headIsBehind`, `benchPlausibleLead`, `IsHeadBenched`
 - [`health/tracker.go:L1666-L1918`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1666-L1918) — `SetLatestBlockNumber`, EMA update (`updateBlockTimeSample`, `sampleBlockTime`), `BlockHeadLag` computation

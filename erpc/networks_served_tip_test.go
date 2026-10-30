@@ -76,7 +76,7 @@ func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []ser
 
 // setupServedTipNetworkEvery is setupServedTipNetworkWith whose head loop
 // computes on its timer every headRefresh, besides every wake.
-func setupServedTipNetworkEvery(t *testing.T, ctx context.Context, fixtures []servedTipFixture, stCfg *common.EvmServedTipConfig, headRefresh time.Duration) (*Network, []*upstream.Upstream) {
+func setupServedTipNetworkEvery(t testing.TB, ctx context.Context, fixtures []servedTipFixture, stCfg *common.EvmServedTipConfig, headRefresh time.Duration) (*Network, []*upstream.Upstream) {
 	t.Helper()
 	// The network's goroutines read package variables later tests swap.
 	ctx, cancel := context.WithCancel(ctx)

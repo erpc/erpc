@@ -370,7 +370,7 @@ Owner: `erpc/network_intake.go` (hash votes), `EvmStatePoller.ObserveHead` (numb
 
 ### 6.4 Head: how high may we serve, is N final, how far above may a request ask?
 
-One `Head` per (network, lane). It is computed when an upstream head changes (local or remote), a bench changes, the policy's eligible set changes, and every 1s for every lane.
+One `Head` per (network, lane). One loop per network computes the lanes a change can move: a lane when the head of an upstream in it changes (local or remote); every lane when a bench changes, the policy's eligible set changes, and every 1s.
 
 | Field | Rule |
 |---|---|

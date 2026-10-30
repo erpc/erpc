@@ -25,8 +25,9 @@ func (s noopSpan) RecordError(error, ...trace.EventOption) {}
 func (s noopSpan) SpanContext() trace.SpanContext          { return trace.SpanContext{} }
 func (s noopSpan) TracerProvider() trace.TracerProvider    { return nil }
 
-// A single instance of noopSpan can be reused
-var defaultNoopSpan = noopSpan{nil}
+// A single instance of noopSpan can be reused; boxed once, so returning it
+// as a trace.Span allocates nothing.
+var defaultNoopSpan trace.Span = noopSpan{nil}
 
 // Create simple spans only for major operations such as external interactions (cache, upstreams, etc) with low-cardinality tags
 func StartSpan(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
