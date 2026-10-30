@@ -3077,6 +3077,8 @@ type EvmNetworkConfig struct {
 	// result applies only when it is longer than the regular debounce. Finalized
 	// advances once per finality window, so polling it at the latest-block cadence
 	// mostly returns the same number. 0 disables it (finalized uses the regular debounce).
+	// Must be < 1: at >= 1 the debounce grows as fast as age while latest advances
+	// and finalized is stuck, so polling never resumes. Validation rejects >= 1.
 	// Default: 0.05 (refresh about 20 times per finality window).
 	FinalizedDebounceDepthMultiplier *float64 `yaml:"finalizedDebounceDepthMultiplier,omitempty" json:"finalizedDebounceDepthMultiplier,omitempty"`
 
