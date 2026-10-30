@@ -41,6 +41,7 @@ Prefer TypeScript for full type safety and closures in selection policies:
 
 ```ts
 // erpc.ts
+import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
   logLevel: "info",
@@ -211,6 +212,7 @@ links to its `.llms.txt` companion.
   - [Timeout](https://docs.erpc.cloud/config/failsafe/timeout.llms.txt) — Give every request a hard latency budget — three nested layers keep stalled upstreams from tying up your connections indefinitely.
   - [Circuit breaker](https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt) — When an upstream starts failing, eRPC stops sending it traffic automatically — and quietly brings it back once it recovers.
   - [Consensus](https://docs.erpc.cloud/config/failsafe/consensus.llms.txt) — Fan out every request to multiple providers simultaneously, agree on a single canonical answer, and automatically flag — or silence — the ones that lie.
+  - [Consensus policies](https://docs.erpc.cloud/config/failsafe/consensus-policies.llms.txt) — Pick a named consensus rule-set per request with a pre-round JS selector — strategy-gated historical serving, availability fallback, and MissingData waivers — always failing closed to the strictest policy.
   - [Integrity](https://docs.erpc.cloud/config/failsafe/integrity.llms.txt) — eRPC silently discards stale or structurally broken upstream responses and retries on another provider — callers always get the correct answer.
 - **Database**
   - [EVM JSON-RPC cache](https://docs.erpc.cloud/config/database/evm-json-rpc-cache.llms.txt) — Stop paying for the same upstream call twice — eRPC caches every EVM JSON-RPC response by finality bucket, fans out reads in parallel, and rejects stale tip-of-chain data before it ever reaches your users.
@@ -243,6 +245,7 @@ links to its `.llms.txt` companion.
 
 - [URL](https://docs.erpc.cloud/operation/url.llms.txt) — One URL pattern routes every chain — domain and network aliases let you publish clean, memorable endpoints without touching your app code.
 - [WebSocket](https://docs.erpc.cloud/operation/websocket.llms.txt) — WebSocket support in eRPC for persistent connections and real-time subscriptions
+- [Streams integration](https://docs.erpc.cloud/operation/streams-integration.llms.txt) — Integrate eRPC block, log and mempool streams into a backend app over gRPC or ws, gap-free across reconnects, reorgs and instances.
 - [Healthcheck](https://docs.erpc.cloud/operation/healthcheck.llms.txt) — One endpoint that tells Kubernetes exactly when your pod is ready, draining, or broken — with eight probe strategies from "any upstream alive" to live chain-ID verification.
 - [Batching](https://docs.erpc.cloud/operation/batch.llms.txt) — Send one request, get back a merged response — eRPC parallelises inbound batch arrays, re-batches calls to supporting upstreams, and collapses identical in-flight requests so each unique call hits the network exactly once.
 - [Directives](https://docs.erpc.cloud/operation/directives.llms.txt) — Send an HTTP header or query param and change routing, caching, validation, or consensus for exactly that one request — no restarts, no config changes.
@@ -296,6 +299,7 @@ follow the hierarchy:
 - [Example config](https://docs.erpc.cloud/config/example.llms.txt) — A production-ready starting point you can copy today, plus a complete annotated reference of every config section — caching, failover, hedging, rate limits, and observability included.
 - [Failsafe](https://docs.erpc.cloud/config/failsafe.llms.txt) — Six composable failsafe policies that keep every RPC request succeeding — even when upstreams are slow, wrong, or temporarily down.
 - [Circuit breaker](https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt) — When an upstream starts failing, eRPC stops sending it traffic automatically — and quietly brings it back once it recovers.
+- [Consensus policies](https://docs.erpc.cloud/config/failsafe/consensus-policies.llms.txt) — Pick a named consensus rule-set per request with a pre-round JS selector — strategy-gated historical serving, availability fallback, and MissingData waivers — always failing closed to the strictest policy.
 - [Consensus](https://docs.erpc.cloud/config/failsafe/consensus.llms.txt) — Fan out every request to multiple providers simultaneously, agree on a single canonical answer, and automatically flag — or silence — the ones that lie.
 - [Hedge](https://docs.erpc.cloud/config/failsafe/hedge.llms.txt) — When a provider is having a slow moment, eRPC quietly races a backup request — your slowest responses simply disappear.
 - [Integrity checks](https://docs.erpc.cloud/config/failsafe/integrity.llms.txt) — eRPC silently discards stale or structurally broken upstream responses and retries on another provider — callers always get the correct answer.
@@ -327,6 +331,7 @@ follow the hierarchy:
 - [Healthcheck](https://docs.erpc.cloud/operation/healthcheck.llms.txt) — One endpoint that tells Kubernetes exactly when your pod is ready, draining, or broken — with eight probe strategies from "any upstream alive" to live chain-ID verification.
 - [Monitoring & metrics](https://docs.erpc.cloud/operation/monitoring.llms.txt) — Every subsystem in eRPC — upstreams, cache, rate limits, consensus, hedging — emits Prometheus metrics. One scrape target, full visibility, zero instrumentation work.
 - [Production checklist](https://docs.erpc.cloud/operation/production.llms.txt) — Go live confidently — a short list of settings that separate a hardened eRPC deployment from a dev-mode one.
+- [Streams integration](https://docs.erpc.cloud/operation/streams-integration.llms.txt) — Integrate eRPC block, log and mempool streams into a backend app over gRPC or ws, gap-free across reconnects, reorgs and instances.
 - [Tracing & logging](https://docs.erpc.cloud/operation/tracing.llms.txt) — Every request, cache lookup, and upstream call becomes a searchable span — shipped to any OTel backend. Secrets never leave the process.
 - [URL structure](https://docs.erpc.cloud/operation/url.llms.txt) — One URL pattern routes every chain — domain and network aliases let you publish clean, memorable endpoints without touching your app code.
 - [WebSocket](https://docs.erpc.cloud/operation/websocket.llms.txt) — WebSocket support in eRPC for persistent connections and real-time subscriptions
