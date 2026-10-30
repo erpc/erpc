@@ -243,9 +243,22 @@ jobs:
           curl -fsS "https://proxy.golang.org/github.com/erpc/erpc/@v/v${VERSION}.info"
 
       - name: Attest build provenance
+        id: attest
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-checksums: ./dist/checksums.txt
+
+      # Scorecard's Signed-Releases check only sees provenance attached to the
+      # release as a *.intoto.jsonl asset, not the attestation API.
+      - name: Attach provenance to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cp "$BUNDLE" "erpc_${VERSION}.intoto.jsonl"
+          gh release upload "$VERSION" "erpc_${VERSION}.intoto.jsonl" --clobber
 
   # npm publishing lives in its own workflow so a release that dies after the
   # tag exists can be completed from the Actions tab, without re-running

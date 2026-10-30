@@ -30,7 +30,51 @@ var liveConsensuses sync.Map // *Consensus -> struct{}
 // wait for them: fire-and-forget rounds detach from the request context, and
 // the analyzer keeps exporting misbehavior after the handler returns.
 // CloseAll waits for this before closing exporters.
-var inflightAnalyzers sync.WaitGroup
+var inflightAnalyzers analyzerCounter
+
+// analyzerCounter is a WaitGroup that allows starts during a wait. Requests
+// keep starting rounds while CloseAll waits; sync.WaitGroup forbids an Add
+// from zero concurrent with Wait (a data race, and a panic on reuse).
+type analyzerCounter struct {
+	mu   sync.Mutex
+	n    int
+	idle chan struct{} // closed when n drops to 0; nil before the first add
+}
+
+func (a *analyzerCounter) add() {
+	a.mu.Lock()
+	if a.n == 0 {
+		a.idle = make(chan struct{})
+	}
+	a.n++
+	a.mu.Unlock()
+}
+
+func (a *analyzerCounter) done() {
+	a.mu.Lock()
+	a.n--
+	if a.n == 0 {
+		close(a.idle)
+	}
+	a.mu.Unlock()
+}
+
+// wait reports whether the count reached zero before ctx ended.
+func (a *analyzerCounter) wait(ctx context.Context) bool {
+	a.mu.Lock()
+	if a.n == 0 {
+		a.mu.Unlock()
+		return true
+	}
+	idle := a.idle
+	a.mu.Unlock()
+	select {
+	case <-idle:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
 
 // Consensus is the entry point to the consensus executor. The network
 // executor calls (*Consensus).Run with a per-slot inner function; this
@@ -217,7 +261,7 @@ func CloseAll(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if !waitFinished(ctx, func() { inflightAnalyzers.Wait() }) {
+	if !inflightAnalyzers.wait(ctx) {
 		return
 	}
 	liveConsensuses.Range(func(key, _ any) bool {
@@ -231,22 +275,6 @@ func CloseAll(ctx context.Context) {
 		_ = c.Close()
 		return true
 	})
-}
-
-// waitFinished runs fn and reports whether it finished before ctx ended.
-// fn is not cancelled.
-func waitFinished(ctx context.Context, fn func()) bool {
-	done := make(chan struct{})
-	go func() {
-		fn()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-ctx.Done():
-		return false
-	}
 }
 
 // buildPolicy compiles one ConsensusPolicyConfig into a consensusPolicy. Used
