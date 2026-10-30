@@ -1,7 +1,9 @@
 // The library against real eRPC pods over a simulated chain
 // (test/streamsim): resume after a pod restart, undo on reorgs, the
-// heartbeat watchdog on a black-holed link, a two-endpoint merge, and the
-// out-of-range end. ERPC_BIN names a built cmd/erpc; else it is built.
+// heartbeat watchdog on a black-holed link, a two-endpoint merge, the
+// out-of-range end, stops on abort and on a handler error, and a merge
+// whose leader dies on another branch. ERPC_BIN names a built cmd/erpc;
+// else it is built.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -9,8 +11,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, before, test } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { fileCursor, OutOfRangeError, stream } from "../lib/index.js";
+import { fileCursor, formatToken, OutOfRangeError, stream } from "../lib/index.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const dir = mkdtempSync(join(tmpdir(), "erpc-streams-"));
@@ -101,12 +104,15 @@ function app(kind) {
   };
 }
 
-/** The applied chain is the canonical one, with exactly its keys. */
-async function requireCanonical(a, filter) {
+/**
+ * The applied chain is the canonical one, or with view the one pod view's
+ * vendors serve, with exactly its keys.
+ */
+async function requireCanonical(a, filter, view) {
   assert.ok(a.chain.length >= 20, `only ${a.chain.length} blocks applied`);
   const from = Number(a.chain[0].number);
   const to = Number(a.chain.at(-1).number);
-  const { blocks } = await send({ op: "canon", from, to, filter });
+  const { blocks } = await send({ op: "canon", from, to, filter, view });
   assert.equal(blocks.length, a.chain.length);
   const want = new Set();
   blocks.forEach((b, i) => {
@@ -224,4 +230,77 @@ test("a cursor below the window ends OutOfRangeError with the oldest block", asy
     },
   );
   assert.equal(a.chain.length, 0);
+});
+
+test("no apply or undo starts after the signal aborts, though the stream buffered more", async () => {
+  const { tip } = await send({ op: "wait", blocks: 0 });
+  const [back] = (await send({ op: "canon", from: tip.number - 12, to: tip.number - 12 })).blocks;
+  const ac = new AbortController();
+  const calls = [];
+  await stream({
+    endpoints: [ready.endpoints[0]],
+    kind: "newHeads",
+    heartbeatSeconds: 1,
+    cursor: { load: () => formatToken({ number: BigInt(back.number), hash: back.hash }), save() {} },
+  }).run(
+    {
+      async apply(b) {
+        calls.push(`apply ${b.number}${ac.signal.aborted ? " after abort" : ""}`);
+        if (calls.length === 3) ac.abort();
+        // The server's burst fills the stream's buffer meanwhile.
+        await sleep(100);
+      },
+      undo(fp) {
+        calls.push(`undo ${fp.number}${ac.signal.aborted ? " after abort" : ""}`);
+      },
+    },
+    { signal: ac.signal },
+  );
+  assert.equal(calls.length, 3, calls.join(", "));
+});
+
+test("a handler error stops both connections at once", async () => {
+  const boom = new Error("app failed");
+  const calls = [];
+  await assert.rejects(
+    stream({ endpoints: ready.endpoints, kind: "newHeads", heartbeatSeconds: 1 }).run({
+      async apply(b) {
+        calls.push(b.number);
+        if (calls.length === 5) {
+          // Both connections deliver the next blocks meanwhile.
+          await sleep(600);
+          throw boom;
+        }
+      },
+      undo() {},
+    }),
+    (err) => err === boom,
+  );
+  assert.deepEqual(calls.slice(5), [], "apply after the handler failed");
+});
+
+// Pod 1 stays on the branch it serves while pod 0's chain reorgs below the
+// split, so pod 0 leads; then pod 0 dies. The app must move to pod 1's
+// branch: an undo to the fork point, then every block above it. Pod 0
+// comes back and ends each stream out of range (cursor_unknown: the
+// cursor is on a branch it never saw); the run must go on with pod 1.
+test("two endpoints on different branches: a reorg, then the leader dies", async () => {
+  const a = app("logs");
+  const r = await running(
+    { endpoints: ready.endpoints, kind: "logs", filter: ready.filters[1], heartbeatSeconds: 1 },
+    a,
+  );
+  await send({ op: "wait", blocks: 10 });
+  await send({ op: "pin", pod: 1, on: true });
+  await send({ op: "reorg", depth: 3 });
+  await send({ op: "wait", blocks: 6 });
+  await send({ op: "kill", pod: 0 });
+  await send({ op: "wait", blocks: 10 });
+  await send({ op: "start", pod: 0 });
+  await send({ op: "wait", blocks: 16 });
+  const state = await Promise.race([r.done.then(() => "resolved", (e) => e), sleep(0).then(() => "running")]);
+  assert.equal(state, "running", "the run ended while pod 1 streams");
+  await r.stop();
+  assert.ok(a.undos >= 1, "no undo across the branch switch");
+  await requireCanonical(a, 1, 1);
 });

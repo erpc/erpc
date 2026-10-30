@@ -38,7 +38,7 @@ export interface StreamConfig {
   cursor?: Cursor;
   /** Sent on every stream, e.g. `x-erpc-secret-token`. */
   metadata?: Record<string, string>;
-  /** 1–30; 0 or unset is the server default. */
+  /** 1–30; 0 or unset is 5, the server's lowest default. */
   heartbeatSeconds?: number;
   /** Pending only: full transactions instead of hashes. */
   fullTransactions?: boolean;

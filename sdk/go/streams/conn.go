@@ -64,10 +64,12 @@ type event struct {
 	block  Block
 	ref    BlockRef
 	status Status
-	// err ends Run when terminal; else it is why the session ended.
-	err      error
-	reason   string
-	terminal bool
+	// err, on evEnd, is the terminal error the session ended with, nil
+	// when it reconnects; perEndpoint: err ends Run only while no other
+	// endpoint's stream is open. reason is why the session ended.
+	err         error
+	perEndpoint bool
+	reason      string
 }
 
 // link is one endpoint: its sessions run one after another on their own
@@ -89,8 +91,8 @@ func (l *link) begin(cancel context.CancelCauseFunc) uint64 {
 	return l.sess
 }
 
-// restart ends session sess, if it still runs, to resume it at once from
-// the merged cursor.
+// restart ends session sess, if it still runs, to resume it from the
+// merged cursor.
 func (l *link) restart(sess uint64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -101,7 +103,9 @@ func (l *link) restart(sess uint64) {
 
 // sessionEnd is how one session ended.
 type sessionEnd struct {
-	sess   uint64
+	sess uint64
+	// from is the cursor the session resumed from.
+	from   *BlockRef
 	err    error
 	reason string
 	// flowed: the session received a message.
@@ -109,8 +113,10 @@ type sessionEnd struct {
 	lived  time.Duration
 }
 
-// runLink runs the endpoint's sessions until ctx ends or one ends with a
-// terminal error.
+// runLink runs the endpoint's sessions until ctx ends or one ends with an
+// error that ends Run (spec §9.5 Terminal). A session the library
+// restarted backs off as any other, so a server that keeps breaking the
+// chain linkage is not dialled in a loop.
 func (r *runner) runLink(ctx context.Context, l *link) {
 	attempt := 0
 	for ctx.Err() == nil {
@@ -118,16 +124,15 @@ func (r *runner) runLink(ctx context.Context, l *link) {
 		if ctx.Err() != nil {
 			return
 		}
-		if t := r.terminal(l, end.err); t != nil {
-			r.emit(ctx, event{link: l.idx, sess: end.sess, kind: evEnd, err: t, terminal: true})
+		t, perEndpoint := r.terminal(l, end.from, end.err)
+		r.emit(ctx, event{link: l.idx, sess: end.sess, kind: evEnd, err: t, perEndpoint: perEndpoint, reason: end.reason})
+		if t != nil && !perEndpoint {
 			return
 		}
-		r.emit(ctx, event{link: l.idx, sess: end.sess, kind: evEnd, err: end.err, reason: end.reason})
 		if end.lived >= backoffReset {
 			attempt = 0
 		}
-		atOnce := end.reason == "watchdog" || status.Code(end.err) == codes.Unavailable
-		if end.reason == "restart" || end.flowed && atOnce {
+		if t == nil && end.flowed && (end.reason == "watchdog" || status.Code(end.err) == codes.Unavailable) {
 			continue
 		}
 		d := min(backoffMax, backoffMin<<min(attempt, 6))
@@ -159,6 +164,7 @@ func (r *runner) session(ctx context.Context, l *link) (end sessionEnd) {
 	defer cancel(nil)
 	end.sess = l.begin(cancel)
 	from := r.resume.Load()
+	end.from = from
 	if !r.emit(ctx, event{link: l.idx, sess: end.sess, kind: evOpen, from: from}) {
 		return end
 	}
@@ -353,18 +359,20 @@ func refBlock(number uint64, hash, parent []byte) (Block, error) {
 	return Block{BlockRef: BlockRef{Number: number, Hash: h}, ParentHash: p}, nil
 }
 
-// terminal is the error Run ends with for a session's end (spec §9.5), nil
-// when the session reconnects.
-func (r *runner) terminal(l *link, err error) error {
+// terminal is the error a session's end ends Run with (spec §9.5), nil
+// when the session reconnects. perEndpoint: the error is this endpoint's
+// view of the chain, so it ends Run only while no other endpoint streams;
+// else it ends Run at once. from is the cursor the session resumed from.
+func (r *runner) terminal(l *link, from *BlockRef, err error) (t error, perEndpoint bool) {
 	st, ok := status.FromError(err)
 	if !ok {
-		return nil
+		return nil, false
 	}
 	switch st.Code() {
 	case codes.OutOfRange:
 		e := &OutOfRangeError{Endpoint: l.ep.raw, Reason: st.Message()}
-		if c := r.resume.Load(); c != nil {
-			e.Cursor = c.Token()
+		if from != nil {
+			e.Cursor = from.Token()
 		}
 		for _, d := range st.Details() {
 			info, ok := d.(*errdetails.ErrorInfo)
@@ -378,13 +386,13 @@ func (r *runner) terminal(l *link, err error) error {
 				e.Oldest = &BlockRef{Number: n, Hash: Hash(raw)}
 			}
 		}
-		return e
+		return e, true
 	case codes.Aborted:
-		return &FinalRevertedError{Endpoint: l.ep.raw, Message: st.Message()}
+		return &FinalRevertedError{Endpoint: l.ep.raw, Message: st.Message()}, true
 	case codes.Unauthenticated, codes.PermissionDenied, codes.InvalidArgument:
-		return fmt.Errorf("%s: %w", l.ep.raw, err)
+		return fmt.Errorf("%s: %w", l.ep.raw, err), false
 	}
-	return nil
+	return nil, false
 }
 
 // codeName is a gRPC code as the protocol names it: UNAVAILABLE.

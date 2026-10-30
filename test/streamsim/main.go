@@ -1,16 +1,17 @@
 // Command streamsim runs eRPC pods from a given binary over a simulated
-// chain (test/chainsim), with a fault proxy on each pod's gRPC client
-// link, for tests of the stream libraries in other languages. It prints
-// one JSON line once ready, then answers one JSON command per stdin line
-// with one JSON line on stdout, in order:
+// chain (test/chainsim), each pod on its own vendors, with a fault proxy
+// on each pod's gRPC client link, for tests of the stream libraries. It
+// prints one JSON line once ready, then answers one JSON command per
+// stdin line with one JSON line on stdout, in order:
 //
 //	{"op":"wait","blocks":n}          n block times pass
-//	{"op":"reorg","depth":d}          the top d blocks are replaced
+//	{"op":"reorg","depth":d}          the top d canonical blocks are replaced
 //	{"op":"halt","on":b}              block production stops or resumes
 //	{"op":"kill","pod":i}             SIGKILL
 //	{"op":"start","pod":i}            boots it again on its ports
 //	{"op":"cut","pod":i,"on":b}       its client link forwards nothing, sockets kept
-//	{"op":"canon","from":a,"to":b,"filter":k}  canonical blocks and their logs' keys (k -1: every log)
+//	{"op":"pin","pod":i,"on":b}       its vendors stay on the current tip's branch, which grows apart from the canonical one; off: back to canonical
+//	{"op":"canon","from":a,"to":b,"filter":k,"view":i}  canonical blocks, or with view those pod i's vendors serve, and their logs' keys (k -1: every log)
 //
 // stdin closing stops everything.
 package main
@@ -43,6 +44,8 @@ type pod struct {
 	link               *link
 	cmd                *exec.Cmd
 	exited             chan struct{}
+	vendors            []*chainsim.Vendor
+	fork               *chainsim.Fork
 }
 
 func main() {
@@ -57,26 +60,23 @@ func main() {
 		fatal("-erpc and -dir are required")
 	}
 	chain := chainsim.NewChain(chainsim.Config{ChainID: *chainID, BlockTime: *blockTime, Seed: 1})
-	var ups []map[string]interface{}
-	for _, v := range []struct {
-		id, name string
-		ws       bool
-	}{{"ws-a", "vendor-a", true}, {"ws-b", "vendor-b", true}, {"http-a", "vendor-a", false}, {"http-b", "vendor-b", false}} {
-		vd, err := chain.AddVendor(v.id, v.name, v.ws)
-		if err != nil {
-			fatal(err.Error())
-		}
-		ups = append(ups, map[string]interface{}{"id": v.id, "endpoint": vd.URL(), "vendorName": v.name,
-			"evm": map[string]interface{}{"chainId": *chainID}})
-	}
-	chain.Start()
-	defer chain.Close()
-
 	var ps []*pod
-	var endpoints []string
 	for i := range *pods {
 		p := &pod{idx: i, httpPort: freePort(), grpcPort: freePort(),
 			cfg: filepath.Join(*dir, fmt.Sprintf("pod-%d.yaml", i+1)), log: filepath.Join(*dir, fmt.Sprintf("pod-%d.log", i+1))}
+		var ups []map[string]interface{}
+		for _, v := range []struct {
+			id, name string
+			ws       bool
+		}{{"ws-a", "vendor-a", true}, {"ws-b", "vendor-b", true}, {"http-a", "vendor-a", false}, {"http-b", "vendor-b", false}} {
+			vd, err := chain.AddVendor(fmt.Sprintf("%s-%d", v.id, i+1), v.name, v.ws)
+			if err != nil {
+				fatal(err.Error())
+			}
+			p.vendors = append(p.vendors, vd)
+			ups = append(ups, map[string]interface{}{"id": v.id, "endpoint": vd.URL(), "vendorName": v.name,
+				"evm": map[string]interface{}{"chainId": *chainID}})
+		}
 		cfg := map[string]interface{}{
 			"logLevel": "warn",
 			"server": map[string]interface{}{
@@ -96,17 +96,25 @@ func main() {
 		if err == nil {
 			err = os.WriteFile(p.cfg, out, 0o644)
 		}
-		if err == nil {
-			p.link, err = newLink(fmt.Sprintf("127.0.0.1:%d", p.grpcPort))
+		if err != nil {
+			fatal(err.Error())
 		}
+		ps = append(ps, p)
+	}
+	chain.Start()
+	defer chain.Close()
+
+	var endpoints []string
+	for _, p := range ps {
+		link, err := newLink(fmt.Sprintf("127.0.0.1:%d", p.grpcPort))
 		if err == nil {
+			p.link = link
 			err = p.start(*bin)
 		}
 		if err != nil {
 			fatal(err.Error())
 		}
 		defer p.kill()
-		ps = append(ps, p)
 		endpoints = append(endpoints, fmt.Sprintf("grpc://%s/%s/evm/%d", p.link.addr(), project, *chainID))
 	}
 
@@ -121,6 +129,7 @@ func main() {
 			On                 bool
 			From, To           uint64
 			Filter             int
+			View               *int
 		}
 		if err := json.Unmarshal(in.Bytes(), &c); err != nil {
 			_ = enc.Encode(map[string]interface{}{"error": err.Error()})
@@ -147,10 +156,22 @@ func main() {
 			}
 		case "cut":
 			p.link.cut(c.On)
+		case "pin":
+			if c.On && p.fork == nil {
+				p.fork = chain.StartFork(0, 0, p.vendors...)
+			} else if !c.On && p.fork != nil {
+				chain.EndFork(p.fork)
+				p.fork = nil
+			}
 		case "canon":
+			at := chain.CanonAt
+			if c.View != nil {
+				v := ps[*c.View].vendors[0]
+				at = func(n uint64) *chainsim.Block { return chain.ServedAt(v, n) }
+			}
 			var bs []map[string]interface{}
 			for n := c.From; n <= c.To; n++ {
-				b := chain.CanonAt(n)
+				b := at(n)
 				if b == nil {
 					continue
 				}

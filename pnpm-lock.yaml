@@ -45,6 +45,9 @@ importers:
       '@types/node':
         specifier: ^22.20.1
         version: 22.20.1
+      esbuild:
+        specifier: ^0.28.1
+        version: 0.28.1
       ts-proto:
         specifier: 2.18.3
         version: 2.18.3
