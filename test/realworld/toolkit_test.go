@@ -133,10 +133,17 @@ func toolkitFilter(i int) streams.Filter {
 
 var errAppKilled = errors.New("app killed after apply, before the cursor save")
 
-// startGoClient runs the Go library with cfg for c until stop or a
-// terminal end. killEvery > 0 kills the app at every killEvery-th apply,
-// after the apply and before the cursor save, and starts it again.
-func (s *scenario) startGoClient(c *toolkitClient, cfg streams.Config, killEvery int) (stop func()) {
+// toolkitStarter starts a toolkit library for c with cfg, its cursor in
+// the file at cursorPath ("" none), until stop or a terminal end.
+// killEvery > 0 kills the app at every killEvery-th apply, after the apply
+// and before the cursor save, and starts it again.
+type toolkitStarter func(s *scenario, c *toolkitClient, cfg streams.Config, cursorPath string, killEvery int) (stop func())
+
+// startGoClient is the Go library's toolkitStarter.
+func (s *scenario) startGoClient(c *toolkitClient, cfg streams.Config, cursorPath string, killEvery int) (stop func()) {
+	if cursorPath != "" {
+		cfg.Cursor = streams.FileCursor(cursorPath)
+	}
 	ctx, cancel := context.WithCancel(s.ctx)
 	done := make(chan struct{})
 	s.wg.Add(1)
@@ -357,16 +364,16 @@ func (v toolkitView) firstApplyAfter(t time.Time) (toolkitRecord, bool) {
 	return toolkitRecord{}, false
 }
 
-// T1: the Go library on both pods, merged, under C1 reorgs; pod-1 is
-// killed with SIGKILL and restarts. The app's logs are canonical, each
-// block applied once per branch, and it applies from pod-2 within the
-// watchdog of the kill.
-func t1() spec {
-	return spec{name: "T1", bound: healthyDelivery, clients: func(*scenario) {}, body: func(s *scenario) {
+// T1 (Go), T2 (TS): the library on both pods, merged, under C1 reorgs;
+// pod-1 is killed with SIGKILL and restarts. The app's logs are canonical,
+// each block applied once per branch, and it applies from pod-2 within
+// the watchdog of the kill.
+func t1(start toolkitStarter, name string) spec {
+	return spec{name: name, bound: healthyDelivery, clients: func(*scenario) {}, body: func(s *scenario) {
 		s.blocks(25)
-		c := s.newToolkitClient(s.name + "/go")
-		stop := s.startGoClient(c, streams.Config{Endpoints: []string{s.grpcEndpoint(0), s.grpcEndpoint(1)}, Kind: streams.Logs,
-			Filter: toolkitFilter(0), Cursor: streams.FileCursor(filepath.Join(s.dir, "t1.cursor")), HeartbeatSeconds: toolkitBeat}, 0)
+		c := s.newToolkitClient(s.name + "/app")
+		stop := start(s, c, streams.Config{Endpoints: []string{s.grpcEndpoint(0), s.grpcEndpoint(1)}, Kind: streams.Logs,
+			Filter: toolkitFilter(0), HeartbeatSeconds: toolkitBeat}, filepath.Join(s.dir, "app.cursor"), 0)
 		for range 4 {
 			s.blocks(15)
 			s.reorg(1 + rand.IntN(3))
@@ -406,13 +413,13 @@ func t1() spec {
 // T3: pod-1's link black-holed with its sockets kept: the watchdog
 // reconnects within 3 heartbeats; once the link returns the app catches
 // up with no gap.
-func t3() spec {
-	return spec{name: "T3", bound: healthyDelivery, clients: func(*scenario) {}, body: func(s *scenario) {
+func t3(start toolkitStarter, name string) spec {
+	return spec{name: name, bound: healthyDelivery, clients: func(*scenario) {}, body: func(s *scenario) {
 		s.blocks(25)
 		link := s.newGrpcLink()
-		c := s.newToolkitClient(s.name + "/go")
-		stop := s.startGoClient(c, streams.Config{Endpoints: []string{link.grpcEndpoint(s, 0)}, Kind: streams.Logs,
-			Filter: toolkitFilter(1), HeartbeatSeconds: toolkitBeat}, 0)
+		c := s.newToolkitClient(s.name + "/app")
+		stop := start(s, c, streams.Config{Endpoints: []string{link.grpcEndpoint(s, 0)}, Kind: streams.Logs,
+			Filter: toolkitFilter(1), HeartbeatSeconds: toolkitBeat}, "", 0)
 		s.blocks(30)
 		s.reorg(2)
 		s.blocks(15)
@@ -443,15 +450,15 @@ func t3() spec {
 	}}
 }
 
-// T4: the app is killed after every 7th apply, before its cursor save,
-// and starts again: that block is applied again with the same keys; the
-// final logs are canonical.
+// T4 (Go): the app is killed after every 7th apply, before its cursor
+// save, and starts again: that block is applied again with the same keys;
+// the final logs are canonical.
 func t4() spec {
 	return spec{name: "T4", bound: healthyDelivery, clients: func(*scenario) {}, body: func(s *scenario) {
 		s.blocks(25)
-		c := s.newToolkitClient(s.name + "/go")
+		c := s.newToolkitClient(s.name + "/app")
 		stop := s.startGoClient(c, streams.Config{Endpoints: []string{s.grpcEndpoint(0)}, Kind: streams.Logs,
-			Filter: toolkitFilter(0), Cursor: streams.FileCursor(filepath.Join(s.dir, "t4.cursor")), HeartbeatSeconds: toolkitBeat}, 7)
+			Filter: toolkitFilter(0), HeartbeatSeconds: toolkitBeat}, filepath.Join(s.dir, "app.cursor"), 7)
 		for range 6 {
 			s.blocks(15)
 			s.reorg(1 + rand.IntN(3))
@@ -469,13 +476,13 @@ func t4() spec {
 // T5: the app stays offline longer than the window: on its return Run ends
 // with OutOfRangeError naming its cursor and the oldest block a pod can
 // resume from, and applies nothing past the gap.
-func t5() spec {
-	return spec{name: "T5", bound: healthyDelivery, clients: func(*scenario) {}, body: func(s *scenario) {
+func t5(start toolkitStarter, name string) spec {
+	return spec{name: name, bound: healthyDelivery, clients: func(*scenario) {}, body: func(s *scenario) {
 		s.blocks(25)
-		c := s.newToolkitClient(s.name + "/go")
-		cfg := streams.Config{Endpoints: []string{s.grpcEndpoint(0)}, Kind: streams.Logs, Filter: toolkitFilter(0),
-			Cursor: streams.FileCursor(filepath.Join(s.dir, "t5.cursor")), HeartbeatSeconds: toolkitBeat}
-		stop := s.startGoClient(c, cfg, 0)
+		c := s.newToolkitClient(s.name + "/app")
+		cfg := streams.Config{Endpoints: []string{s.grpcEndpoint(0)}, Kind: streams.Logs, Filter: toolkitFilter(0), HeartbeatSeconds: toolkitBeat}
+		cursorPath := filepath.Join(s.dir, "app.cursor")
+		stop := start(s, c, cfg, cursorPath, 0)
 		s.blocks(30)
 		stop()
 		offline := time.Now()
@@ -489,7 +496,7 @@ func t5() spec {
 		time.Sleep(maxBackfill + 30*time.Second)
 		s.logf("app offline %s, back", time.Since(offline).Round(time.Second))
 		back := time.Now()
-		stop = s.startGoClient(c, cfg, 0)
+		stop = start(s, c, cfg, cursorPath, 0)
 		deadline := time.Now().Add(30 * time.Second)
 		var end *toolkitRecord
 		for end == nil && time.Now().Before(deadline) {
@@ -522,12 +529,12 @@ func t5() spec {
 // T6: a finalized stream for 25 minutes under the 10-minute connection
 // age: at least 2 UNAVAILABLE ends, each resumed at once; no gap, no
 // duplicate key.
-func t6() spec {
-	return spec{name: "T6", bound: healthyDelivery, clients: func(*scenario) {}, body: func(s *scenario) {
+func t6(start toolkitStarter, name string) spec {
+	return spec{name: name, bound: healthyDelivery, clients: func(*scenario) {}, body: func(s *scenario) {
 		s.blocks(25)
-		c := s.newToolkitClient(s.name + "/go")
-		stop := s.startGoClient(c, streams.Config{Endpoints: []string{s.grpcEndpoint(0)}, Kind: streams.Logs, Filter: toolkitFilter(0),
-			Finality: streams.Finalized, Cursor: streams.FileCursor(filepath.Join(s.dir, "t6.cursor")), HeartbeatSeconds: toolkitBeat}, 0)
+		c := s.newToolkitClient(s.name + "/app")
+		stop := start(s, c, streams.Config{Endpoints: []string{s.grpcEndpoint(0)}, Kind: streams.Logs, Filter: toolkitFilter(0),
+			Finality: streams.Finalized, HeartbeatSeconds: toolkitBeat}, filepath.Join(s.dir, "app.cursor"), 0)
 		for end := time.Now().Add(25 * time.Minute); time.Now().Before(end); {
 			s.blocks(50)
 		}
