@@ -47,8 +47,8 @@ type WsConnection struct {
 	// notifyCostBlocks caches each subscription kind's notification block.
 	notifyCostBlocks [wsclient.KindPendingTx + 1]atomic.Pointer[[]byte]
 
-	// Write synchronization (gorilla/websocket requires synchronized writes)
-	writeMu sync.Mutex
+	// w is the connection's one data writer (see ws_writer.go).
+	w wsWriter
 
 	// sem bounds concurrent requests; inflight lets teardown wait for them.
 	sem      chan struct{}
@@ -161,6 +161,7 @@ func (s *HttpServer) handleWebSocket(
 		return nil
 	})
 
+	wsc.startWriter()
 	go wsc.pingLoop(pingInterval)
 
 	wsc.readLoop(pongWait)
@@ -482,9 +483,9 @@ func (wsc *WsConnection) buildUnsupportedMethodResponse(nq *common.NormalizedReq
 	}
 }
 
-// wsWriteDeadline bounds every write, so a stalled client cannot hold
-// writeMu and starve the connection's other writers.
-const wsWriteDeadline = 10 * time.Second
+// wsWriteDeadline bounds every write, so a stalled client cannot stall its
+// writer for longer, and every wait of a producer that cannot queue.
+var wsWriteDeadline = 10 * time.Second
 
 var errWsConnClosed = errors.New("connection closed")
 
@@ -545,64 +546,6 @@ func (wsc *WsConnection) notificationCostBlock(sub wsclient.Subscription) []byte
 	return b
 }
 
-// wsMessages holds message buffers. Every message is encoded before
-// writeMu is taken, so nothing allocates while the lock is held: a GC
-// assist would park the holder with every other answer of the connection
-// queued behind it.
-var wsMessages = sync.Pool{New: func() any { return new(bytes.Buffer) }}
-
-// wsMessagePooledMax: a larger buffer is dropped after its write, so one
-// large response does not stay pinned in the pool.
-const wsMessagePooledMax = 64 << 10
-
-func releaseMessage(b *bytes.Buffer) {
-	if b.Cap() <= wsMessagePooledMax {
-		wsMessages.Put(b)
-	}
-}
-
-// encodeMessage is one text message produced by write. With cost frames on,
-// the message starts with costs (a header block, possibly empty) and the
-// blank line ending it, so the block and its body are one message.
-func (wsc *WsConnection) encodeMessage(costs []byte, write func(w io.Writer) error) (*bytes.Buffer, error) {
-	b := wsMessages.Get().(*bytes.Buffer)
-	b.Reset()
-	if wsc.costFrames {
-		b.Write(costs)
-		b.Write(crlf)
-	}
-	if err := write(b); err != nil {
-		releaseMessage(b)
-		return nil, err
-	}
-	return b, nil
-}
-
-// writeMessage writes the message write produces (see encodeMessage).
-func (wsc *WsConnection) writeMessage(costs []byte, write func(w io.Writer) error) error {
-	msg, err := wsc.encodeMessage(costs, write)
-	if err != nil {
-		return err
-	}
-	defer releaseMessage(msg)
-	wsc.writeMu.Lock()
-	defer wsc.writeMu.Unlock()
-	return wsc.writeEncodedLocked(msg.Bytes())
-}
-
-// writeEncodedLocked writes msg under writeMu; gorilla's WriteMessage on a
-// server connection without compression allocates nothing.
-func (wsc *WsConnection) writeEncodedLocked(msg []byte) error {
-	if wsc.closed.Load() {
-		return errWsConnClosed
-	}
-	if err := wsc.conn.SetWriteDeadline(time.Now().Add(wsWriteDeadline)); err != nil {
-		return err
-	}
-	defer wsc.conn.SetWriteDeadline(time.Time{})
-	return wsc.conn.WriteMessage(websocket.TextMessage, msg)
-}
-
 func (wsc *WsConnection) writeJSON(costs []byte, v interface{}) error {
 	return wsc.writeMessage(costs, func(w io.Writer) error {
 		return json.NewEncoder(w).Encode(v)
@@ -658,8 +601,8 @@ func (wsc *WsConnection) pingLoop(interval time.Duration) {
 	for {
 		select {
 		case <-ticker.C:
-			// WriteControl is safe alongside other writers, so pings don't
-			// wait behind a slow data write holding writeMu.
+			// WriteControl is safe alongside the data writer, so pings don't
+			// wait behind a slow data write.
 			err := wsc.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsWriteDeadline))
 			wsc.logger.Trace().Str("connId", wsc.id).Msg("websocket ping sent")
 			if err != nil {
@@ -702,6 +645,8 @@ func (wsc *WsConnection) teardown() {
 	wsc.closed.Store(true)
 
 	wsc.server.subscriptionManager.CleanupConnection(wsc)
+	// The close frame follows the last data message.
+	wsc.stopWriter()
 
 	if !wsc.peerClosed.Load() {
 		_ = wsc.conn.WriteControl(
@@ -759,40 +704,20 @@ func (wsc *WsConnection) notifier(sub wsclient.Subscription) *wsNotifier {
 	}
 }
 
-// write writes one notification carrying result, valid JSON as is.
+// write queues one notification carrying result, valid JSON as is; the
+// writer skips it once the subscription is removed.
 func (n *wsNotifier) write(result json.RawMessage) error {
-	size := len(n.prefix) + len(result) + len(wsNotificationSuffix)
-	written, err := n.wsc.writeNotification(n.sub, n.wsc.notificationCostBlock(n.sub), func(w io.Writer) error {
-		if _, err := w.Write(n.prefix); err != nil {
-			return err
-		}
-		if _, err := w.Write(result); err != nil {
-			return err
-		}
+	if n.sub.Removed() {
+		return nil
+	}
+	msg, err := n.wsc.encodeMessage(n.wsc.notificationCostBlock(n.sub), func(w io.Writer) error {
+		_, _ = w.Write(n.prefix)
+		_, _ = w.Write(result)
 		_, err := w.Write(wsNotificationSuffix)
 		return err
 	})
-	if err != nil || !written {
+	if err != nil {
 		return err
 	}
-	n.sent.Inc()
-	n.bytes.Add(float64(size))
-	return nil
-}
-
-// writeNotification writes as writeMessage does, unless sub was removed.
-// Unsubscribe marks the subscription removed before its answer takes
-// writeMu, so no notification follows the answer.
-func (wsc *WsConnection) writeNotification(sub wsclient.Subscription, costs []byte, write func(w io.Writer) error) (written bool, err error) {
-	msg, err := wsc.encodeMessage(costs, write)
-	if err != nil {
-		return false, err
-	}
-	defer releaseMessage(msg)
-	wsc.writeMu.Lock()
-	defer wsc.writeMu.Unlock()
-	if sub.Removed() {
-		return false, nil
-	}
-	return true, wsc.writeEncodedLocked(msg.Bytes())
+	return n.wsc.queue(wsOut{msg: msg, note: n, size: len(n.prefix) + len(result) + len(wsNotificationSuffix)})
 }

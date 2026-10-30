@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -2320,6 +2321,177 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		defer conn.Close()
 		s.blocks(5)
 		assert.Positive(t, receiptsAndLogsCalls(s), "logs fetched by eth_getLogs")
+	})
+}
+
+// TestWebSocket_WriterOrderAndBackpressure: a connection's one writer keeps
+// the ws guarantees (spec §10.2). On a connection that churns newHeads and
+// logs subscriptions while blocks flow, each id answer comes before any
+// notification of its subscription, a subscription's blocks rise, and none
+// comes after its unsubscribe answer. A client that stops reading holds up
+// only its own tap, which ends after the send wait, as a blocked write did.
+func TestWebSocket_WriterOrderAndBackpressure(t *testing.T) {
+	t.Run("order on one connection", func(t *testing.T) {
+		s := newChaosSeed(t, 12, true, chaosOpts{})
+		s.startERPC()
+		s.chain.Start()
+		defer s.stopERPC()
+		s.blocks(3)
+		_, taps0, _ := wsGauges("newHeads")
+
+		conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", s.addr), nil)
+		require.NoError(t, err)
+		defer conn.Close()
+		var wmu sync.Mutex
+		write := func(v interface{}) {
+			wmu.Lock()
+			defer wmu.Unlock()
+			_ = conn.WriteJSON(v)
+		}
+		var (
+			mu                       sync.Mutex
+			subOf                    = map[int]string{} // unsubscribe id -> subscription
+			answered, gone           = map[string]bool{}, map[string]bool{}
+			last                     = map[string]uint64{}
+			subscribed, unsubscribed int
+			problems                 []string
+		)
+		readDone := make(chan struct{})
+		go func() {
+			defer close(readDone)
+			for {
+				_, raw, err := conn.ReadMessage()
+				if err != nil {
+					return
+				}
+				var m struct {
+					ID     *int            `json:"id"`
+					Result json.RawMessage `json:"result"`
+					Error  json.RawMessage `json:"error"`
+					Params struct {
+						Subscription string `json:"subscription"`
+						Result       struct {
+							Number      string `json:"number"`
+							BlockNumber string `json:"blockNumber"`
+						} `json:"result"`
+					} `json:"params"`
+				}
+				if err := json.Unmarshal(raw, &m); err != nil {
+					mu.Lock()
+					problems = append(problems, fmt.Sprintf("unparsable message %s", raw))
+					mu.Unlock()
+					continue
+				}
+				mu.Lock()
+				switch {
+				case m.ID == nil:
+					sub := m.Params.Subscription
+					num := m.Params.Result.Number
+					if num == "" {
+						num = m.Params.Result.BlockNumber
+					}
+					n, _ := common.HexToInt64(num)
+					switch {
+					case !answered[sub]:
+						problems = append(problems, fmt.Sprintf("notification of %s before its id answer", sub))
+					case gone[sub]:
+						problems = append(problems, fmt.Sprintf("notification of %s after its unsubscribe answer", sub))
+					case uint64(n) < last[sub]:
+						problems = append(problems, fmt.Sprintf("%s: block %d after %d", sub, n, last[sub]))
+					}
+					last[sub] = uint64(n)
+				case *m.ID%2 == 1:
+					var sub string
+					if json.Unmarshal(m.Result, &sub) != nil {
+						problems = append(problems, fmt.Sprintf("subscribe %d refused: %s", *m.ID, m.Error))
+						break
+					}
+					subscribed++
+					answered[sub] = true
+					subOf[*m.ID+1] = sub
+					uid := *m.ID + 1
+					time.AfterFunc(time.Duration(rand.IntN(3*int(chaosBlock))), func() {
+						write(map[string]interface{}{"jsonrpc": "2.0", "id": uid, "method": "eth_unsubscribe", "params": []string{sub}})
+					})
+				default:
+					unsubscribed++
+					gone[subOf[*m.ID]] = true
+				}
+				mu.Unlock()
+			}
+		}()
+
+		sent := 0
+		for end := time.Now().Add(30 * chaosBlock); time.Now().Before(end); sent++ {
+			params := []interface{}{"newHeads"}
+			if k := sent % 3; k > 0 {
+				params = []interface{}{"logs", chainsim.Filters[k-1].Params()}
+			}
+			write(map[string]interface{}{"jsonrpc": "2.0", "id": 2*sent + 1, "method": "eth_subscribe", "params": params})
+			time.Sleep(10 * time.Millisecond)
+		}
+		require.Eventually(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return unsubscribed == sent || len(problems) > 0
+		}, 10*time.Second, 10*time.Millisecond, "every subscribe and unsubscribe is answered")
+		mu.Lock()
+		assert.Equal(t, sent, subscribed, "subscribes answered")
+		assert.Empty(t, problems)
+		notified := 0
+		for _, n := range last {
+			if n > 0 {
+				notified++
+			}
+		}
+		assert.Positive(t, notified, "subscriptions got notifications")
+		mu.Unlock()
+		require.Eventually(t, func() bool {
+			_, taps, _ := wsGauges("newHeads")
+			return taps == taps0
+		}, 5*time.Second, 10*time.Millisecond, "every newHeads tap ended")
+		_ = conn.Close()
+		<-readDone
+	})
+
+	t.Run("a client that stops reading holds up only its own tap", func(t *testing.T) {
+		prev := wsWriteDeadline
+		wsWriteDeadline = time.Second
+		defer func() { wsWriteDeadline = prev }()
+		// 16 KiB headers fill the kernel's socket buffers in about 32 blocks.
+		s := newChaosSeed(t, 13, true, chaosOpts{grpc: true})
+		s.startERPC()
+		s.chain.Start()
+		defer s.stopERPC()
+		s.blocks(3)
+		_, taps0, _ := wsGauges("newHeads")
+		fast := s.dialClient("fast", nil)
+
+		stalled, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", s.addr), nil)
+		require.NoError(t, err)
+		defer stalled.Close()
+		require.NoError(t, stalled.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)))
+		require.NoError(t, stalled.SetReadDeadline(time.Now().Add(5*time.Second)))
+		_, msg, err := stalled.ReadMessage()
+		require.NoError(t, err)
+		require.Contains(t, string(msg), `"result"`, "subscribe answered: %s", msg)
+		require.Eventually(t, func() bool {
+			_, taps, _ := wsGauges("newHeads")
+			return taps == taps0+2
+		}, 5*time.Second, 10*time.Millisecond, "both taps run")
+
+		// The stalled client reads nothing more: its tap waits on the full
+		// queue, then ends; the other client's tap goes on.
+		require.Eventually(t, func() bool {
+			_, taps, _ := wsGauges("newHeads")
+			return taps == taps0+1
+		}, 30*time.Second, 50*time.Millisecond, "the stalled client's tap ends")
+		tip := s.chain.Tip().Number
+		s.blocks(5)
+		fast.mu.Lock()
+		defer fast.mu.Unlock()
+		assert.Empty(t, fast.problems, "the reading client")
+		assert.Greater(t, fast.last, tip, "the reading client gets heads after the stalled tap ended")
 	})
 }
 
