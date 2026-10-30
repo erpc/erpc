@@ -108,6 +108,10 @@ func catalogue() []phaseSpec {
 		{"g2", 13701, []spec{g2()}},
 		{"g4", 13801, []spec{g4()}},
 		{"grpc-final", 13901, []spec{g6(), f1g()}},
+		{"t1", 14001, []spec{t1()}},
+		{"toolkit", 14051, []spec{t3(), t4()}},
+		{"t5", 14101, []spec{t5()}},
+		{"t6", 14201, []spec{t6()}},
 	}
 }
 
