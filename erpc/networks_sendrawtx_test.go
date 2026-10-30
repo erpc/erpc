@@ -2547,6 +2547,26 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 			"a refusal every upstream shares must not be retried: %v", calls)
 		assert.Less(t, elapsed, 3*time.Second)
 	})
+
+	for _, message := range []string{"transaction underpriced", "replacement transaction underpriced"} {
+		message := message
+		t.Run("UnderpricedFromEveryUpstreamIsNotRetried/"+message, func(t *testing.T) {
+			// Minimum gas price and mempool contents are node-local, so each
+			// upstream gets one try; once all refuse, the broadcast ends.
+			calls, elapsed, err := forwardSendEveryUpstreamRefuses(t, -32000, message)
+
+			require.Error(t, err)
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
+				"client must get the node's refusal, got: %v", err)
+			assert.Contains(t, err.Error(), message)
+			for id, n := range calls {
+				assert.Positive(t, n, "upstream %s was never asked", id)
+			}
+			assert.LessOrEqual(t, totalCalls(calls), int64(sendBroadcastParticipants),
+				"an upstream that refused must not be asked again: %v", calls)
+			assert.Less(t, elapsed, 3*time.Second)
+		})
+	}
 }
 
 // sendBroadcastParticipants is the consensus fan-out of the production
