@@ -2196,6 +2196,63 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		assert.Equal(t, headsEnds, tapEndsOf(indexer.SubTypeNewHeads), "no newHeads tap ended")
 	})
 
+	// A newHeads or logs subscribe on a topic the last source pass found
+	// fed answers while a pass is running: it waits for a pass only to find
+	// a source it lacks. Under load one pass took up to 645ms, and every
+	// subscribe of the network queued behind it.
+	t.Run("subscribe on a fed topic waits for no source pass", func(t *testing.T) {
+		s := newChaosSeed(t, 11, true, chaosOpts{})
+		start(s)
+		defer s.stopERPC()
+		s.blocks(3)
+		s.dialClient("fed", nil)
+		s.dialLogs("fed")
+
+		entered := make(chan struct{}, 1)
+		hold := make(chan struct{})
+		held := func() {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			<-hold
+		}
+		sourcePassStart.Store(&held)
+		released := false
+		defer func() {
+			sourcePassStart.Store(nil)
+			if !released {
+				close(hold)
+			}
+		}()
+		select {
+		case <-entered:
+		case <-time.After(15 * time.Second):
+			t.Fatal("no source pass started")
+		}
+
+		const answerWithin = 2 * time.Second
+		logsParams, _ := json.Marshal([]interface{}{"logs", chainsim.Filters[0].Params()})
+		for _, params := range []string{`["newHeads"]`, string(logsParams)} {
+			conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", s.addr), nil)
+			require.NoError(t, err)
+			begin := time.Now()
+			require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":`+params+`}`)))
+			require.NoError(t, conn.SetReadDeadline(begin.Add(answerWithin)))
+			_, msg, err := conn.ReadMessage()
+			require.NoError(t, err, "subscribe %s answered within %s while a source pass is held", params, answerWithin)
+			var resp struct {
+				Result string          `json:"result"`
+				Error  json.RawMessage `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(msg, &resp))
+			assert.NotEmpty(t, resp.Result, "subscribe %s: %s", params, msg)
+			_ = conn.Close()
+		}
+		close(hold)
+		released = true
+	})
+
 	t.Run("no upstream serves receipts or eth_getLogs", func(t *testing.T) {
 		s := newChaosSeed(t, 6, true, chaosOpts{})
 		s.ignore = []string{"eth_getBlockReceipts", "eth_getLogs"}

@@ -409,9 +409,16 @@ func (r *sourceReconciler) run(ctx context.Context) {
 	}
 }
 
+// sourcePassStart, while set, runs as each source pass begins; tests hold
+// it there for a slow pass.
+var sourcePassStart atomic.Pointer[func()]
+
 // pass makes every source feed what the rules say now and returns when the
 // next pass is due without a wake.
 func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
+	if hold := sourcePassStart.Load(); hold != nil {
+		(*hold)()
+	}
 	next = r.nw.chainTracker.W()
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -700,31 +707,40 @@ func (r *sourceReconciler) stopAll() {
 // on the network can feed subType, after the sources caught up with the
 // network's upstreams. logs need heads and a feed that serves receipts or
 // their fallback (spec §10); pending transactions need a push source (§11).
+// A subscribe waits for a source pass only when the last pass found no
+// source: every subscribe on a fed topic would queue behind each pass.
 func (n *Network) requireSubscriptionSource(ctx context.Context, subType string) error {
 	if n.sources == nil {
 		return common.NewErrNoSubscriptionSource(n.networkId, subType)
 	}
+	if n.subscriptionSourced(subType) {
+		return nil
+	}
 	if err := n.sources.sync(ctx); err != nil {
 		return err
 	}
-	n.sources.mu.Lock()
-	heads, push := n.sources.heads, n.sources.push
-	n.sources.mu.Unlock()
-	var ok bool
-	switch subType {
-	case indexer.SubTypeNewHeads:
-		ok = heads
-	case indexer.SubTypeLogs:
-		ok = heads && n.chainTracker != nil && n.chainTracker.ServesLogs()
-	case indexer.SubTypeNewPendingTransactions:
-		ok = push
-	default:
-		return nil
-	}
-	if !ok {
+	if !n.subscriptionSourced(subType) {
 		return common.NewErrNoSubscriptionSource(n.networkId, subType)
 	}
 	return nil
+}
+
+// subscriptionSourced reports whether the last source pass found a feed
+// for subType; a subType with no source of its own always has one.
+func (n *Network) subscriptionSourced(subType string) bool {
+	n.sources.mu.Lock()
+	heads, push := n.sources.heads, n.sources.push
+	n.sources.mu.Unlock()
+	switch subType {
+	case indexer.SubTypeNewHeads:
+		return heads
+	case indexer.SubTypeLogs:
+		return heads && n.chainTracker != nil && n.chainTracker.ServesLogs()
+	case indexer.SubTypeNewPendingTransactions:
+		return push
+	default:
+		return true
+	}
 }
 
 func later(a, b time.Time) time.Time {
