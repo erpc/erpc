@@ -38,7 +38,11 @@ func TestRealWorld(t *testing.T) {
 	r := &run{root: root, host: startHostLoad()}
 	for _, ph := range skipped {
 		for _, sp := range ph.specs {
-			r.rows = append(r.rows, summaryRow{phase: ph.name, name: sp.name, result: "skip", load: "long tier: REALWORLD_TIER=long runs it"})
+			tier := "full tier: make test-realworld runs it"
+			if sp.long {
+				tier = "long tier: make test-realworld-long runs it"
+			}
+			r.rows = append(r.rows, summaryRow{phase: ph.name, name: sp.name, result: "skip", load: tier})
 		}
 	}
 	t.Cleanup(func() {
@@ -127,29 +131,54 @@ func catalogue() []phaseSpec {
 	}
 }
 
-// selectedPhases are the phases this run runs, and the long-tier phases
-// REALWORLD_TIER=fast skips: REALWORLD_ALONE=C1,X4 runs only the named
-// scenarios, each alone in its own phase; REALWORLD_PHASES=shared,n4 runs
-// only the named phases; else every phase of REALWORLD_TIER: fast (no long
-// phase), long (only long phases) or all (default).
+// fastScenarios are the fast tier, longest first: one or two scenarios per
+// spec area, each alone in its own phase.
+var fastScenarios = []string{
+	"P12",    // near-future reads above every vendor's head (§6.4)
+	"N4",     // pod cut from every vendor 2 min; gRPC resume on the peer (§9.2, §10.3)
+	"R1",     // read at once at a delivered block, on either pod (§19 oracle)
+	"D1",     // slow ws and gRPC readers: tap restart, send wait (§9.2)
+	"C1",     // tip reorgs told to newHeads, logs, gRPC (§10.2)
+	"X4",     // pod SIGKILL during a reorg; clients resume on the peer
+	"P1",     // head latency: catch-up asks, no stall (§6.8)
+	"C7",     // halt then 100-block burst: fetch and receipts catch-up (§8)
+	"C18",    // finality: final_hash_changed only on own evidence (§6.5)
+	"U8-on",  // integrity: forged header hashes dropped and counted (§7)
+	"U3",     // half-open wss voter reconnects within 30 s (§13.1)
+	"K2",     // minimal config: 1 wss + 1 https, quorum 2 (§6.3)
+	"D5",     // subscribe/unsubscribe churn: no send after unsubscribe, taps drain (§17)
+	"N3",     // voters: a vendor cut leaves the voter set (§6)
+	"U18",    // minority fork answers only within W (§6.3)
+}
+
+// selectedPhases are the phases this run runs, and the phases its tier
+// leaves out: REALWORLD_ALONE=C1,X4 runs only the named scenarios, each
+// alone in its own phase; REALWORLD_PHASES=shared,n4 runs only the named
+// phases; else REALWORLD_TIER picks: fast (fastScenarios, each alone),
+// full (default: every phase but the long ones) or long (only those).
 func selectedPhases() (phases, skipped []phaseSpec, err error) {
 	all := catalogue()
-	if alone := os.Getenv("REALWORLD_ALONE"); alone != "" {
+	alone := func(names []string) ([]phaseSpec, error) {
 		known := map[string]spec{}
 		for _, ph := range all {
 			for _, sp := range ph.specs {
 				known[sp.name] = sp
 			}
 		}
-		for i, name := range strings.Split(alone, ",") {
+		var out []phaseSpec
+		for i, name := range names {
 			sp, ok := known[name]
 			if !ok {
-				return nil, nil, fmt.Errorf("REALWORLD_ALONE names %q, no scenario", name)
+				return nil, fmt.Errorf("no scenario %q", name)
 			}
 			// The index keeps a scenario named twice in its own run dir.
-			phases = append(phases, phaseSpec{fmt.Sprintf("alone-%d-%s", i+1, name), 9401 + int64(i), []spec{sp}})
+			out = append(out, phaseSpec{fmt.Sprintf("alone-%d-%s", i+1, name), 9401 + int64(i), []spec{sp}})
 		}
-		return phases, nil, nil
+		return out, nil
+	}
+	if names := os.Getenv("REALWORLD_ALONE"); names != "" {
+		phases, err = alone(strings.Split(names, ","))
+		return phases, nil, err
 	}
 	if only := os.Getenv("REALWORLD_PHASES"); only != "" {
 		for _, ph := range all {
@@ -159,24 +188,32 @@ func selectedPhases() (phases, skipped []phaseSpec, err error) {
 		}
 		return phases, nil, nil
 	}
-	tier := cmp.Or(os.Getenv("REALWORLD_TIER"), "all")
-	for _, ph := range all {
-		switch long := ph.specs[0].long; tier {
-		case "all":
-			phases = append(phases, ph)
-		case "fast":
-			if long {
-				skipped = append(skipped, ph)
-			} else {
-				phases = append(phases, ph)
-			}
-		case "long":
-			if long {
-				phases = append(phases, ph)
-			}
-		default:
-			return nil, nil, fmt.Errorf("REALWORLD_TIER is %q: fast, long or all", tier)
+	switch tier := cmp.Or(os.Getenv("REALWORLD_TIER"), "full"); tier {
+	case "fast":
+		if phases, err = alone(fastScenarios); err != nil {
+			return nil, nil, err
 		}
+		for _, ph := range all {
+			var rest []spec
+			for _, sp := range ph.specs {
+				if !slices.Contains(fastScenarios, sp.name) {
+					rest = append(rest, sp)
+				}
+			}
+			if len(rest) > 0 {
+				skipped = append(skipped, phaseSpec{ph.name, ph.chain, rest})
+			}
+		}
+	case "full", "long":
+		for _, ph := range all {
+			if ph.specs[0].long == (tier == "long") {
+				phases = append(phases, ph)
+			} else {
+				skipped = append(skipped, ph)
+			}
+		}
+	default:
+		return nil, nil, fmt.Errorf("REALWORLD_TIER is %q: fast, full or long", tier)
 	}
 	return phases, skipped, nil
 }

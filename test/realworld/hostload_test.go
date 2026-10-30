@@ -188,10 +188,12 @@ func (hl *hostLoad) record(from, to time.Time) string {
 	return fmt.Sprintf("load %.1f–%.1f (limit %.1f), scheduling delay max %s, %d samples", lo, hi, hl.limit, delay.Round(time.Millisecond), len(ss))
 }
 
-// phaseCores and phaseMemory are what one running phase takes at most:
-// its pods, redis, and its share of this process's simulators and clients.
+// phaseCores and phaseMemory are what one running phase takes, room for
+// other work on the host included: 18 phases at once (1 core each) gave
+// this process 4.8 s scheduling delays and pods 10 s answers at load 30-67,
+// failing 80 scenarios on harness time, not eRPC's.
 const (
-	phaseCores  = 1.0
+	phaseCores  = 6.0
 	phaseMemory = 1 << 30
 )
 
