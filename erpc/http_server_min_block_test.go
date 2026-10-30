@@ -300,17 +300,20 @@ func TestHttpServer_MinBlock(t *testing.T) {
 		lane := func(n string) map[string]string {
 			return map[string]string{"X-ERPC-Min-Block": n, "X-ERPC-Use-Upstream": "slow-*"}
 		}
-		later(400*time.Millisecond, 103, "slow-1", "slow-2")
-		status, hdrs, a := ask(lane("103"), nil)
+		// Each step waits for a head above the slow nodes' own, so its
+		// timer has fired before the next step sets its own: two timers
+		// due together fire in either order.
+		later(400*time.Millisecond, 104, "slow-1", "slow-2")
+		status, hdrs, a := ask(lane("104"), nil)
 		require.Equal(t, http.StatusOK, status)
-		assert.Equal(t, int64(103), a.block(t), "the slow lane's Latest waited for 103")
+		assert.Equal(t, int64(104), a.block(t), "the slow lane's Latest waited for 104")
 		assert.Contains(t, hdrs["X-Erpc-Upstream"], "slow-")
 
 		// A selector forming no lane waits on its stateless pick.
-		later(400*time.Millisecond, 104, "slow-1", "slow-2")
-		status, hdrs, a = ask(map[string]string{"X-ERPC-Min-Block": "104", "X-ERPC-Use-Upstream": "slow-1|slow-2"}, nil)
+		later(400*time.Millisecond, 105, "slow-1", "slow-2")
+		status, hdrs, a = ask(map[string]string{"X-ERPC-Min-Block": "105", "X-ERPC-Use-Upstream": "slow-1|slow-2"}, nil)
 		require.Equal(t, http.StatusOK, status)
-		assert.Equal(t, int64(104), a.block(t))
+		assert.Equal(t, int64(105), a.block(t))
 		assert.Contains(t, hdrs["X-Erpc-Upstream"], "slow-")
 
 		// A batch: each call at or after n on the lane, one Ask round for all.
