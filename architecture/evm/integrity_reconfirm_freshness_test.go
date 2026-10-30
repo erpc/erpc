@@ -45,7 +45,7 @@ func (n *capturingNetwork) EvmHashVoters(string, time.Duration, bool) HashVoters
 	return hv
 }
 
-func (n *capturingNetwork) EvmAskHead(ctx context.Context, _ string, need common.HeadNeed, _ time.Duration, _ common.AskReason) common.HeadAnswer {
+func (n *capturingNetwork) EvmAskHead(ctx context.Context, _ string, need common.HeadNeed, _ time.Duration, _ time.Time, _ common.AskReason) common.HeadAnswer {
 	n.mu.Lock()
 	n.asks = append(n.asks, need)
 	n.mu.Unlock()
@@ -57,7 +57,7 @@ func (n *capturingNetwork) EvmAskHead(ctx context.Context, _ string, need common
 		return common.HeadAnswer{Outcome: common.AskFetched, Err: ctx.Err()}
 	}
 	sent := time.Now()
-	return common.HeadAnswer{Outcome: common.AskFetched, Sent: sent, Next: sent.Add(time.Hour),
+	return common.HeadAnswer{Outcome: common.AskFetched, At: sent, Next: sent.Add(time.Hour),
 		Header: askedHeader([]byte(fmt.Sprintf(`{"number":"%s","hash":"%s","parentHash":"%s"}`, n.num, n.hash, testHash("f", n.number()-1))))}
 }
 

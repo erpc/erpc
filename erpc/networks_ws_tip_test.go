@@ -797,7 +797,7 @@ func TestNetworkIntake_HeldHashVoteNeedPollsVotersBelowThePin(t *testing.T) {
 	require.Eventually(t, func() bool {
 		for _, id := range []string{"b-http", "c-http"} {
 			if v, ok := network.intake.hashVote(byId[id]); !ok || v.Number != 1000 {
-				byId[id].EvmStatePoller().AskBackground(common.HeadNeedHash, 0, common.AskRefresh)
+				byId[id].EvmStatePoller().AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefresh)
 				return false
 			}
 		}
@@ -843,7 +843,7 @@ func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
 	require.Eventually(t, func() bool {
 		v, ok := network.intake.hashVote(byId["z-http"])
 		if !ok || v.Number != 1003 {
-			byId["z-http"].EvmStatePoller().AskBackground(common.HeadNeedHash, 0, common.AskRefresh)
+			byId["z-http"].EvmStatePoller().AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefresh)
 			return false
 		}
 		return true
@@ -866,7 +866,7 @@ func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
 	require.Eventually(t, func() bool {
 		v, ok := network.intake.hashVote(byId["z-http"])
 		if !ok || v.Number != 1007 {
-			byId["z-http"].EvmStatePoller().AskBackground(common.HeadNeedHash, 0, common.AskRefresh)
+			byId["z-http"].EvmStatePoller().AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefresh)
 			return false
 		}
 		return true
@@ -948,7 +948,7 @@ func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) 
 	restored := func(msg string) {
 		require.Eventually(t, func() bool {
 			if !hashVoter() {
-				poller.AskBackground(common.HeadNeedHash, 0, common.AskRefresh)
+				poller.AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefresh)
 				return false
 			}
 			return true
@@ -985,7 +985,7 @@ func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) 
 	time.Sleep(150 * time.Millisecond)
 	polled = vendor.latestPolls.Load()
 	vendor.slowFail.Store(int64(time.Second))
-	poller.AskBackground(common.HeadNeedHash, 0, common.AskCatchUp)
+	poller.AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskCatchUp)
 	require.Eventually(t, func() bool { return vendor.latestPolls.Load() > polled }, 2*time.Second, 5*time.Millisecond, "the slow poll reaches the node")
 	time.Sleep(200 * time.Millisecond)
 	_, err := poller.PollLatestBlockNumber(ctx)

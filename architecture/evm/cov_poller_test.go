@@ -411,7 +411,7 @@ func TestCovPoller_PollLatest_OptionalFieldsThatDoNotParseCountAsAbsent(t *testi
 
 			// Before intake binds, the poll itself moves the counter.
 			p, _, ctx := covPollerNew(t, "cov-latest-optional", handler)
-			a := p.Ask(ctx, common.HeadNeedHash, 0, common.AskRefresh)
+			a := p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskRefresh)
 			header(t, a)
 			assert.Equal(t, int64(100), a.Block)
 			assert.Equal(t, int64(100), p.LatestBlock())
@@ -419,7 +419,7 @@ func TestCovPoller_PollLatest_OptionalFieldsThatDoNotParseCountAsAbsent(t *testi
 			bound, _, ctx := covPollerNew(t, "cov-latest-optional-bound", handler)
 			in := &covPollerIntake{}
 			bound.BindIntake(in)
-			sh := header(t, bound.Ask(ctx, common.HeadNeedHash, 0, common.AskRefresh))
+			sh := header(t, bound.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskRefresh))
 			in.mu.Lock()
 			defer in.mu.Unlock()
 			require.NoError(t, in.malformed, "intake takes the header as a vote")
@@ -510,7 +510,7 @@ func TestCovPoller_PollLatest_MajorMoveChainIdGate(t *testing.T) {
 // covPollerFetch is an Ask with a hash need, which fetches however fresh
 // the counter is: the counter after it and its error.
 func covPollerFetch(p *EvmStatePoller, ctx context.Context) (int64, error) {
-	a := p.Ask(ctx, common.HeadNeedHash, 0, common.AskRefresh)
+	a := p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskRefresh)
 	return a.Block, a.Err
 }
 
@@ -762,7 +762,7 @@ func TestCovPoller_OnLatestBlock_FiresForEveryAdvance(t *testing.T) {
 
 	// The suggestion made the counter fresh, which meets a number need;
 	// a hash need fetches.
-	require.NoError(t, p.Ask(ctx, common.HeadNeedHash, 0, common.AskRefresh).Err)
+	require.NoError(t, p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskRefresh).Err)
 	assert.Equal(t, int64(300), <-got, "polled advances fire the same callback")
 	assert.Equal(t, 1, up.callCount("eth_getBlockByNumber"))
 
@@ -789,13 +789,13 @@ func TestCovPoller_Ask(t *testing.T) {
 	t.Run("unusable pollers fetch nothing", func(t *testing.T) {
 		var nilPoller *EvmStatePoller
 		assert.True(t, nilPoller.IsObjectNull())
-		assert.Equal(t, common.AskBackoff, nilPoller.Ask(context.Background(), common.HeadNeedHash, 0, common.AskRefresh).Outcome)
+		assert.Equal(t, common.AskBackoff, nilPoller.Ask(context.Background(), common.HeadNeedHash, 0, time.Time{}, common.AskRefresh).Outcome)
 		assert.Nil(t, nilPoller.GetDiagnostics())
 
 		up := &covPollerUpstream{cfg: &common.UpstreamConfig{Id: "x"}, calls: map[string]int{}}
 		bare := &EvmStatePoller{upstream: up}
 		assert.False(t, bare.IsObjectNull())
-		bare.AskBackground(common.HeadNeedNumber, 0, common.AskRefresh)
+		bare.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
 		bare.OnLatestBlock(func(int64) {})
 		assert.Zero(t, up.callCount("eth_getBlockByNumber"), "no shared counter, nothing to refresh")
 	})
@@ -812,7 +812,7 @@ func TestCovPoller_Ask(t *testing.T) {
 		const waiters = 20
 		answers := make(chan common.HeadAnswer, waiters)
 		for range waiters {
-			go func() { answers <- p.Ask(ctx, common.HeadNeedHash, 0, common.AskRefresh) }()
+			go func() { answers <- p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskRefresh) }()
 		}
 		require.Eventually(t, func() bool { return up.callCount("eth_getBlockByNumber") == 1 }, 5*time.Second, time.Millisecond)
 		time.Sleep(20 * time.Millisecond)
@@ -833,13 +833,13 @@ func TestCovPoller_Ask(t *testing.T) {
 	t.Run("an answer within the cadence debounces; the counter meets a number need", func(t *testing.T) {
 		p, up, ctx := covPollerNew(t, "cov-ask-debounce", covPollerBlocks(42, 1))
 		covPollerDebounce(p, time.Hour)
-		first := p.Ask(ctx, common.HeadNeedHash, 0, common.AskRefresh)
+		first := p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskRefresh)
 		require.NoError(t, first.Err)
 		assert.Equal(t, common.AskFetched, first.Outcome)
-		again := p.Ask(ctx, common.HeadNeedHash, 0, common.AskRefresh)
+		again := p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskRefresh)
 		assert.Equal(t, common.AskInflight, again.Outcome)
 		assert.Equal(t, first.Header, again.Header)
-		assert.Equal(t, common.AskSharedFresh, p.Ask(ctx, common.HeadNeedNumber, 0, common.AskRefresh).Outcome)
+		assert.Equal(t, common.AskSharedFresh, p.Ask(ctx, common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh).Outcome)
 		assert.Equal(t, 1, up.callCount("eth_getBlockByNumber"))
 	})
 
@@ -847,24 +847,24 @@ func TestCovPoller_Ask(t *testing.T) {
 		p, up, ctx := covPollerNew(t, "cov-ask-pace", covPollerBlocks(42, 1))
 		const cadence = 20 * time.Millisecond
 		covPollerDebounce(p, cadence)
-		first := p.Ask(ctx, common.HeadNeedHash, time.Hour, common.AskCatchUp)
+		first := p.Ask(ctx, common.HeadNeedHash, time.Hour, time.Time{}, common.AskCatchUp)
 		require.NoError(t, first.Err)
 		require.Equal(t, common.AskFetched, first.Outcome)
-		assert.WithinDuration(t, first.Sent.Add(time.Hour), first.Next, time.Millisecond, "Next is a pace after the send")
+		assert.WithinDuration(t, first.At.Add(time.Hour), first.Next, time.Millisecond, "Next is a pace after the send")
 		time.Sleep(2 * cadence)
-		paced := p.Ask(ctx, common.HeadNeedHash, time.Hour, common.AskCatchUp)
+		paced := p.Ask(ctx, common.HeadNeedHash, time.Hour, time.Time{}, common.AskCatchUp)
 		assert.Equal(t, common.AskInflight, paced.Outcome, "a fetch within the caller's pace meets it past the cadence")
-		assert.Equal(t, common.AskSharedFresh, p.Ask(ctx, common.HeadNeedNumber, time.Hour, common.AskRefusal).Outcome)
+		assert.Equal(t, common.AskSharedFresh, p.Ask(ctx, common.HeadNeedNumber, time.Hour, time.Time{}, common.AskRefusal).Outcome)
 		assert.Equal(t, 1, up.callCount("eth_getBlockByNumber"))
-		assert.Equal(t, common.AskFetched, p.Ask(ctx, common.HeadNeedHash, 0, common.AskPoll).Outcome, "pace 0 is the cadence")
+		assert.Equal(t, common.AskFetched, p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskPoll).Outcome, "pace 0 is the cadence")
 		assert.Equal(t, 2, up.callCount("eth_getBlockByNumber"))
 
-		fork := p.Ask(ctx, common.HeadNeedFork, time.Hour, common.AskRefresh)
+		fork := p.Ask(ctx, common.HeadNeedFork, time.Hour, time.Time{}, common.AskRefresh)
 		assert.Equal(t, common.AskFetched, fork.Outcome, "a plain fetch never meets a fork need")
-		assert.Equal(t, common.AskInflight, p.Ask(ctx, common.HeadNeedFork, time.Hour, common.AskRefresh).Outcome)
-		assert.Equal(t, common.AskInflight, p.Ask(ctx, common.HeadNeedHash, time.Hour, common.AskRefresh).Outcome, "a fork fetch meets a hash need")
+		assert.Equal(t, common.AskInflight, p.Ask(ctx, common.HeadNeedFork, time.Hour, time.Time{}, common.AskRefresh).Outcome)
+		assert.Equal(t, common.AskInflight, p.Ask(ctx, common.HeadNeedHash, time.Hour, time.Time{}, common.AskRefresh).Outcome, "a fork fetch meets a hash need")
 		assert.Equal(t, 3, up.callCount("eth_getBlockByNumber"))
-		assert.Equal(t, common.AskFetched, p.Ask(ctx, common.HeadNeedFork, 0, common.AskSettle).Outcome, "pace 0: only a fetch sent after the Ask")
+		assert.Equal(t, common.AskFetched, p.Ask(ctx, common.HeadNeedFork, 0, time.Time{}, common.AskSettle).Outcome, "pace 0: only a fetch sent after the Ask")
 		assert.Equal(t, 4, up.callCount("eth_getBlockByNumber"))
 	})
 
@@ -881,15 +881,15 @@ func TestCovPoller_Ask(t *testing.T) {
 		})
 		const cadence = 50 * time.Millisecond
 		covPollerDebounce(p, cadence)
-		a := p.Ask(ctx, common.HeadNeedNumber, 0, common.AskRefresh)
+		a := p.Ask(ctx, common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
 		require.Error(t, a.Err)
 		assert.Equal(t, common.AskFetched, a.Outcome)
 		assert.Equal(t, 2*cadence, p.BackedOffCadence(), "the bench reads the backoff")
-		b := p.Ask(ctx, common.HeadNeedNumber, 0, common.AskRefresh)
+		b := p.Ask(ctx, common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
 		assert.Equal(t, common.AskInflight, b.Outcome, "within the cadence the failure is the outcome")
 		assert.Error(t, b.Err)
 		time.Sleep(cadence)
-		c := p.Ask(ctx, common.HeadNeedNumber, 0, common.AskRefresh)
+		c := p.Ask(ctx, common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
 		assert.Equal(t, common.AskBackoff, c.Outcome)
 		assert.NoError(t, c.Err, "a backoff fetches nothing and fails nothing")
 		assert.Equal(t, 1, up.callCount("eth_getBlockByNumber"))
@@ -897,7 +897,7 @@ func TestCovPoller_Ask(t *testing.T) {
 		failing.Lock()
 		fail = false
 		failing.Unlock()
-		d := p.Ask(ctx, common.HeadNeedNumber, 0, common.AskRefresh)
+		d := p.Ask(ctx, common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
 		require.NoError(t, d.Err)
 		assert.Equal(t, common.AskFetched, d.Outcome)
 		assert.Equal(t, int64(9), d.Block)
@@ -925,7 +925,7 @@ func TestCovPoller_Ask(t *testing.T) {
 		before := promUtil.ToFloat64(panics)
 		answers := make(chan common.HeadAnswer, 3)
 		for range 3 {
-			go func() { answers <- p.Ask(ctx, common.HeadNeedHash, 0, common.AskRefresh) }()
+			go func() { answers <- p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskRefresh) }()
 		}
 		require.Eventually(t, func() bool { return up.callCount("eth_getBlockByNumber") == 1 }, 5*time.Second, time.Millisecond)
 		time.Sleep(20 * time.Millisecond)
@@ -939,12 +939,12 @@ func TestCovPoller_Ask(t *testing.T) {
 		panicking.Lock()
 		explode = false
 		panicking.Unlock()
-		again := p.Ask(ctx, common.HeadNeedHash, 0, common.AskRefresh)
+		again := p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskRefresh)
 		assert.Equal(t, common.AskInflight, again.Outcome, "a failed fetch debounces for its cadence")
 		require.ErrorContains(t, again.Err, "panicked")
 		assert.Equal(t, cadence, p.backoff(), "only node failures back off")
 		time.Sleep(cadence)
-		a := p.Ask(ctx, common.HeadNeedHash, 0, common.AskRefresh)
+		a := p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskRefresh)
 		require.NoError(t, a.Err)
 		assert.Equal(t, common.AskFetched, a.Outcome)
 		assert.Equal(t, int64(5), a.Block)
@@ -959,7 +959,7 @@ func TestCovPoller_Ask(t *testing.T) {
 		const cadence = 20 * time.Millisecond
 		covPollerDebounce(p, cadence)
 		for range 3 {
-			require.Error(t, p.Ask(ctx, common.HeadNeedHash, 0, common.AskRefresh).Err)
+			require.Error(t, p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskRefresh).Err)
 			time.Sleep(cadence)
 		}
 		assert.Equal(t, 3, up.callCount("eth_getBlockByNumber"))
@@ -1007,9 +1007,9 @@ func TestCovPoller_AskHashNeedSamplesThroughFreshCounter(t *testing.T) {
 		mu.Unlock()
 		p.latestBlockShared.TryUpdate(ctx, n, time.Now())
 		calls := up.callCount("eth_getBlockByNumber")
-		require.Equal(t, common.AskSharedFresh, p.Ask(ctx, common.HeadNeedNumber, 0, common.AskRefresh).Outcome)
+		require.Equal(t, common.AskSharedFresh, p.Ask(ctx, common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh).Outcome)
 		require.Equal(t, calls, up.callCount("eth_getBlockByNumber"), "a fresh counter meets a number need")
-		require.Equal(t, common.AskFetched, p.Ask(ctx, common.HeadNeedHash, 0, common.AskRefresh).Outcome)
+		require.Equal(t, common.AskFetched, p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskRefresh).Outcome)
 		require.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"), "a fresh counter never meets a hash need")
 	}
 	assert.Equal(t, time.Second, p.tracker.GetNetworkBlockTime(up.NetworkId()), "block time sampled from the local fetches")

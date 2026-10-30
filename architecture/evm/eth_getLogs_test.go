@@ -1765,11 +1765,11 @@ func (p *fixedPoller) PollLatestBlockNumber(context.Context) (int64, error) { re
 func (p *fixedPoller) AskReaching(context.Context, int64, time.Duration, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{Block: p.latest}
 }
-func (p *fixedPoller) Ask(context.Context, common.HeadNeed, time.Duration, common.AskReason) common.HeadAnswer {
+func (p *fixedPoller) Ask(context.Context, common.HeadNeed, time.Duration, time.Time, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
-func (p *fixedPoller) AskBackground(common.HeadNeed, time.Duration, common.AskReason) time.Time {
-	return time.Time{}
+func (p *fixedPoller) AskBackground(common.HeadNeed, time.Duration, time.Time, common.AskReason) common.HeadAnswer {
+	return common.HeadAnswer{}
 }
 func (p *fixedPoller) RefreshFinalized(context.Context) bool { return true }
 func (p *fixedPoller) LatestReportAt() time.Time             { return time.Time{} }

@@ -1083,7 +1083,7 @@ func newSettleNetwork(t *testing.T, hv HashVoters, latest map[string]json.RawMes
 
 func (n *settleNetwork) EvmHashVoters(string, time.Duration, bool) HashVoters { return n.hv }
 
-func (n *settleNetwork) EvmAskHead(_ context.Context, id string, need common.HeadNeed, _ time.Duration, _ common.AskReason) common.HeadAnswer {
+func (n *settleNetwork) EvmAskHead(_ context.Context, id string, need common.HeadNeed, _ time.Duration, _ time.Time, _ common.AskReason) common.HeadAnswer {
 	n.smu.Lock()
 	if need == common.HeadNeedFork {
 		n.forks++
@@ -1091,7 +1091,7 @@ func (n *settleNetwork) EvmAskHead(_ context.Context, id string, need common.Hea
 	h := n.latest[id]
 	n.smu.Unlock()
 	sent := time.Now()
-	return common.HeadAnswer{Outcome: common.AskFetched, Sent: sent, Next: sent.Add(time.Hour), Header: askedHeader(h)}
+	return common.HeadAnswer{Outcome: common.AskFetched, At: sent, Next: sent.Add(time.Hour), Header: askedHeader(h)}
 }
 
 func (n *settleNetwork) forkAsks() int {
@@ -1143,7 +1143,7 @@ type rewindNetwork struct {
 
 func (n *rewindNetwork) EvmHashVoters(string, time.Duration, bool) HashVoters { return n.hv }
 
-func (n *rewindNetwork) EvmAskHead(context.Context, string, common.HeadNeed, time.Duration, common.AskReason) common.HeadAnswer {
+func (n *rewindNetwork) EvmAskHead(context.Context, string, common.HeadNeed, time.Duration, time.Time, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{Outcome: common.AskBackoff, Next: time.Now().Add(time.Hour)}
 }
 
