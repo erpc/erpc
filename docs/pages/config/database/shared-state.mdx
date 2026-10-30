@@ -108,7 +108,7 @@ https://docs.erpc.cloud/config/database/shared-state.llms.txt`}
 
 **Foreground latency budget.** `TryUpdateIfStale` is used by the EVM state poller to debounce expensive RPC calls. It launches the upstream RPC in a background goroutine and waits at most `updateMaxWait` for the result. If the RPC finishes within that window the fresh value is returned synchronously; otherwise the stale local value is returned immediately and the RPC completes asynchronously. The foreground path never acquires the distributed lock. One caller waits longer: a request naming the `finalized` tag waits for its finalized refresh up to the freshness window W, past `updateMaxWait` (see [block tracking](/reference/evm/block-tracking)).
 
-**Rollback handling.** All counter updates enforce a rollback policy. `latestBlock` and `finalizedBlock` use `ignoreRollbackOf = 1024` — decreases up to 1024 blocks are silently discarded as noise from lagging upstreams; larger gaps (genuine reorgs or provider resets) are accepted and trigger the `OnLargeRollback` callback. `earliestBlock` uses `ignoreRollbackOf = 0` — all decreases are accepted because node pruning genuinely shifts the historical anchor.
+**Rollback handling.** All counter updates enforce a rollback policy. `latestBlock` and `finalizedBlock` use `ignoreRollbackOf = 1024` — decreases up to 1024 blocks are silently discarded as noise from lagging upstreams; a larger gap applies only once the lower side has moved: a later reading above the first lower one, with no reading within 1024 of the counter in between (`admitLargeRollback`). A genuine deep reorg or a chain restarted lower keeps moving from its new height, so it applies at its second reading and triggers the `OnLargeRollback` callback; a provider answering now and then from a node stuck far behind repeats one value, and its readings at the real head in between clear the count, so it never applies. Lower readings alone for 5 minutes (`largeRollbackMaxHold`) also apply, so a chain that restarted lower and halted is still followed. `earliestBlock` uses `ignoreRollbackOf = 0` — all decreases are accepted because node pruning genuinely shifts the historical anchor.
 
 **Timestamp order and conflict resolution.** Each counter state is serialised as `{"v":<int64>,"t":<unix_ms>,"b":"<instance_id>"}`. The `t` field is the reconcile order key, by the writer's clock; it never decides freshness. `allocateUpdatedAtMs` ensures local timestamps are strictly monotonic even under concurrent goroutines (a CAS spin-loop). Head counters (`latestBlock`, `finalizedBlock`) are max-only on every path (pubsub, initial fetch, reconcile, background push): a higher remote value is taken whatever its timestamp, so a writer whose clock runs ahead cannot freeze the others; timestamps decide only drops larger than `ignoreRollbackOf`. Other counters (`earliestBlock`, cordon, SVM floors) adopt a remote state only when `st.UpdatedAt > currentTs`. When a remote update has a newer timestamp but a value that would imply a small rollback (within `ignoreRollbackOf`), `advanceTimestampPast` is called to advance the local order key past the remote's so the local (higher) value wins the next reconciliation cycle.
 
@@ -354,7 +354,7 @@ The shared-state layer has no effect on JSON-RPC request or response shapes visi
 - Do not set **`fallbackTimeout` low** to try to speed up request latency — `fallbackTimeout` governs background I/O only. The foreground latency knob is `updateMaxWait`.
 - Keep **`lockTtl > fallbackTimeout`** (the default 4 s > 3 s relationship). Validation enforces this, but understand it: `lockTtl` must be long enough for one full Get+Set cycle under the lock.
 - In AWS deployments with Redis, set **`pool_size`** in the Redis URI (`?pool_size=10`) to avoid connection exhaustion under bursty background push traffic.
-- Monitor `erpc_upstream_block_head_large_rollback` in production. A sustained non-zero value means an upstream is experiencing genuine reorgs or provider resets — something worth routing around.
+- Monitor `erpc_upstream_block_head_large_rollback` in production. A sustained non-zero value means an upstream is experiencing genuine reorgs or provider resets — something worth routing around. A provider flapping between a healthy node and one stuck far behind no longer sets it: its drops never apply.
 
 ### Edge cases & gotchas
 
@@ -407,6 +407,7 @@ The shared-state layer has no effect on JSON-RPC request or response shapes visi
 - `"counter value increased (remote)"` (TRACE) — value advanced by remote pubsub event.
 - `"small rollback ignored (remote)"` (TRACE) — rollback inside threshold, discarded.
 - `"large rollback applied (remote)"` (TRACE) — real reorg or provider reset accepted.
+- `"large rollback held until the lower head moves (remote)"` / `(local)` (DEBUG) — a drop beyond the threshold waits for a second, higher reading.
 
 ### Source code entry points
 

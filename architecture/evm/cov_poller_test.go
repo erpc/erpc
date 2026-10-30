@@ -1023,8 +1023,18 @@ func TestCovPoller_LargeRollbackIsReportedToTracker(t *testing.T) {
 	p, up, ctx := covPollerNew(t, "cov-rollback-gauge", covPollerBlocks(1, 1))
 
 	p.latestBlockShared.TryUpdate(ctx, 10_000, time.Now())
-	p.latestBlockShared.TryUpdate(ctx, 3_000, time.Now()) // beyond tolerance: a real reorg/correction
 	p.finalizedBlockShared.TryUpdate(ctx, 9_000, time.Now())
+
+	// A node frozen far behind repeats one value: never applied, never reported.
+	for range 3 {
+		p.latestBlockShared.TryUpdate(ctx, 2_999, time.Now())
+		p.finalizedBlockShared.TryUpdate(ctx, 1_999, time.Now())
+	}
+	require.Equal(t, int64(10_000), p.LatestBlock())
+	require.Equal(t, int64(9_000), p.FinalizedBlock())
+
+	// A real reorg/correction moves on from its new height: applied and reported.
+	p.latestBlockShared.TryUpdate(ctx, 3_000, time.Now())
 	p.finalizedBlockShared.TryUpdate(ctx, 2_000, time.Now())
 
 	assert.Equal(t, int64(3_000), p.LatestBlock())
