@@ -820,7 +820,9 @@ func (r *redisServer) launch() error {
 		close(exited)
 	}()
 	r.cmd, r.exited = cmd, exited
-	deadline := time.Now().Add(10 * time.Second)
+	// Harness slack: redis-server took 7.5s to initialize beside 18 phases
+	// booting at load 120.
+	deadline := time.Now().Add(30 * time.Second)
 	for !r.ping() {
 		if time.Now().After(deadline) {
 			r.stop()
