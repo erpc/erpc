@@ -507,24 +507,29 @@ func (n *Network) EvmAskStale(ctx context.Context, selector string) (ceiling int
 
 // EvmAwaitCeiling waits for selector sel's lane ceiling to reach block, at
 // most W or until ctx ends, Asking the lane's number voters below block
-// at once and every bt after (spec §6.4 near future). The Ask is
-// single-flight at pace bt, so many waiting requests fetch each voter at
-// most once per bt. It returns the ceiling and oldest report it last saw.
+// at once at pace bt, and every bt after at the pace of the time since the
+// previous Ask (spec §6.4 near future): each tick takes only a head
+// fetched or reported after the previous tick's Asks returned, never the
+// fetch that tick already got, sent a few µs less than bt before. The Ask
+// is single-flight, so many waiting requests fetch each voter about once
+// per bt. It returns the ceiling and oldest report it last saw.
 func (n *Network) EvmAwaitCeiling(ctx context.Context, sel string, block int64) (ceiling int64, oldestReportAt time.Time) {
 	bt := n.blockTimeOrCold()
 	wait, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
 	defer cancel()
-	ask := func() {
+	var asked time.Time
+	ask := func(pace time.Duration) {
 		n.voters(sel, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
 			if head < block {
 				if sp := u.(common.EvmUpstream).EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-					sp.AskBackground(common.HeadNeedNumber, bt, common.AskRefusal)
+					sp.AskBackground(common.HeadNeedNumber, pace, common.AskRefusal)
 				}
 			}
 			return true
 		})
+		asked = time.Now()
 	}
-	ask()
+	ask(bt)
 	tick := time.NewTicker(bt)
 	defer tick.Stop()
 	for {
@@ -536,7 +541,7 @@ func (n *Network) EvmAwaitCeiling(ctx context.Context, sel string, block int64) 
 		select {
 		case <-computed:
 		case <-tick.C:
-			ask()
+			ask(time.Since(asked))
 		case <-wait.Done():
 			h = n.headFor(sel)
 			return h.Ceiling, h.OldestReportAt
