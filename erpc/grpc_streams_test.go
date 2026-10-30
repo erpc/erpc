@@ -472,9 +472,12 @@ func TestGrpcStreamBlocks_FinalityHeartbeatsAndLimits(t *testing.T) {
 		require.NotNil(t, h, "header messages only without heartbeatSeconds")
 		assert.LessOrEqual(t, h.Number+chainsim.FinalizedLag, m.tip, "header %d at or below Finalized when sent", h.Number)
 	}
-	// Below the window and below the final hold the finalized stream keeps.
-	old := s.chain.CanonAt(s.chain.Tip().Number - chainsim.FinalizedLag - 20)
-	_, err = openOnce(g, resumeFrom(old.Number, old.Hash), 10*time.Second)
+	// Below the window and below the final hold the finalized stream keeps:
+	// the hold follows that stream's cursor, at most Finalized, less
+	// reorgWindow, so a resume within 20 blocks of it may still be pinned.
+	old := s.chain.CanonAt(s.chain.Tip().Number - chainsim.FinalizedLag - uint64(chaosReorgWindow) - 20)
+	got, err := openOnce(g, resumeFrom(old.Number, old.Hash), 10*time.Second)
+	require.Empty(t, got, "a resume below the window sends nothing: %v", err)
 	require.Equal(t, codes.OutOfRange, status.Code(err), "%v", err)
 	var info *errdetails.ErrorInfo
 	for _, d := range status.Convert(err).Details() {
