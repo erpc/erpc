@@ -751,9 +751,13 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 			return res, nil
 		}
 	}
-	if d := v.delay(method, params); d > 0 {
+	if d, hist := v.delay(method, params); d > 0 {
 		v.slowAnswers.Add(1)
-		time.Sleep(d)
+		if hist {
+			v.chain.historyWait(d)
+		} else {
+			time.Sleep(d)
+		}
 	}
 	c := v.chain
 	c.mu.Lock()
@@ -925,25 +929,29 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 	return "0x0", nil
 }
 
-// delay is how long the vendor's Slow faults hold an answer to method.
-func (v *Vendor) delay(method string, params []interface{}) time.Duration {
+// delay is how long the vendor's Slow faults hold an answer to method,
+// and whether SlowHistory is part of it.
+func (v *Vendor) delay(method string, params []interface{}) (time.Duration, bool) {
 	c := v.chain
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	f := v.faults
 	d := f.Slow
+	hist := false
 	switch method {
 	case "eth_getBlockReceipts", "eth_getLogs":
 		d += f.SlowReceipts
 	case "eth_getBlockByHash":
-		d += f.SlowHistory
+		hist = f.SlowHistory > 0
 	case "eth_getBlockByNumber":
 		tag, _ := firstString(params)
-		if n, ok := parseNumber(tag); ok && n < v.tip.Number {
-			d += f.SlowHistory
-		}
+		n, ok := parseNumber(tag)
+		hist = ok && n < v.tip.Number && f.SlowHistory > 0
 	}
-	return d
+	if hist {
+		d += f.SlowHistory
+	}
+	return d, hist
 }
 
 // trapped answers a block's first receipts call while the chain's trap is

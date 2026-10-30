@@ -671,11 +671,12 @@ func TestStreamFinality_FinalizedOnLaneBelowTheNetwork(t *testing.T) {
 // F6's shape: 0.2s blocks, every vendor finalizes 4,000 blocks below its
 // head, far below a 5s window, and answers history 25ms late, as a remote
 // vendor's round trip. A finalized subscribe's start is the Finalized
-// block, pinned once fill reaches it: within 10 W (20s), where one fetch
-// at a time took 4,000 round trips. Its first block comes when Finalized
-// next moves. Fill takes a rate permit only while half the budget is
-// free: 500 per second per upstream here, so the round trip, not the
-// budget, bounds it.
+// block, pinned once fill reaches it. Fill keeps fillAhead (8) by-number
+// fetches in flight (CT spec §9): the vendors see 8 history answers at
+// once, never more, and fill takes under half the 100s one fetch at a
+// time takes. Its first block comes when Finalized next moves. Fill takes
+// a rate permit only while half the budget is free: 500 per second per
+// upstream here, so the round trip, not the budget, bounds it.
 func TestStreamFinality_DeepFinalityFirstBlock(t *testing.T) {
 	const depth = 4000
 	s := newChaosSeed(t, 139, true, chaosOpts{history: depth + 200, maxBackfill: 5 * time.Second, budget: 1000})
@@ -688,15 +689,17 @@ func TestStreamFinality_DeepFinalityFirstBlock(t *testing.T) {
 	nw := s.nw.Load()
 	fin := nw.headFor("").Finalized
 	require.Positive(t, fin)
+	s.chain.ResetHistoryPeak()
 	start := time.Now()
 	sub := c.subscribe("newHeads", ext(map[string]interface{}{"finality": "finalized"}))
 	require.Eventually(t, func() bool {
 		from, _, ok := nw.chainTracker.FollowedRange()
 		return ok && from <= fin
 	}, 2*time.Minute, 10*time.Millisecond, "fill pins Finalized %d", fin)
-	took := time.Since(start)
-	t.Logf("fill held Finalized %s after subscribe, %d headers below the head", took, depth)
-	assert.Less(t, took, 20*time.Second, "fill reaches the start within 10 W")
+	took, peak := time.Since(start), s.chain.HistoryPeak()
+	t.Logf("fill held Finalized %s after subscribe, %d headers below the head, %d history fetches in flight at most", took, depth, peak)
+	assert.EqualValues(t, 8, peak, "fill keeps fillAhead history fetches in flight")
+	assert.Less(t, took, depth*25*time.Millisecond/2, "fill takes under half the one-at-a-time time")
 	require.Eventually(t, func() bool { return len(c.applyHeads(sub).chain) > 0 }, 2*time.Minute, 20*time.Millisecond,
 		"the first final block once Finalized moves: %v", c.controls(sub, "end"))
 	h := c.applyHeads(sub)
