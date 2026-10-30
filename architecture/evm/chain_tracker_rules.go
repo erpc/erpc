@@ -119,10 +119,10 @@ func (t *ChainTracker) extends() bool {
 // or awaited answer. The pins of a replaced tree go with it; choose moves
 // them. Trees another voter's vote holds stay, and rule 4 weighs them.
 func (t *ChainTracker) replaceOlder(nd *node, u string) {
-	keep := map[*node]bool{rootOf(nd): true}
+	keep := map[*node]bool{t.rootOf(nd): true}
 	hold := func(n *node) {
 		if t.alive(n) {
-			keep[rootOf(n)] = true
+			keep[t.rootOf(n)] = true
 		}
 	}
 	for _, v := range t.baseVotes() {
@@ -164,7 +164,7 @@ func (t *ChainTracker) replaceOlder(nd *node, u string) {
 
 // walking reports whether n's tree is still being walked; votes in it wait.
 func (t *ChainTracker) walking(n *node) bool {
-	e := t.exts[rootOf(n)]
+	e := t.exts[t.rootOf(n)]
 	return e != nil && e.walk > 0 && !e.atBase
 }
 
@@ -182,7 +182,7 @@ func (t *ChainTracker) pinRoot() *node {
 	if len(t.pins) == 0 {
 		return nil
 	}
-	return rootOf(t.pins[0])
+	return t.rootOf(t.pins[0])
 }
 
 // walkFrom is rule 1 for a vote nd whose tree does not reach the pins: walk
@@ -193,7 +193,7 @@ func (t *ChainTracker) walkFrom(nd *node, sender string) {
 	if !t.extends() || len(t.pins) == 0 || t.farAhead(nd.h) {
 		return
 	}
-	r := rootOf(nd)
+	r := t.rootOf(nd)
 	e := t.exts[r]
 	if e == nil || e.atBase || e.capped || e.walked || r == t.pinRoot() {
 		return
@@ -231,7 +231,7 @@ func (t *ChainTracker) rootsHolding(votes bool) map[*node]bool {
 	roots := make(map[*node]bool)
 	add := func(n *node) {
 		if t.alive(n) {
-			roots[rootOf(n)] = true
+			roots[t.rootOf(n)] = true
 		}
 	}
 	for _, n := range t.pending {
@@ -265,11 +265,23 @@ func (t *ChainTracker) treeTop(r *node) *chainHeader {
 
 // walkTree calls fn for every node of r's tree; fn must not walk a tree.
 func (t *ChainTracker) walkTree(r *node, fn func(*node)) {
+	t.walkTreeWhile(r, func(n *node) bool {
+		fn(n)
+		return true
+	})
+}
+
+// walkTreeWhile calls fn for the nodes of r's tree that no node fn
+// returned false for lies below; fn must not walk a tree.
+func (t *ChainTracker) walkTreeWhile(r *node, fn func(*node) bool) {
 	stack := append(t.stack[:0], r)
 	for len(stack) > 0 {
 		n := stack[len(stack)-1]
-		stack = append(stack[:len(stack)-1], n.children...)
-		fn(n)
+		stack[len(stack)-1] = nil // the scratch keeps no dropped header alive
+		stack = stack[:len(stack)-1]
+		if fn(n) {
+			stack = append(stack, n.children...)
+		}
 	}
 	t.stack = stack[:0]
 }
@@ -323,7 +335,7 @@ func (t *ChainTracker) fillRoots() map[*node]bool {
 			if roots == nil {
 				roots = make(map[*node]bool)
 			}
-			roots[rootOf(n)] = true
+			roots[t.rootOf(n)] = true
 		}
 	}
 	return roots
@@ -563,22 +575,22 @@ func report(ch chan settleOutcome, o settleOutcome) {
 
 // headAsker is the network's Ask of one upstream's head (spec §6.8).
 type headAsker interface {
-	EvmAskHead(ctx context.Context, upstreamId string, need common.HeadNeed, pace time.Duration, reason common.AskReason) common.HeadAnswer
+	EvmAskHead(ctx context.Context, upstreamId string, need common.HeadNeed, pace time.Duration, after time.Time, reason common.AskReason) common.HeadAnswer
 }
 
 var errHeadAskPanicked = errors.New("head ask panicked")
 
-// askHead Asks upstream id's head at pace off the tracker's goroutine;
-// done runs on it with the answer. A panic in the Ask is a failed answer.
-// false: the network has no Ask.
-func (t *ChainTracker) askHead(id string, need common.HeadNeed, pace time.Duration, reason common.AskReason, done func(common.HeadAnswer)) bool {
+// askHead Asks upstream id's head at pace, after after (common.EvmStatePoller
+// Ask), off the tracker's goroutine; done runs on it with the answer. A
+// panic in the Ask is a failed answer. false: the network has no Ask.
+func (t *ChainTracker) askHead(id string, need common.HeadNeed, pace time.Duration, after time.Time, reason common.AskReason, done func(common.HeadAnswer)) bool {
 	n, ok := t.network.(headAsker)
 	if !ok || t.fetch == nil {
 		return false
 	}
 	t.fetch.bg.Go(func() {
 		a := common.HeadAnswer{Err: errHeadAskPanicked}
-		t.callNetwork("head-ask", func() { a = n.EvmAskHead(t.ctx, id, need, pace, reason) })
+		t.callNetwork("head-ask", func() { a = n.EvmAskHead(t.ctx, id, need, pace, after, reason) })
 		t.mb.put(trackerMsg{kind: msgCall, fn: func() { done(a) }})
 	})
 	return true
@@ -594,9 +606,11 @@ func (t *ChainTracker) heldAnswer(a common.HeadAnswer) *node {
 }
 
 // startSettle starts round s: an Ask of each target with need, reason
-// settle. With every Ask refused, s ends at once and false is returned.
-// With no target no round starts, nothing is logged and no retry is set:
-// the next vote runs rule 4 again; a waiter hears unanswered.
+// settle, after the answer the last round took from it, so a retry at the
+// soonest target's Next never takes another target's previous answer.
+// With every Ask refused, s ends at once and false is returned. With no
+// target no round starts, nothing is logged and no retry is set: the next
+// vote runs rule 4 again; a waiter hears unanswered.
 func (t *ChainTracker) startSettle(s *settleState, targets []string, need common.HeadNeed, waiter chan settleOutcome) bool {
 	if len(targets) == 0 {
 		if waiter != nil {
@@ -611,7 +625,7 @@ func (t *ChainTracker) startSettle(s *settleState, targets []string, need common
 	t.settle = s
 	for _, id := range targets {
 		s.asked++
-		if t.askHead(id, need, 0, common.AskSettle, func(a common.HeadAnswer) { t.settleAnswered(s, id, a) }) {
+		if t.askHead(id, need, 0, t.settleTaken[id], common.AskSettle, func(a common.HeadAnswer) { t.settleAnswered(s, id, a) }) {
 			s.out++
 		} else {
 			s.deferred++
@@ -638,6 +652,9 @@ func (t *ChainTracker) settleAnswered(s *settleState, id string, a common.HeadAn
 		return
 	}
 	s.out--
+	if !a.At.IsZero() {
+		t.settleTaken[id] = a.At
+	}
 	if !a.Next.IsZero() && (s.next.IsZero() || a.Next.Before(s.next)) {
 		s.next = a.Next
 	}
@@ -650,7 +667,7 @@ func (t *ChainTracker) settleAnswered(s *settleState, id string, a common.HeadAn
 	}
 	s.answers[id] = nd
 	if t.votes[id] == nd {
-		t.voteAt[id] = maxTime(t.voteAt[id], a.Sent)
+		t.voteAt[id] = maxTime(t.voteAt[id], a.At)
 	}
 	t.walkFrom(nd, id)
 }
@@ -931,7 +948,7 @@ func (t *ChainTracker) askNoSource() {
 	}
 	pace, _ := t.demand()
 	id, seq := t.voters.Voters[0], t.askSeq
-	t.ask.out = t.askHead(id, common.HeadNeedHash, pace, common.AskNoSource, func(a common.HeadAnswer) {
+	t.ask.out = t.askHead(id, common.HeadNeedHash, pace, time.Time{}, common.AskNoSource, func(a common.HeadAnswer) {
 		if seq != t.askSeq {
 			return
 		}

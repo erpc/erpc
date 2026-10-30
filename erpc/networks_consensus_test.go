@@ -2535,7 +2535,7 @@ func TestConsensusPolicy(t *testing.T) {
 // TestConsensusGoroutineCancellationIntegration tests the consensus goroutine cancellation behavior with real network
 func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -2992,6 +2992,7 @@ func setupNetworkForConsensusTest(t *testing.T, ctx context.Context, tc consensu
 		nil, upsReg, mt,
 		nil,
 	)
+	stopAtEnd(t, ntw)
 	require.NoError(t, err)
 
 	upsReg.Bootstrap(ctx)

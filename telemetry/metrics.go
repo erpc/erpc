@@ -226,7 +226,7 @@ var (
 	MetricSharedCounterRemoteRejectedTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "shared_counter_remote_rejected_total",
-		Help:      "Remote shared counter states this instance rejected, by reason (non_positive, small_rollback, stale_timestamp, malformed).",
+		Help:      "Remote shared counter states this instance rejected, by reason (non_positive, small_rollback, held_rollback, stale_timestamp, malformed).",
 	}, []string{"reason"})
 
 	MetricChainTrackerReanchorTotal = DefineCounter(prometheus.CounterOpts{
@@ -634,7 +634,7 @@ var (
 	MetricTapDeliverySeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "tap_delivery_seconds",
-		Help:      "Seconds from a block's confirmed-head change to a tap's write of it.",
+		Help:      "Seconds from a block's ready stamp (confirmed head; logs head for a logs tap) to the end of a tap's write of it.",
 		Buckets:   []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60},
 	}, []string{"transport", "kind"})
 

@@ -129,7 +129,7 @@ func TestNetwork_PinLatestTag(t *testing.T) {
 	)
 	run := func(t *testing.T, how send, pinnedHead int64, pinnedReply string) (result string, pinnedTags, vendorTags []interface{}) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -211,6 +211,7 @@ func TestNetwork_PinLatestTag(t *testing.T) {
 			},
 		}
 		network, err := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, nil)
+		stopAtEnd(t, network)
 		require.NoError(t, err)
 		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 		require.NoError(t, network.Bootstrap(ctx))

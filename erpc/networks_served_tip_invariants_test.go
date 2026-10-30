@@ -56,7 +56,7 @@ func forEachInvariantLane(t *testing.T, body func(t *testing.T, ctx context.Cont
 		}
 		t.Run(name, func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 			util.SetupMocksForEvmStatePoller()
 
 			ctx, cancel := context.WithCancel(context.Background())

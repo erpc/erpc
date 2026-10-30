@@ -20,7 +20,7 @@ func init() { util.ConfigureTestLogger() }
 func TestNetwork_TimeoutPolicy(t *testing.T) {
 	t.Run("FixedTimeout_BackwardCompatible", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -61,7 +61,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 
 	t.Run("FixedTimeout_RequestExceedsTimeout", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
@@ -104,7 +104,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 		// propagate as a plain context.DeadlineExceeded so the HTTP layer can
 		// surface it correctly. This locks in the sentinel-cause design.
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
@@ -146,7 +146,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 
 	t.Run("QuantileTimeout_DynamicComputation", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -218,7 +218,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 
 	t.Run("QuantileTimeout_MinDurationBoundary", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -287,7 +287,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 
 	t.Run("QuantileTimeout_ColdStartFallback", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -333,7 +333,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 
 	t.Run("QuantileTimeout_ColdStartFallbackToMaxDuration", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -381,7 +381,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 		// timeout inside the per-attempt callback would silently blow this
 		// budget; this test fails unless the timeout wraps the entire executor.
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		// Each upstream attempt delays 2s. With per-attempt timeout semantics,
@@ -439,7 +439,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 		// exhaustion surfaces as a raw retrypolicy.ExceededError without the
 		// ErrUpstreamsExhausted short-circuit that kicks in at network scope.
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		// 3 attempts × always-slow mock → retry exhausts with timeout on last.
@@ -499,7 +499,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 		// increment. Otherwise every upstream timeout produces two fires
 		// (scope=upstream at upstream.go + scope=network at networks.go).
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		gock.New("http://rpc1.localhost").
@@ -546,7 +546,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 		// truthful — the timeout was the NETWORK's policy firing, not the
 		// upstream's.
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		gock.New("http://rpc1.localhost").
@@ -591,7 +591,7 @@ func TestUpstream_TimeoutPolicy(t *testing.T) {
 		// Verifies the unified context.WithTimeoutCause path also fires at the
 		// upstream scope (not just network scope).
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
@@ -631,7 +631,7 @@ func TestUpstream_TimeoutPolicy(t *testing.T) {
 		// Verifies that NewTimeoutFunc emits erpc_network_timeout_duration_seconds
 		// when used at the upstream scope (not only network scope).
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 

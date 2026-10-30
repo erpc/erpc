@@ -119,15 +119,16 @@ type grpcBlocksEncoder struct {
 	meter   *streamMeter
 }
 
-func (e *grpcBlocksEncoder) Header(blk indexer.Block) (func() error, bool, error) {
+func (e *grpcBlocksEncoder) Header(blk indexer.Block) (func(tapDelivery) error, bool, error) {
 	resp, pinned, err := streamBlocksEncoding.Of(e.tracker, blk)
 	if err != nil {
 		return nil, pinned, streamEncodeError{blk.Number, err}
 	}
-	return func() error {
+	return func(d tapDelivery) error {
 		if err := e.sender.send(resp, e.wait); err != nil {
 			return streamWriteError{err: err, slow: errors.Is(err, errStreamBlocksSlow)}
 		}
+		d.done()
 		e.meter.wrote(streamData, proto.Size(resp))
 		return nil
 	}, pinned, nil

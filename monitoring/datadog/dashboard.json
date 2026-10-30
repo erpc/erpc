@@ -10850,7 +10850,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Seconds from a block's confirmed-head change to a tap's write of it.",
+          "description": "Seconds from a block's ready stamp (confirmed head; logs head for a logs tap) to the end of a tap's write of it.",
           "fieldConfig": {
             "defaults": {
               "color": {

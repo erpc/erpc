@@ -54,7 +54,7 @@ func envelopeTestConfig() *common.Config {
 func TestHttpServer_RequestEnvelope(t *testing.T) {
 	t.Run("RepeatedMethodMemberReachesNoUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		// Neither spelling may be forwarded, so stand up a mock for each and
@@ -90,7 +90,7 @@ func TestHttpServer_RequestEnvelope(t *testing.T) {
 
 	t.Run("BatchItemsAreParsedIndependently", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		// Exactly the two well-formed items reach the upstream; the item in
@@ -131,7 +131,7 @@ func TestHttpServer_RequestEnvelope(t *testing.T) {
 
 	t.Run("NetworkIdMemberRoutesPathlessRequest", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		gock.New("http://rpc1.localhost").
@@ -173,7 +173,7 @@ func TestHttpServer_RequestEnvelope(t *testing.T) {
 	// response will throw on a 200 with no body.
 	t.Run("EmptyBatchBodyIsEmptyArray", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 

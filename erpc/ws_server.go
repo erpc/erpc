@@ -42,13 +42,13 @@ type WsConnection struct {
 	architecture common.NetworkArchitecture
 	httpReq      *http.Request // the upgrade request, for auth and headers
 	// costFrames: every text message starts with a cost header block (see
-	// writeMessage); set at upgrade from headerCostFrames and costHeaders.
+	// encodeMessage); set at upgrade from headerCostFrames and costHeaders.
 	costFrames bool
 	// notifyCostBlocks caches each subscription kind's notification block.
 	notifyCostBlocks [wsclient.KindPendingTx + 1]atomic.Pointer[[]byte]
 
-	// Write synchronization (gorilla/websocket requires synchronized writes)
-	writeMu sync.Mutex
+	// w is the connection's one data writer (see ws_writer.go).
+	w wsWriter
 
 	// sem bounds concurrent requests; inflight lets teardown wait for them.
 	sem      chan struct{}
@@ -63,7 +63,7 @@ type WsConnection struct {
 	closeGrace  time.Duration
 	done        chan struct{}
 
-	closed     atomic.Bool // no more writes once set
+	closed     atomic.Bool // nothing more queues once set; the writer drains what did
 	peerClosed atomic.Bool // the peer's close frame was already answered
 
 	// subsClosed is guarded by SubscriptionManager.connMu.
@@ -179,6 +179,7 @@ func (s *HttpServer) handleWebSocket(
 		return nil
 	})
 
+	wsc.startWriter()
 	go wsc.pingLoop(pingInterval)
 
 	wsc.readLoop(pongWait)
@@ -503,9 +504,9 @@ func (wsc *WsConnection) buildUnsupportedMethodResponse(nq *common.NormalizedReq
 	}
 }
 
-// wsWriteDeadline bounds every write, so a stalled client cannot hold
-// writeMu and starve the connection's other writers.
-const wsWriteDeadline = 10 * time.Second
+// wsWriteDeadline bounds every write, so a stalled client cannot stall its
+// writer for longer, and every wait of a producer that cannot queue.
+var wsWriteDeadline = 10 * time.Second
 
 var errWsConnClosed = errors.New("connection closed")
 
@@ -566,42 +567,6 @@ func (wsc *WsConnection) notificationCostBlock(sub wsclient.Subscription) []byte
 	return b
 }
 
-// writeMessage writes one text message produced by write. With cost frames
-// on, the message starts with costs (a header block, possibly empty) and the
-// blank line ending it, so the block and its body are one message.
-func (wsc *WsConnection) writeMessage(costs []byte, write func(w io.Writer) error) error {
-	wsc.writeMu.Lock()
-	defer wsc.writeMu.Unlock()
-	return wsc.writeMessageLocked(costs, write)
-}
-
-func (wsc *WsConnection) writeMessageLocked(costs []byte, write func(w io.Writer) error) error {
-	if wsc.closed.Load() {
-		return errWsConnClosed
-	}
-	if err := wsc.conn.SetWriteDeadline(time.Now().Add(wsWriteDeadline)); err != nil {
-		return err
-	}
-	defer wsc.conn.SetWriteDeadline(time.Time{})
-
-	w, err := wsc.conn.NextWriter(websocket.TextMessage)
-	if err != nil {
-		return err
-	}
-	if wsc.costFrames {
-		if _, err = w.Write(costs); err == nil {
-			_, err = w.Write(crlf)
-		}
-	}
-	if err == nil {
-		err = write(w)
-	}
-	if closeErr := w.Close(); err == nil {
-		err = closeErr
-	}
-	return err
-}
-
 func (wsc *WsConnection) writeJSON(costs []byte, v interface{}) error {
 	return wsc.writeMessage(costs, func(w io.Writer) error {
 		return json.NewEncoder(w).Encode(v)
@@ -657,8 +622,8 @@ func (wsc *WsConnection) pingLoop(interval time.Duration) {
 	for {
 		select {
 		case <-ticker.C:
-			// WriteControl is safe alongside other writers, so pings don't
-			// wait behind a slow data write holding writeMu.
+			// WriteControl is safe alongside the data writer, so pings don't
+			// wait behind a slow data write.
 			err := wsc.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsWriteDeadline))
 			wsc.logger.Trace().Str("connId", wsc.id).Msg("websocket ping sent")
 			if err != nil {
@@ -707,6 +672,8 @@ func (wsc *WsConnection) teardown() {
 	wsc.closed.Store(true)
 
 	wsc.server.subscriptionManager.CleanupConnection(wsc)
+	// The close frame follows the last data message.
+	wsc.stopWriter()
 
 	if !wsc.peerClosed.Load() {
 		_ = wsc.conn.WriteControl(
@@ -754,10 +721,10 @@ func writeStreamOptionRefusal(w http.ResponseWriter, err error) {
 	_, _ = w.Write(body)
 }
 
-// wsNotifier writes one subscription's eth_subscription notifications. The
-// envelope is spliced around the payload bytes as they came, so no
-// notification is encoded again per subscriber, and the metric handles are
-// bound once.
+// wsNotifier writes one subscription's messages: eth_subscription
+// notifications, whose envelope is spliced around the payload bytes as they
+// came, so no notification is encoded again per subscriber, and its
+// erpc_subscription frames (wsStream). Metric handles are bound once.
 type wsNotifier struct {
 	wsc *WsConnection
 	sub wsclient.Subscription
@@ -765,6 +732,7 @@ type wsNotifier struct {
 	// {"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"<id>","result":
 	prefix      []byte
 	sent, bytes *telemetry.BoundCounter
+	meter       *streamMeter
 }
 
 var wsNotificationSuffix = []byte("}}\n")
@@ -783,50 +751,46 @@ func (wsc *WsConnection) notifier(sub wsclient.Subscription) *wsNotifier {
 	}
 }
 
-// write writes one notification carrying result, valid JSON as is.
-func (n *wsNotifier) write(result json.RawMessage) error {
-	size := len(n.prefix) + len(result) + len(wsNotificationSuffix)
-	written, err := n.wsc.writeNotification(n.sub, n.wsc.notificationCostBlock(n.sub), func(w io.Writer) error {
-		if _, err := w.Write(n.prefix); err != nil {
-			return err
-		}
-		if _, err := w.Write(result); err != nil {
-			return err
-		}
+// write queues one notification of type t carrying result, valid JSON as
+// is; the writer skips it once the subscription is removed, and calls
+// d.done once it is written.
+func (n *wsNotifier) write(t streamMsgType, result json.RawMessage, d tapDelivery) error {
+	if n.sub.Removed() {
+		return nil
+	}
+	msg, err := n.wsc.encodeMessage(n.wsc.notificationCostBlock(n.sub), func(w io.Writer) error {
+		_, _ = w.Write(n.prefix)
+		_, _ = w.Write(result)
 		_, err := w.Write(wsNotificationSuffix)
 		return err
 	})
-	if err != nil || !written {
+	if err != nil {
 		return err
 	}
-	n.sent.Inc()
-	n.bytes.Add(float64(size))
-	return nil
+	return n.wsc.queue(wsOut{msg: msg, note: n, typ: t, size: len(n.prefix) + len(result) + len(wsNotificationSuffix), delivery: d})
 }
 
-// writeNotification writes as writeMessage does, unless sub was removed.
-// Unsubscribe marks the subscription removed before its answer takes
-// writeMu, so no notification follows the answer.
-func (wsc *WsConnection) writeNotification(sub wsclient.Subscription, costs []byte, write func(w io.Writer) error) (written bool, err error) {
-	wsc.writeMu.Lock()
-	defer wsc.writeMu.Unlock()
-	if sub.Removed() {
-		return false, nil
+// admit decides, on the writer, whether m of n's subscription is written:
+// nothing once the subscription is removed; its last message removes it in
+// the same step, so nothing of it follows (streams spec §3.2).
+func (n *wsNotifier) admit(m wsOut) bool {
+	if m.last {
+		return n.sub.Remove()
 	}
-	return true, wsc.writeMessageLocked(costs, write)
+	return !n.sub.Removed()
 }
 
-// writeLastNotification writes sub's last message as writeNotification
-// does and marks sub removed under the same lock, so nothing of sub
-// follows it (streams spec §3.2: end is the last message).
-func (wsc *WsConnection) writeLastNotification(sub wsclient.Subscription, write func(w io.Writer) error) (written bool, err error) {
-	wsc.writeMu.Lock()
-	defer wsc.writeMu.Unlock()
-	if sub.Removed() {
-		return false, nil
+// wrote counts m once written: data in the notification metrics, every
+// message in the stream's.
+func (n *wsNotifier) wrote(m wsOut) {
+	if m.typ == streamData || m.typ == streamRemoved {
+		n.sent.Inc()
+		n.bytes.Add(float64(m.size))
 	}
-	sub.MarkRemoved()
-	return true, wsc.writeMessageLocked(nil, write)
+	if n.meter != nil {
+		n.meter.wrote(m.typ, m.size)
+	}
+	m.delivery.done()
 }
 
 // wsSubscribeAnswerHold, while set, runs before a subscribe's answer is

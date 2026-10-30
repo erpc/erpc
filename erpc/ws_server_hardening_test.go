@@ -32,7 +32,7 @@ import (
 // able to upgrade under the default config, where response gzip is enabled.
 func TestWebSocket_UpgradeWithAcceptEncodingGzip(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	cfg := httpOnlyConfig()
 	cfg.Server.EnableGzip = util.BoolPtr(true)
@@ -54,7 +54,7 @@ func TestWebSocket_UpgradeWithAcceptEncodingGzip(t *testing.T) {
 // WebSocket handshake and must stay bounded by server.maxTimeout.
 func TestWebSocket_UpgradeHeaderDoesNotBypassMaxTimeout(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	gock.New("http://rpc1.localhost").
 		Post("/").
@@ -94,7 +94,7 @@ func TestWebSocket_UpgradeHeaderDoesNotBypassMaxTimeout(t *testing.T) {
 // healthcheck. With WebSocket off the same handshake is ordinary HTTP.
 func TestWebSocket_UpgradeHeaderIsCaseInsensitive(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	handshake := func(t *testing.T, cfg *common.Config) *http.Response {
 		addr, cleanup := setupTestERPCServer(t, cfg)
@@ -173,7 +173,7 @@ func wsGauges(kind string) (conns, clientSubs, upstreamSubs float64) {
 // subscriptions or their taps behind.
 func TestWebSocket_SubscribeThenCloseDoesNotLeak(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	srv, addr, cancel := startTestERPCServer(t, standardWsConfig(subscribingWsUpstream(t)))
 	defer func() { _ = srv.Shutdown(&log.Logger); cancel() }()
@@ -198,7 +198,7 @@ func TestWebSocket_SubscribeThenCloseDoesNotLeak(t *testing.T) {
 // upstream after the idle delay.
 func TestWebSocket_UnsubscribeIsScopedToConnection(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	prevIdle := sourceIdleStop.Load()
 	sourceIdleStop.Store(300 * time.Millisecond)
 	defer sourceIdleStop.Store(prevIdle)
@@ -261,7 +261,7 @@ func TestWebSocket_UnsubscribeIsScopedToConnection(t *testing.T) {
 // after waitBeforeShutdown, and lets in-flight requests answer first.
 func TestWebSocket_ShutdownClosesPromptlyAfterInflightRequests(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	gock.New("http://rpc1.localhost").
 		Post("/").
@@ -322,7 +322,7 @@ func TestWebSocket_ShutdownClosesPromptlyAfterInflightRequests(t *testing.T) {
 // A peer that never answers pings is disconnected.
 func TestWebSocket_UnresponsivePeerIsDisconnected(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	cfg := httpOnlyConfig()
 	cfg.Server.WebSocket = &common.WebSocketServerConfig{PingInterval: common.Duration(200 * time.Millisecond).Ptr()}
@@ -350,7 +350,7 @@ func TestWebSocket_UnresponsivePeerIsDisconnected(t *testing.T) {
 // once; the rest wait instead of failing.
 func TestWebSocket_ConcurrentRequestsAreBounded(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	gock.New("http://rpc1.localhost").
 		Post("/").
@@ -391,7 +391,7 @@ func TestWebSocket_ConcurrentRequestsAreBounded(t *testing.T) {
 
 func TestWebSocket_ErrorShapes(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	addr, cleanup := setupTestERPCServer(t, standardWsConfig(subscribingWsUpstream(t)))
 	defer cleanup()
@@ -424,7 +424,7 @@ func TestWebSocket_ErrorShapes(t *testing.T) {
 // name one is refused at the handshake.
 func TestWebSocket_UpgradeRequiresNetwork(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 	defer cleanup()
@@ -462,7 +462,7 @@ func TestWebSocket_PanickedRequestRepliesWithItsId(t *testing.T) {
 // Method scoping still applies per message.
 func TestWebSocket_UpgradeRequiresAcceptedCredentials(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	cfg := httpOnlyConfig()
 	cfg.Projects[0].Auth = &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{{
@@ -523,7 +523,7 @@ func TestWebSocket_ResponseReleasedWhenWriteNeverStarts(t *testing.T) {
 // error uses the SVM wire code, not -32005 (NodeUnhealthy to Solana clients).
 func TestWebSocket_SvmAuthRateLimitUsesSvmWireCode(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	cfg := &common.Config{
 		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true)},
@@ -582,7 +582,7 @@ func TestWebSocket_SvmAuthRateLimitUsesSvmWireCode(t *testing.T) {
 // answered.
 func TestWebSocket_NotificationsGetNoReply(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
 	defer cleanup()
 	conn := dialWs(t, addr)
@@ -610,7 +610,7 @@ func TestWebSocket_NotificationsGetNoReply(t *testing.T) {
 // upstreams, not by the first project's network that was bootstrapped first.
 func TestWebSocket_ProjectsSharingANetworkUseTheirOwnUpstreams(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	var subscribesA, subscribesB atomic.Int32
 	mockWith := func(count *atomic.Int32, subID string) *httptest.Server {
