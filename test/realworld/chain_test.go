@@ -555,9 +555,12 @@ func (s *scenario) requireCountersFollow() {
 // c17Blocks blocks on demand, each 0 to c17MaxGap after the last, as an
 // Orbit chain that mints on traffic. No upstream is benched, W stays
 // below its cap while the blocks flow, and every tap gets every block
-// within its bound (§6.1, §6.5 rule 1, §6.7; §19 C17).
+// within its bound (§6.1, §6.5 rule 1, §6.7; §19 C17). Long tier: the
+// halt crosses eRPC's 10-minute timers (PollerGiveUpExpiry,
+// HeadsReaskInterval, the gRPC server's MaxConnectionAge); the last is a
+// constant, so no shortened copy crosses them all.
 func c17() spec {
-	return spec{name: "C17", bound: healthyDelivery, body: func(s *scenario) {
+	return spec{name: "C17", long: true, bound: healthyDelivery, body: func(s *scenario) {
 		s.blocks(25)
 		benched := func(pod int) float64 {
 			v, _ := s.metric(pod, "erpc_upstream_head_benched_total", nil)

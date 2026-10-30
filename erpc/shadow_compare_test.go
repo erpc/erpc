@@ -145,10 +145,14 @@ func (h *shadowCmpHits) last() string {
 }
 
 // shadowCmpMock answers every `method` call to `host` with `reply` (a JSON-RPC
-// envelope) and records the request bodies.
+// envelope) and records the request bodies. The mock is built whole before it
+// is registered: gock.New registers first, and its Persist then writes a field
+// the running state pollers' requests read.
 func shadowCmpMock(host, method, reply string) *shadowCmpHits {
 	h := &shadowCmpHits{}
-	gock.New("http://" + host).Post("").Persist().
+	req, res := gock.NewRequest(), gock.NewResponse()
+	mock := gock.NewMock(req, res)
+	req.URL("http://" + host).Post("").Persist().
 		Filter(func(r *http.Request) bool {
 			if r.URL.Host != host {
 				return false
@@ -161,8 +165,9 @@ func shadowCmpMock(host, method, reply string) *shadowCmpHits {
 			h.bodies = append(h.bodies, body)
 			h.mu.Unlock()
 			return true
-		}).
-		Reply(200).JSON([]byte(reply))
+		})
+	res.Status(200).JSON([]byte(reply))
+	gock.Register(mock)
 	return h
 }
 

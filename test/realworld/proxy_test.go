@@ -416,11 +416,12 @@ func (px *proxy) handle(c net.Conn) {
 	l.mu.Unlock()
 }
 
-// podOf is the pod whose process owns the socket at c's remote end.
+// podOf is the pod whose process owns the socket at c's remote end, from a
+// socket-table read that started after c was accepted.
 func (px *proxy) podOf(c net.Conn) *pod {
-	from, to := c.RemoteAddr().(*net.TCPAddr).Port, px.ln.Addr().(*net.TCPAddr).Port
+	k := sockKey{c.RemoteAddr().(*net.TCPAddr).Port, px.ln.Addr().(*net.TCPAddr).Port}
 	for range 5 {
-		if p := px.h.podOfPid(socketOwner(from, to, px.h.podPids())); p != nil {
+		if p := px.h.podOfPid(px.h.owners.owner(k, time.Now(), px.h.podPids)); p != nil {
 			return p
 		}
 		time.Sleep(5 * time.Millisecond)

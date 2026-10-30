@@ -211,7 +211,7 @@ func (s *scenario) tagCall(pod int) (latest, at uint64, err error) {
 		return 0, 0, err
 	}
 	c, err := rpc.DialOptions(context.Background(), s.h.pods[pod].httpURL(s.project, s.chain.ID()),
-		rpc.WithHTTPClient(s.httpc), rpc.WithHeader("X-ERPC-Skip-Interpolation", "true"))
+		rpc.WithHTTPClient(s.h.pods[pod].httpc), rpc.WithHeader("X-ERPC-Skip-Interpolation", "true"))
 	if err != nil {
 		return uint64(bn), 0, err
 	}
