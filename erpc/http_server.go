@@ -181,8 +181,27 @@ func NewHttpServer(
 			return nil, err
 		}
 		srv.sharedGrpcServer = sharedGrpcServer
+		streamingMethods := make(map[string]struct{})
+		for svc, info := range sharedGrpcServer.server.GetServiceInfo() {
+			for _, m := range info.Methods {
+				if m.IsServerStream || m.IsClientStream {
+					streamingMethods["/"+svc+"/"+m.Name] = struct{}{}
+				}
+			}
+		}
 		handlerV4 = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.ProtoMajor == 2 && strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/grpc") {
+				// net/http applies ReadTimeout and WriteTimeout to each HTTP/2 stream
+				// and resets it on expiry; long-lived gRPC streams must outlive them.
+				if _, ok := streamingMethods[r.URL.Path]; ok {
+					rc := http.NewResponseController(w)
+					if err := rc.SetReadDeadline(time.Time{}); err != nil {
+						logger.Warn().Err(err).Str("method", r.URL.Path).Msg("failed to clear read deadline of gRPC stream")
+					}
+					if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+						logger.Warn().Err(err).Str("method", r.URL.Path).Msg("failed to clear write deadline of gRPC stream")
+					}
+				}
 				sharedGrpcServer.server.ServeHTTP(w, r)
 				return
 			}
@@ -217,15 +236,10 @@ func NewHttpServer(
 		}
 	}
 
-	// gRPC on the shared port rides net/http's HTTP/2: the stream windows
-	// and the per-connection stream count are the HTTP server's (streams
-	// spec §6.3, §10).
+	// gRPC on the shared port rides net/http's HTTP/2: the per-connection
+	// stream count is the HTTP server's (streams spec §10).
 	if srv.serverV4 != nil && srv.sharedGrpcServer != nil {
 		srv.serverV4.ConnContext = grpcConnContext
-		srv.serverV4.HTTP2 = &http.HTTP2Config{
-			MaxReceiveBufferPerStream:     grpcStreamWindow,
-			MaxReceiveBufferPerConnection: grpcConnWindow,
-		}
 	}
 
 	// Create IPv6 server if configured

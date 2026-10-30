@@ -55,7 +55,7 @@ func (f finalityFeed) bound() (uint64, <-chan struct{}) {
 func (f finalityFeed) Read(ctx context.Context, c indexer.Cursor, o indexer.ReadOpts) (indexer.Batch, error) {
 	tracker := f.nw.chainTracker
 	for {
-		if f.finality.final() && tracker.FinalitySpan() {
+		if o.Hold != nil && o.Hold.Spanned() {
 			return indexer.Batch{}, indexer.OutOfRangeError{Reason: indexer.OutOfRangeFinalitySpan}
 		}
 		changed := tracker.Changed()
@@ -131,11 +131,18 @@ func (f finalityFeed) ready(b indexer.Batch) indexer.Batch {
 
 // tapStart is a tap's start without from, fixed at subscribe: the
 // confirmed head (HeadAsOf) for latest, else the bound (finalityStart).
-func (n *Network) tapStart(fin StreamFinality, lane string) func(context.Context) (indexer.Cursor, error) {
+func (n *Network) tapStart(fin StreamFinality, lane string, hold *indexer.FinalHold) func(context.Context) (indexer.Cursor, error) {
 	if fin.Kind == finalityLatest {
 		return n.chainTracker.HeadAsOf()
 	}
-	return n.finalityStart(fin, lane)
+	return n.finalityStart(fin, lane, hold)
+}
+
+// finalBound is a final subscribe's lane bound now, 0 while unknown: its
+// start without from, and what the final hold admits (streams spec §4).
+func (n *Network) finalBound(fin StreamFinality, lane string) uint64 {
+	b, _ := finalityFeed{nw: n, lane: lane, finality: fin}.bound()
+	return b
 }
 
 // reorgWindow is the deepest depth:N a stream takes; unbounded on a
@@ -149,22 +156,29 @@ func (n *Network) reorgWindow() uint64 {
 
 // finalityStart is the start of a tap without from (streams spec §3.7):
 // the bound at subscribe, or its first known value, once the tracker
-// holds its hash; a final tap's hold fills down to it. A final tap whose
-// hold passed FinalHoldMax ends finality_span.
-func (n *Network) finalityStart(fin StreamFinality, lane string) func(context.Context) (indexer.Cursor, error) {
+// holds its hash. A final tap's hold (nil for depth:N) stands there from
+// then, so the tracker holds and fills down to it, its lane's Finalized
+// included where that lies below the network's. A final tap whose hold
+// passed FinalHoldMax ends finality_span.
+func (n *Network) finalityStart(fin StreamFinality, lane string, hold *indexer.FinalHold) func(context.Context) (indexer.Cursor, error) {
 	feed := finalityFeed{nw: n, lane: lane, finality: fin}
 	at, _ := feed.bound()
+	if hold != nil {
+		hold.Set(at)
+	}
 	return func(ctx context.Context) (indexer.Cursor, error) {
 		tracker := n.chainTracker
 		bound := at
 		for {
-			if fin.final() && tracker.FinalitySpan() {
+			if hold != nil && hold.Spanned() {
 				return indexer.Cursor{}, indexer.OutOfRangeError{Reason: indexer.OutOfRangeFinalitySpan}
 			}
 			changed := tracker.Changed()
 			var moved <-chan struct{}
 			if bound == 0 {
-				bound, moved = feed.bound()
+				if bound, moved = feed.bound(); bound > 0 && hold != nil {
+					hold.Set(bound)
+				}
 			}
 			if bound > 0 {
 				if h, ok := tracker.HashAt(int64(bound)); ok {

@@ -40,6 +40,10 @@ type SharedStateRegistry interface {
 	GetLockTtl() time.Duration
 	GetFallbackTimeout() time.Duration
 	GetUpdateMaxWait() time.Duration
+	// Wait waits, once appCtx ended, until no counter refresh runs (each
+	// runs its caller's fetch, at most its fallback timeout); none starts
+	// after.
+	Wait()
 }
 
 type sharedStateRegistry struct {
@@ -54,6 +58,11 @@ type sharedStateRegistry struct {
 	lockMaxWait     time.Duration
 	updateMaxWait   time.Duration
 	initializer     *util.Initializer
+	refreshes       util.Goroutines
+}
+
+func (r *sharedStateRegistry) Wait() {
+	r.refreshes.Wait()
 }
 
 func NewSharedStateRegistry(

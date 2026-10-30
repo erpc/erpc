@@ -81,6 +81,7 @@ type CounterInt64State struct {
 const (
 	rejectNonPositive    = "non_positive"
 	rejectSmallRollback  = "small_rollback"
+	rejectHeldRollback   = "held_rollback"
 	rejectStaleTimestamp = "stale_timestamp"
 	rejectMalformed      = "malformed"
 )

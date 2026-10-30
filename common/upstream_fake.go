@@ -377,12 +377,12 @@ func (p *FakeEvmStatePoller) ObserveHead(n int64, _ time.Time) bool {
 	return true
 }
 
-func (p *FakeEvmStatePoller) Ask(context.Context, HeadNeed, time.Duration, AskReason) HeadAnswer {
+func (p *FakeEvmStatePoller) Ask(context.Context, HeadNeed, time.Duration, time.Time, AskReason) HeadAnswer {
 	return HeadAnswer{Outcome: AskSharedFresh, Block: p.latestBlockNumber}
 }
 
-func (p *FakeEvmStatePoller) AskBackground(HeadNeed, time.Duration, AskReason) time.Time {
-	return time.Time{}
+func (p *FakeEvmStatePoller) AskBackground(HeadNeed, time.Duration, time.Time, AskReason) HeadAnswer {
+	return HeadAnswer{Outcome: AskSharedFresh, Block: p.latestBlockNumber}
 }
 
 func (p *FakeEvmStatePoller) AskReaching(context.Context, int64, time.Duration, AskReason) HeadAnswer {
@@ -396,6 +396,8 @@ func (p *FakeEvmStatePoller) SafeBlock() int64                      { return 0 }
 func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown
 }
+
+func (p *FakeEvmStatePoller) Wait() {}
 
 func (p *FakeEvmStatePoller) GetDiagnostics() *EvmStatePollerDiagnostics {
 	return &EvmStatePollerDiagnostics{

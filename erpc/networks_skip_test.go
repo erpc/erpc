@@ -134,6 +134,7 @@ func setupTwoUpstreamNetworkForSkip(
 	// only on observed metrics, and these tests don't seed any.
 	pe := policy.NewEngine(ctx, &log.Logger, "test", mt, policystdlib.Install, nil)
 	network, err := NewNetwork(ctx, &log.Logger, "test", networkCfg, rlr, upr, mt, pe)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	upr.Bootstrap(ctx)
@@ -185,7 +186,7 @@ func TestNetworkSkip(t *testing.T) {
 	// accounting of dials.
 	t.Run("BreakerOpen_RotatesToNextUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// We expect: rpc1 trip mock consumed, rpc2 success mock
 		// consumed twice. Therefore no user-pending mocks remain.
@@ -271,7 +272,7 @@ func TestNetworkSkip(t *testing.T) {
 	// transport, and rotate to rpc2.
 	t.Run("RateLimitBudgetExhausted_RotatesToNextUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// Expect: rpc1 mock consumed once, rpc2 mock consumed once.
 		defer util.AssertNoPendingMocks(t, 0)
@@ -363,7 +364,7 @@ func TestNetworkSkip(t *testing.T) {
 	// without dialing its transport.
 	t.Run("SelectionPolicyCordoned_RotatesToNextUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// rpc2 mock consumed, rpc1 mock unconsumed (Times(0)).
 		defer util.AssertNoPendingMocks(t, 1)
@@ -448,7 +449,7 @@ func TestNetworkSkip(t *testing.T) {
 	// it 100ms of headroom, well above any plausible scheduling delay.)
 	t.Run("AutoIgnoreUnsupportedMethods_SkipsAfterFirstRejection", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// Expect: rpc1 unsupported response consumed once, rpc2 OK
 		// consumed twice. No user-pending mocks remain.
@@ -544,7 +545,7 @@ func TestNetworkSkip(t *testing.T) {
 	// machinery that powers matchFinality routing.
 	t.Run("FinalityMismatch_FullNodeSkippedForArchiveRequest", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// rpc1's request mock stays pending (Times(0) — see below).
 		// rpc2's request mock is consumed.

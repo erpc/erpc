@@ -35,6 +35,18 @@ type NetworksRegistry struct {
 	aliasMu              *sync.RWMutex
 	initializer          *util.Initializer
 	logger               *zerolog.Logger
+	// bg runs the background bootstrap of the configured networks.
+	bg util.Goroutines
+}
+
+// wait waits, once the app ctx ended, until no goroutine of the registry,
+// its network bootstraps or its networks runs (Network.wait).
+func (nr *NetworksRegistry) wait() {
+	nr.bg.Wait()
+	nr.initializer.Wait()
+	for _, n := range nr.GetNetworks() {
+		n.wait()
+	}
 }
 
 type aliasEntry struct {
@@ -233,13 +245,13 @@ func (nr *NetworksRegistry) Bootstrap(appCtx context.Context) {
 	for _, nwCfg := range nl {
 		tasks = append(tasks, nr.buildNetworkBootstrapTask(nwCfg.NetworkId()))
 	}
-	go func() {
+	nr.bg.Go(func() {
 		if err := nr.initializer.ExecuteTasks(appCtx, tasks...); err != nil {
 			nr.logger.Error().Err(err).Interface("status", nr.initializer.Status()).Msg("failed to bootstrap networks in background")
 		} else {
 			nr.logger.Info().Interface("status", nr.initializer.Status()).Msg("networks bootstrap completed")
 		}
-	}()
+	})
 }
 
 func (nr *NetworksRegistry) GetNetwork(ctx context.Context, networkId string) (*Network, error) {

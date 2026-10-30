@@ -12,7 +12,7 @@ Decisions:
 4. Standard `eth_subscribe` is unchanged; ws extensions are opt-in, per subscription or as URL defaults; data frames stay standard, control frames use their own method (§5).
 5. Resume token = the cursor of the last block the client applied, `<numberHex>:<hash>`; any instance resumes it (§3.5).
 6. Reorg modes: `geth` (ws only, today's), `undo` (one fork-point message), `none` (finalized only) (§3.1).
-7. Finality modes cut what a tap applies at a bound; `safe` and `finalized` taps make the tracker hold headers down to `Finalized` (§4).
+7. Finality modes cut what a tap applies at a bound; `safe` and `finalized` taps make the tracker hold headers down to each final tap's cursor (§4).
 8. Heartbeats only on an idle stream, default W clamped to 5–30s, each carrying head, finalized, safe; on gRPC they are DATA messages, since the AWS ALB ignores HTTP/2 PING (§3.6).
 9. gRPC gains `StreamLogs` and `StreamPendingTransactions`, one message per block or batch, never per log; `StreamBlocks` gains finality and opt-in control messages, wire-compatible with manifesto#26; fixed flow-control windows and a shared write buffer (§6).
 10. No SSE, QUIC or other binary transport (§7).
@@ -53,7 +53,7 @@ flowchart LR
 | Finality bound | `erpc/tap_finality.go` | `finalityFeed`: cuts Applied at the bound, as `laneFeed` cuts at the lane's `Latest` |
 | Control JSON | `erpc/stream_events.go` | ws control messages |
 | Encoders | `erpc/ws_stream.go`, `erpc/grpc_stream_blocks.go`, `erpc/grpc_stream_logs.go`, `erpc/grpc_stream_pending.go` | wire framing, write deadlines, wire end signals |
-| Final hold | `architecture/evm/chain_tracker.go` | headers from `Finalized` up while a final tap is registered (§4) |
+| Final hold | `architecture/evm/chain_tracker.go` | headers from the lowest open final cursor up (§4) |
 | `Head.Safe` | `erpc/networks.go`, `common/served_tip.go` | safe ballot, computed only while a `safe` tap is registered (§4) |
 | Min block | `erpc/networks.go` (request path) | §8 wait |
 
@@ -120,8 +120,10 @@ flowchart LR
 | `final_reverted` | block | `none` mode saw a Reverted batch | `end` | `ABORTED` | — |
 | `draining` | — | instance shutdown, or the gRPC connection's maximum age (§6.4) | `end`, then close `1001` | `UNAVAILABLE` | close `1001` |
 | `slow_client` | — | a write or send took 10s | connection closes | `UNAVAILABLE` | connection closes |
+| `message_too_large` | — | one log's gRPC message exceeds the message bound (§6.2, §10) | — | `RESOURCE_EXHAUSTED` + `ErrorInfo` | — |
 
-- gRPC `ErrorInfo` (`google.rpc.ErrorInfo`): `reason` = detail; metadata `oldestBlock`, `oldestHash`.
+- gRPC `ErrorInfo` (`google.rpc.ErrorInfo`) follows [AIP-193](https://google.aip.dev/193): `domain` `erpc.cloud`; `reason` UPPER_SNAKE. `out_of_range`: `reason` = the detail (`BELOW_WINDOW`, `FINALITY_SPAN`, …), metadata `oldestBlock`, `oldestHash`. `message_too_large`: `reason` `MESSAGE_TOO_LARGE`, metadata `blockNumber`, `blockHash`, `messageBytes`, `maxBytes`. Clients switch on `reason`, never on the message text.
+- `message_too_large` is terminal: a resume from the cursor meets the same block. The toolkit stops and returns it (§9.5).
 - Status and end are always on for extended subscriptions, `StreamLogs`, `StreamPendingTransactions`; on `StreamBlocks` only when the request sets `heartbeatSeconds` (§6).
 - `erpc_tap_end_total{reason,detail}` counts every end (§12).
 
@@ -145,7 +147,7 @@ flowchart LR
 | `from` | start cursor; `ReadOpts.Resumable` | every row; out of range ends `out_of_range` | session |
 | no `from` | start = bound at subscribe (`HeadAsOf` for `latest`; `HashAt(bound)` otherwise), fixed before the id or first message is written | `c` pinned | session |
 | `finality` | `finalityFeed` cuts Applied at the bound, Reverted pass, Ready = when the bound first reached the block | Applied rows; waits on the bound's channel | `tap_finality.go` |
-| `safe`, `finalized` | `ReadOpts.HoldFinalized` (§4) | `c` inside the window | tracker |
+| `safe`, `finalized` | `ReadOpts.Hold` (§4) | `c` inside the window | tracker |
 | `reorg` | encoder rule over `Batch.Reverted` | Reverted rows | encoders |
 | `blockEnd` | encoder writes after each Applied block | Applied | encoders |
 | `heartbeat`, `status` | session timers over published state | — | session |
@@ -154,7 +156,9 @@ flowchart LR
 
 ## 4. Tracker changes
 
-- `indexer.ReadOpts.HoldFinalized bool`: while a tap with it is registered (`Want`), the network-wide window also holds every header from `Head.Finalized` up, and fill extends down to it (class 3, CT§8). At most 20,000 headers below the time window (`finalHold`); past that, final subscribes are refused `-32005` / `RESOURCE_EXHAUSTED` (`finality_span`) and open final taps end `out_of_range` (`finality_span`).
+- `indexer.ReadOpts.Hold *indexer.FinalHold`: a final tap's place, its start bound from subscribe, then its cursor (`RunChain` moves it). While taps with one are registered (`Want`), the network-wide window also holds every header from `reorgWindow` below the lowest place up, and fill extends down to it (class 3, CT§8). A stream keeps its hold registered across its tap's restarts.
+  - Places, not `Head.Finalized`: L2s move `Finalized` hundreds of blocks in one step, `Finalized` can be unknown (0) for a moment, and a `use-upstream` lane's `Finalized` can sit below the network's; a hold keyed to `Finalized` evicted cursors in each case. A lane tap's bound is its lane's `Finalized`; the hold covers its start and cursor, so bound and hold agree.
+  - Bound: a tap whose place lies more than 20,000 headers below the window it holds without (`FinalHoldMax`) is spanned for good: it ends `out_of_range` (`finality_span`) and holds nothing. A final subscribe whose start lies more than 18,000 below (`FinalHoldAdmit`, 9/10) is refused `-32005` / `RESOURCE_EXHAUSTED` (`finality_span`), so a tap just admitted never ends at once. While the window's base is unknown (no pins, or every pin inside the time window with no time span to tell the block time from) nothing is spanned or refused, and the hold keeps at most 20,000 headers below the `reorgWindow` floor.
   - Why: on eth `Finalized` trails head by 64+ blocks (12.8+ min); the default window is 5 min (CT§16). Without it every eth final tap would be `below_window`.
   - Receipts below `reorgWindow` stay unheld: a final logs Read fetches them by hash (class 3), single-flight, so taps at the same frontier share one fetch (CT§8, §10.1).
 - `Head.Safe`, demand-driven: voters' `safe` tags are polled only while a `safe` tap is registered on the network, with that tap's finalized refreshes; with none open, no `safe` poll runs and `Head.Safe` is not computed.
@@ -300,18 +304,20 @@ message StreamStatus {
 
 ### 6.2 Messages per block
 
-- Logs: one `BlockLogs` per applied block, empty blocks included; a block with more than 1,000 matched logs spans messages, the last `complete`. Never one message per log: one 1,000-log batch costs 453 µs to send, 1,000 single logs 1,320 µs [bench].
+- Logs: one `BlockLogs` per applied block, empty blocks included; a block with more than 1,000 matched logs, or more than 1 MiB of them, spans messages, the last `complete`. Never one message per log: one 1,000-log batch costs 453 µs to send, 1,000 single logs 1,320 µs [bench].
 - Pending: one `PendingTransactions` per mempool Read (wake ≤ 50 ms, CT§12), at most 1,000 per message. The variant is `[]` or `[true]`, so ws and gRPC share rings.
-- Conversion: `JsonRpcLog.ToProto`, `ParseJsonRpcTransaction` (manifesto `evm/json_rpc.go`), once per log per block, cached with the block's encodings and shared by every filter and subscriber: 24 ms per 927-log block, then 0.45–0.48 ms per subscriber send [bench].
+- Conversion: `JsonRpcLog.ToProto`, `ParseJsonRpcTransaction` (manifesto `evm/json_rpc.go`), once per log per block and once per pending transaction: a log's encoding is cached with the block's receipts, a transaction's with its ring entry (`indexer.PendingTx`), and shared by every filter and subscriber: 24 ms per 927-log block, then 0.45–0.48 ms per subscriber send [bench].
+- No copy per filter: each log's encoding is one buffer, and a filter's messages reference those buffers (a gRPC `mem.BufferSlice`), so a filter adds 16 B per matched log, not the log's bytes. Per-filter state on held receipts (matched positions, these references) is bounded per network in bytes, oldest out (§10).
+- Message bound: min(4 MiB, the client default receive limit; `server.grpcMaxSendMsgSize`). A log whose message passes it ends the stream `message_too_large` (§3.4); a pending transaction that does is left out, logged, as one that does not convert. A message of several items stays within 1 MiB, so with `grpcMaxSendMsgSize` ≥ 1 MiB only a single item can pass the bound.
 
 ### 6.3 Server tuning
 
 | Setting | Value | Why |
 |---|---|---|
-| `grpc.InitialWindowSize` | 4 MiB per stream, fixed | log-burst p99 at 20 ms RTT 77 → 13.5 ms [bench]; the 64 KB default grows by BDP estimation only |
-| `grpc.InitialConnWindowSize` | 16 MiB per connection, fixed | as above |
-| `grpc.SharedWriteBuffer` | `true` | part of the measured tuning; write buffers released between writes |
-| Toolkit clients | the same windows on their dial (grpc-go `WithInitialWindowSize`, `WithInitialConnWindowSize`; grpc-js `grpc-node.flow_control_window`) | the receiver's window paces the server's sends [INFERENCE] |
+| Flow-control windows | grpc-go defaults on the server (64 KiB, grown by BDP estimation) | a server's `InitialWindowSize` and `InitialConnWindowSize` bound only what clients send it: the receiver sets the window ([RFC 9113 §5.2](https://www.rfc-editor.org/rfc/rfc9113#section-5.2)); fixed ones changed no log burst: 264 KB at 20 ms RTT, worst of 30, 78.3 ms with or without them [bench] |
+| Toolkit clients | 4 MiB per stream, 16 MiB per connection, fixed, on their dial (grpc-go `WithInitialWindowSize`, `WithInitialConnWindowSize`; grpc-js `grpc-node.flow_control_window`) | the receiver's window paces the server's sends: worst 264 KB burst at 20 ms RTT 78.3 → 14.1 ms [bench] |
+| `grpc.SharedWriteBuffer` | `true` | write buffers released between writes |
+| Response compression | none on `StreamService`: each stream sets `grpc.SetSendCompressor(identity)`; a client's own request compression is still accepted | messages are encoded once for every stream; compressing per stream would spend that per subscriber |
 
 ### 6.4 Connection age
 
@@ -326,7 +332,7 @@ message StreamStatus {
 
 ## 7. Other transports
 
-Not built: SSE, QUIC, Kafka protocol, Arrow and binary ws. Reasons [bench]: gRPC with the BDS proto sends 2.5× fewer bytes than JSON (285 vs 714 B per log) with no per-subscriber compression CPU, and already passes the ALB; QUIC costs 6–8× gRPC CPU per message, gains nothing under loss on one ordered stream ([RFC 9000 §2](https://www.rfc-editor.org/rfc/rfc9000#section-2)), and needs an NLB passthrough path and a TCP fallback.
+Not built: SSE, QUIC, Kafka protocol, Arrow and binary ws. Reasons [bench]: gRPC with the BDS proto sends 2.5× fewer bytes than JSON (285 vs 714 B per log) with no per-subscriber compression CPU (`StreamService` never compresses, §6.3), and already passes the ALB; QUIC costs 6–8× gRPC CPU per message, gains nothing under loss on one ordered stream ([RFC 9000 §2](https://www.rfc-editor.org/rfc/rfc9000#section-2)), and needs an NLB passthrough path and a TCP fallback.
 
 ## 8. `X-ERPC-Min-Block`
 
@@ -420,7 +426,7 @@ err := streams.Run(ctx, streams.Config{
 | Connect | gRPC with §6.3 windows; `heartbeatSeconds` always sent, 5 when the app leaves it 0 (the server's lowest default), so the watchdog runs on the server's actual interval; `from` = saved cursor |
 | Watchdog | no message for 3 × heartbeat while not waiting on the handler → cancel the stream, status `reconnecting`; messages the cancelled stream buffered are dropped |
 | Reconnect | `UNAVAILABLE` or watchdog after messages flowed (connection age, drain, stall, lag): resume at once; otherwise, a stream the library restarted included, jittered exponential backoff 0.5s → 30s, reset after 60s connected |
-| Terminal, per run | `UNAUTHENTICATED`, `PERMISSION_DENIED`, `INVALID_ARGUMENT`, a handler error: stop every connection at once and return the error |
+| Terminal, per run | `UNAUTHENTICATED`, `PERMISSION_DENIED`, `INVALID_ARGUMENT`, `RESOURCE_EXHAUSTED` with `ErrorInfo` reason `MESSAGE_TOO_LARGE`, a handler error: stop every connection at once and return the error |
 | Terminal, per endpoint | `OUT_OF_RANGE`, `ABORTED` (`final_reverted`): that endpoint's view of the chain (a new pod's window, a cursor on a branch it never saw: `cursor_unknown`). Stop and return the error when no other connection's stream is open; else that connection reconnects with backoff |
 | Dedup | `apply` skips a block whose hash is already applied on the current branch |
 | Merge (2 endpoints) | each connection resumes from the merged cursor; the library keeps each connection's session blocks, linked by `parentHash` (a block that does not link restarts that connection), the last 256 of them, and the merged chain as contiguous (number, hash); it follows the open connection with the highest block, ties keep the current one, and falls back to the next open one when the leader shares no block; switching branch emits `undo` to the fork point of the two chains, then every block of that connection above it; a block already applied (same hash) is skipped. A fork deeper than 256 blocks restarts that connection, whose server then sends the `undo` (CT§10.1). A connection's `undo` counts only while it leads; a non-leader waits for its next block. Switching that needs an `undo` without `handler.undo` (`finalized`) ends with `FinalRevertedError` |
@@ -443,13 +449,15 @@ err := streams.Run(ctx, streams.Config{
 | ws subscriptions per connection, per instance; connections per instance, per IP | `server.webSocket.*` (CT§15.2) | `-32005`, `429` |
 | `heartbeat` | 1–30s | `-32602` / `INVALID_ARGUMENT` |
 | `depth:N` | 1…`reorgWindow` | `-32602` / `INVALID_ARGUMENT` |
-| Final hold | 20,000 headers per network below the time window | refuse `finality_span`; open final taps end |
+| Final hold | 20,000 headers per network below the time window; subscribe admits 18,000 | refuse `finality_span`; the spanned tap ends |
 | Replay per Read | `reorgWindow` Applied blocks (CT§15.2) | next Read |
 | Logs filter | 1,000 addresses, 4 positions, 1,000 values (CT§11) | `-32602` / `INVALID_ARGUMENT` |
 | ws write | 10s per message | connection closes, `slow_client` |
 | gRPC send | 10s | `UNAVAILABLE` |
 | gRPC long-lived streams per connection | 100 | `RESOURCE_EXHAUSTED` |
-| gRPC logs and pending per message | 1,000 | next message |
+| gRPC logs and pending per message | 1,000 items and 1 MiB | next message |
+| gRPC message | min(4 MiB, `server.grpcMaxSendMsgSize`) | log or header: `message_too_large`; pending transaction: left out, logged |
+| Per-filter state on held receipts (matched positions, encodings) | 32 MiB per network (`FilterStateBytes`) | oldest out, counted; the next tap with that filter on that block builds it again |
 | gRPC connection age | 10 min + 30s grace (existing) | streams end `UNAVAILABLE` |
 | Pending variants | 16 per network (CT§12) | refused |
 | Min-block wait | W, inside the request timeout | `-32015` |
@@ -462,7 +470,7 @@ No new key: every bound is a constant (§10) or an existing `server.webSocket` k
 
 | Metric | Change |
 |---|---|
-| `erpc_tap_end_total{project,network,transport,kind,reason,detail}` | from erpc#1335; streams add reasons `stalled`, `final_reverted`, `draining`, `slow_client` and detail `finality_span` |
+| `erpc_tap_end_total{project,network,transport,kind,reason,detail}` | from erpc#1335; streams add reasons `stalled`, `final_reverted`, `draining`, `slow_client`, `message_too_large` and detail `finality_span` |
 | `erpc_stream_messages_total{project,network,transport,kind,type}` | new; type: `data`, `removed`, `undo`, `block_end`, `heartbeat`, `status`, `end` |
 | `erpc_stream_bytes_total{project,network,transport,kind}` | new: bytes written |
 | `erpc_stream_resume_total{project,network,transport,kind,outcome}` | new; outcome: `replayed`, `at_head`, `out_of_range` |
@@ -475,6 +483,8 @@ No new key: every bound is a constant (§10) or an existing `server.webSocket` k
 | `erpc_min_block_total{project,network,outcome}` | new; outcome: `ready`, `waited`, `timeout`, `future` |
 | `erpc_min_block_wait_seconds{project,network}` | new histogram |
 | `erpc_grpc_streams_rejected_total{project,reason}` | new; reason: `per_connection` |
+| `erpc_chain_tracker_filter_state_bytes{project,network}` | new gauge: per-filter state bytes held on receipts (§6.2, §10) |
+| `erpc_chain_tracker_filter_state_evicted_total{project,network}` | new: per-filter states dropped to stay within the bound |
 
 - Logs: one `TransitionLog` per end with cursor, bound, reason and `oldest`; one per status transition, rate-limited per (network, kind) (CT§17).
 - Traces: a span per session open and per resume replay, under detailed tracing.
@@ -508,7 +518,9 @@ Run on CT§19 baseline B, extended per instance with 2 extended ws logs clients 
 | G5 | s4 | #26-era client (no field ≥ 5) | header-only messages, byte-identical to before | — (guard) |
 | G6 | s4 | `StreamBlocks` `FINALITY_FINALIZED`; cursor below window | headers ≤ `Finalized`; `OUT_OF_RANGE` with `ErrorInfo` `oldestBlock`, `oldestHash` | fields absent |
 | G7 | s4 | 101 long-lived streams on one connection | 101st `RESOURCE_EXHAUSTED` | unlimited |
-| G8 | s4 | client link +20 ms RTT; 1,000-log blocks every 200 ms; tuned Go client | block send → client receive p99 under 30 ms | default windows: p99 about 77 ms [bench] |
+| G8 | s4 | client link +20 ms RTT; 1,000-log blocks every 200 ms; tuned Go client | block send → client receive p99 under 30 ms | default client windows: p99 about 77 ms [bench] |
+| G9 | s4 | 1,000 `StreamLogs` streams, each filter distinct and matching every log (all addresses plus one dummy), CT C11 blocks | every stream gets every log; `erpc_chain_tracker_filter_state_bytes` ≤ 32 MiB; RSS flat after they close | per-filter copies: about 264 MB per held block |
+| G10 | s4 | a log over 4 MiB on one block; a client resumes from the block before | `RESOURCE_EXHAUSTED`, `ErrorInfo` `MESSAGE_TOO_LARGE` naming the block, both times; the toolkit stops | the client fails the message and resumes forever |
 | M1 | s5 | instance 2 serves only numbered calls (CT X2); block N from instance 1's ws; `eth_call(latest)` Multicall3 `getBlockNumber()` on instance 2 with `X-ERPC-Min-Block: N` | ≥ N every time | answers N − 1 |
 | M2 | s5 | n inside the near-future bound; n far above | served once the chain reaches n, ≤ W; far: `-32015` with no dispatch | `header not found` or N − 1 |
 | M3 | s5 | `latest` cached at N − 1, then a read with min-block N | answered at ≥ N | cached N − 1 served |
@@ -529,7 +541,9 @@ Run on CT§19 baseline B, extended per instance with 2 extended ws logs clients 
 - gRPC logs send one message per block, empty ones included: tens of bytes × blocks/s per stream.
 - JSON → proto conversion costs 24 ms CPU per 927-log block, once per block per instance, whatever the subscriber count.
 - Every gRPC stream ends `UNAVAILABLE` about every 10.5 min (connection age) and at each ALB keepalive GOAWAY: clients that resume from their cursor lose nothing; clients without a cursor see a restart.
-- Fixed 4 MiB stream windows let a client hold up to 4 MiB in flight per stream before the 10s send wait starts.
+- A toolkit client's fixed 4 MiB stream window lets it hold up to 4 MiB in flight per stream before the 10s send wait starts.
+- Past 32 MiB of per-filter state per network, the oldest goes and a tap with that filter rebuilds it: positions over the block's candidate logs and 16 B per matched log, no conversion.
+- A block with one log whose message passes 4 MiB ends every logs stream that matches it, terminal (`message_too_large`). Log data costs 8 gas per byte, so such a log needs more than 34M gas in one transaction: possible on chains with higher gas limits `[INFERENCE]`.
 - ws URL defaults with `reorg=undo` make standard libraries miss reorgs: they ignore `erpc_subscription`. The docs say so.
 - `StreamBlocksResponse.header` moves into a oneof: Go code that builds the message changes; readers using `GetHeader()` do not.
 - Resumable ws taps now end `stalled` after 60s on a lagging instance, as gRPC does.

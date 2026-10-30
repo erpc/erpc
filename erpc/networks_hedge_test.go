@@ -31,7 +31,7 @@ func init() {
 func TestNetwork_HedgePolicy(t *testing.T) {
 	t.Run("FixedDelayHedge_FirstRequestSlowHedgeWins", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -93,7 +93,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 	t.Run("FixedDelayHedge_FirstRequestFastNoHedge", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // rpc2 mock should not be called
 
@@ -154,7 +154,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 	t.Run("QuantileBasedHedge_DynamicDelay", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// Don't assert pending mocks due to unpredictable concurrent requests
 
@@ -247,7 +247,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 	t.Run("QuantileBasedHedge_MinDelayBoundary", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -343,7 +343,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 	t.Run("QuantileBasedHedge_MaxDelayBoundary", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// Don't assert pending mocks for this test
 
@@ -448,7 +448,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 	t.Run("HedgePolicy_SkipsNonRetryableWriteMethods", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // rpc2 should not be called
 
@@ -509,7 +509,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 	t.Run("HedgePolicy_MaxCountLimit", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // rpc4 should not be called (rpc3 completes fastest)
 
@@ -565,7 +565,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 	t.Run("HedgePolicy_AllRequestsFail", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// Hedge concurrency makes exact mock consumption non-deterministic
 		// (primary and hedge goroutines share UpstreamIdx). Use Persist()
@@ -643,7 +643,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		// cancel(), timing out the entire test binary. Use a hard per-subtest
 		// deadline so a slow run fails fast instead of poisoning the suite.
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
@@ -733,7 +733,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 	t.Run("HedgePolicy_MultipleHedgesWithVaryingResponseTimes", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -788,7 +788,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 	t.Run("QuantileBasedHedge_NoMetricsAvailable", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -865,7 +865,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 	t.Run("HedgePolicy_ConcurrentRequests", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// Don't assert pending mocks for concurrent test
 
@@ -946,7 +946,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 	t.Run("PrimaryWins_HedgeAttemptExcludedFromRequestsTotal", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
@@ -1001,7 +1001,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 
 	t.Run("HedgeWins_LosingPrimaryNotRecordedAsError_HedgeAttemptNotInRequestsTotal", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
@@ -1076,7 +1076,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 	// the latency quantile.
 	t.Run("HedgeWins_LatencyCapturedInResponseQuantiles", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
@@ -1142,7 +1142,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 	// happen to error out would still inflate the rate.
 	t.Run("HedgeFailsWithRealError_NotCountedAsError", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
@@ -1218,7 +1218,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 	// somewhere around 120ms elapsed.
 	t.Run("HedgeLoser_RanksBelowWinner", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
@@ -1302,7 +1302,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 	// stay excluded — not just the first.
 	t.Run("MultipleHedges_AllExcluded", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
@@ -1387,7 +1387,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 	// skip list, so no upstream is blamed for the client's behavior.
 	t.Run("ClientDisconnect_PrimaryNotPenalized", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
@@ -1465,7 +1465,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 	//      inflated by hedge bookkeeping.
 	t.Run("HeavyHedging_AggregateRatesReflectTruth", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		const totalRequests = 10
@@ -1574,7 +1574,7 @@ func TestNetwork_LongTermHedgingDynamics_PromotesFasterUpstream(t *testing.T) {
 	// `TestNetwork_HedgeAttemptsExcludedFromTrackerCounters`.
 	t.Skip("legacy scoring API removed; rewrite against selection-policy engine")
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	const phase1Pairs = 6        // pairs of (rpc1-fast, rpc1-slow) — both quantiles populate together
@@ -1750,7 +1750,7 @@ func TestNetwork_LongTermHedgingDynamics_PromotesFasterUpstream(t *testing.T) {
 // propagated). The late response must NOT pollute the tracker counters.
 func TestNetwork_LatePrimaryResponseAfterHedgeWin_NoDoubleCounting(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
@@ -1958,6 +1958,7 @@ func setupTestNetworkWithScoring(
 		metricsTracker,
 		nil,
 	)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	upstreamsRegistry.Bootstrap(ctx)

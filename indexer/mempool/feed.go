@@ -60,7 +60,7 @@ type seenKey struct {
 // at entries[s%RingSize]. next is the seq the next entry gets.
 type ring struct {
 	slot    uint16 // its bit in slots and seen
-	entries []json.RawMessage
+	entries []*indexer.PendingTx
 	next    uint64
 	changed chan struct{}
 }
@@ -94,7 +94,7 @@ func (f *Feed) Open(variant string) error {
 		slot <<= 1
 	}
 	f.slots |= slot
-	f.rings[variant] = &ring{slot: slot, entries: make([]json.RawMessage, RingSize), next: 1, changed: make(chan struct{})}
+	f.rings[variant] = &ring{slot: slot, entries: make([]*indexer.PendingTx, RingSize), next: 1, changed: make(chan struct{})}
 	return nil
 }
 
@@ -159,7 +159,7 @@ func (f *Feed) Add(variant string, raw json.RawMessage) {
 		f.entries.Set(float64(len(f.seen)))
 	}
 	if !dropped {
-		r.entries[r.next%RingSize] = raw
+		r.entries[r.next%RingSize] = &indexer.PendingTx{Raw: raw}
 		r.next++
 		close(r.changed)
 		r.changed = make(chan struct{})
@@ -201,7 +201,7 @@ func (f *Feed) Tail(variant string) uint64 {
 
 // Read returns every entry of variant after seq, waiting for one, bounded
 // by ctx. A seq whose next entry left the ring is ErrOutOfRange.
-func (f *Feed) Read(ctx context.Context, variant string, after uint64) ([]json.RawMessage, uint64, error) {
+func (f *Feed) Read(ctx context.Context, variant string, after uint64) ([]*indexer.PendingTx, uint64, error) {
 	for {
 		f.mu.Lock()
 		r := f.rings[variant]
@@ -219,7 +219,7 @@ func (f *Feed) Read(ctx context.Context, variant string, after uint64) ([]json.R
 			return nil, after, indexer.OutOfRangeError{Reason: indexer.OutOfRangeLag}
 		}
 		if after < newest {
-			out := make([]json.RawMessage, 0, newest-after)
+			out := make([]*indexer.PendingTx, 0, newest-after)
 			for s := after + 1; s <= newest; s++ {
 				out = append(out, r.entries[s%RingSize])
 			}

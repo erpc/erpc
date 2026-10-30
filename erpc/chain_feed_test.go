@@ -876,6 +876,8 @@ type chaosOpts struct {
 	grpc        bool
 	maxBackfill time.Duration
 	matchLast   bool
+	history     int    // blocks minted at start; 0 is chaosHistoryBlocks
+	budget      uint32 // requests per second per upstream; 0 is chaosVendorBudget
 }
 
 func newChaosSeed(t *testing.T, seed int64, pollSources bool, opts chaosOpts) *chaosSeed {
@@ -886,7 +888,7 @@ func newChaosSeed(t *testing.T, seed int64, pollSources bool, opts chaosOpts) *c
 		pad = chaosStreamPad
 	}
 	s.chain = chainsim.NewChain(chainsim.Config{ChainID: 123, BlockTime: chaosBlock, Seed: uint64(seed), HeaderPad: pad,
-		History: chaosHistoryBlocks, BadBaseFee: opts.badBaseFee, PendingNoise: true, MatchLast: opts.matchLast})
+		History: cmp.Or(opts.history, chaosHistoryBlocks), BadBaseFee: opts.badBaseFee, PendingNoise: true, MatchLast: opts.matchLast})
 	t.Cleanup(s.chain.Close)
 	add := func(id, name string, ws bool) *chainsim.Vendor {
 		v, err := s.chain.AddVendor(id, name, ws)
@@ -939,7 +941,7 @@ func (s *chaosSeed) config() *common.Config {
 		ups = append(ups, u)
 		budgets = append(budgets, &common.RateLimitBudgetConfig{
 			Id:    "budget-" + v.ID,
-			Rules: []*common.RateLimitRuleConfig{{Method: "*", MaxCount: chaosVendorBudget, Period: common.RateLimitPeriodSecond}},
+			Rules: []*common.RateLimitRuleConfig{{Method: "*", MaxCount: cmp.Or(s.opts.budget, chaosVendorBudget), Period: common.RateLimitPeriodSecond}},
 		})
 	}
 	cfg := sourcesConfig(func(nw *common.NetworkConfig) {
@@ -989,9 +991,12 @@ func (s *chaosSeed) startERPC() {
 	}
 }
 
-// bootERPC boots an eRPC instance and waits for its network.
+// bootERPC boots an eRPC instance and waits for its network. The seed
+// stops its instances before the instance's own end-of-test check
+// (stopERPCAtEnd), which wants its app ctx ended.
 func (s *chaosSeed) bootERPC() (*HttpServer, string, context.CancelFunc, *Network) {
 	srv, addr, cancel := startTestERPCServer(s.t, s.config())
+	s.t.Cleanup(s.stopERPC)
 	var nw *Network
 	require.Eventually(s.t, func() bool {
 		n, err := srv.erpc.GetNetwork(context.Background(), "test_ws", "evm:123")
@@ -1754,10 +1759,27 @@ func (s *chaosSeed) orphanCached() {
 		return res["hash"] == h1 && calls() == before
 	}, 2*time.Second, 20*time.Millisecond, "a repeat answer for block %d comes from the cache", tip.Number)
 	before := calls()
+	// The chain rolls back below the block and mints a sibling at its
+	// height: the new head's parent is held, so the tracker follows the
+	// reorg with no fetch of that height by number.
 	depth := int(c.Tip().Number-tip.Number) + 1
-	s.reorg(depth)
+	c.Rewind(depth)
+	require.Eventually(s.t, func() bool {
+		b := c.CanonAt(tip.Number)
+		return b != nil && b.Hash != tip.Hash
+	}, 5*time.Second, 20*time.Millisecond, "a sibling of block %d is minted", tip.Number)
+	canon := c.CanonAt(tip.Number).Hash.Hex()
+	// Once the tracker pins the new block, a client reading the height by
+	// number gets it, never the orphan cached before the reorg (§19 P8).
+	require.Eventually(s.t, func() bool {
+		got, ok := s.tracker().HashAt(int64(tip.Number))
+		return ok && got == canon
+	}, 5*time.Second, 20*time.Millisecond, "the tracker pins the new block %d", tip.Number)
+	out, _, err := s.rpc("eth_getBlockByNumber", fmt.Sprintf("0x%x", tip.Number), false)
+	require.NoError(s.t, err)
+	res, _ := out["result"].(map[string]interface{})
+	require.Equal(s.t, canon, res["hash"], "block %d by number after the reorg; the orphan %s was cached", tip.Number, h1[:10])
 	s.blocks(3)
-	require.NotEqual(s.t, tip.Hash, c.CanonAt(tip.Number).Hash)
 	s.occur(fOrphanCached, fmt.Sprintf("block %d %s cached by number, then reorged out (depth %d); vendors served %d by-number fetches of it after", tip.Number, h1[:10], depth, calls()-before))
 }
 

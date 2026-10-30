@@ -128,10 +128,11 @@ export interface HeadAnswer {
    */
   block: number /* int64 */;
   /**
-   * Sent is when the fetch that answered was sent: the header's
-   * evidence time; zero with no fetch answer.
+   * At is when the evidence that met the Ask was taken: the meeting
+   * fetch's send, or the shared counter's report; zero with no evidence
+   * (backoff, a fork fetch queued and not yet sent).
    */
-  sent: any /* time.Time */;
+  at: any /* time.Time */;
   /**
    * Next is when an Ask at the same pace may fetch again: the meeting
    * fetch's send plus the pace or its backed-off cadence, the longer;

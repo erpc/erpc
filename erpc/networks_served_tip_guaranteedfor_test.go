@@ -50,7 +50,7 @@ func guaranteedForNetwork(t *testing.T, ctx context.Context, fx []servedTipFixtu
 // Unset is today's behaviour, exactly: the network-wide majority stands.
 func TestGuaranteedFor_UnsetIsNoOp(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -62,7 +62,7 @@ func TestGuaranteedFor_UnsetIsNoOp(t *testing.T) {
 // The advertised tip is one the named group can actually serve.
 func TestGuaranteedFor_ClampsToTheNamedGroupsMajority(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -76,7 +76,7 @@ func TestGuaranteedFor_ClampsToTheNamedGroupsMajority(t *testing.T) {
 // step with the fleet.
 func TestGuaranteedFor_TracksTheActualLag(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -102,7 +102,7 @@ func TestGuaranteedFor_TracksTheActualLag(t *testing.T) {
 // outvoted inside its own group and cannot pin the network.
 func TestGuaranteedFor_StuckMemberDoesNotPinTheNetwork(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -117,7 +117,7 @@ func TestGuaranteedFor_StuckMemberDoesNotPinTheNetwork(t *testing.T) {
 // one upstream supports — naming a single upstream IS declaring it mandatory.
 func TestGuaranteedFor_SingleMemberGroupSetsTheTip(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -129,7 +129,7 @@ func TestGuaranteedFor_SingleMemberGroupSetsTheTip(t *testing.T) {
 // A selector matching nothing constrains nothing — it never pins the tip to 0.
 func TestGuaranteedFor_UnmatchedGroupConstrainsNothing(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -142,7 +142,7 @@ func TestGuaranteedFor_UnmatchedGroupConstrainsNothing(t *testing.T) {
 // servable by every named group, not just one.
 func TestGuaranteedFor_MultipleGroupsTakeTheLowest(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -167,7 +167,7 @@ func TestGuaranteedFor_MultipleGroupsTakeTheLowest(t *testing.T) {
 // use-upstream and consensus.requiredParticipants.
 func TestGuaranteedFor_MatchesByUpstreamIdGlob(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -182,7 +182,7 @@ func TestGuaranteedFor_MatchesByUpstreamIdGlob(t *testing.T) {
 // member still reports it finalized (#1353).
 func TestGuaranteedFor_AppliesToTheFinalizedAxis(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
