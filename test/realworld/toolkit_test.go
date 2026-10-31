@@ -537,10 +537,12 @@ const (
 )
 
 // T6: a finalized stream for t6Run under a t6Age connection age: at least
-// 2 UNAVAILABLE ends, each resumed at once; no gap, no duplicate key.
+// 2 UNAVAILABLE ends, each resumed at once; no gap, no duplicate key. A
+// resume shows as an apply only once Finalized moves, so it moves each
+// finalizedPoll.
 func t6(start toolkitStarter, name string) spec {
 	vars := map[string]time.Duration{"erpc.GrpcMaxConnectionAge": t6Age}
-	return spec{name: name, bound: healthyDelivery, vars: vars, clients: func(*scenario) {}, body: func(s *scenario) {
+	return spec{name: name, bound: healthyDelivery, vars: vars, upEvm: finalizedEvery(finalizedPoll), clients: func(*scenario) {}, body: func(s *scenario) {
 		s.blocks(25)
 		c := s.newToolkitClient(s.name + "/app")
 		stop := start(s, c, streams.Config{Endpoints: []string{s.grpcEndpoint(0)}, Kind: streams.Logs, Filter: toolkitFilter(0),
