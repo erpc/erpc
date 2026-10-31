@@ -1214,10 +1214,13 @@ func (n *Network) refuseFutureRange(req *common.NormalizedRequest, method string
 
 // countRefusal counts the refusal rule's outcome for req (spec §17): data
 // is served, or retried_found after a miss; an empty or missing answer is
-// retried_missing in the band, future above it; a null or missing answer
-// at or below a known Latest is served_missing, a broken head promise.
-// Requests naming no block, and other empty answers at or below Latest
-// (no logs, an empty block's receipts), are no refusal.
+// retried_missing in the band, future above it. eth_getBlockByNumber of a
+// block in the head region, Latest − reorgWindow < N ≤ Latest, answered
+// null or missing is served_missing, a broken head promise. Other methods'
+// null or missing-data answers at or below Latest can be legit (an index
+// past a block's count, a state read on a pruned node), and blocks below
+// the head region are availability, not the promise: no refusal, as for
+// requests naming no block and empty answers.
 func (n *Network) countRefusal(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse, err error) {
 	v := req.HeadRefusal()
 	if v == nil || v.Block <= 0 {
@@ -1233,7 +1236,7 @@ func (n *Network) countRefusal(ctx context.Context, req *common.NormalizedReques
 		}
 	case err != nil && !missingDataErr(err):
 	case v.Rule == common.HeadServe:
-		if v.Latest > 0 && (err != nil || isNullResult(ctx, resp)) {
+		if method == "eth_getBlockByNumber" && n.inHeadRegion(v) && (err != nil || isNullResult(ctx, resp)) {
 			n.countHeadRefusal("served_missing")
 		}
 	case v.Rule == common.HeadBand:
@@ -1241,6 +1244,13 @@ func (n *Network) countRefusal(ctx context.Context, req *common.NormalizedReques
 	case v.Rule == common.HeadFuture:
 		n.countHeadRefusal(v.FutureRule())
 	}
+}
+
+// inHeadRegion reports whether v's block is in the head region of the
+// Latest it was decided against: Latest − reorgWindow < N ≤ Latest, the
+// chain tracker's window. With the head unknown no block was promised.
+func (n *Network) inHeadRegion(v *common.HeadRefusal) bool {
+	return v.Latest > 0 && n.chainTracker != nil && v.Block <= v.Latest && v.Block > v.Latest-int64(n.chainTracker.ReorgWindow())
 }
 
 // isNullResult reports whether resp's result is JSON null.

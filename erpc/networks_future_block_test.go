@@ -761,11 +761,13 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 
 // A future block dispatched (shortCircuitFutureBlocks off) takes one
 // retryable miss too (spec §6.4): the first null is never final, and the
-// answer after it goes to the client as the upstream gave it. A block at
-// or below Latest every node answers null breaks the head promise:
-// served_missing, never retried_missing; logs at or below Latest answered
-// with an empty array are an answer, no refusal (§17). Once the
-// block time is known, a block at most W / bt + 1 above the ceiling waits for
+// answer after it goes to the client as the upstream gave it. A block in
+// the head region, Latest − reorgWindow < N ≤ Latest, every node answers
+// null breaks the head promise: served_missing, never retried_missing.
+// No other read at or below Latest is counted (§17): logs answered with an
+// empty array, a transaction index past a block's count answered null, a
+// block below the head region answered null. Once the block time is known,
+// a block at most W / bt + 1 above the ceiling waits for
 // it, at most W, while the voters are Asked every bt (near future): a
 // numbered read and a log range are served once the nodes reach them,
 // and a range still above the ceiling after W is refused, counted
@@ -891,6 +893,27 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	assert.Equal(t, "[]", jrr.GetResultString())
 	assert.Positive(t, noLogsCalls.Load())
 	assert.Equal(t, servedMissing+1, refusals("served_missing"), "an empty array is an answer")
+
+	var byIndexCalls atomic.Int64
+	mockMethodAnswer("eth_getTransactionByBlockNumberAndIndex", "null", &byIndexCalls, ids...)
+	resp, err = network.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByBlockNumberAndIndex","params":["0x64","0x5"]}`)))
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "null", jrr.GetResultString(), "no transaction at an index past Latest's count")
+	assert.Positive(t, byIndexCalls.Load())
+	assert.Equal(t, servedMissing+1, refusals("served_missing"), "an index past Latest's count can be null")
+
+	deep := fmt.Sprintf("0x%x", 100-int64(network.chainTracker.ReorgWindow())-5)
+	var deepCalls atomic.Int64
+	mockGetBlockByNumberAt(deep, "null", &deepCalls, ids...)
+	resp, err = network.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["`+deep+`",false]}`)))
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "null", jrr.GetResultString(), "a block below the head region no node holds")
+	assert.Positive(t, deepCalls.Load())
+	assert.Equal(t, servedMissing+1, refusals("served_missing"), "below the head region is availability, not the promise")
 
 	// bt 1s: W 3s, so the near future is 4 blocks above the ceiling: W of
 	// chain, and the block the chain may have made since the report.
