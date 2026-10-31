@@ -2987,6 +2987,11 @@ export interface HeadRefusal {
   rule: HeadRule;
   block: number /* int64 */;
   /**
+   * Latest is the Latest Block was decided against, 0 while the head
+   * was unknown: then no block was promised.
+   */
+  latest: number /* int64 */;
+  /**
    * Ceiling is the ceiling Block was decided against: the one the Ask
    * returned when Refreshed.
    */

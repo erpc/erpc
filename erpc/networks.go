@@ -1214,8 +1214,10 @@ func (n *Network) refuseFutureRange(req *common.NormalizedRequest, method string
 
 // countRefusal counts the refusal rule's outcome for req (spec §17): data
 // is served, or retried_found after a miss; an empty or missing answer is
-// retried_missing in the band, future above it. Requests naming no block,
-// and empty answers at or below Latest, are no refusal.
+// retried_missing in the band, future above it; a null or missing answer
+// at or below a known Latest is served_missing, a broken head promise.
+// Requests naming no block, and other empty answers at or below Latest
+// (no logs, an empty block's receipts), are no refusal.
 func (n *Network) countRefusal(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse, err error) {
 	v := req.HeadRefusal()
 	if v == nil || v.Block <= 0 {
@@ -1230,11 +1232,24 @@ func (n *Network) countRefusal(ctx context.Context, req *common.NormalizedReques
 			n.countHeadRefusal("served")
 		}
 	case err != nil && !missingDataErr(err):
+	case v.Rule == common.HeadServe:
+		if v.Latest > 0 && (err != nil || isNullResult(ctx, resp)) {
+			n.countHeadRefusal("served_missing")
+		}
 	case v.Rule == common.HeadBand:
 		n.countHeadRefusal("retried_missing")
 	case v.Rule == common.HeadFuture:
 		n.countHeadRefusal(v.FutureRule())
 	}
+}
+
+// isNullResult reports whether resp's result is JSON null.
+func isNullResult(ctx context.Context, resp *common.NormalizedResponse) bool {
+	if resp == nil {
+		return false
+	}
+	jrr, err := resp.JsonRpcResponse(ctx)
+	return err == nil && jrr != nil && isJSONNull(jrr.GetResultBytes())
 }
 
 func (n *Network) countHeadRefusal(rule string) {

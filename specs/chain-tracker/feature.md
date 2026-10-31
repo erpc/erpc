@@ -881,7 +881,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | Metric | Change |
 |---|---|
 | `erpc_chain_tracker_invariant_violations_total{project,network,invariant}` | new; invariant: `sent_above_latest`, `sent_unconfirmed`, `tap_gap`, `removed_unsent`, `pins_unlinked`, `final_hash_changed`, `latest_regressed` (only a `Latest` below a block this instance sent while the lane's ballot counts the same voters as before; a fall with a changed counted set, a voter gone or one joined under a majority quorum, is a membership change, logged, not counted; counted once per fall and re-armed when `Latest` reaches that block again); must stay 0 except `final_hash_changed`, which logs a followed majority, and `latest_regressed` when every upstream rewinds (§14) |
-| `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `retried_found`, `retried_missing` (the promise broke on this instance), `future`, `future_after_refresh`, `future_after_wait` (near future, §6.4); the by-hash wait (§6.4): `held_served`, `held_null` |
+| `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `retried_found`, `retried_missing` (a band read, above `Latest` and at most the ceiling, answered empty or missing after the retry: a vendor head no node serves yet; expected at a low rate where clients read ahead), `served_missing` (a read naming a block at or below `Latest` whose final answer is a JSON `null` or a missing-data error after the retry: the head promise broke on this instance; must stay 0; an empty array, `eth_getLogs` with no logs or an empty block's receipts, is an answer, never `served_missing`), `future`, `future_after_refresh`, `future_after_wait` (near future, §6.4); the by-hash wait (§6.4): `held_served`, `held_null` |
 | `erpc_head_ask_total{project,network,reason,outcome}` | new; reason: the §6.8 caller (`poll`, `catch_up`, `refusal`, `refresh`, `settle`, `no_source`); outcome: `fetched`, `shared_fresh`, `inflight`, `backoff` |
 | `erpc_chain_tracker_confirm_lag_blocks{project,network}` | new: pins head − confirmed head; with no confirmed pin, the number of pins |
 | `erpc_tap_delivery_seconds{transport,kind}` | new: block ready (confirmed-head stamp; logs-head stamp for logs taps) → end of the tap's write |
@@ -931,7 +931,7 @@ Tap metrics label `network` with the network label. Every other metric keeps its
 4. The canary writes the same per-upstream counters the control instances read: gate each stage on canary-written vs control-polled counter agreement. While old and new images share one backend, old pods ignore the rewind mark (§14), and a rewind of up to 1024 blocks reaches them by no path: their own polls treat it as noise (#222), so they keep the higher counter until the chain passes it; a deeper one counts a large rollback against the upstream on old pods.
 5. Go/no-go per stage, in seconds and per subscriber:
    - invariant violations 0;
-   - `retried_missing` 0;
+   - `served_missing` 0;
    - `eth_blockNumber` within 1 bt of control;
    - confirm lag p99 under 2 bt;
    - out-of-range and error rates within control;
@@ -960,7 +960,7 @@ oracle            HTTP checks per delivered block, on the same and another insta
 - `make test-realworld` runs `go test ./test/realworld/... -count=1 -v -timeout 60m`. `make test` excludes `test/`. No container runtime.
 - Each scenario runs on its own chain id. Network-scoped scenarios run concurrently on shared instances, so fixed wall-clock bounds (30s bench floor, 60s primary lead, 60s receipts and gRPC waits, 5 min cordon, 10 min re-ask) overlap; instance-scoped ones (`kill -9`, Redis down, partition, clock skew) run in their own phase with fresh instances.
 - Instance stderr with `WARNING: DATA RACE` or `panic:` fails the run. A failed run keeps its run directory (logs, config, client transcripts) and prints its path.
-- Every scenario asserts `erpc_chain_tracker_invariant_violations_total` = 0 and `retried_missing` = 0 on every instance, unless the row says otherwise; the invariant series are exported at 0 from network start and never swept as idle. Each tolerance is a named constant citing its spec section.
+- Every scenario asserts `erpc_chain_tracker_invariant_violations_total` = 0 and `served_missing` = 0 on every instance, and `retried_missing` = the scenario's own band probes, unless the row says otherwise; the invariant series are exported at 0 from network start and never swept as idle. Each tolerance is a named constant citing its spec section.
 
 Oracle, for every block any subscriber receives, on the same instance and on another:
 
@@ -1028,7 +1028,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | C13 | chain without a `finalized` tag | `finalized` = latest − derived depth (at least 30 min); cache uses it |
 | C14 | 2 of 4 votes on a branch that does not link | canonical stays; no stall |
 | C15 | hashes and roots not Ethereum's (Hedera, Kaia): no header hash recomputes, an empty block's `transactionsRoot` is keccak(""); `validateTransactionsRoot: false` | `gasUsed` 0 is an empty block: its receipts are never fetched; no receipts or logs fetch fails; no tap ends `1013` |
-| C16 | testnet reset: every vendor restarts on a new genesis with the same chainId, its head dropping from millions to 10 | `eth_blockNumber` follows within 2 min (the 60s regression guard, then 60s); every tap restarts on the new chain; a gRPC stream resumed after the reset from an old-chain cursor ends `OUT_OF_RANGE` within W of the ceiling's drop; every latest counter follows and stays on the new chain; no read answers from the old chain, its cached final block included; a read of an old-chain block at or below `Latest` while the guard holds it may count `retried_missing` |
+| C16 | testnet reset: every vendor restarts on a new genesis with the same chainId, its head dropping from millions to 10 | `eth_blockNumber` follows within 2 min (the 60s regression guard, then 60s); every tap restarts on the new chain; a gRPC stream resumed after the reset from an old-chain cursor ends `OUT_OF_RANGE` within W of the ceiling's drop; every latest counter follows and stays on the new chain; no read answers from the old chain, its cached final block included; a read of an old-chain block at or below `Latest` while the guard holds it may count `served_missing`: no upstream serves the old chain any more |
 | C17 | no block for 30 min, past `maxBackfill`, then 20 blocks on demand, each 0–60s after the last | no upstream benched; W stays under its 60s cap; every tap gets every block within its bound |
 | C18 | one wss upstream that finalizes 2 below its head; chain halted; a reorg 3 deep reverts the block one instance's own finalized poll covered | `final_hash_changed` counted only on that instance; every client told of the reorg |
 | D1 | ws client stops reading for 20 blocks; gRPC client stops reading | `newHeads` restart past `reorgWindow`; gRPC `UNAVAILABLE` after the 10s send wait; other taps unaffected |
@@ -1065,7 +1065,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | P7 | C12 | `finalized` = `Head.Finalized`; a hash at or below it never changes; permanent cache only if the serving upstream finalized it |
 | P8 | reorg after a by-number read | the orphan is not served from cache after the reorg notice |
 | P9 | head+1 polling | as K7 |
-| P10 | `flashblocks*` + normal groups; use-upstream client fetches a delivered block | lane-consistent result; no `retried_missing` |
+| P10 | `flashblocks*` + normal groups; use-upstream client fetches a delivered block | lane-consistent result; no `retried_missing`, no `served_missing` |
 | P11 | `translateLatestTag: false` method; one stale-state vendor, then all stale, then all more than 60s stale | stale vendor skipped; all stale → highest tag-state head, not `-32603`; all past 60s → `-32603` with `executedBlock` and `servedTip`, counted `refused` |
 | P11-nitro | a Nitro chain other than Arbitrum One: Multicall3 `getBlockNumber()` answers the parent chain's height, ArbSys `arbBlockNumber()` the chain's own; `skip-interpolation` `eth_call(latest)` | the first probe finds Nitro; every tag-state head is the chain's own height; every call served at `Latest`; no upstream counted stale |
 | P12 | 0.3s blocks; clients ask `eth_getLogs` and `eth_getBlockByNumber` 1–5 blocks above every vendor's head, through consensus slots and hedges, with fresh reports and with one vendor's reports older than 1 bt; one slot's upstream misses a block at or below `Latest` | each answered once the chain reaches its block, within W, with no block-unavailable error; the missing slot retries in head-first order and its siblings are not stopped; a block more than W of chain ahead gets an error: refused, counted `future`, or after the band's retry when a report stays older than 1 bt |

@@ -10544,7 +10544,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Requests naming a block, by the refusal rule's outcome; retried_missing must stay 0.",
+          "description": "Requests naming a block, by the refusal rule's outcome. retried_missing: a block above Latest, at most the highest upstream head, still empty or missing after the retry; a low rate is expected where clients read ahead. served_missing: a block at or below Latest answered null or missing after the retry, a broken head promise; must stay 0.",
           "fieldConfig": {
             "defaults": {
               "color": {

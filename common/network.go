@@ -104,6 +104,9 @@ func (h EvmHead) Rule(n int64, bt time.Duration, now time.Time) HeadRule {
 type HeadRefusal struct {
 	Rule  HeadRule
 	Block int64
+	// Latest is the Latest Block was decided against, 0 while the head
+	// was unknown: then no block was promised.
+	Latest int64
 	// Ceiling is the ceiling Block was decided against: the one the Ask
 	// returned when Refreshed.
 	Ceiling int64

@@ -84,7 +84,7 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 		h.OldestReportAt = time.Time{}
 	}
 	asked := time.Now()
-	v := &common.HeadRefusal{Block: n, Rule: h.Rule(n, bt, asked)}
+	v := &common.HeadRefusal{Block: n, Latest: h.Latest, Rule: h.Rule(n, bt, asked)}
 	if v.Rule == common.HeadStale && net != nil {
 		h.Ceiling, h.OldestReportAt = net.EvmAskStale(ctx, sel)
 		if cold {

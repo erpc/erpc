@@ -761,7 +761,10 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 
 // A future block dispatched (shortCircuitFutureBlocks off) takes one
 // retryable miss too (spec §6.4): the first null is never final, and the
-// answer after it goes to the client as the upstream gave it. Once the
+// answer after it goes to the client as the upstream gave it. A block at
+// or below Latest every node answers null breaks the head promise:
+// served_missing, never retried_missing; logs at or below Latest answered
+// with an empty array are an answer, no refusal (§17). Once the
 // block time is known, a block at most W / bt + 1 above the ceiling waits for
 // it, at most W, while the voters are Asked every bt (near future): a
 // numbered read and a log range are served once the nodes reach them,
@@ -790,6 +793,23 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	var first, second, nearCalls atomic.Int64
 	mockGetBlockByNumberAt("0x69", "null", &first, "fm1")
 	mockGetBlockByNumberAt("0x69", futureBlockSentinel, &second, "fm2", "fm3")
+	var belowCalls, noLogsCalls atomic.Int64
+	mockGetBlockByNumberAt("0x60", "null", &belowCalls, ids...)
+	for _, id := range ids {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, `"eth_getLogs"`) || !strings.Contains(body, `"0x61"`) {
+					return false
+				}
+				noLogsCalls.Add(1)
+				return true
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[]}`))
+	}
 	for _, id := range ids {
 		gock.New("http://" + id + ".localhost").
 			Post("").
@@ -850,6 +870,27 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	assert.Contains(t, jrr.GetResultString(), "0x270f", "the answer after the future block's one miss")
 	assert.Positive(t, first.Load(), "the first upstream answered null")
 	assert.Equal(t, int64(1), second.Load(), "one retry")
+
+	refusals := func(rule string) float64 {
+		return promUtil.ToFloat64(telemetry.MetricHeadRefusalTotal.WithLabelValues("test", network.Label(), rule))
+	}
+	servedMissing, retriedMissing := refusals("served_missing"), refusals("retried_missing")
+	resp, err = network.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x60",false]}`)))
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "null", jrr.GetResultString(), "a block 4 below Latest no node holds")
+	assert.GreaterOrEqual(t, belowCalls.Load(), int64(len(ids)), "every node asked")
+	assert.Equal(t, servedMissing+1, refusals("served_missing"), "the head promise broke")
+	assert.Equal(t, retriedMissing, refusals("retried_missing"), "no band read")
+
+	resp, err = network.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x61","toBlock":"0x61"}]}`)))
+	require.NoError(t, err, "no logs at or below Latest")
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "[]", jrr.GetResultString())
+	assert.Positive(t, noLogsCalls.Load())
+	assert.Equal(t, servedMissing+1, refusals("served_missing"), "an empty array is an answer")
 
 	// bt 1s: W 3s, so the near future is 4 blocks above the ceiling: W of
 	// chain, and the block the chain may have made since the report.

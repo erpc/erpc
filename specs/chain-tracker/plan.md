@@ -105,7 +105,7 @@ T   the rest of the real-world catalogue
 ## H6: signals
 
 - Add (spec §17): `erpc_chain_tracker_invariant_violations_total` (`latest_regressed` only below a block this instance sent), `erpc_head_refusal_total` with `future_after_refresh`, `erpc_head_ask_total`, `erpc_chain_tracker_confirm_lag_blocks`, `erpc_tap_delivery_seconds`, `erpc_served_tip_voters`, `erpc_served_tip_quorum`, `erpc_upstream_tag_state_stale`, `erpc_upstream_tag_state_all_stale_total`; structured transition logs; spans for tracker fetches, Asks and tap reads.
-- Tests, real-world: every scenario asserts invariant violations 0 and `retried_missing` 0; X7, X8.
+- Tests, real-world: every scenario asserts invariant violations 0, `served_missing` 0 and `retried_missing` at its own band probes; X7, X8.
 
 ## HS: shared counters
 
