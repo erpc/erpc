@@ -252,7 +252,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].routing.scoreLatencyQuantile` | float64 | `0` → policy default p70 | Which response-time quantile feeds the score. |
 | `upstreams[*].routing.probe` | `"on"` \| `"off"` | `""` → `on` | `off` opts this upstream out of probe-excluded shadow-mirror traffic. |
 | `upstreams[*].evm.chainId` | int64 | `0` → auto-detected via `eth_chainId` at bootstrap | Mismatch against detected value is **fatal** (no retry). Must be `0` for vendor-shorthand endpoints. |
-| `upstreams[*].evm.statePollerInterval` | Duration | `30s` (<SourceLink file="common/defaults.go" lines="1718-1724" />) | Background latest/finalized poll cadence. Non-zero required. |
+| `upstreams[*].evm.statePollerInterval` | Duration | `30s` (<SourceLink file="common/defaults.go" lines="1718-1724" />) | Background latest/finalized poll cadence. `0` is unset and becomes `30s`. **A negative value (e.g. `-1s`) turns polling off**; see [Paid last-resort upstreams](#paid-last-resort-upstreams). |
 | `upstreams[*].evm.statePollerDebounce` | Duration | `0` → inferred from chain block time | Minimum spacing between forced polls. |
 | `upstreams[*].evm.skipWhenSyncing` | `*bool` | `false` (<SourceLink file="common/defaults.go" lines="1766-1772" />) | Skip requests with `ErrUpstreamSyncing` while the poller reports syncing state. |
 | `upstreams[*].evm.skipSyncingCheck` | `*bool` | `false` | Disable `eth_syncing` polling for this upstream and hard-set syncing state to `NotSyncing`. Use for nodes that always return a syncing object (e.g. Pharos/Antora) even when fully caught up, which would otherwise cause permanent circuit-breaker false positives. |
@@ -987,6 +987,51 @@ SVM upstream gets its own slot/health poller automatically:
 - [`clients/http_json_rpc_client.go:L109`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L109) — `GenericHttpJsonRpcClient` transport construction, batch aggregation, gzip pools, error normalization.
 - [`clients/proxy_pool_registry.go:L23`](https://github.com/erpc/erpc/blob/main/clients/proxy_pool_registry.go#L23) — `ProxyPool` round-robin selection via atomic counter.
 - [`upstream/upstream_block_availability_test.go`](https://github.com/erpc/erpc/blob/main/upstream/upstream_block_availability_test.go) — exhaustive availability edge cases: negative/zero blocks, reorgs, pruning races, poll-count assertions.
+
+### Paid last-resort upstreams
+
+A fallback on a provider that bills every request also bills the traffic eRPC
+sends on its own: state polling and a `newHeads` subscription. To pay only when
+the fallback is actually used:
+
+1. **Use it last.** Tag it `tier:fallback` and set
+   `failover.onDefaultsExhausted: true`: it gets a request only after the other
+   upstreams failed it. <SourceLink file="common/config.go" lines="766-787" />
+2. **Don't poll it.** Set `evm.statePollerInterval` or `svm.statePollerInterval`
+   to `-1s`. Its head or slot is then unknown, which the block and slot filters
+   treat as "can serve", so it can still be selected. `chainId` detection and
+   `checkGenesisHash` still run once at startup.
+   <SourceLink file="architecture/evm/evm_state_poller.go" lines="204-212" />
+   <SourceLink file="architecture/svm/svm_state_poller.go" lines="283-290" />
+3. **Subscribe to heads only during an outage** (WebSocket only). Set
+   `failover.onDemandFallbackHeads: true`. The fallback stays connected but
+   subscribes `newHeads` only while none of the other upstreams streams heads,
+   and unsubscribes once one has streamed them again for 60 s.
+   <SourceLink file="erpc/subscription_manager.go" lines="340-406" />
+
+The API key in the endpoint URL is redacted in the WebSocket connection logs.
+
+```yaml
+projects:
+  - id: main
+    networkDefaults:
+      failover:
+        onDefaultsExhausted: true
+        onDemandFallbackHeads: true
+    upstreams:
+      # our own node: polled and used first
+      - endpoint: ws://eth-node:8546
+        evm: { chainId: 1 }
+      # paid provider: never polled, heads only while our node has none
+      - endpoint: wss://paid-provider.example/rpc/${API_KEY}
+        tags: [tier:fallback]
+        evm: { chainId: 1, statePollerInterval: -1s }
+      # the same for a Solana network
+      - endpoint: https://paid-provider.example/solana/${API_KEY}
+        type: svm
+        tags: [tier:fallback]
+        svm: { cluster: mainnet-beta, statePollerInterval: -1s }
+```
 
 ### Related pages
 
