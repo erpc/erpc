@@ -4679,7 +4679,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 			"expected network evm:1 to not be supported because only evm:5 and evm:10 are allowed")
 	})
 
-	t.Run("RespectsOnlyNetworksWhenMatch", func(t *testing.T) {
+	t.Run("RespectsOnlyAndIgnoreNetworksWhenMatch", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
@@ -4697,6 +4697,15 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 							OnlyNetworks:       []string{"evm:1", "evm:10"},
 							UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
 						},
+						{
+							Id:     "alchemy-ignored",
+							Vendor: "alchemy",
+							Settings: map[string]interface{}{
+								"apiKey": "test-key",
+							},
+							IgnoreNetworks:     []string{"evm:1"},
+							UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+						},
 					},
 				},
 			},
@@ -4708,7 +4717,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 			"chainId": "0x1",
 		})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		gock.New("https://eth-mainnet.g.alchemy.com").
@@ -4716,6 +4725,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 			Filter(func(request *http.Request) bool {
 				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
+			Persist().
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -4723,12 +4733,23 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 				"result":  "0x123456",
 			})
 
-		// This request calls evm:1, which is not in the OnlyNetworks list
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, map[string]string{
-			"chainId": "1",
-		})
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x123456")
+		// A zero-padded chain id names evm:1 too: it is served by the evm:1
+		// upstream and creates no upstream from a provider that ignores evm:1.
+		for _, chainId := range []string{"1", "01", "0001"} {
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, map[string]string{
+				"chainId": chainId,
+			})
+			assert.Equal(t, http.StatusOK, statusCode, "chainId %s: %s", chainId, body)
+			assert.Contains(t, body, "0x123456", "chainId %s", chainId)
+		}
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		var upstreamIds []string
+		for _, ups := range prj.upstreamsRegistry.GetAllUpstreams() {
+			upstreamIds = append(upstreamIds, ups.Id())
+		}
+		assert.Equal(t, []string{"alchemy-prod-evm:1"}, upstreamIds)
 	})
 
 	t.Run("EventuallyAddsUpstreamWhenSupportsNetworkFailsInitially", func(t *testing.T) {
