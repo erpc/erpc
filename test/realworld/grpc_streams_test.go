@@ -529,7 +529,7 @@ func g5() spec {
 // cursor below the window ends OUT_OF_RANGE with ErrorInfo oldestBlock,
 // oldestHash.
 func g6() spec {
-	return spec{name: "G6", bound: healthyDelivery, evm: finalityEvm(), body: func(s *scenario) {
+	return spec{name: "G6", bound: healthyDelivery, evm: finalityEvm(), upEvm: finalizedEvery(finalizedPoll), body: func(s *scenario) {
 		s.blocks(chainsim.FinalizedLag + 10)
 		conn := s.dialGrpc(s.name, s.h.pods[0].grpcAddr())
 		if conn == nil {
@@ -552,7 +552,7 @@ func g6() spec {
 			}
 		}
 		if n < 30 {
-			s.violate(s.name, "%d finalized headers in 60 blocks", n)
+			s.violate(s.name, "%d finalized headers in 60 blocks, ended %v", n, err)
 		}
 		// Below the window and the final hold the finalized stream had.
 		old := s.chain.CanonAt(s.chain.Tip().Number - chainsim.FinalizedLag - 40)
@@ -605,7 +605,14 @@ func g7() spec {
 				s.violate(s.name, "stream 101 ended %v, want RESOURCE_EXHAUSTED", err)
 			}
 		}
-		if v, ok := s.waitMetric(0, "erpc_grpc_streams_rejected_total", map[string]string{"reason": "per_connection"}, 10*time.Second, func(v float64) bool { return v >= 1 }); !ok {
+		// The counter has no network label (§12): match the project only.
+		rejected := map[string]string{"reason": "per_connection"}
+		v, _ := s.projectMetric(0, "erpc_grpc_streams_rejected_total", rejected)
+		for deadline := time.Now().Add(10 * time.Second); v < 1 && time.Now().Before(deadline); {
+			time.Sleep(scrapeEvery)
+			v, _ = s.projectMetric(0, "erpc_grpc_streams_rejected_total", rejected)
+		}
+		if v < 1 {
 			s.violate(s.name, "erpc_grpc_streams_rejected_total %v, want 1", v)
 		}
 	}}

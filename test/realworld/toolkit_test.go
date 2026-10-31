@@ -529,16 +529,25 @@ func t5(start toolkitStarter, name string) spec {
 	}}
 }
 
-// T6: a finalized stream for 25 minutes under the 10-minute connection
-// age: at least 2 UNAVAILABLE ends, each resumed at once; no gap, no
-// duplicate key.
+// t6Age and t6Run: T6's connection age and run, the spec's 10 and 25
+// minutes scaled to keep its ratio, so the run fits a 10-minute command.
+const (
+	t6Age = 90 * time.Second
+	t6Run = 5 * time.Minute
+)
+
+// T6: a finalized stream for t6Run under a t6Age connection age: at least
+// 2 UNAVAILABLE ends, each resumed at once; no gap, no duplicate key. A
+// resume shows as an apply only once Finalized moves, so it moves each
+// finalizedPoll.
 func t6(start toolkitStarter, name string) spec {
-	return spec{name: name, bound: healthyDelivery, clients: func(*scenario) {}, body: func(s *scenario) {
+	vars := map[string]time.Duration{"erpc.GrpcMaxConnectionAge": t6Age}
+	return spec{name: name, bound: healthyDelivery, vars: vars, upEvm: finalizedEvery(finalizedPoll), clients: func(*scenario) {}, body: func(s *scenario) {
 		s.blocks(25)
 		c := s.newToolkitClient(s.name + "/app")
 		stop := start(s, c, streams.Config{Endpoints: []string{s.grpcEndpoint(0)}, Kind: streams.Logs, Filter: toolkitFilter(0),
 			Finality: streams.Finalized, HeartbeatSeconds: toolkitBeat}, filepath.Join(s.dir, "app.cursor"), 0)
-		for end := time.Now().Add(25 * time.Minute); time.Now().Before(end); {
+		for end := time.Now().Add(t6Run); time.Now().Before(end); {
 			s.blocks(50)
 		}
 		stop()
@@ -554,7 +563,7 @@ func t6(start toolkitStarter, name string) spec {
 			}
 		}
 		if ends < 2 {
-			s.violate(c.name, "%d UNAVAILABLE ends in 25 min, want ≥ 2 from the connection age", ends)
+			s.violate(c.name, "%d UNAVAILABLE ends in %s, want ≥ 2 from the %s connection age", ends, t6Run, t6Age)
 		}
 	}}
 }
