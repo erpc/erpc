@@ -136,6 +136,32 @@ func (n *servedChain) release(ref string) {
 	delete(n.gates, ref)
 }
 
+// forkedChain is servedChain with four hash voters, a to d, of four
+// vendors; a settle Ask waits until answer closes and then answers latest.
+type forkedChain struct {
+	*servedChain
+	latest json.RawMessage
+	answer chan struct{}
+	asks   atomic.Int32
+}
+
+func (n *forkedChain) EvmHashVoters(string, time.Duration, bool) HashVoters {
+	ids := []string{"a", "b", "c", "d"}
+	return HashVoters{Voters: ids, Hash: ids, Need: 2,
+		Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "d": "vendor-d"}, Distinct: 4}}
+}
+
+func (n *forkedChain) EvmAskHead(ctx context.Context, _ string, _ common.HeadNeed, _ time.Duration, _ time.Time, _ common.AskReason) common.HeadAnswer {
+	n.asks.Add(1)
+	select {
+	case <-n.answer:
+	case <-ctx.Done():
+		return common.HeadAnswer{Err: ctx.Err()}
+	}
+	sent := time.Now()
+	return common.HeadAnswer{Outcome: common.AskFetched, At: sent, Next: sent.Add(time.Hour), Header: askedHeader(n.latest)}
+}
+
 func TestChainTracker(t *testing.T) {
 	t.Run("a vote pins its block", func(t *testing.T) {
 		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
@@ -337,6 +363,96 @@ func TestChainTracker(t *testing.T) {
 		v, _ = c.HashAt(6)
 		assert.Equal(t, testHash("a", 6), v, "the branch hangs from the fork point")
 		assert.Equal(t, before, reanchors(), "a reorg inside the window is no re-anchor")
+	})
+
+	// A revert deeper than reorgWindow re-anchors the pins on the new
+	// branch, and fill links it down to the fork point in the old tree,
+	// whose root is final. While a settle round holds the pins, that link
+	// makes the old root the pins' root before the pins reach it: a tap
+	// whose cursor is on the old branch met the pins' own root unlinked and
+	// ended fork_left_window (real world C12: a 74-deep revert ended gRPC
+	// streams), where it waits for the pins and reverts once they move.
+	t.Run("a cursor on a branch reverted deeper than the window waits for the pins to reach the fork", func(t *testing.T) {
+		ctx := context.Background()
+		net := &forkedChain{servedChain: newServedChain(t, "evm:deep-revert"), answer: make(chan struct{})}
+		a := func(n uint64) json.RawMessage {
+			parent := "0x" + strings.Repeat("0", 64)
+			if n > 0 {
+				parent = testHash("a", n-1)
+			}
+			return testHeader(n, testHash("a", n), parent)
+		}
+		b := func(n uint64) json.RawMessage {
+			parent := testHash("b", n-1)
+			if n == 6 {
+				parent = testHash("a", 5)
+			}
+			return testHeader(n, testHash("b", n), parent)
+		}
+		for n := uint64(0); n <= 20; n++ {
+			net.serve(n, testHash("a", n), a(n))
+		}
+		net.latest = b(21)
+		c := newChainTracker(t.Context(), net, 8, time.Hour, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		t.Cleanup(c.Want(indexer.ReadOpts{Resumable: true}))
+		for _, src := range []string{"a", "b", "c", "d"} {
+			voteChain(t, c, src, "a", 0, 20, "0x"+strings.Repeat("0", 64))
+		}
+		v, _ := c.HashAt(20)
+		require.Equal(t, testHash("a", 20), v)
+
+		for n := uint64(6); n <= 21; n++ {
+			net.serve(n, testHash("b", n), b(n))
+		}
+		net.hold("0x6")
+		hash := func(tag string, n uint64) (h [32]byte) {
+			require.True(t, decodeHex32(testHash(tag, n), &h))
+			return h
+		}
+		type result struct {
+			b   indexer.Batch
+			err error
+		}
+		read := make(chan result, 1)
+		go func() {
+			rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			b, err := c.Read(rctx, indexer.Cursor{Number: 20, Hash: hash("a", 20)}, indexer.ReadOpts{})
+			read <- result{b, err}
+		}()
+		for _, src := range []string{"a", "b", "c"} {
+			c.Observe(src, b(21), true)
+		}
+		require.Eventually(t, func() bool {
+			c.sync(ctx)
+			v, _ := c.HashAt(21)
+			_, held := c.HeldNumber(testHash("b", 7))
+			return v == testHash("b", 21) && held
+		}, 5*time.Second, 5*time.Millisecond, "the pins re-anchor on b and fill reaches b7")
+
+		// d's vote forks off the pins: its refresh holds them while its
+		// round Asks the others.
+		c.Observe("d", testHeader(21, testHash("d", 21), testHash("b", 20)), true)
+		require.Eventually(t, func() bool {
+			c.sync(ctx)
+			return net.asks.Load() > 0
+		}, 5*time.Second, 5*time.Millisecond, "d's refresh starts a round")
+
+		// b6's fetch links b to a5, in a's tree.
+		net.release("0x6")
+		select {
+		case r := <-read:
+			require.Failf(t, "the read ended before the pins reached the fork point", "err %v, batch %+v", r.err, r.b)
+		case <-time.After(500 * time.Millisecond):
+		}
+		close(net.answer)
+		r := <-read
+		require.NoError(t, r.err, "the cursor's branch links to the pins: a revert, not fork_left_window")
+		require.Len(t, r.b.Reverted, 15)
+		assert.Equal(t, hash("a", 20), r.b.Reverted[0].Hash)
+		assert.Equal(t, hash("a", 6), r.b.Reverted[14].Hash)
+		require.NotEmpty(t, r.b.Applied)
+		assert.Equal(t, hash("b", 6), r.b.Applied[0].Hash, "the new branch applies from the fork point + 1")
 	})
 
 	// No tap and no integrity check read the history of an idle network,
