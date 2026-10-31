@@ -35,9 +35,15 @@ type RateLimitersRegistry struct {
 	cfg             *common.RateLimiterConfig
 	budgetsLimiters sync.Map
 	envoyCache      limiter.RateLimitCache
-	statsManager    stats.Manager
-	cacheMu         sync.RWMutex
-	initializer     *util.Initializer
+	// overLimitCache is the same freecache passed to the envoy FixedRateLimitCache.
+	// Kept here so TryAcquirePermit can honor a cached OVER_LIMIT when DoLimit
+	// fails on a sibling (uncached) descriptor — envoy panics the whole call.
+	overLimitCache *freecache.Cache
+	cacheKeyGen    limiter.CacheKeyGenerator
+	timeSource     utils.TimeSource
+	statsManager   stats.Manager
+	cacheMu        sync.RWMutex
+	initializer    *util.Initializer
 }
 
 func NewRateLimitersRegistry(appCtx context.Context, cfg *common.RateLimiterConfig, logger *zerolog.Logger) (*RateLimitersRegistry, error) {
@@ -144,18 +150,21 @@ func (r *RateLimitersRegistry) connectRedisTask(ctx context.Context) (err error)
 		)
 	}
 
+	prefix := defaultCacheKeyPrefix(r.cfg.Store.CacheKeyPrefix)
+	timeSource := utils.NewTimeSourceImpl()
+	overLimitCache := freecache.NewCache(overLimitCacheBytes)
 	cache := redis.NewFixedRateLimitCacheImpl(
 		client,
 		nil,
-		utils.NewTimeSourceImpl(),
+		timeSource,
 		// Locked: concurrent DoLimit calls draw expiry jitter from it.
 		rand.New(utils.NewLockedSource(time.Now().UnixNano())), // #nosec G404
 		5,
 		// Remembers keys over their limit until the window ends, so denials
 		// skip Redis. Eviction only costs a Redis call.
-		freecache.NewCache(overLimitCacheBytes),
+		overLimitCache,
 		defaultNearLimitRatio(r.cfg.Store.NearLimitRatio),
-		defaultCacheKeyPrefix(r.cfg.Store.CacheKeyPrefix),
+		prefix,
 		mgr,
 		false,
 	)
@@ -165,6 +174,9 @@ func (r *RateLimitersRegistry) connectRedisTask(ctx context.Context) (err error)
 	// The statsManager created in bootstrap() is sufficient and identical.
 	r.cacheMu.Lock()
 	r.envoyCache = cache
+	r.overLimitCache = overLimitCache
+	r.cacheKeyGen = limiter.NewCacheKeyGenerator(prefix)
+	r.timeSource = timeSource
 	r.cacheMu.Unlock()
 
 	r.logger.Info().Str("url", util.RedactEndpoint(url)).Msg("successfully connected to Redis for rate limiting")
@@ -251,6 +263,14 @@ func (r *RateLimitersRegistry) GetCache() limiter.RateLimitCache {
 	r.cacheMu.RLock()
 	defer r.cacheMu.RUnlock()
 	return r.envoyCache
+}
+
+// overLimitLookup returns the shared over-limit freecache and the keying
+// helpers needed to probe it without going through envoy's DoLimit.
+func (r *RateLimitersRegistry) overLimitLookup() (*freecache.Cache, limiter.CacheKeyGenerator, utils.TimeSource) {
+	r.cacheMu.RLock()
+	defer r.cacheMu.RUnlock()
+	return r.overLimitCache, r.cacheKeyGen, r.timeSource
 }
 
 func (r *RateLimitersRegistry) GetBudget(budgetId string) (*RateLimiterBudget, error) {
