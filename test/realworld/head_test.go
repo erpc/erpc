@@ -907,10 +907,10 @@ func pollNext(s *scenario, farFuture bool) {
 // oweBandProbes owes each pod one retried_missing per band probe: whether a
 // null poll was in the band or above the ceiling is the pod's verdict at
 // that instant, which only its counters show, so the band probes are its
-// null answers less those it counted future. A null the pod counted as no
-// refusal at all (a block at or below Latest) leaves retried_missing short
-// of what is owed, and a retried_missing from anything but these polls
-// exceeds it.
+// null answers less those it counted future. A null poll at or below
+// Latest counts served_missing, which no row owes, and leaves
+// retried_missing short of what is owed; a retried_missing from anything
+// but these polls exceeds it.
 func oweBandProbes(s *scenario, nulls []float64) {
 	for pod, n := range nulls {
 		ss, err := s.h.pods[pod].scrape()
@@ -932,7 +932,9 @@ func oweBandProbes(s *scenario, nulls []float64) {
 // (vendor-b) p10NormalLag behind, each a use-upstream lane. A newHeads
 // client on a lane gets blocks its lane holds, and fetches each over HTTP
 // on the same lane on every pod (§6.4 lanes, §6.5 a use-upstream
-// connection gates on its lane); no retry misses (retried_missing 0). The
+// connection gates on its lane): a pod whose lane Latest has not reached
+// the block yet finds it on the band's retry (retried_missing 0), and one
+// whose Latest holds it serves it (served_missing 0, as on every row). The
 // normal lane trails by more than reorgWindow blocks, yet its taps never
 // restart: a lane tap's block is ready when its lane's Latest reached it
 // (§10.2).

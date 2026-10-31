@@ -370,8 +370,8 @@ func c15() spec {
 // new chain; a stream resumed from an old-chain cursor no tree holds ends
 // OUT_OF_RANGE; and no read is answered from the old chain, though its
 // finalized block was cached permanently. A read of an old-chain block
-// while the regression guard holds Latest may count retried_missing; no
-// other may (§6.4, §14, §10.1, §10.2; §19 C16).
+// at or below the Latest the regression guard holds may count
+// served_missing; no other may (§6.4, §14, §10.1, §10.2; §17; §19 C16).
 func c16() spec {
 	return spec{name: "C16", cache: true, bound: healthyDelivery, sim: chainsim.Config{First: c16First},
 		allow: []string{"ws:logs-end", "ws:jump", "grpc:OutOfRange"},
@@ -408,7 +408,7 @@ func c16() spec {
 			dead := s.chain.CanonAt(was.Number - 2*reorgWindow)
 			missing0 := make([]float64, len(s.h.pods))
 			for pod := range s.h.pods {
-				missing0[pod], _ = s.metric(pod, "erpc_head_refusal_total", map[string]string{"rule": "retried_missing"})
+				missing0[pod], _ = s.metric(pod, "erpc_head_refusal_total", map[string]string{"rule": "served_missing"})
 			}
 			at := time.Now()
 			ex := s.excuse(-1, at)
@@ -448,9 +448,9 @@ func c16() spec {
 			// release, which the pod's eth_blockNumber showed.
 			time.Sleep(time.Until(last.Add(liveBound)))
 			for pod := range s.h.pods {
-				v, _ := s.metric(pod, "erpc_head_refusal_total", map[string]string{"rule": "retried_missing"})
-				s.logf("pod-%d: %v retried_missing while the guard held Latest", pod+1, v-missing0[pod])
-				s.owe(pod, "retried_missing", v-missing0[pod])
+				v, _ := s.metric(pod, "erpc_head_refusal_total", map[string]string{"rule": "served_missing"})
+				s.logf("pod-%d: %v served_missing while the guard held Latest", pod+1, v-missing0[pod])
+				s.owe(pod, "served_missing", v-missing0[pod])
 			}
 			// Taps restart once the pins re-anchor, after Latest follows,
 			// within c16Follow; ws logs then close 1013 over

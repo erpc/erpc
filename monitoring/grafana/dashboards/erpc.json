@@ -18110,7 +18110,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Requests naming a block, by the refusal rule's outcome; retried_missing must stay 0.",
+          "description": "Requests naming a block, by the refusal rule's outcome. retried_missing: a block above Latest, at most the highest upstream head, still empty or missing after the retry; a low rate is expected where clients read ahead. served_missing: eth_getBlockByNumber of a block within reorgWindow of Latest, at or below it, answered null or missing after the retry, a broken head promise; must stay 0. Other methods and older blocks are not counted: their null can be legit or is block availability.",
           "fieldConfig": {
             "defaults": {
               "color": {

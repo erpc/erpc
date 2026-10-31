@@ -146,11 +146,12 @@ next:
 // requireNoInvariantViolation: pod exports
 // erpc_chain_tracker_invariant_violations_total for the network, every
 // invariant but final_hash_changed at what the scenario owes it (0 unless
-// its row says otherwise), and
-// erpc_head_refusal_total{rule=retried_missing} at the scenario's own band
-// probes, each a retried miss by definition (§6.4, §17, §19; owe). The
-// harness runs it on every new-image pod after each scenario; a scrape
-// adds the counts from before each restart of the pod (pod.counted).
+// its row says otherwise); erpc_head_refusal_total{rule=retried_missing}
+// at the scenario's own band probes, each a retried miss by definition;
+// and {rule=served_missing}, a broken head promise, at 0 unless its row
+// owes it (§6.4, §17, §19; owe). The harness runs it on every new-image
+// pod after each scenario; a scrape adds the counts from before each
+// restart of the pod (pod.counted).
 func (s *scenario) requireNoInvariantViolation(pod int) {
 	ss, err := s.h.pods[pod].scrape()
 	if err != nil {
@@ -171,9 +172,11 @@ func (s *scenario) requireNoInvariantViolation(pod int) {
 			s.violate(s.name, "pod-%d: erpc_chain_tracker_invariant_violations_total{invariant=%s} = %v, not %v", pod+1, inv, v, want)
 		}
 	}
-	want := s.owedOn(pod, "retried_missing")
-	if v, _ := sumOf(ss, "erpc_head_refusal_total", map[string]string{"project": s.project, "network": s.network(), "rule": "retried_missing"}); v != want {
-		s.violate(s.name, "pod-%d: erpc_head_refusal_total{rule=retried_missing} = %v, not %v (the scenario's own band probes)", pod+1, v, want)
+	for _, rule := range []string{"retried_missing", "served_missing"} {
+		want := s.owedOn(pod, rule)
+		if v, _ := sumOf(ss, "erpc_head_refusal_total", map[string]string{"project": s.project, "network": s.network(), "rule": rule}); v != want {
+			s.violate(s.name, "pod-%d: erpc_head_refusal_total{rule=%s} = %v, not the %v its row owes", pod+1, rule, v, want)
+		}
 	}
 }
 
