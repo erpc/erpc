@@ -414,7 +414,7 @@ err := streams.Run(ctx, streams.Config{
 ```
 
 - Endpoint `grpc(s)://host:port/<project>/evm/<chainId>`: the library dials `host:port` and sends the path as `x-erpc-project`, `x-erpc-chain-id` metadata (`erpc/grpc_server.go` `extractRequestInput`).
-- `run` / `Run` return only on stop or a terminal end: `OutOfRangeError{Cursor, Oldest}`, `FinalRevertedError`, auth or option errors. No backfill helper: backfill older than the window is "never".
+- `run` / `Run` return only on stop or a terminal end (§9.5): `OutOfRangeError{Endpoint, Cursor, Oldest}` (`Cursor`: the one that endpoint's stream resumed from), `FinalRevertedError{Endpoint}`, `MessageTooLargeError{Endpoint, Block}`, auth or option errors, or the handler's error. No handler call starts after stop or after a terminal end. No backfill helper: backfill older than the window is "never".
 - The cursor is saved after `apply` or `undo` returns without error: at-least-once; `Log.Key()` = `blockHash:logIndex`.
 - The library asks for `undo` (or `none` with `finalized`), so apps see one reorg shape; `StreamBlocks`' resend from fork point + 1 becomes an `undo` call.
 - Pending: `apply` gets a transaction batch; no cursor, no `undo`.
@@ -423,12 +423,13 @@ err := streams.Run(ctx, streams.Config{
 
 | Concern | Rule |
 |---|---|
-| Connect | gRPC with §6.3 windows; `heartbeatSeconds` set; `from` = saved cursor |
-| Watchdog | no message for 3 × heartbeat → cancel the stream, status `reconnecting` |
-| Reconnect | `UNAVAILABLE` after messages flowed (connection age, drain, stall, lag): resume at once; otherwise jittered exponential backoff 0.5s → 30s, reset after 60s connected |
-| Terminal | `OUT_OF_RANGE`, `ABORTED` (`final_reverted`), `RESOURCE_EXHAUSTED` with `ErrorInfo` reason `MESSAGE_TOO_LARGE`, `UNAUTHENTICATED`, `PERMISSION_DENIED`, `INVALID_ARGUMENT`: stop and return the error |
+| Connect | gRPC with §6.3 windows; `heartbeatSeconds` always sent, 5 when the app leaves it 0 (the server's lowest default), so the watchdog runs on the server's actual interval; `from` = saved cursor |
+| Watchdog | no message for 3 × heartbeat while not waiting on the handler → cancel the stream, status `reconnecting`; messages the cancelled stream buffered are dropped |
+| Reconnect | `UNAVAILABLE` or watchdog after messages flowed (connection age, drain, stall, lag): resume at once; otherwise, a stream the library restarted included, jittered exponential backoff 0.5s → 30s, reset after 60s connected |
+| Terminal, per run | `UNAUTHENTICATED`, `PERMISSION_DENIED`, `INVALID_ARGUMENT`, `RESOURCE_EXHAUSTED` with `ErrorInfo` reason `MESSAGE_TOO_LARGE`, a handler error: stop every connection at once and return the error |
+| Terminal, per endpoint | `OUT_OF_RANGE`, `ABORTED` (`final_reverted`): that endpoint's view of the chain (a new pod's window, a cursor on a branch it never saw: `cursor_unknown`). Stop and return the error when no other connection's stream is open; else that connection reconnects with backoff |
 | Dedup | `apply` skips a block whose hash is already applied on the current branch |
-| Merge (2 endpoints) | each connection resumes from the merged cursor; the library keeps each connection's last `reorgWindow` (number, hash) and the merged chain; it follows the connection with the highest tip, ties keep the current one; switching branch emits `undo` to the fork point of the two chains, then that connection's blocks above it; a block already applied (same hash) is skipped |
+| Merge (2 endpoints) | each connection resumes from the merged cursor; the library keeps each connection's session blocks, linked by `parentHash` (a block that does not link restarts that connection), the last 256 of them, and the merged chain as contiguous (number, hash); it follows the open connection with the highest block, ties keep the current one, and falls back to the next open one when the leader shares no block; switching branch emits `undo` to the fork point of the two chains, then every block of that connection above it; a block already applied (same hash) is skipped. A fork deeper than 256 blocks restarts that connection, whose server then sends the `undo` (CT§10.1). A connection's `undo` counts only while it leads; a non-leader waits for its next block. Switching that needs an `undo` without `handler.undo` (`finalized`) ends with `FinalRevertedError` |
 
 ### 9.6 Guide
 

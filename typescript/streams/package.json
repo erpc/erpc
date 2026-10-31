@@ -1,0 +1,53 @@
+{
+  "name": "@erpc-cloud/streams",
+  "version": "0.5.0",
+  "description": "Gap-free, reorg-aware block, log and mempool streams from eRPC over gRPC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/erpc/erpc.git"
+  },
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "require": "./lib/index.js",
+      "import": "./lib/index.js",
+      "default": "./lib/index.js"
+    }
+  },
+  "files": [
+    "lib",
+    "src"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "build": "pnpm build:lib && pnpm build:types",
+    "build:lib": "esbuild src/index.ts --outfile=lib/index.js --bundle --platform=node --target=node22 --format=cjs --sourcemap --external:@grpc/grpc-js",
+    "build:types": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p examples/tsconfig.json",
+    "test": "pnpm build && node --test test/streams.test.mjs",
+    "prepack": "pnpm build"
+  },
+  "keywords": [
+    "erpc",
+    "evm",
+    "grpc",
+    "streams"
+  ],
+  "author": "erpc",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@grpc/grpc-js": "1.14.7"
+  },
+  "devDependencies": {
+    "@bufbuild/protobuf": "2.16.0",
+    "@types/node": "^22.20.1",
+    "esbuild": "^0.28.1",
+    "ts-proto": "2.18.3",
+    "typescript": "5.9.3"
+  }
+}

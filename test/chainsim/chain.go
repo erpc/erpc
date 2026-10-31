@@ -341,6 +341,20 @@ func (c *Chain) CanonAt(n uint64) *Block {
 	return c.canonAtLocked(n)
 }
 
+// ServedAt is the block at n on the branch v serves, nil above its tip.
+func (c *Chain) ServedAt(v *Vendor, n uint64) *Block {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	b := v.targetLocked()
+	for b != nil && b.Number > n {
+		b = b.Parent
+	}
+	if b == nil || b.Number != n {
+		return nil
+	}
+	return b
+}
+
 // MintedBetween are the canonical blocks minted in [from, to], oldest
 // first.
 func (c *Chain) MintedBetween(from, to time.Time) []*Block {
