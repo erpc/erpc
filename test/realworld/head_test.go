@@ -466,31 +466,26 @@ func c12() spec {
 
 // revertFinalized runs C12's revert and its checks: a finalized-tag read
 // on each pod refreshes its Head.Finalized just before the majority
-// reverts below it. A pod whose own finalized poll answered that read
-// holds the pin with its own evidence and counts final_hash_changed; a pod
-// that took the number from the shared counter has no header for it and
-// counts none (§6.5, C18's rule).
+// reverts below it. A pod whose own finalized polls for that read answered
+// at or above the reverted pins holds them with its own evidence and
+// counts final_hash_changed; a pod that took the number from the shared
+// counter, or whose polls reached only vendors that finalize deeper or
+// have no tag (P7's http-b and ws-b), has no header for them and counts
+// none (§6.5, C18's rule).
 func revertFinalized(s *scenario) {
-	polled := func(pod int) float64 {
-		v, _ := s.metric(pod, "erpc_upstream_finalized_block_polled_total", nil)
-		return v
-	}
 	alarms := func(pod int) float64 {
 		v, _ := s.metric(pod, "erpc_chain_tracker_invariant_violations_total", map[string]string{"invariant": "final_hash_changed"})
 		return v
 	}
-	covered, fins, alarms0 := make([]bool, len(s.h.pods)), make([]uint64, len(s.h.pods)), make([]float64, len(s.h.pods))
+	own, fins, alarms0 := make([]uint64, len(s.h.pods)), make([]uint64, len(s.h.pods)), make([]float64, len(s.h.pods))
 	for pod := range s.h.pods {
-		polled0 := polled(pod)
+		polls0 := s.finalizedPolls(pod)
 		alarms0[pod] = alarms(pod)
 		if b := s.blockOf(s.blockAnswer(pod, "", "eth_getBlockByNumber", "finalized", false)); b != nil {
 			fins[pod] = b.Number
-			covered[pod] = polled(pod) > polled0
+			own[pod] = s.ownFinalized(pod, polls0)
 		}
-		s.logf("pod-%d: finalized tag %d before the revert, own finalized poll %v", pod+1, fins[pod], covered[pod])
-	}
-	if !slices.Contains(covered, true) {
-		s.violate("harness", "no pod's finalized-tag read polled finalized itself: no pod holds a final pin with its own evidence")
+		s.logf("pod-%d: finalized tag %d before the revert, own finalized polls answered up to %d", pod+1, fins[pod], own[pod])
 	}
 	// The read heights end below the lowest finalized tag a pod answered
 	// and below every vendor's: a loaded host slows the reads, and a
@@ -514,6 +509,13 @@ func revertFinalized(s *scenario) {
 		}
 	}
 	r := s.reorg(int(s.chain.Tip().Number - from + 1))
+	covered := make([]bool, len(s.h.pods))
+	for pod := range s.h.pods {
+		covered[pod] = own[pod] >= r.old[0].Number
+	}
+	if !slices.Contains(covered, true) {
+		s.violate("harness", "no pod's own finalized polls for its tag read answered at or above the revert from %d: no pod holds a final pin with its own evidence", r.old[0].Number)
+	}
 	replaced := 0
 	for _, n := range heights {
 		if n >= r.old[0].Number {
@@ -535,14 +537,47 @@ func revertFinalized(s *scenario) {
 		case fins[pod] < r.old[0].Number:
 			s.violate("harness", "pod-%d: the revert from %d is above its finalized tag %d", pod+1, r.old[0].Number, fins[pod])
 		case covered[pod] && d == 0:
-			s.violate(s.name, "pod-%d: its own finalized poll answered %d, the majority reverted from %d, and final_hash_changed did not count", pod+1, fins[pod], r.old[0].Number)
+			s.violate(s.name, "pod-%d: its own finalized polls answered %d, the majority reverted from %d, and final_hash_changed did not count", pod+1, own[pod], r.old[0].Number)
 		case !covered[pod] && d > 0:
-			s.violate(s.name, "pod-%d: %v final_hash_changed for the revert from %d, which no finalized poll of its own covered (finalized tag %d from the shared counter)", pod+1, d, r.old[0].Number, fins[pod])
+			s.violate(s.name, "pod-%d: %v final_hash_changed for the revert from %d, which no finalized poll of its own covered (own polls answered up to %d, finalized tag %d)", pod+1, d, r.old[0].Number, own[pod], fins[pod])
 		default:
 			s.logf("pod-%d: final_hash_changed +%v, own evidence %v", pod+1, d, covered[pod])
 		}
 	}
 	s.requireReorgsTold()
+}
+
+// finalizedPolls are pod's finalized polls so far, by upstream.
+func (s *scenario) finalizedPolls(pod int) map[string]float64 {
+	out := map[string]float64{}
+	ss, _ := s.h.pods[pod].scrape()
+	for _, x := range ss {
+		if x.name == "erpc_upstream_finalized_block_polled_total" && x.labels["project"] == s.project && x.labels["network"] == s.network() {
+			out[x.labels["upstream"]] = x.value
+		}
+	}
+	return out
+}
+
+// ownFinalized is the highest block pod's finalized polls since polls0
+// answered: a polled vendor answers its head − its finality depth, nothing
+// without a finalized tag.
+func (s *scenario) ownFinalized(pod int, polls0 map[string]float64) (fin uint64) {
+	polls := s.finalizedPolls(pod)
+	for key, v := range s.vendors {
+		f := v.Faults()
+		if id := s.upstream(key); polls[id] <= polls0[id] || f.NoFinalized {
+			continue
+		}
+		depth := uint64(chainsim.FinalizedLag)
+		if f.FinalityDepth > 0 {
+			depth = f.FinalityDepth
+		}
+		if h := v.Head(); h != nil && h.Number > depth {
+			fin = max(fin, h.Number-depth)
+		}
+	}
+	return fin
 }
 
 // P7: C12, with http-b finalizing p7FinalityDepth deep and ws-b with no
