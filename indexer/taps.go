@@ -2,7 +2,6 @@ package indexer
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -172,7 +171,7 @@ func (t *Taps) gap(networkId, transport, kind string, c Cursor, b Batch) {
 // ends, emit fails, or f returns an error other than ErrOutOfRange: out of
 // range skips to the newest. transport labels metrics.
 func (t *Taps) RunMempool(ctx context.Context, networkId, transport, variant string,
-	f MempoolFeed, emit func([]json.RawMessage) error) (err error) {
+	f MempoolFeed, emit func([]*PendingTx) error) (err error) {
 	kind := SubTypeNewPendingTransactions
 	topic := PendingTxTopic(variant)
 	t.add(networkId, topic, 0)

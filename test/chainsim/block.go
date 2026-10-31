@@ -404,3 +404,13 @@ func ForgedHashOf(b *Block) Hash {
 }
 
 func hexU(n uint64) string { return fmt.Sprintf("0x%x", n) }
+
+// pendingTx is transaction h as a full newPendingTransactions push sends
+// it: a legacy transfer with no block.
+func pendingTx(chainID int64, h Hash) map[string]interface{} {
+	return map[string]interface{}{
+		"hash": h.Hex(), "type": "0x0", "nonce": "0x1", "from": Addrs[1].Hex(), "to": Addrs[2].Hex(),
+		"value": "0x1", "gas": "0x5208", "gasPrice": "0x7", "input": "0x", "chainId": hexU(uint64(chainID)),
+		"v": "0x1b", "r": "0x01", "s": "0x02",
+	}
+}

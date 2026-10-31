@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/indexer"
 )
 
@@ -249,6 +250,28 @@ func parseStreamOptions(kind string, own map[string]any, defaults streamDefaults
 		return o, errStreamOption("reorg", "none needs finality finalized")
 	}
 	return o, nil
+}
+
+// finalitySpanError refuses a final stream whose start lies past what the
+// final hold admits (§4): -32005 on ws, RESOURCE_EXHAUSTED on gRPC.
+type finalitySpanError struct{}
+
+func (finalitySpanError) Error() string {
+	return fmt.Sprintf("finality_span: the finalized block is more than %d headers below the chain tracker's window", evm.FinalHoldAdmit())
+}
+
+// admitStream checks opts of a stream on selector lane against n (§3.1,
+// §4): depth:N at most the reorg window, else a streamOptionError named
+// depthKey, the transport's name for it; a final stream whose bound lies
+// past what the final hold admits, finalitySpanError.
+func (n *Network) admitStream(opts StreamOptions, depthKey, lane string) error {
+	if w := n.reorgWindow(); opts.Finality.Kind == finalityDepth && opts.Finality.Depth > w {
+		return errStreamOption(depthKey, fmt.Sprintf("depth must be at most the reorg window, %d; use finalized", w))
+	}
+	if opts.Finality.final() && n.chainTracker != nil && n.chainTracker.FinalitySpan(n.finalBound(opts.Finality, lane)) {
+		return finalitySpanError{}
+	}
+	return nil
 }
 
 // parseStreamCursor reads a token, <numberHex>:<hash>, or an object

@@ -225,8 +225,8 @@ func (g *bloomGate) noted(h *chainHeader, v bloomVerdict) {
 // heldReceipts is one block's receipts as the feed holds them: verbatim,
 // checked once. Their logs index comes from the fetch's one parse when a
 // registered MayMatch wants the block, else from the first logs tap that
-// reads them. Receipts only client checks read keep no index and no copy
-// of a log (spec §10.1).
+// reads them; each filter's state (filterState) is built on it. Receipts
+// only client checks read keep no index and no copy of a log (spec §10.1).
 type heldReceipts struct {
 	hash     [32]byte
 	h        *chainHeader // the header the answer was checked against; nil when none was held
@@ -239,7 +239,12 @@ type heldReceipts struct {
 
 	indexOnce sync.Once
 	idx       *logsIndex // nil until built, and after a build a log of raw failed
-	matches   sync.Map   // filter key -> []int32
+	filters   sync.Map   // filter key -> *filterState
+	// held: the tracker holds these receipts, so their filter states
+	// count against its bound; guarded by filterStates.mu.
+	held bool
+	// encodings are each LogsEncoding's per-log conversions.
+	encodings sync.Map
 
 	view     sync.Once
 	receipts []integrity.Receipt
@@ -572,28 +577,6 @@ func (r *heldReceipts) integrityView() []integrity.Receipt {
 	return r.receipts
 }
 
-// match is the logs f matches, verbatim and in order. Their positions are
-// computed once per (block, filter): candidates from the address index,
-// else the topic0 index, else every log, each checked with f.Matches.
-func (r *heldReceipts) match(f *logfilter.LogsFilter) []json.RawMessage {
-	x := r.index()
-	if x == nil {
-		return nil
-	}
-	var pos []int32
-	if v, ok := r.matches.Load(f.Key()); ok {
-		pos = v.([]int32)
-	} else {
-		pos = x.positions(f)
-		r.matches.Store(f.Key(), pos)
-	}
-	out := make([]json.RawMessage, len(pos))
-	for i, p := range pos {
-		out[i] = x.logs[p]
-	}
-	return out
-}
-
 func (x *logsIndex) positions(f *logfilter.LogsFilter) []int32 {
 	var cand []int32
 	switch addrs, t0 := f.Addresses(), f.Topic0(); {
@@ -622,19 +605,35 @@ func (x *logsIndex) positions(f *logfilter.LogsFilter) []int32 {
 	return slices.Clip(out)
 }
 
+// receiptsOf is b's receipts as the feed holds them, else indexed from
+// b.Receipts for this call alone: a Read's own fetch below the window; nil
+// without receipts or when a log does not parse.
+func (t *ChainTracker) receiptsOf(b indexer.Block) *heldReceipts {
+	if r := t.heldReceiptsOf(b.Hash); r != nil {
+		return r
+	}
+	if len(b.Receipts) == 0 {
+		return nil
+	}
+	return indexReceipts(b.Hash, b.Receipts)
+}
+
 // MatchedLogs are the logs of b that f matches, verbatim and in order, from
 // the receipts the feed holds for b, else from b.Receipts.
 func (t *ChainTracker) MatchedLogs(b indexer.Block, f *logfilter.LogsFilter) []json.RawMessage {
-	r := t.heldReceiptsOf(b.Hash)
+	r := t.receiptsOf(b)
 	if r == nil {
-		if len(b.Receipts) == 0 {
-			return nil
-		}
-		if r = indexReceipts(b.Hash, b.Receipts); r == nil {
-			return nil
-		}
+		return nil
 	}
-	return r.match(f)
+	s := t.filterOf(r, f)
+	if s == nil {
+		return nil
+	}
+	out := make([]json.RawMessage, len(s.pos))
+	for i, p := range s.pos {
+		out[i] = r.idx.logs[p]
+	}
+	return out
 }
 
 func (t *ChainTracker) heldReceiptsOf(hash [32]byte) *heldReceipts {
@@ -709,13 +708,15 @@ func (t *ChainTracker) holdReceipts(r *heldReceipts, upstreamId string) {
 		t.receiptsDown = time.Time{}
 	}
 	key := hexHash(r.hash)
-	if _, seen := t.receipts.Load(key); !seen {
+	t.holdFilters(r)
+	if old, seen := t.receipts.Swap(key, r); !seen {
 		t.receiptsOrder = append(t.receiptsOrder, receiptsEntry{key: key, number: r.number})
+	} else if old != r {
+		t.dropFilters(old.(*heldReceipts))
 	}
-	t.receipts.Store(key, r)
 	t.evictReceipts()
 	for len(t.receiptsOrder) > t.receiptsCap() {
-		t.receipts.Delete(t.receiptsOrder[0].key)
+		t.releaseReceipts(t.receiptsOrder[0].key)
 		t.receiptsOrder = t.receiptsOrder[1:]
 	}
 	if r.bloom != bloomUnknown {
@@ -735,11 +736,19 @@ func (t *ChainTracker) evictReceipts() {
 	lo := int64(ref.number - uint64(t.window))
 	t.receiptsOrder = slices.DeleteFunc(t.receiptsOrder, func(e receiptsEntry) bool {
 		if e.number >= 0 && e.number < lo {
-			t.receipts.Delete(e.key)
+			t.releaseReceipts(e.key)
 			return true
 		}
 		return false
 	})
+}
+
+// releaseReceipts lets the receipts under key go, with their filter
+// states.
+func (t *ChainTracker) releaseReceipts(key string) {
+	if old, ok := t.receipts.LoadAndDelete(key); ok {
+		t.dropFilters(old.(*heldReceipts))
+	}
 }
 
 // receiptsJob fetches one block's receipts until they are held: at pin time

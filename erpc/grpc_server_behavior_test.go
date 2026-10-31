@@ -733,8 +733,8 @@ func TestGrpcServerBehavior_StreamBlocks(t *testing.T) {
 			t.Helper()
 			msg, err := s.Recv()
 			require.NoError(t, err)
-			assert.Equal(t, uint64(want), msg.Header.Number)
-			assert.Equal(t, qtHash(uint64(want)), evm.BytesToHex(msg.Header.Hash))
+			assert.Equal(t, uint64(want), msg.GetHeader().GetNumber())
+			assert.Equal(t, qtHash(uint64(want)), evm.BytesToHex(msg.GetHeader().GetHash()))
 		}
 
 		recv(head)

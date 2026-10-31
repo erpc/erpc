@@ -161,7 +161,7 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 		// Above the waits of the gRPC seed's other faults, so only the
 		// faults that test them end a stream with UNAVAILABLE.
 		{streamStallWait, 15 * chaosBlock},
-		{streamBlocksSendWait, 5 * chaosBlock},
+		{grpcSendWait, 5 * chaosBlock},
 	}
 	orig := make([]time.Duration, len(scale))
 	for i, sc := range scale {
@@ -979,11 +979,9 @@ func (s *chaosSeed) maxBackfill() time.Duration {
 }
 
 // startERPC boots the primary eRPC instance and, in the gRPC seed, its
-// gRPC server. The seed stops it before the instance's own end-of-test
-// check (stopERPCAtEnd), which wants its app ctx ended.
+// gRPC server.
 func (s *chaosSeed) startERPC() {
 	srv, addr, cancel, nw := s.bootERPC()
-	s.t.Cleanup(s.stopERPC)
 	s.srv, s.addr, s.cancel = srv, addr, cancel
 	s.mu.Lock()
 	s.liveAddr = addr
@@ -994,9 +992,12 @@ func (s *chaosSeed) startERPC() {
 	}
 }
 
-// bootERPC boots an eRPC instance and waits for its network.
+// bootERPC boots an eRPC instance and waits for its network. The seed
+// stops its instances before the instance's own end-of-test check
+// (stopERPCAtEnd), which wants its app ctx ended.
 func (s *chaosSeed) bootERPC() (*HttpServer, string, context.CancelFunc, *Network) {
 	srv, addr, cancel := startTestERPCServer(s.t, s.config())
+	s.t.Cleanup(s.stopERPC)
 	var nw *Network
 	require.Eventually(s.t, func() bool {
 		n, err := srv.erpc.GetNetwork(context.Background(), "test_ws", "evm:123")

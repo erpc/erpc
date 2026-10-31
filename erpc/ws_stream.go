@@ -3,7 +3,6 @@ package erpc
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"math/rand/v2"
 	"sync/atomic"
@@ -95,17 +94,32 @@ func (e *wsStream) Header(blk indexer.Block) (func(tapDelivery) error, bool, err
 	return func(d tapDelivery) error { return e.data(streamData, payload, d) }, pinned, nil
 }
 
-func (e *wsStream) Logs(_ indexer.Block, logs []json.RawMessage, d tapDelivery) error {
-	for i, l := range logs {
-		var last tapDelivery
-		if i == len(logs)-1 {
-			last = d
-		}
-		if err := e.data(streamData, l, last); err != nil {
-			return err
-		}
+// Block writes blk's matched logs, each an eth_subscription notification,
+// then with end its blockEnd; the block is delivered with its last message.
+func (e *wsStream) Block(blk indexer.Block, f *logfilter.LogsFilter, end bool) (func(tapDelivery) error, error) {
+	logs := e.tracker.MatchedLogs(blk, f)
+	if len(logs) == 0 && !end {
+		return nil, nil
 	}
-	return nil
+	return func(d tapDelivery) error {
+		logsDelivery := d
+		if end {
+			logsDelivery = tapDelivery{}
+		}
+		for i, l := range logs {
+			var last tapDelivery
+			if i == len(logs)-1 {
+				last = logsDelivery
+			}
+			if err := e.data(streamData, l, last); err != nil {
+				return err
+			}
+		}
+		if end {
+			return e.write(streamBlockEnd, false, d, func(b []byte) []byte { return appendBlockEnd(b, "blockEnd", blk, len(logs)) })
+		}
+		return nil
+	}, nil
 }
 
 func (e *wsStream) Removed(blk indexer.Block, logs []json.RawMessage) error {
@@ -120,10 +134,6 @@ func (e *wsStream) Removed(blk indexer.Block, logs []json.RawMessage) error {
 		}
 	}
 	return nil
-}
-
-func (e *wsStream) BlockEnd(blk indexer.Block, logs int, d tapDelivery) error {
-	return e.write(streamBlockEnd, false, d, func(b []byte) []byte { return appendBlockEnd(b, "blockEnd", blk, logs) })
 }
 
 func (e *wsStream) Heartbeat(hb streamHeartbeat) error {
@@ -204,7 +214,7 @@ func (sm *SubscriptionManager) runWsTap(ctx context.Context, wsc *WsConnection, 
 	enc := sm.wsStream(wsc, sub, nw, kind)
 	s := newStreamSession(nw, "ws", kind, lane, opts)
 	s.start, s.hold, s.filter, s.opened, s.gone, s.lag, s.resumable = head, hold, f, opened, wsc.done, true, opts.From != nil
-	s.headers, s.logs = enc, enc
+	s.headers, s.logs, s.removed = enc, enc, enc
 	if opts.Extended {
 		s.control, s.drain = enc, wsc.draining
 	}
@@ -244,99 +254,33 @@ func (sm *SubscriptionManager) runWsTap(ctx context.Context, wsc *WsConnection, 
 	}
 }
 
-// mempoolFrom is a mempool feed whose first Tail is from: the tail when
-// the subscribe was answered, so a transaction that arrives before the tap
-// goroutine runs still reaches it. Used by one tap goroutine only.
-type mempoolFrom struct {
-	indexer.MempoolFeed
-	from    uint64
-	started bool
-}
-
-func (m *mempoolFrom) Tail(variant string) uint64 {
-	if !m.started {
-		m.started = true
-		return m.from
-	}
-	return m.MempoolFeed.Tail(variant)
-}
-
-// runPendingTxs is one ws newPendingTransactions subscription: a tap on
-// the network's mempool feed that starts after from, the variant's tail at
-// subscribe time, and writes only once opened, after the client has its
-// id. A start older than the ring skips to the newest, counted as lag
-// (CT§11). A panic or any end but ctx or a failed write restarts it after
-// the newest entry, so the subscription never goes silent. An extended one
-// gets heartbeats and ends draining at shutdown (§3.1: heartbeat only).
+// runPendingTxs is one ws newPendingTransactions subscription
+// (runPendingTap): it writes each transaction as a notification, only once
+// opened, after the client has its id. An extended one gets heartbeats
+// and ends draining at shutdown (§3.1: heartbeat only).
 func (sm *SubscriptionManager) runPendingTxs(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, variant string, from uint64, opts StreamOptions) {
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
-	feed := &mempoolFrom{MempoolFeed: nw.mempool, from: from}
 	enc := sm.wsStream(wsc, sub, nw, indexer.SubTypeNewPendingTransactions)
-	var beat streamBeat
+	var beat func(streamHeartbeat) error
+	var drain <-chan struct{}
 	if opts.Extended {
-		go func() {
-			select {
-			case <-wsc.draining:
-				cancel(errStreamDraining)
-			case <-ctx.Done():
-			}
-		}()
-		go func() {
-			if err := beat.run(ctx, streamHeartbeatEvery(nw, opts), opened, func() error {
-				hb, ok := nw.streamHeartbeat("")
-				if !ok {
-					return nil
-				}
-				return enc.Heartbeat(hb)
-			}); err != nil {
-				cancel(err)
-			}
-		}()
+		beat, drain = enc.Heartbeat, wsc.draining
 	}
-	emit := func(txs []json.RawMessage) error {
-		select {
-		case <-opened:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	e := runPendingTap(ctx, nw, "ws", variant, from, opened, drain, opts, beat, func(txs []*indexer.PendingTx) error {
 		for _, tx := range txs {
-			if err := enc.data(streamData, tx, tapDelivery{}); err != nil {
+			if err := enc.data(streamData, tx.Raw, tapDelivery{}); err != nil {
 				return err
 			}
 		}
-		beat.wrote()
 		return nil
-	}
-	end := func(reason string) {
-		telemetry.CounterHandle(telemetry.MetricTapEndTotal, nw.projectId, nw.Label(), "ws", indexer.SubTypeNewPendingTransactions, reason, "").Inc()
-	}
-	for {
-		err := nw.taps.RunMempool(ctx, nw.Label(), "ws", variant, feed, emit)
-		cause := context.Cause(ctx)
-		var we streamWriteError
-		switch {
-		case opts.Extended && (errors.Is(cause, errStreamDraining) || ctx.Err() != nil && nw.appCtx.Err() != nil):
-			end(indexer.TapEndDraining)
-			if streamOpened(wsc.done, opened) {
-				_ = enc.End(streamEnd{reason: indexer.TapEndDraining})
-			}
-			return
-		case errors.As(cause, &we), errors.As(err, &we):
-			if we.slow {
-				end(indexer.TapEndSlowClient)
-				wsc.stop(websocket.CloseGoingAway, "slow client", 0)
-			}
-			return
-		case ctx.Err() != nil:
-			return
+	})
+	switch {
+	case e == nil:
+	case e.reason == indexer.TapEndDraining:
+		if streamOpened(wsc.done, opened) {
+			_ = enc.End(*e)
 		}
-		sm.logger.Warn().Err(err).Str("clientSubId", sub.ClientSubID).Msg("newPendingTransactions tap ended, restarting after the newest")
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(streamRestartDelay):
-		}
+	case e.reason == indexer.TapEndSlowClient:
+		wsc.stop(websocket.CloseGoingAway, "slow client", 0)
 	}
 }
 

@@ -91,6 +91,7 @@ type ChainTracker struct {
 	// goroutine writes them.
 	held     sync.Map // lowercase hash -> *chainHeader
 	receipts sync.Map // lowercase block hash -> *heldReceipts
+	filters  filterStates
 	// anchors are the finalized narrow anchors, read by any goroutine.
 	// Integrity records them on the request path under anchorMu, never
 	// through the mailbox, so a burst of them never grows it (spec §3);
@@ -2908,7 +2909,7 @@ func (t *ChainTracker) reset() {
 	}
 	t.clear()
 	t.held.Range(func(k, _ any) bool { t.held.Delete(k); return true })
-	t.receipts.Range(func(k, _ any) bool { t.receipts.Delete(k); return true })
+	t.receipts.Range(func(k, _ any) bool { t.releaseReceipts(k.(string)); return true })
 	t.receiptsOrder = nil
 	t.anchorMu.Lock()
 	t.anchors.Range(func(k, _ any) bool { t.anchors.Delete(k); return true })
@@ -3356,10 +3357,14 @@ func (t *ChainTracker) unlinked(tr *treeState, root *chainHeader) (indexer.Batch
 }
 
 // baseFinal reports whether the lowest pin is the window's base for good:
-// block 0, or its tree's fill ended there.
+// block 0, or the pins' tree's fill ended, at the lowest pin or at a root
+// below it that fill ahead or the final hold keeps.
 func (t *ChainTracker) baseFinal(s *feedState, tr *treeState) bool {
-	_, ended := tr.ended[s.pins[0].hash]
-	return s.base == 0 || ended
+	if s.base == 0 {
+		return true
+	}
+	_, ended := tr.ended[tr.pinRoot.hash]
+	return ended
 }
 
 // heldHeader is the held header with hash h, nil when none is.

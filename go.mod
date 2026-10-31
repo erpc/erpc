@@ -6,7 +6,7 @@ require (
 	github.com/DataDog/sketches-go v1.4.8
 	github.com/IGLOU-EU/go-wildcard/v2 v2.1.1
 	github.com/aws/aws-sdk-go v1.55.8
-	github.com/blockchain-data-standards/manifesto v0.0.0-20261029113652-549adaffe38e
+	github.com/blockchain-data-standards/manifesto v0.0.0-20261029145042-0a14d6b52063
 	github.com/bytedance/sonic v1.15.2
 	github.com/coder/websocket v1.8.15
 	github.com/dgraph-io/ristretto/v2 v2.4.2
@@ -55,6 +55,7 @@ require (
 	github.com/coocood/freecache v1.2.4
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/prometheus/client_model v0.6.2
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d
 )
 
 require (
@@ -162,7 +163,6 @@ require (
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect
 )
 
 require (

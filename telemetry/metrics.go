@@ -289,6 +289,18 @@ var (
 		Help:      "Headers the network-wide chain tracker holds below its window for open safe and finalized taps.",
 	}, []string{"project", "network"})
 
+	MetricChainTrackerFilterStateBytes = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "chain_tracker_filter_state_bytes",
+		Help:      "Bytes of per-filter state (matched log positions, per-filter log encodings) the network-wide chain tracker holds on its receipts.",
+	}, []string{"project", "network"})
+
+	MetricChainTrackerFilterStateEvictedTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "chain_tracker_filter_state_evicted_total",
+		Help:      "Per-filter state entries the chain tracker dropped, oldest first, to stay within its byte bound.",
+	}, []string{"project", "network"})
+
 	MetricServedTipVoters = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "served_tip_voters",
@@ -374,6 +386,12 @@ var (
 		Namespace: "erpc",
 		Name:      "websocket_rejected_total",
 		Help:      "Client WebSocket connections and subscriptions refused by server.webSocket caps, by reason (conn_global, conn_per_ip, sub_global).",
+	}, []string{"project", "reason"})
+
+	MetricGrpcStreamsRejectedTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "grpc_streams_rejected_total",
+		Help:      "gRPC StreamService streams refused RESOURCE_EXHAUSTED, by reason (per_connection: past 100 long-lived streams on one connection).",
 	}, []string{"project", "reason"})
 
 	MetricUpstreamCordoned = DefineGauge(prometheus.GaugeOpts{

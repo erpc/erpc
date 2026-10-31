@@ -244,6 +244,12 @@ func NewHttpServer(
 		}
 	}
 
+	// gRPC on the shared port rides net/http's HTTP/2: the per-connection
+	// stream count is the HTTP server's (streams spec §10).
+	if srv.serverV4 != nil && srv.sharedGrpcServer != nil {
+		srv.serverV4.ConnContext = grpcConnContext
+	}
+
 	// Create IPv6 server if configured
 	if cfg.ListenV6 != nil && *cfg.ListenV6 {
 		srv.serverV6 = &http.Server{

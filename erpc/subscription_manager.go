@@ -8,7 +8,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
@@ -114,17 +113,15 @@ func (sm *SubscriptionManager) Subscribe(
 	if err == nil {
 		opts, err = parseStreamOptions(subType, own, wsc.streamDefaults)
 	}
-	if w := nw.reorgWindow(); err == nil && opts.Finality.Kind == finalityDepth && opts.Finality.Depth > w {
-		err = errStreamOption("finality", fmt.Sprintf("depth must be at most the reorg window, %d; use finalized", w))
+	if err == nil {
+		err = nw.admitStream(opts, "finality", laneSelector(nq))
 	}
 	if err != nil {
-		err = common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument, err.Error(), nil, nil)
-		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-		return nil, nil, err
-	}
-	if opts.Finality.final() && nw.chainTracker != nil && nw.chainTracker.FinalitySpan(nw.finalBound(opts.Finality, laneSelector(nq))) {
-		err = common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorCapacityExceeded,
-			fmt.Sprintf("finality_span: the finalized block is more than %d headers below the chain tracker's window", evm.FinalHoldAdmit()), nil, nil)
+		code := common.JsonRpcErrorInvalidArgument
+		if errors.As(err, new(finalitySpanError)) {
+			code = common.JsonRpcErrorCapacityExceeded
+		}
+		err = common.NewErrJsonRpcExceptionInternal(0, code, err.Error(), nil, nil)
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 		return nil, nil, err
 	}
@@ -155,7 +152,7 @@ func (sm *SubscriptionManager) Subscribe(
 	var variant string
 	releaseVariant := func() {}
 	if kind == wsclient.KindPendingTx {
-		if variant, releaseVariant, err = sm.openPendingVariant(ctx, nw, params); err != nil {
+		if variant, releaseVariant, err = openPendingVariant(ctx, nw, params); err != nil {
 			sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 			return nil, nil, err
 		}
@@ -378,7 +375,7 @@ func resolveSubscription(subType string) (wsclient.EventKind, error) {
 // openPendingVariant opens the variant of newPendingTransactions params on
 // nw's mempool feed until release; the reconciler admits it and decides
 // whether its push sources refused it (spec §11).
-func (sm *SubscriptionManager) openPendingVariant(ctx context.Context, nw *Network, params []interface{}) (variant string, release func(), err error) {
+func openPendingVariant(ctx context.Context, nw *Network, params []interface{}) (variant string, release func(), err error) {
 	if nw.mempool == nil {
 		return "", nil, common.NewErrNoSubscriptionSource(nw.networkId, indexer.SubTypeNewPendingTransactions)
 	}
