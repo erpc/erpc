@@ -111,6 +111,20 @@ func (l *servedTipLane) latestMoved() <-chan struct{} {
 	}
 }
 
+// finalityMoved returns a channel closed at the next change of l's
+// Finalized or Safe.
+func (l *servedTipLane) finalityMoved() <-chan struct{} {
+	for {
+		if c := l.finalMoved.Load(); c != nil {
+			return *c
+		}
+		c := make(chan struct{})
+		if l.finalMoved.CompareAndSwap(nil, &c) {
+			return c
+		}
+	}
+}
+
 // headsComputed returns a channel closed after the head loop's next pass,
 // for a reader whose selector forms no lane.
 func (n *Network) headsComputed() <-chan struct{} {
@@ -280,9 +294,22 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	if h.Latest != old.Latest {
 		l.reached.note(h.Latest, time.Now(), n.latestReachedKept())
 	}
+	finality := h.Finalized != old.Finalized || h.Safe != old.Safe
+	if finality {
+		l.finalReached.note(h.Finalized, time.Now(), n.latestReachedKept())
+		l.safeReached.note(h.Safe, time.Now(), n.latestReachedKept())
+	}
+	if h.Safe == 0 && old.Safe != 0 {
+		n.forgetSafeAxis(l)
+	}
 	// A copy, so only a changed Head reaches the heap.
 	pub := h
 	l.head.Store(&pub)
+	if finality {
+		if c := l.finalMoved.Swap(nil); c != nil {
+			close(*c)
+		}
+	}
 	if h.Latest != old.Latest {
 		// Latest 0 is unknown, not a served number: eth_blockNumber then
 		// errors. A fall through unknown counts at its first known value.
@@ -340,6 +367,9 @@ func (n *Network) computeHead(l *servedTipLane, sel string) common.EvmHead {
 		Latest: n.laneTip(l, sel, false, 0),
 	}
 	h.Finalized = n.laneTip(l, sel, true, h.Latest)
+	if n.safeTaps.Load() > 0 {
+		h.Safe = n.laneSafe(l, sel, h.Latest, h.Finalized)
+	}
 	h.Leader = n.laneLeader(sel, h.Latest)
 	h.Ceiling, h.OldestReportAt = n.laneCeiling(sel)
 	return h

@@ -42,6 +42,7 @@ type Faults struct {
 	NoNewHeads    bool          // eth_subscribe newHeads answers unsupported
 	RefuseLatest  bool          // eth_getBlockByNumber(latest) answers unsupported
 	NoFinalized   bool          // the finalized and safe tags answer invalid, as on a chain with none
+	NoSafe        bool          // the safe tag answers invalid; finalized still answers
 	Slow          time.Duration // every answer waits this long
 	SlowReceipts  time.Duration // receipts and logs answers wait this long more
 	SlowHistory   time.Duration // answers by hash, and by number below its head, wait this long more
@@ -50,6 +51,7 @@ type Faults struct {
 	Ahead         uint64        // eth_blockNumber and the latest tag claim a head this far above its own
 	Syncing       bool          // eth_syncing answers in progress; still serves what it holds
 	FinalityDepth uint64        // finalized tag this far below its head; 0 is FinalizedLag
+	SafeDepth     uint64        // safe tag this far below its head; 0 is the finalized tag's depth
 	StaleState    uint64        // eth_call at latest (or no block) executes this far below its head; numbered calls are right
 	Forbidden     bool          // HTTP 403 with an HTML body on every call and ws upgrade, as a CDN ban or a revoked key
 	// Pruned: history more than this far below its head is gone, as on a
@@ -74,6 +76,7 @@ type Stats struct {
 	CapacityRefused                                                         int64 // calls a Capacity fault refused
 	ForbiddenLatest                                                         int64 // eth_getBlockByNumber(latest) calls a Forbidden fault refused
 	PrunedRefused                                                           int64 // calls or HTTP requests a Pruned fault answered null or 403
+	SafeCalls                                                               int64 // eth_getBlockByNumber(safe) calls, refused ones included
 }
 
 // Vendor is one simulated node of a chain, on its own listener.
@@ -110,7 +113,7 @@ type Vendor struct {
 
 	connects, headsSubs, pendingSubs, logsSubs, throttled, receiptsCalls  atomic.Int64
 	logsCalls, slowAnswers, forgedHeads, cappedLogs, subSeq, headsRefused atomic.Int64
-	capacityRefused, forbiddenLatest, prunedRefused, calls                atomic.Int64
+	capacityRefused, forbiddenLatest, prunedRefused, calls, safeCalls     atomic.Int64
 }
 
 // LatestCall is one eth_getBlockByNumber(latest) call a vendor answered.
@@ -307,7 +310,8 @@ func (v *Vendor) Stats() Stats {
 	return Stats{Calls: v.calls.Load(), Connects: v.connects.Load(), HeadsSubscribes: v.headsSubs.Load(), PendingSubscribes: v.pendingSubs.Load(),
 		LogsSubscribes: v.logsSubs.Load(), Throttled: v.throttled.Load(), HeadsRefused: v.headsRefused.Load(), ReceiptsCalls: v.receiptsCalls.Load(),
 		LogsCalls: v.logsCalls.Load(), SlowAnswers: v.slowAnswers.Load(), ForgedHeads: v.forgedHeads.Load(), CappedLogs: v.cappedLogs.Load(),
-		CapacityRefused: v.capacityRefused.Load(), ForbiddenLatest: v.forbiddenLatest.Load(), PrunedRefused: v.prunedRefused.Load()}
+		CapacityRefused: v.capacityRefused.Load(), ForbiddenLatest: v.forbiddenLatest.Load(), PrunedRefused: v.prunedRefused.Load(),
+		SafeCalls: v.safeCalls.Load()}
 }
 
 // ReceiptsOf are the eth_getBlockReceipts calls the vendor got for block h,
@@ -727,10 +731,18 @@ func parseNumber(s string) (uint64, bool) {
 	return n, true
 }
 
-// byNumberLocked walks the vendor's own branch down to n.
+// byNumberLocked walks the vendor's own branch down to n; from the first
+// canonical block on it, the canonical chain is an index by number.
 func (v *Vendor) byNumberLocked(n uint64) *Block {
+	canon := v.chain.canon
 	b := v.tip
 	for b != nil && b.Number > n {
+		if i := b.Number - canon[0].Number; b.Number >= canon[0].Number && i < uint64(len(canon)) && canon[i] == b {
+			if n < canon[0].Number {
+				return nil
+			}
+			return canon[n-canon[0].Number]
+		}
 		b = b.Parent
 	}
 	if b == nil || b.Number != n {
@@ -747,9 +759,13 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 			return res, nil
 		}
 	}
-	if d := v.delay(method, params); d > 0 {
+	if d, hist := v.delay(method, params); d > 0 {
 		v.slowAnswers.Add(1)
-		time.Sleep(d)
+		if hist {
+			v.chain.historyWait(d)
+		} else {
+			time.Sleep(d)
+		}
 	}
 	c := v.chain
 	c.mu.Lock()
@@ -821,12 +837,18 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 			}
 			b = v.tip
 		case "finalized", "safe":
-			if c.cfg.NoFinalized || f.NoFinalized {
+			if tag == "safe" {
+				v.safeCalls.Add(1)
+			}
+			if c.cfg.NoFinalized || f.NoFinalized || tag == "safe" && f.NoSafe {
 				return nil, &rpcError{-32602, "invalid block number tag " + tag}
 			}
 			depth := uint64(FinalizedLag)
 			if f.FinalityDepth > 0 {
 				depth = f.FinalityDepth
+			}
+			if tag == "safe" && f.SafeDepth > 0 {
+				depth = f.SafeDepth
 			}
 			n := c.canon[0].Number
 			if v.tip.Number > depth && v.tip.Number-depth > n {
@@ -915,25 +937,29 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 	return "0x0", nil
 }
 
-// delay is how long the vendor's Slow faults hold an answer to method.
-func (v *Vendor) delay(method string, params []interface{}) time.Duration {
+// delay is how long the vendor's Slow faults hold an answer to method,
+// and whether SlowHistory is part of it.
+func (v *Vendor) delay(method string, params []interface{}) (time.Duration, bool) {
 	c := v.chain
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	f := v.faults
 	d := f.Slow
+	hist := false
 	switch method {
 	case "eth_getBlockReceipts", "eth_getLogs":
 		d += f.SlowReceipts
 	case "eth_getBlockByHash":
-		d += f.SlowHistory
+		hist = f.SlowHistory > 0
 	case "eth_getBlockByNumber":
 		tag, _ := firstString(params)
-		if n, ok := parseNumber(tag); ok && n < v.tip.Number {
-			d += f.SlowHistory
-		}
+		n, ok := parseNumber(tag)
+		hist = ok && n < v.tip.Number && f.SlowHistory > 0
 	}
-	return d
+	if hist {
+		d += f.SlowHistory
+	}
+	return d, hist
 }
 
 // trapped answers a block's first receipts call while the chain's trap is

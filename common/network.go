@@ -51,6 +51,11 @@ type EvmHead struct {
 	Latest int64
 	// Finalized is the same ballot over the voters' finalized numbers.
 	Finalized int64
+	// Safe is the same ballot over the voters' safe tags, between
+	// Finalized and Latest, Finalized with no safe vote; computed only
+	// while a safe stream is open on the network, 0 otherwise (streams
+	// spec §4).
+	Safe int64
 	// Leader is the highest voter within Latest + maxRetryableBlockDistance.
 	Leader Upstream
 	// Ceiling is the raw max report of the lane's counted upstreams, 0

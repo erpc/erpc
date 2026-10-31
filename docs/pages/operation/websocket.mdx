@@ -179,7 +179,7 @@ A failed `eth_subscribe` leaves your WebSocket connection open. You can retry on
 Add an `erpc` object as the last `eth_subscribe` param to make a subscription resumable, with block ends, heartbeats, status and a reason when it ends. Data frames stay standard `eth_subscription` notifications; control frames use the method `erpc_subscription`, which standard libraries ignore.
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["logs",{"address":"0xa0b8…"},{"erpc":{"from":"0x1406f3c:0x5c1e…","heartbeat":15,"blockEnd":true}}]}
+{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["logs",{"address":"0xa0b8…"},{"erpc":{"from":"0x1406f3c:0x5c1e…","finality":"latest","reorg":"undo","heartbeat":15,"blockEnd":true}}]}
 ```
 
 | Option | Kinds | Values | Rule |
@@ -187,19 +187,24 @@ Add an `erpc` object as the last `eth_subscribe` param to make a subscription re
 | `from` | `newHeads`, `logs` | `<numberHex>:<hash>` or `{number, hash}` | the last block the client applied; the subscription resumes after it, on any instance |
 | `heartbeat` | all | whole seconds 1–30; `0` = default | a `heartbeat` after that many idle seconds; default: the chain's freshness window, clamped to 5–30s |
 | `blockEnd` | `logs` | `true`, `false` | a `blockEnd` after each block's logs, also for blocks with none |
+| `finality` | `newHeads`, `logs` | `latest`, `safe`, `finalized`, `depth:N` | the highest block sent: the confirmed head; `safe`; `finalized`; the confirmed head − N, N 1…`chainTracker.reorgWindow` |
+| `reorg` | `newHeads`, `logs` | `geth` (default), `undo`, `none` | how a reorg reaches the client: `geth` new-branch heads and `"removed": true` logs; `undo` one `undo` frame with the fork point, then the new branch; `none` only with `finalized`, and a reverted final block ends the subscription `final_reverted` |
 
-`{"erpc":{}}` opts in with every default. The same options in the URL (`wss://host/main/evm/1?heartbeat=15`) apply to every subscription on the connection that takes them; a subscription's own keys win per key. `from` is per subscription only: in a URL the upgrade fails with `400`. An unknown key, a bad value, or an option on a kind that does not take it fails with `-32602` naming the key. For `newPendingTransactions` the `erpc` object never reaches an upstream.
+`{"erpc":{}}` opts in with every default. The same options in the URL (`wss://host/main/evm/1?finality=finalized&heartbeat=15`) apply to every subscription on the connection that takes them; a subscription's own keys win per key. `from` is per subscription only: in a URL the upgrade fails with `400`. An unknown key, a bad value, an option on a kind that does not take it, or `reorg: none` without `finality: finalized` fails with `-32602` naming the key. For `newPendingTransactions` the `erpc` object never reaches an upstream. With `reorg: undo` in the URL, standard libraries miss reorgs: they ignore `erpc_subscription` frames.
+
+**Finality.** A subscription without `from` starts after its bound at subscribe. `safe` and `finalized` subscriptions make the instance hold every header from just below each such subscription's position (its start, then its last block) up. A subscribe whose start lies more than 18,000 headers below the window fails with `-32005` (`finality_span`); an open one whose position falls more than 20,000 below ends `out_of_range` (`finality_span`). `safe` is polled from upstreams only while a `safe` subscription is open; upstreams that refuse the `safe` tag have no vote, and with no vote `safe` is `finalized`. `evm.safeBlockSource`, when set, alone decides it.
 
 Control frames:
 
 ```json
 {"jsonrpc":"2.0","method":"erpc_subscription","params":{"subscription":"0x9cef…","result":{"type":"blockEnd","block":{"number":"0x1406f40","hash":"0x77aa…","parentHash":"0x5c1e…"},"logs":3}}}
-{"jsonrpc":"2.0","method":"erpc_subscription","params":{"subscription":"0x9cef…","result":{"type":"heartbeat","head":{"number":"0x1406f41","hash":"0x91b0…"},"finalized":"0x1406f00"}}}
+{"jsonrpc":"2.0","method":"erpc_subscription","params":{"subscription":"0x9cef…","result":{"type":"undo","forkPoint":{"number":"0x1406f3d","hash":"0x0c4d…"}}}}
+{"jsonrpc":"2.0","method":"erpc_subscription","params":{"subscription":"0x9cef…","result":{"type":"heartbeat","head":{"number":"0x1406f41","hash":"0x91b0…"},"finalized":"0x1406f00","safe":"0x1406f20"}}}
 {"jsonrpc":"2.0","method":"erpc_subscription","params":{"subscription":"0x9cef…","result":{"type":"status","state":"degraded","reason":"no_fresh_source"}}}
 {"jsonrpc":"2.0","method":"erpc_subscription","params":{"subscription":"0x9cef…","result":{"type":"end","reason":"out_of_range","detail":"below_window","oldest":{"number":"0x1406e10","hash":"0x3e2f…"}}}}
 ```
 
-**Cursor.** Keep the last `blockEnd` block (logs) or the last head (`newHeads`) as `<numberHex>:<hash>`, and pass it as `from` when you reconnect. Logs of a block whose `blockEnd` you did not get come again; drop repeats by `(blockHash, logIndex)`. After a reorg the subscription sends `"removed": true` for the logs you applied of the dropped blocks, including blocks sent on an earlier connection, then the new branch.
+**Cursor.** Keep the last `blockEnd` block (logs), the last head (`newHeads`), or the fork point of the last `undo`, as `<numberHex>:<hash>`, and pass it as `from` when you reconnect. Logs of a block whose `blockEnd` you did not get come again; drop repeats by `(blockHash, logIndex)`. After a reorg, `geth` mode sends `"removed": true` for the logs you applied of the dropped blocks, including blocks sent on an earlier connection, then the new branch; `undo` mode sends one `undo`: drop everything above `forkPoint.number`. A heartbeat's `safe` is absent while no `safe` subscription is open.
 
 **Status.** `degraded` (`no_fresh_source`): the subscription waits and no upstream has given this instance a fresh head for the freshness window. `lagging` (`lag`): the next block has waited more than half the lag bound (`chainTracker.reorgWindow` × block time). `ok` after either.
 
@@ -207,9 +212,10 @@ Control frames:
 
 | `reason` | Cause | Client action |
 |---|---|---|
-| `out_of_range` | the cursor left the window (`detail`: `below_window`, `fork_left_window`, `cursor_unknown`, `receipts_timeout`, `reorg_depth`); `oldest` is the oldest block held | backfill up to `oldest`, then resubscribe |
+| `out_of_range` | the cursor left the window (`detail`: `below_window`, `fork_left_window`, `cursor_unknown`, `receipts_timeout`, `reorg_depth`), or the final hold passed 20,000 headers (`finality_span`); `oldest` is the oldest block held | backfill up to `oldest`, then resubscribe |
 | `lagging` | the next block waited past the lag bound | resubscribe with `from` |
 | `stalled` | a subscription with `from` waited 60s while this instance lags | resubscribe with `from`, on another instance |
+| `final_reverted` | `reorg: none` saw a majority revert of a final block it sent; `block` is that block | rebuild state from before `block` |
 | `draining` | the instance shuts down; the connection then closes `1001` | reconnect with `from` |
 
 A write blocked for 10s closes the connection, extended or not.

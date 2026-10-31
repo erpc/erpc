@@ -287,6 +287,12 @@ type EvmStatePoller interface {
 	// upstream has no finalized poll to refresh: its finalized tag is given
 	// up.
 	RefreshFinalized(ctx context.Context) (polls bool)
+	// RefreshSafe polls the safe tag past the finalized debounce, or joins
+	// the poll in flight, and waits for it until ctx ends; only while a
+	// safe stream is open. SafeBlock is the last answer, 0 before one and
+	// while the tag is refused.
+	RefreshSafe(ctx context.Context) (polls bool)
+	SafeBlock() int64
 	SetNetworkConfig(cfg *NetworkConfig)
 	IsObjectNull() bool
 	EarliestBlock(probe EvmAvailabilityProbeType) int64

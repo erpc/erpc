@@ -188,6 +188,10 @@ type ReadOpts struct {
     // Pace: the slowest this tap needs heads at; 0 is every block. The
     // tap's demand carries it (§3 demand); a Read ignores it.
     Pace time.Duration
+    // Hold: a final tap's place, its start then its cursor; the window
+    // also holds every header from reorgWindow below the lowest place up
+    // while the tap is registered (streams spec §4).
+    Hold *FinalHold
 }
 
 // ChainFeed is the reader side of one tracker.
@@ -257,6 +261,7 @@ func (e *EvmStatePoller) ObserveHead(number int64, at time.Time) (accepted bool)
 // erpc: one per (network, lane), published atomically on each change (§6.4).
 type Head struct {
     Latest, Finalized int64
+    Safe              int64     // only while a safe stream is open (streams spec §4)
     Leader            string    // upstream id
     Ceiling           int64     // raw max of the counted reports
     OldestReportAt    time.Time // when the oldest counted report's evidence was taken (§6.4)
@@ -608,7 +613,8 @@ Every tracker fetch goes through one scheduler per (network, instance). Head fet
 - Orphans: at most 4 per height; the oldest goes first.
 - Receipts: held for blocks within `reorgWindow` of the head, orphans included. Older receipts are fetched for the Read that needs them and not kept.
 - Matched logs: positions into the held receipts, per (block, filter).
-- Fill extends a root downward (class 3): by number, each checked against the parentHash of the block above, and a mismatch fetched by hash. It runs to `reorgWindow` blocks below the head for every root of a tracker that history serves (§6.5 rule 1); below that, only while a `Resumable` tap is open or a Read needs an older height. When fill reaches a held header, the two trees join.
+- Fill extends a root downward (class 3): by number, each checked against the parentHash of the block above, and a mismatch fetched by hash. It runs to `reorgWindow` blocks below the head for every root of a tracker that history serves (§6.5 rule 1); below that, only while a `Resumable` tap is open, a final hold reaches lower, or a Read needs an older height. When fill reaches a held header, the two trees join.
+  - Below `reorgWindow` under the head, in the pins' tree or one a Read waits on fill in, fill keeps up to 8 by-number fetches in flight ahead of its root, across the tracker's roots: half the scheduler's 16 slots, so a Read's cursor fetch and a final logs tap's receipts, in the same class, always find a slot. Answers wait until fill reaches them and are checked then. What fills that deep turns it on: an open `Resumable` tap (gRPC `StreamBlocks`, ws with `from`), a final tap's hold, a Read waiting on fill. One fetch at a time took one round trip per header: 4,000 headers at a 25 ms vendor round trip, 106 s; 8 in flight, 15 s. Near the head, and in a capped tree, which may never join, fill fetches one at a time.
 - A chain halt does not empty the window: the floor of `reorgWindow` blocks stays.
 
 ## 10. Taps and transports

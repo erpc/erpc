@@ -9,7 +9,7 @@ Decisions:
 3. Standard `eth_subscribe` is unchanged; ws extensions are opt-in, per subscription or as URL defaults; data frames stay standard, control frames use their own method (§5).
 4. Resume token = the cursor of the last block the client applied, `<numberHex>:<hash>`; any instance resumes it (§3.5).
 5. Reorg modes: `geth` (ws only, today's), `undo` (one fork-point message), `none` (finalized only) (§3.1).
-6. Finality modes cut what a tap applies at a bound; `safe` and `finalized` taps make the tracker hold headers down to `Finalized` (§4).
+6. Finality modes cut what a tap applies at a bound; `safe` and `finalized` taps make the tracker hold headers down to each final tap's cursor (§4).
 7. Heartbeats only on an idle stream, default W clamped to 5–30s, each carrying head, finalized, safe (§3.2).
 8. SSE is a GET of the network URL with `Accept: text/event-stream`; `Last-Event-ID` is the resume token (§6).
 9. gRPC gains `StreamLogs` and `StreamPendingTransactions`; `StreamBlocks` gains finality and opt-in control messages, wire-compatible with manifesto#26 (§7).
@@ -53,7 +53,7 @@ flowchart LR
 | Finality bound | `erpc/tap_finality.go` | `finalityFeed`: cuts Applied at the bound, as `laneFeed` cuts at the lane's `Latest` |
 | Event encoding | `erpc/stream_events.go` | control message JSON, shared by ws and SSE |
 | Encoders | `erpc/ws_stream.go`, `erpc/sse_stream.go`, `erpc/grpc_stream_*.go` | wire framing, write deadlines, wire end signals |
-| Final hold | `architecture/evm/chain_tracker.go` | headers from `Finalized` up while a final tap is registered (§4) |
+| Final hold | `architecture/evm/chain_tracker.go` | headers from the lowest open final cursor up (§4) |
 | `Head.Safe` | `erpc/networks.go`, `common/served_tip.go` | safe ballot, computed only while a `safe` tap is registered (§4) |
 | Min block | `erpc/networks.go` (request path) | §9 wait |
 
@@ -145,7 +145,7 @@ flowchart LR
 | `from` | start cursor; `ReadOpts.Resumable` | every row; out of range ends `out_of_range` | session |
 | no `from` | start = bound at subscribe (`HeadAsOf` for `latest`; `HashAt(bound)` otherwise), fixed before the id or headers are written | `c` pinned | session |
 | `finality` | `finalityFeed` cuts Applied at the bound, Reverted pass, Ready = when the bound first reached the block | Applied rows; waits on the bound's channel | `tap_finality.go` |
-| `safe`, `finalized` | `ReadOpts.HoldFinalized` (§4) | `c` inside the window | tracker |
+| `safe`, `finalized` | `ReadOpts.Hold` (§4) | `c` inside the window | tracker |
 | `reorg` | encoder rule over `Batch.Reverted` | Reverted rows | encoders |
 | `blockEnd` | encoder writes after each Applied block | Applied | encoders |
 | `heartbeat`, `status` | session timers over published state | — | session |
@@ -154,7 +154,9 @@ flowchart LR
 
 ## 4. Tracker changes
 
-- `indexer.ReadOpts.HoldFinalized bool`: while a tap with it is registered (`Want`), the network-wide window also holds every header from `Head.Finalized` up, and fill extends down to it (class 3, CT§8). At most 20,000 headers below the time window (`finalHold`); past that, final subscribes are refused `-32005` / `RESOURCE_EXHAUSTED` (`finality_span`) and open final taps end `out_of_range` (`finality_span`).
+- `indexer.ReadOpts.Hold *indexer.FinalHold`: a final tap's place, its start bound from subscribe, then its cursor (`RunChain` moves it). While taps with one are registered (`Want`), the network-wide window also holds every header from `reorgWindow` below the lowest place up, and fill extends down to it (class 3, CT§8). A stream keeps its hold registered across its tap's restarts.
+  - Places, not `Head.Finalized`: L2s move `Finalized` hundreds of blocks in one step, `Finalized` can be unknown (0) for a moment, and a `use-upstream` lane's `Finalized` can sit below the network's; a hold keyed to `Finalized` evicted cursors in each case. A lane tap's bound is its lane's `Finalized`; the hold covers its start and cursor, so bound and hold agree.
+  - Bound: a tap whose place lies more than 20,000 headers below the window it holds without (`FinalHoldMax`) is spanned for good: it ends `out_of_range` (`finality_span`) and holds nothing. A final subscribe whose start lies more than 18,000 below (`FinalHoldAdmit`, 9/10) is refused `-32005` / `RESOURCE_EXHAUSTED` (`finality_span`), so a tap just admitted never ends at once. While the window's base is unknown (no pins, or every pin inside the time window with no time span to tell the block time from) nothing is spanned or refused, and the hold keeps at most 20,000 headers below the `reorgWindow` floor.
   - Why: on eth `Finalized` trails head by 64+ blocks (12.8+ min); the default window is 5 min (CT§16). Without it every eth final tap would be `below_window`.
   - Receipts below `reorgWindow` stay unheld: a final logs Read fetches them by hash (class 3), single-flight, so taps at the same frontier share one fetch (CT§8, §10.1).
 - `Head.Safe`, demand-driven: voters' `safe` tags are polled only while a `safe` tap is registered on the network, with that tap's finalized refreshes; with none open, no `safe` poll runs and `Head.Safe` is not computed.
@@ -452,7 +454,7 @@ err := streams.Run(ctx, streams.Config{
 | ws subscriptions per connection, per instance; connections per instance, per IP | `server.webSocket.*` (CT§15.2) | `-32005`, `429` |
 | `heartbeat` | 1–30s | `-32602` / `INVALID_ARGUMENT` |
 | `depth:N` | 1…`reorgWindow` | `-32602` / `INVALID_ARGUMENT` |
-| Final hold | 20,000 headers per network below the time window | refuse `finality_span`; open final taps end |
+| Final hold | 20,000 headers per network below the time window; subscribe admits 18,000 | refuse `finality_span`; the spanned tap ends |
 | Replay per Read | `reorgWindow` Applied blocks (CT§15.2) | next Read |
 | Logs filter | 1,000 addresses, 4 positions, 1,000 values (CT§11) | `-32602` / `INVALID_ARGUMENT` |
 | SSE streams | `server.sse.maxStreams` per instance, `maxStreamsPerIP` per client IP; 0 = unlimited | `429` |

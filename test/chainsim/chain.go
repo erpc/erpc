@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"slices"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -89,6 +90,9 @@ type Chain struct {
 	// bigTxs, while set, is how many transactions each non-empty block
 	// minted holds (BigBlocks).
 	bigTxs int
+	// history counts answers SlowHistory holds now, across the vendors;
+	// historyPeak is its most since ResetHistoryPeak.
+	history, historyPeak atomic.Int64
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -101,11 +105,19 @@ type Chain struct {
 	tickMu sync.Mutex
 	tickCh chan struct{}
 	tickAt []time.Time
+	// tips is each canonical tip vendors were moved to, in order, with
+	// when (TipAt); guarded by mu.
+	tips []tipMark
 }
 
 // Fork is a branch some vendors serve instead of the canonical chain; it
 // gains a block every tick.
 type Fork struct{ tip *Block }
+
+type tipMark struct {
+	at     time.Time
+	number uint64
+}
 
 // Trap is one block's held first receipts call.
 type Trap struct {
@@ -139,6 +151,7 @@ func NewChain(cfg Config) *Chain {
 		c.canon = append(c.canon, b)
 		parent = b
 	}
+	c.tips = append(c.tips, tipMark{time.Now(), c.tipLocked().Number})
 	return c
 }
 
@@ -147,6 +160,23 @@ func (c *Chain) ID() int64 { return c.cfg.ChainID }
 
 // BlockTime is the chain's block time.
 func (c *Chain) BlockTime() time.Duration { return c.cfg.BlockTime }
+
+// HistoryPeak is the most answers SlowHistory held at once, across the
+// chain's vendors, since ResetHistoryPeak: a client's history fetches in
+// flight together.
+func (c *Chain) HistoryPeak() int64 { return c.historyPeak.Load() }
+
+// ResetHistoryPeak restarts HistoryPeak from the answers held now.
+func (c *Chain) ResetHistoryPeak() { c.historyPeak.Store(c.history.Load()) }
+
+// historyWait holds a history answer for d, counted in HistoryPeak.
+func (c *Chain) historyWait(d time.Duration) {
+	n := c.history.Add(1)
+	for p := c.historyPeak.Load(); n > p && !c.historyPeak.CompareAndSwap(p, n); p = c.historyPeak.Load() {
+	}
+	time.Sleep(d)
+	c.history.Add(-1)
+}
 
 // Start makes a block every block time until Stop or Close.
 func (c *Chain) Start() {
@@ -293,6 +323,15 @@ func (c *Chain) Tip() *Block {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.tipLocked()
+}
+
+// TipAt is the number of the canonical head vendors served at time at, a
+// reorg's replaced branch included; the first head before NewChain.
+func (c *Chain) TipAt(at time.Time) uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	i := sort.Search(len(c.tips), func(i int) bool { return c.tips[i].at.After(at) })
+	return c.tips[max(i-1, 0)].number
 }
 
 // CanonAt is the canonical block at n, nil outside the chain.
@@ -636,6 +675,9 @@ func (c *Chain) failingLocked(h Hash) bool {
 // new tip on its newHeads subscriptions.
 func (c *Chain) refresh() {
 	c.mu.Lock()
+	if tip := c.tipLocked().Number; c.tips[len(c.tips)-1].number != tip {
+		c.tips = append(c.tips, tipMark{time.Now(), tip})
+	}
 	var pushes []push
 	for _, v := range c.vendors {
 		pushes = v.followLocked(pushes)

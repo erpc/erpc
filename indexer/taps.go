@@ -67,6 +67,11 @@ func (t *Taps) RunChain(ctx context.Context, networkId, transport, kind string,
 			err = fmt.Errorf("tap panicked: %v", rec)
 		}
 	}()
+	// A final tap's place is set before it registers, so the feed's first
+	// look at the hold covers its start; a start Head fixes sets its own.
+	if o.Hold != nil && start != nil {
+		o.Hold.Set(start.Number)
+	}
 	release := f.Want(o)
 	defer release()
 
@@ -79,6 +84,9 @@ func (t *Taps) RunChain(ctx context.Context, networkId, transport, kind string,
 		c = *start
 	}
 	for {
+		if o.Hold != nil {
+			o.Hold.Set(c.Number)
+		}
 		b, err := t.read(ctx, transport, kind, f, c, o)
 		if err != nil {
 			return err

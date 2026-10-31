@@ -134,6 +134,10 @@ func (e *wsStream) Status(state, reason string) error {
 	return e.write(streamStatus, false, tapDelivery{}, func(b []byte) []byte { return appendStatus(b, "status", state, reason) })
 }
 
+func (e *wsStream) Undo(forkPoint indexer.Cursor) error {
+	return e.write(streamUndo, false, tapDelivery{}, func(b []byte) []byte { return appendUndo(b, "undo", forkPoint) })
+}
+
 // End writes the end as the subscription's last message, then removes
 // the subscription; the connection stays (§5.2).
 func (e *wsStream) End(end streamEnd) error {
@@ -195,11 +199,11 @@ func removedLog(log json.RawMessage) (json.RawMessage, error) {
 // within logsCloseSpread, so the client reconnects knowing it may have
 // missed logs. A write that spends the write bound closes the connection.
 func (sm *SubscriptionManager) runWsTap(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{},
-	nw *Network, lane, kind string, head func(context.Context) (indexer.Cursor, error), f *logfilter.LogsFilter, opts StreamOptions) {
+	nw *Network, lane, kind string, head func(context.Context) (indexer.Cursor, error), hold *indexer.FinalHold, f *logfilter.LogsFilter, opts StreamOptions) {
 	wsTapLoopStarts()
 	enc := sm.wsStream(wsc, sub, nw, kind)
 	s := newStreamSession(nw, "ws", kind, lane, opts)
-	s.start, s.filter, s.opened, s.gone, s.lag, s.resumable = head, f, opened, wsc.done, true, opts.From != nil
+	s.start, s.hold, s.filter, s.opened, s.gone, s.lag, s.resumable = head, hold, f, opened, wsc.done, true, opts.From != nil
 	s.headers, s.logs = enc, enc
 	if opts.Extended {
 		s.control, s.drain = enc, wsc.draining
@@ -342,6 +346,7 @@ type streamMsgType uint8
 const (
 	streamData streamMsgType = iota
 	streamRemoved
+	streamUndo
 	streamBlockEnd
 	streamHeartbeatMsg
 	streamStatus
@@ -349,7 +354,7 @@ const (
 	streamMsgTypes
 )
 
-var streamMsgTypeNames = [streamMsgTypes]string{"data", "removed", "block_end", "heartbeat", "status", "end"}
+var streamMsgTypeNames = [streamMsgTypes]string{"data", "removed", "undo", "block_end", "heartbeat", "status", "end"}
 
 // streamMeter counts one stream's messages by type and its bytes; each
 // series binds on the stream's first message of it.

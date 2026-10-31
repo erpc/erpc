@@ -309,6 +309,8 @@ func (m *mockEvmStatePoller) AskReaching(context.Context, int64, time.Duration, 
 	return common.HeadAnswer{}
 }
 func (m *mockEvmStatePoller) RefreshFinalized(context.Context) bool      { return true }
+func (m *mockEvmStatePoller) RefreshSafe(context.Context) bool           { return true }
+func (m *mockEvmStatePoller) SafeBlock() int64                           { return 0 }
 func (m *mockEvmStatePoller) LatestReportAt() time.Time                  { return time.Time{} }
 func (m *mockEvmStatePoller) LatestAskAt() time.Time                     { return time.Time{} }
 func (m *mockEvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {}
@@ -643,6 +645,8 @@ func (m *mockEvmStatePollerWithUpdate) AskReaching(context.Context, int64, time.
 	return common.HeadAnswer{}
 }
 func (m *mockEvmStatePollerWithUpdate) RefreshFinalized(context.Context) bool      { return true }
+func (m *mockEvmStatePollerWithUpdate) RefreshSafe(context.Context) bool           { return true }
+func (m *mockEvmStatePollerWithUpdate) SafeBlock() int64                           { return 0 }
 func (m *mockEvmStatePollerWithUpdate) LatestReportAt() time.Time                  { return time.Time{} }
 func (m *mockEvmStatePollerWithUpdate) LatestAskAt() time.Time                     { return time.Time{} }
 func (m *mockEvmStatePollerWithUpdate) SetNetworkConfig(cfg *common.NetworkConfig) {}

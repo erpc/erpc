@@ -116,6 +116,14 @@ type Network struct {
 	taps         *indexer.Taps
 	mempool      *mempool.Feed
 	bg           util.Goroutines
+
+	// safeTaps counts the open safe streams (openSafe): while any is, the
+	// safe loop polls the voters' safe tags and every lane computes
+	// Head.Safe (streams spec §4). safeStop ends the loop; safeMu orders
+	// its start and stop with the count.
+	safeTaps atomic.Int32
+	safeMu   sync.Mutex
+	safeStop context.CancelFunc
 }
 
 // wait waits, once the app ctx ended, until no goroutine of the network's
@@ -159,6 +167,12 @@ type servedTipLane struct {
 	moved atomic.Pointer[chan struct{}]
 	// reached is when Latest first reached each recent number.
 	reached latestReached
+	// finalMoved is closed and replaced when Finalized or Safe changes;
+	// finalReached and safeReached are when each first reached each
+	// recent number: a final tap's block is deliverable from then
+	// (finalityFeed).
+	finalMoved                atomic.Pointer[chan struct{}]
+	finalReached, safeReached latestReached
 	// sent is the highest block this instance's taps of the lane wrote,
 	// on any transport: a Latest below it is latest_regressed.
 	sent atomic.Uint64
@@ -1783,13 +1797,16 @@ func (n *Network) anyRegisteredLiveHead(member func(common.Upstream) bool, useFi
 
 // laneGauges are one lane's served-tip gauges, bound once to their labels,
 // so a computation sets them with no label lookup. axis ("latest" |
-// "finalized") is a label rather than part of the metric name to keep the
-// gauge set small. lane="all" is the network-wide pick; a named lane is a
-// use-upstream group's own pick.
+// "finalized" | "safe") is a label rather than part of the metric name to
+// keep the gauge set small. lane="all" is the network-wide pick; a named
+// lane is a use-upstream group's own pick.
 type laneGauges struct {
 	latest, finalized servedTipGauges
-	voters            [len(tipRankLabels)]prometheus.Gauge
-	quorum            prometheus.Gauge
+	// safe is bound while Safe is computed (laneSafe), nil after
+	// forgetSafeAxis deleted its series.
+	safe   *servedTipGauges
+	voters [len(tipRankLabels)]prometheus.Gauge
+	quorum prometheus.Gauge
 }
 
 type servedTipGauges struct {
