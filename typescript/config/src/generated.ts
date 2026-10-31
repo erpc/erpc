@@ -1792,6 +1792,13 @@ export interface SvmUpstreamConfig {
    * earliestBlockPlus. Unknown floor = unbounded.
    */
   blockAvailability?: SvmBlockAvailabilityConfig;
+  /**
+   * StatePollerInterval set to a negative value (e.g. "-1s") turns off
+   * background polling for this upstream, e.g. a paid fallback that bills
+   * every request. 0 or a positive value leaves polling on; unlike on EVM it
+   * doesn't change how often it polls.
+   */
+  statePollerInterval?: Duration;
 }
 /**
  * SvmBlockAvailabilityConfig is the per-upstream declared slot window.

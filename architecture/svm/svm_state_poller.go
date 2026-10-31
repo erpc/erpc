@@ -281,6 +281,14 @@ func (e *SvmStatePoller) recoverPanicValue(where string, r interface{}) {
 }
 
 func (e *SvmStatePoller) Bootstrap(ctx context.Context) error {
+	// A negative statePollerInterval turns the poller off, like on EVM. The
+	// upstream then has no known slot, which the slot filters treat as
+	// unknown, so it can still be selected.
+	if cfg := e.upstream.Config(); cfg != nil && cfg.Svm != nil && cfg.Svm.StatePollerInterval < 0 {
+		e.logger.Debug().Msg("skipping svm state poller for upstream as its interval is disabled")
+		return nil
+	}
+
 	// The debounce gate defaults to one slot when not configured. It may have
 	// already been set via SetDebounceInterval (config can arrive before
 	// Bootstrap), so only fill the default when still unset.

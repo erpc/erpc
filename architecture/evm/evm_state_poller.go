@@ -204,8 +204,10 @@ func NewEvmStatePoller(
 func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	cfg := e.upstream.Config()
 	interval := cfg.Evm.StatePollerInterval
-	if interval == 0 {
-		e.logger.Debug().Msg("skipping evm state poller for upstream as interval is 0")
+	// A negative interval disables the poller: 0 means unset in the config,
+	// and SetDefaults replaces it with the default interval.
+	if interval <= 0 {
+		e.logger.Debug().Msg("skipping evm state poller for upstream as its interval is disabled")
 		return nil
 	}
 

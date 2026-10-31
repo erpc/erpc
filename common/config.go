@@ -2912,6 +2912,12 @@ type SvmUpstreamConfig struct {
 	// every upstream and anchors a firstAvailableSlotPlus bound, mirroring EVM's
 	// earliestBlockPlus. Unknown floor = unbounded.
 	BlockAvailability *SvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
+
+	// StatePollerInterval set to a negative value (e.g. "-1s") turns off
+	// background polling for this upstream, e.g. a paid fallback that bills
+	// every request. 0 or a positive value leaves polling on; unlike on EVM it
+	// doesn't change how often it polls.
+	StatePollerInterval Duration `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
 }
 
 // SvmBlockAvailabilityConfig is the per-upstream declared slot window.

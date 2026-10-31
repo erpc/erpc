@@ -208,6 +208,7 @@ The filter is defensive throughout: an upstream with no state poller is **includ
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
 | `networks[*].svm.statePollerDebounce` | Duration | `400ms` (one slot) | Minimum interval between poll fan-outs. A **gate**, not the ticker period — the ticker stays at 400 ms. Raising it widens the `getBlock` guard's staleness margin proportionally. |
+| `upstreams[*].svm.statePollerInterval` | Duration | `0` (on) | **A negative value (e.g. `-1s`) turns polling off** for this upstream: no `getSlot`, `getHealth` or floor probe is sent. Its slot is then unknown, which the slot filters treat as included, so it can still be selected. Unlike on EVM, a positive value doesn't set the period (use `statePollerDebounce`). `checkGenesisHash` still runs once. Source: <SourceLink file="architecture/svm/svm_state_poller.go" lines="283-290" /> |
 | `networks[*].svm.maxFinalizedSlotLag` | `*int64` | `100` slots (≈40 s) | Consensus-scoped only: applied when a consensus policy is active **and** the request's resolved finality is `Finalized`. **Tri-state** — omit for the 100-slot default, `0` to **disable** the filter entirely, `>0` for that value. |
 | `networks[*].svm.enforceBlockAvailability` | `*bool` | `true` | Gates the `getBlock`/`getConfirmedBlock` availability guard **and** declared `svm.blockAvailability` windows. Set `false` when shred-insert tracking is unavailable or unreliable on a deployment. |
 

@@ -1858,6 +1858,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Svm.Cluster == "" && defaults.Svm.Cluster != "" {
 			u.Svm.Cluster = defaults.Svm.Cluster
 		}
+		if u.Svm.StatePollerInterval == 0 && defaults.Svm.StatePollerInterval != 0 {
+			u.Svm.StatePollerInterval = defaults.Svm.StatePollerInterval
+		}
 		// ponytail: CheckGenesisHash stays a plain bool — false is the zero
 		// value and also the "skip the check" behavior, so only an opt-in true
 		// is worth propagating. Make it *bool if a per-upstream opt-OUT of an
