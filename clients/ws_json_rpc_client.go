@@ -22,6 +22,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/util"
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -187,7 +188,7 @@ func NewWsJsonRpcClient(
 
 	if err := client.connect(); err != nil {
 		// readLoop keeps re-dialing in the background.
-		logger.Warn().Err(err).Str("url", parsedUrl.String()).Msg("initial websocket connection failed, will retry in background")
+		logger.Warn().Err(err).Str("url", util.RedactEndpoint(parsedUrl.String())).Msg("initial websocket connection failed, will retry in background")
 	}
 
 	go client.readLoop()
@@ -449,7 +450,7 @@ func (c *WsJsonRpcClient) connect() error {
 	c.connMu.Unlock()
 	c.setConnectedMetric()
 
-	c.logger.Info().Str("url", c.Url.String()).Msg("websocket connection established")
+	c.logger.Info().Str("url", util.RedactEndpoint(c.Url.String())).Msg("websocket connection established")
 	return nil
 }
 
