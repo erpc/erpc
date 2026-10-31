@@ -222,13 +222,18 @@ func (nr *NetworksRegistry) Bootstrap(appCtx context.Context) {
 }
 
 func (nr *NetworksRegistry) GetNetwork(ctx context.Context, networkId string) (*Network, error) {
-	// If network already prepared, return it
+	// Networks are stored only under canonical ids, so a hit needs no parse.
 	if pn, ok := nr.preparedNetworks.Load(networkId); ok {
 		return pn.(*Network), nil
 	}
 
-	if !util.IsValidNetworkId(networkId) {
+	canonicalId, ok := util.CanonicalNetworkId(networkId)
+	if !ok {
 		return nil, common.NewErrInvalidRequest(fmt.Errorf("invalid network id format: '%s' either use a network alias (/main/arbitrum) or a valid network id (/main/evm/42161)", networkId))
+	}
+	networkId = canonicalId
+	if pn, ok := nr.preparedNetworks.Load(networkId); ok {
+		return pn.(*Network), nil
 	}
 
 	// Schedule tasks and wait using the caller's context; tasks run on appCtx internally

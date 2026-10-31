@@ -3701,7 +3701,7 @@ func CachePartitionKey(networkId, suffix, ref string) string {
 	if suffix == "" {
 		return networkId + ":" + ref
 	}
-	if util.IsValidNetworkId(networkId + ":" + suffix) {
+	if _, ok := util.CanonicalNetworkId(networkId + ":" + suffix); ok {
 		networkId = escapePartitionSegment(networkId)
 	}
 	return networkId + ":" + escapePartitionSegment(suffix) + ":" + ref
