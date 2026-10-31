@@ -2,11 +2,11 @@ package evm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
-	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	gethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/assert"
@@ -35,6 +35,10 @@ func newProbeNetwork(t *testing.T) *probeNetwork {
 	pn.On("Id").Return("evm:1").Maybe()
 	pn.On("ProjectId").Return("test").Maybe()
 	pn.On("Label").Return("mainnet").Maybe()
+	// The receipts profile reads the config (validateTransactionsRoot).
+	pn.On("Config").Return(&common.NetworkConfig{}).Maybe()
+	// No served tip here: latest never caps the delivery gate.
+	pn.On("HeadLatest", mock.Anything).Return(int64(1) << 62).Maybe()
 	pn.On("Forward", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			jrq, _ := req.JsonRpcRequest()
@@ -42,7 +46,7 @@ func newProbeNetwork(t *testing.T) *probeNetwork {
 			// answering a probe from the cache would be the circular-evidence
 			// trap all over again.
 			dirs := req.Directives()
-			if dirs == nil || dirs.UseUpstream != "u1" || dirs.SkipCacheRead != "true" || !dirs.IsInternal {
+			if dirs == nil || dirs.UseUpstream != "u1" || dirs.SkipCacheRead != "true" || dirs.UpstreamPolicies != common.UpstreamPoliciesTimeoutOnly {
 				return nil, fmt.Errorf("probe request missing required directives: %+v", dirs)
 			}
 			switch jrq.Method {
@@ -64,14 +68,14 @@ func newProbeNetwork(t *testing.T) *probeNetwork {
 	return pn
 }
 
-func proberFor(pn *probeNetwork, headN int64, stateRoot string) (*stateProber, *chainView) {
-	v := newChainView(pn, 32, "", "", nil)
-	v.adoptFollowed(headN, &integrity.Header{
-		Number: fmt.Sprintf("0x%x", headN), Hash: "0xhead", ParentHash: "0xpar", StateRoot: stateRoot,
-	})
+func proberFor(pn *probeNetwork, headN int64, stateRoot string) (*stateProber, *ChainTracker) {
+	common.WithEvmStatePoller(common.NewFakeEvmStatePoller(headN, headN-10))(pn.upstream)
+	v := newChainTracker(context.Background(), pn, 32, 0, "", "", "", nil, newFetchScheduler(context.Background(), pn))
+	v.Observe("a", json.RawMessage(fmt.Sprintf(`{"number":"0x%x","hash":"%s","parentHash":"%s","stateRoot":"%s"}`,
+		headN, testHash("e", uint64(headN)), testHash("f", uint64(headN-1)), stateRoot)), true)
+	v.sync(context.Background())
 	p := &stateProber{
 		network: pn, view: v, interval: 0,
-		ctxProbe:  integrity.ChainStateContextProbe(1),
 		lastProbe: map[string]time.Time{}, work: make(chan int64, 1),
 	}
 	return p, v
@@ -89,7 +93,7 @@ func TestStateProber(t *testing.T) {
 		pn := newProbeNetwork(t)
 		pn.execContext, pn.proofNode = head, trieNode
 		p, _ := proberFor(pn, head, stateRoot)
-		p.probeAll(head)
+		p.probeAll(context.Background(), head)
 		assert.EqualValues(t, head, pn.upstream.EvmStateProvenBlock())
 	})
 
@@ -101,7 +105,7 @@ func TestStateProber(t *testing.T) {
 		pn := newProbeNetwork(t)
 		pn.execContext, pn.proofNode = head+4, trieNode
 		p, _ := proberFor(pn, head, stateRoot)
-		p.probeAll(head)
+		p.probeAll(context.Background(), head)
 		assert.EqualValues(t, 0, pn.upstream.EvmStateProvenBlock(),
 			"executing AHEAD of the pin means the pin was ignored — never proven")
 	})
@@ -110,7 +114,7 @@ func TestStateProber(t *testing.T) {
 		pn := newProbeNetwork(t)
 		pn.execContext, pn.proofNode = head-7, trieNode // claims head, executes 7 back
 		p, _ := proberFor(pn, head, stateRoot)
-		p.probeAll(head)
+		p.probeAll(context.Background(), head)
 		assert.EqualValues(t, 0, pn.upstream.EvmStateProvenBlock(),
 			"a node executing pinned calls in an older context must never be proven at the pin")
 	})
@@ -119,7 +123,7 @@ func TestStateProber(t *testing.T) {
 		pn := newProbeNetwork(t)
 		pn.execContext, pn.proofNode = head, []byte("some-other-trie")
 		p, _ := proberFor(pn, head, stateRoot)
-		p.probeAll(head)
+		p.probeAll(context.Background(), head)
 		assert.EqualValues(t, 0, pn.upstream.EvmStateProvenBlock(),
 			"the context call is spoofable in principle; the proof layer must hold on its own")
 	})
@@ -128,10 +132,9 @@ func TestStateProber(t *testing.T) {
 		pn := newProbeNetwork(t)
 		pn.execContext, pn.proofErr = head, "the method eth_getProof does not exist/is not available"
 		p, _ := proberFor(pn, head, stateRoot)
-		p.probeAll(head)
+		p.probeAll(context.Background(), head)
 		assert.EqualValues(t, head, pn.upstream.EvmStateProvenBlock())
-		_, remembered := p.proofUnsupported.Load("u1")
-		assert.True(t, remembered, "unsupported must be remembered, not rediscovered every block")
+		assert.True(t, p.proofsOff("u1"), "unsupported must be remembered, not rediscovered every block")
 	})
 
 	t.Run("getProof ignored by the upstream's own config: latched without a forward, context still proves", func(t *testing.T) {
@@ -139,17 +142,16 @@ func TestStateProber(t *testing.T) {
 		pn.upstream.Config().IgnoreMethods = []string{"eth_getProof"}
 		pn.execContext, pn.proofErr = head, "must not be forwarded"
 		p, _ := proberFor(pn, head, stateRoot)
-		p.probeAll(head)
+		p.probeAll(context.Background(), head)
 		assert.EqualValues(t, head, pn.upstream.EvmStateProvenBlock())
-		_, remembered := p.proofUnsupported.Load("u1")
-		assert.True(t, remembered, "an ignored method is remembered as unsupported, not re-asked every block")
+		assert.True(t, p.proofsOff("u1"), "an ignored method is remembered as unsupported, not re-asked every block")
 	})
 
 	t.Run("no verified header at the height: nothing advances (no anchor, no proof)", func(t *testing.T) {
 		pn := newProbeNetwork(t)
 		pn.execContext, pn.proofNode = head, trieNode
 		p, _ := proberFor(pn, head, stateRoot)
-		p.probeAll(head + 5) // a height the follower never verified
+		p.probeAll(context.Background(), head+5) // a height the follower never verified
 		assert.EqualValues(t, 0, pn.upstream.EvmStateProvenBlock())
 	})
 }
@@ -226,8 +228,8 @@ func TestStateBoundary_TipChosenFromClaimedHeadsMustRoute(t *testing.T) {
 	// heads, misbehavior), never routing refusals.
 	n := &mockNetwork{}
 	n.On("Id").Return("evm:42161").Maybe()
-	stateProbers.Store("evm:42161", &stateProber{network: &fleetNetwork{ups: ups}})
-	defer stateProbers.Delete("evm:42161")
+	stateProbers.Store(n, &stateProber{network: &fleetNetwork{ups: ups}})
+	defer stateProbers.Delete(n)
 
 	req := func() *common.NormalizedRequest {
 		return common.NewNormalizedRequest([]byte(fmt.Sprintf(

@@ -1944,6 +1944,21 @@ func TranslateToJsonRpcException(err error) error {
 			nil,
 		)
 	}
+	// geth answers a subscription it cannot serve with -32601; -32603 would
+	// read as a server fault worth retrying.
+	if HasErrorCode(err, ErrCodeNoSubscriptionSource) {
+		reason := "no subscription source"
+		if se, ok := err.(StandardError); ok {
+			reason = se.DeepestMessage()
+		}
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorUnsupportedException,
+			reason,
+			err,
+			nil,
+		)
+	}
 	// A block outside every upstream's availability window (pruned history, or an
 	// explicit blockAvailability bound) is missing data, not an internal failure.
 	// Without this it falls through to the generic -32603 server-side exception,

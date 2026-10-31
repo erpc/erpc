@@ -49,30 +49,6 @@ logLevel: DEBUG
 	}
 }
 
-// Configs that still set the ignored indexer.canonicalChainDepth must load
-// under strict decoding.
-func TestLoadConfig_DeprecatedIndexerCanonicalChainDepthAccepted(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	cfg, err := afero.TempFile(fs, "", "erpc.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.WriteString(`
-logLevel: error
-indexer:
-  canonicalChainDepth: 256
-  dedupWindowSize: 1024
-`)
-
-	loaded, err := LoadConfig(fs, cfg.Name(), &DefaultOptions{})
-	if err != nil {
-		t.Fatalf("config setting the deprecated field must still load: %v", err)
-	}
-	if loaded.Indexer == nil || loaded.Indexer.DedupWindowSize != 1024 {
-		t.Fatalf("indexer block must still parse, got %+v", loaded.Indexer)
-	}
-}
-
 // TestLoadConfig_LegacyFieldsAccepted pins the back-compat contract:
 // a prod-shape YAML carrying legacy `routing.scoreMultipliers` on
 // upstreams + `scoreMetricsWindowSize` at the project level loads
@@ -1287,14 +1263,6 @@ func TestFailoverConfig_Enabled(t *testing.T) {
 	disabled, enabled := false, true
 	assert.False(t, (&FailoverConfig{OnDefaultsExhausted: &disabled}).Enabled())
 	assert.True(t, (&FailoverConfig{OnDefaultsExhausted: &enabled}).Enabled())
-}
-
-func TestNetworkConfig_SetDefaults_StripSubscribeFromBlockZeroInheritsFromDefaults(t *testing.T) {
-	strip := true
-	defaults := &NetworkDefaults{Evm: &EvmNetworkConfig{StripSubscribeFromBlockZero: &strip}}
-	n := &NetworkConfig{Architecture: ArchitectureEvm, Evm: &EvmNetworkConfig{ChainId: 1}}
-	assert.NoError(t, n.SetDefaults(nil, defaults))
-	assert.Equal(t, &strip, n.Evm.StripSubscribeFromBlockZero)
 }
 
 func TestNetworkConfig_SetDefaults_ShortCircuitFutureBlocksInheritsFromDefaults(t *testing.T) {

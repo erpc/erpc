@@ -7,6 +7,9 @@ help:
 	@echo " build                         Build the eRPC server + simulator"
 	@echo " fmt                           Format source code"
 	@echo " test                          Run unit tests"
+	@echo " test-realworld                Run the chain tracker real-world suite, every tier (eRPC pods, redis-server); REALWORLD_LOADED_HOST=1 starts at any host load, REALWORLD_RACE=1 builds pods with -race"
+	@echo " test-realworld-long           Run only the real-world suite's long tier (C17, ~40 min)"
+	@echo " verify-fast                   Build, vet, -race every package, chaos once, real-world fast tier; prints a pass/fail table (VERIFY_DIR=<dir> for logs)"
 	@echo
 	@echo " run-k6                        Run k6 tests"
 	@echo " run-pprof                     Run the eRPC server with pprof"
@@ -117,6 +120,18 @@ test-race:
 	@go clean -testcache
 	@go test ./cmd/... -count 5 -parallel 5 -v -race
 	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -count 15 -parallel 15 -v -timeout 30m -race
+
+.PHONY: test-realworld
+test-realworld:
+	@go test ./test/realworld/... -count=1 -v -timeout 60m
+
+.PHONY: test-realworld-long
+test-realworld-long:
+	@REALWORLD_TIER=long go test ./test/realworld/... -count=1 -v -timeout 60m
+
+.PHONY: verify-fast
+verify-fast:
+	@./scripts/verify-fast.sh
 
 .PHONY: bench
 bench:

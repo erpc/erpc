@@ -39,7 +39,7 @@ func TestPartitionUpstreamsByLatestBlock_AllHaveTheBlock_NoReorder(t *testing.T)
 		upWithLatest("b", 105),
 		upWithLatest("c", 110),
 	}
-	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100)
+	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100, 0)
 	assert.Equal(t, []string{"a", "b", "c"}, ids(got), "no upstream lags the requested block; partition is identity")
 }
 
@@ -49,7 +49,7 @@ func TestPartitionUpstreamsByLatestBlock_NoneHaveTheBlock_NoReorder(t *testing.T
 		upWithLatest("b", 60),
 		upWithLatest("c", 70),
 	}
-	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100)
+	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100, 0)
 	assert.Equal(t, []string{"a", "b", "c"}, ids(got), "no upstream has the requested block; partition is identity (caller can still try them)")
 }
 
@@ -61,7 +61,7 @@ func TestPartitionUpstreamsByLatestBlock_SplitsAndPreservesIntraGroupOrder(t *te
 		upWithLatest("d", 105),
 		upWithLatest("e", 88),
 	}
-	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100)
+	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100, 0)
 	assert.Equal(t, []string{"b", "d", "a", "c", "e"}, ids(got))
 }
 
@@ -71,7 +71,7 @@ func TestPartitionUpstreamsByLatestBlock_EqualLatestIsTreatedAsHavingBlock(t *te
 		upWithLatest("b", 100),
 		upWithLatest("c", 100),
 	}
-	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100)
+	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100, 0)
 	assert.Equal(t, []string{"b", "c", "a"}, ids(got))
 }
 
@@ -82,7 +82,7 @@ func TestPartitionUpstreamsByLatestBlock_UnknownHeadKeepsItsPlace(t *testing.T) 
 		upWithLatest("c", 110),
 		upWithLatest("d", 0),
 	}
-	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100)
+	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100, 0)
 	assert.Equal(t, []string{"a", "c", "d", "b"}, ids(got), "only a known head below the block moves back")
 }
 
@@ -91,13 +91,13 @@ func TestPartitionUpstreamsByLatestBlock_ZeroOrNegativeBlockIsNoOp(t *testing.T)
 		upWithLatest("a", 100),
 		upWithLatest("b", 50),
 	}
-	assert.Equal(t, in, (&Network{}).partitionUpstreamsByLatestBlock(in, 0), "no block reference means no per-block routing preference")
-	assert.Equal(t, in, (&Network{}).partitionUpstreamsByLatestBlock(in, -1), "negative block numbers are nonsensical; skip the partition rather than mis-sort")
+	assert.Equal(t, in, (&Network{}).partitionUpstreamsByLatestBlock(in, 0, 0), "no block reference means no per-block routing preference")
+	assert.Equal(t, in, (&Network{}).partitionUpstreamsByLatestBlock(in, -1, 0), "negative block numbers are nonsensical; skip the partition rather than mis-sort")
 }
 
 func TestPartitionUpstreamsByLatestBlock_SingleUpstreamIsNoOp(t *testing.T) {
 	in := []common.Upstream{upWithLatest("a", 50)}
-	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100)
+	got := (&Network{}).partitionUpstreamsByLatestBlock(in, 100, 0)
 	assert.Equal(t, in, got, "no other upstream to prefer; partition is a no-op")
 }
 
@@ -105,15 +105,16 @@ func TestPreferTipLeaderForNearTipGetBlock(t *testing.T) {
 	const method = "eth_getBlockByNumber"
 
 	tied := []common.Upstream{upWithLatest("c", 1000), upWithLatest("b", 1000), upWithLatest("a", 1000)}
-	assert.Equal(t, []string{"c", "b", "a"}, ids((&Network{}).preferTipLeaderForNearTipGetBlock(tied, method, 1000)),
+	nw := &Network{}
+	assert.Equal(t, []string{"c", "b", "a"}, ids(nw.preferTipLeaderForNearTipGetBlock(tied, method, 1000, highestOf(tied), 0)),
 		"tied heads keep the selection policy's order")
 
 	ahead := []common.Upstream{upWithLatest("c", 999), upWithLatest("b", 999), upWithLatest("a", 1000)}
-	assert.Equal(t, []string{"a", "c", "b"}, ids((&Network{}).preferTipLeaderForNearTipGetBlock(ahead, method, 1001)),
+	assert.Equal(t, []string{"a", "c", "b"}, ids(nw.preferTipLeaderForNearTipGetBlock(ahead, method, 1001, highestOf(ahead), 0)),
 		"a strict leader goes first for its next block")
-	assert.Equal(t, []string{"c", "b", "a"}, ids((&Network{}).preferTipLeaderForNearTipGetBlock(ahead, method, 998)),
+	assert.Equal(t, []string{"c", "b", "a"}, ids(nw.preferTipLeaderForNearTipGetBlock(ahead, method, 998, highestOf(ahead), 0)),
 		"blocks every candidate has keep the policy order")
-	assert.Equal(t, []string{"c", "b", "a"}, ids((&Network{}).preferTipLeaderForNearTipGetBlock(ahead, "eth_call", 1000)))
+	assert.Equal(t, []string{"c", "b", "a"}, ids(nw.preferTipLeaderForNearTipGetBlock(ahead, "eth_call", 1000, highestOf(ahead), 0)))
 }
 
 // pollAgeEnv drives one network of real pollers, the real tracker and the
@@ -216,17 +217,18 @@ func (e *pollAgeEnv) step(n int) {
 
 // report is one successful poll of id answering h, moved or not, the way the
 // poller reports it: the tracker first, with the block timestamp, then the
-// poller's counter.
+// poller's counter, dated by the pinned clock as a poll's send time.
 func (e *pollAgeEnv) report(id string, h int64) {
 	u := e.ups[id]
 	e.network.metricsTracker.SetLatestBlockNumber(u, h, 1_800_000_000+2*(h-1000))
-	u.EvmStatePoller().SuggestLatestBlock(h)
+	u.EvmStatePoller().SuggestLatestBlock(h, servedTipClock())
 }
 
 // first is the upstream Forward tries first for eth_getBlockByNumber(bn);
 // every upstream answers it.
 func (e *pollAgeEnv) first(bn int64) string {
 	e.t.Helper()
+	e.network.refreshHeads()
 	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, bn)))
 	req.SetNetwork(e.network)
 	_, err := e.network.Forward(e.ctx, req)
@@ -236,7 +238,12 @@ func (e *pollAgeEnv) first(bn int64) string {
 	return log[0].UpstreamId
 }
 
-func (e *pollAgeEnv) headOf(id string) int64 { return e.network.upstreamHead(e.ups[id]) }
+// headOf is id's head as the head-first order reads it, against the
+// network-wide Latest.
+func (e *pollAgeEnv) headOf(id string) int64 {
+	u := e.ups[id]
+	return e.network.creditedHead(u, upstreamLatestBlock(u), servedHead(e.network, e.ctx).Latest)
+}
 
 func (e *pollAgeEnv) polled(id string) int64 { return e.ups[id].EvmStatePoller().LatestBlock() }
 

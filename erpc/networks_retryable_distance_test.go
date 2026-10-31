@@ -28,8 +28,8 @@ func newRetryDistanceNetwork(t *testing.T, configured *int64, blocksPerSecond in
 	if blocksPerSecond > 0 {
 		// Settle the tracker's block-time EMA by replaying observations through
 		// the same entry point the poller uses: blocksPerSecond blocks for every
-		// one second of block timestamp. blockTimeMinSamples is 3, so eight
-		// rounds is comfortably past the gate.
+		// one second of block timestamp. The first sample lands on the third
+		// round, so eight rounds is comfortably past it.
 		up := common.NewFakeUpstream("ups-1", common.WithFakeUpstreamNetworkID("evm:1"))
 		var num int64 = 1_000_000
 		var ts int64 = 1_700_000_000

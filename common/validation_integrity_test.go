@@ -31,7 +31,6 @@ func TestIntegrityConfigValidate(t *testing.T) {
 				},
 				InvalidBehavior: &IntegrityInvalidBehaviorConfig{Finalized: "hardReject", Unfinalized: "recordOnly"},
 				Budget:          &IntegrityBudgetConfig{MaxPerSecond: 50, MaxConcurrent: 8},
-				ReorgWindow:     256,
 			},
 			HeaderMode: "profiles",
 			Profiles:   map[string]*IntegritySettings{"strict": {Level: "authoritative"}},

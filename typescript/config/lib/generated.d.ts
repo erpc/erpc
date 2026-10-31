@@ -35,6 +35,88 @@ export interface AdaptiveDuration {
  */
 export type ArchitectureHandler = any;
 export declare const UpstreamTypeEvm: UpstreamType;
+/**
+ * HeadNeed is what a head Ask must produce (spec §6.8); the Ask's pace
+ * is the oldest evidence that meets it.
+ */
+export type HeadNeed = number;
+/**
+ * HeadNeedNumber: a fresh number; a shared counter whose report is
+ * younger than the pace meets it.
+ */
+export declare const HeadNeedNumber: HeadNeed;
+/**
+ * HeadNeedHash: a hash vote; only a local fetch sent within the pace
+ * meets it.
+ */
+export declare const HeadNeedHash: HeadNeed;
+/**
+ * HeadNeedFork: a hash need whose answer is fresh evidence of the
+ * node's head, whatever its earlier votes say (spec §6.3 fork poll):
+ * only a fork fetch meets it, sent after the Ask at pace 0, else
+ * within the pace.
+ */
+export declare const HeadNeedFork: HeadNeed;
+/**
+ * AskReason is a head Ask's caller, the reason label of
+ * erpc_head_ask_total (spec §6.8, §17).
+ */
+export type AskReason = string;
+export declare const AskPoll: AskReason;
+export declare const AskCatchUp: AskReason;
+export declare const AskRefusal: AskReason;
+export declare const AskRefresh: AskReason;
+export declare const AskSettle: AskReason;
+export declare const AskNoSource: AskReason;
+/**
+ * AskOutcome is how a head Ask was met, the outcome label of
+ * erpc_head_ask_total (spec §17).
+ */
+export type AskOutcome = string;
+/**
+ * AskFetched: the Ask started a fetch.
+ */
+export declare const AskFetched: AskOutcome;
+/**
+ * AskSharedFresh: the shared counter met a number need.
+ */
+export declare const AskSharedFresh: AskOutcome;
+/**
+ * AskInflight: a local fetch sent within the pace met it, in flight
+ * or answered.
+ */
+export declare const AskInflight: AskOutcome;
+/**
+ * AskBackoff: the upstream backs off; nothing was fetched.
+ */
+export declare const AskBackoff: AskOutcome;
+/**
+ * HeadAnswer is what a head Ask gives its caller: the fetch's one
+ * outcome, the same for every waiter.
+ */
+export interface HeadAnswer {
+    outcome: AskOutcome;
+    /**
+     * Block is the upstream's latest counter after the outcome.
+     */
+    block: number;
+    /**
+     * Sent is when the fetch that answered was sent: the header's
+     * evidence time; zero with no fetch answer.
+     */
+    sent: any;
+    /**
+     * Next is when an Ask at the same pace may fetch again: the meeting
+     * fetch's send plus the pace or its backed-off cadence, the longer;
+     * zero when it may now.
+     */
+    next: any;
+}
+/**
+ * EvmHeader is a latest header past intake check 0, parsed once where it
+ * was fetched: the evm package's SourceHeader.
+ */
+export type EvmHeader = any;
 export type EvmUpstream = Upstream;
 /**
  * EvmStateProvenWriter is the OPTIONAL, separately-asserted surface the
@@ -184,24 +266,8 @@ export interface Config {
     projects?: (ProjectConfig | undefined)[];
     rateLimiters?: RateLimiterConfig;
     metrics?: MetricsConfig;
-    indexer?: IndexerConfig;
     proxyPools?: (ProxyPoolConfig | undefined)[];
     tracing?: TracingConfig;
-}
-/**
- * IndexerConfig tunes the event-stream indexer behind eth_subscribe fan-out.
- */
-export interface IndexerConfig {
-    /**
-     * Deprecated: ignored; the indexer no longer tracks a canonical chain.
-     * Kept so configs that still set it load under strict decoding.
-     */
-    canonicalChainDepth?: number;
-    /**
-     * DedupWindowSize is the per-filter seen-set capacity for log and
-     * pending-tx fan-out across upstreams. 0 uses the default (8192).
-     */
-    dedupWindowSize?: number;
 }
 export interface ServerConfig {
     listenV4?: boolean;
@@ -268,13 +334,6 @@ export interface WebSocketServerConfig {
      * A batch is one message; its requests run concurrently, as over HTTP.
      */
     maxConcurrentRequestsPerConnection?: number;
-    /**
-     * SubscriptionBufferSize is the number of notifications queued per
-     * subscription for a client that is behind. On overflow newHeads and
-     * newPendingTransactions drop their oldest entry; logs close the
-     * connection instead (1013), so the client knows it missed data.
-     */
-    subscriptionBufferSize?: number;
     /**
      * MaxConnections caps concurrent client connections on this instance
      * (0 = unlimited). Unlike the per-IP cap it holds when client IPs are
@@ -956,13 +1015,13 @@ export interface ShadowUpstreamConfig {
         [key: string]: string[];
     };
     /**
-     * PinBlockTag rewrites a tag block selector ("latest"/"pending") in the mirrored copy to a
-     * concrete height before forwarding: the primary's resolved block number when its response
-     * carries one, else the network's tracked head at mirror time. Without it the shadow executes
-     * the tag at its OWN head wall-clock-later than the primary did, so any read of volatile state
-     * (pool reserves, oracle prices — most visibly large multicalls) diverges by construction and
-     * reports a mismatch that says nothing about correctness. Default false = mirror byte-identical
-     * requests, exactly as before.
+     * PinBlockTag rewrites a tag block selector ("latest") in the mirrored copy to the block the
+     * primary was sent: its response's own block number when it carries one, else the request's
+     * Latest, or the serving upstream's own head when the tag reached it as is. Without it the
+     * shadow executes the tag at its OWN head wall-clock-later than the primary did, so any read
+     * of volatile state (pool reserves, oracle prices — most visibly large multicalls) diverges by
+     * construction and reports a mismatch that says nothing about correctness. Default false =
+     * mirror byte-identical requests, exactly as before.
      */
     pinBlockTag?: boolean;
 }
@@ -1036,8 +1095,9 @@ export interface EvmUpstreamConfig {
     /**
      * StatePollerDebounce overrides the debounce interval for the state poller.
      * When 0 (default), the interval is dynamically inferred from the chain's
-     * observed block time, falling back to the network-level
-     * FallbackStatePollerDebounce, then to a 1s floor.
+     * observed block time; until that is known, the network-level
+     * FallbackStatePollerDebounce when set, else 0.7s (the 1s cold block
+     * time × dynamicBlockTimeDebounceMultiplier).
      */
     statePollerDebounce?: Duration;
     blockAvailability?: EvmBlockAvailabilityConfig;
@@ -1071,8 +1131,15 @@ export interface EvmUpstreamConfig {
      * upstream when its blockAvailability upper bound is below that head or the head is unknown.
      * For an upstream whose own head lags the network: it answers only blocks it holds, and a block
      * it lacks fails as missing data so the next upstream answers, instead of an older "latest".
+     * Never a request whose tag reaches upstreams as is (translateLatestTag: false, skip-interpolation).
      */
     pinLatestTag?: boolean;
+    /**
+     * SubscriptionSource makes this upstream a chain-tracker source: it feeds
+     * newHeads by push over ws/wss, by polling eth_getBlockByNumber(latest)
+     * otherwise. Unset: true for ws/wss endpoints, false otherwise.
+     */
+    subscriptionSource?: boolean;
     /**
      * Deprecated: never read at runtime. Configure data integrity via the network
      * `integrity` block instead. Retained only so existing YAML still parses.
@@ -1173,15 +1240,11 @@ export interface FailsafeConfig {
      */
     matchCommitment?: ('none' | 'processed' | 'confirmed' | 'finalized')[];
     /**
-     * MatchRequestKind scopes this policy by who issued the request:
-     * "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
-     * the integrity module's canonical corroboration), or ""/"*" for both.
-     * This is what lets an operator give INTERNAL canonical fetches a
-     * consensus policy (quorum-verified ground truth, deduplicated to ~once
-     * per block by the ChainView) while user data methods rely on integrity
-     * validation instead of per-request fan-out.
+     * MatchRequestKind "user", "*" or "" matches every client request: no
+     * eRPC-own request (tracker fetch, head poll, probe) goes through a
+     * failsafe policy. "internal" is refused at load.
      */
-    matchRequestKind?: 'user' | 'internal' | '*';
+    matchRequestKind?: 'user' | '*';
     retry?: RetryPolicyConfig;
     circuitBreaker?: CircuitBreakerPolicyConfig;
     timeout?: TimeoutPolicyConfig;
@@ -1665,9 +1728,12 @@ export interface DirectiveDefaultsConfig {
      * retained only so existing YAML still parses. At startup the flags that map
      * to a current check are translated into `integrity.checks` by
      * migrateLegacyIntegrityChecks (an explicit `integrity` block wins per check);
-     * they are NOT read at runtime. The receipt-count / expected-block /
-     * receipt-to-transaction flags have no equivalent in the new model and are
-     * accepted but ignored. See docs/pages/config/failsafe/integrity.mdx.
+     * they are NOT read at runtime, except validateTransactionsRoot: false,
+     * which also says the network's roots are not Ethereum's trie, so the
+     * chain tracker takes gasUsed 0 as an empty block. The receipt-count /
+     * expected-block / receipt-to-transaction flags have no equivalent in
+     * the new model and are accepted but ignored. See
+     * docs/pages/config/failsafe/integrity.mdx.
      */
     validateTransactionsRoot?: boolean;
     validateHeaderFieldLengths?: boolean;
@@ -1811,6 +1877,11 @@ export interface EvmNetworkConfig {
      * EvmServedTipConfig.
      */
     servedTip?: EvmServedTipConfig;
+    /**
+     * ChainTracker configures the network's chain trackers: how far back they
+     * hold the chain and follow reorgs.
+     */
+    chainTracker?: EvmChainTrackerConfig;
     getLogsMaxAllowedRange?: number;
     getLogsMaxAllowedAddresses?: number;
     getLogsMaxAllowedTopics?: number;
@@ -1872,13 +1943,6 @@ export interface EvmNetworkConfig {
     localAnswers?: {
         [key: string]: boolean;
     };
-    /**
-     * StripSubscribeFromBlockZero removes a zero `fromBlock` from eth_subscribe
-     * logs filters before forwarding upstream. fromBlock has no meaning for a
-     * live subscription, and backends that prune history reject it.
-     * DEFAULT: false.
-     */
-    stripSubscribeFromBlockZero?: boolean;
     /**
      * DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
      * the debounce interval for block polling. A value of 0.7 means debounce = 70% of
@@ -1946,6 +2010,22 @@ export interface EvmNetworkConfig {
     safeBlockSource?: string;
 }
 /**
+ * EvmChainTrackerConfig sizes the window a chain tracker holds.
+ */
+export interface EvmChainTrackerConfig {
+    /**
+     * ReorgWindow is the floor of the window in blocks, the window of group
+     * trackers, and the deepest reorg a tracker walks and replays (default
+     * 32). Raise it for deep-reorg chains (e.g. polygon 256).
+     */
+    reorgWindow?: number;
+    /**
+     * MaxBackfill is how much chain time, compared on header timestamps, the
+     * network-wide tracker holds for resumable taps (default 5m).
+     */
+    maxBackfill?: Duration;
+}
+/**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
  * block it advertises (and enforces) from its upstreams.
  * Both axes use one rule: among the eligible (selection-policy), non-syncing
@@ -1953,7 +2033,9 @@ export interface EvmNetworkConfig {
  * static-capped, then benched and static-capped), and the served block is the
  * highest one at least Quorum of those voters already have. The health
  * tracker benches an upstream whose head stopped moving while another kept
- * advancing, until it catches up again.
+ * advancing, until it catches up again. "finalized" never steps back below a
+ * block already served, by this instance or (network-wide, through shared
+ * state) by another, while a voter here still reports it finalized.
  */
 export interface EvmServedTipConfig {
     /**
@@ -2449,12 +2531,6 @@ export interface IntegritySettings {
      */
     invalidBehavior?: IntegrityInvalidBehaviorConfig;
     /**
-     * ReorgWindow is how many blocks back from the tip the integrity ChainView
-     * keeps a number→hash pin + header and tracks reorgs (default 32). Raise for
-     * deep-reorg chains (e.g. polygon 256).
-     */
-    reorgWindow?: number;
-    /**
      * ObserveOnly runs every enabled check but never lets a verdict touch the
      * response: violations that WOULD have been rejected are recorded with the
      * outcome "would_reject" and served anyway. This is the safe way to enable
@@ -2482,14 +2558,16 @@ export interface IntegritySettings {
      * misbehaviorRateAbove predicate); absence of proof has no effect at all,
      * and ObserveOnly suppresses the misbehavior recording like every other
      * integrity effect. Requires follow to be enabled (the verified header is
-     * the trust anchor). Off by default.
+     * the trust anchor). Off by default. The "latest" tag-state probe behind
+     * the tag-state gate runs on every network from its first client
+     * request, whatever this says.
      */
     stateProbe?: IntegrityStateProbeConfig;
     /**
-     * Follow turns the ChainView into an actual chain follower: it walks the
-     * chain forward block by block, requires each block to name its
-     * predecessor's hash, and reconciles reorgs by finding the common ancestor.
-     * Off by default — it costs one eth_getBlockByNumber per block per network.
+     * Follow opens one integrity follow tap per chain tracker at the
+     * network's first client request: it holds demand at its interval's
+     * pace, so source polls run while clients are quiet, and it drives the
+     * state prober on each new head. Off by default.
      */
     follow?: IntegrityFollowConfig;
     /**
@@ -2501,28 +2579,24 @@ export interface IntegritySettings {
     misbehaviorsDestination?: MisbehaviorsDestinationConfig;
 }
 /**
- * IntegrityFollowConfig configures the ChainView chain follower.
- * Following gives the module a CONTIGUOUS, parent-linked view of the chain
- * instead of the sparse scatter of heights that client traffic happens to
- * touch. That is what lets it answer "is this block canonical" from a verified
- * chain rather than from whichever source was observed first, and it is the
- * precondition for any check that compares consecutive headers.
+ * DefaultIntegrityFollowInterval is the follow tap's pace when its config
+ * sets none.
+ */
+export declare const DefaultIntegrityFollowInterval: typeof any;
+/**
+ * IntegrityFollowConfig configures the integrity follow tap.
  */
 export interface IntegrityFollowConfig {
     /**
-     * Enabled turns the follower on for this network. Default false.
+     * Enabled opens the follow tap for this network. Default false.
      */
     enabled?: boolean;
     /**
-     * Interval is how often to check for new blocks (default 1s). Keep it below
-     * the chain's block time or the follower will run a step behind.
+     * Interval is the pace the follow tap needs heads at (default 1s): while
+     * it is a network's only newHeads demand, the tracker asks upstreams for
+     * newer heads no more often than this.
      */
     interval?: Duration;
-    /**
-     * MaxBlocksPerTick bounds catch-up work per tick (default 16), so a
-     * follower starting far behind converges steadily instead of bursting.
-     */
-    maxBlocksPerTick?: number;
 }
 /**
  * IntegrityStateProbeConfig configures the per-upstream state-trie probes.
@@ -2814,12 +2888,114 @@ export declare const ArchitectureEvm: NetworkArchitecture;
 export declare const ArchitectureSvm: NetworkArchitecture;
 export type Network = any;
 /**
- * EvmNetwork is the EVM-specific view of a Network. Callers that need
- * block-number accessors or leader-upstream selection should go through the
- * EvmHighestLatestBlockNumber / EvmHighestFinalizedBlockNumber / EvmLeaderUpstream
- * helpers below, which type-assert and degrade to zero-value on mismatch.
+ * EvmNetwork is the EVM-specific view of a Network. Callers read the head
+ * through EvmHeadOf, which type-asserts and degrades to the zero Head.
  */
 export type EvmNetwork = Network;
+/**
+ * EvmHead is one lane's head (spec §6.4), published as one value. The zero
+ * Head is an unknown one.
+ */
+export interface EvmHead {
+    /**
+     * Latest is the q-th highest voter number, guarded and clamped to the
+     * guarantees.
+     */
+    latest: number;
+    /**
+     * Finalized is the same ballot over the voters' finalized numbers.
+     */
+    finalized: number;
+    /**
+     * Leader is the highest voter within Latest + maxRetryableBlockDistance.
+     */
+    leader: Upstream;
+    /**
+     * Ceiling is the raw max report of the lane's counted upstreams, 0
+     * while any of them has none.
+     */
+    ceiling: number;
+    /**
+     * OldestReportAt is when the oldest counted report's evidence was
+     * taken: a poll's send time, a push's receive time; zero while one has
+     * none.
+     */
+    oldestreportat: any;
+    /**
+     * CeilingPeak is the highest Ceiling this instance published for the
+     * lane, and CeilingFellAt when Ceiling last fell below the one before
+     * it: a cursor between the two heights names a block no upstream
+     * reports any more (spec §10.1, §19 C16).
+     */
+    ceilingpeak: number;
+    ceilingfellat: any;
+}
+/**
+ * HeadRule is the refusal rule's row for block N on a request (spec §6.4).
+ */
+export type HeadRule = number;
+/**
+ * HeadServe: N ≤ Latest, or Latest unknown (tags and numbers reach
+ * upstreams unchanged).
+ */
+export declare const HeadServe: HeadRule;
+/**
+ * HeadBand: Latest < N ≤ ceiling, or the ceiling is unknown.
+ */
+export declare const HeadBand: HeadRule;
+/**
+ * HeadFuture: above the ceiling, every counted report younger than
+ * 1 bt: no counted upstream has N yet.
+ */
+export declare const HeadFuture: HeadRule;
+/**
+ * HeadStale: above the ceiling, a counted report 1 bt old or older:
+ * those reports are Asked before N is decided again. Never a request's
+ * verdict.
+ */
+export declare const HeadStale: HeadRule;
+/**
+ * HeadRefusal is the refusal rule's verdict for one request's block, taken
+ * once (spec §6.4), and the retryable misses its legs got since.
+ */
+export interface HeadRefusal {
+    rule: HeadRule;
+    block: number;
+    /**
+     * Ceiling is the ceiling Block was decided against: the one the Ask
+     * returned when Refreshed.
+     */
+    ceiling: number;
+    /**
+     * Refreshed: N was decided again after its stale reports were Asked.
+     */
+    refreshed: boolean;
+    /**
+     * Waited: N, near the ceiling, waited up to W for it (spec §6.4 near
+     * future).
+     */
+    waited: boolean;
+}
+/**
+ * RefusalLeg is one execution of a request: a consensus slot, a hedge
+ * leg, or a retry round's. One goroutine runs it.
+ */
+export interface RefusalLeg {
+}
+/**
+ * MissVerdict is what an empty or missing answer above Latest is to the
+ * leg that got it.
+ */
+export type MissVerdict = number;
+/**
+ * MissRetry: the leg's one retryable miss; the leg retries.
+ */
+export declare const MissRetry: MissVerdict;
+/**
+ * MissFinal: the answer after the leg's miss, sent as the upstream
+ * gave it.
+ */
+export declare const MissFinal: MissVerdict;
 /**
  * SvmNetwork is the SVM-specific view of a Network. Production Network
  * implementations satisfy this automatically when the underlying network is
@@ -2871,6 +3047,18 @@ export type ServedTipQuorum = number;
  * ServedTipQuorumMajority requires a strict majority of the voters.
  */
 export declare const ServedTipQuorumMajority: ServedTipQuorum;
+/**
+ * Invariant is one chain-tracking invariant (spec §15.3) counted by
+ * erpc_chain_tracker_invariant_violations_total (§17).
+ */
+export type Invariant = string;
+export declare const InvariantSentAboveLatest: Invariant;
+export declare const InvariantSentUnconfirmed: Invariant;
+export declare const InvariantTapGap: Invariant;
+export declare const InvariantRemovedUnsent: Invariant;
+export declare const InvariantPinsUnlinked: Invariant;
+export declare const InvariantFinalHashChanged: Invariant;
+export declare const InvariantLatestRegressed: Invariant;
 /**
  * TimeoutFunc computes the timeout for a request. Returns nil when no
  * timeout applies (caller skips context.WithTimeout).
@@ -2925,26 +3113,25 @@ export declare const CordonClassOperator: CordonClass;
  * (legacy call sites, internal probes, batch retries). Cordon/Uncordon
  * stay finality-agnostic because cordoning is an admin-level decision
  * about an entire (upstream, method) pair, not a per-finality bucket.
+ * Cordon and Uncordon stay class-less so existing tracker implementations
+ * keep compiling. Class-aware cordoning is the optional ClassedHealthTracker.
  */
 export type HealthTracker = any;
+/**
+ * ClassedHealthTracker is the optional capability for a cordon that carries a
+ * class. The consensus selector reads CordonClasses. A tracker that does not
+ * implement this still receives HealthTracker.Cordon/Uncordon; the class is
+ * not stored, and the selector does not treat that upstream as
+ * availability-only (the only class that permits a policy downgrade).
+ */
+export type ClassedHealthTracker = any;
 export type Upstream = any;
 /**
- * User is the authenticated caller. Beyond identity (Id) it carries the
- * per-caller capabilities resolved at authentication time. Capability fields
- * are populated ONLY by auth strategies; the trusted-header path
- * (NormalizedRequest.SetUserFromTrustedHeader) sets Id alone, so an
- * unvalidated header can never grant a capability.
+ * ClassedUpstream is the optional capability for an upstream that records a
+ * cordon class. In-tree upstreams implement it. Out-of-tree upstreams keep
+ * the class-less Upstream.Cordon/Uncordon methods.
  */
-export interface User {
-    id: string;
-    ratelimitbudget: string;
-    /**
-     * AllowClientDirectives is the client-directive wildcard pattern granted by
-     * the strategy that authenticated this user. Nil means "no strategy-level
-     * override" — the project-level pattern applies.
-     */
-    allowclientdirectives?: string;
-}
+export type ClassedUpstream = any;
 /**
  * MaxGrpcConnPoolSize is the upper bound accepted for a gRPC connection-pool
  * size. It guards against a fat-fingered value opening an absurd number of

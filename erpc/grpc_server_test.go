@@ -166,10 +166,11 @@ func TestHttpServer_CanSharePortWithGrpc(t *testing.T) {
 	defer cancel()
 
 	erpcInstance, err := NewERPC(ctx, &logger, nil, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 	require.NoError(t, err)
 	require.NotNil(t, httpServer.sharedGrpcServer)
 	// Reflection is enabled by default, so the reflection service is registered

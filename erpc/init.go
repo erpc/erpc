@@ -158,7 +158,7 @@ func Init(
 	// cancelled; nil (never waited on) when no HTTP server is configured.
 	var httpDrained <-chan struct{}
 	if cfg.Server != nil {
-		httpServer, err := NewHttpServer(appCtx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+		httpServer, err := NewHttpServer(appCtx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 		if err != nil {
 			return err
 		}
@@ -171,10 +171,6 @@ func Init(
 				}
 			}
 		}()
-		// Proactively establish upstream newHeads subscriptions so the state
-		// poller's latest-block tip is fed by pushed heads instead of RPC
-		// polling — without waiting for a client eth_subscribe.
-		go httpServer.PrewarmUpstreamSubscriptions(appCtx)
 	}
 	if cfg.Server != nil && cfg.Server.GrpcEnabled != nil && *cfg.Server.GrpcEnabled && !grpcSharesHttpV4(cfg.Server) {
 		grpcServer, err := NewGrpcServer(appCtx, &logger, cfg.Server, erpcInstance)

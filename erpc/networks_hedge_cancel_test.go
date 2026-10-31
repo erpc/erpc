@@ -48,7 +48,7 @@ func TestHedgeConsensus_AllUpstreamsMissingData_HedgeRecovery(t *testing.T) {
 	// After fix: 3 valid results → consensus succeeds (3/3 agree)
 
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	var rpc1Calls, rpc2Calls, rpc3Calls atomic.Int32
@@ -146,7 +146,7 @@ func TestHedgeConsensus_ServerError_HedgeRecovery(t *testing.T) {
 	// Server-side errors are also transient — CancelIf should NOT cancel hedges.
 
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	var rpc1Calls, rpc2Calls, rpc3Calls atomic.Int32
@@ -234,7 +234,7 @@ func TestHedgeConsensus_ExecutionReverted_CancelsHedge(t *testing.T) {
 	// resources. This test verifies the fix doesn't break terminal error cancellation.
 
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	var rpc1Calls, rpc2Calls, rpc3Calls atomic.Int32
@@ -312,7 +312,7 @@ func TestHedgeConsensus_OneUpstreamMissingData_OthersSucceed_StillWorks(t *testi
 	// enough participants succeed independently.
 
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	// rpc1: always MissingData
@@ -394,7 +394,7 @@ func TestHedgeConsensus_EmptyTxLookupIsKeptAsSlotVote(t *testing.T) {
 	// vote never reached analysis.groups and the empty-outside-retention
 	// waiver could not fire.
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	tx := map[string]interface{}{
@@ -438,6 +438,12 @@ func TestHedgeConsensus_EmptyTxLookupIsKeptAsSlotVote(t *testing.T) {
 		DisputeBehavior:       common.ConsensusDisputeBehaviorReturnError,
 		PreferNonEmpty:        &common.TRUE,
 		PreferLargerResponses: &common.TRUE,
+		// The waiver needs every internal's vote, and a wait cap seals a
+		// partial bag fail-closed. The default 5 ms result cap arms once one
+		// internal and one external answered, so a slot scheduled late on a
+		// busy host lost its vote.
+		MaxWaitOnResult: common.NewStaticDuration(5 * time.Second),
+		MaxWaitOnEmpty:  common.NewStaticDuration(5 * time.Second),
 		BlockEvidenceFields: map[string][]string{
 			"eth_getTransactionByHash": {"blockNumber"},
 		},

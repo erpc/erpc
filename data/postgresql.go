@@ -561,7 +561,7 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey st
 	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.Set")
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("partition_key", partitionKey),
 			attribute.String("range_key", rangeKey),
@@ -618,7 +618,7 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.Get")
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("index", index),
 			attribute.String("partition_key", partitionKey),
@@ -665,7 +665,7 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 		return nil, err
 	}
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.Int("value_size", len(value)),
 		)
@@ -678,7 +678,7 @@ func (p *PostgreSQLConnector) Lock(ctx context.Context, key string, ttl time.Dur
 	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.Lock")
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("lock_key", key),
 			attribute.Int64("ttl_ms", ttl.Milliseconds()),
@@ -839,7 +839,7 @@ func (p *PostgreSQLConnector) PublishCounterInt64(ctx context.Context, key strin
 	)
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.Int64("value", value.Value),
 			attribute.Int64("updated_at", value.UpdatedAt),
@@ -1029,8 +1029,7 @@ func (p *PostgreSQLConnector) getOrCreateListener(ctx context.Context, key strin
 			p.logger.Trace().Str("key", key).Interface("payload", notification).Msg("received postgres notification")
 
 			// Parse and broadcast state
-			var st CounterInt64State
-			if err := common.SonicCfg.Unmarshal([]byte(notification.Payload), &st); err == nil && st.UpdatedAt > 0 {
+			if st, ok := parseCounterState(key, []byte(notification.Payload)); ok {
 				listener.mu.Lock()
 				for _, ch := range listener.watchers {
 					select {
@@ -1146,9 +1145,8 @@ func (p *PostgreSQLConnector) getCurrentValue(ctx context.Context, key string) (
 		return CounterInt64State{}, false, err
 	}
 
-	var st CounterInt64State
-	if err := common.SonicCfg.Unmarshal(val, &st); err != nil || st.UpdatedAt <= 0 {
-		// No backward compatibility: treat parse errors as missing
+	st, ok := parseCounterState(key, val)
+	if !ok {
 		return CounterInt64State{}, false, nil
 	}
 
@@ -1234,7 +1232,7 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, pool *pgxpool
 		return nil, err
 	}
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(attribute.Int("value_size", len(value)))
 	}
 	return value, nil
@@ -1309,7 +1307,7 @@ func (p *PostgreSQLConnector) Delete(ctx context.Context, partitionKey, rangeKey
 	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.Delete")
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("partition_key", partitionKey),
 			attribute.String("range_key", rangeKey),
@@ -1344,7 +1342,7 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.List")
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("index", index),
 			attribute.Int("limit", limit),

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,7 +32,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// grpcBehaviorHead is the latest (and finalized) block the mocked upstream reports.
+// grpcBehaviorHead is the latest (and finalized) block the mocked upstream
+// reports until a test moves its head.
 const grpcBehaviorHead = 0x100
 
 // grpcBehaviorUpstream is a JSON-RPC upstream whose answer per method can be
@@ -41,11 +43,13 @@ type grpcBehaviorUpstream struct {
 	mu      sync.Mutex
 	replies map[string]string // method -> `"result":...` or `"error":{...}`
 	params  map[string]string
+	head    atomic.Uint64 // latest and finalized
 }
 
 func newGrpcBehaviorUpstream(t *testing.T) *grpcBehaviorUpstream {
 	t.Helper()
 	u := &grpcBehaviorUpstream{replies: map[string]string{}, params: map[string]string{}}
+	u.head.Store(grpcBehaviorHead)
 	u.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req struct {
@@ -85,14 +89,17 @@ func (u *grpcBehaviorUpstream) reply(method string, params json.RawMessage) stri
 	case "eth_syncing":
 		return `"result":false`
 	case "eth_getBlockByNumber":
-		n := uint64(grpcBehaviorHead)
+		n := u.head.Load()
 		var p []interface{}
 		if sonic.Unmarshal(params, &p) == nil && len(p) > 0 {
 			if s, ok := p[0].(string); ok && strings.HasPrefix(s, "0x") {
 				n, _ = strconv.ParseUint(s[2:], 16, 64)
 			}
 		}
-		b, _ := sonic.Marshal(qtBlock(n))
+		blk := qtBlock(n)
+		// A full-width bloom, so the chain tracker takes the header as a vote.
+		blk["logsBloom"] = "0x" + strings.Repeat("00", 256)
+		b, _ := sonic.Marshal(blk)
 		return `"result":` + string(b)
 	}
 	return `"error":{"code":-32601,"message":"the method ` + method + ` does not exist/is not available"}`
@@ -144,6 +151,7 @@ func newGrpcBehaviorFixture(t *testing.T) *grpcBehaviorFixture {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
 				StatePollerInterval: common.Duration(time.Hour),
+				StatePollerDebounce: common.Duration(100 * time.Millisecond),
 				SkipSyncingCheck:    util.BoolPtr(true),
 				QueryShim:           &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true), AllowedMethods: []string{"eth_queryBlocks"}},
 			},
@@ -174,8 +182,9 @@ func newGrpcBehaviorFixture(t *testing.T) *grpcBehaviorFixture {
 	require.NoError(t, cfg.SetDefaults(nil))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 	erpcInstance, err := NewERPC(ctx, &log.Logger, nil, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
+	t.Cleanup(cancel)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 
@@ -712,39 +721,40 @@ func TestGrpcServerBehavior_StreamBlocks(t *testing.T) {
 
 	t.Run("pushes each new head in order", func(t *testing.T) {
 		bctx := grpcBehaviorCtx(t, "main")
-		ntw, err := fx.erpc.GetNetwork(bctx, "main", util.EvmNetworkId(123))
-		require.NoError(t, err)
-		ups := ntw.AllUpstreams()
-		require.Len(t, ups, 1)
-		sp := ups[0].EvmStatePoller()
-		require.Eventually(t, func() bool { return sp.LatestBlock() > 0 }, 5*time.Second, 10*time.Millisecond)
-		head := sp.LatestBlock()
-
+		head := int64(grpcBehaviorHead)
+		// With no live source the tap's demand makes the tracker ask the
+		// upstream for latest; the stream starts with that first fresh head
+		// (spec §6 rule 6, §9.1).
 		sctx, scancel := context.WithCancel(bctx)
 		defer scancel()
 		s, err := client.StreamBlocks(sctx, &evm.StreamBlocksRequest{})
 		require.NoError(t, err)
-		require.Eventually(t, func() bool {
-			m := fx.gs.processor.blockStream
-			m.mu.Lock()
-			defer m.mu.Unlock()
-			for _, h := range m.hubs {
-				h.mu.Lock()
-				n := len(h.subs)
-				h.mu.Unlock()
-				if n > 0 {
-					return true
-				}
-			}
-			return false
-		}, 5*time.Second, 5*time.Millisecond, "subscriber registered")
-
-		sp.SuggestLatestBlock(head + 2)
-		for _, want := range []int64{head + 1, head + 2} {
+		recv := func(want int64) {
+			t.Helper()
 			msg, err := s.Recv()
 			require.NoError(t, err)
 			assert.Equal(t, uint64(want), msg.Header.Number)
 			assert.Equal(t, qtHash(uint64(want)), evm.BytesToHex(msg.Header.Hash))
+		}
+
+		recv(head)
+
+		fx.up.head.Store(uint64(head + 2))
+		for _, want := range []int64{head + 1, head + 2} {
+			recv(want)
+		}
+
+		// A poll of the upstream outside rule 6, such as a catch-up poll,
+		// votes too; the upstream is still no source, so rule 6 goes on.
+		nw, err := fx.erpc.GetNetwork(bctx, "main", "evm:123")
+		require.NoError(t, err)
+		poller := nw.upstreamsRegistry.GetNetworkUpstreams(bctx, nw.networkId)[0].EvmStatePoller()
+		fx.up.head.Store(uint64(head + 3))
+		require.NoError(t, poller.Ask(bctx, common.HeadNeedFork, 0, time.Time{}, common.AskCatchUp).Err)
+		recv(head + 3)
+		fx.up.head.Store(uint64(head + 5))
+		for _, want := range []int64{head + 4, head + 5} {
+			recv(want)
 		}
 
 		scancel()

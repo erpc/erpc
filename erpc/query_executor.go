@@ -13,6 +13,7 @@ import (
 
 	bdscommon "github.com/blockchain-data-standards/manifesto/common"
 	"github.com/blockchain-data-standards/manifesto/evm"
+	archevm "github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -63,6 +64,9 @@ type queryPlan struct {
 	// target is the target number of primary objects per page; 0 is none.
 	target uint32
 	budget queryShimBudget
+	// head is the Head the range was resolved and is checked against (spec
+	// §7): the request's bound to ctx, else the network-wide lane's.
+	head common.EvmHead
 }
 
 type queryShimBudget struct {
@@ -246,6 +250,7 @@ func (qe *EvmQueryExecutor) newPlan(ctx context.Context, method string, req prot
 		toRef = *params.toBlock
 	}
 
+	h := common.EvmHeadOf(qe.network, ctx, nil)
 	resolved := make(map[string]uint64, 2)
 	resolve := func(key, ref string) (uint64, error) {
 		if n, ok := resolved[ref]; ok {
@@ -256,12 +261,12 @@ func (qe *EvmQueryExecutor) newPlan(ctx context.Context, method string, req prot
 		case "earliest":
 			return 0, nil
 		case "latest":
-			head = common.EvmHighestLatestBlockNumber(qe.network, ctx)
+			head = h.Latest
 		case "finalized":
-			head = common.EvmHighestFinalizedBlockNumber(qe.network, ctx)
+			head = h.Finalized
 		case "safe":
-			if head = common.EvmHighestFinalizedBlockNumber(qe.network, ctx); head <= 0 {
-				head = common.EvmHighestLatestBlockNumber(qe.network, ctx)
+			if head = h.Finalized; head <= 0 {
+				head = h.Latest
 			}
 		default:
 			n, ok := parseQueryQuantity(ref)
@@ -287,7 +292,7 @@ func (qe *EvmQueryExecutor) newPlan(ctx context.Context, method string, req prot
 	if err := evm.ValidateQueryRange(params.order, from, to); err != nil {
 		return nil, err
 	}
-	plan := &queryPlan{method: method, req: req, desc: desc, from: from, to: to, budget: budget}
+	plan := &queryPlan{method: method, req: req, desc: desc, from: from, to: to, budget: budget, head: h}
 	if params.target != nil {
 		if *params.target == 0 {
 			return nil, queryInvalidParams("target must be a QUANTITY of at least 0x1")
@@ -349,16 +354,31 @@ func servesAll(u common.Upstream, sets [][]string) bool {
 }
 
 // checkAvailability fails with -32001 when a block of the resolved range is
-// above the network's highest known block, or outside the union of the
-// availability windows of the upstreams that can serve the method (natively
-// or through the shim sub-requests).
+// one the refusal rule calls future (spec §6.4: above the ceiling plus its
+// age in blocks, the ceiling Asked first when stale, a near-future block
+// waiting up to W for it), or outside the union of the availability
+// windows of the upstreams that can serve the method (natively or through
+// the shim sub-requests).
 func (qe *EvmQueryExecutor) checkAvailability(ctx context.Context, p *queryPlan, natives []common.Upstream, shimEnabled bool) error {
 	lo, hi := p.from, p.to
 	if p.desc {
 		lo, hi = p.to, p.from
 	}
-	if latest := common.EvmHighestLatestBlockNumber(qe.network, ctx); latest > 0 && hi > uint64(latest) {
-		return queryRangeUnavailable("block %#x is above the highest known block %#x", hi, latest)
+	if hi <= math.MaxInt64 {
+		sel := ""
+		if rq, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest); rq != nil {
+			if d := rq.Directives(); d != nil {
+				sel = d.UseUpstream
+			}
+		}
+		v := archevm.DecideHeadRefusal(ctx, qe.network, p.head, sel, int64(hi), true)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if v.Rule == common.HeadFuture {
+			qe.network.countHeadRefusal(v.FutureRule())
+			return queryRangeUnavailable("block %#x is above the highest known block %#x", hi, v.Ceiling)
+		}
 	}
 
 	type window struct{ lo, hi int64 }

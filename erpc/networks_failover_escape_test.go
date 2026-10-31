@@ -179,6 +179,7 @@ func buildFailoverNetwork(
 	}
 
 	network, err := NewNetwork(ctx, &log.Logger, "main", networkConfig, rlr, upr, mt, policyEngine)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	upr.Bootstrap(ctx)
@@ -272,7 +273,7 @@ func ethCallRequest(id int, blockHex string) *common.NormalizedRequest {
 // escalates to the fallback tier.
 func TestFailover_EscapeHatch(t *testing.T) {
 	t.Run("EscapesToFallbackOnFirstFailingRequest", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -305,7 +306,7 @@ func TestFailover_EscapeHatch(t *testing.T) {
 	})
 
 	t.Run("NoEscapeWhenPrimariesHealthy", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -338,7 +339,7 @@ func TestFailover_EscapeHatch(t *testing.T) {
 	})
 
 	t.Run("NoEscapeWhenFailoverDisabled", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -365,7 +366,7 @@ func TestFailover_EscapeHatch(t *testing.T) {
 	})
 
 	t.Run("OnlyEscalatesOncePerRequest", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -394,7 +395,7 @@ func TestFailover_EscapeHatch(t *testing.T) {
 	})
 
 	t.Run("EscapesOnNonRetryableGateSkip", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -432,7 +433,7 @@ func TestFailover_EscapeHatch(t *testing.T) {
 	})
 
 	t.Run("EscapesOnEmptyishGetBlockByNumber", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -497,7 +498,7 @@ func TestFailover_EscapeHatch(t *testing.T) {
 	})
 
 	t.Run("NoEscapeOnErrorNonRetryableTowardNetwork", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -525,7 +526,7 @@ func TestFailover_EscapeHatch(t *testing.T) {
 	})
 
 	t.Run("NoEscapeOnNullReceipt", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -565,7 +566,7 @@ func TestFailover_EscapeHatch(t *testing.T) {
 	})
 
 	t.Run("UseUpstreamPinLimitsTheEscape", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -605,7 +606,7 @@ func TestFailover_EscapeHatch(t *testing.T) {
 	})
 
 	t.Run("KeepsTheRoutedEmptyAnswerWhenFallbacksFail", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -655,7 +656,7 @@ func TestFailover_EscapeHatch(t *testing.T) {
 	})
 
 	t.Run("DoesNotResweepFallbacksAlreadyTried", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -703,7 +704,7 @@ func TestFailover_EscapeHatch(t *testing.T) {
 	})
 
 	t.Run("ConcurrentHedgesEscalateAtMostOnce", func(t *testing.T) {
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -768,7 +769,7 @@ func mockEthCallError(host string, code int, message string) {
 // ErrUpstreamsExhausted, which consensus counts as "no attempt", rather than
 // the raw skip error.
 func TestNetwork_ConsensusSlotSkippedByBlockAvailability(t *testing.T) {
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/upstream"
@@ -162,11 +163,12 @@ func TestNetworksPaths_UpstreamOrderingHelpers(t *testing.T) {
 			pathsFakeUpstream("unknown", 0, 0),
 			pathsFakeUpstream("at", 150, 1),
 		}
-		assert.Equal(t, []string{"ahead", "unknown", "at", "behind"}, pathsIds((&Network{}).partitionUpstreamsByLatestBlock(ups, 100)))
-		assert.Equal(t, pathsIds(ups), pathsIds((&Network{}).partitionUpstreamsByLatestBlock(ups, 0)), "no block keeps order")
-		assert.Equal(t, []string{"behind"}, pathsIds((&Network{}).partitionUpstreamsByLatestBlock(ups[:1], 100)))
+		nw := &Network{}
+		assert.Equal(t, []string{"ahead", "unknown", "at", "behind"}, pathsIds(nw.partitionUpstreamsByLatestBlock(ups, 100, 0)))
+		assert.Equal(t, pathsIds(ups), pathsIds(nw.partitionUpstreamsByLatestBlock(ups, 0, 0)), "no block keeps order")
+		assert.Equal(t, []string{"behind"}, pathsIds(nw.partitionUpstreamsByLatestBlock(ups[:1], 100, 0)))
 		noPoller := []common.Upstream{common.NewFakeUpstream("np1"), common.NewFakeUpstream("np2")}
-		assert.Equal(t, []string{"np1", "np2"}, pathsIds((&Network{}).partitionUpstreamsByLatestBlock(noPoller, 100)))
+		assert.Equal(t, []string{"np1", "np2"}, pathsIds(nw.partitionUpstreamsByLatestBlock(noPoller, 100, 0)))
 	})
 
 	t.Run("PreferTipLeaderForNearTipGetBlock", func(t *testing.T) {
@@ -193,7 +195,7 @@ func TestNetworksPaths_UpstreamOrderingHelpers(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				assert.Equal(t, tc.want, pathsIds((&Network{}).preferTipLeaderForNearTipGetBlock(tc.ups, tc.method, tc.bn)))
+				assert.Equal(t, tc.want, pathsIds((&Network{}).preferTipLeaderForNearTipGetBlock(tc.ups, tc.method, tc.bn, highestOf(tc.ups), 0)))
 			})
 		}
 	})
@@ -269,7 +271,7 @@ func TestNetworksPaths_BareNetworkAccessors(t *testing.T) {
 	t.Run("ArchitectureDefaultsToEvmWhenEvmConfigured", func(t *testing.T) {
 		n := pathsBareNetwork(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{ChainId: 1}})
 		assert.Equal(t, common.ArchitectureEvm, n.Architecture())
-		assert.Equal(t, common.ArchitectureEvm, n.cfg.Architecture, "the default is persisted on the config")
+		assert.Empty(t, n.cfg.Architecture, "a read never writes the live config, which trackers read concurrently")
 		empty := pathsBareNetwork(&common.NetworkConfig{})
 		assert.Equal(t, common.NetworkArchitecture(""), empty.Architecture())
 	})
@@ -293,11 +295,11 @@ func TestNetworksPaths_BareNetworkAccessors(t *testing.T) {
 		assert.Nil(t, n.AllUpstreams())
 		assert.Empty(t, n.EvmAllUpstreams(ctx))
 		assert.Nil(t, n.GetMethodMetrics(""))
-		head, known := n.futureBlockCeiling(ctx)
+		head, known := laneCeilingOf(n)
 		assert.False(t, known)
 		assert.Equal(t, int64(0), head)
 		var visited int
-		n.walkTipCandidates(ctx, func(common.Upstream) bool { visited++; return true })
+		n.walkTipCandidates("", func(common.Upstream) bool { visited++; return true })
 		assert.Equal(t, 0, visited)
 		key, ids := n.partitionKeyFor(ctx, "primary-*")
 		assert.Equal(t, "", key)
@@ -309,31 +311,13 @@ func TestNetworksPaths_BareNetworkAccessors(t *testing.T) {
 
 	t.Run("ServedTipLaneForWithoutSelectorIsNetworkWide", func(t *testing.T) {
 		n := pathsBareNetwork(nil)
-		assert.Same(t, &n.servedTipAll, n.servedTipLaneFor(ctx))
+		assert.Same(t, &n.servedTipAll, n.laneFor(requestSelector(ctx)))
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 		req.SetDirectives(&common.RequestDirectives{UseUpstream: "primary-*"})
 		rctx := context.WithValue(ctx, common.RequestContextKey, req)
 		assert.Equal(t, "primary-*", requestSelector(rctx))
-		assert.Nil(t, n.servedTipLaneFor(rctx), "a selector that forms no group gets no lane")
-	})
-
-	t.Run("NoteObservedLatestBlockIsMonotonic", func(t *testing.T) {
-		var nilNet *Network
-		nilNet.NoteObservedLatestBlock(ctx, 10)
-
-		n := pathsBareNetwork(nil)
-		var nilCtx context.Context
-		n.NoteObservedLatestBlock(nilCtx, 10)
-		assert.Equal(t, int64(10), n.deliveredLatestBlock.Load())
-		n.NoteObservedLatestBlock(ctx, 5)
-		assert.Equal(t, int64(10), n.deliveredLatestBlock.Load(), "a lower head never moves it back")
-		n.NoteObservedLatestBlock(ctx, 0)
-		n.NoteObservedLatestBlock(ctx, -3)
-		assert.Equal(t, int64(10), n.deliveredLatestBlock.Load())
-		n.appCtx = ctx
-		n.NoteObservedLatestBlock(nilCtx, 25)
-		assert.Equal(t, int64(25), n.deliveredLatestBlock.Load())
+		assert.Nil(t, n.laneFor(requestSelector(rctx)), "a selector that forms no group gets no lane")
 	})
 
 	t.Run("RetryDistanceAndRegressionDefaults", func(t *testing.T) {
@@ -416,26 +400,20 @@ func TestNetworksPaths_GetFailsafeExecutor(t *testing.T) {
 	logs := mk(&common.FailsafeConfig{MatchMethod: "eth_getLogs"})
 	finalizedOnly := mk(&common.FailsafeConfig{MatchMethod: "eth_call", MatchFinality: []common.DataFinalityState{common.DataFinalityStateFinalized}})
 	svmFinalized := mk(&common.FailsafeConfig{MatchMethod: "eth_call", MatchCommitment: []string{"finalized"}})
-	internal := mk(&common.FailsafeConfig{MatchRequestKind: "internal"})
 	catchAll := mk(nil)
 
 	n := pathsBareNetwork(nil)
-	n.failsafeExecutors = []*networkExecutor{logs, finalizedOnly, svmFinalized, internal, catchAll}
+	n.failsafeExecutors = []*networkExecutor{logs, finalizedOnly, svmFinalized, catchAll}
 	ctx := context.Background()
-	newReq := func(method string, isInternal bool) *common.NormalizedRequest {
-		r := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":[]}`, method)))
-		if isInternal {
-			r.SetDirectives(&common.RequestDirectives{IsInternal: true})
-		}
-		return r
+	newReq := func(method string) *common.NormalizedRequest {
+		return common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":[]}`, method)))
 	}
 
-	assert.Same(t, logs, n.getFailsafeExecutor(ctx, newReq("eth_getLogs", false)))
-	assert.Same(t, internal, n.getFailsafeExecutor(ctx, newReq("eth_call", true)), "finality and commitment filters skip; internal kind matches")
-	assert.Same(t, catchAll, n.getFailsafeExecutor(ctx, newReq("eth_call", false)))
+	assert.Same(t, logs, n.getFailsafeExecutor(ctx, newReq("eth_getLogs")))
+	assert.Same(t, catchAll, n.getFailsafeExecutor(ctx, newReq("eth_call")), "finality and commitment filters skip")
 
-	n.failsafeExecutors = []*networkExecutor{logs, internal}
-	assert.Nil(t, n.getFailsafeExecutor(ctx, newReq("eth_call", false)), "no matching executor")
+	n.failsafeExecutors = []*networkExecutor{logs}
+	assert.Nil(t, n.getFailsafeExecutor(ctx, newReq("eth_call")), "no matching executor")
 }
 
 func TestNetworksPaths_PrepareRequest(t *testing.T) {
@@ -487,17 +465,23 @@ func TestNetworksPaths_GetFinalityWithoutRegistry(t *testing.T) {
 
 	numbered := `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x10",false]}`
 	assert.Equal(t, common.DataFinalityStateUnknown, n.GetFinality(ctx, newReq(numbered), nil),
-		"no upstream and no registry leaves it unknown")
+		"no registry: the Head is unknown, so is finality")
 
 	viaLast := newReq(numbered)
 	viaLast.SetLastUpstream(pathsFakeUpstream("last", 100, 90))
-	assert.Equal(t, common.DataFinalityStateUnfinalized, n.GetFinality(ctx, viaLast, nil),
-		"the last upstream's finality answer is used")
+	assert.Equal(t, common.DataFinalityStateUnknown, n.GetFinality(ctx, viaLast, nil),
+		"an upstream's own finalized never stands in for an unknown Head.Finalized")
+
+	// The voters give Head.Finalized 90 (spec §6.4).
+	n.servedTipAll.head.Store(&common.EvmHead{Latest: 100, Finalized: 90})
+	assert.Equal(t, common.DataFinalityStateFinalized, n.GetFinality(ctx, newReq(numbered), nil),
+		"a read at or below Head.Finalized is finalized")
 
 	viaResp := newReq(numbered)
 	resp := common.NewNormalizedResponse().WithRequest(viaResp)
 	resp.SetUpstream(pathsFakeUpstream("resp", 100, 90))
-	assert.Equal(t, common.DataFinalityStateUnfinalized, n.GetFinality(ctx, viaResp, resp))
+	assert.Equal(t, common.DataFinalityStateUnfinalized, n.GetFinality(ctx, viaResp, resp),
+		"an answer is final only when its upstream has finalized the block too")
 
 	svmNet := pathsBareNetwork(&common.NetworkConfig{Architecture: common.ArchitectureSvm, Svm: &common.SvmNetworkConfig{Cluster: "mainnet-beta"}})
 	assert.Equal(t, common.DataFinalityStateRealtime,
@@ -520,6 +504,7 @@ func TestNetworksPaths_EnrichStatePoller(t *testing.T) {
 		resp := common.NewNormalizedResponse().WithRequest(req).
 			WithJsonRpcResponse(common.MustNewJsonRpcResponseFromBytes([]byte(`1`), []byte(result), nil))
 		resp.SetUpstream(u)
+		resp.SetSentAt(time.Now())
 		method, _ := req.Method()
 		n.enrichStatePoller(ctx, method, req, resp)
 		return u.(common.EvmUpstream).EvmStatePoller()
@@ -530,8 +515,15 @@ func TestNetworksPaths_EnrichStatePoller(t *testing.T) {
 		assert.Equal(t, int64(200), sp.LatestBlock())
 		assert.Equal(t, int64(90), sp.FinalizedBlock())
 	})
-	t.Run("FinalizedTagFromBlockRefSuggestsFinalized", func(t *testing.T) {
+	t.Run("InterpolatedFinalizedTagDoesNotSuggest", func(t *testing.T) {
+		// The request asked for Head.Finalized, eRPC's number: serving it
+		// says nothing of what this upstream finalized.
 		sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x5f",false]}`, "finalized", `{"number":"0x5f"}`)
+		assert.Equal(t, int64(90), sp.FinalizedBlock())
+		assert.Equal(t, int64(100), sp.LatestBlock())
+	})
+	t.Run("LiteralFinalizedTagSuggestsFinalized", func(t *testing.T) {
+		sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["finalized",false]}`, "finalized", `{"number":"0x5f"}`)
 		assert.Equal(t, int64(95), sp.FinalizedBlock())
 		assert.Equal(t, int64(100), sp.LatestBlock())
 	})
@@ -616,6 +608,23 @@ func TestNetworksPaths_MultiplexKey(t *testing.T) {
 	ek2, err := evmNet.multiplexKey(ctx, upper)
 	require.NoError(t, err)
 	assert.Equal(t, ek1, ek2, "EVM keeps the case-insensitive cache hash")
+
+	call := func(use string) *common.NormalizedRequest {
+		r := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xca11bde05977b3631167028862be2a173976ca11","data":"0x42cbb15c"},"latest"]}`))
+		if use != "" {
+			r.SetDirectives(&common.RequestDirectives{UseUpstream: use})
+		}
+		return r
+	}
+	keyOf := func(r *common.NormalizedRequest) string {
+		k, err := evmNet.multiplexKey(ctx, r)
+		require.NoError(t, err)
+		return k
+	}
+	routed, pinnedA, pinnedA2, pinnedB := keyOf(call("")), keyOf(call("rpc-a")), keyOf(call("rpc-a")), keyOf(call("rpc-b"))
+	assert.NotEqual(t, routed, pinnedA, "a request pinned to one upstream never shares with one routed by policy")
+	assert.NotEqual(t, pinnedA, pinnedB, "requests pinned to different upstreams never share")
+	assert.Equal(t, pinnedA, pinnedA2, "requests pinned alike still share")
 }
 
 func TestNetworksPaths_Multiplexing(t *testing.T) {
@@ -773,23 +782,28 @@ func TestNetworksPaths_BoundaryLaneAndFutureBlockGuards(t *testing.T) {
 	assert.Nil(t, n.eligibleUpstreamIDsForBoundary(ctx, "eth_getLogs", newReq(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{}]}`)),
 		"range methods own their availability")
 
-	future := newReq(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0xffffff",false]}`)
-	resp, ok := n.tryShortCircuitFutureBlock(ctx, future, "eth_getBlockByNumber")
+	onN := func(body string) *common.NormalizedRequest {
+		r := newReq(body)
+		r.SetNetwork(n)
+		return r
+	}
+	future := onN(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0xffffff",false]}`)
+	resp, ok := n.tryShortCircuitFutureBlock(ctx, future)
 	assert.False(t, ok, "disabled by default")
 	assert.Nil(t, resp)
 
 	n.cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
-	_, ok = n.tryShortCircuitFutureBlock(ctx, future, "eth_call")
+	_, ok = n.tryShortCircuitFutureBlock(ctx, onN(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{},"0xffffff"]}`))
 	assert.False(t, ok, "only eth_getBlockByNumber")
-	_, ok = n.tryShortCircuitFutureBlock(ctx, newReq(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`), "eth_getBlockByNumber")
+	_, ok = n.tryShortCircuitFutureBlock(ctx, onN(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
 	assert.False(t, ok, "tags never short-circuit")
-	_, ok = n.tryShortCircuitFutureBlock(ctx, future, "eth_getBlockByNumber")
+	_, ok = n.tryShortCircuitFutureBlock(ctx, future)
 	assert.False(t, ok, "unknown heads fail open")
 }
 
 func TestNetworksPaths_ForwardOnLiveNetwork(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	gock.New("http://rpc1.localhost").
 		Post("").
@@ -810,7 +824,7 @@ func TestNetworksPaths_ForwardOnLiveNetwork(t *testing.T) {
 	cache := &pathsCache{}
 	network.cacheDal = cache
 
-	head, known := network.futureBlockCeiling(ctx)
+	head, known := laneCeilingOf(network)
 	require.True(t, known, "the single upstream's head is known")
 	require.Greater(t, head, int64(0))
 
@@ -826,31 +840,33 @@ func TestNetworksPaths_ForwardOnLiveNetwork(t *testing.T) {
 		assert.Equal(t, "test", all[0].Id())
 		assert.Equal(t, []string{"test"}, pathsIds(network.EvmAllUpstreams(ctx)))
 		assert.Empty(t, network.ShadowUpstreams())
-		leader := network.EvmLeaderUpstream(ctx)
+		leader := servedHead(network, ctx).Leader
 		require.NotNil(t, leader)
 		assert.Equal(t, "test", leader.Id())
 		assert.NotNil(t, network.MetricsTracker())
-		network.EvmRefreshLatestBlock(ctx)
-		assert.Equal(t, head, network.EvmHighestLatestBlockNumber(ctx), "one voter: the served tip is its head")
+		network.refreshLatest(ctx, "")
+		assert.Equal(t, head, servedHead(network, ctx).Latest, "one voter: the served tip is its head")
 	})
 
-	t.Run("FinalityHeuristicFromRegistry", func(t *testing.T) {
-		lowest := network.EvmLowestFinalizedBlockNumber(ctx)
-		require.Greater(t, lowest, int64(0))
-		below := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1",false]}`))
-		assert.Equal(t, common.DataFinalityStateFinalized, network.GetFinality(ctx, below, nil))
-		above := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, lowest+1000)))
+	t.Run("FinalityFromHeadFinalized", func(t *testing.T) {
+		fin := servedHead(network, ctx).Finalized
+		require.Greater(t, fin, int64(0))
+		at := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, fin)))
+		assert.Equal(t, common.DataFinalityStateFinalized, network.GetFinality(ctx, at, nil))
+		above := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, fin+1)))
 		assert.Equal(t, common.DataFinalityStateUnfinalized, network.GetFinality(ctx, above, nil))
 	})
 
 	t.Run("FutureBlockShortCircuitsToNull", func(t *testing.T) {
+		sampleBlockTime(t, network)
 		resp, err := forward(fmt.Sprintf(`{"jsonrpc":"2.0","id":7,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, head+100000))
 		require.NoError(t, err)
 		assert.Equal(t, "null", pathsResult(t, resp), "a block beyond every head is null without dispatch")
 		assert.Equal(t, head+100000, resp.EvmBlockNumber())
 
 		within := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, head)))
-		_, ok := network.tryShortCircuitFutureBlock(ctx, within, "eth_getBlockByNumber")
+		within.SetNetwork(network)
+		_, ok := network.tryShortCircuitFutureBlock(ctx, within)
 		assert.False(t, ok, "a block at the head is dispatched")
 	})
 
@@ -898,7 +914,7 @@ func TestNetworksPaths_ForwardOnLiveNetwork(t *testing.T) {
 }
 
 func TestNetworksPaths_PolicyAccessorsAndGroupLanes(t *testing.T) {
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{primaryLatest: "0x3e8", fallbackLatest: "0x3e8"})
@@ -954,29 +970,37 @@ func TestNetworksPaths_PolicyAccessorsAndGroupLanes(t *testing.T) {
 		assert.Equal(t, "1", l, "the shared id token names the lane")
 	})
 
-	t.Run("ServedTipLanesMaterializeOncePerGroupUpToCap", func(t *testing.T) {
+	// Group trackers are the lanes (spec §13): past the cap a selector has
+	// neither, and its integrity reads the network-wide tracker.
+	t.Run("ServedTipLanesAndGroupTrackersMaterializeOncePerGroupUpToCap", func(t *testing.T) {
 		laneCtx := func(sel string) context.Context {
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 			req.SetDirectives(&common.RequestDirectives{UseUpstream: sel})
 			return context.WithValue(ctx, common.RequestContextKey, req)
 		}
-		first := network.servedTipLaneFor(laneCtx("primary-*"))
+		wide := evm.StartChainTrackers(ctx, network)
+		first := network.laneFor(requestSelector(laneCtx("primary-*")))
 		require.NotNil(t, first)
 		assert.Equal(t, "primary", first.label)
-		assert.Same(t, first, network.servedTipLaneFor(laneCtx("primary-*")), "a group reuses its lane")
-		assert.Nil(t, network.servedTipLaneFor(laneCtx("primary-1")), "a single upstream is no group")
+		assert.Same(t, first, network.laneFor(requestSelector(laneCtx("primary-*"))), "a group reuses its lane")
+		assert.Nil(t, network.laneFor(requestSelector(laneCtx("primary-1"))), "a single upstream is no group")
+		group := evm.ChainTrackerOf(ctx, network, "primary-*")
+		assert.NotSame(t, wide, group, "a lane has its group tracker")
 
 		count := network.servedTipLaneCount.Load()
 		network.servedTipLaneCount.Store(maxServedTipLanes)
-		assert.Nil(t, network.servedTipLaneFor(laneCtx("fallback-*")), "beyond the cap a new group gets no lane")
-		assert.Same(t, first, network.servedTipLaneFor(laneCtx("primary-*")), "existing lanes still resolve at the cap")
+		// GroupForSelector already gave primary-*, fallback-* and *-1 lanes.
+		assert.Nil(t, network.laneFor(requestSelector(laneCtx("*-2"))), "beyond the cap a new group gets no lane")
+		assert.Same(t, wide, evm.ChainTrackerOf(ctx, network, "*-2"), "beyond the cap a new group gets no tracker")
+		assert.Same(t, first, network.laneFor(requestSelector(laneCtx("primary-*"))), "existing lanes still resolve at the cap")
+		assert.Same(t, group, evm.ChainTrackerOf(ctx, network, "primary-*"), "existing group trackers still resolve at the cap")
 		network.servedTipLaneCount.Store(count)
 	})
 }
 
 func TestNetworksPaths_SvmSlotReadouts(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	const host = "svm-paths-rpc1.localhost"
 	util.SetupMocksForSvmStatePollerWithShred(host, 1000, 990, 1005)
 	gock.New("http://" + host).

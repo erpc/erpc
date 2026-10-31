@@ -645,8 +645,8 @@ func TestCovCache_GetLogsRangeObservation(t *testing.T) {
 }
 
 func TestCovCache_DetailedTracing(t *testing.T) {
-	common.IsTracingDetailed = true
-	t.Cleanup(func() { common.IsTracingDetailed = false })
+	common.SetTracingDetailed(true)
+	t.Cleanup(func() { common.SetTracingDetailed(false) })
 	ctx := context.Background()
 	ntw := &testNetwork{finalityState: common.DataFinalityStateFinalized}
 	conn := covCacheNewConn("tr")

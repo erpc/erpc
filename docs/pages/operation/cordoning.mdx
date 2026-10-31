@@ -96,8 +96,10 @@ Uncordoning a method never lifts a wildcard cordon.
   consensus-sit-out (punishment), and detector (availability) sources, so one
   `Uncordon` could clear an unrelated cordon. Now each source holds its own bit and
   clears only its own; a sit-out ending never releases an operator cordon.
-- **One matching `eth_chainId` lifts the chain-identity cordon.** `main` never lifted
-  it automatically; until a probe matches again, that upstream's heads stay held.
+- **The chain-identity cordon is an `availability` cordon and expires.** While it holds,
+  every head the upstream reports is dropped. The poller checks `eth_chainId` every 5
+  minutes and lifts it after 2 matches in a row, the only way out: an admin uncordon
+  restores routing but not its heads, and a mismatch cordons it again.
 - **A full `erpc_uncordonUpstream` also resets consensus sit-out state**, so the
   upstream can be re-punished immediately instead of waiting for the original
   penalty window to end.

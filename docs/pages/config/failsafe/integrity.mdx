@@ -136,13 +136,12 @@ a lower one raised, with no re-request. The head is resolved request-aware: a
 `use-upstream` selector scopes it to the targeted subset. See
 [Block tracking](/reference/evm/block-tracking). <SourceLink file="architecture/evm/eth_blockNumber.go" lines="13-171" />
 
-**Highest-block enforcement — `eth_getBlockByNumber[latest/finalized]`.** Reads
-`dirs.EnforceHighestBlock`. If the returned block is behind the network-known highest,
-eRPC re-requests that block (`SkipCacheRead=true`), keeping the request's own
-`use-upstream` selector if any; the upstream that answered is not excluded, since on fast
-chains it is often the only one that already has the tip block. `pickHighestBlock` keeps
-the higher of the two — protecting against a corrupted state pointer. Cache hits are enforced the same way, so a cached block behind the tip is
-re-fetched rather than served. <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="111-283" />
+**`eth_getBlockByNumber[latest/finalized]`.** The tag is interpolated to the request's
+`Latest`/`Finalized`, like every method's, before the cache and every attempt; each such
+request takes its head after the voters' refresh, as `eth_blockNumber` does: waited for, at
+most W, when the head is older than W, else in the background.
+No answer is re-requested. A `null` for an interpolated tag follows
+`enforceNonNullTaggedBlocks`, which reads the tag the client sent. <SourceLink file="architecture/evm/eth_getBlockByNumber.go" />
 
 **Stale-tip cache write guard.** Under `enforceHighestBlock`, a realtime-finality
 response already behind the network-wide tip is never written to cache (the classic
@@ -163,7 +162,7 @@ not-yet-produced blocks. Fail-open on unknown head or block tags. <SourceLink fi
 
 | Field | Type | Default | Behavior |
 |---|---|---|---|
-| `enforceHighestBlock` | `*bool` | `true` | Highest-block enforcement for `eth_blockNumber` (answered from the served head; every response pinned to it, incl. cache hits) and `eth_getBlockByNumber[latest/finalized]` (re-fetch). Gates the stale-tip cache write guard. Header: `X-ERPC-Enforce-Highest-Block`. <SourceLink file="common/defaults.go" lines="1458-1460" /> |
+| `enforceHighestBlock` | `*bool` | `true` | Highest-block enforcement for `eth_blockNumber`: answered from the served head; every response pinned to it, incl. cache hits. `eth_getBlockByNumber[latest/finalized]` needs no enforcement: its tag is interpolated to the request's Head. Gates the stale-tip cache write guard. Header: `X-ERPC-Enforce-Highest-Block`. <SourceLink file="common/defaults.go" lines="1458-1460" /> |
 | `enforceGetLogsBlockRange` | `*bool` | `true` | Pre-screens `eth_getLogs`/`trace_filter` ranges against upstream availability. The actual hooks read `evm.integrity.enforceGetLogsBlockRange` directly. Header: `X-ERPC-Enforce-GetLogs-Range`. <SourceLink file="common/defaults.go" lines="1461-1463" /> |
 | `enforceNonNullTaggedBlocks` | `*bool` | `true` | Converts null tagged `eth_getBlockByNumber` responses into `ErrEndpointMissingData`. Disable for chains that legitimately return null for some tags (e.g. ZKSync Era). Header: `X-ERPC-Enforce-Non-Null-Tagged-Blocks`. <SourceLink file="common/defaults.go" lines="1464-1466" /> |
 
@@ -278,7 +277,7 @@ Methods column: **block** = `eth_getBlockByNumber`/`eth_getBlockByHash`; **recei
 | `receiptVsBlock` ※ | authoritative | receipt | a single receipt ≠ the force-fetched canonical block |
 | `receiptsRootRecompute` | authoritative | receipts | receipt MPT root ≠ the header's `receiptsRoot` (force-fetched by hash) |
 
-※ = **reorg-sensitive** (governed by `invalidBehavior`). All others are deterministic and always reject on violation. Note the division of labour on `eth_getBlockByHash`: `blockByHashIdentity` enforces that you got **the block you asked for**, while the continuity pair (which judges *canonicality*, a question a by-hash lookup never asked) deliberately does not run there — see [Edge cases](#edge-cases--gotchas) #7. Both stateful tiers share one **reorg-aware per-network ChainView** — a bounded `number→hash` pin plus a content-addressed header cache (window `reorgWindow`, default 32). `corroborated` populates it passively from blocks your own traffic already pulled (it **never fetches a block sequence**); `authoritative` additionally force-fetches a missing anchor **once** through the normal network path (cache-backed, recursion-guarded, deduped by the ChainView), capped by `budget`. A changed hash for a number is treated as a reorg: the new fork is adopted and its stale descendants are rolled back, so the pin always reflects one consistent fork — block and receipts can't disagree.
+※ = **reorg-sensitive** (governed by `invalidBehavior`). All others are deterministic and always reject on violation. Note the division of labour on `eth_getBlockByHash`: `blockByHashIdentity` enforces that you got **the block you asked for**, while the continuity pair (which judges *canonicality*, a question a by-hash lookup never asked) deliberately does not run there — see [Edge cases](#edge-cases--gotchas) #7. Both stateful tiers read the network's **chain tracker** — the canonical `number→hash` pins plus held headers (window [`evm.chainTracker.reorgWindow`](/config/projects/networks), default 32). Only upstream hash votes move the pins; blocks your own traffic pulled are held for the checks but never vote. `authoritative` additionally force-fetches a missing anchor **once** through the normal network path (cache-backed, recursion-guarded), capped by `budget`, and needs the evidence quorum for it. When the voters move to another branch, the pins follow it, so block and receipts can't disagree.
 
 ### Per-finality verdict: `invalidBehavior`
 
@@ -433,7 +432,10 @@ fields, and the non-functional `upstreams[].integrity` block no longer exist —
 | `observeOnly` | bool | `false` | Run every check but never reject: suppressed rejections are served and reported as `would_reject`. **Absolute** — outranks `checks.<id>.onFailure`, `invalidBehavior`, and any check added by a later release. The safe way to enable a new network; see [Rolling out safely](#rolling-out-safely-observeonly). <SourceLink file="architecture/evm/integrity/engine.go" /> |
 | `budget.maxPerSecond` | int | conservative | Token-bucket cap on the authoritative tier's canonical fetches. |
 | `budget.maxConcurrent` | int | small | Concurrency cap on in-flight fetches. |
-| `reorgWindow` | int | `32` | How many blocks back from the tip the per-network ChainView keeps a `number→hash` pin + header and tracks reorgs. Raise for deep-reorg chains (e.g. polygon `256`). Bounds both reorg depth and memory. <SourceLink file="architecture/evm/integrity_chainview.go" /> |
+| `follow.enabled` | bool | `false` | Opens one integrity follow tap per chain tracker at the network's first client request, and keeps it open. It reads the confirmed head like a ws subscription, so source polls run while clients are quiet, and it drives `stateProbe` on each new head. An idle network, with no client request yet, sends no follow polls and no probes. Out of range restarts it after the confirmed head. The window it follows is [`evm.chainTracker`](/config/projects/networks). |
+| `follow.interval` | Duration | `1s` | The pace the follow tap needs heads at. While it is a network's only newHeads demand (no client subscription), the tracker asks upstreams for a newer head, and catches lagging upstreams up, no more often than this; a client tap needs every block and lifts the limit. |
+| `stateProbe.enabled` | bool | `false` | Probes every upstream's state trie on each followed block. Needs `follow.enabled`. |
+| `stateProbe.interval` | Duration | `2s` | Minimum time between probes of one upstream. |
 | `headerMode` | enum | `off` | `off`/`profiles`/`full` — whether/how `X-ERPC-Integrity` may adjust integrity per request. |
 | `profiles.<name>` | object | — | Named settings (`level`/`checks`/`invalidBehavior`/`budget`) a request may select by name. |
 
@@ -586,8 +588,10 @@ integrity:
 1. **Opt-in means opt-in.** No `integrity:` block ⇒ zero data-integrity checks (Layer 1 enforcement still runs). Deploying this version changes nothing until you add the block.
 2. **Recompute checks skip rather than false-flag** — *almost always*. A header/receipt with a field the reference encoder doesn't know, a system/deposit tx, or a hashes-only block response is skipped, never rejected. The one case the skip-guard can't catch is #6.
 3. **Continuity never fetches.** `parentHashLinkage`/`hashStability` only compare against blocks already observed (bounded per-network `number→hash` store); an unseen parent skips the check.
-4. **`authoritative` force-fetches are recursion-guarded** (marked internal, skipped by the engine) and budgeted; on budget exhaustion the corroboration check no-ops.
+4. **Tracker fetches run the checks; validation never recurses.** The chain tracker's header, receipts and logs fetches run the integrity checks like client requests, but a check on a tracker fetch reads only held data and skips when it needs more. `authoritative` force-fetches are budgeted; on budget exhaustion the corroboration check no-ops. No failsafe policy covers tracker fetches: they follow the tracker's own fetch schedule, and settles replace the quorum. `matchRequestKind: internal` is refused at load.
 5. **Project⊕network precedence.** A project-wide `integrity:` applies to all networks; a network block overrides field-by-field (profiles unioned).
+- **Suspension.** A check no upstream passes is wrong for the network, not for one vendor, so eRPC suspends it instead of failing every request. Header checks suspend when no header at 2 heights in a row passes within 60s, from upstreams that meet the evidence quorum; they return observe-only after 100 blocks and enforce again after 2 passing heights. The bloom check suspends after 8 mismatched blocks in a row and re-arms after 8 matching ones. Each suspension counts in `erpc_integrity_check_suspended_total{check}`. On a network with one vendor, that vendor alone can suspend a check.
+- **Evidence quorum.** Content counts as corroborated when 2 distinct vendors agree, or 1 on a network with one vendor. Finalized anchors, suspension, the `eth_getLogs` fallback for `logs` subscriptions, and the tracker's pin freshness read this one rule.
 - **Kaia root compatibility.** Kaia mainnet (`8217`) and Kairos (`1001`) exclude `transactionsRootRecompute` and `receiptsRootRecompute` through their architecture profile. Kaia uses native serialization and governance-selected root derivation, so matching Ethereum transaction hashes does not prove Ethereum trie compatibility. Identity, structural, and follower checks remain enabled. These exclusions provide no native root verification; explicit per-check overrides still win.
 6. **Some chains need recompute checks disabled — proven: HyperEVM (chainId 999).** A chain whose `eth_getBlock` keeps *system transactions* in the header's `transactionsRoot` but omits them from the returned `transactions` list will **systematically** fail `transactionsRootRecompute` (and, by the same mechanism, `receiptsRootRecompute`) — even though every returned tx is valid. The skip-guard in #2 can't catch it: each individual tx hash verifies, only the Merkle root differs. This is a chain representation quirk, **not corruption**. Disable the affected check(s) on that network — the level preset stays, the one check is turned off:
    ```yaml
@@ -619,11 +623,11 @@ integrity:
 | `erpc_integrity_violation_total` | counter | project, vendor, network, upstream, category, **check**, **verdict** | A data-integrity check (Layer 2) failed. The `check` label is the rule id and `verdict` is `reject` (response failed over to another upstream) or `soft_flag` (recorded but served). This is how you see *which rule* is failing for which method/network/upstream. Only fires on a violation. |
 | `erpc_integrity_check_total` | counter | …, **check**, **outcome** | Every check evaluation by `outcome` (`pass`/`reject`/`soft_flag`/`off`). Sum across outcomes = total attempts (the rate denominator). |
 | `erpc_integrity_aux_request_total` | counter | …, **kind**, **outcome** | Aux force-fetches the module issues that are *not* part of the user request (`kind` = `canonical_header`/`canonical_receipts`). |
+| `erpc_integrity_check_suspended_total` | counter | project, network, check | A check was suspended for the network (see Suspension above). |
 | `erpc_integrity_saved_total` | counter | project, network, category | Requests the module **saved**: a check rejected a bad response and a retry returned a good one — a wrong/invalid response prevented. |
 | `erpc_integrity_failed_total` | counter | project, network, category, **check** | Requests that **failed** toward the user due to integrity (a check rejected and no good response was found). The `check` is the why. |
 | `erpc_integrity_overhead_seconds` | histogram | project, network, category | Per-request latency the module added — time waited on data-checks + aux force-fetches. Same config-driven buckets as `network_request_duration_seconds`. |
 | `erpc_upstream_stale_latest_block_total` | counter | project, vendor, network, upstream, category | Upstream returned a block below the network-known latest head (Layer-1 highest-block enforcement). |
-| `erpc_upstream_stale_finalized_block_total` | counter | project, vendor, network, upstream | Upstream returned a finalized block below the known finalized head. |
 | `erpc_upstream_stale_upper_bound_total` / `_lower_bound_total` | counter | …, confidence | Request skipped: upstream's range doesn't cover the requested `toBlock`/`fromBlock`. |
 | `erpc_upstream_attempt_outcome_total` | counter | …, outcome | `outcome=block_unavailable` on range failure; `missing_data` on null responses. |
 | `erpc_network_retry_attempt_total` | counter | …, reason | `reason=block_unavailable` / `missing_data` on the corresponding retries. |
@@ -657,7 +661,7 @@ tracing is off. Sample a few requests in detailed mode to audit a specific upstr
 
 - [Retry](/config/failsafe/retry) — integrity violations are retryable; retry routes them to a fresh upstream.
 - [Consensus](/config/failsafe/consensus) — content-validation errors are excluded from agreement/preferLargerResponses.
-- [Timeout](/config/failsafe/timeout) — bounds the re-fetch triggered by highest-block enforcement and authoritative force-fetch.
+- [Timeout](/config/failsafe/timeout) — bounds the authoritative force-fetch.
 - [Selection policies](/config/projects/selection-policies) — upstream scoring uses stale-block metrics.
 - [Survive provider outages](/use-cases/survive-provider-outages) — the broader scenario this feature serves.
 

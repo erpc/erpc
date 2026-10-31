@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -28,19 +29,168 @@ type Network interface {
 	GetFinality(ctx context.Context, req *NormalizedRequest, resp *NormalizedResponse) DataFinalityState
 }
 
-// EvmNetwork is the EVM-specific view of a Network. Callers that need
-// block-number accessors or leader-upstream selection should go through the
-// EvmHighestLatestBlockNumber / EvmHighestFinalizedBlockNumber / EvmLeaderUpstream
-// helpers below, which type-assert and degrade to zero-value on mismatch.
+// EvmNetwork is the EVM-specific view of a Network. Callers read the head
+// through EvmHeadOf, which type-asserts and degrades to the zero Head.
 type EvmNetwork interface {
 	Network
-	EvmHighestLatestBlockNumber(ctx context.Context) int64
-	EvmHighestFinalizedBlockNumber(ctx context.Context) int64
-	EvmLeaderUpstream(ctx context.Context) Upstream
-	// EvmRefreshLatestBlock asks the pollers of the request's latest-head
-	// ballot for a fresh head in the background (see
-	// EvmStatePoller.RefreshLatestBlock); it never blocks.
-	EvmRefreshLatestBlock(ctx context.Context)
+	// EvmHead is the head a request serves (spec §6.4, §7): req's, taken
+	// once per request from its lane, else the request bound to ctx, else
+	// the network-wide lane's. It never computes a ballot for a lane.
+	EvmHead(ctx context.Context, req *NormalizedRequest) EvmHead
+	// EvmLaneHead is the published Head of the lane keyed groupKey, ""
+	// being the network-wide lane, materialized from selector on first use:
+	// for readers bound to a lane, not to a request (spec §6.4, §6.5).
+	EvmLaneHead(groupKey, selector string) EvmHead
+}
+
+// EvmHead is one lane's head (spec §6.4), published as one value. The zero
+// Head is an unknown one.
+type EvmHead struct {
+	// Latest is the q-th highest voter number, guarded and clamped to the
+	// guarantees.
+	Latest int64
+	// Finalized is the same ballot over the voters' finalized numbers.
+	Finalized int64
+	// Leader is the highest voter within Latest + maxRetryableBlockDistance.
+	Leader Upstream
+	// Ceiling is the raw max report of the lane's counted upstreams, 0
+	// while any of them has none.
+	Ceiling int64
+	// OldestReportAt is when the oldest counted report's evidence was
+	// taken: a poll's send time, a push's receive time; zero while one has
+	// none.
+	OldestReportAt time.Time
+	// CeilingPeak is the highest Ceiling this instance published for the
+	// lane, and CeilingFellAt when Ceiling last fell below the one before
+	// it: a cursor between the two heights names a block no upstream
+	// reports any more (spec §10.1, §19 C16).
+	CeilingPeak   int64
+	CeilingFellAt time.Time
+}
+
+// HeadRule is the refusal rule's row for block N on a request (spec §6.4).
+type HeadRule uint8
+
+const (
+	// HeadServe: N ≤ Latest, or Latest unknown (tags and numbers reach
+	// upstreams unchanged).
+	HeadServe HeadRule = iota
+	// HeadBand: Latest < N ≤ ceiling, or the ceiling is unknown.
+	HeadBand
+	// HeadFuture: above the ceiling, every counted report younger than
+	// 1 bt: no counted upstream has N yet.
+	HeadFuture
+	// HeadStale: above the ceiling, a counted report 1 bt old or older:
+	// those reports are Asked before N is decided again. Never a request's
+	// verdict.
+	HeadStale
+)
+
+// Rule is the refusal rule's row for block n at now, bt the block time (> 0).
+func (h EvmHead) Rule(n int64, bt time.Duration, now time.Time) HeadRule {
+	switch {
+	case h.Latest <= 0 || n <= h.Latest:
+		return HeadServe
+	case h.Ceiling <= 0 || n <= h.Ceiling:
+		return HeadBand
+	case h.OldestReportAt.IsZero() || now.Sub(h.OldestReportAt) >= bt:
+		return HeadStale
+	}
+	return HeadFuture
+}
+
+// HeadRefusal is the refusal rule's verdict for one request's block, taken
+// once (spec §6.4), and the retryable misses its legs got since.
+type HeadRefusal struct {
+	Rule  HeadRule
+	Block int64
+	// Latest is the Latest Block was decided against, 0 while the head
+	// was unknown: then no block was promised.
+	Latest int64
+	// Ceiling is the ceiling Block was decided against: the one the Ask
+	// returned when Refreshed.
+	Ceiling int64
+	// Refreshed: N was decided again after its stale reports were Asked.
+	Refreshed bool
+	// Waited: N, near the ceiling, waited up to W for it (spec §6.4 near
+	// future).
+	Waited bool
+	// missed: a leg of the request took its retryable miss.
+	missed atomic.Bool
+	// answered: a leg took its answer after the miss.
+	answered atomic.Bool
+}
+
+// FutureRule is the refusal counter's rule for a future verdict:
+// future_after_wait when it waited for the ceiling, future_after_refresh
+// when its stale reports were Asked first.
+func (r *HeadRefusal) FutureRule() string {
+	switch {
+	case r.Waited:
+		return "future_after_wait"
+	case r.Refreshed:
+		return "future_after_refresh"
+	}
+	return "future"
+}
+
+// RefusalLeg is one execution of a request: a consensus slot, a hedge
+// leg, or a retry round's. One goroutine runs it.
+type RefusalLeg struct{ missed bool }
+
+// MissVerdict is what an empty or missing answer above Latest is to the
+// leg that got it.
+type MissVerdict uint8
+
+const (
+	// MissRetry: the leg's one retryable miss; the leg retries.
+	MissRetry MissVerdict = iota
+	// MissFinal: the answer after the leg's miss, sent as the upstream
+	// gave it.
+	MissFinal
+)
+
+// AboveLatest reports whether the request's block is above its Latest.
+func (r *HeadRefusal) AboveLatest() bool {
+	return r != nil && r.Rule != HeadServe
+}
+
+// Final reports whether an empty answer now may be the request's answer:
+// a leg took its miss.
+func (r *HeadRefusal) Final() bool {
+	return r.AboveLatest() && r.missed.Load()
+}
+
+// Spent reports whether a leg took its answer after its miss, so an empty
+// or missing answer may no longer be retried.
+func (r *HeadRefusal) Spent() bool {
+	return r != nil && r.answered.Load()
+}
+
+// Miss records an empty or missing answer leg got for a block above
+// Latest: each leg's first is its retryable miss, so a miss in one leg
+// never stops another (spec §6.4: every leg gets the band's one retry);
+// the leg's next is final.
+func (r *HeadRefusal) Miss(leg *RefusalLeg) MissVerdict {
+	r.missed.Store(true)
+	if !leg.missed {
+		leg.missed = true
+		return MissRetry
+	}
+	r.answered.Store(true)
+	return MissFinal
+}
+
+// Retried reports whether a leg of the request got its retryable miss.
+func (r *HeadRefusal) Retried() bool {
+	return r != nil && r.missed.Load()
+}
+
+// Refuse records that the request's null was decided with no dispatch (a
+// future block under shortCircuitFutureBlocks): that null is its answer.
+func (r *HeadRefusal) Refuse() {
+	r.missed.Store(true)
+	r.answered.Store(true)
 }
 
 // SvmNetwork is the SVM-specific view of a Network. Production Network
@@ -60,41 +210,13 @@ type SvmNetwork interface {
 	SvmEnforceBlockAvailability() bool
 }
 
-// EvmHighestLatestBlockNumber returns the highest observed "latest" block
-// across EVM upstreams of n, or 0 if n is not an EVM network or no upstream
-// has reported a block yet. Use in place of a direct method call so callers
-// don't need to type-assert inline.
-func EvmHighestLatestBlockNumber(n Network, ctx context.Context) int64 {
-	if e, ok := n.(EvmNetwork); ok {
-		return e.EvmHighestLatestBlockNumber(ctx)
-	}
-	return 0
-}
-
-// EvmHighestFinalizedBlockNumber mirrors EvmHighestLatestBlockNumber for the
-// finalized tip.
-func EvmHighestFinalizedBlockNumber(n Network, ctx context.Context) int64 {
-	if e, ok := n.(EvmNetwork); ok {
-		return e.EvmHighestFinalizedBlockNumber(ctx)
-	}
-	return 0
-}
-
-// EvmLeaderUpstream returns the currently-elected leader EVM upstream for n,
-// or nil if n is not EVM-shaped or no leader has been elected.
-func EvmLeaderUpstream(n Network, ctx context.Context) Upstream {
-	if e, ok := n.(EvmNetwork); ok {
-		return e.EvmLeaderUpstream(ctx)
-	}
-	return nil
-}
-
-// EvmRefreshLatestBlock calls EvmNetwork.EvmRefreshLatestBlock when n is an
+// EvmHeadOf returns n.EvmHead(ctx, req), or the zero Head when n is not an
 // EVM network.
-func EvmRefreshLatestBlock(n Network, ctx context.Context) {
+func EvmHeadOf(n Network, ctx context.Context, req *NormalizedRequest) EvmHead {
 	if e, ok := n.(EvmNetwork); ok {
-		e.EvmRefreshLatestBlock(ctx)
+		return e.EvmHead(ctx, req)
 	}
+	return EvmHead{}
 }
 
 func IsValidArchitecture(architecture string) bool {

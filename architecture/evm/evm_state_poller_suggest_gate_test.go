@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"math"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -26,16 +27,17 @@ import (
 // uses before it is accepted. Small keep-fresh advances stay ungated and inline.
 
 // suggestGateUpstream is a common.EvmUpstream double with a fully settable
-// eth_chainId response (value + error) and an observable Cordon.
+// eth_chainId response (value + error). Its cordons go to the poller's health
+// tracker per class, as the real upstream's do, so the poller reads back the
+// cordon it set.
 type suggestGateUpstream struct {
 	id       string
 	cfg      *common.UpstreamConfig
 	logger   zerolog.Logger
+	tracker  *health.Tracker
 	mu       sync.Mutex
 	chainId  string
 	chainErr error
-	cordoned bool
-	reason   string
 }
 
 func newSuggestGateUpstream(configuredChainId int64, detected string, detectErr error) *suggestGateUpstream {
@@ -56,9 +58,11 @@ func (u *suggestGateUpstream) setChainId(detected string, detectErr error) {
 }
 
 func (u *suggestGateUpstream) isCordoned() bool {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	return u.cordoned
+	return u.tracker.IsCordoned(u, "*")
+}
+
+func (u *suggestGateUpstream) cordonClasses() []common.CordonClass {
+	return u.tracker.CordonClasses(u, "*")
 }
 
 // common.Upstream
@@ -71,11 +75,11 @@ func (u *suggestGateUpstream) Logger() *zerolog.Logger        { return &u.logger
 func (u *suggestGateUpstream) Vendor() common.Vendor          { return nil }
 func (u *suggestGateUpstream) Tracker() common.HealthTracker  { return nil }
 func (u *suggestGateUpstream) IgnoreMethod(string)            {}
-func (u *suggestGateUpstream) Uncordon(_, _ string) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.cordoned = false
-	u.reason = ""
+func (u *suggestGateUpstream) Uncordon(method, reason string) {
+	u.UncordonClass(method, reason, common.CordonClassOperator)
+}
+func (u *suggestGateUpstream) UncordonClass(method, reason string, class common.CordonClass) {
+	u.tracker.UncordonClass(u, method, reason, class)
 }
 func (u *suggestGateUpstream) ShouldHandleMethod(string) (bool, error) {
 	return true, nil
@@ -83,11 +87,11 @@ func (u *suggestGateUpstream) ShouldHandleMethod(string) (bool, error) {
 func (u *suggestGateUpstream) Forward(context.Context, *common.NormalizedRequest, bool, bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (u *suggestGateUpstream) Cordon(_, reason string) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.cordoned = true
-	u.reason = reason
+func (u *suggestGateUpstream) Cordon(method, reason string) {
+	u.CordonClass(method, reason, common.CordonClassOperator)
+}
+func (u *suggestGateUpstream) CordonClass(method, reason string, class common.CordonClass) {
+	u.tracker.CordonClass(u, method, reason, class)
 }
 
 // common.EvmUpstream
@@ -112,12 +116,13 @@ func (u *suggestGateUpstream) EvmBlockAvailabilityBounds() (int64, int64) {
 	return math.MinInt64, math.MaxInt64
 }
 
-func newGateTestPoller(t *testing.T, up common.Upstream) *EvmStatePoller {
+func newGateTestPoller(t *testing.T, up *suggestGateUpstream) *EvmStatePoller {
 	t.Helper()
 	appCtx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	logger := zerolog.Nop()
 	tracker := health.NewTracker(&logger, "test", 2*time.Second)
+	up.tracker = tracker
 	ssr, err := data.NewSharedStateRegistry(appCtx, &logger, &common.SharedStateConfig{
 		Connector: &common.ConnectorConfig{
 			Driver: common.DriverMemory,
@@ -138,10 +143,10 @@ func TestSuggestLatestBlock_SmallAdvanceAppliesInline(t *testing.T) {
 	up := newSuggestGateUpstream(123, "123", nil)
 	p := newGateTestPoller(t, up)
 
-	p.SuggestLatestBlock(1000) // from 0 → inline (cold start)
+	p.SuggestLatestBlock(1000, time.Now()) // from 0 → inline (cold start)
 	require.Equal(t, int64(1000), p.LatestBlock())
 
-	p.SuggestLatestBlock(1000 + gateTolerance) // small (== tolerance, not major)
+	p.SuggestLatestBlock(1000+gateTolerance, time.Now()) // small (== tolerance, not major)
 	require.Equal(t, int64(1000+gateTolerance), p.LatestBlock(), "small advance applies inline & synchronously")
 	require.False(t, up.isCordoned())
 }
@@ -150,10 +155,10 @@ func TestSuggestLatestBlock_MajorJumpMatchingChainIdApplies(t *testing.T) {
 	up := newSuggestGateUpstream(123, "123", nil) // detected == configured
 	p := newGateTestPoller(t, up)
 
-	p.SuggestLatestBlock(1000)
+	p.SuggestLatestBlock(1000, time.Now())
 	require.Equal(t, int64(1000), p.LatestBlock())
 
-	p.SuggestLatestBlock(1000 + gateTolerance + 1000) // MAJOR forward jump
+	p.SuggestLatestBlock(1000+gateTolerance+1000, time.Now()) // MAJOR forward jump
 	require.Eventually(t, func() bool {
 		return p.LatestBlock() == 1000+gateTolerance+1000
 	}, 2*time.Second, 10*time.Millisecond, "verified major jump must be applied")
@@ -164,91 +169,97 @@ func TestSuggestLatestBlock_MajorJumpChainIdMismatchDroppedAndCordoned(t *testin
 	up := newSuggestGateUpstream(123, "999", nil) // detected != configured
 	p := newGateTestPoller(t, up)
 
-	p.SuggestLatestBlock(1000)
+	p.SuggestLatestBlock(1000, time.Now())
 	require.Equal(t, int64(1000), p.LatestBlock())
 
-	p.SuggestLatestBlock(5_000_000) // MAJOR (another chain's height)
+	p.SuggestLatestBlock(5_000_000, time.Now()) // MAJOR (another chain's height)
 	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond, "a proven cross-wired endpoint must be cordoned")
 	assert.Equal(t, int64(1000), p.LatestBlock(), "the bogus major jump must NOT enter the shared counter")
 }
 
-func TestSuggestLatestBlock_ChainIdRecoveryUncordonsAvailability(t *testing.T) {
+// chainIdRecheckFast shortens the chain-identity recheck for one test.
+func chainIdRecheckFast(t *testing.T) {
+	prev := ChainIdCordonRecheck.Load()
+	ChainIdCordonRecheck.Store(20 * time.Millisecond)
+	t.Cleanup(func() { ChainIdCordonRecheck.Store(prev) })
+}
+
+// A fixed endpoint recovers without any further head move: the recheck lifts
+// the availability class it set, and only that class, so an operator cordon
+// placed meanwhile stays.
+func TestChainIdCordon_RecheckLiftsOnlyItsAvailabilityCordon(t *testing.T) {
+	chainIdRecheckFast(t)
 	up := newSuggestGateUpstream(123, "999", nil)
 	p := newGateTestPoller(t, up)
 
-	p.SuggestLatestBlock(1000)
+	p.SuggestLatestBlock(1000, time.Now())
 	require.Equal(t, int64(1000), p.LatestBlock())
 
-	p.SuggestLatestBlock(5_000_000)
+	p.SuggestLatestBlock(5_000_000, time.Now())
 	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
+	assert.Equal(t, []common.CordonClass{common.CordonClassAvailability}, up.cordonClasses(),
+		"a chain-identity mismatch is an availability cordon")
+	assert.True(t, p.ChainIdCordoned())
 
-	// Endpoint fixed: recovery must also fire on a *small* keep-fresh advance
-	// (not only another major jump), otherwise a fixed endpoint that never
-	// moves past the major-move threshold stays availability-cordoned forever.
+	up.Cordon("*", "ops maintenance")
 	up.setChainId("123", nil)
-	p.SuggestLatestBlock(1000 + gateTolerance) // small (== tolerance, not major)
-	require.Eventually(t, func() bool {
-		return !up.isCordoned()
-	}, 2*time.Second, 10*time.Millisecond, "matching chainId after mismatch must uncordon even on a non-major advance")
-}
-
-func TestSuggestLatestBlock_ChainIdRecoveryOnNonMajorAdvance(t *testing.T) {
-	up := newSuggestGateUpstream(123, "999", nil)
-	p := newGateTestPoller(t, up)
-
-	p.SuggestLatestBlock(1000)
-	require.Equal(t, int64(1000), p.LatestBlock())
-	p.SuggestLatestBlock(5_000_000)
-	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
-
-	// Endpoint fixed, but next observation is only a small keep-fresh advance.
-	// Recovery must still run (forced probe while cordonedByChainId).
-	up.setChainId("123", nil)
-	p.SuggestLatestBlock(1000 + gateTolerance) // == tolerance, not major vs current 1000
-	require.Eventually(t, func() bool { return !up.isCordoned() }, 2*time.Second, 10*time.Millisecond,
-		"matching chainId on a non-major advance must uncordon while cordonedByChainId")
-}
-
-// While still cross-wired, a non-major keep-fresh suggestion must be dropped —
-// accepting it would poison the shared counter on every tick until a major jump.
-func TestSuggestLatestBlock_CordonedNonMajorAdvanceRejectedUntilRecovered(t *testing.T) {
-	up := newSuggestGateUpstream(123, "999", nil)
-	p := newGateTestPoller(t, up)
-
-	p.SuggestLatestBlock(1000)
-	require.Equal(t, int64(1000), p.LatestBlock())
-	p.SuggestLatestBlock(5_000_000)
-	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
-
-	// Still wrong chain: small advance must not write through.
-	p.SuggestLatestBlock(1000 + gateTolerance)
-	require.Never(t, func() bool {
-		return p.LatestBlock() != 1000
-	}, 300*time.Millisecond, 20*time.Millisecond, "cordoned non-major sample must be rejected while chainId still mismatches")
-	assert.True(t, up.isCordoned())
-}
-
-// After an operator UncordonAdmin clears the tracker bit, cordonedByChainId
-// may still be set. A mismatching recovery probe must re-assert the
-// availability cordon so the endpoint does not stay fail-open for routing.
-func TestSuggestLatestBlock_MismatchAfterAdminClearReCordons(t *testing.T) {
-	up := newSuggestGateUpstream(123, "999", nil)
-	p := newGateTestPoller(t, up)
-
-	p.SuggestLatestBlock(1000)
-	p.SuggestLatestBlock(5_000_000)
-	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
-
-	// Simulate UncordonAdmin: tracker cleared, ownership flag still true.
-	up.Uncordon("*", "ops cleared")
-	require.False(t, up.isCordoned())
-	require.True(t, p.cordonedByChainId.Load())
-
-	// Still wrong chain on a keep-fresh tick → must re-cordon.
-	p.SuggestLatestBlock(1000 + gateTolerance)
-	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond,
-		"mismatch after admin clear must re-assert availability cordon")
+	require.Eventually(t, func() bool { return !p.ChainIdCordoned() }, 2*time.Second, 10*time.Millisecond,
+		"matching chainId must lift the chain-identity cordon with no head move")
+	assert.Equal(t, []common.CordonClass{common.CordonClassOperator}, up.cordonClasses(),
+		"recovery must clear only the availability class")
 	assert.Equal(t, int64(1000), p.LatestBlock())
+}
+
+// After an operator UncordonAdmin clears every class, an endpoint that still
+// answers for another chain is cordoned again by the recheck, so it does not
+// stay fail-open for routing.
+func TestChainIdCordon_MismatchAfterAdminClearReCordons(t *testing.T) {
+	chainIdRecheckFast(t)
+	up := newSuggestGateUpstream(123, "999", nil)
+	p := newGateTestPoller(t, up)
+
+	p.SuggestLatestBlock(1000, time.Now())
+	p.SuggestLatestBlock(5_000_000, time.Now())
+	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
+
+	up.UncordonClass("*", "ops cleared", common.CordonClassAvailability)
+	require.False(t, up.isCordoned())
+
+	require.Eventually(t, func() bool {
+		return slices.Contains(up.cordonClasses(), common.CordonClassAvailability)
+	}, 2*time.Second, 10*time.Millisecond, "mismatch after admin clear must re-assert the availability cordon")
+	assert.True(t, p.ChainIdCordoned())
+	assert.Equal(t, int64(1000), p.LatestBlock())
+}
+
+// While still cross-wired, a non-major keep-fresh report must be dropped —
+// accepting it would poison the shared counter on every tick (spec §5): a
+// suggestion, a source header and a finalized report alike. Only the
+// recheck's matches lift the cordon; then small advances apply again.
+func TestSuggestLatestBlock_CordonedNonMajorAdvanceRejectedUntilRecovered(t *testing.T) {
+	chainIdRecheckFast(t)
+	up := newSuggestGateUpstream(123, "999", nil)
+	p := newGateTestPoller(t, up)
+
+	p.SuggestLatestBlock(1000, time.Now())
+	p.SuggestFinalizedBlock(900, time.Now())
+	require.Eventually(t, func() bool { return p.FinalizedBlock() == 900 }, 2*time.Second, 10*time.Millisecond)
+	p.SuggestLatestBlock(5_000_000, time.Now())
+	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
+
+	p.SuggestLatestBlock(1000+gateTolerance, time.Now())
+	assert.False(t, p.ObserveHead(1001, time.Now()), "a cordoned source header is not accepted")
+	p.SuggestFinalizedBlock(950, time.Now())
+	require.Never(t, func() bool {
+		return p.LatestBlock() != 1000 || p.FinalizedBlock() != 900
+	}, 300*time.Millisecond, 20*time.Millisecond, "cordoned non-major reports must be rejected while chainId still mismatches")
+	assert.True(t, up.isCordoned())
+
+	up.setChainId("123", nil)
+	require.Eventually(t, func() bool { return !p.ChainIdCordoned() }, 2*time.Second, 10*time.Millisecond,
+		"the recheck lifts the cordon")
+	p.SuggestLatestBlock(1001, time.Now())
+	assert.Equal(t, int64(1001), p.LatestBlock(), "after the lift a small advance applies inline")
 }
 
 func TestSuggestLatestBlock_MajorJumpChainIdErrorDroppedNotCordoned(t *testing.T) {
@@ -257,10 +268,10 @@ func TestSuggestLatestBlock_MajorJumpChainIdErrorDroppedNotCordoned(t *testing.T
 	up := newSuggestGateUpstream(123, "", assert.AnError)
 	p := newGateTestPoller(t, up)
 
-	p.SuggestLatestBlock(1000)
+	p.SuggestLatestBlock(1000, time.Now())
 	require.Equal(t, int64(1000), p.LatestBlock())
 
-	p.SuggestLatestBlock(5_000_000) // MAJOR
+	p.SuggestLatestBlock(5_000_000, time.Now()) // MAJOR
 	require.Never(t, func() bool {
 		return p.LatestBlock() != 1000
 	}, 300*time.Millisecond, 20*time.Millisecond, "unverifiable major jump must be dropped")
@@ -273,10 +284,10 @@ func TestSuggestLatestBlock_MajorJumpTypedMismatchErrorCordons(t *testing.T) {
 	up := newSuggestGateUpstream(123, "", common.NewErrEndpointChainIdMismatch(999, 123))
 	p := newGateTestPoller(t, up)
 
-	p.SuggestLatestBlock(1000)
+	p.SuggestLatestBlock(1000, time.Now())
 	require.Equal(t, int64(1000), p.LatestBlock())
 
-	p.SuggestLatestBlock(5_000_000)
+	p.SuggestLatestBlock(5_000_000, time.Now())
 	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond, "typed chainId-mismatch error must cordon")
 	assert.Equal(t, int64(1000), p.LatestBlock())
 }
@@ -287,10 +298,10 @@ func TestSuggestLatestBlock_UnpinnedChainIdSkipsGate(t *testing.T) {
 	up := newSuggestGateUpstream(0, "", assert.AnError)
 	p := newGateTestPoller(t, up)
 
-	p.SuggestLatestBlock(1000)
+	p.SuggestLatestBlock(1000, time.Now())
 	require.Equal(t, int64(1000), p.LatestBlock())
 
-	p.SuggestLatestBlock(5_000_000) // major, but chainId not pinned → not gated
+	p.SuggestLatestBlock(5_000_000, time.Now()) // major, but chainId not pinned → not gated
 	require.Eventually(t, func() bool {
 		return p.LatestBlock() == 5_000_000
 	}, 2*time.Second, 10*time.Millisecond)
@@ -303,14 +314,14 @@ func TestSuggestFinalizedBlock_MajorJumpMatchingApplies(t *testing.T) {
 	up := newSuggestGateUpstream(123, "123", nil)
 	p := newGateTestPoller(t, up)
 
-	p.SuggestFinalizedBlock(1000)
+	p.SuggestFinalizedBlock(1000, time.Now())
 	require.Eventually(t, func() bool { return p.FinalizedBlock() == 1000 }, 2*time.Second, 10*time.Millisecond)
 
 	// The first suggestion's goroutine publishes the value before it releases
 	// the in-progress lock, so a single follow-up suggestion can be skipped.
 	// Re-suggest until it is taken.
 	require.Eventually(t, func() bool {
-		p.SuggestFinalizedBlock(1000 + gateTolerance + 1000) // MAJOR
+		p.SuggestFinalizedBlock(1000+gateTolerance+1000, time.Now()) // MAJOR
 		return p.FinalizedBlock() == 1000+gateTolerance+1000
 	}, 2*time.Second, 10*time.Millisecond, "verified major finalized jump must be applied")
 	require.False(t, up.isCordoned())
@@ -320,12 +331,12 @@ func TestSuggestFinalizedBlock_MajorJumpChainIdMismatchDroppedAndCordoned(t *tes
 	up := newSuggestGateUpstream(123, "999", nil)
 	p := newGateTestPoller(t, up)
 
-	p.SuggestFinalizedBlock(1000)
+	p.SuggestFinalizedBlock(1000, time.Now())
 	require.Eventually(t, func() bool { return p.FinalizedBlock() == 1000 }, 2*time.Second, 10*time.Millisecond)
 
 	// Re-suggest until taken: see TestSuggestFinalizedBlock_MajorJumpMatchingApplies.
 	require.Eventually(t, func() bool {
-		p.SuggestFinalizedBlock(5_000_000) // MAJOR wrong-chain height
+		p.SuggestFinalizedBlock(5_000_000, time.Now()) // MAJOR wrong-chain height
 		return up.isCordoned()
 	}, 2*time.Second, 10*time.Millisecond)
 	assert.Equal(t, int64(1000), p.FinalizedBlock(), "bogus major finalized jump must not enter the shared counter")
@@ -335,7 +346,8 @@ func TestSuggestFinalizedBlock_MajorJumpChainIdMismatchDroppedAndCordoned(t *tes
 
 // feedBlockTime drives the tracker's block-time EMA to (tsDelta/numDelta)
 // seconds per block by replaying observations through the same entry point the
-// poller uses. blockTimeMinSamples is 3, so a handful of rounds is plenty.
+// poller uses. The first sample lands on the third observation, so a handful
+// of rounds is plenty.
 func feedBlockTime(t *testing.T, p *EvmStatePoller, up common.Upstream, numDelta, tsDelta int64) {
 	t.Helper()
 	var num int64 = 1_000_000

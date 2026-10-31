@@ -82,7 +82,7 @@ func forwardEthCall(t *testing.T, ctx context.Context, network *Network, id int,
 // A hedge leg that finds every routed upstream missing the data must not
 // cancel a sibling leg that escalated to the fallbacks and is still waiting.
 func TestFailover_HedgeKeepsEscalatedSibling(t *testing.T) {
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -105,7 +105,7 @@ func TestFailover_HedgeKeepsEscalatedSibling(t *testing.T) {
 	escape := telemetry.MetricNetworkFallbackEscapeTotal.WithLabelValues("main", "evm:999", "eth_call")
 	escapeBefore := promUtil.ToFloat64(escape)
 	for i := 0; i < 5; i++ {
-		result, err := forwardEthCall(t, ctx, network, i, "0x3ea")
+		result, err := forwardEthCall(t, ctx, network, i, "0x3e8")
 		require.NoError(t, err, "iter %d", i)
 		assert.Equal(t, "0x3333", result, "iter %d", i)
 	}
@@ -115,7 +115,7 @@ func TestFailover_HedgeKeepsEscalatedSibling(t *testing.T) {
 // A fallback that already answered missing data must not let a hedge leg
 // cancel another fallback that is still working on the request.
 func TestFailover_HedgeKeepsSlowFallbackAfterFastFallbackMiss(t *testing.T) {
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -134,7 +134,7 @@ func TestFailover_HedgeKeepsSlowFallbackAfterFastFallbackMiss(t *testing.T) {
 	})
 
 	for i := 0; i < 5; i++ {
-		result, err := forwardEthCall(t, ctx, network, i, "0x3ea")
+		result, err := forwardEthCall(t, ctx, network, i, "0x3e8")
 		require.NoError(t, err, "iter %d", i)
 		assert.Equal(t, "0x4444", result, "iter %d", i)
 	}
@@ -145,7 +145,7 @@ func TestFailover_HedgeKeepsSlowFallbackAfterFastFallbackMiss(t *testing.T) {
 // policy's probeExcluded may still mirror the request to them in the
 // background, so upstream hits are not counted here.)
 func TestFailover_FallbackAheadDoesNotTakeServedReads(t *testing.T) {
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

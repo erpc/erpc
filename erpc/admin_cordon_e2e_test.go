@@ -27,7 +27,7 @@ import (
 // upstream answers eth_getBalance with a distinct value.
 func TestAdminCordon_TwoInstancesConvergeThroughSharedState(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	for host, balance := range map[string]string{"rpc3": "0x3", "rpc4": "0x4"} {
 		gock.New("http://" + host + ".localhost").
@@ -88,10 +88,11 @@ func TestAdminCordon_TwoInstancesConvergeThroughSharedState(t *testing.T) {
 		require.NoError(t, err)
 
 		instance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+		stopERPCAtEnd(t, instance, ctx)
 		require.NoError(t, err)
 		instance.Bootstrap(ctx)
 
-		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, instance)
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, instance)
 		require.NoError(t, err)
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		require.NoError(t, err)

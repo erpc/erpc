@@ -175,10 +175,14 @@ func TestEvmStatePoller_BootstrapWithZeroIntervalStartsNothing(t *testing.T) {
 	assert.False(t, poller.Enabled)
 }
 
-// Request-path polls (block-availability gates, block-skip refresh) respect
-// the debounce: concurrent and repeated calls within it share one fetch.
+// Request-path polls (block-availability gates, block-skip refresh) share
+// one fetch (spec §6.8 Ask): concurrent ones join it, and after its node
+// failure the next ones back off.
 func TestEvmStatePoller_RequestPathPollsAreCoalesced(t *testing.T) {
-	poller, up, ctx := newTestStatePoller(t, time.Hour, time.Minute)
+	poller, up, ctx := covPollerNew(t, "test-upstream", func(string, []interface{}) (*common.NormalizedResponse, error) {
+		return nil, common.NewErrEndpointServerSideException(errors.New("boom"), nil, 500)
+	})
+	covPollerDebounce(poller, time.Minute)
 
 	var wg sync.WaitGroup
 	for range 20 {
@@ -192,5 +196,5 @@ func TestEvmStatePoller_RequestPathPollsAreCoalesced(t *testing.T) {
 	for range 20 {
 		_, _ = poller.PollLatestBlockNumber(ctx)
 	}
-	assert.Equal(t, int64(1), up.forwards.Load())
+	assert.Equal(t, 1, up.callCount("eth_getBlockByNumber"))
 }

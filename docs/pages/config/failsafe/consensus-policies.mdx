@@ -406,10 +406,10 @@ block the empty count; a matching non-empty result holds the quota. Proof order:
    this is the reliable `head − retention` signal when internals declare retention
    via availability bounds. Align `latestBlockMinus` with `retentionBlocks`.
 2. **Chain-head fallback.** Else `head - winnerBlock > retentionBlocks`, where
-   `head` is the majority network served tip when `evm.servedTip.enabledFor`
-   includes `"latest"`, otherwise the min corroborated poller latest among this
+   `head` is the request's head `Latest` when `evm.servedTip.quorum` is
+   `"majority"`, otherwise the min corroborated poller latest among this
    round's EVM participants (≥2 positive latests; a single poller fails closed).
-   Default max-mode served tip is not trusted.
+   A head under the default quorum is not trusted.
 
 It shares the MissingData waiver's safety properties (`minAgreement` threshold,
 round-complete, never-decisive-masking, floor enforced) and adds a **block proof**

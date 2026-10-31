@@ -60,10 +60,11 @@ func TestHttpServer_WebSocketUpgradeReachesDispatch(t *testing.T) {
 	require.NoError(t, err)
 
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

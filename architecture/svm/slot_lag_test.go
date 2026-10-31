@@ -140,28 +140,6 @@ func TestFilterByFinalizedSlotLag_IncludesUnreadyPollers(t *testing.T) {
 	}
 }
 
-func TestHighestFinalizedSlot_PicksMaxAcrossUpstreams(t *testing.T) {
-	t.Parallel()
-	ups := []common.Upstream{
-		upstreamAt("a", 500),
-		upstreamAt("b", 1200),
-		upstreamAt("c", 900),
-	}
-	if got := HighestFinalizedSlot(ups); got != 1200 {
-		t.Fatalf("expected 1200, got %d", got)
-	}
-}
-
-func TestHighestFinalizedSlot_ZeroWhenNoSvmUpstreams(t *testing.T) {
-	t.Parallel()
-	// stubSvm (from error_normalizer_test.go) implements common.Upstream but
-	// not common.SvmUpstream — no SvmStatePoller method.
-	nonSvm := newSvmStub()
-	if got := HighestFinalizedSlot([]common.Upstream{nonSvm}); got != 0 {
-		t.Fatalf("non-svm upstreams must contribute 0, got %d", got)
-	}
-}
-
 func TestReferenceFinalizedSlot(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

@@ -314,8 +314,9 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 			policies:  []*data.CachePolicy{policy1, policy2},
 		}
 
-		// Create request
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",true],"id":1}`))
+		// A numbered request: plan H2 deletes the cache key on the word
+		// `latest`, so a tag with no Head is not cached at all.
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1235",true],"id":1}`))
 
 		// Perform Get operation
 		resp, err := cache.Get(ctx, req)

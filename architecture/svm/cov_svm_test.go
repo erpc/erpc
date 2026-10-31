@@ -426,7 +426,6 @@ func TestCovSvm_SlotLagFilters_NonSvmAndPollerless(t *testing.T) {
 	require.Equal(t, []common.Upstream{nonSvm, noPoller, nullPoller, fresh}, got,
 		"upstreams that cannot be judged stay; only the stale one is dropped")
 
-	require.EqualValues(t, 1000, HighestFinalizedSlot([]common.Upstream{nonSvm, noPoller, nullPoller, stale, fresh}))
 	require.EqualValues(t, 1000, ReferenceFinalizedSlot([]common.Upstream{nonSvm, noPoller, fresh, stale}, 0))
 
 	got = FilterByMinContextSlot([]common.Upstream{nonSvm, nullPoller, stale}, 500, true)

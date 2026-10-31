@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
@@ -152,40 +153,81 @@ func covMiscResultString(t *testing.T, r *common.NormalizedResponse) string {
 	return s
 }
 
+// covMiscTagPack answers a tag pack: results for the clients' entries, then
+// the block-number entry the batcher adds once the network's context call
+// is decided (covMiscDecided).
+func covMiscTagPack(results ...aggregate3Result) []aggregate3Result {
+	return append(results, aggregate3Result{success: true, data: covMiscWord(1)})
+}
+
+// covMiscDecided starts n's state prober with its context call decided
+// (Multicall3, as its first probe would on a chain without ArbSys), so its
+// tag packs carry the block-number call.
+func covMiscDecided(t *testing.T, n common.Network) *stateProber {
+	tracker := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+	startStateProber(t.Context(), n, tracker, nil)
+	p := stateProberFor(n)
+	require.NotNil(t, p)
+	p.stateCtx.decided.Store(integrity.Multicall3BlockNumber)
+	t.Cleanup(func() { stateProbers.CompareAndDelete(n, p) })
+	return p
+}
+
 func TestCovMisc_Multicall3_PacksFullBatchAndAnswersEachCaller(t *testing.T) {
-	n := &queryTestNetwork{}
+	const latest, executed = 100, 90
+	n := &queryTestNetwork{latest: latest}
+	p := covMiscDecided(t, n)
+	probeTarget, err := common.HexToBytes(integrity.Multicall3Address)
+	require.NoError(t, err)
+
 	addrA, addrB := covLogsAddr("a"), covLogsAddr("b")
 	var gotDeadline bool
+	var packed [][][]byte
 	u := covMiscMcNew(t, 2, time.Minute, nil)
 	u.forward = func(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		_, gotDeadline = ctx.Deadline()
 		assert.Equal(t, common.CompositeTypeMulticall3, nq.CompositeType())
 		to, targets := covMiscAgg3Targets(t, nq)
-		assert.Equal(t, multicall3Address, to)
+		assert.Equal(t, integrity.Multicall3Address, to)
+		packed = append(packed, targets)
 		res := make([]aggregate3Result, len(targets))
 		for i, tg := range targets {
 			res[i] = aggregate3Result{success: true, data: tg}
+			if string(tg) == string(probeTarget) {
+				res[i].data = covMiscWord(executed)
+			}
 		}
 		return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3(res)) + `"`), nil
 	}
 	before := covMiscMcCount(u, multicall3Packed)
 
-	reqs := []*common.NormalizedRequest{covMiscMcCall(1, addrA, "0x01", "0x10"), covMiscMcCall(2, addrB, "0x02", "0x10")}
-	outs := covMiscMcRun(covMiscBg(2), n, u, reqs)
-
-	for i, want := range []string{addrA, addrB} {
-		require.NoError(t, outs[i].err)
-		require.True(t, outs[i].handled, "call %d is answered from the pack", i)
-		assert.Equal(t, want, covMiscResultString(t, outs[i].resp), "each caller gets its own return data")
-		assert.Same(t, u, outs[i].resp.Upstream())
-		assert.Same(t, u, reqs[i].LastUpstream())
+	for _, block := range []string{"0x10", "latest"} {
+		reqs := []*common.NormalizedRequest{covMiscMcCall(1, addrA, "0x01", block), covMiscMcCall(2, addrB, "0x02", block)}
+		outs := covMiscMcRun(covMiscBg(2), n, u, reqs)
+		for i, want := range []string{addrA, addrB} {
+			require.NoError(t, outs[i].err)
+			require.True(t, outs[i].handled, "%s: call %d is answered from the pack", block, i)
+			assert.Equal(t, want, covMiscResultString(t, outs[i].resp), "%s: each caller gets only its own return data", block)
+			assert.Same(t, u, outs[i].resp.Upstream())
+			assert.Same(t, u, reqs[i].LastUpstream())
+		}
 	}
+	require.Len(t, packed, 2)
+	assert.Len(t, packed[0], 2, "a numbered pack carries the clients' calls only")
+	require.Len(t, packed[1], 3, "a tag pack carries one more call")
+	assert.Equal(t, probeTarget, packed[1][2], "the block-number call of the chain's architecture")
 	assert.False(t, gotDeadline, "callers without a deadline give the pack none")
-	assert.Equal(t, before+2, covMiscMcCount(u, multicall3Packed))
+	assert.Equal(t, before+4, covMiscMcCount(u, multicall3Packed))
+
+	h := p.tagHead(u.Id(), latest, time.Now())
+	assert.EqualValues(t, executed, h.block, "the tag pack's answer is the upstream's tag-state sample")
+	assert.False(t, h.sentAt.IsZero())
+	assert.Equal(t, tagStale, h.state, "%d blocks below Latest at a 1s block time is past W", latest-executed)
 }
 
 func TestCovMisc_Multicall3_PackDeadlineIsLastCallers(t *testing.T) {
 	n := &queryTestNetwork{}
+	covMiscDecided(t, n)
 	now := time.Now()
 	ctx1, c1 := context.WithDeadline(context.Background(), now.Add(time.Hour))
 	defer c1()
@@ -194,7 +236,7 @@ func TestCovMisc_Multicall3_PackDeadlineIsLastCallers(t *testing.T) {
 	var deadline time.Time
 	u := covMiscMcNew(t, 2, time.Minute, func(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		deadline, _ = ctx.Deadline()
-		return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3([]aggregate3Result{{true, []byte{1}}, {true, []byte{2}}})) + `"`), nil
+		return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3(covMiscTagPack(aggregate3Result{true, []byte{1}}, aggregate3Result{true, []byte{2}}))) + `"`), nil
 	})
 	outs := covMiscMcRun([]context.Context{ctx2, ctx1}, n, u, []*common.NormalizedRequest{
 		covMiscMcCall(1, covLogsAddr("a"), "0x01", "latest"),
@@ -222,6 +264,9 @@ func TestCovMisc_Multicall3_FailedPackSendsEveryCallAlone(t *testing.T) {
 		{"result count mismatch", func() (*common.NormalizedResponse, error) {
 			return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3([]aggregate3Result{{true, []byte{1}}})) + `"`), nil
 		}},
+		{"tag pack answered without its block-number entry", func() (*common.NormalizedResponse, error) {
+			return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3([]aggregate3Result{{true, []byte{1}}, {true, []byte{2}}})) + `"`), nil
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -229,7 +274,9 @@ func TestCovMisc_Multicall3_FailedPackSendsEveryCallAlone(t *testing.T) {
 				return tc.forward()
 			})
 			before := covMiscMcCount(u, multicall3Failed)
-			outs := covMiscMcRun(covMiscBg(2), &queryTestNetwork{}, u, []*common.NormalizedRequest{
+			n := &queryTestNetwork{}
+			covMiscDecided(t, n)
+			outs := covMiscMcRun(covMiscBg(2), n, u, []*common.NormalizedRequest{
 				covMiscMcCall(1, covLogsAddr("a"), "0x01", "latest"),
 				covMiscMcCall(2, covLogsAddr("b"), "0x02", "latest"),
 			})
@@ -272,9 +319,10 @@ func TestCovMisc_Multicall3_NoCodeMarksOlderBlocksIneligible(t *testing.T) {
 func TestCovMisc_Multicall3_RevertedInPackLearnsBypassOnlyOnCleanAloneSuccess(t *testing.T) {
 	addrA, addrB := covLogsAddr("a"), covLogsAddr("b")
 	u := covMiscMcNew(t, 2, time.Minute, func(context.Context, *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-		return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3([]aggregate3Result{{false, nil}, {false, nil}})) + `"`), nil
+		return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3(covMiscTagPack(aggregate3Result{false, nil}, aggregate3Result{false, nil}))) + `"`), nil
 	})
 	n := &queryTestNetwork{}
+	covMiscDecided(t, n)
 	reqs := []*common.NormalizedRequest{covMiscMcCall(1, addrA, "0x01", "latest"), covMiscMcCall(2, addrB, "0x02", "latest")}
 	before := covMiscMcCount(u, multicall3Reverted)
 	outs := covMiscMcRun(covMiscBg(2), n, u, reqs)
@@ -334,13 +382,15 @@ func TestCovMisc_Multicall3_PostForwardTransportErrorLearnsNothing(t *testing.T)
 
 func TestCovMisc_Multicall3_UnencodableCallerIdFallsBackAlone(t *testing.T) {
 	u := covMiscMcNew(t, 2, time.Minute, func(context.Context, *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-		return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3([]aggregate3Result{{true, []byte{1}}, {true, []byte{2}}})) + `"`), nil
+		return covMiscMcResult(`"0x` + hex.EncodeToString(covMiscAgg3(covMiscTagPack(aggregate3Result{true, []byte{1}}, aggregate3Result{true, []byte{2}}))) + `"`), nil
 	})
 	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{map[string]interface{}{"to": covLogsAddr("a"), "data": "0x01"}, "latest"})
 	jrq.ID = make(chan int)
 	bad := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
 	before := covMiscMcCount(u, multicall3Failed)
-	outs := covMiscMcRun(covMiscBg(2), &queryTestNetwork{}, u, []*common.NormalizedRequest{
+	n := &queryTestNetwork{}
+	covMiscDecided(t, n)
+	outs := covMiscMcRun(covMiscBg(2), n, u, []*common.NormalizedRequest{
 		covMiscMcCall(1, covLogsAddr("b"), "0x02", "latest"), bad,
 	})
 	assert.True(t, outs[0].handled)
@@ -680,8 +730,8 @@ func TestCovMisc_Integrity_DetailedTracingCapsRecordedBodies(t *testing.T) {
 	exp := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp), sdktrace.WithSampler(sdktrace.AlwaysSample()))
 	common.SetTracerProviderForTest(tp)
-	t.Cleanup(func() { common.IsTracingEnabled = false; common.IsTracingDetailed = false })
-	common.IsTracingDetailed = true
+	t.Cleanup(func() { common.SetTracingEnabled(false); common.SetTracingDetailed(false) })
+	common.SetTracingDetailed(true)
 
 	dir := t.TempDir()
 	n := covMiscIndexNetwork("evm:covmisc-trace", dir, func(s *common.IntegritySettings) {
@@ -764,39 +814,45 @@ func TestCovMisc_ExportIntegrityCatch(t *testing.T) {
 // pin_latest
 // ---------------------------------------------------------------------------
 
-func TestCovMisc_LatestTagParamIndexAndPinParams(t *testing.T) {
-	for method, want := range map[string]int{"eth_call": 1, "eth_getStorageAt": 2} {
-		idx, ok := LatestTagParamIndex(method)
-		assert.True(t, ok)
-		assert.Equal(t, want, idx)
+func TestCovMisc_StateSelectorAndPinParams(t *testing.T) {
+	for method, want := range map[string]int{"eth_call": 1, "eth_getStorageAt": 2, "eth_estimateGas": 1, "eth_callMany": 1, "trace_call": 2} {
+		idx, ok := stateSelectorIndex(method)
+		assert.True(t, ok, method)
+		assert.Equal(t, want, idx, method)
 	}
-	_, ok := LatestTagParamIndex("eth_getBlockByNumber")
+	_, ok := stateSelectorIndex("eth_getBlockByNumber")
 	assert.False(t, ok, "block-by-number is never pinned")
 
 	cases := []struct {
 		name   string
+		method string
 		params []interface{}
-		idx    int
 		want   []interface{}
 		pinned bool
 	}{
-		{"absent selector means latest", []interface{}{"0xabc"}, 1, []interface{}{"0xabc", "0x64"}, true},
-		{"explicit latest", []interface{}{"0xabc", "latest"}, 1, []interface{}{"0xabc", "0x64"}, true},
-		{"params too short", []interface{}{"0xabc"}, 2, []interface{}{"0xabc"}, false},
-		{"concrete block", []interface{}{"0xabc", "0x10"}, 1, []interface{}{"0xabc", "0x10"}, false},
-		{"object selector", []interface{}{"0xabc", map[string]interface{}{"blockNumber": "0x1"}}, 1, nil, false},
+		{"absent selector means latest", "eth_getBalance", []interface{}{"0xabc"}, []interface{}{"0xabc", "0x64"}, true},
+		{"null selector means latest", "eth_getBalance", []interface{}{"0xabc", nil}, []interface{}{"0xabc", "0x64"}, true},
+		{"explicit latest", "eth_getBalance", []interface{}{"0xabc", "latest"}, []interface{}{"0xabc", "0x64"}, true},
+		{"eth_estimateGas latest", "eth_estimateGas", []interface{}{"0xabc", "latest"}, []interface{}{"0xabc", "0x64"}, true},
+		{"params too short", "eth_getStorageAt", []interface{}{"0xabc"}, []interface{}{"0xabc"}, false},
+		{"concrete block", "eth_getBalance", []interface{}{"0xabc", "0x10"}, []interface{}{"0xabc", "0x10"}, false},
+		{"EIP-1898 number", "eth_getBalance", []interface{}{"0xabc", map[string]interface{}{"blockNumber": "0x1"}}, nil, false},
+		{"EIP-1898 latest leaf", "eth_getBalance", []interface{}{"0xabc", map[string]interface{}{"blockNumber": "latest"}},
+			[]interface{}{"0xabc", map[string]interface{}{"blockNumber": "0x64"}}, true},
+		{"eth_callMany state context", "eth_callMany", []interface{}{[]interface{}{}, map[string]interface{}{"blockNumber": "latest", "transactionIndex": -1}},
+			[]interface{}{[]interface{}{}, map[string]interface{}{"blockNumber": "0x64", "transactionIndex": -1}}, true},
+		{"eth_callMany absent stays absent", "eth_callMany", []interface{}{[]interface{}{}}, []interface{}{[]interface{}{}}, false},
+		{"not family 3", "eth_getBlockByNumber", []interface{}{"latest", false}, []interface{}{"latest", false}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, pinned := PinLatestParams(tc.params, tc.idx, 100)
+			before := deepCopyParams(tc.params)
+			got, pinned := pinLatestParams(tc.method, tc.params, 100)
 			assert.Equal(t, tc.pinned, pinned)
 			if tc.want != nil {
 				assert.Equal(t, tc.want, got)
 			}
-			if pinned {
-				assert.NotSame(t, &tc.params[0], &got[0], "the input slice is never mutated")
-				assert.NotEqual(t, "0x64", tc.params[min(tc.idx, len(tc.params)-1)])
-			}
+			assert.Equal(t, before, tc.params, "the input params are never mutated")
 		})
 	}
 }
@@ -806,20 +862,20 @@ func TestCovMisc_PinBlockTagInBody(t *testing.T) {
 	cases := []struct {
 		name   string
 		body   []byte
-		idx    int
 		height int64
 		pinned bool
 	}{
-		{"empty body", nil, 1, 100, false},
-		{"unknown height", body, 1, 0, false},
-		{"not json", []byte(`{not json`), 1, 100, false},
-		{"selector index beyond params", body, 2, 100, false},
-		{"selector is not latest", []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","0x5"]}`), 1, 100, false},
-		{"latest is pinned", body, 1, 100, true},
+		{"empty body", nil, 100, false},
+		{"unknown height", body, 0, false},
+		{"not json", []byte(`{not json`), 100, false},
+		{"not family 3", []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`), 100, false},
+		{"selector is not latest", []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","0x5"]}`), 100, false},
+		{"latest is pinned", body, 100, true},
+		{"absent selector is pinned", []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc"]}`), 100, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out, pinned := PinBlockTagInBody(tc.body, tc.idx, tc.height)
+			out, pinned := PinBlockTagInBody(tc.body, tc.height)
 			assert.Equal(t, tc.pinned, pinned)
 			if !pinned {
 				assert.Equal(t, tc.body, out)
@@ -904,8 +960,14 @@ func TestCovMisc_ReplaceParamAtPath(t *testing.T) {
 		{"index out of range", []interface{}{5}, false, nil},
 		{"negative index", []interface{}{-1}, false, nil},
 		{"string key on non-object", []interface{}{1, "fromBlock"}, false, nil},
-		{"missing key is not created", []interface{}{0, "toBlock"}, false, nil},
-		{"missing nested key", []interface{}{0, "nested", "absent"}, false, nil},
+		{"missing nested key", []interface{}{0, "nested2", "absent"}, false, nil},
+		{"missing leaf key is created", []interface{}{0, "toBlock"}, true, func(t *testing.T, out []interface{}) {
+			assert.Equal(t, "0x64", out[0].(map[string]interface{})["toBlock"])
+			assert.Equal(t, "latest", out[0].(map[string]interface{})["fromBlock"])
+		}},
+		{"index right after the last is appended", []interface{}{2}, true, func(t *testing.T, out []interface{}) {
+			assert.Equal(t, []interface{}{params[0], "latest", "0x64"}, out)
+		}},
 		{"unsupported path element", []interface{}{0, 1.5}, false, nil},
 		{"string key at root", []interface{}{"fromBlock"}, false, nil},
 		{"top-level index", []interface{}{1}, true, func(t *testing.T, out []interface{}) {

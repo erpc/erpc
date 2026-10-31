@@ -325,6 +325,17 @@ func (p *FakeEvmStatePoller) LatestBlock() int64 {
 	return p.latestBlockNumber
 }
 
+// LatestReportAt has no receive time: a fake's report reaches no further
+// than itself.
+func (p *FakeEvmStatePoller) LatestReportAt() time.Time {
+	return time.Time{}
+}
+
+// LatestAskAt is zero: a fake is never Asked.
+func (p *FakeEvmStatePoller) LatestAskAt() time.Time {
+	return time.Time{}
+}
+
 func (p *FakeEvmStatePoller) Poll(ctx context.Context) error {
 	return nil
 }
@@ -345,20 +356,46 @@ func (p *FakeEvmStatePoller) SetSyncingState(state EvmSyncingState) {
 	// No-op for testing
 }
 
-func (p *FakeEvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
+func (p *FakeEvmStatePoller) SuggestFinalizedBlock(blockNumber int64, _ time.Time) {
 	p.finalizedBlockNumber = blockNumber
 }
 
-func (p *FakeEvmStatePoller) SuggestLatestBlock(blockNumber int64) {
+func (p *FakeEvmStatePoller) SuggestLatestBlock(blockNumber int64, _ time.Time) {
 	p.latestBlockNumber = blockNumber
 }
 
-func (p *FakeEvmStatePoller) RefreshLatestBlock() {}
-func (p *FakeEvmStatePoller) ResetChainIdCordon() {}
+func (p *FakeEvmStatePoller) RewindLatestBlock(blockNumber int64) {
+	if blockNumber > 0 && blockNumber < p.latestBlockNumber {
+		p.latestBlockNumber = blockNumber
+	}
+}
+
+func (p *FakeEvmStatePoller) ObserveHead(n int64, _ time.Time) bool {
+	if n > p.latestBlockNumber {
+		p.latestBlockNumber = n
+	}
+	return true
+}
+
+func (p *FakeEvmStatePoller) Ask(context.Context, HeadNeed, time.Duration, time.Time, AskReason) HeadAnswer {
+	return HeadAnswer{Outcome: AskSharedFresh, Block: p.latestBlockNumber}
+}
+
+func (p *FakeEvmStatePoller) AskBackground(HeadNeed, time.Duration, time.Time, AskReason) HeadAnswer {
+	return HeadAnswer{Outcome: AskSharedFresh, Block: p.latestBlockNumber}
+}
+
+func (p *FakeEvmStatePoller) AskReaching(context.Context, int64, time.Duration, AskReason) HeadAnswer {
+	return HeadAnswer{Outcome: AskSharedFresh, Block: p.latestBlockNumber}
+}
+
+func (p *FakeEvmStatePoller) RefreshFinalized(context.Context) bool { return true }
 
 func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown
 }
+
+func (p *FakeEvmStatePoller) Wait() {}
 
 func (p *FakeEvmStatePoller) GetDiagnostics() *EvmStatePollerDiagnostics {
 	return &EvmStatePollerDiagnostics{

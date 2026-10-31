@@ -16,7 +16,7 @@ func init() {
 
 func TestSvm_DeclaredBounds_SkipsBelowConfiguredLower(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	// latestSlotMinus: 100000 is an operator restriction on the window.
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("archive.localhost", 300000, 299900, 300001, 0)
@@ -50,7 +50,7 @@ func TestSvm_DeclaredBounds_SkipsBelowConfiguredLower(t *testing.T) {
 
 func TestSvm_DeclaredBounds_DisabledWhenEnforceBlockAvailabilityFalse(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("archive.localhost", 300000, 299900, 300001, 0)
 

@@ -12,10 +12,10 @@ import (
 // the inline validateBlock. They read the header and full transactions from the
 // shared decode and reuse the same field primitives as the receipt checks.
 
-// emptyTrieRoot is keccak256(RLP(empty)) — the transactionsRoot of a block with
+// EmptyTrieRoot is keccak256(RLP(empty)) — the transactionsRoot of a block with
 // zero transactions. Some non-standard chains use the all-zero hash instead.
 const (
-	emptyTrieRoot = "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+	EmptyTrieRoot = "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
 	zeroHash32    = "0x0000000000000000000000000000000000000000000000000000000000000000"
 )
 
@@ -32,7 +32,7 @@ func init() {
 				return nil
 			}
 			root := strings.ToLower(h.TransactionsRoot)
-			isEmptyRoot := root == emptyTrieRoot || root == zeroHash32
+			isEmptyRoot := root == EmptyTrieRoot || root == zeroHash32
 			count := len(h.RawTransactions)
 			if !isEmptyRoot && count == 0 {
 				return failf("transactionsRoot %s is non-empty but block has 0 transactions; incomplete block data", h.TransactionsRoot)

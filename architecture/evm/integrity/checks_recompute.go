@@ -1,9 +1,11 @@
 package integrity
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"math/big"
+	"strconv"
 
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -47,6 +49,39 @@ func deriveKnownBlockFields() map[string]struct{} {
 	return set
 }
 
+// RecomputeBlockHash is keccak(RLP(header)) of a block's JSON, as 0x hex. ok
+// is false when the header is not fully understood: not an object, a
+// custom field, or a required field missing. A timestamp counts in any
+// form ParseTimestamp reads, so a node that sends it as an integer is
+// still judged.
+func RecomputeBlockHash(raw []byte) (hash string, ok bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return "", false
+	}
+	for k := range fields {
+		if _, ok := knownBlockFields[k]; !ok {
+			return "", false
+		}
+	}
+	if ts := fields["timestamp"]; len(ts) > 0 && !bytes.HasPrefix(ts, []byte(`"0x`)) {
+		v, ok := JSONTimestamp(ts)
+		if !ok {
+			return "", false
+		}
+		fields["timestamp"] = json.RawMessage(`"0x` + strconv.FormatInt(v, 16) + `"`)
+		var err error
+		if raw, err = json.Marshal(fields); err != nil {
+			return "", false
+		}
+	}
+	var gh gethtypes.Header
+	if err := gh.UnmarshalJSON(raw); err != nil {
+		return "", false
+	}
+	return gh.Hash().Hex(), true
+}
+
 func init() {
 	// blockHashRecompute — keccak(RLP(header)) must equal the reported hash.
 	register(&Check{
@@ -57,22 +92,11 @@ func init() {
 			if h == nil || h.Hash == "" {
 				return Skipped
 			}
-
-			var fields map[string]json.RawMessage
-			if err := json.Unmarshal(d.raw, &fields); err != nil {
-				return Skipped // not an object → leave it to schemaConformance
+			got, ok := RecomputeBlockHash(d.raw)
+			if !ok {
+				return Skipped
 			}
-			for k := range fields {
-				if _, ok := knownBlockFields[k]; !ok {
-					return Skipped // custom/unknown field → header not fully understood
-				}
-			}
-
-			var gh gethtypes.Header
-			if err := gh.UnmarshalJSON(d.raw); err != nil {
-				return Skipped // missing a required header field → do not false-flag
-			}
-			if got := gh.Hash().Hex(); !eqHex(got, h.Hash) {
+			if !eqHex(got, h.Hash) {
 				return failf("block hash %s does not match recomputed %s", h.Hash, got)
 			}
 			return nil

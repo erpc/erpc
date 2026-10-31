@@ -12,8 +12,11 @@ import (
 // trace_filter, and arbtrace_filter.
 //
 // It checks:
-// 1. toBlock (upper bound) - with forceFreshIfStale=true since this is typically the "latest" end
-// 2. fromBlock (lower bound) - with forceFreshIfStale=false since this is historical data
+//  1. toBlock (upper bound) by the one head predicate: below it, the
+//     upstream is Asked with a number need, waiting for the answer, and
+//     checked again (spec §6.8). A toBlock the refusal rule calls future
+//     never gets here: the network refuses it before dispatch (spec §6.4).
+//  2. fromBlock (lower bound) against the configured window.
 //
 // Returns nil if both blocks are available, otherwise returns an appropriate error.
 func CheckBlockRangeAvailability(
@@ -30,11 +33,18 @@ func CheckBlockRangeAvailability(
 		)
 	}
 
-	// Check upper bound (toBlock) first - this is typically near the chain head
-	// Use forceFreshIfStale=true since we want accurate head information
-	available, err := up.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, true, toBlock)
+	available, err := up.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, false, toBlock)
 	if err != nil {
 		return err
+	}
+	if !available {
+		// The Ask's error is its upstream's; the check below reads the
+		// head it leaves.
+		_ = statePoller.AskReaching(ctx, toBlock, 0, common.AskRefresh)
+		available, err = up.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, false, toBlock)
+		if err != nil {
+			return err
+		}
 	}
 	if !available {
 		latestBlock := statePoller.LatestBlock()
@@ -57,8 +67,7 @@ func CheckBlockRangeAvailability(
 		}
 	}
 
-	// Check lower bound (fromBlock) - this is historical data
-	// Use forceFreshIfStale=false since we're checking historical availability
+	// Check lower bound (fromBlock) - this is historical data.
 	available, err = up.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, false, fromBlock)
 	if err != nil {
 		return err

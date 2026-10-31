@@ -608,9 +608,13 @@ func TestEvmJsonRpcCache_FanOut_MissReasonLabel(t *testing.T) {
 			name:     "StaleEntryTripsFreshnessGuard",
 			policies: realtimeFanOutPolicies,
 			request: func(t *testing.T, network *Network, cache common.CacheDAL) *common.NormalizedRequest {
+				// A "latest" tag is keyed on the number its Head interpolates
+				// it to, never on the word (spec §7); the request carries the
+				// Head Network.Forward takes before the cache read.
 				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
 				req.SetNetwork(network)
 				req.SetCacheDal(cache)
+				req.TakeEvmHead(&common.EvmHead{Latest: 15, Finalized: 10})
 				return req
 			},
 			arrange: func(t *testing.T, conns []*data.MockConnector, _ *common.NormalizedRequest) {

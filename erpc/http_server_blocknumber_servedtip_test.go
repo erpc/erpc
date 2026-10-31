@@ -50,10 +50,16 @@ func bniServedTipBoot(t *testing.T, cfg *common.Config, order ...string) (
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		ctx := context.Background()
-		ceiling, known := ntw.futureBlockCeiling(ctx)
-		return known && ceiling == bniHealthyHead &&
-			ntw.EvmHighestLatestBlockNumber(ctx) == bniLaggingHead
+		ceiling, known := laneCeilingOf(ntw)
+		return known && ceiling == bniHealthyHead
+	}, 5*time.Second, 50*time.Millisecond, "pollers must learn every head (max=0x1000)")
+	// The head loop evaluates from boot on (spec §6.4), before the order
+	// override narrows the voters to rpc1 and rpc2: the regression guard
+	// armed at the 3-voter pick holds it against the 2-voter one. The
+	// scenario starts on the 2-voter topology, as a fresh process would.
+	freshHeadMemory(ntw)
+	require.Eventually(t, func() bool {
+		return servedHead(ntw, context.Background()).Latest == bniLaggingHead
 	}, 5*time.Second, 50*time.Millisecond,
 		"pollers must learn both heads (served=0x800, max=0x1000) before the scenario starts")
 
@@ -62,11 +68,11 @@ func bniServedTipBoot(t *testing.T, cfg *common.Config, order ...string) (
 
 func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	t.Run("Bug_FreshResponseAboveTipMustBePinnedToServedTip", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -80,11 +86,18 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 			bniLaggingHead, bniHealthyHead)
 		assert.Empty(t, hdrs["X-Erpc-Upstream"],
 			"the pin discards any upstream answer, so the served tip must be answered without dispatching")
+
+		// erigon_blockNumber is the same question (spec §7 family 1).
+		status, ehdrs, body := send(`{"jsonrpc":"2.0","id":1,"method":"erigon_blockNumber","params":[]}`, nil, nil)
+		require.Equal(t, http.StatusOK, status, body)
+		assert.Contains(t, body, fmt.Sprintf(`"result":"0x%x"`, bniLaggingHead),
+			"erigon_blockNumber must answer the served tip, not an upstream's head")
+		assert.Empty(t, ehdrs["X-Erpc-Upstream"], "erigon_blockNumber is answered without dispatching")
 	})
 
 	t.Run("Bug_CacheHitAboveTipMustBePinnedToServedTip", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -104,7 +117,7 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 
 	t.Run("Baseline_ResponseAtServedTipPassesThrough", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -118,7 +131,7 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 
 	t.Run("Baseline_PerRequestOverrideServesRawValue", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -133,15 +146,17 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 
 	t.Run("LocalAnswerRefreshesBallotPollers", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		// Heads move up 5 blocks once `moved` flips. Registered before the
 		// static bootstrap mocks so gock matches them first; until the flip
-		// they decline and the static heads (0x800/0x1000) answer.
+		// they decline and the static heads (0x800/0x1000) answer. Each poll
+		// passes intake, which drops a header without hash and parentHash
+		// (spec §5.3 check 0), so these carry both.
 		var moved atomic.Bool
-		for host, head := range map[string]string{
-			"http://rpc1.localhost": "0x805",
-			"http://rpc2.localhost": "0x1005",
+		for host, head := range map[string]int64{
+			"http://rpc1.localhost": bniLaggingHead + 5,
+			"http://rpc2.localhost": bniHealthyHead + 5,
 		} {
 			gock.New(host).Post("").Persist().
 				Filter(func(r *http.Request) bool {
@@ -149,7 +164,7 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 					return moved.Load() && strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
 				}).
 				Reply(200).
-				JSON([]byte(fmt.Sprintf(`{"result":{"number":"%s","timestamp":"0x6702a8f0"}}`, head)))
+				JSON([]byte(fmt.Sprintf(`{"result":{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","timestamp":"0x6702a8f0"}}`, head, head, head-1)))
 		}
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()

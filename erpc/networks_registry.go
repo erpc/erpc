@@ -13,6 +13,8 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/indexer"
+	"github.com/erpc/erpc/indexer/mempool"
 	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -33,6 +35,18 @@ type NetworksRegistry struct {
 	aliasMu              *sync.RWMutex
 	initializer          *util.Initializer
 	logger               *zerolog.Logger
+	// bg runs the background bootstrap of the configured networks.
+	bg util.Goroutines
+}
+
+// wait waits, once the app ctx ended, until no goroutine of the registry,
+// its network bootstraps or its networks runs (Network.wait).
+func (nr *NetworksRegistry) wait() {
+	nr.bg.Wait()
+	nr.initializer.Wait()
+	for _, n := range nr.GetNetworks() {
+		n.wait()
+	}
 }
 
 type aliasEntry struct {
@@ -140,7 +154,8 @@ func NewNetwork(
 		}
 	}
 
-	// Catch-all no-op executor.
+	// Catch-all no-op executor; timeout-only requests take it whatever the
+	// config matches.
 	noop, _ := NewNetworkExecutor(nil, &lg, nil, dynamicBlockUnavailableDelay)
 	failsafeExecutors = append(failsafeExecutors, noop)
 
@@ -169,27 +184,31 @@ func NewNetwork(
 
 		inFlightRequests:  &sync.Map{},
 		failsafeExecutors: failsafeExecutors,
+		bareExecutor:      noop,
 		initializer:       util.NewInitializer(appCtx, &lg, nil),
 	}
 	network.servedTipAll.label = "all"
-
-	if nwCfg.Architecture == "" {
-		nwCfg.Architecture = common.ArchitectureEvm
-	}
-
-	// Keyed per project since each project has its own upstreams; tolerates
-	// the same rollback as upstream state pollers.
 	if upstreamsRegistry != nil {
 		if ssr := upstreamsRegistry.SharedStateRegistry(); ssr != nil {
-			network.latestBlockShared = ssr.GetCounterInt64(
-				fmt.Sprintf("network/%s/%s/latestBlock", projectId, netId),
-				evm.DefaultToleratedBlockHeadRollback,
-			)
 			network.servedFinalizedShared = ssr.GetCounterInt64(
 				fmt.Sprintf("network/%s/%s/finalizedBlock", projectId, netId),
 				evm.DefaultToleratedBlockHeadRollback,
 			)
 		}
+	}
+	network.headWake = make(chan struct{}, 1)
+	if metricsTracker != nil {
+		metricsTracker.OnHeadBenchChange(network.networkId, network.headsChanged)
+	}
+	if policyEngine != nil {
+		policyEngine.OnEligibleChanged(network.networkId, network.headsChanged)
+	}
+	if upstreamsRegistry != nil {
+		upstreamsRegistry.OnNetworkUpstream(network.networkId, network.watchHeadCounters)
+	}
+
+	if nwCfg.Architecture == "" {
+		nwCfg.Architecture = common.ArchitectureEvm
 	}
 
 	// Wire the architecture handler so per-network hooks dispatch correctly.
@@ -197,6 +216,20 @@ func NewNetwork(
 	// networks via NewNetwork directly get the same behavior as production.
 	if handler, err := common.GetArchitectureHandler(nwCfg.Architecture); err == nil {
 		network.architectureHandler = handler
+	}
+
+	if nwCfg.Architecture == common.ArchitectureEvm {
+		// Intake, sources and taps first: trackers read their voters from
+		// intake from their first message on, and intake reaches the sources.
+		network.intake = newNetworkIntake(network)
+		network.sources = newSourceReconciler(network)
+		network.taps = indexer.NewTaps(projectId, func(string) {
+			network.sources.demandChanged()
+			evm.DemandChanged(network)
+		})
+		network.mempool = mempool.New(projectId, network.Label())
+		network.chainTracker = evm.StartChainTrackers(appCtx, network)
+		evm.OnCheckSuspended(network, network.intake.replayRejected)
 	}
 
 	return network, nil
@@ -212,23 +245,28 @@ func (nr *NetworksRegistry) Bootstrap(appCtx context.Context) {
 	for _, nwCfg := range nl {
 		tasks = append(tasks, nr.buildNetworkBootstrapTask(nwCfg.NetworkId()))
 	}
-	go func() {
+	nr.bg.Go(func() {
 		if err := nr.initializer.ExecuteTasks(appCtx, tasks...); err != nil {
 			nr.logger.Error().Err(err).Interface("status", nr.initializer.Status()).Msg("failed to bootstrap networks in background")
 		} else {
 			nr.logger.Info().Interface("status", nr.initializer.Status()).Msg("networks bootstrap completed")
 		}
-	}()
+	})
 }
 
 func (nr *NetworksRegistry) GetNetwork(ctx context.Context, networkId string) (*Network, error) {
-	// If network already prepared, return it
+	// Networks are stored only under canonical ids, so a hit needs no parse.
 	if pn, ok := nr.preparedNetworks.Load(networkId); ok {
 		return pn.(*Network), nil
 	}
 
-	if !util.IsValidNetworkId(networkId) {
+	canonicalId, ok := util.CanonicalNetworkId(networkId)
+	if !ok {
 		return nil, common.NewErrInvalidRequest(fmt.Errorf("invalid network id format: '%s' either use a network alias (/main/arbitrum) or a valid network id (/main/evm/42161)", networkId))
+	}
+	networkId = canonicalId
+	if pn, ok := nr.preparedNetworks.Load(networkId); ok {
+		return pn.(*Network), nil
 	}
 
 	// Schedule tasks and wait using the caller's context; tasks run on appCtx internally
@@ -298,11 +336,11 @@ func (nr *NetworksRegistry) buildNetworkBootstrapTask(networkId string) *util.Bo
 				return err
 			}
 			nr.preparedNetworks.Store(networkId, network)
+			network.sources.start(nr.appCtx)
 			err = network.Bootstrap(ctx)
 			if err != nil {
 				return err
 			}
-			network.startServedTipRefresh()
 			nr.logger.Debug().Str("networkId", networkId).Msg("network bootstrap completed")
 			return nil
 		},
@@ -411,13 +449,10 @@ func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.Netw
 		default:
 			return nil, common.NewErrInvalidEvmChainId(networkId)
 		}
-		if err := nwCfg.SetDefaults(prj.Config.Upstreams, prj.Config.NetworkDefaults); err != nil {
-			return nil, fmt.Errorf("failed to set defaults for network config: %w", err)
+		if err := prj.Config.SetNetworkDefaults(nwCfg); err != nil {
+			return nil, err
 		}
 		prj.ExposeNetworkConfig(nwCfg)
 	}
-	// Fold the project-wide integrity block into this network's (network wins).
-	// Runs once per network at bootstrap, so the merge is not repeated.
-	nwCfg.Integrity = common.MergeIntegrityConfig(prj.Config.Integrity, nwCfg.Integrity)
 	return nwCfg, nil
 }

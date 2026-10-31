@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/go-logr/zerologr"
 	"github.com/rs/zerolog"
@@ -38,8 +39,10 @@ const (
 )
 
 var (
-	IsTracingEnabled  bool
-	IsTracingDetailed bool
+	// isTracingEnabled and isTracingDetailed are read on every span start,
+	// from request and background goroutines alike, while tests toggle them.
+	isTracingEnabled  atomic.Bool
+	isTracingDetailed atomic.Bool
 
 	tracerProvider *sdktrace.TracerProvider
 	tracer         trace.Tracer
@@ -49,14 +52,26 @@ var (
 	forceTraceMatchers []*ForceTraceMatcher
 )
 
+// IsTracingEnabled reports whether tracing is on.
+func IsTracingEnabled() bool { return isTracingEnabled.Load() }
+
+// IsTracingDetailed reports whether detailed spans and attributes are on.
+func IsTracingDetailed() bool { return isTracingDetailed.Load() }
+
+// SetTracingEnabled turns tracing on or off.
+func SetTracingEnabled(on bool) { isTracingEnabled.Store(on) }
+
+// SetTracingDetailed turns detailed tracing on or off.
+func SetTracingDetailed(on bool) { isTracingDetailed.Store(on) }
+
 func InitializeTracing(ctx context.Context, logger *zerolog.Logger, cfg *TracingConfig) error {
 	var err error
 
 	initOnce.Do(func() {
 		if cfg == nil || !cfg.Enabled {
 			logger.Info().Msg("OpenTelemetry tracing is disabled")
-			IsTracingEnabled = false
-			IsTracingDetailed = false
+			SetTracingEnabled(false)
+			SetTracingDetailed(false)
 			return
 		}
 
@@ -129,8 +144,8 @@ func InitializeTracing(ctx context.Context, logger *zerolog.Logger, cfg *Tracing
 		}))
 
 		tracer = otel.Tracer(instrumentationName)
-		IsTracingEnabled = true
-		IsTracingDetailed = cfg.Detailed
+		SetTracingEnabled(true)
+		SetTracingDetailed(cfg.Detailed)
 
 		// Store force-trace matchers
 		forceTraceMatchers = cfg.ForceTraceMatchers
@@ -366,7 +381,7 @@ func matchesForceTraceMatcher(matcher *ForceTraceMatcher, network, method string
 // Call this after URL path parsing to enable network-based force-tracing for child spans.
 // Returns the updated context with network stored (always stores if non-empty, matching happens later).
 func SetForceTraceNetwork(ctx context.Context, network string) context.Context {
-	if !IsTracingEnabled || network == "" {
+	if !IsTracingEnabled() || network == "" {
 		return ctx
 	}
 	return context.WithValue(ctx, forceTraceNetworkKey, network)

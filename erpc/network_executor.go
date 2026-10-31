@@ -36,7 +36,6 @@ type networkExecutor struct {
 	method      string
 	finalities  []common.DataFinalityState
 	commitments []string
-	requestKind string // "*" (any) | "user" | "internal"
 
 	emptyResultAccept []string
 
@@ -67,7 +66,6 @@ func NewNetworkExecutor(
 	if cfg == nil {
 		return &networkExecutor{
 			method:                       "*",
-			requestKind:                  "*",
 			logger:                       logger,
 			emptyResultAccept:            common.DefaultEmptyResultAccept(),
 			dynamicBlockUnavailableDelay: dynamicBlockUnavailableDelay,
@@ -87,15 +85,11 @@ func NewNetworkExecutor(
 		method:                       cfg.MatchMethod,
 		finalities:                   cfg.MatchFinality,
 		commitments:                  cfg.MatchCommitment,
-		requestKind:                  cfg.MatchRequestKind,
 		consensus:                    consensus,
 		dynamicBlockUnavailableDelay: dynamicBlockUnavailableDelay,
 	}
 	if e.method == "" {
 		e.method = "*"
-	}
-	if e.requestKind == "" {
-		e.requestKind = "*"
 	}
 	if cfg.Timeout != nil {
 		e.timeout = common.NewTimeoutFunc(logger, cfg.Timeout)
@@ -116,9 +110,6 @@ func (e *networkExecutor) MatchFinality() []common.DataFinalityState { return e.
 
 // MatchCommitment returns the configured commitment filter (nil/empty = any).
 func (e *networkExecutor) MatchCommitment() []string { return e.commitments }
-
-// MatchRequestKind returns the configured request-kind filter ("*"/"user"/"internal").
-func (e *networkExecutor) MatchRequestKind() string { return e.requestKind }
 
 // Timeout exposes the configured TimeoutFunc (nil when no timeout).
 func (e *networkExecutor) Timeout() common.TimeoutFunc { return e.timeout }
@@ -476,6 +467,12 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 		return ""
 	}
 	if req != nil && req.IsCompositeRequest() {
+		return ""
+	}
+	// The refusal rule allows one retryable miss for a band block and none
+	// for a future one (spec §6.4); a spent request's empty or missing
+	// answer is its answer.
+	if req != nil && req.HeadRefusal().Spent() && (err == nil || common.HasErrorCode(err, common.ErrCodeEndpointMissingData)) {
 		return ""
 	}
 	if err != nil {

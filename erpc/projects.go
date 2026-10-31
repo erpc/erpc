@@ -148,7 +148,15 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	}
 	// Ensure project label is available for budget decision metrics by setting network on request early
 	nq.SetNetwork(network)
+	evm.ClientRequested(network)
 	if err := p.AcquireRateLimitPermit(ctx, nq); err != nil {
+		common.SetTraceSpanError(span, err)
+		return nil, err
+	}
+	// The safe-block source picks the request's lane, so it routes before
+	// the first Head read (finality, the pre-forward hooks): a request takes
+	// its lane's Head once (spec §7).
+	if err := evm.ApplySafeBlockSource(ctx, network, nq); err != nil {
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
@@ -229,7 +237,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			// Reliable here (IntegrityCaught is set, the outcome is known) unlike the
 			// racy hedged pass. The IsTracingDetailed gate short-circuits before any
 			// body copy, so it's zero-cost when tracing is off.
-			if common.IsTracingDetailed {
+			if common.IsTracingDetailed() {
 				if jrr, jerr := resp.JsonRpcResponse(ctx); jerr == nil && jrr != nil {
 					body := jrr.GetResultBytes()
 					if len(body) > maxIntegrityTraceResponseBytes {

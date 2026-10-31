@@ -835,7 +835,7 @@ func (e *SvmStatePoller) suggestLatestSlot(slot int64) {
 	if slot <= 0 {
 		return
 	}
-	e.latestSlotShared.TryUpdate(e.appCtx, slot)
+	e.latestSlotShared.TryUpdate(e.appCtx, slot, time.Now())
 	// Tracker feed lives in the counter's OnValue callback (NewSvmStatePoller):
 	// it also covers traffic-fed and cross-instance updates, and skips values
 	// the counter rejected.
@@ -855,6 +855,6 @@ func (e *SvmStatePoller) suggestFinalizedSlot(slot int64) {
 	if slot <= 0 {
 		return
 	}
-	e.finalizedSlotShared.TryUpdate(e.appCtx, slot)
+	e.finalizedSlotShared.TryUpdate(e.appCtx, slot, time.Now())
 	// Tracker feed: see suggestLatestSlot.
 }

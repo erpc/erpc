@@ -85,13 +85,16 @@ func projectPreForward_trace_filter(ctx context.Context, n common.Network, nq *c
 		jrq.RUnlock()
 		return false, nil, nil
 	}
-	fbStr, _ := filter["fromBlock"].(string)
-	tbStr, _ := filter["toBlock"].(string)
+	fbStr := rangeBound(filter, "fromBlock")
+	tbStr := rangeBound(filter, "toBlock")
 	jrq.RUnlock()
 
-	// Reuse the getLogs tag resolver since trace_filter uses the same fromBlock/toBlock semantics.
-	_, fromBlock := resolveBlockTagForGetLogs(ctx, n, fbStr)
-	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tbStr)
+	// Reuse the getLogs tag resolver since trace_filter uses the same
+	// fromBlock/toBlock semantics, on the Head the request takes from its
+	// lane, as projectPreForward_eth_getLogs does.
+	headCtx := context.WithValue(ctx, common.RequestContextKey, nq)
+	_, fromBlock := resolveBlockTagForGetLogs(headCtx, n, fbStr)
+	_, toBlock := resolveBlockTagForGetLogs(headCtx, n, tbStr)
 
 	if fromBlock > 0 && toBlock >= fromBlock {
 		rangeSize := float64(toBlock - fromBlock + 1)
@@ -145,8 +148,9 @@ func networkPreForward_trace_filter(ctx context.Context, n common.Network, ups [
 		return false, nil, nil
 	}
 
-	fbStr, _ := filter["fromBlock"].(string)
-	tbStr, _ := filter["toBlock"].(string)
+	fbStr := rangeBound(filter, "fromBlock")
+	tbStr := rangeBound(filter, "toBlock")
+	sentAsTag := rangeSentAsTag(filter)
 	jrq.RUnlock()
 
 	// If either block can't be resolved to a number, pass through to upstream
@@ -186,7 +190,7 @@ func networkPreForward_trace_filter(ctx context.Context, n common.Network, ups [
 		}
 	}
 
-	if requestRange > 0 && effectiveThreshold > 0 && requestRange > effectiveThreshold {
+	if !sentAsTag && requestRange > 0 && effectiveThreshold > 0 && requestRange > effectiveThreshold {
 		subRequests := make([]traceFilterSubRequest, 0)
 		sb := fromBlock
 		for sb <= toBlock {

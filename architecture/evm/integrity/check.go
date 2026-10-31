@@ -91,6 +91,10 @@ type Check struct {
 	Family Family
 	// Class is how a violation should be treated (see FailureClass).
 	Class FailureClass
+	// History: the check judges a response against the tracker's pins or
+	// held headers (History, ChainSegment), so a network that enables it
+	// keeps them (chain tracker spec §6.5 rule 1).
+	History bool
 	// Methods are the lowercased JSON-RPC methods this check applies to.
 	Methods []string
 	// AllowEmptyish opts this check into evaluating emptyish ("[]"/null)
@@ -127,4 +131,31 @@ func register(c *Check) {
 // checksFor returns the checks registered for a lowercased method.
 func checksFor(method string) []*Check {
 	return registry[method]
+}
+
+// HeaderChecks are the checks a bare header can satisfy (spec §12): intake
+// runs them on every source header, and only they can be suspended when no
+// upstream passes them.
+var HeaderChecks = []string{"headerFieldShapes", "headerConsensusInvariants", "blockHashRecompute", "baseFeeDerivation", "timestampMonotonicity"}
+
+// HeaderCheckSet narrows cs to HeaderChecks.
+func HeaderCheckSet(cs CheckSet) CheckSet {
+	out := CheckSet{}
+	for _, id := range HeaderChecks {
+		if cfg := cs.For(id); cfg.Enabled {
+			out[id] = cfg
+		}
+	}
+	return out
+}
+
+// ReadsHistory reports whether cs enables a check that reads the tracker's
+// history (Check.History).
+func (cs CheckSet) ReadsHistory() bool {
+	for _, c := range allChecks {
+		if c.History && cs.For(c.ID).Enabled {
+			return true
+		}
+	}
+	return false
 }

@@ -237,7 +237,8 @@ func TestTrackerBlockTimeReanchorsAfterHeadRollback(t *testing.T) {
 	net := ups.NetworkId()
 	base := int64(1_700_000_000)
 
-	// Establish a ~1s/block EMA (4 observations → 3 samples).
+	// Establish a ~1s/block EMA (the first sample spans the first two
+	// timestamp changes, spec §6.7).
 	tracker.SetLatestBlockNumber(ups, 100, base)
 	tracker.SetLatestBlockNumber(ups, 101, base+1)
 	tracker.SetLatestBlockNumber(ups, 102, base+2)
@@ -249,14 +250,17 @@ func TestTrackerBlockTimeReanchorsAfterHeadRollback(t *testing.T) {
 	// Correction rolls the head back (no EMA sample of its own).
 	tracker.SetLatestBlockNumber(ups, 104, base+5)
 	assert.Equal(t, int64(104), networkLatest(tracker, net))
+	frozen := tracker.GetNetworkBlockTime(net)
 
-	// Sampling resumes: the first forward observation re-anchors, the next one
-	// produces a sample again (3s/block here), and the EMA starts moving.
+	// Sampling resumes: the first forward observation re-anchors, the next
+	// timestamp change starts a span, the one after produces a sample again
+	// (3s/block here), and the EMA starts moving.
 	tracker.SetLatestBlockNumber(ups, 105, base+8)
 	tracker.SetLatestBlockNumber(ups, 106, base+11)
+	tracker.SetLatestBlockNumber(ups, 107, base+14)
 
 	bt := tracker.GetNetworkBlockTime(net)
-	assert.Greater(t, int64(bt), int64(1050*time.Millisecond),
+	assert.Greater(t, int64(bt), int64(frozen)+int64(100*time.Millisecond),
 		"EMA must move toward the new 3s/block cadence instead of staying frozen")
 	assert.Less(t, int64(bt), int64(2*time.Second))
 }

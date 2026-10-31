@@ -38,7 +38,20 @@ type Input struct {
 	// violation serves the original immediately, corrected by nothing.
 	// ObserveOnly outranks this like it outranks everything else.
 	AutoCorrect bool
+	// Modes, when set, overrides a check for the whole network (the
+	// unanimous-failure suspension): CheckOff does not run it, CheckObserve
+	// records what it would reject and serves the response.
+	Modes func(checkID string) CheckMode
 }
+
+// CheckMode is how the network currently runs one check.
+type CheckMode int
+
+const (
+	CheckEnforced CheckMode = iota
+	CheckOff
+	CheckObserve
+)
 
 // Recorded is a reorg-sensitive mismatch that was observed but not rejected
 // (the block was unfinalized, so it may be a benign reorg). Callers emit a
@@ -156,6 +169,15 @@ func Validate(ctx context.Context, in Input) Result {
 			continue
 		}
 		cfg := in.Checks.For(c.ID)
+		mode := CheckEnforced
+		if in.Modes != nil {
+			mode = in.Modes(c.ID)
+		}
+		if mode == CheckOff {
+			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "off"})
+			continue
+		}
+		observe := in.ObserveOnly || mode == CheckObserve
 		// Resolve the verdict for this check up front. If it would be ignored
 		// (invalidBehavior unfinalized: off, or a per-check onFailure: off),
 		// skip the check entirely — and with it any force-fetch it would issue.
@@ -229,7 +251,7 @@ func Validate(ctx context.Context, in Input) Result {
 			// verdictFor so it covers every path that can reach a rejection —
 			// including Deterministic checks, which ignore invalidBehavior, and any
 			// check added by a later release.
-			if in.ObserveOnly {
+			if observe {
 				res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "would_reject"})
 				res.Recorded = append(res.Recorded, Recorded{
 					CheckID: c.ID, Reason: v.Reason, Class: c.Class,
@@ -251,7 +273,7 @@ func Validate(ctx context.Context, in Input) Result {
 		// the flagged original instead of an error, so the client never pays
 		// for a mismatch that might be a benign reorg. ObserveOnly was handled
 		// above (a recordOnly verdict under observe is just a record).
-		if in.AutoCorrect && !in.ObserveOnly {
+		if in.AutoCorrect && !observe {
 			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "reject_recoverable"})
 			res.Err = contentValidation(c, v, in.Upstream)
 			res.RejectedCheckID = c.ID

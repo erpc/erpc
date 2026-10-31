@@ -18,11 +18,9 @@ import (
 // call never succeeds. Headers may be absent only on very-early errors
 // (URL parse, project lookup) where no request was constructed.
 func TestHttpServer_HeadersCoverage(t *testing.T) {
-	cfg := minimalServerConfig()
-
 	t.Run("success path carries full header set", func(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
@@ -36,7 +34,7 @@ func TestHttpServer_HeadersCoverage(t *testing.T) {
 				"result":  "0xdeadbeef",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(minimalServerConfig(), t)
 		defer shutdown()
 
 		statusCode, headers, body := sendRequest(
@@ -49,7 +47,10 @@ func TestHttpServer_HeadersCoverage(t *testing.T) {
 	})
 
 	t.Run("validation error carries headers", func(t *testing.T) {
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		// Each server its own config, as each process loads its own: the
+		// previous server's trackers may still read theirs, and this server's
+		// SetDefaults and bootstrap would otherwise write the same object.
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(minimalServerConfig(), t)
 		defer shutdown()
 
 		// Malformed JSON-RPC (missing method) caught by nq.Validate().
@@ -64,7 +65,7 @@ func TestHttpServer_HeadersCoverage(t *testing.T) {
 	})
 
 	t.Run("null body is a parse error, not a panic", func(t *testing.T) {
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(minimalServerConfig(), t)
 		defer shutdown()
 
 		statusCode, _, body := sendRequest(`null`, nil, nil)

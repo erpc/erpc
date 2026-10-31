@@ -11,16 +11,13 @@ import (
 //
 // Every other check in the catalog judges a response against itself, against a
 // commitment inside it, or against another source. These judge it against its
-// PARENT — which is only possible because the ChainView follower walks the
-// chain block by block and can hand back the block that genuinely precedes this
-// one on the same fork. A sparse, traffic-learned pin cannot support them: two
-// pins at adjacent heights may sit on different forks, and comparing across
-// that boundary would reject honest data.
+// PARENT: the held header its parentHash names. A header found by number
+// cannot stand in for it: the block at number-1 may sit on another fork, and
+// comparing across that boundary would reject honest data.
 //
-// So they all skip unless the height AND its parent are inside the verified
-// segment. Skipping is the correct answer when the follower is off — these
-// checks buy their strength from the follower and must not pretend to it
-// otherwise.
+// So they skip unless the parent is held. Skipping is the correct answer
+// then: these checks buy their strength from the chain tracker's held
+// headers and must not pretend to it otherwise.
 
 func init() {
 	// baseFeeDerivation — EIP-1559 fixes baseFeePerGas[n] as an exact function
@@ -35,7 +32,7 @@ func init() {
 	// chainProfiles. On such a chain this check is protocol-invalid, not a
 	// catch, and would reject every block.
 	register(&Check{
-		ID: "baseFeeDerivation", Family: FamilyStructural, Class: Deterministic,
+		ID: "baseFeeDerivation", Family: FamilyStructural, Class: Deterministic, History: true,
 		Methods: []string{MethodGetBlockByNumber},
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			h := d.Header()
@@ -46,9 +43,9 @@ func init() {
 			if err != nil || n <= 0 {
 				return Skipped
 			}
-			parent, ok := parentInSegment(ctx, n)
+			parent, ok := parentInSegment(ctx, h, n)
 			if !ok || parent == nil {
-				return Skipped // no verified parent — the follower owns this
+				return Skipped // parent not held: the tracker owns this
 			}
 			if parent.BaseFeePerGas == "" || parent.GasLimit == "" || parent.GasUsed == "" {
 				return Skipped
@@ -77,7 +74,7 @@ func init() {
 	// a strict increase would reject honest data there, while a timestamp that
 	// moves BACKWARDS is invalid everywhere.
 	register(&Check{
-		ID: "timestampMonotonicity", Family: FamilyStructural, Class: Deterministic,
+		ID: "timestampMonotonicity", Family: FamilyStructural, Class: Deterministic, History: true,
 		Methods: []string{MethodGetBlockByNumber},
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			h := d.Header()
@@ -88,7 +85,7 @@ func init() {
 			if err != nil || n <= 0 {
 				return Skipped
 			}
-			parent, ok := parentInSegment(ctx, n)
+			parent, ok := parentInSegment(ctx, h, n)
 			if !ok || parent == nil || parent.Timestamp == "" {
 				return Skipped
 			}

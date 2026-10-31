@@ -300,11 +300,10 @@ func TestEvmNetworkIdAndIdentifiers(t *testing.T) {
 		assert.False(t, IsValidIdentifier(s), s)
 	}
 
-	assert.True(t, IsValidNetworkId("evm:1"))
-	assert.False(t, IsValidNetworkId("evm:abc"))
-	assert.False(t, IsValidNetworkId("evm:"))
-	assert.False(t, IsValidNetworkId("cosmos:hub"))
-	assert.False(t, IsValidNetworkId(""))
+	for _, s := range []string{"evm:abc", "evm:", "cosmos:hub", ""} {
+		_, ok := CanonicalNetworkId(s)
+		assert.False(t, ok, s)
+	}
 }
 
 func TestIncrementAndGetIndex(t *testing.T) {

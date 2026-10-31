@@ -94,6 +94,31 @@ func resolveIntegrity(n common.Network, dirs *common.RequestDirectives) (integri
 	return cs, policy, observeOnly, autoCorrect
 }
 
+// integrityReadsHistory reports whether a request on a network with cfg may
+// run a check that reads the tracker's history (CheckSet.ReadsHistory): by
+// the configured settings, or by a profile or level its header may select.
+func integrityReadsHistory(cfg *common.IntegrityConfig, chainId int64) bool {
+	if cfg == nil {
+		return false
+	}
+	selectors := []string{""}
+	switch strings.ToLower(strings.TrimSpace(cfg.HeaderMode)) {
+	case common.IntegrityHeaderModeFull:
+		selectors = append(selectors, string(integrity.LevelAuthoritative))
+		fallthrough
+	case common.IntegrityHeaderModeProfiles:
+		for name := range cfg.Profiles {
+			selectors = append(selectors, name)
+		}
+	}
+	for _, sel := range selectors {
+		if cs, _ := compileIntegritySettings(resolveRequestSettings(cfg, sel), chainId); cs.ReadsHistory() {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveRequestSettings computes the effective settings for one request: the
 // configured base, with the per-request header selector overlaid when headerMode
 // permits. In profiles mode a request may only select a named profile; in full

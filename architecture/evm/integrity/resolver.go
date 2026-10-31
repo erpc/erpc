@@ -14,11 +14,12 @@ type Resolver interface {
 	// final).
 	IsFinalized(ctx context.Context, blockNumber int64) (final bool, ok bool)
 
-	// CanonicalReceipts force-fetches the receipts for a block via the trusted
-	// network path (cache-backed, inheriting whatever failsafe — e.g. consensus
-	// — the network is configured with). Returns ok=false when unavailable, in
-	// which case a corroboration check no-ops rather than failing.
-	CanonicalReceipts(ctx context.Context, blockRef string) (receipts []Receipt, ok bool)
+	// CanonicalReceipts force-fetches the receipts for a block by its hash via
+	// the trusted network path. blockNumber is the block's number when the
+	// caller knows it, else -1; it orders the fetch against the chain head.
+	// Returns ok=false when unavailable, in which case a corroboration check
+	// no-ops rather than failing.
+	CanonicalReceipts(ctx context.Context, blockHash string, blockNumber int64) (receipts []Receipt, ok bool)
 
 	// CanonicalHeader force-fetches a block's header (for cross-method
 	// commitment checks such as receipts-root, where the committed root lives in

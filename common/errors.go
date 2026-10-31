@@ -1152,7 +1152,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeFailsafeCircuitBreakerOpen) {
 				cbOpen++
 				continue
-			} else if errors.Is(e, context.DeadlineExceeded) || HasErrorCode(e, ErrCodeEndpointRequestTimeout, ErrCodeNetworkRequestTimeout, ErrCodeFailsafeTimeoutExceeded) {
+			} else if IsTimeout(e) {
 				timeout++
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointServerSideException) {
@@ -1259,6 +1259,12 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 	}
 
 	return ""
+}
+
+// IsTimeout reports whether err is a deadline that ran out: the request's,
+// the network's, or a failsafe timeout.
+func IsTimeout(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || HasErrorCode(err, ErrCodeEndpointRequestTimeout, ErrCodeNetworkRequestTimeout, ErrCodeFailsafeTimeoutExceeded)
 }
 
 func (e *ErrUpstreamsExhausted) Errors() []error {
@@ -1571,6 +1577,29 @@ var NewErrUpstreamBlockUnavailable = func(upstreamId string, blockNumber int64, 
 }
 
 func (e *ErrUpstreamBlockUnavailable) ErrorStatusCode() int {
+	return http.StatusServiceUnavailable
+}
+
+// ErrUpstreamTagStateStale: the tag-state gate skipped the upstream for a
+// tag request, its "latest" state being stale (spec §6.11). Its own code,
+// never ErrUpstreamBlockUnavailable, so it never makes an answer -32014.
+type ErrUpstreamTagStateStale struct{ BaseError }
+
+const ErrCodeUpstreamTagStateStale ErrorCode = "ErrUpstreamTagStateStale"
+
+var NewErrUpstreamTagStateStale = func(upstreamId string) error {
+	return &ErrUpstreamTagStateStale{
+		BaseError{
+			Code:    ErrCodeUpstreamTagStateStale,
+			Message: "upstream executes \"latest\" in stale state",
+			Details: map[string]interface{}{
+				"upstreamId": upstreamId,
+			},
+		},
+	}
+}
+
+func (e *ErrUpstreamTagStateStale) ErrorStatusCode() int {
 	return http.StatusServiceUnavailable
 }
 
@@ -3233,23 +3262,24 @@ func (e *ErrSubscriptionNotFound) ErrorStatusCode() int {
 	return http.StatusNotFound
 }
 
-type ErrNoWsUpstreamAvailable struct{ BaseError }
+type ErrNoSubscriptionSource struct{ BaseError }
 
-const ErrCodeNoWsUpstreamAvailable ErrorCode = "ErrNoWsUpstreamAvailable"
+const ErrCodeNoSubscriptionSource ErrorCode = "ErrNoSubscriptionSource"
 
-var NewErrNoWsUpstreamAvailable = func(networkId string) error {
-	return &ErrNoWsUpstreamAvailable{
+var NewErrNoSubscriptionSource = func(networkId, subType string) error {
+	return &ErrNoSubscriptionSource{
 		BaseError{
-			Code:    ErrCodeNoWsUpstreamAvailable,
-			Message: fmt.Sprintf("eth_subscribe requires a WebSocket-capable upstream, none configured for network %s", networkId),
+			Code:    ErrCodeNoSubscriptionSource,
+			Message: fmt.Sprintf("eth_subscribe %s needs a subscription source, none configured for network %s", subType, networkId),
 			Details: map[string]interface{}{
 				"networkId": networkId,
+				"subType":   subType,
 			},
 		},
 	}
 }
 
-func (e *ErrNoWsUpstreamAvailable) ErrorStatusCode() int {
+func (e *ErrNoSubscriptionSource) ErrorStatusCode() int {
 	return http.StatusBadRequest
 }
 
@@ -3278,6 +3308,20 @@ var NewErrInstanceSubscriptionLimitExceeded = func(max int) error {
 			Message: "maximum subscriptions per instance exceeded",
 			Details: map[string]interface{}{
 				"maxPerInstance": max,
+			},
+		},
+	}
+}
+
+// NewErrPendingVariantLimitExceeded refuses a newPendingTransactions
+// subscribe whose params would open more than max variants on a network.
+var NewErrPendingVariantLimitExceeded = func(max int) error {
+	return &ErrSubscriptionLimitExceeded{
+		BaseError{
+			Code:    ErrCodeSubscriptionLimitExceeded,
+			Message: "maximum distinct newPendingTransactions params per network exceeded",
+			Details: map[string]interface{}{
+				"maxVariantsPerNetwork": max,
 			},
 		},
 	}

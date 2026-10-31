@@ -462,16 +462,6 @@ func serveQuery[Res any](gs *GrpcServer, req proto.Message, stream grpc.ServerSt
 	}))
 }
 
-func (gs *GrpcServer) StreamBlocks(req *evm.StreamBlocksRequest, stream evm.StreamService_StreamBlocksServer) error {
-	input, err := gs.extractRequestInput(stream.Context(), "eth_getBlockByNumber")
-	if err != nil {
-		return err
-	}
-	return grpcStatusOf(gs.processor.ProcessBlockStream(stream.Context(), input, func(header *evm.BlockHeader) error {
-		return stream.Send(&evm.StreamBlocksResponse{Header: header})
-	}))
-}
-
 func (gs *GrpcServer) panicRecoveryUnary() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
 		defer func() {

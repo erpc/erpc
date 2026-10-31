@@ -110,6 +110,7 @@ var AuthTypeSecret = "secret";
 var AuthTypeJwt = "jwt";
 var AuthTypeSiwe = "siwe";
 var AuthTypeNetwork = "network";
+var DefaultIntegrityFollowInterval = any;
 var DataFinalityStateFinalized = 0;
 var DataFinalityStateUnfinalized = 1;
 var DataFinalityStateRealtime = 2;

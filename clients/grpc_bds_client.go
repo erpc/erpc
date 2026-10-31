@@ -242,7 +242,7 @@ func grpcResponseMetadataInterceptor() grpc.UnaryClientInterceptor {
 		invoker grpc.UnaryInvoker,
 		opts ...grpc.CallOption,
 	) error {
-		if !common.IsTracingDetailed {
+		if !common.IsTracingDetailed() {
 			return invoker(ctx, method, req, reply, cc, opts...)
 		}
 		span := trace.SpanFromContext(ctx)
@@ -298,7 +298,7 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		return nil, common.NewErrEndpointRequestCanceled(err)
 	}
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 		)

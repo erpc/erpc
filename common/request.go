@@ -185,11 +185,18 @@ type RequestDirectives struct {
 	// Instruct the proxy to bypass method exclusion checks.
 	ByPassMethodExclusion bool `json:"-"`
 
-	// IsInternal flags a request as constructed by an internal subsystem
-	// (state poller, chainId probe, vendor detection). Internal requests
-	// bypass retry, hedge, and breaker policies; only the per-attempt
-	// timeout still applies. Never set from HTTP headers.
-	IsInternal bool `json:"-"`
+	// UpstreamPolicies says whose request it is and which upstream failsafe
+	// policies apply: a client's (UpstreamPoliciesConfigured) or eRPC's own
+	// (any other), which matches failsafe request kind "internal" and whose
+	// answer the integrity engine checks against held data only. Never set
+	// from HTTP headers.
+	UpstreamPolicies UpstreamPolicies `json:"-"`
+
+	// DeferIntegrity: the upstream attempt skips the integrity checks; the
+	// caller runs them on the answer it takes (a chain tracker receipts
+	// fetch hands the answer to waiting client checks first, spec §11).
+	// Never set from HTTP headers.
+	DeferIntegrity bool `json:"-"`
 
 	// Instruct the normalization layer to avoid mutating JSON-RPC params for block tag interpolation.
 	// When true, the system will still compute and cache block references (for finality/metrics),
@@ -215,6 +222,40 @@ type RequestDirectives struct {
 	// level (off/intrinsic/corroborated/authoritative) or a configured profile
 	// name. Honored only when the effective integrity headerMode permits it.
 	IntegritySelector string `json:"integritySelector,omitempty"`
+}
+
+// UpstreamPolicies selects the upstream failsafe policies a request takes.
+type UpstreamPolicies uint8
+
+const (
+	// UpstreamPoliciesConfigured: every configured policy; client traffic.
+	UpstreamPoliciesConfigured UpstreamPolicies = iota
+	// UpstreamPoliciesTimeoutOnly: subscription calls, state-poller and
+	// chainId probes, integrity state probes. No network or upstream retry
+	// or hedge, which would send a subscribe twice, and no breaker, so
+	// probing a down vendor never opens one clients depend on; the
+	// per-attempt timeout applies.
+	UpstreamPoliciesTimeoutOnly
+	// UpstreamPoliciesTracker: chain tracker fetches. No configured policy
+	// applies; an open breaker refuses them, and they never feed it, so
+	// tracker load cannot open a breaker that blocks clients.
+	UpstreamPoliciesTracker
+	// UpstreamPoliciesTrackerFill: catch-up tracker fetches. As
+	// UpstreamPoliciesTracker, and they take an upstream rate permit only
+	// while the budget stays more than half free, so they yield to clients.
+	UpstreamPoliciesTrackerFill
+	// UpstreamPoliciesHeadAsk: a head Ask's fetch of latest. As
+	// UpstreamPoliciesTimeoutOnly, and it takes no upstream rate permit:
+	// client load at a budget never stalls a head (spec §6.8).
+	UpstreamPoliciesHeadAsk
+)
+
+// NewProbeRequest is a request an upstream's own state poller or chainId
+// probe sends: UpstreamPoliciesTimeoutOnly.
+func NewProbeRequest(body []byte) *NormalizedRequest {
+	r := NewNormalizedRequest(body)
+	r.SetDirectives(&RequestDirectives{UpstreamPolicies: UpstreamPoliciesTimeoutOnly})
+	return r
 }
 
 func (d *RequestDirectives) Clone() *RequestDirectives {
@@ -285,6 +326,13 @@ type NormalizedRequest struct {
 	lastUpstream        atomic.Value
 	evmBlockRef         atomic.Value
 	evmBlockNumber      atomic.Value
+	// evmHead is the lane's Head this request took once (spec §7).
+	evmHead atomic.Pointer[EvmHead]
+	// headRefusal is the refusal rule's verdict for its block (spec §6.4).
+	headRefusal atomic.Pointer[HeadRefusal]
+	// tagStateSkips are the upstreams the tag-state gate skips for this
+	// request (spec §6.11); nil unless it is a family-3 tag request.
+	tagStateSkips atomic.Pointer[map[string]bool]
 
 	compositeType   atomic.Value // Type of composite request (e.g., "logs-split")
 	parentRequestId atomic.Value // ID of the parent request (for sub-requests)
@@ -332,19 +380,16 @@ func (r *NormalizedRequest) CreditUnitsByVendor() map[string]int64 {
 	return r.ExecState().CreditUnitsByVendor()
 }
 
-// IsInternal returns true when the request was constructed by an
-// internal subsystem (state poller, chainId probe, vendor detection).
-// Internal requests bypass retry, hedge, and breaker policies; only
-// the per-attempt timeout still applies.
-func (r *NormalizedRequest) IsInternal() bool {
+// UpstreamPolicies returns which upstream failsafe policies apply to r.
+func (r *NormalizedRequest) UpstreamPolicies() UpstreamPolicies {
 	if r == nil {
-		return false
+		return UpstreamPoliciesConfigured
 	}
 	d := r.Directives()
 	if d == nil {
-		return false
+		return UpstreamPoliciesConfigured
 	}
-	return d.IsInternal
+	return d.UpstreamPolicies
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -1158,6 +1203,63 @@ func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {
 	return nil, nil
 }
 
+// EvmHead is the Head r took, nil before it took one.
+func (r *NormalizedRequest) EvmHead() *EvmHead {
+	if r == nil {
+		return nil
+	}
+	return r.evmHead.Load()
+}
+
+// TakeEvmHead makes h r's Head unless r took one already, and returns r's
+// Head: concurrent first readers of one request all get the same value.
+func (r *NormalizedRequest) TakeEvmHead(h *EvmHead) *EvmHead {
+	if r.evmHead.CompareAndSwap(nil, h) {
+		return h
+	}
+	return r.evmHead.Load()
+}
+
+// HeadRefusal is the refusal verdict r took, nil before it took one.
+func (r *NormalizedRequest) HeadRefusal() *HeadRefusal {
+	if r == nil {
+		return nil
+	}
+	return r.headRefusal.Load()
+}
+
+// TakeHeadRefusal makes v r's verdict unless r took one already, and
+// returns r's verdict.
+func (r *NormalizedRequest) TakeHeadRefusal(v *HeadRefusal) *HeadRefusal {
+	if r.headRefusal.CompareAndSwap(nil, v) {
+		return v
+	}
+	return r.headRefusal.Load()
+}
+
+// TagStateSkips is r's tag-state decision: the upstream ids the gate skips,
+// nil unless r is a family-3 request whose "latest" reaches upstreams as the
+// tag (spec §6.11).
+func (r *NormalizedRequest) TagStateSkips() map[string]bool {
+	if r == nil {
+		return nil
+	}
+	if m := r.tagStateSkips.Load(); m != nil {
+		return *m
+	}
+	return nil
+}
+
+// TakeTagStateSkips makes skips r's tag-state decision unless r took one
+// already, and returns r's decision: one per request, every attempt and
+// hedge reads it.
+func (r *NormalizedRequest) TakeTagStateSkips(skips map[string]bool) map[string]bool {
+	if r.tagStateSkips.CompareAndSwap(nil, &skips) {
+		return skips
+	}
+	return *r.tagStateSkips.Load()
+}
+
 func (r *NormalizedRequest) CacheHash(ctx ...context.Context) (string, error) {
 	rq, err := r.JsonRpcRequest(ctx...)
 	if err != nil {
@@ -1540,60 +1642,69 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 		)
 	}
 
-	// Capture any UseUpstream directive to be applied inside the generic selection loop
-	var useUpstreamPattern string
-	if r.directives != nil && r.directives.UseUpstream != "" {
-		useUpstreamPattern = r.directives.UseUpstream
-	}
-
 	upstreamCount := len(r.upstreamList)
 
 	// Simple round-robin selection. The outer loop in networks.go is capped to prevent
 	// infinite loops. Retryable errors are removed from ConsumedUpstreams by
 	// MarkUpstreamCompleted, allowing re-selection on subsequent iterations.
-	for attempts := 0; attempts < upstreamCount; attempts++ {
+	for range upstreamCount {
 		idx := r.UpstreamIdx % uint32(upstreamCount)
 		r.UpstreamIdx++ // Guaranteed increment for next caller
 
-		upstream := r.upstreamList[idx]
-
-		// If a UseUpstream selector is provided, only consider matching
-		// upstreams. The selector matches the upstream id OR any of its tags
-		// (e.g. `use-upstream=family:systx`); see MatchesSelector.
-		if useUpstreamPattern != "" {
-			match, err := UpstreamMatchesSelector(useUpstreamPattern, upstream)
-			if err != nil || !match {
-				continue
-			}
-		}
-
-		// Skip if already consumed (in-flight or already completed this round)
-		if _, consumed := r.ConsumedUpstreams.Load(upstream); consumed {
-			continue
-		}
-
-		// Skip if already responded with a permanent error (method ignored,
-		// execution exception, etc.). Retryable errors (including MissingData)
-		// are allowed through so the upstream can be retried on subsequent rounds.
-		if prevErr, exists := r.ErrorsByUpstream.Load(upstream); exists {
-			if pe, ok := prevErr.(error); ok && !IsRetryableTowardsUpstream(pe) {
-				continue
-			}
-		}
-
-		// Try to reserve this upstream atomically
-		// If LoadOrStore returns loaded=false, we successfully reserved it
-		if _, loaded := r.ConsumedUpstreams.LoadOrStore(upstream, true); !loaded {
-			// Successfully reserved this upstream
+		if upstream := r.upstreamList[idx]; r.reserveLocked(upstream) {
 			return upstream, nil
 		}
-		// If we reach here, another goroutine reserved this upstream, continue to next
 	}
 
 	return nil, NewErrNoUpstreamsLeftToSelect(
 		r,
 		"no more non-consumed or working upstreams left",
 	)
+}
+
+// ReserveUpstream reserves upstream for an attempt when NextUpstream could
+// select it: a caller with its own order (the refusal band's head-first
+// retry) picks only what NextUpstream would.
+func (r *NormalizedRequest) ReserveUpstream(upstream Upstream) bool {
+	if r == nil {
+		return false
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+	return r.reserveLocked(upstream)
+}
+
+// reserveLocked reserves upstream when it is selectable and not consumed
+// (in flight, or completed this round).
+func (r *NormalizedRequest) reserveLocked(upstream Upstream) bool {
+	if !r.matchesUseUpstreamLocked(upstream) || r.failedPermanentlyLocked(upstream) {
+		return false
+	}
+	_, loaded := r.ConsumedUpstreams.LoadOrStore(upstream, true)
+	return !loaded
+}
+
+// matchesUseUpstreamLocked reports whether upstream matches the request's
+// UseUpstream selector (its id or any of its tags, e.g.
+// `use-upstream=family:systx`); every upstream does without one.
+func (r *NormalizedRequest) matchesUseUpstreamLocked(upstream Upstream) bool {
+	if r.directives == nil || r.directives.UseUpstream == "" {
+		return true
+	}
+	match, err := UpstreamMatchesSelector(r.directives.UseUpstream, upstream)
+	return err == nil && match
+}
+
+// failedPermanentlyLocked reports whether upstream already answered with an
+// error no retry changes (method ignored, execution exception, etc.).
+// Retryable errors, missing data included, leave it selectable.
+func (r *NormalizedRequest) failedPermanentlyLocked(upstream Upstream) bool {
+	prevErr, exists := r.ErrorsByUpstream.Load(upstream)
+	if !exists {
+		return false
+	}
+	pe, ok := prevErr.(error)
+	return ok && !IsRetryableTowardsUpstream(pe)
 }
 
 // AllUpstreamsFailedPermanently reports whether every upstream this request
@@ -1607,23 +1718,13 @@ func (r *NormalizedRequest) AllUpstreamsFailedPermanently() bool {
 	r.upstreamMutex.Lock()
 	defer r.upstreamMutex.Unlock()
 
-	var useUpstreamPattern string
-	if r.directives != nil {
-		useUpstreamPattern = r.directives.UseUpstream
-	}
 	selectable := 0
 	for _, upstream := range r.upstreamList {
-		if useUpstreamPattern != "" {
-			if match, err := UpstreamMatchesSelector(useUpstreamPattern, upstream); err != nil || !match {
-				continue
-			}
+		if !r.matchesUseUpstreamLocked(upstream) {
+			continue
 		}
 		selectable++
-		prevErr, exists := r.ErrorsByUpstream.Load(upstream)
-		if !exists {
-			return false
-		}
-		if pe, ok := prevErr.(error); !ok || IsRetryableTowardsUpstream(pe) {
+		if !r.failedPermanentlyLocked(upstream) {
 			return false
 		}
 	}

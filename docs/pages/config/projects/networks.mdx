@@ -52,54 +52,6 @@ Illustrative, not a tuned production config — declare Ethereum with a human-re
 }]`}
 />
 
-## `eth_subscribe`
-
-Some JSON-RPC clients include `fromBlock: "0x0"` in the `eth_subscribe("logs", {…})` filter as a "from genesis" marker. `eth_subscribe` is a live-stream RPC — `fromBlock` has no standardised meaning there — and on backends that prune historical data the subscribe call fails outright. Enable `stripSubscribeFromBlockZero` on the network to drop the field before forwarding so the live stream succeeds; historical logs stay retrievable via `eth_getLogs` in the normal way.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
-  - id: main
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 1
-          # Drops fromBlock: "0x0" / "0" from eth_subscribe logs filters
-          # before forwarding to upstream WebSockets. Only a value that
-          # parses to zero is stripped — other fromBlocks pass through.
-          stripSubscribeFromBlockZero: true  # default: false
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      networks: [
-        {
-          architecture: "evm",
-          evm: {
-            chainId: 1,
-            // Drops fromBlock: "0x0" / "0" from eth_subscribe logs filters
-            // before forwarding to upstream WebSockets. Only a value that
-            // parses to zero is stripped — other fromBlocks pass through.
-            stripSubscribeFromBlockZero: true,  // default: false
-          },
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
-
-Leave unset for chains where upstreams handle `fromBlock: "0x0"` in an `eth_subscribe` filter correctly (most do — the flag is a targeted workaround, not a universal default). It can also be set once for every network under `networkDefaults.evm`.
-
 ## Future-block polling
 
 Clients that follow a chain by number (for example rollup nodes reading L1) poll `eth_getBlockByNumber` for the block after the head and treat `null` as "not produced yet". No upstream has that block, so each one returns `null` in turn and every poll walks every routed upstream, fallbacks included. Enable `shortCircuitFutureBlocks` to return `null` for a numbered `eth_getBlockByNumber` above the latest head of every upstream of the network (static availability caps included), without dispatching it. A block at or below the last head any upstream reported is still dispatched, and the request is dispatched as usual while any upstream's head is unknown. Only this flag turns it on.
@@ -258,7 +210,7 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 
 ### How it works
 
-**Architecture concept.** `NetworkArchitecture` is a string enum with two valid values: `"evm"` and `"svm"` (<SourceLink file="common/network.go" lines="14-17" />). The canonical id is `evm:<chainId>` from `util.EvmNetworkId`, or `svm:<cluster>` / `svm:<chain>:<cluster>` from `util.SvmNetworkId` (<SourceLink file="util/ids.go" lines="1-30" />). The `network` Prometheus label equals the alias when set, otherwise the raw id.
+**Architecture concept.** `NetworkArchitecture` is a string enum with two valid values: `"evm"` and `"svm"` (<SourceLink file="common/network.go" lines="14-17" />). The canonical id is `evm:<chainId>` from `util.EvmNetworkId`, or `svm:<cluster>` / `svm:<chain>:<cluster>` from `util.SvmNetworkId` (<SourceLink file="util/ids.go" lines="1-30" />). A request's network id is canonicalized by `util.CanonicalNetworkId` before lookup: `/main/evm/01` and `"networkId":"evm:0001"` both serve `evm:1`, so provider `onlyNetworks`/`ignoreNetworks` and upstream ids see `evm:1`. The `network` Prometheus label equals the alias when set, otherwise the raw id.
 
 `architecture` is inferred when omitted: a network carrying an `svm` block derives `architecture: svm`, one carrying `evm` (or neither) derives `evm` (<SourceLink file="common/defaults.go" lines="2010-2028" />). Declaring `architecture: svm` auto-creates an empty `svm` block, and `networkDefaults.evm` is never injected into an SVM network. See [SvmNetworkConfig](#projectsnetworkssvm--svmnetworkconfig) below and the [SVM reference pages](/reference/svm/commitment).
 
@@ -278,9 +230,9 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 
 **networkDefaults inheritance** (`common/defaults.go:L1781-1973`). "Network wins; defaults fill gaps." Scalars inherit when zero-valued; pointers when nil. `selectionPolicy` and `directiveDefaults` are whole-struct copies (no per-field merge). `evm` is a whole-struct copy when absent from the network, otherwise per-field fill for 14 named fields. Failsafe: if the network has entries, each is matched against the first compatible default (wildcard method + finality) and missing sub-fields are inherited; if the network has no entries the defaults list is deep-copied wholesale.
 
-**Finality classification** (`erpc/networks.go:L1645-1743`). Explicit `finalized`/`realtime` flags in `methods.definitions` win. Otherwise the block ref/number is extracted from the request, then from the response body (for hash-keyed cache hits). Non-numeric tags → `realtime`; numeric blocks are checked via `EvmIsBlockFinalized` on the serving upstream, then the last upstream tried, then the network-wide lowest-finalized heuristic.
+**Finality classification** (`Network.GetFinality`). Explicit `finalized`/`realtime` flags in `methods.definitions` win. Otherwise the block ref/number is extracted from the request, then from the response body (for hash-keyed cache hits). Non-numeric tags → `realtime`; a numbered block is finalized when it is at or below the request's `Head.Finalized`. An upstream's answer is finalized, and so cached permanently, only when that upstream has also finalized the block and is not on a minority fork. An upstream without a `finalized` tag reports latest minus the derived finality depth (`fallbackFinalityDepth`, at least 30 minutes of chain).
 
-**Served tip.** Both axes advertise the highest block that `servedTip.quorum` of the network's voters already have, per process and with no stored pick; the rule, benching, guard and floors are in [Block tracking & served tip](/reference/evm/block-tracking#served-tip). A `use-upstream` selector scopes the pick to its matched upstreams and may get its own [lane](/reference/lanes). `EvmLeaderUpstream` returns the upstream with the highest raw `LatestBlock()`; `EvmLowestFinalizedBlockNumber` returns the min positive effective finalized across non-syncing upstreams.
+**Served tip.** Both axes advertise the highest block that `servedTip.quorum` of the network's voters already have, per process and with no stored pick; the rule, benching, guard and floors are in [Block tracking & served tip](/reference/evm/block-tracking#served-tip). A `use-upstream` selector scopes the pick to its matched upstreams and may get its own [lane](/reference/lanes).
 
 ### Config schema
 
@@ -310,7 +262,7 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 | `methods.definitions.<m>.finalized` | `bool` | `false` (true for static-cache methods) | **Footgun**: setting `true` on a non-finalized method (e.g. `eth_getBalance`) permanently caches ALL responses from that method with long/permanent TTL — a severe data-correctness bug (<SourceLink file="erpc/networks.go" lines="1656-1660" />). |
 | `methods.definitions.<m>.realtime` | `bool` | `false` (true for `eth_blockNumber` and similar) | Forces `GetFinality` → `Realtime`; responses use the realtime cache policy (short TTL). |
 | `methods.definitions.<m>.stateful` | `bool` | `true` for `DefaultStatefulMethodNames`, else `false` | **Footgun**: `stateful: false` on any of the 6 built-in stateful methods (`eth_newFilter`, `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`) is silently overridden to `true` with no warning (<SourceLink file="common/defaults.go" lines="512-519" />). |
-| `methods.definitions.<m>.translateLatestTag` | `*bool` | `nil` = enabled | `nil`/`true` → `"latest"` tag replaced with current block hex before forwarding and cache keying. `false` → tag passed through unchanged. `eth_getBlockByNumber` ships with `false` so it can discover new blocks. **Footgun**: `false` on a changing method means all callers share one `"latest"` cache key; stale data returned until TTL expires (<SourceLink file="common/config.go" lines="307-309" />). |
+| `methods.definitions.<m>.translateLatestTag` | `*bool` | `nil` = enabled for every method, `eth_getBlockByNumber` included; `false` for `arbtrace_*` | `nil`/`true` → `"latest"` (plain, EIP-1898 leaf, or an absent selector) replaced with the request's `Head.Latest` before forwarding and cache keying, so `eth_getBlockByNumber("latest")` answers the block `eth_blockNumber` reports. `false` → the tag reaches upstreams as is, an absent selector as the literal `"latest"`, and the method leaves the one-number promise: its answer may name a different block than `eth_blockNumber`, and it is not cached. `arbtrace_*` ship with `false`: Arbitrum classic nodes serve them, and their latest is not the network's; their absent params stay absent (<SourceLink file="common/config.go" lines="307-309" />). |
 | `methods.definitions.<m>.translateFinalizedTag` | `*bool` | `nil` = enabled | Same as `translateLatestTag` for the `"finalized"` tag (<SourceLink file="common/config.go" lines="310-312" />). |
 | `methods.definitions.<m>.enforceBlockAvailability` | `*bool` | `nil` (inherit) | Per-method override; highest priority in the 5-step enforcement chain (<SourceLink file="erpc/networks.go" lines="1806-1813" />). |
 
@@ -319,8 +271,8 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `chainId` | `int64` | — (no default) | Drives `networkId = "evm:<chainId>"`. Not validated &gt; 0 for networks; `chainId: 0` yields `evm:0`. |
-| `fallbackFinalityDepth` | `int64` | `1024` (<SourceLink file="common/defaults.go" lines="1975" />) | Used when an upstream doesn't expose the `finalized` tag. Must be &gt; 0 after defaults. |
-| `fallbackStatePollerDebounce` | `Duration` | `5s` (<SourceLink file="common/defaults.go" lines="1976" />) | Static debounce for block polling until dynamic block time is learned. Must be &gt; 0. |
+| `fallbackFinalityDepth` | `int64` | `1024` (<SourceLink file="common/defaults.go" lines="1975" />) | Used when an upstream doesn't expose the `finalized` tag: its finalized is latest minus the deeper of this and 30 minutes of chain, counted at the block time floor so a cold-start estimate never shortens it. Must be &gt; 0 after defaults. |
+| `fallbackStatePollerDebounce` | `Duration` | unset | Set: the block-polling debounce until the block time is learned. Unset: the 1s cold block time × `dynamicBlockTimeDebounceMultiplier` (0.7s). |
 | `dynamicBlockTimeDebounceMultiplier` | `*float64` | `0.7` (<SourceLink file="common/defaults.go" lines="1977" />) | Polling debounce = EMA block time × multiplier. Lower → more aggressive polling (fresher data, more upstream load). |
 | `finalizedDebounceDepthMultiplier` | `*float64` | `0.05` (<SourceLink file="common/defaults.go" lines="2446" />) | Finalized-poll debounce = (latest − finalized) × EMA block time × multiplier, when longer than the regular debounce. `0` disables it. |
 | `blockUnavailableDelayMultiplier` | `*float64` | `1.0` (<SourceLink file="common/defaults.go" lines="1978" />) | Retry delay for block-unavailable = EMA block time × multiplier. |
@@ -350,6 +302,11 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 | `servedTip.guaranteedFor` | `[]string` (selector) | `[]` | Upstream groups (id/tag selector) that must be able to serve the tip ([guarantee subsets](/reference/evm/block-tracking#guarantee-subsets)). Selectors validated at load. |
 | `servedTip.enabledFor` | — | — | **Removed**; configs that set it fail to load. Use `servedTip.quorum: majority` (with ≤ 3 voters the default quorum already serves the same block). If it listed `latest`, also set `shortCircuitFutureBlocks: true`, which it used to turn on. |
 | `servedTip.clusterDelta`, `servedTip.trajectoryWindow` | — | — | **Removed**; configs that set them fail to load. Delete them; benching replaces the trajectory referee. |
+| `chainTracker` | `EvmChainTrackerConfig` | the defaults below | The network's [chain tracker](/operation/websocket#how-heads-reach-subscribers): one canonical chain for ws subscriptions, gRPC `StreamBlocks` and the integrity follow tap. |
+| `chainTracker.reorgWindow` | `int` | `32` | Floor of the held window in blocks, the window of use-upstream group trackers, and the deepest reorg a tracker walks and replays. Raise it for deep-reorg chains (Polygon: `256`). A ws `logs` subscription that falls `reorgWindow` × block time behind closes with `1013`. |
+| `chainTracker.maxBackfill` | `Duration` | `5m` | Chain time, compared on header timestamps, the network-wide tracker holds for resuming gRPC `StreamBlocks` clients. A cursor older than this ends with `OUT_OF_RANGE`. |
+| `stripSubscribeFromBlockZero` | — | — | **Removed**; configs that set it fail to load. No upstream `logs` subscription is made. |
+| `integrity.reorgWindow`, `integrity.follow.maxBlocksPerTick` | — | — | **Removed** at project, network and profile level; configs that set them fail to load. Use `evm.chainTracker.reorgWindow` and `evm.chainTracker.maxBackfill`; the follow tap is driven by the confirmed head. |
 
 #### `projects[].networks[].svm` — SvmNetworkConfig
 
@@ -742,7 +699,7 @@ POST /main                    →  body {"networkId": "svm:fogo:mainnet", ...}
 13. **`stateful: false` on a built-in stateful method is silently overridden** — `MethodsConfig.SetDefaults` force-sets `Stateful = true` for all 6 stateful methods in all three code paths, overwriting any user-supplied `false` without any warning. [`common/defaults.go:L512-573`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L512-L573)
 14. **`EnforceGetLogsBlockRange` directives cannot be overridden per-request via HTTP headers for `eth_getLogs`, `trace_filter`, and `arbtrace_filter`** — these hooks read from the config baked in at startup, not live per-request directives. Set `enforceGetLogsBlockRange: false` in `directiveDefaults`, not as an HTTP header. `eth_blockNumber` reads the live `enforceHighestBlock` directive, so a header does override it. [`architecture/evm/eth_getLogs.go:L282-285`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getLogs.go#L282-L285)
 15. **`ErrNetworkRequestTimeout` is produced only in the multiplexer follower path** — a request that is itself the leader experiences `ErrFailsafeTimeoutExceeded` or upstream sweep errors, never `ErrNetworkRequestTimeout`. [`erpc/networks.go:L2079-2084`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L2079-L2084)
-16. **`evm.chainId: 0` is not rejected** — `chainId: 0` produces `networkId = evm:0`, which passes `util.IsValidNetworkId` but is excluded by provider `onlyNetworks`/`ignoreNetworks` lists that use the stricter `chainId > 0` check.
+16. **`evm.chainId: 0` is not rejected** — `chainId: 0` produces `networkId = evm:0`, which passes `util.CanonicalNetworkId` but is excluded by provider `onlyNetworks`/`ignoreNetworks` lists that use the stricter `chainId > 0` check.
 17. **`translateLatestTag: false` on a non-historical method collapses all callers to one cache key** — all requests for that method share the literal `"latest"` key; stale data is returned until the cache TTL expires.
 18. **`preserveDefaultMethods: false` with NO `definitions` block keeps ALL built-ins** — the drop-all behavior only triggers when `definitions` is non-empty AND `preserveDefaultMethods` is false. A config with `methods: { preserveDefaultMethods: false }` and no `definitions` key is identical to omitting the `methods` block entirely. [`common/defaults.go:L494`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L494)
 19. **Lazy network alias registration happens after first bootstrap** — statically-declared networks register aliases eagerly in the `NetworksRegistry` constructor; lazily-created networks only register their alias inside `prepareNetwork`, which runs during bootstrap. Until bootstrap completes, alias-based URLs for lazy networks return an alias-not-found error. [`erpc/networks_registry.go:L322-328`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go#L322-L328)

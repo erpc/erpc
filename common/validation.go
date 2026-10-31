@@ -67,20 +67,6 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-	if c.Indexer != nil {
-		if err := c.Indexer.Validate(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Validate rejects nonsensical values; zeros pass through and resolve to
-// internal defaults inside the indexer.
-func (i *IndexerConfig) Validate() error {
-	if i.DedupWindowSize < 0 {
-		return fmt.Errorf("indexer.dedupWindowSize must be >= 0 (0 uses the default)")
-	}
 	return nil
 }
 
@@ -120,9 +106,6 @@ func (s *ServerConfig) Validate() error {
 		}
 		if ws.MaxConcurrentRequestsPerConnection < 1 {
 			return fmt.Errorf("server.webSocket.maxConcurrentRequestsPerConnection must be at least 1")
-		}
-		if ws.SubscriptionBufferSize < 1 {
-			return fmt.Errorf("server.webSocket.subscriptionBufferSize must be at least 1")
 		}
 		if ws.MaxConnections < 0 || ws.MaxConnectionsPerIP < 0 || ws.MaxSubscriptions < 0 {
 			return fmt.Errorf("server.webSocket.maxConnections, maxConnectionsPerIP and maxSubscriptions must not be negative")
@@ -858,6 +841,11 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			return err
 		}
 	}
+	// Before the networks: each network's block already carries the project's
+	// folded in, so a project error must be reported as the project's.
+	if err := p.Integrity.Validate(); err != nil {
+		return fmt.Errorf("project.*: %w", err)
+	}
 	if p.Networks != nil {
 		existingIds := make(map[string]bool)
 		existingAliases := make(map[string]bool)
@@ -902,9 +890,6 @@ func (p *ProjectConfig) Validate(c *Config) error {
 		if !c.HasRateLimiterBudget(p.RateLimitBudget) {
 			return fmt.Errorf("project.*.rateLimitBudget '%s' does not exist in config.rateLimiters", p.RateLimitBudget)
 		}
-	}
-	if err := p.Integrity.Validate(); err != nil {
-		return fmt.Errorf("project.*: %w", err)
 	}
 	return nil
 }
@@ -1181,6 +1166,11 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	if e.StatePollerInterval == 0 {
 		return fmt.Errorf("upstream.*.evm.statePollerInterval is required")
 	}
+	// Shadow upstreams never join the network's upstreams, so intake would
+	// drop every header they feed.
+	if e.SubscriptionSource != nil && *e.SubscriptionSource && u.Shadow != nil && u.Shadow.Enabled {
+		return fmt.Errorf("upstream '%s': evm.subscriptionSource cannot be true on a shadow upstream", u.Id)
+	}
 	// NodeType deprecated; keep syntax validation for back-compat only
 	if e.NodeType != "" {
 		allowed := []EvmNodeType{
@@ -1324,9 +1314,11 @@ func (f *FailsafeConfig) Validate() error {
 	}
 
 	switch f.MatchRequestKind {
-	case "", "*", "user", "internal":
+	case "", "*", "user":
+	case "internal":
+		return fmt.Errorf("failsafe.matchRequestKind 'internal' is deleted: no eRPC-own request (tracker fetch, head poll, probe) goes through a failsafe policy; remove it")
 	default:
-		return fmt.Errorf("failsafe.matchRequestKind '%s' is invalid, must be one of: user | internal | *", f.MatchRequestKind)
+		return fmt.Errorf("failsafe.matchRequestKind '%s' is invalid, must be one of: user | *", f.MatchRequestKind)
 	}
 
 	for _, c := range f.MatchCommitment {
@@ -1999,9 +1991,6 @@ func (e *EvmNetworkConfig) Validate() error {
 	if e.FallbackFinalityDepth == 0 {
 		return fmt.Errorf("network.*.evm.fallbackFinalityDepth must be greater than 0")
 	}
-	if e.FallbackStatePollerDebounce == 0 {
-		return fmt.Errorf("network.*.evm.fallbackStatePollerDebounce is required")
-	}
 	if e.GetLogsMaxAllowedRange == 0 {
 		return fmt.Errorf("network.*.evm.getLogsMaxAllowedRange must be greater than 0")
 	}
@@ -2026,6 +2015,14 @@ func (e *EvmNetworkConfig) Validate() error {
 			if err := ValidatePattern(sel); err != nil {
 				return fmt.Errorf("network.*.evm.servedTip.guaranteedFor has invalid selector %q: %w", sel, err)
 			}
+		}
+	}
+	if ct := e.ChainTracker; ct != nil {
+		if ct.ReorgWindow < 0 {
+			return fmt.Errorf("network.*.evm.chainTracker.reorgWindow must be >= 0")
+		}
+		if ct.MaxBackfill < 0 {
+			return fmt.Errorf("network.*.evm.chainTracker.maxBackfill must be >= 0")
 		}
 	}
 	if e.SafeBlockSource != "" {
@@ -2334,8 +2331,8 @@ func (s *IntegritySettings) validate() error {
 	if b := s.Budget; b != nil && (b.MaxPerSecond < 0 || b.MaxConcurrent < 0) {
 		return fmt.Errorf("integrity.budget.maxPerSecond/maxConcurrent must be >= 0")
 	}
-	if s.ReorgWindow < 0 {
-		return fmt.Errorf("integrity.reorgWindow must be >= 0")
+	if f := s.Follow; f != nil && f.Interval < 0 {
+		return fmt.Errorf("integrity.follow.interval must be >= 0")
 	}
 	if s.MisbehaviorsDestination != nil {
 		if err := s.MisbehaviorsDestination.Validate(); err != nil {

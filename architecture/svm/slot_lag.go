@@ -72,27 +72,6 @@ func isSlotWithinLag(u common.Upstream, maxLag, referenceSlot int64) bool {
 	return (referenceSlot - finalized) <= maxLag
 }
 
-// HighestFinalizedSlot returns the maximum FinalizedSlot across the upstreams,
-// or 0 if none report a positive value. Convenience accessor for callers that
-// want to derive referenceSlot from the current pool.
-func HighestFinalizedSlot(upstreams []common.Upstream) int64 {
-	var max int64
-	for _, u := range upstreams {
-		sup, ok := u.(common.SvmUpstream)
-		if !ok {
-			continue
-		}
-		poller := sup.SvmStatePoller()
-		if poller == nil || poller.IsObjectNull() {
-			continue
-		}
-		if s := poller.FinalizedSlot(); s > max {
-			max = s
-		}
-	}
-	return max
-}
-
 // ReferenceFinalizedSlot derives the reference slot the consensus slot-lag
 // prefilter measures against. Plain pool-max is poisonable: a single upstream
 // reporting a wildly inflated finalized slot becomes the reference, every

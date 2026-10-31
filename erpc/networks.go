@@ -20,10 +20,13 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/indexer"
+	"github.com/erpc/erpc/indexer/mempool"
 	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -31,15 +34,18 @@ import (
 )
 
 type Network struct {
-	networkId            string
-	networkLabel         string
-	projectId            string
-	logger               *zerolog.Logger
-	servedTipRefreshOnce sync.Once
-	appCtx               context.Context
-	cfg                  *common.NetworkConfig
-	inFlightRequests     *sync.Map
-	failsafeExecutors    []*networkExecutor // main: failsafe rename FailsafeExecutor → networkExecutor
+	networkId         string
+	networkLabel      string
+	projectId         string
+	logger            *zerolog.Logger
+	headLoopOnce      sync.Once
+	appCtx            context.Context
+	cfg               *common.NetworkConfig
+	inFlightRequests  *sync.Map
+	failsafeExecutors []*networkExecutor // main: failsafe rename FailsafeExecutor → networkExecutor
+	// bareExecutor applies no network policy: timeout-only requests (state
+	// probes) take it, so they get no network retry or hedge (spec §6.11).
+	bareExecutor         *networkExecutor
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	cacheDal             common.CacheDAL
 	metricsTracker       *health.Tracker
@@ -53,64 +59,75 @@ type Network struct {
 	initializer         *util.Initializer
 	architectureHandler common.ArchitectureHandler
 
-	// latestBlockShared is the highest head any instance has delivered to a
-	// WebSocket subscriber (see applyDeliveredHeadFloor). Nil when shared
-	// state is not configured.
-	latestBlockShared data.CounterInt64SharedVariable
-	// deliveredLatestBlock is the highest head this instance has delivered to
-	// a WebSocket subscriber.
-	deliveredLatestBlock atomic.Int64
-	// servedFinalizedShared is the highest network-wide finalized tip any
-	// instance has served (see shareFinalized). Nil when shared state is not
-	// configured.
-	servedFinalizedShared data.CounterInt64SharedVariable
+	// forkDemoted are the voters on a minority fork (EvmForkDemoted): no
+	// number vote, last in routing. nil while none is.
+	forkDemoted atomic.Pointer[[]string]
+	// hashStale are the sources whose hash age exceeds W, or whose socket
+	// closed (setHashStale): tried after the rest, before forkDemoted. nil
+	// while none is.
+	hashStale atomic.Pointer[[]string]
 
-	// servedTipAll is the network-wide served-tip lane. Lanes hold the
-	// advance-age watchdog, the regression guard's memory and the finalized
-	// floor; the pick itself is stateless (common.PickServedTip).
+	// servedTipAll is the network-wide lane. A lane publishes its Head and
+	// holds the advance-age watchdog, the regression guard's memory and the
+	// finalized floor; the pick itself is stateless (common.PickServedTip).
 	servedTipAll servedTipLane
+	// servedFinalizedShared is the highest network-wide Finalized any
+	// instance served (shareFinalized). Nil without shared state.
+	servedFinalizedShared data.CounterInt64SharedVariable
 
 	// servedTipLanes holds lazily-materialized per-group lanes for
 	// use-upstream selectors that carve out a real sub-group (e.g.
 	// `flashblocks*` / `family:systx`). The pick for any selector is the same
-	// stateless quorum over the matched subset; a lane adds only its gauge
-	// label (LaneName), watchdog and guard memory. Bounded by construction:
-	// keyed by the hash of the MATCHED UPSTREAM SET (equivalent selectors
-	// dedup; garbage selectors can't inflate state beyond the real topology)
-	// and capped by maxServedTipLanes.
+	// stateless quorum over the matched subset; a lane adds its published
+	// Head, gauge label (LaneName), watchdog and guard memory. Bounded by
+	// construction: keyed by the hash of the MATCHED UPSTREAM SET (equivalent
+	// selectors dedup; garbage selectors can't inflate state beyond the real
+	// topology) and capped by maxServedTipLanes.
 	servedTipLanes     sync.Map // map[string]*servedTipLane (key = "grp:<hash>")
 	servedTipLaneCount atomic.Int32
+
+	// headWake wakes the head loop to compute the dirty lanes
+	// (refreshDirtyHeads); headPass is closed and replaced after each
+	// pass, for taps on a selector with no lane.
+	headWake chan struct{}
+	headPass atomic.Pointer[chan struct{}]
+	// statelessHeads is each laneless selector's Latest (uint64), picked
+	// once per head pass for its taps (laneLatest); statelessGen counts the
+	// passes' clears, and statelessMu orders a store after its check of it.
+	statelessHeads sync.Map
+	statelessGen   atomic.Uint64
+	statelessMu    sync.Mutex
+	// headRefresh is the head loop's timer, set before Bootstrap; 0 is
+	// headRefreshInterval.
+	headRefresh time.Duration
 
 	// queryTraceSource remembers which trace method answered the eth_query*
 	// shim on this network (queryTraceSource* values), so a network whose
 	// upstreams lack trace_block asks debug_traceBlockByNumber directly.
 	queryTraceSource atomic.Int32
+
+	// chainTracker is the network-wide tracker; intake feeds it from the
+	// sources, which the reconciler sets; taps read it and are the demand.
+	// mempool holds the pending transactions intake admits. All nil on
+	// non-EVM networks. bg runs the intake, reconciler and tap loops.
+	chainTracker *evm.ChainTracker
+	intake       *networkIntake
+	sources      *sourceReconciler
+	taps         *indexer.Taps
+	mempool      *mempool.Feed
+	bg           util.Goroutines
 }
 
-// NoteObservedLatestBlock records a head about to be delivered on a WebSocket
-// newHeads subscription, so "latest" over HTTP never trails it. Callers must
-// invoke it before delivering the notification.
-func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64) {
-	if n == nil || blockNumber <= 0 {
-		return
+// wait waits, once the app ctx ended, until no goroutine of the network's
+// intake, reconciler, taps, trackers or tracker fetches runs, nor any of
+// its upstreams registry's (UpstreamsRegistry.Wait).
+func (n *Network) wait() {
+	n.bg.Wait()
+	if n.chainTracker != nil {
+		n.chainTracker.Wait()
 	}
-	if ctx == nil {
-		ctx = n.appCtx
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if n.latestBlockShared != nil {
-		n.latestBlockShared.TryUpdate(ctx, blockNumber)
-	}
-	for {
-		cur := n.deliveredLatestBlock.Load()
-		if blockNumber <= cur {
-			return
-		}
-		if n.deliveredLatestBlock.CompareAndSwap(cur, blockNumber) {
-			return
-		}
+	if n.upstreamsRegistry != nil {
+		n.upstreamsRegistry.Wait()
 	}
 }
 
@@ -119,14 +136,54 @@ func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64
 // the cap, a group's request gets the stateless subset pick with no lane.
 const maxServedTipLanes = 16
 
-// servedTipLane is one served-tip scope with its own telemetry, guard memory
-// and finalized floor: the network-wide pick (label "all") or a use-upstream
-// group's pick (label common.LaneName of the matched upstream set). It holds
-// NO pick state.
+// servedTipLane is one Head scope: the network-wide lane (label "all", key
+// "") or a use-upstream group's (label common.LaneName of the matched
+// upstream set, key partitionKeyFor's). It publishes the lane's Head and
+// holds the guard memory and the finalized floor; mu orders its
+// computations so a slower one never publishes over a newer one.
 type servedTipLane struct {
+	key       string
+	selector  string
 	label     string
 	latest    servedTipAnchor
 	finalized servedTipAnchor
+
+	mu   sync.Mutex
+	head atomic.Pointer[common.EvmHead]
+	// dirty: a change since the lane's last computation began
+	// (markLanes).
+	dirty atomic.Bool
+	// gauges are bound at the first computation. Guarded by mu.
+	gauges *laneGauges
+	// moved is closed and replaced when Latest changes.
+	moved atomic.Pointer[chan struct{}]
+	// reached is when Latest first reached each recent number.
+	reached latestReached
+	// sent is the highest block this instance's taps of the lane wrote,
+	// on any transport: a Latest below it is latest_regressed.
+	sent atomic.Uint64
+	// fallen: Latest is below sent and its fall was counted; it re-arms
+	// once Latest reaches sent again (spec §17: once per fall). Guarded
+	// by mu.
+	fallen bool
+	// voters are the ids the last latest ballot counted, ballot the
+	// current evaluation's (buffers swapped each refresh): a fall while
+	// the counted set changed is a membership change, no latest_regressed
+	// (spec §17). Guarded by mu.
+	voters, ballot []string
+	// finalizedFloor is the highest Finalized the lane served since an
+	// evaluation last found no voter backing it (holdFinalized). Guarded
+	// by mu.
+	finalizedFloor int64
+}
+
+func (l *servedTipLane) noteSent(n uint64) {
+	for {
+		cur := l.sent.Load()
+		if n <= cur || l.sent.CompareAndSwap(cur, n) {
+			return
+		}
+	}
 }
 
 func (l *servedTipLane) anchor(finalized bool) *servedTipAnchor {
@@ -136,10 +193,70 @@ func (l *servedTipLane) anchor(finalized bool) *servedTipAnchor {
 	return &l.latest
 }
 
+// holdFinalized returns the Finalized to serve for the computed tip and
+// keeps the lane's floor, the highest Finalized it served (spec §6.4,
+// #1353). Finality never reverts, so a lower tip while backing (the lowest
+// highest finalized vote of the lane's ballot and each constraining
+// guarantee subset) still reaches the floor means the voters changed — a
+// leader left the ballot, or a lagger rejoined a lone leader — not the
+// chain. The floor holds only a drop of at most tolerance blocks: voter
+// changes move Finalized by far less, and a deeper drop is the regression
+// guard's to bound, so a far-ahead head once served alone cannot back the
+// floor on its own forever. Outside those bounds the floor drops to the
+// tip, and a voter that returns later does not restore it. Callers hold
+// mu: the backing is from the same evaluation as the floor it is compared
+// to.
+func (l *servedTipLane) holdFinalized(tip, backing, tolerance int64) int64 {
+	if tip < l.finalizedFloor && l.finalizedFloor-tip <= tolerance && l.finalizedFloor <= backing {
+		return l.finalizedFloor
+	}
+	l.finalizedFloor = tip
+	return tip
+}
+
+// finalizedFloorTolerance is the deepest drop a finalized floor holds: the
+// regression guard's tolerance (servedTip.maxRegressionBlocks), the default
+// one when the guard is off, so the two split the drops between them.
+func (n *Network) finalizedFloorTolerance() int64 {
+	if t := n.servedTipMaxRegressionBlocks(); t >= 0 {
+		return t
+	}
+	return common.DefaultToleratedBlockHeadRollback
+}
+
+// shareFinalized lifts the network-wide lane's Finalized `served` to the
+// highest one any instance served (servedFinalizedShared), so instances
+// behind one load balancer agree (spec §6.4, §14), under holdFinalized's
+// rule: at most tolerance above the `computed` tip, and only while backing
+// still reaches it. Any other shared value is ignored, and ages out as the
+// chain passes it.
+func (n *Network) shareFinalized(served, computed, backing, tolerance int64) int64 {
+	if n.servedFinalizedShared == nil || served <= 0 {
+		return served
+	}
+	if shared := n.servedFinalizedShared.GetValue(); served < shared && shared-computed <= tolerance && shared <= backing {
+		return shared
+	}
+	return served
+}
+
+// publishFinalized raises the shared network-wide Finalized to `computed`,
+// this evaluation's computed tip, as main does (#1364): a held value never
+// publishes. Only raises are published: a value the chain left behind stays
+// in the counter until the chain passes it, unserved by shareFinalized's
+// tolerance bound, while publishing it down would make instances whose views
+// differ by more than the counter's rollback tolerance overwrite each other on
+// every evaluation. A raise updates the local copy at once and the store in
+// the background (TryUpdate), so the head computation never waits on it.
+func (n *Network) publishFinalized(computed int64) {
+	if n.servedFinalizedShared != nil && computed > n.servedFinalizedShared.GetValue() {
+		n.servedFinalizedShared.TryUpdate(context.Background(), computed, time.Now())
+	}
+}
+
 // servedTipAnchor tracks, per process, when the served-tip VALUE was last
 // seen to change — the advance-age watchdog's clock — and holds the regression
-// guard's last corroborated pick (see guardServedTipRegression) and, on the
-// finalized axis, the finalized floor (see holdFinalized).
+// guard's last corroborated pick (see guardServedTipRegression).
 //
 // The first observed value does NOT count as a change (there is nothing to
 // compare against): the anchor stays unset until the process witnesses the
@@ -149,9 +266,8 @@ func (l *servedTipLane) anchor(finalized bool) *servedTipAnchor {
 // pods. A persisted anchor plus a strict clamp is exactly what produces the
 // frozen-tip regression (see the picker's doc comment and
 // networks_served_tip_invariants_test.go); every field below is rebuilt from
-// live observations after a restart, the guard always fails open on its own
-// after a bounded window, and the finalized floor yields the moment no voter
-// reports it.
+// live observations after a restart, and the guard always fails open on its
+// own after a bounded window.
 type servedTipAnchor struct {
 	seenValue   atomic.Int64
 	changedAtMs atomic.Int64
@@ -173,10 +289,12 @@ type servedTipAnchor struct {
 	// starts holding, once if it gives up) instead of once per request.
 	guardState atomic.Int32
 
-	// finalizedFloor is the finalized axis's floor: the highest tip this lane
-	// served as finalized since the last evaluation in which no voter
-	// reported it. Unused on the latest axis.
-	finalizedFloor atomic.Int64
+	// refreshedAtNs is when refreshLatest last walked this axis's voters
+	// (UnixNano). It saves each request the voter walk and an Ask per
+	// voter; the Ask paces the fetches, but within one cadence a routing
+	// order that rotates would Ask voters the last walk did not, and the
+	// finalized axis is no Ask.
+	refreshedAtNs atomic.Int64
 }
 
 const (
@@ -198,24 +316,35 @@ const (
 // impossible.
 const servedTipRegressionTTL = time.Minute
 
-// servedTipClock is the regression guard's clock, swapped in tests.
-var servedTipClock = time.Now
+// servedTipNow is the regression guard's clock while set; tests swap it
+// while network goroutines read it.
+var servedTipNow atomic.Pointer[func() time.Time]
+
+func servedTipClock() time.Time {
+	if now := servedTipNow.Load(); now != nil {
+		return (*now)()
+	}
+	return time.Now()
+}
 
 // observe records v as the latest served value, stamping the anchor when the
-// value changed since the last observation.
+// value changed since the last observation. moved: this caller saw v replace
+// another value, the first one included.
 //
 // LOAD FIRST: the served tip is read several times per request and is the same
 // value on almost every one of them, so the steady state must be a shared READ
 // of this cache line, not an exclusive read-modify-write from every serving
 // core. The Swap survives only on the (rare) path where the value really moved,
 // where it is what makes exactly one caller see the transition.
-func (a *servedTipAnchor) observe(v int64) {
+func (a *servedTipAnchor) observe(v int64) (moved bool) {
 	if a.seenValue.Load() == v {
-		return
+		return false
 	}
-	if old := a.seenValue.Swap(v); old != v && old != 0 {
+	old := a.seenValue.Swap(v)
+	if old != v && old != 0 {
 		a.changedAtMs.Store(time.Now().UnixMilli())
 	}
+	return old != v
 }
 
 // age returns time since the last observed value change, or -1 when no change
@@ -234,17 +363,19 @@ func (a *servedTipAnchor) age() time.Duration {
 // The upstream list is supplied as a closure so newly-bootstrapped upstreams
 // become visible to the engine each tick without a re-register.
 func (n *Network) Bootstrap(ctx context.Context) error {
+	n.startHeads()
 	if n.policyEngine == nil {
 		return nil
 	}
-	cfg := n.cfg.SelectionPolicy
-	if cfg == nil {
-		cfg = &common.SelectionPolicyConfig{}
-		n.cfg.SelectionPolicy = cfg
+	// A copy: defaults and the engine's default-policy upgrade write it, and
+	// a retry runs this again while the network serves from n.cfg.
+	cfg := &common.SelectionPolicyConfig{}
+	if n.cfg.SelectionPolicy != nil {
+		*cfg = *n.cfg.SelectionPolicy
 	}
-	// Defensive: callers may have set Eval but skipped SetDefaults (common
-	// in tests that build Config as Go struct literals). Compile here so
-	// the engine never sees a nil program.
+	// Callers may have set Eval but skipped SetDefaults (common in tests that
+	// build Config as Go struct literals). Compile here so the engine never
+	// sees a nil program.
 	if cfg.CompiledProgram == nil {
 		if err := cfg.SetDefaults(); err != nil {
 			return fmt.Errorf("selectionPolicy SetDefaults: %w", err)
@@ -422,12 +553,9 @@ func (n *Network) ProjectId() string {
 }
 
 func (n *Network) Architecture() common.NetworkArchitecture {
-	if n.cfg.Architecture == "" {
-		if n.cfg.Evm != nil {
-			n.cfg.Architecture = common.ArchitectureEvm
-		}
+	if n.cfg.Architecture == "" && n.cfg.Evm != nil {
+		return common.ArchitectureEvm
 	}
-
 	return n.cfg.Architecture
 }
 
@@ -439,53 +567,11 @@ func (n *Network) Logger() *zerolog.Logger {
 	return n.logger
 }
 
-// tipVoterRank is the one rule for who votes on a served-tip ballot. ok is
-// false for an upstream with no head on the axis: non-EVM, no state poller,
-// syncing, or no head yet. Otherwise rank orders the voters, and a ballot
-// counts only the lowest rank present: 0 live, 1 benched, 2 static cap,
-// 3 benched static cap.
-//
-// STATIC-CAP UPSTREAMS DO NOT VOTE while any live head is present. An upstream
-// configured with `blockAvailability.upper.exactBlock` below the chain's head is
-// declaring a SERVING RANGE ("I answer up to block X"), not observing where the
-// head is — see evmTipObservation. Letting such a declaration onto the ballot
-// lets two capped legacy upstreams pull the tip down: pinned at an
-// `upper.exactBlock` far below the live heads, they outvote them the moment a
-// third live upstream is excluded for lag, "latest" interpolates to a
-// historical block, the availability gate then admits ONLY those two
-// upstreams (the live ones start above the cap), and funded accounts read 0x0.
-//
-// BENCHED UPSTREAMS DO NOT VOTE while any non-benched one does: the health
-// tracker benches a head that stayed behind peers that kept advancing
-// (health.Tracker.IsHeadBenched), so one stalled node cannot hold
-// "latest" at its height. A live head always outranks a cap, benched or not:
-// a stalled live node is still closer to the chain than a serving range.
-func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (head int64, rank int, ok bool) {
-	eu, isEvm := u.(common.EvmUpstream)
-	if !isEvm {
-		return 0, 0, false
-	}
-	if sp := eu.EvmStatePoller(); sp == nil || sp.IsObjectNull() || eu.EvmSyncingState() == common.EvmSyncingStateSyncing {
-		return 0, 0, false
-	}
-	head, capped := evmTipObservation(eu, finalized)
-	if head <= 0 {
-		return 0, 0, false
-	}
-	if capped {
-		rank = 2
-	}
-	if tracker != nil && tracker.IsHeadBenched(u) {
-		rank++
-	}
-	return head, rank, true
-}
-
 // evmTipBallot builds the served-tip pick for an axis under quorum q from the
-// request's tip candidates (EvmRoutableUpstreams) that satisfy member (nil =
-// all of them): the heads of the best-ranked voters (tipVoterRank). live
-// reports whether live, non-capped heads decided it (benched or not): a
-// cap-only ballot gives the regression guard no live reference.
+// number votes of sel's lane (voterSet) that satisfy member (nil = all of
+// them). live reports whether live, non-capped heads decided it (benched or
+// not): a cap-only ballot gives the regression guard no live reference.
+// voters, when not nil, is reset to the ids of the voters the pick counted.
 //
 // MIXED POOL vs ALL-CAPPED POOL. The rule applies per candidate set, which is
 // what lets the same function build the network-wide ballot AND each
@@ -495,27 +581,27 @@ func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (h
 // serve — so it keeps voting. (No live head means no live reference for the
 // regression guard either; it falls back to its own last corroborated pick,
 // see guardServedTipRegression.)
-func (n *Network) evmTipBallot(ctx context.Context, useFinalized bool, q common.ServedTipQuorum, member func(common.Upstream) bool) (common.ServedTipPick, bool) {
+func (n *Network) evmTipBallot(sel string, useFinalized bool, q common.ServedTipQuorum, member func(common.Upstream) bool, voters *[]string) (pick common.ServedTipPick, live bool, ranks tipRanks) {
 	// Typical pools fit the stack buffer, so the ballot stays off the heap;
 	// append moves a larger one there.
 	var buf [16]int64
 	heads := buf[:0]
-	best := -1
-	for u := range n.EvmRoutableUpstreams(ctx) {
-		if member != nil && !member(u) {
-			continue
-		}
-		head, rank, ok := tipVoterRank(u, useFinalized, n.metricsTracker)
-		if !ok || (best >= 0 && rank > best) {
-			continue
-		}
-		if best < 0 || rank < best {
-			best, heads = rank, heads[:0]
-		}
-		heads = append(heads, head)
+	if voters != nil {
+		*voters = (*voters)[:0]
 	}
-	return common.PickServedTip(heads, q), best >= 0 && best <= 1
+	s := n.voters(sel, voterQuery{kind: numberVote, finalized: useFinalized, member: member})
+	s.each(func(u common.Upstream, head int64) bool {
+		heads = append(heads, head)
+		if voters != nil {
+			*voters = append(*voters, u.Id())
+		}
+		return true
+	})
+	return common.PickServedTip(heads, q), s.live(), s.ranks
 }
+
+// tipRankLabels name the ranks of tipVoterRank on erpc_served_tip_voters.
+var tipRankLabels = [4]string{"live", "live_benched", "capped", "capped_benched"}
 
 // evmTipObservation returns an upstream's effective head for the axis, plus
 // whether that value is a STATIC SERVING-RANGE DECLARATION rather than an
@@ -590,13 +676,18 @@ func configuredUpperExactBlock(u common.Upstream) *int64 {
 // arbitrary selector value can never grow per-pod memory. No-op when there is
 // no request or no selector in ctx (background/admin callers).
 func (n *Network) EvmRoutableUpstreams(ctx context.Context) iter.Seq[common.Upstream] {
-	// Kept this small so it inlines: the closure then stays on the caller's
-	// stack instead of costing a heap allocation per walk.
-	return func(yield func(common.Upstream) bool) { n.walkTipCandidates(ctx, yield) }
+	return n.tipCandidates(requestSelector(ctx))
 }
 
-func (n *Network) walkTipCandidates(ctx context.Context, yield func(common.Upstream) bool) {
-	sel := requestSelector(ctx)
+// tipCandidates is EvmRoutableUpstreams for the use-upstream selector sel
+// ("" = every upstream).
+func (n *Network) tipCandidates(sel string) iter.Seq[common.Upstream] {
+	// Kept this small so it inlines: the closure then stays on the caller's
+	// stack instead of costing a heap allocation per walk.
+	return func(yield func(common.Upstream) bool) { n.walkTipCandidates(sel, yield) }
+}
+
+func (n *Network) walkTipCandidates(sel string, yield func(common.Upstream) bool) {
 	visit := func(u common.Upstream) bool {
 		if sel != "" {
 			if m, _ := common.UpstreamMatchesSelector(sel, u); !m {
@@ -605,26 +696,33 @@ func (n *Network) walkTipCandidates(ctx context.Context, yield func(common.Upstr
 		}
 		return yield(u)
 	}
-	if n.policyEngine != nil {
-		if eligible := n.policyEngine.GetOrdered(n.networkId, "*", "*"); len(eligible) > 0 {
-			for _, u := range eligible {
-				if !visit(u) {
-					return
-				}
-			}
-			return
-		}
-	}
-	// A partially-initialized network (cache-only paths, tests without a
-	// registry) has no candidates, so the head accessors fail open (0).
-	if n.upstreamsRegistry == nil {
-		return
-	}
-	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+	policy, all := n.eligibleSet(context.Background())
+	for _, u := range policy {
 		if !visit(u) {
 			return
 		}
 	}
+	for _, u := range all {
+		if !visit(u) {
+			return
+		}
+	}
+}
+
+// eligibleSet is the policy's eligible set, or, while it has none, every
+// upstream of the network; the other is nil. A partially-initialized
+// network (cache-only paths, tests without a registry) has neither, so the
+// head accessors fail open (0).
+func (n *Network) eligibleSet(ctx context.Context) (policy []common.Upstream, all []*upstream.Upstream) {
+	if n.policyEngine != nil {
+		if eligible := n.policyEngine.GetOrdered(n.networkId, "*", "*"); len(eligible) > 0 {
+			return eligible, nil
+		}
+	}
+	if n.upstreamsRegistry == nil {
+		return nil, nil
+	}
+	return nil, n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
 }
 
 // requestSelector returns the use-upstream selector for the request bound to
@@ -638,18 +736,18 @@ func requestSelector(ctx context.Context) string {
 	return ""
 }
 
-// servedTipLaneFor returns the served-tip lane of the request bound to ctx:
-// the network-wide lane when it carries no use-upstream selector, the group's
-// lazily-materialized lane when the selector carves out a real sub-group
-// (identity and DDoS-safe gating from EvmUpstreamGroupForSelector, count capped
-// by maxServedTipLanes), else nil: the subset pick then runs with no guard, no
-// gauges and no anchor, so a subset value never overwrites any gauge.
-func (n *Network) servedTipLaneFor(ctx context.Context) *servedTipLane {
-	sel := requestSelector(ctx)
+// laneFor returns the lane of the use-upstream selector sel: the
+// network-wide lane for "", the group's lazily-materialized lane when sel
+// carves out a real sub-group (identity and DDoS-safe gating from
+// partitionKeyFor, count capped by maxServedTipLanes), else nil: the
+// subset pick then runs per request with no guard, no gauges and no
+// anchor, so a subset value never overwrites any gauge. A new lane
+// publishes its first Head before it is returned.
+func (n *Network) laneFor(sel string) *servedTipLane {
 	if sel == "" {
 		return &n.servedTipAll
 	}
-	key, label := n.EvmUpstreamGroupForSelector(ctx, sel)
+	key, ids := n.partitionKeyFor(context.Background(), sel)
 	if key == "" {
 		return nil
 	}
@@ -660,7 +758,9 @@ func (n *Network) servedTipLaneFor(ctx context.Context) *servedTipLane {
 	if n.servedTipLaneCount.Load() >= maxServedTipLanes {
 		return nil
 	}
-	actual, loaded := n.servedTipLanes.LoadOrStore(key, &servedTipLane{label: label})
+	l := &servedTipLane{key: key, selector: sel, label: common.LaneName(ids)}
+	n.refreshLane(l)
+	actual, loaded := n.servedTipLanes.LoadOrStore(key, l)
 	if !loaded {
 		n.servedTipLaneCount.Add(1)
 	}
@@ -711,13 +811,21 @@ func (n *Network) partitionKeyFor(ctx context.Context, selector string) (string,
 	return "grp:" + hex.EncodeToString(sum[:8]), matched
 }
 
-// EvmUpstreamGroupForSelector is the single source of node-GROUP identity: it maps a
-// use-upstream selector to a stable group key (for keying per-group state) and a
-// human-readable lane name, or ("","") when the selector doesn't carve out a real
-// sub-group. partitionKeyFor provides the dedup/bounds/cross-pod-stable key; this adds
-// the lane. Used by served-tip latest-block tracking (servedTipLaneFor) AND by
-// the integrity module, so both corroborate/track within the SAME group a request was
-// pinned to (whatever node groups the use-upstream selector carves out) — one grouping, not two.
+// EvmUpstreamGroupForSelector is the single source of node-GROUP identity:
+// it maps a use-upstream selector to its lane's stable key (for keying
+// per-group state) and human-readable name, or ("","") when the selector
+// has no lane of its own: it carves out no real sub-group, or its group
+// came past maxServedTipLanes. The lanes' Heads and the integrity module
+// (group trackers, spec §13) both read it, so a network holds at most
+// maxServedTipLanes group trackers, and a selector past them tracks and
+// corroborates within the network-wide lane — one grouping, not two.
+func (n *Network) EvmUpstreamGroupForSelector(_ context.Context, selector string) (key string, lane string) {
+	if l := n.laneFor(selector); l != nil && l.key != "" {
+		return l.key, l.label
+	}
+	return "", ""
+}
+
 // EvmAllUpstreams exposes the network's upstreams to the architecture layer
 // (interface-asserted from architecture/evm, which cannot import this package).
 // Used by the integrity state prober to enumerate probe targets.
@@ -728,14 +836,6 @@ func (n *Network) EvmAllUpstreams(ctx context.Context) []common.Upstream {
 		out = append(out, u)
 	}
 	return out
-}
-
-func (n *Network) EvmUpstreamGroupForSelector(ctx context.Context, selector string) (key string, lane string) {
-	k, ids := n.partitionKeyFor(ctx, selector)
-	if k == "" {
-		return "", ""
-	}
-	return k, common.LaneName(ids)
 }
 
 // isSimpleGroupSelector reports whether a selector is a single glob token
@@ -758,310 +858,418 @@ func isSimpleGroupSelector(selector string) bool {
 	return true
 }
 
-// EvmHighestLatestBlockNumber returns the served latest block for this network:
-// the freshest block at least servedTip.quorum (default 2) of the eligible,
-// non-syncing, live, non-benched upstreams already have — so interpolated
-// requests land on upstreams that can serve the advertised block, and a lone
-// far-ahead (or wrong-chain) upstream never defines it — then guarded against a
-// deep regression, floored to the head already delivered to WebSocket
-// subscribers, and clamped to every configured guarantee. See servedTip.
-func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
-	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestLatestBlockNumber")
-	defer span.End()
-	return n.servedTip(ctx, span, false)
-}
-
-// EvmRefreshLatestBlock asks the pollers that decide the request's latest head
-// for a background refresh: in routing order, only as many of the ballot's
-// voters (its best tipVoterRank) as the quorum needs, since a fresher head
-// anywhere else cannot move the served value. Two passes over the candidates,
-// counting then refreshing, keep a hot path such as eth_blockNumber free of
-// allocation.
-func (n *Network) EvmRefreshLatestBlock(ctx context.Context) {
-	best, voters := -1, 0
-	for u := range n.EvmRoutableUpstreams(ctx) {
-		if _, rank, ok := tipVoterRank(u, false, n.metricsTracker); ok {
-			switch {
-			case best < 0 || rank < best:
-				best, voters = rank, 1
-			case rank == best:
-				voters++
-			}
+// refreshLatest refreshes the pollers that decide selector sel's Latest
+// for a request that answers it (spec §6.8): only as many of the ballot's
+// voters (voterSet's number votes) as the quorum needs, in routing order,
+// since a fresher head anywhere else cannot move the served value. A lane
+// walks its voters at most once per poll cadence, the debounce each poller
+// applies anyway, so the per-request call costs no upstream iteration in
+// between. While Latest rests on reports younger than W the Asks run in
+// the background and the request reads Head at once, one refresh behind.
+// Once they are older, after an idle period, the request waits for the
+// Asks, at most W, then reads the Head they moved: else it would answer
+// the last full poll's Latest. A timeout or a failed Ask leaves Head as
+// it is.
+func (n *Network) refreshLatest(ctx context.Context, sel string) {
+	var ec *common.EvmNetworkConfig
+	if n.cfg != nil {
+		ec = n.cfg.Evm
+	}
+	l := n.laneFor(sel)
+	now := time.Now()
+	var last int64
+	if l != nil {
+		last = l.latest.refreshedAtNs.Load()
+		if now.UnixNano()-last < int64(ec.PollCadence(n.blockTimeOrCold())) {
+			return
 		}
 	}
-	if voters == 0 {
+	s := n.voters(sel, voterQuery{kind: numberVote})
+	if s.count() == 0 {
 		return
 	}
-	var q common.ServedTipQuorum
-	if n.cfg != nil {
-		q = n.cfg.Evm.ServedTipQuorum()
+	need := ec.ServedTipQuorum().Of(s.count())
+	w := health.FreshnessWindow(n.EvmBlockTime())
+	if now.Sub(latestRestsOn(s, need)) >= w {
+		n.awaitLatestRefresh(ctx, l, s, need, w)
+		return
 	}
-	need := q.Of(voters)
-	for u := range n.EvmRoutableUpstreams(ctx) {
-		if _, rank, ok := tipVoterRank(u, false, n.metricsTracker); ok && rank == best {
-			u.(common.EvmUpstream).EvmStatePoller().RefreshLatestBlock()
-			if need--; need == 0 {
-				return
+	if l != nil && !l.latest.refreshedAtNs.CompareAndSwap(last, now.UnixNano()) {
+		return
+	}
+	s.each(func(u common.Upstream, _ int64) bool {
+		u.(common.EvmUpstream).EvmStatePoller().AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
+		need--
+		return need > 0
+	})
+}
+
+// latestRestsOn is when the evidence Latest rests on was taken: the
+// need-th newest report of voters s (spec §6.8). Latest is the need-th
+// highest vote, so it is at least the lowest of the need newest votes, each
+// its node's head when the report was taken. Zero when s walks no voter
+// (the set changed since it was read).
+func latestRestsOn(s voterSet, need int) time.Time {
+	at := make([]time.Time, 0, s.count())
+	s.each(func(u common.Upstream, _ int64) bool {
+		at = append(at, u.(common.EvmUpstream).EvmStatePoller().LatestReportAt())
+		return true
+	})
+	if len(at) == 0 {
+		return time.Time{}
+	}
+	slices.SortFunc(at, func(a, b time.Time) int { return b.Compare(a) })
+	return at[min(need, len(at))-1]
+}
+
+// awaitLatestRefresh Asks the first need voters of s in routing order and
+// waits for their answers, at most w, then publishes lane l's Head (nil:
+// sel forms no lane and its Head is computed per read). No gate: every
+// request that finds Latest stale waits, and the Ask joins the fetch in
+// flight.
+func (n *Network) awaitLatestRefresh(ctx context.Context, l *servedTipLane, s voterSet, need int, w time.Duration) {
+	ctx, cancel := context.WithTimeout(ctx, w)
+	defer cancel()
+	var wg sync.WaitGroup
+	s.each(func(u common.Upstream, _ int64) bool {
+		sp := u.(common.EvmUpstream).EvmStatePoller()
+		wg.Go(func() { sp.Ask(ctx, common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh) })
+		need--
+		return need > 0
+	})
+	wg.Wait()
+	if l != nil {
+		l.latest.refreshedAtNs.Store(time.Now().UnixNano())
+		n.refreshLaneRecovered(l)
+	}
+}
+
+// awaitFinalizedRefresh refreshes the finalized numbers of every voter of
+// selector sel's ballot and waits for them, at most W, then publishes
+// sel's lane Head, so a request naming the `finalized` tag takes a
+// Finalized no older than the finalized debounce (spec §6.4 Finality,
+// §6.8). Every voter, not a quorum's worth: a voter's finality depth is
+// its own, so which voters decide the ballot's q-th highest finalized is
+// known only from fresh numbers, and a refresh of the deep ones leaves it
+// where it was. Each poller polls only past its finalized debounce, joins
+// a poll in flight, and has none once its finalized tag is given up. The
+// latest-axis rank serves here too: an upstream with no finalized number
+// yet still gets polled for its first one.
+func (n *Network) awaitFinalizedRefresh(ctx context.Context, sel string) {
+	s := n.voters(sel, voterQuery{kind: numberVote})
+	if s.count() == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
+	defer cancel()
+	var wg sync.WaitGroup
+	var moved atomic.Bool
+	s.each(func(u common.Upstream, _ int64) bool {
+		sp := u.(common.EvmUpstream).EvmStatePoller()
+		wg.Go(func() {
+			before := sp.FinalizedBlock()
+			if sp.RefreshFinalized(ctx) && sp.FinalizedBlock() != before {
+				moved.Store(true)
 			}
+		})
+		return true
+	})
+	wg.Wait()
+	if l := n.laneFor(sel); moved.Load() && l != nil {
+		n.refreshLaneRecovered(l)
+	}
+}
+
+// EvmRefreshHeadsBelow Asks, in the background, with a number need at
+// pace, the voters Latest lacks to reach block (lackingVoters; spec §6.5
+// catch-up).
+func (n *Network) EvmRefreshHeadsBelow(selector string, block int64, pace time.Duration) {
+	for _, sp := range n.lackingVoters(selector, block) {
+		sp.AskBackground(common.HeadNeedNumber, pace, time.Time{}, common.AskCatchUp)
+	}
+}
+
+// lackingVoters are the pollers of as many of the voters of selector's
+// lane whose head is below block as Latest still lacks to reach it,
+// oldest evidence first, each once (spec §6.5 catch-up, §6.4 by-hash wait):
+// Latest is their ballot, so no other upstream moves it, and once the
+// quorum holds block no further Ask can. A guarantee subset's majority
+// clamps Latest too (guaranteedFloor), so each subset adds the voters its
+// own ballot lacks.
+func (n *Network) lackingVoters(selector string, block int64) []common.EvmStatePoller {
+	var ec *common.EvmNetworkConfig
+	if n.cfg != nil {
+		ec = n.cfg.Evm
+	}
+	out := n.lacking(nil, selector, block, voterQuery{kind: numberVote}, ec.ServedTipQuorum())
+	if ec == nil || ec.ServedTip == nil {
+		return out
+	}
+	for _, g := range ec.ServedTip.GuaranteedFor {
+		out = n.lacking(out, selector, block, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
+			m, _ := common.UpstreamMatchesSelector(g, u)
+			return m
+		}}, common.ServedTipQuorumMajority)
+	}
+	for _, m := range ec.ServedTip.GuaranteedMethods {
+		out = n.lacking(out, selector, block, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
+			handle, _ := u.ShouldHandleMethod(m)
+			return handle
+		}}, common.ServedTipQuorumMajority)
+	}
+	return out
+}
+
+// lacking appends to out, unless already there, as many of q's voters
+// below block as quorum lacks to hold it (quorum less the voters at or
+// above it), oldest evidence first.
+func (n *Network) lacking(out []common.EvmStatePoller, selector string, block int64, q voterQuery, quorum common.ServedTipQuorum) []common.EvmStatePoller {
+	s := n.voters(selector, q)
+	if s.count() == 0 {
+		return out
+	}
+	lacks := quorum.Of(s.count())
+	var below []common.EvmStatePoller
+	s.each(func(u common.Upstream, head int64) bool {
+		if head >= block {
+			lacks--
+		} else if sp := u.(common.EvmUpstream).EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+			below = append(below, sp)
+		}
+		return true
+	})
+	if lacks <= 0 {
+		return out
+	}
+	oldestEvidenceFirst(below)
+	for _, sp := range below[:min(lacks, len(below))] {
+		if !slices.Contains(out, sp) {
+			out = append(out, sp)
+		}
+	}
+	return out
+}
+
+// oldestEvidenceFirst orders pollers by their latest evidence time
+// (common.EvidenceAt), oldest first, stably.
+func oldestEvidenceFirst(pollers []common.EvmStatePoller) {
+	type ranked struct {
+		sp common.EvmStatePoller
+		at time.Time
+	}
+	rs := make([]ranked, len(pollers))
+	for i, sp := range pollers {
+		rs[i] = ranked{sp, common.EvidenceAt(sp.LatestReportAt(), sp.LatestAskAt())}
+	}
+	slices.SortStableFunc(rs, func(a, b ranked) int { return a.at.Compare(b.at) })
+	for i, r := range rs {
+		pollers[i] = r.sp
+	}
+}
+
+// EvmPollHeads Asks, with a hash need at pace, each upstream in ids:
+// voters that a held vote need waits on (spec §6.5). Every lane's tracker
+// asks at each publish; the Ask's pace keeps it to one fetch per upstream
+// per pace across lanes.
+func (n *Network) EvmPollHeads(ids []string, pace time.Duration) {
+	n.pollHeads(ids, common.HeadNeedHash, pace, common.AskCatchUp)
+}
+
+// EvmPollForks Asks, with a fork need at pace, each voter in ids whose
+// vote the pins moved off (spec §6.3). Each answer is its voter's hash
+// vote, whatever it voted before. next is the soonest of their Asks' Next.
+func (n *Network) EvmPollForks(ids []string, pace time.Duration) (next time.Time) {
+	return n.pollHeads(ids, common.HeadNeedFork, pace, common.AskRefresh)
+}
+
+// EvmRewindHeads is the network-wide tracker's rollback write (spec §14):
+// votes holds, per upstream id, the height of its own hash vote on the
+// tracker's new branch; each counter above it is rewound to it.
+func (n *Network) EvmRewindHeads(votes map[string]int64) {
+	if n.upstreamsRegistry == nil {
+		return
+	}
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
+		bn, ok := votes[u.Id()]
+		if !ok {
+			continue
+		}
+		if p := u.EvmStatePoller(); p != nil && !p.IsObjectNull() {
+			p.RewindLatestBlock(bn)
 		}
 	}
 }
 
-// tryShortCircuitFutureBlock returns a truthful null response (ok=true) when
-// `req` is a concrete-numbered eth_getBlockByNumber lookup whose target block is
-// beyond every upstream's latest head.
-// No upstream can serve such a block yet, so dispatching + hedging across all of
-// them only burns latency and load before they each return empty — returning the
-// null here skips that fan-out entirely.
-//
-// Safety: it compares against the highest last-observed effective latest head
-// across every upstream of the network, static caps included, and fails open
-// when any of them has no observed head (see futureBlockCeiling), so it never
-// nulls out a block at or below a head an upstream has reported. A block an
-// upstream produced after its last observed head can still get null until the
-// poller or a head subscription reports it. It runs only when the network sets
-// evm.shortCircuitFutureBlocks (EvmNetworkConfig.ShortCircuitFutureBlocksEnabled),
-// and the synthesized response is returned directly from Forward, so it is
-// never written to cache
-// (the block will exist later). The post-forward empty guard remains as
-// defense-in-depth for the in-flight case where an upstream advances mid-request.
-func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.NormalizedRequest, method string) (*common.NormalizedResponse, bool) {
-	if n.cfg == nil || !n.cfg.Evm.ShortCircuitFutureBlocksEnabled() {
+// pollHeads Asks each upstream in ids in the background; next is the
+// soonest of their Asks' Next.
+func (n *Network) pollHeads(ids []string, need common.HeadNeed, pace time.Duration, reason common.AskReason) (next time.Time) {
+	if n.upstreamsRegistry == nil {
+		return time.Time{}
+	}
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
+		if !slices.Contains(ids, u.Id()) {
+			continue
+		}
+		p := u.EvmStatePoller()
+		if p == nil || p.IsObjectNull() {
+			continue
+		}
+		if at := p.AskBackground(need, pace, time.Time{}, reason).Next; !at.IsZero() && (next.IsZero() || at.Before(next)) {
+			next = at
+		}
+	}
+	return next
+}
+
+// EvmLatestAskAt is, for each upstream in ids, the send time of this
+// instance's last Ask fetch of its latest: the Ask half of a chain
+// tracker's evidence times (common.EvidenceAt). An upstream never Asked
+// is absent.
+func (n *Network) EvmLatestAskAt(ids []string) map[string]time.Time {
+	out := make(map[string]time.Time, len(ids))
+	if n.upstreamsRegistry == nil {
+		return out
+	}
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
+		if !slices.Contains(ids, u.Id()) {
+			continue
+		}
+		if p := u.EvmStatePoller(); p != nil && !p.IsObjectNull() {
+			if at := p.LatestAskAt(); !at.IsZero() {
+				out[u.Id()] = at
+			}
+		}
+	}
+	return out
+}
+
+// EvmAskHead is the Ask of upstreamId's head at pace, after after, for a
+// chain tracker's settle or no-source Ask (spec §6.5 rules 5 and 6,
+// §6.8); AskBackoff when the network has no such upstream with a poller.
+func (n *Network) EvmAskHead(ctx context.Context, upstreamId string, need common.HeadNeed, pace time.Duration, after time.Time, reason common.AskReason) common.HeadAnswer {
+	if n.upstreamsRegistry != nil {
+		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+			if u.Id() != upstreamId {
+				continue
+			}
+			if p := u.EvmStatePoller(); p != nil && !p.IsObjectNull() {
+				return p.Ask(ctx, need, pace, after, reason)
+			}
+			break
+		}
+	}
+	return common.HeadAnswer{Outcome: common.AskBackoff}
+}
+
+// tryShortCircuitFutureBlock returns a truthful null response (ok=true) for
+// a numbered eth_getBlockByNumber the refusal rule calls future (spec §6.4,
+// #1238): above the ceiling plus its age in blocks, on a ceiling younger
+// than 1 bt or Asked again. No upstream can serve it yet, so dispatching
+// and hedging across all of them only burns latency and load. It runs only
+// when the network sets evm.shortCircuitFutureBlocks, and the synthesized
+// response is returned directly from Forward, so it is never cached.
+func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, bool) {
+	if !evm.ShortCircuitsFuture(req) {
 		return nil, false
 	}
-	if !strings.EqualFold(method, "eth_getBlockByNumber") {
-		return nil, false
-	}
-	_, bn, err := evm.ExtractBlockReferenceFromRequest(ctx, req)
-	if err != nil || bn <= 0 {
-		// Tags ("latest"/"pending"/...), block-hash lookups, or unparseable
-		// params carry no concrete future number — never short-circuit.
-		return nil, false
-	}
-	maxHead, known := n.futureBlockCeiling(ctx)
-	if !known || bn <= maxHead {
-		// Unknown head (fail open) or block within reach of some upstream.
+	v := evm.HeadRefusalOf(ctx, req)
+	if v == nil || v.Rule != common.HeadFuture {
 		return nil, false
 	}
 	jrr, err := common.NewJsonRpcResponse(req.ID(), nil, nil)
 	if err != nil {
 		return nil, false
 	}
+	v.Refuse()
 	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
-	resp.SetEvmBlockNumber(bn)
+	resp.SetEvmBlockNumber(v.Block)
 	return resp, true
 }
 
-// futureBlockCeiling returns the highest effective latest head across every
-// upstream of the network, regardless of selection policy, tier or syncing
-// state: any of them can end up serving a request (policy order, the fallback
-// escape, syncing upstreams without skipWhenSyncing). It uses latest heads
-// whatever emptyResultConfidence says: that setting decides how an empty answer
-// is treated, not whether an upstream can have the block. known is false when
-// the network has no upstreams or any upstream's head is unknown.
-func (n *Network) futureBlockCeiling(ctx context.Context) (head int64, known bool) {
-	if n.upstreamsRegistry == nil {
-		return 0, false
+// refuseFutureRange refuses a range method (eth_getLogs, trace_filter)
+// whose toBlock the refusal rule calls future, before any dispatch (spec
+// §6.4): a node answers a range above its head with the part it has, so an
+// empty or short answer would pass for the whole range. The error names
+// the ceiling the verdict was decided against.
+func (n *Network) refuseFutureRange(req *common.NormalizedRequest, method string) error {
+	if n.cfg.Architecture != common.ArchitectureEvm || !methodHasDedicatedRangeAvailabilityHook(method) {
+		return nil
 	}
-	ups := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	if len(ups) == 0 {
-		return 0, false
+	v := req.HeadRefusal()
+	if v == nil || v.Rule != common.HeadFuture {
+		return nil
 	}
-	for _, u := range ups {
-		if u.EvmStatePoller() == nil {
-			return 0, false
-		}
-		blk, _ := evmTipObservation(u, false)
-		if blk <= 0 {
-			return 0, false
-		}
-		head = max(head, blk)
-	}
-	return head, true
-}
-
-// servedTip computes the served tip for one axis of the request bound to ctx:
-// the freshest block at least the configured quorum of the eligible voters
-// already has (see evmTipBallot and common.PickServedTip), guarded against a
-// regression far below the live heads, lifted to the head already delivered to
-// WebSocket subscribers (network-wide latest only), clamped to every
-// configured guarantee, held at the lane's finalized floor and, network-wide,
-// at the finalized other instances served (finalized only), then exported on
-// the request's lane.
-//
-// The guard is in-process, bounded and one-directional (it can only hold the
-// tip, and only briefly), and it cannot produce a block that no live upstream
-// reports in the very same evaluation. The finalized floors hold a block only
-// while a voter of the same evaluation reports it, the shared one included.
-// Nothing else is persisted and nothing is predicted, so no inherited or
-// rogue value can pin, freeze or poison the result
-// (networks_served_tip_invariants_test.go pins those outcomes against the
-// frozen-tip regression).
-func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool) int64 {
-	axis := "latest"
-	if finalized {
-		axis = "finalized"
-	}
-	lane := n.servedTipLaneFor(ctx)
-	var q common.ServedTipQuorum
-	if n.cfg != nil {
-		q = n.cfg.Evm.ServedTipQuorum()
-	}
-	pick, live := n.evmTipBallot(ctx, finalized, q, nil)
-	tip := pick.Tip
-
-	// Regression guard: "latest" cannot drop far below the corroborated live
-	// head in one evaluation. Runs BEFORE the guaranteed-method floor, which is
-	// a deliberate operator-configured clamp the guard must not fight.
-	var anchor *servedTipAnchor
-	if lane != nil {
-		anchor = lane.anchor(finalized)
-		tip = n.guardServedTipRegression(axis, lane.label, anchor, pick, live)
-	}
-
-	// The delivered-head floor is network-wide, so it applies to unscoped
-	// requests only.
-	if lane == &n.servedTipAll && !finalized {
-		tip = n.applyDeliveredHeadFloor(tip, pick.Max)
-	}
-
-	// Capability guarantee (#855): the served tip must never exceed what any
-	// configured guarantee SUBSET can serve — a method's supporting upstreams
-	// (guaranteedMethods) or an operator-named group (guaranteedFor) — so a
-	// request on such a method (e.g. trace_*), or one consensus requires that
-	// group to answer, never resolves "latest" to a block only upstreams
-	// outside the subset have. It runs after the delivered-head floor, so the
-	// floor may lift the tip but never past a guarantee.
-	if tip > 0 {
-		if floor, _ := n.guaranteedFloor(ctx, finalized); floor > 0 && floor < tip {
-			tip = floor
-		}
-	}
-
-	// Finalized floor (#1353): a change of voters — the quorum passing to a
-	// lagging cohort, in the lane's ballot or a guarantee subset's — cannot
-	// pull "finalized" below a block this lane, or for the network-wide lane
-	// any instance, already served while a voter of each of those ballots
-	// still reports it. A floor holds only drops within the regression
-	// tolerance, so a far-ahead rogue head cannot pin it, and a held value never
-	// exceeds the served "latest": per voter finalized <= latest, so the pick
-	// keeps that order and the floor must too. Last, so nothing above lowers it.
-	if finalized && lane != nil {
-		tolerance := n.finalizedFloorTolerance()
-		held := n.holdFinalized(ctx, anchor, q, tip, tolerance)
-		if lane == &n.servedTipAll {
-			held = n.shareFinalized(ctx, q, held, tip, tolerance)
-		}
-		if held > tip {
-			if latest := n.EvmHighestLatestBlockNumber(ctx); latest > 0 && held > latest {
-				held = max(tip, latest)
-			}
-		}
-		tip = held
-	}
-
-	if common.IsTracingDetailed {
-		span.SetAttributes(
-			attribute.String("served_tip.axis", axis),
-			attribute.Int64("served_tip.tip", tip),
-			attribute.Int64("served_tip.freshest", pick.Freshest),
-			attribute.Int("served_tip.inputs", pick.Inputs),
-		)
-	}
-
-	// Watchdog anchor: when did this process last see the served value
-	// change. Telemetry only — nothing feeds back into the pick.
-	if lane != nil {
-		if tip > 0 {
-			anchor.observe(tip)
-		}
-		n.observeServedTipMetrics(axis, lane.label, tip, pick.Freshest, anchor.age())
-	}
-	return tip
-}
-
-// holdFinalized returns the finalized tip to serve for the computed tip, and
-// keeps the lane's finalized floor: the highest finalized tip this lane served.
-//
-// Finality never reverts, so a block this lane served as finalized is still
-// finalized. While a voter still reports it (finalizedBacking), a lower
-// computed tip means the voters changed — a leader left the ballot, or a
-// lagger rejoined a lone leader, and a lagging cohort became the quorum — not
-// the chain, so the lane keeps serving it. Once no voter reports it, the floor
-// drops to the computed tip: it never outlives its evidence, and a voter that
-// returns later does not bring it back.
-//
-// A floor holds only a drop of at most tolerance blocks: voter changes move
-// finalized by far less, and a deeper drop is the regression guard's to bound
-// (guardServedTipRegression). So a far-ahead rogue or wrong-chain head that
-// was once served alone cannot back the floor on its own forever.
-//
-// The backing is read after the floor: the tip's ballot may predate a floor a
-// concurrent evaluation just raised, and a voter's finalized head only moves
-// up, so only a fresh read tells a voter that left from one read too early.
-// The steady state (tip equals floor) is one shared read.
-func (n *Network) holdFinalized(ctx context.Context, anchor *servedTipAnchor, q common.ServedTipQuorum, tip, tolerance int64) int64 {
-	for {
-		floor := anchor.finalizedFloor.Load()
-		if tip == floor {
-			return tip
-		}
-		if tip < floor && floor-tip <= tolerance && floor <= n.finalizedBacking(ctx, q) {
-			return floor
-		}
-		if anchor.finalizedFloor.CompareAndSwap(floor, tip) {
-			return tip
-		}
+	n.countHeadRefusal(v.FutureRule())
+	return &common.ErrUpstreamBlockUnavailable{
+		BaseError: common.BaseError{
+			Code:    common.ErrCodeUpstreamBlockUnavailable,
+			Message: fmt.Sprintf("block not found for %s, requested toBlock %d is above the highest known block %d", method, v.Block, v.Ceiling),
+			Details: map[string]interface{}{
+				"blockNumber":  v.Block,
+				"highestBlock": v.Ceiling,
+			},
+		},
 	}
 }
 
-// finalizedFloorTolerance is the deepest drop a finalized floor holds: the
-// regression guard's tolerance (servedTip.maxRegressionBlocks), the default
-// one when the guard is off, so the two split the drops between them.
-func (n *Network) finalizedFloorTolerance() int64 {
-	if t := n.servedTipMaxRegressionBlocks(); t >= 0 {
-		return t
+// countRefusal counts the refusal rule's outcome for req (spec §17): data
+// is served, or retried_found after a miss; an empty or missing answer is
+// retried_missing in the band, future above it. eth_getBlockByNumber of a
+// block in the head region, Latest − reorgWindow < N ≤ Latest, answered
+// null or missing is served_missing, a broken head promise. Other methods'
+// null or missing-data answers at or below Latest can be legit (an index
+// past a block's count, a state read on a pruned node), and blocks below
+// the head region are availability, not the promise: no refusal, as for
+// requests naming no block and empty answers.
+func (n *Network) countRefusal(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse, err error) {
+	v := req.HeadRefusal()
+	if v == nil || v.Block <= 0 {
+		return
 	}
-	return common.DefaultToleratedBlockHeadRollback
-}
-
-// finalizedBacking is the highest finalized block a voter reports in every
-// ballot servedTip passes the finalized tip through: the request's own and each
-// constraining guarantee subset's.
-func (n *Network) finalizedBacking(ctx context.Context, q common.ServedTipQuorum) int64 {
-	pick, _ := n.evmTipBallot(ctx, true, q, nil)
-	backing := pick.Max
-	if _, subsets := n.guaranteedFloor(ctx, true); subsets > 0 {
-		backing = min(backing, subsets)
-	}
-	return backing
-}
-
-// shareFinalized lifts the network-wide finalized tip `served` to the highest
-// one any instance served (servedFinalizedShared), so instances behind one load
-// balancer agree, under holdFinalized's rule: at most tolerance above the
-// computed tip, so the lane's floor and the shared one together never hold
-// more, and only while a voter here still reports it (finalizedBacking). Any
-// other shared value is ignored, as an instance's own floor is.
-//
-// Only raises are published. A value the chain left behind (a reset chain, a
-// far-ahead voter served once) stays in the counter until the chain passes it,
-// but the tolerance bound already keeps it from being served; publishing it
-// down would make instances whose views differ by more than the counter's
-// rollback tolerance overwrite each other on every evaluation. The steady
-// state (tip equals the shared value) is one shared read.
-func (n *Network) shareFinalized(ctx context.Context, q common.ServedTipQuorum, served, computed, tolerance int64) int64 {
-	if n.servedFinalizedShared == nil || served <= 0 {
-		return served
-	}
-	shared := n.servedFinalizedShared.GetValue()
+	method, _ := req.Method()
 	switch {
-	case computed > shared:
-		n.servedFinalizedShared.TryUpdate(ctx, computed)
-	case served < shared && shared-computed <= tolerance && shared <= n.finalizedBacking(ctx, q):
-		return shared
+	case err == nil && resp != nil && !resp.IsObjectNull(ctx) && !isEmptyNetworkResult(method, resp):
+		if v.Retried() {
+			n.countHeadRefusal("retried_found")
+		} else {
+			n.countHeadRefusal("served")
+		}
+	case err != nil && !missingDataErr(err):
+	case v.Rule == common.HeadServe:
+		if method == "eth_getBlockByNumber" && n.inHeadRegion(v) && (err != nil || isNullResult(ctx, resp)) {
+			n.countHeadRefusal("served_missing")
+		}
+	case v.Rule == common.HeadBand:
+		n.countHeadRefusal("retried_missing")
+	case v.Rule == common.HeadFuture:
+		n.countHeadRefusal(v.FutureRule())
 	}
-	return served
+}
+
+// inHeadRegion reports whether v's block is in the head region of the
+// Latest it was decided against: Latest − reorgWindow < N ≤ Latest, the
+// chain tracker's window. With the head unknown no block was promised.
+func (n *Network) inHeadRegion(v *common.HeadRefusal) bool {
+	return v.Latest > 0 && n.chainTracker != nil && v.Block <= v.Latest && v.Block > v.Latest-int64(n.chainTracker.ReorgWindow())
+}
+
+// isNullResult reports whether resp's result is JSON null.
+func isNullResult(ctx context.Context, resp *common.NormalizedResponse) bool {
+	if resp == nil {
+		return false
+	}
+	jrr, err := resp.JsonRpcResponse(ctx)
+	return err == nil && jrr != nil && isJSONNull(jrr.GetResultBytes())
+}
+
+func (n *Network) countHeadRefusal(rule string) {
+	telemetry.CounterHandle(telemetry.MetricHeadRefusalTotal, n.projectId, n.Label(), rule).Inc()
+}
+
+// missingDataErr reports whether err says an upstream lacks the block
+// (spec §6.4): a missing-data error, or a range refused per upstream.
+func missingDataErr(err error) bool {
+	return common.HasErrorCode(err, common.ErrCodeEndpointMissingData, common.ErrCodeUpstreamBlockUnavailable)
 }
 
 // guardServedTipRegression returns the tip to serve for `pick`, substituting the
@@ -1302,10 +1510,9 @@ func (n *Network) rememberServedTipPick(anchor *servedTipAnchor, pick int64, las
 
 // noteServedTipGuardTransition records the guard's state and reports whether it
 // CHANGED, so both the log line and the counter fire once when a hold starts and
-// once when it gives up — never once per evaluation. EvmHighestLatestBlockNumber
-// runs several times per request, so a per-evaluation counter would scale with
-// RPS and read as thousands of suppressed picks where there is one sustained
-// regression.
+// once when it gives up — never once per evaluation. Lanes compute their Head
+// on every head move and every second, so a per-evaluation counter would read
+// as thousands of suppressed picks where there is one sustained regression.
 func (n *Network) noteServedTipGuardTransition(anchor *servedTipAnchor, state int32, axis string, pick int64, reference int64, held time.Duration) bool {
 	// Load first: the steady state is "still healthy", read by every serving
 	// core on every evaluation, and it must not cost an exclusive line.
@@ -1416,7 +1623,7 @@ func (n *Network) SvmHighestFinalizedSlot(ctx context.Context) int64 {
 // ~100 slots the third upstream is holding, converting a served request into a
 // client-visible -32014.
 //
-// Same rationale as SvmHighestIndexedSlot and EVM's futureBlockCeiling: never
+// Same rationale as SvmHighestIndexedSlot and the EVM Head's ceiling: never
 // reject a block the most-ahead upstream actually has. Zero means UNKNOWN (no
 // poller has reported a root yet), and every caller must treat it as "no bound"
 // rather than as slot 0.
@@ -1501,55 +1708,10 @@ func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []i
 	return out
 }
 
-// EvmHighestFinalizedBlockNumber is the finalized-axis sibling of
-// EvmHighestLatestBlockNumber: the same ballot, quorum, guard and guarantees,
-// applied to each upstream's EvmEffectiveFinalizedBlock, then held at the
-// lane's finalized floor so it does not step back while a voter still reports
-// what this instance served (holdFinalized), or network-wide what any
-// instance served (shareFinalized).
-func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
-	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestFinalizedBlockNumber", trace.WithAttributes(
-		attribute.String("network.id", n.networkId),
-	))
-	defer span.End()
-
-	return n.servedTip(ctx, span, true)
-}
-
-// applyDeliveredHeadFloor lifts the computed network-wide "latest" head to the
-// highest head already delivered to a WebSocket subscriber by this or any
-// instance, so a client never sees "latest" regress below a streamed head.
-// Only delivered heads feed the floor; remembering the computed head would
-// turn the served tip into a persisted clamp.
-//
-// A delivered head always came from some live upstream, so the floor is
-// honoured only within maxRetryableBlockDistance of the ballot's highest head
-// (liveMax), or when no head is known at all. A stale shared value is ignored
-// and ages out as the chain advances.
-func (n *Network) applyDeliveredHeadFloor(computed, liveMax int64) int64 {
-	floor := n.deliveredLatestBlock.Load()
-	if n.latestBlockShared != nil {
-		floor = max(floor, n.latestBlockShared.GetValue())
-	}
-	if floor <= computed {
-		return computed
-	}
-	ceiling := max(liveMax, computed)
-	if ceiling <= 0 || floor-ceiling <= n.maxRetryableBlockDistance() {
-		return floor
-	}
-	n.logger.Debug().
-		Int64("computed", computed).
-		Int64("liveMax", liveMax).
-		Int64("deliveredFloor", floor).
-		Msg("ignoring delivered-head floor too far ahead of every live head")
-	return computed
-}
-
 // guaranteedFloor returns the lowest majority served tip across every
 // configured guarantee SUBSET, or 0 when none is configured or none constrains
 // the tip, and backing: the lowest of those constraining subsets' highest
-// heads, which bounds the finalized floor (finalizedBacking). Two kinds of
+// heads, which bounds the finalized floor (holdFinalized). Two kinds of
 // subset, one rule (guaranteedSubsetPick):
 //
 //   - GuaranteedMethods — the eligible upstreams that handle the method
@@ -1563,7 +1725,7 @@ func (n *Network) applyDeliveredHeadFloor(computed, liveMax int64) int64 {
 // Each subset is clamped to its OWN MAJORITY, never its minimum, so a single
 // frozen member is outvoted inside its group and cannot pin the network. An
 // empty subset constrains nothing.
-func (n *Network) guaranteedFloor(ctx context.Context, useFinalized bool) (floor, backing int64) {
+func (n *Network) guaranteedFloor(sel string, useFinalized bool) (floor, backing int64) {
 	if n.cfg == nil || n.cfg.Evm == nil || n.cfg.Evm.ServedTip == nil {
 		return 0, 0
 	}
@@ -1579,14 +1741,14 @@ func (n *Network) guaranteedFloor(ctx context.Context, useFinalized bool) (floor
 			backing = p.Max
 		}
 	}
-	for _, sel := range st.GuaranteedFor {
-		fold(n.guaranteedSubsetPick(ctx, useFinalized, func(u common.Upstream) bool {
-			m, _ := common.UpstreamMatchesSelector(sel, u)
+	for _, g := range st.GuaranteedFor {
+		fold(n.guaranteedSubsetPick(sel, useFinalized, func(u common.Upstream) bool {
+			m, _ := common.UpstreamMatchesSelector(g, u)
 			return m
 		}))
 	}
 	for _, m := range st.GuaranteedMethods {
-		fold(n.guaranteedSubsetPick(ctx, useFinalized, func(u common.Upstream) bool {
+		fold(n.guaranteedSubsetPick(sel, useFinalized, func(u common.Upstream) bool {
 			handle, _ := u.ShouldHandleMethod(m)
 			return handle
 		}))
@@ -1612,9 +1774,9 @@ func (n *Network) guaranteedFloor(ctx context.Context, useFinalized bool) (floor
 //
 // So a cap-only ballot floors only when the REGISTERED set, which eligibility
 // churn cannot change, has no live member (anyRegisteredLiveHead).
-func (n *Network) guaranteedSubsetPick(ctx context.Context, useFinalized bool, member func(common.Upstream) bool) common.ServedTipPick {
-	pick, live := n.evmTipBallot(ctx, useFinalized, common.ServedTipQuorumMajority, member)
-	if pick.Inputs == 0 || (!live && n.anyRegisteredLiveHead(ctx, member, useFinalized)) {
+func (n *Network) guaranteedSubsetPick(sel string, useFinalized bool, member func(common.Upstream) bool) common.ServedTipPick {
+	pick, live, _ := n.evmTipBallot(sel, useFinalized, common.ServedTipQuorumMajority, member, nil)
+	if pick.Inputs == 0 || (!live && n.anyRegisteredLiveHead(member, useFinalized)) {
 		return common.ServedTipPick{}
 	}
 	return pick
@@ -1626,11 +1788,11 @@ func (n *Network) guaranteedSubsetPick(ctx context.Context, useFinalized bool, m
 // serving a stale cap is the failure the floor rule exists to prevent. Only
 // reached for a cap-only subset ballot, i.e. approximately never on the hot
 // path.
-func (n *Network) anyRegisteredLiveHead(ctx context.Context, member func(common.Upstream) bool, useFinalized bool) bool {
+func (n *Network) anyRegisteredLiveHead(member func(common.Upstream) bool, useFinalized bool) bool {
 	if n.upstreamsRegistry == nil {
 		return false
 	}
-	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
 		if !member(u) {
 			continue
 		}
@@ -1644,89 +1806,57 @@ func (n *Network) anyRegisteredLiveHead(ctx context.Context, member func(common.
 	return false
 }
 
-// observeServedTipMetrics exports one lane's served-tip gauges. axis
-// ("latest"|"finalized") is a label rather than part of the metric name to
-// keep the gauge set small. lane="all" is the network-wide pick; a named lane
-// is a use-upstream group's own pick.
-func (n *Network) observeServedTipMetrics(axis string, laneLabel string, tip, freshest int64, advanceAge time.Duration) {
+// laneGauges are one lane's served-tip gauges, bound once to their labels,
+// so a computation sets them with no label lookup. axis ("latest" |
+// "finalized") is a label rather than part of the metric name to keep the
+// gauge set small. lane="all" is the network-wide pick; a named lane is a
+// use-upstream group's own pick.
+type laneGauges struct {
+	latest, finalized servedTipGauges
+	voters            [len(tipRankLabels)]prometheus.Gauge
+	quorum            prometheus.Gauge
+}
+
+type servedTipGauges struct {
+	block, lag, advanceAge prometheus.Gauge
+}
+
+func (n *Network) bindLaneGauges(lane string) *laneGauges {
+	axis := func(axis string) servedTipGauges {
+		return servedTipGauges{
+			block:      telemetry.MetricNetworkServedTipBlockNumber.WithLabelValues(n.projectId, n.Label(), lane, axis),
+			lag:        telemetry.MetricNetworkServedTipLagBlocks.WithLabelValues(n.projectId, n.Label(), lane, axis),
+			advanceAge: telemetry.MetricNetworkServedTipAdvanceAgeSeconds.WithLabelValues(n.projectId, n.Label(), lane, axis),
+		}
+	}
+	g := &laneGauges{
+		latest:    axis("latest"),
+		finalized: axis("finalized"),
+		quorum:    telemetry.MetricServedTipQuorum.WithLabelValues(n.projectId, n.Label(), lane),
+	}
+	for rank, label := range tipRankLabels {
+		g.voters[rank] = telemetry.MetricServedTipVoters.WithLabelValues(n.projectId, n.Label(), lane, label)
+	}
+	return g
+}
+
+// observe exports one axis of a lane's pick.
+func (g *servedTipGauges) observe(tip, freshest int64, advanceAge time.Duration) {
 	if tip > 0 {
-		telemetry.MetricNetworkServedTipBlockNumber.
-			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
-			Set(float64(tip))
+		g.block.Set(float64(tip))
 		// Deliberate lag: how far the served tip sits behind the corroborated
 		// freshest upstream view in the same set. Clamped at 0 because the tip
 		// can legitimately sit ABOVE that view while the regression guard
 		// holds its last corroborated pick, and a lag gauge that reads
 		// negative is a broken dashboard, not a signal; the hold has its own
 		// counter (…_regression_total).
-		lag := freshest - tip
-		if lag < 0 {
-			lag = 0
-		}
-		telemetry.MetricNetworkServedTipLagBlocks.
-			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
-			Set(float64(lag))
+		g.lag.Set(float64(max(freshest-tip, 0)))
 	}
 	// Universal stuck-tip signal: seconds since this process last saw the
 	// served value change. Skipped until a first change is observed.
 	if advanceAge >= 0 {
-		telemetry.MetricNetworkServedTipAdvanceAgeSeconds.
-			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
-			Set(advanceAge.Seconds())
+		g.advanceAge.Set(advanceAge.Seconds())
 	}
-}
-
-func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
-	ctx, span := common.StartDetailSpan(ctx, "Network.EvmLowestFinalizedBlockNumber", trace.WithAttributes(
-		attribute.String("network.id", n.networkId),
-	))
-	defer span.End()
-
-	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	var minBlock int64 = 0
-	var initialized bool = false
-
-	for _, u := range upstreams {
-		statePoller := u.EvmStatePoller()
-		if statePoller == nil {
-			continue
-		}
-
-		// Check if the node is syncing - skip syncing nodes as their block numbers may be unreliable
-		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
-			n.logger.Debug().Str("upstreamId", u.Id()).Msg("skipping syncing upstream for lowest finalized block calculation")
-			continue
-		}
-
-		// Use effective finalized block which considers blockAvailability.upper config
-		upBlock := u.EvmEffectiveFinalizedBlock()
-		// Skip upstreams that haven't determined finalized block yet (returning 0)
-		if upBlock > 0 {
-			if !initialized || upBlock < minBlock {
-				minBlock = upBlock
-				initialized = true
-			}
-		}
-	}
-
-	span.SetAttributes(attribute.Int64("lowest_finalized_block", minBlock))
-	return minBlock
-}
-
-func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
-	var leader common.Upstream
-	var leaderLastBlock int64 = 0
-	upsList := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	for _, u := range upsList {
-		if statePoller := u.EvmStatePoller(); statePoller != nil {
-			lastBlock := statePoller.LatestBlock()
-			if lastBlock > leaderLastBlock {
-				leader = u
-				leaderLastBlock = lastBlock
-			}
-		}
-	}
-	return leader
 }
 
 // consensusPolicySelectorEnabled reports whether ANY failsafe executor on this
@@ -1741,18 +1871,12 @@ func (n *Network) consensusPolicySelectorEnabled() bool {
 	}
 	return false
 }
-
 func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *networkExecutor {
+	if req.UpstreamPolicies() == common.UpstreamPoliciesTimeoutOnly {
+		return n.bareExecutor
+	}
 	method, _ := req.Method()
 	finality := req.Finality(ctx)
-	// Request kind: "internal" = erpc's own auxiliary fetches (e.g. integrity's
-	// canonical corroboration), "user" = client traffic. Lets a policy give the
-	// deduplicated internal fetches consensus while user methods rely on
-	// integrity validation (matchRequestKind).
-	kind := "user"
-	if dirs := req.Directives(); dirs != nil && dirs.IsInternal {
-		kind = "internal"
-	}
 
 	// matchCommitment compares the commitment erpc pins on the wire, so a rule
 	// is a function of the bytes the multiplexer and cache key on. Non-SVM
@@ -1777,15 +1901,128 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 		mc := fe.MatchCommitment()
 		commitmentMatches := len(mc) == 0 || slices.Contains(mc, commitment)
 
-		mk := fe.MatchRequestKind()
-		kindMatches := mk == "*" || mk == "" || mk == kind
-
-		if methodMatches && finalityMatches && commitmentMatches && kindMatches {
+		if methodMatches && finalityMatches && commitmentMatches {
 			return fe
 		}
 	}
 
 	return nil
+}
+
+// selectionOrder is the selection policy's order of the upstreams for req:
+// the engine's order, or registration order until its first tick, without
+// upstreams whose method config excludes the method.
+func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequest, method string) []common.Upstream {
+	_, upstreamSpan := common.StartDetailSpan(ctx, "PolicyEngine.GetOrdered")
+	var upsList []common.Upstream
+	if n.policyEngine != nil {
+		// Pass the request's actual finality so per-finality slots
+		// (when EvalPerFinality is on) resolve to the bucket-specific
+		// ordering. Networks not configured per-finality see "*" and
+		// resolve to the wildcard slot regardless.
+		finality := req.Finality(ctx).String()
+		// When the boundary axis (EvalPerBoundary) is on, scope selection to
+		// the request's block-availability lane — the set of upstreams whose
+		// configured bounds can serve this block. laneIDs stays nil when the
+		// axis is off or the request has no resolvable block number, in which
+		// case GetOrderedInLane behaves exactly like GetOrdered.
+		var laneIDs []string
+		if n.policyEngine.PerBoundaryEnabled(n.networkId) {
+			laneIDs = n.eligibleUpstreamIDsForBoundary(ctx, method, req)
+			if common.IsTracingDetailed() && len(laneIDs) > 0 {
+				upstreamSpan.SetAttributes(attribute.Int("upstreams.lane_size", len(laneIDs)))
+			}
+		}
+		upsList = n.policyEngine.GetOrderedInLane(n.networkId, method, finality, laneIDs)
+	}
+	if len(upsList) == 0 {
+		// Cold-start fallback: serve the raw registration order until the
+		// engine's first tick completes for this slot.
+		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+			upsList = append(upsList, u)
+		}
+	}
+	// Enforce method eligibility at selection time: an upstream whose
+	// ignoreMethods/allowMethods config (including entries added by
+	// autoIgnoreUnsupportedMethods) excludes this method would only be
+	// skipped at forward time anyway — but letting it into the request's
+	// upstream list makes it consume retry/hedge/consensus attempts and
+	// emit instant "method ignored" skips; under consensus fan-out those
+	// skips become phantom participants. When EVERY upstream ignores the
+	// method, keep the full list so the request fails with the descriptive
+	// per-upstream "method ignored" error instead of a generic
+	// "no upstreams found".
+	if eligible, dropped := filterMethodEligible(upsList, method); dropped > 0 && len(eligible) > 0 {
+		upstreamSpan.SetAttributes(attribute.Int("upstreams.method_ineligible", dropped))
+		upsList = eligible
+	}
+	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
+	if common.IsTracingDetailed() {
+		ids := make([]string, len(upsList))
+		for i, u := range upsList {
+			ids[i] = u.Id()
+		}
+		upstreamSpan.SetAttributes(
+			attribute.String("upstreams.sorted", strings.Join(ids, ", ")),
+		)
+	}
+	upstreamSpan.End()
+	return upsList
+}
+
+// preferUpstreams reorders ups by hints only, every upstream staying
+// eligible: upstreams whose poller has the block first, then failover tiers,
+// then voters with a stale hash vote, and voters on a minority fork last.
+func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedRequest, method string, upsList []common.Upstream) []common.Upstream {
+	// For a specific block, try upstreams whose poller already has it first.
+	// Ordering hints only: every upstream stays eligible.
+	if n.Architecture() == common.ArchitectureEvm {
+		if bn := n.routingBlockNumber(ctx, req); bn > 0 {
+			head := n.requestHead(ctx, req)
+			upsList = n.partitionUpstreamsByLatestBlock(upsList, bn, head.Latest)
+			upsList = n.preferTipLeaderForNearTipGetBlock(upsList, method, bn, head.Leader, head.Latest)
+		}
+	}
+
+	// Failover tiering: try default-tier upstreams before fallback-tier ones,
+	// keeping score order within each tier.
+	if n.cfg.Failover.Enabled() {
+		upsList = tierUpstreamsByGroup(upsList)
+	}
+	return n.lateLast(upsList)
+}
+
+// lateLast moves sources with a stale hash vote (spec §6.1), then voters on
+// a minority fork (§6.3), to the end of upsList, keeping each part's order:
+// a half-open socket keeps its upstream's rank in the policy for a while,
+// and a request it holds waits for its timeout. upsList is the request's
+// own copy.
+func (n *Network) lateLast(upsList []common.Upstream) []common.Upstream {
+	stale, demoted := n.hashStale.Load(), n.forkDemoted.Load()
+	if stale == nil && demoted == nil {
+		return upsList
+	}
+	rank := func(u common.Upstream) int {
+		switch {
+		case demoted != nil && slices.Contains(*demoted, u.Id()):
+			return 2
+		case stale != nil && slices.Contains(*stale, u.Id()):
+			return 1
+		}
+		return 0
+	}
+	if !slices.ContainsFunc(upsList, func(u common.Upstream) bool { return rank(u) > 0 }) {
+		return upsList
+	}
+	out := make([]common.Upstream, 0, len(upsList))
+	for r := 0; r <= 2; r++ {
+		for _, u := range upsList {
+			if rank(u) == r {
+				out = append(out, u)
+			}
+		}
+	}
+	return out
 }
 
 func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -1804,18 +2041,16 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		trace.WithAttributes(
 			attribute.String("network.id", n.networkId),
 			attribute.String("request.method", method),
-			attribute.String("request.finality", req.Finality(ctx).String()),
 		),
 	)
 
-	// Bind the request to ctx so downstream served-tip resolution can decide
-	// `latest`/`finalized` AMONG the use-upstream-selected subset (see
-	// EvmRoutableUpstreams / requestSelector). The failsafe executor re-sets
-	// the same value below for its own readers; setting it here makes it
-	// available to the earlier pre-forward / short-circuit paths too.
+	// Bind the request to ctx so the pre-forward and short-circuit paths read
+	// its Head and its use-upstream subset (see EvmRoutableUpstreams /
+	// requestSelector). The failsafe executor re-sets the same value below
+	// for its own readers.
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		forwardSpan.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 			attribute.String("user.id", req.UserId()),
@@ -1840,7 +2075,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	// Route safe-tagged requests before multiplexing and cache lookup.
+	// Route safe-tagged requests before multiplexing and cache lookup; the
+	// project already did for its requests, this covers direct callers.
 	if n.cfg.Architecture == common.ArchitectureEvm {
 		if err := evm.ApplySafeBlockSource(ctx, n, req); err != nil {
 			common.SetTraceSpanError(forwardSpan, err)
@@ -1858,6 +2094,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			return resp, err
 		}
 	}
+	// One Head per request (spec §7), taken before the multiplexer and the
+	// cache, and its tags interpolated to it: the cache key, every attempt
+	// and hedge, and the response all see the same latest.
+	if n.cfg.Architecture == common.ArchitectureEvm {
+		n.requestHead(ctx, req)
+	}
+	if err := n.prepareRequest(ctx, req); err != nil {
+		common.SetTraceSpanError(forwardSpan, err)
+		return nil, err
+	}
+	forwardSpan.SetAttributes(attribute.String("request.finality", req.Finality(ctx).String()))
 
 	// Selector-enabled requests must not share results across callers: the
 	// multiplex hash and the EVM cache key omit the consensus policy and the
@@ -1903,6 +2150,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			} else {
 				lg.Info().Msgf("response served from cache")
 			}
+			if n.cfg.Architecture == common.ArchitectureEvm {
+				resp, _ = n.holdByHash(ctx, req, resp)
+			}
 			if mlx != nil {
 				mlx.Close(ctx, resp, err)
 			}
@@ -1912,60 +2162,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
 	}
 
-	_, upstreamSpan := common.StartDetailSpan(ctx, "PolicyEngine.GetOrdered")
-	var upsList []common.Upstream
-	if n.policyEngine != nil {
-		// Pass the request's actual finality so per-finality slots
-		// (when EvalPerFinality is on) resolve to the bucket-specific
-		// ordering. Networks not configured per-finality see "*" and
-		// resolve to the wildcard slot regardless.
-		finality := req.Finality(ctx).String()
-		// When the boundary axis (EvalPerBoundary) is on, scope selection to
-		// the request's block-availability lane — the set of upstreams whose
-		// configured bounds can serve this block. laneIDs stays nil when the
-		// axis is off or the request has no resolvable block number, in which
-		// case GetOrderedInLane behaves exactly like GetOrdered.
-		var laneIDs []string
-		if n.policyEngine.PerBoundaryEnabled(n.networkId) {
-			laneIDs = n.eligibleUpstreamIDsForBoundary(ctx, method, req)
-			if common.IsTracingDetailed && len(laneIDs) > 0 {
-				upstreamSpan.SetAttributes(attribute.Int("upstreams.lane_size", len(laneIDs)))
-			}
-		}
-		upsList = n.policyEngine.GetOrderedInLane(n.networkId, method, finality, laneIDs)
-	}
-	if len(upsList) == 0 {
-		// Cold-start fallback: serve the raw registration order until the
-		// engine's first tick completes for this slot.
-		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
-			upsList = append(upsList, u)
-		}
-	}
-	// Enforce method eligibility at selection time: an upstream whose
-	// ignoreMethods/allowMethods config (including entries added by
-	// autoIgnoreUnsupportedMethods) excludes this method would only be
-	// skipped at forward time anyway — but letting it into the request's
-	// upstream list makes it consume retry/hedge/consensus attempts and
-	// emit instant "method ignored" skips; under consensus fan-out those
-	// skips become phantom participants. When EVERY upstream ignores the
-	// method, keep the full list so the request fails with the descriptive
-	// per-upstream "method ignored" error instead of a generic
-	// "no upstreams found".
-	if eligible, dropped := filterMethodEligible(upsList, method); dropped > 0 && len(eligible) > 0 {
-		upstreamSpan.SetAttributes(attribute.Int("upstreams.method_ineligible", dropped))
-		upsList = eligible
-	}
-	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
-	if common.IsTracingDetailed {
-		ids := make([]string, len(upsList))
-		for i, u := range upsList {
-			ids[i] = u.Id()
-		}
-		upstreamSpan.SetAttributes(
-			attribute.String("upstreams.sorted", strings.Join(ids, ", ")),
-		)
-	}
-	upstreamSpan.End()
+	upsList := n.selectionOrder(ctx, req, method)
 
 	if len(upsList) == 0 {
 		err := common.NewErrNoUpstreamsFound(n.projectId, n.networkId)
@@ -1976,20 +2173,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		return nil, err
 	}
 
-	// For a specific block, try upstreams that already have it first.
-	// Ordering hints only: every upstream stays eligible.
-	if n.Architecture() == common.ArchitectureEvm {
-		if bn := requestBlockNumber(ctx, req); bn > 0 {
-			upsList = n.partitionUpstreamsByLatestBlock(upsList, bn)
-			upsList = n.preferTipLeaderForNearTipGetBlock(upsList, method, bn)
-		}
-	}
-
-	// Failover tiering: try default-tier upstreams before fallback-tier ones,
-	// keeping score order within each tier.
-	if n.cfg.Failover.Enabled() {
-		upsList = tierUpstreamsByGroup(upsList)
-	}
+	upsList = n.preferUpstreams(ctx, req, method, upsList)
 
 	// SVM history reads go deepest known floor first within each tier, so the
 	// first answer is the most complete one the pool holds.
@@ -2083,17 +2267,52 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		req.SetNetworkUpstreams(all)
 	}
 
-	// Future-block short-circuit: a concrete block number beyond every
-	// upstream's head cannot be served yet — return the truthful null instead of
-	// dispatching + hedging across upstreams that will all return empty. Runs
-	// before rate limiting so a non-dispatched request consumes no permit, and
-	// before the probe-bus publish so it is never mirrored to excluded upstreams.
-	if resp, ok := n.tryShortCircuitFutureBlock(ctx, req, method); ok {
+	// The refusal rule decides the request's block once, before dispatch
+	// (spec §6.4): a stale ceiling is Asked here, a near-future block waits
+	// for the ceiling, a band block refreshes the voters below it. A
+	// future block, with shortCircuitFutureBlocks, gets the truthful null
+	// with no dispatch and no wait; it runs before rate limiting so it
+	// consumes no permit, and before the probe-bus publish so it is never
+	// mirrored to excluded upstreams. A request that ends during the wait
+	// ends as any request whose context ends.
+	if n.cfg.Architecture == common.ArchitectureEvm {
+		evm.HeadRefusalOf(ctx, req)
+		if err := ctx.Err(); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				err = common.NewErrNetworkRequestTimeout(time.Since(startTime), err)
+			}
+			common.SetTraceSpanError(forwardSpan, err)
+			if mlx != nil {
+				mlx.Close(ctx, nil, err)
+			}
+			return nil, err
+		}
+	}
+	if resp, ok := n.tryShortCircuitFutureBlock(ctx, req); ok {
 		forwardSpan.SetAttributes(attribute.Bool("future_block.short_circuit", true))
+		n.countRefusal(ctx, req, resp, nil)
 		if mlx != nil {
 			mlx.Close(ctx, resp, nil)
 		}
 		return resp, nil
+	}
+	if err := n.refuseFutureRange(req, method); err != nil {
+		common.SetTraceSpanError(forwardSpan, err)
+		if mlx != nil {
+			mlx.Close(ctx, nil, err)
+		}
+		return nil, err
+	}
+	// The tag-state decision (spec §6.11) is made once, from the routed
+	// upstreams, before the first attempt: every retry and hedge reads it.
+	if n.cfg.Architecture == common.ArchitectureEvm {
+		if err := evm.DecideTagState(ctx, n, req); err != nil {
+			common.SetTraceSpanError(forwardSpan, err)
+			if mlx != nil {
+				mlx.Close(ctx, nil, err)
+			}
+			return nil, err
+		}
 	}
 
 	// Feed the per-network probe-bus AFTER we know the request is
@@ -2136,14 +2355,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	// 3) Apply rate limits
 	if err := n.acquireRateLimitPermit(ctx, req); err != nil {
-		if mlx != nil {
-			mlx.Close(ctx, nil, err)
-		}
-		return nil, err
-	}
-
-	// 4) Prepare the request
-	if err := n.prepareRequest(ctx, req); err != nil {
 		if mlx != nil {
 			mlx.Close(ctx, nil, err)
 		}
@@ -2222,7 +2433,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		)
 		defer execSpan.End()
 
-		if common.IsTracingDetailed {
+		if common.IsTracingDetailed() {
 			execSpan.SetAttributes(
 				attribute.String("request.id", fmt.Sprintf("%v", effectiveReq.ID())),
 			)
@@ -2248,12 +2459,16 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			maxLoopIterations = 1
 		}
 		attempted := make(map[string]struct{}, maxLoopIterations)
+		// leg is this execution to the refusal rule: it gets its own one
+		// retryable miss, whatever its sibling slots and hedges got (spec
+		// §6.4).
+		leg := &common.RefusalLeg{}
 		// The fallback escape below swaps in its own picker, leaving the
 		// request's routed list untouched for later retries.
 		nextUpstream := effectiveReq.NextUpstream
 		// An empty result is a miss (rather than a legitimate answer, like a
-		// pending tx's null receipt) only for a concrete block the network
-		// is confident about.
+		// pending tx's null receipt) only for a concrete block whose empty
+		// answer the refusal rule does not call final.
 		emptyIsMiss := func(ctx context.Context) bool {
 			return requestBlockNumber(ctx, effectiveReq) > 0 && !evm.EmptyResultBeyondConfidence(ctx, effectiveReq)
 		}
@@ -2359,17 +2574,65 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					r.WithRequest(effectiveReq)
 				}
 
+				// The refusal rule (spec §6.4): an empty or missing answer for a
+				// block above Latest is the leg's one retryable miss, in a
+				// consensus slot or a hedge pinned to one upstream too; the
+				// retry asks the upstreams whose head reaches the block first.
+				// The answer after it goes to the client as the upstream gave it.
+				refusal := effectiveReq.HeadRefusal()
+				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && isEmptyNetworkResult(method, r)
+				missing := emptyAnswer || missingDataErr(err)
+				finalEmpty := false
+				if refusal.AboveLatest() && missing {
+					switch refusal.Miss(leg) {
+					case common.MissRetry:
+						if refusal.Rule == common.HeadBand {
+							// The retry waits for the band's Ask until it
+							// answers, at most W, and orders on the heads
+							// it brings.
+							sel := ""
+							if d := effectiveReq.Directives(); d != nil {
+								sel = d.UseUpstream
+							}
+							n.awaitBandAsk(loopCtx, sel, refusal.Block)
+						}
+						nextUpstream = n.headFirst(loopCtx, effectiveReq, attempted, refusal.Block)
+						// One more pick for the retry, a slot's included.
+						maxLoopIterations = max(maxLoopIterations, loopIteration+2)
+						// With no upstream left to retry, the client gets
+						// this answer as the upstream gave it: an empty
+						// answer stays the result, never a missing-data
+						// error made up from it.
+						if r != nil && !r.IsObjectNull() {
+							bestResp = r
+						} else {
+							lastErr = err
+							common.SetTraceSpanError(loopSpan, err)
+						}
+						loopSpan.End()
+						continue
+					case common.MissFinal:
+						if !emptyAnswer {
+							common.SetTraceSpanError(loopSpan, err)
+							loopSpan.End()
+							return nil, err
+						}
+						finalEmpty = true
+					}
+				}
+
 				// Return immediately when the result is usable:
 				//  - Non-empty success always qualifies.
-				//  - Emptyish success qualifies when the method is in
-				//    emptyResultAccept and consensus is not required,
-				//    because failsafe would accept the empty result anyway
-				//    so trying more upstreams just wastes time on slow ones.
+				//  - Emptyish success qualifies when the refusal rule calls it
+				//    final, or, below Latest, when the method is in
+				//    emptyResultAccept and consensus is not required, because
+				//    failsafe would accept the empty result anyway so trying
+				//    more upstreams just wastes time on slow ones.
 				//  - Otherwise emptyish results continue to the next upstream.
 				if err == nil && r != nil && !r.IsObjectNull() {
 					emptyish := isEmptyNetworkResult(method, r)
-					acceptEmpty := !emptyish ||
-						(!failsafeExecutor.HasConsensus() &&
+					acceptEmpty := !emptyish || finalEmpty ||
+						(!refusal.AboveLatest() && !failsafeExecutor.HasConsensus() &&
 							failsafeExecutor.acceptsEmptyResult(method, r))
 					if acceptEmpty {
 						st := effectiveReq.ExecState()
@@ -2588,6 +2851,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			// LVR is a borrowed pointer — consensus executor owns releasing all participant
 			// responses (winners and losers). Just drop our reference to avoid dangling pointer.
 			req.ClearLastValidResponse()
+			n.countRefusal(ctx, req, nil, translatedErr)
 			return nil, translatedErr
 		}
 
@@ -2609,41 +2873,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			if mlx != nil {
 				mlx.Close(ctx, nil, translatedErr)
 			}
+			n.countRefusal(ctx, req, nil, translatedErr)
 			return nil, translatedErr
 		}
 	}
 
+	held := false
+	if n.cfg.Architecture == common.ArchitectureEvm {
+		resp, held = n.holdByHash(ctx, req, resp)
+	}
 	if resp != nil {
-		if n.cacheDal != nil && !selectorOn {
-			// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
-			// TODO For other architectures we might need a different approach
-			_, _ = resp.JsonRpcResponse(ctx)
-			resp.AddRef()
-
-			go (func(resp *common.NormalizedResponse, forwardSpan trace.Span) {
-				defer (func() {
-					if rec := recover(); rec != nil {
-						telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
-							"cache-set",
-							fmt.Sprintf("network:%s method:%s", n.networkId, method),
-							common.ErrorFingerprint(rec),
-						).Inc()
-						lg.Error().
-							Interface("panic", rec).
-							Str("stack", string(debug.Stack())).
-							Msgf("unexpected panic on cache-set")
-					}
-				})()
-				defer resp.DoneRef()
-
-				timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
-				defer timeoutCtxCancel()
-				tracedCtx := trace.ContextWithSpanContext(timeoutCtx, forwardSpan.SpanContext())
-				err := n.cacheDal.Set(tracedCtx, req, resp)
-				if err != nil {
-					lg.Warn().Err(err).Msgf("could not store response in cache")
-				}
-			})(resp, forwardSpan)
+		if n.cacheDal != nil && !held && !selectorOn {
+			n.storeInCache(ctx, forwardSpan.SpanContext(), &lg, method, req, resp)
 		}
 
 		// Per-request execution counters + full upstream-attempt trace.
@@ -2742,7 +2983,41 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		req.ClearLastValidResponse()
 	}
 
+	n.countRefusal(ctx, req, resp, nil)
 	return resp, nil
+}
+
+// storeInCache writes resp to the cache in the background; the cache
+// policies decide by the request's finality what is kept and for how long.
+func (n *Network) storeInCache(ctx context.Context, spanCtx trace.SpanContext, lg *zerolog.Logger, method string, req *common.NormalizedRequest, resp *common.NormalizedResponse) {
+	// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
+	// TODO For other architectures we might need a different approach
+	_, _ = resp.JsonRpcResponse(ctx)
+	resp.AddRef()
+
+	go func() {
+		defer (func() {
+			if rec := recover(); rec != nil {
+				telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+					"cache-set",
+					fmt.Sprintf("network:%s method:%s", n.networkId, method),
+					common.ErrorFingerprint(rec),
+				).Inc()
+				lg.Error().
+					Interface("panic", rec).
+					Str("stack", string(debug.Stack())).
+					Msgf("unexpected panic on cache-set")
+			}
+		})()
+		defer resp.DoneRef()
+
+		timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
+		defer timeoutCtxCancel()
+		tracedCtx := trace.ContextWithSpanContext(timeoutCtx, spanCtx)
+		if err := n.cacheDal.Set(tracedCtx, req, resp); err != nil {
+			lg.Warn().Err(err).Msgf("could not store response in cache")
+		}
+	}()
 }
 
 func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedRequest) error {
@@ -2849,58 +3124,35 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 		return finality
 	}
 
-	if blockNumber > 0 {
-		// Try response's upstream first (direct upstream responses)
-		if resp != nil {
-			upstream := resp.Upstream()
-			if upstream != nil {
-				if ups, ok := upstream.(common.EvmUpstream); ok {
-					if isFinalized, err := ups.EvmIsBlockFinalized(ctx, blockNumber, false); err == nil {
-						if isFinalized {
-							finality = common.DataFinalityStateFinalized
-						} else {
-							finality = common.DataFinalityStateUnfinalized
-						}
-						return finality
-					}
-				}
-			}
-		}
-
-		// Try LastUpstream from the request (retries or subsequent attempts)
-		if upstream := req.LastUpstream(); upstream != nil {
-			if ups, ok := upstream.(common.EvmUpstream); ok {
-				if isFinalized, err := ups.EvmIsBlockFinalized(ctx, blockNumber, false); err == nil {
-					if isFinalized {
-						finality = common.DataFinalityStateFinalized
-					} else {
-						finality = common.DataFinalityStateUnfinalized
-					}
-					return finality
-				}
-			}
-		}
-
-		// Fallback: use the network's lowest finalized block as a heuristic.
-		// This is the primary path for cache hits where no upstream is available.
-		if n.upstreamsRegistry != nil {
-			lowestFinalized := n.EvmLowestFinalizedBlockNumber(ctx)
-			if lowestFinalized > 0 {
-				if blockNumber <= lowestFinalized {
-					finality = common.DataFinalityStateFinalized
-				} else {
-					finality = common.DataFinalityStateUnfinalized
-				}
-				span.SetAttributes(
-					attribute.Bool("used_network_finalized_heuristic", true),
-					attribute.Int64("lowest_finalized", lowestFinalized),
-				)
-			}
-		}
-		// If we still can't determine, it remains unknown
+	if blockNumber <= 0 {
+		return finality
 	}
-
-	return finality
+	// Reads decide on the request's Head.Finalized (spec §6.4). An answer
+	// from an upstream is final only when that upstream has finalized the
+	// block too (#90) and is not on a minority fork (§6.3), so neither
+	// makes a permanent cache entry. A read above Finalized polls nothing:
+	// only the full poll and the finalized-tag refresh move it.
+	fin := n.EvmHead(ctx, req).Finalized
+	span.SetAttributes(attribute.Int64("head.finalized", fin))
+	if fin <= 0 {
+		return finality
+	}
+	if blockNumber > fin {
+		return common.DataFinalityStateUnfinalized
+	}
+	if resp != nil {
+		if u := resp.Upstream(); u != nil {
+			if n.isForkDemoted(u) {
+				return common.DataFinalityStateUnfinalized
+			}
+			if ups, ok := u.(common.EvmUpstream); ok {
+				if final, err := ups.EvmIsBlockFinalized(ctx, blockNumber, false); err != nil || !final {
+					return common.DataFinalityStateUnfinalized
+				}
+			}
+		}
+	}
+	return common.DataFinalityStateFinalized
 }
 
 func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req *common.NormalizedRequest, skipCacheRead, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
@@ -3019,20 +3271,14 @@ func (n *Network) handleBlockSkip(
 	}
 	req.MarkUpstreamCompleted(ctx, u, nil, errToStore)
 
-	// When the block is slightly ahead (retryable), trigger an async poll so the
-	// state poller fetches the latest block number before the next retry fires.
-	// Without this the retry loop sleeps for blockUnavailableDelay but the cached
-	// latestBlock stays stale until the background ticker fires (often 10s+).
-	// PollLatestBlockNumber respects its own debounce interval so concurrent
-	// triggers from multiple upstreams/requests are coalesced safely.
+	// When the block is slightly ahead (retryable), Ask the upstream with a
+	// number need in the background (spec §6.4, §6.8), as main polled it:
+	// the request never waits on it, and the retry after
+	// blockUnavailableDelay sees its head; concurrent skips join one fetch.
 	if isRetryable {
 		if eu, ok := u.(common.EvmUpstream); ok {
 			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-				go func() { // #nosec G118 -- fire-and-forget poll; must not share request lifetime
-					pollCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer cancel()
-					_, _ = sp.PollLatestBlockNumber(pollCtx)
-				}()
+				sp.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
 			}
 		}
 	}
@@ -3121,7 +3367,7 @@ func (n *Network) checkSvmUpstreamSlotAvailability(ctx context.Context, u common
 // apply any implicit "blockNumber > latestBlock" head check. Tip-awareness — i.e.
 // "is this block past the chain head?" — is owned elsewhere:
 //   - served-tip short-circuits concrete future blocks beyond the network tip, and
-//   - integrity.enforceHighestBlock keeps "latest"/"finalized" tag responses honest.
+//   - interpolation sends "latest"/"finalized" tags as the request's Head number.
 //
 // Coupling an implicit head check to this path raced with the state poller on fast
 // block-time chains and falsely rejected fresh blocks an upstream already had
@@ -3132,6 +3378,11 @@ func (n *Network) checkSvmUpstreamSlotAvailability(ctx context.Context, u common
 // FAIL-OPEN BEHAVIOR: If we cannot determine the bounds or block number (e.g. state
 // poller not ready), we allow the request to proceed rather than blocking traffic.
 func (n *Network) checkEvmUpstreamBlockAvailability(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) (error, bool) {
+	// A tag request whose tag-state decision says u's "latest" state is
+	// stale (spec §6.11): its own error, so it never reads as -32014.
+	if evm.TagStateSkip(n, u, req) {
+		return common.NewErrUpstreamTagStateStale(u.Id()), false
+	}
 	// Range methods (eth_getLogs, trace_filter, arbtrace_filter) enforce block
 	// availability via their own range-aware pre-forward hooks; gating them here on a
 	// single extracted block number would conflict with that.
@@ -3307,11 +3558,25 @@ func eligibleLane(bounds []upstreamBlockBounds, bn int64) []string {
 // cache derive its own key (architecture/svm.RequestKey); multiplexing needs
 // the identical guarantee because it hands the leader's response to followers
 // verbatim.
+//
+// The Use-Upstream directive is part of the key, so identical requests share
+// only when they route alike: a state probe pinned to one upstream never
+// shares with a client request routed elsewhere.
 func (n *Network) multiplexKey(ctx context.Context, req *common.NormalizedRequest) (string, error) {
+	var key string
+	var err error
 	if n.cfg != nil && n.cfg.Architecture == common.ArchitectureSvm {
-		return svm.RequestKey(ctx, req)
+		key, err = svm.RequestKey(ctx, req)
+	} else {
+		key, err = req.CacheHash()
 	}
-	return req.CacheHash()
+	if err != nil || key == "" {
+		return key, err
+	}
+	if d := req.Directives(); d != nil && d.UseUpstream != "" {
+		key += "|use-upstream:" + d.UseUpstream
+	}
+	return key, nil
 }
 
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
@@ -3383,9 +3648,29 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 			return nil, resp, nil
 		}
 
-		// Shouldn't reach here normally, but if we do, retry
-		lg.Warn().Str("hash", mlxHash).Msg("multiplexer follower got nil response and no error, retrying")
+		// A leader that shares only a usable answer (a chain tracker fetch)
+		// closed without one: lead or join anew, with this request's own
+		// failsafe policies.
+		lg.Debug().Str("hash", mlxHash).Msg("multiplexer leader shared no response, forwarding anew")
 	}
+}
+
+// leadMultiplexer registers req as the leader of its in-flight key so
+// concurrent identical requests join it. It returns nil when multiplexing is
+// off or another request already leads the key; it never follows one.
+func (n *Network) leadMultiplexer(ctx context.Context, req *common.NormalizedRequest) *Multiplexer {
+	if !n.cfg.MultiplexingEnabled() {
+		return nil
+	}
+	hash, err := n.multiplexKey(ctx, req)
+	if err != nil || hash == "" {
+		return nil
+	}
+	mlx := NewMultiplexer(hash)
+	if _, loaded := n.inFlightRequests.LoadOrStore(hash, mlx); loaded {
+		return nil
+	}
+	return mlx
 }
 
 func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, req *common.NormalizedRequest, startTime time.Time) (*common.NormalizedResponse, error) {
@@ -3515,43 +3800,35 @@ func filterMethodEligible(ups []common.Upstream, method string) ([]common.Upstre
 func (n *Network) enrichStatePoller(ctx context.Context, method string, req *common.NormalizedRequest, resp *common.NormalizedResponse) {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EnrichStatePoller")
 	defer span.End()
+	// A client answer is dated by its request's send time (spec §6.4); an
+	// answer no upstream sent now carries no evidence of a head.
+	sentAt := resp.SentAt()
+	if sentAt.IsZero() {
+		return
+	}
 
 	switch n.Architecture() {
 	case common.ArchitectureEvm:
 		// TODO Move the logic to evm package as a post-forward hook?
 		if method == "eth_getBlockByNumber" {
-			// Prefer the original block reference preserved by normalization.
-			// This stays "latest"/"finalized" even if params were interpolated to hex.
-			var blkTag string
-			if ref := req.EvmBlockRef(); ref != nil {
-				if s, ok := ref.(string); ok && (s == "latest" || s == "finalized") {
-					blkTag = s
+			// sentTag is the tag the upstream resolved itself; blkTag the
+			// request's own, which normalization keeps when it interpolates
+			// the params to Head's number.
+			jrq, err := req.JsonRpcRequest(ctx)
+			if err != nil {
+				return
+			}
+			var sentTag string
+			jrq.RLock()
+			if len(jrq.Params) > 0 {
+				if s, ok := jrq.Params[0].(string); ok && (s == "latest" || s == "finalized") {
+					sentTag = s
 				}
 			}
-			if lg := n.logger; lg != nil && lg.GetLevel() <= zerolog.TraceLevel {
-				lg.Trace().
-					Str("blkTagFromEvmBlockRef", blkTag).
-					Interface("evmBlockRefRaw", req.EvmBlockRef()).
-					Msg("enrichStatePoller: resolved block tag from request EvmBlockRef")
-			}
-			// Fallback to inspecting the request param only if we couldn't resolve from EvmBlockRef
-			if blkTag == "" {
-				jrq, err := req.JsonRpcRequest(ctx)
-				if err != nil {
-					return
-				}
-				jrq.RLock()
-				if len(jrq.Params) > 0 {
-					if s, ok := jrq.Params[0].(string); ok && (s == "latest" || s == "finalized") {
-						blkTag = s
-					}
-				}
-				jrq.RUnlock()
-				if lg := n.logger; lg != nil {
-					lg.Trace().
-						Str("blkTagFromParams", blkTag).
-						Msg("enrichStatePoller: resolved block tag from request params")
-				}
+			jrq.RUnlock()
+			blkTag := sentTag
+			if s, ok := req.EvmBlockRef().(string); ok && (s == "latest" || s == "finalized") {
+				blkTag = s
 			}
 			if blkTag == "" {
 				return
@@ -3577,9 +3854,30 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 					// These methods are non-blocking and handle async updates internally
 					switch blkTag {
 					case "finalized":
-						ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
+						// Only the upstream's own answer to the tag is its
+						// finalized: an interpolated request asked for
+						// Head.Finalized, eRPC's number, and serving that block
+						// says nothing of what this upstream finalized (spec
+						// §6.4, #90).
+						if sentTag == "finalized" {
+							ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber, sentAt)
+						}
 					case "latest":
-						ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
+						// As finalized: an interpolated answer shows the
+						// upstream has block N, not that its head is N.
+						if sentTag == "latest" {
+							ups.EvmStatePoller().SuggestLatestBlock(blockNumber, sentAt)
+						}
+						// An answer, never a vote: the tracker of the
+						// request's group holds its header, in bytes of its
+						// own, once per hash.
+						selector := ""
+						if d := req.Directives(); d != nil {
+							selector = d.UseUpstream
+						}
+						if t := evm.ChainTrackerOf(ctx, n, selector); t != nil {
+							t.Observe(ups.Id(), jrs.GetResultBytes(), false)
+						}
 					}
 				}
 			}
@@ -3592,7 +3890,7 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 					if ups := resp.Upstream(); ups != nil {
 						if ups, ok := ups.(common.EvmUpstream); ok {
 							// This method is non-blocking and handles async updates internally
-							ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
+							ups.EvmStatePoller().SuggestLatestBlock(blockNumber, sentAt)
 						}
 					}
 				}
@@ -3689,16 +3987,49 @@ func isFallbackTier(u common.Upstream) bool {
 	return u.Config() != nil && u.Config().HasTag(common.TagTierFallback)
 }
 
-// partitionUpstreamsByLatestBlock moves upstreams whose head is known to be
-// below bn behind the rest, preserving order within each group. An upstream
-// with no known head keeps its place.
-func (n *Network) partitionUpstreamsByLatestBlock(ups []common.Upstream, bn int64) []common.Upstream {
+// headFirst picks req's band retry (spec §6.4): its routed upstreams not
+// yet attempted that NextUpstream may still select, ordered by their heads
+// as they are now, those reaching bn first, with no I/O. Upstreams the
+// policy did not route stay the fallback escape's.
+func (n *Network) headFirst(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, bn int64) func() (common.Upstream, error) {
+	var rest []common.Upstream
+	for _, u := range req.Upstreams() {
+		if _, seen := attempted[u.Id()]; !seen {
+			rest = append(rest, u)
+		}
+	}
+	rest = n.partitionUpstreamsByLatestBlock(rest, bn, n.requestHead(ctx, req).Latest)
+	return func() (common.Upstream, error) {
+		for len(rest) > 0 {
+			u := rest[0]
+			rest = rest[1:]
+			if req.ReserveUpstream(u) {
+				return u, nil
+			}
+		}
+		return nil, common.NewErrNoUpstreamsLeftToSelect(req, "no upstream left for the refusal band's retry")
+	}
+}
+
+// partitionUpstreamsByLatestBlock moves the upstreams known not to reach
+// block bn (common.EvmHeadReaches) behind the rest, preserving order within
+// each group (spec §6.1, §6.4, §8). A push source is judged by its hash
+// vote on this instance, as its requests ride this instance's socket,
+// which may be half-open while the shared head counter moves; any other
+// upstream by its head counter, credited up to latest (creditedHead). An
+// upstream with no known head keeps its place.
+func (n *Network) partitionUpstreamsByLatestBlock(ups []common.Upstream, bn, latest int64) []common.Upstream {
 	if bn <= 0 || len(ups) < 2 {
 		return ups
 	}
 	return stablePartition(ups, func(u common.Upstream) bool {
-		lb := n.upstreamHead(u)
-		return lb > 0 && lb < bn
+		head := upstreamLatestBlock(u)
+		if n.metricsTracker != nil && n.sources.pushSource(u.Id()) {
+			head = n.metricsTracker.HashVoteNumber(u)
+		} else {
+			head = n.creditedHead(u, head, latest)
+		}
+		return head > 0 && !common.EvmHeadReaches(u, head, bn)
 	})
 }
 
@@ -3722,47 +4053,63 @@ func stablePartition(ups []common.Upstream, last func(common.Upstream) bool) []c
 	return out
 }
 
-// preferTipLeaderForNearTipGetBlock moves the upstream whose head is strictly
-// ahead of every other to the front for eth_getBlockByNumber of that head or
-// the next block, which its siblings may not have imported yet.
-func (n *Network) preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn int64) []common.Upstream {
-	if method != "eth_getBlockByNumber" || len(ups) < 2 {
+// preferTipLeaderForNearTipGetBlock moves leader, the request Head's Leader,
+// to the front for eth_getBlockByNumber of its head or the next block while
+// its head is strictly ahead of every other upstream in ups, which may not
+// have imported that block yet. Heads are read as the Leader was chosen
+// (evmTipHead), the others credited up to latest (creditedHead), so a
+// fresher poll alone makes no leader.
+func (n *Network) preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn int64, leader common.Upstream, latest int64) []common.Upstream {
+	if method != "eth_getBlockByNumber" || len(ups) < 2 || leader == nil {
 		return ups
 	}
-	leader, tip, runnerUp := -1, int64(0), int64(0)
+	tip := evmTipHead(leader)
+	if bn < tip || bn > tip+1 {
+		return ups
+	}
+	at := -1
 	for i, u := range ups {
-		if lb := n.upstreamHead(u); lb > tip {
-			leader, tip, runnerUp = i, lb, tip
-		} else if lb > runnerUp {
-			runnerUp = lb
+		switch {
+		case u == leader:
+			at = i
+		case n.creditedHead(u, evmTipHead(u), latest) >= tip:
+			return ups
 		}
 	}
-	if leader <= 0 || tip == runnerUp || bn < tip || bn > tip+1 {
+	if at <= 0 {
 		return ups
 	}
 	out := make([]common.Upstream, 0, len(ups))
-	out = append(out, ups[leader])
-	out = append(out, ups[:leader]...)
-	out = append(out, ups[leader+1:]...)
+	out = append(out, ups[at])
+	out = append(out, ups[:at]...)
+	out = append(out, ups[at+1:]...)
 	return out
 }
 
-// upstreamHead is u's head for ordering: its polled head plus the blocks the
-// tracker presumes it gained since its last report (HeadCredit), never above
-// the corroborated network head. A polled head ages by up to a poll interval;
-// read raw, it made a fast upstream polled every 10s on a 2s chain look blocks
-// behind a slow one polled more often, so tip reads went to the slow one first.
-// An unknown head stays unknown.
-func (n *Network) upstreamHead(u common.Upstream) int64 {
-	lb := upstreamLatestBlock(u)
-	if lb <= 0 || n.metricsTracker == nil {
-		return lb
+// creditedHead is head, u's head as read for ordering, plus the blocks the
+// chain made since u's newest report beyond its lag then, never above
+// latest (spec §6.4, #1352): a polled head ages by up to a poll interval,
+// and read raw it put a fast upstream polled every 10s on a 2s chain behind
+// a slow one polled more often. The report is u's head counter and its
+// report time. A head that is unknown, at or above latest, capped by a
+// configured exactBlock, or a push source's gets none, and so does a
+// benched one (Tracker.HeadCredit). It orders only.
+func (n *Network) creditedHead(u common.Upstream, head, latest int64) int64 {
+	if head <= 0 || head >= latest || n.metricsTracker == nil || n.sources.pushSource(u.Id()) {
+		return head
 	}
-	credit, network := n.metricsTracker.HeadCredit(u)
-	if credit <= 0 {
-		return lb
+	eu, ok := u.(common.EvmUpstream)
+	if !ok {
+		return head
 	}
-	return max(lb, min(lb+credit, network))
+	sp := eu.EvmStatePoller()
+	if sp == nil || sp.IsObjectNull() {
+		return head
+	}
+	if _, capped := evmTipObservation(eu, false); capped {
+		return head
+	}
+	return min(latest, head+n.metricsTracker.HeadCredit(u, sp.LatestBlock(), sp.LatestReportAt(), latest))
 }
 
 // upstreamLatestBlock is u's polled head, or 0 when unknown.
@@ -3771,6 +4118,16 @@ func upstreamLatestBlock(u common.Upstream) int64 {
 		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 			return sp.LatestBlock()
 		}
+	}
+	return 0
+}
+
+// evmTipHead is u's latest head as the Leader is chosen on it (voterSet,
+// evmTipObservation), or 0 when unknown.
+func evmTipHead(u common.Upstream) int64 {
+	if eu, ok := u.(common.EvmUpstream); ok {
+		head, _ := evmTipObservation(eu, false)
+		return head
 	}
 	return 0
 }
@@ -3788,6 +4145,29 @@ func requestBlockNumber(ctx context.Context, req *common.NormalizedRequest) int6
 	}
 	if _, x, ebn := evm.ExtractBlockReferenceFromRequest(ctx, req); ebn == nil && x > 0 {
 		return x
+	}
+	return 0
+}
+
+// routingBlockNumber is the block req reads, for routing: requestBlockNumber,
+// or for a read by block hash the number of the header the network-wide
+// tracker holds; 0 otherwise.
+func (n *Network) routingBlockNumber(ctx context.Context, req *common.NormalizedRequest) int64 {
+	if req == nil {
+		return 0
+	}
+	if v, ok := req.EvmBlockNumber().(int64); ok && v > 0 {
+		return v
+	}
+	ref, x, err := evm.ExtractBlockReferenceFromRequest(ctx, req)
+	switch {
+	case err != nil:
+		return 0
+	case x > 0:
+		return x
+	case len(ref) == 66:
+		bn, _ := n.chainTracker.HeldNumber(ref)
+		return bn
 	}
 	return 0
 }

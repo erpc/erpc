@@ -12,7 +12,6 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,14 +57,15 @@ type covMiscEvmNetwork struct {
 	*covMiscNetwork
 	latest, finalized int64
 	leader            Upstream
-	refreshed         atomic.Int32
 	routable          []Upstream
 }
 
-func (n *covMiscEvmNetwork) EvmHighestLatestBlockNumber(context.Context) int64    { return n.latest }
-func (n *covMiscEvmNetwork) EvmHighestFinalizedBlockNumber(context.Context) int64 { return n.finalized }
-func (n *covMiscEvmNetwork) EvmLeaderUpstream(context.Context) Upstream           { return n.leader }
-func (n *covMiscEvmNetwork) EvmRefreshLatestBlock(context.Context)                { n.refreshed.Add(1) }
+func (n *covMiscEvmNetwork) EvmHead(context.Context, *NormalizedRequest) EvmHead {
+	return EvmHead{Latest: n.latest, Finalized: n.finalized, Leader: n.leader}
+}
+func (n *covMiscEvmNetwork) EvmLaneHead(string, string) EvmHead {
+	return n.EvmHead(context.Background(), nil)
+}
 func (n *covMiscEvmNetwork) EvmRoutableUpstreams(context.Context) iter.Seq[Upstream] {
 	return func(yield func(Upstream) bool) {
 		for _, u := range n.routable {
@@ -126,7 +126,7 @@ func covMiscWriteCert(t *testing.T) (string, string) {
 // span recorder and restores every tracing global on cleanup.
 func covMiscRecordSpans(t *testing.T, sampleRate float64, detailed bool, matchers []*ForceTraceMatcher) *tracetest.SpanRecorder {
 	t.Helper()
-	prevEnabled, prevDetailed := IsTracingEnabled, IsTracingDetailed
+	prevEnabled, prevDetailed := IsTracingEnabled(), IsTracingDetailed()
 	prevTracer, prevProvider, prevMatchers := tracer, tracerProvider, forceTraceMatchers
 
 	sr := tracetest.NewSpanRecorder()
@@ -136,13 +136,14 @@ func covMiscRecordSpans(t *testing.T, sampleRate float64, detailed bool, matcher
 	)
 	tracer = tp.Tracer(instrumentationName)
 	tracerProvider = tp
-	IsTracingEnabled = true
-	IsTracingDetailed = detailed
+	SetTracingEnabled(true)
+	SetTracingDetailed(detailed)
 	forceTraceMatchers = matchers
 
 	t.Cleanup(func() {
 		_ = tp.Shutdown(context.Background())
-		IsTracingEnabled, IsTracingDetailed = prevEnabled, prevDetailed
+		SetTracingEnabled(prevEnabled)
+		SetTracingDetailed(prevDetailed)
 		tracer, tracerProvider, forceTraceMatchers = prevTracer, prevProvider, prevMatchers
 	})
 	return sr
@@ -151,10 +152,13 @@ func covMiscRecordSpans(t *testing.T, sampleRate float64, detailed bool, matcher
 // covMiscDisableTracing forces the disabled path and restores on cleanup.
 func covMiscDisableTracing(t *testing.T) {
 	t.Helper()
-	prevEnabled, prevDetailed, prevProvider := IsTracingEnabled, IsTracingDetailed, tracerProvider
-	IsTracingEnabled, IsTracingDetailed = false, false
+	prevEnabled, prevDetailed, prevProvider := IsTracingEnabled(), IsTracingDetailed(), tracerProvider
+	SetTracingEnabled(false)
+	SetTracingDetailed(false)
 	t.Cleanup(func() {
-		IsTracingEnabled, IsTracingDetailed, tracerProvider = prevEnabled, prevDetailed, prevProvider
+		SetTracingEnabled(prevEnabled)
+		SetTracingDetailed(prevDetailed)
+		tracerProvider = prevProvider
 	})
 }
 

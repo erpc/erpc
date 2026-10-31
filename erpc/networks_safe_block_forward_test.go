@@ -6,8 +6,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/stretchr/testify/assert"
@@ -33,7 +35,7 @@ func (*seededSafeCache) IsObjectNull() bool { return false }
 
 func TestNetwork_Forward_RoutesSafeBeforeCacheAndSelection(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	var sourceBody string
@@ -91,4 +93,80 @@ func TestNetwork_Forward_RoutesSafeBeforeCacheAndSelection(t *testing.T) {
 	assert.Zero(t, otherCalls.Load(), "non-source upstream must not receive the user safe request")
 	assert.Zero(t, cache.reads.Load(), "a provider-defined safe cache entry must not satisfy operator routing")
 	assert.Contains(t, sourceBody, `"safe"`, "the selected source must receive the original safe tag")
+}
+
+// A safe-tagged request takes the safe source's Head, not the network-wide
+// one: its toBlock "latest" never names a block above what the source lane
+// serves, though the project reads the Head before Network.Forward.
+func TestHttpServer_SafeGetLogsTakesTheSafeLaneHead(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+
+	// Both upstreams sit on rpc1's poller mocks (head 0x11118888); the path
+	// tells them apart. "other" then moves 5 blocks ahead.
+	const sourceHead = int64(0x11118888)
+	var sourceBody atomic.Value
+	var otherCalls atomic.Int32
+	gock.New("http://rpc1.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			if !strings.Contains(body, `"eth_getLogs"`) {
+				return false
+			}
+			if r.URL.Path == "/other" {
+				otherCalls.Add(1)
+			} else {
+				sourceBody.Store(body)
+			}
+			return true
+		}).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[]}`))
+
+	cfg := &common.Config{
+		Server: &common.ServerConfig{MaxTimeout: common.Duration(10 * time.Second).Ptr()},
+		Projects: []*common.ProjectConfig{{
+			Id: "test_project",
+			Networks: []*common.NetworkConfig{{
+				Architecture: "evm",
+				Evm: &common.EvmNetworkConfig{
+					ChainId:         123,
+					SafeBlockSource: "tier:source",
+					ServedTip:       &common.EvmServedTipConfig{Quorum: 1},
+				},
+			}},
+			Upstreams: []*common.UpstreamConfig{
+				{Id: "source", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost/source", Tags: []string{"tier:source"},
+					Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(10 * time.Second)}},
+				{Id: "other", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost/other", Tags: []string{"tier:other"},
+					Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(10 * time.Second)}},
+			},
+		}},
+	}
+	sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+	defer shutdown()
+	prj, err := erpcInstance.GetProject("test_project")
+	require.NoError(t, err)
+	policy.OverrideAllForTest(prj.policyEngine)
+	nw, err := prj.GetNetwork(context.Background(), "evm:123")
+	require.NoError(t, err)
+
+	for _, u := range nw.upstreamsRegistry.GetNetworkUpstreams(context.Background(), "evm:123") {
+		require.Eventually(t, func() bool { return u.EvmStatePoller().LatestBlock() == sourceHead }, 5*time.Second, 5*time.Millisecond)
+		if u.Id() == "other" {
+			u.EvmStatePoller().SuggestLatestBlock(sourceHead+5, time.Now())
+		}
+	}
+	require.Eventually(t, func() bool { return servedHead(nw, context.Background()).Latest == sourceHead+5 }, 5*time.Second, 5*time.Millisecond,
+		"network-wide head: %+v", servedHead(nw, context.Background()))
+	require.Equal(t, sourceHead, nw.headFor("tier:source").Latest, "the safe lane is 5 blocks behind the network-wide lane")
+
+	status, _, body := sendRequest(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"safe","toBlock":"latest"}]}`, nil, nil)
+	require.Equal(t, http.StatusOK, status, "body=%s", body)
+	sent, _ := sourceBody.Load().(string)
+	require.NotEmpty(t, sent, "the safe source must receive the request; body=%s", body)
+	assert.Contains(t, sent, `"toBlock":"0x11118888"`, "toBlock must be the safe lane's Latest, never the network-wide one")
+	assert.Contains(t, sent, `"fromBlock":"safe"`)
+	assert.Zero(t, otherCalls.Load(), "only the safe source serves a safe request")
 }

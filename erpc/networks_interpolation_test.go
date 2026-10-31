@@ -2,8 +2,10 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -28,6 +30,8 @@ func init() {
 
 // Helper to create a test network with mocked state poller
 func setupTestNetworkForInterpolation(t *testing.T, ctx context.Context, networkConfig *common.NetworkConfig) (*Network, *upstream.UpstreamsRegistry) {
+	// The network lives as long as t, not the caller's ctx (stopAtEnd).
+	ctx, cancel := context.WithCancel(ctx)
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
 		Type:     common.UpstreamTypeEvm,
@@ -73,6 +77,8 @@ func setupTestNetworkForInterpolation(t *testing.T, ctx context.Context, network
 	}
 
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt, nil)
+	stopAtEnd(t, network)
+	t.Cleanup(cancel)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 	network.PinUpstreamOrderForTest()
@@ -86,7 +92,7 @@ func setupTestNetworkForInterpolation(t *testing.T, ctx context.Context, network
 // Test "latest" tag translation to hex number
 func TestInterpolation_LatestTag_ToHex(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -136,13 +142,12 @@ func TestInterpolation_LatestTag_ToHex(t *testing.T) {
 	}
 }
 
-// After tag interpolation to hex, enrichStatePoller must still enrich using the original tag intent.
-// This test forces a forwarded eth_getBlockByNumber (latest) call to return a higher block number than the poller's background value,
-// and expects the poller's LatestBlock to be updated to that higher number via enrichment.
-// With the current bug (checking mutated params instead of original tag), enrichment won't run and the value won't update.
-func TestEnrichment_AfterInterpolation_UsesOriginalLatestTagIntent(t *testing.T) {
+// After tag interpolation to hex, the upstream was asked for eRPC's number,
+// not its own latest: its answer shows it has that block, not that its head
+// is there, so enrichStatePoller never moves its latest counter (spec §6.4).
+func TestEnrichment_AfterInterpolation_NeverMovesTheCounter(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -179,23 +184,14 @@ func TestEnrichment_AfterInterpolation_UsesOriginalLatestTagIntent(t *testing.T)
 	poller := eups.EvmStatePoller()
 	require.NotNil(t, poller)
 
-	// Now directly invoke enrichStatePoller with a synthetic response that has a higher block number (0x22222222).
-	// If enrichment uses the original tag intent (from req.EvmBlockRef) rather than mutated params,
-	// it should call SuggestLatestBlock and update the poller's latest block to 0x22222222.
+	// Enrich with a synthetic answer far above the poller's head: a head
+	// this answer would claim, were it read as the upstream's latest.
 	jrr := common.MustNewJsonRpcResponse(1, map[string]interface{}{"number": "0x22222222"}, nil)
 	resp2 := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr).SetUpstream(ups)
-	// Retry a few times to avoid racing with background poller updates that may hold the Suggest lock
-	for i := 0; i < 10; i++ {
-		network.enrichStatePoller(ctx, "eth_getBlockByNumber", req, resp2)
-		time.Sleep(50 * time.Millisecond)
-		if poller.LatestBlock() >= int64(0x22222222) {
-			break
-		}
-	}
-
-	latest := poller.LatestBlock()
-	// Expect enrichment to have updated to 0x22222222 (572662306)
-	assert.Equal(t, int64(0x22222222), latest, "LatestBlock should be enriched to the block from response when original tag was 'latest'")
+	resp2.SetSentAt(time.Now())
+	network.enrichStatePoller(ctx, "eth_getBlockByNumber", req, resp2)
+	time.Sleep(100 * time.Millisecond)
+	assert.Less(t, poller.LatestBlock(), int64(0x22222222), "an interpolated answer never moves the upstream's latest counter")
 }
 
 // When using EIP-1898 object params for eth_getBlockReceipts, we must preserve the object
@@ -203,7 +199,7 @@ func TestEnrichment_AfterInterpolation_UsesOriginalLatestTagIntent(t *testing.T)
 // due to conflicting refs ({0} and {0,"blockNumber"}).
 func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Latest_PreservesObject(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -246,7 +242,7 @@ func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Latest_PreservesO
 // Same as above but with "finalized" tag; should still preserve object shape and translate nested field.
 func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Finalized_PreservesObject(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -285,7 +281,7 @@ func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Finalized_Preserv
 // Mixed tags should collapse EvmBlockRef to "*"
 func TestInterpolation_EthGetLogs_MixedTags_EvmBlockRefCollapsed(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -333,7 +329,7 @@ func TestInterpolation_EthGetLogs_MixedTags_EvmBlockRefCollapsed(t *testing.T) {
 // Same tags should preserve that tag in EvmBlockRef
 func TestInterpolation_EthGetLogs_SameTags_EvmBlockRefPreserved(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -380,7 +376,7 @@ func TestInterpolation_EthGetLogs_SameTags_EvmBlockRefPreserved(t *testing.T) {
 // SkipInterpolation should keep params unchanged but still warm/collapse EvmBlockRef
 func TestInterpolation_EthGetLogs_MixedTags_SkipInterpolation_WarmsRef(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -443,7 +439,7 @@ func TestInterpolation_EthGetLogs_MixedTags_SkipInterpolation_WarmsRef(t *testin
 // Mixing with semantic tags (safe/pending) should not collapse; preserve known tag
 func TestInterpolation_EthGetLogs_MixedWithSemanticTags_NoCollapse(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -491,7 +487,7 @@ func TestInterpolation_EthGetLogs_MixedWithSemanticTags_NoCollapse(t *testing.T)
 // Ensure EvmBlockRef is cleared per-request (no leak across requests)
 func TestInterpolation_EvmBlockRef_IsPerRequest(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -543,7 +539,7 @@ func TestInterpolation_EvmBlockRef_IsPerRequest(t *testing.T) {
 // Test "finalized" tag translation to hex number
 func TestInterpolation_FinalizedTag_ToHex(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -592,7 +588,7 @@ func TestInterpolation_FinalizedTag_ToHex(t *testing.T) {
 // Test "safe" tag NOT translated (passed through)
 func TestInterpolation_SafeTag_PassThrough(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -640,7 +636,7 @@ func TestInterpolation_SafeTag_PassThrough(t *testing.T) {
 // Test that deep copy prevents race conditions
 func TestInterpolation_DeepCopyPreventsRace(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -719,7 +715,7 @@ func TestInterpolation_DeepCopyPreventsRace(t *testing.T) {
 // Test that safe and pending tags preserve their semantic meaning
 func TestInterpolation_PreservesSemanticTags(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -768,7 +764,7 @@ func TestInterpolation_PreservesSemanticTags(t *testing.T) {
 // Test "pending" tag NOT translated (passed through)
 func TestInterpolation_PendingTag_PassThrough(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -816,7 +812,7 @@ func TestInterpolation_PendingTag_PassThrough(t *testing.T) {
 // Test numeric block parameter normalization (float64 from JSON)
 func TestInterpolation_NumericBlock_ToHex(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -865,7 +861,7 @@ func TestInterpolation_NumericBlock_ToHex(t *testing.T) {
 // Test eth_getLogs with fromBlock and toBlock
 func TestInterpolation_EthGetLogs_MultipleParams(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -923,7 +919,7 @@ func TestInterpolation_EthGetLogs_MultipleParams(t *testing.T) {
 // Test eth_getLogs with numeric fromBlock/toBlock
 func TestInterpolation_EthGetLogs_NumericBlocks(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -975,7 +971,7 @@ func TestInterpolation_EthGetLogs_NumericBlocks(t *testing.T) {
 // Test hex normalization (e.g., "0x0a" -> "0xa")
 func TestInterpolation_HexNormalization(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1024,7 +1020,7 @@ func TestInterpolation_HexNormalization(t *testing.T) {
 // Test with translation disabled for latest tag
 func TestInterpolation_DisabledLatestTranslation(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1089,7 +1085,7 @@ func TestInterpolation_DisabledLatestTranslation(t *testing.T) {
 // Test with translation disabled for finalized tag
 func TestInterpolation_DisabledFinalizedTranslation(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1151,66 +1147,11 @@ func TestInterpolation_DisabledFinalizedTranslation(t *testing.T) {
 	}
 }
 
-// Test that eth_getBlockByNumber does NOT interpolate "latest" by default.
-// This method should fetch actual latest from upstream, not use the state poller's
-// potentially stale value. This is critical for indexers that poll for latest blocks.
-func TestInterpolation_EthGetBlockByNumber_Latest_NotInterpolated(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
-	req.SetNetwork(network)
-
-	// Normalize the request - this is where interpolation would happen
-	jrq, err := req.JsonRpcRequest()
-	require.NoError(t, err)
-	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
-
-	// Verify "latest" was NOT translated (should still be "latest")
-	// This is the key assertion - eth_getBlockByNumber should NOT interpolate the tag
-	params := jrq.Params
-	require.Len(t, params, 2)
-	blockParam := params[0].(string)
-	assert.Equal(t, "latest", blockParam, "eth_getBlockByNumber should NOT interpolate 'latest' - it should fetch actual latest from upstream")
-}
-
-// Test that eth_getBlockByNumber does NOT interpolate "finalized" by default.
-func TestInterpolation_EthGetBlockByNumber_Finalized_NotInterpolated(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["finalized",false]}`))
-	req.SetNetwork(network)
-
-	// Normalize the request - this is where interpolation would happen
-	jrq, err := req.JsonRpcRequest()
-	require.NoError(t, err)
-	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
-
-	// Verify "finalized" was NOT translated (should still be "finalized")
-	params := jrq.Params
-	require.Len(t, params, 2)
-	blockParam := params[0].(string)
-	assert.Equal(t, "finalized", blockParam, "eth_getBlockByNumber should NOT interpolate 'finalized'")
-}
-
 // Test that other methods like eth_getBalance STILL interpolate "latest".
 // This ensures our change to eth_getBlockByNumber doesn't affect other methods.
 func TestInterpolation_OtherMethods_StillInterpolateLatest(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1264,7 +1205,7 @@ func TestInterpolation_OtherMethods_StillInterpolateLatest(t *testing.T) {
 // Test methods without block parameters (should not be affected)
 func TestInterpolation_MethodsWithoutBlockParams(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1305,7 +1246,7 @@ func TestInterpolation_MethodsWithoutBlockParams(t *testing.T) {
 // Test eth_getStorageAt with third parameter
 func TestInterpolation_EthGetStorageAt_ThirdParam(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1355,7 +1296,7 @@ func TestInterpolation_EthGetStorageAt_ThirdParam(t *testing.T) {
 // Test trace_call with second parameter
 func TestInterpolation_TraceCall_SecondParam(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1404,7 +1345,7 @@ func TestInterpolation_TraceCall_SecondParam(t *testing.T) {
 // Test debug_traceCall with second parameter
 func TestInterpolation_DebugTraceCall_SecondParam(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1454,7 +1395,7 @@ func TestInterpolation_DebugTraceCall_SecondParam(t *testing.T) {
 // the network's latest block number, the same as eth_call.
 func TestInterpolation_EthEstimateGas_MissingBlockParamPinnedToLatestNumber(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1481,8 +1422,7 @@ func TestInterpolation_EthEstimateGas_MissingBlockParamPinnedToLatestNumber(t *t
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_estimateGas","params":[{"to":"0xabc","value":"0x1"}]}`))
 	req.SetNetwork(network)
 
-	handled, resp, err := evm.HandleProjectPreForward(ctx, network, req)
-	require.True(t, handled)
+	resp, err := network.Forward(ctx, req)
 	require.NoError(t, err)
 	if resp != nil {
 		resp.Release()
@@ -1492,7 +1432,7 @@ func TestInterpolation_EthEstimateGas_MissingBlockParamPinnedToLatestNumber(t *t
 // Test eth_estimateGas with second parameter
 func TestInterpolation_EthEstimateGas_SecondParam(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1584,7 +1524,7 @@ func TestInterpolation_NoStatePollerData(t *testing.T) {
 // Test mixed parameters in eth_getLogs
 func TestInterpolation_EthGetLogs_MixedParams(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1627,7 +1567,7 @@ func TestInterpolation_EthGetLogs_MixedParams(t *testing.T) {
 // Test large numeric values
 func TestInterpolation_LargeNumericValues(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1676,7 +1616,7 @@ func TestInterpolation_LargeNumericValues(t *testing.T) {
 // Test eth_getBlockReceipts with object parameter
 func TestInterpolation_EthGetBlockReceipts_ObjectParam(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -1729,7 +1669,7 @@ func TestInterpolation_EthGetBlockReceipts_ObjectParam(t *testing.T) {
 // Benchmark tag translation performance with deep copy
 func BenchmarkInterpolation_TagTranslationWithDeepCopy(b *testing.B) {
 	util.ResetGock()
-	defer util.ResetGock()
+	b.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx := context.Background()
@@ -1763,7 +1703,7 @@ func BenchmarkInterpolation_TagTranslationWithDeepCopy(b *testing.B) {
 // Benchmark tag translation performance (simple params)
 func BenchmarkInterpolation_TagTranslation(b *testing.B) {
 	util.ResetGock()
-	defer util.ResetGock()
+	b.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx := context.Background()
@@ -1782,7 +1722,7 @@ func BenchmarkInterpolation_TagTranslation(b *testing.B) {
 // Benchmark numeric normalization performance
 func BenchmarkInterpolation_NumericNormalization(b *testing.B) {
 	util.ResetGock()
-	defer util.ResetGock()
+	b.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx := context.Background()
@@ -1875,7 +1815,7 @@ func TestInterpolation_AllMethodsCoverage(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 			util.SetupMocksForEvmStatePoller()
 			defer util.AssertNoPendingMocks(t, 0)
 
@@ -1920,7 +1860,7 @@ func TestInterpolation_AllMethodsCoverage(t *testing.T) {
 // When interpolating "latest", only upstreams whose latest >= interpolated block should be used.
 func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -2007,6 +1947,7 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 		},
 	}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt, nil)
+	stopAtEnd(t, network)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 	network.PinUpstreamOrderForTest()
@@ -2048,7 +1989,7 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 // When method-level enforcement is disabled, upstreams are not skipped even if their head is behind interpolated block.
 func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -2136,6 +2077,7 @@ func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
 		},
 	}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt, nil)
+	stopAtEnd(t, network)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 	network.PinUpstreamOrderForTest()
@@ -2154,4 +2096,177 @@ func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
 	defer resp.Release()
 	require.NotNil(t, resp.Upstream())
 	assert.Equal(t, "rpc1", resp.Upstream().Id(), "with enforcement disabled for method, upstream should not be skipped")
+}
+
+// Every block-selector form reaches the upstream as the request's one
+// number (spec §7): a plain tag, an absent or null selector of a method
+// whose nodes read it as latest, an absent range bound, and an EIP-1898
+// blockNumber leaf. translateLatestTag: false keeps "latest" in every form,
+// an absent one spelled out.
+func TestInterpolation_EveryForm(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type form struct {
+		name, method, params string
+		want, absent         []string
+		key                  string // what identifies the request upstream; formKey when empty
+		sent                 atomic.Value
+	}
+	translated := []*form{
+		{name: "eth_call absent", method: "eth_call", params: `[{"to":"0x1"}]`,
+			want: []string{`"params":[{"to":"0x1"},"0x11118888"]`}},
+		{name: "eth_estimateGas absent", method: "eth_estimateGas", params: `[{"to":"0x1"}]`,
+			want: []string{`"params":[{"to":"0x1"},"0x11118888"]`}},
+		{name: "eth_createAccessList absent", method: "eth_createAccessList", params: `[{"to":"0x1"}]`,
+			want: []string{`"params":[{"to":"0x1"},"0x11118888"]`}},
+		{name: "eth_getBalance null", method: "eth_getBalance", params: `["0xabc",null]`,
+			want: []string{`"params":["0xabc","0x11118888"]`}},
+		{name: "trace_call absent after trace types", method: "trace_call", params: `[{"to":"0x1"},["trace"]]`,
+			want: []string{`"params":[{"to":"0x1"},["trace"],"0x11118888"]`}},
+		{name: "trace_call tag in second place", method: "trace_call", params: `[{"to":"0x9"},"latest"]`,
+			want: []string{`"params":[{"to":"0x9"},"0x11118888"]`}},
+		{name: "eth_call EIP-1898 latest", method: "eth_call", params: `[{"to":"0x2"},{"blockNumber":"latest"}]`,
+			want: []string{`{"blockNumber":"0x11118888"}`}},
+		{name: "eth_call EIP-1898 finalized", method: "eth_call", params: `[{"to":"0x3"},{"blockNumber":"finalized"}]`,
+			want: []string{`{"blockNumber":"0x11117777"}`}},
+		{name: "eth_call EIP-1898 hash", method: "eth_call", params: `[{"to":"0x4"},{"blockHash":"0x` + strings.Repeat("ab", 32) + `"}]`,
+			want: []string{`"blockHash"`}, absent: []string{`"blockNumber"`}},
+		{name: "eth_callMany state context", method: "eth_callMany", params: `[[{"transactions":[]}],{"blockNumber":"latest","transactionIndex":-1}]`,
+			want: []string{`"blockNumber":"0x11118888"`, `"transactionIndex":-1`}},
+		{name: "eth_getLogs absent bounds", method: "eth_getLogs", params: `[{"address":"0x0000000000000000000000000000000000000001"}]`, key: "0000000000000000000000000000000000000001",
+			want: []string{`"fromBlock":"0x11118888"`, `"toBlock":"0x11118888"`}},
+		{name: "eth_getLogs absent toBlock", method: "eth_getLogs", params: `[{"fromBlock":"0x11118880","address":"0x0000000000000000000000000000000000000002"}]`, key: "0000000000000000000000000000000000000002",
+			want: []string{`"fromBlock":"0x11118880"`, `"toBlock":"0x11118888"`}},
+		{name: "eth_getLogs by blockHash", method: "eth_getLogs", params: `[{"blockHash":"0x` + strings.Repeat("cd", 32) + `"}]`, key: strings.Repeat("cd", 32),
+			absent: []string{`"fromBlock"`, `"toBlock"`}},
+	}
+	off := []*form{
+		{name: "eth_call absent", method: "eth_call", params: `[{"to":"0x5"}]`,
+			want: []string{`"params":[{"to":"0x5"},"latest"]`}},
+		{name: "eth_call EIP-1898 latest", method: "eth_call", params: `[{"to":"0x6"},{"blockNumber":"latest"}]`,
+			want: []string{`{"blockNumber":"latest"}`}},
+		{name: "eth_call plain tag", method: "eth_call", params: `[{"to":"0x7"},"latest"]`,
+			want: []string{`"params":[{"to":"0x7"},"latest"]`}},
+		{name: "eth_getLogs absent bounds", method: "eth_getLogs", params: `[{"address":"0x0000000000000000000000000000000000000003"}]`, key: "0000000000000000000000000000000000000003",
+			want: []string{`"fromBlock":"latest"`, `"toBlock":"latest"`}},
+	}
+	// A family-2 method other than eth_getBlockByNumber (spec §7).
+	family2 := []*form{
+		{name: "eth_getBlockReceipts latest", method: "eth_getBlockReceipts", params: `["latest"]`, key: "0x11118888",
+			want: []string{`"params":["0x11118888"]`}},
+	}
+	// Every mock is registered before any network starts: gock's mocks are
+	// not safe to register while pollers match them.
+	for _, f := range slices.Concat(translated, off, family2) {
+		f.sent.Store("")
+		var result interface{} = "0x1"
+		if f.method == "eth_getLogs" || f.method == "eth_getBlockReceipts" {
+			result = []interface{}{}
+		}
+		key := f.key
+		if key == "" {
+			key = formKey(f.params)
+		}
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(1).
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				// The client's own params identify its request; each form's are unique.
+				if !strings.Contains(body, `"`+f.method+`"`) || !strings.Contains(body, key) {
+					return false
+				}
+				f.sent.Store(body)
+				return true
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": result})
+	}
+	run := func(t *testing.T, network *Network, forms []*form) {
+		for _, f := range forms {
+			t.Run(f.name, func(t *testing.T) {
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + f.method + `","params":` + f.params + `}`))
+				req.SetNetwork(network)
+				resp, err := network.Forward(ctx, req)
+				require.NoError(t, err)
+				if resp != nil {
+					resp.Release()
+				}
+				sent := f.sent.Load().(string)
+				for _, w := range f.want {
+					assert.Contains(t, sent, w)
+				}
+				for _, a := range f.absent {
+					assert.NotContains(t, sent, a)
+				}
+			})
+		}
+	}
+
+	t.Run("Translated", func(t *testing.T) {
+		network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+		run(t, network, translated)
+
+		// A family-1 or family-2 latest request refreshes its axis's voters
+		// before it takes its Head, ahead of the cache: past one poll
+		// cadence, the request walks them again.
+		refreshed := &network.servedTipAll.latest.refreshedAtNs
+		cadence := network.cfg.Evm.PollCadence(network.blockTimeOrCold())
+		time.Sleep(cadence)
+		before := refreshed.Load()
+		run(t, network, family2)
+		assert.Greater(t, refreshed.Load(), before, "eth_getBlockReceipts(latest) refreshes the latest head before forwarding")
+
+		time.Sleep(cadence)
+		before = refreshed.Load()
+		bn := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+		bn.SetNetwork(network)
+		bn.SetDirectives(&common.RequestDirectives{EnforceHighestBlock: true})
+		bnResp, err := network.Forward(ctx, bn)
+		require.NoError(t, err)
+		if bnResp != nil {
+			bnResp.Release()
+		}
+		assert.Greater(t, refreshed.Load(), before, "eth_blockNumber refreshes the latest head before it takes its Head")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
+		req.SetNetwork(network)
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		if resp != nil {
+			resp.Release()
+		}
+		jrq, err := req.JsonRpcRequest()
+		require.NoError(t, err)
+		assert.Equal(t, "0x11118888", jrq.Params[0], "eth_getBlockByNumber(latest) is interpolated like every method")
+	})
+
+	t.Run("TranslateLatestTagOff", func(t *testing.T) {
+		no := false
+		network, _ := setupTestNetworkForInterpolation(t, ctx, &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm:          &common.EvmNetworkConfig{ChainId: 123},
+			Methods: &common.MethodsConfig{Definitions: map[string]*common.CacheMethodConfig{
+				"eth_call":    {ReqRefs: common.SecondParam, TranslateLatestTag: &no},
+				"eth_getLogs": {ReqRefs: [][]interface{}{{0, "fromBlock"}, {0, "toBlock"}, {0, "blockHash"}}, TranslateLatestTag: &no},
+			}},
+		})
+		run(t, network, off)
+	})
+}
+
+// formKey is the part of a form's params that survives interpolation: its
+// first param's JSON, which no other form shares.
+func formKey(params string) string {
+	var ps []json.RawMessage
+	if err := json.Unmarshal([]byte(params), &ps); err != nil || len(ps) == 0 {
+		return params
+	}
+	return string(ps[0])
 }

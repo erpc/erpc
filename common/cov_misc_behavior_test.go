@@ -309,18 +309,14 @@ func TestCovMiscStaticResponse_ValueEquality(t *testing.T) {
 func TestCovMiscNetwork_EvmHelpersDegradeForNonEvm(t *testing.T) {
 	ctx := context.Background()
 	plain := &covMiscNetwork{id: "svm:mainnet-beta"}
-	assert.Zero(t, EvmHighestLatestBlockNumber(plain, ctx))
-	assert.Zero(t, EvmHighestFinalizedBlockNumber(plain, ctx))
-	assert.Nil(t, EvmLeaderUpstream(plain, ctx))
-	EvmRefreshLatestBlock(plain, ctx) // must not panic
+	assert.Zero(t, EvmHeadOf(plain, ctx, nil))
 
 	leader := NewFakeUpstream("leader")
 	evm := &covMiscEvmNetwork{covMiscNetwork: &covMiscNetwork{id: "evm:1"}, latest: 100, finalized: 90, leader: leader}
-	assert.Equal(t, int64(100), EvmHighestLatestBlockNumber(evm, ctx))
-	assert.Equal(t, int64(90), EvmHighestFinalizedBlockNumber(evm, ctx))
-	assert.Same(t, leader, EvmLeaderUpstream(evm, ctx))
-	EvmRefreshLatestBlock(evm, ctx)
-	assert.Equal(t, int32(1), evm.refreshed.Load())
+	head := EvmHeadOf(evm, ctx, nil)
+	assert.Equal(t, int64(100), head.Latest)
+	assert.Equal(t, int64(90), head.Finalized)
+	assert.Same(t, leader, head.Leader)
 }
 
 func TestCovMiscNetwork_Validity(t *testing.T) {
@@ -456,18 +452,16 @@ func TestCovMiscIntegrity_MergeOverridesEveryField(t *testing.T) {
 	dest := &MisbehaviorsDestinationConfig{}
 	base := &IntegrityConfig{
 		IntegritySettings: IntegritySettings{
-			Level:       "intrinsic",
-			ReorgWindow: 5,
-			Checks:      map[string]*IntegrityCheckConfig{"keep": {OnFailure: "recordOnly"}},
+			Level:  "intrinsic",
+			Checks: map[string]*IntegrityCheckConfig{"keep": {OnFailure: "recordOnly"}},
 		},
 	}
 	over := &IntegrityConfig{
 		IntegritySettings: IntegritySettings{
 			Budget:                  &IntegrityBudgetConfig{MaxConcurrent: 4},
 			InvalidBehavior:         &IntegrityInvalidBehaviorConfig{Finalized: "hardReject"},
-			Follow:                  &IntegrityFollowConfig{Enabled: &tru, MaxBlocksPerTick: 8},
+			Follow:                  &IntegrityFollowConfig{Enabled: &tru},
 			StateProbe:              &IntegrityStateProbeConfig{Enabled: &fls},
-			ReorgWindow:             12,
 			ObserveOnly:             &tru,
 			AutoCorrectWhenPossible: &fls,
 			MisbehaviorsDestination: dest,
@@ -482,7 +476,6 @@ func TestCovMiscIntegrity_MergeOverridesEveryField(t *testing.T) {
 	assert.Equal(t, "hardReject", m.InvalidBehavior.Finalized)
 	assert.True(t, m.Follow.IsEnabled())
 	assert.False(t, m.StateProbe.IsEnabled())
-	assert.Equal(t, 12, m.ReorgWindow)
 	assert.True(t, *m.ObserveOnly)
 	assert.False(t, *m.AutoCorrectWhenPossible)
 	assert.Same(t, dest, m.MisbehaviorsDestination)
@@ -504,11 +497,10 @@ func TestCovMiscIntegrity_MergeOverridesEveryField(t *testing.T) {
 
 func TestCovMiscIntegrity_CopiesAreDeep(t *testing.T) {
 	tru := true
-	follow := &IntegrityFollowConfig{Enabled: &tru, Interval: Duration(time.Second)}
+	follow := &IntegrityFollowConfig{Enabled: &tru}
 	fc := follow.Copy()
 	*follow.Enabled = false
 	assert.True(t, fc.IsEnabled())
-	assert.Equal(t, Duration(time.Second), fc.Interval)
 	assert.Nil(t, (*IntegrityFollowConfig)(nil).Copy())
 	assert.False(t, (*IntegrityFollowConfig)(nil).IsEnabled())
 	assert.False(t, (&IntegrityFollowConfig{}).Copy().IsEnabled())

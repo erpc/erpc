@@ -421,6 +421,64 @@ func TestWsClientFailsFastWhileRedialing(t *testing.T) {
 	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointTransportFailure), "got %v", err)
 }
 
+// TestWsClientHalfOpenRequestTimeoutTearsDown: on a half-open socket (TCP
+// open, nothing comes back, the liveness deadline still far off), the first
+// request that times out makes the client find the socket dead within
+// wsProbeWait, though more requests keep timing out on it: every other
+// request pending on it fails with a transport failure, so the network
+// fails it over, instead of waiting out the liveness deadline.
+func TestWsClientHalfOpenRequestTimeoutTearsDown(t *testing.T) {
+	origProbe := wsProbeWait
+	wsProbeWait = 200 * time.Millisecond
+	t.Cleanup(func() { wsProbeWait = origProbe })
+	server := newFakeWsServer(t)
+	client := newTestWsClient(t, server.wsURL(t))
+	conn1 := <-server.newConn
+	require.Eventually(t, client.IsConnected, 2*time.Second, 5*time.Millisecond)
+	conn1.silent.Store(true)
+
+	send := func(ctx context.Context) error {
+		_, err := client.SendRequest(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`)))
+		return err
+	}
+	waiting := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		waiting <- send(ctx)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	err := send(ctx)
+	require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout), "got %v", err)
+	timedOut := time.Now()
+
+	stop := make(chan struct{})
+	defer close(stop)
+	step := wsProbeWait / 4
+	go func() {
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), step)
+			_ = send(ctx)
+			cancel()
+			select {
+			case <-stop:
+				return
+			case <-time.After(step / 4):
+			}
+		}
+	}()
+
+	select {
+	case err := <-waiting:
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointTransportFailure), "got %v", err)
+		assert.Less(t, time.Since(timedOut), wsProbeWait+time.Second)
+	case <-time.After(wsProbeWait + 5*time.Second):
+		t.Fatal("requests timing out after the first kept the half-open socket alive")
+	}
+}
+
 // TestWsClientIgnoresDuplicateResponses: repeated responses for one id must
 // not wedge readLoop.
 func TestWsClientIgnoresDuplicateResponses(t *testing.T) {

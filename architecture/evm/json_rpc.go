@@ -2,6 +2,8 @@ package evm
 
 import (
 	"context"
+	"slices"
+	"strings"
 
 	"github.com/erpc/erpc/common"
 )
@@ -52,39 +54,265 @@ func deepCopyValue(val interface{}) interface{} {
 	}
 }
 
-// resolveBlockTagToHex resolves well-known tags to concrete hex numbers using highest known state.
-// IMPORTANT: Only translates tags we can accurately represent. "safe" and "pending" are passed
-// through unchanged as we don't have the necessary state information for accurate translation.
-func resolveBlockTagToHex(ctx context.Context, network common.Network, tag string) (string, bool) {
-	if network == nil {
-		return "", false
+// TagBlockNumber is the block number tag interpolates to for nrq (spec §7):
+// the request Head's Latest for "latest", its Finalized for "finalized". 0
+// when the tag reaches upstreams as is: another tag, the method's
+// translateLatestTag/translateFinalizedTag is off, the request skips
+// interpolation, or the Head is unknown. "safe" and "pending" are never
+// translated: eRPC tracks neither state.
+func TagBlockNumber(ctx context.Context, nrq *common.NormalizedRequest, tag string) int64 {
+	method, _ := nrq.Method()
+	return tagBlockNumber(ctx, nrq, getMethodConfig(method, nrq.Network()), tag)
+}
+
+func tagBlockNumber(ctx context.Context, nrq *common.NormalizedRequest, cfg *common.CacheMethodConfig, tag string) int64 {
+	network := nrq.Network()
+	if network == nil || cfg == nil {
+		return 0
+	}
+	if d := nrq.Directives(); d != nil && d.SkipInterpolation {
+		return 0
 	}
 	switch tag {
 	case "latest":
-		// Translate "latest" to the highest known latest block
-		if bn := common.EvmHighestLatestBlockNumber(network, ctx); bn > 0 {
-			if hx, err := common.NormalizeHex(bn); err == nil {
-				return hx, true
-			}
+		if keepsLatestTag(cfg) {
+			return 0
 		}
+		return common.EvmHeadOf(network, ctx, nrq).Latest
 	case "finalized":
-		// Translate "finalized" to the highest known finalized block
-		if bn := common.EvmHighestFinalizedBlockNumber(network, ctx); bn > 0 {
-			if hx, err := common.NormalizeHex(bn); err == nil {
-				return hx, true
+		if cfg.TranslateFinalizedTag != nil && !*cfg.TranslateFinalizedTag {
+			return 0
+		}
+		return common.EvmHeadOf(network, ctx, nrq).Finalized
+	}
+	return 0
+}
+
+// NamesFinalizedTag reports whether any of nrq's params, at any depth, is
+// the "finalized" tag (spec §6.4 Finality: any method, any param).
+func NamesFinalizedTag(ctx context.Context, nrq *common.NormalizedRequest) bool {
+	jrq, err := nrq.JsonRpcRequest(ctx)
+	if err != nil || jrq == nil {
+		return false
+	}
+	jrq.RLock()
+	defer jrq.RUnlock()
+	return namesFinalized(jrq.Params)
+}
+
+// AnswersLatest reports whether nrq answers with its Head's Latest (spec §7
+// families 1-2): eth_blockNumber, or erigon_blockNumber on the latest axis,
+// answered from the Head (enforce-highest-block), or a block-by-tag method
+// whose "latest" tag is interpolated. Such a request takes its Head after
+// the latest refresh (§6.8); a tag that reaches upstreams as is reads no
+// Head, as on main.
+func AnswersLatest(ctx context.Context, network common.Network, nrq *common.NormalizedRequest) bool {
+	method, err := nrq.Method()
+	if err != nil {
+		return false
+	}
+	d := nrq.Directives()
+	switch m := strings.ToLower(method); m {
+	case "eth_blocknumber", "erigon_blocknumber":
+		finalized, ok := headNumberAxis(ctx, nrq)
+		return ok && !finalized && d != nil && d.EnforceHighestBlock
+	default:
+		if _, ok := blockByTagFamily[m]; !ok || d != nil && d.SkipInterpolation || requestBlockTag(ctx, nrq) != "latest" {
+			return false
+		}
+	}
+	return !keepsLatestTag(getMethodConfig(method, network))
+}
+
+func namesFinalized(v interface{}) bool {
+	switch t := v.(type) {
+	case string:
+		return t == "finalized"
+	case []interface{}:
+		return slices.ContainsFunc(t, namesFinalized)
+	case map[string]interface{}:
+		for _, e := range t {
+			if namesFinalized(e) {
+				return true
 			}
 		}
-		// "safe" and "pending" are intentionally NOT translated here:
-		// - "safe": Represents a specific consensus state between finalized and latest that we don't track
-		// - "pending": Represents state including mempool transactions, which we don't have visibility into
-		// These tags should be passed through to the upstream unchanged
 	}
-	return "", false
+	return false
+}
+
+// keepsLatestTag reports whether a method's config sends "latest" to
+// upstreams as the tag: translateLatestTag off.
+func keepsLatestTag(cfg *common.CacheMethodConfig) bool {
+	return cfg != nil && cfg.TranslateLatestTag != nil && !*cfg.TranslateLatestTag
+}
+
+// stateBlockParam is the block selector's position for the §7 state-at-a-block
+// methods whose nodes read an absent or null selector as "latest" (geth's
+// blockNrOrHashOrLatest, erigon's trace_call): absent, it is interpolated
+// like "latest". eth_callMany is not here: its selector is a required
+// object, whose blockNumber leaf is rewritten like any EIP-1898 one (see
+// stateSelectorIndex). Nor are arbtrace_*: Arbitrum classic nodes serve
+// them, and their latest is not the network's, so an absent param stays
+// absent.
+var stateBlockParam = map[string]int{
+	"eth_call":                1,
+	"eth_estimateGas":         1,
+	"eth_getBalance":          1,
+	"eth_getCode":             1,
+	"eth_getStorageAt":        2,
+	"eth_getTransactionCount": 1,
+	"eth_getProof":            2,
+	"eth_getAccount":          1,
+	"eth_createAccessList":    1,
+	"eth_simulateV1":          1,
+	"debug_traceCall":         1,
+	"trace_call":              2,
+}
+
+// stateBlockParamAbsent reports whether params end right before idx or hold
+// null there.
+func stateBlockParamAbsent(params []interface{}, idx int) bool {
+	return len(params) == idx || (len(params) > idx && params[idx] == nil)
+}
+
+// stateSelectorIndex is the block selector's position of a §7 family-3
+// (state at a block) method: stateBlockParam's, or eth_callMany's state
+// context object: the one family-3 map pinLatestTag, the shadow pin, the
+// tag-state gate and the state prober read.
+func stateSelectorIndex(method string) (int, bool) {
+	if idx, ok := stateBlockParam[method]; ok {
+		return idx, true
+	}
+	if method == "eth_callMany" {
+		return 1, true
+	}
+	return 0, false
+}
+
+// latestStateSelector is the path in params of a family-3 request's block
+// selector when it means "latest", in every form interpolation rewrites: the
+// tag, an EIP-1898 object's blockNumber leaf, or an absent or null selector
+// of a stateBlockParam method. false for any other method or selector.
+func latestStateSelector(method string, params []interface{}) ([]interface{}, bool) {
+	idx, ok := stateSelectorIndex(method)
+	if !ok {
+		return nil, false
+	}
+	if _, absentIsLatest := stateBlockParam[method]; absentIsLatest && stateBlockParamAbsent(params, idx) {
+		return []interface{}{idx}, true
+	}
+	if len(params) <= idx {
+		return nil, false
+	}
+	leaf, ok := selectsLatest(params[idx])
+	switch {
+	case !ok:
+		return nil, false
+	case leaf:
+		return []interface{}{idx, "blockNumber"}, true
+	}
+	return []interface{}{idx}, true
+}
+
+// selectsLatest reports whether a present block selector means "latest":
+// the tag, or an EIP-1898 object whose blockNumber leaf is the tag (leaf).
+func selectsLatest(v interface{}) (leaf, ok bool) {
+	switch v := v.(type) {
+	case string:
+		return false, v == "latest"
+	case map[string]interface{}:
+		s, _ := v["blockNumber"].(string)
+		return true, s == "latest" && v["blockHash"] == nil
+	}
+	return false, false
+}
+
+// rangeBoundAbsent reports whether a range filter's bound key (fromBlock,
+// toBlock) is absent or null with no blockHash: nodes read it as "latest"
+// (spec §7 family 4).
+func rangeBoundAbsent(filter map[string]interface{}, key string) bool {
+	if filter["blockHash"] != nil {
+		return false
+	}
+	v, ok := filter[key]
+	return !ok || v == nil
+}
+
+// rangeBound is a range filter's bound key as the range checks read it:
+// "latest" when absent (rangeBoundAbsent), else its string value.
+func rangeBound(filter map[string]interface{}, key string) string {
+	if rangeBoundAbsent(filter, key) {
+		return "latest"
+	}
+	s, _ := filter[key].(string)
+	return s
+}
+
+// rangeSentAsTag reports whether either bound of an interpolated range
+// filter still reaches upstreams as a tag: absent, or "latest"/"finalized"
+// left as the word (translate off, skip-interpolation). Such a range is
+// never split proactively: its sub-requests would carry numbers (spec §7).
+func rangeSentAsTag(filter map[string]interface{}) bool {
+	for _, key := range [...]string{"fromBlock", "toBlock"} {
+		if rangeBoundAbsent(filter, key) {
+			return true
+		}
+		if s, _ := filter[key].(string); s == "latest" || s == "finalized" {
+			return true
+		}
+	}
+	return false
+}
+
+// absentRangeFilter is the filter of a range method whose absent bounds
+// mean "latest" (spec §7 family 4; not arbtrace_filter, see
+// stateBlockParam), else nil.
+func absentRangeFilter(method string, params []interface{}) map[string]interface{} {
+	if method != "eth_getLogs" && method != "trace_filter" || len(params) == 0 {
+		return nil
+	}
+	filter, _ := params[0].(map[string]interface{})
+	return filter
+}
+
+// hasAbsentSelector reports whether params hold a selector that is absent
+// and means "latest" for method, without allocating: absentLatestPaths'
+// pre-check before any ReqRef is read.
+func hasAbsentSelector(method string, params []interface{}) bool {
+	if idx, ok := stateBlockParam[method]; ok {
+		return stateBlockParamAbsent(params, idx)
+	}
+	filter := absentRangeFilter(method, params)
+	return filter != nil && (rangeBoundAbsent(filter, "fromBlock") || rangeBoundAbsent(filter, "toBlock"))
+}
+
+// absentLatestPaths are the block selectors of params that are absent and
+// mean "latest" for method; selectorSeen: a ReqRef already holds one.
+func absentLatestPaths(method string, params []interface{}, selectorSeen bool) [][]interface{} {
+	if idx, ok := stateBlockParam[method]; ok {
+		if !selectorSeen && stateBlockParamAbsent(params, idx) {
+			return [][]interface{}{{idx}}
+		}
+		return nil
+	}
+	filter := absentRangeFilter(method, params)
+	if filter == nil {
+		return nil
+	}
+	var paths [][]interface{}
+	for _, key := range [...]string{"fromBlock", "toBlock"} {
+		if rangeBoundAbsent(filter, key) {
+			paths = append(paths, []interface{}{0, key})
+		}
+	}
+	return paths
 }
 
 // NormalizeHttpJsonRpc normalizes and translates block parameters in JSON-RPC requests.
 // It converts supported block tags (latest, finalized) to concrete hex block numbers
-// and normalizes hex values. Tags like "safe" and "pending" are passed through unchanged.
+// and normalizes hex values, in every form (spec §7): a plain tag, an EIP-1898
+// object's blockNumber leaf, and an absent selector that means "latest"
+// (absentLatestPaths). Tags like "safe" and "pending" are passed through unchanged.
 // The function minimizes lock contention by:
 // 1. Briefly holding a read lock to extract parameter values
 // 2. Releasing the lock before performing expensive operations (network state lookups)
@@ -99,6 +327,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		paramsToProcess []paramRef
 		method          string
 		reqId           interface{}
+		anyAbsent       bool
 	)
 
 	jrq.RLock()
@@ -120,15 +349,13 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 			value: val,
 		})
 	}
+	anyAbsent = hasAbsentSelector(method, jrq.Params)
 	jrq.RUnlock()
 
-	if len(paramsToProcess) == 0 {
+	if len(paramsToProcess) == 0 && !anyAbsent {
 		return
 	}
 
-	// Config flags
-	translateLatest := methodCfg.TranslateLatestTag == nil || *methodCfg.TranslateLatestTag
-	translateFinalized := methodCfg.TranslateFinalizedTag == nil || *methodCfg.TranslateFinalizedTag
 	skipInterpolation := nrq.Directives() != nil && nrq.Directives().SkipInterpolation
 
 	// Aggregators
@@ -136,6 +363,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		needsUpdate   bool
 		seenLatest    bool
 		seenFinalized bool
+		selectorSeen  bool
 	)
 
 	// Helper: cache numeric block number when safe.
@@ -164,6 +392,13 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 			newVal  interface{}
 			changed bool
 		)
+		// An EIP-1898 object selects its block by its blockNumber leaf.
+		if m, ok := p.value.(map[string]interface{}); ok && len(p.path) == 1 && m["blockHash"] == nil {
+			if leaf, ok := m["blockNumber"]; ok {
+				p.path = []interface{}{p.path[0], "blockNumber"}
+				p.value = leaf
+			}
+		}
 		// Avoid replacing entire object params; prefer leaf updates when refs include nested keys.
 		isTopLevelParamOfMap := false
 		if len(p.path) == 1 {
@@ -176,6 +411,9 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 
 		// Use composite parser to distinguish block numbers, tags, and hashes.
 		blockRef, blockNum, err := parseCompositeBlockParam(p.value)
+		if err == nil && (blockRef != "" || blockNum > 0) {
+			selectorSeen = true
+		}
 		if err == nil {
 			// Cache numeric block number (for single-ref methods)
 			if blockNum > 0 {
@@ -202,72 +440,32 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 			} else if blockRef != "" {
 				// Handle tags; do not mutate when blockRef is a hash.
 				switch blockRef {
-				case "latest":
-					seenLatest = true
-					if !skipInterpolation && translateLatest {
-						if hx, ok := resolveBlockTagToHex(ctx, network, blockRef); ok {
-							// Only replace when not a top-level object param
-							if !isTopLevelParamOfMap {
-								newVal = hx
-								changed = true
-							}
-							var resolvedNum int64
-							if n, herr := common.HexToInt64(hx); herr == nil {
-								resolvedNum = n
-								cacheBlockNumber(n)
-							}
-							// Debug log interpolation
-							if network != nil && network.Logger() != nil {
-								lg := network.Logger()
-								ev := lg.Debug().
-									Str("component", "evm").
-									Str("method", method).
-									Interface("requestId", reqId).
-									Str("tag", blockRef).
-									Str("resolvedHex", hx).
-									Int64("resolvedNumber", resolvedNum).
-									Interface("path", p.path).
-									Str("networkId", network.Id()).
-									Str("networkLabel", network.Label()).
-									Bool("translateLatest", translateLatest).
-									Bool("translateFinalized", translateFinalized).
-									Bool("skipInterpolation", skipInterpolation)
-								ev.Msg("interpolated block tag to concrete block number")
-							}
-						}
+				case "latest", "finalized":
+					if blockRef == "latest" {
+						seenLatest = true
+					} else {
+						seenFinalized = true
 					}
-				case "finalized":
-					seenFinalized = true
-					if !skipInterpolation && translateFinalized {
-						if hx, ok := resolveBlockTagToHex(ctx, network, blockRef); ok {
-							// Only replace when not a top-level object param
-							if !isTopLevelParamOfMap {
-								newVal = hx
-								changed = true
-							}
-							var resolvedNum int64
-							if n, herr := common.HexToInt64(hx); herr == nil {
-								resolvedNum = n
-								cacheBlockNumber(n)
-							}
-							// Debug log interpolation
-							if network != nil && network.Logger() != nil {
-								lg := network.Logger()
-								ev := lg.Debug().
-									Str("component", "evm").
-									Str("method", method).
-									Interface("requestId", reqId).
-									Str("tag", blockRef).
-									Str("resolvedHex", hx).
-									Int64("resolvedNumber", resolvedNum).
-									Interface("path", p.path).
-									Str("networkId", network.Id()).
-									Str("networkLabel", network.Label()).
-									Bool("translateLatest", translateLatest).
-									Bool("translateFinalized", translateFinalized).
-									Bool("skipInterpolation", skipInterpolation)
-								ev.Msg("interpolated block tag to concrete block number")
-							}
+					n := tagBlockNumber(ctx, nrq, methodCfg, blockRef)
+					if hx, herr := common.NormalizeHex(n); n > 0 && herr == nil {
+						// Only replace when not a top-level object param
+						if !isTopLevelParamOfMap {
+							newVal = hx
+							changed = true
+						}
+						cacheBlockNumber(n)
+						if network.Logger() != nil {
+							network.Logger().Debug().
+								Str("component", "evm").
+								Str("method", method).
+								Interface("requestId", reqId).
+								Str("tag", blockRef).
+								Str("resolvedHex", hx).
+								Int64("resolvedNumber", n).
+								Interface("path", p.path).
+								Str("networkId", network.Id()).
+								Str("networkLabel", network.Label()).
+								Msg("interpolated block tag to concrete block number")
 						}
 					}
 				default:
@@ -292,6 +490,27 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 			changes = append(changes, change{path: p.path, newVal: newVal})
 			needsUpdate = true
 		}
+	}
+
+	var absent [][]interface{}
+	if anyAbsent {
+		jrq.RLock()
+		absent = absentLatestPaths(method, jrq.Params, selectorSeen)
+		jrq.RUnlock()
+	}
+	// An absent selector is "latest" spelled out: interpolated when the tag
+	// is, else sent as the word, so no node applies its own default block (a
+	// vendor answered a bare eth_estimateGas from state far behind its head).
+	for _, path := range absent {
+		seenLatest = true
+		var val interface{} = "latest"
+		n := tagBlockNumber(ctx, nrq, methodCfg, "latest")
+		if hx, herr := common.NormalizeHex(n); n > 0 && herr == nil {
+			val = hx
+			cacheBlockNumber(n)
+		}
+		changes = append(changes, change{path: path, newVal: val})
+		needsUpdate = true
 	}
 
 	// Set EvmBlockRef from observed tags: collapse only when both appear
@@ -340,7 +559,9 @@ func replaceParamAtPath(params []interface{}, path []interface{}, newValue inter
 }
 
 // setByPath clones only the necessary containers along the path and sets the leaf to newValue.
-// Supports param arrays (top-level) and map[string]interface{} nesting.
+// Supports param arrays (top-level) and map[string]interface{} nesting. A missing
+// leaf is created (an absent selector, absentLatestPaths): a key of an existing
+// map, or the element right after an array's last; containers never are.
 func setByPath(current interface{}, path []interface{}, newValue interface{}) (interface{}, bool) {
 	if len(path) == 0 {
 		return newValue, true
@@ -348,15 +569,19 @@ func setByPath(current interface{}, path []interface{}, newValue interface{}) (i
 	switch key := path[0].(type) {
 	case int:
 		arr, ok := current.([]interface{})
-		if !ok || key < 0 || key >= len(arr) {
+		if !ok || key < 0 || key > len(arr) || (key == len(arr) && len(path) > 1) {
 			return current, false
 		}
-		updatedChild, changed := setByPath(arr[key], path[1:], newValue)
+		var child interface{}
+		if key < len(arr) {
+			child = arr[key]
+		}
+		updatedChild, changed := setByPath(child, path[1:], newValue)
 		if !changed {
 			return current, false
 		}
 		// Clone slice and set updated child
-		newArr := make([]interface{}, len(arr))
+		newArr := make([]interface{}, max(len(arr), key+1))
 		copy(newArr, arr)
 		newArr[key] = updatedChild
 		return newArr, true
@@ -366,8 +591,8 @@ func setByPath(current interface{}, path []interface{}, newValue interface{}) (i
 			return current, false
 		}
 		child, exists := m[key]
-		if !exists {
-			// If path does not exist, do not create new structure
+		if !exists && len(path) > 1 {
+			// Never create intermediate structure
 			return current, false
 		}
 		updatedChild, changed := setByPath(child, path[1:], newValue)

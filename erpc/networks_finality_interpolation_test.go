@@ -23,7 +23,7 @@ func init() {
 // Test that finality is preserved as "realtime" when translating tags
 func TestInterpolation_PreservesRealtimeFinality(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -89,7 +89,7 @@ func TestInterpolation_PreservesRealtimeFinality(t *testing.T) {
 // Test that finality is preserved for finalized tag
 func TestInterpolation_PreservesFinalizedTagFinality(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -148,7 +148,7 @@ func TestInterpolation_PreservesFinalizedTagFinality(t *testing.T) {
 // Test that numeric block parameters are correctly identified as unfinalized
 func TestInterpolation_NumericBlockFinality(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	// We don't forward any requests in this test, so no user mocks are needed
 	defer util.AssertNoPendingMocks(t, 0)
@@ -185,7 +185,7 @@ func TestInterpolation_InstantFinalityLatestStaysRealtime(t *testing.T) {
 	for _, method := range []string{"eth_getTransactionCount", "eth_getBalance"} {
 		t.Run(method, func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 			mockJsonRpcUpstream("rpc1.localhost", "0x7b", "0x11118888", "0x11118888")
 			for _, result := range []string{"0x1", "0x2"} {
 				gock.New("http://rpc1.localhost").
@@ -203,7 +203,7 @@ func TestInterpolation_InstantFinalityLatestStaysRealtime(t *testing.T) {
 			defer cancel()
 
 			network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-			require.Equal(t, network.EvmHighestLatestBlockNumber(ctx), network.EvmHighestFinalizedBlockNumber(ctx))
+			require.Equal(t, servedHead(network, ctx).Latest, servedHead(network, ctx).Finalized)
 
 			cacheCfg := &common.CacheConfig{
 				Connectors: []*common.ConnectorConfig{{

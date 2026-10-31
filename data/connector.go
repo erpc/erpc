@@ -2,9 +2,11 @@ package data
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
@@ -69,6 +71,45 @@ type CounterInt64State struct {
 	Value     int64  `json:"v"`
 	UpdatedAt int64  `json:"t"`
 	UpdatedBy string `json:"b,omitempty"`
+	// Rewind marks a head counter's hash-proven rollback write (spec §14):
+	// a lower value newer than the receiver's is taken whatever the drop,
+	// and counted against no upstream. Older readers ignore it.
+	Rewind bool `json:"r,omitempty"`
+}
+
+// Reasons of erpc_shared_counter_remote_rejected_total.
+const (
+	rejectNonPositive    = "non_positive"
+	rejectSmallRollback  = "small_rollback"
+	rejectHeldRollback   = "held_rollback"
+	rejectStaleTimestamp = "stale_timestamp"
+	rejectMalformed      = "malformed"
+)
+
+func countRejected(reason string) {
+	telemetry.CounterHandle(telemetry.MetricSharedCounterRemoteRejectedTotal, reason).Inc()
+}
+
+// malformedPayloads holds, per counter key, the malformed payload last
+// counted for it: polls and resubscribes read one stored record again and
+// again, and it is one rejected state.
+var malformedPayloads sync.Map
+
+// parseCounterState parses key's stored or published counter state. A
+// parse error or t<=0 is malformed: counted once per distinct payload in a
+// row, and read as missing (no v1 fallback, #956).
+func parseCounterState(key string, raw []byte) (CounterInt64State, bool) {
+	var st CounterInt64State
+	if err := common.SonicCfg.Unmarshal(raw, &st); err != nil || st.UpdatedAt <= 0 {
+		if prev, seen := malformedPayloads.Swap(key, string(raw)); !seen || prev.(string) != string(raw) {
+			countRejected(rejectMalformed)
+		}
+		return CounterInt64State{}, false
+	}
+	if _, seen := malformedPayloads.Load(key); seen {
+		malformedPayloads.Delete(key)
+	}
+	return st, true
 }
 
 type Connector interface {

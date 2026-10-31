@@ -47,16 +47,6 @@ func covBlocksBadBodyReq() *common.NormalizedRequest {
 	return common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":`))
 }
 
-// covBlocksPanicNetwork panics when asked for the latest tip, like a network
-// whose state poller has not been wired yet.
-type covBlocksPanicNetwork struct {
-	queryTestNetwork
-}
-
-func (n *covBlocksPanicNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
-	panic("state poller not initialized")
-}
-
 // covBlocksForwardUpstream is a config upstream with a pluggable Forward.
 type covBlocksForwardUpstream struct {
 	queryTestConfigUpstream
@@ -65,145 +55,6 @@ type covBlocksForwardUpstream struct {
 
 func (u *covBlocksForwardUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion bool, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
 	return u.forwardFn(ctx, nq)
-}
-
-func TestCovBlocks_BuildGetBlockByNumberRequest(t *testing.T) {
-	cases := []struct {
-		name    string
-		in      interface{}
-		want    string
-		wantErr bool
-	}{
-		{name: "latest_tag", in: "latest", want: "latest"},
-		{name: "earliest_tag", in: "earliest", want: "earliest"},
-		{name: "hex_string_kept_verbatim", in: "0x10", want: "0x10"},
-		{name: "unknown_tag", in: "newest", wantErr: true},
-		{name: "int", in: 16, want: "0x10"},
-		{name: "int64", in: int64(255), want: "0xff"},
-		{name: "float64_not_normalizable", in: float64(16), wantErr: true},
-		{name: "unsupported_type", in: []int{1}, wantErr: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			jrq, err := BuildGetBlockByNumberRequest(tc.in, true)
-			if tc.wantErr {
-				require.Error(t, err)
-				assert.Nil(t, jrq)
-				assert.Contains(t, err.Error(), "invalid block number or tag for eth_getBlockByNumber")
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, "eth_getBlockByNumber", jrq.Method)
-			assert.Equal(t, []interface{}{tc.want, true}, jrq.Params)
-		})
-	}
-}
-
-func TestCovBlocks_EnforceHighestBlock_Edges(t *testing.T) {
-	ctx := context.Background()
-	network := &testNetwork{highestLatest: 0x100}
-	enforce := &common.RequestDirectives{EnforceHighestBlock: true}
-
-	t.Run("unparsable_request_body_fails", func(t *testing.T) {
-		req := covBlocksBadBodyReq()
-		req.SetDirectives(enforce)
-		out, err := enforceHighestBlock(ctx, network, req, covBlocksResp(t, nil, `{"number":"0x1"}`), nil)
-		assert.Nil(t, out)
-		assert.Error(t, err)
-	})
-
-	passThrough := []struct {
-		name   string
-		params []interface{}
-	}{
-		{name: "no_params", params: []interface{}{}},
-		{name: "numeric_block_param", params: []interface{}{float64(5), false}},
-		{name: "pending_tag", params: []interface{}{"pending"}},
-	}
-	for _, tc := range passThrough {
-		t.Run(tc.name, func(t *testing.T) {
-			req := covBlocksReq("eth_getBlockByNumber", tc.params...)
-			req.SetDirectives(enforce)
-			resp := covBlocksResp(t, req, `{"number":"0x1"}`)
-			out, err := enforceHighestBlock(ctx, network, req, resp, nil)
-			require.NoError(t, err)
-			assert.Same(t, resp, out)
-		})
-	}
-
-	for _, tag := range []string{"latest", "finalized"} {
-		t.Run("malformed_block_number_in_"+tag+"_response_fails", func(t *testing.T) {
-			req := covBlocksReq("eth_getBlockByNumber", tag, false)
-			req.SetDirectives(enforce)
-			resp := covBlocksResp(t, req, `{"number":"0xzz"}`)
-			out, err := enforceHighestBlock(ctx, network, req, resp, nil)
-			assert.Nil(t, out)
-			require.Error(t, err)
-		})
-	}
-
-	t.Run("upstream_error_short_circuits", func(t *testing.T) {
-		req := covBlocksReq("eth_getBlockByNumber", "latest", false)
-		req.SetDirectives(enforce)
-		boom := errors.New("upstream down")
-		out, err := networkPostForward_eth_getBlockByNumber(ctx, network, req, nil, boom)
-		assert.Nil(t, out)
-		assert.Same(t, boom, err)
-	})
-}
-
-func TestCovBlocks_PickHighestBlock(t *testing.T) {
-	ctx := context.Background()
-	boom := errors.New("re-fetch failed")
-	type pick int
-	const (
-		pickNil pick = iota
-		pickX
-		pickY
-	)
-	cases := []struct {
-		name    string
-		x, y    string // "" means nil response
-		err     error
-		want    pick
-		wantErr error
-	}{
-		{name: "both_empty_with_error", x: `null`, y: "", err: boom, want: pickNil, wantErr: boom},
-		{name: "both_nil_without_error", want: pickNil},
-		{name: "y_missing_keeps_x", x: `{"number":"0x5"}`, want: pickX},
-		{name: "x_without_number_keeps_y", x: `{"hash":"0x1"}`, y: `{"number":"0x5"}`, want: pickY},
-		{name: "y_without_number_keeps_x", x: `{"number":"0x5"}`, y: `{"hash":"0x1"}`, want: pickX},
-		{name: "x_unparsable_number_keeps_y", x: `{"number":"0xzz"}`, y: `{"number":"0x5"}`, want: pickY},
-		{name: "y_unparsable_number_keeps_x", x: `{"number":"0x5"}`, y: `{"number":"0xzz"}`, want: pickX},
-		{name: "x_higher_wins", x: `{"number":"0x6"}`, y: `{"number":"0x5"}`, want: pickX},
-		{name: "y_higher_wins", x: `{"number":"0x5"}`, y: `{"number":"0x6"}`, want: pickY},
-		{name: "tie_prefers_y", x: `{"number":"0x5"}`, y: `{"number":"0x5"}`, want: pickY},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var x, y *common.NormalizedResponse
-			if tc.x != "" {
-				x = covBlocksResp(t, nil, tc.x)
-			}
-			if tc.y != "" {
-				y = covBlocksResp(t, nil, tc.y)
-			}
-			out, err := pickHighestBlock(ctx, x, y, tc.err)
-			if tc.wantErr != nil {
-				assert.Same(t, tc.wantErr, err)
-			} else {
-				assert.NoError(t, err)
-			}
-			switch tc.want {
-			case pickNil:
-				assert.Nil(t, out)
-			case pickX:
-				assert.Same(t, x, out)
-			case pickY:
-				assert.Same(t, y, out)
-			}
-		})
-	}
 }
 
 func TestCovBlocks_ExtractBlockReference_Errors(t *testing.T) {
@@ -287,26 +138,35 @@ func TestCovBlocks_ExtractBlockTimestamp(t *testing.T) {
 	}
 }
 
+// Plan H2 deletes "the cache key on the word `latest`": a translated tag
+// keys on the number its Head gives it, an untranslated one gets no GET key.
 func TestCovBlocks_ResolveCacheBlockRef_TipFallbacks(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("finalized_tag_resolves_to_network_finalized_tip", func(t *testing.T) {
-		req := covBlocksReq("eth_getBlockByNumber", "finalized", false)
-		req.SetNetwork(&queryTestNetwork{finalized: 0x30})
+		req := covBlocksReq("eth_getBalance", "0xabc", "finalized")
+		req.SetNetwork(&queryTestNetwork{latest: 0x40, finalized: 0x30})
 		ref, bn, err := ResolveCacheBlockRef(ctx, req, nil)
 		require.NoError(t, err)
-		assert.Equal(t, "0x30", ref)
+		assert.Equal(t, "48", ref)
 		assert.Equal(t, int64(0x30), bn)
 	})
 
-	t.Run("panicking_tip_lookup_falls_back_to_tag_literal", func(t *testing.T) {
+	t.Run("untranslated_tag_gets_no_get_key", func(t *testing.T) {
+		// translateLatestTag off: the tag reaches upstreams as is, so no
+		// Head number names the answer.
+		off := false
 		req := covBlocksReq("eth_getBlockByNumber", "latest", false)
-		req.SetNetwork(&covBlocksPanicNetwork{})
-		var ref string
-		var err error
-		require.NotPanics(t, func() { ref, _, err = ResolveCacheBlockRef(ctx, req, nil) })
+		req.SetNetwork(&queryTestNetwork{latest: 0x40, finalized: 0x30, cfg: &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Methods: &common.MethodsConfig{Definitions: map[string]*common.CacheMethodConfig{
+				"eth_getBlockByNumber": {ReqRefs: common.FirstParam, RespRefs: common.NumberOrHashParam, TranslateLatestTag: &off},
+			}},
+		}})
+		ref, bn, err := ResolveCacheBlockRef(ctx, req, nil)
 		require.NoError(t, err)
-		assert.Equal(t, "latest", ref)
+		assert.Equal(t, "", ref)
+		assert.Equal(t, int64(0), bn)
 	})
 }
 
@@ -515,9 +375,9 @@ func TestCovBlocks_CreateNormalizedNonceTooLowError(t *testing.T) {
 // TestCovBlocks_DetailedTracing toggles the process-wide detailed-tracing flag,
 // so it must stay sequential (no t.Parallel), like integrity_tracing_test.go.
 func TestCovBlocks_DetailedTracing(t *testing.T) {
-	prev := common.IsTracingDetailed
-	common.IsTracingDetailed = true
-	t.Cleanup(func() { common.IsTracingDetailed = prev })
+	prev := common.IsTracingDetailed()
+	common.SetTracingDetailed(true)
+	t.Cleanup(func() { common.SetTracingDetailed(prev) })
 	ctx := context.Background()
 
 	t.Run("latest_block_records_timestamp_distance", func(t *testing.T) {

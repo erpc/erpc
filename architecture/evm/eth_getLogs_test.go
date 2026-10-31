@@ -77,6 +77,15 @@ func (m *mockNetwork) Forward(
 	return respRaw, err
 }
 
+// SweepUpstreams serves tracker fetches from the same mocked Forward.
+func (m *mockNetwork) SweepUpstreams(ctx context.Context, req *common.NormalizedRequest, _ string, check func(*common.NormalizedResponse) error) (*common.NormalizedResponse, error) {
+	resp, err := m.Forward(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return resp, check(resp)
+}
+
 func (m *mockNetwork) Config() *common.NetworkConfig {
 	args := m.Called()
 	return args.Get(0).(*common.NetworkConfig)
@@ -99,24 +108,30 @@ func (m *mockNetwork) EvmStatePoller() common.EvmStatePoller {
 	return args.Get(0).(common.EvmStatePoller)
 }
 
-func (m *mockNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
-	args := m.Called(ctx)
-	return args.Get(0).(int64)
+// EvmHead reads the stubbed "HeadLatest" and
+// "HeadFinalized" calls, each with the request bound to
+// ctx; an axis a test does not stub is unknown (0).
+func (m *mockNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
+	if req != nil {
+		ctx = context.WithValue(ctx, common.RequestContextKey, req)
+	}
+	return common.EvmHead{
+		Latest:    m.headAxis("HeadLatest", ctx),
+		Finalized: m.headAxis("HeadFinalized", ctx),
+	}
+}
+func (m *mockNetwork) EvmLaneHead(string, string) common.EvmHead {
+	return m.EvmHead(context.Background(), nil)
 }
 
-func (m *mockNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
-	args := m.Called(ctx)
-	return args.Get(0).(int64)
+func (m *mockNetwork) headAxis(method string, ctx context.Context) (v int64) {
+	defer func() {
+		if recover() != nil {
+			v = 0
+		}
+	}()
+	return m.MethodCalled(method, ctx).Get(0).(int64)
 }
-
-// EvmLeaderUpstream is required by common.EvmNetwork. Tests that don't
-// exercise leader selection leave this unstubbed — returning nil is safe
-// because the helpers only use the leader where it's explicitly configured.
-func (m *mockNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream {
-	return nil
-}
-
-func (m *mockNetwork) EvmRefreshLatestBlock(ctx context.Context) {}
 
 var _ common.EvmUpstream = (*mockEvmUpstream)(nil)
 
@@ -201,6 +216,8 @@ func (m *mockStatePoller) FinalizedBlock() int64 {
 func (m *mockStatePoller) IsObjectNull() bool {
 	return false
 }
+
+func (m *mockStatePoller) Wait() {}
 
 func (m *mockStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	return &common.EvmStatePollerDiagnostics{
@@ -494,7 +511,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
-				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(5)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(5)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(0)).Return(true, nil)
 
 				return n, u, r
@@ -525,7 +542,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
 				// Mock the new EvmAssertBlockAvailability calls
-				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(5)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(5)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
@@ -556,7 +573,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
 				// Availability checks
-				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(21)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(21)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
@@ -587,7 +604,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
 				// Availability checks
-				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(20)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(20)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
@@ -621,7 +638,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
 				// Availability checks
-				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(2)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(2)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
@@ -655,7 +672,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
 				// Availability checks
-				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(2)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(2)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
@@ -1429,8 +1446,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 	// Tests for block tag resolution before validation (fixes bypass when using "latest", "finalized", etc.)
 	t.Run("latest_toBlock_resolved_before_max_range_validation", func(t *testing.T) {
 		n := new(mockNetwork)
-		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1000))
-		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(990)).Maybe()
+		n.On("HeadLatest", mock.Anything).Return(int64(1000))
+		n.On("HeadFinalized", mock.Anything).Return(int64(990)).Maybe()
 		n.On("Config").Return(&common.NetworkConfig{
 			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10}, // max 10 blocks
 		})
@@ -1451,8 +1468,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 
 	t.Run("finalized_toBlock_resolved_before_max_range_validation", func(t *testing.T) {
 		n := new(mockNetwork)
-		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1000)).Maybe()
-		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(990))
+		n.On("HeadLatest", mock.Anything).Return(int64(1000)).Maybe()
+		n.On("HeadFinalized", mock.Anything).Return(int64(990))
 		n.On("Config").Return(&common.NetworkConfig{
 			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10}, // max 10 blocks
 		})
@@ -1473,8 +1490,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 
 	t.Run("latest_toBlock_passes_when_within_range", func(t *testing.T) {
 		n := new(mockNetwork)
-		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(10))
-		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(5)).Maybe()
+		n.On("HeadLatest", mock.Anything).Return(int64(10))
+		n.On("HeadFinalized", mock.Anything).Return(int64(5)).Maybe()
 		n.On("Config").Return(&common.NetworkConfig{
 			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 100}, // max 100 blocks
 		})
@@ -1516,8 +1533,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 
 	t.Run("latest_fromBlock_and_latest_toBlock_resolved_correctly", func(t *testing.T) {
 		n := new(mockNetwork)
-		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1000))
-		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(990)).Maybe()
+		n.On("HeadLatest", mock.Anything).Return(int64(1000))
+		n.On("HeadFinalized", mock.Anything).Return(int64(990)).Maybe()
 		n.On("Config").Return(&common.NetworkConfig{
 			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 100},
 		})
@@ -1547,12 +1564,12 @@ func TestProjectPreForward_eth_getLogs_UseUpstreamTip(t *testing.T) {
 		})
 		n.On("ProjectId").Return("test")
 		if selected > 0 {
-			n.On("EvmHighestLatestBlockNumber", mock.MatchedBy(func(ctx context.Context) bool {
+			n.On("HeadLatest", mock.MatchedBy(func(ctx context.Context) bool {
 				req, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
 				return ok && req != nil && req.Directives() != nil && req.Directives().UseUpstream == "slow"
 			})).Return(selected)
 		}
-		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(2000)).Maybe()
+		n.On("HeadLatest", mock.Anything).Return(int64(2000)).Maybe()
 		return n
 	}
 	req := func(useUpstream string) *common.NormalizedRequest {
@@ -1697,9 +1714,9 @@ func TestUpstreamPreForward_eth_getLogs_BlockHeadTolerance(t *testing.T) {
 		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{}}).Maybe()
 		u.On("EvmStatePoller").Return(poller).Maybe()
 		// toBlock=101, upstream says not available
-		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(101)).
+		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(101)).
 			Return(false, nil).
-			Once()
+			Twice() // before and after the Ask
 
 		r := createTestRequest(map[string]interface{}{
 			"fromBlock": "0x65", // 101
@@ -1722,9 +1739,9 @@ func TestUpstreamPreForward_eth_getLogs_BlockHeadTolerance(t *testing.T) {
 		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{}}).Maybe()
 		u.On("EvmStatePoller").Return(poller).Maybe()
 		// toBlock=301 (0x12d), upstream says not available
-		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(301)).
+		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(301)).
 			Return(false, nil).
-			Once()
+			Twice() // before and after the Ask
 
 		r := createTestRequest(map[string]interface{}{
 			"fromBlock": "0x12d",
@@ -1745,7 +1762,20 @@ type fixedPoller struct {
 	finalized int64
 }
 
-func (p *fixedPoller) LatestBlock() int64 { return p.latest }
+func (p *fixedPoller) LatestBlock() int64                                   { return p.latest }
+func (p *fixedPoller) PollLatestBlockNumber(context.Context) (int64, error) { return p.latest, nil }
+func (p *fixedPoller) AskReaching(context.Context, int64, time.Duration, common.AskReason) common.HeadAnswer {
+	return common.HeadAnswer{Block: p.latest}
+}
+func (p *fixedPoller) Ask(context.Context, common.HeadNeed, time.Duration, time.Time, common.AskReason) common.HeadAnswer {
+	return common.HeadAnswer{}
+}
+func (p *fixedPoller) AskBackground(common.HeadNeed, time.Duration, time.Time, common.AskReason) common.HeadAnswer {
+	return common.HeadAnswer{}
+}
+func (p *fixedPoller) RefreshFinalized(context.Context) bool { return true }
+func (p *fixedPoller) LatestReportAt() time.Time             { return time.Time{} }
+func (p *fixedPoller) LatestAskAt() time.Time                { return time.Time{} }
 
 func (p *fixedPoller) FinalizedBlock() int64 { return p.finalized }
 
