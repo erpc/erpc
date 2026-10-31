@@ -3344,8 +3344,12 @@ func (t *ChainTracker) revert(s *feedState, tr *treeState, h *chainHeader, rr *r
 // unlinked is a held cursor whose tree, rooted at root, does not hold the
 // pins: it waits while either tree's fill may still join them, and is out
 // of range once root's fill ended and the pins' fill ended or passed below
-// root (spec §9.1).
+// root (spec §9.1). A root that is the pins' root joined them in an update
+// whose pins move onto it in the next, so it waits on the pins.
 func (t *ChainTracker) unlinked(tr *treeState, root *chainHeader) (indexer.Batch, readStep, error) {
+	if tr.pinRoot != nil && tr.pinRoot.hash == root.hash {
+		return indexer.Batch{}, readWaitPins, nil
+	}
 	if _, ended := tr.ended[root.hash]; ended && !tr.pinsMayJoin(root) {
 		return indexer.Batch{}, readWaitPins, indexer.OutOfRangeError{Reason: indexer.OutOfRangeForkLeftWindow}
 	}
