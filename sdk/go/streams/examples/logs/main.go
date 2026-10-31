@@ -62,7 +62,14 @@ func main() {
 	})
 	var oor *streams.OutOfRangeError
 	if errors.As(err, &oor) {
-		log.Fatalf("cursor %s is older than the server's window (oldest %v): backfill with eth_getLogs, then delete erpc.cursor", oor.Cursor, oor.Oldest)
+		// Away longer than the server's window. Backfill the blocks after
+		// oor.Cursor through oor.Oldest with eth_getLogs, save oor.Oldest.Token()
+		// to erpc.cursor, then start again.
+		oldest := "unknown"
+		if oor.Oldest != nil {
+			oldest = oor.Oldest.Token()
+		}
+		log.Fatalf("cursor %s is out of range (%s); oldest resumable %s", oor.Cursor, oor.Reason, oldest)
 	}
 	if err != nil {
 		log.Fatal(err)

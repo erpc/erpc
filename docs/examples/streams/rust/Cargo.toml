@@ -1,0 +1,13 @@
+[package]
+name = "stream-logs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+bds = { git = "https://github.com/blockchain-data-standards/manifesto" }
+bytes = "1"
+rand = "0.9"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tonic = { version = "0.14", features = ["tls-ring", "tls-native-roots"] }
+tonic-types = "0.14"

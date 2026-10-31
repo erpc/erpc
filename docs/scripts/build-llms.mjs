@@ -33,7 +33,7 @@ const DOCS_ROOT = path.resolve(__dirname, "..");
 const PAGES_DIR = path.join(DOCS_ROOT, "pages");
 const PUBLIC_DIR = path.join(DOCS_ROOT, "public");
 
-const SITE_BASE_URL = "https://docs.erpc.cloud";
+export const SITE_BASE_URL = "https://docs.erpc.cloud";
 
 const require = createRequire(import.meta.url);
 
@@ -550,7 +550,39 @@ function rewriteInternalLinks(src) {
 	});
 }
 
-function transformMdxToMarkdown(src) {
+/**
+ * Swap each fenced code block for a placeholder line, so no transform
+ * touches code: `import` lines, `<Generic>` types and `](/` stay verbatim.
+ */
+function protectFences(src) {
+	const fences = [];
+	const lines = src.split("\n");
+	const out = [];
+	for (let i = 0; i < lines.length; i++) {
+		const open = lines[i].match(/^\s*(`{3,}|~{3,})/);
+		let j = i + 1;
+		if (open) {
+			const marker = open[1];
+			while (j < lines.length) {
+				const t = lines[j].trim();
+				if (t.startsWith(marker) && /^[`~]+$/.test(t)) break;
+				j++;
+			}
+		}
+		if (!open || j >= lines.length) {
+			out.push(lines[i]);
+			continue;
+		}
+		fences.push(lines.slice(i, j + 1).join("\n"));
+		out.push(`\u0000FENCE${fences.length - 1}\u0000`);
+		i = j;
+	}
+	const restore = (s) => s.replace(/\u0000FENCE(\d+)\u0000/g, (_, n) => fences[Number(n)]);
+	return { src: out.join("\n"), restore };
+}
+
+function transformMdxToMarkdown(source) {
+	const { src, restore } = protectFences(source);
 	let out = src;
 	out = stripImports(out);
 	out = transformAISection(out);
@@ -566,7 +598,7 @@ function transformMdxToMarkdown(src) {
 	out = stripBareLeftoverComponents(out);
 	out = rewriteInternalLinks(out);
 	out = out.replace(/\n{3,}/g, "\n\n").trim();
-	return out + "\n";
+	return restore(out) + "\n";
 }
 
 /* -------------------------------------------------------------------------- */
@@ -788,6 +820,34 @@ async function cleanStaleLlmsTxt(dir) {
 	}
 }
 
+/** One page's machine-readable rendering, from its MDX source `raw` at `rel` under pages/. */
+export function renderPage(raw, rel) {
+	const { frontmatter, body } = splitFrontmatter(raw);
+	const markdown = transformMdxToMarkdown(body);
+
+	const urlPath = relToUrlPath(rel);
+	const fullUrl = `${SITE_BASE_URL}${urlPath}`;
+	const llmsUrlPath = relToLlmsUrlPath(rel);
+
+	const titleMatch = body.match(/^#\s+(.+)$/m);
+	const title = frontmatter.title || (titleMatch ? titleMatch[1].trim() : rel);
+	const description = frontmatter.description?.replace(/\.\.\.$/, "").trim() ?? "";
+
+	const header = [
+		`# ${title}`,
+		"",
+		`> Source: ${fullUrl}`,
+		description ? `> ${description}` : null,
+		"> Format: machine-readable markdown export of the docs page above.",
+		"> All collapsible AI sections are inlined and fully expanded.",
+		"",
+	]
+		.filter((l) => l !== null)
+		.join("\n");
+
+	return { rel, urlPath, fullUrl, llmsUrlPath, title, description, header, body: markdown };
+}
+
 async function main() {
 	await cleanStaleLlmsTxt(PUBLIC_DIR);
 	const files = await walkMdx(PAGES_DIR);
@@ -802,46 +862,14 @@ async function main() {
 
 	for (const { abs, rel } of files) {
 		const raw = await fs.readFile(abs, "utf8");
-		const { frontmatter, body } = splitFrontmatter(raw);
-		const markdown = transformMdxToMarkdown(body);
-
-		const urlPath = relToUrlPath(rel);
-		const fullUrl = `${SITE_BASE_URL}${urlPath}`;
-		const llmsUrlPath = relToLlmsUrlPath(rel);
-
-		const titleMatch = body.match(/^#\s+(.+)$/m);
-		const title = frontmatter.title || (titleMatch ? titleMatch[1].trim() : rel);
-		const description = frontmatter.description?.replace(/\.\.\.$/, "").trim() ?? "";
-
-		const header = [
-			`# ${title}`,
-			"",
-			`> Source: ${fullUrl}`,
-			description ? `> ${description}` : null,
-			"> Format: machine-readable markdown export of the docs page above.",
-			"> All collapsible AI sections are inlined and fully expanded.",
-			"",
-		]
-			.filter((l) => l !== null)
-			.join("\n");
-
-		const entry = {
-			rel,
-			urlPath,
-			fullUrl,
-			llmsUrlPath,
-			title,
-			description,
-			header,
-			body: markdown,
-		};
+		const entry = renderPage(raw, rel);
 		entries.push(entry);
 		entryByPath.set(rel.replace(/\.(mdx|md)$/i, ""), entry);
 
 		// Capture the index page's transformed body so we can inline it into
 		// the root llms.txt.
 		if (rel === "index.mdx" || rel === "index.md") {
-			indexBodyMarkdown = markdown;
+			indexBodyMarkdown = entry.body;
 		}
 	}
 
@@ -982,7 +1010,9 @@ async function main() {
 	);
 }
 
-main().catch((err) => {
-	console.error("[llms] failed:", err);
-	process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+	main().catch((err) => {
+		console.error("[llms] failed:", err);
+		process.exit(1);
+	});
+}

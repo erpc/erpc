@@ -141,6 +141,7 @@ func catalogue() []phaseSpec {
 		{"toolkit", 14051, []spec{t3((*scenario).startGoClient, "T3"), t3((*scenario).startNodeClient, "T3-ts"), t4()}},
 		{"t5", 14101, []spec{t5((*scenario).startGoClient, "T5"), t5((*scenario).startNodeClient, "T5-ts")}},
 		{"t6", 14201, []spec{t6((*scenario).startGoClient, "T6"), t6((*scenario).startNodeClient, "T6-ts")}},
+		{"t7", 14401, []spec{t7()}},
 	}
 }
 

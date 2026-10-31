@@ -15,3 +15,5 @@
 // after each returns nil: delivery is at least once, so both must be
 // idempotent; key logs by Log.Key.
 package streams
+
+//go:generate node ../../../docs/scripts/streams-guide.mjs write INTEGRATION.md

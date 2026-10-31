@@ -7,9 +7,10 @@ help:
 	@echo " build                         Build the eRPC server + simulator"
 	@echo " fmt                           Format source code"
 	@echo " test                          Run unit tests"
-	@echo " test-realworld                Run the chain tracker real-world suite, every tier (eRPC pods, redis-server, node >= 22 with pnpm install done); REALWORLD_LOADED_HOST=1 starts at any host load, REALWORLD_RACE=1 builds pods with -race"
+	@echo " test-realworld                Run the chain tracker real-world suite, every tier (eRPC pods, redis-server, node >= 22 with pnpm install done; row T7 also needs uv, cargo, mvn with JDK >= 17, and MANIFESTO_DIR = a manifesto checkout with the python, rust and java stubs); REALWORLD_LOADED_HOST=1 starts at any host load, REALWORLD_RACE=1 builds pods with -race"
 	@echo " test-realworld-long           Run only the real-world suite's long tier (C17, ~40 min)"
 	@echo " verify-fast                   Build, vet, -race every package, chaos once, real-world fast tier; prints a pass/fail table (VERIFY_DIR=<dir> for logs)"
+	@echo " check-streams-guide           Fail when the streams guide's code blocks or INTEGRATION.md copies drift from their files"
 	@echo
 	@echo " run-k6                        Run k6 tests"
 	@echo " run-pprof                     Run the eRPC server with pprof"
@@ -120,6 +121,10 @@ test-race:
 	@go clean -testcache
 	@go test ./cmd/... -count 5 -parallel 5 -v -race
 	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -count 15 -parallel 15 -v -timeout 30m -race
+
+.PHONY: check-streams-guide
+check-streams-guide:
+	@node docs/scripts/streams-guide.mjs check
 
 .PHONY: test-realworld
 test-realworld:
