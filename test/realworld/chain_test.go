@@ -557,8 +557,8 @@ func (s *scenario) requireCountersFollow() {
 // below its cap while the blocks flow, and every tap gets every block
 // within its bound (§6.1, §6.5 rule 1, §6.7; §19 C17). Long tier: the
 // halt crosses eRPC's 10-minute timers (PollerGiveUpExpiry,
-// HeadsReaskInterval, the gRPC server's MaxConnectionAge); the last is a
-// constant, so no shortened copy crosses them all.
+// HeadsReaskInterval, the gRPC server's MaxConnectionAge) at their real
+// values.
 func c17() spec {
 	return spec{name: "C17", long: true, bound: healthyDelivery, body: func(s *scenario) {
 		s.blocks(25)

@@ -11,11 +11,13 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/erpc"
 	"github.com/erpc/erpc/indexer/adapters/wsupstream"
 	"github.com/erpc/erpc/util"
 )
 
 var realworldVars = map[string]*util.Duration{
+	"erpc.GrpcMaxConnectionAge":     erpc.GrpcMaxConnectionAge,
 	"evm.ChainIdCordonRecheck":      evm.ChainIdCordonRecheck,
 	"evm.PollerGiveUpExpiry":        evm.PollerGiveUpExpiry,
 	"wsupstream.HeadsReaskInterval": wsupstream.HeadsReaskInterval,

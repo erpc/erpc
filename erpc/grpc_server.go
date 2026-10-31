@@ -13,6 +13,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
@@ -26,6 +27,10 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
+
+// GrpcMaxConnectionAge is a variable so the real-world suite can cross it
+// in minutes.
+var GrpcMaxConnectionAge = util.NewDuration(10 * time.Minute)
 
 type GrpcServer struct {
 	appCtx    context.Context
@@ -126,7 +131,7 @@ func NewGrpcServer(
 		// contract (the BDS client's conn max-age is the client-side half).
 		// Jitter (±10%) is added by grpc-go itself.
 		grpc.KeepaliveParams(keepalive.ServerParameters{
-			MaxConnectionAge:      10 * time.Minute,
+			MaxConnectionAge:      GrpcMaxConnectionAge.Load(),
 			MaxConnectionAgeGrace: 30 * time.Second,
 		}),
 		// Allow well-behaved clients (our BDS client pings every 30s, also
