@@ -2087,3 +2087,53 @@ func TestCounterInt64_TryUpdateIfStale_AsyncResultWithinExtendedTimeoutIsApplied
 	assert.Eventually(t, func() bool { return counter.GetValue() == 42 }, 4*time.Second, 20*time.Millisecond,
 		"result delivered after fallbackTimeout but within the caller's deadline must be applied")
 }
+
+// A remote counter ahead of local by more than ignoreRollbackOf is still
+// forward progress. Reconciling under a newer local timestamp must adopt it,
+// not push the lower local value (which peers would then treat as a large
+// rollback of the head).
+func TestCounterInt64_BackgroundPush_AdoptsFarAheadRemote(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	connector := NewMockConnector("far-ahead-remote")
+	lock := &MockLock{}
+	registry := &sharedStateRegistry{
+		appCtx:          ctx,
+		clusterKey:      "test",
+		instanceId:      "test-instance",
+		logger:          &log.Logger,
+		connector:       connector,
+		fallbackTimeout: time.Second,
+		lockTtl:         30 * time.Second,
+		lockMaxWait:     100 * time.Millisecond,
+		initializer:     util.NewInitializer(ctx, &log.Logger, nil),
+	}
+
+	var setCount atomic.Int32
+	connector.On("PublishCounterInt64", mock.Anything, "test/far-ahead", mock.Anything).Return(nil).Maybe()
+	connector.On("Lock", mock.Anything, "test/far-ahead", mock.Anything).Return(lock, nil)
+	lock.On("Unlock", mock.Anything).Return(nil)
+	// Remote is 5000 ahead of local 100; gap > ignoreRollbackOf (1024).
+	// Older remote timestamp: the stale-writer case the upper-bound used to miss.
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test/far-ahead", "value", nil).
+		Return([]byte(`{"v":5100,"t":1,"b":"peer"}`), nil)
+	connector.On("Set", mock.Anything, "test/far-ahead", "value", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) { setCount.Add(1) }).
+		Return(nil).Maybe()
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test/far-ahead",
+		ignoreRollbackOf: 1024,
+	}
+	// Local lagging value with a newer timestamp than remote.
+	counter.value.Store(100)
+	counter.updatedAtUnixMs.Store(time.Now().UnixMilli() + 60_000)
+
+	counter.scheduleBackgroundPushCurrent()
+
+	assert.Eventually(t, func() bool { return counter.GetValue() == 5100 }, 2*time.Second, 20*time.Millisecond,
+		"background reconcile must adopt a far-ahead remote instead of keeping the lagging local value")
+	assert.Equal(t, int32(0), setCount.Load(), "must not overwrite remote with the lower local value")
+}
