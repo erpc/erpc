@@ -28,10 +28,22 @@ const (
 	f5FinalDepth = 64
 	// f7Lag: F7's lane upstream trails the network head by this much.
 	f7Lag = 6
+	// finalizedPoll: the base vendors' finalized poll where a check times
+	// final deliveries: Finalized moves once per poll, 30s by default.
+	finalizedPoll = time.Second
 )
 
 func finalityEvm() map[string]interface{} {
 	return map[string]interface{}{"chainTracker": map[string]interface{}{"reorgWindow": reorgWindow, "maxBackfill": finalWindow.String()}}
+}
+
+// finalizedEvery is upEvm polling every base vendor's finalized tag at d.
+func finalizedEvery(d time.Duration) map[string]map[string]interface{} {
+	upEvm := map[string]map[string]interface{}{}
+	for _, v := range baseVendors {
+		upEvm[v.key] = map[string]interface{}{"statePollerInterval": d.String()}
+	}
+	return upEvm
 }
 
 func erpcOpts(kv ...interface{}) map[string]interface{} {

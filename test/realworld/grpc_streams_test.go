@@ -33,9 +33,6 @@ const (
 	// grpcWindow, grpcConnWindow: the tuned client's windows (§6.3).
 	grpcWindow     = 4 << 20
 	grpcConnWindow = 16 << 20
-	// g6Poll: every vendor's finalized poll in G6. Finalized moves once per
-	// poll (30s by default), so a 60-block read would see at most one move.
-	g6Poll = time.Second
 )
 
 func (s *scenario) streamMD(ctx context.Context) context.Context {
@@ -532,9 +529,7 @@ func g5() spec {
 // cursor below the window ends OUT_OF_RANGE with ErrorInfo oldestBlock,
 // oldestHash.
 func g6() spec {
-	poll := map[string]interface{}{"statePollerInterval": g6Poll.String()}
-	upEvm := map[string]map[string]interface{}{"ws-a": poll, "ws-b": poll, "http-a": poll, "http-b": poll}
-	return spec{name: "G6", bound: healthyDelivery, evm: finalityEvm(), upEvm: upEvm, body: func(s *scenario) {
+	return spec{name: "G6", bound: healthyDelivery, evm: finalityEvm(), upEvm: finalizedEvery(finalizedPoll), body: func(s *scenario) {
 		s.blocks(chainsim.FinalizedLag + 10)
 		conn := s.dialGrpc(s.name, s.h.pods[0].grpcAddr())
 		if conn == nil {
