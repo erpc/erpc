@@ -3,8 +3,11 @@ package common
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/erpc/erpc/util"
 )
 
 const (
@@ -183,4 +186,90 @@ type EvmProbeEarliestInfo struct {
 	ProbeType        EvmAvailabilityProbeType `json:"probeType"`
 	EarliestBlock    int64                    `json:"earliestBlock"`
 	SchedulerRunning bool                     `json:"schedulerRunning,omitempty"`
+}
+
+// ParseEvmBlockParam splits a JSON-RPC block parameter into a reference and a
+// number: a hash or tag gives (ref, 0), a number gives (decimal ref, number).
+// Block 0 gives ("", 0).
+func ParseEvmBlockParam(param interface{}) (string, int64, error) {
+	blockNumberStr, blockHash, err := util.ParseBlockParameter(param)
+	if err != nil {
+		return "", 0, err
+	}
+	if blockHash != nil {
+		return fmt.Sprintf("0x%x", blockHash), 0, nil
+	}
+	if blockNumberStr == "" {
+		return "", 0, nil
+	}
+	if !strings.HasPrefix(blockNumberStr, "0x") {
+		return blockNumberStr, 0, nil
+	}
+	bn, err := HexToInt64(blockNumberStr)
+	if err != nil {
+		return "", 0, err
+	}
+	if bn > 0 {
+		return strconv.FormatInt(bn, 10), bn, nil
+	}
+	return "", 0, nil
+}
+
+// EvmRequestedBlockNumber returns the highest block number the request's own
+// parameters name, read through the method's reqRefs. ok is false when the
+// method takes no block parameter, or when any parameter is a tag, a hash, or
+// an omitted range bound: JSON-RPC reads an omitted fromBlock/toBlock as
+// "latest".
+func EvmRequestedBlockNumber(ctx context.Context, req *NormalizedRequest) (int64, bool) {
+	method, err := req.Method()
+	if err != nil {
+		return 0, false
+	}
+	mc := ResolveMethodConfig(method, req.Network())
+	if mc == nil || mc.Finalized || mc.Realtime || len(mc.ReqRefs) == 0 {
+		return 0, false
+	}
+	jrq, err := req.JsonRpcRequest(ctx)
+	if err != nil {
+		return 0, false
+	}
+	jrq.RLock()
+	defer jrq.RUnlock()
+
+	var highest int64
+	found := false
+	for _, ref := range mc.ReqRefs {
+		val, err := jrq.PeekByPath(ref...)
+		if err != nil {
+			if omittedRangeBound(jrq, ref) {
+				return 0, false
+			}
+			continue
+		}
+		blockRef, bn, err := ParseEvmBlockParam(val)
+		if err != nil || (bn == 0 && blockRef != "") {
+			return 0, false
+		}
+		if !found || bn > highest {
+			highest = bn
+		}
+		found = true
+	}
+	return highest, found
+}
+
+func omittedRangeBound(jrq *JsonRpcRequest, ref []interface{}) bool {
+	if len(ref) < 2 {
+		return false
+	}
+	key, _ := ref[len(ref)-1].(string)
+	if key != "fromBlock" && key != "toBlock" {
+		return false
+	}
+	parent, err := jrq.PeekByPath(ref[:len(ref)-1]...)
+	if err != nil {
+		return false
+	}
+	_, isObject := parent.(map[string]interface{})
+	return isObject
 }

@@ -282,9 +282,6 @@ func buildPolicy(cfg *common.ConsensusPolicyConfig, logger *zerolog.Logger, poli
 	if cfg.PreferHighestValueFor != nil {
 		b = b.WithPreferHighestValueFor(cfg.PreferHighestValueFor)
 	}
-	if cfg.BlockEvidenceFields != nil {
-		b = b.WithBlockEvidenceFields(cfg.BlockEvidenceFields)
-	}
 	if cfg.DisputeLogLevel != "" {
 		level, err := zerolog.ParseLevel(cfg.DisputeLogLevel)
 		if err == nil {

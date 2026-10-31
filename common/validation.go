@@ -1414,31 +1414,6 @@ func (c *CircuitBreakerPolicyConfig) Validate() error {
 	return nil
 }
 
-// lookupMethodFields resolves a per-method field list with the same
-// exact-first / case-insensitive precedence used at runtime for
-// blockEvidenceFields and ignoreFields. Returns the matched key so callers
-// can cite it in errors.
-func lookupMethodFields(defs map[string][]string, method string) ([]string, string, bool) {
-	if len(defs) == 0 || method == "" {
-		return nil, "", false
-	}
-	if fields, ok := defs[method]; ok {
-		return fields, method, true
-	}
-	var bestKey string
-	var best []string
-	var found bool
-	for k, v := range defs {
-		if !strings.EqualFold(k, method) {
-			continue
-		}
-		if !found || k < bestKey {
-			bestKey, best, found = k, v, true
-		}
-	}
-	return best, bestKey, found
-}
-
 func (c *ConsensusPolicyConfig) Validate() error {
 	if c.MaxParticipants <= 0 {
 		return fmt.Errorf("consensus.maxParticipants must be greater than 0")
@@ -1463,7 +1438,6 @@ func (c *ConsensusPolicyConfig) Validate() error {
 	}
 
 	anyWaivable := false
-	anyEmptyWaiver := false
 	haveNeverWaivableFloor := false
 	for i, rp := range c.RequiredParticipants {
 		if rp == nil {
@@ -1499,9 +1473,6 @@ func (c *ConsensusPolicyConfig) Validate() error {
 			// nothing and cannot serve as the floor.
 			haveNeverWaivableFloor = true
 		}
-		if rp.WaiveAgreementOnEmptyOutsideRetention {
-			anyEmptyWaiver = true
-		}
 	}
 	// R9: a policy that opts into a waiver (MissingData or empty-outside-retention)
 	// must keep a floor — at least one never-waivable entry with minAgreement>0 —
@@ -1510,51 +1481,6 @@ func (c *ConsensusPolicyConfig) Validate() error {
 	if anyWaivable && !haveNeverWaivableFloor {
 		return fmt.Errorf("consensus.requiredParticipants: a policy using waiveAgreementOnMissingData or waiveAgreementOnEmptyOutsideRetention must also keep at least one never-waivable entry with minAgreement > 0 (the waivable quotas cannot be the only floor)")
 	}
-	// R11: the empty-outside-retention waiver needs a block proof, which comes
-	// from blockEvidenceFields. Opting in without configuring it is a config
-	// error — the waiver could never fire and the operator's intent is silently
-	// dropped.
-	if anyEmptyWaiver && len(c.BlockEvidenceFields) == 0 {
-		return fmt.Errorf("consensus.requiredParticipants uses waiveAgreementOnEmptyOutsideRetention but consensus.blockEvidenceFields is empty: the waiver needs a per-method block-evidence field to prove the winner's block is outside retention")
-	}
-	// A block-evidence path that is also ignored would let differing block
-	// numbers collapse into one winner group while waiver proof is taken from
-	// a size-selected response — reject that overlap at load time. An ignore
-	// path that is an ancestor of the evidence path strips it too
-	// (ignoreFields["receipt"] removes receipt.blockNumber), so reject any
-	// ignore path equal to or a dot-delimited ancestor of an evidence path.
-	// Method lookup matches runtime methodFields (exact first, then EqualFold).
-	for method, evidencePaths := range c.BlockEvidenceFields {
-		ignored, ignoreKey, found := lookupMethodFields(c.IgnoreFields, method)
-		if !found || len(evidencePaths) == 0 {
-			continue
-		}
-		for _, ep := range evidencePaths {
-			for _, ip := range ignored {
-				if ip == ep || strings.HasPrefix(ep, ip+".") {
-					return fmt.Errorf("consensus.blockEvidenceFields[%q] path %q is also listed in ignoreFields[%q]: evidence fields must not be ignored or waiver proof can disagree with the winning group", method, ep, ignoreKey)
-				}
-			}
-		}
-	}
-
-	// blockEvidenceFields only supports the shapes extractFieldValues reads:
-	// "result", a flat top-level field of a result object ("blockNumber",
-	// "number"), or an array wildcard "*.field" for array results (eth_getLogs,
-	// eth_getBlockReceipts — max across elements). Nested dotted paths ("a.b")
-	// resolve to nil at runtime and would silently disable the waiver — reject
-	// them at load time.
-	for method, paths := range c.BlockEvidenceFields {
-		for _, ep := range paths {
-			if ep == "result" || strings.HasPrefix(ep, "*.") {
-				continue
-			}
-			if strings.Contains(ep, ".") {
-				return fmt.Errorf("consensus.blockEvidenceFields[%q] path %q is unsupported: use \"result\", a flat top-level field (e.g. \"blockNumber\"), or an array wildcard \"*.field\"; nested paths cannot prove the winner's block and would silently disable the empty-outside-retention waiver", method, ep)
-			}
-		}
-	}
-
 	// Smoke-compile the custom-policy eval function so a syntactically broken
 	// selector fails at load time rather than falling closed on every request.
 	if c.CustomPolicy != nil {

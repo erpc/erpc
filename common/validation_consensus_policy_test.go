@@ -73,11 +73,9 @@ func TestConsensusPolicyValidate_MissingDataWaiverFloor_R9(t *testing.T) {
 
 func TestConsensusPolicyValidate_EmptyWaiver_v11(t *testing.T) {
 	// A valid empty-waiver config: an opted-in internal quota with a retention
-	// boundary, a never-waivable external floor, and the block-evidence field
-	// the waiver's proof reads.
+	// boundary and a never-waivable external floor.
 	validEmptyWaiver := func() *ConsensusPolicyConfig {
 		c := validConsensusBase()
-		c.BlockEvidenceFields = map[string][]string{"eth_getTransactionReceipt": {"blockNumber"}}
 		c.RequiredParticipants = []*ConsensusRequiredParticipant{
 			{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1, WaiveAgreementOnEmptyOutsideRetention: true, RetentionBlocks: 128},
 			{Tag: "type:external", MinParticipants: 2, MinAgreement: 2},
@@ -103,45 +101,6 @@ func TestConsensusPolicyValidate_EmptyWaiver_v11(t *testing.T) {
 		err := c.Validate()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "retentionBlocks must not be negative")
-	})
-
-	t.Run("opting in without blockEvidenceFields is rejected (R11)", func(t *testing.T) {
-		c := validEmptyWaiver()
-		c.BlockEvidenceFields = nil
-		err := c.Validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "blockEvidenceFields")
-	})
-
-	t.Run("blockEvidenceFields path overlapping ignoreFields is rejected", func(t *testing.T) {
-		c := validEmptyWaiver()
-		c.IgnoreFields = map[string][]string{
-			"eth_getTransactionReceipt": {"blockNumber", "logs"},
-		}
-		err := c.Validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "also listed in ignoreFields")
-	})
-
-	t.Run("blockEvidenceFields overlap with ignoreFields is case-insensitive on method", func(t *testing.T) {
-		c := validEmptyWaiver()
-		c.IgnoreFields = map[string][]string{
-			"ETH_GETTRANSACTIONRECEIPT": {"blockNumber"},
-		}
-		err := c.Validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "also listed in ignoreFields")
-	})
-
-	t.Run("blockEvidenceFields nested under an ignored ancestor is rejected", func(t *testing.T) {
-		c := validEmptyWaiver()
-		c.BlockEvidenceFields = map[string][]string{"eth_getTransactionReceipt": {"receipt.blockNumber"}}
-		c.IgnoreFields = map[string][]string{
-			"eth_getTransactionReceipt": {"receipt"},
-		}
-		err := c.Validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "also listed in ignoreFields")
 	})
 
 	t.Run("the empty-waiver also needs a never-waivable floor (R9)", func(t *testing.T) {
@@ -359,7 +318,6 @@ func TestConsensusPolicyConfig_CopyIncludesNewFields(t *testing.T) {
 		{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1, WaiveAgreementOnMissingData: true,
 			WaiveAgreementOnEmptyOutsideRetention: true, RetentionBlocks: 128},
 	}
-	c.BlockEvidenceFields = map[string][]string{"eth_getTransactionReceipt": {"blockNumber"}}
 
 	cp := c.Copy()
 	require.NotNil(t, cp.CustomPolicy)
@@ -376,11 +334,6 @@ func TestConsensusPolicyConfig_CopyIncludesNewFields(t *testing.T) {
 	assert.True(t, cp.RequiredParticipants[0].WaiveAgreementOnMissingData)
 	assert.True(t, cp.RequiredParticipants[0].WaiveAgreementOnEmptyOutsideRetention)
 	assert.Equal(t, int64(128), cp.RequiredParticipants[0].RetentionBlocks)
-
-	// BlockEvidenceFields is deep-copied: mutating the copy must not leak back.
-	require.Contains(t, cp.BlockEvidenceFields, "eth_getTransactionReceipt")
-	cp.BlockEvidenceFields["eth_getTransactionReceipt"][0] = "changed"
-	assert.Equal(t, "blockNumber", c.BlockEvidenceFields["eth_getTransactionReceipt"][0])
 }
 
 func TestConsensusPolicy_ExtendsExplicitFireAndForgetFalse(t *testing.T) {

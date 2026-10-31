@@ -604,8 +604,8 @@ func TestGetMethodConfigOperatorDefinitionsCaseInsensitive(t *testing.T) {
 		},
 	})
 
-	assert.Same(t, customCfg, getMethodConfig("custom_traceThing", n), "exact casing resolves")
-	assert.Same(t, customCfg, getMethodConfig("CUSTOM_TRACETHING", n), "non-canonical casing resolves the operator key")
-	assert.Same(t, customCfg, getMethodConfig("custom_tracething", n), "lowercase casing resolves the operator key")
-	assert.Nil(t, getMethodConfig("custom_otherThing", n), "unrelated methods still miss")
+	assert.Same(t, customCfg, common.ResolveMethodConfig("custom_traceThing", n), "exact casing resolves")
+	assert.Same(t, customCfg, common.ResolveMethodConfig("CUSTOM_TRACETHING", n), "non-canonical casing resolves the operator key")
+	assert.Same(t, customCfg, common.ResolveMethodConfig("custom_tracething", n), "lowercase casing resolves the operator key")
+	assert.Nil(t, common.ResolveMethodConfig("custom_otherThing", n), "unrelated methods still miss")
 }

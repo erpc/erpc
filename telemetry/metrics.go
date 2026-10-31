@@ -1159,9 +1159,9 @@ var (
 	}, []string{"project", "network", "tag", "reason"})
 
 	// MetricConsensusCompositionWaiverUnproven counts fail-closed empty-outside-
-	// retention evaluations where the waiver could not be proven (no winner
+	// retention evaluations where the waiver could not be proven (no requested
 	// block, no finite abstainer availability lower bound, and/or no known
-	// chain head). Reason is one of: no_winner_block, no_avail_bound, no_head.
+	// chain head). Reason is one of: no_request_block, no_avail_bound, no_head.
 	// Mid-round deferral (round still collecting) is debug-logged, not counted.
 	MetricConsensusCompositionWaiverUnproven = DefineLabeledCounter(prometheus.CounterOpts{
 		Namespace: "erpc",

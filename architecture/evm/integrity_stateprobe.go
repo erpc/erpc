@@ -309,7 +309,7 @@ func (p *stateProber) latestReachesUpstream(u common.Upstream) bool {
 	if cfg := u.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.PinLatestTag != nil && *cfg.Evm.PinLatestTag {
 		return false
 	}
-	m := getMethodConfig("eth_call", p.network)
+	m := common.ResolveMethodConfig("eth_call", p.network)
 	return m != nil && m.TranslateLatestTag != nil && !*m.TranslateLatestTag
 }
 

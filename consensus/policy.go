@@ -53,7 +53,6 @@ type config struct {
 	preferNonEmpty          bool
 	preferLargerResponses   bool
 	preferHighestValueFor   map[string][]string
-	blockEvidenceFields     map[string][]string
 	fireAndForget           bool
 	maxWaitOnResult         *common.AdaptiveDuration
 	maxWaitOnEmpty          *common.AdaptiveDuration
@@ -122,10 +121,6 @@ func (b *builder) WithPreferLargerResponses(v bool) *builder {
 }
 func (b *builder) WithPreferHighestValueFor(m map[string][]string) *builder {
 	b.cfg.preferHighestValueFor = m
-	return b
-}
-func (b *builder) WithBlockEvidenceFields(m map[string][]string) *builder {
-	b.cfg.blockEvidenceFields = m
 	return b
 }
 func (b *builder) WithFireAndForget(v bool) *builder { b.cfg.fireAndForget = v; return b }
