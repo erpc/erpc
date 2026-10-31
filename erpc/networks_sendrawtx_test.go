@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2532,6 +2533,110 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 		assert.Less(t, elapsed, 3*time.Second,
 			"rejection must return once every upstream has answered, not after hedge and retry delays")
 	})
+
+	t.Run("ExceedsBlockGasLimitIsNotRetried", func(t *testing.T) {
+		// The block gas limit is consensus state: every upstream refuses the
+		// same transaction, so the broadcast ends after its first round.
+		calls, elapsed, err := forwardSendEveryUpstreamRefuses(t, -32000, "exceeds block gas limit")
+
+		require.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
+			"client must get the node's refusal, got: %v", err)
+		assert.Contains(t, err.Error(), "exceeds block gas limit")
+		assert.LessOrEqual(t, totalCalls(calls), int64(sendBroadcastParticipants),
+			"a refusal every upstream shares must not be retried: %v", calls)
+		assert.Less(t, elapsed, 3*time.Second)
+	})
+}
+
+// sendBroadcastParticipants is the consensus fan-out of the production
+// eth_sendRawTransaction broadcast: one round asks at most this many times.
+const sendBroadcastParticipants = 10
+
+// forwardSendEveryUpstreamRefuses forwards one eth_sendRawTransaction through
+// the production broadcast shape (consensus fan-out, hedge, retry) to four
+// upstreams that all answer the JSON-RPC error code/message. It returns how
+// often each upstream was asked, how long the forward took and its error.
+func forwardSendEveryUpstreamRefuses(t *testing.T, code int, message string) (map[string]int64, time.Duration, error) {
+	t.Helper()
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+
+	ids := []string{"rpc1", "rpc2", "rpc3", "rpc4"}
+	counters := make(map[string]*atomic.Int64, len(ids))
+	var upstreamConfigs []*common.UpstreamConfig
+	for _, id := range ids {
+		endpoint := "http://" + id + ".localhost"
+		upstreamConfigs = append(upstreamConfigs, &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       id,
+			Endpoint: endpoint,
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		})
+		counter := &atomic.Int64{}
+		counters[id] = counter
+		gock.New(endpoint).
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				if !strings.Contains(util.SafeReadBody(r), "eth_sendRawTransaction") {
+					return false
+				}
+				counter.Add(1)
+				return true
+			}).
+			Reply(200).
+			Delay(100 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error": map[string]interface{}{
+					"code":    code,
+					"message": message,
+				},
+			})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	network := setupSendRawTxNetwork(t, ctx, upstreamConfigs, &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_sendRawTransaction",
+			Hedge: &common.HedgePolicyConfig{
+				MaxCount: 2,
+				Delay:    common.NewStaticDuration(500 * time.Millisecond),
+			},
+			Retry: &common.RetryPolicyConfig{MaxAttempts: 6},
+			Consensus: &common.ConsensusPolicyConfig{
+				MaxParticipants:    sendBroadcastParticipants,
+				AgreementThreshold: 1,
+				FireAndForget:      true,
+			},
+		}},
+	})
+
+	start := time.Now()
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`))
+	_, err := network.Forward(ctx, req)
+	elapsed := time.Since(start)
+
+	calls := make(map[string]int64, len(ids))
+	for id, counter := range counters {
+		calls[id] = counter.Load()
+	}
+	return calls, elapsed, err
+}
+
+func totalCalls(calls map[string]int64) int64 {
+	var total int64
+	for _, n := range calls {
+		total += n
+	}
+	return total
 }
 
 // Helper to set up a test network with fire-and-forget consensus for eth_sendRawTransaction
