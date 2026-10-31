@@ -2245,6 +2245,10 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 				v := *defaults.Failover.OnDefaultsExhausted
 				cp.OnDefaultsExhausted = &v
 			}
+			if defaults.Failover.OnDemandFallbackHeads != nil {
+				v := *defaults.Failover.OnDemandFallbackHeads
+				cp.OnDemandFallbackHeads = &v
+			}
 			n.Failover = &cp
 		}
 		if n.Evm != nil && defaults.Evm != nil {

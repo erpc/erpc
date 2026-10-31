@@ -796,6 +796,14 @@ export interface FailoverConfig {
    * other upstream failed with an error retryable toward the network.
    */
   onDefaultsExhausted?: boolean;
+  /**
+   * OnDemandFallbackHeads subscribes newHeads on `tier:fallback` WebSocket
+   * upstreams only while no other routable upstream streams heads, and
+   * unsubscribes once one has streamed them for a while again. The
+   * connection itself stays open. Useful when the fallback bills each
+   * notification. Takes effect only with OnDefaultsExhausted.
+   */
+  onDemandFallbackHeads?: boolean;
 }
 export interface CORSConfig {
   allowedOrigins: string[];
