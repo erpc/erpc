@@ -42,19 +42,6 @@ func erpcOpts(kv ...interface{}) map[string]interface{} {
 	return map[string]interface{}{"erpc": o}
 }
 
-// tipAt is the canonical tip when at came: the highest canonical block
-// minted at or before it.
-func (s *scenario) tipAt(at time.Time) uint64 {
-	n := s.chain.Tip().Number
-	for n > 0 {
-		if b := s.chain.CanonAt(n); b == nil || !b.MintedAt.After(at) {
-			break
-		}
-		n--
-	}
-	return n
-}
-
 // finalApplied is what a client that applies sub's heads, dropping what
 // each undo names, holds.
 type finalApplied struct {
@@ -117,7 +104,7 @@ func (s *scenario) requireFinal(name string, a finalApplied, depth uint64) {
 		if b := s.chain.CanonAt(n); b == nil || b.Hash != h {
 			s.violate(name, "holds block %d %s off the canonical chain", n, short(h))
 		}
-		if tip := s.tipAt(a.at[n]); n+depth > tip {
+		if tip := s.chain.TipAt(a.at[n]); n+depth > tip {
 			s.violate(name, "head %d sent at tip %d: above the bound, %d below the tip", n, tip, depth)
 		}
 	}
@@ -411,7 +398,7 @@ func f5() spec {
 		s.requireFinal(s.name, a, f5SafeDepth)
 		above := 0
 		for n, at := range a.at {
-			if n+f5FinalDepth > s.tipAt(at) {
+			if n+f5FinalDepth > s.chain.TipAt(at) {
 				above++
 			}
 		}

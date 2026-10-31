@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"slices"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -104,11 +105,19 @@ type Chain struct {
 	tickMu sync.Mutex
 	tickCh chan struct{}
 	tickAt []time.Time
+	// tips is each canonical tip vendors were moved to, in order, with
+	// when (TipAt); guarded by mu.
+	tips []tipMark
 }
 
 // Fork is a branch some vendors serve instead of the canonical chain; it
 // gains a block every tick.
 type Fork struct{ tip *Block }
+
+type tipMark struct {
+	at     time.Time
+	number uint64
+}
 
 // Trap is one block's held first receipts call.
 type Trap struct {
@@ -142,6 +151,7 @@ func NewChain(cfg Config) *Chain {
 		c.canon = append(c.canon, b)
 		parent = b
 	}
+	c.tips = append(c.tips, tipMark{time.Now(), c.tipLocked().Number})
 	return c
 }
 
@@ -313,6 +323,15 @@ func (c *Chain) Tip() *Block {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.tipLocked()
+}
+
+// TipAt is the number of the canonical head vendors served at time at, a
+// reorg's replaced branch included; the first head before NewChain.
+func (c *Chain) TipAt(at time.Time) uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	i := sort.Search(len(c.tips), func(i int) bool { return c.tips[i].at.After(at) })
+	return c.tips[max(i-1, 0)].number
 }
 
 // CanonAt is the canonical block at n, nil outside the chain.
@@ -656,6 +675,9 @@ func (c *Chain) failingLocked(h Hash) bool {
 // new tip on its newHeads subscriptions.
 func (c *Chain) refresh() {
 	c.mu.Lock()
+	if tip := c.tipLocked().Number; c.tips[len(c.tips)-1].number != tip {
+		c.tips = append(c.tips, tipMark{time.Now(), tip})
+	}
 	var pushes []push
 	for _, v := range c.vendors {
 		pushes = v.followLocked(pushes)
