@@ -311,8 +311,8 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 
 ### Worked examples
 
-All patterns below are distilled from real production fleets; comments explain the
-non-obvious choices.
+The patterns below cover upstream configuration choices; comments explain why
+each setting is present.
 
 **1. Full node + archive node pool with explicit block windows.** Route recent
 blocks to a cheap full node and archive queries to a dedicated archive node. In
@@ -820,6 +820,72 @@ SVM upstream gets its own slot/health poller automatically:
   ],
 }]`}
 />
+
+**7. Chain-slug endpoints with API-key headers.** A numeric eRPC chain ID need not
+appear in the upstream URL. For example, BlockVectra's Robinhood mainnet and
+testnet endpoints use different slugs; keep each URL paired with its chain ID.
+Export your own `BLOCKVECTRA_API_KEY` before loading this config. YAML environment
+variables are expanded before decoding, so a missing variable becomes an empty
+value; check it before starting: `: "${BLOCKVECTRA_API_KEY:?Set your API key first}"`.
+
+<ConfigTabs
+  path="projects[].upstreams[]"
+  focusYaml="5-10,12-17"
+  focusTs="3-4,13-15,19-21"
+  yaml={`projects:
+  - id: blockvectra
+    upstreams:
+      - id: blockvectra-rh-mainnet
+        endpoint: https://api.blockvectra.com/v1/robinhood_mainnet
+        evm:
+          chainId: 4663
+        jsonRpc:
+          headers:
+            x-api-key: "\${BLOCKVECTRA_API_KEY}"
+      - id: blockvectra-rh-testnet
+        endpoint: https://api.blockvectra.com/v1/robinhood_testnet
+        evm:
+          chainId: 46630
+        jsonRpc:
+          headers:
+            x-api-key: "\${BLOCKVECTRA_API_KEY}"`}
+  ts={`import { createConfig } from "@erpc-cloud/config";
+
+const apiKey = process.env.BLOCKVECTRA_API_KEY;
+if (!apiKey) throw new Error("Set BLOCKVECTRA_API_KEY before starting eRPC");
+
+export default createConfig({
+  projects: [{
+    id: "blockvectra",
+    upstreams: [
+      {
+        id: "blockvectra-rh-mainnet",
+        // URL slug and eRPC chain ID describe the same network.
+        endpoint: "https://api.blockvectra.com/v1/robinhood_mainnet",
+        evm: { chainId: 4663 },
+        jsonRpc: { headers: { "x-api-key": apiKey } },
+      },
+      {
+        id: "blockvectra-rh-testnet",
+        endpoint: "https://api.blockvectra.com/v1/robinhood_testnet",
+        evm: { chainId: 46630 },
+        jsonRpc: { headers: { "x-api-key": apiKey } },
+      },
+    ],
+  }],
+});`}
+/>
+
+Use eRPC routes `/blockvectra/evm/4663` and `/blockvectra/evm/46630` for these two
+networks. Keep the expanded configuration and authentication headers private.
+This is explicit upstream configuration, not a native vendor adapter or automatic
+chain discovery. Check the provider's [chain catalog](https://api.blockvectra.com/v1/chains)
+for current method and state-window limits; its `/public` endpoints have a separate
+method policy and are not interchangeable with this authenticated setup.
+See the [Robinhood connection guide](https://docs.blockvectra.com/en/guides/robinhood-chain/?ref=erpc-upstreams)
+for the provider-specific endpoints. YAML expansion and custom-header transport are
+implemented in [the config loader](https://github.com/erpc/erpc/blob/204f98cb052b6fa49a0e4b5ed3832193ebf239e3/common/config.go#L115-L124)
+and [HTTP client](https://github.com/erpc/erpc/blob/204f98cb052b6fa49a0e4b5ed3832193ebf239e3/clients/http_json_rpc_client.go#L135-L137).
 
 ### Request/response behavior
 
