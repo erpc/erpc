@@ -337,7 +337,7 @@ Each concept answers one question and has one home. W (§1) is the one freshness
 - #1263's stall rules stay beside number age: a head frozen above peers whose newest blocks are a stall window younger is benched by block age, so a frozen pair above the chain never benches the honest pair below it.
 - Hash age decides the hash voters: a voter is a hash voter while its hash age is at most W and its channel answers. A push source's channel is its socket; any other voter's is its polls: once its failed polls of `latest` cover at least W, from the first one's send to the last one's failure, with no success since, its hash vote expires as a closed socket's does, until a poll succeeds. One timeout as long as W covers W alone; two quick 429s do not. A failed poll is one the node failed (transport error, timeout, 5xx, 429) or the vendor refused us (401, 403: a ban or a revoked key); eRPC's own refusals (local rate limit, open breaker, skip) and unsupported or client-error answers are no poll: they neither fail nor back off, and a failure whose request was sent before the last success does not count. A halted chain still answers polls and keeps its hash voters; an instance cut from its vendors loses them, so its streams end (§10.2).
 - Routing hints, ordering only; every upstream stays eligible:
-  - Reached N: for a request at block N, by number or by a block hash the tracker holds, the upstreams that reached N go first, the policy's order kept within each part. A push source (a wss upstream whose `newHeads` subscription is live) reached N when its hash vote on this instance did, since its requests ride that socket; any other upstream when its head counter did. Tracker fetches use the same rule (§8).
+  - Reached N: for a request at block N, by number or by a block hash the tracker holds, the upstreams that reached N go first, the policy's order kept within each part. A push source (a wss upstream whose `newHeads` subscription is live) reached N when its hash vote on this instance did, since its requests ride that socket; any other upstream when its head counter did. Tracker fetches use the same rule (§8). N is the block the client named, read before §7 pins a tag: a tag pinned to the request's `Head` is a request with no block, as on main. Ordered by the pin, the policy's first upstream, polled every 1s on a 0.1s chain and a few blocks below `Latest`, went behind a far node at `Latest`, and the far node took the tip calls (P15).
   - A request with no block: a push source whose hash age exceeds W, or whose socket closed, goes after the others until it reports again, so a half-open socket holds no client request. Hash age never reorders any other upstream: its freshness follows the poll schedule, which is no evidence of a fault. Being behind by less than W reorders nobody.
 - A chain that makes no blocks moves no reference: every age stays 0 and nothing reconnects.
 
@@ -980,10 +980,10 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | Client behaviour | 9 | D1–D9 |
 | Cross-instance | 9 | X1–X9 |
 | Config | 7 | K1–K7 |
-| HTTP consistency | 14 | P1–P13, P11-nitro |
+| HTTP consistency | 15 | P1–P13, P15, P11-nitro |
 | Vendor cost | 3 | Z1–Z3 |
 | Read after event | 1 | R1 |
-| Total | 88 | |
+| Total | 89 | |
 
 | ID | Setup and fault | Expected |
 |---|---|---|
@@ -1071,6 +1071,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | P11-nitro | a Nitro chain other than Arbitrum One: Multicall3 `getBlockNumber()` answers the parent chain's height, ArbSys `arbBlockNumber()` the chain's own; `skip-interpolation` `eth_call(latest)` | the first probe finds Nitro; every tag-state head is the chain's own height; every call served at `Latest`; no upstream counted stale |
 | P12 | 0.3s blocks; clients ask `eth_getLogs` and `eth_getBlockByNumber` 1–5 blocks above every vendor's head, through consensus slots and hedges, with fresh reports and with one vendor's reports older than 1 bt; one slot's upstream misses a block at or below `Latest` | each answered once the chain reaches its block, within W, with no block-unavailable error; the missing slot retries in head-first order and its siblings are not stopped; a block more than W of chain ahead gets an error: refused, counted `future`, or after the band's retry when a report stays older than 1 bt |
 | P13 | 4 https vendors, 0.25s blocks, full poll every 10s, no subscription; a reader sends `eth_getBlockByNumber(latest)` and `eth_blockNumber`, alternating, each after 7.5s idle; then the same reads at 1/s | each idle read answers a block the chain had not passed more than W before the request; at 1/s, lag p99 at most 5 blocks and at most q refresh Asks per read |
+| P15 | 5 https upstreams, 0.1s blocks, polled every 1s; policy order: one 3 blocks behind the chain, a node 170 ms away, 3 near upstreams; 1 old-image and 1 new-image instance, own state each; per image 30 `eth_call(latest)` and 2 `eth_getBlockByNumber(latest)` per second for 90s | the new image's share of first `eth_call` attempts on the far node is at most the old image's + 5 points, and its client p50 at most the old's + 20 ms |
 | Z1 | 1 instance; 4 https vendors of 4 vendors, none a source; 0.25s blocks; full poll every 10s; integrity off; no client | no settle, fork poll or demotion; vendor calls per block at most main's (0.200) + 10% |
 | Z2 | Z1 with one client `eth_getBlockByNumber(latest)` per second | no tie settle, fork refresh or demotion |
 | Z3 | Z1 with integrity on and no client request, boot included; then one `latest` request | no walk fetch (`erpc_chain_tracker_fetch_total{class="head"}`) before the request; walks after it |

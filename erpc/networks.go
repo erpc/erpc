@@ -1971,17 +1971,15 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 }
 
 // preferUpstreams reorders ups by hints only, every upstream staying
-// eligible: upstreams whose poller has the block first, then failover tiers,
-// then voters with a stale hash vote, and voters on a minority fork last.
-func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedRequest, method string, upsList []common.Upstream) []common.Upstream {
-	// For a specific block, try upstreams whose poller already has it first.
-	// Ordering hints only: every upstream stays eligible.
-	if n.Architecture() == common.ArchitectureEvm {
-		if bn := n.routingBlockNumber(ctx, req); bn > 0 {
-			head := n.requestHead(ctx, req)
-			upsList = n.partitionUpstreamsByLatestBlock(upsList, bn, head.Latest)
-			upsList = n.preferTipLeaderForNearTipGetBlock(upsList, method, bn, head.Leader, head.Latest)
-		}
+// eligible: for bn, the block the client named (routingBlockNumber, read
+// before a tag is pinned to the Head), upstreams whose poller has it first;
+// then failover tiers, then voters with a stale hash vote, and voters on a
+// minority fork last.
+func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedRequest, method string, upsList []common.Upstream, bn int64) []common.Upstream {
+	if n.Architecture() == common.ArchitectureEvm && bn > 0 {
+		head := n.requestHead(ctx, req)
+		upsList = n.partitionUpstreamsByLatestBlock(upsList, bn, head.Latest)
+		upsList = n.preferTipLeaderForNearTipGetBlock(upsList, method, bn, head.Leader, head.Latest)
 	}
 
 	// Failover tiering: try default-tier upstreams before fallback-tier ones,
@@ -2096,9 +2094,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 	// One Head per request (spec §7), taken before the multiplexer and the
 	// cache, and its tags interpolated to it: the cache key, every attempt
-	// and hedge, and the response all see the same latest.
+	// and hedge, and the response all see the same latest. The block the
+	// client named is read before that: a tag pinned to the Head names no
+	// block, so it orders no upstream by head (§6.1).
+	var namedBlock int64
 	if n.cfg.Architecture == common.ArchitectureEvm {
 		n.requestHead(ctx, req)
+		namedBlock = n.routingBlockNumber(ctx, req)
 	}
 	if err := n.prepareRequest(ctx, req); err != nil {
 		common.SetTraceSpanError(forwardSpan, err)
@@ -2173,7 +2175,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		return nil, err
 	}
 
-	upsList = n.preferUpstreams(ctx, req, method, upsList)
+	upsList = n.preferUpstreams(ctx, req, method, upsList, namedBlock)
 
 	// SVM history reads go deepest known floor first within each tier, so the
 	// first answer is the most complete one the pool holds.
@@ -4149,9 +4151,10 @@ func requestBlockNumber(ctx context.Context, req *common.NormalizedRequest) int6
 	return 0
 }
 
-// routingBlockNumber is the block req reads, for routing: requestBlockNumber,
+// routingBlockNumber is the block req names, for routing: requestBlockNumber,
 // or for a read by block hash the number of the header the network-wide
-// tracker holds; 0 otherwise.
+// tracker holds; 0 otherwise. Read it before prepareRequest pins a tag to
+// the Head: a pinned tag is no block the client named (spec §6.1).
 func (n *Network) routingBlockNumber(ctx context.Context, req *common.NormalizedRequest) int64 {
 	if req == nil {
 		return 0
