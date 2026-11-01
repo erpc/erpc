@@ -181,9 +181,14 @@ func (a *Adapter) SetHeadsWanted(ctx context.Context, want bool) {
 		return
 	}
 	a.headsWanted = want
+	// Mark it removed under the same lock, so a SetHeadsWanted(true) right
+	// after can't be undone by this one.
+	var id string
+	var epoch uint64
 	if want {
-		// drop() marked it removed; allow subscribing again.
 		a.heads.removed = false
+	} else {
+		id, epoch = a.dropLocked(&a.heads, indexer.SubTypeNewHeads)
 	}
 	a.subsMu.Unlock()
 
@@ -193,7 +198,9 @@ func (a *Adapter) SetHeadsWanted(ctx context.Context, want bool) {
 		return
 	}
 	a.logger.Info().Msg("unsubscribing on-demand newHeads")
-	a.drop(ctx, &a.heads, indexer.SubTypeNewHeads)
+	if id != "" {
+		a.release(ctx, id, epoch)
+	}
 }
 
 // wantHeads reports whether newHeads should be subscribed.
@@ -491,15 +498,22 @@ func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params 
 // instead of committing it, and releases its live subscription if any.
 func (a *Adapter) drop(ctx context.Context, sub *upstreamSub, kind string) {
 	a.subsMu.Lock()
+	id, epoch := a.dropLocked(sub, kind)
+	a.subsMu.Unlock()
+	if id != "" {
+		a.release(ctx, id, epoch)
+	}
+}
+
+// dropLocked marks sub removed and returns its live subscription, if any,
+// for the caller to release. The caller holds subsMu.
+func (a *Adapter) dropLocked(sub *upstreamSub, kind string) (string, uint64) {
 	id, epoch := sub.id, sub.epoch
 	sub.id, sub.removed = "", true
 	if id != "" {
 		a.liveGauge(kind).Dec()
 	}
-	a.subsMu.Unlock()
-	if id != "" {
-		a.release(ctx, id, epoch)
-	}
+	return id, epoch
 }
 
 // release drops a subscription's handler and cancels it upstream. Both are

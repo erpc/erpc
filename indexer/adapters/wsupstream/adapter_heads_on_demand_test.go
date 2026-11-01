@@ -2,10 +2,12 @@ package wsupstream
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/erpc/erpc/indexer"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -99,4 +101,49 @@ func TestAdapterHeadsWantedIgnoredWhenNotOnDemand(t *testing.T) {
 	a.SetHeadsWanted(context.Background(), false)
 	time.Sleep(100 * time.Millisecond)
 	require.True(t, a.HeadsLive())
+}
+
+// TestAdapterHeadsWantedOnOffRace: "off" and "on" at the same time must not
+// leave newHeads wanted but blocked from subscribing.
+func TestAdapterHeadsWantedOnOffRace(t *testing.T) {
+	compressResubRetry(t)
+	server := newNotifyServer(t)
+	a, sink := newTestAdapter(t, server.wsURL(t))
+	a.headsOnDemand = true
+	// Subscribes canceled by the next toggle log a warning; keep those quiet.
+	nop := zerolog.Nop()
+	a.logger = &nop
+	conn := <-server.newConn
+	// The test server queues every request it gets; keep the queue empty.
+	go func() {
+		for range conn.requests {
+		}
+	}()
+	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
+	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
+
+	for i := 0; i < 20000; i++ {
+		a.SetHeadsWanted(context.Background(), true)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		wg.Add(2)
+		go func() { defer wg.Done(); <-start; a.SetHeadsWanted(context.Background(), false) }()
+		go func() { defer wg.Done(); <-start; a.SetHeadsWanted(context.Background(), true) }()
+		close(start)
+		wg.Wait()
+
+		a.subsMu.Lock()
+		stuck := a.headsWanted && a.heads.removed
+		a.subsMu.Unlock()
+		require.False(t, stuck, "round %d: newHeads wanted but marked removed", i)
+	}
+
+	// Wanted at the end, so it gets subscribed.
+	a.SetHeadsWanted(context.Background(), false)
+	a.SetHeadsWanted(context.Background(), true)
+	require.Eventually(t, func() bool {
+		a.subsMu.Lock()
+		defer a.subsMu.Unlock()
+		return a.heads.id != "" && a.resubDone
+	}, 5*time.Second, 10*time.Millisecond)
 }
