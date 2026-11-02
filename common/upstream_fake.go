@@ -391,6 +391,7 @@ func (p *FakeEvmStatePoller) AskReaching(context.Context, int64, time.Duration, 
 
 func (p *FakeEvmStatePoller) RefreshFinalized(context.Context, time.Duration) bool { return true }
 func (p *FakeEvmStatePoller) FinalizedReportAt() time.Time                         { return time.Time{} }
+func (p *FakeEvmStatePoller) LatestDue() time.Time                                 { return time.Time{} }
 
 func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown

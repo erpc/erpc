@@ -856,16 +856,17 @@ func isSimpleGroupSelector(selector string) bool {
 }
 
 // refreshLatest refreshes the pollers that can move selector sel's Latest
-// for a request that answers it (spec §6.8), each at its own cadence, as
-// main refreshed each poller at its own debounce: the voter whose evidence
-// is oldest, so successive requests walk the voters; and while a voter
-// reports a block Latest lacks (Ceiling above it), the voters Latest
-// lacks to reach it (catch-up). The Asks run in the background and the
-// request reads Head at once, one refresh behind. Once Latest rests on
-// reports older than W, after an idle period, the request waits for the
-// first q voters' Asks, at most W, then reads the Head they moved: else
-// it would answer the last full poll's Latest. A timeout or a failed Ask
-// leaves Head as it is.
+// for a request that answers it (spec §6.8), each limited by its own
+// cadence, as main refreshed each poller at its own debounce: the voter
+// due first (LatestDue), when it is due, so successive requests walk the
+// voters and a voter with a short debounce gets the requests the others
+// leave; and while a voter reports a block Latest lacks (Ceiling above
+// it), the voters Latest lacks to reach it (catch-up). The Asks run in
+// the background and the request reads Head at once, one refresh behind.
+// Once Latest rests on reports older than W, after an idle period, the
+// request waits for the first q voters' Asks, at most W, then reads the
+// Head they moved: else it would answer the last full poll's Latest. A
+// timeout or a failed Ask leaves Head as it is.
 func (n *Network) refreshLatest(ctx context.Context, sel string) {
 	var ec *common.EvmNetworkConfig
 	if n.cfg != nil {
@@ -877,24 +878,25 @@ func (n *Network) refreshLatest(ctx context.Context, sel string) {
 	}
 	need := ec.ServedTipQuorum().Of(s.count())
 	w := health.FreshnessWindow(n.EvmBlockTime())
-	if time.Since(latestRestsOn(s, need)) >= w {
+	now := time.Now()
+	if now.Sub(latestRestsOn(s, need)) >= w {
 		n.awaitLatestRefresh(ctx, n.laneFor(sel), s, need, w)
 		return
 	}
 	if h := n.headFor(sel); h.Ceiling > h.Latest {
 		n.EvmRefreshHeadsBelow(sel, h.Ceiling, 0)
 	}
-	var oldest common.EvmStatePoller
-	var at time.Time
+	var first common.EvmStatePoller
+	var due time.Time
 	s.each(func(u common.Upstream, _ int64) bool {
 		sp := u.(common.EvmUpstream).EvmStatePoller()
-		if e := common.EvidenceAt(sp.LatestReportAt(), sp.LatestAskAt()); oldest == nil || e.Before(at) {
-			oldest, at = sp, e
+		if d := sp.LatestDue(); first == nil || d.Before(due) {
+			first, due = sp, d
 		}
 		return true
 	})
-	if oldest != nil {
-		oldest.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
+	if first != nil && !due.After(now) {
+		first.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
 	}
 }
 

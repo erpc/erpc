@@ -1775,6 +1775,7 @@ func (p *fixedPoller) AskBackground(common.HeadNeed, time.Duration, time.Time, c
 }
 func (p *fixedPoller) RefreshFinalized(context.Context, time.Duration) bool { return true }
 func (p *fixedPoller) FinalizedReportAt() time.Time                         { return time.Time{} }
+func (p *fixedPoller) LatestDue() time.Time                                 { return time.Time{} }
 func (p *fixedPoller) LatestReportAt() time.Time                            { return time.Time{} }
 func (p *fixedPoller) LatestAskAt() time.Time                               { return time.Time{} }
 
