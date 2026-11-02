@@ -749,3 +749,73 @@ func TestExtractJsonRpcError_InvalidChainID(t *testing.T) {
 		}
 	}
 }
+
+// TestExtractJsonRpcError_ExceedsBlockGasLimit verifies that "exceeds block
+// gas limit" (geth txpool ErrGasLimit: the transaction's gas limit is above
+// the block gas limit) normalizes to a non-retryable ExecutionException. The
+// block gas limit is consensus state, so every upstream refuses the same
+// transaction; left as the server-side default, eth_sendRawTransaction was
+// retried and hedged across every upstream for 12-14 s before failing.
+func TestExtractJsonRpcError_ExceedsBlockGasLimit(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{"eth_sendRawTransaction", "eth_estimateGas"} {
+		method := method
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+
+			req := common.NewNormalizedRequest([]byte(
+				`{"jsonrpc":"2.0","method":"` + method + `","params":[],"id":1}`))
+			nr := common.NewNormalizedResponse().WithRequest(req)
+
+			r := &http.Response{StatusCode: 200, Header: http.Header{}}
+			jr := common.MustNewJsonRpcResponse(1, nil,
+				common.NewErrJsonRpcExceptionExternal(-32000, "exceeds block gas limit", ""))
+
+			err := ExtractJsonRpcError(r, nr, jr, nil)
+			if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+				t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+			}
+			if common.IsRetryableTowardNetwork(err) {
+				t.Fatalf("exceeds block gas limit must be non-retryable toward network (method=%s)", method)
+			}
+		})
+	}
+}
+
+// TestExtractJsonRpcError_Underpriced verifies that "underpriced" refusals
+// ("transaction underpriced", "replacement transaction underpriced") normalize
+// to an ExecutionException that stays retryable toward the network for
+// eth_sendRawTransaction: minimum gas price and mempool contents are
+// node-local, so another upstream may accept, but the refusing upstream is not
+// asked again. Left as the server-side default, the same upstreams were asked
+// over and over until the retry budget ran out.
+func TestExtractJsonRpcError_Underpriced(t *testing.T) {
+	t.Parallel()
+
+	for _, msg := range []string{"transaction underpriced", "replacement transaction underpriced", "tx underpriced"} {
+		msg := msg
+		t.Run(msg, func(t *testing.T) {
+			t.Parallel()
+
+			req := common.NewNormalizedRequest([]byte(
+				`{"jsonrpc":"2.0","method":"eth_sendRawTransaction","params":[],"id":1}`))
+			nr := common.NewNormalizedResponse().WithRequest(req)
+
+			r := &http.Response{StatusCode: 200, Header: http.Header{}}
+			jr := common.MustNewJsonRpcResponse(1, nil,
+				common.NewErrJsonRpcExceptionExternal(-32000, msg, ""))
+
+			err := ExtractJsonRpcError(r, nr, jr, nil)
+			if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+				t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+			}
+			if common.IsRetryableTowardsUpstream(err) {
+				t.Fatalf("%q must not be retried on the upstream that refused it", msg)
+			}
+			if !common.IsRetryableTowardNetwork(err) {
+				t.Fatalf("%q must stay retryable toward other upstreams", msg)
+			}
+		})
+	}
+}
