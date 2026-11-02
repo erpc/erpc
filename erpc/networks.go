@@ -179,6 +179,24 @@ type servedTipLane struct {
 	// evaluation last found no voter backing it (holdFinalized). Guarded
 	// by mu.
 	finalizedFloor int64
+	// ceiling is the Ceiling a latest request last saw above Latest
+	// (ceilingRose).
+	ceiling atomic.Int64
+}
+
+// ceilingRose records c as the Ceiling a latest request saw above
+// Latest; true for the one call that saw it rise. A fall is recorded
+// too, so a chain that restarted lower rises again.
+func (l *servedTipLane) ceilingRose(c int64) bool {
+	for {
+		cur := l.ceiling.Load()
+		if c == cur {
+			return false
+		}
+		if l.ceiling.CompareAndSwap(cur, c) {
+			return c > cur
+		}
+	}
 }
 
 func (l *servedTipLane) noteSent(n uint64) {
@@ -861,12 +879,12 @@ func isSimpleGroupSelector(selector string) bool {
 // due first (LatestDue), when it is due, so successive requests walk the
 // voters and a voter with a short debounce gets the requests the others
 // leave; and while a voter reports a block Latest lacks (Ceiling above
-// it), the voters Latest lacks to reach it (catch-up). The Asks run in
-// the background and the request reads Head at once, one refresh behind.
-// Once Latest rests on reports older than W, after an idle period, the
-// request waits for the first q voters' Asks, at most W, then reads the
-// Head they moved: else it would answer the last full poll's Latest. A
-// timeout or a failed Ask leaves Head as it is.
+// it), the voters Latest lacks to reach it (catch-up, catchUpLatest). The
+// Asks run in the background and the request reads Head at once, one
+// refresh behind. Once Latest rests on reports older than W, after an
+// idle period, the request waits for the first q voters' Asks, at most W,
+// then reads the Head they moved: else it would answer the last full
+// poll's Latest. A timeout or a failed Ask leaves Head as it is.
 func (n *Network) refreshLatest(ctx context.Context, sel string) {
 	var ec *common.EvmNetworkConfig
 	if n.cfg != nil {
@@ -884,7 +902,7 @@ func (n *Network) refreshLatest(ctx context.Context, sel string) {
 		return
 	}
 	if h := n.headFor(sel); h.Ceiling > h.Latest {
-		n.EvmRefreshHeadsBelow(sel, h.Ceiling, 0)
+		n.catchUpLatest(sel, h.Ceiling, now)
 	}
 	var first common.EvmStatePoller
 	var due time.Time
@@ -897,6 +915,25 @@ func (n *Network) refreshLatest(ctx context.Context, sel string) {
 	})
 	if first != nil && !due.After(now) {
 		first.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
+	}
+}
+
+// catchUpLatest Asks, in the background, the voters Latest lacks to reach
+// ceiling (lackingVoters; spec §6.8 catch-up), at their cadence. The one
+// request that sees sel's lane Ceiling rise Asks them for evidence taken
+// after now, below their cadence: the voter that saw the block first gave
+// it one vote, and a voter that has it too would else answer only at its
+// own cadence, so Latest would trail the first sighting by up to a
+// cadence, not a round trip (§19 P18). So each rise costs at most q-1
+// fetches more, and a voter that stays ahead of the rest, stuck or a lone
+// fast source, costs at most that per block it rises.
+func (n *Network) catchUpLatest(sel string, ceiling int64, now time.Time) {
+	var after time.Time
+	if l := n.laneFor(sel); l != nil && l.ceilingRose(ceiling) {
+		after = now
+	}
+	for _, sp := range n.lackingVoters(sel, ceiling) {
+		sp.AskBackground(common.HeadNeedNumber, 0, after, common.AskCatchUp)
 	}
 }
 

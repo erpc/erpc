@@ -1031,3 +1031,68 @@ func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) 
 	require.Greater(t, vendor.latestPolls.Load(), polled, "client traffic uses up the budget: the Asks still reach the node")
 	require.True(t, keptVote, "the vote holds while clients use up the budget")
 }
+
+// One voter stays ahead of the rest, quorum 2: http-a serves the chain's
+// head, http-b, http-c and http-d 2 blocks below it, so the Ceiling rises
+// each block and Latest never reaches it. eth_blockNumber requests far
+// faster than the blocks: the request that sees each rise Asks the voter
+// Latest lacks below its cadence, the rest Ask at the cadence (1 s), so
+// catch-up fetches at most q-1 per rise plus one per lagging voter per
+// cadence, never one per request (spec §6.8 catch-up).
+func TestNetworkHead_LoneVoterAheadBoundsCatchUp(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
+
+	chain := newMockChain(1000, false)
+	ids := []string{"http-a", "http-b", "http-c", "http-d"}
+	var ups []*common.UpstreamConfig
+	for i, id := range ids {
+		v, srv := newMockHttpVendor(t, chain)
+		up := pollerUpstream(id, srv.URL)
+		if i > 0 {
+			v.lag.Store(2)
+			up.Evm.StatePollerDebounce = common.Duration(time.Second)
+		}
+		ups = append(ups, up)
+	}
+	network, _, addr := sourcesNetwork(t, sourcesConfig(func(nw *common.NetworkConfig) {
+		nw.Evm.ServedTip = &common.EvmServedTipConfig{Quorum: 2}
+	}, ups...))
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go chain.run(ctx, 100*time.Millisecond)
+	blockNumber := func() {
+		resp, err := http.Post(fmt.Sprintf("http://%s/test_ws/evm/123", addr), "application/json",
+			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+		require.NoError(t, err)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+	require.Eventually(t, func() bool {
+		blockNumber()
+		h := servedHead(network, ctx)
+		return h.Ceiling > 0 && h.Ceiling == h.Latest+2
+	}, 10*time.Second, 20*time.Millisecond, "http-a holds the Ceiling 2 above Latest")
+
+	var fetched atomic.Int64
+	hook := func(_ *evm.EvmStatePoller, m evm.AskMet) {
+		if m.Reason == common.AskCatchUp && m.Outcome == common.AskFetched {
+			fetched.Add(1)
+		}
+	}
+	evm.AskHook.Store(&hook)
+	t.Cleanup(func() { evm.AskHook.Store(nil) })
+	from, at := chain.Head(), time.Now()
+	var requests int
+	for time.Since(at) < 3*time.Second {
+		blockNumber()
+		requests++
+		time.Sleep(2 * time.Millisecond)
+	}
+	rises, secs := chain.Head()-from, time.Since(at).Seconds()
+	bound := rises + 1 + int64(len(ids)-1)*(int64(secs)+1)
+	t.Logf("%d requests over %.1fs, %d Ceiling rises, %d catch-up fetches (bound %d)", requests, secs, rises, fetched.Load(), bound)
+	assert.Greater(t, int64(requests), 10*bound, "the requests outnumber the bound")
+	assert.LessOrEqual(t, fetched.Load(), bound, "catch-up fetches at most q-1 per Ceiling rise and one per lagging voter per cadence")
+	assert.GreaterOrEqual(t, fetched.Load(), rises/2, "each Ceiling rise fetches a voter Latest lacks at once")
+}
