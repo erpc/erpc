@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,8 +24,8 @@ const evalForWiring = `(ctx) => {
 }`
 
 func TestCloseAll_StopsWhenDeadlineExpires(t *testing.T) {
-	inflightAnalyzers.Add(1)
-	t.Cleanup(func() { inflightAnalyzers.Done() })
+	inflightAnalyzers.add()
+	t.Cleanup(inflightAnalyzers.done)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
@@ -33,6 +34,59 @@ func TestCloseAll_StopsWhenDeadlineExpires(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("CloseAll blocked for %s after the deadline", elapsed)
 	}
+}
+
+// Shutdown runs CloseAll while requests still start consensus rounds. Every
+// round must still return its own result, and CloseAll must not race the
+// analyzers it waits for.
+func TestCloseAll_WhileRoundsInFlight(t *testing.T) {
+	lg := zerolog.Nop()
+	c, err := NewConsensus(&common.ConsensusPolicyConfig{MaxParticipants: 2, AgreementThreshold: 2}, &lg, "")
+	if err != nil {
+		t.Fatalf("NewConsensus: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	inner := func(context.Context, *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+		return validResponseWithValue("0x1"), nil
+	}
+	stop := make(chan struct{})
+	var rounds sync.WaitGroup
+	for range 8 {
+		rounds.Add(1)
+		go func() {
+			defer rounds.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				resp, err := c.Run(context.Background(), newTestRequest(), inner)
+				if err != nil {
+					t.Errorf("round failed during shutdown: %v", err)
+					return
+				}
+				jrr, err := resp.JsonRpcResponse()
+				if err != nil {
+					t.Errorf("round response: %v", err)
+					return
+				}
+				if got := string(jrr.GetResultBytes()); got != `["0x1"]` {
+					t.Errorf("round result = %s, want [\"0x1\"]", got)
+					return
+				}
+			}
+		}()
+	}
+
+	for end := time.Now().Add(300 * time.Millisecond); time.Now().Before(end); {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		CloseAll(ctx)
+		cancel()
+	}
+	close(stop)
+	rounds.Wait()
 }
 
 func newWiringConsensus(t *testing.T) *Consensus {

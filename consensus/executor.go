@@ -299,10 +299,10 @@ func (e *executor) executeConsensus(
 	// abandon-path drain goroutine waits on this before releasing the winner
 	// to avoid racing trackAndPunishMisbehavingUpstreams on winner.Result.
 	analyzerDone := make(chan struct{})
-	// Add before the goroutine starts. Add inside runAnalyzer races CloseAll's
-	// Wait: shutdown can observe zero, close exporters, then the analyzer
-	// exports into a closed file.
-	inflightAnalyzers.Add(1)
+	// Count before the goroutine starts. Counting inside runAnalyzer lets
+	// CloseAll observe zero, close exporters, then the analyzer exports into
+	// a closed file.
+	inflightAnalyzers.add()
 	go e.runAnalyzer(
 		ctx, lg, originalReq, labels,
 		responseChan, attemptCancels, maxToSpawn, cancelRemaining,
@@ -411,7 +411,7 @@ func (e *executor) runAnalyzer(
 	analyzerDone chan<- struct{},
 	collectionSpan trace.Span,
 ) {
-	defer inflightAnalyzers.Done()
+	defer inflightAnalyzers.done()
 
 	outcomeSent := false
 	sendOutcomeOnce := func(o consensusOutcome) {
