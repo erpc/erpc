@@ -51,6 +51,21 @@ type link struct {
 	conns   map[*pconn]bool
 	accepts int64
 	resets  int64 // connections RSTMid reset
+	// reads count the pod's JSON-RPC requests (anyRead) and its
+	// eth_getBlockByNumber requests by tag ("latest", "finalized").
+	reads map[string]int64
+}
+
+// anyRead keys a link's count of every request.
+const anyRead = "*"
+
+func (l *link) count(kind string, n int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.reads == nil {
+		l.reads = map[string]int64{}
+	}
+	l.reads[kind] += int64(n)
 }
 
 type pconn struct {
@@ -77,6 +92,7 @@ type pconn struct {
 type headerScan struct {
 	h    *harness
 	pod  int
+	l    *link
 	tail []byte
 	cur  string
 
@@ -98,13 +114,12 @@ var (
 	pushKey     = []byte(`{"jsonrpc"`)
 )
 
+var tagKeys = map[string][]byte{"latest": latestKey, "finalized": []byte(`"finalized"`)}
+
 // request notes the ids of the latest block requests in a pod→vendor
-// chunk; each message is the part of the chunk from one "jsonrpc" key to
-// the next.
+// chunk, and counts the link's requests; each message is the part of the
+// chunk from one "jsonrpc" key to the next.
 func (sc *headerScan) request(b []byte) {
-	if !bytes.Contains(b, byNumberKey) || !bytes.Contains(b, latestKey) {
-		return
-	}
 	starts := []int{}
 	for i := 0; ; {
 		j := bytes.Index(b[i:], jsonrpcKey)
@@ -117,6 +132,10 @@ func (sc *headerScan) request(b []byte) {
 	if len(starts) == 0 {
 		return
 	}
+	sc.l.count(anyRead, len(starts))
+	if !bytes.Contains(b, byNumberKey) {
+		return
+	}
 	starts[0] = 0
 	for k, from := range starts {
 		to := len(b)
@@ -124,7 +143,15 @@ func (sc *headerScan) request(b []byte) {
 			to = starts[k+1]
 		}
 		msg := b[from:to]
-		if !bytes.Contains(msg, byNumberKey) || !bytes.Contains(msg, latestKey) {
+		if !bytes.Contains(msg, byNumberKey) {
+			continue
+		}
+		for tag, key := range tagKeys {
+			if bytes.Contains(msg, key) {
+				sc.l.count(tag, 1)
+			}
+		}
+		if !bytes.Contains(msg, latestKey) {
 			continue
 		}
 		if id, ok := jsonID(msg, bytes.Index(msg, idKey)); ok {
@@ -310,6 +337,15 @@ func (px *proxy) accepts(p *pod) int64 {
 	return l.accepts
 }
 
+// reads counts p's requests of kind (anyRead, or a block tag) through
+// this proxy.
+func (px *proxy) reads(p *pod, kind string) int64 {
+	l := px.link(p)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.reads[kind]
+}
+
 // resets counts p's connections that RSTMid reset.
 func (px *proxy) resets(p *pod) int64 {
 	l := px.link(p)
@@ -407,7 +443,7 @@ func (px *proxy) handle(c net.Conn) {
 	l.mu.Lock()
 	l.conns[pc] = true
 	l.mu.Unlock()
-	sc := &headerScan{h: px.h, pod: p.idx}
+	sc := &headerScan{h: px.h, pod: p.idx, l: l}
 	go l.pipe(pc, s, c, sc, nil)
 	l.pipe(pc, c, s, nil, sc)
 	<-pc.done

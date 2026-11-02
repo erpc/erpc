@@ -28,6 +28,9 @@ type Config struct {
 	// HeaderPad pads every header's extraData by this many bytes, so few
 	// headers fill a client's socket and flow-control windows.
 	HeaderPad int
+	// FinalityStep: a vendor's finalized block moves in steps of this many
+	// blocks, as Ethereum's moves an epoch at a time; 0 moves it every block.
+	FinalityStep uint64
 	// History is how many blocks are minted at start; 0 is HistoryBlocks.
 	History int
 	// First is the number of the first history block; 0 is firstNumber.
@@ -300,6 +303,26 @@ func (c *Chain) CanonAt(n uint64) *Block {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.canonAtLocked(n)
+}
+
+// Finalized is the finalized block number a vendor at head tip with
+// finality depth serves.
+func (c *Chain) Finalized(tip, depth uint64) uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.finalizedLocked(tip, depth)
+}
+
+func (c *Chain) finalizedLocked(tip, depth uint64) uint64 {
+	first := c.canon[0].Number
+	if tip < first+depth {
+		return first
+	}
+	n := tip - depth
+	if s := c.cfg.FinalityStep; s > 0 {
+		n -= n % s
+	}
+	return max(n, first)
 }
 
 // MintedBetween are the canonical blocks minted in [from, to], oldest

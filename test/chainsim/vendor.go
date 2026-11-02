@@ -828,11 +828,7 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 			if f.FinalityDepth > 0 {
 				depth = f.FinalityDepth
 			}
-			n := c.canon[0].Number
-			if v.tip.Number > depth && v.tip.Number-depth > n {
-				n = v.tip.Number - depth
-			}
-			b = v.byNumberLocked(n)
+			b = v.byNumberLocked(c.finalizedLocked(v.tip.Number, depth))
 		case "earliest":
 			b = c.canon[0]
 		default:
