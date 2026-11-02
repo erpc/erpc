@@ -413,6 +413,9 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 	if !skipSlots {
 		// skipProcessedSlotProbe:true (Alpenglow mode): the finalized
 		// probe feeds the latest view too, saving one call per poll.
+		// A skipped probe is probeNoSignal — never dispatched — so its
+		// zero-value probeDead cannot invent a dead streak when the
+		// remaining probes are themselves no-signal.
 		skipProcessed := e.skipProcessed.Load()
 		if !skipProcessed {
 			wg.Add(2)
@@ -426,6 +429,7 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 				}
 			}()
 		} else {
+			outLatest = probeNoSignal
 			wg.Add(1)
 		}
 
@@ -558,7 +562,12 @@ func (e *SvmStatePoller) fetchSlot(ctx context.Context, payload []byte) (slot in
 			common.ErrCodeEndpointTransportFailure,
 			common.ErrCodeEndpointRequestTimeout,
 			common.ErrCodeEndpointRequestCanceled,
-		):
+			common.ErrCodeFailsafeTimeoutExceeded,
+		) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
+			// Bare deadline/cancel surfaces when retry backoff sleeps past the
+			// poll's 15s context (runRetry returns SleepCtx's serr unwrapped).
+			// Treating that as probeAnswered would reset the dead streak every
+			// tick and never cordon an unreachable upstream.
 			return 0, probeDead
 		case common.HasErrorCode(err, preDispatchErrorCodes...):
 			return 0, probeNoSignal

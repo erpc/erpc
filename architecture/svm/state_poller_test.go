@@ -791,6 +791,45 @@ func TestSvmStatePoller_SkipProcessedSlotProbe_LivenessFromRemainingProbes(t *te
 	require.Len(t, up.cordons(), 1)
 }
 
+// A skipped processed probe must not invent a dead signal: when the remaining
+// probes are local rejections (no-signal), the counter and verdict hold —
+// the zero-value probeDead must not poison anyDead.
+func TestSvmStatePoller_SkipProcessedSlotProbe_NoSignalDoesNotCordon(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	cbErr := common.NewErrFailsafeCircuitBreakerOpen(common.ScopeUpstream, nil, nil)
+	up.scriptClassifiedError("getSlot:finalized", cbErr)
+	up.scriptClassifiedError("getMaxShredInsertSlot", cbErr)
+	p := newPollerWithUpstream(t, up)
+	p.SetSkipProcessedSlotProbe(true)
+
+	for range deadPollsBeforeUnhealthy + 2 {
+		require.NoError(t, p.Poll(context.Background()))
+	}
+	require.True(t, p.IsHealthy(), "skipped probe + no-signal remaining must not cordon")
+	require.Zero(t, p.consecutiveDeadPolls)
+	require.Empty(t, up.cordons())
+	require.Zero(t, up.callCount("getSlot:processed"))
+}
+
+// Bare context.DeadlineExceeded (retry backoff slept past the poll ctx) is
+// transport silence, not an answer — otherwise a dead upstream with retries
+// never cordons.
+func TestSvmStatePoller_Liveness_BareDeadlineIsDead(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	up.scriptClassifiedError("getSlot:processed", context.DeadlineExceeded)
+	up.scriptClassifiedError("getSlot:finalized", context.DeadlineExceeded)
+	up.scriptClassifiedError("getMaxShredInsertSlot", context.DeadlineExceeded)
+	p := newPollerWithUpstream(t, up)
+
+	require.NoError(t, p.Poll(context.Background()))
+	require.True(t, p.IsHealthy(), "one all-deadline poll is not a verdict")
+	require.NoError(t, p.Poll(context.Background()))
+	require.False(t, p.IsHealthy(), "two consecutive bare-deadline polls must cordon")
+	require.Len(t, up.cordons(), 1)
+}
+
 func TestSvmStatePoller_Poll_ExcessiveShredLagFlipsHealthy(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
