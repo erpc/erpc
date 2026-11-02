@@ -2479,6 +2479,12 @@ const DefaultToleratedBlockHeadRollback = 1024
 // serves that voter's head.
 const DefaultServedTipQuorum = 2
 
+// DefaultServedTipPreferredMaxLagBlocks bounds how far a
+// servedTip.preferredRefresh upstream may trail the highest head and still be
+// refreshed first. Prism's 24h p99 lag on mercury-prod stays within 10 blocks
+// on every top chain but robinhood (969).
+const DefaultServedTipPreferredMaxLagBlocks = 10
+
 // DefaultEmptyResultMaxAttempts bounds retries when the requested data isn't on the
 // upstream yet (empty/missing-data point-lookups, pending tx-lookups, and
 // ErrUpstreamBlockUnavailable): one original attempt + one retry after ~one block.

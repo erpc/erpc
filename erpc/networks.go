@@ -85,6 +85,11 @@ type Network struct {
 	// shim on this network (queryTraceSource* values), so a network whose
 	// upstreams lack trace_block asks debug_traceBlockByNumber directly.
 	queryTraceSource atomic.Int32
+
+	// preferredRefresh is servedTip.preferredRefresh.upstreams compiled once
+	// (nil when unset); see EvmRefreshLatestBlock.
+	preferredRefresh       func(id string, tags []string) bool
+	preferredRefreshMaxLag int64
 }
 
 // NoteObservedLatestBlock records a head about to be delivered on a WebSocket
@@ -774,18 +779,23 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 // EvmRefreshLatestBlock asks the pollers that decide the request's latest head
 // for a background refresh: in routing order, only as many of the ballot's
 // voters (its best tipVoterRank) as the quorum needs, since a fresher head
-// anywhere else cannot move the served value. Two passes over the candidates,
-// counting then refreshing, keep a hot path such as eth_blockNumber free of
-// allocation.
+// anywhere else cannot move the served value. With
+// servedTip.preferredRefresh, the matching voters within its lag bound of the
+// highest head fill the quorum first, and a matching voter past that bound is
+// skipped; the other voters' tickers keep their heads on the ballot. Passes
+// over the candidates, counting then refreshing, keep a hot path such as
+// eth_blockNumber free of allocation.
 func (n *Network) EvmRefreshLatestBlock(ctx context.Context) {
 	best, voters := -1, 0
+	var highest int64
 	for u := range n.EvmRoutableUpstreams(ctx) {
-		if _, rank, ok := tipVoterRank(u, false, n.metricsTracker); ok {
+		if head, rank, ok := tipVoterRank(u, false, n.metricsTracker); ok {
 			switch {
 			case best < 0 || rank < best:
-				best, voters = rank, 1
+				best, voters, highest = rank, 1, head
 			case rank == best:
 				voters++
+				highest = max(highest, head)
 			}
 		}
 	}
@@ -797,12 +807,46 @@ func (n *Network) EvmRefreshLatestBlock(ctx context.Context) {
 		q = n.cfg.Evm.ServedTipQuorum()
 	}
 	need := q.Of(voters)
-	for u := range n.EvmRoutableUpstreams(ctx) {
-		if _, rank, ok := tipVoterRank(u, false, n.metricsTracker); ok && rank == best {
-			u.(common.EvmUpstream).EvmStatePoller().RefreshLatestBlock()
-			if need--; need == 0 {
-				return
+	// preferred reports whether u matches the selector; fresh, whether it is
+	// also within the lag bound.
+	preferred := func(u common.Upstream, head int64) (match, fresh bool) {
+		if n.preferredRefresh == nil {
+			return false, false
+		}
+		var tags []string
+		if cfg := u.Config(); cfg != nil {
+			tags = cfg.Tags
+		}
+		if !n.preferredRefresh(u.Id(), tags) {
+			return false, false
+		}
+		return true, highest-head <= n.preferredRefreshMaxLag
+	}
+	if n.preferredRefresh != nil {
+		for u := range n.EvmRoutableUpstreams(ctx) {
+			head, rank, ok := tipVoterRank(u, false, n.metricsTracker)
+			if !ok || rank != best {
+				continue
 			}
+			if _, fresh := preferred(u, head); fresh {
+				u.(common.EvmUpstream).EvmStatePoller().RefreshLatestBlock()
+				if need--; need == 0 {
+					return
+				}
+			}
+		}
+	}
+	for u := range n.EvmRoutableUpstreams(ctx) {
+		head, rank, ok := tipVoterRank(u, false, n.metricsTracker)
+		if !ok || rank != best {
+			continue
+		}
+		if match, _ := preferred(u, head); match {
+			continue
+		}
+		u.(common.EvmUpstream).EvmStatePoller().RefreshLatestBlock()
+		if need--; need == 0 {
+			return
 		}
 	}
 }

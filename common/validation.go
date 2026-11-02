@@ -2027,6 +2027,17 @@ func (e *EvmNetworkConfig) Validate() error {
 				return fmt.Errorf("network.*.evm.servedTip.guaranteedFor has invalid selector %q: %w", sel, err)
 			}
 		}
+		if pr := e.ServedTip.PreferredRefresh; pr != nil {
+			if pr.Upstreams == "" {
+				return fmt.Errorf("network.*.evm.servedTip.preferredRefresh.upstreams is required")
+			}
+			if err := ValidatePattern(pr.Upstreams); err != nil {
+				return fmt.Errorf("network.*.evm.servedTip.preferredRefresh.upstreams has invalid selector %q: %w", pr.Upstreams, err)
+			}
+			if pr.MaxLagBlocks < 0 {
+				return fmt.Errorf("network.*.evm.servedTip.preferredRefresh.maxLagBlocks must be >= 0 (0 uses the default)")
+			}
+		}
 	}
 	if e.SafeBlockSource != "" {
 		if err := ValidatePattern(e.SafeBlockSource); err != nil {

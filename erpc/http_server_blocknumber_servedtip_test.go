@@ -182,4 +182,76 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 			"eth_blockNumber must refresh the ballot's pollers and reach the moved served head (0x%x) without waiting for the 30s poll interval",
 			bniLaggingHead+5)
 	})
+
+	t.Run("PreferredRefreshSparesVendorsWhilePreferredAreFresh", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// rpc1 is the vendor, first in routing order; rpc2 and rpc3 are the
+		// preferred ("prism") voters. Counts rpc1's on-demand head polls.
+		var vendorPolls atomic.Int32
+		gock.New("http://rpc1.localhost").Post("").Persist().
+			Filter(func(r *http.Request) bool {
+				// gock runs filters before matching the host.
+				b := util.SafeReadBody(r)
+				if r.URL.Host == "rpc1.localhost" && strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest") {
+					vendorPolls.Add(1)
+					return true
+				}
+				return false
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x800","timestamp":"0x6702a8f0"}}`))
+		setupBniPollerMocks()
+		setupBniBlockNumberMocks()
+
+		const maxLag = 10
+		cfg := bniConfig(false, nil)
+		cfg.Projects[0].Networks[0].Evm.ServedTip = &common.EvmServedTipConfig{
+			PreferredRefresh: &common.EvmServedTipPreferredRefreshConfig{Upstreams: "prism", MaxLagBlocks: maxLag},
+		}
+		for i, u := range cfg.Projects[0].Upstreams {
+			u.Evm.StatePollerInterval = common.Duration(30 * time.Second)
+			u.Evm.StatePollerDebounce = common.Duration(50 * time.Millisecond)
+			if i > 0 {
+				u.Tags = []string{"prism"}
+			}
+		}
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+		defer shutdown()
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		policy.OverrideAllForTest(prj.policyEngine, "rpc1", "rpc2", "rpc3")
+		ntw, err := prj.GetNetwork(context.Background(), util.EvmNetworkId(123))
+		require.NoError(t, err)
+		ctx := context.Background()
+		require.Eventually(t, func() bool {
+			return ntw.EvmHighestLatestBlockNumber(ctx) == bniHealthyHead
+		}, 5*time.Second, 50*time.Millisecond, "quorum 2 of {0x800, 0x1000, 0x1000} serves 0x1000")
+
+		before := vendorPolls.Load()
+		for range 5 {
+			got, _ := bniSend(t, sendRequest, nil, nil)
+			require.Equal(t, bniHealthyHead, got)
+			time.Sleep(100 * time.Millisecond)
+		}
+		assert.Equal(t, before, vendorPolls.Load(),
+			"two fresh preferred voters meet quorum 2, so answers must not refresh the vendor")
+
+		// The vendor's regular poller reports a head past the preferred voters'
+		// lag bound: they no longer count, and the vendor takes the refresh.
+		var vendor common.EvmUpstream
+		for _, u := range ntw.EvmAllUpstreams(ctx) {
+			if u.Id() == "rpc1" {
+				vendor = u.(common.EvmUpstream)
+			}
+		}
+		require.NotNil(t, vendor)
+		vendor.EvmStatePoller().SuggestLatestBlock(bniHealthyHead + maxLag + 1)
+		require.Eventually(t, func() bool {
+			bniSend(t, sendRequest, nil, nil)
+			return vendorPolls.Load() > before
+		}, 3*time.Second, 100*time.Millisecond,
+			"preferred voters lagging past maxLagBlocks must fall back to refreshing the vendor")
+	})
 }

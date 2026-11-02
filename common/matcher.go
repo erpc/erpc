@@ -77,32 +77,39 @@ func WildcardMatch(pattern, value string) (bool, error) {
 //
 // An empty pattern matches nothing; callers already guard `!= ""`.
 func MatchesSelector(pattern, id string, tags []string) (bool, error) {
-	if pattern == "" {
-		return false, nil
-	}
-	// Honor id matching first — preserves the exact pre-tag behavior.
-	idMatch, err := WildcardMatch(pattern, id)
+	match, err := CompileSelector(pattern)
 	if err != nil {
 		return false, err
 	}
-	if idMatch {
-		return true, nil
+	return match(id, tags), nil
+}
+
+// CompileSelector parses a selector once and returns MatchesSelector's rule
+// as a reusable func, for hot paths that must not reparse per call.
+func CompileSelector(pattern string) (func(id string, tags []string) bool, error) {
+	if pattern == "" {
+		return func(string, []string) bool { return false }, nil
+	}
+	matcher, err := NewWildcardMatcher(pattern)
+	if err != nil {
+		return nil, err
 	}
 	// Tag matching is additive and only for purely-positive patterns so a
 	// negated id expression keeps its original semantics.
-	if len(tags) == 0 || strings.ContainsRune(pattern, '!') {
-		return false, nil
-	}
-	for _, t := range tags {
-		tagMatch, err := WildcardMatch(pattern, t)
-		if err != nil {
-			return false, err
+	byTag := !strings.ContainsRune(pattern, '!')
+	return func(id string, tags []string) bool {
+		if matcher(id) {
+			return true
 		}
-		if tagMatch {
-			return true, nil
+		if byTag {
+			for _, t := range tags {
+				if matcher(t) {
+					return true
+				}
+			}
 		}
-	}
-	return false, nil
+		return false
+	}, nil
 }
 
 // UpstreamMatchesSelector applies MatchesSelector to a common.Upstream, reading
