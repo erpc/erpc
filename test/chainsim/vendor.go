@@ -22,6 +22,7 @@ type Faults struct {
 	Down          bool          // HTTP 503, ws upgrades refused, open sockets closed
 	Held          bool          // block and head answers wait until it clears; newHeads pushes nothing meanwhile, then its head
 	Lag           uint64        // serves the canonical block this far below the head
+	HeadDelay     time.Duration // serves a canonical block only this long after it was minted
 	Frozen        bool          // head stops moving; still answers what it holds
 	WrongChainID  bool          // eth_chainId answers another chain
 	ChainIDHeld   bool          // eth_chainId answers wait until it clears
@@ -372,7 +373,12 @@ func (v *Vendor) targetLocked() *Block {
 	tip := v.chain.tipLocked()
 	if v.faults.Lag > 0 && tip.Number > v.faults.Lag {
 		if b := v.chain.canonAtLocked(tip.Number - v.faults.Lag); b != nil {
-			return b
+			tip = b
+		}
+	}
+	if d := v.faults.HeadDelay; d > 0 {
+		for since := time.Now().Add(-d); tip.MintedAt.After(since) && tip.Parent != nil && tip.Number > v.tip.Number; {
+			tip = tip.Parent
 		}
 	}
 	return tip

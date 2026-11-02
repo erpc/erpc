@@ -431,9 +431,18 @@ func (c *Chain) tick() {
 	for f := range c.forks {
 		f.tip = c.mintLocked(f.tip, f.tip.Number+1, c.timeAtLocked(f.tip.Number+1), true)
 	}
+	delays := map[time.Duration]bool{}
+	for _, v := range c.vendors {
+		if d := v.faults.HeadDelay; d > 0 {
+			delays[d] = true
+		}
+	}
 	c.mu.Unlock()
 	writePushes(pushes)
 	c.refresh()
+	for d := range delays {
+		time.AfterFunc(d, c.refresh)
+	}
 	c.ticks.Add(1)
 	c.tickMu.Lock()
 	c.tickAt = append(c.tickAt, time.Now())

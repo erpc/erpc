@@ -13,39 +13,43 @@ import (
 	"github.com/erpc/erpc/test/chainsim"
 )
 
-// freshUp is one upstream of the freshness layout: an own reader polled
-// fast, then vendors polled slowly, all https.
+// freshUp is one https upstream of a freshness layout, its times on
+// Ethereum (12 s blocks), before the layout's scale: its poll interval and
+// debounce (0 the default), and how long after a block is minted its node
+// serves it.
 type freshUp struct {
-	key, vendor string
-	reader      bool
-	slow        time.Duration
+	key, vendor        string
+	slow               time.Duration
+	interval, debounce time.Duration
+	delay              time.Duration
 }
 
+// freshUps: an own reader polled every 1 s with a 100 ms debounce, and
+// vendors every 10 s.
 var freshUps = []freshUp{
-	{"http-r", "reader", true, 2 * time.Millisecond},
-	{"http-a", "vendor-a", false, 20 * time.Millisecond},
-	{"http-b", "vendor-b", false, 30 * time.Millisecond},
-	{"http-c", "vendor-c", false, 25 * time.Millisecond},
-	{"http-d", "vendor-d", false, 40 * time.Millisecond},
+	{"http-r", "reader", 2 * time.Millisecond, time.Second, 100 * time.Millisecond, 0},
+	{"http-a", "vendor-a", 20 * time.Millisecond, 10 * time.Second, 0, 0},
+	{"http-b", "vendor-b", 30 * time.Millisecond, 10 * time.Second, 0, 0},
+	{"http-c", "vendor-c", 25 * time.Millisecond, 10 * time.Second, 0, 0},
+	{"http-d", "vendor-d", 40 * time.Millisecond, 10 * time.Second, 0, 0},
 }
 
-// freshSpec is the freshness layout on Ethereum on Kubernetes' times
-// divided by scale: 12 s blocks, the own reader polled every 1 s with a
-// 100 ms debounce, vendors every 10 s; no ws source, quorum 2.
-func freshSpec(name string, scale int, sim chainsim.Config, faults chainsim.Faults, body func(*scenario)) spec {
+// freshSpec is a freshness layout ups on Ethereum on Kubernetes' times
+// divided by scale: 12 s blocks, no ws source, quorum 2, one old-image and
+// one new-image pod with their own state.
+func freshSpec(name string, scale int, ups []freshUp, sim chainsim.Config, faults chainsim.Faults, body func(*scenario)) spec {
 	d := func(t time.Duration) string { return (t / time.Duration(scale)).String() }
 	var vendors []vendorSpec
 	fs := map[string]chainsim.Faults{}
 	upEvm := map[string]map[string]interface{}{}
-	for _, u := range freshUps {
+	for _, u := range ups {
 		vendors = append(vendors, vendorSpec{u.key, u.vendor, false})
 		f := faults
-		f.Slow = u.slow
+		f.Slow, f.HeadDelay = u.slow, u.delay/time.Duration(scale)
 		fs[u.key] = f
-		if u.reader {
-			upEvm[u.key] = map[string]interface{}{"statePollerInterval": d(time.Second), "statePollerDebounce": d(100 * time.Millisecond)}
-		} else {
-			upEvm[u.key] = map[string]interface{}{"statePollerInterval": d(10 * time.Second)}
+		upEvm[u.key] = map[string]interface{}{"statePollerInterval": d(u.interval)}
+		if u.debounce > 0 {
+			upEvm[u.key]["statePollerDebounce"] = d(u.debounce)
 		}
 	}
 	sim.BlockTime = 12 * time.Second / time.Duration(scale)
@@ -78,7 +82,7 @@ const (
 // eth_blockNumber first answering it: the new image is no later than the
 // old, at no more latest reads.
 func p16() spec {
-	return freshSpec("P16", p16Scale, chainsim.Config{}, chainsim.Faults{}, p16Body)
+	return freshSpec("P16", p16Scale, freshUps, chainsim.Config{}, chainsim.Faults{}, p16Body)
 }
 
 // freshImage is one image's tally: every answer and when it arrived.
@@ -155,7 +159,7 @@ func (s *scenario) freshCounts(pod int, tag string) freshCount {
 	if err != nil {
 		s.t.Fatalf("scrape pod-%d: %v", pod+1, err)
 	}
-	for _, u := range freshUps {
+	for _, u := range s.spec.vendors {
 		px, p := s.proxies[u.key], s.h.pods[pod]
 		c.polls[u.key], _ = sumOf(ss, "erpc_upstream_"+tag+"_block_polled_total", map[string]string{"upstream": s.upstream(u.key)})
 		c.reads[u.key] = float64(px.reads(p, tag))
@@ -175,26 +179,84 @@ func (c freshCount) since(before freshCount) freshCount {
 	return c
 }
 
-// freshRun runs one client per pod for run and returns each image's tally
-// and its upstream traffic over the run.
-func (s *scenario) freshRun(run, period time.Duration, tag string, read func(pod int) (uint64, error)) (imgs []*freshImage, counts []freshCount) {
+// freshLoad is one client per pod: read every period; tag names the
+// polls and tag reads its traffic report counts.
+type freshLoad struct {
+	period time.Duration
+	tag    string
+	read   func(s *scenario, pod int) (uint64, error)
+}
+
+// freshHead reads pod's eth_blockNumber.
+func freshHead(s *scenario, pod int) (uint64, error) {
+	var bn hexutil.Uint64
+	err := s.call(pod, &bn, "eth_blockNumber")
+	return uint64(bn), err
+}
+
+// freshFinalized reads the number of pod's finalized block.
+func freshFinalized(s *scenario, pod int) (uint64, error) {
+	var raw map[string]interface{}
+	if err := s.call(pod, &raw, "eth_getBlockByNumber", "finalized", false); err != nil {
+		return 0, err
+	}
+	return hexutil.DecodeUint64(fmtString(raw["number"]))
+}
+
+// freshRun runs loads for run, one client per pod each, and returns, per
+// load, each image's tally and its upstream traffic over the run.
+func (s *scenario) freshRun(run time.Duration, loads ...freshLoad) (imgs [][]*freshImage, counts [][]freshCount) {
 	ctx, cancel := context.WithTimeout(s.ctx, run)
 	defer cancel()
-	var before []freshCount
-	for _, p := range s.h.pods {
-		imgs = append(imgs, &freshImage{pod: p.idx})
-		before = append(before, s.freshCounts(p.idx, tag))
+	before := make([][]freshCount, len(loads))
+	imgs = make([][]*freshImage, len(loads))
+	for i, l := range loads {
+		for _, p := range s.h.pods {
+			imgs[i] = append(imgs[i], &freshImage{pod: p.idx})
+			before[i] = append(before[i], s.freshCounts(p.idx, l.tag))
+		}
 	}
 	var wg sync.WaitGroup
-	for _, im := range imgs {
-		wg.Add(1)
-		go func() { defer wg.Done(); s.freshClient(ctx, im, period, read) }()
+	for i, l := range loads {
+		for _, im := range imgs[i] {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				s.freshClient(ctx, im, l.period, func(pod int) (uint64, error) { return l.read(s, pod) })
+			}()
+		}
 	}
 	wg.Wait()
-	for i, p := range s.h.pods {
-		counts = append(counts, s.freshCounts(p.idx, tag).since(before[i]))
+	counts = make([][]freshCount, len(loads))
+	for i, l := range loads {
+		for j, p := range s.h.pods {
+			counts[i] = append(counts[i], s.freshCounts(p.idx, l.tag).since(before[i][j]))
+		}
 	}
 	return imgs, counts
+}
+
+// freshBlocks are the blocks minted in [from, to], as events at their mint.
+func (s *scenario) freshBlocks(from, to time.Time) (events []freshFirst) {
+	for _, b := range s.chain.MintedBetween(from, to) {
+		events = append(events, freshFirst{b.Number, b.MintedAt})
+	}
+	return events
+}
+
+// freshSteps are the finality steps of vendors at finality depth depth
+// in [from, to]: each new finalized number, at the mint of the block that
+// moved it.
+func (s *scenario) freshSteps(from, to time.Time, depth uint64) (events []freshFirst) {
+	prev := uint64(0)
+	for _, b := range s.chain.MintedBetween(from, to) {
+		f := s.chain.Finalized(b.Number, depth)
+		if prev != 0 && f > prev {
+			events = append(events, freshFirst{f, b.MintedAt})
+		}
+		prev = f
+	}
+	return events
 }
 
 // freshDelays are im's delays for each (value, since) event: from since
@@ -234,13 +296,13 @@ func (s *scenario) freshReport(b *strings.Builder, what, tag string, imgs []*fre
 			im.pod+1, img, len(ds), what, missed, im.errs, v.p50, v.p90, pctl(ds, 100))
 		fmt.Fprintf(b, "  per %s, %s polls / %s reads / all requests:", unit, tag, tag)
 		var numbered float64
-		for _, u := range freshUps {
+		for _, u := range s.spec.vendors {
 			p, t, r := counts[i].polls[u.key]/per, counts[i].reads[u.key]/per, counts[i].requests[u.key]/per
 			v.polls += p
 			v.reads += t
 			v.requests += r
 			numbered += counts[i].numbered[u.key]
-			fmt.Fprintf(b, " %s %.2f/%.2f/%.2f", u.vendor, p, t, r)
+			fmt.Fprintf(b, " %s %.2f/%.2f/%.2f", u.name, p, t, r)
 		}
 		im.mu.Lock()
 		clientReads := len(im.answers)
@@ -258,18 +320,11 @@ func (s *scenario) freshReport(b *strings.Builder, what, tag string, imgs []*fre
 func p16Body(s *scenario) {
 	s.blocks(10)
 	start := time.Now()
-	imgs, counts := s.freshRun(p16Run, time.Second/p16Rate, "latest", func(pod int) (uint64, error) {
-		var bn hexutil.Uint64
-		err := s.call(pod, &bn, "eth_blockNumber")
-		return uint64(bn), err
-	})
+	imgs, counts := s.freshRun(p16Run, freshLoad{time.Second / p16Rate, "latest", freshHead})
 	end := time.Now()
-	var events []freshFirst
-	for _, b := range s.chain.MintedBetween(start.Add(s.chain.BlockTime()), end.Add(-s.chain.BlockTime())) {
-		events = append(events, freshFirst{b.Number, b.MintedAt})
-	}
+	events := s.freshBlocks(start.Add(s.chain.BlockTime()), end.Add(-s.chain.BlockTime()))
 	var b strings.Builder
-	v := s.freshReport(&b, "blocks", "latest", imgs, counts, events, end, time.Second, p16Run)
+	v := s.freshReport(&b, "blocks", "latest", imgs[0], counts[0], events, end, time.Second, p16Run)
 	s.logf("%s", b.String())
 	s.freshJudge(v, "a block", "minted it", p16P50Slack, p16P90Slack)
 }
@@ -314,7 +369,7 @@ const (
 // image is no later than the old, at no more finalized polls, and its
 // reads of the finalized block by number hit the cache.
 func p17() spec {
-	sp := freshSpec("P17", p17Scale, chainsim.Config{FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, p17Body)
+	sp := freshSpec("P17", p17Scale, freshUps, chainsim.Config{FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, p17Body)
 	sp.cache = true
 	return sp
 }
@@ -322,26 +377,11 @@ func p17() spec {
 func p17Body(s *scenario) {
 	s.blocks(10)
 	start := time.Now()
-	period := time.Second / p17Scale
-	imgs, counts := s.freshRun(p17Run, period, "finalized", func(pod int) (uint64, error) {
-		var raw map[string]interface{}
-		if err := s.call(pod, &raw, "eth_getBlockByNumber", "finalized", false); err != nil {
-			return 0, err
-		}
-		return hexutil.DecodeUint64(fmtString(raw["number"]))
-	})
+	imgs, counts := s.freshRun(p17Run, freshLoad{time.Second / p17Scale, "finalized", freshFinalized})
 	end := time.Now()
-	var events []freshFirst
-	prev := uint64(0)
-	for _, b := range s.chain.MintedBetween(start, end.Add(-3*s.chain.BlockTime())) {
-		f := s.chain.Finalized(b.Number, p17Depth)
-		if prev != 0 && f > prev {
-			events = append(events, freshFirst{f, b.MintedAt})
-		}
-		prev = f
-	}
+	events := s.freshSteps(start, end.Add(-3*s.chain.BlockTime()), p17Depth)
 	var b strings.Builder
-	v := s.freshReport(&b, "steps", "finalized", imgs, counts, events, end, time.Minute, p17Run)
+	v := s.freshReport(&b, "steps", "finalized", imgs[0], counts[0], events, end, time.Minute, p17Run)
 	s.logf("%s", b.String())
 	if len(events) == 0 {
 		s.violate(s.name, "chainsim made no finality step in %s", p17Run)
@@ -349,5 +389,96 @@ func p17Body(s *scenario) {
 	s.freshJudge(v, "a finality step", "made it", p17P50Slack, p17P90Slack)
 	if o, n := v["old"], v["new"]; n.numberedPerRead > o.numberedPerRead+p17NumberedSlack {
 		s.violate(s.name, "new image sent %.3f by-number block reads per finalized-tag read, old %.3f", n.numberedPerRead, o.numberedPerRead)
+	}
+}
+
+const (
+	// p18Scale: 1.5 s blocks, as P17.
+	p18Scale = 8
+	// p18HeadRate, p18LatestRate, p18FinalizedRate: each pod's
+	// eth_blockNumber, eth_getBlockByNumber("latest") and
+	// eth_getBlockByNumber("finalized") reads per second of Ethereum
+	// time (7.5, 2 and 1), scaled.
+	p18HeadRate      = 60
+	p18LatestRate    = 16
+	p18FinalizedRate = 8
+	p18Run           = 8 * time.Minute
+	// p18CostSlack: the new image may send its upstreams at most this
+	// many times the old image's requests.
+	p18CostSlack = 1.10
+)
+
+// p18Ups are eight voters: a reader that serves each block delay after
+// the vendors, six vendors polled every 10 s and one every 5 s.
+func p18Ups(delay time.Duration) []freshUp {
+	return []freshUp{
+		{"http-r", "reader", 2 * time.Millisecond, time.Second, 100 * time.Millisecond, delay},
+		{"http-a", "vendor-a", 20 * time.Millisecond, 10 * time.Second, 0, 0},
+		{"http-b", "vendor-b", 30 * time.Millisecond, 10 * time.Second, 0, 0},
+		{"http-c", "vendor-c", 25 * time.Millisecond, 10 * time.Second, 0, 0},
+		{"http-d", "vendor-d", 40 * time.Millisecond, 10 * time.Second, 0, 0},
+		{"http-e", "vendor-e", 35 * time.Millisecond, 10 * time.Second, 0, 0},
+		{"http-f", "vendor-f", 45 * time.Millisecond, 10 * time.Second, 0, 0},
+		{"http-g", "vendor-g", 10 * time.Millisecond, 5 * time.Second, 0, 0},
+	}
+}
+
+// P18: Ethereum on Kubernetes at 1/8 time: a reader that
+// serves each block delay (on Ethereum's clock) after the vendors and
+// answers only state methods, so block reads go to vendors; seven
+// vendors, P17's stepping finality, a cache, quorum 2; per pod
+// eth_blockNumber, eth_getBlockByNumber("latest") and
+// eth_getBlockByNumber("finalized") clients at busy rates. The new
+// image answers each block and each finality step no later than the old
+// one, at no more upstream requests.
+func p18(delay time.Duration) spec {
+	sp := freshSpec(fmt.Sprintf("P18-d%s", delay), p18Scale, p18Ups(delay), chainsim.Config{FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, p18Body)
+	sp.cache = true
+	sp.up = map[string]map[string]interface{}{"http-r": {
+		"allowMethods":  []string{"eth_call", "eth_getBalance", "eth_getCode", "eth_getStorageAt", "eth_getTransactionCount", "eth_chainId"},
+		"ignoreMethods": []string{"*"},
+	}}
+	return sp
+}
+
+// freshLatestBlock reads the number of pod's latest block.
+func freshLatestBlock(s *scenario, pod int) (uint64, error) {
+	var raw map[string]interface{}
+	if err := s.call(pod, &raw, "eth_getBlockByNumber", "latest", false); err != nil {
+		return 0, err
+	}
+	return hexutil.DecodeUint64(fmtString(raw["number"]))
+}
+
+func p18Body(s *scenario) {
+	s.blocks(10)
+	start := time.Now()
+	imgs, counts := s.freshRun(p18Run,
+		freshLoad{time.Second / p18HeadRate, "latest", freshHead},
+		freshLoad{time.Second / p18FinalizedRate, "finalized", freshFinalized},
+		freshLoad{time.Second / p18LatestRate, "latest", freshLatestBlock})
+	end := time.Now()
+	var b strings.Builder
+	head := s.freshReport(&b, "blocks", "latest", imgs[0], counts[0], s.freshBlocks(start.Add(s.chain.BlockTime()), end.Add(-s.chain.BlockTime())), end, time.Second, p18Run)
+	steps := s.freshSteps(start, end.Add(-3*s.chain.BlockTime()), p17Depth)
+	fin := s.freshReport(&b, "steps", "finalized", imgs[1], counts[1], steps, end, time.Second, p18Run)
+	s.logf("%s", b.String())
+	if len(steps) == 0 {
+		s.violate(s.name, "chainsim made no finality step in %s", p18Run)
+	}
+	for _, c := range []struct {
+		v          map[string]freshVerdict
+		what, made string
+		p50, p90   time.Duration
+	}{
+		{head, "a block", "minted it", p16P50Slack, p16P90Slack},
+		{fin, "a finality step", "made it", p17P50Slack, p17P90Slack},
+	} {
+		if o, n := c.v["old"], c.v["new"]; n.p50 > o.p50+c.p50 || n.p90 > o.p90+c.p90 {
+			s.violate(s.name, "new image first answered %s p50 %s p90 %s after chainsim %s, old p50 %s p90 %s", c.what, n.p50, n.p90, c.made, o.p50, o.p90)
+		}
+	}
+	if o, n := head["old"], head["new"]; n.requests > o.requests*p18CostSlack {
+		s.violate(s.name, "new image sent its upstreams %.2f requests/s, old %.2f", n.requests, o.requests)
 	}
 }
