@@ -10,6 +10,7 @@ import (
 	"math"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3144,6 +3145,15 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	blockRef, blockNumber, _ := evm.ExtractBlockReferenceFromRequest(ctx, req)
+	// An interpolated finalized tag runs at the request Head's Finalized
+	// (spec §7), the number its cache key holds (ResolveCacheBlockRef): its
+	// answer is final as that number's is, not realtime as a tag that
+	// reaches upstreams. "latest" stays realtime (#560).
+	if blockRef == "finalized" {
+		if num := evm.TagBlockNumber(ctx, req, blockRef); num > 0 {
+			blockRef, blockNumber = strconv.FormatInt(num, 10), num
+		}
+	}
 
 	// When the request alone doesn't carry a block number (e.g. tx-hash lookups
 	// like eth_getTransactionReceipt, or block-hash lookups like eth_getBlockByHash),
