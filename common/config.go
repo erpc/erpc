@@ -347,16 +347,17 @@ type CacheConfig struct {
 	Policies    []*CachePolicyConfig `yaml:"policies,omitempty" json:"policies"`
 	Compression *CompressionConfig   `yaml:"compression,omitempty" json:"compression"`
 	// CacheableConsensusPolicies is the allowlist of consensus policy names
-	// whose responses may be persisted. A cache hit is served with zero
-	// validation, so only grades on this list should be written. Unstamped
-	// responses (method never went through consensus, or consensus without a
-	// customPolicy selector) are always cacheable and are not represented
-	// here. Nil/omitted or empty keeps the historical Forward !selectorOn
-	// skip (filter off). A non-empty list is opt-in: it both filters writes
-	// and re-opens the selector-network cache path — listing a name is the
-	// operator's statement that grade is safe to serve to any later caller
-	// (cache keys omit policy+auth). Typically ["default"] when the inline
-	// default is the strictest grade.
+	// whose responses may be persisted. Applies identically under
+	// database.evmJsonRpcCache and database.svmJsonRpcCache. A cache hit is
+	// served with zero validation, so only grades on this list should be
+	// written. Unstamped responses (method never went through consensus, or
+	// consensus without a customPolicy selector) are always cacheable and are
+	// not represented here. Nil/omitted or empty keeps the historical Forward
+	// !selectorOn skip (filter off). A non-empty list is opt-in: it both
+	// filters writes and re-opens the selector-network cache path — listing a
+	// name is the operator's statement that grade is safe to serve to any
+	// later caller (cache keys omit policy+auth). Typically ["default"] when
+	// the inline default is the strictest grade.
 	CacheableConsensusPolicies []string `yaml:"cacheableConsensusPolicies,omitempty" json:"cacheableConsensusPolicies,omitempty"`
 }
 

@@ -150,10 +150,3 @@ func TestNewEvmJsonRpcCache_CacheableConsensusPoliciesWiring(t *testing.T) {
 	})
 }
 
-func TestResolveCacheableConsensusPolicies(t *testing.T) {
-	assert.Nil(t, resolveCacheableConsensusPolicies(nil))
-	assert.Nil(t, resolveCacheableConsensusPolicies([]string{}))
-	assert.Nil(t, resolveCacheableConsensusPolicies([]string{""}))
-	assert.Equal(t, map[string]struct{}{"default": {}, "strict": {}},
-		resolveCacheableConsensusPolicies([]string{"default", "strict", ""}))
-}

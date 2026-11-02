@@ -44,6 +44,13 @@ type SvmJsonRpcCache struct {
 	policies  []*data.CachePolicy
 	logger    *zerolog.Logger
 
+	// cacheableConsensusPolicies is the set of consensus policy names whose
+	// responses may be persisted (see common.CacheConfig.CacheableConsensusPolicies).
+	// Nil means the admission filter is off (explicit empty config list).
+	// Non-nil means a stamped policy must be in the set to be written;
+	// unstamped responses are always allowed. Same semantics as EvmJsonRpcCache.
+	cacheableConsensusPolicies map[string]struct{}
+
 	// compressionThreshold is the minimum payload size (bytes) worth
 	// compressing; 0 means compression is disabled for writes. The decoder is
 	// always present so entries written while compression was enabled stay
@@ -81,7 +88,11 @@ func NewSvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 		policies = append(policies, policy)
 	}
 
-	cache := &SvmJsonRpcCache{policies: policies, logger: &lg}
+	cache := &SvmJsonRpcCache{
+		policies:                   policies,
+		logger:                     &lg,
+		cacheableConsensusPolicies: common.ResolveCacheableConsensusPolicies(cfg.CacheableConsensusPolicies),
+	}
 
 	// One stateless encoder/decoder pair is enough: zstd's EncodeAll/DecodeAll
 	// are documented safe for concurrent use and pull from their own internal
@@ -129,17 +140,26 @@ func NewSvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 func (c *SvmJsonRpcCache) WithProjectId(projectId string) *SvmJsonRpcCache {
 	lg := c.logger.With().Str("projectId", projectId).Logger()
 	return &SvmJsonRpcCache{
-		projectId:            projectId,
-		policies:             c.policies,
-		logger:               &lg,
-		compressionThreshold: c.compressionThreshold,
-		encoder:              c.encoder,
-		decoder:              c.decoder,
+		projectId:                  projectId,
+		policies:                   c.policies,
+		logger:                     &lg,
+		cacheableConsensusPolicies: c.cacheableConsensusPolicies,
+		compressionThreshold:       c.compressionThreshold,
+		encoder:                    c.encoder,
+		decoder:                    c.decoder,
 	}
 }
 
 func (c *SvmJsonRpcCache) SetPolicies(policies []*data.CachePolicy) {
 	c.policies = policies
+}
+
+// AllowsSelectorCache reports whether selector-enabled networks may safely
+// read/write this cache. True when the consensus-policy allowlist filter is
+// active — same contract as EvmJsonRpcCache.AllowsSelectorCache; Network.Forward
+// uses cacheEligible against whichever CacheDAL the network is wired with.
+func (c *SvmJsonRpcCache) AllowsSelectorCache() bool {
+	return c != nil && c.cacheableConsensusPolicies != nil
 }
 
 // IsObjectNull is the nil-safe check callers use before dispatching to the cache.
@@ -298,6 +318,26 @@ func (c *SvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		// Don't cache responses that carry a JSON-RPC error body; the caller may
 		// retry against another upstream and expect a fresh attempt.
 		return nil
+	}
+
+	// A response produced under a non-allowlisted consensus policy was
+	// validated by a grade outside cacheableConsensusPolicies; a cache hit
+	// would later serve it with zero validation. Don't persist it.
+	// Write-side only: allowlisted (and unstamped) entries stay safe for
+	// any request. "" means no selector ran (no consensus, or consensus
+	// without a customPolicy selector) — always cacheable.
+	// Mirrors architecture/evm/json_rpc_cache.go Set.
+	if c.cacheableConsensusPolicies != nil {
+		if pol := req.ExecState().ConsensusPolicy(); pol != "" {
+			if _, ok := c.cacheableConsensusPolicies[pol]; !ok {
+				c.logger.Debug().
+					Str("networkId", req.NetworkId()).
+					Str("method", rpcReq.Method).
+					Str("consensusPolicy", pol).
+					Msg("skip caching response governed by non-allowlisted consensus policy")
+				return nil
+			}
+		}
 	}
 
 	// Hard never-cache (mirrors Get): effectful methods (sendTransaction,

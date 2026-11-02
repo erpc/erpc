@@ -1744,7 +1744,7 @@ func (n *Network) consensusPolicySelectorEnabled() bool {
 
 // cacheSelectorSafe is implemented by CacheDAL backends whose write path
 // filters by consensus policy so selector-enabled networks may safely
-// read/write (see EvmJsonRpcCache.AllowsSelectorCache).
+// read/write (EvmJsonRpcCache / SvmJsonRpcCache.AllowsSelectorCache).
 type cacheSelectorSafe interface {
 	AllowsSelectorCache() bool
 }

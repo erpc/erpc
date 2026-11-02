@@ -78,7 +78,7 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 	cache := &EvmJsonRpcCache{
 		policies:                   policies,
 		logger:                     logger,
-		cacheableConsensusPolicies: resolveCacheableConsensusPolicies(cfg.CacheableConsensusPolicies),
+		cacheableConsensusPolicies: common.ResolveCacheableConsensusPolicies(cfg.CacheableConsensusPolicies),
 	}
 
 	// Initialize compression if configured
@@ -160,31 +160,6 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 
 func (c *EvmJsonRpcCache) SetPolicies(policies []*data.CachePolicy) {
 	c.policies = policies
-}
-
-// resolveCacheableConsensusPolicies turns the config allowlist into the
-// runtime set used by Cache.Set / AllowsSelectorCache.
-//
-//   - nil/omitted or empty → nil (filter off; Forward keeps the historical
-//     !selectorOn skip). Opening the selector cache path is opt-in: listing
-//     policies is the operator's statement that those grades are safe to
-//     serve to any later caller (cache keys omit policy+auth).
-//   - non-empty → membership set (filter on; AllowsSelectorCache true)
-func resolveCacheableConsensusPolicies(names []string) map[string]struct{} {
-	if len(names) == 0 {
-		return nil
-	}
-	out := make(map[string]struct{}, len(names))
-	for _, n := range names {
-		if n == "" {
-			continue
-		}
-		out[n] = struct{}{}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }
 
 // AllowsSelectorCache reports whether selector-enabled networks may safely
