@@ -249,6 +249,8 @@ type EvmStatePoller interface {
 	// FinalizedBlock is the upstream's finalized tag; only an upstream known
 	// to have no finalized tag reports latest − the derived finality depth (#1079).
 	FinalizedBlock() int64
+	// FinalizedReportAt is LatestReportAt for the finalized block.
+	FinalizedReportAt() time.Time
 	// LatestAskAt is the send time of this instance's last Ask fetch of
 	// latest, zero before any: the Ask half of EvidenceAt.
 	LatestAskAt() time.Time
@@ -281,12 +283,12 @@ type EvmStatePoller interface {
 	// AskBackground is Ask without waiting for the answer: the answer's
 	// Outcome, Block, Next and At, no header.
 	AskBackground(need HeadNeed, pace time.Duration, after time.Time, reason AskReason) HeadAnswer
-	// RefreshFinalized polls the finalized block when the stored one is
-	// older than the pace (the poll cadence when atCadence, else the
-	// finalized poll's debounce), or joins the poll in flight, and waits
-	// for it until ctx ends. polls is false when the upstream has no
-	// finalized poll to refresh: its finalized tag is given up.
-	RefreshFinalized(ctx context.Context, atCadence bool) (polls bool)
+	// RefreshFinalized polls the finalized block when the stored one was
+	// reported more than maxAge ago (0: the poll cadence), or joins the
+	// poll in flight, and waits for it until ctx ends. fetched is false
+	// when the stored one is fresh, a refresh ended within maxAge, or the
+	// upstream's finalized tag is given up.
+	RefreshFinalized(ctx context.Context, maxAge time.Duration) (fetched bool)
 	SetNetworkConfig(cfg *NetworkConfig)
 	IsObjectNull() bool
 	EarliestBlock(probe EvmAvailabilityProbeType) int64

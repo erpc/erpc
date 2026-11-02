@@ -938,20 +938,21 @@ func (n *Network) awaitLatestRefresh(ctx context.Context, l *servedTipLane, s vo
 	}
 }
 
-// awaitFinalizedRefresh refreshes the finalized numbers of every voter of
-// selector sel's ballot and waits for them, at most W, then publishes
-// sel's lane Head (spec §6.4 Finality, §6.8). Every voter, not a quorum's
-// worth: a voter's finality depth is its own, so which voters decide the
-// ballot's q-th highest finalized is known only from fresh numbers.
-// Finality moves in steps: the first voter in routing order polls at its
-// poll cadence, so it sees a step about when main's tag answer did, the
-// others at the finalized debounce. A voter finalized above every one
-// reported before, by any poll, starts a step: for W after, every voter
-// still below it polls at its cadence, at once on this request too, so
-// the quorum follows within one cadence, not one finalized debounce. Each
-// poller joins a poll in flight, and has none once its finalized tag is
-// given up. The latest-axis rank serves here too: an upstream with no
-// finalized number yet still gets polled for its first one.
+// awaitFinalizedRefresh refreshes the finalized numbers of selector sel's
+// voters and waits for them, at most W, then publishes sel's lane Head
+// (spec §6.4 Finality, §6.8). Finality moves in steps, and any voter may
+// see a step first: a voter's finality depth is its own, and a replica
+// may trail the nodes. So each request polls one voter, the one whose
+// finalized report is oldest, at its poll cadence, as main sent each
+// finalized-tag read to an upstream: successive requests walk the
+// voters. A voter finalized above every one reported before, by any poll,
+// starts a step: for W after, every voter still below it polls once since
+// the step began, at once on the request that saw it too, so Finalized,
+// the q-th highest vote, follows within a round trip. Every voter with no
+// finalized number yet polls at its cadence, so a cold instance gets its
+// first ballot, or gives a tagless voter's tag up, as soon as it would
+// with every voter polled. Each poller joins a poll in flight, and has
+// none once its finalized tag is given up.
 func (n *Network) awaitFinalizedRefresh(ctx context.Context, sel string) {
 	s := n.voters(sel, voterQuery{kind: numberVote})
 	if s.count() == 0 {
@@ -961,40 +962,59 @@ func (n *Network) awaitFinalizedRefresh(ctx context.Context, sel string) {
 	ctx, cancel := context.WithTimeout(ctx, w)
 	defer cancel()
 	var moved atomic.Bool
-	round := func(step int64, first bool) {
-		var wg sync.WaitGroup
+	refresh := func(sp common.EvmStatePoller, maxAge time.Duration) (fetched bool) {
+		before := sp.FinalizedBlock()
+		fetched = sp.RefreshFinalized(ctx, maxAge)
+		if sp.FinalizedBlock() != before {
+			moved.Store(true)
+		}
+		return fetched
+	}
+	stepRound := func(wg *sync.WaitGroup, top int64, at time.Time) {
 		s.each(func(u common.Upstream, _ int64) bool {
-			sp := u.(common.EvmUpstream).EvmStatePoller()
-			before := sp.FinalizedBlock()
-			atCadence := first || before < step
-			first = false
-			wg.Go(func() {
-				if sp.RefreshFinalized(ctx, atCadence) && sp.FinalizedBlock() != before {
-					moved.Store(true)
-				}
-			})
+			if sp := u.(common.EvmUpstream).EvmStatePoller(); sp.FinalizedBlock() < top {
+				wg.Go(func() { refresh(sp, time.Since(at)) })
+			}
 			return true
 		})
-		wg.Wait()
 	}
-	step := n.finalizedStep(s, w)
-	round(step, true)
-	if step == 0 {
-		if step = n.finalizedStep(s, w); step > 0 {
-			round(step, false)
+	var wg sync.WaitGroup
+	top, at := n.finalizedStep(s, w)
+	if !at.IsZero() {
+		stepRound(&wg, top, at)
+	}
+	var buf [16]common.EvmStatePoller
+	byAge := buf[:0]
+	s.each(func(u common.Upstream, _ int64) bool {
+		if sp := u.(common.EvmUpstream).EvmStatePoller(); sp.FinalizedBlock() > 0 {
+			byAge = append(byAge, sp)
+		} else {
+			wg.Go(func() { refresh(sp, 0) })
+		}
+		return true
+	})
+	slices.SortFunc(byAge, func(a, b common.EvmStatePoller) int { return a.FinalizedReportAt().Compare(b.FinalizedReportAt()) })
+	for _, sp := range byAge {
+		if refresh(sp, 0) {
+			break
 		}
 	}
+	if at.IsZero() {
+		if top, at = n.finalizedStep(s, w); !at.IsZero() {
+			stepRound(&wg, top, at)
+		}
+	}
+	wg.Wait()
 	if l := n.laneFor(sel); moved.Load() && l != nil {
 		n.refreshLaneRecovered(l)
 	}
 }
 
-// finalizedStep is the finality step under way, 0 for none: the highest
-// finalized a voter of s reported, when it rose above the highest any
-// voter reported before within w. Steps are the chain's, so the record is
-// network-wide.
-func (n *Network) finalizedStep(s voterSet, w time.Duration) int64 {
-	var top int64
+// finalizedStep is the finality step under way: the highest finalized a
+// voter of s reported, and when it rose above the highest any voter
+// reported before; a zero time when that was W or more ago. Steps are the
+// chain's, so the record is network-wide.
+func (n *Network) finalizedStep(s voterSet, w time.Duration) (top int64, at time.Time) {
 	s.each(func(u common.Upstream, _ int64) bool {
 		top = max(top, u.(common.EvmUpstream).EvmStatePoller().FinalizedBlock())
 		return true
@@ -1005,10 +1025,10 @@ func (n *Network) finalizedStep(s voterSet, w time.Duration) int64 {
 			break
 		}
 	}
-	if time.Since(time.Unix(0, n.finalizedStepAt.Load())) >= w {
-		return 0
+	if at = time.Unix(0, n.finalizedStepAt.Load()); time.Since(at) >= w {
+		return 0, time.Time{}
 	}
-	return n.finalizedStepTo.Load()
+	return n.finalizedStepTo.Load(), at
 }
 
 // EvmRefreshHeadsBelow Asks, in the background, with a number need at
