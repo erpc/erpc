@@ -389,7 +389,7 @@ func (p *FakeEvmStatePoller) AskReaching(context.Context, int64, time.Duration, 
 	return HeadAnswer{Outcome: AskSharedFresh, Block: p.latestBlockNumber}
 }
 
-func (p *FakeEvmStatePoller) RefreshFinalized(context.Context) bool { return true }
+func (p *FakeEvmStatePoller) RefreshFinalized(context.Context, bool) bool { return true }
 
 func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown

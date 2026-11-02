@@ -1075,17 +1075,22 @@ func nodeFailedPoll(err error) bool {
 }
 
 // RefreshFinalized polls the finalized block when the stored one is older
-// than the finalized poll's debounce, or joins the poll in flight, and
-// waits for it until ctx ends (spec §6.4 Finality), however long past the
-// shared state's foreground budget it takes. The poll itself runs on the
-// app's context, so a waiter that leaves ends no other waiter's poll.
-// polls is false when the upstream has no finalized poll to refresh: its
-// finalized tag is given up (spec §6.8).
-func (e *EvmStatePoller) RefreshFinalized(ctx context.Context) (polls bool) {
+// than the pace: the poll cadence when atCadence, else the finalized
+// poll's debounce; or joins the poll in flight, and waits for it until ctx
+// ends (spec §6.4 Finality), however long past the shared state's
+// foreground budget it takes. The poll itself runs on the app's context,
+// so a waiter that leaves ends no other waiter's poll. polls is false when
+// the upstream has no finalized poll to refresh: its finalized tag is
+// given up (spec §6.8).
+func (e *EvmStatePoller) RefreshFinalized(ctx context.Context, atCadence bool) (polls bool) {
 	if e.IsObjectNull() || e.finalizedBlockShared == nil || e.givenUp(&e.finalizedGiveUp) {
 		return false
 	}
-	e.finalizedBlockShared.UpdateIfStale(ctx, e.finalizedDebounce(), e.fetchFinalized)
+	pace := e.finalizedDebounce()
+	if atCadence {
+		pace = e.pollCadence()
+	}
+	e.finalizedBlockShared.UpdateIfStale(ctx, pace, e.fetchFinalized)
 	return true
 }
 

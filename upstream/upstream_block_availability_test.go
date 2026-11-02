@@ -74,12 +74,12 @@ func (m *mockEvmStatePollerEnhanced) AskBackground(common.HeadNeed, time.Duratio
 func (m *mockEvmStatePollerEnhanced) AskReaching(context.Context, int64, time.Duration, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
-func (m *mockEvmStatePollerEnhanced) RefreshFinalized(context.Context) bool      { return true }
-func (m *mockEvmStatePollerEnhanced) LatestReportAt() time.Time                  { return time.Time{} }
-func (m *mockEvmStatePollerEnhanced) LatestAskAt() time.Time                     { return time.Time{} }
-func (m *mockEvmStatePollerEnhanced) SetNetworkConfig(cfg *common.NetworkConfig) {}
-func (m *mockEvmStatePollerEnhanced) IsObjectNull() bool                         { return m.isNull }
-func (m *mockEvmStatePollerEnhanced) Wait()                                      {}
+func (m *mockEvmStatePollerEnhanced) RefreshFinalized(context.Context, bool) bool { return true }
+func (m *mockEvmStatePollerEnhanced) LatestReportAt() time.Time                   { return time.Time{} }
+func (m *mockEvmStatePollerEnhanced) LatestAskAt() time.Time                      { return time.Time{} }
+func (m *mockEvmStatePollerEnhanced) SetNetworkConfig(cfg *common.NetworkConfig)  {}
+func (m *mockEvmStatePollerEnhanced) IsObjectNull() bool                          { return m.isNull }
+func (m *mockEvmStatePollerEnhanced) Wait()                                       {}
 func (m *mockEvmStatePollerEnhanced) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	return &common.EvmStatePollerDiagnostics{
 		Enabled:        true,
@@ -654,7 +654,9 @@ func (m *mockEvmStatePollerWithCustomBehavior) AskBackground(common.HeadNeed, ti
 func (m *mockEvmStatePollerWithCustomBehavior) AskReaching(context.Context, int64, time.Duration, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
-func (m *mockEvmStatePollerWithCustomBehavior) RefreshFinalized(context.Context) bool      { return true }
+func (m *mockEvmStatePollerWithCustomBehavior) RefreshFinalized(context.Context, bool) bool {
+	return true
+}
 func (m *mockEvmStatePollerWithCustomBehavior) LatestReportAt() time.Time                  { return time.Time{} }
 func (m *mockEvmStatePollerWithCustomBehavior) LatestAskAt() time.Time                     { return time.Time{} }
 func (m *mockEvmStatePollerWithCustomBehavior) SetNetworkConfig(cfg *common.NetworkConfig) {}

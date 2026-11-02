@@ -74,6 +74,9 @@ type Network struct {
 	// servedFinalizedShared is the highest network-wide Finalized any
 	// instance served (shareFinalized). Nil without shared state.
 	servedFinalizedShared data.CounterInt64SharedVariable
+	// finalizedStepTo is the highest finalized any voter reported, and
+	// finalizedStepAt (unix ns) when it last rose (finalizedStep).
+	finalizedStepTo, finalizedStepAt atomic.Int64
 
 	// servedTipLanes holds lazily-materialized per-group lanes for
 	// use-upstream selectors that carve out a real sub-group (e.g.
@@ -946,38 +949,75 @@ func (n *Network) awaitLatestRefresh(ctx context.Context, l *servedTipLane, s vo
 
 // awaitFinalizedRefresh refreshes the finalized numbers of every voter of
 // selector sel's ballot and waits for them, at most W, then publishes
-// sel's lane Head, so a request naming the `finalized` tag takes a
-// Finalized no older than the finalized debounce (spec §6.4 Finality,
-// §6.8). Every voter, not a quorum's worth: a voter's finality depth is
-// its own, so which voters decide the ballot's q-th highest finalized is
-// known only from fresh numbers, and a refresh of the deep ones leaves it
-// where it was. Each poller polls only past its finalized debounce, joins
-// a poll in flight, and has none once its finalized tag is given up. The
-// latest-axis rank serves here too: an upstream with no finalized number
-// yet still gets polled for its first one.
+// sel's lane Head (spec §6.4 Finality, §6.8). Every voter, not a quorum's
+// worth: a voter's finality depth is its own, so which voters decide the
+// ballot's q-th highest finalized is known only from fresh numbers.
+// Finality moves in steps: the first voter in routing order polls at its
+// poll cadence, so it sees a step about when main's tag answer did, the
+// others at the finalized debounce. A voter finalized above every one
+// reported before, by any poll, starts a step: for W after, every voter
+// still below it polls at its cadence, at once on this request too, so
+// the quorum follows within one cadence, not one finalized debounce. Each
+// poller joins a poll in flight, and has none once its finalized tag is
+// given up. The latest-axis rank serves here too: an upstream with no
+// finalized number yet still gets polled for its first one.
 func (n *Network) awaitFinalizedRefresh(ctx context.Context, sel string) {
 	s := n.voters(sel, voterQuery{kind: numberVote})
 	if s.count() == 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
+	w := health.FreshnessWindow(n.EvmBlockTime())
+	ctx, cancel := context.WithTimeout(ctx, w)
 	defer cancel()
-	var wg sync.WaitGroup
 	var moved atomic.Bool
-	s.each(func(u common.Upstream, _ int64) bool {
-		sp := u.(common.EvmUpstream).EvmStatePoller()
-		wg.Go(func() {
+	round := func(step int64, first bool) {
+		var wg sync.WaitGroup
+		s.each(func(u common.Upstream, _ int64) bool {
+			sp := u.(common.EvmUpstream).EvmStatePoller()
 			before := sp.FinalizedBlock()
-			if sp.RefreshFinalized(ctx) && sp.FinalizedBlock() != before {
-				moved.Store(true)
-			}
+			atCadence := first || before < step
+			first = false
+			wg.Go(func() {
+				if sp.RefreshFinalized(ctx, atCadence) && sp.FinalizedBlock() != before {
+					moved.Store(true)
+				}
+			})
+			return true
 		})
-		return true
-	})
-	wg.Wait()
+		wg.Wait()
+	}
+	step := n.finalizedStep(s, w)
+	round(step, true)
+	if step == 0 {
+		if step = n.finalizedStep(s, w); step > 0 {
+			round(step, false)
+		}
+	}
 	if l := n.laneFor(sel); moved.Load() && l != nil {
 		n.refreshLaneRecovered(l)
 	}
+}
+
+// finalizedStep is the finality step under way, 0 for none: the highest
+// finalized a voter of s reported, when it rose above the highest any
+// voter reported before within w. Steps are the chain's, so the record is
+// network-wide.
+func (n *Network) finalizedStep(s voterSet, w time.Duration) int64 {
+	var top int64
+	s.each(func(u common.Upstream, _ int64) bool {
+		top = max(top, u.(common.EvmUpstream).EvmStatePoller().FinalizedBlock())
+		return true
+	})
+	for prev := n.finalizedStepTo.Load(); top > prev; prev = n.finalizedStepTo.Load() {
+		if n.finalizedStepTo.CompareAndSwap(prev, top) {
+			n.finalizedStepAt.Store(time.Now().UnixNano())
+			break
+		}
+	}
+	if time.Since(time.Unix(0, n.finalizedStepAt.Load())) >= w {
+		return 0
+	}
+	return n.finalizedStepTo.Load()
 }
 
 // EvmRefreshHeadsBelow Asks, in the background, with a number need at

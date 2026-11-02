@@ -1773,9 +1773,9 @@ func (p *fixedPoller) Ask(context.Context, common.HeadNeed, time.Duration, time.
 func (p *fixedPoller) AskBackground(common.HeadNeed, time.Duration, time.Time, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{}
 }
-func (p *fixedPoller) RefreshFinalized(context.Context) bool { return true }
-func (p *fixedPoller) LatestReportAt() time.Time             { return time.Time{} }
-func (p *fixedPoller) LatestAskAt() time.Time                { return time.Time{} }
+func (p *fixedPoller) RefreshFinalized(context.Context, bool) bool { return true }
+func (p *fixedPoller) LatestReportAt() time.Time                   { return time.Time{} }
+func (p *fixedPoller) LatestAskAt() time.Time                      { return time.Time{} }
 
 func (p *fixedPoller) FinalizedBlock() int64 { return p.finalized }
 
