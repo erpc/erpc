@@ -2619,7 +2619,6 @@ func forwardSendEveryUpstreamRefuses(t *testing.T, code int, message string) (ma
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 
 	network := setupSendRawTxNetwork(t, ctx, upstreamConfigs, &common.NetworkConfig{
 		Architecture: common.ArchitectureEvm,
@@ -2638,6 +2637,9 @@ func forwardSendEveryUpstreamRefuses(t *testing.T, code int, message string) (ma
 			},
 		}},
 	})
+	// After setup: cleanups run last-in first-out, so the app ctx ends
+	// before stopAtEnd's check (test_lifetime_test.go).
+	t.Cleanup(cancel)
 
 	start := time.Now()
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`))
