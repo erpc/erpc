@@ -146,11 +146,11 @@ func (s *scenario) freshClient(ctx context.Context, im *freshImage, period time.
 // eth_getBlockByNumber(tag) it sent (polls and forwarded client reads
 // alike), and every request it sent.
 type freshCount struct {
-	polls, reads, requests map[string]float64
+	polls, reads, numbered, requests map[string]float64
 }
 
 func (s *scenario) freshCounts(pod int, tag string) freshCount {
-	c := freshCount{map[string]float64{}, map[string]float64{}, map[string]float64{}}
+	c := freshCount{map[string]float64{}, map[string]float64{}, map[string]float64{}, map[string]float64{}}
 	ss, err := s.h.pods[pod].scrape()
 	if err != nil {
 		s.t.Fatalf("scrape pod-%d: %v", pod+1, err)
@@ -159,6 +159,7 @@ func (s *scenario) freshCounts(pod int, tag string) freshCount {
 		px, p := s.proxies[u.key], s.h.pods[pod]
 		c.polls[u.key], _ = sumOf(ss, "erpc_upstream_"+tag+"_block_polled_total", map[string]string{"upstream": s.upstream(u.key)})
 		c.reads[u.key] = float64(px.reads(p, tag))
+		c.numbered[u.key] = float64(px.reads(p, "number"))
 		c.requests[u.key] = float64(px.reads(p, anyRead))
 	}
 	return c
@@ -168,6 +169,7 @@ func (c freshCount) since(before freshCount) freshCount {
 	for k := range c.polls {
 		c.polls[k] -= before.polls[k]
 		c.reads[k] -= before.reads[k]
+		c.numbered[k] -= before.numbered[k]
 		c.requests[k] -= before.requests[k]
 	}
 	return c
@@ -210,11 +212,13 @@ func freshDelays(im *freshImage, events []freshFirst, end time.Time) (ds []time.
 	return ds, missed
 }
 
-// freshVerdict is one image's result: its delays' p50 and p90, and its
-// polls, tag reads and upstream requests per unit, summed over upstreams.
+// freshVerdict is one image's result: its delays' p50 and p90; its polls,
+// tag reads and upstream requests per unit, summed over upstreams; and its
+// eth_getBlockByNumber(<number>) upstream calls per client read.
 type freshVerdict struct {
 	p50, p90               time.Duration
 	polls, reads, requests float64
+	numberedPerRead        float64
 }
 
 // freshReport writes each image's delays and traffic per unit to b and
@@ -229,14 +233,23 @@ func (s *scenario) freshReport(b *strings.Builder, what, tag string, imgs []*fre
 		fmt.Fprintf(b, "pod-%d (%s image): %d %s, %d never answered, %d errors; delay p50 %s p90 %s max %s\n",
 			im.pod+1, img, len(ds), what, missed, im.errs, v.p50, v.p90, pctl(ds, 100))
 		fmt.Fprintf(b, "  per %s, %s polls / %s reads / all requests:", unit, tag, tag)
+		var numbered float64
 		for _, u := range freshUps {
 			p, t, r := counts[i].polls[u.key]/per, counts[i].reads[u.key]/per, counts[i].requests[u.key]/per
 			v.polls += p
 			v.reads += t
 			v.requests += r
+			numbered += counts[i].numbered[u.key]
 			fmt.Fprintf(b, " %s %.2f/%.2f/%.2f", u.vendor, p, t, r)
 		}
-		fmt.Fprintf(b, " (total %.2f/%.2f/%.2f)\n", v.polls, v.reads, v.requests)
+		im.mu.Lock()
+		clientReads := len(im.answers)
+		im.mu.Unlock()
+		if clientReads > 0 {
+			v.numberedPerRead = numbered / float64(clientReads)
+		}
+		fmt.Fprintf(b, " (total %.2f/%.2f/%.2f); %.0f by-number block reads for %d client reads (%.3f each)\n",
+			v.polls, v.reads, v.requests, numbered, clientReads, v.numberedPerRead)
 		out[img] = v
 	}
 	return out
@@ -288,15 +301,22 @@ const (
 	// answer a finality step (2 s and 4 s on Ethereum).
 	p17P50Slack = 250 * time.Millisecond
 	p17P90Slack = 500 * time.Millisecond
+	// p17NumberedSlack: by-number block reads per finalized-tag client
+	// read the new image may send above the old image's: with a cache,
+	// one per finality step, not one per read.
+	p17NumberedSlack = 0.05
 )
 
 // P17: P16's layout, time-scaled by p17Scale, with finality moving in
-// steps; one client per image reads eth_getBlockByNumber("finalized")
-// every reader poll interval. Per step, the time from chainsim's step to
-// each pod first answering it: the new image is no later than the old, at
-// no more finalized polls.
+// steps and a cache; one client per image reads
+// eth_getBlockByNumber("finalized") every reader poll interval. Per step,
+// the time from chainsim's step to each pod first answering it: the new
+// image is no later than the old, at no more finalized polls, and its
+// reads of the finalized block by number hit the cache.
 func p17() spec {
-	return freshSpec("P17", p17Scale, chainsim.Config{FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, p17Body)
+	sp := freshSpec("P17", p17Scale, chainsim.Config{FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, p17Body)
+	sp.cache = true
+	return sp
 }
 
 func p17Body(s *scenario) {
@@ -327,4 +347,7 @@ func p17Body(s *scenario) {
 		s.violate(s.name, "chainsim made no finality step in %s", p17Run)
 	}
 	s.freshJudge(v, "a finality step", "made it", p17P50Slack, p17P90Slack)
+	if o, n := v["old"], v["new"]; n.numberedPerRead > o.numberedPerRead+p17NumberedSlack {
+		s.violate(s.name, "new image sent %.3f by-number block reads per finalized-tag read, old %.3f", n.numberedPerRead, o.numberedPerRead)
+	}
 }

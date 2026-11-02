@@ -114,7 +114,9 @@ var (
 	pushKey     = []byte(`{"jsonrpc"`)
 )
 
-var tagKeys = map[string][]byte{"latest": latestKey, "finalized": []byte(`"finalized"`)}
+// tagKeys mark an eth_getBlockByNumber message's block param, by the kind
+// a link counts: a tag, or "number" for a hex number.
+var tagKeys = map[string][]byte{"latest": latestKey, "finalized": []byte(`"finalized"`), "number": []byte(`["0x`)}
 
 // request notes the ids of the latest block requests in a pod→vendor
 // chunk, and counts the link's requests; each message is the part of the
