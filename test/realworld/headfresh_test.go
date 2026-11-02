@@ -54,15 +54,19 @@ func freshSpec(name string, scale int, sim chainsim.Config, faults chainsim.Faul
 }
 
 const (
-	// p16Scale: 3 s blocks, reader 250 ms / 25 ms, vendors 2.5 s.
-	p16Scale = 4
+	// p16Scale: 1.5 s blocks, reader 125 ms / 12.5 ms, vendors 1.25 s.
+	p16Scale = 8
 	// p16Rate: each image's client sends this many eth_blockNumber a second.
-	p16Rate = 20
-	p16Run  = 3 * time.Minute
+	p16Rate = 40
+	// p16Run: about 400 blocks. Each pod polls the vendors at its own
+	// phase, so the per-block delay spreads over a vendor interval: at 3
+	// min the new-minus-old p50 moved by ±250 ms of the 3 s block from run
+	// to run.
+	p16Run = 10 * time.Minute
 	// p16P50Slack, p16P90Slack: how much later the new image may first
-	// answer a block; one client period is 50 ms.
-	p16P50Slack = 75 * time.Millisecond
-	p16P90Slack = 150 * time.Millisecond
+	// answer a block (0.5 s and 1 s on Ethereum).
+	p16P50Slack = 60 * time.Millisecond
+	p16P90Slack = 120 * time.Millisecond
 	// freshCostSlack: the new image may read the tag from its upstreams
 	// at most this many times as often as the old image.
 	freshCostSlack = 1.10
