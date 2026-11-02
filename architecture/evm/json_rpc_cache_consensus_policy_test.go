@@ -19,11 +19,9 @@ func init() {
 }
 
 // TestEvmJsonRpcCache_CacheableConsensusPolicies exercises the write-side
-// admission allowlist: when active (the default ["default"]), a response
-// governed by a non-allowlisted consensus policy is never persisted, because
-// a later cache hit would serve it with zero validation. Responses that ran
-// under an allowlisted policy — or never went through a consensus selector —
-// stay cacheable.
+// admission allowlist: when the operator sets a non-empty list, a response
+// governed by a non-allowlisted consensus policy is never persisted. When
+// the list is nil/empty the filter is off (Forward keeps !selectorOn).
 func TestEvmJsonRpcCache_CacheableConsensusPolicies(t *testing.T) {
 	ctx := context.Background()
 	logger := log.Logger
@@ -50,7 +48,7 @@ func TestEvmJsonRpcCache_CacheableConsensusPolicies(t *testing.T) {
 
 	defaultList := map[string]struct{}{common.ConsensusDefaultPolicyName: {}}
 
-	t.Run("DefaultAllowlist_NamedPolicyNotCached", func(t *testing.T) {
+	t.Run("Allowlist_NamedPolicyNotCached", func(t *testing.T) {
 		conn := plainConnector("conn")
 		conn.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 		cache := newCache(t, conn, defaultList)
@@ -63,14 +61,14 @@ func TestEvmJsonRpcCache_CacheableConsensusPolicies(t *testing.T) {
 	t.Run("FilterOff_NamedPolicyCached", func(t *testing.T) {
 		conn := plainConnector("conn")
 		conn.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-		cache := newCache(t, conn, nil) // explicit empty config → filter off
+		cache := newCache(t, conn, nil) // nil/empty config → filter off
 
 		req, resp := newReqResp("fallback")
 		require.NoError(t, cache.Set(ctx, req, resp))
 		conn.AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
-	t.Run("DefaultPolicyCached", func(t *testing.T) {
+	t.Run("Allowlist_DefaultPolicyCached", func(t *testing.T) {
 		conn := plainConnector("conn")
 		conn.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 		cache := newCache(t, conn, defaultList)
@@ -80,7 +78,7 @@ func TestEvmJsonRpcCache_CacheableConsensusPolicies(t *testing.T) {
 		conn.AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
-	t.Run("NoConsensusStampCached", func(t *testing.T) {
+	t.Run("Allowlist_NoConsensusStampCached", func(t *testing.T) {
 		conn := plainConnector("conn")
 		conn.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 		cache := newCache(t, conn, defaultList)
@@ -104,8 +102,8 @@ func TestEvmJsonRpcCache_CacheableConsensusPolicies(t *testing.T) {
 	})
 }
 
-// TestNewEvmJsonRpcCache_CacheableConsensusPoliciesWiring checks nil →
-// ["default"], explicit empty → filter off, and the per-project clone.
+// TestNewEvmJsonRpcCache_CacheableConsensusPoliciesWiring checks that
+// nil/empty keep the historical skip, and an explicit list is opt-in.
 func TestNewEvmJsonRpcCache_CacheableConsensusPoliciesWiring(t *testing.T) {
 	ctx := context.Background()
 	logger := log.Logger
@@ -127,37 +125,35 @@ func TestNewEvmJsonRpcCache_CacheableConsensusPoliciesWiring(t *testing.T) {
 		}
 	}
 
-	t.Run("NilMeansDefaultOnly", func(t *testing.T) {
+	t.Run("NilKeepsHistoricalSkip", func(t *testing.T) {
 		cache, err := NewEvmJsonRpcCache(ctx, &logger, newCfg(nil))
 		require.NoError(t, err)
-		_, ok := cache.cacheableConsensusPolicies[common.ConsensusDefaultPolicyName]
-		assert.True(t, ok)
-		assert.Len(t, cache.cacheableConsensusPolicies, 1)
-		assert.True(t, cache.AllowsSelectorCache())
+		assert.Nil(t, cache.cacheableConsensusPolicies)
+		assert.False(t, cache.AllowsSelectorCache(), "omitted list must not open the selector cache path")
 	})
 
-	t.Run("ExplicitDefaultList", func(t *testing.T) {
-		cache, err := NewEvmJsonRpcCache(ctx, &logger, newCfg([]string{common.ConsensusDefaultPolicyName}))
-		require.NoError(t, err)
-		assert.True(t, cache.AllowsSelectorCache())
-		_, ok := cache.cacheableConsensusPolicies[common.ConsensusDefaultPolicyName]
-		assert.True(t, ok)
-	})
-
-	t.Run("ExplicitEmptyDisablesFilter", func(t *testing.T) {
+	t.Run("EmptyKeepsHistoricalSkip", func(t *testing.T) {
 		cache, err := NewEvmJsonRpcCache(ctx, &logger, newCfg([]string{}))
 		require.NoError(t, err)
 		assert.Nil(t, cache.cacheableConsensusPolicies)
-		assert.False(t, cache.AllowsSelectorCache(), "empty list keeps the historical !selectorOn skip")
+		assert.False(t, cache.AllowsSelectorCache())
+	})
+
+	t.Run("ExplicitListOptIn", func(t *testing.T) {
+		cache, err := NewEvmJsonRpcCache(ctx, &logger, newCfg([]string{common.ConsensusDefaultPolicyName}))
+		require.NoError(t, err)
+		assert.True(t, cache.AllowsSelectorCache(), "listing policies is the opt-in that opens the selector cache path")
+		_, ok := cache.cacheableConsensusPolicies[common.ConsensusDefaultPolicyName]
+		assert.True(t, ok)
 		cloned := cache.WithProjectId("other-project")
-		assert.Nil(t, cloned.cacheableConsensusPolicies)
-		assert.False(t, cloned.AllowsSelectorCache())
+		assert.True(t, cloned.AllowsSelectorCache())
 	})
 }
 
 func TestResolveCacheableConsensusPolicies(t *testing.T) {
-	assert.Equal(t, map[string]struct{}{common.ConsensusDefaultPolicyName: {}}, resolveCacheableConsensusPolicies(nil))
+	assert.Nil(t, resolveCacheableConsensusPolicies(nil))
 	assert.Nil(t, resolveCacheableConsensusPolicies([]string{}))
+	assert.Nil(t, resolveCacheableConsensusPolicies([]string{""}))
 	assert.Equal(t, map[string]struct{}{"default": {}, "strict": {}},
 		resolveCacheableConsensusPolicies([]string{"default", "strict", ""}))
 }

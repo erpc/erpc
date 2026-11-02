@@ -1752,9 +1752,9 @@ type cacheSelectorSafe interface {
 // cacheEligible reports whether Forward should consult the cache for this
 // request. Always true when no selector is configured. On selector-enabled
 // networks, true only when the cache advertises AllowsSelectorCache — i.e.
-// cacheableConsensusPolicies is active (default ["default"]) so non-allowlisted
-// stamped policies are refused at Set. Otherwise keep the historical skip so
-// a strict caller cannot receive a weaker-grade cached entry.
+// the operator set a non-empty cacheableConsensusPolicies allowlist (opt-in),
+// so non-allowlisted stamped policies are refused at Set. Otherwise keep the
+// historical skip so a strict caller cannot receive a weaker-grade cached entry.
 func cacheEligible(cache common.CacheDAL, selectorOn bool) bool {
 	if cache == nil {
 		return false
@@ -1891,13 +1891,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// fallback / waive-missing result (Copilot finding). Keep multiplexing
 	// disabled until that key carries policy+auth.
 	//
-	// The EVM cache is different: when cacheableConsensusPolicies is active
-	// (default ["default"]), Cache.Set refuses non-allowlisted stamped
-	// policies, so every stored entry is allowlisted (or never went through
-	// a selector) and is safe to serve to any later caller. cacheEligible
-	// opens the read/write path in that case; an explicit empty list keeps
-	// the historical !selectorOn skip so a strict caller cannot receive a
-	// weaker-grade cached entry.
+	// The EVM cache is different: when the operator sets a non-empty
+	// cacheableConsensusPolicies allowlist (opt-in), Cache.Set refuses
+	// non-allowlisted stamped policies. Listing a name is their statement
+	// that grade is safe to serve to any later caller (keys omit
+	// policy+auth). cacheEligible opens the read/write path in that case;
+	// nil/empty keeps the historical !selectorOn skip.
 	selectorOn := n.consensusPolicySelectorEnabled()
 	useCache := cacheEligible(n.cacheDal, selectorOn)
 
