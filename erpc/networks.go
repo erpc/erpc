@@ -2663,13 +2663,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if execErr == nil && !isEmpty {
 		n.enrichStatePoller(ctx, method, req, resp)
 
-		// Extract block number from successful response for block availability bounds check below.
-		var respBlockNumber int64
-		if n.cfg.Architecture == common.ArchitectureEvm {
-			if _, bn, err := evm.ExtractBlockReferenceFromResponse(ctx, resp); err == nil && bn > 0 {
-				respBlockNumber = bn
-			}
-		}
+		// The block the request targets, resolved once and only if an upstream missed.
+		var targetBlock int64
+		targetResolved := false
 
 		// If response is not empty, but at least one upstream responded empty we track in a metric.
 		// Derived from ErrorsByUpstream entries with ErrEndpointMissingData code.
@@ -2689,10 +2685,22 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				return true
 			}
 			upstream := key.(*upstream.Upstream)
-			// An upstream whose head was below the winning block when it answered
+			if !targetResolved {
+				targetBlock, targetResolved = n.evmTargetBlock(ctx, req, resp), true
+			}
+			// An upstream whose head was below the target block when it answered
 			// was behind, or the data did not exist yet (e.g. a tx not yet mined).
 			// An unknown head (0) proves neither, so it still counts.
-			if head := req.HeadAtError(upstream); respBlockNumber > 0 && head > 0 && head < respBlockNumber {
+			if head := req.HeadAtError(upstream); targetBlock > 0 && head > 0 && head < targetBlock {
+				return true
+			}
+			// A miss outside the range an operator declared for this upstream
+			// (blockAvailability) is expected, never misbehavior. A request by
+			// block hash names no number, so a bounded upstream (a pruned full
+			// node) cannot be shown to have missed data it should hold.
+			minBound, maxBound := upstream.EvmBlockAvailabilityBounds()
+			if (minBound != math.MinInt64 || maxBound != math.MaxInt64) &&
+				(targetBlock <= 0 || targetBlock < minBound || targetBlock > maxBound) {
 				return true
 			}
 			finality := req.Finality(ctx)
@@ -2705,17 +2713,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				finality.String(),
 				req.UserId(),
 				req.AgentName()).Inc()
-
-			// If the response block number is known, check if it falls outside
-			// this upstream's configured block availability range.
-			// If so, the empty response was expected — skip misbehavior recording.
-			if respBlockNumber > 0 {
-				minBound, maxBound := upstream.EvmBlockAvailabilityBounds()
-				if (minBound != math.MinInt64 && respBlockNumber < minBound) ||
-					(maxBound != math.MaxInt64 && respBlockNumber > maxBound) {
-					return true
-				}
-			}
 
 			// Wrong-empty is a misbehavior (data disagreement with other upstreams),
 			// not an error. The upstream responded correctly, it just lacked data
@@ -3510,6 +3507,22 @@ func filterMethodEligible(ups []common.Upstream, method string) ([]common.Upstre
 		}
 	}
 	return eligible, dropped
+}
+
+// evmTargetBlock is the block a request targets: the response's, or the
+// request's own when the response names none (eth_call). 0 when unknown, as
+// for a request by block hash.
+func (n *Network) evmTargetBlock(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) int64 {
+	if n.cfg.Architecture != common.ArchitectureEvm {
+		return 0
+	}
+	if _, bn, err := evm.ExtractBlockReferenceFromResponse(ctx, resp); err == nil && bn > 0 {
+		return bn
+	}
+	if _, bn, err := evm.ExtractBlockReferenceFromRequest(ctx, req); err == nil && bn > 0 {
+		return bn
+	}
+	return 0
 }
 
 func (n *Network) enrichStatePoller(ctx context.Context, method string, req *common.NormalizedRequest, resp *common.NormalizedResponse) {
