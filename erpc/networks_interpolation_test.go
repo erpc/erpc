@@ -2214,7 +2214,10 @@ func TestInterpolation_EveryForm(t *testing.T) {
 		run(t, network, translated)
 
 		// A family-1 or family-2 latest request refreshes its axis's voters
-		// before it takes its Head, ahead of the cache: each Asks one.
+		// before it takes its Head, ahead of the cache: once the voter is due
+		// (LatestDue), each Asks it.
+		poller := network.upstreamsRegistry.GetNetworkUpstreams(ctx, network.networkId)[0].EvmStatePoller()
+		untilDue := func() { time.Sleep(time.Until(poller.LatestDue())) }
 		var refreshes atomic.Int64
 		hook := func(_ *evm.EvmStatePoller, m evm.AskMet) {
 			if m.Reason == common.AskRefresh {
@@ -2223,10 +2226,12 @@ func TestInterpolation_EveryForm(t *testing.T) {
 		}
 		evm.AskHook.Store(&hook)
 		t.Cleanup(func() { evm.AskHook.Store(nil) })
+		untilDue()
 		before := refreshes.Load()
 		run(t, network, family2)
 		assert.Greater(t, refreshes.Load(), before, "eth_getBlockReceipts(latest) refreshes the latest head before forwarding")
 
+		untilDue()
 		before = refreshes.Load()
 		bn := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 		bn.SetNetwork(network)
