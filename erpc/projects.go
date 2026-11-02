@@ -168,6 +168,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		Str("method", method).
 		Interface("id", nq.ID()).
 		Str("ptr", fmt.Sprintf("%p", nq)).
+		Str("clientIP", nq.ClientIP()).
 		Logger()
 
 	resp, err := p.doForward(ctx, network, nq)

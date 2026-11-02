@@ -129,7 +129,7 @@ func (s *HttpServer) handleWebSocket(
 		done:         make(chan struct{}),
 	}
 
-	lg.Info().Str("connId", wsc.id).Str("remoteAddr", r.RemoteAddr).Msg("websocket connection established")
+	lg.Info().Str("connId", wsc.id).Str("remoteAddr", r.RemoteAddr).Str("clientIP", clientIP).Msg("websocket connection established")
 
 	// Store before checking draining so shutdownWebSockets either sees this
 	// connection or we see its flag.
