@@ -453,8 +453,9 @@ func svmRepolicy(t *testing.T, net *Network, reg *upstream.UpstreamsRegistry, ct
 //
 // The degradation is a runaway shred-insert lag: the node keeps ingesting shreds
 // (maxShredInsertSlot races ahead) while replay stalls at the processed slot, so
-// getHealth still answers "ok" while every read it serves is stale. That is
-// exactly the failure mode getHealth alone cannot catch.
+// the state probes still answer "ok" while every read it serves is stale. That
+// is exactly the failure mode probe liveness alone cannot catch — the shred-lag
+// clause is what fires here.
 //
 // Recovery is driven by SuggestLatestSlot — the production signal that live
 // traffic observed the node's replay catching up to the shred watermark —

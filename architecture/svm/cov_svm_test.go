@@ -730,7 +730,6 @@ func (u *covSvmFuncUpstream) Forward(ctx context.Context, req *common.Normalized
 
 func covSvmHealthyAnswer(req *common.NormalizedRequest, key string) (*common.NormalizedResponse, error) {
 	raw := map[string]string{
-		"getHealth":             `"ok"`,
 		"getSlot:processed":     `1000`,
 		"getSlot:finalized":     `990`,
 		"getMaxShredInsertSlot": `1001`,
@@ -746,7 +745,6 @@ func covSvmHealthyAnswer(req *common.NormalizedRequest, key string) (*common.Nor
 func TestCovSvmPoller_MalformedSlotAnswersAreIgnored(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
 	up.script("getSlot:processed", []byte(`null`))
 	up.scriptError("getSlot:finalized", -32005, "Node is behind by 42 slots")
 	up.script("getMaxShredInsertSlot", []byte(`"abc"`))
@@ -759,18 +757,21 @@ func TestCovSvmPoller_MalformedSlotAnswersAreIgnored(t *testing.T) {
 	require.True(t, p.IsHealthy(), "a bad slot sample is not a health verdict")
 }
 
-func TestCovSvmPoller_NilHealthResponseIsUnhealthy(t *testing.T) {
+// A nil response object is transport-level silence, not an answer: one dead
+// poll is tolerated (a vendor 429 against the poller is the common case), the
+// second consecutive one flips the verdict.
+func TestCovSvmPoller_NilResponsesAreDeadAfterTwoPolls(t *testing.T) {
 	t.Parallel()
-	up := &covSvmFuncUpstream{id: "covsvm-nilhealth", fwd: func(_ context.Context, req *common.NormalizedRequest, key string) (*common.NormalizedResponse, error) {
-		if key == "getHealth" {
-			return nil, nil
-		}
-		return covSvmHealthyAnswer(req, key)
+	up := &covSvmFuncUpstream{id: "covsvm-nilresp", fwd: func(_ context.Context, _ *common.NormalizedRequest, _ string) (*common.NormalizedResponse, error) {
+		return nil, nil
 	}}
 	p := newPollerWithUpstream(t, up)
+
 	require.NoError(t, p.Poll(context.Background()))
-	require.False(t, p.IsHealthy())
-	require.EqualValues(t, 1000, p.LatestSlot())
+	require.True(t, p.IsHealthy(), "one all-silent poll is not a verdict")
+
+	require.NoError(t, p.Poll(context.Background()))
+	require.False(t, p.IsHealthy(), "two consecutive all-silent polls must flip the verdict")
 }
 
 func TestCovSvmPoller_PanickingUpstreamIsRecovered(t *testing.T) {
@@ -810,7 +811,7 @@ func TestCovSvmPoller_FloorProbeFailuresLeaveFloorUnknown(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			up := newScriptedUpstream()
-			scriptAllFour(up)
+			scriptAllProbes(up)
 			tc.script(up)
 			p := newPollerWithUpstream(t, up)
 			require.NoError(t, p.Poll(context.Background()))

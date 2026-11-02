@@ -106,7 +106,7 @@ Transport is identical (JSON-RPC 2.0 over HTTP). The differences are in network 
 - HTTP JSON-RPC proxy for `mainnet-beta`, `devnet`, `testnet`
 - Network ID format: `svm:<cluster>` (e.g., `svm:mainnet-beta`, `svm:fogo-mainnet`)
 - Commitment-level-aware caching and finality
-- Slot-number state poller per upstream (`getSlot`, `getHealth`, `getMaxShredInsertSlot` polled concurrently)
+- Slot-number state poller per upstream (`getSlot`, `getMaxShredInsertSlot` polled concurrently; liveness derived from probe outcomes, no `getHealth`)
 - Shred-insert lag detection per upstream — nodes that receive shreds but fail to replay them are cordoned out of rotation
 - Error normalization for common SVM error codes
 - Score-based upstream selection and failover (same algorithm as EVM)
@@ -622,33 +622,53 @@ and `commitment.go` never existed, its content living in `finality.go` and `hook
 
 ### 9.2 State Poller: Slot Tracking
 
-Mirrors `EvmStatePoller` in structure. Fans out up to **four RPC calls concurrently** per poll tick (~400 ms). ("Up to" because a later round added traffic-gated polling: when `context.slot` harvested from live responses has kept both slot views fresh inside the debounce window, the two `getSlot` calls are skipped — bounded at 4 consecutive skips, and `getHealth` / `getMaxShredInsertSlot` always run.)
+Mirrors `EvmStatePoller` in structure. Fans out up to **three RPC calls concurrently** per poll tick (~400 ms). ("Up to" because a later round added traffic-gated polling: when `context.slot` harvested from live responses has kept both slot views fresh inside the debounce window, the two `getSlot` calls are skipped — bounded at 4 consecutive skips, and `getMaxShredInsertSlot` always runs.)
 
 ```
-getHealth                           → IsHealthy()           (node health)
 getSlot {"commitment":"processed"}  → LatestSlot()          (processed tip)
 getSlot {"commitment":"finalized"}  → FinalizedSlot()       (latest ROOTED slot)
 getMaxShredInsertSlot               → shred-insert lag      (silent stale detection)
+probe outcomes + gate freshness     → IsHealthy()           (liveness, see below)
 ```
 
-Concurrency eliminates 3× RTT per tick vs. sequential polling. Request bodies are pre-computed static byte slices — no `fmt.Sprintf` allocation per tick:
+Concurrency eliminates 2× RTT per tick vs. sequential polling. Request bodies are pre-computed static byte slices — no `fmt.Sprintf` allocation per tick:
 
 ```go
 // architecture/svm/svm_state_poller.go
 var (
-    reqGetHealth             = []byte(`{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}`)
     reqGetSlotProcessed      = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"processed"}]}`)
     reqGetSlotFinalized      = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`)
     reqGetMaxShredInsertSlot = []byte(`{"jsonrpc":"2.0","id":1,"method":"getMaxShredInsertSlot","params":[]}`)
 )
 ```
 
+**Liveness without a health probe** (replaced the original `getHealth` poll): a poll is alive
+when any state probe answers — any response object, even an RPC error, proves the endpoint is
+alive — or when the traffic gate skipped the `getSlot` calls (live traffic just flowed through
+the upstream, which is stronger proof of life than any probe). The verdict flips unhealthy only
+after 2 consecutive all-failed polls (`deadPollsBeforeUnhealthy`), so one vendor 429 against the
+poller never cordons. The dedicated `getHealth` call was dropped because its verdict was
+redundant with probe outcomes plus the shred-lag cordon, and on a dead endpoint its
+failure-re-probe was the poller's most expensive path. Accepted trade-off: a node that answers
+fine but steadily trails the pool is no longer hard-cordoned (the old `getHealth` "behind"
+verdict); it degrades to score penalty plus missing-data failover, while restart/catch-up cases
+remain covered by the shred-lag cordon.
+
 **Shred-insert lag** (`maxShredInsertSlot − processedSlot`) detects nodes that receive block
 shreds from the network but fail to replay them. The watermark is structurally ≥ the replayed
 slot, so that subtraction *is* the silent-stale detector: shreds keep arriving while replay
-stalls, so the watermark runs away from the processed slot while the node still answers
-`getHealth` "ok". A lag exceeding `MaxShredInsertSlotLagThreshold` (100 slots) makes
+stalls, so the watermark runs away from the processed slot while the node still answers its
+state probes "ok". A lag exceeding `MaxShredInsertSlotLagThreshold` (100 slots) makes
 `IsHealthy()` false.
+
+**Optional processed-probe skip** (`svm.skipProcessedSlotProbe`, default false = poll): on chains that finalize
+within ~1 slot of the processed tip (Alpenglow, ~150 ms finality) the `getSlot(processed)` probe
+is redundant — the finalized probe double-feeds `LatestSlot` (a finalized slot is always a valid
+lower bound for the latest view, the same rule the traffic harvest applies), keeping the lag
+detector, availability bounds, scoring, and the getSlot floor correct within ~1 slot with one
+fewer call per poll. Default OFF (probe runs) for every chain: skipping is strictly opt-in, because on a
+~32-slot-gap chain (TowerBFT) it would silently shift the lag cordon and availability windows by
+that gap.
 
 **CORRECTED — "degraded" is not the shipped effect.** `IsHealthy()` needed a production
 consumer, so the poller publishes its verdict through `Cordon("*")` / `Uncordon("*")` (the
@@ -1199,7 +1219,7 @@ func SetupMocksForSvmStatePoller(upstreamUrl string, latestSlot, finalizedSlot i
         MatchType("json").
         BodyString(`"getSlot"`).
         Reply(200).JSON(map[string]interface{}{"jsonrpc": "2.0", "result": latestSlot, "id": 1})
-    // also mock getHealth and getMaxShredInsertSlot
+    // also mock getMaxShredInsertSlot
 }
 ```
 
@@ -1228,7 +1248,7 @@ gock.New(sol1Url).Post("").Filter(func(r *http.Request) bool {
 |---|---|---|---|
 | **0 — Interface** | `common/architecture.go`, `architecture/evm/handler.go`, wire handler into `Network`/`Upstream`, replace 8 hard-coded calls, all EVM tests pass. **Migrate the 7 EVM methods currently in `upstream/upstream.go`** (`EvmGetChainId`, `EvmIsBlockFinalized`, `EvmSyncingState`, `EvmLatestBlock`, `EvmFinalizedBlock`, `EvmStatePoller`, `EvmAssertBlockAvailability`) into `architecture/evm/` — they are already flagged `// TODO move to evm package`. Replace `evmStatePoller` field with generic `statePoller common.StatePoller`. **Also fix `upstream/failsafe.go` non-retryable short-circuit** (missing `return false` in network-scope retry predicate). | `common/`, `erpc/projects.go`, `erpc/networks.go`, `erpc/init.go`, `upstream/upstream.go`, `upstream/registry.go`, `upstream/failsafe.go`, `architecture/evm/` | 2 days |
 | **1 — Foundation** | `ArchitectureSvm` constant, config structs, validation helpers, composite cache, composite error extractor | `common/network.go`, `common/config.go`, `erpc/composite_cache.go`, `upstream/composite_error_extractor.go` | 1 day |
-| **2 — State Poller** | `common/architecture_svm.go`, `architecture/svm/svm_state_poller.go` with concurrent 4-call polling (`getHealth`, `getSlot(processed)`, `getSlot(finalized)`, `getMaxShredInsertSlot`), shred-insert lag detection, bootstrap integration, `svmVerifyGenesisHash` with all edge cases | `architecture/svm/`, `upstream/upstream.go` | 2 days |
+| **2 — State Poller** | `common/architecture_svm.go`, `architecture/svm/svm_state_poller.go` with concurrent 3-call polling (`getSlot(processed)`, `getSlot(finalized)`, `getMaxShredInsertSlot`), probe-outcome liveness, shred-insert lag detection, bootstrap integration, `svmVerifyGenesisHash` with all edge cases | `architecture/svm/`, `upstream/upstream.go` | 2 days |
 | **3 — Error Normalizer** | Full SVM error table (see §9.6), retryability classification, `-32000` message-text disambiguation | `architecture/svm/error_normalizer.go` | 1 day |
 | **4 — Cache & Finality** | `neverCacheMethods` / `alwaysFinalizedMethods` / `slotPinnedMethods` tables, commitment injection, cache key design, `DataFinalityStateRealtime` | `architecture/svm/finality.go`, `architecture/svm/json_rpc_cache.go`, `common/defaults.go` | 1 day |
 | **5 — Hooks** | All hook implementations, `getGenesisHash` short-circuit, non-retryable write guard (`sendTransaction`, `sendRawTransaction`, `requestAirdrop`), slot-lag filter for consensus | `architecture/svm/hooks.go`, `architecture/svm/slot_lag.go` | 2 days |
