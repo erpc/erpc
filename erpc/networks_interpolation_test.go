@@ -2214,17 +2214,20 @@ func TestInterpolation_EveryForm(t *testing.T) {
 		run(t, network, translated)
 
 		// A family-1 or family-2 latest request refreshes its axis's voters
-		// before it takes its Head, ahead of the cache: past one poll
-		// cadence, the request walks them again.
-		refreshed := &network.servedTipAll.latest.refreshedAtNs
-		cadence := network.cfg.Evm.PollCadence(network.blockTimeOrCold())
-		time.Sleep(cadence)
-		before := refreshed.Load()
+		// before it takes its Head, ahead of the cache: each Asks one.
+		var refreshes atomic.Int64
+		hook := func(_ *evm.EvmStatePoller, m evm.AskMet) {
+			if m.Reason == common.AskRefresh {
+				refreshes.Add(1)
+			}
+		}
+		evm.AskHook.Store(&hook)
+		t.Cleanup(func() { evm.AskHook.Store(nil) })
+		before := refreshes.Load()
 		run(t, network, family2)
-		assert.Greater(t, refreshed.Load(), before, "eth_getBlockReceipts(latest) refreshes the latest head before forwarding")
+		assert.Greater(t, refreshes.Load(), before, "eth_getBlockReceipts(latest) refreshes the latest head before forwarding")
 
-		time.Sleep(cadence)
-		before = refreshed.Load()
+		before = refreshes.Load()
 		bn := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 		bn.SetNetwork(network)
 		bn.SetDirectives(&common.RequestDirectives{EnforceHighestBlock: true})
@@ -2233,7 +2236,7 @@ func TestInterpolation_EveryForm(t *testing.T) {
 		if bnResp != nil {
 			bnResp.Release()
 		}
-		assert.Greater(t, refreshed.Load(), before, "eth_blockNumber refreshes the latest head before it takes its Head")
+		assert.Greater(t, refreshes.Load(), before, "eth_blockNumber refreshes the latest head before it takes its Head")
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
 		req.SetNetwork(network)

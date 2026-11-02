@@ -292,13 +292,6 @@ type servedTipAnchor struct {
 	// on transitions, so a sustained regression reports twice (once when it
 	// starts holding, once if it gives up) instead of once per request.
 	guardState atomic.Int32
-
-	// refreshedAtNs is when refreshLatest last walked this axis's voters
-	// (UnixNano). It saves each request the voter walk and an Ask per
-	// voter; the Ask paces the fetches, but within one cadence a routing
-	// order that rotates would Ask voters the last walk did not, and the
-	// finalized axis is no Ask.
-	refreshedAtNs atomic.Int64
 }
 
 const (
@@ -862,31 +855,21 @@ func isSimpleGroupSelector(selector string) bool {
 	return true
 }
 
-// refreshLatest refreshes the pollers that decide selector sel's Latest
-// for a request that answers it (spec §6.8): only as many of the ballot's
-// voters (voterSet's number votes) as the quorum needs, in routing order,
-// since a fresher head anywhere else cannot move the served value. A lane
-// walks its voters at most once per poll cadence, the debounce each poller
-// applies anyway, so the per-request call costs no upstream iteration in
-// between. While Latest rests on reports younger than W the Asks run in
-// the background and the request reads Head at once, one refresh behind.
-// Once they are older, after an idle period, the request waits for the
-// Asks, at most W, then reads the Head they moved: else it would answer
-// the last full poll's Latest. A timeout or a failed Ask leaves Head as
-// it is.
+// refreshLatest refreshes the pollers that can move selector sel's Latest
+// for a request that answers it (spec §6.8), each at its own cadence, as
+// main refreshed each poller at its own debounce: the voter whose evidence
+// is oldest, so successive requests walk the voters; and while a voter
+// reports a block Latest lacks (Ceiling above it), the voters Latest
+// lacks to reach it (catch-up). The Asks run in the background and the
+// request reads Head at once, one refresh behind. Once Latest rests on
+// reports older than W, after an idle period, the request waits for the
+// first q voters' Asks, at most W, then reads the Head they moved: else
+// it would answer the last full poll's Latest. A timeout or a failed Ask
+// leaves Head as it is.
 func (n *Network) refreshLatest(ctx context.Context, sel string) {
 	var ec *common.EvmNetworkConfig
 	if n.cfg != nil {
 		ec = n.cfg.Evm
-	}
-	l := n.laneFor(sel)
-	now := time.Now()
-	var last int64
-	if l != nil {
-		last = l.latest.refreshedAtNs.Load()
-		if now.UnixNano()-last < int64(ec.PollCadence(n.blockTimeOrCold())) {
-			return
-		}
 	}
 	s := n.voters(sel, voterQuery{kind: numberVote})
 	if s.count() == 0 {
@@ -894,18 +877,25 @@ func (n *Network) refreshLatest(ctx context.Context, sel string) {
 	}
 	need := ec.ServedTipQuorum().Of(s.count())
 	w := health.FreshnessWindow(n.EvmBlockTime())
-	if now.Sub(latestRestsOn(s, need)) >= w {
-		n.awaitLatestRefresh(ctx, l, s, need, w)
+	if time.Since(latestRestsOn(s, need)) >= w {
+		n.awaitLatestRefresh(ctx, n.laneFor(sel), s, need, w)
 		return
 	}
-	if l != nil && !l.latest.refreshedAtNs.CompareAndSwap(last, now.UnixNano()) {
-		return
+	if h := n.headFor(sel); h.Ceiling > h.Latest {
+		n.EvmRefreshHeadsBelow(sel, h.Ceiling, 0)
 	}
+	var oldest common.EvmStatePoller
+	var at time.Time
 	s.each(func(u common.Upstream, _ int64) bool {
-		u.(common.EvmUpstream).EvmStatePoller().AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
-		need--
-		return need > 0
+		sp := u.(common.EvmUpstream).EvmStatePoller()
+		if e := common.EvidenceAt(sp.LatestReportAt(), sp.LatestAskAt()); oldest == nil || e.Before(at) {
+			oldest, at = sp, e
+		}
+		return true
 	})
+	if oldest != nil {
+		oldest.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
+	}
 }
 
 // latestRestsOn is when the evidence Latest rests on was taken: the
@@ -914,7 +904,8 @@ func (n *Network) refreshLatest(ctx context.Context, sel string) {
 // its node's head when the report was taken. Zero when s walks no voter
 // (the set changed since it was read).
 func latestRestsOn(s voterSet, need int) time.Time {
-	at := make([]time.Time, 0, s.count())
+	var buf [16]time.Time
+	at := buf[:0]
 	s.each(func(u common.Upstream, _ int64) bool {
 		at = append(at, u.(common.EvmUpstream).EvmStatePoller().LatestReportAt())
 		return true
@@ -943,7 +934,6 @@ func (n *Network) awaitLatestRefresh(ctx context.Context, l *servedTipLane, s vo
 	})
 	wg.Wait()
 	if l != nil {
-		l.latest.refreshedAtNs.Store(time.Now().UnixNano())
 		n.refreshLaneRecovered(l)
 	}
 }
