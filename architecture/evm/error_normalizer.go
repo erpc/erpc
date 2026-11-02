@@ -417,7 +417,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// "Duplicate transaction / nonce" errors for eth_sendRawTransaction idempotency
 		// IMPORTANT: This must come BEFORE the generic -32003 handling below, because
 		// some upstreams use -32003 for "already known" or "nonce too low" messages.
-		// Note: "replacement transaction underpriced" is NOT handled here - it should remain an error
+		// Note: "replacement transaction underpriced" is NOT handled here - it is not an
+		// idempotent success but a node-local refusal (see the mempool branch below)
 		//----------------------------------------------------------------
 
 		ml := strings.ToLower(msg)
@@ -496,20 +497,25 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		//   - "A newer transaction had higher priority"      (ReplacedByHigherPriority)
 		//   - "Transaction fee too low"                      (FeeTooLow)
 		//   - bare "rejected"                                (TxStatus::Evicted)
+		// and from geth-family pools as -32000:
+		//   - "transaction underpriced"             (below the node's minimum gas price)
+		//   - "replacement transaction underpriced" (fee bump too small for the pool's tx)
 		// These are deterministic pool verdicts about the transaction; the
 		// node is healthy and answered correctly. Left unclassified they fall
 		// through to ErrEndpointServerSideException, which counts toward the
 		// circuit breaker: a burst of rejections used to open the catch-all
 		// breaker and cordon the upstream for ALL methods, reads included.
+		// A server-side exception is also retried on the same upstream, so an
+		// eth_sendRawTransaction broadcast asked every upstream again and
+		// again until its retry budget ran out.
 		// The bare-"rejected" equality intentionally checks err.Message (the
 		// pristine wire message), not ml, which may carry a " Data: …" suffix.
-		// geth-family "replacement transaction underpriced" is deliberately
-		// NOT reclassified here (see the nonce/duplicate note above).
 		//----------------------------------------------------------------
 
 		if strings.Contains(ml, "existing transaction had higher priority") ||
 			strings.Contains(ml, "newer transaction had higher priority") ||
 			strings.Contains(ml, "transaction fee too low") ||
+			strings.Contains(ml, "underpriced") ||
 			strings.EqualFold(strings.TrimSpace(err.Message), "rejected") {
 			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
@@ -523,7 +529,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			// Mempool contents and min-fee policies are node-local: another
 			// upstream may accept the same broadcast. Keep eth_sendRawTransaction
 			// failover, consistent with the -32003 "transaction rejected" branch
-			// below; only the breaker/scoring treatment changes.
+			// below; the upstream that refused is not asked again.
 			if nr != nil && nr.Request() != nil {
 				if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
 					if re, ok := execErr.(common.RetryableError); ok {
