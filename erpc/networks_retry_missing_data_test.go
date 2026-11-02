@@ -1858,6 +1858,74 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 		assert.Equal(t, int64(0), misbehaviors(t, network, "rpc1"),
 			"the winning upstream is never counted for its own earlier empty answer")
 	})
+
+	t.Run("PrunedNodeCallByBlockHash_NoPunishment", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// rpc1 is a pruned full node with a declared lower bound. The call names
+		// its block by hash, so eRPC cannot place it inside rpc1's range: rpc1's
+		// "historical state ... is not available" must not count as misbehavior.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_call")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "error": map[string]interface{}{
+				"code":    -32000,
+				"message": "historical state 4d0f6c8e2a0b7c3d1e5f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d is not available",
+			}})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_call")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x0000000000000000000000000000000000000000000000000000000000000001"})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithCustomUpstreams(t, ctx,
+			[]*common.UpstreamConfig{
+				{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: int64Ptr(0x11110000)},
+					},
+				}},
+				{Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			},
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
+		)
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x2222222222222222222222222222222222222222","data":"0x70a08231"},{"blockHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}`))
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.Equal(t, "rpc2", resp.UpstreamId())
+
+		rpc1 := findUpstream(t, network, "rpc1")
+		missed := false
+		req.ErrorsByUpstream.Range(func(key, value interface{}) bool {
+			if key == rpc1 {
+				err, _ := value.(error)
+				missed = common.HasErrorCode(err, common.ErrCodeEndpointMissingData)
+			}
+			return true
+		})
+		require.True(t, missed, "rpc1's missing state must reach eRPC as missing data")
+		assert.Equal(t, int64(0), network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_call", common.DataFinalityStateAll).MisbehaviorsTotal.Load(),
+			"a bounded upstream is never punished for a call by block hash it cannot be shown to hold")
+	})
 }
 
 // Test: blockUnavailableDelay applied after full round of all upstreams
