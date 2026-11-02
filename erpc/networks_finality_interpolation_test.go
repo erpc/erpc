@@ -86,8 +86,10 @@ func TestInterpolation_PreservesRealtimeFinality(t *testing.T) {
 	assert.Equal(t, common.DataFinalityStateRealtime, respFinality, "Response should also be realtime")
 }
 
-// Test that finality is preserved for finalized tag
-func TestInterpolation_PreservesFinalizedTagFinality(t *testing.T) {
+// An interpolated finalized tag runs at its Head's Finalized, so it has that
+// block's finality, not a tag's realtime (spec §6.4): "latest" stays
+// realtime (TestInterpolation_PreservesRealtimeFinality).
+func TestInterpolation_FinalizedTagTakesItsBlockFinality(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
@@ -122,7 +124,7 @@ func TestInterpolation_PreservesFinalizedTagFinality(t *testing.T) {
 
 	// Check finality BEFORE normalization
 	finalityBefore := req.Finality(ctx)
-	assert.Equal(t, common.DataFinalityStateRealtime, finalityBefore, "Request with 'finalized' tag should be realtime before translation")
+	assert.NotEqual(t, common.DataFinalityStateRealtime, finalityBefore, "An interpolated 'finalized' tag has its block's finality")
 
 	// Normalize the request
 	jrq, err := req.JsonRpcRequest()
@@ -131,7 +133,7 @@ func TestInterpolation_PreservesFinalizedTagFinality(t *testing.T) {
 
 	// Check finality AFTER normalization
 	finalityAfter := req.Finality(ctx)
-	assert.Equal(t, common.DataFinalityStateRealtime, finalityAfter, "Request should STILL be realtime after finalized tag translation")
+	assert.Equal(t, finalityBefore, finalityAfter, "Normalization keeps the request's finality")
 
 	// Forward the request
 	resp, err := network.Forward(ctx, req)
@@ -141,7 +143,7 @@ func TestInterpolation_PreservesFinalizedTagFinality(t *testing.T) {
 
 		// Check response finality
 		respFinality := resp.Finality(ctx)
-		assert.Equal(t, common.DataFinalityStateRealtime, respFinality, "Response should also be realtime")
+		assert.NotEqual(t, common.DataFinalityStateRealtime, respFinality, "The response has the block's finality too")
 	}
 }
 

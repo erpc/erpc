@@ -707,11 +707,12 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				expectedPolicy: finalizedPolicy,
 			},
 			{
-				name:          "FinalizedTag_NoCache",
-				method:        "eth_getBlockByNumber",
-				params:        `["finalized",false]`,
-				result:        `"result":{"number":"0xa","hash":"0xaaa"}`,
-				expectedCache: false, // Realtime tag → not cached
+				name:           "FinalizedTag_CacheAtItsNumber",
+				method:         "eth_getBlockByNumber",
+				params:         `["finalized",false]`,
+				result:         `"result":{"number":"0xa","hash":"0xaaa"}`,
+				expectedCache:  true, // Interpolated to Head.Finalized: final as that number is
+				expectedPolicy: finalizedPolicy,
 			},
 			{
 				name:   "UnfinalizedBlock_Cache",
@@ -896,7 +897,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl)
 	})
 
-	t.Run("CustomPolicyForFinalizedTag", func(t *testing.T) {
+	t.Run("CustomRealtimePolicyForFinalizedTag_NotUsedOnceInterpolated", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
@@ -923,13 +924,14 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
-		ttl := time.Duration(5 * time.Second)
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl).Return(nil)
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
 		err = cache.Set(context.Background(), req, resp)
 
+		// The tag runs at Head.Finalized, so the request has that block's
+		// finality, not a tag's realtime: a realtime policy never stores it.
 		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl)
+		mockConnectors[0].AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("ServeFinalizedBlock_WhenRequestedByFinalizedBlockNumber", func(t *testing.T) {
@@ -969,7 +971,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:20", mock.Anything, mock.Anything, finalizedDefault.GetTTL())
 	})
 
-	t.Run("SkipCache_WhenRequestedByFinalizedTag_WithDefaultFinalizedPolicy", func(t *testing.T) {
+	t.Run("CacheFinalizedTag_WithDefaultFinalizedPolicy", func(t *testing.T) {
 		// The upstream just marked block 0x14 (20 dec) as finalized
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -998,21 +1000,12 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		respLatest.SetUpstream(mockUpstreams[0])
 		reqLatest.SetLastValidResponse(ctx, respLatest)
 
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, finalizedDefault.GetTTL()).Return(nil)
 		err = cache.Set(context.Background(), reqLatest, respLatest)
 		require.NoError(t, err)
-		// The 'finalized' tag is classified as Realtime and should NOT match the
-		// default-finalized policy, therefore nothing is written to cache.
-		mockConnectors[0].AssertNumberOfCalls(t, "Set", 0)
-
-		// 2/ client asks for block (0xf == 15) explicitly
-		reqExact := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0xf",false],"id":2}`))
-		reqExact.SetNetwork(mockNetwork)
-		reqExact.SetCacheDal(cache)
-
-		// Expect a lookup on the finalized-policy key that returns "record not found".
-		mockConnectors[0].
-			On("Get", mock.Anything, mock.Anything, "evm:123:15", mock.Anything, mock.Anything).
-			Return("", common.NewErrRecordNotFound("evm:123:15", "some-key", "mock1")).Once()
+		// The interpolated tag runs at Head.Finalized (20), final on the
+		// serving upstream too (#90): the default-finalized policy stores it.
+		mockConnectors[0].AssertNumberOfCalls(t, "Set", 1)
 	})
 
 	t.Run("SkipCache_WhenRequestedByFinalizedTag_WithRealtimePolicy", func(t *testing.T) {
@@ -1071,7 +1064,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			Return("", common.NewErrRecordNotFound("evm:123:15", "cache-key", "mock1")).Once()
 	})
 
-	t.Run("SkipCache_WhenFinalizedTagAfterNumericCache_WithDefaultFinalizedPolicy", func(t *testing.T) {
+	t.Run("FinalizedTagReadsHeadFinalized_AfterNumericCache_WithDefaultFinalizedPolicy", func(t *testing.T) {
 		// upstream finalized height = 25 (0x19); we will write block 0x18 (24).
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1105,17 +1098,20 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		require.NoError(t, err)
 		mockConnectors[0].AssertNumberOfCalls(t, "Set", 1)
 
-		// 2) "finalized" tag request must MISS the cache.
+		// 2) a "finalized" tag request looks up the number its Head's
+		// Finalized holds, not the tag.
 		reqTag := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["finalized",false],"id":2}`))
 		reqTag.SetNetwork(mockNetwork)
 		reqTag.SetCacheDal(cache)
+		mockConnectors[0].On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Return(nil, common.NewErrRecordNotFound("evm:123:fin", "some-key", "mock1"))
 
 		resp, err := cache.Get(context.Background(), reqTag)
 		assert.NoError(t, err)
 		assert.Nil(t, resp)
-
-		// Verify the connector was **not** touched.
-		mockConnectors[0].AssertNumberOfCalls(t, "Get", 0)
+		fin := reqTag.EvmHead().Finalized
+		require.Positive(t, fin)
+		mockConnectors[0].AssertCalled(t, "Get", mock.Anything, mock.Anything, fmt.Sprintf("evm:123:%d", fin), mock.Anything, mock.Anything)
 	})
 
 	t.Run("EthGetLogs_SameBlockRange_Finalized", func(t *testing.T) {
