@@ -437,6 +437,8 @@ func p18(delay time.Duration) spec {
 	sp.up = map[string]map[string]interface{}{"http-r": {
 		"allowMethods":  []string{"eth_call", "eth_getBalance", "eth_getCode", "eth_getStorageAt", "eth_getTransactionCount", "eth_chainId"},
 		"ignoreMethods": []string{"*"},
+		// Preferred over the vendors.
+		"routing": map[string]interface{}{"scoreMultipliers": []map[string]interface{}{{"network": "", "method": "", "overall": 2}}},
 	}}
 	return sp
 }
