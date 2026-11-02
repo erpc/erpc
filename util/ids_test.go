@@ -26,7 +26,7 @@ func TestSvmNetworkId_BackwardCompat(t *testing.T) {
 	}
 }
 
-func TestIsValidNetworkId_SvmWithChain(t *testing.T) {
+func TestCanonicalNetworkId_SvmWithChain(t *testing.T) {
 	cases := []struct {
 		id   string
 		want bool
@@ -51,8 +51,8 @@ func TestIsValidNetworkId_SvmWithChain(t *testing.T) {
 		tc := tc
 		t.Run(tc.id, func(t *testing.T) {
 			t.Parallel()
-			if got := IsValidNetworkId(tc.id); got != tc.want {
-				t.Fatalf("IsValidNetworkId(%q) = %v, want %v", tc.id, got, tc.want)
+			if _, got := CanonicalNetworkId(tc.id); got != tc.want {
+				t.Fatalf("CanonicalNetworkId(%q) valid = %v, want %v", tc.id, got, tc.want)
 			}
 		})
 	}

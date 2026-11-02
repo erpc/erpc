@@ -30,10 +30,18 @@ func IsValidIdentifier(s string) bool {
 	return validIdentifierRegex.MatchString(s)
 }
 
-func IsValidNetworkId(s string) bool {
+// CanonicalNetworkId returns the one id of the network s names, and whether s
+// names a valid network. An EVM chain id is a plain integer, so "evm:01" and
+// "evm:0001" both name "evm:1": every consumer of the id (provider
+// ignoreNetworks/onlyNetworks, lazy network creation, upstream ids) must see
+// that one form.
+func CanonicalNetworkId(s string) (string, bool) {
 	if strings.HasPrefix(s, "evm:") {
-		_, err := strconv.Atoi(s[4:])
-		return err == nil
+		chainId, err := strconv.ParseInt(s[4:], 10, 64)
+		if err != nil {
+			return "", false
+		}
+		return EvmNetworkId(chainId), true
 	}
 	if strings.HasPrefix(s, "svm:") {
 		// Two accepted shapes: "svm:<cluster>" (implicit solana, back-compat)
@@ -42,28 +50,28 @@ func IsValidNetworkId(s string) bool {
 		// rejected.
 		rest := s[4:]
 		if rest == "" {
-			return false
+			return "", false
 		}
 		for _, segment := range strings.Split(rest, ":") {
 			if segment == "" {
-				return false
+				return "", false
 			}
 			for _, r := range segment {
 				if !(r == '-' || r == '_' || r == '.' ||
 					(r >= 'a' && r <= 'z') ||
 					(r >= 'A' && r <= 'Z') ||
 					(r >= '0' && r <= '9')) {
-					return false
+					return "", false
 				}
 			}
 		}
 		// Reject more than 2 segments — no use case for svm:a:b:c today.
 		if strings.Count(rest, ":") > 1 {
-			return false
+			return "", false
 		}
-		return true
+		return s, true
 	}
-	return false
+	return "", false
 }
 
 var counters = make(map[string]int)
