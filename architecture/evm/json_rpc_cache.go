@@ -24,6 +24,13 @@ type EvmJsonRpcCache struct {
 	policies  []*data.CachePolicy
 	logger    *zerolog.Logger
 
+	// cacheableConsensusPolicies is the set of consensus policy names whose
+	// responses may be persisted (see common.CacheConfig.CacheableConsensusPolicies).
+	// Nil means the admission filter is off (explicit empty config list).
+	// Non-nil (including the default {"default"}) means a stamped policy must
+	// be in the set to be written; unstamped responses are always allowed.
+	cacheableConsensusPolicies map[string]struct{}
+
 	// Compression settings
 	compressionEnabled   bool
 	compressionThreshold int
@@ -69,8 +76,9 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 	}
 
 	cache := &EvmJsonRpcCache{
-		policies: policies,
-		logger:   logger,
+		policies:                   policies,
+		logger:                     logger,
+		cacheableConsensusPolicies: resolveCacheableConsensusPolicies(cfg.CacheableConsensusPolicies),
 	}
 
 	// Initialize compression if configured
@@ -138,19 +146,56 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 	lg := c.logger.With().Str("projectId", projectId).Logger()
 	lg.Debug().Msgf("cloning EvmJsonRpcCache for project")
 	return &EvmJsonRpcCache{
-		logger:               &lg,
-		policies:             c.policies,
-		projectId:            projectId,
-		compressionEnabled:   c.compressionEnabled,
-		compressionThreshold: c.compressionThreshold,
-		compressionLevel:     c.compressionLevel,
-		encoderPool:          c.encoderPool,
-		decoderPool:          c.decoderPool,
+		logger:                     &lg,
+		policies:                   c.policies,
+		projectId:                  projectId,
+		cacheableConsensusPolicies: c.cacheableConsensusPolicies,
+		compressionEnabled:         c.compressionEnabled,
+		compressionThreshold:       c.compressionThreshold,
+		compressionLevel:           c.compressionLevel,
+		encoderPool:                c.encoderPool,
+		decoderPool:                c.decoderPool,
 	}
 }
 
 func (c *EvmJsonRpcCache) SetPolicies(policies []*data.CachePolicy) {
 	c.policies = policies
+}
+
+// resolveCacheableConsensusPolicies turns the config allowlist into the
+// runtime set used by Cache.Set / AllowsSelectorCache.
+//
+//   - nil/omitted → {"default"} (filter on)
+//   - explicit empty → nil (filter off; historical !selectorOn skip)
+//   - non-empty → membership set (filter on)
+func resolveCacheableConsensusPolicies(names []string) map[string]struct{} {
+	if names == nil {
+		return map[string]struct{}{common.ConsensusDefaultPolicyName: {}}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		if n == "" {
+			continue
+		}
+		out[n] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// AllowsSelectorCache reports whether selector-enabled networks may safely
+// read/write this cache. True when the consensus-policy allowlist filter is
+// active: Cache.Set then refuses stamped policies outside the list, so every
+// stored entry was allowlisted (or never went through a selector) and is
+// safe to serve to any later caller. Network.Forward uses this to decide
+// whether to keep the historical !selectorOn skip.
+func (c *EvmJsonRpcCache) AllowsSelectorCache() bool {
+	return c != nil && c.cacheableConsensusPolicies != nil
 }
 
 // observeGetLogsRange records the concrete block-range size of an eth_getLogs
@@ -665,6 +710,22 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		attribute.String("request.method", rpcReq.Method),
 		attribute.String("network.id", ntwId),
 	)
+
+	// A response produced under a non-allowlisted consensus policy was
+	// validated by a grade outside cacheableConsensusPolicies; a cache hit
+	// would later serve it with zero validation. Don't persist it.
+	// Write-side only: allowlisted (and unstamped) entries stay safe for
+	// any request. "" means no selector ran (no consensus, or consensus
+	// without a customPolicy selector) — always cacheable.
+	if c.cacheableConsensusPolicies != nil {
+		if pol := req.ExecState().ConsensusPolicy(); pol != "" {
+			if _, ok := c.cacheableConsensusPolicies[pol]; !ok {
+				lg.Debug().Str("consensusPolicy", pol).Msg("skip caching response governed by non-allowlisted consensus policy")
+				span.SetAttributes(attribute.String("cache.set_skipped_reason", "consensus_policy:"+pol))
+				return nil
+			}
+		}
+	}
 
 	// Key "latest"/"finalized" by the response's block (see ResolveCacheBlockRef).
 	blockRef, blockNumber, err := ResolveCacheBlockRef(ctx, req, resp)

@@ -465,6 +465,17 @@ export interface CacheConfig {
   connectors?: TsConnectorConfig[];
   policies?: (CachePolicyConfig | undefined)[];
   compression?: CompressionConfig;
+  /**
+   * CacheableConsensusPolicies is the allowlist of consensus policy names
+   * whose responses may be persisted. A cache hit is served with zero
+   * validation, so only grades on this list should be written. Unstamped
+   * responses (method never went through consensus, or consensus without a
+   * customPolicy selector) are always cacheable and are not represented
+   * here. When nil/omitted, defaults to ["default"]. An explicit empty
+   * list disables the filter (cache any stamped policy) and keeps the
+   * historical Forward !selectorOn skip.
+   */
+  cacheableConsensusPolicies?: string[];
 }
 export interface CompressionConfig {
   enabled?: boolean;

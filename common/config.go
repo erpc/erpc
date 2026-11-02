@@ -346,6 +346,15 @@ type CacheConfig struct {
 	Connectors  []*ConnectorConfig   `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
 	Policies    []*CachePolicyConfig `yaml:"policies,omitempty" json:"policies"`
 	Compression *CompressionConfig   `yaml:"compression,omitempty" json:"compression"`
+	// CacheableConsensusPolicies is the allowlist of consensus policy names
+	// whose responses may be persisted. A cache hit is served with zero
+	// validation, so only grades on this list should be written. Unstamped
+	// responses (method never went through consensus, or consensus without a
+	// customPolicy selector) are always cacheable and are not represented
+	// here. When nil/omitted, defaults to ["default"]. An explicit empty
+	// list disables the filter (cache any stamped policy) and keeps the
+	// historical Forward !selectorOn skip.
+	CacheableConsensusPolicies []string `yaml:"cacheableConsensusPolicies,omitempty" json:"cacheableConsensusPolicies,omitempty"`
 }
 
 type CompressionConfig struct {

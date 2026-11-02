@@ -1742,6 +1742,32 @@ func (n *Network) consensusPolicySelectorEnabled() bool {
 	return false
 }
 
+// cacheSelectorSafe is implemented by CacheDAL backends whose write path
+// filters by consensus policy so selector-enabled networks may safely
+// read/write (see EvmJsonRpcCache.AllowsSelectorCache).
+type cacheSelectorSafe interface {
+	AllowsSelectorCache() bool
+}
+
+// cacheEligible reports whether Forward should consult the cache for this
+// request. Always true when no selector is configured. On selector-enabled
+// networks, true only when the cache advertises AllowsSelectorCache — i.e.
+// cacheableConsensusPolicies is active (default ["default"]) so non-allowlisted
+// stamped policies are refused at Set. Otherwise keep the historical skip so
+// a strict caller cannot receive a weaker-grade cached entry.
+func cacheEligible(cache common.CacheDAL, selectorOn bool) bool {
+	if cache == nil {
+		return false
+	}
+	if !selectorOn {
+		return true
+	}
+	if s, ok := cache.(cacheSelectorSafe); ok && s.AllowsSelectorCache() {
+		return true
+	}
+	return false
+}
+
 func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *networkExecutor {
 	method, _ := req.Method()
 	finality := req.Finality(ctx)
@@ -1859,13 +1885,21 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	// Selector-enabled requests must not share results across callers: the
-	// multiplex hash and the EVM cache key omit the consensus policy and the
-	// caller's auth, so a strict caller could receive a concurrent or cached
-	// fallback / waive-missing result (Copilot finding). Until both keys
-	// carry the policy+auth, disable multiplexing and cache reads/writes for
-	// selector-enabled networks.
+	// Selector-enabled requests must not share in-flight results across
+	// callers: the multiplex hash omits the consensus policy and the
+	// caller's auth, so a strict caller could receive a concurrent
+	// fallback / waive-missing result (Copilot finding). Keep multiplexing
+	// disabled until that key carries policy+auth.
+	//
+	// The EVM cache is different: when cacheableConsensusPolicies is active
+	// (default ["default"]), Cache.Set refuses non-allowlisted stamped
+	// policies, so every stored entry is allowlisted (or never went through
+	// a selector) and is safe to serve to any later caller. cacheEligible
+	// opens the read/write path in that case; an explicit empty list keeps
+	// the historical !selectorOn skip so a strict caller cannot receive a
+	// weaker-grade cached entry.
 	selectorOn := n.consensusPolicySelectorEnabled()
+	useCache := cacheEligible(n.cacheDal, selectorOn)
 
 	var mlx *Multiplexer
 	var resp *common.NormalizedResponse
@@ -1892,7 +1926,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		defer n.cleanupMultiplexer(mlx)
 	}
 
-	if n.cacheDal != nil && !selectorOn && !req.ShouldSkipCacheRead("") {
+	if useCache && !req.ShouldSkipCacheRead("") {
 		lg.Debug().Msgf("checking cache for request")
 		resp, err := n.cacheDal.Get(ctx, req)
 		if err != nil {
@@ -2614,7 +2648,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	if resp != nil {
-		if n.cacheDal != nil && !selectorOn {
+		if useCache {
 			// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
 			// TODO For other architectures we might need a different approach
 			_, _ = resp.JsonRpcResponse(ctx)
