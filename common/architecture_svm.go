@@ -38,6 +38,10 @@ type SvmStatePoller interface {
 	// SvmNetworkConfig.StatePollerDebounce via upstream.SetNetworkConfig.
 	SetDebounceInterval(d time.Duration)
 
+	// SetSkipProcessedSlotProbe wires SvmNetworkConfig.SkipProcessedSlotProbe
+	// via upstream.SetNetworkConfig. Default false (probe runs).
+	SetSkipProcessedSlotProbe(v bool)
+
 	Poll(ctx context.Context) error
 
 	LatestSlot() int64

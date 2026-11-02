@@ -2864,6 +2864,15 @@ type SvmNetworkConfig struct {
 	// slot/health view. Default: 400ms (one slot).
 	StatePollerDebounce Duration `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
 
+	// SkipProcessedSlotProbe skips the state poller's getSlot(processed)
+	// probe and lets the finalized probe feed LatestSlot. Default false
+	// (probe runs) — correct for any finality gap. Set true only on chains
+	// finalizing within ~1 slot of the processed tip (Alpenglow); on
+	// ~32-slot-gap chains (TowerBFT) it shifts the shred-lag cordon and
+	// availability windows by that gap. Plain bool: unset and false are the
+	// same (poll), matching the opt-in skip framing.
+	SkipProcessedSlotProbe bool `yaml:"skipProcessedSlotProbe,omitempty" json:"skipProcessedSlotProbe,omitempty"`
+
 	// MaxFinalizedSlotLag bounds how many slots an upstream's FinalizedSlot may
 	// trail the pool's highest FinalizedSlot before it is excluded from
 	// consensus voting on finalized data. Only applied when a consensus policy

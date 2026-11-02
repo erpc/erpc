@@ -30,6 +30,7 @@ func (p *pollerAtSlot) IsHealthy() bool                   { return true }
 func (p *pollerAtSlot) SuggestLatestSlot(int64)           {}
 func (p *pollerAtSlot) SuggestFinalizedSlot(int64)        {}
 func (p *pollerAtSlot) SetDebounceInterval(time.Duration) {}
+func (p *pollerAtSlot) SetSkipProcessedSlotProbe(bool)    {}
 func (p *pollerAtSlot) FirstAvailableSlot() (int64, bool) {
 	return p.floor, p.floorKnown
 }

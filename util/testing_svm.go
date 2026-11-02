@@ -15,8 +15,8 @@ import (
 // Kept here as a literal because util cannot import common (cycle).
 const SolanaMainnetBetaGenesisHash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
 
-// SetupMocksForSvmStatePoller registers the four state-poller calls every SVM
-// upstream makes on each tick: getHealth, getSlot(processed), getSlot(finalized),
+// SetupMocksForSvmStatePoller registers the three state-poller calls every SVM
+// upstream makes on each tick: getSlot(processed), getSlot(finalized),
 // getMaxShredInsertSlot. It also mocks the one-shot bootstrap getGenesisHash with
 // the mainnet-beta hash so the upstream passes genesis validation (which is
 // fail-closed for known clusters). Each filter guards by URL.Host so a test with
@@ -59,14 +59,6 @@ func setupSvmStatePollerMocks(host string, latestSlot, finalizedSlot, shredInser
 		Filter(filterByHostAndBody(host, `"method":"getGenesisHash"`)).
 		Reply(200).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"` + SolanaMainnetBetaGenesisHash + `","_note":"svm bootstrap expected mock for getGenesisHash"}`))
-
-	// getHealth → "ok"
-	gock.New("http://" + host).
-		Post("").
-		Persist().
-		Filter(filterByHostAndBody(host, "getHealth")).
-		Reply(200).
-		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"ok","_note":"svm state poller expected mock for getHealth"}`))
 
 	// getSlot(processed)
 	gock.New("http://" + host).

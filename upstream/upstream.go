@@ -529,9 +529,12 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 		u.evmStatePoller.SetNetworkConfig(cfg)
 	}
 	if cfg.Svm != nil && u.svmStatePoller != nil {
-		// StatePollerDebounce is a network-level SVM setting; the per-upstream
-		// poller has no direct network reference, so push the cadence in here.
+		// Network-level SVM settings pushed into the per-upstream poller,
+		// which has no direct network reference. SkipProcessedSlotProbe is
+		// opt-in (default false = poll), the inverse of the old nil-true
+		// statePollerProcessedSlot framing.
 		u.svmStatePoller.SetDebounceInterval(cfg.Svm.StatePollerDebounce.Duration())
+		u.svmStatePoller.SetSkipProcessedSlotProbe(cfg.Svm.SkipProcessedSlotProbe)
 	}
 	// Always set networkId from the provided config
 	nid := cfg.NetworkId()
