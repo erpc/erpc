@@ -3,6 +3,7 @@ package realworld
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"sync"
@@ -117,18 +118,22 @@ func (im *freshImage) firstAt(n uint64) (first time.Time, ok bool) {
 	return first, ok
 }
 
-// freshClient calls read on im's pod every period until ctx ends.
+// freshClient calls read on im's pod about every period until ctx ends.
+// Each gap is uniform in [period/2, 3*period/2]: a fixed period dividing
+// the block time would pin the reads to one phase of the chain clock per
+// run, and that phase, not the image, would decide the delay.
 func (s *scenario) freshClient(ctx context.Context, im *freshImage, period time.Duration, read func(pod int) (uint64, error)) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
-	tick := time.NewTicker(period)
-	defer tick.Stop()
+	wait := time.NewTimer(period/2 + rand.N(period))
+	defer wait.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-tick.C:
+		case <-wait.C:
 		}
+		wait.Reset(period/2 + rand.N(period))
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
