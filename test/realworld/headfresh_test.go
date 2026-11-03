@@ -14,8 +14,8 @@ import (
 	"github.com/erpc/erpc/test/chainsim"
 )
 
-// freshUp is one https upstream of a freshness layout, its times on
-// Ethereum (12 s blocks), before the layout's scale: its poll interval and
+// freshUp is one https upstream of a freshness layout, its times on its
+// chain's clock, before the layout's scale: its poll interval and
 // debounce (0 the default), and how long after a block is minted its node
 // serves it.
 type freshUp struct {
@@ -35,9 +35,9 @@ var freshUps = []freshUp{
 	{"http-d", "vendor-d", 40 * time.Millisecond, 10 * time.Second, 0, 0},
 }
 
-// freshSpec is a freshness layout ups on Ethereum on Kubernetes' times
-// divided by scale: 12 s blocks, no ws source, quorum 2, one old-image and
-// one new-image pod with their own state.
+// freshSpec is a freshness layout ups on Kubernetes' times divided by
+// scale: sim's block time (Ethereum's 12 s when 0), no ws source, quorum
+// 2, one old-image and one new-image pod with their own state.
 func freshSpec(name string, scale int, ups []freshUp, sim chainsim.Config, faults chainsim.Faults, body func(*scenario)) spec {
 	d := func(t time.Duration) string { return (t / time.Duration(scale)).String() }
 	var vendors []vendorSpec
@@ -53,7 +53,10 @@ func freshSpec(name string, scale int, ups []freshUp, sim chainsim.Config, fault
 			upEvm[u.key]["statePollerDebounce"] = d(u.debounce)
 		}
 	}
-	sim.BlockTime = 12 * time.Second / time.Duration(scale)
+	if sim.BlockTime == 0 {
+		sim.BlockTime = 12 * time.Second
+	}
+	sim.BlockTime /= time.Duration(scale)
 	return spec{name: name, pods: 2, oldPods: []int{0}, memory: true, bound: healthyDelivery,
 		sim: sim, vendors: vendors, faults: fs, upEvm: upEvm, clients: func(*scenario) {}, body: body}
 }
@@ -86,11 +89,13 @@ func p16() spec {
 	return freshSpec("P16", p16Scale, freshUps, chainsim.Config{}, chainsim.Faults{}, p16Body)
 }
 
-// freshImage is one image's tally: every answer and when it arrived.
+// freshImage is one image's tally: every answer, when it arrived and how
+// long its request took.
 type freshImage struct {
 	pod     int
 	mu      sync.Mutex
 	answers []freshFirst
+	took    []time.Duration
 	errs    int
 }
 
@@ -100,10 +105,11 @@ type freshFirst struct {
 	at time.Time
 }
 
-func (im *freshImage) saw(n uint64, at time.Time) {
+func (im *freshImage) saw(n uint64, at time.Time, took time.Duration) {
 	im.mu.Lock()
 	defer im.mu.Unlock()
 	im.answers = append(im.answers, freshFirst{n, at})
+	im.took = append(im.took, took)
 }
 
 // firstAt is when im first answered n or higher; false when never.
@@ -137,6 +143,7 @@ func (s *scenario) freshClient(ctx context.Context, im *freshImage, period time.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			sent := time.Now()
 			n, err := read(im.pod)
 			at := time.Now()
 			if err != nil {
@@ -145,7 +152,7 @@ func (s *scenario) freshClient(ctx context.Context, im *freshImage, period time.
 				im.mu.Unlock()
 				return
 			}
-			im.saw(n, at)
+			im.saw(n, at, at.Sub(sent))
 		}()
 	}
 }
@@ -487,5 +494,87 @@ func p18Body(s *scenario) {
 	}
 	if o, n := head["old"], head["new"]; n.requests > o.requests*p18CostSlack {
 		s.violate(s.name, "new image sent its upstreams %.2f requests/s, old %.2f", n.requests, o.requests)
+	}
+}
+
+const (
+	// p19BlockTime: Arbitrum's blocks, in real time.
+	p19BlockTime = 250 * time.Millisecond
+	p19Run       = 8 * time.Minute
+	// p19P50Slack, p19P90Slack: how much older the new image's served
+	// latest block may be than the old image's: a fifth and two fifths of
+	// a block.
+	p19P50Slack = 50 * time.Millisecond
+	p19P90Slack = 100 * time.Millisecond
+)
+
+// p19Ups are seven voters, every one polled over https:
+// four vendors at 4-6 s, three at 10 s.
+var p19Ups = []freshUp{
+	{"http-a", "vendor-a", 20 * time.Millisecond, 4 * time.Second, 0, 0},
+	{"http-b", "vendor-b", 30 * time.Millisecond, 5 * time.Second, 0, 0},
+	{"http-c", "vendor-c", 25 * time.Millisecond, 5 * time.Second, 0, 0},
+	{"http-d", "vendor-d", 40 * time.Millisecond, 6 * time.Second, 0, 0},
+	{"http-e", "vendor-e", 35 * time.Millisecond, 10 * time.Second, 0, 0},
+	{"http-f", "vendor-f", 45 * time.Millisecond, 10 * time.Second, 0, 0},
+	{"http-g", "vendor-g", 10 * time.Millisecond, 10 * time.Second, 0, 0},
+}
+
+// P19: Arbitrum's 0.25 s blocks, in real time: seven vendors
+// polled every 4-10 s, a cache, quorum 2; per pod, rate head reads a
+// second, half eth_blockNumber and half eth_getBlockByNumber("latest"),
+// sparse next to the blocks. Per answer, its served block's age: from
+// chainsim minting it to the answer. The new image serves blocks no
+// older than the old one, at no more upstream requests.
+func p19(rate float64) spec {
+	sp := freshSpec(fmt.Sprintf("P19-r%g", rate), 1, p19Ups, chainsim.Config{BlockTime: p19BlockTime}, chainsim.Faults{}, func(s *scenario) { p19Body(s, rate) })
+	sp.cache = true
+	return sp
+}
+
+// freshAges are the ages of im's answers: from chainsim minting the
+// answered block to the answer.
+func (s *scenario) freshAges(im *freshImage) (ages []time.Duration) {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	for _, a := range im.answers {
+		if b := s.chain.CanonAt(a.n); b != nil {
+			ages = append(ages, max(a.at.Sub(b.MintedAt), 0))
+		}
+	}
+	slices.Sort(ages)
+	return ages
+}
+
+func p19Body(s *scenario, rate float64) {
+	s.blocks(10)
+	period := time.Duration(float64(2*time.Second) / rate)
+	imgs, counts := s.freshRun(p19Run, freshLoad{period, "latest", freshHead}, freshLoad{period, "latest", freshLatestBlock})
+	var b strings.Builder
+	v := s.freshReport(&b, "blocks timed (P19 times answers)", "latest", imgs[0], counts[0], nil, time.Now(), time.Second, p19Run)
+	ages := map[string][]time.Duration{}
+	for i, l := range imgs {
+		for _, im := range l {
+			img, a := s.image(im.pod), s.freshAges(im)
+			ages[img] = append(ages[img], a...)
+			im.mu.Lock()
+			took := slices.Clone(im.took)
+			im.mu.Unlock()
+			slices.Sort(took)
+			fmt.Fprintf(&b, "pod-%d (%s image) %s: %d answers, served block age p50 %s p90 %s, latency p50 %s p90 %s max %s\n",
+				im.pod+1, img, []string{"eth_blockNumber", "eth_getBlockByNumber(latest)"}[i], len(took), pctl(a, 50), pctl(a, 90), pctl(took, 50), pctl(took, 90), pctl(took, 100))
+		}
+	}
+	for img, a := range ages {
+		slices.Sort(a)
+		fmt.Fprintf(&b, "%s image: %d answers, served block age p50 %s p90 %s max %s\n", img, len(a), pctl(a, 50), pctl(a, 90), pctl(a, 100))
+	}
+	s.logf("%s", b.String())
+	o, n := ages["old"], ages["new"]
+	if pctl(n, 50) > pctl(o, 50)+p19P50Slack || pctl(n, 90) > pctl(o, 90)+p19P90Slack {
+		s.violate(s.name, "new image served latest blocks p50 %s p90 %s old, old image p50 %s p90 %s", pctl(n, 50), pctl(n, 90), pctl(o, 50), pctl(o, 90))
+	}
+	if vo, vn := v["old"], v["new"]; vn.requests > vo.requests*p18CostSlack {
+		s.violate(s.name, "new image sent its upstreams %.2f requests/s, old %.2f", vn.requests, vo.requests)
 	}
 }
