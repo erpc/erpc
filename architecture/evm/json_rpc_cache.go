@@ -24,6 +24,10 @@ type EvmJsonRpcCache struct {
 	policies  []*data.CachePolicy
 	logger    *zerolog.Logger
 
+	// cachingStrategy is the write-side admission default (see
+	// common.AllowsCacheWrite). Combined with resp.Cacheable() at Set.
+	cachingStrategy common.CachingStrategy
+
 	// Compression settings
 	compressionEnabled   bool
 	compressionThreshold int
@@ -68,9 +72,14 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 		policies = append(policies, policy)
 	}
 
+	strategy := cfg.CachingStrategy
+	if strategy == "" {
+		strategy = common.CachingStrategyDefaultAllow
+	}
 	cache := &EvmJsonRpcCache{
-		policies: policies,
-		logger:   logger,
+		policies:        policies,
+		logger:          logger,
+		cachingStrategy: strategy,
 	}
 
 	// Initialize compression if configured
@@ -141,6 +150,7 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 		logger:               &lg,
 		policies:             c.policies,
 		projectId:            projectId,
+		cachingStrategy:      c.cachingStrategy,
 		compressionEnabled:   c.compressionEnabled,
 		compressionThreshold: c.compressionThreshold,
 		compressionLevel:     c.compressionLevel,
@@ -641,6 +651,17 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		span.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 		)
+	}
+
+	// Write-side admission: strategy × response mark. Cache stays ignorant of
+	// consensus policy names; modules stamp resp.Cacheable() before Set.
+	if !common.AllowsCacheWrite(c.cachingStrategy, resp.Cacheable()) {
+		c.logger.Debug().
+			Str("cachingStrategy", string(c.cachingStrategy)).
+			Interface("cacheable", resp.Cacheable()).
+			Interface("id", req.ID()).
+			Msg("skipping cache write: response marked uncacheable under cachingStrategy")
+		return nil
 	}
 
 	// TODO after subscription epic this method can be called for every new block data to pre-populate the cache,

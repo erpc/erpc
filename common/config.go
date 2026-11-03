@@ -342,10 +342,39 @@ type SharedStateConfig struct {
 	UpdateMaxWait Duration `yaml:"updateMaxWait,omitempty" json:"updateMaxWait" tstype:"Duration"`
 }
 
+// CachingStrategy controls write-side admission when combined with a response
+// cacheability mark (see AllowsCacheWrite). Cache hits are served with zero
+// re-validation, so modules that decide grades (consensus in v1) mark the
+// response instead of teaching the cache policy names.
+type CachingStrategy string
+
+const (
+	CachingStrategyDefaultAllow  CachingStrategy = "defaultAllow"
+	CachingStrategyDefaultIgnore CachingStrategy = "defaultIgnore"
+)
+
 type CacheConfig struct {
 	Connectors  []*ConnectorConfig   `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
 	Policies    []*CachePolicyConfig `yaml:"policies,omitempty" json:"policies"`
 	Compression *CompressionConfig   `yaml:"compression,omitempty" json:"compression"`
+	// CachingStrategy is the default write posture for unmarked responses.
+	// Omit → defaultAllow (today's open write). defaultIgnore writes only when
+	// a module marks the response cacheable (true).
+	CachingStrategy CachingStrategy `yaml:"cachingStrategy,omitempty" json:"cachingStrategy,omitempty" tstype:"'defaultAllow' | 'defaultIgnore'"`
+}
+
+// AllowsCacheWrite applies the strategy × mark decision table for Cache.Set.
+// mark nil = undecided (no module voted); true/false = explicit vote.
+func AllowsCacheWrite(strategy CachingStrategy, mark *bool) bool {
+	if strategy == "" {
+		strategy = CachingStrategyDefaultAllow
+	}
+	switch strategy {
+	case CachingStrategyDefaultIgnore:
+		return mark != nil && *mark
+	default: // defaultAllow and any unrecognized value treated as allow
+		return mark == nil || *mark
+	}
 }
 
 type CompressionConfig struct {
@@ -2091,6 +2120,14 @@ type ConsensusPolicyConfig struct {
 	// selection happens once, at the top level. Empty (default) = no named
 	// policies (only the inline default exists).
 	Policies map[string]*ConsensusPolicyConfig `yaml:"policies,omitempty" json:"policies,omitempty"`
+
+	// CacheableResponses marks whether responses produced under this policy may
+	// be persisted by the cache. Consensus.Run stamps the winning response with
+	// this value; Cache.Set combines it with cachingStrategy (feature
+	// cacheable-responses). Omit defaults: inline / fail-closed "default" →
+	// true; named policies.* → false (stamped before extends so extends:default
+	// does not inherit the inline true).
+	CacheableResponses *bool `yaml:"cacheableResponses,omitempty" json:"cacheableResponses,omitempty"`
 }
 
 // ConsensusDefaultPolicyName is the reserved label reported (metric +
@@ -2211,6 +2248,7 @@ func consensusPolicyRejectUnknownFields(value *yaml.Node) error {
 		"misbehaviorsDestination": true, "requiredParticipants": true, "blockEvidenceFields": true,
 		"fireAndForget": true, "maxWaitOnResult": true, "maxWaitOnEmpty": true,
 		"disputeLogLevel": true, "customPolicy": true, "policies": true, "extends": true,
+		"cacheableResponses": true,
 	}
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		key := value.Content[i].Value
@@ -2299,6 +2337,10 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 	if c.PreferLargerResponses != nil {
 		v := *c.PreferLargerResponses
 		copied.PreferLargerResponses = &v
+	}
+	if c.CacheableResponses != nil {
+		v := *c.CacheableResponses
+		copied.CacheableResponses = &v
 	}
 
 	if c.RequiredParticipants != nil {

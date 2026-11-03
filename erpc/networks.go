@@ -1859,12 +1859,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	// Selector-enabled requests must not share results across callers: the
-	// multiplex hash and the EVM cache key omit the consensus policy and the
-	// caller's auth, so a strict caller could receive a concurrent or cached
-	// fallback / waive-missing result (Copilot finding). Until both keys
-	// carry the policy+auth, disable multiplexing and cache reads/writes for
-	// selector-enabled networks.
+	// Selector-enabled requests must not share in-flight results across
+	// callers: the multiplex hash omits the consensus policy and the caller's
+	// auth, so a strict caller could receive a concurrent fallback /
+	// waive-missing result. Keep multiplexing disabled under selector.
+	//
+	// Cache is different: write-side admission (cachingStrategy × response
+	// mark from Consensus.Run) keeps weaker grades out of the store, so
+	// Get/Set are safe to reopen. Cache keys still omit policy+auth; the
+	// mark ensures only trusted grades are written.
 	selectorOn := n.consensusPolicySelectorEnabled()
 
 	var mlx *Multiplexer
@@ -1892,7 +1895,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		defer n.cleanupMultiplexer(mlx)
 	}
 
-	if n.cacheDal != nil && !selectorOn && !req.ShouldSkipCacheRead("") {
+	if n.cacheDal != nil && !req.ShouldSkipCacheRead("") {
 		lg.Debug().Msgf("checking cache for request")
 		resp, err := n.cacheDal.Get(ctx, req)
 		if err != nil {
@@ -2614,7 +2617,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	if resp != nil {
-		if n.cacheDal != nil && !selectorOn {
+		if n.cacheDal != nil {
 			// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
 			// TODO For other architectures we might need a different approach
 			_, _ = resp.JsonRpcResponse(ctx)

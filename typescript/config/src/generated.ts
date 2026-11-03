@@ -461,10 +461,25 @@ export interface SharedStateConfig {
    */
   updateMaxWait?: Duration;
 }
+/**
+ * CachingStrategy controls write-side admission when combined with a response
+ * cacheability mark (see AllowsCacheWrite). Cache hits are served with zero
+ * re-validation, so modules that decide grades (consensus in v1) mark the
+ * response instead of teaching the cache policy names.
+ */
+export type CachingStrategy = string;
+export const CachingStrategyDefaultAllow: CachingStrategy = "defaultAllow";
+export const CachingStrategyDefaultIgnore: CachingStrategy = "defaultIgnore";
 export interface CacheConfig {
   connectors?: TsConnectorConfig[];
   policies?: (CachePolicyConfig | undefined)[];
   compression?: CompressionConfig;
+  /**
+   * CachingStrategy is the default write posture for unmarked responses.
+   * Omit → defaultAllow (today's open write). defaultIgnore writes only when
+   * a module marks the response cacheable (true).
+   */
+  cachingStrategy?: 'defaultAllow' | 'defaultIgnore';
 }
 export interface CompressionConfig {
   enabled?: boolean;
@@ -1410,6 +1425,15 @@ export interface ConsensusPolicyConfig {
    * policies (only the inline default exists).
    */
   policies?: { [key: string]: ConsensusPolicyConfig | undefined};
+  /**
+   * CacheableResponses marks whether responses produced under this policy may
+   * be persisted by the cache. Consensus.Run stamps the winning response with
+   * this value; Cache.Set combines it with cachingStrategy (feature
+   * cacheable-responses). Omit defaults: inline / fail-closed "default" →
+   * true; named policies.* → false (stamped before extends so extends:default
+   * does not inherit the inline true).
+   */
+  cacheableResponses?: boolean;
 }
 /**
  * ConsensusDefaultPolicyName is the reserved label reported (metric +
@@ -1420,6 +1444,14 @@ export interface ConsensusPolicyConfig {
  * "selector fell closed to the inline default".
  */
 export const ConsensusDefaultPolicyName = "default";
+/**
+ * ConsensusDefaultEvalTimeout is the wall-clock cap applied when
+ * customPolicy.evalTimeout is omitted (0). Kept in sync with
+ * ConsensusPolicyConfig.SetDefaults so NewConsensus (used by tests and any
+ * caller that skips SetDefaults) cannot disable the selector timeout by
+ * accident.
+ */
+export const ConsensusDefaultEvalTimeout = 50 * any /* time.Millisecond */;
 /**
  * ConsensusCustomPolicyConfig configures the pre-round consensus-policy
  * selector. EvalFunction is the operator-supplied JS expression evaluating to
@@ -2964,30 +2996,25 @@ export const CordonClassOperator: CordonClass = "operator";
  * (legacy call sites, internal probes, batch retries). Cordon/Uncordon
  * stay finality-agnostic because cordoning is an admin-level decision
  * about an entire (upstream, method) pair, not a per-finality bucket.
+ * Cordon and Uncordon stay class-less so existing tracker implementations
+ * keep compiling. Class-aware cordoning is the optional ClassedHealthTracker.
  */
 export type HealthTracker = any;
-export type Upstream = any;
-
-//////////
-// source: user.go
-
 /**
- * User is the authenticated caller. Beyond identity (Id) it carries the
- * per-caller capabilities resolved at authentication time. Capability fields
- * are populated ONLY by auth strategies; the trusted-header path
- * (NormalizedRequest.SetUserFromTrustedHeader) sets Id alone, so an
- * unvalidated header can never grant a capability.
+ * ClassedHealthTracker is the optional capability for a cordon that carries a
+ * class. The consensus selector reads CordonClasses. A tracker that does not
+ * implement this still receives HealthTracker.Cordon/Uncordon; the class is
+ * not stored, and the selector does not treat that upstream as
+ * availability-only (the only class that permits a policy downgrade).
  */
-export interface User {
-  id: string;
-  ratelimitbudget: string;
-  /**
-   * AllowClientDirectives is the client-directive wildcard pattern granted by
-   * the strategy that authenticated this user. Nil means "no strategy-level
-   * override" — the project-level pattern applies.
-   */
-  allowclientdirectives?: string;
-}
+export type ClassedHealthTracker = any;
+export type Upstream = any;
+/**
+ * ClassedUpstream is the optional capability for an upstream that records a
+ * cordon class. In-tree upstreams implement it. Out-of-tree upstreams keep
+ * the class-less Upstream.Cordon/Uncordon methods.
+ */
+export type ClassedUpstream = any;
 
 //////////
 // source: validation.go

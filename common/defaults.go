@@ -667,6 +667,9 @@ func markStatefulMethod(defs map[string]*CacheMethodConfig, method string) {
 }
 
 func (c *CacheConfig) SetDefaults() error {
+	if c.CachingStrategy == "" {
+		c.CachingStrategy = CachingStrategyDefaultAllow
+	}
 	if len(c.Policies) > 0 {
 		for _, policy := range c.Policies {
 			if err := policy.SetDefaults(); err != nil {
@@ -3072,11 +3075,28 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 		}
 	}
 
+	// Named policies omit cacheableResponses → false. Stamp before extends so
+	// a child that extends the inline default (omit → true) does not inherit
+	// that true — Circle posture is weaker named grades are uncacheable unless
+	// the operator opts in explicitly.
+	for _, p := range c.Policies {
+		if p != nil && p.CacheableResponses == nil {
+			p.CacheableResponses = util.BoolPtr(false)
+		}
+	}
+
 	// Resolve one-level extends on named policies before applying defaults so
 	// each runtime policy is fully merged (feature §2). Unknown base / nested
 	// extends are load-time errors.
 	if err := c.resolveNamedPolicyExtends(); err != nil {
 		return err
+	}
+
+	// Inline / fail-closed default omit → true (open cache write under
+	// defaultAllow). Named policies already carry an explicit value from the
+	// pre-extends stamp or the operator.
+	if c.CacheableResponses == nil {
+		c.CacheableResponses = util.BoolPtr(true)
 	}
 
 	// Named policies are full consensus configs; apply the same defaults so a
@@ -3089,6 +3109,12 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 		}
 		if err := p.SetDefaults(); err != nil {
 			return fmt.Errorf("consensus.policies[%q] defaults: %w", name, err)
+		}
+		// Nested SetDefaults would apply the inline omit→true; restore named
+		// omit→false when the recursive call filled a still-nil field (no
+		// policies map on the child, so the pre-stamp above did not run).
+		if p.CacheableResponses == nil {
+			p.CacheableResponses = util.BoolPtr(false)
 		}
 	}
 
@@ -3204,6 +3230,10 @@ func overlayConsensusPolicy(base, child *ConsensusPolicyConfig) {
 	if child.PreferLargerResponses != nil {
 		v := *child.PreferLargerResponses
 		base.PreferLargerResponses = &v
+	}
+	if child.CacheableResponses != nil {
+		v := *child.CacheableResponses
+		base.CacheableResponses = &v
 	}
 	if child.MisbehaviorsDestination != nil {
 		base.MisbehaviorsDestination = child.MisbehaviorsDestination.Copy()
