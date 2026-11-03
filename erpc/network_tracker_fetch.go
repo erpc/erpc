@@ -107,24 +107,33 @@ func (n *Network) seedHeadBlock(u common.Upstream, sh evm.SourceHeader) {
 // sweep tries ups in order and returns the first non-empty answer check
 // passes, else the last empty one with its check's outcome. An answer
 // whose check fails for its content fails only that upstream, empty or not.
+// An empty answer its check refuses (the tracker's "no such block") stands
+// only when every upstream answered: one skipped or failed may hold the
+// block, so the pass is exhausted instead (seed 79: a one-vendor fork's
+// parent, null from 3 upstreams and refused for rate by the fourth, ended a
+// tree as final).
 func (n *Network) sweep(ctx context.Context, req *common.NormalizedRequest, method string, ups []common.Upstream, startTime time.Time, check func(*common.NormalizedResponse) error) (*common.NormalizedResponse, error) {
 	finality := req.Finality(ctx)
 	deadline, bounded := ctx.Deadline()
 	var (
 		best    *common.NormalizedResponse
 		bestErr error
+		missed  bool
 	)
 	for i := range ups {
 		u := ups[i]
 		if ctx.Err() != nil {
+			missed = true
 			break
 		}
 		if d, ok := u.(interface {
 			IsDown(string, common.DataFinalityState) bool
 		}); ok && d.IsDown(method, finality) {
+			missed = true
 			continue
 		}
 		if skipErr, _ := n.checkUpstreamBlockAvailability(ctx, u, req, method); skipErr != nil {
+			missed = true
 			continue
 		}
 		actx, cancel := ctx, context.CancelFunc(func() {})
@@ -142,9 +151,11 @@ func (n *Network) sweep(ctx context.Context, req *common.NormalizedRequest, meth
 			if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 				return nil, err
 			}
+			missed = true
 			continue
 		}
 		if r == nil || r.IsObjectNull(ctx) {
+			missed = true
 			continue
 		}
 		r.SetUpstream(u)
@@ -153,6 +164,7 @@ func (n *Network) sweep(ctx context.Context, req *common.NormalizedRequest, meth
 		if common.HasErrorCode(err, common.ErrCodeEndpointContentValidation) {
 			req.ErrorsByUpstream.Store(u, err)
 			otherVendorsFirst(ups[i+1:], evm.VendorKey(u))
+			missed = true
 			continue
 		}
 		if !r.IsResultEmptyish(ctx) {
@@ -167,8 +179,11 @@ func (n *Network) sweep(ctx context.Context, req *common.NormalizedRequest, meth
 		}
 		best, bestErr = r, err
 	}
-	if best != nil {
+	if best != nil && (bestErr == nil || !missed) {
 		return best, bestErr
+	}
+	if best != nil {
+		best.Release()
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, context.Cause(ctx)
