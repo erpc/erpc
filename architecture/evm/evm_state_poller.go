@@ -579,6 +579,9 @@ type headFetch struct {
 	next   *headFetch
 	header common.EvmHeader
 	err    error
+	// toIntake: an intake was bound as the fetch began and took its
+	// header; set by the fetch before it ends.
+	toIntake bool
 	// parent is the span of the Ask that started the fetch: the fetch's
 	// span shows under it without taking its cancellation.
 	parent trace.SpanContext
@@ -825,7 +828,13 @@ func (e *EvmStatePoller) endFetch(f *headFetch, header common.EvmHeader, answere
 	if next != nil {
 		next.sent, a.last, a.lastFork = time.Now(), next, next
 	}
+	// An intake bound while f was in flight saw no header (BindIntake).
+	src := e.pollSrc.Load()
+	sh, late := takeUnbound(f, src)
 	a.mu.Unlock()
+	if late {
+		src.intake.Polled(e.upstream.Id(), sh, nil, HeaderPolled, f.sent)
+	}
 	close(f.done)
 	if next != nil {
 		e.startFetch(next)
@@ -908,6 +917,7 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header 
 		// and moves the counter through ObserveHead; the fetch itself must
 		// not move it. The Ask answer carries the header only once it
 		// passed, so no tracker holds a header intake dropped.
+		f.toIntake = true
 		if e.deliverFetched(bound, f, b) {
 			header = b.header
 		}
@@ -1184,9 +1194,32 @@ type PollIntake interface {
 	PolledFinalized(upstreamId string, h SourceHeader)
 }
 
-// BindIntake sends this poller's latest headers to intake.
+// BindIntake sends this poller's latest headers to intake. An upstream
+// bootstraps before its network binds it: the header of a fetch answered
+// unbound is its first hash vote, given to intake here or, for a fetch in
+// flight now, as it ends (endFetch); both under headAsk.mu, so once.
 func (e *EvmStatePoller) BindIntake(intake PollIntake) {
-	e.pollSrc.Store(&pollSource{intake: intake})
+	src := &pollSource{intake: intake}
+	a := &e.headAsk
+	a.mu.Lock()
+	e.pollSrc.Store(src)
+	f := a.last
+	sh, late := takeUnbound(f, src)
+	a.mu.Unlock()
+	if late {
+		src.intake.Polled(e.upstream.Id(), sh, nil, HeaderPolled, f.sent)
+	}
+}
+
+// takeUnbound takes answered fetch f's header for src when no intake took
+// it yet; under headAsk.mu.
+func takeUnbound(f *headFetch, src *pollSource) (SourceHeader, bool) {
+	if src == nil || f == nil || !f.answered || f.toIntake {
+		return SourceHeader{}, false
+	}
+	sh, ok := f.header.(SourceHeader)
+	f.toIntake = ok
+	return sh, ok
 }
 
 // LatestUnsupported reports the give-up after latest was refused as

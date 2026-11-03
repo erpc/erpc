@@ -65,16 +65,17 @@ const (
 // every upstream (chainId / syncing / latest / finalized), giving rpc1 a
 // lagging head and rpc2/rpc3 a healthy head. The state pollers fetch heads via
 // eth_getBlockByNumber, so these never collide with user eth_blockNumber
-// traffic.
+// traffic. A latest header carries hash and parentHash: the served head is a
+// hash-proven pin, and intake drops a header without them (spec §5.3 check 0).
 func setupBniPollerMocks() {
 	for _, h := range []struct {
 		host      string
-		latest    string
+		latest    int64
 		finalized string
 	}{
-		{"http://rpc1.localhost", "0x800", "0x700"},
-		{"http://rpc2.localhost", "0x1000", "0x900"},
-		{"http://rpc3.localhost", "0x1000", "0x900"},
+		{"http://rpc1.localhost", bniLaggingHead, "0x700"},
+		{"http://rpc2.localhost", bniHealthyHead, "0x900"},
+		{"http://rpc3.localhost", bniHealthyHead, "0x900"},
 	} {
 		gock.New(h.host).Post("").Persist().
 			Filter(func(r *http.Request) bool {
@@ -94,7 +95,7 @@ func setupBniPollerMocks() {
 				return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
 			}).
 			Reply(200).
-			JSON([]byte(fmt.Sprintf(`{"result":{"number":"%s","timestamp":"0x6702a8f0"}}`, h.latest)))
+			JSON([]byte(fmt.Sprintf(`{"result":{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","timestamp":"0x6702a8f0"}}`, h.latest, h.latest, h.latest-1)))
 		gock.New(h.host).Post("").Persist().
 			Filter(func(r *http.Request) bool {
 				b := util.SafeReadBody(r)
