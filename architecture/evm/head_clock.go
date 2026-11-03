@@ -349,6 +349,15 @@ func (t *ChainTracker) runClock() {
 		}
 		return
 	}
+	if cand, ok := t.staleVoter(t.clockCandidates()); ok {
+		if c.out = t.fire(cand.id, now); c.out != nil {
+			if edge != nil {
+				c.edge = c.out
+			}
+			telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), "catch_up").Inc()
+			return
+		}
+	}
 	if target := c.top() + 1; target != c.target {
 		c.target, c.early, c.retryAt = target, 0, time.Time{}
 	}
@@ -373,6 +382,38 @@ func (t *ChainTracker) runClock() {
 	if edge != nil {
 		c.edge = c.out
 	}
+}
+
+// staleVoter is a voter the clock fetches now because a counted vote stands
+// above the pins off their tree (spec §6.8 catch-up): a tracker no history
+// serves holds a vote that jumped blocks as a root of its own, and rule 4
+// weighs it against the older votes on the pins, so the pins stay until
+// those voters vote again. It is a voter whose vote is on the pins and
+// whose last fetch the clock took was sent before that vote was sighted;
+// each voter is fetched once per such vote.
+func (t *ChainTracker) staleVoter(cands []clockCandidate) (clockCandidate, bool) {
+	head := t.head()
+	if head == nil {
+		return clockCandidate{}, false
+	}
+	pinRoot := t.pinRoot()
+	var ahead *node
+	for u, n := range t.votes {
+		if t.counts(u) && t.alive(n) && n.h.number > head.number && t.rootOf(n) != pinRoot && (ahead == nil || n.h.number > ahead.h.number) {
+			ahead = n
+		}
+	}
+	if ahead == nil {
+		return clockCandidate{}, false
+	}
+	seen := t.clock.sightOf(ahead.h.number)
+	for _, cand := range cands {
+		n := t.votes[cand.id]
+		if t.alive(n) && t.rootOf(n) == pinRoot && t.clock.taken[cand.id].Before(seen) {
+			return cand, true
+		}
+	}
+	return clockCandidate{}, false
 }
 
 // fireAt is when the clock fetches its target: the target's predicted
