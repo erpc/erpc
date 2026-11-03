@@ -2406,7 +2406,7 @@ func (t *ChainTracker) published(old, s *feedState, pinsMoved bool) {
 			for len(t.reached) > 0 && t.reached[len(t.reached)-1].number >= h.number {
 				t.reached = t.reached[:len(t.reached)-1]
 			}
-			t.reached = append(t.reached, clockSight{h.number, time.Now()})
+			t.reached = append(t.reached, clockSight{number: h.number, at: time.Now()})
 			if over := len(t.reached) - t.window; over > 0 {
 				t.reached = slices.Delete(t.reached, 0, over)
 			}

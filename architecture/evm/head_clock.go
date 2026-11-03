@@ -33,9 +33,10 @@ type headClock struct {
 	// off is where a fire is sent relative to the next block's predicted
 	// sight, less the target's round trip, in block times, so it holds
 	// while the block time estimate moves from its cold value: it moves
-	// up by 0.95 step after an early answer and down by 0.05 step after a
-	// timely one, so it settles where 5% of the fires come early (k ≈
-	// 1.65 at any spread).
+	// up by 32 steps after an early answer and down by 1 after a timely
+	// one, so it settles where 3% of the fires come early (k ≈ 1.9 at any
+	// spread): each early fire costs a retry, and catch-ups and hedges
+	// share the 5% over one fetch per block the budget allows.
 	off    float64
 	offSet bool
 	// out is the fetch in flight, hedge the second voter's while out is
@@ -74,6 +75,8 @@ type headClock struct {
 type clockSight struct {
 	number uint64
 	at     time.Time
+	// pushed: a push, not a fetch, brought it first.
+	pushed bool
 }
 
 type clockFire struct {
@@ -120,7 +123,7 @@ func (c *headClock) saw(number uint64, at time.Time, pushed bool, bt time.Durati
 		}
 	}
 	c.scheduled = false
-	c.sights = append(c.sights, clockSight{number, at})
+	c.sights = append(c.sights, clockSight{number, at, pushed})
 	if over := len(c.sights) - clockFit; over > 0 {
 		c.sights = slices.Delete(c.sights, 0, over)
 	}
@@ -164,6 +167,33 @@ func (c *headClock) predict(number uint64, bt time.Duration) time.Time {
 	slices.Sort(offsets)
 	phase := offsets[len(offsets)/2]
 	return top.at.Add(phase + time.Duration(number-top.number)*bt)
+}
+
+// pushFed reports whether pushes brought most of the recent sights: the
+// lane's blocks come by push, so a fetch only hedges a late one (spec
+// §6.8 skip) and is sent at pushLate after the predicted sight, not a
+// round trip before it.
+func (c *headClock) pushFed() bool {
+	pushed := 0
+	for _, s := range c.sights {
+		if s.pushed {
+			pushed++
+		}
+	}
+	return 2*pushed > len(c.sights)
+}
+
+// pushLate is how long after its predicted sight a pushed block is late:
+// the fit's largest residual over the recent sights, about their 95th
+// percentile, at least bt/10 and at most bt.
+func (c *headClock) pushLate(bt time.Duration) time.Duration {
+	top := c.sights[len(c.sights)-1]
+	offsets := make([]time.Duration, len(c.sights))
+	for i, s := range c.sights {
+		offsets[i] = s.at.Sub(top.at) - time.Duration(s.number-top.number)*bt
+	}
+	slices.Sort(offsets)
+	return min(max(offsets[len(offsets)-1]-offsets[len(offsets)/2], bt/10), bt)
 }
 
 // due is when the tracker must look at the clock again: its next fire,
@@ -514,6 +544,8 @@ func (t *ChainTracker) fireAt(bt, pace time.Duration) time.Time {
 		at = c.lastFire.Add(min(bt<<min(c.misses-1, 16), t.W()))
 	case c.early > 0:
 		at = c.retryAt
+	case c.pushFed():
+		at = c.predict(c.target, bt).Add(c.pushLate(bt))
 	default:
 		at = c.predict(c.target, bt).Add(time.Duration(c.off*float64(bt)) - c.bestRTT())
 	}
@@ -618,7 +650,7 @@ func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnsw
 		outcome = ""
 	default:
 		outcome = "early"
-		c.off = min(c.off+19.0/400, 1)
+		c.off = min(c.off+32.0/400, 1)
 		c.early++
 		debounce := t.clockDebounce(f.id)
 		switch {
