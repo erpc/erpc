@@ -722,9 +722,14 @@ func TestGrpcServerBehavior_StreamBlocks(t *testing.T) {
 	t.Run("pushes each new head in order", func(t *testing.T) {
 		bctx := grpcBehaviorCtx(t, "main")
 		head := int64(grpcBehaviorHead)
-		// With no live source the tap's demand makes the tracker ask the
-		// upstream for latest; the stream starts with that first fresh head
-		// (spec §6 rule 6, §9.1).
+		nw, err := fx.erpc.GetNetwork(bctx, "main", "evm:123")
+		require.NoError(t, err)
+		// The bootstrap poll's header is the first view (spec §6.5); a
+		// stream with no resume cursor starts after it (§9.3), and with no
+		// live source the tap's demand runs the block clock (§6.8).
+		require.Eventually(t, func() bool {
+			return servedHead(nw, bctx).Latest == head
+		}, 5*time.Second, 10*time.Millisecond, "the bootstrap poll's head is the view")
 		sctx, scancel := context.WithCancel(bctx)
 		defer scancel()
 		s, err := client.StreamBlocks(sctx, &evm.StreamBlocksRequest{})
@@ -737,17 +742,13 @@ func TestGrpcServerBehavior_StreamBlocks(t *testing.T) {
 			assert.Equal(t, qtHash(uint64(want)), evm.BytesToHex(msg.Header.Hash))
 		}
 
-		recv(head)
-
 		fx.up.head.Store(uint64(head + 2))
 		for _, want := range []int64{head + 1, head + 2} {
 			recv(want)
 		}
 
-		// A poll of the upstream outside rule 6, such as a catch-up poll,
-		// votes too; the upstream is still no source, so rule 6 goes on.
-		nw, err := fx.erpc.GetNetwork(bctx, "main", "evm:123")
-		require.NoError(t, err)
+		// A poll of the upstream outside the clock, such as a fork poll,
+		// votes too.
 		poller := nw.upstreamsRegistry.GetNetworkUpstreams(bctx, nw.networkId)[0].EvmStatePoller()
 		fx.up.head.Store(uint64(head + 3))
 		require.NoError(t, poller.Ask(bctx, common.HeadNeedFork, 0, time.Time{}, common.AskRefusal).Err)
