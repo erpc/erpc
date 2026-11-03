@@ -177,13 +177,18 @@ type liveRead struct {
 const latencyNoise = 2 * time.Millisecond
 
 // liveReads are P19's head reads, rate a second per pod, half
-// eth_blockNumber and half eth_getBlockByNumber(latest), through vl.
-func liveReads(rate float64, vl *viewLog) []liveRead {
+// eth_blockNumber and half eth_getBlockByNumber(latest), through vl, on a
+// chain of block time bt. At one read per W or more, neither is slower
+// than the old image's; below, reads meet design section 5's idle edge,
+// which waits for one round trip, so latency takes the P19 slacks.
+func liveReads(rate float64, bt time.Duration, vl *viewLog) []liveRead {
 	period := time.Duration(float64(2*time.Second) / rate)
 	slack := [2]time.Duration{p19P50Slack, p19P90Slack}
+	w := max(3*bt, 2*time.Second)
+	busy := rate*w.Seconds() >= 1
 	return []liveRead{
-		{viewHead, freshLoad{period, "latest", vl.reader(viewHead)}, slack, true},
-		{viewLatest, freshLoad{period, "latest", vl.reader(viewLatest)}, slack, true},
+		{viewHead, freshLoad{period, "latest", vl.reader(viewHead)}, slack, busy},
+		{viewLatest, freshLoad{period, "latest", vl.reader(viewLatest)}, slack, busy},
 	}
 }
 
@@ -335,7 +340,7 @@ func (s *scenario) liveRun(run time.Duration, reads []liveRead, fault func(conte
 func liveCompare(s *scenario) {
 	s.blocks(10)
 	vl := &viewLog{}
-	reads := liveReads(liveRate, vl)
+	reads := liveReads(liveRate, s.chain.BlockTime(), vl)
 	imgs, all, _, from, to := s.liveRun(liveRun, reads, nil)
 	var b strings.Builder
 	s.judgeAgeLatency(&b, reads, imgs, from, to)
@@ -922,7 +927,7 @@ func p22Body(s *scenario, stall bool) {
 	}
 	s.blocks(8)
 	vl := &viewLog{}
-	reads := liveReads(liveRate, vl)
+	reads := liveReads(liveRate, s.chain.BlockTime(), vl)
 	run, fault := p22BlipRun, func(ctx context.Context, w *faultWindows) {
 		for {
 			sleepCtx(ctx, p22BlipEvery-p22Blip)
@@ -1062,7 +1067,7 @@ func c19Body(s *scenario) {
 	taps := []*viewTap{s.startViewTap(0), s.startViewTap(1)}
 	s.blocks(8)
 	vl := &viewLog{}
-	reads := liveReads(c19Rate, vl)
+	reads := liveReads(c19Rate, s.chain.BlockTime(), vl)
 	fault := func(ctx context.Context, _ *faultWindows) {
 		for ctx.Err() == nil {
 			sleepCtx(ctx, time.Duration(4+rand.IntN(5))*s.chain.BlockTime())

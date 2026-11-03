@@ -526,8 +526,9 @@ var p19Ups = []freshUp{
 // eth_getBlockByNumber("latest"), and rate/4 eth_getBlockByNumber
 // ("finalized"). Per method, each answer's block age (from chainsim
 // minting it to the answer) and request latency: the new image's are
-// within the slacks of the old one's, and its head-read latency p50 at
-// most the old one's. The new image sends at most 1.05 head fetches per
+// within the slacks of the old one's, and at one read per W or more its
+// head-read latency p50 and p90 at most the old one's (liveReads). The
+// new image sends at most 1.05 head fetches per
 // new block, and at one read per block or more no more upstream requests
 // than the old one. No source pushes, so no pod takes a newHeads
 // subscription: X10 holds HTTP against the stream.
@@ -540,7 +541,7 @@ func p19(rate float64) spec {
 func p19Body(s *scenario, rate float64) {
 	s.blocks(10)
 	vl := &viewLog{}
-	reads := append(liveReads(rate, vl), liveRead{"eth_getBlockByNumber(finalized)",
+	reads := append(liveReads(rate, s.chain.BlockTime(), vl), liveRead{"eth_getBlockByNumber(finalized)",
 		freshLoad{time.Duration(float64(4*time.Second) / rate), "finalized", freshFinalized}, [2]time.Duration{p17P50Slack, p17P90Slack}, false})
 	imgs, all, _, from, to := s.liveRun(p19Run, reads, nil)
 	var b strings.Builder
