@@ -254,10 +254,6 @@ type EvmStatePoller interface {
 	// LatestAskAt is the send time of this instance's last Ask fetch of
 	// latest, zero before any: the Ask half of EvidenceAt.
 	LatestAskAt() time.Time
-	// LatestDue is when a number-need Ask at the poller's cadence may
-	// fetch latest again: its evidence plus its cadence, or its backoff's
-	// end, the later.
-	LatestDue() time.Time
 	IsBlockFinalized(blockNumber int64) (bool, error)
 	SuggestFinalizedBlock(blockNumber int64, at time.Time)
 	// SuggestLatestBlock reports blockNumber, its evidence taken at at: an

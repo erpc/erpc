@@ -873,88 +873,92 @@ func isSimpleGroupSelector(selector string) bool {
 	return true
 }
 
-// refreshLatest refreshes the pollers that can move selector sel's Latest
-// for a request that answers it (spec §6.8), each limited by its own
-// cadence, as main refreshed each poller at its own debounce. A voter is
-// due once its evidence is a cadence old (LatestDue, or its backoff's
-// end). Latest is stale for the request when fewer than q voters are
-// fresh: for a tag read (tag), where main forwarded the tag and answered
-// a node's head, a voter not yet due; for eth_blockNumber, which main
-// answered from memory, a voter that reported within W, as after an idle
-// period (§19 P13, P19). A stale request Asks the due voters, earliest due
-// first, as many as q lacks, and waits for them, at most W, then reads
-// the Head they moved; a timeout or a failed Ask leaves Head as it is.
-// Else it reads Head at once and Asks the voter due first in the
-// background, so successive requests walk the voters. While a voter
-// reports a block Latest lacks (Ceiling above it), it also Asks the voters
-// Latest lacks to reach it (catch-up, catchUpLatest).
+// refreshLatest refreshes selector sel's Latest for a request that
+// answers it (spec §6.8) as main refreshed the head: one voter per
+// request, the first in routing order, at its own cadence. A tag read
+// (tag), where main forwarded the tag and answered a node's head, waits
+// for that Ask; so does any request while Latest rests on reports older
+// than W, as after an idle period (§19 P13); eth_blockNumber, which main
+// answered from memory, else Asks in the background and reads Head at
+// once. Then the catch-up for the second vote (catchUpLatest). A wait
+// lasts at most W; a timeout or a failed Ask leaves Head as it is.
 func (n *Network) refreshLatest(ctx context.Context, sel string, tag bool) {
 	var ec *common.EvmNetworkConfig
 	if n.cfg != nil {
 		ec = n.cfg.Evm
 	}
 	s := n.voters(sel, voterQuery{kind: numberVote})
-	if s.count() == 0 {
+	var first common.EvmStatePoller
+	s.each(func(u common.Upstream, _ int64) bool {
+		first = u.(common.EvmUpstream).EvmStatePoller()
+		return false
+	})
+	if first == nil {
 		return
 	}
-	need := ec.ServedTipQuorum().Of(s.count())
 	w := health.FreshnessWindow(n.EvmBlockTime())
-	now := time.Now()
-	type dueVoter struct {
-		sp  common.EvmStatePoller
-		due time.Time
+	if !tag && time.Since(latestRestsOn(s, ec.ServedTipQuorum().Of(s.count()))) < w {
+		first.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
+		n.catchUpLatest(ctx, sel, false)
+		return
 	}
-	var buf [16]dueVoter
-	due := buf[:0]
-	fresh := 0
-	s.each(func(u common.Upstream, _ int64) bool {
-		sp := u.(common.EvmUpstream).EvmStatePoller()
-		d := sp.LatestDue()
-		if tag && d.After(now) || !tag && now.Sub(sp.LatestReportAt()) < w {
-			fresh++
-		}
-		if !d.After(now) {
-			due = append(due, dueVoter{sp, d})
-		}
-		return true
-	})
-	slices.SortStableFunc(due, func(a, b dueVoter) int { return a.due.Compare(b.due) })
-	switch {
-	case fresh < need && len(due) > 0:
-		ctx, cancel := context.WithTimeout(ctx, w)
-		var wg sync.WaitGroup
-		for _, d := range due[:min(need-fresh, len(due))] {
-			wg.Go(func() { d.sp.Ask(ctx, common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh) })
-		}
-		wg.Wait()
-		cancel()
-		if l := n.laneFor(sel); l != nil {
-			n.refreshLaneRecovered(l)
-		}
-	case len(due) > 0:
-		due[0].sp.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
+	ctx, cancel := context.WithTimeout(ctx, w)
+	defer cancel()
+	first.Ask(ctx, common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
+	if l := n.laneFor(sel); l != nil {
+		n.refreshLaneRecovered(l)
 	}
-	if h := n.headFor(sel); h.Ceiling > h.Latest {
-		n.catchUpLatest(sel, h.Ceiling, now)
-	}
+	n.catchUpLatest(ctx, sel, true)
 }
 
-// catchUpLatest Asks, in the background, the voters Latest lacks to reach
-// ceiling (lackingVoters; spec §6.8 catch-up), at their cadence. The one
-// request that sees sel's lane Ceiling rise Asks them for evidence taken
-// after now, below their cadence: the voter that saw the block first gave
-// it one vote, and a voter that has it too would else answer only at its
-// own cadence, so Latest would trail the first sighting by up to a
-// cadence, not a round trip (§19 P18). So each rise costs at most q-1
-// fetches more, and a voter that stays ahead of the rest, stuck or a lone
-// fast source, costs at most that per block it rises.
-func (n *Network) catchUpLatest(sel string, ceiling int64, now time.Time) {
-	var after time.Time
-	if l := n.laneFor(sel); l != nil && l.ceilingRose(ceiling) {
-		after = now
+// latestRestsOn is when the evidence Latest rests on was taken: the
+// need-th newest report of voters s (spec §6.8). Latest is the need-th
+// highest vote, so it is at least the lowest of the need newest votes, each
+// its node's head when the report was taken. Zero when s walks no voter
+// (the set changed since it was read).
+func latestRestsOn(s voterSet, need int) time.Time {
+	var buf [16]time.Time
+	at := buf[:0]
+	s.each(func(u common.Upstream, _ int64) bool {
+		at = append(at, u.(common.EvmUpstream).EvmStatePoller().LatestReportAt())
+		return true
+	})
+	if len(at) == 0 {
+		return time.Time{}
 	}
-	for _, sp := range n.lackingVoters(sel, ceiling) {
-		sp.AskBackground(common.HeadNeedNumber, 0, after, common.AskCatchUp)
+	slices.SortFunc(at, func(a, b time.Time) int { return b.Compare(a) })
+	return at[min(need, len(at))-1]
+}
+
+// catchUpLatest is the catch-up for Latest's second vote (spec §6.8):
+// when a voter reports a block above sel's lane Latest, the one request
+// that sees its Ceiling rise Asks the voters Latest lacks to reach it
+// (lackingVoters) for a fetch sent after the rise, below their cadence,
+// and waits for them when wait. Else Latest would trail the first
+// sighting by up to a voter's cadence, not a round trip (§19 P18). So a
+// lane pays at most q-1 such fetches per block, and a voter that stays
+// ahead of the rest, stuck or a lone fast source, costs no more.
+func (n *Network) catchUpLatest(ctx context.Context, sel string, wait bool) {
+	l := n.laneFor(sel)
+	if l == nil {
+		return
+	}
+	h := l.published()
+	if h.Ceiling <= h.Latest || !l.ceilingRose(h.Ceiling) {
+		return
+	}
+	now := time.Now()
+	var wg sync.WaitGroup
+	for _, sp := range n.lackingVoters(sel, h.Ceiling) {
+		if !wait {
+			sp.AskBackground(common.HeadNeedNumber, 0, now, common.AskCatchUp)
+			continue
+		}
+		wg.Go(func() { sp.Ask(ctx, common.HeadNeedNumber, 0, now, common.AskCatchUp) })
+	}
+	if wait {
+		wg.Wait()
+		n.refreshLaneRecovered(l)
 	}
 }
 

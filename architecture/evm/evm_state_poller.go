@@ -1043,20 +1043,6 @@ func (e *EvmStatePoller) askNext(need common.HeadNeed, pace time.Duration) time.
 	return time.Time{}
 }
 
-// LatestDue is when a number-need Ask at the cadence may fetch latest
-// again: the upstream's evidence (EvidenceAt) plus its cadence, or its
-// backoff's end, the later.
-func (e *EvmStatePoller) LatestDue() time.Time {
-	if e.IsObjectNull() {
-		return time.Time{}
-	}
-	due := common.EvidenceAt(e.LatestReportAt(), e.LatestAskAt()).Add(e.pollCadence())
-	if next := e.askNext(common.HeadNeedNumber, 0); next.After(due) {
-		return next
-	}
-	return due
-}
-
 // recoverHeadPanic, deferred by a head fetch's goroutine, recovers a
 // panic there (spec §6.8, #1060).
 func (e *EvmStatePoller) recoverHeadPanic(where string) {

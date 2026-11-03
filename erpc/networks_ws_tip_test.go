@@ -1032,13 +1032,13 @@ func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) 
 	require.True(t, keptVote, "the vote holds while clients use up the budget")
 }
 
-// One voter stays ahead of the rest, quorum 2: http-a serves the chain's
-// head, http-b, http-c and http-d 2 blocks below it, so the Ceiling rises
-// each block and Latest never reaches it. eth_blockNumber requests far
-// faster than the blocks: the request that sees each rise Asks the voter
-// Latest lacks below its cadence, the rest Ask at the cadence (1 s), so
-// catch-up fetches at most q-1 per rise plus one per lagging voter per
-// cadence, never one per request (spec §6.8 catch-up).
+// One voter stays ahead of the rest, quorum 2: http-a, first in routing
+// order, serves the chain's head, http-b, http-c and http-d 2 blocks below
+// it. eth_blockNumber requests far faster than the blocks refresh http-a
+// at its cadence (spec §6.8), so the Ceiling rises each block and Latest
+// never reaches it: the request that sees each rise Asks the voter Latest
+// lacks once, so catch-up fetches at most q-1 per rise, never one per
+// request (spec §6.8 catch-up).
 func TestNetworkHead_LoneVoterAheadBoundsCatchUp(t *testing.T) {
 	setupGock()
 	t.Cleanup(util.ResetGock)
@@ -1052,6 +1052,8 @@ func TestNetworkHead_LoneVoterAheadBoundsCatchUp(t *testing.T) {
 		if i > 0 {
 			v.lag.Store(2)
 			up.Evm.StatePollerDebounce = common.Duration(time.Second)
+		} else {
+			up.Routing = &common.UpstreamRoutingConfig{ScoreMultipliers: []*common.ScoreMultiplierConfig{{Overall: util.Float64Ptr(2)}}}
 		}
 		ups = append(ups, up)
 	}
@@ -1090,9 +1092,9 @@ func TestNetworkHead_LoneVoterAheadBoundsCatchUp(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	rises, secs := chain.Head()-from, time.Since(at).Seconds()
-	bound := rises + 1 + int64(len(ids)-1)*(int64(secs)+1)
+	bound := rises + 1
 	t.Logf("%d requests over %.1fs, %d Ceiling rises, %d catch-up fetches (bound %d)", requests, secs, rises, fetched.Load(), bound)
 	assert.Greater(t, int64(requests), 10*bound, "the requests outnumber the bound")
-	assert.LessOrEqual(t, fetched.Load(), bound, "catch-up fetches at most q-1 per Ceiling rise and one per lagging voter per cadence")
+	assert.LessOrEqual(t, fetched.Load(), bound, "catch-up fetches at most q-1 per Ceiling rise")
 	assert.GreaterOrEqual(t, fetched.Load(), rises/2, "each Ceiling rise fetches a voter Latest lacks at once")
 }
