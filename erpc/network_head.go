@@ -59,11 +59,10 @@ func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest
 	if d := req.Directives(); d != nil {
 		sel = d.UseUpstream
 	}
-	switch {
-	case evm.NamesFinalizedTag(ctx, req):
+	if evm.NamesFinalizedTag(ctx, req) {
 		n.awaitFinalizedRefresh(ctx, sel)
-	case evm.AnswersLatest(ctx, n, req):
-		n.refreshLatest(ctx, sel)
+	} else if r := evm.AnswersLatest(ctx, n, req); r != evm.NoLatestRead {
+		n.refreshLatest(ctx, sel, r == evm.LatestTagRead)
 	}
 	return req.TakeEvmHead(n.headFor(sel))
 }
