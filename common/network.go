@@ -97,12 +97,20 @@ const (
 // Rule is the refusal rule's row for block n at now, bt the block time (> 0).
 func (h EvmHead) Rule(n int64, bt time.Duration, now time.Time) HeadRule {
 	switch {
-	case h.Latest <= 0 || h.Firm <= 0 || n <= h.Firm:
+	case h.Latest <= 0 && (h.Ceiling <= 0 || n <= h.Ceiling):
+		// No view yet (cold start): numbers reach upstreams unchanged,
+		// unless every counted upstream reported one below n.
 		return HeadServe
+	case h.Latest <= 0:
 	case n <= h.Latest:
+		if h.Firm <= 0 || n <= h.Firm {
+			return HeadServe
+		}
 		return HeadThin
 	case h.Ceiling <= 0 || n <= h.Ceiling:
 		return HeadBand
+	}
+	switch {
 	case h.OldestReportAt.IsZero() || now.Sub(h.OldestReportAt) >= bt:
 		return HeadStale
 	}
