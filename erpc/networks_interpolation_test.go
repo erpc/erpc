@@ -80,6 +80,21 @@ func setupTestNetworkForInterpolation(t *testing.T, ctx context.Context, network
 	stopAtEnd(t, network)
 	t.Cleanup(cancel)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	// As the networks registry does: the reconciler binds each poller to
+	// intake, so its latest answers are hash votes. They form the view only
+	// with a hash (spec §6.5); the shared poller mocks carry none, so the
+	// tip block answers hashed, by tag and by its number.
+	mockHashedLatest("rpc1", hashedLatestBody("0x11118888"))
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			b := util.SafeReadBody(r)
+			return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, `"0x11118888"`)
+		}).
+		Reply(200).
+		JSON([]byte(hashedLatestBody("0x11118888")))
+	network.sources.start(ctx)
 	require.NoError(t, network.Bootstrap(ctx))
 	network.PinUpstreamOrderForTest()
 
@@ -492,7 +507,9 @@ func TestInterpolation_EvmBlockRef_IsPerRequest(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	// Accept any eth_getLogs call twice
-	gock.New("http://rpc1.localhost").Post("").Times(2).Reply(200).JSON(map[string]interface{}{
+	gock.New("http://rpc1.localhost").Post("").Times(2).Filter(func(r *http.Request) bool {
+		return strings.Contains(util.SafeReadBody(r), "eth_getLogs")
+	}).Reply(200).JSON(map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"result":  []interface{}{},
@@ -2213,8 +2230,9 @@ func TestInterpolation_EveryForm(t *testing.T) {
 		network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 		run(t, network, translated)
 
-		// A family-1 or family-2 latest request refreshes its axis's voters
-		// before it takes its Head, ahead of the cache: each Asks one.
+		// A latest request takes the view's Head as it stands: no request
+		// fetches a head before it (design: one live head, refresh Asks
+		// deleted; §6.8), so none Asks for the refusal rule.
 		var refreshes atomic.Int64
 		hook := func(_ *evm.EvmStatePoller, m evm.AskMet) {
 			if m.Reason == common.AskRefusal {
@@ -2225,7 +2243,7 @@ func TestInterpolation_EveryForm(t *testing.T) {
 		t.Cleanup(func() { evm.AskHook.Store(nil) })
 		before := refreshes.Load()
 		run(t, network, family2)
-		assert.Greater(t, refreshes.Load(), before, "eth_getBlockReceipts(latest) refreshes the latest head before forwarding")
+		assert.Equal(t, before, refreshes.Load(), "eth_getBlockReceipts(latest) forwards at the view's Head, with no head fetch")
 
 		before = refreshes.Load()
 		bn := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
@@ -2236,7 +2254,7 @@ func TestInterpolation_EveryForm(t *testing.T) {
 		if bnResp != nil {
 			bnResp.Release()
 		}
-		assert.Greater(t, refreshes.Load(), before, "eth_blockNumber refreshes the latest head before it takes its Head")
+		assert.Equal(t, before, refreshes.Load(), "eth_blockNumber answers the view's Head, with no head fetch")
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
 		req.SetNetwork(network)
