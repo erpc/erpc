@@ -54,6 +54,8 @@ export type PolicyEvalUpstreamMetrics = {
  * Score-preset weight map used by `sortByScore`. Missing keys are treated
  * as zero. The built-in presets (`PREFER_FASTEST`, `PREFER_FRESHEST`,
  * `PREFER_LEAST_ERRORS`) are exposed as bare globals inside the eval.
+ * `blockHeadLag` and `finalizationLag` weigh each lag in blocks, but never
+ * more than in seconds: `min(blocks, seconds)` once the block time is known.
  */
 export type ScoreWeights = {
     errorRate?: number;
