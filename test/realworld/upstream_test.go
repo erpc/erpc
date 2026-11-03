@@ -27,8 +27,12 @@ const (
 	// scheduler: fetch hangs).
 	fetchTimeout = 10 * time.Second
 	// u4Recover: a pool whose sockets went dead costs one fetch timeout,
-	// then new connections answer within a poll cadence of W (§19 U4).
-	u4Recover = fetchTimeout + liveBound + reconnectSlack
+	// then new connections answer (§19 U4). A voter the block clock does
+	// not take is fetched only by its full poll, every
+	// statePollerInterval (30s by default; §6.8: per-W polls are deleted):
+	// the first poll after the fault times out, the next opens a new
+	// connection.
+	u4Recover = 2*30*time.Second + fetchTimeout + reconnectSlack
 
 	// u5Blocks: every vendor answers 429 this many blocks (§19 U5);
 	// u5ResumeBlocks: delivery resumes within this many block times of

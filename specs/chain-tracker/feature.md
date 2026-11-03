@@ -996,14 +996,14 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | U1 | one https vendor answers after 15s, for 30 blocks | no tap waits more than W; HTTP hedges; no breaker opened by a tracker fetch |
 | U2 | 3 https vendors; the proxy cuts the first one's connection (FIN, then RST) after half of a header or receipts body | fetch fails over at once; no malformed vote; logs complete |
 | U3 | wss TCP half-open: proxy stops forwarding, socket kept | hash vote expires within W; no tap waits more than W after another voter's first header for a block; reconnect within 15s after the counter passes; no gap past `reorgWindow` |
-| U4 | https keep-alive pool black-holed | one timeout, then new connections; `Latest` keeps moving |
+| U4 | https keep-alive pool black-holed | its next fetch (a clock turn or its full poll, every `statePollerInterval`) costs one timeout, then new connections; `Latest` keeps moving |
 | U5 | 429 on every vendor for 4 blocks | nobody benched; delivery resumes within 2 bt |
 | U6 | one vendor `-32005` / compute units for 60s; then every vendor for 10s | one vendor: bypassed, scheduler share unchanged; every vendor: the lowest busy class's share halves (`erpc_chain_tracker_fetch_slots`), then grows back by 10 successes per slot |
 | U7 | vendor answers `null` for a block at or below its own head | retried on another upstream, never cached; client gets the block |
 | U8 | vendor pushes headers with wrong hashes; integrity off and on | never pinned or sent; integrity on: counted on that upstream only |
 | U9 | truncated receipts, forged log, wrong bloom from one vendor | refetched from the other vendor; logs equal canonical |
 | U10 | primary 40 behind, still advancing | `Latest` unchanged; its hash vote expires; benched after 30s or more |
-| U11 | 2 upstreams only; one head frozen, still answering | taps and `latest` wait for the bench (at most 90s), then flow: the held blocks were not deliverable during the wait, so they arrive in batches of at most `reorgWindow`, no gap, no `newHeads` restart and no `1013` (§10.2, as C7); gRPC resumes at most once |
+| U11 | 2 upstreams only; one head frozen, still answering | a block serves at 1 hash-proven holder (§6.5): taps and `latest` follow the other upstream throughout, no wait for the bench; no gap, no `newHeads` restart, no `1013`; no gRPC stream ends |
 | U12 | one upstream reports +30M, same chainId | `Latest`, `Leader`, lag unchanged; ceiling raised, no short-circuit; its band probe counts one `retried_missing` |
 | U13 | one endpoint answers another chainId | cordoned, out of ceiling; uncordoned after 2 matches 5 min apart |
 | U14 | archive syncing at head+5; `eth_getBlockByNumber(head+3)` | served by the archive in the refusal band, not `null`; an answer that lands after the other vendors reach head+3 (2 blocks later) comes from them: a latency verdict |

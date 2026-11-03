@@ -172,14 +172,12 @@ func (s *scenario) watchLatest(bad func(pod int, bn, tip uint64)) (stop func()) 
 }
 
 // U11: two wss upstreams only, quorum 2; ws-b's head freezes while it
-// still answers. Latest and the taps wait for ws-b's bench, then flow at
-// once (§6.1, §15.1 "one ahead, peers stalled": at most 90s). The held
-// blocks were not deliverable during the wait, so they arrive in batches
-// of at most reorgWindow, as in C7 (§10.2): no newHeads restart or gap
-// and no 1013, which the clients' oracles flag through the close spread,
-// every held block's logs seen; each gRPC stream resumed at most once.
+// still answers. A block serves once 1 upstream holds it, hash-proven
+// (design decision 10; §6.5): Latest and the taps follow ws-a throughout,
+// with no wait for ws-b's bench, so every client stays live, with no
+// newHeads restart or gap and no 1013, and no gRPC stream ends.
 func u11() spec {
-	return spec{name: "U11", bound: benchBound + liveBound, allow: []string{"grpc:Unavailable"},
+	return spec{name: "U11", bound: healthyDelivery,
 		vendors: []vendorSpec{{"ws-a", "vendor-a", true}, {"ws-b", "vendor-b", true}},
 		clients: func(s *scenario) {
 			for pod := range s.h.pods {
@@ -193,43 +191,12 @@ func u11() spec {
 			frozen := wsb.Head().Number
 			at := time.Now()
 			s.logf("ws-b frozen at %d", frozen)
-			waited := make([]bool, len(s.h.pods))
-			for time.Since(at) < benchFloor-reconnectSlack {
-				time.Sleep(scrapeEvery)
-				if time.Since(at) < liveBound {
-					continue
-				}
-				for pod := range s.h.pods {
-					var bn hexutil.Uint64
-					if err := s.call(pod, &bn, "eth_blockNumber"); err != nil || waited[pod] {
-						continue
-					}
-					if uint64(bn) > frozen+1 {
-						waited[pod] = true
-						s.violate(s.name, "pod-%d: eth_blockNumber %d above ws-b's frozen %d, %s after the freeze: Latest did not wait for the bench", pod+1, bn, frozen, time.Since(at).Round(time.Second))
-					}
-				}
-			}
-			var flowed time.Time
-			for pod := range s.h.pods {
-				for {
-					var bn hexutil.Uint64
-					err := s.call(pod, &bn, "eth_blockNumber")
-					if err == nil && uint64(bn)+headSlackBlocks >= s.chain.Tip().Number {
-						s.logf("pod-%d: Latest flows again %s after the freeze", pod+1, time.Since(at).Round(time.Second))
-						break
-					}
-					if time.Since(at) > benchBound+reconnectSlack {
-						s.violate(s.name, "pod-%d: eth_blockNumber %d (err %v), tip %d, %s after ws-b froze: Latest did not flow after the bench", pod+1, bn, err, s.chain.Tip().Number, benchBound)
-						break
-					}
-					time.Sleep(scrapeEvery)
-				}
-			}
-			flowed = time.Now()
-			s.blocks(25)
-			s.requireLiveAfter(flowed.Add(liveBound), healthyDelivery)
-			time.Sleep(time.Until(flowed.Add(logsCloseSpread + reconnectSlack)))
+			stop := s.watchLatest(func(pod int, bn, tip uint64) {
+				s.violate(s.name, "pod-%d: eth_blockNumber %d against the tip %d, %s after ws-b froze at %d (slack %d): Latest waited on it", pod+1, bn, tip, time.Since(at).Round(time.Second), frozen, headSlackBlocks)
+			})
+			time.Sleep(time.Until(at.Add(benchFloor)))
+			stop()
+			s.requireLiveAfter(at.Add(liveBound), healthyDelivery)
 			for _, g := range s.grpcs {
 				g.mu.Lock()
 				n := 0
@@ -239,8 +206,8 @@ func u11() spec {
 					}
 				}
 				g.mu.Unlock()
-				if n > 1 {
-					s.violate(g.name, "StreamBlocks ended %d times; resumes at most once", n)
+				if n > 0 {
+					s.violate(g.name, "StreamBlocks ended %d times while ws-a served every block", n)
 				}
 			}
 			wsb.Update(func(f *chainsim.Faults) { f.Frozen = false })
