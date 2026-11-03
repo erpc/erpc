@@ -692,11 +692,12 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			expectedPolicy *data.CachePolicy
 		}{
 			{
-				name:          "LatestTag_NoCache",
-				method:        "eth_getBlockByNumber",
-				params:        `["latest",false]`,
-				result:        `"result":{"number":"0xf","hash":"0xabc"}`,
-				expectedCache: false, // Realtime tag → no default rule caches it
+				name:           "LatestTag_CacheAtItsNumber",
+				method:         "eth_getBlockByNumber",
+				params:         `["latest",false]`,
+				result:         `"result":{"number":"0xf","hash":"0xabc"}`,
+				expectedCache:  true, // Interpolated to Head.Latest above Finalized: unfinalized at its number (spec §6.8 seed)
+				expectedPolicy: unfinalizedPolicy,
 			},
 			{
 				name:           "FinalizedBlock_Cache",
