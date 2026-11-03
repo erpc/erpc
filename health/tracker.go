@@ -59,6 +59,9 @@ type NetworkMetadata struct {
 	evmLatestBlockNumber    atomic.Int64
 	evmLatestBlockTimestamp atomic.Int64
 	evmFinalizedBlockNumber atomic.Int64
+	// viewHead is the network-wide tracker's view Head (SetViewHead), on
+	// the network entry only.
+	viewHead atomic.Int64
 
 	// On the network entry only (nil upstream). headMu serializes every head
 	// publication for the network so a slow re-derivation can never overwrite a
@@ -1918,7 +1921,7 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 	if changed != nil {
 		changed.headChangedAt = now
 	}
-	ref, _ := corroboratedNetworkHead(ntwMeta, func(m *NetworkMetadata) int64 { return m.evmLatestBlockNumber.Load() })
+	ref, _ := lagReference(ntwMeta)
 	// A reference that stopped moving runs no number age (spec §6.1): a
 	// halted chain, or a pair frozen above one that went on, benches no one
 	// by it; headIsBehind's rules decide those.
@@ -1982,6 +1985,18 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 			Msg("upstream head rejoined: it caught up with its non-benched peers")
 	}
 	return membershipChanged
+}
+
+// lagReference is the network's latest lag reference (spec §6.6): the
+// corroborated number head, never below the view Head (SetViewHead); the
+// upstream that reported it, nil when the view sets it. Caller holds
+// ntwMeta.headMu.
+func lagReference(ntwMeta *NetworkMetadata) (int64, common.Upstream) {
+	ref, reporter := corroboratedNetworkHead(ntwMeta, func(m *NetworkMetadata) int64 { return m.evmLatestBlockNumber.Load() })
+	if v := ntwMeta.viewHead.Load(); v > ref {
+		return v, nil
+	}
+	return ref, reporter
 }
 
 // movedSinceBench reports whether the head moved after the evaluation that
@@ -2459,9 +2474,7 @@ func (t *Tracker) setLatestBlockNumber(upstream common.Upstream, blockNumber int
 	}
 
 	oldNtwVal := ntwMeta.evmLatestBlockNumber.Load()
-	ntwBn, headReporter := corroboratedNetworkHead(ntwMeta, func(meta *NetworkMetadata) int64 {
-		return meta.evmLatestBlockNumber.Load()
-	})
+	ntwBn, headReporter := lagReference(ntwMeta)
 	if ntwBn <= 0 {
 		lg.Warn().Str("networkId", net).Int64("value", ntwBn).Msg("ignoring block head lag tracking for non-positive block number in tracker")
 		return
@@ -2618,6 +2631,16 @@ func FreshnessWindow(bt time.Duration) time.Duration {
 		bt = ColdBlockTime
 	}
 	return min(max(3*bt, 2*time.Second), 60*time.Second)
+}
+
+// SetViewHead takes the network-wide tracker's view Head (spec §6.6): the
+// lag reference never stands below a block this instance serves. Number
+// heads alone may: with voters fetched about once per block, one push
+// source's report can be the only fresh number, and a lone report is
+// never the reference, so a source lagging far behind stood at it and its
+// hash age never ran (§19 U10).
+func (t *Tracker) SetViewHead(networkId string, number int64) {
+	t.getMetadata(metadataKey{nil, networkId}).viewHead.Store(number)
 }
 
 // SampleConfirmedHeaderTime feeds the timestamp of a source header the

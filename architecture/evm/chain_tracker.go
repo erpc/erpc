@@ -2520,17 +2520,18 @@ func (t *ChainTracker) laneLabel() string {
 	return t.group
 }
 
-// sampleView feeds each new view Head of the network-wide tracker into the
-// network's block time (spec §6.7): only headers the view reached are
-// samples, so a lagging or bogus source header never is.
+// sampleView hands each new view Head of the network-wide tracker to the
+// network: its block time (spec §6.7) takes only headers the view reached,
+// so a lagging or bogus source header never is a sample, and the lag
+// reference never stands below it (§6.6).
 func (t *ChainTracker) sampleView(s *feedState) {
 	h := s.viewHead()
 	if t.selector != "" || h == nil || h == t.sampled || h.timestamp == 0 {
 		return
 	}
 	t.sampled = h
-	if n, ok := t.network.(interface{ EvmSampleBlockTime(number, timestamp int64) }); ok {
-		t.callNetwork("block-time", func() { n.EvmSampleBlockTime(int64(h.number), int64(h.timestamp)) })
+	if n, ok := t.network.(interface{ EvmViewHeadMoved(number, timestamp int64) }); ok {
+		t.callNetwork("view-head", func() { n.EvmViewHeadMoved(int64(h.number), int64(h.timestamp)) })
 	}
 }
 

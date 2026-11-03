@@ -916,11 +916,12 @@ func (n *Network) EvmHashVotersChanged() {
 	n.sources.wake()
 }
 
-// EvmSampleBlockTime takes the network-wide tracker's confirmed head, a
-// source header q hash voters back, as a block time sample (spec §6.7).
-func (n *Network) EvmSampleBlockTime(number, timestamp int64) {
+// EvmViewHeadMoved takes each new view Head of the network-wide tracker:
+// a block time sample (spec §6.7) and the lag reference's floor (§6.6).
+func (n *Network) EvmViewHeadMoved(number, timestamp int64) {
 	if n.metricsTracker != nil {
 		n.metricsTracker.SampleConfirmedHeaderTime(n.networkId, n.Label(), number, timestamp)
+		n.metricsTracker.SetViewHead(n.networkId, number)
 	}
 }
 
