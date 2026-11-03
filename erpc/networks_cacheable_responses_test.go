@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,10 +22,15 @@ func init() {
 }
 
 // countingCacheDAL records Get/Set calls for Forward cache-path assertions.
+// When admitDefaultAllow is true, Set only increments when
+// AllowsCacheWrite(defaultAllow, resp.Cacheable()) — mirrors real cache
+// admission so Forward+consensus mark e2e can assert skipped writes.
 type countingCacheDAL struct {
-	gets atomic.Int32
-	sets atomic.Int32
-	hit  *common.NormalizedResponse
+	gets              atomic.Int32
+	sets              atomic.Int32
+	admittedSets      atomic.Int32
+	admitDefaultAllow bool
+	hit               *common.NormalizedResponse
 }
 
 func (c *countingCacheDAL) Get(_ context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -34,8 +41,17 @@ func (c *countingCacheDAL) Get(_ context.Context, req *common.NormalizedRequest)
 	return c.hit.WithRequest(req), nil
 }
 
-func (c *countingCacheDAL) Set(context.Context, *common.NormalizedRequest, *common.NormalizedResponse) error {
+func (c *countingCacheDAL) Set(_ context.Context, _ *common.NormalizedRequest, resp *common.NormalizedResponse) error {
 	c.sets.Add(1)
+	if c.admitDefaultAllow {
+		var mark *bool
+		if resp != nil {
+			mark = resp.Cacheable()
+		}
+		if common.AllowsCacheWrite(common.CachingStrategyDefaultAllow, mark) {
+			c.admittedSets.Add(1)
+		}
+	}
 	return nil
 }
 
@@ -120,6 +136,83 @@ func TestNetworkForward_SelectorReopensCache(t *testing.T) {
 		require.Eventually(t, func() bool { return cache.sets.Load() >= 1 }, 2*time.Second, 10*time.Millisecond,
 			"selector-enabled networks must write through Cache.Set (admission lives in Set)")
 	})
+}
+
+// TestNetworkForward_SelectorFallbackDoesNotAdmitWrite locks the ticket AC
+// that selector+fallback must not persist: a real Consensus stamps
+// cacheableResponses:false on the fallback winner, and a Set that applies
+// AllowsCacheWrite(defaultAllow, mark) must not admit the write.
+func TestNetworkForward_SelectorFallbackDoesNotAdmitWrite(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+		}).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0xupstream"}`))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	network := setupTestNetworkSimple(t, ctx, nil, &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+	})
+
+	yes, no := true, false
+	lg := zerolog.Nop()
+	cns, err := consensus.NewConsensus(&common.ConsensusPolicyConfig{
+		MaxParticipants:         1,
+		AgreementThreshold:      1,
+		LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+		CacheableResponses:      &yes,
+		CustomPolicy: &common.ConsensusCustomPolicyConfig{
+			EvalFunction: `(ctx) => "fallback"`,
+		},
+		Policies: map[string]*common.ConsensusPolicyConfig{
+			"fallback": {
+				MaxParticipants:         1,
+				AgreementThreshold:      1,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+				CacheableResponses:      &no,
+			},
+		},
+	}, &lg, "test")
+	require.NoError(t, err)
+	require.True(t, cns.HasSelector())
+
+	// Attach the real consensus to every executor so Forward's failsafe path
+	// stamps the mark (HasConsensus requires cfg.Consensus non-nil).
+	for _, fe := range network.failsafeExecutors {
+		if fe.cfg == nil {
+			fe.cfg = &common.FailsafeConfig{}
+		}
+		if fe.cfg.Consensus == nil {
+			fe.cfg.Consensus = &common.ConsensusPolicyConfig{}
+		}
+		fe.consensus = cns
+	}
+	require.True(t, network.consensusPolicySelectorEnabled())
+
+	cache := &countingCacheDAL{admitDefaultAllow: true}
+	network.cacheDal = cache
+
+	req := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","0x1"]}`,
+	))
+	req.SetNetwork(network)
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp.Cacheable())
+	assert.False(t, *resp.Cacheable(), "fallback policy must stamp false")
+
+	require.Eventually(t, func() bool { return cache.sets.Load() >= 1 }, 2*time.Second, 10*time.Millisecond,
+		"Forward still invokes Cache.Set; admission lives inside Set")
+	assert.Equal(t, int32(0), cache.admittedSets.Load(), "defaultAllow+false must not admit the write")
 }
 
 // TestNetworkForward_NoConsensusUnchanged keeps the non-selector path green:

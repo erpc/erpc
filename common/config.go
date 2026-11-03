@@ -2138,13 +2138,6 @@ type ConsensusPolicyConfig struct {
 // "selector fell closed to the inline default".
 const ConsensusDefaultPolicyName = "default"
 
-// ConsensusDefaultEvalTimeout is the wall-clock cap applied when
-// customPolicy.evalTimeout is omitted (0). Kept in sync with
-// ConsensusPolicyConfig.SetDefaults so NewConsensus (used by tests and any
-// caller that skips SetDefaults) cannot disable the selector timeout by
-// accident.
-const ConsensusDefaultEvalTimeout = 50 * time.Millisecond
-
 // ConsensusCustomPolicyConfig configures the pre-round consensus-policy
 // selector. EvalFunction is the operator-supplied JS expression evaluating to
 // `(ctx) => string | null`; EvalTimeout caps its wall-clock per request (an

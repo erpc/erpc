@@ -92,6 +92,35 @@ policies:
 	assert.False(t, *stock.CacheableResponses, "named omit without extends → false")
 }
 
+func TestConsensusPolicy_CacheableResponses_NamedExtendsNamed(t *testing.T) {
+	// Named omit stamps false before extends, so a child that extends a named
+	// base with explicit true still resolves to false (fail-safe).
+	const src = `
+maxParticipants: 3
+agreementThreshold: 2
+cacheableResponses: true
+policies:
+  strict:
+    maxParticipants: 3
+    agreementThreshold: 2
+    cacheableResponses: true
+  strictNoQuota:
+    extends: strict
+    requiredParticipants: []
+`
+	var c ConsensusPolicyConfig
+	require.NoError(t, yaml.Unmarshal([]byte(src), &c))
+	require.NoError(t, c.SetDefaults())
+
+	require.NotNil(t, c.Policies["strict"].CacheableResponses)
+	assert.True(t, *c.Policies["strict"].CacheableResponses)
+
+	child := c.Policies["strictNoQuota"]
+	require.NotNil(t, child.CacheableResponses)
+	assert.False(t, *child.CacheableResponses,
+		"named omit must not inherit another named policy's explicit true")
+}
+
 func TestNormalizedResponse_CacheableMark(t *testing.T) {
 	r := NewNormalizedResponse()
 	assert.Nil(t, r.Cacheable())

@@ -666,6 +666,14 @@ func markStatefulMethod(defs map[string]*CacheMethodConfig, method string) {
 	defs[key] = &CacheMethodConfig{Stateful: true}
 }
 
+// ConsensusDefaultEvalTimeout is the wall-clock cap applied when
+// customPolicy.evalTimeout is omitted (0). Kept in sync with
+// ConsensusPolicyConfig.SetDefaults so NewConsensus (used by tests and any
+// caller that skips SetDefaults) cannot disable the selector timeout by
+// accident. Lives in defaults.go (tygo-excluded) so it is not emitted as
+// invalid TypeScript (`N * time.Millisecond` → `N * any`).
+const ConsensusDefaultEvalTimeout = 50 * time.Millisecond
+
 func (c *CacheConfig) SetDefaults() error {
 	if c.CachingStrategy == "" {
 		c.CachingStrategy = CachingStrategyDefaultAllow
@@ -3076,9 +3084,11 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 	}
 
 	// Named policies omit cacheableResponses → false. Stamp before extends so
-	// a child that extends the inline default (omit → true) does not inherit
-	// that true — Circle posture is weaker named grades are uncacheable unless
-	// the operator opts in explicitly.
+	// a child that omits the field does not inherit a base's true — including
+	// extends: default (inline omit→true) and named→named where the base
+	// explicitly set true. Named omit always means uncacheable unless the
+	// operator opts in on that named entry. Circle posture: weaker grades
+	// like fallback stay out of the shared cache by default.
 	for _, p := range c.Policies {
 		if p != nil && p.CacheableResponses == nil {
 			p.CacheableResponses = util.BoolPtr(false)
@@ -3110,12 +3120,9 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 		if err := p.SetDefaults(); err != nil {
 			return fmt.Errorf("consensus.policies[%q] defaults: %w", name, err)
 		}
-		// Nested SetDefaults would apply the inline omit→true; restore named
-		// omit→false when the recursive call filled a still-nil field (no
-		// policies map on the child, so the pre-stamp above did not run).
-		if p.CacheableResponses == nil {
-			p.CacheableResponses = util.BoolPtr(false)
-		}
+		// Named policies already carry CacheableResponses from the pre-extends
+		// stamp (or an explicit operator value). Nested SetDefaults does not
+		// clear a non-nil pointer, so no post-restore is needed.
 	}
 
 	return nil
