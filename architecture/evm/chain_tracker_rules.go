@@ -519,7 +519,11 @@ func (t *ChainTracker) logSettle(s *settleState, o settleOutcome) {
 		b := s.started.branch[0].h
 		ev = ev.Uint64("branch", b.number).Str("branchHash", b.hashHex)
 	}
-	ev.Msg("chain tracker settle ended")
+	answers := make([]voter, 0, len(s.answers))
+	for who, a := range s.answers {
+		answers = append(answers, voter{who, a})
+	}
+	ev.Array("answered", t.votesArr(answers)).Array("votes", t.votesArr(t.baseVotes())).Msg("chain tracker settle ended")
 }
 
 // settleCount counts the end of round s in erpc_chain_tracker_settle_total.

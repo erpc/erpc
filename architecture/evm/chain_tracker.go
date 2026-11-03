@@ -1341,6 +1341,18 @@ func (t *ChainTracker) baseVotes() []voter {
 	return out
 }
 
+// votesArr logs votes: who, which block, and the root of its tree, so a
+// settle or re-anchor line shows what chose it.
+func (t *ChainTracker) votesArr(vs []voter) *zerolog.Array {
+	arr := zerolog.Arr()
+	for _, v := range vs {
+		r := t.rootOf(v.n)
+		arr.Dict(zerolog.Dict().Str("upstream", v.who).Uint64("block", v.n.h.number).Str("hash", v.n.h.hashHex).
+			Uint64("root", r.h.number).Str("rootHash", r.h.hashHex))
+	}
+	return arr
+}
+
 // roundKey is what a settle round weighs (spec §6.5 Settle rounds): the
 // pin it disputes and the conflicting branches, each named by its first
 // block off the pins, so new heads on either side keep it. pinned is nil
@@ -1438,15 +1450,19 @@ func (t *ChainTracker) rekey(k roundKey) roundKey {
 }
 
 // decide is rule 4 over the counted votes, plus the answers of the last
-// settle round once it ended, while its key stands. It returns no path
-// while a disputed round is out: the pins stay. tie is a tie rule 4 still
-// meets.
+// settle round once it ended, while its key stands. While a disputed round
+// is out the pins stay; over a tree without the pins they still extend,
+// as that tree could only take them by a re-anchor (pick). tie is a tie
+// rule 4 still meets.
 func (t *ChainTracker) decide() (path, tie []*node) {
 	base := t.baseVotes()
+	extendOnly := false
 	if s := t.settle; s != nil && t.stands(s.key) {
 		switch {
-		case s.inflight && s.key.disputed():
+		case s.inflight && s.key.disputed() && !t.offTree(s.key):
 			return nil, nil
+		case s.inflight && s.key.disputed():
+			extendOnly = true
 		case !s.inflight && t.meets(s.key, base):
 			base = append(base, t.settleAnswers(s, base)...)
 		}
@@ -1454,7 +1470,22 @@ func (t *ChainTracker) decide() (path, tie []*node) {
 	if len(base) > 0 {
 		path, tie = t.pick(base)
 	}
+	if extendOnly && (len(t.pins) == 0 || !slices.Contains(path, t.pins[len(t.pins)-1])) {
+		return nil, nil
+	}
 	return path, tie
+}
+
+// offTree reports whether every branch k weighs is in a tree without the
+// pins.
+func (t *ChainTracker) offTree(k roundKey) bool {
+	pinRoot := t.pinRoot()
+	for _, b := range k.branch {
+		if t.rootOf(b) == pinRoot {
+			return false
+		}
+	}
+	return true
 }
 
 // meets reports whether the counted votes base alone still meet k's
@@ -1551,8 +1582,17 @@ func (t *ChainTracker) pick(counted []voter) (path []*node, tie []*node) {
 			root = r
 		}
 	}
+	// Another tree takes the pins, a re-anchor, only on the votes of more
+	// than half the lane's voters: a poll-only voter's hash age passes W
+	// between its polls while a voter off the pins is polled each W (§6.3),
+	// so the fresh votes alone may be a minority fork's (§19 C14). Two
+	// disjoint trees never both pass half: no tie with the pins' tree.
+	guard := t.served && !t.voters.all && pinRoot != nil
+	if guard && counts.of(root)*2 <= len(t.voters.Voters) {
+		root = pinRoot
+	}
 	for r := range counts.roots {
-		if counts.of(r) == counts.of(root) {
+		if counts.of(r) == counts.of(root) && (!guard || r == root || r != pinRoot && root != pinRoot) {
 			tie = append(tie, r)
 		}
 	}
@@ -1979,6 +2019,7 @@ func (t *ChainTracker) signalMove(mv move) {
 		was := mv.old[len(mv.old)-1]
 		t.transition(zerolog.WarnLevel, "reanchor").Uint64("oldHead", was.number).Str("oldHeadHash", was.hashHex).
 			Uint64("head", mv.head.number).Str("headHash", mv.head.hashHex).Uint64("base", mv.base.number).Str("baseHash", mv.base.hashHex).
+			Array("votes", t.votesArr(t.baseVotes())).
 			Msg("chain tracker pins moved to another tree of held headers")
 	}
 	if mv.reverted > 0 {
@@ -2591,9 +2632,13 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 	}
 	votes := t.baseVotes()
 	var forks []int
+	pinRoot := t.pinRoot()
 	for _, v := range votes {
 		backs(v, false, head)
-		if t.conflicts(v.n) {
+		// A vote in a tree without the pins disputes nothing: that tree
+		// takes the pins only by a re-anchor on more than half the voters
+		// (pick), whose move taps replay as a reorg.
+		if t.conflicts(v.n) && t.rootOf(v.n) == pinRoot {
 			forks = append(forks, pinUnder(v.n))
 		}
 	}
