@@ -35,12 +35,11 @@ const (
 type AskReason string
 
 const (
-	AskPoll     AskReason = "poll"
-	AskCatchUp  AskReason = "catch_up"
-	AskRefusal  AskReason = "refusal"
-	AskRefresh  AskReason = "refresh"
-	AskSettle   AskReason = "settle"
-	AskNoSource AskReason = "no_source"
+	// AskClock: a lane's block clock (spec §6.8), and the latest part of
+	// an upstream's full poll, the clock's turn when no fire met it.
+	AskClock   AskReason = "clock"
+	AskRefusal AskReason = "refusal"
+	AskSettle  AskReason = "settle"
 )
 
 // AskOutcome is how a head Ask was met, the outcome label of
@@ -254,6 +253,9 @@ type EvmStatePoller interface {
 	// LatestAskAt is the send time of this instance's last Ask fetch of
 	// latest, zero before any: the Ask half of EvidenceAt.
 	LatestAskAt() time.Time
+	// HeadBackingOff reports whether the upstream's head fetches back off
+	// after node failures in a row: an Ask now fetches nothing.
+	HeadBackingOff() bool
 	IsBlockFinalized(blockNumber int64) (bool, error)
 	SuggestFinalizedBlock(blockNumber int64, at time.Time)
 	// SuggestLatestBlock reports blockNumber, its evidence taken at at: an

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -148,27 +147,25 @@ type ChainTracker struct {
 	// votes: a poll's send time, a push's receive time (spec §6.4).
 	voteAt    map[string]time.Time
 	pendingAt map[string]time.Time
-	ask       askState     // §6 rule 6
-	askSeq    uint64       // names the latest ask; a reset moves it on
 	settle    *settleState // §6 rule 5; nil until the first round
 	pins      []*node      // root..head, parentHash-linked
 	maxHeld   *chainHeader
 	wakeAt    time.Time
 	wake      *time.Timer
-	// catchUpAt is when the next catch-up round may ask while the network's
-	// latest block holds back a backed pin, or, while the vote need holds
-	// one, when the tracker asks again (each Ask paces its upstream); zero
-	// while neither does (gate). heldSince is when the vote need began to
-	// hold one.
-	catchUpAt time.Time
-	heldSince time.Time
-	// coldUntil is W after the first read of the voters that found any,
-	// since the tracker started or last reset, W read then; zero before
-	// it. Until it, voters that are sources and never reported count as
-	// hash voters (spec §6.5 cold window): an instance whose upstreams
-	// register later than W after its start is cold still. A W learned
-	// later neither ends nor reopens the window.
-	coldUntil time.Time
+	// clock is the lane's block clock (spec §6.8): it fetches the next
+	// block's head when no push brings it.
+	clock headClock
+	// latestReadAt is when a request last read the lane's latest
+	// (LatestRead), in unix nanoseconds: within W of it the clock runs.
+	// edge, while set, is closed once the clock's first fetch after an
+	// idle W answered.
+	latestReadAt atomic.Int64
+	edge         atomic.Pointer[chan struct{}]
+	// reached is, for a group tracker, when its view's Head first reached
+	// each of its recent numbers, ascending, at most window steps: a lane
+	// tap's block is deliverable from then (ReachedAt). reachedMu guards it.
+	reachedMu sync.Mutex
+	reached   []clockSight
 	// voters is the lane's voter set as the network's intake last read it,
 	// before the batch being handled.
 	voters HashVoters
@@ -192,7 +189,7 @@ type ChainTracker struct {
 	settleTaken map[string]time.Time
 	demoted     []string
 	forkAt      time.Time
-	// sampled is the confirmed head last fed to the block time.
+	// sampled is the view Head last fed to the block time.
 	sampled *chainHeader
 
 	receiptsOrder []receiptsEntry
@@ -250,16 +247,22 @@ type node struct {
 	children []*node
 }
 
-// feedState is what the tracker publishes after each change. Readers never
-// take a lock the tracker waits on.
+// feedState is what the tracker publishes after each change, as one
+// pointer: the pins and the lane's view on them, {Head, Firm} (spec §6.5).
+// HTTP reads and every tap read one state, so they never see two views.
+// Readers never take a lock the tracker waits on.
 type feedState struct {
-	base      uint64 // number of pins[0]
-	pins      []*chainHeader
-	confirmed int            // index in pins of the confirmed head; -1 none
-	changed   chan struct{}  // closed once a newer state is published
-	logs      indexer.Cursor // the logs head (spec §1)
-	// backing is the confirmed head's count over pins, for ReconfirmPin,
-	// tap start and the gRPC stall rule.
+	base uint64 // number of pins[0]
+	pins []*chainHeader
+	// view is the index in pins of the view's Head; -1 none.
+	view int
+	// firm is the view's Firm: the highest block at or below Head that q
+	// voters hold; 0 while unknown.
+	firm    uint64
+	changed chan struct{}  // closed once a newer state is published
+	logs    indexer.Cursor // the logs head (spec §1)
+	// backing is the pins' count of votes, for ReconfirmPin, tap start
+	// and the gRPC stall rule.
 	backing *pinBacking
 }
 
@@ -270,12 +273,12 @@ func (s *feedState) head() *chainHeader {
 	return s.pins[len(s.pins)-1]
 }
 
-// confirmedHead is the confirmed head (spec §6.5), nil while no pin is.
-func (s *feedState) confirmedHead() *chainHeader {
-	if s.confirmed < 0 || s.confirmed >= len(s.pins) {
+// viewHead is the view's Head (spec §6.5), nil while no pin is.
+func (s *feedState) viewHead() *chainHeader {
+	if s.view < 0 || s.view >= len(s.pins) {
 		return nil
 	}
-	return s.pins[s.confirmed]
+	return s.pins[s.view]
 }
 
 func (s *feedState) pinAt(n uint64) *chainHeader {
@@ -482,7 +485,7 @@ func newChainTracker(ctx context.Context, n common.Network, window int, backfill
 	}
 	t.laneHead = laneHead
 	t.clear()
-	s := &feedState{changed: make(chan struct{}), backing: &pinBacking{}}
+	s := &feedState{view: -1, changed: make(chan struct{}), backing: &pinBacking{}}
 	t.state.Store(s)
 	t.trees.Store(&treeState{state: s, changed: make(chan struct{})})
 	fetch.bg.Go(func() { t.run(ctx) })
@@ -510,11 +513,9 @@ func (t *ChainTracker) clear() {
 	t.pending = make(map[string]*node)
 	t.voteAt = make(map[string]time.Time)
 	t.pendingAt = make(map[string]time.Time)
-	t.ask = askState{}
-	t.askSeq++
+	t.clock.reset()
 	t.settle = nil
 	t.pins, t.maxHeld = nil, nil
-	t.coldUntil = time.Time{}
 	t.offPins = make(map[string]time.Time)
 	t.refreshedAt = make(map[string]string)
 	t.retryAt = make(map[string]time.Time)
@@ -755,8 +756,9 @@ func (t *ChainTracker) guard(step string, fn func(), onPanic func()) (ok bool) {
 // whose walks ended move (rule 3), a settle whose answers are in ends
 // (rule 5), the pins follow the votes (rule 4), a vote off the pins is
 // refreshed before its voter is polled (§6.3), roots extend (rules 1, 2),
-// the no-source Ask runs (rule 6), the next deadline is armed and the
-// trees are published for Reads outside the pins.
+// the view is published, the block clock fires or schedules its next
+// fetch (§6.8), the next deadline is armed and the trees are published
+// for Reads outside the pins.
 func (t *ChainTracker) update() bool {
 	ok := t.guard("choose", func() {
 		t.moveVotes()
@@ -769,8 +771,8 @@ func (t *ChainTracker) update() bool {
 	}, nil)
 	ok = t.guard("forks", t.trackForks, nil) && ok
 	ok = t.guard("fill", t.extendRoots, nil) && ok
-	ok = t.guard("ask", t.askNoSource, nil) && ok
 	ok = t.guard("send", t.gateSend, nil) && ok
+	ok = t.guard("clock", t.runClock, nil) && ok
 	ok = t.guard("trees", t.publishTrees, nil) && ok
 	ok = t.guard("receipts", t.planReceipts, nil) && ok
 	return t.guard("wake", t.rearm, nil) && ok
@@ -835,6 +837,9 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 		}
 		nd = t.hold(h)
 	}
+	// The block clock's phase: the first local sight of each new number,
+	// on any channel.
+	t.clock.saw(h.number, time.Now())
 	if msg.vote != voteSource {
 		if len(t.pins) == 0 {
 			t.evict()
@@ -882,12 +887,6 @@ func (t *ChainTracker) promote() {
 			t.voteAt[u] = maxTime(t.voteAt[u], at)
 		case cur == nil || !t.alive(cur) || !isAncestor(nd, cur):
 			t.votes[u], t.voteAt[u] = nd, at
-		}
-	}
-	if nd := t.ask.pending; nd != nil && (!t.alive(nd) || !t.walking(nd)) {
-		t.ask.pending = nil
-		if t.alive(nd) {
-			t.ask.vote, t.ask.voter = nd, t.ask.pendingVoter
 		}
 	}
 }
@@ -949,20 +948,24 @@ func (t *ChainTracker) farAhead(h *chainHeader) bool {
 // HashVoters is what the network's intake says of one lane's voters (spec
 // §6.2, §6.5), read once per batch of tracker messages.
 type HashVoters struct {
-	// Voters are the lane's voters in selection order; settles and
-	// no-source Asks go to them.
+	// Voters are the lane's voters in selection order; settles and the
+	// block clock go to them.
 	Voters []string
 	// Others are the lane's eligible upstreams that are no voters, in
 	// selection order: a tie's settle Asks them after the voters.
 	Others []string
-	// Sources are the voters that are push sources or active poll sources:
-	// their votes keep coming on a schedule (spec §6.5 rule 6).
-	Sources []string
-	// Hash are the hash voters: voters whose hash age is at most W, and,
-	// within the cold window, voters that are sources and never reported.
-	// Need is q.Of(len(Hash)).
+	// Hash are the hash voters: voters whose hash age is at most W. Need
+	// is q.Of(len(Hash)).
 	Hash []string
 	Need int
+	// Holders is the q-th highest block the lane's number voters hold by
+	// their shared counters or this instance's answers from them (spec
+	// §6.5 Firm); 0 while unknown.
+	Holders int64
+	// Guarantee is the lowest majority holder number of the lane's
+	// guarantee subsets (servedTip.guaranteedFor, guaranteedMethods), which
+	// the view's Head never passes; 0 while none constrains it.
+	Guarantee int64
 	// Vendors is the network's vendor table (meetsEvidence); nil when
 	// intake published none.
 	Vendors *Vendors
@@ -980,7 +983,7 @@ type HashVoters struct {
 // reconciler rechecks the topics (spec §5.2).
 func (t *ChainTracker) readVoters() {
 	n, ok := t.network.(interface {
-		EvmHashVoters(selector string, w time.Duration, cold bool) HashVoters
+		EvmHashVoters(selector string, w time.Duration) HashVoters
 	})
 	if !ok {
 		// Without intake the vendors are unknown: no vote alone is evidence
@@ -988,15 +991,10 @@ func (t *ChainTracker) readVoters() {
 		t.voters = HashVoters{Need: 1, all: true}
 		return
 	}
-	w, now := t.W(), time.Now()
-	cold := t.coldUntil.IsZero() || now.Before(t.coldUntil)
 	old := t.voters.Hash
-	t.callNetwork("voters", func() { t.voters = n.EvmHashVoters(t.selector, w, cold) })
+	t.callNetwork("voters", func() { t.voters = n.EvmHashVoters(t.selector, t.W()) })
 	if t.voters.Vendors != nil {
 		t.vendors.Store(t.voters.Vendors)
-	}
-	if t.coldUntil.IsZero() && len(t.voters.Voters) > 0 {
-		t.coldUntil = now.Add(w)
 	}
 	if t.selector != "" || slices.Equal(old, t.voters.Hash) {
 		return
@@ -1314,17 +1312,13 @@ type voter struct {
 	n   *node
 }
 
-// baseVotes are the votes of sources that count, or the no-source vote
-// while none of those votes (rule 6).
+// baseVotes are the votes of the hash voters (counts).
 func (t *ChainTracker) baseVotes() []voter {
-	out := make([]voter, 0, len(t.votes)+1)
+	out := make([]voter, 0, len(t.votes))
 	for u, v := range t.votes {
 		if t.counts(u) {
 			out = append(out, voter{u, v})
 		}
-	}
-	if len(out) == 0 && t.alive(t.ask.vote) {
-		out = append(out, voter{t.ask.voter, t.ask.vote})
 	}
 	return out
 }
@@ -1428,14 +1422,13 @@ func (t *ChainTracker) rekey(k roundKey) roundKey {
 // decide is rule 4 over the counted votes, plus the answers of the last
 // settle round once it ended, while its key stands. It returns no path
 // while a disputed round is out: the pins stay. tie is a tie rule 4 still
-// meets; conflict a no-source answer off the pins.
-func (t *ChainTracker) decide() (path, tie []*node, conflict bool) {
+// meets.
+func (t *ChainTracker) decide() (path, tie []*node) {
 	base := t.baseVotes()
-	conflict = len(base) == 1 && base[0].n == t.ask.vote && t.conflicts(t.ask.vote)
 	if s := t.settle; s != nil && t.stands(s.key) {
 		switch {
 		case s.inflight && s.key.disputed():
-			return nil, nil, false
+			return nil, nil
 		case !s.inflight && t.meets(s.key, base):
 			base = append(base, t.settleAnswers(s, base)...)
 		}
@@ -1443,7 +1436,7 @@ func (t *ChainTracker) decide() (path, tie []*node, conflict bool) {
 	if len(base) > 0 {
 		path, tie = t.pick(base)
 	}
-	return path, tie, conflict
+	return path, tie
 }
 
 // meets reports whether the counted votes base alone still meet k's
@@ -1496,25 +1489,18 @@ func (t *ChainTracker) decidedAnswers(base []voter) []voter {
 	return t.settleAnswers(s, base)
 }
 
-// choose moves the pins to rule 4's path; a tie on a tracker that walks,
-// or a no-source answer that conflicts with the pins, starts a settle
-// round when one may start. A tracker that does not walk takes rule 4's
-// tie-break: its roots never link, so a tie there is the usual state of a
-// chain faster than its polls, not a fork (spec §6.5 rule 5).
+// choose moves the pins to rule 4's path; a tie on a tracker that walks
+// starts a settle round when one may start. A tracker that does not walk
+// takes rule 4's tie-break: its roots never link, so a tie there is the
+// usual state of a chain faster than its polls, not a fork (spec §6.5
+// rule 5).
 func (t *ChainTracker) choose() {
-	path, tie, conflict := t.decide()
+	path, tie := t.decide()
 	if path == nil {
 		return
 	}
-	switch {
-	case len(tie) > 0 && t.extends():
-		if t.startDispute(t.tieKey(tie), "", settleTie) {
-			return
-		}
-	case conflict:
-		if t.startDispute(t.disputeOf(t.ask.vote), t.ask.voter, settleDispute) {
-			return
-		}
+	if len(tie) > 0 && t.extends() && t.startTie(t.tieKey(tie)) {
+		return
 	}
 	t.apply(path)
 }
@@ -1824,8 +1810,7 @@ func (t *ChainTracker) apply(path []*node) {
 		return
 	}
 	s := t.newFeedState(path)
-	b := t.gate(path)
-	s.confirmed, s.backing = b.confirmed(), b
+	t.setView(s, path)
 	s.logs = t.logsHeadOf(s)
 	mv := t.moveOf(pub.pins, path)
 
@@ -2280,21 +2265,21 @@ func (t *ChainTracker) pinHeaders(pins []*node) []*chainHeader {
 	return buf[off : off+len(pins) : off+len(pins)]
 }
 
-// stamp marks each pin that first stands at or below s's confirmed head
-// or logs head with the time it got there (Block.Ready). Stamped pins are
-// one run that grows at both ends: new heads above it, fill below it, and
-// a revert unstamps what it removes (unstamp). A hole, a pin whose
-// receipts the feed needs and does not hold, gets no logs stamp, even where
-// the logs head passed it below the window; the run stamps the pins above
-// it, and the Read that returns the hole stamps it (spec §10.2). Only the
+// stamp marks each pin that first stands at or below s's view Head or logs
+// head with the time it got there (Block.Ready). Stamped pins are one run
+// that grows at both ends: new heads above it, fill below it, and a revert
+// unstamps what it removes (unstamp). A hole, a pin whose receipts the
+// feed needs and does not hold, gets no logs stamp, even where the logs
+// head passed it below the window; the run stamps the pins above it, and
+// the Read that returns the hole stamps it (spec §10.2). Only the
 // network-wide tracker stamps: trackers share parsed headers, and taps
 // read only that one.
 func (t *ChainTracker) stamp(s *feedState) {
-	if t.selector != "" || s.confirmed < 0 {
+	if t.selector != "" || s.view < 0 {
 		return
 	}
 	now := time.Now().UnixNano()
-	stampRun(s.pins[:s.confirmed+1], now, func(*chainHeader) bool { return false }, func(h *chainHeader) *atomic.Int64 { return &h.confirmedAt })
+	stampRun(s.pins[:s.view+1], now, func(*chainHeader) bool { return false }, func(h *chainHeader) *atomic.Int64 { return &h.confirmedAt })
 	if l := s.pinAt(s.logs.Number); l != nil && l.hash == s.logs.Hash {
 		hole := func(h *chainHeader) bool { return t.feedNeeds(h) && t.heldReceiptsOf(h.hash) == nil }
 		stampRun(s.pins[:l.number-s.base+1], now, hole, func(h *chainHeader) *atomic.Int64 { return &h.logsAt })
@@ -2336,8 +2321,7 @@ func (t *ChainTracker) unstamp(old []*chainHeader, s *feedState) {
 
 func (t *ChainTracker) publish() {
 	s := t.newFeedState(t.pins)
-	b := t.gate(t.pins)
-	s.confirmed, s.backing = b.confirmed(), b
+	t.setView(s, t.pins)
 	s.logs = t.logsHeadOf(s)
 	t.stamp(s)
 	old := t.state.Swap(s)
@@ -2380,25 +2364,67 @@ func (t *ChainTracker) published(old, s *feedState, pinsMoved bool) {
 				Msg("chain tracker published pins that are not one parentHash chain")
 		}
 	}
-	t.sampleConfirmed(s)
+	h, prev := s.viewHead(), old.viewHead()
+	// Only a pins move lowers the view (spec §6.5 Head rule 5): a Head
+	// that fell while its pin stands is a bug of the view.
+	if h != nil && prev != nil && h.number < prev.number && s.pinAt(prev.number) == prev {
+		common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantLatestRegressed).
+			Str("group", t.group).Uint64("head", h.number).Uint64("previous", prev.number).Str("previousHash", hexHash(prev.hash)).
+			Msg("chain tracker view fell below a Head that is still pinned")
+	}
+	if h != nil {
+		telemetry.GaugeHandle(telemetry.MetricHeadFirmLagBlocks, t.projectId(), t.networkLabel(), t.laneLabel()).Set(float64(h.number - min(s.firm, h.number)))
+	}
+	if h != nil && h != prev {
+		if seen := t.clock.sightOf(h.number); !seen.IsZero() && (prev == nil || h.number > prev.number) {
+			telemetry.ObserverHandle(telemetry.MetricHeadViewLagSeconds, t.projectId(), t.networkLabel(), t.laneLabel()).Observe(time.Since(seen).Seconds())
+		}
+	}
+	t.sampleView(s)
 	if t.selector != "" {
+		if h != nil && (prev == nil || h.number > prev.number) {
+			t.reachedMu.Lock()
+			// A Head that fell and rises again reaches those numbers anew.
+			for len(t.reached) > 0 && t.reached[len(t.reached)-1].number >= h.number {
+				t.reached = t.reached[:len(t.reached)-1]
+			}
+			t.reached = append(t.reached, clockSight{h.number, time.Now()})
+			if over := len(t.reached) - t.window; over > 0 {
+				t.reached = slices.Delete(t.reached, 0, over)
+			}
+			t.reachedMu.Unlock()
+		}
 		return
 	}
 	lag := 0
 	if len(s.pins) > 0 {
-		lag = len(s.pins) - 1 - s.confirmed
+		lag = len(s.pins) - 1 - s.view
 	}
 	telemetry.GaugeHandle(telemetry.MetricChainTrackerConfirmLagBlocks, t.projectId(), t.networkLabel()).Set(float64(lag))
-	if c := s.confirmedHead(); c != nil && c != old.confirmedHead() {
+	if h != nil && h != prev {
 		telemetry.GaugeHandle(telemetry.MetricNetworkSubscriptionLastHeadTimestamp, t.projectId(), t.networkLabel()).SetToCurrentTime()
+		// The state probes run on each change of the network-wide Head
+		// (spec §6.11 Probe).
+		if p := stateProberFor(t.network); p != nil {
+			p.latestChanged()
+		}
 	}
 }
 
-// sampleConfirmed feeds each new confirmed head of the network-wide tracker
-// into the network's block time (spec §6.7): only headers the confirmed
-// head reached are samples, so a lagging or bogus source header never is.
-func (t *ChainTracker) sampleConfirmed(s *feedState) {
-	h := s.confirmedHead()
+// laneLabel is the tracker's lane as metrics label it: "all" for the
+// network-wide tracker.
+func (t *ChainTracker) laneLabel() string {
+	if t.group == "" {
+		return "all"
+	}
+	return t.group
+}
+
+// sampleView feeds each new view Head of the network-wide tracker into the
+// network's block time (spec §6.7): only headers the view reached are
+// samples, so a lagging or bogus source header never is.
+func (t *ChainTracker) sampleView(s *feedState) {
+	h := s.viewHead()
 	if t.selector != "" || h == nil || h == t.sampled || h.timestamp == 0 {
 		return
 	}
@@ -2408,18 +2434,20 @@ func (t *ChainTracker) sampleConfirmed(s *feedState) {
 	}
 }
 
-// pinBacking is the confirmed head's count over the pins (spec §6.5): for
-// each counted vote and decided settle answer, the index of the highest pin
-// it backs and its vendor, a vote backing every pin on its branch at or
-// below it; and how many pins, from the lowest, no counted vote disputes.
+// pinBacking is the pins' count of votes (spec §6.5): for each counted
+// vote and decided settle answer, the index of the highest pin it backs
+// and its vendor, a vote backing every pin on its branch at or below it;
+// how many pins, from the lowest, no counted vote disputes; and the lane's
+// number facts the view reads with them.
 type pinBacking struct {
 	base  uint64
 	backs []pinBack // by index, ascending
 	// need is q.Of(hash voters); voters is how many hash voters there are;
 	// vendors is how many vendors the network's upstreams name.
 	need, voters, vendors int
-	// ceiling is the highest number taps may send: the lane's Latest.
-	ceiling uint64
+	// holders and guarantee are the lane's (HashVoters): the q-th highest
+	// holder number, and the cap of the guarantee subsets, 0 none.
+	holders, guarantee int64
 	// undisputed is how many pins, from the lowest, every counted vote
 	// descends from or extends, walking ones included; a pin above them has
 	// a hash voter on another branch, or may yet be reorged away.
@@ -2438,50 +2466,45 @@ func (b *pinBacking) atLeast(i int) int {
 	return first
 }
 
-// confirmed is the confirmed head: the index of the highest pin with need
-// counted votes at or above it and a number at most the ceiling; -1 while
-// no pin is. A pin one voter alone backs, such as a cold instance's first
-// header, so waits for a second while two hash voters exist.
-func (b *pinBacking) confirmed() int {
-	need := max(b.need, 1)
-	if len(b.backs) < need || b.ceiling < b.base {
+// head is the view's Head before rule 5 (spec §6.5): the index of the
+// highest pin one counted vote backs, undisputed and at most the
+// guarantee; -1 while no pin is.
+func (b *pinBacking) head() int {
+	if len(b.backs) == 0 {
 		return -1
 	}
-	i := b.backs[len(b.backs)-need].i
-	if b.base+uint64(i) > b.ceiling {
-		i = int(b.ceiling - b.base)
+	i := min(b.backs[len(b.backs)-1].i, b.undisputed-1)
+	if b.guarantee > 0 {
+		if uint64(b.guarantee) < b.base {
+			return -1
+		}
+		i = min(i, int(uint64(b.guarantee)-b.base))
 	}
 	return i
 }
 
-// capped returns the highest pin the votes back while the lane's Latest,
-// not the vote need, holds it back; ok false otherwise.
-func (b *pinBacking) capped() (number uint64, ok bool) {
-	need := max(b.need, 1)
-	if len(b.backs) < need {
-		return 0, false
+// firm is the view's Firm for a Head at index head: the highest block at
+// or below it that q voters hold, by need counted votes at or above it or
+// by the lane's holder numbers; 0 while neither knows one.
+func (b *pinBacking) firm(head int) uint64 {
+	if head < 0 {
+		return 0
 	}
-	number = b.base + uint64(b.backs[len(b.backs)-need].i)
-	return number, number > b.ceiling
+	top := b.base + uint64(head)
+	var firm uint64
+	if need := max(b.need, 1); len(b.backs) >= need {
+		firm = b.base + uint64(b.backs[len(b.backs)-need].i)
+	}
+	if b.holders > 0 {
+		firm = max(firm, uint64(b.holders))
+	}
+	return min(firm, top)
 }
 
-// held returns the highest pin a vote backs while the vote need holds it
-// back; ok false otherwise.
-func (b *pinBacking) held() (number uint64, ok bool) {
-	if len(b.backs) == 0 {
-		return 0, false
-	}
-	top, need := b.backs[len(b.backs)-1].i, max(b.need, 1)
-	if len(b.backs) >= need && b.backs[len(b.backs)-need].i >= top {
-		return 0, false
-	}
-	return b.base + uint64(top), true
-}
-
-// confirms reports whether the pin at n is PinFresh (spec §6.5): confirmed,
-// backed by the evidence quorum of vendors, and undisputed.
+// confirms reports whether the pin at n is PinFresh (spec §6.5): backed by
+// q counted votes and the evidence quorum of vendors, and undisputed.
 func (b *pinBacking) confirms(n uint64) bool {
-	if n < b.base || n-b.base >= uint64(b.undisputed) || n > b.ceiling {
+	if n < b.base || n-b.base >= uint64(b.undisputed) {
 		return false
 	}
 	backs := b.backs[b.atLeast(int(n-b.base)):]
@@ -2497,11 +2520,11 @@ func (b *pinBacking) confirms(n uint64) bool {
 	return meetsEvidence(len(vendors), b.vendors)
 }
 
-// same reports whether b and o confirm the same pins and count the same
-// hash voters.
+// same reports whether b and o count the same votes, hash voters and lane
+// numbers over the same pins.
 func (b *pinBacking) same(o *pinBacking) bool {
 	return o != nil && b.base == o.base && b.need == o.need && b.voters == o.voters && b.vendors == o.vendors &&
-		b.undisputed == o.undisputed && b.ceiling == o.ceiling && slices.Equal(b.backs, o.backs)
+		b.holders == o.holders && b.guarantee == o.guarantee && b.undisputed == o.undisputed && slices.Equal(b.backs, o.backs)
 }
 
 // backingOf counts the votes backing each pin of path. A decided settle's
@@ -2509,7 +2532,7 @@ func (b *pinBacking) same(o *pinBacking) bool {
 // a split the settle decided flows at once.
 func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 	vt := t.vendorTable()
-	b := &pinBacking{need: t.voters.Need, voters: len(t.voters.Hash), vendors: vt.Distinct, ceiling: t.sendCeiling()}
+	b := &pinBacking{need: t.voters.Need, voters: len(t.voters.Hash), vendors: vt.Distinct, holders: t.voters.Holders, guarantee: t.voters.Guarantee}
 	if t.voters.all {
 		b.voters = 1
 	}
@@ -2564,83 +2587,18 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 	return b
 }
 
-// gate is the pins' backing for a publish. While a tap waits and the
-// lane's Latest holds back a pin the votes back, it asks as many of the
-// voters whose head is below that pin as Latest lacks, for their heads
-// once per block time, at most catchUpMax apart (spec §6.5 catch-up;
-// EvmRefreshHeadsBelow picks them): a voter that is no source, polled
-// every statePollerInterval, would otherwise hold every tap until its next
-// poll. A pin the vote need holds back for one block time is polled for
-// from as many of the voters whose hash vote here is below it as the need
-// lacks, oldest evidence first (EvmPollHeads).
-// Both run no faster than the demand's pace: a follow tap alone needs a
-// head once per integrity.follow.interval, not every block. Each Ask
-// carries that pace, so an upstream is fetched once per pace across
-// lanes; catchUpAt spaces the rounds, each asking only as many voters as
-// the lane lacks: without it, an answer still below the pin would send
-// the next round to the next voter at once.
-// Their shared counters may already show it, moved by another instance or
-// a client response, which votes no hash. rearm asks again at catchUpAt;
-// a counter that moves wakes the tracker (LatestChanged).
-func (t *ChainTracker) gate(path []*node) *pinBacking {
+// setView computes s's view on path, its pins (spec §6.5): Head is the
+// highest pin one counted hash vote backs, undisputed and within every
+// guarantee, or the previous Head while that one is still pinned and
+// higher, so only a pins move lowers it; Firm is the highest block at or
+// below Head that q voters hold.
+func (t *ChainTracker) setView(s *feedState, path []*node) {
 	b := t.backingOf(path)
-	now := time.Now()
-	pin, capped := b.capped()
-	held, holding := b.held()
-	switch {
-	case !holding:
-		t.heldSince = time.Time{}
-	case t.heldSince.IsZero():
-		t.heldSince = now
+	s.backing, s.view = b, b.head()
+	if prev := t.state.Load().viewHead(); prev != nil && s.pinAt(prev.number) == prev {
+		s.view = max(s.view, int(prev.number-s.base))
 	}
-	pace, demanded := t.demand()
-	if !capped && !holding || !demanded {
-		t.catchUpAt = time.Time{}
-		return b
-	}
-	if !capped {
-		// Pushes of one block arrive together: only a pin held one block
-		// time is asked for.
-		if ripe := t.heldSince.Add(t.BlockTime()); now.Before(ripe) {
-			t.catchUpAt = maxTime(t.catchUpAt, ripe)
-			return b
-		}
-		if pace > 0 && now.Before(t.catchUpAt) {
-			return b
-		}
-		every := max(t.BlockTime(), pace)
-		t.catchUpAt = now.Add(every)
-		// Only as many as the need lacks, oldest evidence first: the
-		// voters already at or above the held pin count toward it.
-		lacks := max(b.need, 1) - (len(b.backs) - b.atLeast(int(held-b.base)))
-		var below []string
-		for _, u := range t.voters.Voters {
-			if nd := t.votes[u]; nd == nil || !t.alive(nd) || nd.h.number < held {
-				below = append(below, u)
-			}
-		}
-		if lacks > 0 && lacks < len(below) {
-			t.oldestEvidenceFirst(below, func(u string) time.Time { return t.voteAt[u] })
-		}
-		below = below[:max(0, min(lacks, len(below)))]
-		if p, ok := t.network.(interface {
-			EvmPollHeads(ids []string, pace time.Duration)
-		}); ok && len(below) > 0 {
-			t.callNetwork("catch-up", func() { p.EvmPollHeads(below, every) })
-		}
-		return b
-	}
-	if now.Before(t.catchUpAt) {
-		return b
-	}
-	every := max(min(t.BlockTime(), catchUpMax), pace)
-	t.catchUpAt = now.Add(every)
-	if r, ok := t.network.(interface {
-		EvmRefreshHeadsBelow(string, int64, time.Duration)
-	}); ok {
-		t.callNetwork("catch-up", func() { r.EvmRefreshHeadsBelow(t.selector, int64(pin), every) })
-	}
-	return b
+	s.firm = b.firm(s.view)
 }
 
 func maxTime(a, b time.Time) time.Time {
@@ -2665,18 +2623,6 @@ func (t *ChainTracker) oldestEvidenceFirst(ids []string, report func(string) tim
 		at[u] = common.EvidenceAt(report(u), asked[u])
 	}
 	slices.SortStableFunc(ids, func(x, y string) int { return at[x].Compare(at[y]) })
-}
-
-// sendCeiling is the highest number this tracker's taps may send: its
-// lane's Latest, so no transport shows a block eth_blockNumber does not,
-// and one source alone never moves either (spec §6.5). Latest unknown, no
-// voter yet, holds every send (§7).
-func (t *ChainTracker) sendCeiling() (ceiling uint64) {
-	if t.laneHead == nil {
-		return math.MaxUint64
-	}
-	t.callNetwork("send-ceiling", func() { ceiling = uint64(max(t.laneHead().Latest, 0)) })
-	return ceiling
 }
 
 // finalizedHead is the lane's Head.Finalized, 0 while unknown or when the
@@ -2715,7 +2661,7 @@ func (t *ChainTracker) ceilingLeft(n uint64) (left bool, wait time.Duration) {
 // callNetwork runs a call into the network's head code from the tracker's
 // goroutine. A panic there is counted and dropped, so it never fails the
 // message being handled: a bug outside the tracker would otherwise reset it
-// every 3 messages. A dropped ceiling call leaves 0, which holds the sends.
+// every 3 messages.
 func (t *ChainTracker) callNetwork(what string, fn func()) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -2728,27 +2674,29 @@ func (t *ChainTracker) callNetwork(what string, fn func()) {
 	fn()
 }
 
-// gateSend republishes the pins when the confirmed head, the pins PinFresh
-// covers or the hash voters moved while the pins stayed: a vote moved up
-// the pinned branch or started a walk off it, a hash vote aged past W, the
-// cold window ended, or the lane's Latest moved. A change taps cannot see
-// keeps the state's changed channel, so no tap wakes for it; the confirmed
-// head moving, or the last hash voter leaving or the first arriving (tap
+// gateSend republishes the pins' view when it, the pins PinFresh covers or
+// the hash voters moved while the pins stayed: a vote moved up the pinned
+// branch or started a walk off it, a hash vote aged past W, or a holder
+// number moved Firm. A change taps cannot see (Firm, the counts behind
+// PinFresh) keeps the state's changed channel, so no tap wakes for it; the
+// Head moving, or the last hash voter leaving or the first arriving (tap
 // start and the gRPC stall rule read it), wakes them.
 func (t *ChainTracker) gateSend() {
 	pub := t.state.Load()
 	if len(pub.pins) == 0 {
 		return
 	}
-	b := t.gate(t.pins)
-	c := b.confirmed()
-	if c == pub.confirmed && b.same(pub.backing) {
+	s := &feedState{base: pub.base, pins: pub.pins, changed: pub.changed}
+	t.setView(s, t.pins)
+	if s.view == pub.view && s.firm == pub.firm && s.backing.same(pub.backing) {
 		return
 	}
-	s := &feedState{base: pub.base, pins: pub.pins, confirmed: c, changed: pub.changed, backing: b}
-	if c == pub.confirmed && (b.voters > 0) == (pub.backing.voters > 0) {
+	if s.view == pub.view && (s.backing.voters > 0) == (pub.backing.voters > 0) {
 		s.logs = pub.logs
 		t.state.Store(s)
+		if h := s.viewHead(); h != nil {
+			telemetry.GaugeHandle(telemetry.MetricHeadFirmLagBlocks, t.projectId(), t.networkLabel(), t.laneLabel()).Set(float64(h.number - min(s.firm, h.number)))
+		}
 		return
 	}
 	s.changed = make(chan struct{})
@@ -2833,24 +2781,24 @@ func (t *ChainTracker) receiptsCap() int {
 
 // --- indexer.ChainFeed ---
 
-// Head is a new tap's start: the confirmed head while a hash voter exists,
+// Head is a new tap's start: the view's Head while a hash voter exists,
 // else its next change; fill moving the pins' base is not one. After a wait
 // the tap starts after the pins' head as it waited, the newest block it
-// could have known, so a confirmed head that moves several blocks up still
-// sends every block pinned since; with no pin then, or one a reorg
-// replaced, the new confirmed head is the tap's first block.
+// could have known, so a Head that moves several blocks up still sends
+// every block pinned since; with no pin then, or one a reorg replaced, the
+// new Head is the tap's first block.
 func (t *ChainTracker) Head(ctx context.Context) (indexer.Cursor, error) {
 	return t.HeadAsOf()(ctx)
 }
 
-// HeadAsOf is Head fixed as of the call: the confirmed head then, or the
-// wait for its next change from then. A ws subscribe takes it before the
-// client has the subscription id, so its tap sends every block confirmed
+// HeadAsOf is Head fixed as of the call: the view's Head then, or the wait
+// for its next change from then. A ws subscribe takes it before the client
+// has the subscription id, so its tap sends every block the view reaches
 // after that, however late its loop runs (spec §10.2). It keeps no state
 // past the call but the headers it starts from.
 func (t *ChainTracker) HeadAsOf() func(context.Context) (indexer.Cursor, error) {
 	s := t.state.Load()
-	prev := s.confirmedHead()
+	prev := s.viewHead()
 	if prev != nil && s.backing.voters > 0 {
 		c := prev.cursor()
 		return func(context.Context) (indexer.Cursor, error) { return c, nil }
@@ -2859,7 +2807,7 @@ func (t *ChainTracker) HeadAsOf() func(context.Context) (indexer.Cursor, error) 
 	return func(ctx context.Context) (indexer.Cursor, error) { return t.nextHead(ctx, prev, known, changed) }
 }
 
-// nextHead waits for the confirmed head to move off prev, from the state
+// nextHead waits for the view's Head to move off prev, from the state
 // whose changed channel is changed and whose pins' head was known.
 func (t *ChainTracker) nextHead(ctx context.Context, prev, known *chainHeader, changed <-chan struct{}) (indexer.Cursor, error) {
 	for {
@@ -2870,7 +2818,7 @@ func (t *ChainTracker) nextHead(ctx context.Context, prev, known *chainHeader, c
 		}
 		s := t.state.Load()
 		changed = s.changed
-		h := s.confirmedHead()
+		h := s.viewHead()
 		if h == nil || h == prev {
 			continue
 		}
@@ -3087,16 +3035,16 @@ func (t *ChainTracker) readAt(s *feedState, tr *treeState, c indexer.Cursor, rr 
 	return indexer.Batch{}, readFetch, nil
 }
 
-// applied is the pins from number from to the confirmed head, at most
+// applied is the pins from number from to the view's Head, at most
 // reorgWindow of them, ending before the first block whose receipts the tap
-// needs and lacks; empty while from is above the confirmed head. from is at
-// least the lowest pin. A block is deliverable to a logs tap no sooner than
-// the blocks before it whose receipts the tap needs: a hole the tap waited
-// on carries its Read's stamp to every block after it, here up to
-// reorgWindow back and through the batch, while a tap that needs no hole
-// measures from the stamps alone.
+// needs and lacks; empty while from is above the Head. from is at least
+// the lowest pin. A block is deliverable to a logs tap no sooner than the
+// blocks before it whose receipts the tap needs: a hole the tap waited on
+// carries its Read's stamp to every block after it, here up to reorgWindow
+// back and through the batch, while a tap that needs no hole measures from
+// the stamps alone.
 func (t *ChainTracker) applied(s *feedState, from uint64, rr *readReceipts) indexer.Batch {
-	head := s.confirmedHead()
+	head := s.viewHead()
 	if head == nil || from > head.number {
 		return indexer.Batch{}
 	}
@@ -3353,27 +3301,66 @@ func (t *ChainTracker) wantFill(c [32]byte) (release func()) {
 	}
 }
 
-// SendState reads one published state for a tap about to write c: whether
-// c is pinned, and the confirmed head (ok false while none is).
-func (t *ChainTracker) SendState(c indexer.Cursor) (pinned bool, confirmed indexer.Cursor, ok bool) {
-	s := t.state.Load()
-	if h := s.confirmedHead(); h != nil {
-		confirmed, ok = h.cursor(), true
-	}
-	return s.pinned(c) != nil, confirmed, ok
+// View is one published state of the tracker, as HTTP reads and taps
+// read it (spec §6.5): the lane's view, {Head, Firm}, over its pins, and
+// the channel closed once a newer state is published. Every read of one
+// View answers from that one state.
+type View struct {
+	s *feedState
 }
 
-// Tip returns the head now, without waiting.
-func (t *ChainTracker) Tip() (indexer.Cursor, bool) {
-	if h := t.state.Load().head(); h != nil {
+// View loads the tracker's published state once.
+func (t *ChainTracker) View() View { return View{s: t.state.Load()} }
+
+// Head is the view's Head; ok false while no pin is.
+func (v View) Head() (head indexer.Cursor, ok bool) {
+	if h := v.s.viewHead(); h != nil {
 		return h.cursor(), true
 	}
 	return indexer.Cursor{}, false
 }
 
-// Confirmed returns the confirmed head now, without waiting.
-func (t *ChainTracker) Confirmed() (indexer.Cursor, bool) {
-	if h := t.state.Load().confirmedHead(); h != nil {
+// Firm is the view's Firm, 0 while unknown; at most Head.
+func (v View) Firm() uint64 { return v.s.firm }
+
+// Pinned reports whether c is pinned in the view's pins.
+func (v View) Pinned(c indexer.Cursor) bool { return v.s.pinned(c) != nil }
+
+// PinAt is the view's pin at height n; ok false while none is.
+func (v View) PinAt(n uint64) (indexer.Cursor, bool) {
+	if h := v.s.pinAt(n); h != nil {
+		return h.cursor(), true
+	}
+	return indexer.Cursor{}, false
+}
+
+// Changed is closed once the tracker publishes a newer state than v.
+func (v View) Changed() <-chan struct{} { return v.s.changed }
+
+// ReachedAt is when the view's Head of a group tracker first reached n:
+// a lane tap's block is deliverable from then (spec §10.2); zero when that
+// was before the steps kept, or has not happened.
+func (t *ChainTracker) ReachedAt(n uint64) time.Time {
+	t.reachedMu.Lock()
+	defer t.reachedMu.Unlock()
+	i, _ := slices.BinarySearchFunc(t.reached, n, func(s clockSight, n uint64) int {
+		switch {
+		case s.number < n:
+			return -1
+		case s.number > n:
+			return 1
+		}
+		return 0
+	})
+	if i == len(t.reached) || i == 0 && t.reached[0].number > n {
+		return time.Time{}
+	}
+	return t.reached[i].at
+}
+
+// Tip returns the head now, without waiting.
+func (t *ChainTracker) Tip() (indexer.Cursor, bool) {
+	if h := t.state.Load().head(); h != nil {
 		return h.cursor(), true
 	}
 	return indexer.Cursor{}, false
@@ -3385,7 +3372,7 @@ func (t *ChainTracker) Confirmed() (indexer.Cursor, bool) {
 func (t *ChainTracker) Pinned(c indexer.Cursor) bool { return t.state.Load().pinned(c) != nil }
 
 // Changed is closed once the tracker publishes a newer state: the pins,
-// the confirmed head or its hash voters may have moved.
+// the view's Head or its hash voters may have moved.
 func (t *ChainTracker) Changed() <-chan struct{} { return t.state.Load().changed }
 
 // TxHeadAt is when the head last moved to a block with transactions; zero
@@ -4166,6 +4153,16 @@ func ChainTrackerOf(ctx context.Context, n common.Network, selector string) *Cha
 	return nt.get(n, groupKey, selector, lane)
 }
 
+// GroupTracker returns the tracker of n's lane keyed groupKey, made from
+// selector and labeled lane on first use; nil while n has no trackers.
+func GroupTracker(n common.Network, groupKey, selector, lane string) *ChainTracker {
+	nt := registeredTrackers(n)
+	if nt == nil {
+		return nil
+	}
+	return nt.get(n, groupKey, selector, lane)
+}
+
 // ObserveSourceHeader hands an accepted source header to the network-wide
 // tracker and to every group tracker whose selector matches u, as u's vote.
 // Each tracker drops it unless u is one of its lane's voters. An upstream
@@ -4228,29 +4225,16 @@ func derivedFinalized(u common.Upstream) (number uint64, ok bool) {
 // VotersChanged makes every tracker of n read its voters again.
 func VotersChanged(n common.Network) { tickTrackers(n) }
 
-// LatestChanged makes the tracker of n's lane groupKey ("" network-wide)
-// gate its sends on the lane's Latest again (spec §6.5); the other lanes'
-// trackers did not move. It never blocks.
-func LatestChanged(n common.Network, groupKey string) {
-	nt := registeredTrackers(n)
-	if nt == nil {
-		return
-	}
-	nt.mu.Lock()
-	t := nt.groups[groupKey]
-	nt.mu.Unlock()
-	if t != nil {
-		t.VotersChanged()
-	}
-	if groupKey == "" {
-		if p := stateProberFor(n); p != nil {
-			p.latestChanged()
-		}
-	}
+// HoldersMoved makes the trackers of u's lanes read their voters again:
+// u's head counter moved, by any path on any instance, which moves Firm
+// (spec §6.5). It never blocks.
+func HoldersMoved(n common.Network, u common.Upstream) {
+	lanesOf(n, u, (*ChainTracker).VotersChanged)
 }
 
-// DemandChanged makes every tracker of n check whether it asks for latest
-// with no hash voter (§6 rule 6). It never blocks.
+// DemandChanged makes every tracker of n check whether its block clock
+// runs (spec §6.8): a tap needing newHeads opened or closed. It never
+// blocks.
 func DemandChanged(n common.Network) { tickTrackers(n) }
 
 // HeldNumber is the number of the header with hash that t holds; false

@@ -111,7 +111,7 @@ func newServedChain(t testing.TB, id string) *servedChain {
 	return n
 }
 
-func (n *servedChain) EvmHashVoters(string, time.Duration, bool) HashVoters {
+func (n *servedChain) EvmHashVoters(string, time.Duration) HashVoters {
 	return HashVoters{Voters: []string{"a", "b"}, Hash: []string{"a", "b"}, Need: 2,
 		Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b"}, Distinct: 2}}
 }
@@ -145,7 +145,7 @@ type forkedChain struct {
 	asks   atomic.Int32
 }
 
-func (n *forkedChain) EvmHashVoters(string, time.Duration, bool) HashVoters {
+func (n *forkedChain) EvmHashVoters(string, time.Duration) HashVoters {
 	ids := []string{"a", "b", "c", "d"}
 	return HashVoters{Voters: ids, Hash: ids, Need: 2,
 		Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "d": "vendor-d"}, Distinct: 4}}
@@ -492,7 +492,7 @@ func TestChainTracker(t *testing.T) {
 			_, held := c.HeldNumber(testHash("a", gone))
 			assert.False(t, held, "block %d: the newest root replaced the older trees", gone)
 		}
-		head, ok := c.Confirmed()
+		head, ok := c.View().Head()
 		require.True(t, ok)
 		assert.Equal(t, uint64(222), head.Number, "the confirmed head follows the votes")
 
@@ -1088,11 +1088,11 @@ func TestChainTracker_DeepWindow(t *testing.T) {
 			return testutil.ToFloat64(telemetry.MetricChainTrackerInvariantViolationsTotal.WithLabelValues(c.projectId(), c.networkLabel(), string(common.InvariantPinsUnlinked)))
 		}
 		state := func(pins ...*chainHeader) *feedState {
-			return &feedState{base: pins[0].number, pins: pins, confirmed: -1, changed: make(chan struct{})}
+			return &feedState{base: pins[0].number, pins: pins, view: -1, changed: make(chan struct{})}
 		}
 		was := counted()
 		s1 := state(hs[1], bad, hs[3])
-		c.published(&feedState{confirmed: -1}, s1, true)
+		c.published(&feedState{view: -1}, s1, true)
 		s2 := state(hs[1], bad, hs[3], hs[4])
 		c.published(s1, s2, true)
 		s3 := state(hs[1], hs[2], hs[3], hs[4], hs[5])
@@ -1225,7 +1225,7 @@ func newSettleNetwork(t *testing.T, hv HashVoters, latest map[string]json.RawMes
 	return &settleNetwork{capturingNetwork: newCapturingNetwork(t, 0, testHash("f", 0)), hv: hv, latest: latest}
 }
 
-func (n *settleNetwork) EvmHashVoters(string, time.Duration, bool) HashVoters { return n.hv }
+func (n *settleNetwork) EvmHashVoters(string, time.Duration) HashVoters { return n.hv }
 
 func (n *settleNetwork) EvmAskHead(_ context.Context, id string, need common.HeadNeed, _ time.Duration, _ time.Time, _ common.AskReason) common.HeadAnswer {
 	n.smu.Lock()
@@ -1285,7 +1285,7 @@ type rewindNetwork struct {
 	rewound map[string]int64 // upstream id -> its last rewind
 }
 
-func (n *rewindNetwork) EvmHashVoters(string, time.Duration, bool) HashVoters { return n.hv }
+func (n *rewindNetwork) EvmHashVoters(string, time.Duration) HashVoters { return n.hv }
 
 func (n *rewindNetwork) EvmAskHead(context.Context, string, common.HeadNeed, time.Duration, time.Time, common.AskReason) common.HeadAnswer {
 	return common.HeadAnswer{Outcome: common.AskBackoff, Next: time.Now().Add(time.Hour)}
@@ -1409,59 +1409,4 @@ func TestSettleRefreshRunsOncePerForkPoint(t *testing.T) {
 	assert.Equal(t, 5, net.forkAsks(), "c's refresh at its fork point already ran")
 	v, _ := c.HashAt(10)
 	assert.Equal(t, testHash("0", 10), v, "the refreshed votes keep the pins")
-}
-
-// coldNetwork's upstreams become voters only once ready, as an instance's
-// upstreams do after their registration; its taps demand newHeads.
-type coldNetwork struct {
-	*settleNetwork
-	ready atomic.Bool
-}
-
-func (n *coldNetwork) EvmHashVoters(_ string, _ time.Duration, cold bool) HashVoters {
-	if !n.ready.Load() {
-		return HashVoters{Need: 1}
-	}
-	hv := HashVoters{Voters: []string{"a", "b"}, Sources: []string{"a", "b"},
-		Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b"}, Distinct: 2}}
-	if cold {
-		hv.Hash = []string{"a", "b"}
-	}
-	hv.Need = common.ServedTipQuorum(0).Of(len(hv.Hash))
-	return hv
-}
-
-func (n *coldNetwork) EvmHeadsDemand() (time.Duration, bool) { return 0, true }
-
-// A cold instance's first header waits for a second voter's (spec §6.5
-// cold window), even when its upstreams become voters more than W after the
-// tracker started: under load their registration takes that long, and a
-// window counted from the start would have let rule 6's one answer confirm
-// alone.
-func TestColdWindowStartsWithTheFirstVoters(t *testing.T) {
-	head := testHeader(10, testHash("0", 10), testHash("0", 9))
-	net := &coldNetwork{settleNetwork: newSettleNetwork(t, HashVoters{}, map[string]json.RawMessage{"a": head, "b": head})}
-	c := newChainTracker(t.Context(), net, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
-	c.VotersChanged()
-	c.sync(context.Background())
-	time.Sleep(c.W() + 100*time.Millisecond)
-
-	net.ready.Store(true)
-	c.VotersChanged()
-	for range 20 {
-		c.sync(context.Background())
-		time.Sleep(10 * time.Millisecond)
-	}
-	_, ok := c.Confirmed()
-	assert.False(t, ok, "no source reported yet: both count as hash voters, so nothing is confirmed")
-
-	c.Observe("a", head, true)
-	c.sync(context.Background())
-	_, ok = c.Confirmed()
-	assert.False(t, ok, "the first header waits for a second voter's")
-	c.Observe("b", head, true)
-	c.sync(context.Background())
-	got, ok := c.Confirmed()
-	require.True(t, ok)
-	assert.Equal(t, uint64(10), got.Number)
 }

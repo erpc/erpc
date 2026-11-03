@@ -1162,6 +1162,11 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 			return fmt.Errorf("upstream.*.evm.chainId must be 0 for non-http endpoints, but '%d' is provided for %s", e.ChainId, util.RedactEndpoint(u.Endpoint))
 		}
 	}
+	// A source is push only (spec §5.1): heads of any other endpoint come
+	// from the block clock.
+	if e.SubscriptionSource != nil && *e.SubscriptionSource && !util.IsWsEndpoint(u.Endpoint) {
+		return fmt.Errorf("upstream '%s': upstreams[].evm.subscriptionSource needs a ws or wss endpoint, %s is not one", u.Id, util.RedactEndpoint(u.Endpoint))
+	}
 
 	if e.StatePollerInterval == 0 {
 		return fmt.Errorf("upstream.*.evm.statePollerInterval is required")

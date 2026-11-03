@@ -828,3 +828,7 @@ func TestUpstream_EvmAssertBlockAvailability_Finalized(t *testing.T) {
 		assert.NoError(t, err)
 	})
 }
+
+func (*mockEvmStatePoller) HeadBackingOff() bool { return false }
+
+func (*mockEvmStatePollerWithUpdate) HeadBackingOff() bool { return false }

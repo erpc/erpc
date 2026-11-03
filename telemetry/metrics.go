@@ -280,19 +280,30 @@ var (
 	MetricChainTrackerConfirmLagBlocks = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "chain_tracker_confirm_lag_blocks",
-		Help:      "Blocks between the network-wide chain tracker's head (highest pin) and its confirmed head.",
+		Help:      "Blocks between the network-wide chain tracker's highest pin and its view's Head.",
 	}, []string{"project", "network"})
 
-	MetricServedTipVoters = DefineGauge(prometheus.GaugeOpts{
+	// MetricHeadClockTotal counts a lane's block clock fetches by outcome:
+	// new (a new block), early (the block was not there yet), hedge (sent
+	// to a second voter while the first was late), skipped_push (a push or
+	// another local fetch brought the block before the fire), failed.
+	MetricHeadClockTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "served_tip_voters",
-		Help:      "Upstreams on a lane's latest served-tip ballot, by rank (live, live_benched, capped, capped_benched); only the best rank votes.",
-	}, []string{"project", "network", "lane", "rank"})
+		Name:      "head_clock_total",
+		Help:      "Block clock fires of a lane's chain tracker, by outcome: new, early, hedge, skipped_push, failed.",
+	}, []string{"project", "network", "lane", "outcome"})
 
-	MetricServedTipQuorum = DefineGauge(prometheus.GaugeOpts{
+	MetricHeadViewLagSeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
-		Name:      "served_tip_quorum",
-		Help:      "Effective quorum of a lane's latest served-tip pick: the configured quorum capped at its voters.",
+		Name:      "head_view_lag_seconds",
+		Help:      "Time from a block's first local sight to the swap of the lane view that made it Head.",
+		Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+	}, []string{"project", "network", "lane"})
+
+	MetricHeadFirmLagBlocks = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "head_firm_lag_blocks",
+		Help:      "Blocks between a lane view's Head and its Firm: the thin region.",
 	}, []string{"project", "network", "lane"})
 
 	// MetricNetworkServedTipBlockNumber is the block number the network actually
@@ -958,18 +969,19 @@ var (
 	}, []string{"project", "network", "category"})
 
 	// MetricHeadRefusalTotal counts the refusal rule's outcomes for requests
-	// naming a block (spec §6.4, §17): served, retried_found,
-	// retried_missing (a band read still empty or missing after its retry),
-	// served_missing (eth_getBlockByNumber in the head region, Latest −
-	// reorgWindow < N ≤ Latest, answered null or missing: the promise broke
-	// on this instance; other methods' null can be legit), future,
-	// future_after_refresh
-	// (stale reports Asked first), future_after_wait (a near-future block
-	// still above the ceiling after W).
+	// naming a block (spec §6.4, §17): served, thin_found and thin_missing
+	// (a thin-region read found or still empty or missing after its
+	// retry), retried_found, retried_missing (a band read still empty or
+	// missing after its retry), served_missing (eth_getBlockByNumber in the
+	// head region, Latest − reorgWindow < N ≤ Latest, answered null or
+	// missing: the promise broke on this instance; other methods' null can
+	// be legit), future, future_after_refresh (stale reports Asked first),
+	// future_after_wait (a near-future block still above the ceiling after
+	// W).
 	MetricHeadRefusalTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "head_refusal_total",
-		Help:      "Total requests naming a block, by the refusal rule's outcome: served, retried_found, retried_missing (above Latest, at most the ceiling, empty or missing after the retry), served_missing (eth_getBlockByNumber with Latest - reorgWindow < N <= Latest, null or missing after the retry; must stay 0; other methods are not counted, their null or missing-data answer can be legit), future, future_after_refresh, future_after_wait; by-hash waits for a block above Latest: held_served, held_null.",
+		Help:      "Total requests naming a block, by the refusal rule's outcome: served, thin_found and thin_missing (Firm < N <= Latest, found or still empty or missing after the retry), retried_found, retried_missing (above Latest, at most the ceiling, empty or missing after the retry), served_missing (eth_getBlockByNumber with Latest - reorgWindow < N <= Latest, null or missing after the retry; must stay 0; other methods are not counted, their null or missing-data answer can be legit), future, future_after_refresh, future_after_wait; by-hash waits for a block above Latest: held_served, held_null.",
 	}, []string{"project", "network", "rule"})
 
 	// MetricHeadAskTotal counts every head Ask (spec §6.8, §17) by its
@@ -977,7 +989,7 @@ var (
 	MetricHeadAskTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "head_ask_total",
-		Help:      "Total head Asks, by caller (poll, catch_up, refusal, refresh, settle, no_source) and outcome (fetched, shared_fresh, inflight, backoff).",
+		Help:      "Total head Asks, by caller (clock, refusal, settle) and outcome (fetched, shared_fresh, inflight, backoff).",
 	}, []string{"project", "network", "reason", "outcome"})
 
 	// MetricCacheExecutorAttempt counts every attempt a cache-connector

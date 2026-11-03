@@ -100,43 +100,23 @@ func NamesFinalizedTag(ctx context.Context, nrq *common.NormalizedRequest) bool 
 	return namesFinalized(jrq.Params)
 }
 
-// LatestRead is how a request answers with its Head's Latest
-// (AnswersLatest).
-type LatestRead int
-
-const (
-	// NoLatestRead: the request does not answer with Latest.
-	NoLatestRead LatestRead = iota
-	// LatestNumberRead: eth_blockNumber, or erigon_blockNumber on the
-	// latest axis, answered from the Head (enforce-highest-block), as main
-	// answered it from memory.
-	LatestNumberRead
-	// LatestTagRead: a block-by-tag method whose "latest" tag is
-	// interpolated, where main forwarded the tag to an upstream.
-	LatestTagRead
-)
-
-// AnswersLatest is how nrq answers with its Head's Latest (spec §7
-// families 1-2). Such a request takes its Head after the latest refresh
-// (§6.8); a tag that reaches upstreams as is reads no Head, as on main.
-func AnswersLatest(ctx context.Context, network common.Network, nrq *common.NormalizedRequest) LatestRead {
+// ReadsLatest reports whether nrq reads its lane's latest (spec §6.8
+// demand): eth_blockNumber, or erigon_blockNumber on the latest axis,
+// answered from the Head; or any request whose "latest" tag, or absent
+// selector, is interpolated to the Head. A tag that reaches upstreams as
+// is reads no Head.
+func ReadsLatest(ctx context.Context, network common.Network, nrq *common.NormalizedRequest) bool {
 	method, err := nrq.Method()
 	if err != nil {
-		return NoLatestRead
+		return false
 	}
 	d := nrq.Directives()
-	switch m := strings.ToLower(method); m {
+	switch strings.ToLower(method) {
 	case "eth_blocknumber", "erigon_blocknumber":
-		if finalized, ok := headNumberAxis(ctx, nrq); ok && !finalized && d != nil && d.EnforceHighestBlock {
-			return LatestNumberRead
-		}
-		return NoLatestRead
-	default:
-		if _, ok := blockByTagFamily[m]; !ok || d != nil && d.SkipInterpolation || requestBlockTag(ctx, nrq) != "latest" || keepsLatestTag(getMethodConfig(method, network)) {
-			return NoLatestRead
-		}
-		return LatestTagRead
+		finalized, ok := headNumberAxis(ctx, nrq)
+		return ok && !finalized && d != nil && d.EnforceHighestBlock
 	}
+	return !(d != nil && d.SkipInterpolation) && requestBlockTag(ctx, nrq) == "latest" && !keepsLatestTag(getMethodConfig(method, network))
 }
 
 func namesFinalized(v interface{}) bool {

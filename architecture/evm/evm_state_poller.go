@@ -17,7 +17,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
-	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus"
@@ -56,8 +55,8 @@ const (
 	chainIdCordonMatches = 2
 )
 
-// pollSourceMaxCadence caps a poll source's cadence.
-var pollSourceMaxCadence = 12 * time.Second
+// askMaxCadence caps the head Ask's cadence (pollCadence).
+var askMaxCadence = 12 * time.Second
 
 // askTimeout bounds one head Ask fetch.
 var askTimeout = 10 * time.Second
@@ -70,10 +69,7 @@ var (
 	ChainIdCordonRecheck = util.NewDuration(5 * time.Minute)
 )
 
-var (
-	_ common.EvmStatePoller = &EvmStatePoller{}
-	_ indexer.Source        = &EvmStatePoller{}
-)
+var _ common.EvmStatePoller = &EvmStatePoller{}
 
 type EvmStatePoller struct {
 	Enabled bool
@@ -133,12 +129,9 @@ type EvmStatePoller struct {
 	// when a node is actively syncing and timestamp is always way in the past.
 	latestBlockShared data.CounterInt64SharedVariable
 
-	// pollSrc is set once the network binds this poller as a poll source;
-	// while pollHeads is on, the poll loop Asks once per backed-off
-	// cadence (spec §6.8). pollWake starts a pass at once.
-	pollSrc   atomic.Pointer[pollSource]
-	pollHeads atomic.Bool
-	pollWake  chan struct{}
+	// pollSrc is set once the network binds this poller to its intake:
+	// every latest header it fetches goes there (spec §6.3).
+	pollSrc atomic.Pointer[pollSource]
 
 	// headAsk is the upstream's one head fetch schedule (Ask).
 	headAsk headAsk
@@ -215,7 +208,6 @@ func NewEvmStatePoller(
 		earliestByProbe:              make(map[common.EvmAvailabilityProbeType]data.CounterInt64SharedVariable),
 		earliestSchedulerStarted:     make(map[common.EvmAvailabilityProbeType]bool),
 		earliestInitialDetectionDone: make(map[common.EvmAvailabilityProbeType]bool),
-		pollWake:                     make(chan struct{}, 1),
 	}
 	e.bindPolledLocked()
 	lbs.OnValue(func(value int64) {
@@ -254,8 +246,8 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	}
 	interval := cfg.Evm.StatePollerInterval.Duration()
 	if interval == 0 {
-		// Only the full state poll is off: Set still starts the loop for a
-		// poll source.
+		// Only the full state poll is off: the lane's block clock still
+		// Asks the upstream's head.
 		e.logger.Debug().Msg("skipping evm state poller for upstream as interval is 0")
 		return nil
 	}
@@ -279,8 +271,8 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 }
 
 // startLoop starts the poller's one poll loop unless it runs already; it
-// runs until appCtx ends. Bootstrap and Set may both start it, since the
-// started flag guards a loop with no other stop.
+// runs until appCtx ends. Bootstrap may run again, and the started flag
+// guards a loop with no other stop.
 func (e *EvmStatePoller) startLoop(interval time.Duration) bool {
 	if !e.started.CompareAndSwap(false, true) {
 		return false
@@ -296,46 +288,26 @@ func (e *EvmStatePoller) Wait() {
 	}
 }
 
-// pollLoop runs a full state poll every interval (none while it is 0), and
-// while a poll source, its Ask with a hash need once per backed-off
-// cadence in between (spec §6.8).
+// pollLoop runs a full state poll every interval (spec §6.8): its latest
+// part is met by any local fetch sent within interval, the block clock's
+// turn of this upstream included.
 func (e *EvmStatePoller) pollLoop(interval time.Duration) {
-	lastFull := time.Now()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
-		var timer *time.Timer
-		var fire <-chan time.Time
-		if d, ok := e.nextPollDelay(interval, lastFull); ok {
-			timer = time.NewTimer(d)
-			fire = timer.C
-		}
 		select {
 		case <-e.appCtx.Done():
-			if timer != nil {
-				timer.Stop()
-			}
 			e.logger.Debug().Msg("shutting down evm state poller due to app context interruption")
 			return
-		case <-e.pollWake:
-		case <-fire:
+		case <-ticker.C:
 		}
-		if timer != nil {
-			timer.Stop()
-		}
-		full := interval > 0 && time.Since(lastFull) >= interval
-		if !full && e.activePollSource() == nil {
-			continue
-		}
-		if full {
-			lastFull = time.Now()
-		}
-		e.pollPass(full, interval)
+		e.pollPass(interval)
 	}
 }
 
-// pollPass is one pass of the poll loop: the poll source's Ask, then the
-// full state poll when full, its latest part met by any local fetch sent
-// within interval. A panic ends the pass, never the loop.
-func (e *EvmStatePoller) pollPass(full bool, interval time.Duration) {
+// pollPass is one full state poll, its latest part met by any local fetch
+// sent within interval. A panic ends the pass, never the loop.
+func (e *EvmStatePoller) pollPass(interval time.Duration) {
 	defer e.recoverHeadPanic("poll-loop")
 	// Calculate timeout based on shared state config:
 	// 1. Wait for distributed lock (up to lockTtl)
@@ -356,16 +328,7 @@ func (e *EvmStatePoller) pollPass(full bool, interval time.Duration) {
 
 	nctx, cancel := context.WithTimeout(e.appCtx, timeout)
 	defer cancel()
-	var err error
-	if e.activePollSource() != nil {
-		// The poll source's own channel (spec §6.2); a full poll's
-		// hash need right after it is met by the fetch it sent.
-		err = e.Ask(nctx, common.HeadNeedHash, 0, time.Time{}, common.AskPoll).Err
-	}
-	if full {
-		err = errors.Join(err, e.poll(nctx, interval))
-	}
-	if err != nil {
+	if err := e.poll(nctx, interval); err != nil {
 		if errors.Is(nctx.Err(), context.Canceled) {
 			e.logger.Info().Err(err).
 				Msgf("shutting down evm state poller due to context cancellation (e.g. app exiting)")
@@ -415,16 +378,17 @@ func (e *EvmStatePoller) poll(ctx context.Context, latestPace time.Duration) err
 	ermu := &sync.Mutex{}
 
 	// Latest: an Ask with a hash need, a local fetch (spec §6.3, §6.8):
-	// a hash vote, and the block time sample of a poll-only network. The
-	// poll waits for it as long as for the finalized counter's refresh, and
-	// the fetch goes on without it: a node that holds its answer must not
-	// hold the upstream's registration past the tracker's cold window.
+	// a hash vote, and the block time sample of a poll-only network; the
+	// block clock's turn of this upstream meets it. The poll waits for it
+	// as long as for the finalized counter's refresh, and the fetch goes
+	// on without it: a node that holds its answer must not hold the
+	// upstream's registration.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		actx, cancel := context.WithTimeout(ctx, e.sharedStateRegistry.GetUpdateMaxWait())
 		defer cancel()
-		err := e.Ask(actx, common.HeadNeedHash, latestPace, time.Time{}, common.AskPoll).Err
+		err := e.Ask(actx, common.HeadNeedHash, latestPace, time.Time{}, common.AskClock).Err
 		if err != nil && actx.Err() != nil && ctx.Err() == nil {
 			return
 		}
@@ -580,9 +544,10 @@ func (e *EvmStatePoller) resolveFinalizedDebounce(cfg *common.EvmNetworkConfig, 
 }
 
 // PollLatestBlockNumber is the upstream's latest block number after an Ask
-// with a number need (spec §6.8); the error is the Ask's.
+// with a number need (spec §6.8): an availability check's, so a shared
+// report within the cadence meets it; the error is the Ask's.
 func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, error) {
-	a := e.Ask(ctx, common.HeadNeedNumber, 0, time.Time{}, common.AskRefresh)
+	a := e.Ask(ctx, common.HeadNeedNumber, 0, time.Time{}, common.AskRefusal)
 	return a.Block, a.Err
 }
 
@@ -980,13 +945,10 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header 
 }
 
 // deliverFetched sends f's header to the bound intake: a fork poll's
-// answer when a fork Ask waits on f, the poll source's stream while it is
-// one, else a poll's. passed: the header passed intake's checks.
+// answer when a fork Ask waits on f, else a poll's. passed: the header
+// passed intake's checks.
 func (e *EvmStatePoller) deliverFetched(bound *pollSource, f *headFetch, b polledBlock) (passed bool) {
 	kind := HeaderPolled
-	if e.activePollSource() != nil {
-		kind = HeaderStreamed
-	}
 	e.headAsk.mu.Lock()
 	if f.fork {
 		kind = HeaderForkPolled
@@ -1012,13 +974,15 @@ func (e *EvmStatePoller) backoff() time.Duration {
 	return backoffDelay(cadence, e.headAsk.failures)
 }
 
-// askDue is how long until the poll source's Ask may fetch again: its last
-// fetch's send plus the backed-off cadence; 0 when it may now.
-func (e *EvmStatePoller) askDue() time.Duration {
-	if next := e.askNext(common.HeadNeedHash, 0); !next.IsZero() {
-		return time.Until(next)
-	}
-	return 0
+// HeadBackingOff reports whether the upstream's head fetches back off: a
+// node failure in a row, and the last fetch's send plus the backed-off
+// cadence still ahead.
+func (e *EvmStatePoller) HeadBackingOff() bool {
+	cadence := e.pollCadence()
+	a := &e.headAsk
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.failures > 0 && a.last != nil && time.Since(a.last.sent) < backoffDelay(cadence, a.failures)
 }
 
 // askNext is when an Ask with need at pace may fetch again: the send of
@@ -1197,11 +1161,10 @@ type pollSource struct {
 type HeaderKind uint8
 
 const (
-	// HeaderPolled: a poll of latest that is not its source's own channel
-	// (a full poll, a refresh, a catch-up poll); it votes (spec §6.3).
+	// HeaderPolled: a poll of latest, the block clock's included; it votes
+	// (spec §6.3).
 	HeaderPolled HeaderKind = iota
-	// HeaderStreamed: a header on its source's own channel (spec §6.2): a
-	// push, or a poll source's poll at its cadence.
+	// HeaderStreamed: a push on its source's own channel (spec §6.2).
 	HeaderStreamed
 	// HeaderForkPolled: the answer to a fork poll (spec §6.3), fresh
 	// evidence of the node's head whatever its earlier votes say.
@@ -1221,8 +1184,7 @@ type PollIntake interface {
 	PolledFinalized(upstreamId string, h SourceHeader)
 }
 
-// BindIntake sends this poller's latest headers to intake; Set makes it a
-// poll source, polled at its cadence.
+// BindIntake sends this poller's latest headers to intake.
 func (e *EvmStatePoller) BindIntake(intake PollIntake) {
 	e.pollSrc.Store(&pollSource{intake: intake})
 }
@@ -1233,38 +1195,9 @@ func (e *EvmStatePoller) LatestUnsupported() bool {
 	return e.givenUp(&e.latestGiveUp)
 }
 
-// Set Asks with a hash need once per backed-off cadence while topics
-// include newHeads, feeding each header to the bound intake; empty returns
-// to statePollerInterval. It starts the poll loop when Bootstrap did not,
-// as with statePollerInterval 0.
-func (e *EvmStatePoller) Set(topics []indexer.Topic) {
-	on := slices.Contains(topics, indexer.TopicNewHeads) && e.pollSrc.Load() != nil
-	if e.pollHeads.Swap(on) == on || !on {
-		return
-	}
-	e.headAsk.mu.Lock()
-	e.headAsk.failures = 0
-	e.headAsk.mu.Unlock()
-	if cfg := e.upstream.Config(); cfg != nil && cfg.Evm != nil {
-		e.startLoop(cfg.Evm.StatePollerInterval.Duration())
-	}
-	select {
-	case e.pollWake <- struct{}{}:
-	default:
-	}
-}
-
-// activePollSource is the bound source while it feeds newHeads, else nil.
-func (e *EvmStatePoller) activePollSource() *pollSource {
-	if !e.pollHeads.Load() {
-		return nil
-	}
-	return e.pollSrc.Load()
-}
-
 // pollCadence is the Ask's cadence (spec §6.8): the poller's debounce
 // (resolveDebounce: the learned block time ×
-// dynamicBlockTimeDebounceMultiplier), at most pollSourceMaxCadence;
+// dynamicBlockTimeDebounceMultiplier), at most askMaxCadence;
 // statePollerDebounce overrides it, cap included.
 func (e *EvmStatePoller) pollCadence() time.Duration {
 	e.stateMu.RLock()
@@ -1274,34 +1207,15 @@ func (e *EvmStatePoller) pollCadence() time.Duration {
 	if override {
 		return d
 	}
-	return min(d, pollSourceMaxCadence)
-}
-
-// nextPollDelay is the poll loop's wait: until the next full state poll,
-// interval after lastFull (none while interval is 0), or sooner while a poll
-// source, until its Ask is due (askDue). false: nothing is due until a
-// wake.
-func (e *EvmStatePoller) nextPollDelay(interval time.Duration, lastFull time.Time) (d time.Duration, ok bool) {
-	if interval > 0 {
-		d, ok = max(interval-time.Since(lastFull), 0), true
-	}
-	if e.activePollSource() != nil {
-		if p := e.askDue(); !ok || p < d {
-			d, ok = p, true
-		}
-	}
-	return d, ok
+	return min(d, askMaxCadence)
 }
 
 // BackedOffCadence is how often this upstream's latest head reaches this
-// instance now, the head bench's cadence (spec §6.1, §6.8): while a poll
-// source, the Ask's backoff; a wss subscription source pushes every head,
-// so its cadence; else the full poll interval or the backoff, the longer.
+// instance at least, the head bench's cadence (spec §6.1, §6.8): a wss
+// subscription source pushes every head, so its cadence; any other gets
+// its turn of the block clock and its full poll every interval, so the
+// interval or the backoff, the longer.
 func (e *EvmStatePoller) BackedOffCadence() time.Duration {
-	backoff := e.backoff()
-	if e.activePollSource() != nil {
-		return backoff
-	}
 	c := e.upstream.Config()
 	if c != nil && c.IsSubscriptionSource() && util.IsWsEndpoint(c.Endpoint) {
 		return e.pollCadence()
@@ -1310,7 +1224,7 @@ func (e *EvmStatePoller) BackedOffCadence() time.Duration {
 	if c != nil && c.Evm != nil {
 		interval = c.Evm.StatePollerInterval.Duration()
 	}
-	return max(interval, backoff)
+	return max(interval, e.backoff())
 }
 
 // verifyThenSuggestLatestBlock validates a MAJOR suggested forward jump with a

@@ -398,7 +398,7 @@ func (s *chaosSeed) trackerContext(since time.Time) string {
 		if c, ok := tr.Tip(); ok {
 			head = fmt.Sprint(c.Number)
 		}
-		if c, ok := tr.Confirmed(); ok {
+		if c, ok := tr.View().Head(); ok {
 			send = fmt.Sprint(c.Number)
 		}
 	}
@@ -1429,7 +1429,7 @@ func (s *chaosSeed) deepReorg() {
 func (s *chaosSeed) caughtUp() time.Time {
 	want := s.chain.Tip()
 	require.Eventually(s.t, func() bool {
-		c, ok := s.tracker().Confirmed()
+		c, ok := s.tracker().View().Head()
 		return ok && (c.Number > want.Number || c.Hash == want.Hash)
 	}, 15*time.Second, 10*time.Millisecond, "the tracker may send the head %d again", want.Number)
 	return time.Now()
@@ -2340,7 +2340,7 @@ func requireInvariantsHeld(t *testing.T, project, network string) {
 		}
 	}
 	for _, inv := range []common.Invariant{
-		common.InvariantSentAboveLatest, common.InvariantSentUnconfirmed, common.InvariantTapGap, common.InvariantRemovedUnsent,
+		common.InvariantSentAboveHead, common.InvariantSentAboveHead, common.InvariantTapGap, common.InvariantRemovedUnsent,
 		common.InvariantPinsUnlinked, common.InvariantFinalHashChanged, common.InvariantLatestRegressed,
 	} {
 		v, ok := got[string(inv)]

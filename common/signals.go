@@ -13,8 +13,7 @@ import (
 type Invariant string
 
 const (
-	InvariantSentAboveLatest  Invariant = "sent_above_latest"
-	InvariantSentUnconfirmed  Invariant = "sent_unconfirmed"
+	InvariantSentAboveHead    Invariant = "sent_above_head"
 	InvariantTapGap           Invariant = "tap_gap"
 	InvariantRemovedUnsent    Invariant = "removed_unsent"
 	InvariantPinsUnlinked     Invariant = "pins_unlinked"
@@ -23,7 +22,7 @@ const (
 )
 
 var invariants = []Invariant{
-	InvariantSentAboveLatest, InvariantSentUnconfirmed, InvariantTapGap, InvariantRemovedUnsent,
+	InvariantSentAboveHead, InvariantTapGap, InvariantRemovedUnsent,
 	InvariantPinsUnlinked, InvariantFinalHashChanged, InvariantLatestRegressed,
 }
 

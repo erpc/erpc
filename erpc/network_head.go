@@ -14,12 +14,11 @@ import (
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
-	"github.com/rs/zerolog"
 )
 
-// headRefreshInterval is the longest a lane's Head goes without being
-// computed (spec §6.4, #1273): the guard's TTL, the bench's clocks and the
-// gauges move with time alone. Network.headRefresh overrides it.
+// headRefreshInterval is the longest a lane's number facts go without
+// being computed (spec §6.4, #1273): the guard's TTL, the bench's clocks
+// and the gauges move with time alone. Network.headRefresh overrides it.
 const headRefreshInterval = time.Second
 
 // unknownHead is the Head of a lane before its first computation.
@@ -33,7 +32,7 @@ func (n *Network) EvmHead(ctx context.Context, req *common.NormalizedRequest) co
 		req, _ = ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
 	}
 	if req == nil {
-		return *n.servedTipAll.published()
+		return *n.headFor("")
 	}
 	return *n.requestHead(ctx, req)
 }
@@ -43,9 +42,9 @@ func (n *Network) EvmHead(ctx context.Context, req *common.NormalizedRequest) co
 // interpolation all see the same Latest. A request naming the finalized
 // tag takes it after the lane's finalized refresh (spec §6.4 Finality): a
 // Finalized up to one full poll old would serve older blocks than the tag
-// gets live. A request answering Latest (evm.AnswersLatest) takes it after
-// the latest refresh (refreshLatest, §6.8), before the cache: a cache hit
-// is pinned to that Head too.
+// gets live. A read of latest (evm.ReadsLatest) is the block clock's
+// demand (§6.8); the first after W without demand waits for the clock's
+// first fetch, before the cache: a cache hit is pinned to that Head too.
 func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest) *common.EvmHead {
 	if h := req.EvmHead(); h != nil {
 		return h
@@ -61,31 +60,79 @@ func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest
 	}
 	if evm.NamesFinalizedTag(ctx, req) {
 		n.awaitFinalizedRefresh(ctx, sel)
-	} else if r := evm.AnswersLatest(ctx, n, req); r != evm.NoLatestRead {
-		n.refreshLatest(ctx, sel, r == evm.LatestTagRead)
+	} else if evm.ReadsLatest(ctx, n, req) {
+		if t := n.laneTracker(sel); t != nil {
+			t.LatestRead(ctx)
+		}
 	}
 	return req.TakeEvmHead(n.headFor(sel))
 }
 
-// headFor is the Head of selector sel: its lane's published one, or, for a
-// selector that forms no lane, the stateless pick by the same rules.
+// headFor is the Head of selector sel, read once: its lane's number facts
+// and its tracker's view (spec §6.4, §6.5). A selector that forms no lane
+// takes the stateless pick of the facts and the network-wide view, its
+// Head capped at the block q of its upstreams hold.
 func (n *Network) headFor(sel string) *common.EvmHead {
+	var h common.EvmHead
+	var limit int64
 	if l := n.laneFor(sel); l != nil {
-		return l.published()
+		h = *l.published()
+	} else {
+		h = n.computeHead(nil, sel)
+		limit, _ = n.laneHolders(sel)
 	}
-	h := n.computeHead(nil, sel)
+	if t := n.laneTracker(sel); t != nil {
+		viewHead(&h, t.View(), limit)
+	}
 	return &h
 }
 
-// EvmLaneHead is the published Head of the lane keyed groupKey ("" is the
-// network-wide lane), materialized from selector on first use: what a
-// lane's tracker sends up to (spec §6.5).
+// viewHead sets h's view fields from v, its Head at most limit when that
+// is set; Finalized never above the Head.
+func viewHead(h *common.EvmHead, v evm.View, limit int64) {
+	head, ok := v.Head()
+	if !ok {
+		h.Latest, h.LatestHash, h.Firm = 0, [32]byte{}, 0
+		return
+	}
+	if limit > 0 && uint64(limit) < head.Number {
+		if c, ok := v.PinAt(uint64(limit)); ok {
+			head = c
+		}
+	}
+	h.Latest, h.LatestHash = int64(head.Number), head.Hash
+	h.Firm = int64(min(v.Firm(), head.Number))
+	if h.Finalized > h.Latest {
+		h.Finalized = h.Latest
+	}
+}
+
+// laneTracker is the chain tracker whose view selector sel's lane serves:
+// its group's, or the network-wide one for "" and for a selector that
+// forms no lane; nil on a network without trackers.
+func (n *Network) laneTracker(sel string) *evm.ChainTracker {
+	if sel == "" || n.chainTracker == nil {
+		return n.chainTracker
+	}
+	if l := n.laneFor(sel); l != nil {
+		return n.trackerOf(l)
+	}
+	return n.chainTracker
+}
+
+// trackerOf is lane l's chain tracker, made on first use.
+func (n *Network) trackerOf(l *servedTipLane) *evm.ChainTracker {
+	if l.key == "" || n.chainTracker == nil {
+		return n.chainTracker
+	}
+	return evm.GroupTracker(n, l.key, l.selector, l.label)
+}
+
+// EvmLaneHead is the Head of the lane keyed groupKey ("" is the
+// network-wide lane), materialized from selector on first use.
 func (n *Network) EvmLaneHead(groupKey, selector string) common.EvmHead {
 	if groupKey == "" {
-		return *n.servedTipAll.published()
-	}
-	if l, ok := n.servedTipLanes.Load(groupKey); ok {
-		return *l.(*servedTipLane).published()
+		selector = ""
 	}
 	return *n.headFor(selector)
 }
@@ -95,19 +142,6 @@ func (l *servedTipLane) published() *common.EvmHead {
 		return h
 	}
 	return unknownHead
-}
-
-// latestMoved returns a channel closed at the next change of l's Latest.
-func (l *servedTipLane) latestMoved() <-chan struct{} {
-	for {
-		if c := l.moved.Load(); c != nil {
-			return *c
-		}
-		c := make(chan struct{})
-		if l.moved.CompareAndSwap(nil, &c) {
-			return c
-		}
-	}
 }
 
 // headsComputed returns a channel closed after the head loop's next pass,
@@ -192,11 +226,15 @@ func (n *Network) startHeads() {
 // watchHeadCounters makes every move of ups's head counters, by a poll, a
 // push or another instance, and every change of its chain-identity cordon,
 // which moves it in or out of the ceiling, mark its lanes dirty (spec
-// §6.4). The registry calls it once per upstream as it joins the network,
-// which is itself a change of the voters.
+// §6.4); a move of its latest counter also wakes its lanes' trackers,
+// whose Firm reads it (§6.5). The registry calls it once per upstream as
+// it joins the network, which is itself a change of the voters.
 func (n *Network) watchHeadCounters(ups *upstream.Upstream) {
 	if p, ok := ups.EvmStatePoller().(*evm.EvmStatePoller); ok && !p.IsObjectNull() {
-		p.OnLatestBlock(func(int64) { n.headMoved(ups) })
+		p.OnLatestBlock(func(int64) {
+			n.headMoved(ups)
+			evm.HoldersMoved(n, ups)
+		})
 		p.OnFinalizedBlock(func(int64) { n.headMoved(ups) })
 		p.OnChainIdCordonChanged(func() { n.headMoved(ups) })
 	}
@@ -229,14 +267,8 @@ func (n *Network) refreshDirtyHeads() {
 	})
 }
 
-// endHeadPass drops the stateless heads of selectors that form no lane,
-// picked again at their next read, and wakes the readers waiting on the
-// pass (headsComputed).
+// endHeadPass wakes the readers waiting on the pass (headsComputed).
 func (n *Network) endHeadPass() {
-	n.statelessMu.Lock()
-	n.statelessGen.Add(1)
-	n.statelessHeads.Clear()
-	n.statelessMu.Unlock()
 	if c := n.headPass.Swap(nil); c != nil {
 		close(*c)
 	}
@@ -257,9 +289,7 @@ func (n *Network) refreshLaneRecovered(l *servedTipLane) {
 	n.refreshLane(l)
 }
 
-// refreshLane computes l's Head and publishes it in one step. A change of
-// Latest wakes the lane's tracker and its taps, which send no block above
-// it (spec §6.5).
+// refreshLane computes l's number facts and publishes them in one step.
 func (n *Network) refreshLane(l *servedTipLane) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -270,88 +300,52 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	if h.Ceiling > 0 && h.Ceiling < old.CeilingPeak && (old.Ceiling == 0 || h.Ceiling < old.Ceiling) {
 		h.CeilingFellAt = time.Now()
 	}
-	left, joined := ballotChange(l.voters, l.ballot)
-	l.voters, l.ballot = l.ballot, l.voters
 	if h == *old {
 		return
-	}
-	// A Read that sees the new Latest finds when it reached each block.
-	if h.Latest != old.Latest {
-		l.reached.note(h.Latest, time.Now(), n.latestReachedKept())
 	}
 	// A copy, so only a changed Head reaches the heap.
 	pub := h
 	l.head.Store(&pub)
-	if h.Latest != old.Latest {
-		// Latest 0 is unknown, not a served number: eth_blockNumber then
-		// errors. A fall through unknown counts at its first known value.
-		sent := l.sent.Load()
-		switch below := h.Latest > 0 && uint64(h.Latest) < sent; {
-		case !below:
-			if h.Latest > 0 {
-				l.fallen = false
-			}
-		case l.fallen || old.Latest > 0 && h.Latest > old.Latest:
-		case left != "" || joined != "":
-			// A voter that left lowers the q-th highest number, and one
-			// that joined raises q under a majority quorum, with no
-			// upstream's head falling: the ballot changed, the chain did not
-			// (spec §6.4, §17).
-			common.TransitionLog(n.logger, zerolog.InfoLevel, n.Label(), "ballot").
-				Str("lane", l.label).Str("left", left).Str("joined", joined).Int64("latest", h.Latest).Int64("previous", old.Latest).Uint64("sent", sent).
-				Msg("lane's Latest fell below a block this instance sent as its ballot's voters changed")
-		default:
-			l.fallen = true
-			common.ViolateInvariant(n.logger, n.projectId, n.Label(), common.InvariantLatestRegressed).
-				Str("lane", l.label).Int64("latest", h.Latest).Int64("previous", old.Latest).Uint64("sent", sent).
-				Msg("lane's Latest fell below a block this instance sent")
-		}
-		if c := l.moved.Swap(nil); c != nil {
-			close(*c)
-		}
-		evm.LatestChanged(n, l.key)
-	}
 }
 
-// ballotChange is the first voter of prev that cur no longer counts and
-// the first of cur that prev did not, "" each when there is none.
-func ballotChange(prev, cur []string) (left, joined string) {
-	for _, id := range prev {
-		if !slices.Contains(cur, id) {
-			left = id
-			break
-		}
-	}
-	for _, id := range cur {
-		if !slices.Contains(prev, id) {
-			joined = id
-			break
-		}
-	}
-	return left, joined
-}
-
-// computeHead computes the Head of selector sel (spec §6.4); l is its lane,
-// nil for the stateless pick of a selector that forms none: no guard, no
-// gauges, no anchor.
+// computeHead computes the number facts of selector sel (spec §6.4):
+// Finalized, Leader and the ceiling, against the lane's view's Head; l is
+// its lane, nil for the stateless pick of a selector that forms none: no
+// guard, no gauges, no anchor.
 func (n *Network) computeHead(l *servedTipLane, sel string) common.EvmHead {
-	h := common.EvmHead{
-		Latest: n.laneTip(l, sel, false, 0),
+	var latest int64
+	t := n.chainTracker
+	if l != nil {
+		// By the lane itself: a lane being made is not yet laneFor's.
+		t = n.trackerOf(l)
 	}
-	h.Finalized = n.laneTip(l, sel, true, h.Latest)
-	h.Leader = n.laneLeader(sel, h.Latest)
+	if t != nil {
+		if head, ok := t.View().Head(); ok {
+			latest = int64(head.Number)
+		}
+	}
+	h := common.EvmHead{Finalized: n.laneFinalized(l, sel, latest)}
+	h.Leader = n.laneLeader(sel, latest)
 	h.Ceiling, h.OldestReportAt = n.laneCeiling(sel)
+	if l != nil {
+		if l.gauges == nil {
+			l.gauges = n.bindLaneGauges(l.label)
+		}
+		if latest > 0 {
+			l.latest.observe(latest)
+		}
+		l.gauges.latest.observe(latest, h.Ceiling, l.latest.age())
+	}
 	return h
 }
 
-// laneTip is one axis of the Head: the freshest block at least the
-// configured quorum of the lane's eligible voters already has (evmTipBallot,
-// common.PickServedTip), guarded against a regression far below the live
-// heads, clamped to every configured guarantee, held at the lane's finalized
-// floor and, network-wide, at the finalized other instances served
-// (finalized only, holdFinalized, shareFinalized), then exported on the lane.
-// latest is the lane's Latest of the same evaluation, which caps a held
-// Finalized; unused on the latest axis.
+// laneFinalized is the Head's Finalized: the freshest finalized block at
+// least the configured quorum of the lane's eligible voters already has
+// (evmTipBallot, common.PickServedTip), guarded against a regression far
+// below the live heads, clamped to every configured guarantee, held at the
+// lane's finalized floor and, network-wide, at the finalized other
+// instances served (holdFinalized, shareFinalized), then exported on the
+// lane. latest is the lane's view's Head, which caps a held Finalized.
 //
 // The guard is in-process, bounded and one-directional (it can only hold the
 // tip, and only briefly), and it cannot produce a block that no live upstream
@@ -361,40 +355,29 @@ func (n *Network) computeHead(l *servedTipLane, sel string) common.EvmHead {
 // rogue value can pin, freeze or poison the result
 // (networks_served_tip_invariants_test.go pins those outcomes against
 // the frozen-tip regression).
-func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool, latest int64) int64 {
-	axis := "latest"
-	if finalized {
-		axis = "finalized"
-	}
+func (n *Network) laneFinalized(l *servedTipLane, sel string, latest int64) int64 {
 	var q common.ServedTipQuorum
 	if n.cfg != nil {
 		q = n.cfg.Evm.ServedTipQuorum()
 	}
-	var voters *[]string
-	if l != nil && !finalized {
-		voters = &l.ballot
-	}
-	pick, live, ranks := n.evmTipBallot(sel, finalized, q, nil, voters)
+	pick, live := n.evmTipBallot(sel, true, q, nil)
 	tip := pick.Tip
 
-	// Regression guard: "latest" cannot drop far below the corroborated live
-	// head in one evaluation. Runs BEFORE the guaranteed-method floor, which is
-	// a deliberate operator-configured clamp the guard must not fight.
-	var anchor *servedTipAnchor
+	// Regression guard: "finalized" cannot drop far below the corroborated
+	// live head in one evaluation. Runs BEFORE the guaranteed-method floor,
+	// which is a deliberate operator-configured clamp the guard must not
+	// fight.
 	if l != nil {
-		anchor = l.anchor(finalized)
-		tip = n.guardServedTipRegression(axis, l.label, anchor, pick, live)
+		tip = n.guardServedTipRegression("finalized", l.label, &l.finalized, pick, live)
 	}
 
-	// Capability guarantee (#855): the served tip must never exceed what any
-	// configured guarantee SUBSET can serve — a method's supporting upstreams
-	// (guaranteedMethods) or an operator-named group (guaranteedFor) — so a
-	// request on such a method (e.g. trace_*), or one consensus requires that
-	// group to answer, never resolves "latest" to a block only upstreams
-	// outside the subset have.
+	// Capability guarantee (#855): the served finalized must never exceed
+	// what any configured guarantee SUBSET can serve — a method's
+	// supporting upstreams (guaranteedMethods) or an operator-named group
+	// (guaranteedFor).
 	backing := pick.Max
 	if tip > 0 {
-		floor, subsets := n.guaranteedFloor(sel, finalized)
+		floor, subsets := n.guaranteedFloor(sel, true)
 		if floor > 0 && floor < tip {
 			tip = floor
 		}
@@ -409,10 +392,10 @@ func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool, latest i
 	// each still reports it. A floor holds only drops within the regression
 	// tolerance, so a far-ahead rogue head cannot pin it, and a held value
 	// never exceeds Latest: per voter finalized <= latest, so the pick keeps
-	// that order and the floor must too. laneTip of a lane runs only under
-	// l.mu (refreshLane), so the floor and this evaluation's backing are
-	// read together.
-	if finalized && l != nil {
+	// that order and the floor must too. laneFinalized of a lane runs only
+	// under l.mu (refreshLane), so the floor and this evaluation's backing
+	// are read together.
+	if l != nil {
 		computed := tip
 		tolerance := n.finalizedFloorTolerance()
 		held := l.holdFinalized(tip, backing, tolerance)
@@ -426,33 +409,37 @@ func (n *Network) laneTip(l *servedTipLane, sel string, finalized bool, latest i
 		if l == &n.servedTipAll {
 			n.publishFinalized(computed)
 		}
-	}
-
-	// Watchdog anchor: when did this process last see the served value change.
-	if l != nil {
+		// Watchdog anchor: when did this process last see the served value
+		// change.
 		if tip > 0 {
-			anchor.observe(tip)
+			l.finalized.observe(tip)
 		}
 		if l.gauges == nil {
 			l.gauges = n.bindLaneGauges(l.label)
 		}
-		g := &l.gauges.latest
-		if finalized {
-			g = &l.gauges.finalized
-		}
-		g.observe(tip, pick.Freshest, anchor.age())
-		if !finalized {
-			for rank, voters := range ranks {
-				l.gauges.voters[rank].Set(float64(voters))
-			}
-			quorum := 0
-			if pick.Inputs > 0 {
-				quorum = q.Of(pick.Inputs)
-			}
-			l.gauges.quorum.Set(float64(quorum))
-		}
+		l.gauges.finalized.observe(tip, pick.Freshest, l.finalized.age())
 	}
 	return tip
+}
+
+// laneHolders is what Firm and the Head read of selector sel's lane (spec
+// §6.5): holders, the q-th highest block its number voters hold, by their
+// head counters (any instance, any path) or by this instance's by-number
+// answers from them (heldAtLeast); and guarantee, the lowest majority of
+// the guarantee subsets, 0 while none constrains it.
+func (n *Network) laneHolders(sel string) (holders, guarantee int64) {
+	var q common.ServedTipQuorum
+	if n.cfg != nil {
+		q = n.cfg.Evm.ServedTipQuorum()
+	}
+	var buf [16]int64
+	heads := buf[:0]
+	n.voters(sel, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
+		heads = append(heads, max(head, n.heldAtLeast(u.Id())))
+		return true
+	})
+	guarantee, _ = n.guaranteedFloor(sel, false)
+	return common.PickServedTip(heads, q).Tip, guarantee
 }
 
 // laneLeader is the highest number voter of the lane (voterSet) whose head
@@ -688,14 +675,15 @@ var byHashFamily = map[string][]interface{}{
 
 // holdByHash returns the answer to send for resp, an answer to req, from
 // an upstream or the cache (spec §6.4): a by-hash answer from a block
-// above its lane's Latest waits at least 1 bt while the voters Latest
-// lacks are Asked for a head fetched after the wait began (AskReaching: a
-// counter fresher than 1 bt is no evidence their nodes lack the block),
-// and past 1 bt until those Asks answered, at most W: a fetch over a slow
-// link or on a loaded host answers after 1 bt, and only its answer is
-// evidence. It is then sent if Latest includes the block, else it is
-// null, as it is when ctx ends first. Each wait counts its outcome. held:
-// resp was replaced by null.
+// above its lane's Latest, the view's Head, waits at least 1 bt while the
+// lane's first voter whose counter holds the block is Asked for its hash
+// vote, which moves the Head, and the voters below it for a head fetched
+// after the wait began (AskReaching: a counter fresher than 1 bt is no
+// evidence their nodes lack the block), and past 1 bt until those Asks
+// answered, at most W: a fetch over a slow link or on a loaded host
+// answers after 1 bt, and only its answer is evidence. It is then sent if
+// Latest includes the block, else it is null, as it is when ctx ends
+// first. Each wait counts its outcome. held: resp was replaced by null.
 func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (out *common.NormalizedResponse, held bool) {
 	bn := byHashBlock(ctx, req, resp)
 	if bn <= 0 {
@@ -705,29 +693,26 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 	if d := req.Directives(); d != nil {
 		sel = d.UseUpstream
 	}
-	// computed: the lane's Head is computed and published first. Under
-	// load the head loop can trail the voters' counters by more than 1 bt,
-	// and Latest is their quorum, not the last publish.
-	latest := func(computed bool) (int64, <-chan struct{}) {
-		if l := n.laneFor(sel); l != nil {
-			if computed {
-				n.refreshLaneRecovered(l)
-			}
-			moved := l.latestMoved()
-			return l.published().Latest, moved
+	t := n.laneTracker(sel)
+	latest := func() (int64, <-chan struct{}) {
+		var moved <-chan struct{}
+		if t != nil {
+			moved = t.Changed()
 		}
-		pass := n.headsComputed()
-		return n.headFor(sel).Latest, pass
+		return n.headFor(sel).Latest, moved
 	}
-	at, moved := latest(false)
+	at, moved := latest()
 	if at <= 0 || bn <= at {
 		return resp, false
 	}
-	at, moved = latest(true)
 	bt := n.blockTimeOrCold()
 	asks, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
 	defer cancel()
 	var wg sync.WaitGroup
+	if sp := n.firstHolder(sel, bn); sp != nil {
+		begin := time.Now()
+		wg.Go(func() { sp.Ask(asks, common.HeadNeedHash, bt, begin, common.AskRefusal) })
+	}
 	for _, sp := range n.lackingVoters(sel, bn) {
 		wg.Go(func() { sp.AskReaching(asks, bn, bt, common.AskRefusal) })
 	}
@@ -743,7 +728,7 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 	for at < bn {
 		select {
 		case <-moved:
-			at, moved = latest(false)
+			at, moved = latest()
 			continue
 		case <-minWait.C:
 			settled = answered
@@ -751,7 +736,7 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 		case <-settled:
 		case <-asks.Done():
 		}
-		if at, _ = latest(true); at < bn {
+		if at, _ = latest(); at < bn {
 			n.countHeadRefusal("held_null")
 			return nullAnswer(req, resp)
 		}

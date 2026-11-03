@@ -43,13 +43,19 @@ type EvmNetwork interface {
 	EvmLaneHead(groupKey, selector string) EvmHead
 }
 
-// EvmHead is one lane's head (spec §6.4), published as one value. The zero
-// Head is an unknown one.
+// EvmHead is one lane's head (spec §6.4, §6.5), published as one value. The
+// zero Head is an unknown one. Latest, LatestHash and Firm are the lane's
+// one view, the chain tracker's; the rest is the head loop's number facts.
 type EvmHead struct {
-	// Latest is the q-th highest voter number, guarded and clamped to the
-	// guarantees.
+	// Latest is the view's Head: the highest pin one counted hash vote
+	// holds, undisputed, within every guarantee, sticky until the pins move.
 	Latest int64
-	// Finalized is the same ballot over the voters' finalized numbers.
+	// LatestHash is Latest's hash, the hash every transport sends there.
+	LatestHash [32]byte
+	// Firm is the highest block at or below Latest that q voters hold;
+	// routing and the refusal rule read it, nothing serves it alone.
+	Firm int64
+	// Finalized is the q-th highest voter finalized number, at most Latest.
 	Finalized int64
 	// Leader is the highest voter within Latest + maxRetryableBlockDistance.
 	Leader Upstream
@@ -72,9 +78,11 @@ type EvmHead struct {
 type HeadRule uint8
 
 const (
-	// HeadServe: N ≤ Latest, or Latest unknown (tags and numbers reach
-	// upstreams unchanged).
+	// HeadServe: N ≤ Firm, or Latest or Firm unknown (tags and numbers
+	// reach upstreams unchanged).
 	HeadServe HeadRule = iota
+	// HeadThin: Firm < N ≤ Latest: fewer than q voters hold N yet.
+	HeadThin
 	// HeadBand: Latest < N ≤ ceiling, or the ceiling is unknown.
 	HeadBand
 	// HeadFuture: above the ceiling, every counted report younger than
@@ -89,8 +97,10 @@ const (
 // Rule is the refusal rule's row for block n at now, bt the block time (> 0).
 func (h EvmHead) Rule(n int64, bt time.Duration, now time.Time) HeadRule {
 	switch {
-	case h.Latest <= 0 || n <= h.Latest:
+	case h.Latest <= 0 || h.Firm <= 0 || n <= h.Firm:
 		return HeadServe
+	case n <= h.Latest:
+		return HeadThin
 	case h.Ceiling <= 0 || n <= h.Ceiling:
 		return HeadBand
 	case h.OldestReportAt.IsZero() || now.Sub(h.OldestReportAt) >= bt:
@@ -138,8 +148,8 @@ func (r *HeadRefusal) FutureRule() string {
 // leg, or a retry round's. One goroutine runs it.
 type RefusalLeg struct{ missed bool }
 
-// MissVerdict is what an empty or missing answer above Latest is to the
-// leg that got it.
+// MissVerdict is what an empty or missing answer above Firm is to the leg
+// that got it.
 type MissVerdict uint8
 
 const (
@@ -150,15 +160,16 @@ const (
 	MissFinal
 )
 
-// AboveLatest reports whether the request's block is above its Latest.
-func (r *HeadRefusal) AboveLatest() bool {
+// AboveFirm reports whether the request's block is above its Firm: in the
+// thin region, the band or the future, where a miss is retried once.
+func (r *HeadRefusal) AboveFirm() bool {
 	return r != nil && r.Rule != HeadServe
 }
 
 // Final reports whether an empty answer now may be the request's answer:
 // a leg took its miss.
 func (r *HeadRefusal) Final() bool {
-	return r.AboveLatest() && r.missed.Load()
+	return r.AboveFirm() && r.missed.Load()
 }
 
 // Spent reports whether a leg took its answer after its miss, so an empty
@@ -167,10 +178,10 @@ func (r *HeadRefusal) Spent() bool {
 	return r != nil && r.answered.Load()
 }
 
-// Miss records an empty or missing answer leg got for a block above
-// Latest: each leg's first is its retryable miss, so a miss in one leg
-// never stops another (spec §6.4: every leg gets the band's one retry);
-// the leg's next is final.
+// Miss records an empty or missing answer leg got for a block above Firm:
+// each leg's first is its retryable miss, so a miss in one leg never stops
+// another (spec §6.4: every leg gets the one retry); the leg's next is
+// final.
 func (r *HeadRefusal) Miss(leg *RefusalLeg) MissVerdict {
 	r.missed.Store(true)
 	if !leg.missed {

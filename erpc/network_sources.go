@@ -23,8 +23,8 @@ import (
 
 // Source timing (spec §5.2, §11); vars so tests can shorten them.
 var (
-	// sourceIdleStop is how long polls and pending-transaction
-	// subscriptions keep running after the last tap needing them closed.
+	// sourceIdleStop is how long pending-transaction subscriptions keep
+	// running after the last tap needing them closed.
 	sourceIdleStop = util.NewDuration(60 * time.Second)
 	// pendingSilentAfter: a pending-transaction topic with no message this
 	// long, while heads carry transactions, is subscribed again; each
@@ -40,13 +40,10 @@ var (
 // sourceReconciler decides which topics each source of one network feeds:
 //
 //	push u: newHeads                    always, from network init
-//	poll u: newHeads                    while demand has newHeads, admitted(u) and u serves latest
 //	push u: newPendingTransactions:<v>  while demand has it and admitted(u)
 //
-// A push source whose newHeads the upstream refused as unsupported is polled
-// under the poll rule until a subscribe succeeds. An upstream that refused
-// latest as unsupported is no poll source until its give-up expires (#240).
-// It runs on one goroutine, from network init whether or not a WebSocket or
+// Heads that no push brings come from each lane's block clock (spec §6.8),
+// which fetches the voters' heads while taps demand them. It runs on one goroutine, from network init whether or not a WebSocket or
 // gRPC server runs, and wakes on demand changes, hash-voter changes,
 // subscribe answers, and a timer at W. admitted(u) is topic admission
 // (spec §6.2); each pass computes it first.
@@ -56,22 +53,16 @@ type sourceReconciler struct {
 	startOnce sync.Once
 	wakeCh    chan struct{}
 	syncCh    chan chan struct{}
-	// demandChangedAt is when the network's demand last gained or lost a
-	// topic, in unix nanoseconds.
-	demandChangedAt atomic.Int64
 	// pushes are the push sources by upstream id, as the last pass set them
 	// up; read without a lock by routing and intake (pushSource).
 	pushes atomic.Pointer[map[string]*wsupstream.Adapter]
-	// polls are the poll sources the last pass turned on; read without a
-	// lock by intake (source).
-	polls atomic.Pointer[map[string]bool]
 
 	// Owned by the run goroutine.
-	sources    map[string]*source
-	demandSeen time.Time
-	mu         sync.Mutex
-	// heads: some upstream is a subscription source; push: some push
-	// source can carry pending transactions.
+	sources map[string]*source
+	mu      sync.Mutex
+	// heads: some upstream is a subscription source or has a poller the
+	// block clock fetches; push: some push source can carry pending
+	// transactions.
 	heads, push bool
 	// pending holds each pending-transaction topic that is held, demanded,
 	// idle within sourceIdleStop, or still set on a source.
@@ -158,16 +149,16 @@ func pendingRefusal(err error) bool {
 	return errors.As(err, &jre)
 }
 
-// source is one upstream's transports: push over its WebSocket client, poll
-// through its state poller.
+// source is one upstream's transports: push over its WebSocket client;
+// clocked: its state poller is bound to intake, so the block clock can
+// fetch its heads.
 type source struct {
 	id       string
 	isSource bool
+	clocked  bool
 	push     *wsupstream.Adapter
-	poll     *evm.EvmStatePoller
 	// pushTopics is what push was last Set to; nil before.
 	pushTopics []indexer.Topic
-	pollOn     bool
 }
 
 func newSourceReconciler(nw *Network) *sourceReconciler {
@@ -206,7 +197,6 @@ func (r *sourceReconciler) demandChanged() {
 	if r == nil {
 		return
 	}
-	r.demandChangedAt.Store(time.Now().UnixNano())
 	r.wake()
 }
 
@@ -448,20 +438,6 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 	}
 
 	demand := r.nw.taps.Demand(r.nw.Label())
-	demanded := slices.Contains(demand, indexer.TopicNewHeads)
-	if demanded {
-		r.demandSeen = now
-	} else if at := r.demandChangedAt.Load(); at != 0 && time.Unix(0, at).After(r.demandSeen) {
-		// Demand was there until it last changed.
-		r.demandSeen = time.Unix(0, at)
-	}
-	polling := demanded
-	if !demanded && !r.demandSeen.IsZero() {
-		if left := sourceIdleStop.Load() - now.Sub(r.demandSeen); left > 0 {
-			polling = true
-			next = min(next, left)
-		}
-	}
 	pending, left := r.pendingWanted(demand, now)
 	if left > 0 {
 		next = min(next, left)
@@ -473,32 +449,16 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 
 	heads, push := false, false
 	pushes := make(map[string]*wsupstream.Adapter)
-	polls := make(map[string]bool)
 	for _, s := range r.sources {
-		heads = heads || s.isSource
+		heads = heads || s.isSource || s.clocked
 		if s.push != nil && s.isSource {
 			push = true
 			pushes[s.id] = s.push
 			r.setPush(s, pending, now, txHeadAt)
 		}
-		if s.poll == nil {
-			continue
-		}
-		pollOn := polling && (s.push == nil || s.push.HeadsRefused()) && !s.poll.LatestUnsupported() && r.nw.intake.admits(s.id)
-		if pollOn != s.pollOn {
-			s.poll.Set(topicsIf(pollOn))
-			s.pollOn = pollOn
-			r.nw.logger.Debug().Str("upstreamId", s.id).Bool("polling", pollOn).Msg("poll source changed")
-		}
-		if pollOn {
-			polls[s.id] = true
-		}
 	}
 	if old := r.pushes.Load(); old == nil || !maps.Equal(*old, pushes) {
 		r.pushes.Store(&pushes)
-	}
-	if old := r.polls.Load(); old == nil || !maps.Equal(*old, polls) {
-		r.polls.Store(&polls)
 	}
 	r.mu.Lock()
 	r.heads, r.push = heads, push
@@ -603,13 +563,6 @@ func (r *sourceReconciler) setPush(s *source, wanted []indexer.Topic, now, txHea
 	}
 }
 
-func topicsIf(newHeads bool) []indexer.Topic {
-	if newHeads {
-		return []indexer.Topic{indexer.TopicNewHeads}
-	}
-	return nil
-}
-
 // pushSource reports whether upstreamId is a push source (spec §6.1): a
 // WebSocket subscription source whose newHeads the upstream did not refuse,
 // so its requests ride the socket its pushes come on. A push source whose
@@ -626,31 +579,16 @@ func (r *sourceReconciler) pushSource(upstreamId string) bool {
 	return a != nil && !a.HeadsRefused()
 }
 
-// source reports whether upstreamId's headers come as a source's: a push
-// source, or a poll source the last pass turned on (spec §6.5 rule 6).
-// Another voter's latest polls vote too, but keep no schedule.
-func (r *sourceReconciler) source(upstreamId string) bool {
-	if r == nil {
-		return false
-	}
-	if ps := r.polls.Load(); ps != nil && (*ps)[upstreamId] {
-		return true
-	}
-	return r.pushSource(upstreamId)
-}
-
-// newSource sets up u's transports: its WebSocket client as a push source
-// and its state poller as a poll source. Every poller's latest headers go
-// through intake as u's hash votes (spec §6.3), source or not.
+// newSource sets up u's transports: its WebSocket client as a push source.
+// Every poller's latest headers go through intake as u's hash votes (spec
+// §6.3), source or not.
 func (r *sourceReconciler) newSource(u *upstream.Upstream) *source {
 	cfg := u.Config()
 	s := &source{id: u.Id(), isSource: cfg.IsSubscriptionSource()}
 	p, ok := u.EvmStatePoller().(*evm.EvmStatePoller)
 	if ok && !p.IsObjectNull() {
 		p.BindIntake(r.nw.intake)
-		if s.isSource {
-			s.poll = p
-		}
+		s.clocked = true
 	}
 	if util.IsWsEndpoint(cfg.Endpoint) {
 		opts := wsupstream.Options{
@@ -690,13 +628,9 @@ func (r *sourceReconciler) stop(s *source) {
 		s.push.Set(nil)
 		s.pushTopics = nil
 	}
-	if s.pollOn {
-		s.poll.Set(nil)
-		s.pollOn = false
-	}
 }
 
-// stopAll stops every poll and push subscription when the network ends.
+// stopAll stops every push subscription when the network ends.
 func (r *sourceReconciler) stopAll() {
 	for _, s := range r.sources {
 		r.stop(s)
@@ -709,8 +643,7 @@ func (r *sourceReconciler) stopAll() {
 // their fallback (spec §10); pending transactions need a push source (§11).
 // A subscribe skips the source pass when the last pass found a source and
 // one feeds now (sourceReconciler.live), so subscribes on a fed topic never
-// queue behind a pass. The first subscribe on an idle polled network waits
-// one pass: its tap is the demand that turns polling on.
+// queue behind a pass.
 func (n *Network) requireSubscriptionSource(ctx context.Context, subType string) error {
 	if n.sources == nil {
 		return common.NewErrNoSubscriptionSource(n.networkId, subType)
@@ -746,7 +679,8 @@ func (n *Network) subscriptionSourced(subType string) bool {
 }
 
 // live reports whether a source the last pass set feeds subType now: a
-// connected push source, or for heads a polling one.
+// connected push source, or for heads the block clock of a network with a
+// poller.
 func (r *sourceReconciler) live(subType string) bool {
 	switch subType {
 	case indexer.SubTypeNewHeads, indexer.SubTypeLogs, indexer.SubTypeNewPendingTransactions:
@@ -763,8 +697,9 @@ func (r *sourceReconciler) live(subType string) bool {
 	if subType == indexer.SubTypeNewPendingTransactions {
 		return false
 	}
-	p := r.polls.Load()
-	return p != nil && len(*p) > 0
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.heads
 }
 
 func later(a, b time.Time) time.Time {

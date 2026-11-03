@@ -2217,7 +2217,7 @@ func TestInterpolation_EveryForm(t *testing.T) {
 		// before it takes its Head, ahead of the cache: each Asks one.
 		var refreshes atomic.Int64
 		hook := func(_ *evm.EvmStatePoller, m evm.AskMet) {
-			if m.Reason == common.AskRefresh {
+			if m.Reason == common.AskRefusal {
 				refreshes.Add(1)
 			}
 		}

@@ -820,13 +820,13 @@ func (in *networkIntake) admits(upstreamId string) bool {
 }
 
 // EvmHashVoters is the voter set of the tracker of selector ("" network
-// wide), read once per tracker message (spec §6.2, §6.5): the lane's voters
-// in selection order; the eligible non-voters with a poller, which a
-// settle may Ask; the hash voters, those whose hash age is at most w,
-// and, while cold, the eligible sources that have not reported a header
-// yet, so a cold instance's first header waits for a second; q.Of of them;
-// each upstream's vendor and how many vendors they name.
-func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm.HashVoters {
+// wide), read once per batch of tracker messages (spec §6.2, §6.5): the
+// lane's voters in selection order; the eligible non-voters with a poller,
+// which a settle may Ask; the hash voters, those whose hash age is at most
+// w; q.Of of them; the lane's holder number and guarantee cap, which Firm
+// and Head read (laneHolders); each upstream's vendor and how many vendors
+// they name.
+func (n *Network) EvmHashVoters(selector string, w time.Duration) evm.HashVoters {
 	var q common.ServedTipQuorum
 	if n.cfg != nil {
 		q = n.cfg.Evm.ServedTipQuorum()
@@ -845,9 +845,6 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 	hv.Hash = make([]string, 0, len(voters))
 	for _, u := range voters {
 		hv.Voters = append(hv.Voters, u.Id())
-		if n.sources.source(u.Id()) {
-			hv.Sources = append(hv.Sources, u.Id())
-		}
 		v, voted := n.intake.hashVote(u)
 		if voted && (v.Expired || v.Age > w) && n.sources.pushSource(u.Id()) {
 			stale = append(stale, u.Id())
@@ -868,19 +865,15 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration, cold bool) evm
 		}
 	}
 	for c := range n.tipCandidates(selector) {
-		if syncing(c) {
+		if syncing(c) || slices.Contains(hv.Voters, c.Id()) {
 			continue
 		}
-		if !slices.Contains(hv.Voters, c.Id()) {
-			if eu, ok := c.(common.EvmUpstream); ok && eu.EvmStatePoller() != nil && !eu.EvmStatePoller().IsObjectNull() {
-				hv.Others = append(hv.Others, c.Id())
-			}
-		}
-		if cold && c.Config().IsSubscriptionSource() && !n.intake.reported(c.Id()) && !slices.Contains(hv.Hash, c.Id()) {
-			hv.Hash = append(hv.Hash, c.Id())
+		if eu, ok := c.(common.EvmUpstream); ok && eu.EvmStatePoller() != nil && !eu.EvmStatePoller().IsObjectNull() {
+			hv.Others = append(hv.Others, c.Id())
 		}
 	}
 	hv.Need = q.Of(len(hv.Hash))
+	hv.Holders, hv.Guarantee = n.laneHolders(selector)
 	return hv
 }
 

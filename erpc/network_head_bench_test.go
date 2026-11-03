@@ -3,7 +3,6 @@ package erpc
 import (
 	"context"
 	"fmt"
-	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -84,47 +83,4 @@ func processCPU() time.Duration {
 	var ru syscall.Rusage
 	_ = syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
 	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
-}
-
-// BenchmarkHeadChangeToPublish is the time from a counter move to the
-// published Latest of the lane it moves: each op raises every member of
-// one lane, in turn, one block above the lane's highest member and waits
-// for that lane's Latest to change. p50 and max are per op.
-func BenchmarkHeadChangeToPublish(b *testing.B) {
-	for _, s := range headBenchShapes {
-		b.Run(fmt.Sprintf("lanes=%d/ups=%d", s.lanes, s.ups), func(b *testing.B) {
-			_, ups, ls, members := headBenchNetwork(b, s.lanes, s.ups)
-			heads := make([]int64, len(ups))
-			for i := range heads {
-				heads[i] = 1000
-			}
-			var took []time.Duration
-			b.ReportAllocs()
-			op := 0
-			for b.Loop() {
-				k := op % len(ls)
-				op++
-				var target int64
-				for _, i := range members[k] {
-					target = max(target, heads[i]+1)
-				}
-				moved := ls[k].latestMoved()
-				start := time.Now()
-				for _, i := range members[k] {
-					heads[i] = target
-					ups[i].EvmStatePoller().SuggestLatestBlock(target, start)
-				}
-				select {
-				case <-moved:
-				case <-time.After(5 * time.Second):
-					b.Fatalf("lane %d never published %d", k, target)
-				}
-				took = append(took, time.Since(start))
-			}
-			slices.Sort(took)
-			b.ReportMetric(float64(took[len(took)/2].Nanoseconds()), "p50-ns")
-			b.ReportMetric(float64(took[len(took)*99/100].Nanoseconds()), "p99-ns")
-			b.ReportMetric(float64(took[len(took)-1].Nanoseconds()), "max-ns")
-		})
-	}
 }

@@ -1298,3 +1298,7 @@ func TestEvmAssertBlockAvailability_HeadLagTolerance(t *testing.T) {
 		assert.Equal(t, int64(995), upstream.EvmEffectiveLatestBlock(), "the vote keeps head-5")
 	})
 }
+
+func (*mockEvmStatePollerEnhanced) HeadBackingOff() bool { return false }
+
+func (*mockEvmStatePollerWithCustomBehavior) HeadBackingOff() bool { return false }

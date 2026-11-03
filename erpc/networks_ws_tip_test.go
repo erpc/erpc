@@ -760,18 +760,18 @@ func TestNetworkIntake_GroupLaneConfirmsWhenLatestMovesWithoutHeader(t *testing.
 	chain.advance()
 	require.Eventually(t, func() bool {
 		tip, ok := group.Tip()
-		hv := network.EvmHashVoters("g-*", group.W(), false)
+		hv := network.EvmHashVoters("g-*", group.W())
 		return ok && tip.Number == 1001 && slices.Equal(hv.Hash, []string{"g-a"})
 	}, 10*time.Second, 10*time.Millisecond, "the lane pins 1001, and only g-a's vote is fresh once g-b's ages past W")
 	require.Equal(t, int64(1000), servedHead(network, laneCtx).Latest, "g-b's counter holds the lane's Latest")
 	time.Sleep(200 * time.Millisecond)
-	if c, ok := group.Confirmed(); ok {
+	if c, ok := group.View().Head(); ok {
 		require.Less(t, c.Number, uint64(1001), "the lane's Latest holds 1001 back")
 	}
 
 	byId["g-b"].EvmStatePoller().SuggestLatestBlock(1001, time.Now())
 	require.Eventually(t, func() bool {
-		c, ok := group.Confirmed()
+		c, ok := group.View().Head()
 		return ok && c.Number == 1001
 	}, 2*time.Second, 10*time.Millisecond, "the lane's Latest reaching 1001 confirms it without another header")
 }
@@ -798,7 +798,7 @@ func TestNetworkIntake_HeldHashVoteNeedPollsVotersBelowThePin(t *testing.T) {
 	require.Eventually(t, func() bool {
 		for _, id := range []string{"b-http", "c-http"} {
 			if v, ok := network.intake.hashVote(byId[id]); !ok || v.Number != 1000 {
-				byId[id].EvmStatePoller().AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefresh)
+				byId[id].EvmStatePoller().AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefusal)
 				return false
 			}
 		}
@@ -844,7 +844,7 @@ func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
 	require.Eventually(t, func() bool {
 		v, ok := network.intake.hashVote(byId["z-http"])
 		if !ok || v.Number != 1003 {
-			byId["z-http"].EvmStatePoller().AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefresh)
+			byId["z-http"].EvmStatePoller().AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefusal)
 			return false
 		}
 		return true
@@ -867,7 +867,7 @@ func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
 	require.Eventually(t, func() bool {
 		v, ok := network.intake.hashVote(byId["z-http"])
 		if !ok || v.Number != 1007 {
-			byId["z-http"].EvmStatePoller().AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefresh)
+			byId["z-http"].EvmStatePoller().AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefusal)
 			return false
 		}
 		return true
@@ -944,12 +944,12 @@ func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) 
 	network, byId, addr := sourcesNetwork(t, cfg)
 	poller := byId["p-http"].EvmStatePoller()
 	hashVoter := func() bool {
-		return slices.Contains(network.EvmHashVoters("", network.chainTracker.W(), false).Hash, "p-http")
+		return slices.Contains(network.EvmHashVoters("", network.chainTracker.W()).Hash, "p-http")
 	}
 	restored := func(msg string) {
 		require.Eventually(t, func() bool {
 			if !hashVoter() {
-				poller.AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefresh)
+				poller.AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefusal)
 				return false
 			}
 			return true
@@ -986,7 +986,7 @@ func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) 
 	time.Sleep(150 * time.Millisecond)
 	polled = vendor.latestPolls.Load()
 	vendor.slowFail.Store(int64(time.Second))
-	poller.AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskCatchUp)
+	poller.AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefusal)
 	require.Eventually(t, func() bool { return vendor.latestPolls.Load() > polled }, 2*time.Second, 5*time.Millisecond, "the slow poll reaches the node")
 	time.Sleep(200 * time.Millisecond)
 	_, err := poller.PollLatestBlockNumber(ctx)
@@ -1078,7 +1078,7 @@ func TestNetworkHead_LoneVoterAheadBoundsCatchUp(t *testing.T) {
 
 	var fetched atomic.Int64
 	hook := func(_ *evm.EvmStatePoller, m evm.AskMet) {
-		if m.Reason == common.AskCatchUp && m.Outcome == common.AskFetched {
+		if m.Reason == common.AskRefusal && m.Outcome == common.AskFetched {
 			fetched.Add(1)
 		}
 	}

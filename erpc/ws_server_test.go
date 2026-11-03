@@ -2081,12 +2081,12 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		defer s.stopERPC()
 		tr := s.tracker()
 		require.Eventually(t, func() bool { _, ok := tr.Tip(); return ok }, 10*time.Second, 10*time.Millisecond, "ws-a's heads are pinned")
-		_, sendable := tr.Confirmed()
+		_, sendable := tr.View().Head()
 		require.False(t, sendable, "the delivery gate waits for the held sources")
 		s.dialLogs("cold")
 		from := s.chain.Tip().Number + 1
 		s.blocks(4)
-		_, sendable = tr.Confirmed()
+		_, sendable = tr.View().Head()
 		require.False(t, sendable, "the gate is still shut %d blocks after the subscription", 4)
 		for _, v := range []*chainsim.Vendor{s.wsB, s.httpA, s.httpB} {
 			v.Update(func(f *chainsim.Faults) { f.Held = false })
@@ -2161,7 +2161,7 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		to := from + uint64(len(plan)) - 1
 		s.blocks(len(plan))
 		tr := s.tracker()
-		require.Eventually(t, func() bool { c, ok := tr.Confirmed(); return ok && c.Number >= to }, 10*time.Second, 10*time.Millisecond, "block %d is sendable before the loops start", to)
+		require.Eventually(t, func() bool { c, ok := tr.View().Head(); return ok && c.Number >= to }, 10*time.Second, 10*time.Millisecond, "block %d is sendable before the loops start", to)
 		logsEnds, headsEnds := tapEndsOf(indexer.SubTypeLogs), tapEndsOf(indexer.SubTypeNewHeads)
 		close(hold)
 		released = true
@@ -3776,7 +3776,7 @@ func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 	require.NoError(t, err)
 	_ = resp.Body.Close()
 	pace := common.DefaultIntegrityFollowInterval
-	reasons := []common.AskReason{common.AskNoSource, common.AskCatchUp, common.AskRefusal, common.AskSettle, common.AskRefresh, common.AskPoll}
+	reasons := []common.AskReason{common.AskClock, common.AskRefusal, common.AskRefusal, common.AskSettle, common.AskRefusal, common.AskClock}
 	fetched := func() map[common.AskReason]float64 {
 		out := map[common.AskReason]float64{}
 		for _, r := range reasons {
@@ -3797,9 +3797,9 @@ func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 	}
 	t.Logf("follow-only network over %.1fs: %.1f requests/s, %d vendor head requests, fetched Asks by reason %v", secs, follow, vendorAsks, by)
 	assert.Positive(t, follow, "the first client request starts the follow tap and the probes")
-	assert.LessOrEqual(t, by[common.AskNoSource], rounds, "rule 6 Asks once per follow pace")
-	assert.LessOrEqual(t, by[common.AskCatchUp], rounds, "one catch-up round per follow pace, one lagging voter each")
-	for _, r := range []common.AskReason{common.AskRefusal, common.AskSettle, common.AskRefresh, common.AskPoll} {
+	assert.LessOrEqual(t, by[common.AskClock], rounds, "rule 6 Asks once per follow pace")
+	assert.LessOrEqual(t, by[common.AskRefusal], rounds, "one catch-up round per follow pace, one lagging voter each")
+	for _, r := range []common.AskReason{common.AskRefusal, common.AskSettle, common.AskRefusal, common.AskClock} {
 		assert.Zero(t, by[r], "no %s Asks on a follow-only network", r)
 	}
 	assert.LessOrEqual(t, float64(vendorAsks), 2*rounds, "every vendor head request is one of those Asks")
@@ -3808,7 +3808,7 @@ func TestWebSocket_IntegrityFollowCost(t *testing.T) {
 	require.NoError(t, err)
 	network, err := prj.GetNetwork(context.Background(), "evm:123")
 	require.NoError(t, err)
-	voters := network.EvmHashVoters("", network.chainTracker.W(), false).Voters
+	voters := network.EvmHashVoters("", network.chainTracker.W()).Voters
 	require.Len(t, voters, len(ids))
 	// Rule 6 Asks the first voter; every other voter's latest poll is a
 	// catch-up slot. The lagging node is the other voter with the oldest

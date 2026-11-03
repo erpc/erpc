@@ -1,89 +1,20 @@
 package erpc
 
 import (
-	"cmp"
 	"context"
-	"slices"
-	"sync"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 )
 
-// minLatestReachedKept is the fewest Latest increases a lane keeps, for a
-// network whose tracker's reorgWindow is smaller or not known yet.
-const minLatestReachedKept = 128
-
-// latestReached is when a lane's Latest first reached each number, kept
-// for its newest increases, at least reorgWindow of them: a lane tap's
-// block is deliverable from the later of its stamp and that time, so a
-// lane that trails the network-wide head is no lag (spec §10.2).
-type latestReached struct {
-	mu    sync.Mutex
-	steps []latestStep // increasing numbers
-	// floor: every number at or below it was reached before the steps.
-	floor uint64
-}
-
-type latestStep struct {
-	number uint64
-	at     time.Time
-}
-
-// note records latest at at when it is the highest yet; kept bounds the
-// steps. A Latest that fell drops the reached times above it: a block it
-// reaches again is deliverable from then.
-func (r *latestReached) note(latest int64, at time.Time, kept int) {
-	if latest <= 0 {
-		return
-	}
-	n := uint64(latest)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if n <= r.floor {
-		r.floor, r.steps = n, r.steps[:0]
-		return
-	}
-	if i, _ := slices.BinarySearchFunc(r.steps, n, func(s latestStep, n uint64) int { return cmp.Compare(s.number, n) }); i < len(r.steps) {
-		r.steps[i].number, r.steps = n, r.steps[:i+1]
-		return
-	}
-	r.steps = append(r.steps, latestStep{n, at})
-	if over := len(r.steps) - kept; over > 0 {
-		r.floor = r.steps[over-1].number
-		r.steps = slices.Delete(r.steps, 0, over)
-	}
-}
-
-// at is when Latest first reached n; zero when that was before the kept
-// steps, or has not happened.
-func (r *latestReached) at(n uint64) time.Time {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if n <= r.floor {
-		return time.Time{}
-	}
-	i, _ := slices.BinarySearchFunc(r.steps, n, func(s latestStep, n uint64) int { return cmp.Compare(s.number, n) })
-	if i == len(r.steps) {
-		return time.Time{}
-	}
-	return r.steps[i].at
-}
-
-// latestReachedKept is how many Latest increases a lane keeps: the
-// tracker's reorgWindow, at least minLatestReachedKept.
-func (n *Network) latestReachedKept() int {
-	if t := n.chainTracker; t != nil {
-		return max(t.ReorgWindow(), minLatestReachedKept)
-	}
-	return minLatestReachedKept
-}
-
 // laneFeed is the feed of a tap whose connection carries a use-upstream
-// directive: the network-wide tracker's batches, cut at the lane's Latest,
-// so the connection never gets a block its own eth_blockNumber does not
-// show (spec §4, §6.5). The pins stay network-wide.
+// directive: the network-wide tracker's batches, cut at the lane's Head
+// (headFor), so the connection never gets a block its own eth_blockNumber
+// does not show (spec §4, §6.5). The pins stay network-wide; while the
+// network-wide pin at the lane's Head is not the lane's hash, the lane's
+// blocks wait.
 type laneFeed struct {
 	indexer.ChainFeed
 	nw       *Network
@@ -107,50 +38,15 @@ func gated(f indexer.ChainFeed, nw *Network, selector string) indexer.ChainFeed 
 	return laneFeed{ChainFeed: f, nw: nw, selector: selector}
 }
 
-// laneLatest is the Latest of selector sel, whose lane is l: nil for a
-// selector that forms none, picked statelessly once per head pass
-// (endHeadPass clears statelessHeads).
-func (n *Network) laneLatest(l *servedTipLane, sel string) uint64 {
-	if l != nil {
-		return uint64(max(l.published().Latest, 0))
-	}
-	if v, ok := n.statelessHeads.Load(sel); ok {
-		return v.(uint64)
-	}
-	gen := n.statelessGen.Load()
-	latest := uint64(max(n.computeHead(nil, sel).Latest, 0))
-	// A pick that a pass's clear overtook is from before that pass: kept,
-	// it would stand until the next one.
-	n.statelessMu.Lock()
-	if n.statelessGen.Load() == gen {
-		n.statelessHeads.Store(sel, latest)
-	}
-	n.statelessMu.Unlock()
-	return latest
-}
-
-// latest is the lane's Latest and a channel closed once it may have moved:
-// the lane's own change, or, for a selector that forms no lane, the next
-// pass over the network's lanes.
-func (f laneFeed) latest() (uint64, <-chan struct{}) {
-	l := f.nw.laneFor(f.selector)
-	var moved <-chan struct{}
-	if l != nil {
-		moved = l.latestMoved()
-	} else {
-		moved = f.nw.headsComputed()
-	}
-	return f.nw.laneLatest(l, f.selector), moved
-}
-
-// Read returns the next batch from c up to the lane's Latest: Applied
-// blocks above it wait for the lane's Latest to move. While one waits, the
-// lane's voters below it are asked for their head once per block time, at
-// most 1s apart (spec §6.5 catch-up): the network-wide tracker under the
-// feed asks only the network's voters. Reverted blocks pass, so a reorg
-// below Latest still reaches the client. Each Applied block is ready from
-// the later of its stamp and when the lane's Latest first reached it.
+// Read returns the next batch from c up to the lane's Head: Applied blocks
+// above it, or every one while the network-wide pins hold another block at
+// its number, wait for the lane's view to move. Each Read is the lane's
+// demand, so its block clock runs while the tap waits (spec §6.8).
+// Reverted blocks pass, so a reorg still reaches the client. Each Applied
+// block is ready from the later of its stamp and when the lane's view
+// first reached it.
 func (f laneFeed) Read(ctx context.Context, c indexer.Cursor, o indexer.ReadOpts) (indexer.Batch, error) {
+	lt := f.nw.laneTracker(f.selector)
 	var timer *time.Timer
 	defer func() {
 		if timer != nil {
@@ -162,28 +58,31 @@ func (f laneFeed) Read(ctx context.Context, c indexer.Cursor, o indexer.ReadOpts
 		if err != nil {
 			return b, err
 		}
-		latest, moved := f.latest()
+		var moved <-chan struct{}
+		if lt != nil {
+			lt.MarkRead()
+			moved = lt.Changed()
+		}
+		h := f.nw.headFor(f.selector)
 		keep := len(b.Applied)
-		for keep > 0 && b.Applied[keep-1].Number > latest {
+		for keep > 0 && (h.Latest <= 0 || b.Applied[keep-1].Number > uint64(h.Latest) ||
+			b.Applied[keep-1].Number == uint64(h.Latest) && b.Applied[keep-1].Hash != h.LatestHash) {
 			keep--
 		}
 		switch {
 		case keep == len(b.Applied):
-			return f.ready(b), nil
+			return f.ready(lt, b), nil
 		case keep > 0:
 			last := b.Applied[keep-1]
 			b.Applied, b.Next = b.Applied[:keep], indexer.Cursor{Number: last.Number, Hash: last.Hash}
-			return f.ready(b), nil
+			return f.ready(lt, b), nil
 		case len(b.Reverted) > 0:
 			fork := b.Reverted[len(b.Reverted)-1]
 			b.Applied, b.Next = nil, indexer.Cursor{Number: fork.Number - 1, Hash: fork.ParentHash}
 			return b, nil
 		}
-		f.nw.EvmRefreshHeadsBelow(f.selector, int64(b.Applied[0].Number), 0)
-		every := f.nw.EvmBlockTime()
-		if every <= 0 || every > time.Second {
-			every = time.Second
-		}
+		// MarkRead again before the demand's W ends.
+		every := f.nw.blockTimeOrCold()
 		if timer == nil {
 			timer = time.NewTimer(every)
 		} else {
@@ -198,15 +97,15 @@ func (f laneFeed) Read(ctx context.Context, c indexer.Cursor, o indexer.ReadOpts
 	}
 }
 
-// ready moves each Applied block's Ready to when the lane's Latest first
-// reached it, when that is later.
-func (f laneFeed) ready(b indexer.Batch) indexer.Batch {
-	l := f.nw.laneFor(f.selector)
-	if l == nil {
+// ready moves each Applied block's Ready to when the lane's view first
+// reached it, when that is later (lt's stamps; none for a selector that
+// forms no lane, which reads the network-wide view).
+func (f laneFeed) ready(lt *evm.ChainTracker, b indexer.Batch) indexer.Batch {
+	if lt == nil || lt == f.nw.chainTracker {
 		return b
 	}
 	for i := range b.Applied {
-		if at := l.reached.at(b.Applied[i].Number); at.After(b.Applied[i].Ready) {
+		if at := lt.ReachedAt(b.Applied[i].Number); at.After(b.Applied[i].Ready) {
 			b.Applied[i].Ready = at
 		}
 	}

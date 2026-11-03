@@ -17,7 +17,6 @@ import (
 // Spec §6 bounds; variables so tests run fast.
 var (
 	settleAsks     = 3           // targets a settle round Asks
-	catchUpMax     = time.Second // longest gap between catch-ups while latest caps the sends
 	followTapPause = time.Second // before a follow tap that failed restarts
 )
 
@@ -135,7 +134,6 @@ func (t *ChainTracker) replaceOlder(nd *node, u string) {
 			hold(n)
 		}
 	}
-	hold(t.ask.pending)
 	if s := t.settle; s != nil {
 		for _, a := range s.answers {
 			hold(a)
@@ -202,9 +200,9 @@ func (t *ChainTracker) walkFrom(nd *node, sender string) {
 }
 
 // endWalks ends each walk whose tree came to hold the pins, so the votes
-// in it apply at once, each walk no pending vote, ask answer or settle
-// answer waits on any more, and every walk once history no longer serves
-// the tracker; fill goes on from where it stopped.
+// in it apply at once, each walk no pending vote or settle answer waits on
+// any more, and every walk once history no longer serves the tracker; fill
+// goes on from where it stopped.
 func (t *ChainTracker) endWalks() {
 	pinRoot := t.pinRoot()
 	var awaited map[*node]bool
@@ -225,8 +223,7 @@ func (t *ChainTracker) endWalks() {
 }
 
 // rootsHolding are the roots of the trees that hold a vote a walk keeps
-// back, an ask's answer not yet the vote, or a settle's answer; with votes,
-// also the trees of the votes and of the no-source vote.
+// back or a settle's answer; with votes, also the trees of the votes.
 func (t *ChainTracker) rootsHolding(votes bool) map[*node]bool {
 	roots := make(map[*node]bool)
 	add := func(n *node) {
@@ -237,7 +234,6 @@ func (t *ChainTracker) rootsHolding(votes bool) map[*node]bool {
 	for _, n := range t.pending {
 		add(n)
 	}
-	add(t.ask.pending)
 	if s := t.settle; s != nil {
 		for _, a := range s.answers {
 			add(a)
@@ -247,7 +243,6 @@ func (t *ChainTracker) rootsHolding(votes bool) map[*node]bool {
 		for _, n := range t.votes {
 			add(n)
 		}
-		add(t.ask.vote)
 	}
 	return roots
 }
@@ -505,12 +500,11 @@ type settleReason uint8
 
 const (
 	settleTie     settleReason = iota // a tie in rule 4
-	settleDispute                     // a no-source answer off the pins (rule 6)
 	settleFork                        // the refresh of a vote off the pins (§6.3)
 	settleRecheck                     // a client's ReconfirmPin
 )
 
-var settleReasonNames = [...]string{"tie", "dispute", "fork", "recheck"}
+var settleReasonNames = [...]string{"tie", "fork", "recheck"}
 
 // logSettle logs the end of round s (spec §17) under the key it started
 // with: a decided round re-keys on the block it pinned, which names no
@@ -638,10 +632,9 @@ func (t *ChainTracker) startSettle(s *settleState, targets []string, need common
 	return false
 }
 
-// startDispute starts a round over k, a tie or a conflicting no-source
-// answer, when one may start; skip is the voter whose answer k disputes.
-func (t *ChainTracker) startDispute(k roundKey, skip string, reason settleReason) bool {
-	return t.maySettle(k) && t.startSettle(&settleState{key: k, reason: reason}, t.tieTargets(k, skip), common.HeadNeedHash, nil)
+// startTie starts a round over k, a tie rule 4 meets, when one may start.
+func (t *ChainTracker) startTie(k roundKey) bool {
+	return t.maySettle(k) && t.startSettle(&settleState{key: k, reason: settleTie}, t.tieTargets(k), common.HeadNeedHash, nil)
 }
 
 // settleAnswered takes target id's answer to round s. A failed Ask, a
@@ -683,7 +676,7 @@ func (t *ChainTracker) endSettle(s *settleState) {
 	s.inflight = false
 	t.markRefreshed(s.key)
 	stands := t.stands(s.key)
-	path, tie, _ := t.decide()
+	path, tie := t.decide()
 	if path != nil {
 		t.apply(path)
 	}
@@ -771,8 +764,8 @@ func (t *ChainTracker) maySettle(k roundKey) bool {
 }
 
 // requestSettle is ReconfirmPin's settle: it joins the round in flight and
-// waits for its answers, or runs one over the dispute rule 4 meets, else
-// over the pin at number. A decided round over that key that still stands
+// waits for its answers, or runs one over the tie rule 4 meets, else over
+// the pin at number. A decided round over that key that still stands
 // reports decided at once. A round over that key before its retry, or a
 // last round over another key that still holds its place, defers it.
 func (t *ChainTracker) requestSettle(settled chan settleOutcome, number int64) {
@@ -781,15 +774,12 @@ func (t *ChainTracker) requestSettle(settled chan settleOutcome, number int64) {
 		s.waiters = append(s.waiters, settled)
 		return
 	}
-	k, skip := keyOf(nil, nil), ""
+	k := keyOf(nil, nil)
 	if number >= 0 {
 		k = keyOf(t.pinNode(uint64(number)), nil)
 	}
-	switch _, tie, conflict := t.decide(); {
-	case len(tie) > 0:
+	if _, tie := t.decide(); len(tie) > 0 {
 		k = t.tieKey(tie)
-	case conflict:
-		k, skip = t.disputeOf(t.ask.vote), t.ask.voter
 	}
 	switch {
 	case s != nil && s.decided && s.key.name == k.name && t.stands(s.key):
@@ -797,25 +787,24 @@ func (t *ChainTracker) requestSettle(settled chan settleOutcome, number int64) {
 	case t.waits(k), s != nil && s.key.name != k.name && t.keepsPlace(s):
 		report(settled, settleDeferred)
 	default:
-		t.startSettle(&settleState{key: k, reason: settleRecheck}, t.tieTargets(k, skip), common.HeadNeedHash, settled)
+		t.startSettle(&settleState{key: k, reason: settleRecheck}, t.tieTargets(k), common.HeadNeedHash, settled)
 	}
 }
 
-// tieTargets are the targets of a round over k, a tie, a conflicting
-// no-source answer or a client's re-check (spec §6.8): the voters without a
-// counted vote that decides k, then the non-voters, in selection order, up
-// to settleAsks; never skip, the voter whose answer is disputed. A vote
-// below k's blocks, or in another tree, has no say in k: only its answer
-// can break the tie.
-func (t *ChainTracker) tieTargets(k roundKey, skip string) []string {
+// tieTargets are the targets of a round over k, a tie or a client's
+// re-check (spec §6.8): the voters without a counted vote that decides k,
+// then the non-voters, in selection order, up to settleAsks. A vote below
+// k's blocks, or in another tree, has no say in k: only its answer can
+// break the tie.
+func (t *ChainTracker) tieTargets(k roundKey) []string {
 	var out []string
 	for _, id := range t.voters.Voters {
-		if v := t.votes[id]; id != skip && !(t.counts(id) && t.alive(v) && t.decides(k, v)) && len(out) < settleAsks {
+		if v := t.votes[id]; !(t.counts(id) && t.alive(v) && t.decides(k, v)) && len(out) < settleAsks {
 			out = append(out, id)
 		}
 	}
 	for _, id := range t.voters.Others {
-		if id != skip && len(out) < settleAsks {
+		if len(out) < settleAsks {
 			out = append(out, id)
 		}
 	}
@@ -914,55 +903,6 @@ func (t *ChainTracker) markRefreshed(k roundKey) {
 	}
 }
 
-// askState is §6 rule 6: with demand and no source with a fresh hash vote,
-// the tracker Asks the first voter in selection order with a hash need,
-// at the demand's pace (the Ask keeps it at least the cadence). That
-// answer is the only vote until the next.
-type askState struct {
-	vote, pending       *node
-	voter, pendingVoter string
-	out                 bool // an Ask is out
-	// due is the last answer's Next: the Ask at this pace fetches nothing
-	// sooner, so the tracker wakes for it then rather than Ask again.
-	due time.Time
-}
-
-// noSourceWanted reports whether rule 6 Asks: demand, a voter, no Ask out,
-// and no source among the hash voters. A voter that is no source votes
-// from each poll of it, rule 6's Asks and full polls included, yet no
-// schedule keeps those coming.
-func (t *ChainTracker) noSourceWanted() bool {
-	if t.ask.out || len(t.voters.Voters) == 0 {
-		return false
-	}
-	if _, ok := t.demand(); !ok {
-		return false
-	}
-	return !slices.ContainsFunc(t.voters.Sources, t.counts)
-}
-
-// askNoSource is rule 6's Ask, reason no_source, once it is due.
-func (t *ChainTracker) askNoSource() {
-	if !t.noSourceWanted() || time.Now().Before(t.ask.due) {
-		return
-	}
-	pace, _ := t.demand()
-	id, seq := t.voters.Voters[0], t.askSeq
-	t.ask.out = t.askHead(id, common.HeadNeedHash, pace, time.Time{}, common.AskNoSource, func(a common.HeadAnswer) {
-		if seq != t.askSeq {
-			return
-		}
-		t.ask.out, t.ask.due = false, a.Next
-		if t.ask.due.IsZero() {
-			t.ask.due = time.Now().Add(t.BlockTime())
-		}
-		if nd := t.heldAnswer(a); nd != nil {
-			t.ask.pending, t.ask.pendingVoter = nd, id
-			t.walkFrom(nd, id)
-		}
-	})
-}
-
 // demand reports whether newHeads demand stands for this tracker, and the
 // fastest pace it needs heads at (0 every block): an open tap of the
 // network for the network-wide tracker; a tap open on a group tracker, at
@@ -1003,21 +943,14 @@ func (t *ChainTracker) conflicts(nd *node) bool {
 	return t.pinNode(t.branchOf(nd).h.number) != nil
 }
 
-// rearm ticks the tracker at its next deadline: the no-source voter's next
-// Ask, the end of a settle round's W or of an undecided round's backoff,
-// the next catch-up while the lane's Latest caps the sends, the end of the
-// cold window, the moment the soonest hash voter's hash age passes W, or
-// the moment a vote off the pins has been off for W (minority fork). It
-// runs after every batch, so a deadline that fires never hides a later
-// one.
+// rearm ticks the tracker at its next deadline: the block clock's next
+// fire, the end of a settle round's W or of an undecided round's backoff,
+// the moment the soonest hash voter's hash age passes W, or the moment a
+// vote off the pins has been off for W (minority fork). It runs after
+// every batch, so a deadline that fires never hides a later one.
 func (t *ChainTracker) rearm() {
 	now := time.Now()
-	var at time.Time
-	if t.noSourceWanted() {
-		if due := t.ask.due; due.After(now) {
-			at = due
-		}
-	}
+	at := t.clock.due()
 	if s := t.settle; s != nil {
 		due := t.retryAt[s.key.name]
 		if s.inflight {
@@ -1027,10 +960,7 @@ func (t *ChainTracker) rearm() {
 			at = due
 		}
 	}
-	if c := t.catchUpAt; c.After(now) && (at.IsZero() || c.Before(at)) {
-		at = c
-	}
-	for _, due := range []time.Time{t.coldUntil, t.voters.Next, t.forkAt} {
+	for _, due := range []time.Time{t.voters.Next, t.forkAt} {
 		if due.After(now) && (at.IsZero() || due.Before(at)) {
 			at = due
 		}
@@ -1053,9 +983,9 @@ func (t *ChainTracker) rearm() {
 
 // follow runs the integrity follow tap (spec §13) from the network's first
 // client request (ClientRequested): it holds newHeads demand at
-// integrity.follow.interval's pace, so polls run while clients are quiet,
-// hands each new head to the state prober and sets the head's lag behind
-// the network's served tip. Out of range restarts it after the head.
+// integrity.follow.interval's pace, so the block clock runs while clients
+// are quiet, hands each new head to the state prober and sets the tap's
+// lag behind the view's Head. Out of range restarts it after the head.
 func (t *ChainTracker) follow(ctx context.Context) {
 	tn, ok := t.network.(interface {
 		EvmTaps() (*indexer.Taps, string)
@@ -1075,11 +1005,9 @@ func (t *ChainTracker) follow(ctx context.Context) {
 			if p := stateProberFor(t.network); p != nil {
 				p.onNewHead(int64(b.Next.Number))
 			}
-			if t.laneHead != nil {
-				if served := t.laneHead().Latest; served > 0 {
-					telemetry.MetricChainTrackerLag.WithLabelValues(t.projectId(), t.networkLabel(), t.group).
-						Set(float64(max(0, served-int64(b.Next.Number))))
-				}
+			if head, ok := t.View().Head(); ok {
+				telemetry.MetricChainTrackerLag.WithLabelValues(t.projectId(), t.networkLabel(), t.group).
+					Set(float64(head.Number - min(head.Number, b.Next.Number)))
 			}
 			return len(b.Applied), nil
 		})

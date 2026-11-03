@@ -281,7 +281,7 @@ func (f waitBoundedFeed) stalled(c indexer.Cursor, voting bool) bool {
 	if !voting {
 		return true
 	}
-	send, ok := f.Confirmed()
+	send, ok := f.View().Head()
 	return ok && (send.Number > c.Number || send.Number == c.Number && send.Hash != c.Hash)
 }
 

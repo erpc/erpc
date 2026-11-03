@@ -212,7 +212,7 @@ func (f logsFeed) watchReceipts(ctx context.Context, c indexer.Cursor, cancel co
 	for {
 		changed := f.Changed()
 		if timeout == nil {
-			if send, ok := f.Confirmed(); ok && send.Number > c.Number {
+			if send, ok := f.View().Head(); ok && send.Number > c.Number {
 				t := time.NewTimer(logsReceiptsWait.Load())
 				defer t.Stop()
 				timeout = t.C

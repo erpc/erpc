@@ -392,7 +392,6 @@ func TestCovInteg_ChainTrackerOf(t *testing.T) {
 		hn := &covIntegHeadNet{covIntegNet: newCovIntegNet("y", nil, nil), latest: 9}
 		tr := StartChainTrackers(ctx, hn)
 		require.NotNil(t, tr.laneHead)
-		assert.Equal(t, uint64(9), tr.sendCeiling())
 	})
 }
 

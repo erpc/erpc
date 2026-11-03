@@ -336,6 +336,11 @@ func (p *FakeEvmStatePoller) LatestAskAt() time.Time {
 	return time.Time{}
 }
 
+// HeadBackingOff is false: a fake never fails a fetch.
+func (p *FakeEvmStatePoller) HeadBackingOff() bool {
+	return false
+}
+
 func (p *FakeEvmStatePoller) Poll(ctx context.Context) error {
 	return nil
 }

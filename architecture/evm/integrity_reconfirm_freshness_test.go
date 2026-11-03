@@ -36,7 +36,7 @@ type capturingNetwork struct {
 	backoff, hold atomic.Bool
 }
 
-func (n *capturingNetwork) EvmHashVoters(string, time.Duration, bool) HashVoters {
+func (n *capturingNetwork) EvmHashVoters(string, time.Duration) HashVoters {
 	hv := HashVoters{Voters: []string{"a", "b"}, Need: 1,
 		Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b"}, Distinct: 2}}
 	if n.sourcesVote.Load() {

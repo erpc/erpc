@@ -30,6 +30,37 @@ var blockByTagFamily = map[string]struct{}{
 	"arbtrace_block":                          {},
 }
 
+// OffViewBlock reports whether resp, an upstream's eth_getBlockByNumber
+// answer to req, is the block at head's Latest on another branch than the
+// view's (spec §6.5, §7 family 2): a block of another branch is never
+// served under the view's number, so it is a miss. head is the request's
+// one Head; nil, unknown or hashless, nothing is off the view.
+func OffViewBlock(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse, head *common.EvmHead) bool {
+	if head == nil || head.Latest <= 0 || head.LatestHash == ([32]byte{}) || resp == nil || resp.IsObjectNull(ctx) {
+		return false
+	}
+	if method, _ := req.Method(); method != "eth_getBlockByNumber" {
+		return false
+	}
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil || jrr == nil {
+		return false
+	}
+	nh, err := jrr.PeekStringByPath(ctx, "number")
+	if err != nil {
+		return false
+	}
+	if n, err := common.HexToInt64(nh); err != nil || n != head.Latest {
+		return false
+	}
+	hh, err := jrr.PeekStringByPath(ctx, "hash")
+	if err != nil {
+		return false
+	}
+	var h [32]byte
+	return decodeHex32(hh, &h) && h != head.LatestHash
+}
+
 func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartDetailSpan(ctx, "Network.PostForward.eth_getBlockByNumber", trace.WithAttributes(
 		attribute.String("request.id", fmt.Sprintf("%v", nq.ID())),
