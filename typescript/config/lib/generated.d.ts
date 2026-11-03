@@ -101,10 +101,11 @@ export interface HeadAnswer {
      */
     block: number;
     /**
-     * Sent is when the fetch that answered was sent: the header's
-     * evidence time; zero with no fetch answer.
+     * At is when the evidence that met the Ask was taken: the meeting
+     * fetch's send, or the shared counter's report; zero with no evidence
+     * (backoff, a fork fetch queued and not yet sent).
      */
-    sent: any;
+    at: any;
     /**
      * Next is when an Ask at the same pace may fetch again: the meeting
      * fetch's send plus the pace or its backed-off cadence, the longer;
@@ -2961,6 +2962,11 @@ export declare const HeadStale: HeadRule;
 export interface HeadRefusal {
     rule: HeadRule;
     block: number;
+    /**
+     * Latest is the Latest Block was decided against, 0 while the head
+     * was unknown: then no block was promised.
+     */
+    latest: number;
     /**
      * Ceiling is the ceiling Block was decided against: the one the Ask
      * returned when Refreshed.

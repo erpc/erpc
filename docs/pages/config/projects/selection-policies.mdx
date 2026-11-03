@@ -248,7 +248,7 @@ Each `excludeIf` step records per-leaf attribution into `erpc_selection_exclusio
 score(u) = overall / (1 + errorRate×w₁ + respLatency×w₂ + throttledRate×w₃ + blockHeadLag×w₄ + finalizationLag×w₅ + misbehaviors×w₆)
 ```
 
-A clean upstream with no penalties scores `1.0`; every unit of penalty divides the score. Three built-in weight presets:
+A clean upstream with no penalties scores `1.0`; every unit of penalty divides the score. A lag term counts blocks, but never more than seconds of lag: `min(blockHeadLag, blockHeadLagSeconds)`, and the same for `finalizationLag`. On chains with blocks of 1 s or slower, and while the block-time EMA is cold, it is the block count; on sub-second chains it is seconds, so 0.4 s behind costs 0.4, not the 4 blocks it is at 10 blocks/s. Three built-in weight presets:
 
 | Preset | errorRate | respLatency | throttledRate | blockHeadLag | finalizationLag | misbehaviors |
 |---|---|---|---|---|---|---|

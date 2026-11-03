@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -91,7 +92,7 @@ func (*fakeUpstreamForPoller) IgnoreMethod(string)                     {}
 // one of the two fields is populated per canned response.
 type scriptedResponse struct {
 	result []byte // raw result bytes, e.g. `"ok"` or `1234`
-	errJr  *common.ErrJsonRpcExceptionExternal
+	errJr  error  // classified error, returned as (nil, err) like Forward
 }
 
 // scriptedUpstream returns canned JSON-RPC responses keyed by the request
@@ -139,20 +140,29 @@ func (s *scriptedUpstream) script(key string, resultBody []byte) {
 	s.responses[key] = scriptedResponse{result: resultBody}
 }
 
-// scriptError registers a JSON-RPC error response for the given key.
+// scriptError registers a JSON-RPC error for the given key. It comes back the
+// way upstream.Forward really returns errors: (nil, classified err), not a
+// response object carrying the error inside.
 func (s *scriptedUpstream) scriptError(key string, code int, msg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.responses[key] = scriptedResponse{errJr: common.NewErrJsonRpcExceptionExternal(code, msg, "")}
 }
 
-// requestKey maps a state-poller request payload to one of the four known
-// kinds. getSlot is split by commitment so processed and finalized route to
-// separate canned responses.
+// scriptClassifiedError registers an arbitrary classified error (e.g. circuit
+// breaker open, upstream rate-limit budget) for the given key, returned the
+// way Forward returns it: (nil, err).
+func (s *scriptedUpstream) scriptClassifiedError(key string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.responses[key] = scriptedResponse{errJr: err}
+}
+
+// requestKey maps a state-poller request payload to one of the known kinds.
+// getSlot is split by commitment so processed and finalized route to separate
+// canned responses.
 func requestKey(body string) string {
 	switch {
-	case strings.Contains(body, `"method":"getHealth"`):
-		return "getHealth"
 	case strings.Contains(body, `"method":"getMaxShredInsertSlot"`):
 		return "getMaxShredInsertSlot"
 	case strings.Contains(body, `"method":"getBlocksWithLimit","params":[0,1]`):
@@ -165,6 +175,14 @@ func requestKey(body string) string {
 	return "unknown"
 }
 
+// Forward mimics upstream.Upstream.Forward faithfully on the shapes liveness
+// cares about: an unscripted method is TRANSPORT SILENCE (a classified
+// transport failure, not a bare error — a bare error would classify as
+// "answered"), and a scripted RPC error comes back as (nil, err), because
+// the real Forward drops the response on any error (upstream.go's errCall
+// branch). Tests that need an endpoint answering with an RPC error must use
+// scriptError; tests that need a dead endpoint simply leave a method
+// unscripted.
 func (s *scriptedUpstream) Forward(ctx context.Context, req *common.NormalizedRequest, _, _ bool) (*common.NormalizedResponse, error) {
 	body := string(req.Body())
 	key := requestKey(body)
@@ -175,16 +193,17 @@ func (s *scriptedUpstream) Forward(ctx context.Context, req *common.NormalizedRe
 	s.mu.Unlock()
 
 	if !ok {
-		return nil, fmt.Errorf("scriptedUpstream: no scripted response for %q (body=%s)", key, body)
+		return nil, common.NewErrEndpointTransportFailure(&url.URL{Host: "scriptedUpstream"},
+			fmt.Errorf("no scripted response for %q (body=%s)", key, body))
 	}
 
-	var jrr *common.JsonRpcResponse
-	var err error
 	if scripted.errJr != nil {
-		jrr, err = common.NewJsonRpcResponse(1, nil, scripted.errJr)
-	} else {
-		jrr, err = common.NewJsonRpcResponseFromBytes(nil, scripted.result, nil)
+		// The real Forward returns (nil, wrapped err) on JSON-RPC errors;
+		// the raw classified error classifies identically under HasErrorCode.
+		return nil, scripted.errJr
 	}
+
+	jrr, err := common.NewJsonRpcResponseFromBytes(nil, scripted.result, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -259,10 +278,10 @@ func newPollerOnCtx(t *testing.T, appCtx context.Context, up common.Upstream) *S
 	)
 }
 
-func TestSvmStatePoller_Poll_FansOutAllFiveCalls(t *testing.T) {
+func TestSvmStatePoller_Poll_FansOutAllCalls(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
+
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
 	// The shred watermark is structurally AHEAD of the replayed slot, so
@@ -273,9 +292,6 @@ func TestSvmStatePoller_Poll_FansOutAllFiveCalls(t *testing.T) {
 	p := newPollerWithUpstream(t, up)
 	require.NoError(t, p.Poll(context.Background()))
 
-	if up.callCount("getHealth") != 1 {
-		t.Errorf("getHealth called %d times, want 1", up.callCount("getHealth"))
-	}
 	if up.callCount("getSlot:processed") != 1 {
 		t.Errorf("getSlot(processed) called %d times, want 1", up.callCount("getSlot:processed"))
 	}
@@ -299,7 +315,7 @@ func TestSvmStatePoller_Poll_FansOutAllFiveCalls(t *testing.T) {
 		t.Errorf("MaxShredInsertSlotLag = %d, want 2 (maxShredInsertSlot 1002 - processedSlot 1000)", p.MaxShredInsertSlotLag())
 	}
 	if !p.IsHealthy() {
-		t.Error("IsHealthy should be true: getHealth ok + lag within threshold")
+		t.Error("IsHealthy should be true: probes answering + lag within threshold")
 	}
 	// The floor fetch may finish after Poll's bounded foreground wait under
 	// -race; it still lands via the async closure.
@@ -315,7 +331,7 @@ func TestSvmStatePoller_Poll_FansOutAllFiveCalls(t *testing.T) {
 func TestSvmStatePoller_FirstAvailableSlot_UnknownUntilObserved(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
+
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
 	up.script("getMaxShredInsertSlot", []byte(`1002`))
@@ -359,7 +375,7 @@ func TestSvmStatePoller_FirstAvailableSlot_PolledWithoutDeclaredBound(t *testing
 		t.Run(name, func(t *testing.T) {
 			up := newScriptedUpstream()
 			up.cfg = cfg
-			up.script("getHealth", []byte(`"ok"`))
+
 			up.script("getSlot:processed", []byte(`1000`))
 			up.script("getSlot:finalized", []byte(`990`))
 			up.script("getMaxShredInsertSlot", []byte(`1002`))
@@ -383,7 +399,7 @@ func TestSvmStatePoller_FirstAvailableSlot_PolledWithoutDeclaredBound(t *testing
 func TestSvmStatePoller_FirstAvailableSlot_ZeroIsKnown(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
+
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
 	up.script("getMaxShredInsertSlot", []byte(`1002`))
@@ -409,7 +425,7 @@ func TestSvmStatePoller_FirstAvailableSlot_ZeroIsKnown(t *testing.T) {
 func TestSvmStatePoller_FirstAvailableSlot_EmptyLeavesUnknown(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
+
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
 	up.script("getMaxShredInsertSlot", []byte(`1002`))
@@ -452,7 +468,7 @@ func TestSvmStatePoller_FirstAvailableSlot_KnownFromCounterPropagation(t *testin
 func TestSvmStatePoller_FirstAvailableSlot_KnownWithoutLocalFetch(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
+
 	up.script("getSlot:processed", []byte(`300000`))
 	up.script("getSlot:finalized", []byte(`299900`))
 	up.script("getMaxShredInsertSlot", []byte(`300001`))
@@ -481,7 +497,7 @@ func TestSvmStatePoller_FirstAvailableSlot_KnownWithoutLocalFetch(t *testing.T) 
 func TestSvmStatePoller_FirstAvailableSlot_PropagatedZeroBecomesKnownOnTick(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
+
 	up.script("getSlot:processed", []byte(`300000`))
 	up.script("getSlot:finalized", []byte(`299900`))
 	up.script("getMaxShredInsertSlot", []byte(`300001`))
@@ -514,7 +530,7 @@ func TestSvmStatePoller_FirstAvailableSlot_PropagatedZeroBecomesKnownOnTick(t *t
 // and ToFloat64 would flake the equality check.
 func TestSvmStatePoller_FirstAvailableSlot_GaugeSetWithoutLocalFetch(t *testing.T) {
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
+
 	up.script("getSlot:processed", []byte(`300000`))
 	up.script("getSlot:finalized", []byte(`299900`))
 	up.script("getMaxShredInsertSlot", []byte(`300001`))
@@ -537,7 +553,7 @@ func TestSvmStatePoller_FirstAvailableSlot_GaugeSetWithoutLocalFetch(t *testing.
 func TestSvmStatePoller_FirstAvailableSlot_AboveOwnLatestRejected(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
+
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
 	up.script("getMaxShredInsertSlot", []byte(`1002`))
@@ -572,7 +588,7 @@ func TestSvmStatePoller_FirstAvailableSlot_PolledLessOftenThanHealth(t *testing.
 		"default: frozen after first observation": {nil, 1},
 		"firstAvailableSlotPlus updateRate 1ns": {
 			withRate(&common.SvmAvailabilityBoundConfig{FirstAvailableSlotPlus: &plus, UpdateRate: common.Duration(time.Nanosecond)}),
-			2 * healthPollEveryNTicks,
+			10,
 		},
 		"updateRate on a bound without the floor is ignored": {
 			withRate(&common.SvmAvailabilityBoundConfig{ExactSlot: &exact, UpdateRate: common.Duration(time.Nanosecond)}),
@@ -583,62 +599,244 @@ func TestSvmStatePoller_FirstAvailableSlot_PolledLessOftenThanHealth(t *testing.
 		t.Run(name, func(t *testing.T) {
 			up := newScriptedUpstream()
 			up.cfg = tc.cfg
-			up.script("getHealth", []byte(`"ok"`))
+
 			up.script("getSlot:processed", []byte(`1000`))
 			up.script("getSlot:finalized", []byte(`990`))
 			up.script("getMaxShredInsertSlot", []byte(`1002`))
 			up.script("oldestBlock", []byte(`[200]`))
 
 			p := newPollerWithUpstream(t, up)
-			const polls = 2 * healthPollEveryNTicks
+			const polls = 10
 			for range polls {
 				require.NoError(t, p.Poll(context.Background()))
 				time.Sleep(time.Millisecond)
 			}
 
-			require.Equal(t, polls/healthPollEveryNTicks, up.callCount("getHealth"),
-				"getHealth runs every Nth poll")
 			require.Equal(t, tc.wantFloor, up.callCount("oldestBlock"),
 				"the floor is debounced by its own staleness window, not by the poll gate")
 		})
 	}
 }
 
-func TestSvmStatePoller_Poll_HealthFailureFlipsHealthy(t *testing.T) {
+// A single failing probe is not a verdict: while any other probe answers, the
+// upstream is alive. getMaxShredInsertSlot erroring -32601 here stands in for
+// a vendor that does not implement it — an RPC error is an answer, so that
+// must never cordon.
+func TestSvmStatePoller_Poll_PartialProbeFailureStaysHealthy(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	// getHealth returns a JSON-RPC error — the poller should flip healthy=false
-	// without poisoning the slot readings.
-	up.scriptError("getHealth", -32000, "degraded")
+	up.scriptError("getMaxShredInsertSlot", -32601, "Method not found")
 	up.script("getSlot:processed", []byte(`2000`))
 	up.script("getSlot:finalized", []byte(`1990`))
-	up.script("getMaxShredInsertSlot", []byte(`2001`))
 
 	p := newPollerWithUpstream(t, up)
+	for range deadPollsBeforeUnhealthy + 1 {
+		require.NoError(t, p.Poll(context.Background()))
+	}
+
+	require.True(t, p.IsHealthy(), "a single dead probe must never flip the verdict while others answer")
+	require.Empty(t, up.cordons(), "a vendor missing one method must not be cordoned for it")
+	// Slot reads are unaffected by the failing probe — the poller reports each
+	// signal independently, not bail on first error.
+	require.EqualValues(t, 2000, p.LatestSlot())
+}
+
+// The liveness threshold: one all-failed poll (a vendor 429 against the poller
+// is the common case) must NOT flip the verdict; two consecutive ones must
+// cordon the upstream out of rotation.
+func TestSvmStatePoller_Liveness_DeadAfterTwoAllFailedPolls(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	// Nothing scripted: every probe errors with no response object.
+	p := newPollerWithUpstream(t, up)
+
+	require.NoError(t, p.Poll(context.Background()))
+	require.True(t, p.IsHealthy(), "one all-failed poll is not a verdict")
+	require.Empty(t, up.cordons())
+
+	require.NoError(t, p.Poll(context.Background()))
+	require.False(t, p.IsHealthy(), "two consecutive all-failed polls must flip the verdict")
+	cordons := up.cordons()
+	require.Len(t, cordons, 1, "a dead upstream must be cordoned out of rotation")
+	require.Equal(t, "*", cordons[0].method)
+	require.Contains(t, cordons[0].reason, "not answering state probes")
+}
+
+// Recovery is detected on the first answering probe, and the uncordon lifts
+// only the poller's own cordon (edge-triggered).
+func TestSvmStatePoller_Liveness_RecoversOnFirstAnswer(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	p := newPollerWithUpstream(t, up)
+
+	require.NoError(t, p.Poll(context.Background()))
+	require.NoError(t, p.Poll(context.Background()))
+	require.False(t, p.IsHealthy())
+	require.Len(t, up.cordons(), 1)
+
+	scriptAllProbes(up)
+	require.NoError(t, p.Poll(context.Background()))
+	require.True(t, p.IsHealthy(), "the first answering poll must clear the verdict")
+	require.Len(t, up.uncordons(), 1, "recovery must lift the poller's own cordon")
+}
+
+// An RPC error is still an ANSWER — the endpoint is alive, whatever the node
+// thinks of the method. Only transport silence reads as dead.
+func TestSvmStatePoller_Liveness_RpcErrorAnswersCountAsAlive(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	up.scriptError("getSlot:processed", -32005, "Node is behind by 42 slots")
+	up.scriptError("getSlot:finalized", -32005, "Node is behind by 42 slots")
+	up.scriptError("getMaxShredInsertSlot", -32601, "Method not found")
+	p := newPollerWithUpstream(t, up)
+
+	for range deadPollsBeforeUnhealthy + 1 {
+		require.NoError(t, p.Poll(context.Background()))
+	}
+	require.True(t, p.IsHealthy(), "RPC errors are answers; only silence is dead")
+	require.Empty(t, up.cordons())
+}
+
+// Errors raised LOCALLY before dispatch (circuit breaker open, the upstream's
+// own rate-limit budget) never reached the endpoint: they are evidence of
+// nothing, so they must move the counter neither way — neither proving life
+// nor counting as death.
+func TestSvmStatePoller_Liveness_LocalRejectionsAreNoSignal(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	cbErr := common.NewErrFailsafeCircuitBreakerOpen(common.ScopeUpstream, nil, nil)
+	rlErr := common.NewErrUpstreamRateLimitRuleExceeded("up", "budget", "rule")
+
+	// Healthy upstream with all probes rejected locally: the healthy verdict
+	// must NOT flip (no evidence of death), but the counter must not reset
+	// either — verified by driving it to the edge first.
+	up.scriptClassifiedError("getSlot:processed", cbErr)
+	up.scriptClassifiedError("getSlot:finalized", rlErr)
+	up.scriptClassifiedError("getMaxShredInsertSlot", cbErr)
+	p := newPollerWithUpstream(t, up)
+
+	for range deadPollsBeforeUnhealthy + 2 {
+		require.NoError(t, p.Poll(context.Background()))
+	}
+	require.True(t, p.IsHealthy(), "local rejections are not evidence of death")
+	require.Zero(t, p.consecutiveDeadPolls, "local rejections must not advance the dead counter")
+	require.Empty(t, up.cordons())
+
+	// From the unhealthy side: drive to a dead verdict, then switch to local
+	// rejections — the counter must HOLD (not reset), so the next answering
+	// poll is what recovers, not the no-signal stretch.
+	up2 := newScriptedUpstream() // unscripted = transport silence
+	p2 := newPollerWithUpstream(t, up2)
+	require.NoError(t, p2.Poll(context.Background()))
+	require.NoError(t, p2.Poll(context.Background()))
+	require.False(t, p2.IsHealthy())
+	dead := p2.consecutiveDeadPolls
+	up2.scriptClassifiedError("getSlot:processed", cbErr)
+	up2.scriptClassifiedError("getSlot:finalized", cbErr)
+	up2.scriptClassifiedError("getMaxShredInsertSlot", rlErr)
+	require.NoError(t, p2.Poll(context.Background()))
+	require.Equal(t, dead, p2.consecutiveDeadPolls, "no-signal must not reset the counter")
+	require.False(t, p2.IsHealthy(), "the last verdict stands through a no-signal stretch")
+}
+
+// Alpenglow mode: the processed probe is skipped entirely, and the finalized
+// sample double-feeds the latest view — correct within ~1 slot on a
+// fast-finality chain, and one fewer upstream call per poll.
+func TestSvmStatePoller_SkipProcessedSlotProbe_SkipsAndDoubleFeeds(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	up.script("getSlot:processed", []byte(`1024`)) // must NOT be called
+	up.script("getSlot:finalized", []byte(`990`))
+	up.script("getMaxShredInsertSlot", []byte(`998`))
+	p := newPollerWithUpstream(t, up)
+	p.SetSkipProcessedSlotProbe(true)
+
 	require.NoError(t, p.Poll(context.Background()))
 
-	if p.IsHealthy() {
-		t.Error("IsHealthy should flip to false when getHealth returns a JSON-RPC error")
+	require.Zero(t, up.callCount("getSlot:processed"), "skipProcessedSlotProbe=true must skip the processed probe")
+	require.Equal(t, 1, up.callCount("getSlot:finalized"))
+	require.Equal(t, 1, up.callCount("getMaxShredInsertSlot"))
+	require.EqualValues(t, 990, p.LatestSlot(), "finalized sample must double-feed the latest view")
+	require.EqualValues(t, 990, p.FinalizedSlot())
+	require.EqualValues(t, 8, p.MaxShredInsertSlotLag(), "lag = shred 998 - latest 990")
+	require.True(t, p.IsHealthy())
+}
+
+// Default remains full polling: with no setter call the processed probe runs
+// (the atomic zero value must never read as "skip").
+func TestSvmStatePoller_SkipProcessedSlotProbe_DefaultOffPollsProcessed(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	scriptAllProbes(up)
+	p := newPollerWithUpstream(t, up)
+
+	require.NoError(t, p.Poll(context.Background()))
+	require.Equal(t, 1, up.callCount("getSlot:processed"), "default must poll the processed view")
+	require.EqualValues(t, 1000, p.LatestSlot())
+}
+
+// Liveness derivation is unaffected by the skipped probe: the remaining two
+// probes still carry the verdict, and silence on both cordons after
+// deadPollsBeforeUnhealthy polls.
+func TestSvmStatePoller_SkipProcessedSlotProbe_LivenessFromRemainingProbes(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	p := newPollerWithUpstream(t, up)
+	p.SetSkipProcessedSlotProbe(true)
+
+	require.NoError(t, p.Poll(context.Background()))
+	require.True(t, p.IsHealthy(), "one all-failed poll is not a verdict")
+	require.NoError(t, p.Poll(context.Background()))
+	require.False(t, p.IsHealthy(), "two consecutive all-failed polls must cordon")
+	require.Len(t, up.cordons(), 1)
+}
+
+// A skipped processed probe must not invent a dead signal: when the remaining
+// probes are local rejections (no-signal), the counter and verdict hold —
+// the zero-value probeDead must not poison anyDead.
+func TestSvmStatePoller_SkipProcessedSlotProbe_NoSignalDoesNotCordon(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	cbErr := common.NewErrFailsafeCircuitBreakerOpen(common.ScopeUpstream, nil, nil)
+	up.scriptClassifiedError("getSlot:finalized", cbErr)
+	up.scriptClassifiedError("getMaxShredInsertSlot", cbErr)
+	p := newPollerWithUpstream(t, up)
+	p.SetSkipProcessedSlotProbe(true)
+
+	for range deadPollsBeforeUnhealthy + 2 {
+		require.NoError(t, p.Poll(context.Background()))
 	}
-	// The verdict must reach routing, else it changes nothing.
-	cordons := up.cordons()
-	require.Len(t, cordons, 1, "a failing getHealth must cordon the upstream out of rotation")
-	require.Equal(t, "*", cordons[0].method)
-	require.Contains(t, cordons[0].reason, "getHealth")
-	// Slot reads should still succeed even when health fails — the poller must
-	// report each signal independently, not bail on first error.
-	if p.LatestSlot() != 2000 {
-		t.Errorf("slot tracking should be unaffected by health failure; got %d", p.LatestSlot())
-	}
+	require.True(t, p.IsHealthy(), "skipped probe + no-signal remaining must not cordon")
+	require.Zero(t, p.consecutiveDeadPolls)
+	require.Empty(t, up.cordons())
+	require.Zero(t, up.callCount("getSlot:processed"))
+}
+
+// Bare context.DeadlineExceeded (retry backoff slept past the poll ctx) is
+// transport silence, not an answer — otherwise a dead upstream with retries
+// never cordons.
+func TestSvmStatePoller_Liveness_BareDeadlineIsDead(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	up.scriptClassifiedError("getSlot:processed", context.DeadlineExceeded)
+	up.scriptClassifiedError("getSlot:finalized", context.DeadlineExceeded)
+	up.scriptClassifiedError("getMaxShredInsertSlot", context.DeadlineExceeded)
+	p := newPollerWithUpstream(t, up)
+
+	require.NoError(t, p.Poll(context.Background()))
+	require.True(t, p.IsHealthy(), "one all-deadline poll is not a verdict")
+	require.NoError(t, p.Poll(context.Background()))
+	require.False(t, p.IsHealthy(), "two consecutive bare-deadline polls must cordon")
+	require.Len(t, up.cordons(), 1)
 }
 
 func TestSvmStatePoller_Poll_ExcessiveShredLagFlipsHealthy(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
+
 	// Processed = 10000 while the shred watermark has reached 10500 → ingestion
 	// lag 500 > threshold 100. This is the silent-stale signature: shreds keep
-	// arriving while replay is stalled, and getHealth still answers "ok".
+	// arriving while replay is stalled, and the state probes still answer "ok".
 	up.script("getSlot:processed", []byte(`10000`))
 	up.script("getSlot:finalized", []byte(`9990`))
 	up.script("getMaxShredInsertSlot", []byte(`10500`))
@@ -662,7 +860,7 @@ func TestSvmStatePoller_Poll_ExcessiveShredLagFlipsHealthy(t *testing.T) {
 func TestSvmStatePoller_Poll_DebouncesWithinInterval(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
+
 	up.script("getSlot:processed", []byte(`100`))
 	up.script("getSlot:finalized", []byte(`99`))
 	up.script("getMaxShredInsertSlot", []byte(`100`))
@@ -678,10 +876,9 @@ func TestSvmStatePoller_Poll_DebouncesWithinInterval(t *testing.T) {
 	}
 }
 
-// scriptAllFour registers healthy canned responses for every poller request so
-// the traffic-gate tests can focus on WHICH calls fire, not what they return.
-func scriptAllFour(up *scriptedUpstream) {
-	up.script("getHealth", []byte(`"ok"`))
+// scriptAllProbes registers healthy canned responses for every poller request
+// so the traffic-gate tests can focus on WHICH calls fire, not what they return.
+func scriptAllProbes(up *scriptedUpstream) {
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
 	up.script("getMaxShredInsertSlot", []byte(`998`))
@@ -689,18 +886,18 @@ func scriptAllFour(up *scriptedUpstream) {
 
 // TestSvmStatePoller_Poll_TrafficGate_ClosedWithoutSuggestions: enabling the
 // debounce gate alone must not suppress anything — without external freshness
-// evidence Poll still fans out all four calls.
+// evidence Poll still fans out all three calls.
 func TestSvmStatePoller_Poll_TrafficGate_ClosedWithoutSuggestions(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	scriptAllFour(up)
+	scriptAllProbes(up)
 	p := newPollerWithUpstream(t, up)
 	p.SetDebounceInterval(200 * time.Millisecond)
 
 	// First Poll is never debounce-blocked (no prior poll recorded).
 	require.NoError(t, p.Poll(context.Background()))
 
-	for _, key := range []string{"getHealth", "getSlot:processed", "getSlot:finalized", "getMaxShredInsertSlot"} {
+	for _, key := range []string{"getSlot:processed", "getSlot:finalized", "getMaxShredInsertSlot"} {
 		if got := up.callCount(key); got != 1 {
 			t.Errorf("%s called %d times, want 1 (gate must stay closed without suggestions)", key, got)
 		}
@@ -709,13 +906,12 @@ func TestSvmStatePoller_Poll_TrafficGate_ClosedWithoutSuggestions(t *testing.T) 
 
 // TestSvmStatePoller_Poll_TrafficGate_SkipsGetSlotWhenBothViewsFresh: when live
 // traffic refreshed BOTH slot views within the debounce window, Poll skips the
-// two getSlot calls but still issues getHealth and getMaxShredInsertSlot
-// (traffic carries neither signal), and the slot surface keeps serving the
-// traffic-fed values.
+// two getSlot calls but still issues getMaxShredInsertSlot (traffic carries no
+// such signal), and the slot surface keeps serving the traffic-fed values.
 func TestSvmStatePoller_Poll_TrafficGate_SkipsGetSlotWhenBothViewsFresh(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	scriptAllFour(up)
+	scriptAllProbes(up)
 	p := newPollerWithUpstream(t, up)
 	p.SetDebounceInterval(200 * time.Millisecond)
 
@@ -731,9 +927,6 @@ func TestSvmStatePoller_Poll_TrafficGate_SkipsGetSlotWhenBothViewsFresh(t *testi
 	if got := up.callCount("getSlot:finalized"); got != 0 {
 		t.Errorf("getSlot(finalized) called %d times, want 0 (gated by fresh traffic)", got)
 	}
-	if got := up.callCount("getHealth"); got != 1 {
-		t.Errorf("getHealth called %d times, want 1 (must run on gated ticks)", got)
-	}
 	if got := up.callCount("getMaxShredInsertSlot"); got != 1 {
 		t.Errorf("getMaxShredInsertSlot called %d times, want 1 (must run on gated ticks)", got)
 	}
@@ -745,7 +938,7 @@ func TestSvmStatePoller_Poll_TrafficGate_SkipsGetSlotWhenBothViewsFresh(t *testi
 
 // TestSvmStatePoller_Poll_TrafficGate_PartialFreshnessStillPollsSlots: one
 // fresh view is not freshness — the gate requires BOTH latest and finalized
-// observations within the window, else Poll fans out all four calls.
+// observations within the window, else Poll fans out all three calls.
 func TestSvmStatePoller_Poll_TrafficGate_PartialFreshnessStillPollsSlots(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -760,14 +953,14 @@ func TestSvmStatePoller_Poll_TrafficGate_PartialFreshnessStillPollsSlots(t *test
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			up := newScriptedUpstream()
-			scriptAllFour(up)
+			scriptAllProbes(up)
 			p := newPollerWithUpstream(t, up)
 			p.SetDebounceInterval(200 * time.Millisecond)
 
 			tc.suggest(p)
 			require.NoError(t, p.Poll(context.Background()))
 
-			for _, key := range []string{"getHealth", "getSlot:processed", "getSlot:finalized", "getMaxShredInsertSlot"} {
+			for _, key := range []string{"getSlot:processed", "getSlot:finalized", "getMaxShredInsertSlot"} {
 				if got := up.callCount(key); got != 1 {
 					t.Errorf("%s called %d times, want 1 (one fresh view must not gate)", key, got)
 				}
@@ -783,7 +976,7 @@ func TestSvmStatePoller_Poll_TrafficGate_PartialFreshnessStillPollsSlots(t *test
 func TestSvmStatePoller_Poll_TrafficGate_SkipCapForcesFullPoll(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	scriptAllFour(up)
+	scriptAllProbes(up)
 	p := newPollerWithUpstream(t, up)
 
 	// Wide enough that a loaded -race run cannot age the stamps made right
@@ -807,12 +1000,11 @@ func TestSvmStatePoller_Poll_TrafficGate_SkipCapForcesFullPoll(t *testing.T) {
 		p.SuggestFinalizedSlot(int64(1990 + i))
 		require.NoError(t, p.Poll(context.Background()))
 
-		// Guard against a vacuous pass: pollCount increments on every poll that
-		// ran, so a debounce-dropped iteration is caught here, not mistaken for
-		// a gated one. (getHealth no longer works as this witness — it is
-		// throttled to every healthPollEveryNTicks-th poll.)
-		if got := p.pollCount; got != i+1 {
-			t.Fatalf("poll %d did not run: pollCount=%d, want %d", i+1, got, i+1)
+		// Guard against a vacuous pass: getMaxShredInsertSlot runs on every poll
+		// that runs, so a debounce-dropped iteration is caught here, not
+		// mistaken for a gated one.
+		if got := up.callCount("getMaxShredInsertSlot"); got != i+1 {
+			t.Fatalf("poll %d did not run: getMaxShredInsertSlot=%d, want %d", i+1, got, i+1)
 		}
 		if got := up.callCount("getSlot:processed"); got != want {
 			t.Fatalf("after poll %d: getSlot(processed)=%d, want %d", i+1, got, want)
@@ -829,7 +1021,7 @@ func TestSvmStatePoller_Poll_TrafficGate_SkipCapForcesFullPoll(t *testing.T) {
 func TestSvmStatePoller_Poll_TrafficGate_SelfSuggestionsDoNotOpenGate(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	scriptAllFour(up)
+	scriptAllProbes(up)
 	p := newPollerWithUpstream(t, up)
 
 	const debounce = 100 * time.Millisecond
@@ -839,8 +1031,8 @@ func TestSvmStatePoller_Poll_TrafficGate_SelfSuggestionsDoNotOpenGate(t *testing
 	time.Sleep(debounce + 40*time.Millisecond)       // clear the whole-poll debounce
 	require.NoError(t, p.Poll(context.Background()))
 
-	if got := p.pollCount; got != 2 {
-		t.Fatalf("second poll did not run: pollCount=%d, want 2", got)
+	if got := up.callCount("getMaxShredInsertSlot"); got != 2 {
+		t.Fatalf("second poll did not run: getMaxShredInsertSlot=%d, want 2", got)
 	}
 	if got := up.callCount("getSlot:processed"); got != 2 {
 		t.Errorf("getSlot(processed)=%d, want 2 (self-observed slots must not gate)", got)
@@ -1015,7 +1207,7 @@ func TestSvmStatePoller_IsObjectNull_NilReceiver(t *testing.T) {
 func TestSvmStatePoller_Poll_ShredWatermarkBehindProcessedClampsToZero(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
+
 	up.script("getSlot:processed", []byte(`10000`))
 	up.script("getSlot:finalized", []byte(`9990`))
 	up.script("getMaxShredInsertSlot", []byte(`9000`)) // 1000 slots BEHIND processed
@@ -1035,83 +1227,35 @@ func TestSvmStatePoller_Poll_ShredWatermarkBehindProcessedClampsToZero(t *testin
 // erpc_upstream_cordoned gauge series and resetting the cordon-duration
 // observation each time), and a level-triggered uncordon would keep clearing an
 // operator's manual cordon.
-// TestSvmStatePoller_HealthThrottled_SlotSignalsStayHot pins the asymmetry that
-// cuts vendor quota without blunting any live bound: ONLY getHealth is
-// throttled (its value is a near-static boolean feeding the cordon edge). All
-// three slot signals must run on EVERY poll because their values move at chain
-// rate and each is a bound — getSlot(finalized) for the getBlock guard,
+// TestSvmStatePoller_Poll_AllProbesRunEveryPoll pins the hot cadence: every
+// state probe runs on EVERY poll because its value moves at chain rate and
+// each is a live bound — getSlot(finalized) for the getBlock guard,
 // getSlot(processed) for non-finalized routing, and getMaxShredInsertSlot for
 // every commitment level, whose tipStalenessMargin assumes the snapshot is at
 // most one debounce old.
-func TestSvmStatePoller_HealthThrottled_SlotSignalsStayHot(t *testing.T) {
+func TestSvmStatePoller_Poll_AllProbesRunEveryPoll(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	scriptAllFour(up)
+	scriptAllProbes(up)
 	p := newPollerWithUpstream(t, up)
 	// Debounce left at 0: no whole-poll gate and no traffic gate, so every Poll
-	// runs its full body and the only throttling in play is the tick counter.
+	// runs its full body.
 
-	const polls = 2 * healthPollEveryNTicks
+	const polls = 10
 	for range polls {
 		require.NoError(t, p.Poll(context.Background()))
 	}
 
-	// Hot: every live bound must be resampled on each poll.
 	require.Equal(t, polls, up.callCount("getSlot:processed"), "getSlot(processed) must run every poll")
 	require.Equal(t, polls, up.callCount("getSlot:finalized"), "getSlot(finalized) must run every poll")
 	require.Equal(t, polls, up.callCount("getMaxShredInsertSlot"),
 		"getMaxShredInsertSlot moves at chain rate and bounds non-finalized requests — it must NOT be throttled")
-
-	// Throttled: sampled on polls with pollCount 0 and N — twice across 2N polls.
-	wantHealth := polls / healthPollEveryNTicks
-	require.Equal(t, wantHealth, up.callCount("getHealth"), "getHealth must be throttled")
-
-	// Cold start must still sample health on the very first poll — routing must
-	// never act on a zero-valued verdict.
-	require.Positive(t, wantHealth)
-}
-
-// TestSvmStatePoller_HealthThrottled_FailedProbeRetriesNextPoll is the guard on
-// the throttle's blast radius. An unhealthy verdict CORDONS the upstream out of
-// rotation, so a single transient probe error — a vendor 429 against the poller
-// is the common one — must not keep it out for the whole throttle window. The
-// throttle applies to healthy probes only; a failure re-probes on the next poll.
-func TestSvmStatePoller_HealthThrottled_FailedProbeRetriesNextPoll(t *testing.T) {
-	t.Parallel()
-	up := newScriptedUpstream()
-	scriptAllFour(up)
-	up.scriptError("getHealth", -32000, "degraded")
-	p := newPollerWithUpstream(t, up)
-
-	// Poll 1 probes (cold start) and gets the failure.
-	require.NoError(t, p.Poll(context.Background()))
-	require.Equal(t, 1, up.callCount("getHealth"))
-	require.False(t, p.IsHealthy(), "a failed probe must flip the verdict")
-	require.Len(t, up.cordons(), 1, "the failed verdict must reach routing")
-
-	// Recovery: the very next poll must re-probe rather than wait out the
-	// window, so the upstream is back in rotation after one debounce.
-	up.script("getHealth", []byte(`"ok"`))
-	require.NoError(t, p.Poll(context.Background()))
-	require.Equal(t, 2, up.callCount("getHealth"),
-		"the poll after a failed probe must re-probe, not skip to poll N")
-	require.True(t, p.IsHealthy(), "the re-probe must clear the verdict")
-	require.Len(t, up.uncordons(), 1, "recovery must lift the poller's own cordon")
-
-	// Back to the throttled cadence now that the verdict is healthy again.
-	for range healthPollEveryNTicks - 1 {
-		require.NoError(t, p.Poll(context.Background()))
-	}
-	require.Equal(t, 2, up.callCount("getHealth"),
-		"a healthy verdict must ride out the throttle window")
-	require.NoError(t, p.Poll(context.Background()))
-	require.Equal(t, 3, up.callCount("getHealth"), "the Nth poll after a probe must sample again")
 }
 
 func TestSvmStatePoller_HealthToRouting_EdgeTriggered(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
+
 	up.script("getSlot:processed", []byte(`10000`))
 	up.script("getSlot:finalized", []byte(`9990`))
 	up.script("getMaxShredInsertSlot", []byte(`10500`)) // lag 500 > threshold
@@ -1148,7 +1292,7 @@ func TestSvmStatePoller_HealthToRouting_EdgeTriggered(t *testing.T) {
 func TestSvmStatePoller_ColdPoller_DoesNotCordon(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
+
 	up.script("getSlot:processed", []byte(`5000`))
 	up.script("getSlot:finalized", []byte(`4990`))
 	// getMaxShredInsertSlot deliberately unscripted: the upstream errors on it,
@@ -1218,7 +1362,7 @@ func TestSvmStatePoller_AppCtxCancellation_DrainsEveryLoop(t *testing.T) {
 	defer cancel()
 
 	responsive := newScriptedUpstream()
-	scriptAllFour(responsive)
+	scriptAllProbes(responsive)
 	stuck := newBlockingUpstream()
 
 	pollers := []*SvmStatePoller{
@@ -1289,7 +1433,7 @@ func TestSvmStatePoller_ConcurrentSuggestionsDuringPoll_StaySlotMonotonic(t *tes
 	t.Logf("deterministic seed: %#x (rerun reproduces the exact suggestion order)", seed)
 
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
+
 	up.script("getSlot:processed", fmt.Appendf(nil, `%d`, polledProcessed))
 	up.script("getSlot:finalized", fmt.Appendf(nil, `%d`, polledFinalized))
 	up.script("getMaxShredInsertSlot", fmt.Appendf(nil, `%d`, polledProcessed))
@@ -1412,7 +1556,7 @@ func TestSvmStatePoller_ConcurrentBootstrap_StartsExactlyOneLoop(t *testing.T) {
 	defer cancel()
 
 	up := newScriptedUpstream()
-	scriptAllFour(up)
+	scriptAllProbes(up)
 	p := newPollerOnCtx(t, appCtx, up)
 
 	const racers = 16

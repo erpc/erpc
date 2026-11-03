@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/failsafe"
@@ -119,6 +120,53 @@ func TestUpstreamState_CircuitBreakerState_ReflectsCatchAllBreaker(t *testing.T)
 	assert.Equal(t, failsafe.StateClosed, u.CircuitBreakerState())
 	u.failsafeExecutors[0].Breaker().Record(failsafe.OutcomeFailure)
 	assert.Equal(t, failsafe.StateOpen, u.CircuitBreakerState())
+}
+
+// mockSvmStatePollerWiring records what SetNetworkConfig pushes into the
+// poller, so the default-false / opt-in-true of svm.skipProcessedSlotProbe
+// is pinned at the wiring layer rather than only in poller unit tests.
+type mockSvmStatePollerWiring struct {
+	skipProcessed bool
+	setSkipCalls  int
+}
+
+func (m *mockSvmStatePollerWiring) Bootstrap(ctx context.Context) error { return nil }
+func (m *mockSvmStatePollerWiring) IsObjectNull() bool                  { return false }
+func (m *mockSvmStatePollerWiring) SetDebounceInterval(time.Duration)   {}
+func (m *mockSvmStatePollerWiring) SetSkipProcessedSlotProbe(v bool) {
+	m.skipProcessed = v
+	m.setSkipCalls++
+}
+func (m *mockSvmStatePollerWiring) Poll(ctx context.Context) error    { return nil }
+func (m *mockSvmStatePollerWiring) LatestSlot() int64                 { return 0 }
+func (m *mockSvmStatePollerWiring) FinalizedSlot() int64              { return 0 }
+func (m *mockSvmStatePollerWiring) ShredInsertSlot() int64            { return 0 }
+func (m *mockSvmStatePollerWiring) MaxShredInsertSlotLag() int64      { return 0 }
+func (m *mockSvmStatePollerWiring) IsHealthy() bool                   { return true }
+func (m *mockSvmStatePollerWiring) FirstAvailableSlot() (int64, bool) { return 0, false }
+func (m *mockSvmStatePollerWiring) SuggestLatestSlot(int64)           {}
+func (m *mockSvmStatePollerWiring) SuggestFinalizedSlot(int64)        {}
+
+func TestUpstreamState_SetNetworkConfig_WiresSvmSkipProcessedSlotProbe(t *testing.T) {
+	cases := map[string]struct {
+		cfg  bool
+		want bool
+	}{
+		"false polls the processed view (default)": {false, false},
+		"true skips the probe":                     {true, true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			m := &mockSvmStatePollerWiring{}
+			u := &Upstream{svmStatePoller: m}
+			u.SetNetworkConfig(&common.NetworkConfig{
+				Architecture: common.ArchitectureSvm,
+				Svm:          &common.SvmNetworkConfig{Chain: "solana", Cluster: "mainnet-beta", SkipProcessedSlotProbe: tc.cfg},
+			})
+			assert.Equal(t, 1, m.setSkipCalls, "the setter must be wired exactly once per SetNetworkConfig")
+			assert.Equal(t, tc.want, m.skipProcessed)
+		})
+	}
 }
 
 func TestUpstreamState_SetNetworkConfig(t *testing.T) {

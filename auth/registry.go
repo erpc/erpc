@@ -147,8 +147,34 @@ func unauthorized(errs []error) error {
 		return common.NewErrAuthUnauthorized("n/a", "unauthorized", "no auth strategy matched make sure correct headers or query strings are provided")
 	}
 
-	// If no strategy matched or succeeded, consider the request unauthorized
-	return common.NewErrAuthUnauthorized("n/a", "unauthorized", errors.Join(errs...).Error())
+	// Preserve strategy/reason when every attempt agrees. Prefer
+	// token_expired when any attempt reports it: multiple JWT verifiers
+	// often yield token_expired on the matching key and invalid_signature
+	// on the others; expiry is the client-facing cause. Other divergent
+	// labels stay n/a/unauthorized; the joined message still lists each.
+	strategy, reason := agreedAuthFailureLabels(errs)
+	return common.NewErrAuthUnauthorized(strategy, reason, errors.Join(errs...).Error())
+}
+
+// agreedAuthFailureLabels picks labels for a multi-strategy denial.
+func agreedAuthFailureLabels(errs []error) (strategy, reason string) {
+	if len(errs) == 0 {
+		return "n/a", "unauthorized"
+	}
+	for _, err := range errs {
+		s, r := authFailureLabels(err)
+		if r == string(common.AuthUnauthorizedReasonTokenExpired) {
+			return s, r
+		}
+	}
+	strategy, reason = authFailureLabels(errs[0])
+	for _, err := range errs[1:] {
+		s, r := authFailureLabels(err)
+		if s != strategy || r != reason {
+			return "n/a", "unauthorized"
+		}
+	}
+	return strategy, reason
 }
 
 // FindDatabaseConnector finds a database connector by ID from the strategies

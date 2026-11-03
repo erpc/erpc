@@ -941,8 +941,8 @@ SVM upstream gets its own slot/health poller automatically:
     fetch failure fail the upstream — eRPC refuses to register one it could not verify.
     `checkGenesisHash` only affects *unknown* `(chain, cluster)` pairs.
 24. **SVM upstreams are cordoned by their own state poller.** Beyond manual and
-    breaker-driven cordons, a failing `getHealth` or a shred-insert lag above 100 slots
-    removes an SVM upstream from selection until it recovers. See
+    breaker-driven cordons, two consecutive all-silent state polls or a shred-insert
+    lag above 100 slots removes an SVM upstream from selection until it recovers. See
     [SVM slot tracking & health](/reference/svm/slot-tracking).
 
 25. **SVM never gates on a vendor-reported floor by default.** An upstream's

@@ -86,7 +86,7 @@ clears **every** cordon class on `"*"` (operator, punishment, and availability).
 That is the operator recovery path for any wildcard cordon. Availability cordons
 also clear automatically when their owner recovers: the EVM state poller lifts
 its own bit after a later major-move `eth_chainId` verify matches again, and
-the SVM state poller lifts when `getHealth` / shred-insert lag recover.
+the SVM state poller lifts when state probes answer again and shred-insert lag recovers.
 Method-scoped `Uncordon` still clears only the requested class bit (feature §4.5).
 Uncordoning a method never lifts a wildcard cordon.
 
