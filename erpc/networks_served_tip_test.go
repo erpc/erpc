@@ -440,7 +440,9 @@ func TestServedTip_ExcludedUpstreamDropsOutOfTip(t *testing.T) {
 // upstream and it lags (90); u1/u2 (99/100) don't support trace_block. Without
 // the guarantee the served tip is the dominant cluster min (99, u3 an outlier);
 // with the guarantee it must drop to 90 so a trace_block("latest") request hits
-// a block u3 actually has.
+// a block u3 actually has. Without any guarantee, a request's own method
+// decides who votes on its tip: an upstream that does not serve it never raises
+// the block the request is pinned to.
 func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -465,6 +467,29 @@ func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 	})
 	assert.Equal(t, int64(90), nwB.EvmHighestLatestBlockNumber(ctx),
 		"trace_block supported only by u3 (90) clamps served down to 90")
+
+	for _, host := range []string{"call-1", "call-2"} {
+		gock.New("http://" + host + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_call") }).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x01"}`))
+	}
+	nwC, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "call-1", chainID: 123, latestBlock: 100},
+		{id: "call-2", chainID: 123, latestBlock: 99},
+		{id: "no-call", chainID: 123, latestBlock: 105, ignoreMethods: []string{"eth_call"}},
+	})
+	assert.Equal(t, int64(100), nwC.EvmHighestLatestBlockNumber(ctx), "no request: all three vote")
+	call := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"},"latest"]}`))
+	call.SetNetwork(nwC)
+	_, err := nwC.Forward(ctx, call)
+	require.NoError(t, err)
+	jrq, err := call.JsonRpcRequest()
+	require.NoError(t, err)
+	assert.Equal(t, "0x63", jrq.Params[1],
+		"eth_call latest pins to its voters' tip (99): no-call's 105 does not vote")
 }
 
 // TestServedTip_SelectorScoped pins the use-upstream selector affecting the
