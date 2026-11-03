@@ -784,6 +784,38 @@ func (s *scenario) judgeView(b *strings.Builder, vt *viewTap, vl *viewLog, r vie
 //
 
 const (
+	// p20RTT: every vendor answers after this, a distant vendor's round
+	// trip; p20Skew: how far one vendor's head leads or trails the
+	// others', under a round trip.
+	p20RTT  = 30 * time.Millisecond
+	p20Skew = 15 * time.Millisecond
+)
+
+// P20: P19's layout at one round trip of 30 ms, the selection policy
+// ranking vendor-a first; vendor-a serves each block p20Skew before the
+// others (ahead) or after them (behind). As P19: the new image's served
+// age and latency within P19's slacks of the old image's, at most 1.05
+// head fetches per new block, no more upstream requests.
+func p20(ahead bool) spec {
+	name, lagged := "P20-behind", func(key string) bool { return key == "http-a" }
+	if ahead {
+		name, lagged = "P20-ahead", func(key string) bool { return key != "http-a" }
+	}
+	var ups []freshUp
+	for _, u := range p19Ups {
+		u.slow, u.delay = p20RTT, 0
+		if lagged(u.key) {
+			u.delay = p20Skew
+		}
+		ups = append(ups, u)
+	}
+	sp := freshSpec(name, 1, ups, chainsim.Config{BlockTime: liveBlockTime, FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, liveCompare)
+	sp.cache = true
+	sp.network = map[string]interface{}{"selectionPolicy": rankFirst("http-a")}
+	return sp
+}
+
+const (
 	x10Run = 3 * time.Minute
 	// x10Sample: pod-1's sampler reads each latest about this often;
 	// x10PeerRate: pod-2's eth_blockNumber reads a second.

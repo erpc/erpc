@@ -135,6 +135,8 @@ func catalogue() []phaseSpec {
 		{"p19-r1", 13751, []spec{p19(1)}},
 		{"p19-r5", 13801, []spec{p19(5)}},
 		{"p19-r20", 13851, []spec{p19(20)}},
+		{"p20-ahead", 13901, []spec{p20(true)}},
+		{"p20-behind", 13951, []spec{p20(false)}},
 		{"x10", 14251, []spec{x10()}},
 		{"z1", 13001, []spec{z1()}},
 		{"z2", 13051, []spec{z2()}},
