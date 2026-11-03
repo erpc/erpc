@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -2532,149 +2533,151 @@ func TestConsensusPolicy(t *testing.T) {
 
 // TestConsensusGoroutineCancellationIntegration tests the consensus goroutine cancellation behavior with real network
 func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, 0)
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
-	// Create upstreams
-	upstreams := []*common.UpstreamConfig{
-		{
-			Id:       "upstream1",
-			Endpoint: "http://rpc1.localhost",
-			Type:     common.UpstreamTypeEvm,
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
+		// Create upstreams
+		upstreams := []*common.UpstreamConfig{
+			{
+				Id:       "upstream1",
+				Endpoint: "http://rpc1.localhost",
+				Type:     common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
 			},
-		},
-		{
-			Id:       "upstream2",
-			Endpoint: "http://rpc2.localhost",
-			Type:     common.UpstreamTypeEvm,
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
+			{
+				Id:       "upstream2",
+				Endpoint: "http://rpc2.localhost",
+				Type:     common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
 			},
-		},
-		{
-			Id:       "upstream3",
-			Endpoint: "http://rpc3.localhost",
-			Type:     common.UpstreamTypeEvm,
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
+			{
+				Id:       "upstream3",
+				Endpoint: "http://rpc3.localhost",
+				Type:     common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
 			},
-		},
-		{
-			Id:       "upstream4",
-			Endpoint: "http://rpc4.localhost",
-			Type:     common.UpstreamTypeEvm,
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
+			{
+				Id:       "upstream4",
+				Endpoint: "http://rpc4.localhost",
+				Type:     common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
 			},
-		},
-		{
-			Id:       "upstream5",
-			Endpoint: "http://rpc5.localhost",
-			Type:     common.UpstreamTypeEvm,
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
+			{
+				Id:       "upstream5",
+				Endpoint: "http://rpc5.localhost",
+				Type:     common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
 			},
-		},
-	}
+		}
 
-	// Mock responses - upstream2 and upstream3 return consensus result quickly
-	gock.New("http://rpc2.localhost").
-		Post("").
-		Filter(func(request *http.Request) bool {
-			body := util.SafeReadBody(request)
-			return strings.Contains(body, "eth_getBalance")
-		}).
-		Reply(200).
-		Delay(10 * time.Millisecond).
-		JSON(map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"result":  "0x1234567890",
-		})
-
-	gock.New("http://rpc3.localhost").
-		Post("").
-		Filter(func(request *http.Request) bool {
-			body := util.SafeReadBody(request)
-			return strings.Contains(body, "eth_getBalance")
-		}).
-		Reply(200).
-		Delay(10 * time.Millisecond).
-		JSON(map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"result":  "0x1234567890",
-		})
-
-	// Other upstreams are slow and should be cancelled
-	for _, host := range []string{"rpc1", "rpc4", "rpc5"} {
-		gock.New("http://" + host + ".localhost").
+		// Mock responses - upstream2 and upstream3 return consensus result quickly
+		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(2 * time.Second).
+			Delay(10 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
-				"result":  "0x9876543210",
+				"result":  "0x1234567890",
 			})
-	}
 
-	// Create network with consensus policy
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		gock.New("http://rpc3.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(10 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x1234567890",
+			})
 
-	ntw, _ := setupNetworkForConsensusTest(t, ctx, consensusTestCase{
-		upstreams: upstreams,
-		consensusConfig: &common.ConsensusPolicyConfig{
-			MaxParticipants:         5,
-			AgreementThreshold:      2, // Consensus with just 2 responses to trigger early short-circuit
-			DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
-			LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
-			PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
-		},
+		// Other upstreams are slow and should be cancelled
+		for _, host := range []string{"rpc1", "rpc4", "rpc5"} {
+			gock.New("http://" + host + ".localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Reply(200).
+				Delay(2 * time.Second).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x9876543210",
+				})
+		}
+
+		// Create network with consensus policy
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		ntw, _ := setupNetworkForConsensusTest(t, ctx, consensusTestCase{
+			upstreams: upstreams,
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:         5,
+				AgreementThreshold:      2, // Consensus with just 2 responses to trigger early short-circuit
+				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+				PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
+			},
+		})
+
+		// Make request
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
+
+		// Execute with timeout to catch deadlocks
+		done := make(chan struct{})
+		var resp *common.NormalizedResponse
+		var err error
+
+		go func() {
+			defer close(done)
+			resp, err = ntw.Forward(ctx, req)
+		}()
+
+		select {
+		case <-done:
+			// Test completed successfully
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+
+			// Verify consensus was achieved
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+
+			// The test is about goroutine cancellation, not which specific result is returned
+			// Accept either the fast response or slow response as long as consensus was achieved
+			result := jrr.GetResultString()
+			assert.True(t, result == `"0x1234567890"` || result == `"0x9876543210"`,
+				"Expected either fast or slow response, got %s", result)
+
+			t.Log("Test passed: Consensus achieved without deadlock")
+		case <-time.After(5 * time.Second):
+			t.Fatal("Test timed out - potential deadlock detected")
+		}
 	})
-
-	// Make request
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
-
-	// Execute with timeout to catch deadlocks
-	done := make(chan struct{})
-	var resp *common.NormalizedResponse
-	var err error
-
-	go func() {
-		defer close(done)
-		resp, err = ntw.Forward(ctx, req)
-	}()
-
-	select {
-	case <-done:
-		// Test completed successfully
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-
-		// Verify consensus was achieved
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-
-		// The test is about goroutine cancellation, not which specific result is returned
-		// Accept either the fast response or slow response as long as consensus was achieved
-		result := jrr.GetResultString()
-		assert.True(t, result == `"0x1234567890"` || result == `"0x9876543210"`,
-			"Expected either fast or slow response, got %s", result)
-
-		t.Log("Test passed: Consensus achieved without deadlock")
-	case <-time.After(5 * time.Second):
-		t.Fatal("Test timed out - potential deadlock detected")
-	}
 }
 
 // Helper functions for test setup

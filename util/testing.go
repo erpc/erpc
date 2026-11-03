@@ -2,12 +2,15 @@ package util
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,7 +39,15 @@ func ConfigureTestLogger() {
 	log.Logger = zerolog.New(zerolog.NewConsoleWriter(func(w *zerolog.ConsoleWriter) {
 		w.TimeFormat = "04:05.000ms"
 	})).With().Timestamp().Logger()
+	primeResolver()
 }
+
+// primeResolver resolves a name once. The net package creates its resolver
+// state on first use, and state created inside a synctest bubble cannot be
+// used outside it, so test packages create it at init time instead.
+var primeResolver = sync.OnceFunc(func() {
+	_, _ = net.DefaultResolver.LookupHost(context.Background(), "localhost")
+})
 
 const (
 	EvmBlockTrackerMocks = 28
@@ -357,8 +368,6 @@ func ResetGock() {
 
 	gock.OffAll()
 	gock.Clean()
-	gock.CleanUnmatchedRequest()
-	gock.Disable()
 
 	// Networking filters accumulate across tests unless cleared.
 	gock.DisableNetworkingFilters()
@@ -369,7 +378,12 @@ func ResetGock() {
 		return shouldMakeRealCall
 	})
 
+	// Keep intercepting, so requests from components that are still running
+	// fail instead of reaching the network.
+	gock.Intercept()
+
 	time.Sleep(100 * time.Millisecond)
+	gock.CleanUnmatchedRequest()
 }
 
 func SafeReadBody(request *http.Request) string {

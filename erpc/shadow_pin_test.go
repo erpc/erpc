@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -24,44 +25,56 @@ import (
 
 func TestPinBlockTagInBody(t *testing.T) {
 	t.Run("PinsLatestForEthCall", func(t *testing.T) {
-		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc","data":"0x1"},"latest"]}`)
-		out, changed := evm.PinBlockTagInBody(body, 1, 0x189cbe5)
-		assert.True(t, changed)
-		assert.Contains(t, string(out), `"0x189cbe5"`)
-		assert.NotContains(t, string(out), `"latest"`)
+		synctest.Test(t, func(t *testing.T) {
+			body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc","data":"0x1"},"latest"]}`)
+			out, changed := evm.PinBlockTagInBody(body, 1, 0x189cbe5)
+			assert.True(t, changed)
+			assert.Contains(t, string(out), `"0x189cbe5"`)
+			assert.NotContains(t, string(out), `"latest"`)
+		})
 	})
 
 	t.Run("PinsStorageSlotIndexTwo", func(t *testing.T) {
-		body := []byte(`{"jsonrpc":"2.0","id":7,"method":"eth_getStorageAt","params":["0xabc","0x0","latest"]}`)
-		out, changed := evm.PinBlockTagInBody(body, 2, 100)
-		assert.True(t, changed)
-		assert.Contains(t, string(out), `"0x64"`)
+		synctest.Test(t, func(t *testing.T) {
+			body := []byte(`{"jsonrpc":"2.0","id":7,"method":"eth_getStorageAt","params":["0xabc","0x0","latest"]}`)
+			out, changed := evm.PinBlockTagInBody(body, 2, 100)
+			assert.True(t, changed)
+			assert.Contains(t, string(out), `"0x64"`)
+		})
 	})
 
 	t.Run("ConcreteHeightUntouched", func(t *testing.T) {
-		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc"},"0x1234"]}`)
-		out, changed := evm.PinBlockTagInBody(body, 1, 100)
-		assert.False(t, changed)
-		assert.Equal(t, body, out)
+		synctest.Test(t, func(t *testing.T) {
+			body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc"},"0x1234"]}`)
+			out, changed := evm.PinBlockTagInBody(body, 1, 100)
+			assert.False(t, changed)
+			assert.Equal(t, body, out)
+		})
 	})
 
 	t.Run("PendingUntouched", func(t *testing.T) {
-		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc"},"pending"]}`)
-		_, changed := evm.PinBlockTagInBody(body, 1, 100)
-		assert.False(t, changed)
+		synctest.Test(t, func(t *testing.T) {
+			body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc"},"pending"]}`)
+			_, changed := evm.PinBlockTagInBody(body, 1, 100)
+			assert.False(t, changed)
+		})
 	})
 
 	t.Run("MissingParamUntouched", func(t *testing.T) {
-		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc"}]}`)
-		_, changed := evm.PinBlockTagInBody(body, 1, 100)
-		assert.False(t, changed)
+		synctest.Test(t, func(t *testing.T) {
+			body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc"}]}`)
+			_, changed := evm.PinBlockTagInBody(body, 1, 100)
+			assert.False(t, changed)
+		})
 	})
 
 	t.Run("GarbageUntouched", func(t *testing.T) {
-		body := []byte(`{not json`)
-		out, changed := evm.PinBlockTagInBody(body, 1, 100)
-		assert.False(t, changed)
-		assert.Equal(t, []byte(`{not json`), out)
+		synctest.Test(t, func(t *testing.T) {
+			body := []byte(`{not json`)
+			out, changed := evm.PinBlockTagInBody(body, 1, 100)
+			assert.False(t, changed)
+			assert.Equal(t, []byte(`{not json`), out)
+		})
 	})
 }
 
@@ -223,27 +236,33 @@ func TestNetwork_PinLatestTag(t *testing.T) {
 	}
 
 	t.Run("PinnedAtHeadIsSentHeadAndAnswers", func(t *testing.T) {
-		result, pinnedTags, vendorTags := run(t, head, `{"jsonrpc":"2.0","id":1,"result":"0x11"}`)
-		assert.Equal(t, `"0x11"`, result)
-		assert.Equal(t, []interface{}{headHex}, pinnedTags)
-		assert.Empty(t, vendorTags)
+		synctest.Test(t, func(t *testing.T) {
+			result, pinnedTags, vendorTags := run(t, head, `{"jsonrpc":"2.0","id":1,"result":"0x11"}`)
+			assert.Equal(t, `"0x11"`, result)
+			assert.Equal(t, []interface{}{headHex}, pinnedTags)
+			assert.Empty(t, vendorTags)
+		})
 	})
 
 	t.Run("PinnedBehindHeadIsSkipped", func(t *testing.T) {
-		result, pinnedTags, vendorTags := run(t, head-2, `{"jsonrpc":"2.0","id":1,"result":"0x11"}`)
-		assert.Equal(t, `"0x22"`, result)
-		assert.Empty(t, pinnedTags)
-		assert.Equal(t, []interface{}{"latest"}, vendorTags)
+		synctest.Test(t, func(t *testing.T) {
+			result, pinnedTags, vendorTags := run(t, head-2, `{"jsonrpc":"2.0","id":1,"result":"0x11"}`)
+			assert.Equal(t, `"0x22"`, result)
+			assert.Empty(t, pinnedTags)
+			assert.Equal(t, []interface{}{"latest"}, vendorTags)
+		})
 	})
 
 	t.Run("PinnedMissingHeadFallsBackToVendor", func(t *testing.T) {
-		result, pinnedTags, vendorTags := run(t, head,
-			`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"header not found"}}`)
-		assert.Equal(t, `"0x22"`, result)
-		require.NotEmpty(t, pinnedTags)
-		for _, tag := range pinnedTags {
-			assert.Equal(t, headHex, tag)
-		}
-		assert.Equal(t, []interface{}{"latest"}, vendorTags)
+		synctest.Test(t, func(t *testing.T) {
+			result, pinnedTags, vendorTags := run(t, head,
+				`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"header not found"}}`)
+			assert.Equal(t, `"0x22"`, result)
+			require.NotEmpty(t, pinnedTags)
+			for _, tag := range pinnedTags {
+				assert.Equal(t, headHex, tag)
+			}
+			assert.Equal(t, []interface{}{"latest"}, vendorTags)
+		})
 	})
 }

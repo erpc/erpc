@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/util"
@@ -108,127 +109,129 @@ func (m *selfHealMockUpstream) handle(conn *websocket.Conn) {
 //  3. resume delivering heads to the ALREADY-CONNECTED client subscription,
 //  4. accept NEW client subscriptions afterwards.
 func TestWebSocket_UpstreamDiesUngracefully_SelfHeals(t *testing.T) {
-	mock := &selfHealMockUpstream{
-		connSeen: make(chan *selfHealConn, 16),
-		subSeen:  make(chan string, 16),
-	}
-	mockSrv := mockWsUpstream(t, mock.handle)
-	defer mockSrv.Close()
+	synctest.Test(t, func(t *testing.T) {
+		mock := &selfHealMockUpstream{
+			connSeen: make(chan *selfHealConn, 16),
+			subSeen:  make(chan string, 16),
+		}
+		mockSrv := mockWsUpstream(t, mock.handle)
+		defer mockSrv.Close()
 
-	setupGock()
-	defer util.ResetGock()
+		setupGock()
+		defer util.ResetGock()
 
-	wsUpstreamURL := "ws" + strings.TrimPrefix(mockSrv.URL, "http")
-	addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
-	defer cleanup()
+		wsUpstreamURL := "ws" + strings.TrimPrefix(mockSrv.URL, "http")
+		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
+		defer cleanup()
 
-	// eRPC's upstream WS client connects at upstream registration.
-	var upConn1 *selfHealConn
-	select {
-	case upConn1 = <-mock.connSeen:
-	case <-time.After(5 * time.Second):
-		t.Fatal("eRPC never connected to the WS upstream")
-	}
+		// eRPC's upstream WS client connects at upstream registration.
+		var upConn1 *selfHealConn
+		select {
+		case upConn1 = <-mock.connSeen:
+		case <-time.After(5 * time.Second):
+			t.Fatal("eRPC never connected to the WS upstream")
+		}
 
-	// Client subscribes to newHeads (this lazily bootstraps the network's
-	// indexer ingress, which issues the upstream eth_subscribe).
-	client := dialWs(t, addr)
-	defer client.Close()
-	resp := sendAndReceive(t, client, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
-	require.Nil(t, resp["error"], "subscribe must succeed while the upstream is healthy: %v", resp["error"])
-	clientSubID, ok := resp["result"].(string)
-	require.True(t, ok, "subscription ID should be a string, got: %v", resp["result"])
+		// Client subscribes to newHeads (this lazily bootstraps the network's
+		// indexer ingress, which issues the upstream eth_subscribe).
+		client := dialWs(t, addr)
+		defer client.Close()
+		resp := sendAndReceive(t, client, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+		require.Nil(t, resp["error"], "subscribe must succeed while the upstream is healthy: %v", resp["error"])
+		clientSubID, ok := resp["result"].(string)
+		require.True(t, ok, "subscription ID should be a string, got: %v", resp["result"])
 
-	var sub1 string
-	select {
-	case sub1 = <-mock.subSeen:
-	case <-time.After(5 * time.Second):
-		t.Fatal("eRPC never subscribed newHeads on the upstream")
-	}
+		var sub1 string
+		select {
+		case sub1 = <-mock.subSeen:
+		case <-time.After(5 * time.Second):
+			t.Fatal("eRPC never subscribed newHeads on the upstream")
+		}
 
-	// pushHeadsUntilReceived repeatedly emits fresh heads on the upstream
-	// connection until one reaches the given client (the upstream subscribe
-	// response and eRPC's handler registration race the first push — real
-	// chains emit heads continuously, so a retry loop models reality).
-	headNum := int64(0x200)
-	pushHeadsUntilReceived := func(c *websocket.Conn, up *selfHealConn, subID string, within time.Duration) map[string]interface{} {
-		t.Helper()
-		deadline := time.Now().Add(within)
-		notifCh := make(chan map[string]interface{}, 1)
-		errCh := make(chan error, 1)
-		go func() {
-			_ = c.SetReadDeadline(deadline)
-			_, msg, err := c.ReadMessage()
-			if err != nil {
-				errCh <- err
-				return
-			}
-			var notif map[string]interface{}
-			if err := json.Unmarshal(msg, &notif); err != nil {
-				errCh <- err
-				return
-			}
-			notifCh <- notif
-		}()
-		for {
-			headNum++
-			up.sendHead(subID, headNum)
-			select {
-			case notif := <-notifCh:
-				return notif
-			case err := <-errCh:
-				t.Fatalf("client read failed while waiting for a head: %v", err)
-				return nil
-			case <-time.After(250 * time.Millisecond):
-				if time.Now().After(deadline) {
-					t.Fatalf("client never received a head within %s", within)
+		// pushHeadsUntilReceived repeatedly emits fresh heads on the upstream
+		// connection until one reaches the given client (the upstream subscribe
+		// response and eRPC's handler registration race the first push — real
+		// chains emit heads continuously, so a retry loop models reality).
+		headNum := int64(0x200)
+		pushHeadsUntilReceived := func(c *websocket.Conn, up *selfHealConn, subID string, within time.Duration) map[string]interface{} {
+			t.Helper()
+			deadline := time.Now().Add(within)
+			notifCh := make(chan map[string]interface{}, 1)
+			errCh := make(chan error, 1)
+			go func() {
+				_ = c.SetReadDeadline(deadline)
+				_, msg, err := c.ReadMessage()
+				if err != nil {
+					errCh <- err
+					return
+				}
+				var notif map[string]interface{}
+				if err := json.Unmarshal(msg, &notif); err != nil {
+					errCh <- err
+					return
+				}
+				notifCh <- notif
+			}()
+			for {
+				headNum++
+				up.sendHead(subID, headNum)
+				select {
+				case notif := <-notifCh:
+					return notif
+				case err := <-errCh:
+					t.Fatalf("client read failed while waiting for a head: %v", err)
 					return nil
+				case <-time.After(250 * time.Millisecond):
+					if time.Now().After(deadline) {
+						t.Fatalf("client never received a head within %s", within)
+						return nil
+					}
 				}
 			}
 		}
-	}
 
-	// Sanity: a head flows end-to-end before the failure.
-	notif := pushHeadsUntilReceived(client, upConn1, sub1, 5*time.Second)
-	require.Equal(t, "eth_subscription", notif["method"])
-	require.Equal(t, clientSubID, notif["params"].(map[string]interface{})["subscription"])
+		// Sanity: a head flows end-to-end before the failure.
+		notif := pushHeadsUntilReceived(client, upConn1, sub1, 5*time.Second)
+		require.Equal(t, "eth_subscription", notif["method"])
+		require.Equal(t, clientSubID, notif["params"].(map[string]interface{})["subscription"])
 
-	// ── Failure injection ─────────────────────────────────────────────
-	// Kill the upstream TCP connection with NO WebSocket close handshake.
-	_ = upConn1.conn.UnderlyingConn().Close()
+		// ── Failure injection ─────────────────────────────────────────────
+		// Kill the upstream TCP connection with NO WebSocket close handshake.
+		_ = upConn1.conn.UnderlyingConn().Close()
 
-	// eRPC must re-dial (the httptest server is still up, as with a proxy
-	// in front of a replaced node) ...
-	var upConn2 *selfHealConn
-	select {
-	case upConn2 = <-mock.connSeen:
-	case <-time.After(10 * time.Second):
-		t.Fatal("eRPC never re-dialed the upstream after the ungraceful kill")
-	}
+		// eRPC must re-dial (the httptest server is still up, as with a proxy
+		// in front of a replaced node) ...
+		var upConn2 *selfHealConn
+		select {
+		case upConn2 = <-mock.connSeen:
+		case <-time.After(10 * time.Second):
+			t.Fatal("eRPC never re-dialed the upstream after the ungraceful kill")
+		}
 
-	// ... and re-subscribe newHeads with a fresh upstream subscription.
-	var sub2 string
-	select {
-	case sub2 = <-mock.subSeen:
-	case <-time.After(10 * time.Second):
-		t.Fatal("eRPC never re-subscribed newHeads after reconnecting")
-	}
-	assert.NotEqual(t, sub1, sub2, "the re-subscribe must be a fresh upstream subscription")
+		// ... and re-subscribe newHeads with a fresh upstream subscription.
+		var sub2 string
+		select {
+		case sub2 = <-mock.subSeen:
+		case <-time.After(10 * time.Second):
+			t.Fatal("eRPC never re-subscribed newHeads after reconnecting")
+		}
+		assert.NotEqual(t, sub1, sub2, "the re-subscribe must be a fresh upstream subscription")
 
-	// The ALREADY-CONNECTED client must resume receiving heads on its
-	// ORIGINAL subscription ID, with no client-side action.
-	notif = pushHeadsUntilReceived(client, upConn2, sub2, 10*time.Second)
-	assert.Equal(t, "eth_subscription", notif["method"])
-	assert.Equal(t, clientSubID, notif["params"].(map[string]interface{})["subscription"],
-		"recovered heads must arrive on the client's original subscription ID")
+		// The ALREADY-CONNECTED client must resume receiving heads on its
+		// ORIGINAL subscription ID, with no client-side action.
+		notif = pushHeadsUntilReceived(client, upConn2, sub2, 10*time.Second)
+		assert.Equal(t, "eth_subscription", notif["method"])
+		assert.Equal(t, clientSubID, notif["params"].(map[string]interface{})["subscription"],
+			"recovered heads must arrive on the client's original subscription ID")
 
-	// And a NEW client must be able to subscribe and receive heads.
-	client2 := dialWs(t, addr)
-	defer client2.Close()
-	resp2 := sendAndReceive(t, client2, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
-	require.Nil(t, resp2["error"], "new client subscribe must succeed after recovery: %v", resp2["error"])
-	client2SubID, _ := resp2["result"].(string)
+		// And a NEW client must be able to subscribe and receive heads.
+		client2 := dialWs(t, addr)
+		defer client2.Close()
+		resp2 := sendAndReceive(t, client2, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+		require.Nil(t, resp2["error"], "new client subscribe must succeed after recovery: %v", resp2["error"])
+		client2SubID, _ := resp2["result"].(string)
 
-	notif2 := pushHeadsUntilReceived(client2, upConn2, sub2, 10*time.Second)
-	assert.Equal(t, client2SubID, notif2["params"].(map[string]interface{})["subscription"])
+		notif2 := pushHeadsUntilReceived(client2, upConn2, sub2, 10*time.Second)
+		assert.Equal(t, client2SubID, notif2["params"].(map[string]interface{})["subscription"])
+	})
 }

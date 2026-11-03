@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -100,48 +101,50 @@ func TestCacheFailsafe_DynamicHedge_FiresOnSlowPrimary(t *testing.T) {
 }
 
 func TestCacheFailsafe_DynamicTimeout_ClampsAtMax(t *testing.T) {
-	logger := zerolog.New(io.Discard)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		logger := zerolog.New(io.Discard)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	mc := NewMockConnector("test")
-	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-		Run(func(args mock.Arguments) {
-			cctx := args.Get(0).(context.Context)
-			select {
-			case <-cctx.Done():
-			case <-time.After(5 * time.Second):
-			}
-		}).
-		Return(nil, context.DeadlineExceeded)
+		mc := NewMockConnector("test")
+		mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) {
+				cctx := args.Get(0).(context.Context)
+				select {
+				case <-cctx.Done():
+				case <-time.After(5 * time.Second):
+				}
+			}).
+			Return(nil, context.DeadlineExceeded)
 
-	fc, err := NewFailsafeConnector(ctx, &logger, mc, []*common.FailsafeConfig{
-		{
-			Timeout: &common.TimeoutPolicyConfig{
-				Duration: &common.AdaptiveDuration{
-					Base:     common.Duration(100 * time.Millisecond),
-					Quantile: 0.9,
-					Max:      common.Duration(250 * time.Millisecond),
+		fc, err := NewFailsafeConnector(ctx, &logger, mc, []*common.FailsafeConfig{
+			{
+				Timeout: &common.TimeoutPolicyConfig{
+					Duration: &common.AdaptiveDuration{
+						Base:     common.Duration(100 * time.Millisecond),
+						Quantile: 0.9,
+						Max:      common.Duration(250 * time.Millisecond),
+					},
 				},
 			},
-		},
-	}, nil)
-	require.NoError(t, err)
+		}, nil)
+		require.NoError(t, err)
 
-	// Slow samples: unclamped resolve would be ~100ms + 1s; Max caps at 250ms.
-	seedLatency(fc.getExecutors[0], 1.0, 10)
+		// Slow samples: unclamped resolve would be ~100ms + 1s; Max caps at 250ms.
+		seedLatency(fc.getExecutors[0], 1.0, 10)
 
-	start := time.Now()
-	_, err = fc.Get(context.Background(), "", "pk", "rk", nil)
-	elapsed := time.Since(start)
+		start := time.Now()
+		_, err = fc.Get(context.Background(), "", "pk", "rk", nil)
+		elapsed := time.Since(start)
 
-	require.Error(t, err)
-	assert.True(t, common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded),
-		"dynamic timeout expiry must surface as failsafe timeout, got: %v", err)
-	assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond,
-		"timeout must not fire before the 250ms Max clamp")
-	assert.Less(t, elapsed, 1*time.Second,
-		"Max clamp must cap the timeout well below the seeded ~1.1s resolve")
+		require.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded),
+			"dynamic timeout expiry must surface as failsafe timeout, got: %v", err)
+		assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond,
+			"timeout must not fire before the 250ms Max clamp")
+		assert.Less(t, elapsed, 1*time.Second,
+			"Max clamp must cap the timeout well below the seeded ~1.1s resolve")
+	})
 }
 
 func TestCacheExecutor_DynamicTimeout_MinAutoFloor(t *testing.T) {
@@ -274,71 +277,73 @@ func TestCacheFailsafe_LatencyRecording_Classification(t *testing.T) {
 // breaker (fail-fast exclusion); a probe that completes in time re-admits
 // the connector.
 func TestCacheFailsafe_TimeoutBreaker_OpensAndRecovers(t *testing.T) {
-	logger := zerolog.New(io.Discard)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		logger := zerolog.New(io.Discard)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	mc := NewMockConnector("test")
-	// Two reads that outlive the 20ms timeout: the mock honors context
-	// cancellation, so each returns when the executor's own deadline
-	// fires and is translated into ErrFailsafeTimeoutExceeded.
-	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-		Run(func(args mock.Arguments) {
-			cctx := args.Get(0).(context.Context)
-			<-cctx.Done()
-		}).
-		Return(nil, context.DeadlineExceeded).Times(2)
-	// Everything afterwards completes immediately.
-	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-		Return([]byte("fast"), nil)
+		mc := NewMockConnector("test")
+		// Two reads that outlive the 20ms timeout: the mock honors context
+		// cancellation, so each returns when the executor's own deadline
+		// fires and is translated into ErrFailsafeTimeoutExceeded.
+		mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) {
+				cctx := args.Get(0).(context.Context)
+				<-cctx.Done()
+			}).
+			Return(nil, context.DeadlineExceeded).Times(2)
+		// Everything afterwards completes immediately.
+		mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Return([]byte("fast"), nil)
 
-	fc, err := NewFailsafeConnector(ctx, &logger, mc, []*common.FailsafeConfig{
-		{
-			Timeout: &common.TimeoutPolicyConfig{
-				Duration: common.NewStaticDuration(20 * time.Millisecond),
+		fc, err := NewFailsafeConnector(ctx, &logger, mc, []*common.FailsafeConfig{
+			{
+				Timeout: &common.TimeoutPolicyConfig{
+					Duration: common.NewStaticDuration(20 * time.Millisecond),
+				},
+				CircuitBreaker: &common.CircuitBreakerPolicyConfig{
+					FailureThresholdCount:    2,
+					FailureThresholdCapacity: 2,
+					HalfOpenAfter:            common.Duration(25 * time.Millisecond),
+					SuccessThresholdCount:    1,
+					SuccessThresholdCapacity: 1,
+				},
 			},
-			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
-				FailureThresholdCount:    2,
-				FailureThresholdCapacity: 2,
-				HalfOpenAfter:            common.Duration(25 * time.Millisecond),
-				SuccessThresholdCount:    1,
-				SuccessThresholdCapacity: 1,
-			},
-		},
-	}, nil)
-	require.NoError(t, err)
-	ex := fc.getExecutors[0]
-	require.NotNil(t, ex.breaker)
+		}, nil)
+		require.NoError(t, err)
+		ex := fc.getExecutors[0]
+		require.NotNil(t, ex.breaker)
 
-	// Two own-timeouts: surfaced as timeout errors, each a breaker failure.
-	for i := range 2 {
-		_, err := fc.Get(context.Background(), "", "pk", "rk", nil)
-		require.Error(t, err, "call %d must surface the timeout", i+1)
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded),
-			"own-timeout must be translated to failsafe-timeout-exceeded, got: %v", err)
-	}
-	assert.Equal(t, failsafe.StateOpen, ex.breaker.State(),
-		"sustained own-timeouts must open the breaker")
+		// Two own-timeouts: surfaced as timeout errors, each a breaker failure.
+		for i := range 2 {
+			_, err := fc.Get(context.Background(), "", "pk", "rk", nil)
+			require.Error(t, err, "call %d must surface the timeout", i+1)
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded),
+				"own-timeout must be translated to failsafe-timeout-exceeded, got: %v", err)
+		}
+		assert.Equal(t, failsafe.StateOpen, ex.breaker.State(),
+			"sustained own-timeouts must open the breaker")
 
-	// Open breaker rejects without touching the connector.
-	_, err = fc.Get(context.Background(), "", "pk", "rk", nil)
-	require.Error(t, err)
-	assert.True(t, common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen),
-		"open breaker must reject with circuit-breaker-open, got: %v", err)
-	mc.AssertNumberOfCalls(t, "Get", 2)
+		// Open breaker rejects without touching the connector.
+		_, err = fc.Get(context.Background(), "", "pk", "rk", nil)
+		require.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen),
+			"open breaker must reject with circuit-breaker-open, got: %v", err)
+		mc.AssertNumberOfCalls(t, "Get", 2)
 
-	// After HalfOpenAfter elapses, a probe that completes in time closes
-	// the breaker again.
-	time.Sleep(60 * time.Millisecond)
-	result, err := fc.Get(context.Background(), "", "pk", "rk", nil)
-	require.NoError(t, err, "half-open probe must be permitted and succeed")
-	assert.Equal(t, []byte("fast"), result)
-	assert.Equal(t, failsafe.StateClosed, ex.breaker.State(),
-		"an in-time successful probe must close the breaker")
+		// After HalfOpenAfter elapses, a probe that completes in time closes
+		// the breaker again.
+		time.Sleep(60 * time.Millisecond)
+		result, err := fc.Get(context.Background(), "", "pk", "rk", nil)
+		require.NoError(t, err, "half-open probe must be permitted and succeed")
+		assert.Equal(t, []byte("fast"), result)
+		assert.Equal(t, failsafe.StateClosed, ex.breaker.State(),
+			"an in-time successful probe must close the breaker")
 
-	// Closed again: traffic flows normally.
-	result, err = fc.Get(context.Background(), "", "pk", "rk", nil)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("fast"), result)
-	mc.AssertNumberOfCalls(t, "Get", 4)
+		// Closed again: traffic flows normally.
+		result, err = fc.Get(context.Background(), "", "pk", "rk", nil)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("fast"), result)
+		mc.AssertNumberOfCalls(t, "Get", 4)
+	})
 }

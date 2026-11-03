@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -93,36 +94,38 @@ func TestInitializer_FailedTaskBackoffGatesReRuns(t *testing.T) {
 // the auto-retry loop) re-runs it — the gate delays re-execution, it does not
 // permanently pin a task to its first failure.
 func TestInitializer_FailedTaskReRunsAfterBackoff(t *testing.T) {
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	conf := &InitializerConfig{
-		TaskTimeout:   5 * time.Second,
-		AutoRetry:     false,
-		RetryFactor:   1.5,
-		RetryMinDelay: 50 * time.Millisecond,
-		RetryMaxDelay: 130 * time.Second,
-	}
-	init := setupInitializer(t, appCtx, conf)
+		conf := &InitializerConfig{
+			TaskTimeout:   5 * time.Second,
+			AutoRetry:     false,
+			RetryFactor:   1.5,
+			RetryMinDelay: 50 * time.Millisecond,
+			RetryMaxDelay: 130 * time.Second,
+		}
+		init := setupInitializer(t, appCtx, conf)
 
-	var runs atomic.Int32
-	fn := func(ctx context.Context) error {
-		runs.Add(1)
-		return errors.New("still failing")
-	}
+		var runs atomic.Int32
+		fn := func(ctx context.Context) error {
+			runs.Add(1)
+			return errors.New("still failing")
+		}
 
-	_ = init.ExecuteTasks(appCtx, NewBootstrapTask("network/evm:1000", fn))
-	require.Equal(t, int32(1), runs.Load(), "first request runs the task")
+		_ = init.ExecuteTasks(appCtx, NewBootstrapTask("network/evm:1000", fn))
+		require.Equal(t, int32(1), runs.Load(), "first request runs the task")
 
-	// Within the backoff window: no re-run.
-	_ = init.ExecuteTasks(appCtx, NewBootstrapTask("network/evm:1000", fn))
-	require.Equal(t, int32(1), runs.Load(), "request inside backoff window must not re-run")
+		// Within the backoff window: no re-run.
+		_ = init.ExecuteTasks(appCtx, NewBootstrapTask("network/evm:1000", fn))
+		require.Equal(t, int32(1), runs.Load(), "request inside backoff window must not re-run")
 
-	// After the backoff elapses: the next request re-runs the task.
-	time.Sleep(80 * time.Millisecond)
-	_ = init.ExecuteTasks(appCtx, NewBootstrapTask("network/evm:1000", fn))
-	require.Equal(t, int32(2), runs.Load(),
-		"a failing task must become eligible for re-execution once its backoff elapses")
+		// After the backoff elapses: the next request re-runs the task.
+		time.Sleep(80 * time.Millisecond)
+		_ = init.ExecuteTasks(appCtx, NewBootstrapTask("network/evm:1000", fn))
+		require.Equal(t, int32(2), runs.Load(),
+			"a failing task must become eligible for re-execution once its backoff elapses")
+	})
 }
 
 func TestInitializer_SingleTaskSuccess(t *testing.T) {
@@ -162,63 +165,67 @@ func TestInitializer_SingleTaskImmediateFailureNoRetry(t *testing.T) {
 }
 
 func TestInitializer_SingleTaskFailureWithRetryNeverSucceeds(t *testing.T) {
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	init := setupInitializer(t, appCtx, &InitializerConfig{
-		TaskTimeout:   time.Second,
-		AutoRetry:     true,
-		RetryMinDelay: time.Millisecond,
-		RetryMaxDelay: time.Millisecond * 10,
-		RetryFactor:   1.1,
+	synctest.Test(t, func(t *testing.T) {
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		init := setupInitializer(t, appCtx, &InitializerConfig{
+			TaskTimeout:   time.Second,
+			AutoRetry:     true,
+			RetryMinDelay: time.Millisecond,
+			RetryMaxDelay: time.Millisecond * 10,
+			RetryFactor:   1.1,
+		})
+
+		attempts := 0
+		task := NewBootstrapTask("always-failing", func(ctx context.Context) error {
+			attempts++
+			return errors.New("persistent failure")
+		})
+
+		// Use a context with timeout to ensure the test doesn't run forever
+		ctx, cancel := context.WithTimeout(appCtx, time.Millisecond*100)
+		defer cancel()
+
+		init.ExecuteTasks(ctx, task)
+
+		time.Sleep(time.Millisecond * 200)
+		init.Stop(nil)
+
+		assert.Equal(t, TaskFailed, TaskState(task.state.Load()))
+		assert.True(t, attempts >= 10, "should have attempted multiple times")
 	})
-
-	attempts := 0
-	task := NewBootstrapTask("always-failing", func(ctx context.Context) error {
-		attempts++
-		return errors.New("persistent failure")
-	})
-
-	// Use a context with timeout to ensure the test doesn't run forever
-	ctx, cancel := context.WithTimeout(appCtx, time.Millisecond*100)
-	defer cancel()
-
-	init.ExecuteTasks(ctx, task)
-
-	time.Sleep(time.Millisecond * 200)
-	init.Stop(nil)
-
-	assert.Equal(t, TaskFailed, TaskState(task.state.Load()))
-	assert.True(t, attempts >= 10, "should have attempted multiple times")
 }
 
 func TestInitializer_SingleTaskFailsThenSucceeds(t *testing.T) {
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	init := setupInitializer(t, appCtx, &InitializerConfig{
-		TaskTimeout:   time.Second,
-		AutoRetry:     true,
-		RetryMinDelay: time.Millisecond,
-		RetryMaxDelay: time.Millisecond * 10,
-		RetryFactor:   1.5,
-	})
+	synctest.Test(t, func(t *testing.T) {
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		init := setupInitializer(t, appCtx, &InitializerConfig{
+			TaskTimeout:   time.Second,
+			AutoRetry:     true,
+			RetryMinDelay: time.Millisecond,
+			RetryMaxDelay: time.Millisecond * 10,
+			RetryFactor:   1.5,
+		})
 
-	attempts := 0
-	task := NewBootstrapTask("eventually-succeeds", func(ctx context.Context) error {
-		attempts++
-		if attempts == 1 {
-			return errors.New("first attempt fails")
-		}
-		return nil
-	})
+		attempts := 0
+		task := NewBootstrapTask("eventually-succeeds", func(ctx context.Context) error {
+			attempts++
+			if attempts == 1 {
+				return errors.New("first attempt fails")
+			}
+			return nil
+		})
 
-	init.ExecuteTasks(appCtx, task)
-	defer init.Stop(nil)
-	time.Sleep(time.Millisecond * 100)
-	err := init.WaitForTasks(appCtx)
-	require.NoError(t, err)
-	assert.Equal(t, StateReady, init.State())
-	assert.Equal(t, TaskSucceeded, TaskState(task.state.Load()))
-	assert.Equal(t, 2, attempts)
+		init.ExecuteTasks(appCtx, task)
+		defer init.Stop(nil)
+		time.Sleep(time.Millisecond * 100)
+		err := init.WaitForTasks(appCtx)
+		require.NoError(t, err)
+		assert.Equal(t, StateReady, init.State())
+		assert.Equal(t, TaskSucceeded, TaskState(task.state.Load()))
+		assert.Equal(t, 2, attempts)
+	})
 }
 
 func TestInitializer_MultipleTasksAllSucceed(t *testing.T) {
@@ -268,108 +275,114 @@ func TestInitializer_MultipleTasksMixedResultsNoRetry(t *testing.T) {
 }
 
 func TestInitializer_MultipleTasksMixedResultsInitializing(t *testing.T) {
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	init := setupInitializer(t, appCtx, &InitializerConfig{
-		TaskTimeout: time.Second,
-		AutoRetry:   true,
-		// Long enough that the retry cannot run before the Partial check below.
-		RetryMinDelay: time.Second,
-		RetryMaxDelay: time.Second,
+		init := setupInitializer(t, appCtx, &InitializerConfig{
+			TaskTimeout: time.Second,
+			AutoRetry:   true,
+			// Long enough that the retry cannot run before the Partial check below.
+			RetryMinDelay: time.Second,
+			RetryMaxDelay: time.Second,
+		})
+
+		// We'll define three tasks:
+		// 1) A task that runs until released (so the initializer stays "Initializing").
+		// 2) A task that fails on the first run.
+		// 3) A task that succeeds immediately.
+		release := make(chan struct{})
+		longRunningTask := NewBootstrapTask("long-running", func(ctx context.Context) error {
+			<-release
+			return nil
+		})
+
+		var attempts atomic.Int32
+		failingTaskFirst := NewBootstrapTask("fail-first-attempt", func(ctx context.Context) error {
+			if attempts.Add(1) <= 1 {
+				return errors.New("failing on first attempt")
+			}
+			return nil
+		})
+
+		immediateSuccess := NewBootstrapTask("immediate-success", func(ctx context.Context) error {
+			return nil
+		})
+
+		// Start them in a goroutine so we can check state mid-run:
+		go func() {
+			_ = init.ExecuteTasks(appCtx, longRunningTask, failingTaskFirst, immediateSuccess)
+		}()
+
+		// The first attempt of the failing task ends while the long task still runs.
+		require.Eventually(t, func() bool { return TaskState(failingTaskFirst.state.Load()) == TaskFailed }, 5*time.Second, time.Millisecond)
+		assert.Equal(t, StateInitializing, init.State(), "one or more tasks should still be running")
+		close(release)
+		require.Eventually(t, func() bool {
+			return TaskState(longRunningTask.state.Load()) == TaskSucceeded &&
+				TaskState(immediateSuccess.state.Load()) == TaskSucceeded
+		}, 5*time.Second, time.Millisecond)
+		assert.Equal(t, StatePartial, init.State(), "one task must be failed")
+
+		// The auto-retry loop re-runs the failed task after RetryMinDelay.
+		require.Eventually(t, func() bool { return init.State() == StateReady }, 5*time.Second, 5*time.Millisecond)
+		err := init.WaitForTasks(appCtx)
+		require.NoError(t, err, "the second attempt should succeed, no further errors expected")
+
+		// Now that the failed task has succeeded, the overall state should be Ready.
+		assert.Equal(t, StateReady, init.State(), "once all tasks succeed, the initializer should be Ready")
+		init.Stop(nil)
 	})
-
-	// We'll define three tasks:
-	// 1) A task that runs until released (so the initializer stays "Initializing").
-	// 2) A task that fails on the first run.
-	// 3) A task that succeeds immediately.
-	release := make(chan struct{})
-	longRunningTask := NewBootstrapTask("long-running", func(ctx context.Context) error {
-		<-release
-		return nil
-	})
-
-	var attempts atomic.Int32
-	failingTaskFirst := NewBootstrapTask("fail-first-attempt", func(ctx context.Context) error {
-		if attempts.Add(1) <= 1 {
-			return errors.New("failing on first attempt")
-		}
-		return nil
-	})
-
-	immediateSuccess := NewBootstrapTask("immediate-success", func(ctx context.Context) error {
-		return nil
-	})
-
-	// Start them in a goroutine so we can check state mid-run:
-	go func() {
-		_ = init.ExecuteTasks(appCtx, longRunningTask, failingTaskFirst, immediateSuccess)
-	}()
-
-	// The first attempt of the failing task ends while the long task still runs.
-	require.Eventually(t, func() bool { return TaskState(failingTaskFirst.state.Load()) == TaskFailed }, 5*time.Second, time.Millisecond)
-	assert.Equal(t, StateInitializing, init.State(), "one or more tasks should still be running")
-	close(release)
-	require.Eventually(t, func() bool {
-		return TaskState(longRunningTask.state.Load()) == TaskSucceeded &&
-			TaskState(immediateSuccess.state.Load()) == TaskSucceeded
-	}, 5*time.Second, time.Millisecond)
-	assert.Equal(t, StatePartial, init.State(), "one task must be failed")
-
-	// The auto-retry loop re-runs the failed task after RetryMinDelay.
-	require.Eventually(t, func() bool { return init.State() == StateReady }, 5*time.Second, 5*time.Millisecond)
-	err := init.WaitForTasks(appCtx)
-	require.NoError(t, err, "the second attempt should succeed, no further errors expected")
-
-	// Now that the failed task has succeeded, the overall state should be Ready.
-	assert.Equal(t, StateReady, init.State(), "once all tasks succeed, the initializer should be Ready")
-	init.Stop(nil)
 }
 
 func TestInitializer_LongRunningTask(t *testing.T) {
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	init := setupInitializer(t, appCtx, &InitializerConfig{
-		TaskTimeout: time.Second * 2,
-		AutoRetry:   false,
-	})
+	synctest.Test(t, func(t *testing.T) {
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		init := setupInitializer(t, appCtx, &InitializerConfig{
+			TaskTimeout: time.Second * 2,
+			AutoRetry:   false,
+		})
 
-	longTask := NewBootstrapTask("long-task", func(ctx context.Context) error {
-		time.Sleep(time.Second) // Sleep for 1 second
-		return nil
-	})
+		longTask := NewBootstrapTask("long-task", func(ctx context.Context) error {
+			time.Sleep(time.Second) // Sleep for 1 second
+			return nil
+		})
 
-	quickTask := NewBootstrapTask("quick-task", func(ctx context.Context) error {
-		return nil
-	})
+		quickTask := NewBootstrapTask("quick-task", func(ctx context.Context) error {
+			return nil
+		})
 
-	err := init.ExecuteTasks(appCtx, longTask, quickTask)
-	defer init.Stop(nil)
-	require.NoError(t, err)
-	assert.Equal(t, StateReady, init.State())
-	assert.Equal(t, TaskSucceeded, TaskState(longTask.state.Load()))
-	assert.Equal(t, TaskSucceeded, TaskState(quickTask.state.Load()))
+		err := init.ExecuteTasks(appCtx, longTask, quickTask)
+		defer init.Stop(nil)
+		require.NoError(t, err)
+		assert.Equal(t, StateReady, init.State())
+		assert.Equal(t, TaskSucceeded, TaskState(longTask.state.Load()))
+		assert.Equal(t, TaskSucceeded, TaskState(quickTask.state.Load()))
+	})
 }
 
 func TestInitializer_TaskTimeout(t *testing.T) {
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	init := setupInitializer(t, appCtx, &InitializerConfig{
-		TaskTimeout: time.Millisecond * 100,
-		AutoRetry:   false,
-	})
+	synctest.Test(t, func(t *testing.T) {
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		init := setupInitializer(t, appCtx, &InitializerConfig{
+			TaskTimeout: time.Millisecond * 100,
+			AutoRetry:   false,
+		})
 
-	task := NewBootstrapTask("timeout-task", func(ctx context.Context) error {
-		time.Sleep(time.Second) // Sleep longer than timeout
-		return nil
-	})
+		task := NewBootstrapTask("timeout-task", func(ctx context.Context) error {
+			time.Sleep(time.Second) // Sleep longer than timeout
+			return nil
+		})
 
-	err := init.ExecuteTasks(appCtx, task)
-	defer init.Stop(nil)
-	require.Error(t, err)
-	assert.Equal(t, StateFailed, init.State())
-	assert.Equal(t, TaskTimedOut, TaskState(task.state.Load()))
-	assert.ErrorIs(t, task.Error().Err, context.DeadlineExceeded)
+		err := init.ExecuteTasks(appCtx, task)
+		defer init.Stop(nil)
+		require.Error(t, err)
+		assert.Equal(t, StateFailed, init.State())
+		assert.Equal(t, TaskTimedOut, TaskState(task.state.Load()))
+		assert.ErrorIs(t, task.Error().Err, context.DeadlineExceeded)
+	})
 }
 
 func TestInitializer_MarkTaskAsFailed(t *testing.T) {
@@ -495,279 +508,289 @@ func TestInitializer_MultipleRapidFailures(t *testing.T) {
 }
 
 func TestInitializer_ForcedCancellationMidTask(t *testing.T) {
-	conf := &InitializerConfig{
-		TaskTimeout:   time.Second * 2, // Somewhat long
-		AutoRetry:     false,
-		RetryMinDelay: time.Millisecond * 50,
-		RetryMaxDelay: time.Millisecond * 100,
-		RetryFactor:   1.5,
-	}
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	init := setupInitializer(t, appCtx, conf)
+	synctest.Test(t, func(t *testing.T) {
+		conf := &InitializerConfig{
+			TaskTimeout:   time.Second * 2, // Somewhat long
+			AutoRetry:     false,
+			RetryMinDelay: time.Millisecond * 50,
+			RetryMaxDelay: time.Millisecond * 100,
+			RetryFactor:   1.5,
+		}
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		init := setupInitializer(t, appCtx, conf)
 
-	task := NewBootstrapTask("never-finishes", func(ctx context.Context) error {
-		// Sleep forever or until ctx is canceled
-		<-ctx.Done()
-		// Return the ctx error or something
-		return ctx.Err()
+		task := NewBootstrapTask("never-finishes", func(ctx context.Context) error {
+			// Sleep forever or until ctx is canceled
+			<-ctx.Done()
+			// Return the ctx error or something
+			return ctx.Err()
+		})
+
+		init.ExecuteTasks(appCtx, task)
+
+		// Cancel the context after a brief delay
+		ctx, cancel := context.WithTimeout(appCtx, time.Millisecond*100)
+		defer cancel()
+
+		// Once canceled, WaitForTasks should return a context error
+		err := init.WaitForTasks(ctx)
+		defer init.Stop(nil)
+		require.Error(t, err, "should fail or be canceled")
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+
+		// ExecuteTasks already ran until TaskTimeout; deadline surfaces as TimedOut.
+		st := TaskState(task.state.Load())
+		assert.True(t, st == TaskFailed || st == TaskTimedOut, "task should show failed or timed out, got %d", st)
 	})
-
-	init.ExecuteTasks(appCtx, task)
-
-	// Cancel the context after a brief delay
-	ctx, cancel := context.WithTimeout(appCtx, time.Millisecond*100)
-	defer cancel()
-
-	// Once canceled, WaitForTasks should return a context error
-	err := init.WaitForTasks(ctx)
-	defer init.Stop(nil)
-	require.Error(t, err, "should fail or be canceled")
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
-
-	// ExecuteTasks already ran until TaskTimeout; deadline surfaces as TimedOut.
-	st := TaskState(task.state.Load())
-	assert.True(t, st == TaskFailed || st == TaskTimedOut, "task should show failed or timed out, got %d", st)
 }
 
 func TestInitializer_MarkTaskAsFailedMidRun(t *testing.T) {
-	conf := &InitializerConfig{
-		TaskTimeout:   time.Millisecond * 500,
-		AutoRetry:     true, // let it possibly re-attempt
-		RetryMinDelay: time.Millisecond * 30,
-		RetryMaxDelay: time.Millisecond * 30,
-		RetryFactor:   1.5,
-	}
-	appCtx, cancelApp := context.WithCancel(context.Background())
-	defer cancelApp()
-
-	init := setupInitializer(t, appCtx, conf)
-
-	blockingTask := NewBootstrapTask("blocker", func(ctx context.Context) error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Second * 1):
-			return nil
+	synctest.Test(t, func(t *testing.T) {
+		conf := &InitializerConfig{
+			TaskTimeout:   time.Millisecond * 500,
+			AutoRetry:     true, // let it possibly re-attempt
+			RetryMinDelay: time.Millisecond * 30,
+			RetryMaxDelay: time.Millisecond * 30,
+			RetryFactor:   1.5,
 		}
+		appCtx, cancelApp := context.WithCancel(context.Background())
+		defer cancelApp()
+
+		init := setupInitializer(t, appCtx, conf)
+
+		blockingTask := NewBootstrapTask("blocker", func(ctx context.Context) error {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Second * 1):
+				return nil
+			}
+		})
+
+		// Start the task asynchronously
+		init.ExecuteTasks(appCtx, blockingTask)
+
+		// Give it a moment to start
+		time.Sleep(time.Millisecond * 100)
+
+		// Mark the task as failed
+		customErr := errors.New("manual failure")
+		init.MarkTaskAsFailed("blocker", customErr)
+
+		// Check that state is updated to FAILED quickly
+		assert.Equal(t, TaskFailed, TaskState(blockingTask.state.Load()), "task should be forced to FAIL")
+
+		// If AutoRetry is true, might see a new attempt => it might be re-run
+		time.Sleep(time.Millisecond * 100)
+		st := TaskState(blockingTask.state.Load())
+
+		// If the re-attempt has started, we might see it in RUNNING or even SUCCEEDED,
+		// but it definitely shouldn't be in PENDING anymore. Let's just check it's not the old one.
+		assert.Equal(t, TaskRunning, st, "should not remain pending after forced failure")
+
+		// Final wait
+		ctxt, cancel := context.WithTimeout(appCtx, time.Second*2)
+		defer cancel()
+
+		// Could succeed if the second attempt eventually finishes, or fail if it times out again
+		err := init.WaitForTasks(ctxt)
+		// We'll accept either no error (if the re-attempt succeeded) or error (if still failing).
+		// But let's at least confirm we don't time out indefinitely here.
+		require.True(t, err == nil || err != nil, "just confirming we didn't hang forever")
+
+		finalState := init.State()
+		assert.NotEqual(t, StatePartial, finalState, "expected eventually a stable state after re-attempts")
+
+		err = init.Stop(nil)
+		require.NoError(t, err)
 	})
-
-	// Start the task asynchronously
-	init.ExecuteTasks(appCtx, blockingTask)
-
-	// Give it a moment to start
-	time.Sleep(time.Millisecond * 100)
-
-	// Mark the task as failed
-	customErr := errors.New("manual failure")
-	init.MarkTaskAsFailed("blocker", customErr)
-
-	// Check that state is updated to FAILED quickly
-	assert.Equal(t, TaskFailed, TaskState(blockingTask.state.Load()), "task should be forced to FAIL")
-
-	// If AutoRetry is true, might see a new attempt => it might be re-run
-	time.Sleep(time.Millisecond * 100)
-	st := TaskState(blockingTask.state.Load())
-
-	// If the re-attempt has started, we might see it in RUNNING or even SUCCEEDED,
-	// but it definitely shouldn't be in PENDING anymore. Let's just check it's not the old one.
-	assert.Equal(t, TaskRunning, st, "should not remain pending after forced failure")
-
-	// Final wait
-	ctxt, cancel := context.WithTimeout(appCtx, time.Second*2)
-	defer cancel()
-
-	// Could succeed if the second attempt eventually finishes, or fail if it times out again
-	err := init.WaitForTasks(ctxt)
-	// We'll accept either no error (if the re-attempt succeeded) or error (if still failing).
-	// But let's at least confirm we don't time out indefinitely here.
-	require.True(t, err == nil || err != nil, "just confirming we didn't hang forever")
-
-	finalState := init.State()
-	assert.NotEqual(t, StatePartial, finalState, "expected eventually a stable state after re-attempts")
-
-	err = init.Stop(nil)
-	require.NoError(t, err)
 }
 
 func TestInitializer_ManualMarkAsFailedAfterSuccess(t *testing.T) {
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	conf := &InitializerConfig{
-		TaskTimeout:   time.Second * 2,
-		AutoRetry:     true,
-		RetryMinDelay: time.Millisecond * 50,
-		RetryMaxDelay: time.Millisecond * 150,
-		RetryFactor:   1.3,
-	}
-	init := setupInitializer(t, appCtx, conf)
-
-	var attempts int32
-	task := NewBootstrapTask("flaky-task", func(ctx context.Context) error {
-		// We'll track attempts in a local variable:
-		attempts++
-		switch attempts {
-		case 1:
-			// First attempt: Sleep a bit, then succeed
-			time.Sleep(time.Millisecond * 100)
-			return nil
-		case 2, 3:
-			// Second & Third attempts: fail quickly
-			return errors.New("manual-failure-phase: fails on attempt #2 and #3")
-		case 4:
-			// Fourth attempt: succeed
-			return nil
-		default:
-			// Just in case, fail all other attempts after #4 (shouldn't happen)
-			return errors.New("unexpected extra attempt")
+	synctest.Test(t, func(t *testing.T) {
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		conf := &InitializerConfig{
+			TaskTimeout:   time.Second * 2,
+			AutoRetry:     true,
+			RetryMinDelay: time.Millisecond * 50,
+			RetryMaxDelay: time.Millisecond * 150,
+			RetryFactor:   1.3,
 		}
+		init := setupInitializer(t, appCtx, conf)
+
+		var attempts int32
+		task := NewBootstrapTask("flaky-task", func(ctx context.Context) error {
+			// We'll track attempts in a local variable:
+			attempts++
+			switch attempts {
+			case 1:
+				// First attempt: Sleep a bit, then succeed
+				time.Sleep(time.Millisecond * 100)
+				return nil
+			case 2, 3:
+				// Second & Third attempts: fail quickly
+				return errors.New("manual-failure-phase: fails on attempt #2 and #3")
+			case 4:
+				// Fourth attempt: succeed
+				return nil
+			default:
+				// Just in case, fail all other attempts after #4 (shouldn't happen)
+				return errors.New("unexpected extra attempt")
+			}
+		})
+
+		// 1) Execute tasks for the first time - should succeed on attempt #1
+		err := init.ExecuteTasks(appCtx, task)
+		defer init.Stop(nil)
+		require.NoError(t, err, "ExecuteTasks should not error")
+
+		// Wait for the first success
+		err = init.WaitForTasks(appCtx)
+		require.NoError(t, err, "first attempt should succeed without errors")
+
+		// Confirm it's in the SUCCEEDED state now
+		st := TaskState(task.state.Load())
+		require.Equal(t, TaskSucceeded, st, "task should be succeeded after first attempt")
+		require.Equal(t, int32(1), attempts, "should have run exactly once so far")
+
+		// 2) The task is "good" for a while
+		time.Sleep(time.Millisecond * 100)
+
+		// 3) Manually mark the task as failed
+		init.MarkTaskAsFailed(task.Name, errors.New("manual forced failure after success"))
+
+		// After forcing it to fail, with AutoRetry=true the loop re-runs it:
+		// attempts #2 and #3 fail quickly, #4 succeeds. WaitForTasks returns as soon
+		// as the task is in a terminal state, including Failed between retries, so
+		// wait for the success itself.
+		require.Eventually(t, func() bool {
+			return TaskState(task.state.Load()) == TaskSucceeded
+		}, 3*time.Second, 5*time.Millisecond, "final attempt should succeed eventually")
+		err = init.WaitForTasks(appCtx)
+		require.NoError(t, err, "final attempt should succeed eventually")
+
+		// Check that we ended up with SUCCEEDED state
+		st = TaskState(task.state.Load())
+		assert.Equal(t, TaskSucceeded, st, "task should be succeeded after final attempt")
+
+		// We expect attempts to be at least 4 now
+		finalAttempts := attempts
+		assert.Equal(t, int32(4), finalAttempts, "should have attempted 4 times in total")
 	})
-
-	// 1) Execute tasks for the first time - should succeed on attempt #1
-	err := init.ExecuteTasks(appCtx, task)
-	defer init.Stop(nil)
-	require.NoError(t, err, "ExecuteTasks should not error")
-
-	// Wait for the first success
-	err = init.WaitForTasks(appCtx)
-	require.NoError(t, err, "first attempt should succeed without errors")
-
-	// Confirm it's in the SUCCEEDED state now
-	st := TaskState(task.state.Load())
-	require.Equal(t, TaskSucceeded, st, "task should be succeeded after first attempt")
-	require.Equal(t, int32(1), attempts, "should have run exactly once so far")
-
-	// 2) The task is "good" for a while
-	time.Sleep(time.Millisecond * 100)
-
-	// 3) Manually mark the task as failed
-	init.MarkTaskAsFailed(task.Name, errors.New("manual forced failure after success"))
-
-	// After forcing it to fail, with AutoRetry=true the loop re-runs it:
-	// attempts #2 and #3 fail quickly, #4 succeeds. WaitForTasks returns as soon
-	// as the task is in a terminal state, including Failed between retries, so
-	// wait for the success itself.
-	require.Eventually(t, func() bool {
-		return TaskState(task.state.Load()) == TaskSucceeded
-	}, 3*time.Second, 5*time.Millisecond, "final attempt should succeed eventually")
-	err = init.WaitForTasks(appCtx)
-	require.NoError(t, err, "final attempt should succeed eventually")
-
-	// Check that we ended up with SUCCEEDED state
-	st = TaskState(task.state.Load())
-	assert.Equal(t, TaskSucceeded, st, "task should be succeeded after final attempt")
-
-	// We expect attempts to be at least 4 now
-	finalAttempts := attempts
-	assert.Equal(t, int32(4), finalAttempts, "should have attempted 4 times in total")
 }
 
 func TestInitializer_MarkAsFailedUnblocksWaitThenRetries(t *testing.T) {
-	conf := &InitializerConfig{
-		TaskTimeout:   500 * time.Millisecond,
-		AutoRetry:     true, // We'll rely on auto-retry to eventually succeed
-		RetryMinDelay: time.Millisecond * 50,
-		RetryMaxDelay: time.Millisecond * 50,
-	}
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	init := setupInitializer(t, appCtx, conf)
-
-	// This task function will block until context is canceled
-	// (i.e., it doesn't naturally exit).
-	blockingFn := func(ctx context.Context) error {
-		<-ctx.Done()
-		return ctx.Err()
-	}
-
-	// We'll make it so that on the third attempt, it succeeds quickly.
-	var attemptCount int32
-	customFn := func(ctx context.Context) error {
-		attemptCount++
-		if attemptCount == 3 {
-			return nil // third attempt succeeds
+	synctest.Test(t, func(t *testing.T) {
+		conf := &InitializerConfig{
+			TaskTimeout:   500 * time.Millisecond,
+			AutoRetry:     true, // We'll rely on auto-retry to eventually succeed
+			RetryMinDelay: time.Millisecond * 50,
+			RetryMaxDelay: time.Millisecond * 50,
 		}
-		// first/second attempt never returns unless forcibly canceled/failed
-		return blockingFn(ctx)
-	}
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		init := setupInitializer(t, appCtx, conf)
 
-	task := NewBootstrapTask("blocked-then-succeed", customFn)
+		// This task function will block until context is canceled
+		// (i.e., it doesn't naturally exit).
+		blockingFn := func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}
 
-	// Execute the task. The first attempt will start running and block.
-	err := init.ExecuteTasks(appCtx, task)
-	require.Error(t, err, "First attempt ExecuteTasks() should have timeout error")
+		// We'll make it so that on the third attempt, it succeeds quickly.
+		var attemptCount int32
+		customFn := func(ctx context.Context) error {
+			attemptCount++
+			if attemptCount == 3 {
+				return nil // third attempt succeeds
+			}
+			// first/second attempt never returns unless forcibly canceled/failed
+			return blockingFn(ctx)
+		}
 
-	// Give the task time to get into RUNNING state with second attempt.
-	time.Sleep(time.Millisecond * 80)
+		task := NewBootstrapTask("blocked-then-succeed", customFn)
 
-	// We'll have a goroutine that waits on the task. It should block until the task is forcibly failed.
-	waitErrCh := make(chan error)
-	go func() {
-		waitErrCh <- task.Wait(appCtx)
-	}()
+		// Execute the task. The first attempt will start running and block.
+		err := init.ExecuteTasks(appCtx, task)
+		require.Error(t, err, "First attempt ExecuteTasks() should have timeout error")
 
-	// Now mark the task as failed. This should:
-	// 1) cause Wait() to unblock with an error.
-	// 2) trigger a third attempt if AutoRetry=true.
-	customErr := errors.New("manual fail to unblock waiters")
-	go func() {
-		time.Sleep(time.Millisecond * 5)
-		init.MarkTaskAsFailed(task.Name, customErr)
-	}()
+		// Give the task time to get into RUNNING state with second attempt.
+		time.Sleep(time.Millisecond * 80)
 
-	unblockedErr := <-waitErrCh
-	require.Error(t, unblockedErr, "Wait() should be unblocked with an error when MarkTaskAsFailed is called")
-	assert.Equal(t, customErr, unblockedErr, "Wait() should return the custom error")
+		// We'll have a goroutine that waits on the task. It should block until the task is forcibly failed.
+		waitErrCh := make(chan error)
+		go func() {
+			waitErrCh <- task.Wait(appCtx)
+		}()
 
-	// Wait for the second attempt to finish
-	time.Sleep(time.Millisecond * 100)
+		// Now mark the task as failed. This should:
+		// 1) cause Wait() to unblock with an error.
+		// 2) trigger a third attempt if AutoRetry=true.
+		customErr := errors.New("manual fail to unblock waiters")
+		go func() {
+			time.Sleep(time.Millisecond * 5)
+			init.MarkTaskAsFailed(task.Name, customErr)
+		}()
 
-	// Now auto-retry should notice the task is FAILED and re-run it.
-	// On the third attempt, our function is designed to succeed, so let's wait for that success.
-	ctx, cancel := context.WithTimeout(appCtx, 1*time.Second)
-	defer cancel()
+		unblockedErr := <-waitErrCh
+		require.Error(t, unblockedErr, "Wait() should be unblocked with an error when MarkTaskAsFailed is called")
+		assert.Equal(t, customErr, unblockedErr, "Wait() should return the custom error")
 
-	waitForAllErr := init.WaitForTasks(ctx)
-	require.NoError(t, waitForAllErr, "final attempt should succeed after auto-retry")
+		// Wait for the second attempt to finish
+		time.Sleep(time.Millisecond * 100)
 
-	// Verify final state is ready
-	assert.Equal(t, StateReady, init.State(), "initializer should be fully ready after second attempt")
+		// Now auto-retry should notice the task is FAILED and re-run it.
+		// On the third attempt, our function is designed to succeed, so let's wait for that success.
+		ctx, cancel := context.WithTimeout(appCtx, 1*time.Second)
+		defer cancel()
 
-	// The task should have final TaskSucceeded state
-	assert.Equal(t, TaskSucceeded, TaskState(task.state.Load()), "task should be succeeded after final attempt")
+		waitForAllErr := init.WaitForTasks(ctx)
+		require.NoError(t, waitForAllErr, "final attempt should succeed after auto-retry")
 
-	init.Stop(nil)
+		// Verify final state is ready
+		assert.Equal(t, StateReady, init.State(), "initializer should be fully ready after second attempt")
+
+		// The task should have final TaskSucceeded state
+		assert.Equal(t, TaskSucceeded, TaskState(task.state.Load()), "task should be succeeded after final attempt")
+
+		init.Stop(nil)
+	})
 }
 
 func TestInitializer_SyncOncePatternNoGoroutineLeak(t *testing.T) {
-	appCtx, cancel := context.WithCancel(context.Background())
-	init := setupInitializer(t, appCtx, nil)
+	synctest.Test(t, func(t *testing.T) {
+		appCtx, cancel := context.WithCancel(context.Background())
+		init := setupInitializer(t, appCtx, nil)
 
-	slowTask := NewBootstrapTask("network/evm:1/provider/slow", func(ctx context.Context) error {
-		<-ctx.Done()
-		return ctx.Err()
-	})
-
-	var once sync.Once
-	before := runtime.NumGoroutine()
-
-	for i := 0; i < 20; i++ {
-		once.Do(func() {
-			go func() {
-				_ = init.ExecuteTasks(appCtx, slowTask)
-			}()
+		slowTask := NewBootstrapTask("network/evm:1/provider/slow", func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
 		})
-	}
 
-	time.Sleep(50 * time.Millisecond)
-	after := runtime.NumGoroutine()
+		var once sync.Once
+		before := runtime.NumGoroutine()
 
-	cancel()
-	init.Stop(nil)
+		for i := 0; i < 20; i++ {
+			once.Do(func() {
+				go func() {
+					_ = init.ExecuteTasks(appCtx, slowTask)
+				}()
+			})
+		}
 
-	// sync.Once ensures only 1 ExecuteTasks goroutine + initializer internals.
-	// Without it, 20 goroutines would pile up blocking in waitForTasks.
-	assert.Less(t, after-before, 5)
+		time.Sleep(50 * time.Millisecond)
+		after := runtime.NumGoroutine()
+
+		cancel()
+		init.Stop(nil)
+
+		// sync.Once ensures only 1 ExecuteTasks goroutine + initializer internals.
+		// Without it, 20 goroutines would pile up blocking in waitForTasks.
+		assert.Less(t, after-before, 5)
+	})
 }
 
 // TestInitializer_RangeTaskStates_YieldsAllRegistered — the streaming
@@ -1042,65 +1065,69 @@ func TestInitializer_FatalTaskKeepsSiblingRetryLoopAlive(t *testing.T) {
 // is fatal there is nothing to recover, so the loop must terminate and never
 // re-run a fatal task (no busy-loop, no wasted attempts).
 func TestInitializer_AllFatalTasksStopRetrying(t *testing.T) {
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	init := setupInitializer(t, appCtx, &InitializerConfig{
-		TaskTimeout:   time.Second,
-		AutoRetry:     true,
-		RetryMinDelay: 5 * time.Millisecond,
-		RetryMaxDelay: 10 * time.Millisecond,
-		RetryFactor:   1.5,
+	synctest.Test(t, func(t *testing.T) {
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		init := setupInitializer(t, appCtx, &InitializerConfig{
+			TaskTimeout:   time.Second,
+			AutoRetry:     true,
+			RetryMinDelay: 5 * time.Millisecond,
+			RetryMaxDelay: 10 * time.Millisecond,
+			RetryFactor:   1.5,
+		})
+		defer init.Stop(nil)
+
+		var a, b atomic.Int32
+		t1 := NewBootstrapTask("upstream/fatal-1", func(ctx context.Context) error { a.Add(1); return &fatalErr{"boom1"} })
+		t2 := NewBootstrapTask("upstream/fatal-2", func(ctx context.Context) error { b.Add(1); return &fatalErr{"boom2"} })
+
+		_ = init.ExecuteTasks(appCtx, t1, t2)
+
+		// Ample time for any (erroneous) retries to happen.
+		time.Sleep(120 * time.Millisecond)
+
+		assert.Equal(t, TaskFatal, TaskState(t1.state.Load()))
+		assert.Equal(t, TaskFatal, TaskState(t2.state.Load()))
+		assert.Equal(t, int32(1), a.Load(), "fatal task 1 must never be retried")
+		assert.Equal(t, int32(1), b.Load(), "fatal task 2 must never be retried")
+		assert.Equal(t, StateFatal, init.State())
+		assert.False(t, init.hasPendingWork(), "no pending work once every task is terminal")
 	})
-	defer init.Stop(nil)
-
-	var a, b atomic.Int32
-	t1 := NewBootstrapTask("upstream/fatal-1", func(ctx context.Context) error { a.Add(1); return &fatalErr{"boom1"} })
-	t2 := NewBootstrapTask("upstream/fatal-2", func(ctx context.Context) error { b.Add(1); return &fatalErr{"boom2"} })
-
-	_ = init.ExecuteTasks(appCtx, t1, t2)
-
-	// Ample time for any (erroneous) retries to happen.
-	time.Sleep(120 * time.Millisecond)
-
-	assert.Equal(t, TaskFatal, TaskState(t1.state.Load()))
-	assert.Equal(t, TaskFatal, TaskState(t2.state.Load()))
-	assert.Equal(t, int32(1), a.Load(), "fatal task 1 must never be retried")
-	assert.Equal(t, int32(1), b.Load(), "fatal task 2 must never be retried")
-	assert.Equal(t, StateFatal, init.State())
-	assert.False(t, init.hasPendingWork(), "no pending work once every task is terminal")
 }
 
 // TestInitializer_FatalTaskWithSucceededSiblingExits verifies the mixed
 // terminal case: one fatal + one already-succeeded task means no pending work,
 // so the loop exits cleanly (and Stop returns promptly).
 func TestInitializer_FatalTaskWithSucceededSiblingExits(t *testing.T) {
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	init := setupInitializer(t, appCtx, &InitializerConfig{
-		TaskTimeout:   time.Second,
-		AutoRetry:     true,
-		RetryMinDelay: 5 * time.Millisecond,
-		RetryMaxDelay: 10 * time.Millisecond,
-		RetryFactor:   1.5,
+	synctest.Test(t, func(t *testing.T) {
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		init := setupInitializer(t, appCtx, &InitializerConfig{
+			TaskTimeout:   time.Second,
+			AutoRetry:     true,
+			RetryMinDelay: 5 * time.Millisecond,
+			RetryMaxDelay: 10 * time.Millisecond,
+			RetryFactor:   1.5,
+		})
+
+		okTask := NewBootstrapTask("upstream/ok", func(ctx context.Context) error { return nil })
+		fatalTask := NewBootstrapTask("upstream/fatal", func(ctx context.Context) error { return &fatalErr{"permanent"} })
+
+		_ = init.ExecuteTasks(appCtx, okTask, fatalTask)
+		time.Sleep(50 * time.Millisecond)
+
+		assert.Equal(t, TaskSucceeded, TaskState(okTask.state.Load()))
+		assert.Equal(t, TaskFatal, TaskState(fatalTask.state.Load()))
+		assert.False(t, init.hasPendingWork())
+
+		done := make(chan struct{})
+		go func() { _ = init.Stop(nil); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("Stop did not return promptly after all tasks reached terminal states")
+		}
 	})
-
-	okTask := NewBootstrapTask("upstream/ok", func(ctx context.Context) error { return nil })
-	fatalTask := NewBootstrapTask("upstream/fatal", func(ctx context.Context) error { return &fatalErr{"permanent"} })
-
-	_ = init.ExecuteTasks(appCtx, okTask, fatalTask)
-	time.Sleep(50 * time.Millisecond)
-
-	assert.Equal(t, TaskSucceeded, TaskState(okTask.state.Load()))
-	assert.Equal(t, TaskFatal, TaskState(fatalTask.state.Load()))
-	assert.False(t, init.hasPendingWork())
-
-	done := make(chan struct{})
-	go func() { _ = init.Stop(nil); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not return promptly after all tasks reached terminal states")
-	}
 }
 
 // Regression: tasks scheduled after all earlier tasks succeeded must still
@@ -1142,51 +1169,53 @@ func TestInitializer_RetryLoopRestartsForNewFailedTasks(t *testing.T) {
 // Regression: a task whose Fn hangs (ignores ctx) must not block the
 // auto-retry loop for other, transiently-failing tasks.
 func TestInitializer_HungTaskDoesNotBlockRetryOfOthers(t *testing.T) {
-	conf := &InitializerConfig{
-		TaskTimeout:   time.Millisecond * 200,
-		AutoRetry:     true,
-		RetryMinDelay: time.Millisecond * 10,
-		RetryMaxDelay: time.Millisecond * 20,
-		RetryFactor:   1.2,
-	}
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	init := setupInitializer(t, appCtx, conf)
-
-	hungRelease := make(chan struct{})
-	hungTask := NewBootstrapTask("hung-task", func(ctx context.Context) error {
-		<-hungRelease // ignores ctx: simulates a client dial with no deadline
-		return nil
-	})
-
-	var attempts atomic.Int32
-	transientTask := NewBootstrapTask("transient-task", func(ctx context.Context) error {
-		if attempts.Add(1) < 3 {
-			return errors.New("transient failure")
+	synctest.Test(t, func(t *testing.T) {
+		conf := &InitializerConfig{
+			TaskTimeout:   time.Millisecond * 200,
+			AutoRetry:     true,
+			RetryMinDelay: time.Millisecond * 10,
+			RetryMaxDelay: time.Millisecond * 20,
+			RetryFactor:   1.2,
 		}
-		return nil
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		init := setupInitializer(t, appCtx, conf)
+
+		hungRelease := make(chan struct{})
+		hungTask := NewBootstrapTask("hung-task", func(ctx context.Context) error {
+			<-hungRelease // ignores ctx: simulates a client dial with no deadline
+			return nil
+		})
+
+		var attempts atomic.Int32
+		transientTask := NewBootstrapTask("transient-task", func(ctx context.Context) error {
+			if attempts.Add(1) < 3 {
+				return errors.New("transient failure")
+			}
+			return nil
+		})
+
+		go func() { _ = init.ExecuteTasks(appCtx, hungTask, transientTask) }()
+
+		require.Eventually(t, func() bool {
+			return TaskState(transientTask.state.Load()) == TaskSucceeded
+		}, 5*time.Second, 20*time.Millisecond, "transient task should eventually succeed despite the hung sibling")
+
+		// Hung attempt must be reaped to TimedOut (retryable), not left Running forever.
+		require.Eventually(t, func() bool {
+			st := TaskState(hungTask.state.Load())
+			return st == TaskTimedOut || st == TaskRunning // Running only during a brief retry window
+		}, 2*time.Second, 20*time.Millisecond)
+
+		// Observe at least one TimedOut transition (reap happened).
+		require.Eventually(t, func() bool {
+			return TaskState(hungTask.state.Load()) == TaskTimedOut ||
+				hungTask.attempts.Load() >= 2 // reaped and retried
+		}, 3*time.Second, 20*time.Millisecond, "hung task should be reaped (TimedOut) and/or retried")
+
+		close(hungRelease)
+		init.Stop(nil)
 	})
-
-	go func() { _ = init.ExecuteTasks(appCtx, hungTask, transientTask) }()
-
-	require.Eventually(t, func() bool {
-		return TaskState(transientTask.state.Load()) == TaskSucceeded
-	}, 5*time.Second, 20*time.Millisecond, "transient task should eventually succeed despite the hung sibling")
-
-	// Hung attempt must be reaped to TimedOut (retryable), not left Running forever.
-	require.Eventually(t, func() bool {
-		st := TaskState(hungTask.state.Load())
-		return st == TaskTimedOut || st == TaskRunning // Running only during a brief retry window
-	}, 2*time.Second, 20*time.Millisecond)
-
-	// Observe at least one TimedOut transition (reap happened).
-	require.Eventually(t, func() bool {
-		return TaskState(hungTask.state.Load()) == TaskTimedOut ||
-			hungTask.attempts.Load() >= 2 // reaped and retried
-	}, 3*time.Second, 20*time.Millisecond, "hung task should be reaped (TimedOut) and/or retried")
-
-	close(hungRelease)
-	init.Stop(nil)
 }
 
 func TestInitializer_State_FatalSiblingWithSuccessIsPartial(t *testing.T) {
@@ -1232,37 +1261,39 @@ func TestInitializer_State_AllFatalIsFatal(t *testing.T) {
 }
 
 func TestInitializer_WaitForTasks_ParallelDoesNotSerializeOnSlowSibling(t *testing.T) {
-	conf := &InitializerConfig{
-		TaskTimeout: time.Second,
-		AutoRetry:   false,
-	}
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	init := setupInitializer(t, appCtx, conf)
-
-	slowStarted := make(chan struct{})
-	slow := NewBootstrapTask("slow", func(ctx context.Context) error {
-		close(slowStarted)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Second):
-			return nil
+	synctest.Test(t, func(t *testing.T) {
+		conf := &InitializerConfig{
+			TaskTimeout: time.Second,
+			AutoRetry:   false,
 		}
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		init := setupInitializer(t, appCtx, conf)
+
+		slowStarted := make(chan struct{})
+		slow := NewBootstrapTask("slow", func(ctx context.Context) error {
+			close(slowStarted)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Second):
+				return nil
+			}
+		})
+		fast := NewBootstrapTask("fast", func(ctx context.Context) error { return nil })
+
+		go func() { _ = init.ExecuteTasks(appCtx, slow, fast) }()
+		<-slowStarted
+
+		// Short wait: with sequential Wait, a slow-first Range order could burn the
+		// whole budget before observing fast. Parallel wait must see fast succeed.
+		waitCtx, waitCancel := context.WithTimeout(appCtx, 100*time.Millisecond)
+		defer waitCancel()
+		_ = init.WaitForTasks(waitCtx)
+
+		assert.Equal(t, TaskSucceeded, TaskState(fast.state.Load()), "fast task must complete even while slow is in-flight")
+		init.Stop(nil)
 	})
-	fast := NewBootstrapTask("fast", func(ctx context.Context) error { return nil })
-
-	go func() { _ = init.ExecuteTasks(appCtx, slow, fast) }()
-	<-slowStarted
-
-	// Short wait: with sequential Wait, a slow-first Range order could burn the
-	// whole budget before observing fast. Parallel wait must see fast succeed.
-	waitCtx, waitCancel := context.WithTimeout(appCtx, 100*time.Millisecond)
-	defer waitCancel()
-	_ = init.WaitForTasks(waitCtx)
-
-	assert.Equal(t, TaskSucceeded, TaskState(fast.state.Load()), "fast task must complete even while slow is in-flight")
-	init.Stop(nil)
 }
 
 type testFatalError struct{ error }

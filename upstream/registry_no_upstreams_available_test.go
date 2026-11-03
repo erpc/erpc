@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -83,40 +84,42 @@ func TestErrStillInitializing_ZeroThresholdKeepsInitializing(t *testing.T) {
 // the network has been stuck past the threshold, the same call reports that no
 // provider is available for it.
 func TestPrepareUpstreamsForNetwork_ReportsNoProvidersOnceStale(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	// No mocks at all: chain-id detection fails, so nothing ever registers.
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		// No mocks at all: chain-id detection fails, so nothing ever registers.
 
-	withNoUpstreamsAvailableAfter(t, 5*time.Minute)
-	reg, _ := newBootstrapTestRegistry(t)
-	reg.Bootstrap(t.Context())
+		withNoUpstreamsAvailableAfter(t, 5*time.Minute)
+		reg, _ := newBootstrapTestRegistry(t)
+		reg.Bootstrap(t.Context())
 
-	prepare := func() error {
-		// Short deadline: the wait loop otherwise sits for its full 30s budget
-		// hoping an upstream shows up.
-		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+		prepare := func() error {
+			// Short deadline: the wait loop otherwise sits for its full 30s budget
+			// hoping an upstream shows up.
+			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+			defer cancel()
+			return reg.PrepareUpstreamsForNetwork(ctx, "evm:123")
+		}
+
+		err := prepare()
+		require.Error(t, err)
+		require.Empty(t, reg.GetNetworkUpstreams(t.Context(), "evm:123"), "no upstream should have registered")
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeNetworkInitializing),
+			"a network that just started bootstrapping is still initializing, got: %v", err)
+
+		// Same network, same failure, five minutes older. The caller's full wait
+		// budget is available, yet the verdict must come without waiting it out:
+		// a still-failing upstream task must not hold every request for 30s.
+		reg.networkFirstPreparedAt.Store("evm:123", time.Now().Add(-6*time.Minute))
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
-		return reg.PrepareUpstreamsForNetwork(ctx, "evm:123")
-	}
-
-	err := prepare()
-	require.Error(t, err)
-	require.Empty(t, reg.GetNetworkUpstreams(t.Context(), "evm:123"), "no upstream should have registered")
-	assert.True(t, common.HasErrorCode(err, common.ErrCodeNetworkInitializing),
-		"a network that just started bootstrapping is still initializing, got: %v", err)
-
-	// Same network, same failure, five minutes older. The caller's full wait
-	// budget is available, yet the verdict must come without waiting it out:
-	// a still-failing upstream task must not hold every request for 30s.
-	reg.networkFirstPreparedAt.Store("evm:123", time.Now().Add(-6*time.Minute))
-
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	start := time.Now()
-	err = reg.PrepareUpstreamsForNetwork(ctx, "evm:123")
-	require.Error(t, err)
-	assert.Less(t, time.Since(start), time.Second, "a stale unserved network must fail fast")
-	assert.True(t, common.HasErrorCode(err, common.ErrCodeNetworkNoUpstreamsAvailable),
-		"a network stuck with zero upstreams past the threshold is unavailable, got: %v", err)
-	assert.Contains(t, err.Error(), "evm:123")
+		start := time.Now()
+		err = reg.PrepareUpstreamsForNetwork(ctx, "evm:123")
+		require.Error(t, err)
+		assert.Less(t, time.Since(start), time.Second, "a stale unserved network must fail fast")
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeNetworkNoUpstreamsAvailable),
+			"a network stuck with zero upstreams past the threshold is unavailable, got: %v", err)
+		assert.Contains(t, err.Error(), "evm:123")
+	})
 }

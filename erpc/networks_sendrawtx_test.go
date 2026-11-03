@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -45,175 +46,181 @@ const expectedEIP1559TxHash = "0xb9f61197f9c6c63a6981ba69fb22308469d03a4e013b10b
 
 func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
 	t.Run("AlreadyKnownReturnsSuccess", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// Upstream returns "already known" error
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "already known",
-				},
-			})
+			// Upstream returns "already known" error
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "already known",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should succeed (idempotent) - error is converted to success
-		require.NoError(t, err)
-		require.NotNil(t, resp)
+			// Should succeed (idempotent) - error is converted to success
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
 
-		// Result should be the transaction hash
-		result := jrr.GetResultString()
-		assert.Contains(t, result, "0x")
+			// Result should be the transaction hash
+			result := jrr.GetResultString()
+			assert.Contains(t, result, "0x")
+		})
 	})
 
 	t.Run("NonceTooLowWithMatchingTxReturnsSuccess", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First: upstream returns "nonce too low" error
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "nonce too low",
-				},
-			})
+			// First: upstream returns "nonce too low" error
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "nonce too low",
+					},
+				})
 
-		// Then: eth_getTransactionByHash returns the matching transaction
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": map[string]interface{}{
-					"hash":        expectedTxHash,
-					"nonce":       "0x9",
-					"blockHash":   "0x1234567890abcdef",
-					"blockNumber": "0x100",
-					"from":        "0x1234567890123456789012345678901234567890",
-					"to":          "0x3535353535353535353535353535353535353535",
-					"value":       "0xde0b6b3a7640000",
-				},
-			})
+			// Then: eth_getTransactionByHash returns the matching transaction
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": map[string]interface{}{
+						"hash":        expectedTxHash,
+						"nonce":       "0x9",
+						"blockHash":   "0x1234567890abcdef",
+						"blockNumber": "0x100",
+						"from":        "0x1234567890123456789012345678901234567890",
+						"to":          "0x3535353535353535353535353535353535353535",
+						"value":       "0xde0b6b3a7640000",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should succeed - tx exists on chain
-		require.NoError(t, err)
-		require.NotNil(t, resp)
+			// Should succeed - tx exists on chain
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
 
-		// Result should be the transaction hash
-		result := jrr.GetResultString()
-		assert.Contains(t, result, "0x")
+			// Result should be the transaction hash
+			result := jrr.GetResultString()
+			assert.Contains(t, result, "0x")
+		})
 	})
 
 	t.Run("NonceTooLowWithNoMatchingTxReturnsError", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First: upstream returns "nonce too low" error
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "nonce too low",
-				},
-			})
+			// First: upstream returns "nonce too low" error
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "nonce too low",
+					},
+				})
 
-		// Then: eth_getTransactionByHash returns null (tx not found)
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  nil,
-			})
+			// Then: eth_getTransactionByHash returns null (tx not found)
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  nil,
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should return error - different tx with same nonce
-		require.Error(t, err)
+			// Should return error - different tx with same nonce
+			require.Error(t, err)
 
-		// The error should be normalized to -32003 (Transaction rejected)
-		var jrpcErr *common.ErrJsonRpcExceptionInternal
-		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
-			// Check that it contains the original message
-			assert.Contains(t, err.Error(), "nonce too low")
-		} else {
-			// Accept other error types as long as they indicate failure
-			assert.NotNil(t, err)
-		}
-		_ = jrpcErr
-		_ = resp
+			// The error should be normalized to -32003 (Transaction rejected)
+			var jrpcErr *common.ErrJsonRpcExceptionInternal
+			if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
+				// Check that it contains the original message
+				assert.Contains(t, err.Error(), "nonce too low")
+			} else {
+				// Accept other error types as long as they indicate failure
+				assert.NotNil(t, err)
+			}
+			_ = jrpcErr
+			_ = resp
+		})
 	})
 
 	// HyperEVM returns opaque "Unexpected error (code=10055)" (JSON-RPC -32100)
@@ -221,529 +228,549 @@ func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
 	// funds / underpriced). Classify as nonce-too-low so we verify on-chain
 	// instead of failing over to ErrUpstreamsExhausted or treating as already-known.
 	t.Run("HyperEVMCode10055WithMatchingTxReturnsSuccess", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32100,
-					"message": "Unexpected error (code=10055)",
-				},
-			})
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32100,
+						"message": "Unexpected error (code=10055)",
+					},
+				})
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": map[string]interface{}{
-					"hash":        expectedTxHash,
-					"nonce":       "0x9",
-					"blockHash":   "0x1234567890abcdef",
-					"blockNumber": "0x100",
-					"from":        "0x1234567890123456789012345678901234567890",
-					"to":          "0x3535353535353535353535353535353535353535",
-					"value":       "0xde0b6b3a7640000",
-				},
-			})
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": map[string]interface{}{
+						"hash":        expectedTxHash,
+						"nonce":       "0x9",
+						"blockHash":   "0x1234567890abcdef",
+						"blockNumber": "0x100",
+						"from":        "0x1234567890123456789012345678901234567890",
+						"to":          "0x3535353535353535353535353535353535353535",
+						"value":       "0xde0b6b3a7640000",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		require.NoError(t, err, "HyperEVM 10055 with matching tx should convert to success")
-		require.NotNil(t, resp)
+			require.NoError(t, err, "HyperEVM 10055 with matching tx should convert to success")
+			require.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), "0x")
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, jrr.GetResultString(), "0x")
+		})
 	})
 
 	t.Run("HyperEVMCode10055WithNoMatchingTxReturnsError", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32100,
-					"message": "Unexpected error (code=10055)",
-				},
-			})
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32100,
+						"message": "Unexpected error (code=10055)",
+					},
+				})
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  nil,
-			})
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  nil,
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		_, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			_, err := network.Forward(ctx, req)
 
-		require.Error(t, err, "10055 without matching tx must remain an error (e.g. insufficient funds)")
-		assert.NotContains(t, err.Error(), "ErrUpstreamsExhausted")
-		assert.Contains(t, err.Error(), "code=10055")
+			require.Error(t, err, "10055 without matching tx must remain an error (e.g. insufficient funds)")
+			assert.NotContains(t, err.Error(), "ErrUpstreamsExhausted")
+			assert.Contains(t, err.Error(), "code=10055")
+		})
 	})
 
 	t.Run("ExecutionRevertedIsRetryableAcrossUpstreams", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First upstream returns execution reverted
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    3,
-					"message": "execution reverted",
-				},
+			// First upstream returns execution reverted
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    3,
+						"message": "execution reverted",
+					},
+				})
+
+			// Second upstream succeeds
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			// Use retry policy to enable retrying across upstreams
+			network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+				Delay:       common.Duration(10 * time.Millisecond),
 			})
 
-		// Second upstream succeeds
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			// Should succeed - retried to second upstream
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		// Use retry policy to enable retrying across upstreams
-		network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
-			MaxAttempts: 3,
-			Delay:       common.Duration(10 * time.Millisecond),
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+
+			result := jrr.GetResultString()
+			assert.Contains(t, result, expectedTxHash)
 		})
-
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-
-		// Should succeed - retried to second upstream
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-
-		result := jrr.GetResultString()
-		assert.Contains(t, result, expectedTxHash)
 	})
 
 	t.Run("AllUpstreamsRevertReturnsRevertError", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// Both upstreams return execution reverted
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    3,
-					"message": "execution reverted: insufficient balance",
-				},
+			// Both upstreams return execution reverted
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    3,
+						"message": "execution reverted: insufficient balance",
+					},
+				})
+
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    3,
+						"message": "execution reverted: insufficient balance",
+					},
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+				Delay:       common.Duration(10 * time.Millisecond),
 			})
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    3,
-					"message": "execution reverted: insufficient balance",
-				},
-			})
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
-			MaxAttempts: 3,
-			Delay:       common.Duration(10 * time.Millisecond),
+			// Should return the execution exception error (not ErrFailsafeRetryExceeded)
+			require.Error(t, err)
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
+				"expected ErrCodeEndpointExecutionException but got: %v", err)
+			_ = resp
 		})
-
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-
-		// Should return the execution exception error (not ErrFailsafeRetryExceeded)
-		require.Error(t, err)
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
-			"expected ErrCodeEndpointExecutionException but got: %v", err)
-		_ = resp
 	})
 
 	t.Run("HedgeWorksForSendRawTransaction", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First upstream is slow
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			Delay(500 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
+			// First upstream is slow
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				Delay(500 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
+
+			// Second upstream (hedged) is fast and returns "already known"
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				Delay(50 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "already known",
+					},
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupSendRawTxTestNetworkWithHedge(t, ctx, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(100 * time.Millisecond),
+				MaxCount: 1,
 			})
 
-		// Second upstream (hedged) is fast and returns "already known"
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			Delay(50 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "already known",
-				},
-			})
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			// Should succeed - hedged request returned "already known" which is converted to success
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		network := setupSendRawTxTestNetworkWithHedge(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(100 * time.Millisecond),
-			MaxCount: 1,
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+
+			result := jrr.GetResultString()
+			assert.Contains(t, result, "0x")
 		})
-
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-
-		// Should succeed - hedged request returned "already known" which is converted to success
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-
-		result := jrr.GetResultString()
-		assert.Contains(t, result, "0x")
 	})
 
 	t.Run("ReplacementUnderpricedRemainsError", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// Upstream returns "replacement transaction underpriced" - this should NOT be converted to success
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "replacement transaction underpriced",
-				},
-			})
+			// Upstream returns "replacement transaction underpriced" - this should NOT be converted to success
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "replacement transaction underpriced",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should return error - replacement underpriced is NOT idempotent
-		require.Error(t, err)
-		_ = resp
+			// Should return error - replacement underpriced is NOT idempotent
+			require.Error(t, err)
+			_ = resp
+		})
 	})
 
 	t.Run("IdempotentBroadcastDisabledReturnsRawError", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// Upstream returns "already known" error - normally this would be converted to success
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "already known",
-				},
-			})
+			// Upstream returns "already known" error - normally this would be converted to success
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "already known",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Set up network with IdempotentTransactionBroadcast DISABLED
-		network := setupSendRawTxTestNetworkWithIdempotentDisabled(t, ctx)
+			// Set up network with IdempotentTransactionBroadcast DISABLED
+			network := setupSendRawTxTestNetworkWithIdempotentDisabled(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should return error - idempotency is disabled, so "already known" is NOT converted to success
-		require.Error(t, err)
-		_ = resp
+			// Should return error - idempotency is disabled, so "already known" is NOT converted to success
+			require.Error(t, err)
+			_ = resp
+		})
 	})
 
 	// Test that EIP-1559 (type-2) transactions work with idempotent handling
 	// This is a regression test for typed transactions not being decoded correctly
 	t.Run("EIP1559AlreadyKnownReturnsSuccess", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleEIP1559SignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleEIP1559SignedTx + `"]}`)
 
-		// Upstream returns "already known" error for EIP-1559 transaction
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "already known",
-				},
-			})
+			// Upstream returns "already known" error for EIP-1559 transaction
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "already known",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should succeed (idempotent) - EIP-1559 transactions should be handled correctly
-		require.NoError(t, err, "EIP-1559 transaction should be parsed and converted to success")
-		require.NotNil(t, resp)
+			// Should succeed (idempotent) - EIP-1559 transactions should be handled correctly
+			require.NoError(t, err, "EIP-1559 transaction should be parsed and converted to success")
+			require.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
 
-		// Result should be the expected EIP-1559 transaction hash
-		result := jrr.GetResultString()
-		assert.Contains(t, result, expectedEIP1559TxHash, "Result should contain the EIP-1559 transaction hash")
+			// Result should be the expected EIP-1559 transaction hash
+			result := jrr.GetResultString()
+			assert.Contains(t, result, expectedEIP1559TxHash, "Result should contain the EIP-1559 transaction hash")
+		})
 	})
 
 	// Test that nonce/duplicate detection works even when upstream uses -32003 code
 	// Some upstreams return -32003 (transaction rejected) with "already known" or "nonce too low" messages
 	t.Run("AlreadyKnownWith32003CodeReturnsSuccess", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// Upstream returns "already known" error with -32003 code (some nodes do this)
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32003, // JsonRpcErrorTransactionRejected
-					"message": "already known",
-				},
-			})
+			// Upstream returns "already known" error with -32003 code (some nodes do this)
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32003, // JsonRpcErrorTransactionRejected
+						"message": "already known",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should succeed (idempotent) - error is converted to success even with -32003 code
-		require.NoError(t, err, "already known with -32003 code should be converted to success")
-		require.NotNil(t, resp)
+			// Should succeed (idempotent) - error is converted to success even with -32003 code
+			require.NoError(t, err, "already known with -32003 code should be converted to success")
+			require.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
 
-		// Result should be the transaction hash
-		result := jrr.GetResultString()
-		assert.Contains(t, result, "0x")
+			// Result should be the transaction hash
+			result := jrr.GetResultString()
+			assert.Contains(t, result, "0x")
+		})
 	})
 
 	t.Run("NonceTooLowWith32003CodeAndMatchingTxReturnsSuccess", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First: upstream returns "nonce too low" error with -32003 code
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32003, // JsonRpcErrorTransactionRejected
-					"message": "nonce too low",
-				},
-			})
+			// First: upstream returns "nonce too low" error with -32003 code
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32003, // JsonRpcErrorTransactionRejected
+						"message": "nonce too low",
+					},
+				})
 
-		// Second: verification call returns the transaction (it exists on-chain)
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": map[string]interface{}{
-					"hash":             expectedTxHash,
-					"nonce":            "0x9",
-					"blockHash":        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-					"blockNumber":      "0x100",
-					"transactionIndex": "0x0",
-					"from":             "0x3535353535353535353535353535353535353535",
-					"to":               "0x3535353535353535353535353535353535353535",
-					"value":            "0xde0b6b3a7640000",
-					"gas":              "0x5208",
-					"gasPrice":         "0x4a817c800",
-					"input":            "0x",
-				},
-			})
+			// Second: verification call returns the transaction (it exists on-chain)
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": map[string]interface{}{
+						"hash":             expectedTxHash,
+						"nonce":            "0x9",
+						"blockHash":        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+						"blockNumber":      "0x100",
+						"transactionIndex": "0x0",
+						"from":             "0x3535353535353535353535353535353535353535",
+						"to":               "0x3535353535353535353535353535353535353535",
+						"value":            "0xde0b6b3a7640000",
+						"gas":              "0x5208",
+						"gasPrice":         "0x4a817c800",
+						"input":            "0x",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should succeed - transaction exists on-chain, idempotent success even with -32003 code
-		require.NoError(t, err, "nonce too low with -32003 code should be verified and converted to success")
-		require.NotNil(t, resp)
+			// Should succeed - transaction exists on-chain, idempotent success even with -32003 code
+			require.NoError(t, err, "nonce too low with -32003 code should be verified and converted to success")
+			require.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
 
-		result := jrr.GetResultString()
-		assert.Contains(t, result, "0x")
+			result := jrr.GetResultString()
+			assert.Contains(t, result, "0x")
+		})
 	})
 
 	// ============================================================
@@ -752,794 +779,763 @@ func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
 
 	// Happy path: First upstream succeeds immediately (most common case)
 	t.Run("FirstUpstreamSucceedsImmediately", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First upstream succeeds immediately
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
+			// First upstream succeeds immediately
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		require.NoError(t, err)
-		require.NotNil(t, resp)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), expectedTxHash)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, jrr.GetResultString(), expectedTxHash)
+		})
 	})
 
 	// Geth-style "known transaction: <hash>" message
 	t.Run("GethStyleKnownTransactionWithHash", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// Geth returns "known transaction: <hash>" format
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "known transaction: " + expectedTxHash,
-				},
-			})
+			// Geth returns "known transaction: <hash>" format
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "known transaction: " + expectedTxHash,
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should succeed - "known transaction" is idempotent
-		require.NoError(t, err, "Geth-style 'known transaction: hash' should be converted to success")
-		require.NotNil(t, resp)
+			// Should succeed - "known transaction" is idempotent
+			require.NoError(t, err, "Geth-style 'known transaction: hash' should be converted to success")
+			require.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), "0x")
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, jrr.GetResultString(), "0x")
+		})
 	})
 
 	// Insufficient funds should fail fast instead of retrying across upstreams.
 	t.Run("InsufficientFundsIsNotRetriedAcrossUpstreams", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// Single upstream returns "insufficient funds"
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "insufficient funds for gas * price + value",
+			// Single upstream returns "insufficient funds"
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "insufficient funds for gas * price + value",
+					},
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			upstreamConfigs := []*common.UpstreamConfig{{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
 				},
-			})
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		upstreamConfigs := []*common.UpstreamConfig{{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}}
-		networkConfig := &common.NetworkConfig{
-			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				ChainId: 123,
-			},
-			Failsafe: []*common.FailsafeConfig{{
-				Retry: &common.RetryPolicyConfig{
-					MaxAttempts: 3,
-					Delay:       common.Duration(10 * time.Millisecond),
+			}}
+			networkConfig := &common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
 				},
-			}},
-		}
-		network := setupSendRawTxNetwork(t, ctx, upstreamConfigs, networkConfig)
+				Failsafe: []*common.FailsafeConfig{{
+					Retry: &common.RetryPolicyConfig{
+						MaxAttempts: 3,
+						Delay:       common.Duration(10 * time.Millisecond),
+					},
+				}},
+			}
+			network := setupSendRawTxNetwork(t, ctx, upstreamConfigs, networkConfig)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should fail fast with the deterministic balance error and never retry the same upstream.
-		require.Error(t, err, "insufficient funds should not be retried to other upstreams")
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
-			"expected ErrCodeEndpointExecutionException but got: %v", err)
-		assert.Nil(t, resp)
-		assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
-			"insufficient funds should not trigger retry attempts")
+			// Should fail fast with the deterministic balance error and never retry the same upstream.
+			require.Error(t, err, "insufficient funds should not be retried to other upstreams")
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
+				"expected ErrCodeEndpointExecutionException but got: %v", err)
+			assert.Nil(t, resp)
+			assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
+				"insufficient funds should not trigger retry attempts")
+		})
 	})
 
 	// Verification call returns error (not null) - should return original nonce error
 	t.Run("NonceTooLowVerificationReturnsError", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First: upstream returns "nonce too low"
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "nonce too low",
-				},
-			})
+			// First: upstream returns "nonce too low"
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "nonce too low",
+					},
+				})
 
-		// Then: verification call returns an error (upstream issue)
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "internal error",
-				},
-			})
+			// Then: verification call returns an error (upstream issue)
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "internal error",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should return error - verification failed, so we can't confirm idempotency
-		require.Error(t, err, "should return error when verification call fails")
-		_ = resp
+			// Should return error - verification failed, so we can't confirm idempotency
+			require.Error(t, err, "should return error when verification call fails")
+			_ = resp
+		})
 	})
 
 	// User sends same tx twice: first succeeds, second gets "already known" - both should succeed
 	t.Run("SameTransactionSentTwice", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First request succeeds
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
+			// First request succeeds
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		// First request
-		req1 := common.NewNormalizedRequest(requestBytes)
-		resp1, err1 := network.Forward(ctx, req1)
-		require.NoError(t, err1)
-		jrr1, _ := resp1.JsonRpcResponse()
-		assert.Contains(t, jrr1.GetResultString(), expectedTxHash)
+			// First request
+			req1 := common.NewNormalizedRequest(requestBytes)
+			resp1, err1 := network.Forward(ctx, req1)
+			require.NoError(t, err1)
+			jrr1, _ := resp1.JsonRpcResponse()
+			assert.Contains(t, jrr1.GetResultString(), expectedTxHash)
 
-		// Reset mocks for second request
-		util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+			// Reset mocks for second request
+			util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		// Second request gets "already known"
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "already known",
-				},
-			})
+			// Second request gets "already known"
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "already known",
+					},
+				})
 
-		// Second request
-		req2 := common.NewNormalizedRequest(requestBytes)
-		resp2, err2 := network.Forward(ctx, req2)
-		require.NoError(t, err2, "second request with 'already known' should succeed")
-		jrr2, _ := resp2.JsonRpcResponse()
-		assert.Contains(t, jrr2.GetResultString(), "0x")
+			// Second request
+			req2 := common.NewNormalizedRequest(requestBytes)
+			resp2, err2 := network.Forward(ctx, req2)
+			require.NoError(t, err2, "second request with 'already known' should succeed")
+			jrr2, _ := resp2.JsonRpcResponse()
+			assert.Contains(t, jrr2.GetResultString(), "0x")
+		})
 	})
 
 	// EIP-2930 (type-1) access list transaction
 	// Format: 0x01 || rlp([chainId, nonce, gasPrice, gasLimit, to, value, data, accessList, v, r, s])
 	t.Run("EIP2930AccessListTransaction", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		// EIP-2930 transaction (type 1) - access list transaction
-		// Generated with ethers.js: wallet.signTransaction({ type: 1, chainId: 1, nonce: 5, ... })
-		eip2930Tx := "0x01f8a30105843b9aca00825208943535353535353535353535353535353535353535880de0b6b3a764000080f838f7943535353535353535353535353535353535353535e1a00000000000000000000000000000000000000000000000000000000000000000" +
-			"80a0b50409ac5bc0a54c0d37db42f9e6e2d29cdf4c6c0c4f7c45b3e0e0c7c9b8b7a6a03f5d5e5a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475"
+			// EIP-2930 transaction (type 1) - access list transaction
+			// Generated with ethers.js: wallet.signTransaction({ type: 1, chainId: 1, nonce: 5, ... })
+			eip2930Tx := "0x01f8a30105843b9aca00825208943535353535353535353535353535353535353535880de0b6b3a764000080f838f7943535353535353535353535353535353535353535e1a00000000000000000000000000000000000000000000000000000000000000000" +
+				"80a0b50409ac5bc0a54c0d37db42f9e6e2d29cdf4c6c0c4f7c45b3e0e0c7c9b8b7a6a03f5d5e5a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475"
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + eip2930Tx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + eip2930Tx + `"]}`)
 
-		// Note: This tx might not parse correctly due to invalid signature - that's fine, we're testing error handling
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "already known",
-				},
-			})
+			// Note: This tx might not parse correctly due to invalid signature - that's fine, we're testing error handling
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "already known",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// If tx parses successfully, should return success
-		// If tx fails to parse, should return original "already known" error (which is still handled)
-		// Either way, we shouldn't panic
-		if err == nil {
-			jrr, _ := resp.JsonRpcResponse()
-			assert.Contains(t, jrr.GetResultString(), "0x")
-		}
-		// Test passes as long as we don't panic
+			// If tx parses successfully, should return success
+			// If tx fails to parse, should return original "already known" error (which is still handled)
+			// Either way, we shouldn't panic
+			if err == nil {
+				jrr, _ := resp.JsonRpcResponse()
+				assert.Contains(t, jrr.GetResultString(), "0x")
+			}
+			// Test passes as long as we don't panic
+		})
 	})
 
 	// Invalid transaction hex - should return error gracefully
 	t.Run("InvalidTransactionHex", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		// Invalid hex (not a valid transaction)
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0xnotvalidhex"]}`)
+			// Invalid hex (not a valid transaction)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0xnotvalidhex"]}`)
 
-		// Upstream returns "already known" - but we can't parse the tx
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "already known",
-				},
-			})
+			// Upstream returns "already known" - but we can't parse the tx
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "already known",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should return original error since we can't parse the tx to get the hash
-		// The idempotency hook returns the original error when parsing fails
-		require.Error(t, err, "should return error when tx cannot be parsed")
-		_ = resp
+			// Should return original error since we can't parse the tx to get the hash
+			// The idempotency hook returns the original error when parsing fails
+			require.Error(t, err, "should return error when tx cannot be parsed")
+			_ = resp
+		})
 	})
 
 	// Alternative message: "nonce has already been used" (Alchemy format)
 	t.Run("AlchemyStyleNonceAlreadyUsed", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// Alchemy-style error message
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "nonce has already been used",
-				},
-			})
+			// Alchemy-style error message
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "nonce has already been used",
+					},
+				})
 
-		// Verification finds the tx
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": map[string]interface{}{
-					"hash": expectedTxHash,
-				},
-			})
+			// Verification finds the tx
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": map[string]interface{}{
+						"hash": expectedTxHash,
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should succeed - "nonce has already been used" is recognized
-		require.NoError(t, err, "'nonce has already been used' should trigger verification")
-		require.NotNil(t, resp)
+			// Should succeed - "nonce has already been used" is recognized
+			require.NoError(t, err, "'nonce has already been used' should trigger verification")
+			require.NotNil(t, resp)
+		})
 	})
 
 	// Base fee error - should NOT be converted to success (not idempotent)
 	t.Run("MaxFeePerGasLessThanBaseFeeRemainsError", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleEIP1559SignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleEIP1559SignedTx + `"]}`)
 
-		// Base fee error - transaction is genuinely invalid, not a duplicate
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "max fee per gas less than block base fee",
-				},
-			})
+			// Base fee error - transaction is genuinely invalid, not a duplicate
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "max fee per gas less than block base fee",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should return error - this is not an idempotent case
-		require.Error(t, err, "base fee error should not be converted to success")
-		_ = resp
+			// Should return error - this is not an idempotent case
+			require.Error(t, err, "base fee error should not be converted to success")
+			_ = resp
+		})
 	})
 
 	// HTTP 500 from upstream - should be retryable
 	t.Run("HTTP500IsRetryable", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First upstream returns HTTP 500
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(500).
-			BodyString("Internal Server Error")
+			// First upstream returns HTTP 500
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(500).
+				BodyString("Internal Server Error")
 
-		// Second upstream succeeds
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
+			// Second upstream succeeds
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+				Delay:       common.Duration(10 * time.Millisecond),
 			})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
-			MaxAttempts: 3,
-			Delay:       common.Duration(10 * time.Millisecond),
+			// Should succeed - retried after HTTP 500
+			require.NoError(t, err, "HTTP 500 should trigger retry to second upstream")
+			require.NotNil(t, resp)
+
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, jrr.GetResultString(), expectedTxHash)
 		})
-
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-
-		// Should succeed - retried after HTTP 500
-		require.NoError(t, err, "HTTP 500 should trigger retry to second upstream")
-		require.NotNil(t, resp)
-
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), expectedTxHash)
 	})
 
 	// Contract deployment transaction (to = null) - should work with idempotency
 	t.Run("ContractDeploymentAlreadyKnown", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		// Contract deployment transaction (legacy type-0, to field is empty)
-		// This is a simplified contract deployment tx
-		// Format: rlp([nonce, gasPrice, gasLimit, to (empty), value, data (contract bytecode), v, r, s])
-		contractDeployTx := "0xf8a80985174876e800830186a08080b853604580600e600039806000f350fe7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf325a0b5acb56a4d4e7c65adb35c1ba24ce2c887c95c5c7635f4f3fa7a5a5c17a4a0c9a0456f5a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475"
+			// Contract deployment transaction (legacy type-0, to field is empty)
+			// This is a simplified contract deployment tx
+			// Format: rlp([nonce, gasPrice, gasLimit, to (empty), value, data (contract bytecode), v, r, s])
+			contractDeployTx := "0xf8a80985174876e800830186a08080b853604580600e600039806000f350fe7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf325a0b5acb56a4d4e7c65adb35c1ba24ce2c887c95c5c7635f4f3fa7a5a5c17a4a0c9a0456f5a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475"
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + contractDeployTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + contractDeployTx + `"]}`)
 
-		// Upstream returns "already known"
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "already known",
-				},
-			})
+			// Upstream returns "already known"
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "already known",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Contract deployment should work with idempotency (if tx parses)
-		// If tx fails to parse due to invalid signature, original error is returned
-		if err == nil {
-			jrr, _ := resp.JsonRpcResponse()
-			assert.Contains(t, jrr.GetResultString(), "0x")
-		}
-		// Test passes as long as no panic
+			// Contract deployment should work with idempotency (if tx parses)
+			// If tx fails to parse due to invalid signature, original error is returned
+			if err == nil {
+				jrr, _ := resp.JsonRpcResponse()
+				assert.Contains(t, jrr.GetResultString(), "0x")
+			}
+			// Test passes as long as no panic
+		})
 	})
 
 	// Retry + Hedge combined policies
 	t.Run("RetryAndHedgeCombined", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First upstream is slow and returns error
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			Delay(300 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    3,
-					"message": "execution reverted",
+			// First upstream is slow and returns error
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				Delay(300 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    3,
+						"message": "execution reverted",
+					},
+				})
+
+			// Second upstream (hedged) succeeds quickly
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				Delay(50 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupSendRawTxTestNetworkWithRetryAndHedge(t, ctx,
+				&common.RetryPolicyConfig{
+					MaxAttempts: 3,
+					Delay:       common.Duration(10 * time.Millisecond),
 				},
-			})
+				&common.HedgePolicyConfig{
+					Delay:    common.NewStaticDuration(100 * time.Millisecond),
+					MaxCount: 1,
+				},
+			)
 
-		// Second upstream (hedged) succeeds quickly
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			Delay(50 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			// Should succeed via hedge
+			require.NoError(t, err, "retry+hedge combined should work")
+			require.NotNil(t, resp)
 
-		network := setupSendRawTxTestNetworkWithRetryAndHedge(t, ctx,
-			&common.RetryPolicyConfig{
-				MaxAttempts: 3,
-				Delay:       common.Duration(10 * time.Millisecond),
-			},
-			&common.HedgePolicyConfig{
-				Delay:    common.NewStaticDuration(100 * time.Millisecond),
-				MaxCount: 1,
-			},
-		)
-
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-
-		// Should succeed via hedge
-		require.NoError(t, err, "retry+hedge combined should work")
-		require.NotNil(t, resp)
-
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), expectedTxHash)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, jrr.GetResultString(), expectedTxHash)
+		})
 	})
 
 	// First upstream returns connection error, second succeeds
 	t.Run("FirstUpstreamConnectionErrorSecondSucceeds", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First upstream returns connection refused / network error
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			ReplyError(errors.New("connection refused"))
+			// First upstream returns connection refused / network error
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				ReplyError(errors.New("connection refused"))
 
-		// Second upstream succeeds
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
+			// Second upstream succeeds
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+				Delay:       common.Duration(10 * time.Millisecond),
 			})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
-			MaxAttempts: 3,
-			Delay:       common.Duration(10 * time.Millisecond),
+			// Should succeed via retry after connection error
+			require.NoError(t, err, "should retry after connection error")
+			require.NotNil(t, resp)
+
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, jrr.GetResultString(), expectedTxHash)
 		})
-
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-
-		// Should succeed via retry after connection error
-		require.NoError(t, err, "should retry after connection error")
-		require.NotNil(t, resp)
-
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), expectedTxHash)
 	})
 
 	// "tx underpriced" (not replacement) - should be retryable, not idempotent
 	t.Run("TxUnderpricedIsRetryable", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First upstream returns "tx underpriced" (gas price too low for network)
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "tx underpriced",
-				},
+			// First upstream returns "tx underpriced" (gas price too low for network)
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "tx underpriced",
+					},
+				})
+
+			// Second upstream succeeds (maybe has different gas requirements)
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+				Delay:       common.Duration(10 * time.Millisecond),
 			})
 
-		// Second upstream succeeds (maybe has different gas requirements)
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			// Should succeed via retry - "tx underpriced" is not the same as "replacement underpriced"
+			require.NoError(t, err, "tx underpriced should be retryable")
+			require.NotNil(t, resp)
 
-		network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
-			MaxAttempts: 3,
-			Delay:       common.Duration(10 * time.Millisecond),
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, jrr.GetResultString(), expectedTxHash)
 		})
-
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-
-		// Should succeed via retry - "tx underpriced" is not the same as "replacement underpriced"
-		require.NoError(t, err, "tx underpriced should be retryable")
-		require.NotNil(t, resp)
-
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), expectedTxHash)
 	})
 
 	// Mempool policy rejections (Monad-style, -32603 with no data field) are
 	// ExecutionException — breaker-neutral — but stay retryable toward other
 	// upstreams: pool contents/policies are node-local.
 	t.Run("MempoolPriorityRejectionFailsOverToNextUpstream", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First upstream rejects: an existing pool tx with same nonce wins.
-		// NOTE: no "data" field — the real wire shape (unmarshals to nil).
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32603,
-					"message": "An existing transaction had higher priority",
-				},
-			})
-
-		// Second upstream's pool does not hold the conflicting tx and accepts.
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
-			MaxAttempts: 3,
-			Delay:       common.Duration(10 * time.Millisecond),
-		})
-
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-
-		require.NoError(t, err, "priority rejection should fail over to the next upstream")
-		require.NotNil(t, resp)
-
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), expectedTxHash)
-	})
-
-	// When every upstream rejects, the client gets the original rejection as an
-	// ExecutionException — not a retry-exceeded wrapper and not a
-	// ServerSideException (which would count toward the circuit breaker).
-	t.Run("MempoolPolicyRejectionTerminalWhenAllUpstreamsReject", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
-
-		for _, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
-			gock.New(host).
+			// First upstream rejects: an existing pool tx with same nonce wins.
+			// NOTE: no "data" field — the real wire shape (unmarshals to nil).
+			gock.New("http://rpc1.localhost").
 				Post("").
 				Filter(func(r *http.Request) bool {
 					body := util.SafeReadBody(r)
@@ -1551,188 +1547,259 @@ func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
 					"id":      1,
 					"error": map[string]interface{}{
 						"code":    -32603,
-						"message": "rejected",
+						"message": "An existing transaction had higher priority",
 					},
 				})
-		}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			// Second upstream's pool does not hold the conflicting tx and accepts.
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
 
-		network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
-			MaxAttempts: 3,
-			Delay:       common.Duration(10 * time.Millisecond),
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+				Delay:       common.Duration(10 * time.Millisecond),
+			})
+
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
+
+			require.NoError(t, err, "priority rejection should fail over to the next upstream")
+			require.NotNil(t, resp)
+
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, jrr.GetResultString(), expectedTxHash)
 		})
+	})
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+	// When every upstream rejects, the client gets the original rejection as an
+	// ExecutionException — not a retry-exceeded wrapper and not a
+	// ServerSideException (which would count toward the circuit breaker).
+	t.Run("MempoolPolicyRejectionTerminalWhenAllUpstreamsReject", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		require.Error(t, err)
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
-			"expected ErrCodeEndpointExecutionException, got: %v", err)
-		assert.False(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
-			"rejections must not surface as server-side (breaker-visible) errors, got: %v", err)
-		assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
-			"both upstreams should have been tried before surfacing the rejection")
-		_ = resp
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+
+			for _, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
+				gock.New(host).
+					Post("").
+					Filter(func(r *http.Request) bool {
+						body := util.SafeReadBody(r)
+						return strings.Contains(body, "eth_sendRawTransaction")
+					}).
+					Reply(200).
+					JSON(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"error": map[string]interface{}{
+							"code":    -32603,
+							"message": "rejected",
+						},
+					})
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+				Delay:       common.Duration(10 * time.Millisecond),
+			})
+
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
+
+			require.Error(t, err)
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
+				"expected ErrCodeEndpointExecutionException, got: %v", err)
+			assert.False(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+				"rejections must not surface as server-side (breaker-visible) errors, got: %v", err)
+			assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
+				"both upstreams should have been tried before surfacing the rejection")
+			_ = resp
+		})
 	})
 
 	// "transaction type not supported" - should return error (not idempotent)
 	t.Run("TransactionTypeNotSupportedRemainsError", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleEIP1559SignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleEIP1559SignedTx + `"]}`)
 
-		// Upstream doesn't support EIP-1559
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "transaction type not supported",
-				},
-			})
+			// Upstream doesn't support EIP-1559
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "transaction type not supported",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should return error - this is not idempotent
-		require.Error(t, err, "transaction type not supported should remain an error")
-		_ = resp
+			// Should return error - this is not idempotent
+			require.Error(t, err, "transaction type not supported should remain an error")
+			_ = resp
+		})
 	})
 
 	// Empty params array - should return error gracefully
 	t.Run("EmptyParamsReturnsError", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		// Request with empty params
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":[]}`)
+			// Request with empty params
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":[]}`)
 
-		// Upstream returns error for invalid params
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32602,
-					"message": "invalid argument 0: missing value",
-				},
-			})
+			// Upstream returns error for invalid params
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32602,
+						"message": "invalid argument 0: missing value",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should return error - invalid params
-		require.Error(t, err, "empty params should return error")
-		_ = resp
+			// Should return error - invalid params
+			require.Error(t, err, "empty params should return error")
+			_ = resp
+		})
 	})
 
 	// Non-string first param - should return error gracefully
 	t.Run("NonStringParamReturnsError", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		// Request with non-string param (number instead of hex string)
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":[12345]}`)
+			// Request with non-string param (number instead of hex string)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":[12345]}`)
 
-		// Upstream returns error for invalid params
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32602,
-					"message": "invalid argument 0: hex string expected",
-				},
-			})
+			// Upstream returns error for invalid params
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32602,
+						"message": "invalid argument 0: hex string expected",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should return error - invalid params
-		require.Error(t, err, "non-string param should return error")
-		_ = resp
+			// Should return error - invalid params
+			require.Error(t, err, "non-string param should return error")
+			_ = resp
+		})
 	})
 
 	// "already imported" message variation (Besu format)
 	t.Run("BesuStyleAlreadyImported", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// Besu-style error message
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "already imported",
-				},
-			})
+			// Besu-style error message
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "already imported",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+			network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should succeed - "already imported" is idempotent
-		require.NoError(t, err, "'already imported' should be converted to success")
-		require.NotNil(t, resp)
+			// Should succeed - "already imported" is idempotent
+			require.NoError(t, err, "'already imported' should be converted to success")
+			require.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), "0x")
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, jrr.GetResultString(), "0x")
+		})
 	})
 }
 
@@ -1755,179 +1822,183 @@ func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
 // (the same call site invoked by PreparedProject.doForward in production).
 func TestNetwork_SendRawTransaction_NetworkPostForwardIntegration(t *testing.T) {
 	t.Run("AllUpstreams500_TxInNetwork_ReturnsSyntheticSuccess", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		// Use the EIP-1559 fixture: its expectedEIP1559TxHash constant is the
-		// actual keccak256 of sampleEIP1559SignedTx. (The legacy sampleSignedTx
-		// + expectedTxHash pair is broken — see review finding P-1.) We need a
-		// fixture whose constant matches reality because the new postForward
-		// cross-checks the returned hash against the locally-derived hash.
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleEIP1559SignedTx + `"]}`)
+			// Use the EIP-1559 fixture: its expectedEIP1559TxHash constant is the
+			// actual keccak256 of sampleEIP1559SignedTx. (The legacy sampleSignedTx
+			// + expectedTxHash pair is broken — see review finding P-1.) We need a
+			// fixture whose constant matches reality because the new postForward
+			// cross-checks the returned hash against the locally-derived hash.
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleEIP1559SignedTx + `"]}`)
 
-		// Every retry attempt to rpc1 returns HTTP 500. Persisted so all
-		// failsafe attempts hit the same outcome.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(500).
-			BodyString("Internal Server Error")
+			// Every retry attempt to rpc1 returns HTTP 500. Persisted so all
+			// failsafe attempts hit the same outcome.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(500).
+				BodyString("Internal Server Error")
 
-		// rpc2 also returns HTTP 500 for the broadcast.
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(500).
-			BodyString("Internal Server Error")
+			// rpc2 also returns HTTP 500 for the broadcast.
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(500).
+				BodyString("Internal Server Error")
 
-		// But the tx IS actually in the network — eth_getTransactionByHash on
-		// either upstream returns a non-null tx object whose hash field matches
-		// the locally-derived hash. This simulates an upstream that silently
-		// accepted the broadcast despite returning 5xx, or a different upstream
-		// that already saw the tx in its mempool.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": map[string]interface{}{
-					"hash":        expectedEIP1559TxHash,
-					"blockNumber": "0x123",
-					"from":        "0x0000000000000000000000000000000000000001",
-					"to":          "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
-				},
+			// But the tx IS actually in the network — eth_getTransactionByHash on
+			// either upstream returns a non-null tx object whose hash field matches
+			// the locally-derived hash. This simulates an upstream that silently
+			// accepted the broadcast despite returning 5xx, or a different upstream
+			// that already saw the tx in its mempool.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": map[string]interface{}{
+						"hash":        expectedEIP1559TxHash,
+						"blockNumber": "0x123",
+						"from":        "0x0000000000000000000000000000000000000001",
+						"to":          "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+					},
+				})
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": map[string]interface{}{
+						"hash":        expectedEIP1559TxHash,
+						"blockNumber": "0x123",
+						"from":        "0x0000000000000000000000000000000000000001",
+						"to":          "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+					},
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+				Delay:       common.Duration(10 * time.Millisecond),
 			})
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": map[string]interface{}{
-					"hash":        expectedEIP1559TxHash,
-					"blockNumber": "0x123",
-					"from":        "0x0000000000000000000000000000000000000001",
-					"to":          "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
-				},
-			})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			req := common.NewNormalizedRequest(requestBytes)
 
-		network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
-			MaxAttempts: 3,
-			Delay:       common.Duration(10 * time.Millisecond),
+			// Stage 1: bare network.Forward — failsafe loop exhausts on 500s.
+			// This is the "without the network postForward" behavior.
+			respRaw, errRaw := network.Forward(ctx, req)
+			require.Error(t, errRaw, "raw network.Forward should fail when all upstreams 500")
+			assert.True(t, common.HasErrorCode(errRaw, common.ErrCodeFailsafeRetryExceeded) ||
+				common.HasErrorCode(errRaw, common.ErrCodeUpstreamsExhausted),
+				"raw error should be exhausted-class, got: %v", errRaw)
+			log.Info().Err(errRaw).Msg("STAGE 1: bare network.Forward returned exhausted error (the bug)")
+
+			// Stage 2: feed that error through the network postForward hook (this
+			// is exactly what PreparedProject.doForward does at projects.go:265).
+			resp, err := evm.HandleNetworkPostForward(ctx, network, req, respRaw, errRaw)
+			require.NoError(t, err, "post-forward should override -32603 with synthetic success when tx is in network")
+			require.NotNil(t, resp)
+			jrr, jrrErr := resp.JsonRpcResponse()
+			require.NoError(t, jrrErr)
+			assert.Contains(t, jrr.GetResultString(), expectedEIP1559TxHash,
+				"synthetic success should carry the tx hash extracted from the signed bytes")
+			log.Info().Str("result", jrr.GetResultString()).Msg("STAGE 2: postForward returned synthetic success (the fix)")
 		})
-
-		req := common.NewNormalizedRequest(requestBytes)
-
-		// Stage 1: bare network.Forward — failsafe loop exhausts on 500s.
-		// This is the "without the network postForward" behavior.
-		respRaw, errRaw := network.Forward(ctx, req)
-		require.Error(t, errRaw, "raw network.Forward should fail when all upstreams 500")
-		assert.True(t, common.HasErrorCode(errRaw, common.ErrCodeFailsafeRetryExceeded) ||
-			common.HasErrorCode(errRaw, common.ErrCodeUpstreamsExhausted),
-			"raw error should be exhausted-class, got: %v", errRaw)
-		log.Info().Err(errRaw).Msg("STAGE 1: bare network.Forward returned exhausted error (the bug)")
-
-		// Stage 2: feed that error through the network postForward hook (this
-		// is exactly what PreparedProject.doForward does at projects.go:265).
-		resp, err := evm.HandleNetworkPostForward(ctx, network, req, respRaw, errRaw)
-		require.NoError(t, err, "post-forward should override -32603 with synthetic success when tx is in network")
-		require.NotNil(t, resp)
-		jrr, jrrErr := resp.JsonRpcResponse()
-		require.NoError(t, jrrErr)
-		assert.Contains(t, jrr.GetResultString(), expectedEIP1559TxHash,
-			"synthetic success should carry the tx hash extracted from the signed bytes")
-		log.Info().Str("result", jrr.GetResultString()).Msg("STAGE 2: postForward returned synthetic success (the fix)")
 	})
 
 	t.Run("AllUpstreams500_TxNotInNetwork_PropagatesOriginalError", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		// Same EIP-1559 fixture as the sibling subtest (matching pair of
-		// fixture + correct hash constant).
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleEIP1559SignedTx + `"]}`)
+			// Same EIP-1559 fixture as the sibling subtest (matching pair of
+			// fixture + correct hash constant).
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleEIP1559SignedTx + `"]}`)
 
-		// All broadcast attempts 500.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(500).BodyString("Internal Server Error")
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(500).BodyString("Internal Server Error")
+			// All broadcast attempts 500.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(500).BodyString("Internal Server Error")
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(500).BodyString("Internal Server Error")
 
-		// Tx is NOT in network — both upstreams return null result.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil})
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil})
+			// Tx is NOT in network — both upstreams return null result.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil})
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
-			MaxAttempts: 3,
-			Delay:       common.Duration(10 * time.Millisecond),
+			network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+				Delay:       common.Duration(10 * time.Millisecond),
+			})
+
+			req := common.NewNormalizedRequest(requestBytes)
+			respRaw, errRaw := network.Forward(ctx, req)
+			require.Error(t, errRaw)
+
+			resp, err := evm.HandleNetworkPostForward(ctx, network, req, respRaw, errRaw)
+			require.Error(t, err, "tx genuinely missing → original error must propagate")
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) ||
+				common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted),
+				"expected exhausted-class error to be preserved, got: %v", err)
+			_ = resp // may be nil — only the error matters here
+			log.Info().Err(err).Msg("regression guard: tx absent → original error preserved")
 		})
-
-		req := common.NewNormalizedRequest(requestBytes)
-		respRaw, errRaw := network.Forward(ctx, req)
-		require.Error(t, errRaw)
-
-		resp, err := evm.HandleNetworkPostForward(ctx, network, req, respRaw, errRaw)
-		require.Error(t, err, "tx genuinely missing → original error must propagate")
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) ||
-			common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted),
-			"expected exhausted-class error to be preserved, got: %v", err)
-		_ = resp // may be nil — only the error matters here
-		log.Info().Err(err).Msg("regression guard: tx absent → original error preserved")
 	})
 }
 
@@ -1936,330 +2007,338 @@ func TestNetwork_SendRawTransaction_NetworkPostForwardIntegration(t *testing.T) 
 // allows background requests to complete for maximum broadcast.
 func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 	t.Run("FireAndForgetBroadcastsToAllUpstreams", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First upstream responds immediately with success
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
+			// First upstream responds immediately with success
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
 
-		// Second upstream responds after delay (should still receive the request)
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			Delay(200 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
+			// Second upstream responds after delay (should still receive the request)
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				Delay(200 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
 
-		// Third upstream responds after longer delay (should still receive the request)
-		gock.New("http://rpc3.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			Delay(400 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
+			// Third upstream responds after longer delay (should still receive the request)
+			gock.New("http://rpc3.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				Delay(400 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkWithFireAndForget(t, ctx)
+			network := setupSendRawTxTestNetworkWithFireAndForget(t, ctx)
 
-		// Time the request
-		start := time.Now()
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-		duration := time.Since(start)
+			// Time the request
+			start := time.Now()
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
+			duration := time.Since(start)
 
-		// Should succeed quickly (short-circuit on first success)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
+			// Should succeed quickly (short-circuit on first success)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), expectedTxHash)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, jrr.GetResultString(), expectedTxHash)
 
-		// Response should be fast (first upstream responds immediately)
-		// Allow some buffer for test overhead
-		assert.Less(t, duration, 150*time.Millisecond,
-			"fire-and-forget should return quickly after first success")
+			// Response should be fast (first upstream responds immediately)
+			// Allow some buffer for test overhead
+			assert.Less(t, duration, 150*time.Millisecond,
+				"fire-and-forget should return quickly after first success")
 
-		// Wait for background requests to complete
-		time.Sleep(600 * time.Millisecond)
+			// Wait for background requests to complete
+			time.Sleep(600 * time.Millisecond)
 
-		// Verify all upstreams received the transaction
-		// Note: gock.IsDone() doesn't work with persistent mocks, so check pending count instead
-		// All non-persistent sendRawTx mocks should be consumed, leaving only the persistent state poller mocks
-		assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
-			"only persistent mocks should remain - all sendRawTx mocks should be consumed")
+			// Verify all upstreams received the transaction
+			// Note: gock.IsDone() doesn't work with persistent mocks, so check pending count instead
+			// All non-persistent sendRawTx mocks should be consumed, leaving only the persistent state poller mocks
+			assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
+				"only persistent mocks should remain - all sendRawTx mocks should be consumed")
+		})
 	})
 
 	t.Run("FireAndForgetReturnsFirstSuccessWhileOthersComplete", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First upstream returns "already known" (still a success for idempotent broadcast)
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "already known",
-				},
-			})
+			// First upstream returns "already known" (still a success for idempotent broadcast)
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "already known",
+					},
+				})
 
-		// Second and third upstreams respond with success after delays
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			Delay(200 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
+			// Second and third upstreams respond with success after delays
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				Delay(200 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
 
-		gock.New("http://rpc3.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			Delay(300 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
+			gock.New("http://rpc3.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				Delay(300 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkWithFireAndForget(t, ctx)
+			network := setupSendRawTxTestNetworkWithFireAndForget(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should succeed - "already known" is converted to success
-		require.NoError(t, err)
-		require.NotNil(t, resp)
+			// Should succeed - "already known" is converted to success
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), "0x")
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, jrr.GetResultString(), "0x")
 
-		// Wait for background requests to complete
-		time.Sleep(500 * time.Millisecond)
+			// Wait for background requests to complete
+			time.Sleep(500 * time.Millisecond)
 
-		// Verify all upstreams were called
-		// Note: gock.IsDone() doesn't work with persistent mocks, so check pending count instead
-		assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
-			"only persistent mocks should remain - all sendRawTx mocks should be consumed")
+			// Verify all upstreams were called
+			// Note: gock.IsDone() doesn't work with persistent mocks, so check pending count instead
+			assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
+				"only persistent mocks should remain - all sendRawTx mocks should be consumed")
+		})
 	})
 
 	t.Run("FireAndForgetHandlesSlowUpstreams", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First upstream is slow
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			Delay(500 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
+			// First upstream is slow
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				Delay(500 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
 
-		// Second upstream responds quickly
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			Delay(50 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
+			// Second upstream responds quickly
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				Delay(50 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
 
-		// Third upstream responds even faster
-		gock.New("http://rpc3.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
+			// Third upstream responds even faster
+			gock.New("http://rpc3.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkWithFireAndForget(t, ctx)
+			network := setupSendRawTxTestNetworkWithFireAndForget(t, ctx)
 
-		start := time.Now()
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-		duration := time.Since(start)
+			start := time.Now()
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
+			duration := time.Since(start)
 
-		// Should succeed quickly (first fast response wins)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
+			// Should succeed quickly (first fast response wins)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), expectedTxHash)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, jrr.GetResultString(), expectedTxHash)
 
-		// Should return much faster than the slowest upstream
-		assert.Less(t, duration, 200*time.Millisecond,
-			"fire-and-forget should return after fastest upstream responds")
+			// Should return much faster than the slowest upstream
+			assert.Less(t, duration, 200*time.Millisecond,
+				"fire-and-forget should return after fastest upstream responds")
 
-		// Wait for all background requests
-		time.Sleep(700 * time.Millisecond)
+			// Wait for all background requests
+			time.Sleep(700 * time.Millisecond)
 
-		// All upstreams should have received the request
-		// Note: gock.IsDone() doesn't work with persistent mocks, so check pending count instead
-		assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
-			"only persistent mocks should remain - all sendRawTx mocks should be consumed")
+			// All upstreams should have received the request
+			// Note: gock.IsDone() doesn't work with persistent mocks, so check pending count instead
+			assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
+				"only persistent mocks should remain - all sendRawTx mocks should be consumed")
+		})
 	})
 
 	t.Run("FireAndForgetWithMixedResponses", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First upstream succeeds
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
+			// First upstream succeeds
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  expectedTxHash,
+				})
 
-		// Second upstream returns error (should still complete in background)
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			Delay(100 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "already known",
-				},
-			})
+			// Second upstream returns error (should still complete in background)
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				Delay(100 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "already known",
+					},
+				})
 
-		// Third upstream returns different error (should still complete in background)
-		gock.New("http://rpc3.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			Delay(200 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    3,
-					"message": "execution reverted",
-				},
-			})
+			// Third upstream returns different error (should still complete in background)
+			gock.New("http://rpc3.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				Delay(200 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    3,
+						"message": "execution reverted",
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupSendRawTxTestNetworkWithFireAndForget(t, ctx)
+			network := setupSendRawTxTestNetworkWithFireAndForget(t, ctx)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Should succeed with first upstream's result
-		require.NoError(t, err)
-		require.NotNil(t, resp)
+			// Should succeed with first upstream's result
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), expectedTxHash)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, jrr.GetResultString(), expectedTxHash)
 
-		// Wait for background requests
-		time.Sleep(400 * time.Millisecond)
+			// Wait for background requests
+			time.Sleep(400 * time.Millisecond)
 
-		// All upstreams should have been called
-		// Note: gock.IsDone() doesn't work with persistent mocks, so check pending count instead
-		assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
-			"only persistent mocks should remain - all sendRawTx mocks should be consumed")
+			// All upstreams should have been called
+			// Note: gock.IsDone() doesn't work with persistent mocks, so check pending count instead
+			assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
+				"only persistent mocks should remain - all sendRawTx mocks should be consumed")
+		})
 	})
 
 	// REGRESSION TEST: This test verifies the fix for the bug where background requests
@@ -2466,72 +2545,74 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 	})
 
 	t.Run("AllUpstreamsRejectReturnsWithoutWaitingOnHedges", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		var upstreamConfigs []*common.UpstreamConfig
-		for _, id := range []string{"rpc1", "rpc2", "rpc3", "rpc4"} {
-			endpoint := "http://" + id + ".localhost"
-			upstreamConfigs = append(upstreamConfigs, &common.UpstreamConfig{
-				Type:     common.UpstreamTypeEvm,
-				Id:       id,
-				Endpoint: endpoint,
-				Evm:      &common.EvmUpstreamConfig{ChainId: 123},
-			})
-			gock.New(endpoint).
-				Post("").
-				Persist().
-				Filter(func(r *http.Request) bool {
-					return strings.Contains(util.SafeReadBody(r), "eth_sendRawTransaction")
-				}).
-				Reply(200).
-				Delay(300 * time.Millisecond).
-				JSON(map[string]interface{}{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"error": map[string]interface{}{
-						"code":    -32003,
-						"message": "gas limit too high",
-					},
+			var upstreamConfigs []*common.UpstreamConfig
+			for _, id := range []string{"rpc1", "rpc2", "rpc3", "rpc4"} {
+				endpoint := "http://" + id + ".localhost"
+				upstreamConfigs = append(upstreamConfigs, &common.UpstreamConfig{
+					Type:     common.UpstreamTypeEvm,
+					Id:       id,
+					Endpoint: endpoint,
+					Evm:      &common.EvmUpstreamConfig{ChainId: 123},
 				})
-		}
+				gock.New(endpoint).
+					Post("").
+					Persist().
+					Filter(func(r *http.Request) bool {
+						return strings.Contains(util.SafeReadBody(r), "eth_sendRawTransaction")
+					}).
+					Reply(200).
+					Delay(300 * time.Millisecond).
+					JSON(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"error": map[string]interface{}{
+							"code":    -32003,
+							"message": "gas limit too high",
+						},
+					})
+			}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Production broadcast shape: more consensus slots than upstreams,
-		// hedged and retried. Every upstream rejects, so the hedge timers
-		// left on the idle slots must not delay the answer.
-		network := setupSendRawTxNetwork(t, ctx, upstreamConfigs, &common.NetworkConfig{
-			Architecture: common.ArchitectureEvm,
-			Evm:          &common.EvmNetworkConfig{ChainId: 123},
-			Failsafe: []*common.FailsafeConfig{{
-				MatchMethod: "eth_sendRawTransaction",
-				Hedge: &common.HedgePolicyConfig{
-					MaxCount: 2,
-					Delay:    common.NewStaticDuration(500 * time.Millisecond),
-				},
-				Retry: &common.RetryPolicyConfig{MaxAttempts: 6},
-				Consensus: &common.ConsensusPolicyConfig{
-					MaxParticipants:    10,
-					AgreementThreshold: 1,
-					FireAndForget:      true,
-				},
-			}},
+			// Production broadcast shape: more consensus slots than upstreams,
+			// hedged and retried. Every upstream rejects, so the hedge timers
+			// left on the idle slots must not delay the answer.
+			network := setupSendRawTxNetwork(t, ctx, upstreamConfigs, &common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm:          &common.EvmNetworkConfig{ChainId: 123},
+				Failsafe: []*common.FailsafeConfig{{
+					MatchMethod: "eth_sendRawTransaction",
+					Hedge: &common.HedgePolicyConfig{
+						MaxCount: 2,
+						Delay:    common.NewStaticDuration(500 * time.Millisecond),
+					},
+					Retry: &common.RetryPolicyConfig{MaxAttempts: 6},
+					Consensus: &common.ConsensusPolicyConfig{
+						MaxParticipants:    10,
+						AgreementThreshold: 1,
+						FireAndForget:      true,
+					},
+				}},
+			})
+
+			start := time.Now()
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`))
+			_, err := network.Forward(ctx, req)
+			elapsed := time.Since(start)
+
+			require.Error(t, err)
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
+				"client must get the node's rejection, got: %v", err)
+			// main waits out hedge and retry timers (~6s); 3s leaves room for -race.
+			assert.Less(t, elapsed, 3*time.Second,
+				"rejection must return once every upstream has answered, not after hedge and retry delays")
 		})
-
-		start := time.Now()
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`))
-		_, err := network.Forward(ctx, req)
-		elapsed := time.Since(start)
-
-		require.Error(t, err)
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
-			"client must get the node's rejection, got: %v", err)
-		// main waits out hedge and retry timers (~6s); 3s leaves room for -race.
-		assert.Less(t, elapsed, 3*time.Second,
-			"rejection must return once every upstream has answered, not after hedge and retry delays")
 	})
 
 	t.Run("ExceedsBlockGasLimitIsNotRetried", func(t *testing.T) {

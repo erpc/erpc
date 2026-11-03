@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -96,83 +97,91 @@ func countGoroutinesStable() int {
 }
 
 func TestEvmStatePoller_RepeatedBootstrapDoesNotLeakTickerGoroutines(t *testing.T) {
-	// Long interval: the ticker never fires during the test, so any goroutine
-	// growth is the ticker goroutines themselves.
-	poller, _, ctx := newTestStatePoller(t, time.Hour, time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		// Long interval: the ticker never fires during the test, so any goroutine
+		// growth is the ticker goroutines themselves.
+		poller, _, ctx := newTestStatePoller(t, time.Hour, time.Millisecond)
 
-	before := countGoroutinesStable()
+		before := countGoroutinesStable()
 
-	// Simulate what a retried/re-executed bootstrap task does: call Bootstrap
-	// over and over on the same poller. Poll errors are irrelevant here.
-	for range 25 {
-		_ = poller.Bootstrap(ctx)
-	}
+		// Simulate what a retried/re-executed bootstrap task does: call Bootstrap
+		// over and over on the same poller. Poll errors are irrelevant here.
+		for range 25 {
+			_ = poller.Bootstrap(ctx)
+		}
 
-	after := countGoroutinesStable()
+		after := countGoroutinesStable()
 
-	// Exactly one ticker goroutine must exist (allow small scheduler noise).
-	// Without the started-guard this grows by one goroutine per Bootstrap.
-	assert.LessOrEqual(t, after-before, 3,
-		"expected a single ticker goroutine after 25 Bootstrap calls, got %d new goroutines", after-before)
+		// Exactly one ticker goroutine must exist (allow small scheduler noise).
+		// Without the started-guard this grows by one goroutine per Bootstrap.
+		assert.LessOrEqual(t, after-before, 3,
+			"expected a single ticker goroutine after 25 Bootstrap calls, got %d new goroutines", after-before)
+	})
 }
 
 func TestEvmStatePoller_RepeatedBootstrapDoesNotMultiplyPollRate(t *testing.T) {
-	// Short interval and tiny debounce so every tick reaches Forward.
-	poller, up, ctx := newTestStatePoller(t, 40*time.Millisecond, time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		// Short interval and tiny debounce so every tick reaches Forward.
+		poller, up, ctx := newTestStatePoller(t, 40*time.Millisecond, time.Millisecond)
 
-	_ = poller.Bootstrap(ctx)
-
-	base1 := up.forwards.Load()
-	time.Sleep(600 * time.Millisecond)
-	singleTickerCalls := up.forwards.Load() - base1
-	require.Greater(t, singleTickerCalls, int64(0), "single ticker should be polling")
-
-	// Re-bootstrap several times; with the guard this must not add tickers.
-	for range 4 {
 		_ = poller.Bootstrap(ctx)
-	}
 
-	base2 := up.forwards.Load()
-	time.Sleep(600 * time.Millisecond)
-	afterRebootstrapCalls := up.forwards.Load() - base2
+		base1 := up.forwards.Load()
+		time.Sleep(600 * time.Millisecond)
+		singleTickerCalls := up.forwards.Load() - base1
+		require.Greater(t, singleTickerCalls, int64(0), "single ticker should be polling")
 
-	// With five tickers the second window would see ~5x the calls of the
-	// first. Allow generous scheduling slack, but reject any multiplication.
-	assert.Less(t, afterRebootstrapCalls, singleTickerCalls*2+8,
-		"poll rate multiplied after repeated Bootstrap calls: first window %d calls, second window %d calls",
-		singleTickerCalls, afterRebootstrapCalls)
+		// Re-bootstrap several times; with the guard this must not add tickers.
+		for range 4 {
+			_ = poller.Bootstrap(ctx)
+		}
+
+		base2 := up.forwards.Load()
+		time.Sleep(600 * time.Millisecond)
+		afterRebootstrapCalls := up.forwards.Load() - base2
+
+		// With five tickers the second window would see ~5x the calls of the
+		// first. Allow generous scheduling slack, but reject any multiplication.
+		assert.Less(t, afterRebootstrapCalls, singleTickerCalls*2+8,
+			"poll rate multiplied after repeated Bootstrap calls: first window %d calls, second window %d calls",
+			singleTickerCalls, afterRebootstrapCalls)
+	})
 }
 
 func TestEvmStatePoller_IgnoreSyncingCheck_ImmediatelyNotSyncing(t *testing.T) {
-	// ignoreSyncingCheck: true must set syncingState = NotSyncing without ever
-	// calling eth_syncing (i.e. without any Forward calls for the syncing check).
-	poller, up, ctx := newTestStatePoller(t, 40*time.Millisecond, time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		// ignoreSyncingCheck: true must set syncingState = NotSyncing without ever
+		// calling eth_syncing (i.e. without any Forward calls for the syncing check).
+		poller, up, ctx := newTestStatePoller(t, 40*time.Millisecond, time.Millisecond)
 
-	skipSyncing := true
-	up.cfg.Evm.SkipSyncingCheck = &skipSyncing
+		skipSyncing := true
+		up.cfg.Evm.SkipSyncingCheck = &skipSyncing
 
-	_ = poller.Bootstrap(ctx)
+		_ = poller.Bootstrap(ctx)
 
-	// Give the poller a couple of ticks to run.
-	time.Sleep(120 * time.Millisecond)
+		// Give the poller a couple of ticks to run.
+		time.Sleep(120 * time.Millisecond)
 
-	assert.Equal(t, common.EvmSyncingStateNotSyncing, poller.SyncingState(),
-		"ignoreSyncingCheck should mark upstream as NotSyncing immediately")
-	assert.Equal(t, int64(0), up.syncingForwards.Load(),
-		"skipSyncingCheck should not call eth_syncing on the upstream")
+		assert.Equal(t, common.EvmSyncingStateNotSyncing, poller.SyncingState(),
+			"ignoreSyncingCheck should mark upstream as NotSyncing immediately")
+		assert.Equal(t, int64(0), up.syncingForwards.Load(),
+			"skipSyncingCheck should not call eth_syncing on the upstream")
+	})
 }
 
 func TestEvmStatePoller_BootstrapWithZeroIntervalStartsNothing(t *testing.T) {
-	poller, up, ctx := newTestStatePoller(t, 0, 0)
+	synctest.Test(t, func(t *testing.T) {
+		poller, up, ctx := newTestStatePoller(t, 0, 0)
 
-	before := countGoroutinesStable()
-	require.NoError(t, poller.Bootstrap(ctx))
-	require.NoError(t, poller.Bootstrap(ctx))
-	after := countGoroutinesStable()
+		before := countGoroutinesStable()
+		require.NoError(t, poller.Bootstrap(ctx))
+		require.NoError(t, poller.Bootstrap(ctx))
+		after := countGoroutinesStable()
 
-	assert.LessOrEqual(t, after-before, 0, "interval=0 must not start any poll loop")
-	assert.Equal(t, int64(0), up.forwards.Load(), "interval=0 must not poll the upstream")
-	assert.False(t, poller.Enabled)
+		assert.LessOrEqual(t, after-before, 0, "interval=0 must not start any poll loop")
+		assert.Equal(t, int64(0), up.forwards.Load(), "interval=0 must not poll the upstream")
+		assert.False(t, poller.Enabled)
+	})
 }
 
 // Request-path polls (block-availability gates, block-skip refresh) respect

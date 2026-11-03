@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v3"
@@ -133,113 +134,115 @@ func buildLeakTestBudget(t testing.TB, redisDelay, maxTimeout time.Duration, adm
 //   - After the burst completes, every Redis-bound goroutine drains and the
 //     in-flight gauge returns to zero (no leak).
 func TestRateLimiterBudget_NoGoroutineLeakUnderRedisStall(t *testing.T) {
-	const (
-		redisDelay   = 200 * time.Millisecond // slow but tractable for tests
-		maxTimeout   = 50 * time.Millisecond  // mirrors original prod config
-		admissionCap = 64                     // small cap to force shedding
-		burstSize    = 5000                   // far exceeds the cap
-	)
+	synctest.Test(t, func(t *testing.T) {
+		const (
+			redisDelay   = 200 * time.Millisecond // slow but tractable for tests
+			maxTimeout   = 50 * time.Millisecond  // mirrors original prod config
+			admissionCap = 64                     // small cap to force shedding
+			burstSize    = 5000                   // far exceeds the cap
+		)
 
-	budget, cache := buildLeakTestBudget(t, redisDelay, maxTimeout, admissionCap, 0)
+		budget, cache := buildLeakTestBudget(t, redisDelay, maxTimeout, admissionCap, 0)
 
-	baseline := runtime.NumGoroutine()
-	t.Logf("baseline goroutines=%d", baseline)
+		baseline := runtime.NumGoroutine()
+		t.Logf("baseline goroutines=%d", baseline)
 
-	allowed := atomic.Int64{}
-	var wg sync.WaitGroup
-	wg.Add(burstSize)
-	startBurst := time.Now()
-	for i := 0; i < burstSize; i++ {
-		go func() {
-			defer wg.Done()
-			ok, err := budget.TryAcquirePermit(context.Background(), "proj", nil, "eth_call", "", "", "", "")
-			require.NoError(t, err)
-			if ok {
-				allowed.Add(1)
-			}
-		}()
-	}
-
-	// Wait for every TryAcquirePermit caller to return. Each caller either
-	// returns immediately (admission_full) or after the local maxTimeout
-	// (50ms) — both are << redisDelay (200ms), so all callers return well
-	// before the first Redis call finishes. After wg.Wait the only
-	// goroutines added on top of baseline are the Redis-bound ones inside
-	// cache.DoLimit. Counting them this way gives us a clean measurement
-	// of the actual leak indicator (the runtime.NumGoroutine() during the
-	// burst itself is polluted by the burstSize caller goroutines, none of
-	// which are part of the leak).
-	wg.Wait()
-	burstFanInDur := time.Since(startBurst)
-	postBurstGoroutines := runtime.NumGoroutine()
-	maxInflightDuringBurst := cache.maxSeen.Load()
-	currentInflight := cache.inflight.Load()
-	t.Logf("after permits returned: goroutines=%d (delta from baseline=%d), allowed=%d, completedRedisCalls=%d, currentRedisInflight=%d, maxInflightInRedis=%d, burstFanIn=%v",
-		postBurstGoroutines, postBurstGoroutines-baseline,
-		allowed.Load(), cache.completed.Load(),
-		currentInflight, maxInflightDuringBurst, burstFanInDur)
-
-	// All TryAcquirePermit calls must have returned (every caller is fail-
-	// opened: 100% allowed) — the leak fix MUST NOT change the user-visible
-	// fail-open contract.
-	assert.Equal(t, int64(burstSize), allowed.Load(),
-		"every request must fail-open under stall: caller-visible behaviour unchanged")
-
-	// Critical leak invariant #1: max concurrent Redis calls bounded by cap.
-	// Pre-fix this would equal burstSize (one Redis-bound goroutine per
-	// caller). Post-fix this must equal admissionCap.
-	// We allow +1 fudge because the in-flight counter is bumped inside the
-	// goroutine after the cap admits it — there's a tiny race window where
-	// admissionCap calls have started but the (admissionCap+1)th hasn't
-	// observed the full semaphore yet.
-	assert.LessOrEqual(t, maxInflightDuringBurst, int64(admissionCap+1),
-		"max concurrent Redis calls must be bounded by admission cap (saw %d, cap %d) — pre-fix this would equal burstSize=%d",
-		maxInflightDuringBurst, admissionCap, burstSize)
-
-	// Critical leak invariant #2: post-burst goroutine delta stays in
-	// the same order of magnitude as admissionCap — NOT ~burstSize like
-	// the pre-fix world (5000+). The admission cap means at most
-	// `admissionCap` goroutines are still alive in cache.DoLimit;
-	// everything else has already returned (fail-open path doesn't
-	// spawn).
-	//
-	// The slack is loose-ish (2× admissionCap + small constant) to
-	// absorb CI scheduler jitter: under heavy load the snapshot can
-	// catch caller goroutines mid-cleanup or stragglers that haven't
-	// returned-and-been-GCed yet. The check that actually matters is
-	// the "not pre-fix levels" guarantee — even 2× cap is two orders
-	// of magnitude under the pre-fix leak signature.
-	maxAllowedDelta := 2*admissionCap + 16
-	assert.LessOrEqual(t, postBurstGoroutines-baseline, maxAllowedDelta,
-		"post-burst goroutines must stay within 2×admissionCap+16 (got delta %d, cap %d, slack %d, burstSize %d) — pre-fix would be ~burstSize",
-		postBurstGoroutines-baseline, admissionCap, maxAllowedDelta, burstSize)
-
-	// Now wait for all Redis-bound goroutines to drain. Each goroutine
-	// lives for redisDelay (we don't kill them on timeout); the last one
-	// to start was admitted near the end of the burst window.
-	drainDeadline := time.Now().Add(2 * (redisDelay + maxTimeout))
-	for time.Now().Before(drainDeadline) {
-		if cache.inflight.Load() == 0 {
-			break
+		allowed := atomic.Int64{}
+		var wg sync.WaitGroup
+		wg.Add(burstSize)
+		startBurst := time.Now()
+		for i := 0; i < burstSize; i++ {
+			go func() {
+				defer wg.Done()
+				ok, err := budget.TryAcquirePermit(context.Background(), "proj", nil, "eth_call", "", "", "", "")
+				require.NoError(t, err)
+				if ok {
+					allowed.Add(1)
+				}
+			}()
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	// Allow a few ms for the budget's deferred releases to settle.
-	time.Sleep(20 * time.Millisecond)
-	runtime.GC()
-	finalGoroutines := runtime.NumGoroutine()
 
-	t.Logf("after drain: goroutines=%d (delta from baseline=%d), inflight=%d",
-		finalGoroutines, finalGoroutines-baseline, cache.inflight.Load())
+		// Wait for every TryAcquirePermit caller to return. Each caller either
+		// returns immediately (admission_full) or after the local maxTimeout
+		// (50ms) — both are << redisDelay (200ms), so all callers return well
+		// before the first Redis call finishes. After wg.Wait the only
+		// goroutines added on top of baseline are the Redis-bound ones inside
+		// cache.DoLimit. Counting them this way gives us a clean measurement
+		// of the actual leak indicator (the runtime.NumGoroutine() during the
+		// burst itself is polluted by the burstSize caller goroutines, none of
+		// which are part of the leak).
+		wg.Wait()
+		burstFanInDur := time.Since(startBurst)
+		postBurstGoroutines := runtime.NumGoroutine()
+		maxInflightDuringBurst := cache.maxSeen.Load()
+		currentInflight := cache.inflight.Load()
+		t.Logf("after permits returned: goroutines=%d (delta from baseline=%d), allowed=%d, completedRedisCalls=%d, currentRedisInflight=%d, maxInflightInRedis=%d, burstFanIn=%v",
+			postBurstGoroutines, postBurstGoroutines-baseline,
+			allowed.Load(), cache.completed.Load(),
+			currentInflight, maxInflightDuringBurst, burstFanInDur)
 
-	// Critical leak invariant #3: after the burst completes, every Redis-
-	// bound goroutine MUST have drained. We allow a small fudge (tests
-	// commonly leave a few goroutines around for runtime bookkeeping) but
-	// not anywhere near admission cap or burst size.
-	assert.Zero(t, cache.inflight.Load(), "all Redis-bound goroutines must have completed")
-	assert.LessOrEqual(t, finalGoroutines-baseline, 8,
-		"goroutine count must return to baseline (within slack), got delta %d",
-		finalGoroutines-baseline)
+		// All TryAcquirePermit calls must have returned (every caller is fail-
+		// opened: 100% allowed) — the leak fix MUST NOT change the user-visible
+		// fail-open contract.
+		assert.Equal(t, int64(burstSize), allowed.Load(),
+			"every request must fail-open under stall: caller-visible behaviour unchanged")
+
+		// Critical leak invariant #1: max concurrent Redis calls bounded by cap.
+		// Pre-fix this would equal burstSize (one Redis-bound goroutine per
+		// caller). Post-fix this must equal admissionCap.
+		// We allow +1 fudge because the in-flight counter is bumped inside the
+		// goroutine after the cap admits it — there's a tiny race window where
+		// admissionCap calls have started but the (admissionCap+1)th hasn't
+		// observed the full semaphore yet.
+		assert.LessOrEqual(t, maxInflightDuringBurst, int64(admissionCap+1),
+			"max concurrent Redis calls must be bounded by admission cap (saw %d, cap %d) — pre-fix this would equal burstSize=%d",
+			maxInflightDuringBurst, admissionCap, burstSize)
+
+		// Critical leak invariant #2: post-burst goroutine delta stays in
+		// the same order of magnitude as admissionCap — NOT ~burstSize like
+		// the pre-fix world (5000+). The admission cap means at most
+		// `admissionCap` goroutines are still alive in cache.DoLimit;
+		// everything else has already returned (fail-open path doesn't
+		// spawn).
+		//
+		// The slack is loose-ish (2× admissionCap + small constant) to
+		// absorb CI scheduler jitter: under heavy load the snapshot can
+		// catch caller goroutines mid-cleanup or stragglers that haven't
+		// returned-and-been-GCed yet. The check that actually matters is
+		// the "not pre-fix levels" guarantee — even 2× cap is two orders
+		// of magnitude under the pre-fix leak signature.
+		maxAllowedDelta := 2*admissionCap + 16
+		assert.LessOrEqual(t, postBurstGoroutines-baseline, maxAllowedDelta,
+			"post-burst goroutines must stay within 2×admissionCap+16 (got delta %d, cap %d, slack %d, burstSize %d) — pre-fix would be ~burstSize",
+			postBurstGoroutines-baseline, admissionCap, maxAllowedDelta, burstSize)
+
+		// Now wait for all Redis-bound goroutines to drain. Each goroutine
+		// lives for redisDelay (we don't kill them on timeout); the last one
+		// to start was admitted near the end of the burst window.
+		drainDeadline := time.Now().Add(2 * (redisDelay + maxTimeout))
+		for time.Now().Before(drainDeadline) {
+			if cache.inflight.Load() == 0 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		// Allow a few ms for the budget's deferred releases to settle.
+		time.Sleep(20 * time.Millisecond)
+		runtime.GC()
+		finalGoroutines := runtime.NumGoroutine()
+
+		t.Logf("after drain: goroutines=%d (delta from baseline=%d), inflight=%d",
+			finalGoroutines, finalGoroutines-baseline, cache.inflight.Load())
+
+		// Critical leak invariant #3: after the burst completes, every Redis-
+		// bound goroutine MUST have drained. We allow a small fudge (tests
+		// commonly leave a few goroutines around for runtime bookkeeping) but
+		// not anywhere near admission cap or burst size.
+		assert.Zero(t, cache.inflight.Load(), "all Redis-bound goroutines must have completed")
+		assert.LessOrEqual(t, finalGoroutines-baseline, 8,
+			"goroutine count must return to baseline (within slack), got delta %d",
+			finalGoroutines-baseline)
+	})
 }
 
 // TestRateLimiterBudget_AdmissionPanicSafety verifies that a panicking
@@ -247,40 +250,42 @@ func TestRateLimiterBudget_NoGoroutineLeakUnderRedisStall(t *testing.T) {
 // NOT leak admission slots or goroutines. Pre-fix the panic would have
 // killed the whole process; we now recover and release the slot.
 func TestRateLimiterBudget_AdmissionPanicSafety(t *testing.T) {
-	const (
-		redisDelay   = 50 * time.Millisecond
-		maxTimeout   = 25 * time.Millisecond
-		admissionCap = 16
-		iterations   = 200
-	)
+	synctest.Test(t, func(t *testing.T) {
+		const (
+			redisDelay   = 50 * time.Millisecond
+			maxTimeout   = 25 * time.Millisecond
+			admissionCap = 16
+			iterations   = 200
+		)
 
-	// 100% panic rate so every spawned goroutine exercises the recover path.
-	budget, cache := buildLeakTestBudget(t, redisDelay, maxTimeout, admissionCap, 1.0)
+		// 100% panic rate so every spawned goroutine exercises the recover path.
+		budget, cache := buildLeakTestBudget(t, redisDelay, maxTimeout, admissionCap, 1.0)
 
-	baseline := runtime.NumGoroutine()
-	for i := 0; i < iterations; i++ {
-		_, err := budget.TryAcquirePermit(context.Background(), "proj", nil, "eth_call", "", "", "", "")
-		require.NoError(t, err)
-	}
+		baseline := runtime.NumGoroutine()
+		for i := 0; i < iterations; i++ {
+			_, err := budget.TryAcquirePermit(context.Background(), "proj", nil, "eth_call", "", "", "", "")
+			require.NoError(t, err)
+		}
 
-	// Wait for in-flight goroutines (panicking and recovering) to drain.
-	deadline := time.Now().Add(2 * redisDelay)
-	for time.Now().Before(deadline) && cache.inflight.Load() > 0 {
-		time.Sleep(5 * time.Millisecond)
-	}
-	time.Sleep(20 * time.Millisecond)
-	runtime.GC()
+		// Wait for in-flight goroutines (panicking and recovering) to drain.
+		deadline := time.Now().Add(2 * redisDelay)
+		for time.Now().Before(deadline) && cache.inflight.Load() > 0 {
+			time.Sleep(5 * time.Millisecond)
+		}
+		time.Sleep(20 * time.Millisecond)
+		runtime.GC()
 
-	finalGoroutines := runtime.NumGoroutine()
-	t.Logf("after panic burst: goroutines=%d (delta=%d), inflight=%d",
-		finalGoroutines, finalGoroutines-baseline, cache.inflight.Load())
+		finalGoroutines := runtime.NumGoroutine()
+		t.Logf("after panic burst: goroutines=%d (delta=%d), inflight=%d",
+			finalGoroutines, finalGoroutines-baseline, cache.inflight.Load())
 
-	assert.Zero(t, cache.inflight.Load(),
-		"recovered panic goroutines must release admission slots")
-	assert.LessOrEqual(t, finalGoroutines-baseline, 8,
-		"panic recovery must not leak goroutines (delta=%d)", finalGoroutines-baseline)
+		assert.Zero(t, cache.inflight.Load(),
+			"recovered panic goroutines must release admission slots")
+		assert.LessOrEqual(t, finalGoroutines-baseline, 8,
+			"panic recovery must not leak goroutines (delta=%d)", finalGoroutines-baseline)
 
-	// Sanity: admission semaphore must be empty so subsequent traffic flows.
-	assert.Equal(t, 0, len(budget.admission),
-		"admission semaphore must be drained after panicking goroutines complete")
+		// Sanity: admission semaphore must be empty so subsequent traffic flows.
+		assert.Equal(t, 0, len(budget.admission),
+			"admission semaphore must be drained after panicking goroutines complete")
+	})
 }

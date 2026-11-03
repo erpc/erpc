@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -87,19 +88,21 @@ func TestBuildErrorResponseBody_SvmRateLimitWireCodes(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":[]}`))
-			req.SetNetwork(&Network{networkId: tc.networkID})
+			synctest.Test(t, func(t *testing.T) {
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":[]}`))
+				req.SetNetwork(&Network{networkId: tc.networkID})
 
-			body := buildErrorResponseBody(req, tc.err, tc.err, nil)
-			response, ok := body.(*HttpJsonRpcErrorResponse)
-			require.Truef(t, ok, "expected HttpJsonRpcErrorResponse, got %T", body)
-			errObject, ok := response.Error.(map[string]interface{})
-			require.Truef(t, ok, "expected JSON-RPC error object, got %T", response.Error)
+				body := buildErrorResponseBody(req, tc.err, tc.err, nil)
+				response, ok := body.(*HttpJsonRpcErrorResponse)
+				require.Truef(t, ok, "expected HttpJsonRpcErrorResponse, got %T", body)
+				errObject, ok := response.Error.(map[string]interface{})
+				require.Truef(t, ok, "expected JSON-RPC error object, got %T", response.Error)
 
-			assert.EqualValuesf(t, tc.wantCode, errObject["code"], "got %v want %v", errObject["code"], tc.wantCode)
-			require.Equal(t, tc.wantMessage, errObject["message"])
-			require.ErrorIs(t, response.Cause, tc.err)
-			require.Truef(t, common.HasErrorCode(response.Cause, tc.wantCause), "response cause lost %s: %v", tc.wantCause, response.Cause)
+				assert.EqualValuesf(t, tc.wantCode, errObject["code"], "got %v want %v", errObject["code"], tc.wantCode)
+				require.Equal(t, tc.wantMessage, errObject["message"])
+				require.ErrorIs(t, response.Cause, tc.err)
+				require.Truef(t, common.HasErrorCode(response.Cause, tc.wantCause), "response cause lost %s: %v", tc.wantCause, response.Cause)
+			})
 		})
 	}
 }
@@ -141,26 +144,28 @@ func TestProcessErrorBody_AuthRateLimitBeforeNetworkResolution(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			req := common.NewNormalizedRequest([]byte(tc.body))
-			if tc.networkID == "" {
-				require.Nil(t, req.Network(), "auth runs before network resolution")
-			} else {
-				req.SetNetwork(&Network{networkId: tc.networkID})
-				require.NotNil(t, req.Network(), "test requires a resolved network")
-			}
+			synctest.Test(t, func(t *testing.T) {
+				req := common.NewNormalizedRequest([]byte(tc.body))
+				if tc.networkID == "" {
+					require.Nil(t, req.Network(), "auth runs before network resolution")
+				} else {
+					req.SetNetwork(&Network{networkId: tc.networkID})
+					require.NotNil(t, req.Network(), "test requires a resolved network")
+				}
 
-			logger := zerolog.Nop()
-			startedAt := time.Now()
-			body := processErrorBody(&logger, &startedAt, req, authRateLimitErr, nil, tc.hints...)
+				logger := zerolog.Nop()
+				startedAt := time.Now()
+				body := processErrorBody(&logger, &startedAt, req, authRateLimitErr, nil, tc.hints...)
 
-			response, ok := body.(*HttpJsonRpcErrorResponse)
-			require.Truef(t, ok, "expected HttpJsonRpcErrorResponse, got %T", body)
-			errObject, ok := response.Error.(map[string]interface{})
-			require.Truef(t, ok, "expected JSON-RPC error object, got %T", response.Error)
-			assert.EqualValues(t, tc.wantCode, errObject["code"])
-			require.Equal(t, "rate-limit exceeded", errObject["message"])
-			require.ErrorIs(t, response.Cause, authRateLimitErr)
-			require.True(t, common.HasErrorCode(response.Cause, common.ErrCodeAuthRateLimitRuleExceeded))
+				response, ok := body.(*HttpJsonRpcErrorResponse)
+				require.Truef(t, ok, "expected HttpJsonRpcErrorResponse, got %T", body)
+				errObject, ok := response.Error.(map[string]interface{})
+				require.Truef(t, ok, "expected JSON-RPC error object, got %T", response.Error)
+				assert.EqualValues(t, tc.wantCode, errObject["code"])
+				require.Equal(t, "rate-limit exceeded", errObject["message"])
+				require.ErrorIs(t, response.Cause, authRateLimitErr)
+				require.True(t, common.HasErrorCode(response.Cause, common.ErrCodeAuthRateLimitRuleExceeded))
+			})
 		})
 	}
 }

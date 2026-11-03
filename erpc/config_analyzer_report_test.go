@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -335,22 +336,24 @@ func TestConfigAnalyzerReport_YoungChainSkipsBlockComparison(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			a, b := tc.node(), tc.node()
-			cfg := analyzerConfig(
-				analyzerUpstream("a", startAnalyzerNode(t, a), 1),
-				analyzerUpstream("b", startAnalyzerNode(t, b), 1),
-			)
-			report := GenerateValidationReport(context.Background(), cfg)
-			assert.Empty(t, report.Errors)
-			assert.Empty(t, report.Warnings)
-			for _, n := range []*analyzerNode{a, b} {
-				n.mu.Lock()
-				for k := range n.calls {
-					assert.Contains(t, []string{"eth_chainId", "eth_getBlockByNumber(0x0)", "eth_getBlockByNumber(latest)", "eth_getBlockByNumber(finalized)"}, k,
-						"no historical block probe expected")
+			synctest.Test(t, func(t *testing.T) {
+				a, b := tc.node(), tc.node()
+				cfg := analyzerConfig(
+					analyzerUpstream("a", startAnalyzerNode(t, a), 1),
+					analyzerUpstream("b", startAnalyzerNode(t, b), 1),
+				)
+				report := GenerateValidationReport(context.Background(), cfg)
+				assert.Empty(t, report.Errors)
+				assert.Empty(t, report.Warnings)
+				for _, n := range []*analyzerNode{a, b} {
+					n.mu.Lock()
+					for k := range n.calls {
+						assert.Contains(t, []string{"eth_chainId", "eth_getBlockByNumber(0x0)", "eth_getBlockByNumber(latest)", "eth_getBlockByNumber(finalized)"}, k,
+							"no historical block probe expected")
+					}
+					n.mu.Unlock()
 				}
-				n.mu.Unlock()
-			}
+			})
 		})
 	}
 }
@@ -565,13 +568,15 @@ func TestConfigAnalyzerIsLocalEndpoint(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.endpoint, func(t *testing.T) {
-			local, err := isLocalEndpoint(tc.endpoint)
-			if tc.wantErr {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tc.local, local)
+			synctest.Test(t, func(t *testing.T) {
+				local, err := isLocalEndpoint(tc.endpoint)
+				if tc.wantErr {
+					require.Error(t, err)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, tc.local, local)
+			})
 		})
 	}
 }

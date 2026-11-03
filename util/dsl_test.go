@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -289,40 +290,44 @@ func TestDoOpenAIRequestWithRetries(t *testing.T) {
 	})
 
 	t.Run("transport error then retry-after then success", func(t *testing.T) {
-		var calls int
-		var mu sync.Mutex
-		useFakeOpenAI(t, func(r *http.Request) (*http.Response, error) {
-			mu.Lock()
-			defer mu.Unlock()
-			calls++
-			switch calls {
-			case 1:
-				return nil, errors.New("connection reset")
-			case 2:
-				return openAIResponse(429, "slow down", http.Header{"Retry-After": []string{"1"}}), nil
-			default:
-				return openAIResponse(200, "done", nil), nil
-			}
+		synctest.Test(t, func(t *testing.T) {
+			var calls int
+			var mu sync.Mutex
+			useFakeOpenAI(t, func(r *http.Request) (*http.Response, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				calls++
+				switch calls {
+				case 1:
+					return nil, errors.New("connection reset")
+				case 2:
+					return openAIResponse(429, "slow down", http.Header{"Retry-After": []string{"1"}}), nil
+				default:
+					return openAIResponse(200, "done", nil), nil
+				}
+			})
+			body, err := doOpenAIRequestWithRetries(t, "k", []byte(`{}`))
+			require.NoError(t, err)
+			assert.Equal(t, "done", string(body))
+			assert.Equal(t, 3, calls)
 		})
-		body, err := doOpenAIRequestWithRetries(t, "k", []byte(`{}`))
-		require.NoError(t, err)
-		assert.Equal(t, "done", string(body))
-		assert.Equal(t, 3, calls)
 	})
 
 	t.Run("5xx with unusable retry-after backs off then succeeds", func(t *testing.T) {
-		calls := 0
-		useFakeOpenAI(t, func(r *http.Request) (*http.Response, error) {
-			calls++
-			if calls == 1 {
-				return openAIResponse(503, "busy", http.Header{"Retry-After": []string{"later"}}), nil
-			}
-			return openAIResponse(201, "created", nil), nil
+		synctest.Test(t, func(t *testing.T) {
+			calls := 0
+			useFakeOpenAI(t, func(r *http.Request) (*http.Response, error) {
+				calls++
+				if calls == 1 {
+					return openAIResponse(503, "busy", http.Header{"Retry-After": []string{"later"}}), nil
+				}
+				return openAIResponse(201, "created", nil), nil
+			})
+			body, err := doOpenAIRequestWithRetries(t, "k", []byte(`{}`))
+			require.NoError(t, err)
+			assert.Equal(t, "created", string(body))
+			assert.Equal(t, 2, calls)
 		})
-		body, err := doOpenAIRequestWithRetries(t, "k", []byte(`{}`))
-		require.NoError(t, err)
-		assert.Equal(t, "created", string(body))
-		assert.Equal(t, 2, calls)
 	})
 }
 
@@ -601,21 +606,20 @@ func TestGenerateDslFromScenariosViaLLM_CacheWriteFailureStillReturnsItems(t *te
 }
 
 func TestDoOpenAIRequestWithRetries_ExhaustsAttempts(t *testing.T) {
-	if testing.Short() {
-		t.Skip("sleeps ~5s honoring Retry-After")
-	}
 	t.Run("transport error on final attempt", func(t *testing.T) {
-		calls := 0
-		useFakeOpenAI(t, func(r *http.Request) (*http.Response, error) {
-			calls++
-			if calls < 6 {
-				return openAIResponse(429, "busy", http.Header{"Retry-After": []string{"1"}}), nil
-			}
-			return nil, errors.New("final transport failure")
+		synctest.Test(t, func(t *testing.T) {
+			calls := 0
+			useFakeOpenAI(t, func(r *http.Request) (*http.Response, error) {
+				calls++
+				if calls < 6 {
+					return openAIResponse(429, "busy", http.Header{"Retry-After": []string{"1"}}), nil
+				}
+				return nil, errors.New("final transport failure")
+			})
+			_, err := doOpenAIRequestWithRetries(t, "k", []byte(`{}`))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "final transport failure")
+			assert.Equal(t, 6, calls, "gives up after 6 attempts")
 		})
-		_, err := doOpenAIRequestWithRetries(t, "k", []byte(`{}`))
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "final transport failure")
-		assert.Equal(t, 6, calls, "gives up after 6 attempts")
 	})
 }

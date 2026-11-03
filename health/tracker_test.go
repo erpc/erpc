@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -48,29 +49,31 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("MetricsOverTime", func(t *testing.T) {
-		tracker := NewTracker(&log.Logger, projectID, windowSize)
+		synctest.Test(t, func(t *testing.T) {
+			tracker := NewTracker(&log.Logger, projectID, windowSize)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		tracker.Bootstrap(ctx)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tracker.Bootstrap(ctx)
 
-		ups := common.NewFakeUpstream("a")
+			ups := common.NewFakeUpstream("a")
 
-		// First window
-		simulateRequestMetrics(tracker, ups, "method1", 100, 10)
+			// First window
+			simulateRequestMetrics(tracker, ups, "method1", 100, 10)
 
-		metrics1 := tracker.GetUpstreamMethodMetrics(ups, "method1", common.DataFinalityStateAll)
-		assert.Equal(t, int64(100), metrics1.RequestsTotal.Load())
-		assert.Equal(t, int64(10), metrics1.ErrorsTotal.Load())
+			metrics1 := tracker.GetUpstreamMethodMetrics(ups, "method1", common.DataFinalityStateAll)
+			assert.Equal(t, int64(100), metrics1.RequestsTotal.Load())
+			assert.Equal(t, int64(10), metrics1.ErrorsTotal.Load())
 
-		time.Sleep(windowSize + 10*time.Millisecond)
+			time.Sleep(windowSize + 10*time.Millisecond)
 
-		// Second window
-		simulateRequestMetrics(tracker, ups, "method1", 50, 5)
+			// Second window
+			simulateRequestMetrics(tracker, ups, "method1", 50, 5)
 
-		metrics2 := tracker.GetUpstreamMethodMetrics(ups, "method1", common.DataFinalityStateAll)
-		assert.Equal(t, int64(50), metrics2.RequestsTotal.Load())
-		assert.Equal(t, int64(5), metrics2.ErrorsTotal.Load())
+			metrics2 := tracker.GetUpstreamMethodMetrics(ups, "method1", common.DataFinalityStateAll)
+			assert.Equal(t, int64(50), metrics2.RequestsTotal.Load())
+			assert.Equal(t, int64(5), metrics2.ErrorsTotal.Load())
+		})
 	})
 
 	t.Run("RateLimitingMetrics", func(t *testing.T) {
@@ -139,27 +142,29 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("ResetMetrics", func(t *testing.T) {
-		tracker := NewTracker(&log.Logger, projectID, windowSize)
+		synctest.Test(t, func(t *testing.T) {
+			tracker := NewTracker(&log.Logger, projectID, windowSize)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		tracker.Bootstrap(ctx)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tracker.Bootstrap(ctx)
 
-		ups := common.NewFakeUpstream("a")
+			ups := common.NewFakeUpstream("a")
 
-		simulateRequestMetrics(tracker, ups, "method1", 100, 10)
+			simulateRequestMetrics(tracker, ups, "method1", 100, 10)
 
-		metricsBefore := tracker.GetUpstreamMethodMetrics(ups, "method1", common.DataFinalityStateAll)
-		assert.Equal(t, int64(100), metricsBefore.RequestsTotal.Load())
-		assert.Equal(t, int64(10), metricsBefore.ErrorsTotal.Load())
-		assert.Equal(t, int64(0), metricsBefore.RemoteRateLimitedTotal.Load())
+			metricsBefore := tracker.GetUpstreamMethodMetrics(ups, "method1", common.DataFinalityStateAll)
+			assert.Equal(t, int64(100), metricsBefore.RequestsTotal.Load())
+			assert.Equal(t, int64(10), metricsBefore.ErrorsTotal.Load())
+			assert.Equal(t, int64(0), metricsBefore.RemoteRateLimitedTotal.Load())
 
-		time.Sleep(windowSize + 10*time.Millisecond)
+			time.Sleep(windowSize + 10*time.Millisecond)
 
-		metricsAfter := tracker.GetUpstreamMethodMetrics(ups, "method1", common.DataFinalityStateAll)
-		assert.Equal(t, int64(0), metricsAfter.RequestsTotal.Load())
-		assert.Equal(t, int64(0), metricsAfter.ErrorsTotal.Load())
-		assert.Equal(t, int64(0), metricsAfter.RemoteRateLimitedTotal.Load())
+			metricsAfter := tracker.GetUpstreamMethodMetrics(ups, "method1", common.DataFinalityStateAll)
+			assert.Equal(t, int64(0), metricsAfter.RequestsTotal.Load())
+			assert.Equal(t, int64(0), metricsAfter.ErrorsTotal.Load())
+			assert.Equal(t, int64(0), metricsAfter.RemoteRateLimitedTotal.Load())
+		})
 	})
 
 	t.Run("DifferentMethods", func(t *testing.T) {
@@ -182,44 +187,48 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("LongTermMetrics", func(t *testing.T) {
-		longWindowSize := 500 * time.Millisecond
-		tracker := NewTracker(&log.Logger, projectID, longWindowSize)
+		synctest.Test(t, func(t *testing.T) {
+			longWindowSize := 500 * time.Millisecond
+			tracker := NewTracker(&log.Logger, projectID, longWindowSize)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		tracker.Bootstrap(ctx)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tracker.Bootstrap(ctx)
 
-		ups := common.NewFakeUpstream("a")
+			ups := common.NewFakeUpstream("a")
 
-		for i := 0; i < 5; i++ {
-			simulateRequestMetrics(tracker, ups, "method1", 20, 2)
-			time.Sleep(50 * time.Millisecond)
-		}
+			for i := 0; i < 5; i++ {
+				simulateRequestMetrics(tracker, ups, "method1", 20, 2)
+				time.Sleep(50 * time.Millisecond)
+			}
 
-		metrics := tracker.GetUpstreamMethodMetrics(ups, "method1", common.DataFinalityStateAll)
-		assert.Equal(t, int64(100), metrics.RequestsTotal.Load())
-		assert.Equal(t, int64(10), metrics.ErrorsTotal.Load())
+			metrics := tracker.GetUpstreamMethodMetrics(ups, "method1", common.DataFinalityStateAll)
+			assert.Equal(t, int64(100), metrics.RequestsTotal.Load())
+			assert.Equal(t, int64(10), metrics.ErrorsTotal.Load())
+		})
 	})
 
 	t.Run("LongTermMetricsReset", func(t *testing.T) {
-		tracker := NewTracker(&log.Logger, projectID, windowSize)
-		resetMetrics()
+		synctest.Test(t, func(t *testing.T) {
+			tracker := NewTracker(&log.Logger, projectID, windowSize)
+			resetMetrics()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		tracker.Bootstrap(ctx)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tracker.Bootstrap(ctx)
 
-		ups := common.NewFakeUpstream("a")
+			ups := common.NewFakeUpstream("a")
 
-		for i := 0; i < 5; i++ {
-			simulateRequestMetrics(tracker, ups, "method1", 20, 2)
+			for i := 0; i < 5; i++ {
+				simulateRequestMetrics(tracker, ups, "method1", 20, 2)
 
-			metrics := tracker.GetUpstreamMethodMetrics(ups, "method1", common.DataFinalityStateAll)
-			assert.Equal(t, int64(20), metrics.RequestsTotal.Load())
-			assert.Equal(t, int64(2), metrics.ErrorsTotal.Load())
+				metrics := tracker.GetUpstreamMethodMetrics(ups, "method1", common.DataFinalityStateAll)
+				assert.Equal(t, int64(20), metrics.RequestsTotal.Load())
+				assert.Equal(t, int64(2), metrics.ErrorsTotal.Load())
 
-			time.Sleep(windowSize + 10*time.Millisecond)
-		}
+				time.Sleep(windowSize + 10*time.Millisecond)
+			}
+		})
 	})
 
 	t.Run("MultipleMethodsRequestsIncreaseNetworkOverall", func(t *testing.T) {
@@ -331,126 +340,130 @@ func resetMetrics() {
 }
 
 func TestBlockHeadLagPersistsAcrossResets(t *testing.T) {
-	projectID := "test-project"
-	windowSize := 100 * time.Millisecond // Short window for faster testing
+	synctest.Test(t, func(t *testing.T) {
+		projectID := "test-project"
+		windowSize := 100 * time.Millisecond // Short window for faster testing
 
-	tracker := NewTracker(&log.Logger, projectID, windowSize)
+		tracker := NewTracker(&log.Logger, projectID, windowSize)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	tracker.Bootstrap(ctx)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
 
-	ups1 := common.NewFakeUpstream("upstream1")
-	ups2 := common.NewFakeUpstream("upstream2")
-	ups3 := common.NewFakeUpstream("upstream3")
+		ups1 := common.NewFakeUpstream("upstream1")
+		ups2 := common.NewFakeUpstream("upstream2")
+		ups3 := common.NewFakeUpstream("upstream3")
 
-	// First, ensure TrackedMetrics exist by recording some requests
-	tracker.RecordUpstreamRequest(ups1, "method1", common.DataFinalityStateUnknown)
-	tracker.RecordUpstreamRequest(ups2, "method1", common.DataFinalityStateUnknown)
-	tracker.RecordUpstreamRequest(ups3, "method1", common.DataFinalityStateUnknown)
-	tracker.RecordUpstreamFailure(ups1, "method1", common.DataFinalityStateUnknown, fmt.Errorf("test error"))
+		// First, ensure TrackedMetrics exist by recording some requests
+		tracker.RecordUpstreamRequest(ups1, "method1", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamRequest(ups2, "method1", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamRequest(ups3, "method1", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups1, "method1", common.DataFinalityStateUnknown, fmt.Errorf("test error"))
 
-	// Now set different block numbers to create lag. The network head is the
-	// second-highest reporter, so ups3 corroborates ups1's head.
-	tracker.SetLatestBlockNumber(ups1, 1000, 0) // ups1 is at block 1000
-	tracker.SetLatestBlockNumber(ups3, 1000, 0)
-	tracker.SetLatestBlockNumber(ups2, 990, 0) // ups2 is behind by 10 blocks
+		// Now set different block numbers to create lag. The network head is the
+		// second-highest reporter, so ups3 corroborates ups1's head.
+		tracker.SetLatestBlockNumber(ups1, 1000, 0) // ups1 is at block 1000
+		tracker.SetLatestBlockNumber(ups3, 1000, 0)
+		tracker.SetLatestBlockNumber(ups2, 990, 0) // ups2 is behind by 10 blocks
 
-	// Get initial metrics AFTER setting block numbers
-	metrics1Before := tracker.GetUpstreamMethodMetrics(ups1, "method1", common.DataFinalityStateAll)
-	metrics2Before := tracker.GetUpstreamMethodMetrics(ups2, "method1", common.DataFinalityStateAll)
+		// Get initial metrics AFTER setting block numbers
+		metrics1Before := tracker.GetUpstreamMethodMetrics(ups1, "method1", common.DataFinalityStateAll)
+		metrics2Before := tracker.GetUpstreamMethodMetrics(ups2, "method1", common.DataFinalityStateAll)
 
-	// Debug: Print actual lag values
-	t.Logf("Before reset - ups1 lag: %d, ups2 lag: %d",
-		metrics1Before.BlockHeadLag.Load(),
-		metrics2Before.BlockHeadLag.Load())
+		// Debug: Print actual lag values
+		t.Logf("Before reset - ups1 lag: %d, ups2 lag: %d",
+			metrics1Before.BlockHeadLag.Load(),
+			metrics2Before.BlockHeadLag.Load())
 
-	// Verify initial state
-	assert.Equal(t, int64(0), metrics1Before.BlockHeadLag.Load())  // ups1 is at network head
-	assert.Equal(t, int64(10), metrics2Before.BlockHeadLag.Load()) // ups2 is 10 blocks behind
-	assert.Equal(t, int64(1), metrics1Before.RequestsTotal.Load())
-	assert.Equal(t, int64(1), metrics1Before.ErrorsTotal.Load())
+		// Verify initial state
+		assert.Equal(t, int64(0), metrics1Before.BlockHeadLag.Load())  // ups1 is at network head
+		assert.Equal(t, int64(10), metrics2Before.BlockHeadLag.Load()) // ups2 is 10 blocks behind
+		assert.Equal(t, int64(1), metrics1Before.RequestsTotal.Load())
+		assert.Equal(t, int64(1), metrics1Before.ErrorsTotal.Load())
 
-	// Wait for reset cycle
-	time.Sleep(windowSize + 50*time.Millisecond)
+		// Wait for reset cycle
+		time.Sleep(windowSize + 50*time.Millisecond)
 
-	// Get metrics after reset
-	metrics1After := tracker.GetUpstreamMethodMetrics(ups1, "method1", common.DataFinalityStateAll)
-	metrics2After := tracker.GetUpstreamMethodMetrics(ups2, "method1", common.DataFinalityStateAll)
+		// Get metrics after reset
+		metrics1After := tracker.GetUpstreamMethodMetrics(ups1, "method1", common.DataFinalityStateAll)
+		metrics2After := tracker.GetUpstreamMethodMetrics(ups2, "method1", common.DataFinalityStateAll)
 
-	// Debug: Print actual lag values after reset
-	t.Logf("After reset - ups1 lag: %d, ups2 lag: %d",
-		metrics1After.BlockHeadLag.Load(),
-		metrics2After.BlockHeadLag.Load())
+		// Debug: Print actual lag values after reset
+		t.Logf("After reset - ups1 lag: %d, ups2 lag: %d",
+			metrics1After.BlockHeadLag.Load(),
+			metrics2After.BlockHeadLag.Load())
 
-	// Verify cumulative metrics were reset
-	assert.Equal(t, int64(0), metrics1After.RequestsTotal.Load())
-	assert.Equal(t, int64(0), metrics1After.ErrorsTotal.Load())
-	assert.Equal(t, int64(0), metrics2After.RequestsTotal.Load())
+		// Verify cumulative metrics were reset
+		assert.Equal(t, int64(0), metrics1After.RequestsTotal.Load())
+		assert.Equal(t, int64(0), metrics1After.ErrorsTotal.Load())
+		assert.Equal(t, int64(0), metrics2After.RequestsTotal.Load())
 
-	// Verify block head lag persisted (the key fix)
-	assert.Equal(t, int64(0), metrics1After.BlockHeadLag.Load(), "upstream1 should still be at network head")
-	assert.Equal(t, int64(10), metrics2After.BlockHeadLag.Load(), "upstream2 should still be 10 blocks behind")
+		// Verify block head lag persisted (the key fix)
+		assert.Equal(t, int64(0), metrics1After.BlockHeadLag.Load(), "upstream1 should still be at network head")
+		assert.Equal(t, int64(10), metrics2After.BlockHeadLag.Load(), "upstream2 should still be 10 blocks behind")
 
-	// Test that block lag can still be updated after reset
-	tracker.SetLatestBlockNumber(ups2, 1000, 0) // ups2 catches up
-	metrics2Updated := tracker.GetUpstreamMethodMetrics(ups2, "method1", common.DataFinalityStateAll)
-	assert.Equal(t, int64(0), metrics2Updated.BlockHeadLag.Load(), "upstream2 should now be caught up")
+		// Test that block lag can still be updated after reset
+		tracker.SetLatestBlockNumber(ups2, 1000, 0) // ups2 catches up
+		metrics2Updated := tracker.GetUpstreamMethodMetrics(ups2, "method1", common.DataFinalityStateAll)
+		assert.Equal(t, int64(0), metrics2Updated.BlockHeadLag.Load(), "upstream2 should now be caught up")
+	})
 }
 
 func TestFinalizationLagPersistsAcrossResets(t *testing.T) {
-	projectID := "test-project"
-	windowSize := 100 * time.Millisecond // Short window for faster testing
+	synctest.Test(t, func(t *testing.T) {
+		projectID := "test-project"
+		windowSize := 100 * time.Millisecond // Short window for faster testing
 
-	tracker := NewTracker(&log.Logger, projectID, windowSize)
+		tracker := NewTracker(&log.Logger, projectID, windowSize)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	tracker.Bootstrap(ctx)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
 
-	ups1 := common.NewFakeUpstream("upstream1")
-	ups2 := common.NewFakeUpstream("upstream2")
-	ups3 := common.NewFakeUpstream("upstream3")
+		ups1 := common.NewFakeUpstream("upstream1")
+		ups2 := common.NewFakeUpstream("upstream2")
+		ups3 := common.NewFakeUpstream("upstream3")
 
-	// First, ensure TrackedMetrics exist by recording some requests
-	tracker.RecordUpstreamRequest(ups1, "method1", common.DataFinalityStateUnknown)
-	tracker.RecordUpstreamRequest(ups2, "method1", common.DataFinalityStateUnknown)
-	tracker.RecordUpstreamRequest(ups3, "method1", common.DataFinalityStateUnknown)
+		// First, ensure TrackedMetrics exist by recording some requests
+		tracker.RecordUpstreamRequest(ups1, "method1", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamRequest(ups2, "method1", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamRequest(ups3, "method1", common.DataFinalityStateUnknown)
 
-	// Now set different finalized block numbers to create lag; ups3
-	// corroborates ups1's finalized head.
-	tracker.SetFinalizedBlockNumber(ups1, 900) // ups1 finalized at block 900
-	tracker.SetFinalizedBlockNumber(ups3, 900)
-	tracker.SetFinalizedBlockNumber(ups2, 880) // ups2 finalized at block 880 (behind by 20)
+		// Now set different finalized block numbers to create lag; ups3
+		// corroborates ups1's finalized head.
+		tracker.SetFinalizedBlockNumber(ups1, 900) // ups1 finalized at block 900
+		tracker.SetFinalizedBlockNumber(ups3, 900)
+		tracker.SetFinalizedBlockNumber(ups2, 880) // ups2 finalized at block 880 (behind by 20)
 
-	// Get initial metrics
-	metrics1Before := tracker.GetUpstreamMethodMetrics(ups1, "method1", common.DataFinalityStateAll)
-	metrics2Before := tracker.GetUpstreamMethodMetrics(ups2, "method1", common.DataFinalityStateAll)
+		// Get initial metrics
+		metrics1Before := tracker.GetUpstreamMethodMetrics(ups1, "method1", common.DataFinalityStateAll)
+		metrics2Before := tracker.GetUpstreamMethodMetrics(ups2, "method1", common.DataFinalityStateAll)
 
-	// Verify initial state
-	assert.Equal(t, int64(0), metrics1Before.FinalizationLag.Load())  // ups1 is at network finalization head
-	assert.Equal(t, int64(20), metrics2Before.FinalizationLag.Load()) // ups2 is 20 blocks behind
-	assert.Equal(t, int64(1), metrics1Before.RequestsTotal.Load())
+		// Verify initial state
+		assert.Equal(t, int64(0), metrics1Before.FinalizationLag.Load())  // ups1 is at network finalization head
+		assert.Equal(t, int64(20), metrics2Before.FinalizationLag.Load()) // ups2 is 20 blocks behind
+		assert.Equal(t, int64(1), metrics1Before.RequestsTotal.Load())
 
-	// Wait for reset cycle
-	time.Sleep(windowSize + 50*time.Millisecond)
+		// Wait for reset cycle
+		time.Sleep(windowSize + 50*time.Millisecond)
 
-	// Get metrics after reset
-	metrics1After := tracker.GetUpstreamMethodMetrics(ups1, "method1", common.DataFinalityStateAll)
-	metrics2After := tracker.GetUpstreamMethodMetrics(ups2, "method1", common.DataFinalityStateAll)
+		// Get metrics after reset
+		metrics1After := tracker.GetUpstreamMethodMetrics(ups1, "method1", common.DataFinalityStateAll)
+		metrics2After := tracker.GetUpstreamMethodMetrics(ups2, "method1", common.DataFinalityStateAll)
 
-	// Verify cumulative metrics were reset
-	assert.Equal(t, int64(0), metrics1After.RequestsTotal.Load())
-	assert.Equal(t, int64(0), metrics2After.RequestsTotal.Load())
+		// Verify cumulative metrics were reset
+		assert.Equal(t, int64(0), metrics1After.RequestsTotal.Load())
+		assert.Equal(t, int64(0), metrics2After.RequestsTotal.Load())
 
-	// Verify finalization lag persisted (the key fix)
-	assert.Equal(t, int64(0), metrics1After.FinalizationLag.Load(), "upstream1 should still be at network finalization head")
-	assert.Equal(t, int64(20), metrics2After.FinalizationLag.Load(), "upstream2 should still be 20 blocks behind in finalization")
+		// Verify finalization lag persisted (the key fix)
+		assert.Equal(t, int64(0), metrics1After.FinalizationLag.Load(), "upstream1 should still be at network finalization head")
+		assert.Equal(t, int64(20), metrics2After.FinalizationLag.Load(), "upstream2 should still be 20 blocks behind in finalization")
 
-	// Test that finalization lag can still be updated after reset
-	tracker.SetFinalizedBlockNumber(ups2, 900) // ups2 catches up
-	metrics2Updated := tracker.GetUpstreamMethodMetrics(ups2, "method1", common.DataFinalityStateAll)
-	assert.Equal(t, int64(0), metrics2Updated.FinalizationLag.Load(), "upstream2 should now be caught up in finalization")
+		// Test that finalization lag can still be updated after reset
+		tracker.SetFinalizedBlockNumber(ups2, 900) // ups2 catches up
+		metrics2Updated := tracker.GetUpstreamMethodMetrics(ups2, "method1", common.DataFinalityStateAll)
+		assert.Equal(t, int64(0), metrics2Updated.FinalizationLag.Load(), "upstream2 should now be caught up in finalization")
+	})
 }
 
 // TestWildcardLagMirroredForPeerUpstreams is the regression test for the
@@ -1434,53 +1447,55 @@ func TestGetNetworkBlockTime(t *testing.T) {
 // histogram so dashboards can answer "how long did this incident last?".
 func TestTracker_CordonEventMetrics(t *testing.T) {
 	t.Run("cordon_then_uncordon_records_paired_events_and_duration", func(t *testing.T) {
-		tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		tracker.Bootstrap(ctx)
+		synctest.Test(t, func(t *testing.T) {
+			tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tracker.Bootstrap(ctx)
 
-		ups := common.NewFakeUpstream("under-incident")
-		networkID := ups.NetworkId()
-		cordonCounter := telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
-			"test-project", networkID, ups.Id(), "cordon")
-		uncordonCounter := telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
-			"test-project", networkID, ups.Id(), "uncordon")
-		beforeCordonCount := promUtil.ToFloat64(cordonCounter)
-		beforeUncordonCount := promUtil.ToFloat64(uncordonCounter)
+			ups := common.NewFakeUpstream("under-incident")
+			networkID := ups.NetworkId()
+			cordonCounter := telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
+				"test-project", networkID, ups.Id(), "cordon")
+			uncordonCounter := telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
+				"test-project", networkID, ups.Id(), "uncordon")
+			beforeCordonCount := promUtil.ToFloat64(cordonCounter)
+			beforeUncordonCount := promUtil.ToFloat64(uncordonCounter)
 
-		tracker.CordonClass(ups, "*", "vendor maintenance", common.CordonClassOperator)
-		assert.Equal(t, beforeCordonCount+1, promUtil.ToFloat64(cordonCounter),
-			"cordon event counter increments on OFF→ON edge")
+			tracker.CordonClass(ups, "*", "vendor maintenance", common.CordonClassOperator)
+			assert.Equal(t, beforeCordonCount+1, promUtil.ToFloat64(cordonCounter),
+				"cordon event counter increments on OFF→ON edge")
 
-		// Tracked cordon-start timestamp survives an already-cordoned
-		// refresh (operator updating context with another Cordon call)
-		// — only the OFF→ON edge records start so durations measure
-		// real outages.
-		tm := tracker.getUpsMetrics(upstreamKey{ups, "*", common.DataFinalityStateAll})
-		startedAt := tm.CordonedAtMs.Load()
-		require.NotZero(t, startedAt, "CordonedAtMs must be set on OFF→ON edge")
+			// Tracked cordon-start timestamp survives an already-cordoned
+			// refresh (operator updating context with another Cordon call)
+			// — only the OFF→ON edge records start so durations measure
+			// real outages.
+			tm := tracker.getUpsMetrics(upstreamKey{ups, "*", common.DataFinalityStateAll})
+			startedAt := tm.CordonedAtMs.Load()
+			require.NotZero(t, startedAt, "CordonedAtMs must be set on OFF→ON edge")
 
-		time.Sleep(5 * time.Millisecond)
-		tracker.CordonClass(ups, "*", "vendor maintenance (extended)", common.CordonClassOperator)
-		require.Equal(t, startedAt, tm.CordonedAtMs.Load(),
-			"already-cordoned re-cordon must preserve original start timestamp")
-		assert.Equal(t, beforeCordonCount+1, promUtil.ToFloat64(cordonCounter),
-			"already-cordoned re-cordon must NOT increment the event counter")
+			time.Sleep(5 * time.Millisecond)
+			tracker.CordonClass(ups, "*", "vendor maintenance (extended)", common.CordonClassOperator)
+			require.Equal(t, startedAt, tm.CordonedAtMs.Load(),
+				"already-cordoned re-cordon must preserve original start timestamp")
+			assert.Equal(t, beforeCordonCount+1, promUtil.ToFloat64(cordonCounter),
+				"already-cordoned re-cordon must NOT increment the event counter")
 
-		// Hold the cordon briefly so the duration histogram observes a
-		// non-zero value, then uncordon.
-		time.Sleep(20 * time.Millisecond)
-		histBefore := promUtil.CollectAndCount(telemetry.MetricUpstreamCordonDurationSeconds)
-		tracker.UncordonClass(ups, "*", "vendor resolved", common.CordonClassOperator)
-		histAfter := promUtil.CollectAndCount(telemetry.MetricUpstreamCordonDurationSeconds)
+			// Hold the cordon briefly so the duration histogram observes a
+			// non-zero value, then uncordon.
+			time.Sleep(20 * time.Millisecond)
+			histBefore := promUtil.CollectAndCount(telemetry.MetricUpstreamCordonDurationSeconds)
+			tracker.UncordonClass(ups, "*", "vendor resolved", common.CordonClassOperator)
+			histAfter := promUtil.CollectAndCount(telemetry.MetricUpstreamCordonDurationSeconds)
 
-		assert.Equal(t, int64(0), tm.CordonedAtMs.Load(),
-			"CordonedAtMs reset to 0 on uncordon")
-		assert.False(t, tm.CordonMask.Load() != 0, "Cordoned flag must be false after uncordon")
-		assert.Equal(t, beforeUncordonCount+1, promUtil.ToFloat64(uncordonCounter),
-			"uncordon event counter increments on ON→OFF edge")
-		assert.GreaterOrEqual(t, histAfter, histBefore,
-			"cordon-duration histogram must have observed the duration on uncordon")
+			assert.Equal(t, int64(0), tm.CordonedAtMs.Load(),
+				"CordonedAtMs reset to 0 on uncordon")
+			assert.False(t, tm.CordonMask.Load() != 0, "Cordoned flag must be false after uncordon")
+			assert.Equal(t, beforeUncordonCount+1, promUtil.ToFloat64(uncordonCounter),
+				"uncordon event counter increments on ON→OFF edge")
+			assert.GreaterOrEqual(t, histAfter, histBefore,
+				"cordon-duration histogram must have observed the duration on uncordon")
+		})
 	})
 
 	t.Run("uncordon_with_unrecognized_class_does_not_clear_operator_cordon", func(t *testing.T) {
@@ -1589,134 +1604,139 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 	})
 
 	t.Run("idle_sweep_evicts_silent_methods", func(t *testing.T) {
-		// Defends against the method-flood attack vector — a hostile
-		// client sending unique JSON-RPC method names to grow the
-		// per-method tracker map without bound. After the attack
-		// stops, the idle sweep must drop those buckets within a few
-		// rotations and the steady-state memory should track only
-		// methods that received recent traffic.
-		tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
-		// Aggressive threshold so the test doesn't wait minutes.
-		// Just shy of the sweep cadence so the second sweep cycle
-		// catches still-silent buckets.
-		tracker.SetIdleEvictionAfter(150 * time.Millisecond)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		tracker.Bootstrap(ctx)
+		synctest.Test(t, func(t *testing.T) {
+			// Defends against the method-flood attack vector — a hostile
+			// client sending unique JSON-RPC method names to grow the
+			// per-method tracker map without bound. After the attack
+			// stops, the idle sweep must drop those buckets within a few
+			// rotations and the steady-state memory should track only
+			// methods that received recent traffic.
+			tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
+			// Aggressive threshold so the test doesn't wait minutes.
+			// Just shy of the sweep cadence so the second sweep cycle
+			// catches still-silent buckets.
+			tracker.SetIdleEvictionAfter(150 * time.Millisecond)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tracker.Bootstrap(ctx)
 
-		ups := common.NewFakeUpstream("flood-target")
+			ups := common.NewFakeUpstream("flood-target")
 
-		for i := 0; i < 200; i++ {
-			tracker.RecordUpstreamRequest(ups, fmt.Sprintf("eth_random%d", i), common.DataFinalityStateUnknown)
-		}
-		hotMethod := "eth_blockNumber"
-
-		countBefore := 0
-		tracker.upsMetrics.Range(func(k, _ any) bool {
-			if k.(upstreamKey).method != "*" {
-				countBefore++
+			for i := 0; i < 200; i++ {
+				tracker.RecordUpstreamRequest(ups, fmt.Sprintf("eth_random%d", i), common.DataFinalityStateUnknown)
 			}
-			return true
-		})
-		require.GreaterOrEqual(t, countBefore, 200,
-			"all 200 flood methods should have spawned per-method entries")
+			hotMethod := "eth_blockNumber"
 
-		// Eviction needs (a) idleEvictionAfter to elapse, AND (b) the
-		// sweep cadence — sweepEveryRotations × interval. With
-		// windowSize=2s and rollingBuckets=10, sweep fires every 2s.
-		// Generous margin to absorb CI jitter.
-		require.Eventually(t, func() bool {
-			// Keep the hot method alive across the wait so it survives.
-			tracker.RecordUpstreamRequest(ups, hotMethod, common.DataFinalityStateUnknown)
-			n := 0
+			countBefore := 0
 			tracker.upsMetrics.Range(func(k, _ any) bool {
 				if k.(upstreamKey).method != "*" {
-					n++
+					countBefore++
 				}
 				return true
 			})
-			return n <= 1
-		}, 5*time.Second, 100*time.Millisecond,
-			"flooded methods should have evicted after going idle past the threshold")
+			require.GreaterOrEqual(t, countBefore, 200,
+				"all 200 flood methods should have spawned per-method entries")
 
-		_, ok := tracker.upsMetrics.Load(upstreamKey{ups, hotMethod, common.DataFinalityStateAll})
-		assert.True(t, ok, "hot method must NOT be evicted while it keeps receiving traffic")
+			// Eviction needs (a) idleEvictionAfter to elapse, AND (b) the
+			// sweep cadence — sweepEveryRotations × interval. With
+			// windowSize=2s and rollingBuckets=10, sweep fires every 2s.
+			require.Eventually(t, func() bool {
+				// Keep the hot method alive across the wait so it survives.
+				tracker.RecordUpstreamRequest(ups, hotMethod, common.DataFinalityStateUnknown)
+				n := 0
+				tracker.upsMetrics.Range(func(k, _ any) bool {
+					if k.(upstreamKey).method != "*" {
+						n++
+					}
+					return true
+				})
+				return n <= 1
+			}, 5*time.Second, 100*time.Millisecond,
+				"flooded methods should have evicted after going idle past the threshold")
+
+			_, ok := tracker.upsMetrics.Load(upstreamKey{ups, hotMethod, common.DataFinalityStateAll})
+			assert.True(t, ok, "hot method must NOT be evicted while it keeps receiving traffic")
+		})
 	})
 
 	t.Run("idle_sweep_releases_prom_observer_series", func(t *testing.T) {
-		// Verifies the second half of the method-flood defense: the
-		// IN-MEMORY observer cache shrinks AND the Prometheus
-		// registry side actually releases the series. Without
-		// DeleteLabelValues, even an evicted cache entry would leave
-		// the label-set in the registry forever, and the next
-		// `/metrics` scrape would still emit it.
-		tracker := NewTracker(&log.Logger, "test-project-prom", 2*time.Second)
-		tracker.SetIdleEvictionAfter(150 * time.Millisecond)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		tracker.Bootstrap(ctx)
+		synctest.Test(t, func(t *testing.T) {
+			// Verifies the second half of the method-flood defense: the
+			// IN-MEMORY observer cache shrinks AND the Prometheus
+			// registry side actually releases the series. Without
+			// DeleteLabelValues, even an evicted cache entry would leave
+			// the label-set in the registry forever, and the next
+			// `/metrics` scrape would still emit it.
+			tracker := NewTracker(&log.Logger, "test-project-prom", 2*time.Second)
+			tracker.SetIdleEvictionAfter(150 * time.Millisecond)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tracker.Bootstrap(ctx)
 
-		ups := common.NewFakeUpstream("prom-flood-target")
+			ups := common.NewFakeUpstream("prom-flood-target")
 
-		// Drive the observer cache via real duration records — that's
-		// the only path that lazy-creates entries in urdObsCache.
-		for i := 0; i < 50; i++ {
-			method := fmt.Sprintf("eth_prom_random%d", i)
-			tracker.RecordUpstreamDuration(ups, method, 5*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "user-a")
-		}
+			// Drive the observer cache via real duration records — that's
+			// the only path that lazy-creates entries in urdObsCache.
+			for i := 0; i < 50; i++ {
+				method := fmt.Sprintf("eth_prom_random%d", i)
+				tracker.RecordUpstreamDuration(ups, method, 5*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "user-a")
+			}
 
-		// Pre-sweep: the cache holds at least 50 unique label tuples
-		// AND the underlying MetricVec sees them all.
-		cacheBefore := 0
-		tracker.urdObsCache.Range(func(_, _ any) bool { cacheBefore++; return true })
-		require.GreaterOrEqual(t, cacheBefore, 50,
-			"observer cache should hold an entry per unique method")
-		metricBefore := promUtil.CollectAndCount(telemetry.MetricUpstreamRequestDuration)
-		require.GreaterOrEqual(t, metricBefore, 50,
-			"Prometheus registry should hold a series per unique method (got %d)", metricBefore)
+			// Pre-sweep: the cache holds at least 50 unique label tuples
+			// AND the underlying MetricVec sees them all.
+			cacheBefore := 0
+			tracker.urdObsCache.Range(func(_, _ any) bool { cacheBefore++; return true })
+			require.GreaterOrEqual(t, cacheBefore, 50,
+				"observer cache should hold an entry per unique method")
+			metricBefore := promUtil.CollectAndCount(telemetry.MetricUpstreamRequestDuration)
+			require.GreaterOrEqual(t, metricBefore, 50,
+				"Prometheus registry should hold a series per unique method (got %d)", metricBefore)
 
-		// Wait past the idle threshold + a sweep cycle. Sweep fires
-		// once per windowSize (2s) so 2.5s is enough.
-		require.Eventually(t, func() bool {
-			n := 0
-			tracker.urdObsCache.Range(func(_, _ any) bool { n++; return true })
-			return n == 0
-		}, 5*time.Second, 100*time.Millisecond,
-			"observer cache should have evicted every flood entry once idle")
+			// Wait past the idle threshold + a sweep cycle. Sweep fires
+			// once per windowSize (2s) so 2.5s is enough.
+			require.Eventually(t, func() bool {
+				n := 0
+				tracker.urdObsCache.Range(func(_, _ any) bool { n++; return true })
+				return n == 0
+			}, 5*time.Second, 100*time.Millisecond,
+				"observer cache should have evicted every flood entry once idle")
 
-		// Critical: the Prom registry shrunk too. Without
-		// DeleteLabelValues this count would still be ≥ 50 even after
-		// the in-memory cache cleared.
-		metricAfter := promUtil.CollectAndCount(telemetry.MetricUpstreamRequestDuration)
-		require.Less(t, metricAfter, metricBefore,
-			"Prometheus registry must release evicted series — without DeleteLabelValues the count stays sticky (got after=%d, before=%d)",
-			metricAfter, metricBefore)
+			// Critical: the Prom registry shrunk too. Without
+			// DeleteLabelValues this count would still be ≥ 50 even after
+			// the in-memory cache cleared.
+			metricAfter := promUtil.CollectAndCount(telemetry.MetricUpstreamRequestDuration)
+			require.Less(t, metricAfter, metricBefore,
+				"Prometheus registry must release evicted series — without DeleteLabelValues the count stays sticky (got after=%d, before=%d)",
+				metricAfter, metricBefore)
+		})
 	})
 
 	t.Run("idle_sweep_preserves_cordoned_state", func(t *testing.T) {
-		// Cordon is operator-set; it must never be evicted by the
-		// idle sweep, even if the cordoned (upstream, method) has
-		// received zero traffic since the cordon was applied.
-		tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
-		tracker.SetIdleEvictionAfter(50 * time.Millisecond)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		tracker.Bootstrap(ctx)
+		synctest.Test(t, func(t *testing.T) {
+			// Cordon is operator-set; it must never be evicted by the
+			// idle sweep, even if the cordoned (upstream, method) has
+			// received zero traffic since the cordon was applied.
+			tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
+			tracker.SetIdleEvictionAfter(50 * time.Millisecond)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tracker.Bootstrap(ctx)
 
-		ups := common.NewFakeUpstream("cordoned-method-target")
-		tracker.RecordUpstreamRequest(ups, "eth_call", common.DataFinalityStateUnknown)
-		tracker.CordonClass(ups, "eth_call", "investigated regression", common.CordonClassOperator)
+			ups := common.NewFakeUpstream("cordoned-method-target")
+			tracker.RecordUpstreamRequest(ups, "eth_call", common.DataFinalityStateUnknown)
+			tracker.CordonClass(ups, "eth_call", "investigated regression", common.CordonClassOperator)
 
-		// Wait through a couple of sweep cycles.
-		time.Sleep(2500 * time.Millisecond)
+			// Wait through a couple of sweep cycles.
+			time.Sleep(2500 * time.Millisecond)
 
-		// `Cordon` stores on the all-finalities key; the sweep skips
-		// any entry where `Cordoned == true`, so the cordoned bucket
-		// MUST survive.
-		tm, ok := tracker.upsMetrics.Load(upstreamKey{ups, "eth_call", common.DataFinalityStateAll})
-		require.True(t, ok, "cordoned per-method entry must NOT be evicted by the idle sweep")
-		assert.True(t, tm.(*TrackedMetrics).CordonMask.Load() != 0,
-			"cordon flag must still be set after the sweep")
+			// `Cordon` stores on the all-finalities key; the sweep skips
+			// any entry where `Cordoned == true`, so the cordoned bucket
+			// MUST survive.
+			tm, ok := tracker.upsMetrics.Load(upstreamKey{ups, "eth_call", common.DataFinalityStateAll})
+			require.True(t, ok, "cordoned per-method entry must NOT be evicted by the idle sweep")
+			assert.True(t, tm.(*TrackedMetrics).CordonMask.Load() != 0,
+				"cordon flag must still be set after the sweep")
+		})
 	})
 
 	t.Run("uncordon_when_not_cordoned_is_idempotent", func(t *testing.T) {

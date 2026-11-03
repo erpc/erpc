@@ -218,7 +218,7 @@ func TestWebSocket_AuthStrategyClientDirectives(t *testing.T) {
 		hdr := http.Header{}
 		hdr.Set("X-ERPC-Secret-Token", token)
 		hdr.Set("X-ERPC-Use-Upstream", "rpc2")
-		conn, _, err := websocket.DefaultDialer.Dial("ws://"+addr+"/test_project/evm/123", hdr)
+		conn, _, err := testWsDialer.Dial("ws://"+addr+"/test_project/evm/123", hdr)
 		require.NoError(t, err)
 		defer conn.Close()
 		require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(body)))

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -47,39 +48,41 @@ func TestQuicknodeVendor_FetchEndpoints(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("paginates, forwards filters and drops endpoints without http url", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
 
-		page1 := make([]map[string]interface{}, 0, 100)
-		for i := range 99 {
-			page1 = append(page1, map[string]interface{}{"id": "e" + strconv.Itoa(i), "http_url": "https://e" + strconv.Itoa(i) + ".quiknode.pro/k/", "chain": "eth"})
-		}
-		page1 = append(page1, map[string]interface{}{"id": "nohttp", "http_url": ""})
+			page1 := make([]map[string]interface{}, 0, 100)
+			for i := range 99 {
+				page1 = append(page1, map[string]interface{}{"id": "e" + strconv.Itoa(i), "http_url": "https://e" + strconv.Itoa(i) + ".quiknode.pro/k/", "chain": "eth"})
+			}
+			page1 = append(page1, map[string]interface{}{"id": "nohttp", "http_url": ""})
 
-		gock.New("https://api.quicknode.com").
-			Get("/v0/endpoints").
-			MatchHeader("x-api-key", "qn-key").
-			MatchParam("offset", "^0$").
-			MatchParam("limit", "^100$").
-			MatchParam("tag_ids", "^1,2$").
-			MatchParam("tag_labels", "^prod,eu$").
-			Reply(200).
-			JSON(map[string]interface{}{"data": page1})
-		gock.New("https://api.quicknode.com").
-			Get("/v0/endpoints").
-			MatchParam("offset", "^100$").
-			Reply(200).
-			JSON(map[string]interface{}{"data": []map[string]interface{}{{"id": "last", "http_url": "https://last.quiknode.pro/k/", "chain": "matic"}}})
+			gock.New("https://api.quicknode.com").
+				Get("/v0/endpoints").
+				MatchHeader("x-api-key", "qn-key").
+				MatchParam("offset", "^0$").
+				MatchParam("limit", "^100$").
+				MatchParam("tag_ids", "^1,2$").
+				MatchParam("tag_labels", "^prod,eu$").
+				Reply(200).
+				JSON(map[string]interface{}{"data": page1})
+			gock.New("https://api.quicknode.com").
+				Get("/v0/endpoints").
+				MatchParam("offset", "^100$").
+				Reply(200).
+				JSON(map[string]interface{}{"data": []map[string]interface{}{{"id": "last", "http_url": "https://last.quiknode.pro/k/", "chain": "matic"}}})
 
-		v := CreateQuicknodeVendor().(*QuicknodeVendor)
-		got, err := v.fetchEndpoints(ctx, "qn-key", &QuicknodeFilterParams{TagIDs: []int{1, 2}, TagLabels: []string{"prod", "eu"}})
-		require.NoError(t, err)
-		require.Len(t, got, 100)
-		assert.Equal(t, "e0", got[0].ID)
-		assert.Equal(t, "eth", got[0].Chain)
-		assert.Equal(t, "last", got[99].ID)
-		assert.Equal(t, "matic", got[99].Chain)
-		assert.True(t, gock.IsDone(), "both pages requested")
+			v := CreateQuicknodeVendor().(*QuicknodeVendor)
+			got, err := v.fetchEndpoints(ctx, "qn-key", &QuicknodeFilterParams{TagIDs: []int{1, 2}, TagLabels: []string{"prod", "eu"}})
+			require.NoError(t, err)
+			require.Len(t, got, 100)
+			assert.Equal(t, "e0", got[0].ID)
+			assert.Equal(t, "eth", got[0].Chain)
+			assert.Equal(t, "last", got[99].ID)
+			assert.Equal(t, "matic", got[99].Chain)
+			assert.True(t, gock.IsDone(), "both pages requested")
+		})
 	})
 
 	errCases := []struct {
@@ -94,25 +97,29 @@ func TestQuicknodeVendor_FetchEndpoints(t *testing.T) {
 	}
 	for _, c := range errCases {
 		t.Run(c.name, func(t *testing.T) {
-			util.ResetGock()
-			defer util.ResetGock()
-			gock.New("https://api.quicknode.com").Get("/v0/endpoints").Reply(c.status).BodyString(c.body)
+			synctest.Test(t, func(t *testing.T) {
+				util.ResetGock()
+				defer util.ResetGock()
+				gock.New("https://api.quicknode.com").Get("/v0/endpoints").Reply(c.status).BodyString(c.body)
 
-			v := CreateQuicknodeVendor().(*QuicknodeVendor)
-			_, err := v.fetchEndpoints(ctx, "k", nil)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), c.wantErr)
+				v := CreateQuicknodeVendor().(*QuicknodeVendor)
+				_, err := v.fetchEndpoints(ctx, "k", nil)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), c.wantErr)
+			})
 		})
 	}
 
 	t.Run("transport failure is an error", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		gock.New("https://api.quicknode.com").Get("/v0/endpoints").ReplyError(io.ErrUnexpectedEOF)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			gock.New("https://api.quicknode.com").Get("/v0/endpoints").ReplyError(io.ErrUnexpectedEOF)
 
-		v := CreateQuicknodeVendor().(*QuicknodeVendor)
-		_, err := v.fetchEndpoints(ctx, "k", &QuicknodeFilterParams{})
-		require.Error(t, err)
+			v := CreateQuicknodeVendor().(*QuicknodeVendor)
+			_, err := v.fetchEndpoints(ctx, "k", &QuicknodeFilterParams{})
+			require.Error(t, err)
+		})
 	})
 }
 

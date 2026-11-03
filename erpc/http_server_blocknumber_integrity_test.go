@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -325,178 +326,194 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 	// ── Baselines: pin the behavior that already works ──────────────────────
 
 	t.Run("Baseline_FreshStaleResponseIsCorrectedForClient", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		setupBniPollerMocks()
-		setupBniBlockNumberMocks()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			setupBniPollerMocks()
+			setupBniBlockNumberMocks()
 
-		send, _, shutdown := bniBoot(t, bniConfig(false, integrityOn()))
-		defer shutdown()
+			send, _, shutdown := bniBoot(t, bniConfig(false, integrityOn()))
+			defer shutdown()
 
-		got, _ := bniSend(t, send, nil, nil)
-		assert.Equal(t, bniHealthyHead, got,
-			"a fresh (non-cached) stale response from the lagging upstream must be corrected to the network tip")
+			got, _ := bniSend(t, send, nil, nil)
+			assert.Equal(t, bniHealthyHead, got,
+				"a fresh (non-cached) stale response from the lagging upstream must be corrected to the network tip")
+		})
 	})
 
 	t.Run("Baseline_EnforcementExplicitlyDisabledServesRawValue", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		setupBniPollerMocks()
-		setupBniBlockNumberMocks()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			setupBniPollerMocks()
+			setupBniBlockNumberMocks()
 
-		send, _, shutdown := bniBoot(t, bniConfig(false, integrityOff()))
-		defer shutdown()
+			send, _, shutdown := bniBoot(t, bniConfig(false, integrityOff()))
+			defer shutdown()
 
-		got, _ := bniSend(t, send, nil, nil)
-		assert.Equal(t, bniLaggingHead, got,
-			"with enforcement explicitly disabled the raw upstream value must pass through untouched")
+			got, _ := bniSend(t, send, nil, nil)
+			assert.Equal(t, bniLaggingHead, got,
+				"with enforcement explicitly disabled the raw upstream value must pass through untouched")
+		})
 	})
 
 	// ── B1+B2: the customer-visible sawtooth ────────────────────────────────
 
 	t.Run("Bug_CacheHitMustNotServeBlockBelowAlreadyServedTip", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		setupBniPollerMocks()
-		setupBniBlockNumberMocks()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			setupBniPollerMocks()
+			setupBniBlockNumberMocks()
 
-		send, ntw, shutdown := bniBoot(t, bniConfig(true, integrityOn()))
-		defer shutdown()
+			send, ntw, shutdown := bniBoot(t, bniConfig(true, integrityOn()))
+			defer shutdown()
 
-		// Request #1: cache miss → lagging upstream answers 0x800 → the hook
-		// corrects the client-bound response to the tip (0x1000)...
-		first, _ := bniSend(t, send, nil, nil)
-		require.Equal(t, bniHealthyHead, first,
-			"precondition: fresh-path correction must work (otherwise this test is proving a different bug)")
+			// Request #1: cache miss → lagging upstream answers 0x800 → the hook
+			// corrects the client-bound response to the tip (0x1000)...
+			first, _ := bniSend(t, send, nil, nil)
+			require.Equal(t, bniHealthyHead, first,
+				"precondition: fresh-path correction must work (otherwise this test is proving a different bug)")
 
-		// ...meanwhile the forward path persisted SOMETHING for this method
-		// (today: the stale 0x800 — bug B1). Wait for the async write so
-		// request #2 deterministically exercises the cache-hit path.
-		if v, ok := bniWaitForCachedValue(ntw, 2*time.Second); ok {
-			t.Logf("cache now holds eth_blockNumber=0x%x", v)
-		}
+			// ...meanwhile the forward path persisted SOMETHING for this method
+			// (today: the stale 0x800 — bug B1). Wait for the async write so
+			// request #2 deterministically exercises the cache-hit path.
+			if v, ok := bniWaitForCachedValue(ntw, 2*time.Second); ok {
+				t.Logf("cache now holds eth_blockNumber=0x%x", v)
+			}
 
-		// Request #2: the client already saw 0x1000; whatever source serves
-		// this response (cache hit today — bug B2), the served block number
-		// must never fall below the tip already served.
-		second, hdrs := bniSend(t, send, nil, nil)
-		t.Logf("second response: block=0x%x cacheHeader=%q", second, hdrs["X-Erpc-Cache"])
-		assert.GreaterOrEqual(t, second, first,
-			"sawtooth: served block number went BACKWARDS by %d blocks vs the tip already served to this client "+
-				"(stale upstream value was cached by the forward path and the cache-hit response skipped enforcement)",
-			first-second)
+			// Request #2: the client already saw 0x1000; whatever source serves
+			// this response (cache hit today — bug B2), the served block number
+			// must never fall below the tip already served.
+			second, hdrs := bniSend(t, send, nil, nil)
+			t.Logf("second response: block=0x%x cacheHeader=%q", second, hdrs["X-Erpc-Cache"])
+			assert.GreaterOrEqual(t, second, first,
+				"sawtooth: served block number went BACKWARDS by %d blocks vs the tip already served to this client "+
+					"(stale upstream value was cached by the forward path and the cache-hit response skipped enforcement)",
+				first-second)
+		})
 	})
 
 	t.Run("Bug_StaleUpstreamValueMustNotPoisonCache", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		setupBniPollerMocks()
-		setupBniBlockNumberMocks()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			setupBniPollerMocks()
+			setupBniBlockNumberMocks()
 
-		send, ntw, shutdown := bniBoot(t, bniConfig(true, integrityOn()))
-		defer shutdown()
+			send, ntw, shutdown := bniBoot(t, bniConfig(true, integrityOn()))
+			defer shutdown()
 
-		// With the head known, an enforced eth_blockNumber is answered from the
-		// served head before dispatch and writes nothing to the cache. The path
-		// that still dispatches AND persists is a request that opts out of
-		// enforcement: the lagging upstream answers first and its raw 0x800
-		// lands in the shared cache.
-		raw, _ := bniSend(t, send, nil, map[string]string{"enforce-highest-block": "false"})
-		require.Equal(t, bniLaggingHead, raw, "precondition: the opt-out request is answered by the lagging upstream")
-		v, ok := bniWaitForCachedValue(ntw, 2*time.Second)
-		require.True(t, ok, "precondition: the dispatched opt-out response must reach the cache, or this test exercises nothing")
-		t.Logf("cache now holds eth_blockNumber=0x%x", v)
+			// With the head known, an enforced eth_blockNumber is answered from the
+			// served head before dispatch and writes nothing to the cache. The path
+			// that still dispatches AND persists is a request that opts out of
+			// enforcement: the lagging upstream answers first and its raw 0x800
+			// lands in the shared cache.
+			raw, _ := bniSend(t, send, nil, map[string]string{"enforce-highest-block": "false"})
+			require.Equal(t, bniLaggingHead, raw, "precondition: the opt-out request is answered by the lagging upstream")
+			v, ok := bniWaitForCachedValue(ntw, 2*time.Second)
+			require.True(t, ok, "precondition: the dispatched opt-out response must reach the cache, or this test exercises nothing")
+			t.Logf("cache now holds eth_blockNumber=0x%x", v)
 
-		// Every enforced client reading that entry must still see the tip.
-		got, hdrs := bniSend(t, send, nil, nil)
-		assert.Equal(t, "HIT", hdrs["X-Erpc-Cache"], "the enforced read must come from the entry the opt-out request wrote")
-		assert.Equal(t, bniHealthyHead, got,
-			"cache poisoned: a stale upstream value persisted by the forward path (0x%x) reached an enforced client below the tip (0x%x)",
-			v, bniHealthyHead)
+			// Every enforced client reading that entry must still see the tip.
+			got, hdrs := bniSend(t, send, nil, nil)
+			assert.Equal(t, "HIT", hdrs["X-Erpc-Cache"], "the enforced read must come from the entry the opt-out request wrote")
+			assert.Equal(t, bniHealthyHead, got,
+				"cache poisoned: a stale upstream value persisted by the forward path (0x%x) reached an enforced client below the tip (0x%x)",
+				v, bniHealthyHead)
+		})
 	})
 
 	// ── B2 isolated: a stale entry already in the (possibly shared) cache ───
 
 	t.Run("Bug_StaleCacheEntryMustBeEnforcedOnRead", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		setupBniPollerMocks()
-		setupBniBlockNumberMocks()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			setupBniPollerMocks()
+			setupBniBlockNumberMocks()
 
-		send, ntw, shutdown := bniBoot(t, bniConfig(true, integrityOn()))
-		defer shutdown()
+			send, ntw, shutdown := bniBoot(t, bniConfig(true, integrityOn()))
+			defer shutdown()
 
-		// Simulate a stale value present in the cache regardless of how it
-		// got there (another pod, an earlier window, a race). Note the
-		// realtime age guard cannot reject it: eth_blockNumber responses
-		// carry no block timestamp and the memory connector is not
-		// head-aware, so the guard fails open.
-		bniSeedCache(t, ntw, "0x800")
+			// Simulate a stale value present in the cache regardless of how it
+			// got there (another pod, an earlier window, a race). Note the
+			// realtime age guard cannot reject it: eth_blockNumber responses
+			// carry no block timestamp and the memory connector is not
+			// head-aware, so the guard fails open.
+			bniSeedCache(t, ntw, "0x800")
 
-		got, hdrs := bniSend(t, send, nil, nil)
-		t.Logf("response: block=0x%x cacheHeader=%q", got, hdrs["X-Erpc-Cache"])
-		assert.GreaterOrEqual(t, got, bniHealthyHead,
-			"a cache-hit response below the known tip must be corrected just like a fresh response (FromCache responses currently skip enforcement entirely)")
+			got, hdrs := bniSend(t, send, nil, nil)
+			t.Logf("response: block=0x%x cacheHeader=%q", got, hdrs["X-Erpc-Cache"])
+			assert.GreaterOrEqual(t, got, bniHealthyHead,
+				"a cache-hit response below the known tip must be corrected just like a fresh response (FromCache responses currently skip enforcement entirely)")
+		})
 	})
 
 	// ── B3: use-upstream pinned requests must use the subset's tip ──────────
 
 	t.Run("Bug_UseUpstreamPinnedRequestMustUseSelectorScopedTip", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		setupBniPollerMocks()
-		setupBniBlockNumberMocks()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			setupBniPollerMocks()
+			setupBniBlockNumberMocks()
 
-		send, _, shutdown := bniBoot(t, bniConfig(false, integrityOn()))
-		defer shutdown()
+			send, _, shutdown := bniBoot(t, bniConfig(false, integrityOn()))
+			defer shutdown()
 
-		// The request is explicitly pinned to the lagging upstream. Per the
-		// selector-scoped served-tip semantics (#912, honored by max-mode
-		// EvmRoutableUpstreams when the ctx carries the request), "latest"
-		// must be decided AMONG the pinned subset — advertising the
-		// network-wide tip promises a block rpc1 cannot serve.
-		got, _ := bniSend(t, send, map[string]string{"X-ERPC-Use-Upstream": "rpc1"}, nil)
-		assert.Equal(t, bniLaggingHead, got,
-			"request pinned to the lagging upstream must be corrected against the pinned subset's tip (0x%x), not the network-wide tip (0x%x)",
-			bniLaggingHead, bniHealthyHead)
+			// The request is explicitly pinned to the lagging upstream. Per the
+			// selector-scoped served-tip semantics (#912, honored by max-mode
+			// EvmRoutableUpstreams when the ctx carries the request), "latest"
+			// must be decided AMONG the pinned subset — advertising the
+			// network-wide tip promises a block rpc1 cannot serve.
+			got, _ := bniSend(t, send, map[string]string{"X-ERPC-Use-Upstream": "rpc1"}, nil)
+			assert.Equal(t, bniLaggingHead, got,
+				"request pinned to the lagging upstream must be corrected against the pinned subset's tip (0x%x), not the network-wide tip (0x%x)",
+				bniLaggingHead, bniHealthyHead)
+		})
 	})
 
 	// ── B4: directive gating parity with eth_getBlockByNumber ───────────────
 
 	t.Run("Baseline_EnforcementEnabledByDefaultOnModernConfig", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		setupBniPollerMocks()
-		setupBniBlockNumberMocks()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			setupBniPollerMocks()
+			setupBniBlockNumberMocks()
 
-		// No integrity block in config: both the deprecated
-		// evm.integrity.enforceHighestBlock (which the eth_blockNumber hook
-		// reads) and DirectiveDefaults.EnforceHighestBlock (which
-		// eth_getBlockByNumber reads) are auto-defaulted to true, so
-		// enforcement must run out of the box.
-		send, _, shutdown := bniBoot(t, bniConfig(false, nil))
-		defer shutdown()
+			// No integrity block in config: both the deprecated
+			// evm.integrity.enforceHighestBlock (which the eth_blockNumber hook
+			// reads) and DirectiveDefaults.EnforceHighestBlock (which
+			// eth_getBlockByNumber reads) are auto-defaulted to true, so
+			// enforcement must run out of the box.
+			send, _, shutdown := bniBoot(t, bniConfig(false, nil))
+			defer shutdown()
 
-		got, _ := bniSend(t, send, nil, nil)
-		assert.Equal(t, bniHealthyHead, got,
-			"enforcement must be active by default (no explicit integrity config)")
+			got, _ := bniSend(t, send, nil, nil)
+			assert.Equal(t, bniHealthyHead, got,
+				"enforcement must be active by default (no explicit integrity config)")
+		})
 	})
 
 	t.Run("Bug_PerRequestDirectiveOverrideMustBeHonored", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		setupBniPollerMocks()
-		setupBniBlockNumberMocks()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			setupBniPollerMocks()
+			setupBniBlockNumberMocks()
 
-		send, _, shutdown := bniBoot(t, bniConfig(false, integrityOn()))
-		defer shutdown()
+			send, _, shutdown := bniBoot(t, bniConfig(false, integrityOn()))
+			defer shutdown()
 
-		// eth_getBlockByNumber honors ?enforce-highest-block=false per
-		// request (see HonorsEnforceHighestBlockFalseQueryOverride); the
-		// eth_blockNumber hook must behave the same instead of reading only
-		// the network config.
-		got, _ := bniSend(t, send, nil, map[string]string{"enforce-highest-block": "false"})
-		assert.Equal(t, bniLaggingHead, got,
-			"per-request enforce-highest-block=false must disable correction for eth_blockNumber (it already does for eth_getBlockByNumber)")
+			// eth_getBlockByNumber honors ?enforce-highest-block=false per
+			// request (see HonorsEnforceHighestBlockFalseQueryOverride); the
+			// eth_blockNumber hook must behave the same instead of reading only
+			// the network config.
+			got, _ := bniSend(t, send, nil, map[string]string{"enforce-highest-block": "false"})
+			assert.Equal(t, bniLaggingHead, got,
+				"per-request enforce-highest-block=false must disable correction for eth_blockNumber (it already does for eth_getBlockByNumber)")
+		})
 	})
 }

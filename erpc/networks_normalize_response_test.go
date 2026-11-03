@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 
 	"github.com/erpc/erpc/common"
 	"github.com/stretchr/testify/assert"
@@ -48,28 +49,34 @@ func TestNormalizeResponse_IDRewrite_AppliesToAllArchitectures(t *testing.T) {
 	}
 
 	t.Run("EVM", func(t *testing.T) {
-		network := &Network{cfg: &common.NetworkConfig{Architecture: common.ArchitectureEvm}}
-		req := buildReq()
-		resp := buildResp(t)
-		require.NoError(t, network.normalizeResponse(ctx, req, resp))
-		assertResponseMatchesRequest(t, req, resp)
+		synctest.Test(t, func(t *testing.T) {
+			network := &Network{cfg: &common.NetworkConfig{Architecture: common.ArchitectureEvm}}
+			req := buildReq()
+			resp := buildResp(t)
+			require.NoError(t, network.normalizeResponse(ctx, req, resp))
+			assertResponseMatchesRequest(t, req, resp)
+		})
 	})
 
 	t.Run("NonEvmJsonRpcArchitecture", func(t *testing.T) {
-		// Regression: pre-fix this returned the upstream's echoed ID (99)
-		// because the switch only handled EVM. Post-fix: rewrite applies to
-		// any JSON-RPC architecture. We use a placeholder architecture name
-		// so the test exercises the non-EVM branch without depending on a
-		// specific architecture being merged to main.
-		network := &Network{cfg: &common.NetworkConfig{Architecture: common.NetworkArchitecture("jsonrpc-test")}}
-		req := buildReq()
-		resp := buildResp(t)
-		require.NoError(t, network.normalizeResponse(ctx, req, resp))
-		assertResponseMatchesRequest(t, req, resp)
+		synctest.Test(t, func(t *testing.T) {
+			// Regression: pre-fix this returned the upstream's echoed ID (99)
+			// because the switch only handled EVM. Post-fix: rewrite applies to
+			// any JSON-RPC architecture. We use a placeholder architecture name
+			// so the test exercises the non-EVM branch without depending on a
+			// specific architecture being merged to main.
+			network := &Network{cfg: &common.NetworkConfig{Architecture: common.NetworkArchitecture("jsonrpc-test")}}
+			req := buildReq()
+			resp := buildResp(t)
+			require.NoError(t, network.normalizeResponse(ctx, req, resp))
+			assertResponseMatchesRequest(t, req, resp)
+		})
 	})
 
 	t.Run("NilResponse_NoError", func(t *testing.T) {
-		network := &Network{cfg: &common.NetworkConfig{Architecture: common.ArchitectureEvm}}
-		assert.NoError(t, network.normalizeResponse(ctx, buildReq(), nil))
+		synctest.Test(t, func(t *testing.T) {
+			network := &Network{cfg: &common.NetworkConfig{Architecture: common.ArchitectureEvm}}
+			assert.NoError(t, network.normalizeResponse(ctx, buildReq(), nil))
+		})
 	})
 }

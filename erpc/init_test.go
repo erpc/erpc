@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -147,39 +148,41 @@ func TestInit_AllGood(t *testing.T) {
 }
 
 func TestInit_InvalidHttpPort(t *testing.T) {
-	mainMutex.Lock()
-	defer mainMutex.Unlock()
+	synctest.Test(t, func(t *testing.T) {
+		mainMutex.Lock()
+		defer mainMutex.Unlock()
 
-	cfg := &common.Config{
-		LogLevel: "DEBUG",
-		Server: &common.ServerConfig{
-			HttpHostV4: util.StringPtr("localhost"),
-			ListenV4:   util.BoolPtr(true),
-			HttpPortV4: util.IntPtr(-1),
-		},
-	}
-
-	logger := log.Logger
-
-	// Replace exit channel with a buffered channel
-	exitChan := make(chan int, 1)
-	util.OsExit = func(code int) {
-		exitChan <- code
-	}
-
-	// Launch init
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	Init(ctx, cfg, logger)
-
-	select {
-	case code := <-exitChan:
-		if code != util.ExitCodeHttpServerFailed {
-			t.Errorf("expected exit code %d, got %d", util.ExitCodeHttpServerFailed, code)
+		cfg := &common.Config{
+			LogLevel: "DEBUG",
+			Server: &common.ServerConfig{
+				HttpHostV4: util.StringPtr("localhost"),
+				ListenV4:   util.BoolPtr(true),
+				HttpPortV4: util.IntPtr(-1),
+			},
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for Init to return an error")
-	}
+
+		logger := log.Logger
+
+		// Replace exit channel with a buffered channel
+		exitChan := make(chan int, 1)
+		util.OsExit = func(code int) {
+			exitChan <- code
+		}
+
+		// Launch init
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		Init(ctx, cfg, logger)
+
+		select {
+		case code := <-exitChan:
+			if code != util.ExitCodeHttpServerFailed {
+				t.Errorf("expected exit code %d, got %d", util.ExitCodeHttpServerFailed, code)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for Init to return an error")
+		}
+	})
 }
 
 // After SIGTERM, Init must not return (main exits right after it) while the

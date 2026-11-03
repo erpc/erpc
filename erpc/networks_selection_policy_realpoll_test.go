@@ -34,6 +34,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -240,81 +241,85 @@ func blockHeadLagOf(t *testing.T, network *Network, id string) int64 {
 // This is the network-level guard that #907 was missing — a direct
 // BlockHeadLag.Store would have masked the rollup bug.
 func TestNetworkPolicy_RealPoll_LaggingUpstreamExcluded(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	// Two healthy nodes at the tip (1000) + one frozen 900 blocks behind (100).
-	// 900 is far past the default policy's blockNumberLagAbove(16) threshold.
-	network := setupRealPollLagNetwork(t, ctx, []realPollFixture{
-		{id: "healthy-a", latest: 1000},
-		{id: "healthy-b", latest: 1000},
-		{id: "frozen", latest: 100},
+		// Two healthy nodes at the tip (1000) + one frozen 900 blocks behind (100).
+		// 900 is far past the default policy's blockNumberLagAbove(16) threshold.
+		network := setupRealPollLagNetwork(t, ctx, []realPollFixture{
+			{id: "healthy-a", latest: 1000},
+			{id: "healthy-b", latest: 1000},
+			{id: "frozen", latest: 100},
+		})
+
+		// 1) The real poll → tracker rollup populated the {*, All} bucket the
+		//    policy reads. This is the exact hop #907 fixed; pre-#907 this is 0.
+		require.EqualValues(t, 900, blockHeadLagOf(t, network, "frozen"),
+			"real poll must land lag on the {*, All} rollup (poll→SetLatestBlockNumber→updateNetworkLagMetrics)")
+		require.EqualValues(t, 0, blockHeadLagOf(t, network, "healthy-a"))
+
+		// 2) The default selection policy excluded the laggard.
+		order, excluded := policy.LatestDecisionOutputForTest(network.policyEngine, network.networkId, "*")
+		assert.Contains(t, excluded, "frozen",
+			"frozen (lag 900 > blockNumberLagAbove(16)) must be excluded by the default policy")
+		assert.NotContains(t, order, "frozen")
+		assert.Contains(t, order, "healthy-a")
+		assert.Contains(t, order, "healthy-b")
+
+		//    No probes either: probe responses never move a head, so probing a
+		//    lag-only exclusion would bill its vendor without re-admitting it.
+		for _, u := range network.policyEngine.GetExcluded(network.networkId, "*", "*") {
+			assert.NotEqual(t, "frozen", u.Id(),
+				"a lag-only exclusion must not be handed to the prober")
+		}
+
+		// 3) End-to-end routing: a real request never reaches the excluded node.
+		mockClean(t, upstreamHostFromID("healthy-a"), "eth_getBalance", "0xaaa")
+		mockClean(t, upstreamHostFromID("healthy-b"), "eth_getBalance", "0xbbb")
+		mockClean(t, upstreamHostFromID("frozen"), "eth_getBalance", "0xfff")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		assert.Equal(t, 0, gockHits(upstreamHostFromID("frozen")),
+			"frozen upstream must receive zero traffic — excluded by the lag predicate")
 	})
-
-	// 1) The real poll → tracker rollup populated the {*, All} bucket the
-	//    policy reads. This is the exact hop #907 fixed; pre-#907 this is 0.
-	require.EqualValues(t, 900, blockHeadLagOf(t, network, "frozen"),
-		"real poll must land lag on the {*, All} rollup (poll→SetLatestBlockNumber→updateNetworkLagMetrics)")
-	require.EqualValues(t, 0, blockHeadLagOf(t, network, "healthy-a"))
-
-	// 2) The default selection policy excluded the laggard.
-	order, excluded := policy.LatestDecisionOutputForTest(network.policyEngine, network.networkId, "*")
-	assert.Contains(t, excluded, "frozen",
-		"frozen (lag 900 > blockNumberLagAbove(16)) must be excluded by the default policy")
-	assert.NotContains(t, order, "frozen")
-	assert.Contains(t, order, "healthy-a")
-	assert.Contains(t, order, "healthy-b")
-
-	//    No probes either: probe responses never move a head, so probing a
-	//    lag-only exclusion would bill its vendor without re-admitting it.
-	for _, u := range network.policyEngine.GetExcluded(network.networkId, "*", "*") {
-		assert.NotEqual(t, "frozen", u.Id(),
-			"a lag-only exclusion must not be handed to the prober")
-	}
-
-	// 3) End-to-end routing: a real request never reaches the excluded node.
-	mockClean(t, upstreamHostFromID("healthy-a"), "eth_getBalance", "0xaaa")
-	mockClean(t, upstreamHostFromID("healthy-b"), "eth_getBalance", "0xbbb")
-	mockClean(t, upstreamHostFromID("frozen"), "eth_getBalance", "0xfff")
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-
-	assert.Equal(t, 0, gockHits(upstreamHostFromID("frozen")),
-		"frozen upstream must receive zero traffic — excluded by the lag predicate")
 }
 
 // TestNetworkPolicy_RealPoll_WithinTolerance_NoneExcluded guards the other
 // direction: small, normal lag (a few blocks behind the tip) must NOT trip
 // blockNumberLagAbove(16). Same real-poll path, no exclusion expected.
 func TestNetworkPolicy_RealPoll_WithinTolerance_NoneExcluded(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network := setupRealPollLagNetwork(t, ctx, []realPollFixture{
-		{id: "u1", latest: 1000},
-		{id: "u2", latest: 998}, // the corroborated head (second-highest)
-		{id: "u3", latest: 995}, // 3 behind it — still within the 16-block tolerance
+		network := setupRealPollLagNetwork(t, ctx, []realPollFixture{
+			{id: "u1", latest: 1000},
+			{id: "u2", latest: 998}, // the corroborated head (second-highest)
+			{id: "u3", latest: 995}, // 3 behind it — still within the 16-block tolerance
+		})
+
+		require.EqualValues(t, 0, blockHeadLagOf(t, network, "u1"))
+		require.EqualValues(t, 0, blockHeadLagOf(t, network, "u2"))
+		require.EqualValues(t, 3, blockHeadLagOf(t, network, "u3"))
+
+		order, excluded := policy.LatestDecisionOutputForTest(network.policyEngine, network.networkId, "*")
+		assert.NotContains(t, excluded, "u1")
+		assert.NotContains(t, excluded, "u2")
+		assert.NotContains(t, excluded, "u3")
+		assert.ElementsMatch(t, []string{"u1", "u2", "u3"}, order,
+			"all three within-tolerance upstreams must stay in rotation")
 	})
-
-	require.EqualValues(t, 0, blockHeadLagOf(t, network, "u1"))
-	require.EqualValues(t, 0, blockHeadLagOf(t, network, "u2"))
-	require.EqualValues(t, 3, blockHeadLagOf(t, network, "u3"))
-
-	order, excluded := policy.LatestDecisionOutputForTest(network.policyEngine, network.networkId, "*")
-	assert.NotContains(t, excluded, "u1")
-	assert.NotContains(t, excluded, "u2")
-	assert.NotContains(t, excluded, "u3")
-	assert.ElementsMatch(t, []string{"u1", "u2", "u3"}, order,
-		"all three within-tolerance upstreams must stay in rotation")
 }
 
 // TestNetworkPolicy_RealPoll_SlowPolledUpstreamAtTipStaysIn: an upstream
@@ -325,60 +330,62 @@ func TestNetworkPolicy_RealPoll_WithinTolerance_NoneExcluded(t *testing.T) {
 // some processes. A healthy slow-polled upstream must stay in; one whose
 // reports stop must still be excluded once a poll period has passed.
 func TestNetworkPolicy_RealPoll_SlowPolledUpstreamAtTipStaysIn(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network := setupRealPollLagNetwork(t, ctx, []realPollFixture{
-		{id: "fast-a", latest: 1000},
-		{id: "fast-b", latest: 1000},
-		{id: "slow", latest: 1000, pollEvery: 10 * time.Second},
-	})
-	tr := network.metricsTracker
-	var nowNs atomic.Int64
-	nowNs.Store(time.Now().UnixNano())
-	tr.SetClockForTest(func() time.Time { return time.Unix(0, nowNs.Load()) })
-	fastA, fastB, slow := upstreamByID(t, network, "fast-a"), upstreamByID(t, network, "fast-b"), upstreamByID(t, network, "slow")
+		network := setupRealPollLagNetwork(t, ctx, []realPollFixture{
+			{id: "fast-a", latest: 1000},
+			{id: "fast-b", latest: 1000},
+			{id: "slow", latest: 1000, pollEvery: 10 * time.Second},
+		})
+		tr := network.metricsTracker
+		var nowNs atomic.Int64
+		nowNs.Store(time.Now().UnixNano())
+		tr.SetClockForTest(func() time.Time { return time.Unix(0, nowNs.Load()) })
+		fastA, fastB, slow := upstreamByID(t, network, "fast-a"), upstreamByID(t, network, "fast-b"), upstreamByID(t, network, "slow")
 
-	// One 0.4s block per step; the fast pair reports every block, slow every
-	// 25th (10s). Fast reports first, as their 500ms polls land first. Block
-	// timestamps continue from the mocked poll's head block.
-	const ts0 = int64(0x6702a8f0)
-	step, slowReports := 0, true
-	runTo := func(last int) {
-		for ; step < last; step++ {
-			i := int64(step + 1)
-			nowNs.Add(int64(400 * time.Millisecond))
-			head, ts := 1000+i, ts0+i*2/5
-			tr.SetLatestBlockNumber(fastA, head, ts)
-			tr.SetLatestBlockNumber(fastB, head, ts)
-			if slowReports && i%25 == 0 {
-				tr.SetLatestBlockNumber(slow, head, ts)
+		// One 0.4s block per step; the fast pair reports every block, slow every
+		// 25th (10s). Fast reports first, as their 500ms polls land first. Block
+		// timestamps continue from the mocked poll's head block.
+		const ts0 = int64(0x6702a8f0)
+		step, slowReports := 0, true
+		runTo := func(last int) {
+			for ; step < last; step++ {
+				i := int64(step + 1)
+				nowNs.Add(int64(400 * time.Millisecond))
+				head, ts := 1000+i, ts0+i*2/5
+				tr.SetLatestBlockNumber(fastA, head, ts)
+				tr.SetLatestBlockNumber(fastB, head, ts)
+				if slowReports && i%25 == 0 {
+					tr.SetLatestBlockNumber(slow, head, ts)
+				}
 			}
 		}
-	}
-	tick := func() (order, excluded []string) {
-		policy.TickForTest(network.policyEngine, network.networkId, "*")
-		return policy.LatestDecisionOutputForTest(network.policyEngine, network.networkId, "*")
-	}
-	runTo(70)
+		tick := func() (order, excluded []string) {
+			policy.TickForTest(network.policyEngine, network.networkId, "*")
+			return policy.LatestDecisionOutputForTest(network.policyEngine, network.networkId, "*")
+		}
+		runTo(70)
 
-	// 8s after slow's report at step 50: the tip is 20 blocks past its stored
-	// head, all of it made since slow was last asked.
-	assert.LessOrEqual(t, blockHeadLagOf(t, network, "slow"), int64(1),
-		"blocks made since the last poll are not lag")
-	order, excluded := tick()
-	assert.NotContains(t, excluded, "slow", "a slow-polled upstream at the tip must stay in rotation")
-	assert.Contains(t, order, "slow")
+		// 8s after slow's report at step 50: the tip is 20 blocks past its stored
+		// head, all of it made since slow was last asked.
+		assert.LessOrEqual(t, blockHeadLagOf(t, network, "slow"), int64(1),
+			"blocks made since the last poll are not lag")
+		order, excluded := tick()
+		assert.NotContains(t, excluded, "slow", "a slow-polled upstream at the tip must stay in rotation")
+		assert.Contains(t, order, "slow")
 
-	// Slow stops reporting. 26s after its last report the chain made 65
-	// blocks; one poll period (25 blocks) is credited, the rest is lag.
-	slowReports = false
-	runTo(115)
-	assert.GreaterOrEqual(t, blockHeadLagOf(t, network, "slow"), int64(39),
-		"a report missing past one poll period counts as lag again")
-	_, excluded = tick()
-	assert.Contains(t, excluded, "slow", "an upstream whose reports stopped must be excluded")
+		// Slow stops reporting. 26s after its last report the chain made 65
+		// blocks; one poll period (25 blocks) is credited, the rest is lag.
+		slowReports = false
+		runTo(115)
+		assert.GreaterOrEqual(t, blockHeadLagOf(t, network, "slow"), int64(39),
+			"a report missing past one poll period counts as lag again")
+		_, excluded = tick()
+		assert.Contains(t, excluded, "slow", "an upstream whose reports stopped must be excluded")
+	})
 }

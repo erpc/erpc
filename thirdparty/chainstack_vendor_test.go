@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -20,47 +21,49 @@ func TestChainstackVendor_FetchNodes(t *testing.T) {
 	logger := zerolog.Nop()
 
 	t.Run("follows next links, forwards filters and skips invalid nodes", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
 
-		next := "https://api.chainstack.com/v1/nodes/?page=2"
-		gock.New("https://api.chainstack.com").
-			Get("/v1/nodes/").
-			MatchHeader("Authorization", "^Bearer cs-key$").
-			MatchParam("project", "^p1$").
-			MatchParam("organization", "^o1$").
-			MatchParam("region", "^r1$").
-			MatchParam("provider", "^aws$").
-			MatchParam("type", "^dedicated$").
-			Reply(200).
-			JSON(map[string]interface{}{
-				"next": next,
-				"results": []interface{}{
-					map[string]interface{}{"id": "n1", "status": "running", "details": map[string]interface{}{"https_endpoint": "https://n1.core.chainstack.com", "auth_key": "a1"}},
-					map[string]interface{}{"id": "noendpoint", "status": "running", "details": map[string]interface{}{}},
-					map[string]interface{}{"id": 5, "status": "running"},
-				},
-			})
-		gock.New("https://api.chainstack.com").
-			Get("/v1/nodes/").
-			MatchParam("page", "^2$").
-			Reply(200).
-			JSON(map[string]interface{}{
-				"next":    nil,
-				"results": []interface{}{map[string]interface{}{"id": "n2", "status": "stopped", "details": map[string]interface{}{"https_endpoint": "https://n2.core.chainstack.com"}}},
-			})
+			next := "https://api.chainstack.com/v1/nodes/?page=2"
+			gock.New("https://api.chainstack.com").
+				Get("/v1/nodes/").
+				MatchHeader("Authorization", "^Bearer cs-key$").
+				MatchParam("project", "^p1$").
+				MatchParam("organization", "^o1$").
+				MatchParam("region", "^r1$").
+				MatchParam("provider", "^aws$").
+				MatchParam("type", "^dedicated$").
+				Reply(200).
+				JSON(map[string]interface{}{
+					"next": next,
+					"results": []interface{}{
+						map[string]interface{}{"id": "n1", "status": "running", "details": map[string]interface{}{"https_endpoint": "https://n1.core.chainstack.com", "auth_key": "a1"}},
+						map[string]interface{}{"id": "noendpoint", "status": "running", "details": map[string]interface{}{}},
+						map[string]interface{}{"id": 5, "status": "running"},
+					},
+				})
+			gock.New("https://api.chainstack.com").
+				Get("/v1/nodes/").
+				MatchParam("page", "^2$").
+				Reply(200).
+				JSON(map[string]interface{}{
+					"next":    nil,
+					"results": []interface{}{map[string]interface{}{"id": "n2", "status": "stopped", "details": map[string]interface{}{"https_endpoint": "https://n2.core.chainstack.com"}}},
+				})
 
-		v := CreateChainstackVendor().(*ChainstackVendor)
-		got, err := v.fetchNodes(ctx, &logger, "cs-key", &ChainstackFilterParams{
-			Project: "p1", Organization: "o1", Region: "r1", Provider: "aws", Type: "dedicated",
+			v := CreateChainstackVendor().(*ChainstackVendor)
+			got, err := v.fetchNodes(ctx, &logger, "cs-key", &ChainstackFilterParams{
+				Project: "p1", Organization: "o1", Region: "r1", Provider: "aws", Type: "dedicated",
+			})
+			require.NoError(t, err)
+			require.Len(t, got, 2)
+			assert.Equal(t, "n1", got[0].ID)
+			assert.Equal(t, "a1", got[0].Details.AuthKey)
+			assert.Equal(t, "n2", got[1].ID)
+			assert.Equal(t, "stopped", got[1].Status)
+			assert.True(t, gock.IsDone())
 		})
-		require.NoError(t, err)
-		require.Len(t, got, 2)
-		assert.Equal(t, "n1", got[0].ID)
-		assert.Equal(t, "a1", got[0].Details.AuthKey)
-		assert.Equal(t, "n2", got[1].ID)
-		assert.Equal(t, "stopped", got[1].Status)
-		assert.True(t, gock.IsDone())
 	})
 
 	errCases := []struct {
@@ -74,36 +77,42 @@ func TestChainstackVendor_FetchNodes(t *testing.T) {
 	}
 	for _, c := range errCases {
 		t.Run(c.name, func(t *testing.T) {
-			util.ResetGock()
-			defer util.ResetGock()
-			gock.New("https://api.chainstack.com").Get("/v1/nodes/").Reply(c.status).BodyString(c.body)
+			synctest.Test(t, func(t *testing.T) {
+				util.ResetGock()
+				defer util.ResetGock()
+				gock.New("https://api.chainstack.com").Get("/v1/nodes/").Reply(c.status).BodyString(c.body)
 
-			v := CreateChainstackVendor().(*ChainstackVendor)
-			_, err := v.fetchNodes(ctx, &logger, "k", nil)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), c.wantErr)
+				v := CreateChainstackVendor().(*ChainstackVendor)
+				_, err := v.fetchNodes(ctx, &logger, "k", nil)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), c.wantErr)
+			})
 		})
 	}
 
 	t.Run("transport failure is an error", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		gock.New("https://api.chainstack.com").Get("/v1/nodes/").ReplyError(io.ErrUnexpectedEOF)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			gock.New("https://api.chainstack.com").Get("/v1/nodes/").ReplyError(io.ErrUnexpectedEOF)
 
-		v := CreateChainstackVendor().(*ChainstackVendor)
-		_, err := v.fetchNodes(ctx, &logger, "k", &ChainstackFilterParams{})
-		require.Error(t, err)
+			v := CreateChainstackVendor().(*ChainstackVendor)
+			_, err := v.fetchNodes(ctx, &logger, "k", &ChainstackFilterParams{})
+			require.Error(t, err)
+		})
 	})
 
 	t.Run("malformed next link is an error", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		gock.New("https://api.chainstack.com").Get("/v1/nodes/").Reply(200).
-			JSON(map[string]interface{}{"next": "http://bad host/", "results": []interface{}{}})
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			gock.New("https://api.chainstack.com").Get("/v1/nodes/").Reply(200).
+				JSON(map[string]interface{}{"next": "http://bad host/", "results": []interface{}{}})
 
-		v := CreateChainstackVendor().(*ChainstackVendor)
-		_, err := v.fetchNodes(ctx, &logger, "k", nil)
-		require.Error(t, err)
+			v := CreateChainstackVendor().(*ChainstackVendor)
+			_, err := v.fetchNodes(ctx, &logger, "k", nil)
+			require.Error(t, err)
+		})
 	})
 }
 

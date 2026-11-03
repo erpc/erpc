@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -102,33 +103,35 @@ func TestWaitCap_MaxWaitOnEmpty_TighterFloor(t *testing.T) {
 // TestWaitCap_NoCap_WaitsForEveryone confirms the default behavior is
 // unchanged: zero caps = wait for every participant.
 func TestWaitCap_NoCap_WaitsForEveryone(t *testing.T) {
-	logger := zerolog.New(zerolog.NewTestWriter(t))
+	synctest.Test(t, func(t *testing.T) {
+		logger := zerolog.New(zerolog.NewTestWriter(t))
 
-	pol := newBuilder().
-		WithLogger(&logger).
-		WithMaxParticipants(2).
-		WithAgreementThreshold(2).
-		WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
-		Build()
+		pol := newBuilder().
+			WithLogger(&logger).
+			WithMaxParticipants(2).
+			WithAgreementThreshold(2).
+			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
+			Build()
 
-	req := newTestRequest()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		req := newTestRequest()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	var slot atomic.Int32
-	start := time.Now()
-	_, _ = pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-		idx := slot.Add(1)
-		if idx == 1 {
+		var slot atomic.Int32
+		start := time.Now()
+		_, _ = pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			idx := slot.Add(1)
+			if idx == 1 {
+				return validResponseWithValue("0x1"), nil
+			}
+			time.Sleep(250 * time.Millisecond)
 			return validResponseWithValue("0x1"), nil
-		}
-		time.Sleep(250 * time.Millisecond)
-		return validResponseWithValue("0x1"), nil
-	})
-	elapsed := time.Since(start)
+		})
+		elapsed := time.Since(start)
 
-	assert.GreaterOrEqual(t, elapsed, 250*time.Millisecond,
-		"with no wait cap, consensus must wait for the slower participant")
+		assert.GreaterOrEqual(t, elapsed, 250*time.Millisecond,
+			"with no wait cap, consensus must wait for the slower participant")
+	})
 }
 
 // skippedParticipantErr builds the error a participant slot produces when its
@@ -144,50 +147,52 @@ func skippedParticipantErr(method, upstreamId string) error {
 // keep waiting for the only real participant even though it is far slower
 // than both caps.
 func TestWaitCap_NotArmedBySkippedParticipants(t *testing.T) {
-	logger := zerolog.New(zerolog.NewTestWriter(t))
+	synctest.Test(t, func(t *testing.T) {
+		logger := zerolog.New(zerolog.NewTestWriter(t))
 
-	pol := newBuilder().
-		WithLogger(&logger).
-		WithMaxParticipants(3).
-		WithAgreementThreshold(3). // disable short-circuit; the collection loop must decide
-		WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
-		WithMaxWaitOnEmpty(common.NewStaticDuration(30 * time.Millisecond)).
-		WithMaxWaitOnResult(common.NewStaticDuration(30 * time.Millisecond)).
-		Build()
+		pol := newBuilder().
+			WithLogger(&logger).
+			WithMaxParticipants(3).
+			WithAgreementThreshold(3). // disable short-circuit; the collection loop must decide
+			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
+			WithMaxWaitOnEmpty(common.NewStaticDuration(30 * time.Millisecond)).
+			WithMaxWaitOnResult(common.NewStaticDuration(30 * time.Millisecond)).
+			Build()
 
-	req := newTestRequest()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		req := newTestRequest()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	var slot atomic.Int32
-	start := time.Now()
-	resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-		idx := slot.Add(1)
-		switch idx {
-		case 1:
-			// Config-static skip — produced locally in microseconds.
-			return nil, skippedParticipantErr("eth_getLogs", "archive-1")
-		case 2:
-			// A slot that exhausted the shared cursor after burning its
-			// retries on skipped upstreams — also produced in microseconds.
-			return nil, common.NewErrFailsafeRetryExceeded(common.ScopeNetwork,
-				common.NewErrUpstreamsExhaustedWithCause(errors.Join(
-					skippedParticipantErr("eth_getLogs", "archive-1"),
-					skippedParticipantErr("eth_getLogs", "archive-2"),
-				)), nil)
-		default:
-			// The only real participant — far beyond both caps.
-			time.Sleep(150 * time.Millisecond)
-			return validResponseWithValue("0xreal"), nil
-		}
+		var slot atomic.Int32
+		start := time.Now()
+		resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			idx := slot.Add(1)
+			switch idx {
+			case 1:
+				// Config-static skip — produced locally in microseconds.
+				return nil, skippedParticipantErr("eth_getLogs", "archive-1")
+			case 2:
+				// A slot that exhausted the shared cursor after burning its
+				// retries on skipped upstreams — also produced in microseconds.
+				return nil, common.NewErrFailsafeRetryExceeded(common.ScopeNetwork,
+					common.NewErrUpstreamsExhaustedWithCause(errors.Join(
+						skippedParticipantErr("eth_getLogs", "archive-1"),
+						skippedParticipantErr("eth_getLogs", "archive-2"),
+					)), nil)
+			default:
+				// The only real participant — far beyond both caps.
+				time.Sleep(150 * time.Millisecond)
+				return validResponseWithValue("0xreal"), nil
+			}
+		})
+		elapsed := time.Since(start)
+
+		require.NoError(t, err,
+			"instant skips must not resolve the round with only infrastructure errors")
+		require.NotNil(t, resp)
+		assert.GreaterOrEqual(t, elapsed, 150*time.Millisecond,
+			"round must wait for the real participant; skips must not start the countdown")
 	})
-	elapsed := time.Since(start)
-
-	require.NoError(t, err,
-		"instant skips must not resolve the round with only infrastructure errors")
-	require.NotNil(t, resp)
-	assert.GreaterOrEqual(t, elapsed, 150*time.Millisecond,
-		"round must wait for the real participant; skips must not start the countdown")
 }
 
 // TestWaitCap_AllParticipantsSkipped_ResolvesImmediately verifies that when

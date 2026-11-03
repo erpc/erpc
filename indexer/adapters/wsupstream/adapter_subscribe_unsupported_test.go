@@ -3,6 +3,7 @@ package wsupstream
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/indexer"
@@ -13,43 +14,45 @@ import (
 // newHeads as an unsupported method is asked once per connection, and its
 // filters still settle.
 func TestAdapterGivesUpNewHeadsWhenUnsupported(t *testing.T) {
-	compressResubRetry(t)
-	server := newNotifyServer(t)
-	server.rejectNewHeads = true
-	a, sink := newTestAdapter(t, server.wsURL(t))
-	conn1 := <-server.newConn
-	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
+	synctest.Test(t, func(t *testing.T) {
+		compressResubRetry(t)
+		server := newNotifyServer(t)
+		server.rejectNewHeads = true
+		a, sink := newTestAdapter(t, server.wsURL(t))
+		conn1 := <-server.newConn
+		require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
+		require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
 
-	params := logsParams("0xabc")
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, indexer.BuildParamsKey(params), params))
+		params := logsParams("0xabc")
+		require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, indexer.BuildParamsKey(params), params))
 
-	var headsSubscribes int
-	deadline := time.After(time.Second)
-	for done := false; !done; {
-		select {
-		case req := <-conn1.requests:
-			if req.Method == methodEthSubscribe && req.Params[0] == indexer.SubTypeNewHeads {
-				headsSubscribes++
+		var headsSubscribes int
+		deadline := time.After(time.Second)
+		for done := false; !done; {
+			select {
+			case req := <-conn1.requests:
+				if req.Method == methodEthSubscribe && req.Params[0] == indexer.SubTypeNewHeads {
+					headsSubscribes++
+				}
+			case <-deadline:
+				done = true
 			}
-		case <-deadline:
-			done = true
 		}
-	}
-	require.Equal(t, 1, headsSubscribes, "newHeads must not be retried after an unsupported rejection")
-	require.False(t, a.HeadsLive())
-	a.subsMu.Lock()
-	settled := a.resubDone
-	a.subsMu.Unlock()
-	require.True(t, settled, "resubscribe loop must settle without newHeads")
-
-	_ = conn1.conn.UnderlyingConn().Close()
-	conn2 := <-server.newConn
-	require.Equal(t, indexer.SubTypeNewHeads, conn2.nextRequest(t, methodEthSubscribe).Params[0],
-		"a new connection asks for newHeads again")
-	require.Eventually(t, func() bool {
+		require.Equal(t, 1, headsSubscribes, "newHeads must not be retried after an unsupported rejection")
+		require.False(t, a.HeadsLive())
 		a.subsMu.Lock()
-		defer a.subsMu.Unlock()
-		return a.resubDone
-	}, 3*time.Second, 10*time.Millisecond, "resubscribe loop must settle on the new connection")
+		settled := a.resubDone
+		a.subsMu.Unlock()
+		require.True(t, settled, "resubscribe loop must settle without newHeads")
+
+		_ = conn1.conn.UnderlyingConn().Close()
+		conn2 := <-server.newConn
+		require.Equal(t, indexer.SubTypeNewHeads, conn2.nextRequest(t, methodEthSubscribe).Params[0],
+			"a new connection asks for newHeads again")
+		require.Eventually(t, func() bool {
+			a.subsMu.Lock()
+			defer a.subsMu.Unlock()
+			return a.resubDone
+		}, 3*time.Second, 10*time.Millisecond, "resubscribe loop must settle on the new connection")
+	})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"testing/synctest"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
@@ -188,12 +189,14 @@ func TestPreparedProject_ClientDirectiveMatcherFor(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			project, err := reg.GetProject(tc.projectId)
-			require.NoError(t, err)
+			synctest.Test(t, func(t *testing.T) {
+				project, err := reg.GetProject(tc.projectId)
+				require.NoError(t, err)
 
-			matcher := project.clientDirectiveMatcherFor(tc.user)
-			require.NotNil(t, matcher)
-			assert.Equal(t, tc.want, matcher(tc.directive))
+				matcher := project.clientDirectiveMatcherFor(tc.user)
+				require.NotNil(t, matcher)
+				assert.Equal(t, tc.want, matcher(tc.directive))
+			})
 		})
 	}
 }
@@ -204,31 +207,33 @@ func TestPreparedProject_ClientDirectiveMatcherFor(t *testing.T) {
 // even when the spoofed id is byte-identical to the id of a strategy that
 // grants every directive in the very same project.
 func TestPreparedProject_TrustedHeaderUserNeverGainsStrategyClientDirectives(t *testing.T) {
-	reg := directiveMatcherProjects(t)
-	project, err := reg.GetProject("deny_project")
-	require.NoError(t, err)
+	synctest.Test(t, func(t *testing.T) {
+		reg := directiveMatcherProjects(t)
+		project, err := reg.GetProject("deny_project")
+		require.NoError(t, err)
 
-	// Contrast case: the same project genuinely grants "use-upstream" to a
-	// caller an auth strategy authenticated, so the deny below is a real
-	// decision rather than a project with nothing to give.
-	authenticated := project.clientDirectiveMatcherFor(&common.User{
-		Id:                    "ops",
-		AllowClientDirectives: util.StringPtr("*"),
+		// Contrast case: the same project genuinely grants "use-upstream" to a
+		// caller an auth strategy authenticated, so the deny below is a real
+		// decision rather than a project with nothing to give.
+		authenticated := project.clientDirectiveMatcherFor(&common.User{
+			Id:                    "ops",
+			AllowClientDirectives: util.StringPtr("*"),
+		})
+		require.NotNil(t, authenticated)
+		require.True(t, authenticated("use-upstream"),
+			"precondition: the ops strategy's capability grants use-upstream in this project")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}`))
+		req.SetUserFromTrustedHeader("ops")
+		spoofed := req.User()
+		require.NotNil(t, spoofed)
+		require.Equal(t, "ops", spoofed.Id, "precondition: the spoofed id matches the ops strategy's user id")
+
+		matcher := project.clientDirectiveMatcherFor(spoofed)
+		require.NotNil(t, matcher)
+		assert.False(t, matcher("use-upstream"),
+			"a user resolved from the unvalidated X-ERPC-User-Id header must fall through to the project pattern")
+		assert.False(t, matcher("skip-cache-read"),
+			"a user resolved from the unvalidated X-ERPC-User-Id header must fall through to the project pattern")
 	})
-	require.NotNil(t, authenticated)
-	require.True(t, authenticated("use-upstream"),
-		"precondition: the ops strategy's capability grants use-upstream in this project")
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}`))
-	req.SetUserFromTrustedHeader("ops")
-	spoofed := req.User()
-	require.NotNil(t, spoofed)
-	require.Equal(t, "ops", spoofed.Id, "precondition: the spoofed id matches the ops strategy's user id")
-
-	matcher := project.clientDirectiveMatcherFor(spoofed)
-	require.NotNil(t, matcher)
-	assert.False(t, matcher("use-upstream"),
-		"a user resolved from the unvalidated X-ERPC-User-Id header must fall through to the project pattern")
-	assert.False(t, matcher("skip-cache-read"),
-		"a user resolved from the unvalidated X-ERPC-User-Id header must fall through to the project pattern")
 }

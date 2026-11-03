@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"testing/synctest"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -43,39 +44,45 @@ func TestRoutemeshVendor_SupportsNetwork(t *testing.T) {
 	}
 	for _, c := range probeCases {
 		t.Run(c.name, func(t *testing.T) {
-			util.ResetGock()
-			defer util.ResetGock()
-			gockProbeReply(c.host, c.path, c.body)
+			synctest.Test(t, func(t *testing.T) {
+				util.ResetGock()
+				defer util.ResetGock()
+				gockProbeReply(c.host, c.path, c.body)
 
-			ok, err := CreateRoutemeshVendor().SupportsNetwork(ctx, &logger, c.settings, c.networkId)
-			if c.wantErr {
-				assert.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-			assert.Equal(t, c.want, ok)
+				ok, err := CreateRoutemeshVendor().SupportsNetwork(ctx, &logger, c.settings, c.networkId)
+				if c.wantErr {
+					assert.Error(t, err)
+				} else {
+					require.NoError(t, err)
+				}
+				assert.Equal(t, c.want, ok)
+			})
 		})
 	}
 
 	t.Run("cached client reused", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		gockProbeReply("https://lb.routemes.sh", "/rpc/1/k1", `{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
-		v := CreateRoutemeshVendor()
-		for range 2 {
-			ok, err := v.SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, "evm:1")
-			require.NoError(t, err)
-			assert.True(t, ok)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			gockProbeReply("https://lb.routemes.sh", "/rpc/1/k1", `{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+			v := CreateRoutemeshVendor()
+			for range 2 {
+				ok, err := v.SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, "evm:1")
+				require.NoError(t, err)
+				assert.True(t, ok)
+			}
+		})
 	})
 
 	t.Run("unreachable endpoint", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		gock.New("https://lb.routemes.sh").Post("/rpc/1/k1").Persist().ReplyError(assert.AnError)
-		ok, err := CreateRoutemeshVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, "evm:1")
-		assert.Error(t, err)
-		assert.False(t, ok)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			gock.New("https://lb.routemes.sh").Post("/rpc/1/k1").Persist().ReplyError(assert.AnError)
+			ok, err := CreateRoutemeshVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, "evm:1")
+			assert.Error(t, err)
+			assert.False(t, ok)
+		})
 	})
 
 	t.Run("non-evm network", func(t *testing.T) {

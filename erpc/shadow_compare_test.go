@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -367,35 +368,37 @@ func TestShadowCompare_ForwardPath(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			shadowCmpMock("rpc1.localhost", tc.method, tc.primary)
-			shadowCmpMock("rpc2.localhost", tc.method, tc.shadow)
-			shadowCmpMock("rpc3.localhost", tc.method, tc.shadow)
+			synctest.Test(t, func(t *testing.T) {
+				shadowCmpMock("rpc1.localhost", tc.method, tc.primary)
+				shadowCmpMock("rpc2.localhost", tc.method, tc.shadow)
+				shadowCmpMock("rpc3.localhost", tc.method, tc.shadow)
 
-			beforeIgn := shadowCmpOutcomes(ign, tc.method)
-			beforePlain := shadowCmpOutcomes(plain, tc.method)
-			var beforeLabeled float64
-			if tc.mismatchLabel != nil {
-				sel := map[string]string{"upstream": plain, "category": tc.method}
-				for k, v := range tc.mismatchLabel {
-					sel[k] = v
+				beforeIgn := shadowCmpOutcomes(ign, tc.method)
+				beforePlain := shadowCmpOutcomes(plain, tc.method)
+				var beforeLabeled float64
+				if tc.mismatchLabel != nil {
+					sel := map[string]string{"upstream": plain, "category": tc.method}
+					for k, v := range tc.mismatchLabel {
+						sel[k] = v
+					}
+					beforeLabeled = shadowCmpCount(telemetry.MetricShadowResponseMismatchTotal, sel)
 				}
-				beforeLabeled = shadowCmpCount(telemetry.MetricShadowResponseMismatchTotal, sel)
-			}
 
-			got := shadowCmpForward(t, f, tc.method, tc.params)
-			assert.JSONEq(t, shadowCmpResultOf(t, tc.primary), got, "client receives the primary's result")
+				got := shadowCmpForward(t, f, tc.method, tc.params)
+				assert.JSONEq(t, shadowCmpResultOf(t, tc.primary), got, "client receives the primary's result")
 
-			shadowCmpAwait(t, ign, tc.method, beforeIgn, tc.wantIgn)
-			shadowCmpAwait(t, plain, tc.method, beforePlain, tc.wantPlain)
+				shadowCmpAwait(t, ign, tc.method, beforeIgn, tc.wantIgn)
+				shadowCmpAwait(t, plain, tc.method, beforePlain, tc.wantPlain)
 
-			if tc.mismatchLabel != nil {
-				sel := map[string]string{"upstream": plain, "category": tc.method}
-				for k, v := range tc.mismatchLabel {
-					sel[k] = v
+				if tc.mismatchLabel != nil {
+					sel := map[string]string{"upstream": plain, "category": tc.method}
+					for k, v := range tc.mismatchLabel {
+						sel[k] = v
+					}
+					assert.Equal(t, 1.0, shadowCmpCount(telemetry.MetricShadowResponseMismatchTotal, sel)-beforeLabeled,
+						"mismatch carries labels %v", tc.mismatchLabel)
 				}
-				assert.Equal(t, 1.0, shadowCmpCount(telemetry.MetricShadowResponseMismatchTotal, sel)-beforeLabeled,
-					"mismatch carries labels %v", tc.mismatchLabel)
-			}
+			})
 		})
 	}
 }
@@ -405,64 +408,66 @@ func TestShadowCompare_ForwardPath(t *testing.T) {
 // request; the ignored-method, zero-sample-rate, out-of-range and
 // invalid-pattern shadows are skipped before any goroutine is spawned.
 func TestShadowCompare_SkipConditions(t *testing.T) {
-	zero := 0.0
-	f := newShadowCmpFixture(t, "shadowcmp_skip",
-		&common.UpstreamConfig{
-			Id:            "shadowcmp-skip-ignored",
-			Endpoint:      "http://rpc2.localhost",
-			IgnoreMethods: []string{"eth_getBalance"},
-		},
-		&common.UpstreamConfig{
-			Id:       "shadowcmp-skip-sampled",
-			Endpoint: "http://rpc3.localhost",
-			Shadow:   &common.ShadowUpstreamConfig{SampleRate: &zero},
-		},
-		&common.UpstreamConfig{
-			Id:       "shadowcmp-skip-recent",
-			Endpoint: "http://rpc4.localhost",
-			Evm:      &common.EvmUpstreamConfig{MaxAvailableRecentBlocks: 100},
-		},
-		&common.UpstreamConfig{
-			Id:            "shadowcmp-skip-badpattern",
-			Endpoint:      "http://rpc5.localhost",
-			IgnoreMethods: []string{"(eth_getBalance"},
-		},
-		&common.UpstreamConfig{
-			Id:       "shadowcmp-skip-control",
-			Endpoint: "http://rpc7.localhost",
-		},
-	)
-	control := f.shadowUpstream(t, "shadowcmp-skip-control")
-	shadowCmpWaitHead(t, control, 0x33338888)
-	shadowCmpWaitHead(t, f.shadowUpstream(t, "shadowcmp-skip-recent"), 0x33338888)
+	synctest.Test(t, func(t *testing.T) {
+		zero := 0.0
+		f := newShadowCmpFixture(t, "shadowcmp_skip",
+			&common.UpstreamConfig{
+				Id:            "shadowcmp-skip-ignored",
+				Endpoint:      "http://rpc2.localhost",
+				IgnoreMethods: []string{"eth_getBalance"},
+			},
+			&common.UpstreamConfig{
+				Id:       "shadowcmp-skip-sampled",
+				Endpoint: "http://rpc3.localhost",
+				Shadow:   &common.ShadowUpstreamConfig{SampleRate: &zero},
+			},
+			&common.UpstreamConfig{
+				Id:       "shadowcmp-skip-recent",
+				Endpoint: "http://rpc4.localhost",
+				Evm:      &common.EvmUpstreamConfig{MaxAvailableRecentBlocks: 100},
+			},
+			&common.UpstreamConfig{
+				Id:            "shadowcmp-skip-badpattern",
+				Endpoint:      "http://rpc5.localhost",
+				IgnoreMethods: []string{"(eth_getBalance"},
+			},
+			&common.UpstreamConfig{
+				Id:       "shadowcmp-skip-control",
+				Endpoint: "http://rpc7.localhost",
+			},
+		)
+		control := f.shadowUpstream(t, "shadowcmp-skip-control")
+		shadowCmpWaitHead(t, control, 0x33338888)
+		shadowCmpWaitHead(t, f.shadowUpstream(t, "shadowcmp-skip-recent"), 0x33338888)
 
-	const method = "eth_getBalance"
-	reply := `{"jsonrpc":"2.0","id":1,"result":"0x64"}`
-	skipped := map[string]*shadowCmpHits{
-		"shadowcmp-skip-ignored":    shadowCmpMock("rpc2.localhost", method, reply),
-		"shadowcmp-skip-sampled":    shadowCmpMock("rpc3.localhost", method, reply),
-		"shadowcmp-skip-recent":     shadowCmpMock("rpc4.localhost", method, reply),
-		"shadowcmp-skip-badpattern": shadowCmpMock("rpc5.localhost", method, reply),
-	}
-	controlHits := shadowCmpMock("rpc7.localhost", method, reply)
+		const method = "eth_getBalance"
+		reply := `{"jsonrpc":"2.0","id":1,"result":"0x64"}`
+		skipped := map[string]*shadowCmpHits{
+			"shadowcmp-skip-ignored":    shadowCmpMock("rpc2.localhost", method, reply),
+			"shadowcmp-skip-sampled":    shadowCmpMock("rpc3.localhost", method, reply),
+			"shadowcmp-skip-recent":     shadowCmpMock("rpc4.localhost", method, reply),
+			"shadowcmp-skip-badpattern": shadowCmpMock("rpc5.localhost", method, reply),
+		}
+		controlHits := shadowCmpMock("rpc7.localhost", method, reply)
 
-	before := map[string]shadowCmpOutcome{}
-	for id := range skipped {
-		before[id] = shadowCmpOutcomes(id, method)
-	}
-	beforeControl := shadowCmpOutcomes("shadowcmp-skip-control", method)
+		before := map[string]shadowCmpOutcome{}
+		for id := range skipped {
+			before[id] = shadowCmpOutcomes(id, method)
+		}
+		beforeControl := shadowCmpOutcomes("shadowcmp-skip-control", method)
 
-	resp := shadowCmpResponse(f.network,
-		`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000001","0x1"]}`,
-		`"0x64"`, "")
-	f.prj.executeShadowRequests(f.ctx, f.network, f.network.ShadowUpstreams(), resp)
+		resp := shadowCmpResponse(f.network,
+			`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000001","0x1"]}`,
+			`"0x64"`, "")
+		f.prj.executeShadowRequests(f.ctx, f.network, f.network.ShadowUpstreams(), resp)
 
-	shadowCmpAwait(t, "shadowcmp-skip-control", method, beforeControl, shadowCmpOutcome{identical: 1})
-	assert.Equal(t, 1, controlHits.count(), "control shadow is sent the request once")
-	for id, hits := range skipped {
-		assert.Equal(t, 0, hits.count(), "%s must not be sent the request", id)
-		assert.Equal(t, before[id], shadowCmpOutcomes(id, method), "%s records no outcome", id)
-	}
+		shadowCmpAwait(t, "shadowcmp-skip-control", method, beforeControl, shadowCmpOutcome{identical: 1})
+		assert.Equal(t, 1, controlHits.count(), "control shadow is sent the request once")
+		for id, hits := range skipped {
+			assert.Equal(t, 0, hits.count(), "%s must not be sent the request", id)
+			assert.Equal(t, before[id], shadowCmpOutcomes(id, method), "%s records no outcome", id)
+		}
+	})
 }
 
 // shadowCmpWriter is a result writer whose Size fails or panics.
@@ -472,7 +477,7 @@ type shadowCmpWriter struct {
 }
 
 func (w *shadowCmpWriter) WriteTo(io.Writer, bool) (int64, error) { return 0, nil }
-func (w *shadowCmpWriter) IsResultEmptyish() bool                   { return false }
+func (w *shadowCmpWriter) IsResultEmptyish() bool                 { return false }
 func (w *shadowCmpWriter) Size(...context.Context) (int, error) {
 	if w.panicMsg != "" {
 		panic(w.panicMsg)
@@ -521,16 +526,18 @@ func TestShadowCompare_EarlyReturns(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			before := shadowCmpOutcomes("shadowcmp-early", method)
-			beforePanic := shadowCmpCount(telemetry.MetricUnexpectedPanicTotal, panicSel)
+			synctest.Test(t, func(t *testing.T) {
+				before := shadowCmpOutcomes("shadowcmp-early", method)
+				beforePanic := shadowCmpCount(telemetry.MetricUnexpectedPanicTotal, panicSel)
 
-			require.NotPanics(t, func() {
-				f.prj.executeShadowRequests(f.ctx, f.network, tc.shadows, tc.resp)
+				require.NotPanics(t, func() {
+					f.prj.executeShadowRequests(f.ctx, f.network, tc.shadows, tc.resp)
+				})
+
+				assert.Equal(t, 0, hits.count(), "no shadow request is sent")
+				assert.Equal(t, before, shadowCmpOutcomes("shadowcmp-early", method), "no shadow outcome is recorded")
+				assert.Equal(t, tc.wantPanic, shadowCmpCount(telemetry.MetricUnexpectedPanicTotal, panicSel)-beforePanic)
 			})
-
-			assert.Equal(t, 0, hits.count(), "no shadow request is sent")
-			assert.Equal(t, before, shadowCmpOutcomes("shadowcmp-early", method), "no shadow outcome is recorded")
-			assert.Equal(t, tc.wantPanic, shadowCmpCount(telemetry.MetricUnexpectedPanicTotal, panicSel)-beforePanic)
 		})
 	}
 }
@@ -553,15 +560,17 @@ func TestShadowCompare_DirectVerdicts(t *testing.T) {
 	shadows := f.network.ShadowUpstreams()
 
 	t.Run("BothRevertedIsIdentical", func(t *testing.T) {
-		const method = "eth_estimateGas"
-		shadowCmpMock("rpc2.localhost", method,
-			`{"jsonrpc":"2.0","id":1,"error":{"code":3,"message":"execution reverted","data":"0x"}}`)
-		before := shadowCmpOutcomes(upsId, method)
-		resp := shadowCmpResponse(f.network,
-			`{"jsonrpc":"2.0","id":1,"method":"eth_estimateGas","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"}]}`,
-			"", `{"code":3,"message":"execution reverted"}`)
-		f.prj.executeShadowRequests(f.ctx, f.network, shadows, resp)
-		shadowCmpAwait(t, upsId, method, before, shadowCmpOutcome{identical: 1})
+		synctest.Test(t, func(t *testing.T) {
+			const method = "eth_estimateGas"
+			shadowCmpMock("rpc2.localhost", method,
+				`{"jsonrpc":"2.0","id":1,"error":{"code":3,"message":"execution reverted","data":"0x"}}`)
+			before := shadowCmpOutcomes(upsId, method)
+			resp := shadowCmpResponse(f.network,
+				`{"jsonrpc":"2.0","id":1,"method":"eth_estimateGas","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"}]}`,
+				"", `{"code":3,"message":"execution reverted"}`)
+			f.prj.executeShadowRequests(f.ctx, f.network, shadows, resp)
+			shadowCmpAwait(t, upsId, method, before, shadowCmpOutcome{identical: 1})
+		})
 	})
 
 	// A primary without a result cannot be hashed; the comparison proceeds
@@ -569,27 +578,31 @@ func TestShadowCompare_DirectVerdicts(t *testing.T) {
 	// non-empty shadow, with and without ignore fields.
 	for _, method := range []string{"shadowcmp_nohash", "shadowcmp_ignhash"} {
 		t.Run("PrimaryHashFailureMismatches/"+method, func(t *testing.T) {
-			shadowCmpMock("rpc2.localhost", method, `{"jsonrpc":"2.0","id":1,"result":{"v":"0x1","ts":"0x2"}}`)
-			before := shadowCmpOutcomes(upsId, method)
-			resp := shadowCmpResponse(f.network,
-				fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"%s","params":[]}`, method), "", "")
-			f.prj.executeShadowRequests(f.ctx, f.network, shadows, resp)
-			shadowCmpAwait(t, upsId, method, before, shadowCmpOutcome{mismatch: 1})
+			synctest.Test(t, func(t *testing.T) {
+				shadowCmpMock("rpc2.localhost", method, `{"jsonrpc":"2.0","id":1,"result":{"v":"0x1","ts":"0x2"}}`)
+				before := shadowCmpOutcomes(upsId, method)
+				resp := shadowCmpResponse(f.network,
+					fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"%s","params":[]}`, method), "", "")
+				f.prj.executeShadowRequests(f.ctx, f.network, shadows, resp)
+				shadowCmpAwait(t, upsId, method, before, shadowCmpOutcome{mismatch: 1})
+			})
 		})
 	}
 
 	t.Run("BodylessRequestIsMarshalledWithDirectives", func(t *testing.T) {
-		const method = "shadowcmp_bodyless"
-		hits := shadowCmpMock("rpc2.localhost", method, `{"jsonrpc":"2.0","id":1,"result":"0x7"}`)
-		before := shadowCmpOutcomes(upsId, method)
-		req := common.NewNormalizedRequestFromJsonRpcRequest(common.NewJsonRpcRequest(method, []interface{}{"0xabc"}))
-		req.SetNetwork(f.network)
-		req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
-		resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(
-			common.MustNewJsonRpcResponseFromBytes([]byte("1"), []byte(`"0x7"`), nil))
-		f.prj.executeShadowRequests(f.ctx, f.network, shadows, resp)
-		shadowCmpAwait(t, upsId, method, before, shadowCmpOutcome{identical: 1})
-		assert.Contains(t, hits.last(), `"0xabc"`, "shadow receives the marshalled params")
+		synctest.Test(t, func(t *testing.T) {
+			const method = "shadowcmp_bodyless"
+			hits := shadowCmpMock("rpc2.localhost", method, `{"jsonrpc":"2.0","id":1,"result":"0x7"}`)
+			before := shadowCmpOutcomes(upsId, method)
+			req := common.NewNormalizedRequestFromJsonRpcRequest(common.NewJsonRpcRequest(method, []interface{}{"0xabc"}))
+			req.SetNetwork(f.network)
+			req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+			resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(
+				common.MustNewJsonRpcResponseFromBytes([]byte("1"), []byte(`"0x7"`), nil))
+			f.prj.executeShadowRequests(f.ctx, f.network, shadows, resp)
+			shadowCmpAwait(t, upsId, method, before, shadowCmpOutcome{identical: 1})
+			assert.Contains(t, hits.last(), `"0xabc"`, "shadow receives the marshalled params")
+		})
 	})
 
 	// The mirror copies the original body only while it is still unparsed;
@@ -612,42 +625,48 @@ func TestShadowCompare_DirectVerdicts(t *testing.T) {
 	pinHits := shadowCmpMock("rpc2.localhost", "eth_getBalance", `{"jsonrpc":"2.0","id":1,"result":"0x5"}`)
 
 	t.Run("PinBlockTagUsesPrimaryBlockNumber", func(t *testing.T) {
-		before := shadowCmpOutcomes(upsId, "eth_getBalance")
-		f.prj.executeShadowRequests(f.ctx, f.network, shadows, pinResp(0x1234))
-		shadowCmpAwait(t, upsId, "eth_getBalance", before, shadowCmpOutcome{identical: 1})
-		assert.Contains(t, pinHits.last(), `"0x1234"`, "latest is pinned to the primary's block number")
-		assert.NotContains(t, pinHits.last(), `"latest"`)
+		synctest.Test(t, func(t *testing.T) {
+			before := shadowCmpOutcomes(upsId, "eth_getBalance")
+			f.prj.executeShadowRequests(f.ctx, f.network, shadows, pinResp(0x1234))
+			shadowCmpAwait(t, upsId, "eth_getBalance", before, shadowCmpOutcome{identical: 1})
+			assert.Contains(t, pinHits.last(), `"0x1234"`, "latest is pinned to the primary's block number")
+			assert.NotContains(t, pinHits.last(), `"latest"`)
+		})
 	})
 
 	t.Run("PinBlockTagFallsBackToServingUpstreamHead", func(t *testing.T) {
-		var primary common.Upstream
-		for _, u := range f.prj.upstreamsRegistry.GetNetworkUpstreams(f.ctx, util.EvmNetworkId(123)) {
-			if u.Id() == "rpc1" {
-				shadowCmpWaitHead(t, u, 0x11118888)
-				primary = u
+		synctest.Test(t, func(t *testing.T) {
+			var primary common.Upstream
+			for _, u := range f.prj.upstreamsRegistry.GetNetworkUpstreams(f.ctx, util.EvmNetworkId(123)) {
+				if u.Id() == "rpc1" {
+					shadowCmpWaitHead(t, u, 0x11118888)
+					primary = u
+				}
 			}
-		}
-		require.NotNil(t, primary)
-		before := shadowCmpOutcomes(upsId, "eth_getBalance")
-		resp := pinResp(0)
-		resp.SetUpstream(primary)
-		f.prj.executeShadowRequests(f.ctx, f.network, shadows, resp)
-		shadowCmpAwait(t, upsId, "eth_getBalance", before, shadowCmpOutcome{identical: 1})
-		assert.Contains(t, pinHits.last(), `"0x11118888"`, "latest is pinned to the serving upstream's head")
+			require.NotNil(t, primary)
+			before := shadowCmpOutcomes(upsId, "eth_getBalance")
+			resp := pinResp(0)
+			resp.SetUpstream(primary)
+			f.prj.executeShadowRequests(f.ctx, f.network, shadows, resp)
+			shadowCmpAwait(t, upsId, "eth_getBalance", before, shadowCmpOutcome{identical: 1})
+			assert.Contains(t, pinHits.last(), `"0x11118888"`, "latest is pinned to the serving upstream's head")
+		})
 	})
 
 	t.Run("UnresolvableRequestIsNotMirrored", func(t *testing.T) {
-		const method = "shadowcmp_unresolvable"
-		hits := shadowCmpMock("rpc2.localhost", method, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
-		before := shadowCmpOutcomes(upsId, "")
-		req := common.NewNormalizedRequest(nil)
-		req.SetNetwork(f.network)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(
-			common.MustNewJsonRpcResponseFromBytes([]byte("1"), []byte(`"0x1"`), nil))
-		f.prj.executeShadowRequests(f.ctx, f.network, shadows, resp)
-		// The clone fails inside the mirror goroutine; give it time to run.
-		require.Never(t, func() bool { return hits.count() > 0 }, 300*time.Millisecond, 20*time.Millisecond)
-		assert.Equal(t, before, shadowCmpOutcomes(upsId, ""), "no outcome is recorded")
+		synctest.Test(t, func(t *testing.T) {
+			const method = "shadowcmp_unresolvable"
+			hits := shadowCmpMock("rpc2.localhost", method, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+			before := shadowCmpOutcomes(upsId, "")
+			req := common.NewNormalizedRequest(nil)
+			req.SetNetwork(f.network)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(
+				common.MustNewJsonRpcResponseFromBytes([]byte("1"), []byte(`"0x1"`), nil))
+			f.prj.executeShadowRequests(f.ctx, f.network, shadows, resp)
+			// The clone fails inside the mirror goroutine; give it time to run.
+			require.Never(t, func() bool { return hits.count() > 0 }, 300*time.Millisecond, 20*time.Millisecond)
+			assert.Equal(t, before, shadowCmpOutcomes(upsId, ""), "no outcome is recorded")
+		})
 	})
 }
 
@@ -656,28 +675,30 @@ func TestShadowCompare_DirectVerdicts(t *testing.T) {
 // shadow: the client gets the primary's answer and the shadow is sent a
 // concrete height in place of the tag.
 func TestShadowCompare_ForwardPathPinsLatestTag(t *testing.T) {
-	f := newShadowCmpFixture(t, "shadowcmp_pinfwd", &common.UpstreamConfig{
-		Id:       "shadowcmp-pinfwd",
-		Endpoint: "http://rpc2.localhost",
-		Shadow:   &common.ShadowUpstreamConfig{PinBlockTag: true},
+	synctest.Test(t, func(t *testing.T) {
+		f := newShadowCmpFixture(t, "shadowcmp_pinfwd", &common.UpstreamConfig{
+			Id:       "shadowcmp-pinfwd",
+			Endpoint: "http://rpc2.localhost",
+			Shadow:   &common.ShadowUpstreamConfig{PinBlockTag: true},
+		})
+		for _, u := range f.prj.upstreamsRegistry.GetNetworkUpstreams(f.ctx, util.EvmNetworkId(123)) {
+			shadowCmpWaitHead(t, u, 0x11118888)
+		}
+		shadowCmpMock("rpc1.localhost", "eth_getBalance", `{"jsonrpc":"2.0","id":1,"result":"0x5"}`)
+		hits := shadowCmpMock("rpc2.localhost", "eth_getBalance", `{"jsonrpc":"2.0","id":1,"result":"0x5"}`)
+		before := shadowCmpOutcomes("shadowcmp-pinfwd", "eth_getBalance")
+
+		got := shadowCmpForward(t, f, "eth_getBalance", `["0x0000000000000000000000000000000000000001","latest"]`)
+		assert.Equal(t, `"0x5"`, got)
+
+		shadowCmpAwait(t, "shadowcmp-pinfwd", "eth_getBalance", before, shadowCmpOutcome{identical: 1})
+		var sent struct {
+			Params []interface{} `json:"params"`
+		}
+		require.NoError(t, common.SonicCfg.Unmarshal([]byte(hits.last()), &sent))
+		require.Len(t, sent.Params, 2)
+		tag, _ := sent.Params[1].(string)
+		assert.NotEqual(t, "latest", tag, "shadow copy is pinned")
+		assert.True(t, strings.HasPrefix(tag, "0x"), "shadow copy carries a hex height, got %q", tag)
 	})
-	for _, u := range f.prj.upstreamsRegistry.GetNetworkUpstreams(f.ctx, util.EvmNetworkId(123)) {
-		shadowCmpWaitHead(t, u, 0x11118888)
-	}
-	shadowCmpMock("rpc1.localhost", "eth_getBalance", `{"jsonrpc":"2.0","id":1,"result":"0x5"}`)
-	hits := shadowCmpMock("rpc2.localhost", "eth_getBalance", `{"jsonrpc":"2.0","id":1,"result":"0x5"}`)
-	before := shadowCmpOutcomes("shadowcmp-pinfwd", "eth_getBalance")
-
-	got := shadowCmpForward(t, f, "eth_getBalance", `["0x0000000000000000000000000000000000000001","latest"]`)
-	assert.Equal(t, `"0x5"`, got)
-
-	shadowCmpAwait(t, "shadowcmp-pinfwd", "eth_getBalance", before, shadowCmpOutcome{identical: 1})
-	var sent struct {
-		Params []interface{} `json:"params"`
-	}
-	require.NoError(t, common.SonicCfg.Unmarshal([]byte(hits.last()), &sent))
-	require.Len(t, sent.Params, 2)
-	tag, _ := sent.Params[1].(string)
-	assert.NotEqual(t, "latest", tag, "shadow copy is pinned")
-	assert.True(t, strings.HasPrefix(tag, "0x"), "shadow copy carries a hex height, got %q", tag)
 }

@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -184,81 +185,83 @@ func TestNetworkSkip(t *testing.T) {
 	// consulted by the state poller, so we get a clean per-method
 	// accounting of dials.
 	t.Run("BreakerOpen_RotatesToNextUpstream", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// We expect: rpc1 trip mock consumed, rpc2 success mock
-		// consumed twice. Therefore no user-pending mocks remain.
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// We expect: rpc1 trip mock consumed, rpc2 success mock
+			// consumed twice. Therefore no user-pending mocks remain.
+			defer util.AssertNoPendingMocks(t, 0)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// rpc1: one 503 to trip the breaker.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
-			}).
-			Times(1).
-			Reply(503).
-			JSON(map[string]interface{}{
-				"error": map[string]interface{}{"code": -32000, "message": "upstream blew up"},
-			})
+			// rpc1: one 503 to trip the breaker.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
+				}).
+				Times(1).
+				Reply(503).
+				JSON(map[string]interface{}{
+					"error": map[string]interface{}{"code": -32000, "message": "upstream blew up"},
+				})
 
-		// rpc2: should be called twice — first as the fallback on the
-		// trip request, second when rpc1's breaker is open.
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
-			}).
-			Times(2).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  map[string]interface{}{"fromHost": "rpc2"},
-			})
+			// rpc2: should be called twice — first as the fallback on the
+			// trip request, second when rpc1's breaker is open.
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
+				}).
+				Times(2).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  map[string]interface{}{"fromHost": "rpc2"},
+				})
 
-		network := setupTwoUpstreamNetworkForSkip(t, ctx,
-			[]*common.FailsafeConfig{{
-				CircuitBreaker: &common.CircuitBreakerPolicyConfig{
-					FailureThresholdCount:    1,
-					FailureThresholdCapacity: 1,
-					HalfOpenAfter:            common.Duration(5 * time.Minute),
-				},
-			}},
-			nil, nil, nil,
-			// No network-level retry — we want a clean rotation, not a retry.
-			nil, nil, nil,
-		)
+			network := setupTwoUpstreamNetworkForSkip(t, ctx,
+				[]*common.FailsafeConfig{{
+					CircuitBreaker: &common.CircuitBreakerPolicyConfig{
+						FailureThresholdCount:    1,
+						FailureThresholdCapacity: 1,
+						HalfOpenAfter:            common.Duration(5 * time.Minute),
+					},
+				}},
+				nil, nil, nil,
+				// No network-level retry — we want a clean rotation, not a retry.
+				nil, nil, nil,
+			)
 
-		// Request #1 — rpc1 fails (trips breaker), rpc2 succeeds.
-		req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0xdead"]}`))
-		resp1, err1 := network.Forward(ctx, req1)
-		require.NoError(t, err1)
-		require.NotNil(t, resp1)
+			// Request #1 — rpc1 fails (trips breaker), rpc2 succeeds.
+			req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0xdead"]}`))
+			resp1, err1 := network.Forward(ctx, req1)
+			require.NoError(t, err1)
+			require.NotNil(t, resp1)
 
-		jrr1, err := resp1.JsonRpcResponse()
-		require.NoError(t, err)
-		host, _ := jrr1.PeekStringByPath(ctx, "fromHost")
-		assert.Equal(t, "rpc2", host, "first request should fall through to rpc2 after rpc1 503")
+			jrr1, err := resp1.JsonRpcResponse()
+			require.NoError(t, err)
+			host, _ := jrr1.PeekStringByPath(ctx, "fromHost")
+			assert.Equal(t, "rpc2", host, "first request should fall through to rpc2 after rpc1 503")
 
-		// Request #2 — rpc1's breaker should be open; transport NOT
-		// dialed. rpc2 alone serves the request. If rpc1's breaker did
-		// NOT trip, gock would assert the rpc1 mock was reused
-		// (Times(1) was already consumed, so a 2nd dial would surface
-		// as an unmatched request → test failure via gock.IsPending).
-		req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_traceTransaction","params":["0xdead"]}`))
-		resp2, err2 := network.Forward(ctx, req2)
-		require.NoError(t, err2)
-		require.NotNil(t, resp2)
+			// Request #2 — rpc1's breaker should be open; transport NOT
+			// dialed. rpc2 alone serves the request. If rpc1's breaker did
+			// NOT trip, gock would assert the rpc1 mock was reused
+			// (Times(1) was already consumed, so a 2nd dial would surface
+			// as an unmatched request → test failure via gock.IsPending).
+			req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_traceTransaction","params":["0xdead"]}`))
+			resp2, err2 := network.Forward(ctx, req2)
+			require.NoError(t, err2)
+			require.NotNil(t, resp2)
 
-		jrr2, err := resp2.JsonRpcResponse()
-		require.NoError(t, err)
-		host2, _ := jrr2.PeekStringByPath(ctx, "fromHost")
-		assert.Equal(t, "rpc2", host2, "second request should be served by rpc2 with rpc1 breaker open")
+			jrr2, err := resp2.JsonRpcResponse()
+			require.NoError(t, err)
+			host2, _ := jrr2.PeekStringByPath(ctx, "fromHost")
+			assert.Equal(t, "rpc2", host2, "second request should be served by rpc2 with rpc1 breaker open")
+		})
 	})
 
 	// -----------------------------------------------------------------
@@ -270,87 +273,89 @@ func TestNetworkSkip(t *testing.T) {
 	// ErrUpstreamRateLimitRuleExceeded for rpc1 BEFORE dialing the
 	// transport, and rotate to rpc2.
 	t.Run("RateLimitBudgetExhausted_RotatesToNextUpstream", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// Expect: rpc1 mock consumed once, rpc2 mock consumed once.
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// Expect: rpc1 mock consumed once, rpc2 mock consumed once.
+			defer util.AssertNoPendingMocks(t, 0)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{{
-				Id: "rpc1-tight-budget",
-				Rules: []*common.RateLimitRuleConfig{{
-					Method:   "*",
-					MaxCount: 1,
-					Period:   common.RateLimitPeriodSecond,
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{{
+					Id: "rpc1-tight-budget",
+					Rules: []*common.RateLimitRuleConfig{{
+						Method:   "*",
+						MaxCount: 1,
+						Period:   common.RateLimitPeriodSecond,
+					}},
 				}},
-			}},
-		}, &log.Logger)
-		require.NoError(t, err)
+			}, &log.Logger)
+			require.NoError(t, err)
 
-		// rpc1: serves exactly ONE request. The mock Times(1) doubles
-		// as the assertion that rpc1 was dialed exactly once.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
-			}).
-			Times(1).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  map[string]interface{}{"fromHost": "rpc1"},
-			})
+			// rpc1: serves exactly ONE request. The mock Times(1) doubles
+			// as the assertion that rpc1 was dialed exactly once.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
+				}).
+				Times(1).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  map[string]interface{}{"fromHost": "rpc1"},
+				})
 
-		// rpc2: serves exactly ONE request (the second one, when
-		// rpc1's budget is exhausted).
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
-			}).
-			Times(1).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      2,
-				"result":  map[string]interface{}{"fromHost": "rpc2"},
-			})
+			// rpc2: serves exactly ONE request (the second one, when
+			// rpc1's budget is exhausted).
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
+				}).
+				Times(1).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      2,
+					"result":  map[string]interface{}{"fromHost": "rpc2"},
+				})
 
-		network := setupTwoUpstreamNetworkForSkip(t, ctx,
-			nil, nil,
-			func(c *common.UpstreamConfig) { c.RateLimitBudget = "rpc1-tight-budget" },
-			nil, nil, rlr, nil,
-		)
+			network := setupTwoUpstreamNetworkForSkip(t, ctx,
+				nil, nil,
+				func(c *common.UpstreamConfig) { c.RateLimitBudget = "rpc1-tight-budget" },
+				nil, nil, rlr, nil,
+			)
 
-		// Align to the start of the next second to avoid rate-limit
-		// window-rollover flakiness — same pattern used in
-		// TestNetwork_Forward.ForwardCorrectlyRateLimitedOnNetworkLevel.
-		now := time.Now()
-		time.Sleep(time.Until(now.Truncate(time.Second).Add(time.Second)))
+			// Align to the start of the next second to avoid rate-limit
+			// window-rollover flakiness — same pattern used in
+			// TestNetwork_Forward.ForwardCorrectlyRateLimitedOnNetworkLevel.
+			now := time.Now()
+			time.Sleep(time.Until(now.Truncate(time.Second).Add(time.Second)))
 
-		// Request #1 — rpc1 has budget; serves and consumes its 1/s.
-		req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0xa"]}`))
-		resp1, err1 := network.Forward(ctx, req1)
-		require.NoError(t, err1)
-		jrr1, err := resp1.JsonRpcResponse()
-		require.NoError(t, err)
-		host1, _ := jrr1.PeekStringByPath(ctx, "fromHost")
-		assert.Equal(t, "rpc1", host1)
+			// Request #1 — rpc1 has budget; serves and consumes its 1/s.
+			req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0xa"]}`))
+			resp1, err1 := network.Forward(ctx, req1)
+			require.NoError(t, err1)
+			jrr1, err := resp1.JsonRpcResponse()
+			require.NoError(t, err)
+			host1, _ := jrr1.PeekStringByPath(ctx, "fromHost")
+			assert.Equal(t, "rpc1", host1)
 
-		// Request #2 — rpc1's budget is exhausted; transport MUST NOT
-		// be dialed. Network must rotate to rpc2.
-		req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_traceTransaction","params":["0xa"]}`))
-		resp2, err2 := network.Forward(ctx, req2)
-		require.NoError(t, err2)
-		jrr2, err := resp2.JsonRpcResponse()
-		require.NoError(t, err)
-		host2, _ := jrr2.PeekStringByPath(ctx, "fromHost")
-		assert.Equal(t, "rpc2", host2, "second request must rotate to rpc2 after rpc1 budget exhausted")
+			// Request #2 — rpc1's budget is exhausted; transport MUST NOT
+			// be dialed. Network must rotate to rpc2.
+			req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_traceTransaction","params":["0xa"]}`))
+			resp2, err2 := network.Forward(ctx, req2)
+			require.NoError(t, err2)
+			jrr2, err := resp2.JsonRpcResponse()
+			require.NoError(t, err)
+			host2, _ := jrr2.PeekStringByPath(ctx, "fromHost")
+			assert.Equal(t, "rpc2", host2, "second request must rotate to rpc2 after rpc1 budget exhausted")
+		})
 	})
 
 	// -----------------------------------------------------------------
@@ -362,74 +367,76 @@ func TestNetworkSkip(t *testing.T) {
 	// the cordon is in place, network.Forward must rotate past rpc1
 	// without dialing its transport.
 	t.Run("SelectionPolicyCordoned_RotatesToNextUpstream", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// rpc2 mock consumed, rpc1 mock unconsumed (Times(0)).
-		defer util.AssertNoPendingMocks(t, 1)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// rpc2 mock consumed, rpc1 mock unconsumed (Times(0)).
+			defer util.AssertNoPendingMocks(t, 1)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// rpc1: MUST NOT be called. Times(0) means any matched call
-		// will count as unmatched (gock pending stays at 0 if untouched
-		// — but we use Times(1) here ONLY as a tripwire: if rpc1 IS
-		// hit, the mock IS consumed and our final
-		// AssertNoPendingMocks(t, 1) assertion fails because the
-		// pending count drops to 0. The "1" in AssertNoPendingMocks is
-		// the pending tripwire.)
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
-			}).
-			Times(1).
-			Reply(500).
-			JSON(map[string]interface{}{"_note": "tripwire — rpc1 must NOT be dialed when cordoned"})
+			// rpc1: MUST NOT be called. Times(0) means any matched call
+			// will count as unmatched (gock pending stays at 0 if untouched
+			// — but we use Times(1) here ONLY as a tripwire: if rpc1 IS
+			// hit, the mock IS consumed and our final
+			// AssertNoPendingMocks(t, 1) assertion fails because the
+			// pending count drops to 0. The "1" in AssertNoPendingMocks is
+			// the pending tripwire.)
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
+				}).
+				Times(1).
+				Reply(500).
+				JSON(map[string]interface{}{"_note": "tripwire — rpc1 must NOT be dialed when cordoned"})
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
-			}).
-			Times(1).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  map[string]interface{}{"fromHost": "rpc2"},
-			})
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
+				}).
+				Times(1).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  map[string]interface{}{"fromHost": "rpc2"},
+				})
 
-		// Selection policy: keep only upstreams whose id is rpc2.
-		// (Legacy `EvalFunction` + `Resample*` fields are gone — the new
-		// shape uses `Eval string` with `(upstreams, ctx) => …`, and
-		// rotation/re-admission is expressed via `.probeExcluded()` in
-		// the eval chain. This test doesn't need probe behavior, so the
-		// chain is just the filter.)
-		policy := &common.SelectionPolicyConfig{
-			EvalInterval: common.Duration(50 * time.Millisecond),
-			// EvalScope defaults to `network` (single wildcard slot) —
-			// no method/finality scoping needed for this test.
-			EvalFunc: `(upstreams, ctx) => upstreams.filter(u => u.id === 'rpc2')`,
-		}
+			// Selection policy: keep only upstreams whose id is rpc2.
+			// (Legacy `EvalFunction` + `Resample*` fields are gone — the new
+			// shape uses `Eval string` with `(upstreams, ctx) => …`, and
+			// rotation/re-admission is expressed via `.probeExcluded()` in
+			// the eval chain. This test doesn't need probe behavior, so the
+			// chain is just the filter.)
+			policy := &common.SelectionPolicyConfig{
+				EvalInterval: common.Duration(50 * time.Millisecond),
+				// EvalScope defaults to `network` (single wildcard slot) —
+				// no method/finality scoping needed for this test.
+				EvalFunc: `(upstreams, ctx) => upstreams.filter(u => u.id === 'rpc2')`,
+			}
 
-		network := setupTwoUpstreamNetworkForSkip(t, ctx,
-			nil, nil, nil, nil, nil, nil, policy,
-		)
+			network := setupTwoUpstreamNetworkForSkip(t, ctx,
+				nil, nil, nil, nil, nil, nil, policy,
+			)
 
-		// Give the evaluator time to run AT LEAST one eval and cordon
-		// rpc1. EvalInterval is 50ms; 250ms is comfortably 5 ticks.
-		time.Sleep(250 * time.Millisecond)
+			// Give the evaluator time to run AT LEAST one eval and cordon
+			// rpc1. EvalInterval is 50ms; 250ms is comfortably 5 ticks.
+			time.Sleep(250 * time.Millisecond)
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0xb"]}`))
-		resp, err := network.Forward(ctx, req)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0xb"]}`))
+			resp, err := network.Forward(ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		host, _ := jrr.PeekStringByPath(ctx, "fromHost")
-		assert.Equal(t, "rpc2", host, "request must be served by rpc2 — rpc1 cordoned by selection policy")
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			host, _ := jrr.PeekStringByPath(ctx, "fromHost")
+			assert.Equal(t, "rpc2", host, "request must be served by rpc2 — rpc1 cordoned by selection policy")
+		})
 	})
 
 	// -----------------------------------------------------------------
@@ -447,86 +454,88 @@ func TestNetworkSkip(t *testing.T) {
 	// request #1 completing and the goroutine taking effect. We give
 	// it 100ms of headroom, well above any plausible scheduling delay.)
 	t.Run("AutoIgnoreUnsupportedMethods_SkipsAfterFirstRejection", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// Expect: rpc1 unsupported response consumed once, rpc2 OK
-		// consumed twice. No user-pending mocks remain.
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// Expect: rpc1 unsupported response consumed once, rpc2 OK
+			// consumed twice. No user-pending mocks remain.
+			defer util.AssertNoPendingMocks(t, 0)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// rpc1: returns -32601 once. After this is consumed, rpc1 must
-		// not be redialed for eth_traceTransaction.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
-			}).
-			Times(1).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32601,
-					"message": "the method eth_traceTransaction does not exist/is not available",
+			// rpc1: returns -32601 once. After this is consumed, rpc1 must
+			// not be redialed for eth_traceTransaction.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
+				}).
+				Times(1).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32601,
+						"message": "the method eth_traceTransaction does not exist/is not available",
+					},
+				})
+
+			// rpc2: serves both requests successfully.
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
+				}).
+				Times(2).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  map[string]interface{}{"fromHost": "rpc2"},
+				})
+
+			network := setupTwoUpstreamNetworkForSkip(t, ctx,
+				nil, nil,
+				func(c *common.UpstreamConfig) {
+					c.AutoIgnoreUnsupportedMethods = &common.TRUE
 				},
-			})
+				nil, nil, nil, nil,
+			)
 
-		// rpc2: serves both requests successfully.
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_traceTransaction")
-			}).
-			Times(2).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  map[string]interface{}{"fromHost": "rpc2"},
-			})
+			// Request #1 — rpc1 returns unsupported, network falls
+			// through to rpc2.
+			req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0xc"]}`))
+			resp1, err1 := network.Forward(ctx, req1)
+			require.NoError(t, err1)
+			require.NotNil(t, resp1)
+			jrr1, err := resp1.JsonRpcResponse()
+			require.NoError(t, err)
+			host1, _ := jrr1.PeekStringByPath(ctx, "fromHost")
+			assert.Equal(t, "rpc2", host1)
 
-		network := setupTwoUpstreamNetworkForSkip(t, ctx,
-			nil, nil,
-			func(c *common.UpstreamConfig) {
-				c.AutoIgnoreUnsupportedMethods = &common.TRUE
-			},
-			nil, nil, nil, nil,
-		)
+			// Wait for the async IgnoreMethod goroutine to add the method
+			// to rpc1's ignoreMethods list before issuing request #2.
+			time.Sleep(100 * time.Millisecond)
 
-		// Request #1 — rpc1 returns unsupported, network falls
-		// through to rpc2.
-		req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0xc"]}`))
-		resp1, err1 := network.Forward(ctx, req1)
-		require.NoError(t, err1)
-		require.NotNil(t, resp1)
-		jrr1, err := resp1.JsonRpcResponse()
-		require.NoError(t, err)
-		host1, _ := jrr1.PeekStringByPath(ctx, "fromHost")
-		assert.Equal(t, "rpc2", host1)
-
-		// Wait for the async IgnoreMethod goroutine to add the method
-		// to rpc1's ignoreMethods list before issuing request #2.
-		time.Sleep(100 * time.Millisecond)
-
-		// Request #2 — rpc1 MUST be skipped (its method is now
-		// auto-ignored); rpc2 alone serves the call. If rpc1's
-		// auto-ignore failed to take effect, the test catches it via
-		// AssertNoPendingMocks: rpc1's Times(1) mock is already
-		// consumed, so a second dial to rpc1 surfaces as an unmatched
-		// request and gock returns an error from the round-tripper —
-		// rpc2's mock then stays pending and the assertion trips.
-		req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_traceTransaction","params":["0xc"]}`))
-		resp2, err2 := network.Forward(ctx, req2)
-		require.NoError(t, err2)
-		require.NotNil(t, resp2)
-		jrr2, err := resp2.JsonRpcResponse()
-		require.NoError(t, err)
-		host2, _ := jrr2.PeekStringByPath(ctx, "fromHost")
-		assert.Equal(t, "rpc2", host2, "second request must rotate past rpc1 after auto-ignore")
+			// Request #2 — rpc1 MUST be skipped (its method is now
+			// auto-ignored); rpc2 alone serves the call. If rpc1's
+			// auto-ignore failed to take effect, the test catches it via
+			// AssertNoPendingMocks: rpc1's Times(1) mock is already
+			// consumed, so a second dial to rpc1 surfaces as an unmatched
+			// request and gock returns an error from the round-tripper —
+			// rpc2's mock then stays pending and the assertion trips.
+			req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_traceTransaction","params":["0xc"]}`))
+			resp2, err2 := network.Forward(ctx, req2)
+			require.NoError(t, err2)
+			require.NotNil(t, resp2)
+			jrr2, err := resp2.JsonRpcResponse()
+			require.NoError(t, err)
+			host2, _ := jrr2.PeekStringByPath(ctx, "fromHost")
+			assert.Equal(t, "rpc2", host2, "second request must rotate past rpc1 after auto-ignore")
+		})
 	})
 
 	// -----------------------------------------------------------------
@@ -543,66 +552,68 @@ func TestNetworkSkip(t *testing.T) {
 	// dial by the block-availability check, which is exactly the same
 	// machinery that powers matchFinality routing.
 	t.Run("FinalityMismatch_FullNodeSkippedForArchiveRequest", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// rpc1's request mock stays pending (Times(0) — see below).
-		// rpc2's request mock is consumed.
-		defer util.AssertNoPendingMocks(t, 1)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// rpc1's request mock stays pending (Times(0) — see below).
+			// rpc2's request mock is consumed.
+			defer util.AssertNoPendingMocks(t, 1)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// rpc1: tripwire. If it's ever dialed for eth_getBalance, the
-		// mock would be consumed and our pending=1 assertion fails.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Times(1).
-			Reply(500).
-			JSON(map[string]interface{}{"_note": "tripwire — full node MUST NOT be dialed for historical block"})
+			// rpc1: tripwire. If it's ever dialed for eth_getBalance, the
+			// mock would be consumed and our pending=1 assertion fails.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Times(1).
+				Reply(500).
+				JSON(map[string]interface{}{"_note": "tripwire — full node MUST NOT be dialed for historical block"})
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Times(1).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0xabcdef",
-			})
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Times(1).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xabcdef",
+				})
 
-		// Use the established full+archive fixture for finality
-		// routing tests so we exercise the exact same machinery as
-		// TestNetwork_HistoricalBlockNumberSkip (around line 9111 in
-		// networks_test.go) — there's a richer codepath here than
-		// our two-upstream helper would activate.
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(
-			t, ctx,
-			common.EvmNodeTypeFull, 128,
-			common.EvmNodeTypeArchive, 0,
-			nil,
-		)
+			// Use the established full+archive fixture for finality
+			// routing tests so we exercise the exact same machinery as
+			// TestNetwork_HistoricalBlockNumberSkip (around line 9111 in
+			// networks_test.go) — there's a richer codepath here than
+			// our two-upstream helper would activate.
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(
+				t, ctx,
+				common.EvmNodeTypeFull, 128,
+				common.EvmNodeTypeArchive, 0,
+				nil,
+			)
 
-		// Historical block 0x1 is well beyond 128 blocks below latest
-		// (0x11118888 on rpc1) — the full node must be skipped.
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x1"]}`))
-		req.SetNetwork(network)
+			// Historical block 0x1 is well beyond 128 blocks below latest
+			// (0x11118888 on rpc1) — the full node must be skipped.
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x1"]}`))
+			req.SetNetwork(network)
 
-		resp, err := network.Forward(ctx, req)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
+			resp, err := network.Forward(ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		result, _ := jrr.PeekStringByPath(ctx)
-		assert.Equal(t, "0xabcdef", result, "request must be served by archive rpc2 — full rpc1 skipped on historical block")
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			result, _ := jrr.PeekStringByPath(ctx)
+			assert.Equal(t, "0xabcdef", result, "request must be served by archive rpc2 — full rpc1 skipped on historical block")
+		})
 	})
 }

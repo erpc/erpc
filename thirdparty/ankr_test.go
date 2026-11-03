@@ -21,6 +21,10 @@ func svtGenerate(t *testing.T, v common.Vendor, ups *common.UpstreamConfig, sett
 	t.Helper()
 	logger := zerolog.Nop()
 	cfgs, err := v.GenerateConfigs(context.Background(), &logger, ups, settings)
+	if av, ok := v.(*AlchemyVendor); ok {
+		waitRefreshesIdle(t, av.cache)
+		waitRefreshesIdle(t, av.cuCache)
+	}
 	if err != nil {
 		assert.Nil(t, cfgs)
 		return nil, err

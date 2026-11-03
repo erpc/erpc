@@ -25,6 +25,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -220,9 +221,11 @@ func TestHttpPaths_MainServerRouting(t *testing.T) {
 	t.Run("NetworkFromBodyAndAliasAndDomainRouting", func(t *testing.T) {
 		bodyWithNet := `{"jsonrpc":"2.0","id":7,"networkId":"evm:123","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000001","latest"]}`
 		for name, call := range map[string]func() (int, http.Header, string){
-			"body":   func() (int, http.Header, string) { return post("/test_project", bodyWithNet, nil) },
-			"alias":  func() (int, http.Header, string) { return post("/test_project/main", httpPathsBalanceBody, nil) },
-			"domain": func() (int, http.Header, string) { return post("/123", httpPathsBalanceBody, map[string]string{"Host": "rpc.alias.test:8080"}) },
+			"body":  func() (int, http.Header, string) { return post("/test_project", bodyWithNet, nil) },
+			"alias": func() (int, http.Header, string) { return post("/test_project/main", httpPathsBalanceBody, nil) },
+			"domain": func() (int, http.Header, string) {
+				return post("/123", httpPathsBalanceBody, map[string]string{"Host": "rpc.alias.test:8080"})
+			},
 		} {
 			status, hdr, body := call()
 			assert.Equal(t, http.StatusOK, status, name)
@@ -445,12 +448,12 @@ func TestHttpPaths_ParseUrlPathAliasCombos(t *testing.T) {
 		}}},
 	}
 	cases := []struct {
-		name             string
-		method, path     string
-		pre              [3]string
-		want             [3]string
-		wantHealth       bool
-		errContains      string
+		name         string
+		method, path string
+		pre          [3]string
+		want         [3]string
+		wantHealth   bool
+		errContains  string
 	}{
 		{name: "project-only too many", method: "POST", path: "/a/b/c/d", pre: [3]string{"p", "", ""}, errContains: "for project-only alias must only provide"},
 		{name: "project-only explicit triple", method: "POST", path: "/q/evm/1", pre: [3]string{"p", "", ""}, want: [3]string{"q", "evm", "1"}},
@@ -479,18 +482,20 @@ func TestHttpPaths_ParseUrlPathAliasCombos(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &http.Request{Method: tc.method, URL: &url.URL{Path: tc.path}, Header: http.Header{}}
-			p, a, c, isAdmin, isHealth, err := s.parseUrlPath(r, tc.pre[0], tc.pre[1], tc.pre[2])
-			if tc.errContains != "" {
-				require.Error(t, err)
-				assert.True(t, common.HasErrorCode(err, common.ErrCodeInvalidUrlPath))
-				assert.Contains(t, err.Error(), tc.errContains)
-				return
-			}
-			require.NoError(t, err)
-			assert.False(t, isAdmin)
-			assert.Equal(t, tc.want, [3]string{p, a, c})
-			assert.Equal(t, tc.wantHealth, isHealth)
+			synctest.Test(t, func(t *testing.T) {
+				r := &http.Request{Method: tc.method, URL: &url.URL{Path: tc.path}, Header: http.Header{}}
+				p, a, c, isAdmin, isHealth, err := s.parseUrlPath(r, tc.pre[0], tc.pre[1], tc.pre[2])
+				if tc.errContains != "" {
+					require.Error(t, err)
+					assert.True(t, common.HasErrorCode(err, common.ErrCodeInvalidUrlPath))
+					assert.Contains(t, err.Error(), tc.errContains)
+					return
+				}
+				require.NoError(t, err)
+				assert.False(t, isAdmin)
+				assert.Equal(t, tc.want, [3]string{p, a, c})
+				assert.Equal(t, tc.wantHealth, isHealth)
+			})
 		})
 	}
 }
@@ -521,7 +526,9 @@ func TestHttpPaths_DetermineResponseStatusCode(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, determineResponseStatusCode(tc.res, tc.hint...))
+			synctest.Test(t, func(t *testing.T) {
+				assert.Equal(t, tc.want, determineResponseStatusCode(tc.res, tc.hint...))
+			})
 		})
 	}
 }
@@ -552,57 +559,67 @@ func TestHttpPaths_ProcessErrorBody(t *testing.T) {
 	started := time.Now()
 
 	t.Run("SvmLocalRateLimitUsesGenericServerCode", func(t *testing.T) {
-		nq := httpPathsRequest(t, `{"jsonrpc":"2.0","id":5,"method":"getSlot"}`, nil)
-		res := processErrorBody(&logger, &started, nq, common.NewErrAuthRateLimitRuleExceeded("p", "s", "b", "r", "u", "ip"), &common.TRUE, common.ArchitectureSvm)
-		body, ok := res.(*HttpJsonRpcErrorResponse)
-		require.True(t, ok)
-		errObj := body.Error.(map[string]interface{})
-		assert.Equal(t, common.JsonRpcErrorNumber(-32000), errObj["code"])
-		assert.Equal(t, "rate-limit exceeded", errObj["message"])
-		assert.Equal(t, http.StatusTooManyRequests, determineResponseStatusCode(body))
+		synctest.Test(t, func(t *testing.T) {
+			nq := httpPathsRequest(t, `{"jsonrpc":"2.0","id":5,"method":"getSlot"}`, nil)
+			res := processErrorBody(&logger, &started, nq, common.NewErrAuthRateLimitRuleExceeded("p", "s", "b", "r", "u", "ip"), &common.TRUE, common.ArchitectureSvm)
+			body, ok := res.(*HttpJsonRpcErrorResponse)
+			require.True(t, ok)
+			errObj := body.Error.(map[string]interface{})
+			assert.Equal(t, common.JsonRpcErrorNumber(-32000), errObj["code"])
+			assert.Equal(t, "rate-limit exceeded", errObj["message"])
+			assert.Equal(t, http.StatusTooManyRequests, determineResponseStatusCode(body))
+		})
 	})
 
 	t.Run("EvmRateLimitKeepsCapacityCode", func(t *testing.T) {
-		nq := httpPathsRequest(t, `{"jsonrpc":"2.0","id":5,"method":"eth_blockNumber"}`, nil)
-		body := processErrorBody(&logger, &started, nq, common.NewErrProjectRateLimitRuleExceeded("p", "b", "r"), &common.TRUE).(*HttpJsonRpcErrorResponse)
-		assert.Equal(t, common.JsonRpcErrorCapacityExceeded, body.Error.(map[string]interface{})["code"])
+		synctest.Test(t, func(t *testing.T) {
+			nq := httpPathsRequest(t, `{"jsonrpc":"2.0","id":5,"method":"eth_blockNumber"}`, nil)
+			body := processErrorBody(&logger, &started, nq, common.NewErrProjectRateLimitRuleExceeded("p", "b", "r"), &common.TRUE).(*HttpJsonRpcErrorResponse)
+			assert.Equal(t, common.JsonRpcErrorCapacityExceeded, body.Error.(map[string]interface{})["code"])
+		})
 	})
 
 	t.Run("ErrorDetailsOmittedForEthCall", func(t *testing.T) {
-		cause := common.NewErrNetworkNotFound("evm:9")
-		call := httpPathsRequest(t, `{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[]}`, nil)
-		other := httpPathsRequest(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":[]}`, nil)
-		callObj := processErrorBody(&logger, &started, call, cause, &common.TRUE).(*HttpJsonRpcErrorResponse).Error.(map[string]interface{})
-		otherObj := processErrorBody(&logger, &started, other, cause, &common.TRUE).(*HttpJsonRpcErrorResponse).Error.(map[string]interface{})
-		hiddenObj := processErrorBody(&logger, &started, other, cause, &common.FALSE).(*HttpJsonRpcErrorResponse).Error.(map[string]interface{})
-		_, callHasData := callObj["data"]
-		_, hiddenHasData := hiddenObj["data"]
-		assert.False(t, callHasData)
-		assert.False(t, hiddenHasData)
-		assert.Equal(t, cause, otherObj["data"])
+		synctest.Test(t, func(t *testing.T) {
+			cause := common.NewErrNetworkNotFound("evm:9")
+			call := httpPathsRequest(t, `{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[]}`, nil)
+			other := httpPathsRequest(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":[]}`, nil)
+			callObj := processErrorBody(&logger, &started, call, cause, &common.TRUE).(*HttpJsonRpcErrorResponse).Error.(map[string]interface{})
+			otherObj := processErrorBody(&logger, &started, other, cause, &common.TRUE).(*HttpJsonRpcErrorResponse).Error.(map[string]interface{})
+			hiddenObj := processErrorBody(&logger, &started, other, cause, &common.FALSE).(*HttpJsonRpcErrorResponse).Error.(map[string]interface{})
+			_, callHasData := callObj["data"]
+			_, hiddenHasData := hiddenObj["data"]
+			assert.False(t, callHasData)
+			assert.False(t, hiddenHasData)
+			assert.Equal(t, cause, otherObj["data"])
+		})
 	})
 
 	t.Run("SingleExhaustedCauseIsUnwrapped", func(t *testing.T) {
-		ex := common.NewErrUpstreamsExhaustedWithCause(errors.Join(common.NewErrEndpointUnauthorized(errors.New("bad key"))))
-		body := processErrorBody(&logger, &started, nil, ex, &common.TRUE).(*HttpJsonRpcErrorResponse)
-		assert.Equal(t, http.StatusUnauthorized, determineResponseStatusCode(body))
-		assert.Equal(t, "2.0", body.Jsonrpc)
-		assert.Nil(t, body.Id)
+		synctest.Test(t, func(t *testing.T) {
+			ex := common.NewErrUpstreamsExhaustedWithCause(errors.Join(common.NewErrEndpointUnauthorized(errors.New("bad key"))))
+			body := processErrorBody(&logger, &started, nil, ex, &common.TRUE).(*HttpJsonRpcErrorResponse)
+			assert.Equal(t, http.StatusUnauthorized, determineResponseStatusCode(body))
+			assert.Equal(t, "2.0", body.Jsonrpc)
+			assert.Nil(t, body.Id)
+		})
 	})
 
 	t.Run("PlainAndContextErrorsBecomeServerErrors", func(t *testing.T) {
-		for _, err := range []error{
-			errors.New("boom"),
-			context.Canceled,
-			context.DeadlineExceeded,
-			common.NewErrEndpointServerSideException(errors.New("upstream 500"), nil, 500),
-		} {
-			nq := httpPathsRequest(t, `{"jsonrpc":"2.0","id":9,"method":"eth_chainId"}`, nil)
-			body, ok := processErrorBody(&logger, &started, nq, err, &common.FALSE).(*HttpJsonRpcErrorResponse)
-			require.True(t, ok, "%v", err)
-			assert.Equal(t, http.StatusOK, determineResponseStatusCode(body), "%v", err)
-			assert.NotNil(t, body.Error.(map[string]interface{})["code"], "%v", err)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			for _, err := range []error{
+				errors.New("boom"),
+				context.Canceled,
+				context.DeadlineExceeded,
+				common.NewErrEndpointServerSideException(errors.New("upstream 500"), nil, 500),
+			} {
+				nq := httpPathsRequest(t, `{"jsonrpc":"2.0","id":9,"method":"eth_chainId"}`, nil)
+				body, ok := processErrorBody(&logger, &started, nq, err, &common.FALSE).(*HttpJsonRpcErrorResponse)
+				require.True(t, ok, "%v", err)
+				assert.Equal(t, http.StatusOK, determineResponseStatusCode(body), "%v", err)
+				assert.NotNil(t, body.Error.(map[string]interface{})["code"], "%v", err)
+			}
+		})
 	})
 }
 
@@ -859,55 +876,61 @@ func TestHttpPaths_MethodAndHeaderFilters(t *testing.T) {
 
 func TestHttpPaths_GzipWriter(t *testing.T) {
 	t.Run("FlushBelowThresholdCommitsPlain", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		w := &conditionalGzipWriter{ResponseWriter: rec, pool: util.NewGzipWriterPool()}
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte("small"))
-		w.Flush()
-		w.WriteHeader(http.StatusTeapot) // already decided: passes through (ignored by recorder after first)
-		_, _ = w.Write([]byte("-more"))
-		require.NoError(t, w.Close())
-		assert.Equal(t, http.StatusAccepted, rec.Code)
-		assert.Empty(t, rec.Header().Get("Content-Encoding"))
-		assert.Equal(t, "small-more", rec.Body.String())
+		synctest.Test(t, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			w := &conditionalGzipWriter{ResponseWriter: rec, pool: util.NewGzipWriterPool()}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte("small"))
+			w.Flush()
+			w.WriteHeader(http.StatusTeapot) // already decided: passes through (ignored by recorder after first)
+			_, _ = w.Write([]byte("-more"))
+			require.NoError(t, w.Close())
+			assert.Equal(t, http.StatusAccepted, rec.Code)
+			assert.Empty(t, rec.Header().Get("Content-Encoding"))
+			assert.Equal(t, "small-more", rec.Body.String())
+		})
 	})
 
 	t.Run("LargeBodyCompressedAcrossWritesAndFlushes", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		w := &conditionalGzipWriter{ResponseWriter: rec, pool: util.NewGzipWriterPool()}
-		part := strings.Repeat("a", compressionThreshold)
-		_, _ = w.Write([]byte(part))
-		w.Flush()
-		_, _ = w.Write([]byte("tail"))
-		require.NoError(t, w.Close())
-		assert.Equal(t, "gzip", rec.Header().Get("Content-Encoding"))
-		assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
-		zr, err := gzip.NewReader(rec.Body)
-		require.NoError(t, err)
-		plain, err := io.ReadAll(zr)
-		require.NoError(t, err)
-		assert.Equal(t, part+"tail", string(plain))
+		synctest.Test(t, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			w := &conditionalGzipWriter{ResponseWriter: rec, pool: util.NewGzipWriterPool()}
+			part := strings.Repeat("a", compressionThreshold)
+			_, _ = w.Write([]byte(part))
+			w.Flush()
+			_, _ = w.Write([]byte("tail"))
+			require.NoError(t, w.Close())
+			assert.Equal(t, "gzip", rec.Header().Get("Content-Encoding"))
+			assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+			zr, err := gzip.NewReader(rec.Body)
+			require.NoError(t, err)
+			plain, err := io.ReadAll(zr)
+			require.NoError(t, err)
+			assert.Equal(t, part+"tail", string(plain))
+		})
 	})
 
 	t.Run("HandlerSkipsWithoutAcceptEncodingAndForUpgrades", func(t *testing.T) {
-		big := strings.Repeat("b", 2*compressionThreshold)
-		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, big) })
-		h := gzipHandler(next, true)
+		synctest.Test(t, func(t *testing.T) {
+			big := strings.Repeat("b", 2*compressionThreshold)
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, big) })
+			h := gzipHandler(next, true)
 
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
-		assert.Equal(t, "Accept-Encoding", rec.Header().Get("Vary"))
-		assert.Empty(t, rec.Header().Get("Content-Encoding"))
-		assert.Equal(t, big, rec.Body.String())
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
+			assert.Equal(t, "Accept-Encoding", rec.Header().Get("Vary"))
+			assert.Empty(t, rec.Header().Get("Content-Encoding"))
+			assert.Equal(t, big, rec.Body.String())
 
-		up := httptest.NewRequest(http.MethodGet, "/", nil)
-		up.Header.Set("Connection", "Upgrade")
-		up.Header.Set("Upgrade", "websocket")
-		up.Header.Set("Accept-Encoding", "gzip")
-		rec = httptest.NewRecorder()
-		h.ServeHTTP(rec, up)
-		assert.Empty(t, rec.Header().Get("Vary"))
-		assert.Empty(t, rec.Header().Get("Content-Encoding"))
+			up := httptest.NewRequest(http.MethodGet, "/", nil)
+			up.Header.Set("Connection", "Upgrade")
+			up.Header.Set("Upgrade", "websocket")
+			up.Header.Set("Accept-Encoding", "gzip")
+			rec = httptest.NewRecorder()
+			h.ServeHTTP(rec, up)
+			assert.Empty(t, rec.Header().Get("Vary"))
+			assert.Empty(t, rec.Header().Get("Content-Encoding"))
+		})
 	})
 }
 
@@ -916,12 +939,12 @@ func httpPathsWriteCert(t *testing.T) (certFile, keyFile string) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "localhost"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		IsCA:         true,
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "localhost"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		BasicConstraintsValid: true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
@@ -985,16 +1008,20 @@ func TestHttpPaths_StartAndShutdownErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := tc.srv.Start(&logger)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tc.want)
+			synctest.Test(t, func(t *testing.T) {
+				err := tc.srv.Start(&logger)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.want)
+			})
 		})
 	}
 
 	t.Run("ShutdownBothUnstartedServers", func(t *testing.T) {
-		s := &HttpServer{serverV4: &http.Server{}, serverV6: &http.Server{}, draining: &atomic.Bool{}}
-		require.NoError(t, s.Shutdown(&logger))
-		assert.True(t, s.draining.Load())
+		synctest.Test(t, func(t *testing.T) {
+			s := &HttpServer{serverV4: &http.Server{}, serverV6: &http.Server{}, draining: &atomic.Bool{}}
+			require.NoError(t, s.Shutdown(&logger))
+			assert.True(t, s.draining.Load())
+		})
 	})
 }
 

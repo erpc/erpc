@@ -44,6 +44,10 @@ var (
 	wsPongWait     = 75 * time.Second
 )
 
+// WsNetDialContext, when set, makes the network connection for each
+// WebSocket upstream. Tests set it to reach in-memory servers.
+var WsNetDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+
 // WsJsonRpcClient implements ClientInterface for WebSocket-based JSON-RPC upstream connections.
 type WsJsonRpcClient struct {
 	Url     *url.URL
@@ -415,6 +419,7 @@ func (c *WsJsonRpcClient) SetOnReconnect(id string, callback func()) {
 func (c *WsJsonRpcClient) connect() error {
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
+		NetDialContext:   WsNetDialContext,
 	}
 
 	if c.Url.Scheme == "wss" {

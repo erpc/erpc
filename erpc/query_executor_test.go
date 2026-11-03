@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"unsafe"
 
 	"github.com/blockchain-data-standards/manifesto/evm"
@@ -62,91 +63,99 @@ func TestQueryExecutor_Native(t *testing.T) {
 	qe := newTestQueryExecutor(t, "eth_queryLogs", unimplemented, serving)
 
 	t.Run("JSON-RPC gets one page, parsed and rendered by the MIP-16 codec", func(t *testing.T) {
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":7,"method":"eth_queryLogs","params":[{"fromBlock":"0x1","toBlock":"0x9","target":"0x1","fields":{"logs":["blockNumber"]}}]}`))
-		resp, err := qe.network.forwardQuery(context.Background(), req, "eth_queryLogs")
-		require.NoError(t, err)
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		var result map[string]interface{}
-		require.NoError(t, sonic.Unmarshal(jrr.GetResultBytes(), &result))
-		assert.Equal(t, map[string]interface{}{"logs": []interface{}{map[string]interface{}{"blockNumber": "0x1"}}}, result["data"])
-		assert.Equal(t, "0x4", result["cursorBlock"].(map[string]interface{})["number"])
+		synctest.Test(t, func(t *testing.T) {
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":7,"method":"eth_queryLogs","params":[{"fromBlock":"0x1","toBlock":"0x9","target":"0x1","fields":{"logs":["blockNumber"]}}]}`))
+			resp, err := qe.network.forwardQuery(context.Background(), req, "eth_queryLogs")
+			require.NoError(t, err)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			var result map[string]interface{}
+			require.NoError(t, sonic.Unmarshal(jrr.GetResultBytes(), &result))
+			assert.Equal(t, map[string]interface{}{"logs": []interface{}{map[string]interface{}{"blockNumber": "0x1"}}}, result["data"])
+			assert.Equal(t, "0x4", result["cursorBlock"].(map[string]interface{})["number"])
 
-		require.Len(t, seen, 1)
-		assert.Equal(t, uint32(1), seen[0].GetTarget(), "the native upstream gets the MIP-16 request unchanged")
-		assert.Equal(t, uint64(1), seen[0].GetChainId())
+			require.Len(t, seen, 1)
+			assert.Equal(t, uint32(1), seen[0].GetTarget(), "the native upstream gets the MIP-16 request unchanged")
+			assert.Equal(t, uint64(1), seen[0].GetChainId())
+		})
 	})
 
 	t.Run("gRPC gets every page and no other upstream after a page", func(t *testing.T) {
-		var cursors []uint64
-		err := qe.Execute(context.Background(), &evm.QueryLogsRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x9")}, func(p proto.Message) error {
-			cursors = append(cursors, p.(*evm.QueryLogsResponse).GetCursorBlock().GetNumber())
-			return nil
+		synctest.Test(t, func(t *testing.T) {
+			var cursors []uint64
+			err := qe.Execute(context.Background(), &evm.QueryLogsRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x9")}, func(p proto.Message) error {
+				cursors = append(cursors, p.(*evm.QueryLogsResponse).GetCursorBlock().GetNumber())
+				return nil
+			})
+			require.ErrorContains(t, err, "stream broke after two pages")
+			assert.Equal(t, []uint64{4, 9}, cursors)
 		})
-		require.ErrorContains(t, err, "stream broke after two pages")
-		assert.Equal(t, []uint64{4, 9}, cursors)
 	})
 
 	t.Run("errors carry the MIP-16 codes on both transports", func(t *testing.T) {
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":8,"method":"eth_queryBlocks","params":[{"fromBlock":"0x1","toBlock":"0x2"}]}`))
-		_, err := qe.network.forwardQuery(context.Background(), req, "eth_queryBlocks")
-		var jre *common.ErrJsonRpcExceptionInternal
-		require.ErrorAs(t, err, &jre)
-		assert.Equal(t, common.JsonRpcErrorNumber(-32004), jre.NormalizedCode(), "no native QueryBlocks and no shim")
+		synctest.Test(t, func(t *testing.T) {
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":8,"method":"eth_queryBlocks","params":[{"fromBlock":"0x1","toBlock":"0x2"}]}`))
+			_, err := qe.network.forwardQuery(context.Background(), req, "eth_queryBlocks")
+			var jre *common.ErrJsonRpcExceptionInternal
+			require.ErrorAs(t, err, &jre)
+			assert.Equal(t, common.JsonRpcErrorNumber(-32004), jre.NormalizedCode(), "no native QueryBlocks and no shim")
 
-		err = qe.Execute(context.Background(), &evm.QueryBlocksRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x2")}, func(proto.Message) error { return nil })
-		assert.Equal(t, codes.Unimplemented, status.Code(queryGrpcError(err)))
+			err = qe.Execute(context.Background(), &evm.QueryBlocksRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x2")}, func(proto.Message) error { return nil })
+			assert.Equal(t, codes.Unimplemented, status.Code(queryGrpcError(err)))
 
-		order := evm.SortOrder_DESC
-		err = qe.Execute(context.Background(), &evm.QueryLogsRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x9"), Order: &order}, func(proto.Message) error { return nil })
-		assert.Equal(t, codes.InvalidArgument, status.Code(queryGrpcError(err)), "inverted desc range")
+			order := evm.SortOrder_DESC
+			err = qe.Execute(context.Background(), &evm.QueryLogsRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x9"), Order: &order}, func(proto.Message) error { return nil })
+			assert.Equal(t, codes.InvalidArgument, status.Code(queryGrpcError(err)), "inverted desc range")
 
-		// A native upstream's MIP-16 failure (pipeThrough wraps it in
-		// StreamError) keeps its code on both transports when no shim can
-		// take over.
-		outOfRange := newTestQueryUpstream(t, "native-window", &fakeGrpcBdsClient{queryClient: &fakeQueryServiceClient{
-			queryTracesFn: func(ctx context.Context, in *evm.QueryTracesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryTracesResponse], error) {
-				return &fakeServerStreamingClient[evm.QueryTracesResponse]{finalErr: status.Error(codes.OutOfRange, "traces pruned")}, nil
-			},
-		}})
-		windowed := newTestQueryExecutor(t, "eth_queryTraces", outOfRange)
-		err = windowed.Execute(context.Background(), &evm.QueryTracesRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x2")}, func(proto.Message) error { return nil })
-		assert.Equal(t, codes.OutOfRange, status.Code(queryGrpcError(err)))
-		req = common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":9,"method":"eth_queryTraces","params":[{"fromBlock":"0x1","toBlock":"0x2"}]}`))
-		_, err = windowed.network.forwardQuery(context.Background(), req, "eth_queryTraces")
-		require.ErrorAs(t, err, &jre)
-		assert.Equal(t, common.JsonRpcErrorNumber(-32001), jre.NormalizedCode())
+			// A native upstream's MIP-16 failure (pipeThrough wraps it in
+			// StreamError) keeps its code on both transports when no shim can
+			// take over.
+			outOfRange := newTestQueryUpstream(t, "native-window", &fakeGrpcBdsClient{queryClient: &fakeQueryServiceClient{
+				queryTracesFn: func(ctx context.Context, in *evm.QueryTracesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryTracesResponse], error) {
+					return &fakeServerStreamingClient[evm.QueryTracesResponse]{finalErr: status.Error(codes.OutOfRange, "traces pruned")}, nil
+				},
+			}})
+			windowed := newTestQueryExecutor(t, "eth_queryTraces", outOfRange)
+			err = windowed.Execute(context.Background(), &evm.QueryTracesRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x2")}, func(proto.Message) error { return nil })
+			assert.Equal(t, codes.OutOfRange, status.Code(queryGrpcError(err)))
+			req = common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":9,"method":"eth_queryTraces","params":[{"fromBlock":"0x1","toBlock":"0x2"}]}`))
+			_, err = windowed.network.forwardQuery(context.Background(), req, "eth_queryTraces")
+			require.ErrorAs(t, err, &jre)
+			assert.Equal(t, common.JsonRpcErrorNumber(-32001), jre.NormalizedCode())
+		})
 	})
 
 	t.Run("a real BDS client sends the upstream's grpc.headers on the stream", func(t *testing.T) {
-		lis, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		server := grpc.NewServer()
-		qs := &headerRecordingQueryServer{}
-		evm.RegisterQueryServiceServer(server, qs)
-		go func() { _ = server.Serve(lis) }()
-		defer server.Stop()
+		synctest.Test(t, func(t *testing.T) {
+			lis, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			server := grpc.NewServer()
+			qs := &headerRecordingQueryServer{}
+			evm.RegisterQueryServiceServer(server, qs)
+			go func() { _ = server.Serve(lis) }()
+			defer server.Stop()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		logger := zerolog.Nop()
-		endpoint, err := url.Parse("grpc://" + lis.Addr().String())
-		require.NoError(t, err)
-		client, err := clients.NewGrpcBdsClient(ctx, &logger, "prjA", nil, endpoint, 0, "")
-		require.NoError(t, err)
-		defer client.(clients.ShutdownableClient).Shutdown()
-		client.SetHeaders(map[string]string{"x-api-key": "demo"})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			logger := zerolog.Nop()
+			endpoint, err := url.Parse("grpc://" + lis.Addr().String())
+			require.NoError(t, err)
+			client, err := clients.NewGrpcBdsClient(ctx, &logger, "prjA", nil, endpoint, 0, "")
+			require.NoError(t, err)
+			defer client.(clients.ShutdownableClient).Shutdown()
+			client.SetHeaders(map[string]string{"x-api-key": "demo"})
 
-		native := newTestQueryExecutor(t, "eth_queryLogs", newTestQueryUpstream(t, "native-real", client))
-		var pages int
-		err = native.Execute(ctx, &evm.QueryLogsRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x9")}, func(proto.Message) error {
-			pages++
-			return nil
+			native := newTestQueryExecutor(t, "eth_queryLogs", newTestQueryUpstream(t, "native-real", client))
+			var pages int
+			err = native.Execute(ctx, &evm.QueryLogsRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x9")}, func(proto.Message) error {
+				pages++
+				return nil
+			})
+			require.NoError(t, err)
+			assert.Equal(t, 1, pages)
+			require.NotNil(t, qs.apiKey.Load(), "the QueryService server got no call")
+			assert.Equal(t, []string{"demo"}, *qs.apiKey.Load(), "x-api-key must reach the QueryService server")
 		})
-		require.NoError(t, err)
-		assert.Equal(t, 1, pages)
-		require.NotNil(t, qs.apiKey.Load(), "the QueryService server got no call")
-		assert.Equal(t, []string{"demo"}, *qs.apiKey.Load(), "x-api-key must reach the QueryService server")
 	})
 }
 

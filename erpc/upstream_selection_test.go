@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -258,119 +259,121 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 // TestCentralizedUpstreamRotation verifies that upstream selection is truly centralized
 // and maintains order across hedge and retry attempts
 func TestCentralizedUpstreamRotation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	// Mock 4 upstreams to test rotation
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+		// Mock 4 upstreams to test rotation
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	// All upstreams are slow (to trigger hedging)
-	for i := 1; i <= 4; i++ {
-		url := fmt.Sprintf("http://rpc%d.localhost", i)
+		// All upstreams are slow (to trigger hedging)
+		for i := 1; i <= 4; i++ {
+			url := fmt.Sprintf("http://rpc%d.localhost", i)
 
-		gock.New(url).
-			Post("").
-			Times(1). // Each should only be called once due to centralized selection
-			Reply(200).
-			Delay(400 * time.Millisecond). // Increased delay to ensure hedging triggers properly
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  fmt.Sprintf("0x%d", i),
-			})
-	}
+			gock.New(url).
+				Post("").
+				Times(1). // Each should only be called once due to centralized selection
+				Reply(200).
+				Delay(400 * time.Millisecond). // Increased delay to ensure hedging triggers properly
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  fmt.Sprintf("0x%d", i),
+				})
+		}
 
-	// Configure aggressive hedging
-	failsafeConfig := &common.FailsafeConfig{
-		Hedge: &common.HedgePolicyConfig{
-			MaxCount: 2,                                                // Allow up to 2 hedges (3 total requests)
-			Delay:    common.NewStaticDuration(100 * time.Millisecond), // Hedge quickly
-		},
-		Timeout: &common.TimeoutPolicyConfig{
-			Duration: common.NewStaticDuration(2 * time.Second),
-		},
-	}
+		// Configure aggressive hedging
+		failsafeConfig := &common.FailsafeConfig{
+			Hedge: &common.HedgePolicyConfig{
+				MaxCount: 2,                                                // Allow up to 2 hedges (3 total requests)
+				Delay:    common.NewStaticDuration(100 * time.Millisecond), // Hedge quickly
+			},
+			Timeout: &common.TimeoutPolicyConfig{
+				Duration: common.NewStaticDuration(2 * time.Second),
+			},
+		}
 
-	network := setupTestNetworkWithFourUpstreams(t, ctx, failsafeConfig)
+		network := setupTestNetworkWithFourUpstreams(t, ctx, failsafeConfig)
 
-	req := common.NewNormalizedRequest([]byte(`{
+		req := common.NewNormalizedRequest([]byte(`{
 		"jsonrpc": "2.0",
 		"method": "eth_getBalance",
 		"params": ["0x742d35Cc6634C0532925a3b844Bc9e7595f8fA49", "latest"],
 		"id": 1
 	}`))
 
-	// Make request
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
+		// Make request
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
 
-	// Wait a bit for any cancelled requests to be processed
-	time.Sleep(50 * time.Millisecond)
+		// Wait a bit for any cancelled requests to be processed
+		time.Sleep(50 * time.Millisecond)
 
-	// Track all attempted upstreams from different sources
-	attemptedUpstreams := make(map[string]bool)
-	var erroredUpstreams []string
-	var cancelledUpstreams []string
+		// Track all attempted upstreams from different sources
+		attemptedUpstreams := make(map[string]bool)
+		var erroredUpstreams []string
+		var cancelledUpstreams []string
 
-	// 1. Check ErrorsByUpstream (contains all upstreams that had errors)
-	req.ErrorsByUpstream.Range(func(key, value interface{}) bool {
-		upstream := key.(common.Upstream)
-		err := value.(error)
-		attemptedUpstreams[upstream.Id()] = true
+		// 1. Check ErrorsByUpstream (contains all upstreams that had errors)
+		req.ErrorsByUpstream.Range(func(key, value interface{}) bool {
+			upstream := key.(common.Upstream)
+			err := value.(error)
+			attemptedUpstreams[upstream.Id()] = true
 
-		// All errors should be cancelled hedged requests
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamHedgeCancelled, common.ErrCodeEndpointRequestCanceled),
-			"Upstream %s should have cancellation error, but got: %v", upstream.Id(), err)
+			// All errors should be cancelled hedged requests
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamHedgeCancelled, common.ErrCodeEndpointRequestCanceled),
+				"Upstream %s should have cancellation error, but got: %v", upstream.Id(), err)
 
-		if common.HasErrorCode(err, common.ErrCodeUpstreamHedgeCancelled, common.ErrCodeEndpointRequestCanceled) {
-			cancelledUpstreams = append(cancelledUpstreams, upstream.Id())
-			t.Logf("Cancelled upstream %s with error: %v", upstream.Id(), err)
-		} else {
-			erroredUpstreams = append(erroredUpstreams, upstream.Id())
-			t.Logf("Errored upstream %s with error: %v", upstream.Id(), err)
-		}
-		return true
+			if common.HasErrorCode(err, common.ErrCodeUpstreamHedgeCancelled, common.ErrCodeEndpointRequestCanceled) {
+				cancelledUpstreams = append(cancelledUpstreams, upstream.Id())
+				t.Logf("Cancelled upstream %s with error: %v", upstream.Id(), err)
+			} else {
+				erroredUpstreams = append(erroredUpstreams, upstream.Id())
+				t.Logf("Errored upstream %s with error: %v", upstream.Id(), err)
+			}
+			return true
+		})
+
+		// 2. Check ConsumedUpstreams (with new logic, should only contain upstreams with final responses)
+		var consumedUpstreams []string
+		req.ConsumedUpstreams.Range(func(key, value interface{}) bool {
+			upstream := key.(common.Upstream)
+			consumedUpstreams = append(consumedUpstreams, upstream.Id())
+			attemptedUpstreams[upstream.Id()] = true
+			return true
+		})
+
+		// 3. Add winning upstream
+		winningUpstream := resp.Upstream().Id()
+		attemptedUpstreams[winningUpstream] = true
+
+		// Log what happened
+		t.Logf("Winning upstream: %s", winningUpstream)
+		t.Logf("Consumed upstreams (final responses): %v", consumedUpstreams)
+		t.Logf("Cancelled upstreams (hedged): %v", cancelledUpstreams)
+		t.Logf("Errored upstreams (other errors): %v", erroredUpstreams)
+		t.Logf("Total attempted upstreams: %d", len(attemptedUpstreams))
+		t.Logf("Response metadata - Attempts: %d, Retries: %d, Hedges: %d",
+			resp.Attempts(), resp.Retries(), resp.Hedges())
+
+		// Should only have the winning upstream in ConsumedUpstreams
+		assert.Equal(t, 1, len(consumedUpstreams), "Should only have winner in consumed")
+		assert.Contains(t, consumedUpstreams, winningUpstream, "Winner should be consumed")
+
+		// Response metadata should still show the attempts
+		assert.Equal(t, 3, resp.Attempts(), "Should have made 3 attempts")
+		assert.Equal(t, 2, resp.Hedges(), "Should have made 2 hedges")
+
+		// We can't verify which specific upstreams were cancelled anymore
+		// This information is not retained (which is correct behavior)
+
+		// The gock mocks will tell us what was actually called
+		// 3 out of 4 mocks should be consumed
+		util.AssertNoPendingMocks(t, 1) // Still expect 1 pending
 	})
-
-	// 2. Check ConsumedUpstreams (with new logic, should only contain upstreams with final responses)
-	var consumedUpstreams []string
-	req.ConsumedUpstreams.Range(func(key, value interface{}) bool {
-		upstream := key.(common.Upstream)
-		consumedUpstreams = append(consumedUpstreams, upstream.Id())
-		attemptedUpstreams[upstream.Id()] = true
-		return true
-	})
-
-	// 3. Add winning upstream
-	winningUpstream := resp.Upstream().Id()
-	attemptedUpstreams[winningUpstream] = true
-
-	// Log what happened
-	t.Logf("Winning upstream: %s", winningUpstream)
-	t.Logf("Consumed upstreams (final responses): %v", consumedUpstreams)
-	t.Logf("Cancelled upstreams (hedged): %v", cancelledUpstreams)
-	t.Logf("Errored upstreams (other errors): %v", erroredUpstreams)
-	t.Logf("Total attempted upstreams: %d", len(attemptedUpstreams))
-	t.Logf("Response metadata - Attempts: %d, Retries: %d, Hedges: %d",
-		resp.Attempts(), resp.Retries(), resp.Hedges())
-
-	// Should only have the winning upstream in ConsumedUpstreams
-	assert.Equal(t, 1, len(consumedUpstreams), "Should only have winner in consumed")
-	assert.Contains(t, consumedUpstreams, winningUpstream, "Winner should be consumed")
-
-	// Response metadata should still show the attempts
-	assert.Equal(t, 3, resp.Attempts(), "Should have made 3 attempts")
-	assert.Equal(t, 2, resp.Hedges(), "Should have made 2 hedges")
-
-	// We can't verify which specific upstreams were cancelled anymore
-	// This information is not retained (which is correct behavior)
-
-	// The gock mocks will tell us what was actually called
-	// 3 out of 4 mocks should be consumed
-	util.AssertNoPendingMocks(t, 1) // Still expect 1 pending
 }
 
 // TestMixedResponseTypes tests upstream selection with various response types

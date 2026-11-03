@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -30,909 +31,933 @@ func init() {
 
 func TestNetwork_HedgePolicy(t *testing.T) {
 	t.Run("FixedDelayHedge_FirstRequestSlowHedgeWins", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		// Set up all mocks BEFORE creating network
-		// First request to rpc1 - slow
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Reply(200).
-			Delay(500 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc":  "2.0",
-				"id":       1,
-				"result":   "0x1111",
-				"fromHost": "rpc1",
+			// Set up all mocks BEFORE creating network
+			// First request to rpc1 - slow
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Reply(200).
+				Delay(500 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc":  "2.0",
+					"id":       1,
+					"result":   "0x1111",
+					"fromHost": "rpc1",
+				})
+
+			// Hedged request to rpc2 - fast
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Reply(200).
+				Delay(50 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc":  "2.0",
+					"id":       1,
+					"result":   "0x2222",
+					"fromHost": "rpc2",
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(100 * time.Millisecond),
+				MaxCount: 1,
 			})
 
-		// Hedged request to rpc2 - fast
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Reply(200).
-			Delay(50 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc":  "2.0",
-				"id":       1,
-				"result":   "0x2222",
-				"fromHost": "rpc2",
-			})
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(100 * time.Millisecond),
-			MaxCount: 1,
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+
+			// Should get response from rpc2 (hedged request)
+			assert.Contains(t, jrr.GetResultString(), "0x2222")
 		})
-
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-
-		// Should get response from rpc2 (hedged request)
-		assert.Contains(t, jrr.GetResultString(), "0x2222")
 	})
 
 	t.Run("FixedDelayHedge_FirstRequestFastNoHedge", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1) // rpc2 mock should not be called
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 1) // rpc2 mock should not be called
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		// Set up all mocks BEFORE creating network
-		// First request to rpc1 - fast
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Reply(200).
-			Delay(50 * time.Millisecond). // Faster than hedge delay
-			JSON(map[string]interface{}{
-				"jsonrpc":  "2.0",
-				"id":       1,
-				"result":   "0x1111",
-				"fromHost": "rpc1",
+			// Set up all mocks BEFORE creating network
+			// First request to rpc1 - fast
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Reply(200).
+				Delay(50 * time.Millisecond). // Faster than hedge delay
+				JSON(map[string]interface{}{
+					"jsonrpc":  "2.0",
+					"id":       1,
+					"result":   "0x1111",
+					"fromHost": "rpc1",
+				})
+
+			// This should not be called
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc":  "2.0",
+					"id":       1,
+					"result":   "0x2222",
+					"fromHost": "rpc2",
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(200 * time.Millisecond),
+				MaxCount: 1,
 			})
 
-		// This should not be called
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc":  "2.0",
-				"id":       1,
-				"result":   "0x2222",
-				"fromHost": "rpc2",
-			})
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(200 * time.Millisecond),
-			MaxCount: 1,
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+
+			// Should get response from rpc1 (no hedge triggered)
+			assert.Contains(t, jrr.GetResultString(), "0x1111")
 		})
-
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-
-		// Should get response from rpc1 (no hedge triggered)
-		assert.Contains(t, jrr.GetResultString(), "0x1111")
 	})
 
 	t.Run("QuantileBasedHedge_DynamicDelay", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// Don't assert pending mocks due to unpredictable concurrent requests
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// Don't assert pending mocks due to unpredictable concurrent requests
 
-		// Set up all mocks BEFORE creating network
-		// First, set up mocks for metric building phase
-		for i := 0; i < 10; i++ {
+			// Set up all mocks BEFORE creating network
+			// First, set up mocks for metric building phase
+			for i := 0; i < 10; i++ {
+				gock.New("http://rpc1.localhost").
+					Post("").
+					Filter(func(r *http.Request) bool {
+						body := util.SafeReadBody(r)
+						return strings.Contains(body, "eth_getBalance")
+					}).
+					Times(1).
+					Reply(200).
+					Delay(time.Duration(50+i*10) * time.Millisecond). // Varying delays 50-140ms
+					JSON(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"result":  "0x1111",
+					})
+			}
+
+			// Then set up mocks for the actual hedge test
 			gock.New("http://rpc1.localhost").
 				Post("").
 				Filter(func(r *http.Request) bool {
 					body := util.SafeReadBody(r)
 					return strings.Contains(body, "eth_getBalance")
 				}).
-				Times(1).
+				Persist(). // Allow multiple matches in case of retries
 				Reply(200).
-				Delay(time.Duration(50+i*10) * time.Millisecond). // Varying delays 50-140ms
+				Delay(500 * time.Millisecond). // Slow primary
 				JSON(map[string]interface{}{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"result":  "0x1111",
+					"jsonrpc":  "2.0",
+					"id":       1,
+					"result":   "0x1111",
+					"fromHost": "rpc1",
 				})
-		}
 
-		// Then set up mocks for the actual hedge test
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Persist(). // Allow multiple matches in case of retries
-			Reply(200).
-			Delay(500 * time.Millisecond). // Slow primary
-			JSON(map[string]interface{}{
-				"jsonrpc":  "2.0",
-				"id":       1,
-				"result":   "0x1111",
-				"fromHost": "rpc1",
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Persist(). // Allow multiple matches in case of retries
+				Reply(200).
+				Delay(50 * time.Millisecond). // Fast hedge
+				JSON(map[string]interface{}{
+					"jsonrpc":  "2.0",
+					"id":       1,
+					"result":   "0x2222",
+					"fromHost": "rpc2",
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			// Set up network with quantile-based hedge
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay: &common.AdaptiveDuration{
+					Base:     common.Duration(50 * time.Millisecond),  // Base delay
+					Quantile: 0.9,                                     // 90th percentile
+					Min:      common.Duration(20 * time.Millisecond),  // Min boundary
+					Max:      common.Duration(200 * time.Millisecond), // Max boundary
+				},
+				MaxCount: 1,
 			})
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Persist(). // Allow multiple matches in case of retries
-			Reply(200).
-			Delay(50 * time.Millisecond). // Fast hedge
-			JSON(map[string]interface{}{
-				"jsonrpc":  "2.0",
-				"id":       1,
-				"result":   "0x2222",
-				"fromHost": "rpc2",
-			})
+			// First, make several requests to build up metrics
+			for i := 0; i < 10; i++ {
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
+				resp, err := network.Forward(ctx, req)
+				require.NoError(t, err)
+				resp.Release()
+			}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		// Set up network with quantile-based hedge
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay: &common.AdaptiveDuration{
-				Base:     common.Duration(50 * time.Millisecond),  // Base delay
-				Quantile: 0.9,                                     // 90th percentile
-				Min:      common.Duration(20 * time.Millisecond),  // Min boundary
-				Max:      common.Duration(200 * time.Millisecond), // Max boundary
-			},
-			MaxCount: 1,
-		})
-
-		// First, make several requests to build up metrics
-		for i := 0; i < 10; i++ {
+			// Now test hedge with quantile-based delay
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
 			resp, err := network.Forward(ctx, req)
 			require.NoError(t, err)
-			resp.Release()
-		}
+			require.NotNil(t, resp)
 
-		// Now test hedge with quantile-based delay
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
-		resp, err := network.Forward(ctx, req)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-
-		// Should get response from hedged request
-		assert.Contains(t, jrr.GetResultString(), "0x2222")
+			// Should get response from hedged request
+			assert.Contains(t, jrr.GetResultString(), "0x2222")
+		})
 	})
 
 	t.Run("QuantileBasedHedge_MinDelayBoundary", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Set up all mocks BEFORE creating network
-		// Build metrics with very fast responses
-		for i := 0; i < 5; i++ {
+			// Set up all mocks BEFORE creating network
+			// Build metrics with very fast responses
+			for i := 0; i < 5; i++ {
+				gock.New("http://rpc1.localhost").
+					Post("").
+					Filter(func(r *http.Request) bool {
+						body := util.SafeReadBody(r)
+						return strings.Contains(body, "eth_getBalance")
+					}).
+					Reply(200).
+					Delay(5 * time.Millisecond). // Very fast
+					JSON(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"result":  "0x1111",
+					})
+			}
+
+			// Track hedge timing
+			var hedgeTime time.Time
+			var primaryTime time.Time
+
 			gock.New("http://rpc1.localhost").
 				Post("").
 				Filter(func(r *http.Request) bool {
 					body := util.SafeReadBody(r)
-					return strings.Contains(body, "eth_getBalance")
+					if strings.Contains(body, "eth_getBalance") {
+						primaryTime = time.Now()
+						return true
+					}
+					return false
 				}).
 				Reply(200).
-				Delay(5 * time.Millisecond). // Very fast
+				Delay(300 * time.Millisecond).
 				JSON(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      1,
 					"result":  "0x1111",
 				})
-		}
 
-		// Track hedge timing
-		var hedgeTime time.Time
-		var primaryTime time.Time
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					if strings.Contains(body, "eth_getBalance") {
+						hedgeTime = time.Now()
+						return true
+					}
+					return false
+				}).
+				Reply(200).
+				Delay(10 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x2222",
+				})
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				if strings.Contains(body, "eth_getBalance") {
-					primaryTime = time.Now()
-					return true
-				}
-				return false
-			}).
-			Reply(200).
-			Delay(300 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x1111",
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			// Set up network with quantile that would result in very low delay
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay: &common.AdaptiveDuration{
+					Quantile: 0.1,                                     // 10th percentile (will be low)
+					Min:      common.Duration(100 * time.Millisecond), // Min boundary
+					Max:      common.Duration(500 * time.Millisecond),
+				},
+				MaxCount: 1,
 			})
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				if strings.Contains(body, "eth_getBalance") {
-					hedgeTime = time.Now()
-					return true
-				}
-				return false
-			}).
-			Reply(200).
-			Delay(10 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x2222",
-			})
+			// Build metrics
+			for i := 0; i < 5; i++ {
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
+				resp, err := network.Forward(ctx, req)
+				require.NoError(t, err)
+				resp.Release()
+			}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		// Set up network with quantile that would result in very low delay
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay: &common.AdaptiveDuration{
-				Quantile: 0.1,                                     // 10th percentile (will be low)
-				Min:      common.Duration(100 * time.Millisecond), // Min boundary
-				Max:      common.Duration(500 * time.Millisecond),
-			},
-			MaxCount: 1,
-		})
-
-		// Build metrics
-		for i := 0; i < 5; i++ {
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
 			resp, err := network.Forward(ctx, req)
 			require.NoError(t, err)
-			resp.Release()
-		}
+			require.NotNil(t, resp)
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
-		resp, err := network.Forward(ctx, req)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-
-		// Verify hedge delay was at least MinDelay (allow tiny scheduling tolerance)
-		hedgeDelay := hedgeTime.Sub(primaryTime)
-		tolerance := 2 * time.Millisecond
-		assert.GreaterOrEqual(t, hedgeDelay, 100*time.Millisecond-tolerance, "Hedge delay should respect MinDelay boundary")
+			// Verify hedge delay was at least MinDelay (allow tiny scheduling tolerance)
+			hedgeDelay := hedgeTime.Sub(primaryTime)
+			tolerance := 2 * time.Millisecond
+			assert.GreaterOrEqual(t, hedgeDelay, 100*time.Millisecond-tolerance, "Hedge delay should respect MinDelay boundary")
+		})
 	})
 
 	t.Run("QuantileBasedHedge_MaxDelayBoundary", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// Don't assert pending mocks for this test
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// Don't assert pending mocks for this test
 
-		// Set up all mocks BEFORE creating network
-		// Build metrics with slow responses - set up mocks for both upstreams
-		for i := 0; i < 5; i++ {
-			// Set up mocks for both upstreams
+			// Set up all mocks BEFORE creating network
+			// Build metrics with slow responses - set up mocks for both upstreams
+			for i := 0; i < 5; i++ {
+				// Set up mocks for both upstreams
+				gock.New("http://rpc1.localhost").
+					Post("").
+					Times(1).
+					Reply(200).
+					Delay(200 * time.Millisecond). // Slow responses
+					JSON(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"result":  "0x1111",
+					})
+
+				// Also set up rpc2 in case it's used
+				gock.New("http://rpc2.localhost").
+					Post("").
+					Times(1).
+					Reply(200).
+					Delay(200 * time.Millisecond).
+					JSON(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"result":  "0x1111",
+					})
+			}
+
+			// Track hedge timing
+			var hedgeTime time.Time
+			var primaryTime time.Time
+
+			// Set up test mocks - make them catch-all
 			gock.New("http://rpc1.localhost").
 				Post("").
-				Times(1).
+				Persist().
+				Filter(func(r *http.Request) bool {
+					if primaryTime.IsZero() {
+						primaryTime = time.Now()
+					}
+					return true
+				}).
 				Reply(200).
-				Delay(200 * time.Millisecond). // Slow responses
+				Delay(400 * time.Millisecond).
 				JSON(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      1,
 					"result":  "0x1111",
 				})
 
-			// Also set up rpc2 in case it's used
 			gock.New("http://rpc2.localhost").
 				Post("").
-				Times(1).
+				Persist().
+				Filter(func(r *http.Request) bool {
+					if hedgeTime.IsZero() {
+						hedgeTime = time.Now()
+					}
+					return true
+				}).
 				Reply(200).
-				Delay(200 * time.Millisecond).
+				Delay(10 * time.Millisecond).
 				JSON(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      1,
-					"result":  "0x1111",
+					"result":  "0x2222",
 				})
-		}
 
-		// Track hedge timing
-		var hedgeTime time.Time
-		var primaryTime time.Time
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Set up test mocks - make them catch-all
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				if primaryTime.IsZero() {
-					primaryTime = time.Now()
-				}
-				return true
-			}).
-			Reply(200).
-			Delay(400 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x1111",
+			// Set up network with quantile that would result in very high delay
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay: &common.AdaptiveDuration{
+					Base:     common.Duration(300 * time.Millisecond), // High base delay
+					Quantile: 0.99,                                    // 99th percentile
+					Min:      common.Duration(10 * time.Millisecond),
+					Max:      common.Duration(150 * time.Millisecond), // Max boundary
+				},
+				MaxCount: 1,
 			})
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				if hedgeTime.IsZero() {
-					hedgeTime = time.Now()
-				}
-				return true
-			}).
-			Reply(200).
-			Delay(10 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x2222",
-			})
+			// Build metrics with slow responses
+			for i := 0; i < 5; i++ {
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
+				resp, err := network.Forward(ctx, req)
+				require.NoError(t, err)
+				resp.Release()
+			}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		// Set up network with quantile that would result in very high delay
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay: &common.AdaptiveDuration{
-				Base:     common.Duration(300 * time.Millisecond), // High base delay
-				Quantile: 0.99,                                    // 99th percentile
-				Min:      common.Duration(10 * time.Millisecond),
-				Max:      common.Duration(150 * time.Millisecond), // Max boundary
-			},
-			MaxCount: 1,
-		})
-
-		// Build metrics with slow responses
-		for i := 0; i < 5; i++ {
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
 			resp, err := network.Forward(ctx, req)
 			require.NoError(t, err)
-			resp.Release()
-		}
+			require.NotNil(t, resp)
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
-		resp, err := network.Forward(ctx, req)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-
-		// Verify hedge delay was at most MaxDelay
-		hedgeDelay := hedgeTime.Sub(primaryTime)
-		assert.LessOrEqual(t, hedgeDelay, 160*time.Millisecond, "Hedge delay should respect MaxDelay boundary")
+			// Verify hedge delay was at most MaxDelay
+			hedgeDelay := hedgeTime.Sub(primaryTime)
+			assert.LessOrEqual(t, hedgeDelay, 160*time.Millisecond, "Hedge delay should respect MaxDelay boundary")
+		})
 	})
 
 	t.Run("HedgePolicy_SkipsNonRetryableWriteMethods", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1) // rpc2 should not be called
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 1) // rpc2 should not be called
 
-		// Use eth_sendTransaction (NOT eth_sendRawTransaction) because eth_sendRawTransaction
-		// is now hedgeable due to idempotency handling
-		writeRequestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendTransaction","params":[{"from":"0x123","to":"0x456"}]}`)
+			// Use eth_sendTransaction (NOT eth_sendRawTransaction) because eth_sendRawTransaction
+			// is now hedgeable due to idempotency handling
+			writeRequestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendTransaction","params":[{"from":"0x123","to":"0x456"}]}`)
 
-		// Set up all mocks BEFORE creating network
-		// Only primary should be called for non-retryable write methods
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendTransaction")
-			}).
-			Reply(200).
-			Delay(300 * time.Millisecond). // Slow enough to trigger hedge normally
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x1234567890abcdef",
+			// Set up all mocks BEFORE creating network
+			// Only primary should be called for non-retryable write methods
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendTransaction")
+				}).
+				Reply(200).
+				Delay(300 * time.Millisecond). // Slow enough to trigger hedge normally
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x1234567890abcdef",
+				})
+
+			// This should NOT be called for non-retryable write methods
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xfedcba0987654321",
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(50 * time.Millisecond),
+				MaxCount: 5,
 			})
 
-		// This should NOT be called for non-retryable write methods
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0xfedcba0987654321",
-			})
+			req := common.NewNormalizedRequest(writeRequestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(50 * time.Millisecond),
-			MaxCount: 5,
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+
+			// Should only get response from primary
+			assert.Contains(t, jrr.GetResultString(), "0x1234567890abcdef")
 		})
-
-		req := common.NewNormalizedRequest(writeRequestBytes)
-		resp, err := network.Forward(ctx, req)
-
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-
-		// Should only get response from primary
-		assert.Contains(t, jrr.GetResultString(), "0x1234567890abcdef")
 	})
 
 	t.Run("HedgePolicy_MaxCountLimit", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1) // rpc4 should not be called (rpc3 completes fastest)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 1) // rpc4 should not be called (rpc3 completes fastest)
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		// Set up all mocks BEFORE creating network
-		// Set up delays so rpc3 (second hedge) completes first
-		delays := map[string]time.Duration{
-			"rpc1": 500 * time.Millisecond, // Primary - slow
-			"rpc2": 400 * time.Millisecond, // First hedge - slow
-			"rpc3": 100 * time.Millisecond, // Second hedge - fastest
-			"rpc4": 300 * time.Millisecond, // Would be third hedge (not allowed)
-		}
+			// Set up all mocks BEFORE creating network
+			// Set up delays so rpc3 (second hedge) completes first
+			delays := map[string]time.Duration{
+				"rpc1": 500 * time.Millisecond, // Primary - slow
+				"rpc2": 400 * time.Millisecond, // First hedge - slow
+				"rpc3": 100 * time.Millisecond, // Second hedge - fastest
+				"rpc4": 300 * time.Millisecond, // Would be third hedge (not allowed)
+			}
 
-		for host, delay := range delays {
-			gock.New("http://" + host + ".localhost").
-				Post("").
-				Filter(func(r *http.Request) bool {
-					body := util.SafeReadBody(r)
-					return strings.Contains(body, "eth_getBalance")
-				}).
-				Reply(200).
-				Delay(delay).
-				JSON(map[string]interface{}{
-					"jsonrpc":  "2.0",
-					"id":       1,
-					"result":   "0x" + host,
-					"fromHost": host,
-				})
-		}
+			for host, delay := range delays {
+				gock.New("http://" + host + ".localhost").
+					Post("").
+					Filter(func(r *http.Request) bool {
+						body := util.SafeReadBody(r)
+						return strings.Contains(body, "eth_getBalance")
+					}).
+					Reply(200).
+					Delay(delay).
+					JSON(map[string]interface{}{
+						"jsonrpc":  "2.0",
+						"id":       1,
+						"result":   "0x" + host,
+						"fromHost": host,
+					})
+			}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Create network with 4 upstreams but MaxCount=2
-		network := setupTestNetworkWithMultipleUpstreams(t, ctx, 4, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(50 * time.Millisecond),
-			MaxCount: 2, // Only 2 hedges allowed (total 3 requests including primary)
+			// Create network with 4 upstreams but MaxCount=2
+			network := setupTestNetworkWithMultipleUpstreams(t, ctx, 4, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(50 * time.Millisecond),
+				MaxCount: 2, // Only 2 hedges allowed (total 3 requests including primary)
+			})
+
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
+
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+
+			// Should get response from rpc3 (second hedge, fastest to complete)
+			assert.Contains(t, jrr.GetResultString(), "rpc3")
 		})
-
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-
-		// Should get response from rpc3 (second hedge, fastest to complete)
-		assert.Contains(t, jrr.GetResultString(), "rpc3")
 	})
 
 	t.Run("HedgePolicy_AllRequestsFail", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// Hedge concurrency makes exact mock consumption non-deterministic
-		// (primary and hedge goroutines share UpstreamIdx). Use Persist()
-		// and assert functional behavior instead.
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// Hedge concurrency makes exact mock consumption non-deterministic
+			// (primary and hedge goroutines share UpstreamIdx). Use Persist()
+			// and assert functional behavior instead.
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Reply(500).
-			Delay(100 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "Server error",
-				},
-			})
-
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Reply(503).
-			Delay(50 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "Service unavailable",
-				},
-			})
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(50 * time.Millisecond),
-			MaxCount: 1,
-		})
-
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-
-		require.Error(t, err)
-		require.Nil(t, resp)
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
-			"expected server-side exception in error chain, got: %v", err)
-
-		// Both upstreams must have been attempted (at least once across primary+hedge)
-		attemptedUpstreams := make(map[string]bool)
-		req.ErrorsByUpstream.Range(func(key, _ interface{}) bool {
-			if u, ok := key.(common.Upstream); ok {
-				attemptedUpstreams[u.Id()] = true
-			}
-			return true
-		})
-		assert.True(t, attemptedUpstreams["rpc1"], "rpc1 should have been attempted")
-		assert.True(t, attemptedUpstreams["rpc2"], "rpc2 should have been attempted")
-	})
-
-	t.Run("HedgePolicy_ContextCancellationDuringHedge", func(t *testing.T) {
-		// Gock's Delay uses time.Sleep which doesn't respect context cancellation.
-		// Under CI resource contention this causes network.Forward to hang after
-		// cancel(), timing out the entire test binary. Use a hard per-subtest
-		// deadline so a slow run fails fast instead of poisoning the suite.
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
-
-		var primaryStarted, hedgeStarted atomic.Bool
-
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				if strings.Contains(body, "eth_getBalance") {
-					primaryStarted.Store(true)
-					return true
-				}
-				return false
-			}).
-			Reply(200).
-			Delay(500 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x1111",
-			})
-
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				if strings.Contains(body, "eth_getBalance") {
-					hedgeStarted.Store(true)
-					return true
-				}
-				return false
-			}).
-			Reply(200).
-			Delay(500 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x2222",
-			})
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(50 * time.Millisecond),
-			MaxCount: 1,
-		})
-
-		var wg sync.WaitGroup
-		wg.Add(1)
-		var respErr error
-
-		go func() {
-			defer wg.Done()
-			req := common.NewNormalizedRequest(requestBytes)
-			_, respErr = network.Forward(ctx, req)
-		}()
-
-		// Wait for hedge to start
-		time.Sleep(100 * time.Millisecond)
-		assert.True(t, primaryStarted.Load(), "Primary request should have started")
-		assert.True(t, hedgeStarted.Load(), "Hedge request should have started")
-
-		cancel()
-
-		// Gock's Delay sleeps unconditionally so Forward may not observe the
-		// cancellation promptly. Cap the wait so a slow run doesn't hang the
-		// entire 10-min CI timeout.
-		done := make(chan struct{})
-		go func() {
-			wg.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Skip("skipping: network.Forward did not return promptly after cancel (gock Delay race); not a product bug")
-		}
-
-		require.Error(t, respErr)
-		assert.True(t, strings.Contains(respErr.Error(), "context canceled"))
-	})
-
-	t.Run("HedgePolicy_MultipleHedgesWithVaryingResponseTimes", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
-
-		// Set up all mocks BEFORE creating network
-		// Set up response times: rpc3 will be fastest
-		delays := map[string]time.Duration{
-			"rpc1": 400 * time.Millisecond, // Primary - slowest
-			"rpc2": 300 * time.Millisecond, // First hedge
-			"rpc3": 100 * time.Millisecond, // Second hedge - fastest
-			"rpc4": 200 * time.Millisecond, // Third hedge
-		}
-
-		for host, delay := range delays {
-			gock.New("http://" + host + ".localhost").
+			gock.New("http://rpc1.localhost").
 				Post("").
+				Persist().
 				Filter(func(r *http.Request) bool {
 					body := util.SafeReadBody(r)
 					return strings.Contains(body, "eth_getBalance")
 				}).
-				Reply(200).
-				Delay(delay).
+				Reply(500).
+				Delay(100 * time.Millisecond).
 				JSON(map[string]interface{}{
-					"jsonrpc":  "2.0",
-					"id":       1,
-					"result":   "0x" + host,
-					"fromHost": host,
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "Server error",
+					},
 				})
-		}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Reply(503).
+				Delay(50 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "Service unavailable",
+					},
+				})
 
-		network := setupTestNetworkWithMultipleUpstreams(t, ctx, 4, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(50 * time.Millisecond),
-			MaxCount: 3, // Allow 3 hedges
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(50 * time.Millisecond),
+				MaxCount: 1,
+			})
+
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
+
+			require.Error(t, err)
+			require.Nil(t, resp)
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+				"expected server-side exception in error chain, got: %v", err)
+
+			// Both upstreams must have been attempted (at least once across primary+hedge)
+			attemptedUpstreams := make(map[string]bool)
+			req.ErrorsByUpstream.Range(func(key, _ interface{}) bool {
+				if u, ok := key.(common.Upstream); ok {
+					attemptedUpstreams[u.Id()] = true
+				}
+				return true
+			})
+			assert.True(t, attemptedUpstreams["rpc1"], "rpc1 should have been attempted")
+			assert.True(t, attemptedUpstreams["rpc2"], "rpc2 should have been attempted")
 		})
+	})
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+	t.Run("HedgePolicy_ContextCancellationDuringHedge", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			// Gock's Delay uses time.Sleep which doesn't respect context cancellation.
+			// Under CI resource contention this causes network.Forward to hang after
+			// cancel(), timing out the entire test binary. Use a hard per-subtest
+			// deadline so a slow run fails fast instead of poisoning the suite.
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		require.NoError(t, err)
-		require.NotNil(t, resp)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
+			var primaryStarted, hedgeStarted atomic.Bool
 
-		// Should get response from rpc3 (fastest)
-		assert.Contains(t, jrr.GetResultString(), "rpc3")
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					if strings.Contains(body, "eth_getBalance") {
+						primaryStarted.Store(true)
+						return true
+					}
+					return false
+				}).
+				Reply(200).
+				Delay(500 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x1111",
+				})
+
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					if strings.Contains(body, "eth_getBalance") {
+						hedgeStarted.Store(true)
+						return true
+					}
+					return false
+				}).
+				Reply(200).
+				Delay(500 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x2222",
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(50 * time.Millisecond),
+				MaxCount: 1,
+			})
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+			var respErr error
+
+			go func() {
+				defer wg.Done()
+				req := common.NewNormalizedRequest(requestBytes)
+				_, respErr = network.Forward(ctx, req)
+			}()
+
+			// Wait for hedge to start
+			time.Sleep(100 * time.Millisecond)
+			assert.True(t, primaryStarted.Load(), "Primary request should have started")
+			assert.True(t, hedgeStarted.Load(), "Hedge request should have started")
+
+			cancel()
+
+			// Gock's Delay sleeps unconditionally so Forward may not observe the
+			// cancellation promptly. Cap the wait so a slow run doesn't hang the
+			// entire 10-min CI timeout.
+			done := make(chan struct{})
+			go func() {
+				wg.Wait()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Skip("skipping: network.Forward did not return promptly after cancel (gock Delay race); not a product bug")
+			}
+
+			require.Error(t, respErr)
+			assert.True(t, strings.Contains(respErr.Error(), "context canceled"))
+		})
+	})
+
+	t.Run("HedgePolicy_MultipleHedgesWithVaryingResponseTimes", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+
+			// Set up all mocks BEFORE creating network
+			// Set up response times: rpc3 will be fastest
+			delays := map[string]time.Duration{
+				"rpc1": 400 * time.Millisecond, // Primary - slowest
+				"rpc2": 300 * time.Millisecond, // First hedge
+				"rpc3": 100 * time.Millisecond, // Second hedge - fastest
+				"rpc4": 200 * time.Millisecond, // Third hedge
+			}
+
+			for host, delay := range delays {
+				gock.New("http://" + host + ".localhost").
+					Post("").
+					Filter(func(r *http.Request) bool {
+						body := util.SafeReadBody(r)
+						return strings.Contains(body, "eth_getBalance")
+					}).
+					Reply(200).
+					Delay(delay).
+					JSON(map[string]interface{}{
+						"jsonrpc":  "2.0",
+						"id":       1,
+						"result":   "0x" + host,
+						"fromHost": host,
+					})
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupTestNetworkWithMultipleUpstreams(t, ctx, 4, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(50 * time.Millisecond),
+				MaxCount: 3, // Allow 3 hedges
+			})
+
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
+
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+
+			// Should get response from rpc3 (fastest)
+			assert.Contains(t, jrr.GetResultString(), "rpc3")
+		})
 	})
 
 	t.Run("QuantileBasedHedge_NoMetricsAvailable", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		// Set up all mocks BEFORE creating network
-		// Track timing
-		var primaryTime, hedgeTime time.Time
+			// Set up all mocks BEFORE creating network
+			// Track timing
+			var primaryTime, hedgeTime time.Time
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				if strings.Contains(body, "eth_getBalance") {
-					primaryTime = time.Now()
-					return true
-				}
-				return false
-			}).
-			Reply(200).
-			Delay(300 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x1111",
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					if strings.Contains(body, "eth_getBalance") {
+						primaryTime = time.Now()
+						return true
+					}
+					return false
+				}).
+				Reply(200).
+				Delay(300 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x1111",
+				})
+
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					if strings.Contains(body, "eth_getBalance") {
+						hedgeTime = time.Now()
+						return true
+					}
+					return false
+				}).
+				Reply(200).
+				Delay(50 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x2222",
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			// Set up network with quantile-based hedge but no metrics.
+			// With AdaptiveDuration, when Quantile is set but no metrics exist,
+			// the resolver adds Min as the adaptive fallback; we leave Min
+			// at 0 here so cold-start delay equals Base alone (~100ms).
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay: &common.AdaptiveDuration{
+					Base:     common.Duration(100 * time.Millisecond), // Base delay (fallback)
+					Quantile: 0.9,
+					Max:      common.Duration(200 * time.Millisecond),
+				},
+				MaxCount: 1,
 			})
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				if strings.Contains(body, "eth_getBalance") {
-					hedgeTime = time.Now()
-					return true
-				}
-				return false
-			}).
-			Reply(200).
-			Delay(50 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x2222",
-			})
+			// First request without any metrics history
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		// Set up network with quantile-based hedge but no metrics.
-		// With AdaptiveDuration, when Quantile is set but no metrics exist,
-		// the resolver adds Min as the adaptive fallback; we leave Min
-		// at 0 here so cold-start delay equals Base alone (~100ms).
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay: &common.AdaptiveDuration{
-				Base:     common.Duration(100 * time.Millisecond), // Base delay (fallback)
-				Quantile: 0.9,
-				Max:      common.Duration(200 * time.Millisecond),
-			},
-			MaxCount: 1,
+			// Verify hedge was triggered with base delay (no metrics available)
+			hedgeDelay := hedgeTime.Sub(primaryTime)
+			assert.GreaterOrEqual(t, hedgeDelay, 90*time.Millisecond, "Should use base delay when no metrics available")
+			assert.LessOrEqual(t, hedgeDelay, 110*time.Millisecond, "Should use base delay when no metrics available")
 		})
-
-		// First request without any metrics history
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-
-		// Verify hedge was triggered with base delay (no metrics available)
-		hedgeDelay := hedgeTime.Sub(primaryTime)
-		assert.GreaterOrEqual(t, hedgeDelay, 90*time.Millisecond, "Should use base delay when no metrics available")
-		assert.LessOrEqual(t, hedgeDelay, 110*time.Millisecond, "Should use base delay when no metrics available")
 	})
 
 	t.Run("HedgePolicy_ConcurrentRequests", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// Don't assert pending mocks for concurrent test
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// Don't assert pending mocks for concurrent test
 
-		// Set up all mocks BEFORE creating network
-		// Set up persistent mocks for concurrent requests
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Reply(200).
-			Delay(500 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x1111",
+			// Set up all mocks BEFORE creating network
+			// Set up persistent mocks for concurrent requests
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Persist().
+				Reply(200).
+				Delay(500 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x1111",
+				})
+
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Persist().
+				Reply(200).
+				Delay(50 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x2222",
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(100 * time.Millisecond),
+				MaxCount: 1,
 			})
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Reply(200).
-			Delay(50 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x2222",
-			})
+			// Launch multiple concurrent requests
+			const numRequests = 10
+			var wg sync.WaitGroup
+			results := make(chan string, numRequests)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(100 * time.Millisecond),
-			MaxCount: 1,
-		})
-
-		// Launch multiple concurrent requests
-		const numRequests = 10
-		var wg sync.WaitGroup
-		results := make(chan string, numRequests)
-
-		for i := 0; i < numRequests; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
-				resp, err := network.Forward(ctx, req)
-				if err != nil {
-					results <- "error"
-					return
-				}
-				jrr, _ := resp.JsonRpcResponse()
-				results <- jrr.GetResultString()
-			}()
-		}
-
-		wg.Wait()
-		close(results)
-
-		// Verify all requests succeeded with hedged responses
-		successCount := 0
-		for result := range results {
-			if strings.Contains(result, "0x2222") {
-				successCount++
+			for i := 0; i < numRequests; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
+					resp, err := network.Forward(ctx, req)
+					if err != nil {
+						results <- "error"
+						return
+					}
+					jrr, _ := resp.JsonRpcResponse()
+					results <- jrr.GetResultString()
+				}()
 			}
-		}
 
-		assert.Equal(t, numRequests, successCount, "All requests should succeed with hedged responses")
+			wg.Wait()
+			close(results)
+
+			// Verify all requests succeeded with hedged responses
+			successCount := 0
+			for result := range results {
+				if strings.Contains(result, "0x2222") {
+					successCount++
+				}
+			}
+
+			assert.Equal(t, numRequests, successCount, "All requests should succeed with hedged responses")
+		})
 	})
 }
 
@@ -945,127 +970,131 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 // scoring isn't double-penalized via ErrorRate on top of latency).
 func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 	t.Run("PrimaryWins_HedgeAttemptExcludedFromRequestsTotal", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		// rpc1 (primary) responds fast — wins before hedge fires.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Reply(200).
-			Delay(20 * time.Millisecond).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+			// rpc1 (primary) responds fast — wins before hedge fires.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Reply(200).
+				Delay(20 * time.Millisecond).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
 
-		// rpc2 hedge would be slow if it fires (it shouldn't).
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(200).
-			Delay(500 * time.Millisecond).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
+			// rpc2 hedge would be slow if it fires (it shouldn't).
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				Delay(500 * time.Millisecond).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(200 * time.Millisecond),
-			MaxCount: 1,
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(200 * time.Millisecond),
+				MaxCount: 1,
+			})
+
+			resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+
+			rpc1, rpc2 := getUpstreamPair(t, network)
+
+			m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
+			require.NotNil(t, m1)
+			assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "rpc1 primary attempt counts")
+			assert.Equal(t, int64(0), m1.ErrorsTotal.Load(), "rpc1 succeeded")
+
+			// rpc2's hedge never fired — clean slate.
+			m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll)
+			if m2 != nil {
+				assert.Equal(t, int64(0), m2.RequestsTotal.Load(), "rpc2 was never tried")
+				assert.Equal(t, int64(0), m2.ErrorsTotal.Load())
+			}
 		})
-
-		resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-
-		rpc1, rpc2 := getUpstreamPair(t, network)
-
-		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
-		require.NotNil(t, m1)
-		assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "rpc1 primary attempt counts")
-		assert.Equal(t, int64(0), m1.ErrorsTotal.Load(), "rpc1 succeeded")
-
-		// rpc2's hedge never fired — clean slate.
-		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll)
-		if m2 != nil {
-			assert.Equal(t, int64(0), m2.RequestsTotal.Load(), "rpc2 was never tried")
-			assert.Equal(t, int64(0), m2.ErrorsTotal.Load())
-		}
 	})
 
 	t.Run("HedgeWins_LosingPrimaryNotRecordedAsError_HedgeAttemptNotInRequestsTotal", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		// rpc1 primary: slow. Will be cancelled when rpc2's hedge wins.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(200).
-			Delay(2 * time.Second).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+			// rpc1 primary: slow. Will be cancelled when rpc2's hedge wins.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				Delay(2 * time.Second).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
 
-		// rpc2 hedge: fast — wins.
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Reply(200).
-			Delay(50 * time.Millisecond).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
+			// rpc2 hedge: fast — wins.
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Reply(200).
+				Delay(50 * time.Millisecond).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(100 * time.Millisecond),
-			MaxCount: 1,
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(100 * time.Millisecond),
+				MaxCount: 1,
+			})
+
+			resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, jrr.GetResultString(), "0x2222", "hedge winner's response should be returned")
+
+			// Give a brief moment for the cancelled primary to unwind through
+			// upstream.tryForward (recording happens after SendRequest returns).
+			time.Sleep(100 * time.Millisecond)
+
+			rpc1, rpc2 := getUpstreamPair(t, network)
+
+			// rpc1 was the primary attempt → its RequestsTotal ticks. Its
+			// cancellation is ignored at both layers (upstream early-return
+			// branch + tracker skip list), so ErrorsTotal stays zero.
+			m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
+			require.NotNil(t, m1)
+			assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "rpc1 primary attempt counts in RequestsTotal")
+			assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
+				"rpc1's hedge-induced cancellation must NOT count as an upstream failure")
+
+			// rpc2 was the hedge attempt → EXCLUDED from RequestsTotal even
+			// though it ran successfully. Its successful latency still lands
+			// in ResponseQuantiles, preserving the latency signal.
+			m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll)
+			require.NotNil(t, m2)
+			assert.Equal(t, int64(0), m2.RequestsTotal.Load(),
+				"rpc2's hedge attempt must NOT inflate RequestsTotal — it's speculative fan-out")
+			assert.Equal(t, int64(0), m2.ErrorsTotal.Load(), "rpc2 succeeded")
 		})
-
-		resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), "0x2222", "hedge winner's response should be returned")
-
-		// Give a brief moment for the cancelled primary to unwind through
-		// upstream.tryForward (recording happens after SendRequest returns).
-		time.Sleep(100 * time.Millisecond)
-
-		rpc1, rpc2 := getUpstreamPair(t, network)
-
-		// rpc1 was the primary attempt → its RequestsTotal ticks. Its
-		// cancellation is ignored at both layers (upstream early-return
-		// branch + tracker skip list), so ErrorsTotal stays zero.
-		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
-		require.NotNil(t, m1)
-		assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "rpc1 primary attempt counts in RequestsTotal")
-		assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
-			"rpc1's hedge-induced cancellation must NOT count as an upstream failure")
-
-		// rpc2 was the hedge attempt → EXCLUDED from RequestsTotal even
-		// though it ran successfully. Its successful latency still lands
-		// in ResponseQuantiles, preserving the latency signal.
-		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll)
-		require.NotNil(t, m2)
-		assert.Equal(t, int64(0), m2.RequestsTotal.Load(),
-			"rpc2's hedge attempt must NOT inflate RequestsTotal — it's speculative fan-out")
-		assert.Equal(t, int64(0), m2.ErrorsTotal.Load(), "rpc2 succeeded")
 	})
 
 	// The whole "trust latency" argument hinges on hedge-win latency
@@ -1075,64 +1104,66 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 	// even when fast. This test pins the contract that hedge wins DO feed
 	// the latency quantile.
 	t.Run("HedgeWins_LatencyCapturedInResponseQuantiles", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		// rpc1 primary: slow → always loses.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(200).
-			Delay(2 * time.Second).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+			// rpc1 primary: slow → always loses.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				Delay(2 * time.Second).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
 
-		// rpc2 hedge: fast → always wins.
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(200).
-			Delay(40 * time.Millisecond).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
+			// rpc2 hedge: fast → always wins.
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				Delay(40 * time.Millisecond).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(80 * time.Millisecond),
-			MaxCount: 1,
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(80 * time.Millisecond),
+				MaxCount: 1,
+			})
+
+			// Run several requests so the quantile has enough samples to be stable.
+			for i := 0; i < 5; i++ {
+				resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+				require.NoError(t, err)
+				require.NotNil(t, resp)
+			}
+			time.Sleep(150 * time.Millisecond)
+
+			_, rpc2 := getUpstreamPair(t, network)
+			m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll)
+			require.NotNil(t, m2)
+
+			// RequestsTotal still zero — exclusion held across multiple requests.
+			assert.Equal(t, int64(0), m2.RequestsTotal.Load(),
+				"hedge attempts still excluded from RequestsTotal under repeated hedging")
+
+			// Latency quantile populated by the hedge wins. This is the signal
+			// `upstream/registry.go:684` consumes for scoring; it MUST be alive
+			// for the "trust latency" design to work.
+			p90 := m2.GetResponseQuantiles().GetQuantile(0.9).Seconds()
+			assert.Greater(t, p90, 0.0, "rpc2's successful hedge latency must populate ResponseQuantiles")
+			assert.Less(t, p90, 1.0, "rpc2's quantile should reflect its actual fast latency, not the slow primary's")
 		})
-
-		// Run several requests so the quantile has enough samples to be stable.
-		for i := 0; i < 5; i++ {
-			resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
-			require.NoError(t, err)
-			require.NotNil(t, resp)
-		}
-		time.Sleep(150 * time.Millisecond)
-
-		_, rpc2 := getUpstreamPair(t, network)
-		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll)
-		require.NotNil(t, m2)
-
-		// RequestsTotal still zero — exclusion held across multiple requests.
-		assert.Equal(t, int64(0), m2.RequestsTotal.Load(),
-			"hedge attempts still excluded from RequestsTotal under repeated hedging")
-
-		// Latency quantile populated by the hedge wins. This is the signal
-		// `upstream/registry.go:684` consumes for scoring; it MUST be alive
-		// for the "trust latency" design to work.
-		p90 := m2.GetResponseQuantiles().GetQuantile(0.9).Seconds()
-		assert.Greater(t, p90, 0.0, "rpc2's successful hedge latency must populate ResponseQuantiles")
-		assert.Less(t, p90, 1.0, "rpc2's quantile should reflect its actual fast latency, not the slow primary's")
 	})
 
 	// William's framing was "exclude hedges from incrementing either
@@ -1141,69 +1172,71 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 	// stays out of ErrorsTotal. Otherwise, slow-upstream hedges that
 	// happen to error out would still inflate the rate.
 	t.Run("HedgeFailsWithRealError_NotCountedAsError", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		// rpc1 primary: takes long enough that the hedge fires, then succeeds.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(200).
-			Delay(300 * time.Millisecond).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+			// rpc1 primary: takes long enough that the hedge fires, then succeeds.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				Delay(300 * time.Millisecond).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
 
-		// rpc2 hedge: fires after the delay, returns a server error.
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(500).
-			Delay(50 * time.Millisecond).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "error": map[string]interface{}{"code": -32000, "message": "boom"}})
+			// rpc2 hedge: fires after the delay, returns a server error.
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(500).
+				Delay(50 * time.Millisecond).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "error": map[string]interface{}{"code": -32000, "message": "boom"}})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(100 * time.Millisecond),
-			MaxCount: 1,
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(100 * time.Millisecond),
+				MaxCount: 1,
+			})
+
+			resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+			require.NoError(t, err, "primary should still win — hedge errored but primary's success aborts the race")
+			require.NotNil(t, resp)
+			jrr, jerr := resp.JsonRpcResponse()
+			require.NoError(t, jerr)
+			assert.Contains(t, jrr.GetResultString(), "0x1111")
+
+			time.Sleep(100 * time.Millisecond)
+
+			rpc1, rpc2 := getUpstreamPair(t, network)
+
+			// rpc1 (primary): one request, success.
+			m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
+			require.NotNil(t, m1)
+			assert.Equal(t, int64(1), m1.RequestsTotal.Load())
+			assert.Equal(t, int64(0), m1.ErrorsTotal.Load())
+
+			// rpc2 (hedge): hedge attempt that failed with a real error.
+			// Still excluded — this is the whole point of treating hedges as
+			// speculative fan-out rather than first-class attempts.
+			m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll)
+			if m2 != nil {
+				assert.Equal(t, int64(0), m2.RequestsTotal.Load(),
+					"rpc2's hedge attempt not in RequestsTotal even though it actually ran")
+				assert.Equal(t, int64(0), m2.ErrorsTotal.Load(),
+					"rpc2's hedge attempt's real 500 error must NOT pollute ErrorsTotal — hedges are excluded from both sides of the rate")
+			}
 		})
-
-		resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
-		require.NoError(t, err, "primary should still win — hedge errored but primary's success aborts the race")
-		require.NotNil(t, resp)
-		jrr, jerr := resp.JsonRpcResponse()
-		require.NoError(t, jerr)
-		assert.Contains(t, jrr.GetResultString(), "0x1111")
-
-		time.Sleep(100 * time.Millisecond)
-
-		rpc1, rpc2 := getUpstreamPair(t, network)
-
-		// rpc1 (primary): one request, success.
-		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
-		require.NotNil(t, m1)
-		assert.Equal(t, int64(1), m1.RequestsTotal.Load())
-		assert.Equal(t, int64(0), m1.ErrorsTotal.Load())
-
-		// rpc2 (hedge): hedge attempt that failed with a real error.
-		// Still excluded — this is the whole point of treating hedges as
-		// speculative fan-out rather than first-class attempts.
-		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll)
-		if m2 != nil {
-			assert.Equal(t, int64(0), m2.RequestsTotal.Load(),
-				"rpc2's hedge attempt not in RequestsTotal even though it actually ran")
-			assert.Equal(t, int64(0), m2.ErrorsTotal.Load(),
-				"rpc2's hedge attempt's real 500 error must NOT pollute ErrorsTotal — hedges are excluded from both sides of the rate")
-		}
 	})
 
 	// HedgeLoser_RanksBelowWinner: a canceled attempt must NOT feed
@@ -1217,166 +1250,170 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 	// hedge (40ms). The hedge fires at 80ms, wins; rpc1 is canceled
 	// somewhere around 120ms elapsed.
 	t.Run("HedgeLoser_RanksBelowWinner", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		// rpc1 primary: slow → consistently canceled.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(200).
-			Delay(1 * time.Second).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+			// rpc1 primary: slow → consistently canceled.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				Delay(1 * time.Second).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
 
-		// rpc2 hedge: fast → consistently wins.
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(200).
-			Delay(40 * time.Millisecond).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
+			// rpc2 hedge: fast → consistently wins.
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				Delay(40 * time.Millisecond).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(80 * time.Millisecond),
-			MaxCount: 1,
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(80 * time.Millisecond),
+				MaxCount: 1,
+			})
+
+			// rpc1 loses every race.
+			for i := 0; i < 5; i++ {
+				resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+				require.NoError(t, err)
+				require.NotNil(t, resp)
+			}
+			time.Sleep(200 * time.Millisecond)
+
+			rpc1, rpc2 := getUpstreamPair(t, network)
+			m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
+			require.NotNil(t, m1)
+
+			// rpc1's error rate stays clean — cancellation is not an upstream
+			// failure (the network just stopped waiting).
+			assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
+				"canceled primary attempts must NOT pollute ErrorsTotal")
+
+			// rpc1's real-latency sketch stays empty no matter how many
+			// hedge races it loses.
+			p70 := m1.GetResponseQuantiles().GetQuantile(0.70).Seconds()
+			assert.Equal(t, 0.0, p70,
+				"hedge-loser cancellations must NOT feed ResponseQuantiles")
+
+			// The policy ranks rpc1 by its cancellations (~120ms lower
+			// bounds), behind rpc2 (40ms), not ahead of it as an
+			// empty-sketch 0 s.
+			engine := policy.NewEngine(ctx, &log.Logger, "test", network.metricsTracker, policystdlib.Install, nil)
+			defer engine.Stop()
+			cfg := &common.SelectionPolicyConfig{
+				EvalInterval: common.Duration(0),
+				EvalTimeout:  common.Duration(time.Second),
+				EvalFunc:     `(upstreams) => upstreams.sortByScore(PREFER_FASTEST)`,
+				EvalScope:    common.EvalScopeNetworkMethod,
+			}
+			require.NoError(t, cfg.SetDefaults())
+			require.NoError(t, engine.RegisterNetwork(network.networkId, "", func() []common.Upstream {
+				return []common.Upstream{rpc1, rpc2}
+			}, cfg))
+			engine.GetOrdered(network.networkId, "eth_getBalance", "*")
+			policy.TickForTest(engine, network.networkId, "eth_getBalance")
+			assert.Equal(t, []string{"rpc2", "rpc1"},
+				idsFromUpstreams(engine.GetOrdered(network.networkId, "eth_getBalance", "*")),
+				"an upstream that loses every hedge race must rank below the winner")
 		})
-
-		// rpc1 loses every race.
-		for i := 0; i < 5; i++ {
-			resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
-			require.NoError(t, err)
-			require.NotNil(t, resp)
-		}
-		time.Sleep(200 * time.Millisecond)
-
-		rpc1, rpc2 := getUpstreamPair(t, network)
-		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
-		require.NotNil(t, m1)
-
-		// rpc1's error rate stays clean — cancellation is not an upstream
-		// failure (the network just stopped waiting).
-		assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
-			"canceled primary attempts must NOT pollute ErrorsTotal")
-
-		// rpc1's real-latency sketch stays empty no matter how many
-		// hedge races it loses.
-		p70 := m1.GetResponseQuantiles().GetQuantile(0.70).Seconds()
-		assert.Equal(t, 0.0, p70,
-			"hedge-loser cancellations must NOT feed ResponseQuantiles")
-
-		// The policy ranks rpc1 by its cancellations (~120ms lower
-		// bounds), behind rpc2 (40ms), not ahead of it as an
-		// empty-sketch 0 s.
-		engine := policy.NewEngine(ctx, &log.Logger, "test", network.metricsTracker, policystdlib.Install, nil)
-		defer engine.Stop()
-		cfg := &common.SelectionPolicyConfig{
-			EvalInterval: common.Duration(0),
-			EvalTimeout:  common.Duration(time.Second),
-			EvalFunc:     `(upstreams) => upstreams.sortByScore(PREFER_FASTEST)`,
-			EvalScope:    common.EvalScopeNetworkMethod,
-		}
-		require.NoError(t, cfg.SetDefaults())
-		require.NoError(t, engine.RegisterNetwork(network.networkId, "", func() []common.Upstream {
-			return []common.Upstream{rpc1, rpc2}
-		}, cfg))
-		engine.GetOrdered(network.networkId, "eth_getBalance", "*")
-		policy.TickForTest(engine, network.networkId, "eth_getBalance")
-		assert.Equal(t, []string{"rpc2", "rpc1"},
-			idsFromUpstreams(engine.GetOrdered(network.networkId, "eth_getBalance", "*")),
-			"an upstream that loses every hedge race must rank below the winner")
 	})
 
 	// MaxCount > 1 spawns multiple hedge attempts. Every one of them must
 	// stay excluded — not just the first.
 	t.Run("MultipleHedges_AllExcluded", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		// rpc1 primary: slow → loses.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(200).
-			Delay(2 * time.Second).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+			// rpc1 primary: slow → loses.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				Delay(2 * time.Second).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
 
-		// rpc2 hedge #1: slow-ish → loses to rpc3.
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(200).
-			Delay(1 * time.Second).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
+			// rpc2 hedge #1: slow-ish → loses to rpc3.
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				Delay(1 * time.Second).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
 
-		// rpc3 hedge #2: fast → wins.
-		gock.New("http://rpc3.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(200).
-			Delay(40 * time.Millisecond).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x3333"})
+			// rpc3 hedge #2: fast → wins.
+			gock.New("http://rpc3.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				Delay(40 * time.Millisecond).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x3333"})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupTestNetworkWithMultipleUpstreams(t, ctx, 3, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(80 * time.Millisecond),
-			MaxCount: 2,
+			network := setupTestNetworkWithMultipleUpstreams(t, ctx, 3, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(80 * time.Millisecond),
+				MaxCount: 2,
+			})
+
+			resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			jrr, jerr := resp.JsonRpcResponse()
+			require.NoError(t, jerr)
+			assert.Contains(t, jrr.GetResultString(), "0x3333", "rpc3's hedge should win")
+
+			time.Sleep(100 * time.Millisecond)
+
+			ups := network.upstreamsRegistry.GetAllUpstreams()
+			byID := map[string]*upstream.Upstream{}
+			for _, u := range ups {
+				byID[u.Id()] = u
+			}
+
+			// rpc1: primary → counts.
+			m1 := network.metricsTracker.GetUpstreamMethodMetrics(byID["rpc1"], "eth_getBalance", common.DataFinalityStateAll)
+			require.NotNil(t, m1)
+			assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "rpc1 primary counts")
+
+			// rpc2 and rpc3: BOTH hedges → both excluded.
+			m2 := network.metricsTracker.GetUpstreamMethodMetrics(byID["rpc2"], "eth_getBalance", common.DataFinalityStateAll)
+			if m2 != nil {
+				assert.Equal(t, int64(0), m2.RequestsTotal.Load(), "1st hedge excluded")
+			}
+			m3 := network.metricsTracker.GetUpstreamMethodMetrics(byID["rpc3"], "eth_getBalance", common.DataFinalityStateAll)
+			if m3 != nil {
+				assert.Equal(t, int64(0), m3.RequestsTotal.Load(), "2nd hedge also excluded")
+			}
 		})
-
-		resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-		jrr, jerr := resp.JsonRpcResponse()
-		require.NoError(t, jerr)
-		assert.Contains(t, jrr.GetResultString(), "0x3333", "rpc3's hedge should win")
-
-		time.Sleep(100 * time.Millisecond)
-
-		ups := network.upstreamsRegistry.GetAllUpstreams()
-		byID := map[string]*upstream.Upstream{}
-		for _, u := range ups {
-			byID[u.Id()] = u
-		}
-
-		// rpc1: primary → counts.
-		m1 := network.metricsTracker.GetUpstreamMethodMetrics(byID["rpc1"], "eth_getBalance", common.DataFinalityStateAll)
-		require.NotNil(t, m1)
-		assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "rpc1 primary counts")
-
-		// rpc2 and rpc3: BOTH hedges → both excluded.
-		m2 := network.metricsTracker.GetUpstreamMethodMetrics(byID["rpc2"], "eth_getBalance", common.DataFinalityStateAll)
-		if m2 != nil {
-			assert.Equal(t, int64(0), m2.RequestsTotal.Load(), "1st hedge excluded")
-		}
-		m3 := network.metricsTracker.GetUpstreamMethodMetrics(byID["rpc3"], "eth_getBalance", common.DataFinalityStateAll)
-		if m3 != nil {
-			assert.Equal(t, int64(0), m3.RequestsTotal.Load(), "2nd hedge also excluded")
-		}
 	})
 
 	// The reviewer's concern: "a client disconnecting mid-request will
@@ -1386,65 +1423,67 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 	// The bare ErrCodeEndpointRequestCanceled lives in the tracker's
 	// skip list, so no upstream is blamed for the client's behavior.
 	t.Run("ClientDisconnect_PrimaryNotPenalized", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		// Both upstreams are slow — the only way the request ends is the client cancel.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(200).
-			Delay(2 * time.Second).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(200).
-			Delay(2 * time.Second).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
+			// Both upstreams are slow — the only way the request ends is the client cancel.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				Delay(2 * time.Second).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				Delay(2 * time.Second).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
 
-		setupCtx, setupCancel := context.WithCancel(context.Background())
-		defer setupCancel()
-		network := setupTestNetworkWithHedgePolicy(t, setupCtx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(10 * time.Second), // hedge never fires in this test window
-			MaxCount: 1,
+			setupCtx, setupCancel := context.WithCancel(context.Background())
+			defer setupCancel()
+			network := setupTestNetworkWithHedgePolicy(t, setupCtx, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(10 * time.Second), // hedge never fires in this test window
+				MaxCount: 1,
+			})
+
+			// Mirror the real client-disconnect path: a WithCancel context the
+			// caller cancels mid-flight. WithTimeout would emit
+			// context.DeadlineExceeded instead, which maps to a *different*
+			// upstream error code (RequestTimeout) — not in the skip list, and
+			// not what a real HTTP client disconnect looks like.
+			reqCtx, reqCancel := context.WithCancel(setupCtx)
+			done := make(chan struct{})
+			go func() {
+				_, _ = network.Forward(reqCtx, common.NewNormalizedRequest(requestBytes))
+				close(done)
+			}()
+			time.Sleep(150 * time.Millisecond) // request is in-flight at rpc1
+			reqCancel()                        // client disconnects
+			<-done
+			time.Sleep(150 * time.Millisecond) // let recording paths complete
+
+			rpc1, _ := getUpstreamPair(t, network)
+			m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
+			require.NotNil(t, m1)
+			assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "primary attempt counted")
+			assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
+				"client disconnect must NOT count as an upstream failure — the upstream didn't do anything wrong")
+			// A client cancel says nothing about rpc1's speed: no latency
+			// lower bound reaches the policy view.
+			assert.Equal(t, time.Duration(0), m1.PolicyQuantiles([]float64{0.70})[0],
+				"client disconnect must NOT record a latency lower bound")
 		})
-
-		// Mirror the real client-disconnect path: a WithCancel context the
-		// caller cancels mid-flight. WithTimeout would emit
-		// context.DeadlineExceeded instead, which maps to a *different*
-		// upstream error code (RequestTimeout) — not in the skip list, and
-		// not what a real HTTP client disconnect looks like.
-		reqCtx, reqCancel := context.WithCancel(setupCtx)
-		done := make(chan struct{})
-		go func() {
-			_, _ = network.Forward(reqCtx, common.NewNormalizedRequest(requestBytes))
-			close(done)
-		}()
-		time.Sleep(150 * time.Millisecond) // request is in-flight at rpc1
-		reqCancel()                        // client disconnects
-		<-done
-		time.Sleep(150 * time.Millisecond) // let recording paths complete
-
-		rpc1, _ := getUpstreamPair(t, network)
-		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
-		require.NotNil(t, m1)
-		assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "primary attempt counted")
-		assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
-			"client disconnect must NOT count as an upstream failure — the upstream didn't do anything wrong")
-		// A client cancel says nothing about rpc1's speed: no latency
-		// lower bound reaches the policy view.
-		assert.Equal(t, time.Duration(0), m1.PolicyQuantiles([]float64{0.70})[0],
-			"client disconnect must NOT record a latency lower bound")
 	})
 
 	// The smoking-gun scenario from #878's description: under heavy
@@ -1464,81 +1503,83 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 	//      upstream quality across the fleet — neither suppressed nor
 	//      inflated by hedge bookkeeping.
 	t.Run("HeavyHedging_AggregateRatesReflectTruth", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		const totalRequests = 10
+			const totalRequests = 10
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		// rpc1: alternates between fast-success and slow (= loses hedge).
-		// We persist both mocks so any selection order works.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(200).
-			Delay(2 * time.Second). // slow → loses to hedge most of the time
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+			// rpc1: alternates between fast-success and slow (= loses hedge).
+			// We persist both mocks so any selection order works.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				Delay(2 * time.Second). // slow → loses to hedge most of the time
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
 
-		// rpc2: fast and reliable — wins hedge races.
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(200).
-			Delay(40 * time.Millisecond).
-			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
+			// rpc2: fast and reliable — wins hedge races.
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				Delay(40 * time.Millisecond).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(80 * time.Millisecond),
-			MaxCount: 1,
-		})
+			network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(80 * time.Millisecond),
+				MaxCount: 1,
+			})
 
-		successes := 0
-		for i := 0; i < totalRequests; i++ {
-			resp, _ := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
-			if resp != nil {
-				successes++
+			successes := 0
+			for i := 0; i < totalRequests; i++ {
+				resp, _ := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+				if resp != nil {
+					successes++
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		assert.Equal(t, totalRequests, successes, "every request succeeded somewhere")
-		time.Sleep(200 * time.Millisecond)
+			assert.Equal(t, totalRequests, successes, "every request succeeded somewhere")
+			time.Sleep(200 * time.Millisecond)
 
-		rpc1, rpc2 := getUpstreamPair(t, network)
-		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
-		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll)
-		require.NotNil(t, m1)
-		require.NotNil(t, m2)
+			rpc1, rpc2 := getUpstreamPair(t, network)
+			m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
+			m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll)
+			require.NotNil(t, m1)
+			require.NotNil(t, m2)
 
-		// Invariant 1: aggregate primary count == total requests.
-		// If hedge attempts were leaking into RequestsTotal we'd see > 10.
-		aggregateRequests := m1.RequestsTotal.Load() + m2.RequestsTotal.Load()
-		assert.Equal(t, int64(totalRequests), aggregateRequests,
-			"aggregate RequestsTotal across upstreams must equal the number of primary attempts (one per request) — hedge attempts must NOT leak in")
+			// Invariant 1: aggregate primary count == total requests.
+			// If hedge attempts were leaking into RequestsTotal we'd see > 10.
+			aggregateRequests := m1.RequestsTotal.Load() + m2.RequestsTotal.Load()
+			assert.Equal(t, int64(totalRequests), aggregateRequests,
+				"aggregate RequestsTotal across upstreams must equal the number of primary attempts (one per request) — hedge attempts must NOT leak in")
 
-		// Invariant 2: zero real errors here (both upstreams' mocks return 200).
-		// All "failures" in the old logic would have been cancellations from
-		// hedge-wins. With the new logic, those don't count.
-		aggregateErrors := m1.ErrorsTotal.Load() + m2.ErrorsTotal.Load()
-		assert.Equal(t, int64(0), aggregateErrors,
-			"no upstream errored — cancellations from hedge-wins must NOT pollute ErrorsTotal")
+			// Invariant 2: zero real errors here (both upstreams' mocks return 200).
+			// All "failures" in the old logic would have been cancellations from
+			// hedge-wins. With the new logic, those don't count.
+			aggregateErrors := m1.ErrorsTotal.Load() + m2.ErrorsTotal.Load()
+			assert.Equal(t, int64(0), aggregateErrors,
+				"no upstream errored — cancellations from hedge-wins must NOT pollute ErrorsTotal")
 
-		// Invariant 3: latency signal preserved — wherever requests landed,
-		// successful responses populated the quantile.
-		p90Total := m1.GetResponseQuantiles().GetQuantile(0.9).Seconds() +
-			m2.GetResponseQuantiles().GetQuantile(0.9).Seconds()
-		assert.Greater(t, p90Total, 0.0,
-			"successful responses populate ResponseQuantiles — scoring's latency signal is alive")
+			// Invariant 3: latency signal preserved — wherever requests landed,
+			// successful responses populated the quantile.
+			p90Total := m1.GetResponseQuantiles().GetQuantile(0.9).Seconds() +
+				m2.GetResponseQuantiles().GetQuantile(0.9).Seconds()
+			assert.Greater(t, p90Total, 0.0,
+				"successful responses populate ResponseQuantiles — scoring's latency signal is alive")
+		})
 	})
 }
 
@@ -1749,66 +1790,68 @@ func TestNetwork_LongTermHedgingDynamics_PromotesFasterUpstream(t *testing.T) {
 // (its goroutine wasn't fully unwound before the parent context cancellation
 // propagated). The late response must NOT pollute the tracker counters.
 func TestNetwork_LatePrimaryResponseAfterHedgeWin_NoDoubleCounting(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-	// rpc1: slow → hedge fires, rpc1 gets cancelled mid-flight.
-	gock.New("http://rpc1.localhost").
-		Post("").
-		Filter(func(r *http.Request) bool {
-			return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-		}).
-		Persist().
-		Reply(200).
-		Delay(500 * time.Millisecond).
-		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+		// rpc1: slow → hedge fires, rpc1 gets cancelled mid-flight.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Persist().
+			Reply(200).
+			Delay(500 * time.Millisecond).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
 
-	// rpc2: fast → wins hedge.
-	gock.New("http://rpc2.localhost").
-		Post("").
-		Filter(func(r *http.Request) bool {
-			return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-		}).
-		Persist().
-		Reply(200).
-		Delay(40 * time.Millisecond).
-		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
+		// rpc2: fast → wins hedge.
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Persist().
+			Reply(200).
+			Delay(40 * time.Millisecond).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-		Delay:    common.NewStaticDuration(80 * time.Millisecond),
-		MaxCount: 1,
+		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+			Delay:    common.NewStaticDuration(80 * time.Millisecond),
+			MaxCount: 1,
+		})
+
+		resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+		require.NoError(t, err)
+		jrr, _ := resp.JsonRpcResponse()
+		require.Contains(t, jrr.GetResultString(), "0x2222", "hedge winner returned")
+
+		// Wait LONGER than the slow primary's nominal completion time so that any
+		// late "ghost" bookkeeping would have a chance to fire.
+		time.Sleep(700 * time.Millisecond)
+
+		rpc1, rpc2 := getUpstreamPair(t, network)
+		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
+		require.NotNil(t, m1)
+		// rpc1 was the primary attempt → exactly one RequestsTotal tick. The
+		// cancellation is skipped at both layers. If the late goroutine fired
+		// any additional recording paths, we'd see > 1 here.
+		assert.Equal(t, int64(1), m1.RequestsTotal.Load(),
+			"rpc1's late response after cancellation must not trigger a second RequestsTotal tick")
+		assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
+			"rpc1's cancellation is not an error; a late successful response after cancel also shouldn't dirty anything")
+
+		if m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll); m2 != nil {
+			assert.Equal(t, int64(0), m2.RequestsTotal.Load(), "rpc2 hedge stayed excluded")
+			assert.Equal(t, int64(0), m2.ErrorsTotal.Load())
+		}
 	})
-
-	resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
-	require.NoError(t, err)
-	jrr, _ := resp.JsonRpcResponse()
-	require.Contains(t, jrr.GetResultString(), "0x2222", "hedge winner returned")
-
-	// Wait LONGER than the slow primary's nominal completion time so that any
-	// late "ghost" bookkeeping would have a chance to fire.
-	time.Sleep(700 * time.Millisecond)
-
-	rpc1, rpc2 := getUpstreamPair(t, network)
-	m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
-	require.NotNil(t, m1)
-	// rpc1 was the primary attempt → exactly one RequestsTotal tick. The
-	// cancellation is skipped at both layers. If the late goroutine fired
-	// any additional recording paths, we'd see > 1 here.
-	assert.Equal(t, int64(1), m1.RequestsTotal.Load(),
-		"rpc1's late response after cancellation must not trigger a second RequestsTotal tick")
-	assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
-		"rpc1's cancellation is not an error; a late successful response after cancel also shouldn't dirty anything")
-
-	if m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll); m2 != nil {
-		assert.Equal(t, int64(0), m2.RequestsTotal.Load(), "rpc2 hedge stayed excluded")
-		assert.Equal(t, int64(0), m2.ErrorsTotal.Load())
-	}
 }
 
 func getUpstreamPair(t *testing.T, network *Network) (rpc1, rpc2 *upstream.Upstream) {

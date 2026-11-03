@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -588,111 +589,115 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 
 func TestUpstream_TimeoutPolicy(t *testing.T) {
 	t.Run("UpstreamLevelFixedTimeout_ExceededWrapsAsFailsafeTimeout", func(t *testing.T) {
-		// Verifies the unified context.WithTimeoutCause path also fires at the
-		// upstream scope (not just network scope).
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			// Verifies the unified context.WithTimeoutCause path also fires at the
+			// upstream scope (not just network scope).
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Reply(200).
-			Delay(2 * time.Second).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x1111",
-			})
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		network := setupTestNetworkWithUpstreamTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
-			Duration: common.NewStaticDuration(150 * time.Millisecond),
-		})
-
-		req := common.NewNormalizedRequest(requestBytes)
-		_, err := network.Forward(ctx, req)
-
-		require.Error(t, err)
-		assert.True(t,
-			common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded),
-			"expected upstream-level timeout to wrap as ErrFailsafeTimeoutExceeded, got: %v", err,
-		)
-	})
-
-	t.Run("UpstreamLevelQuantileTimeout_HistogramEmits", func(t *testing.T) {
-		// Verifies that NewTimeoutFunc emits erpc_network_timeout_duration_seconds
-		// when used at the upstream scope (not only network scope).
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		for i := 0; i < 10; i++ {
 			gock.New("http://rpc1.localhost").
 				Post("").
 				Filter(func(r *http.Request) bool {
 					body := util.SafeReadBody(r)
 					return strings.Contains(body, "eth_getBalance")
 				}).
-				Times(1).
 				Reply(200).
-				Delay(time.Duration(30+i*5) * time.Millisecond).
+				Delay(2 * time.Second).
 				JSON(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      1,
 					"result":  "0x1111",
 				})
-		}
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Reply(200).
-			Delay(20 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x2222",
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupTestNetworkWithUpstreamTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
+				Duration: common.NewStaticDuration(150 * time.Millisecond),
 			})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			req := common.NewNormalizedRequest(requestBytes)
+			_, err := network.Forward(ctx, req)
 
-		network := setupTestNetworkWithUpstreamTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
-			Duration: &common.AdaptiveDuration{
-				Base:     common.Duration(1 * time.Second),
-				Quantile: 0.9,
-				Min:      common.Duration(200 * time.Millisecond),
-				Max:      common.Duration(5 * time.Second),
-			},
+			require.Error(t, err)
+			assert.True(t,
+				common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded),
+				"expected upstream-level timeout to wrap as ErrFailsafeTimeoutExceeded, got: %v", err,
+			)
 		})
+	})
 
-		for i := 0; i < 10; i++ {
+	t.Run("UpstreamLevelQuantileTimeout_HistogramEmits", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			// Verifies that NewTimeoutFunc emits erpc_network_timeout_duration_seconds
+			// when used at the upstream scope (not only network scope).
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			for i := 0; i < 10; i++ {
+				gock.New("http://rpc1.localhost").
+					Post("").
+					Filter(func(r *http.Request) bool {
+						body := util.SafeReadBody(r)
+						return strings.Contains(body, "eth_getBalance")
+					}).
+					Times(1).
+					Reply(200).
+					Delay(time.Duration(30+i*5) * time.Millisecond).
+					JSON(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"result":  "0x1111",
+					})
+			}
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Reply(200).
+				Delay(20 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x2222",
+				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupTestNetworkWithUpstreamTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
+				Duration: &common.AdaptiveDuration{
+					Base:     common.Duration(1 * time.Second),
+					Quantile: 0.9,
+					Min:      common.Duration(200 * time.Millisecond),
+					Max:      common.Duration(5 * time.Second),
+				},
+			})
+
+			for i := 0; i < 10; i++ {
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
+				resp, err := network.Forward(ctx, req)
+				require.NoError(t, err)
+				resp.Release()
+			}
+
+			before := testutilCounterValue(t)
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
 			resp, err := network.Forward(ctx, req)
 			require.NoError(t, err)
-			resp.Release()
-		}
+			require.NotNil(t, resp)
+			after := testutilCounterValue(t)
 
-		before := testutilCounterValue(t)
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
-		resp, err := network.Forward(ctx, req)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-		after := testutilCounterValue(t)
-
-		assert.Greater(t, after, before,
-			"histogram should have observed at least one sample after the 11th upstream-scoped dynamic-timeout request")
+			assert.Greater(t, after, before,
+				"histogram should have observed at least one sample after the 11th upstream-scoped dynamic-timeout request")
+		})
 	})
 }
 

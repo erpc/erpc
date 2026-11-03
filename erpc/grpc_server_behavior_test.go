@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/blockchain-data-standards/manifesto/evm"
@@ -308,49 +309,61 @@ func TestGrpcServerBehavior_ExtractRequestInput(t *testing.T) {
 	}
 
 	t.Run("no incoming metadata", func(t *testing.T) {
-		_, err := gs.extractRequestInput(context.Background(), "eth_chainId")
-		assert.Equal(t, codes.InvalidArgument, status.Code(err))
-		assert.Contains(t, status.Convert(err).Message(), "missing metadata")
+		synctest.Test(t, func(t *testing.T) {
+			_, err := gs.extractRequestInput(context.Background(), "eth_chainId")
+			assert.Equal(t, codes.InvalidArgument, status.Code(err))
+			assert.Contains(t, status.Convert(err).Message(), "missing metadata")
+		})
 	})
 	t.Run("project required", func(t *testing.T) {
-		_, err := gs.extractRequestInput(peerCtx(metadata.Pairs("x-erpc-chain-id", "1")), "eth_chainId")
-		assert.Equal(t, codes.InvalidArgument, status.Code(err))
-		assert.Contains(t, status.Convert(err).Message(), "x-erpc-project")
+		synctest.Test(t, func(t *testing.T) {
+			_, err := gs.extractRequestInput(peerCtx(metadata.Pairs("x-erpc-chain-id", "1")), "eth_chainId")
+			assert.Equal(t, codes.InvalidArgument, status.Code(err))
+			assert.Contains(t, status.Convert(err).Message(), "x-erpc-project")
+		})
 	})
 	t.Run("chain required", func(t *testing.T) {
-		_, err := gs.extractRequestInput(peerCtx(metadata.Pairs("x-erpc-project", "p")), "eth_chainId")
-		assert.Equal(t, codes.InvalidArgument, status.Code(err))
-		assert.Contains(t, status.Convert(err).Message(), "x-erpc-chain-id")
+		synctest.Test(t, func(t *testing.T) {
+			_, err := gs.extractRequestInput(peerCtx(metadata.Pairs("x-erpc-project", "p")), "eth_chainId")
+			assert.Equal(t, codes.InvalidArgument, status.Code(err))
+			assert.Contains(t, status.Convert(err).Message(), "x-erpc-chain-id")
+		})
 	})
 	t.Run("basic auth without colon", func(t *testing.T) {
-		md := metadata.Pairs("x-erpc-project", "p", "x-erpc-chain-id", "1",
-			"authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("nocolon")))
-		_, err := gs.extractRequestInput(peerCtx(md), "eth_chainId")
-		assert.Equal(t, codes.Unauthenticated, status.Code(err))
+		synctest.Test(t, func(t *testing.T) {
+			md := metadata.Pairs("x-erpc-project", "p", "x-erpc-chain-id", "1",
+				"authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("nocolon")))
+			_, err := gs.extractRequestInput(peerCtx(md), "eth_chainId")
+			assert.Equal(t, codes.Unauthenticated, status.Code(err))
+		})
 	})
 	t.Run("defaults and passthrough fields", func(t *testing.T) {
-		md := metadata.Pairs("x-erpc-project", "p", "x-erpc-chain-id", "42",
-			"user-agent", "bds-client/1.0", "x-erpc-user-id", "alice", "x-erpc-secret-token", "s3cret")
-		in, err := gs.extractRequestInput(peerCtx(md), "eth_getLogs")
-		require.NoError(t, err)
-		assert.Equal(t, "p", in.ProjectId)
-		assert.Equal(t, "42", in.ChainId)
-		assert.Equal(t, "evm", in.Architecture, "architecture defaults to evm")
-		assert.Equal(t, "198.51.100.7", in.ClientIP)
-		assert.Contains(t, in.UserAgent, "bds-client/1.0")
-		assert.Equal(t, "alice", in.TrustedUserId)
-		require.NotNil(t, in.AuthPayload)
-		assert.Equal(t, common.AuthTypeSecret, in.AuthPayload.Type)
-		assert.Equal(t, "eth_getLogs", in.AuthPayload.Method)
+		synctest.Test(t, func(t *testing.T) {
+			md := metadata.Pairs("x-erpc-project", "p", "x-erpc-chain-id", "42",
+				"user-agent", "bds-client/1.0", "x-erpc-user-id", "alice", "x-erpc-secret-token", "s3cret")
+			in, err := gs.extractRequestInput(peerCtx(md), "eth_getLogs")
+			require.NoError(t, err)
+			assert.Equal(t, "p", in.ProjectId)
+			assert.Equal(t, "42", in.ChainId)
+			assert.Equal(t, "evm", in.Architecture, "architecture defaults to evm")
+			assert.Equal(t, "198.51.100.7", in.ClientIP)
+			assert.Contains(t, in.UserAgent, "bds-client/1.0")
+			assert.Equal(t, "alice", in.TrustedUserId)
+			require.NotNil(t, in.AuthPayload)
+			assert.Equal(t, common.AuthTypeSecret, in.AuthPayload.Type)
+			assert.Equal(t, "eth_getLogs", in.AuthPayload.Method)
+		})
 	})
 	t.Run("explicit architecture and bearer", func(t *testing.T) {
-		md := metadata.Pairs("x-erpc-project", "p", "x-erpc-chain-id", "1",
-			"x-erpc-architecture", "svm", "authorization", "Bearer tok")
-		in, err := gs.extractRequestInput(peerCtx(md), "eth_chainId")
-		require.NoError(t, err)
-		assert.Equal(t, "svm", in.Architecture)
-		assert.Equal(t, common.AuthTypeJwt, in.AuthPayload.Type)
-		assert.Equal(t, "tok", in.AuthPayload.Jwt.Token)
+		synctest.Test(t, func(t *testing.T) {
+			md := metadata.Pairs("x-erpc-project", "p", "x-erpc-chain-id", "1",
+				"x-erpc-architecture", "svm", "authorization", "Bearer tok")
+			in, err := gs.extractRequestInput(peerCtx(md), "eth_chainId")
+			require.NoError(t, err)
+			assert.Equal(t, "svm", in.Architecture)
+			assert.Equal(t, common.AuthTypeJwt, in.AuthPayload.Type)
+			assert.Equal(t, "tok", in.AuthPayload.Jwt.Token)
+		})
 	})
 }
 
@@ -757,28 +770,36 @@ func TestGrpcServerBehavior_PanicRecovery(t *testing.T) {
 	gs := grpcBehaviorBareServer(t, nil, nil)
 
 	t.Run("unary panic is internal", func(t *testing.T) {
-		resp, err := gs.panicRecoveryUnary()(context.Background(), "req", &grpc.UnaryServerInfo{FullMethod: "/x/Y"},
-			func(ctx context.Context, req interface{}) (interface{}, error) { panic("boom") })
-		assert.Nil(t, resp)
-		assert.Equal(t, codes.Internal, status.Code(err))
-		assert.Equal(t, "internal server error", status.Convert(err).Message())
+		synctest.Test(t, func(t *testing.T) {
+			resp, err := gs.panicRecoveryUnary()(context.Background(), "req", &grpc.UnaryServerInfo{FullMethod: "/x/Y"},
+				func(ctx context.Context, req interface{}) (interface{}, error) { panic("boom") })
+			assert.Nil(t, resp)
+			assert.Equal(t, codes.Internal, status.Code(err))
+			assert.Equal(t, "internal server error", status.Convert(err).Message())
+		})
 	})
 	t.Run("unary passthrough", func(t *testing.T) {
-		resp, err := gs.panicRecoveryUnary()(context.Background(), "req", &grpc.UnaryServerInfo{},
-			func(ctx context.Context, req interface{}) (interface{}, error) { return req.(string) + "-ok", nil })
-		require.NoError(t, err)
-		assert.Equal(t, "req-ok", resp)
+		synctest.Test(t, func(t *testing.T) {
+			resp, err := gs.panicRecoveryUnary()(context.Background(), "req", &grpc.UnaryServerInfo{},
+				func(ctx context.Context, req interface{}) (interface{}, error) { return req.(string) + "-ok", nil })
+			require.NoError(t, err)
+			assert.Equal(t, "req-ok", resp)
+		})
 	})
 	t.Run("stream panic is internal", func(t *testing.T) {
-		err := gs.panicRecoveryStream()(nil, nil, &grpc.StreamServerInfo{FullMethod: "/x/Z"},
-			func(srv interface{}, ss grpc.ServerStream) error { panic(errors.New("boom")) })
-		assert.Equal(t, codes.Internal, status.Code(err))
+		synctest.Test(t, func(t *testing.T) {
+			err := gs.panicRecoveryStream()(nil, nil, &grpc.StreamServerInfo{FullMethod: "/x/Z"},
+				func(srv interface{}, ss grpc.ServerStream) error { panic(errors.New("boom")) })
+			assert.Equal(t, codes.Internal, status.Code(err))
+		})
 	})
 	t.Run("stream passthrough keeps the handler error", func(t *testing.T) {
-		want := status.Error(codes.Aborted, "stop")
-		err := gs.panicRecoveryStream()(nil, nil, &grpc.StreamServerInfo{},
-			func(srv interface{}, ss grpc.ServerStream) error { return want })
-		assert.Equal(t, want, err)
+		synctest.Test(t, func(t *testing.T) {
+			want := status.Error(codes.Aborted, "stop")
+			err := gs.panicRecoveryStream()(nil, nil, &grpc.StreamServerInfo{},
+				func(srv interface{}, ss grpc.ServerStream) error { return want })
+			assert.Equal(t, want, err)
+		})
 	})
 }
 
@@ -819,12 +840,14 @@ func TestGrpcServerBehavior_GrpcStatusOf(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := grpcStatusOf(tc.err)
-			st, ok := status.FromError(got)
-			require.True(t, ok)
-			assert.Equal(t, tc.want, st.Code())
-			// Details are a map, so compare only the message head.
-			assert.Equal(t, strings.SplitN(tc.err.Error(), " -> ", 2)[0], strings.SplitN(st.Message(), " -> ", 2)[0])
+			synctest.Test(t, func(t *testing.T) {
+				got := grpcStatusOf(tc.err)
+				st, ok := status.FromError(got)
+				require.True(t, ok)
+				assert.Equal(t, tc.want, st.Code())
+				// Details are a map, so compare only the message head.
+				assert.Equal(t, strings.SplitN(tc.err.Error(), " -> ", 2)[0], strings.SplitN(st.Message(), " -> ", 2)[0])
+			})
 		})
 	}
 	assert.NoError(t, grpcStatusOf(nil))
@@ -855,7 +878,9 @@ func TestGrpcServerBehavior_ClientIP(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, gs.grpcClientIP(tc.ctx, tc.md))
+			synctest.Test(t, func(t *testing.T) {
+				assert.Equal(t, tc.want, gs.grpcClientIP(tc.ctx, tc.md))
+			})
 		})
 	}
 
@@ -895,77 +920,87 @@ func TestGrpcServerBehavior_SharesHttpV4(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, grpcSharesHttpV4(tc.cfg))
+			synctest.Test(t, func(t *testing.T) {
+				assert.Equal(t, tc.want, grpcSharesHttpV4(tc.cfg))
+			})
 		})
 	}
 }
 
 func TestGrpcServerBehavior_NewAndStart(t *testing.T) {
 	t.Run("reflection on by default", func(t *testing.T) {
-		gs := grpcBehaviorBareServer(t, nil, nil)
-		info := gs.server.GetServiceInfo()
-		assert.Contains(t, info, "grpc.reflection.v1.ServerReflection")
-		assert.Contains(t, info, "bds.evm.RPCQueryService")
-		assert.Contains(t, info, "bds.evm.QueryService")
-		assert.Contains(t, info, "bds.evm.StreamService")
+		synctest.Test(t, func(t *testing.T) {
+			gs := grpcBehaviorBareServer(t, nil, nil)
+			info := gs.server.GetServiceInfo()
+			assert.Contains(t, info, "grpc.reflection.v1.ServerReflection")
+			assert.Contains(t, info, "bds.evm.RPCQueryService")
+			assert.Contains(t, info, "bds.evm.QueryService")
+			assert.Contains(t, info, "bds.evm.StreamService")
+		})
 	})
 
 	t.Run("unreadable TLS files fail construction", func(t *testing.T) {
-		_, err := NewGrpcServer(context.Background(), &log.Logger, &common.ServerConfig{
-			GrpcMaxRecvMsgSize: util.IntPtr(1 << 20),
-			GrpcMaxSendMsgSize: util.IntPtr(1 << 20),
-			TLS:                &common.TLSConfig{Enabled: true, CertFile: t.TempDir() + "/missing.crt", KeyFile: t.TempDir() + "/missing.key"},
-		}, nil)
-		assert.Error(t, err)
+		synctest.Test(t, func(t *testing.T) {
+			_, err := NewGrpcServer(context.Background(), &log.Logger, &common.ServerConfig{
+				GrpcMaxRecvMsgSize: util.IntPtr(1 << 20),
+				GrpcMaxSendMsgSize: util.IntPtr(1 << 20),
+				TLS:                &common.TLSConfig{Enabled: true, CertFile: t.TempDir() + "/missing.crt", KeyFile: t.TempDir() + "/missing.key"},
+			}, nil)
+			assert.Error(t, err)
+		})
 	})
 
 	t.Run("start fails on an occupied port", func(t *testing.T) {
-		busy, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		defer busy.Close()
-		host, port := "127.0.0.1", busy.Addr().(*net.TCPAddr).Port
-		gs, err := NewGrpcServer(context.Background(), &log.Logger, &common.ServerConfig{
-			GrpcMaxRecvMsgSize: util.IntPtr(1 << 20), GrpcMaxSendMsgSize: util.IntPtr(1 << 20),
-			GrpcHostV4: &host, GrpcPortV4: &port,
-		}, nil)
-		require.NoError(t, err)
-		err = gs.Start(&log.Logger)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), fmt.Sprintf("failed to listen on 127.0.0.1:%d", port))
+		synctest.Test(t, func(t *testing.T) {
+			busy, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			defer busy.Close()
+			host, port := "127.0.0.1", busy.Addr().(*net.TCPAddr).Port
+			gs, err := NewGrpcServer(context.Background(), &log.Logger, &common.ServerConfig{
+				GrpcMaxRecvMsgSize: util.IntPtr(1 << 20), GrpcMaxSendMsgSize: util.IntPtr(1 << 20),
+				GrpcHostV4: &host, GrpcPortV4: &port,
+			}, nil)
+			require.NoError(t, err)
+			err = gs.Start(&log.Logger)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), fmt.Sprintf("failed to listen on 127.0.0.1:%d", port))
+		})
 	})
 
 	t.Run("serves until the app context ends", func(t *testing.T) {
-		probe, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		host, port := "127.0.0.1", probe.Addr().(*net.TCPAddr).Port
-		require.NoError(t, probe.Close())
+		synctest.Test(t, func(t *testing.T) {
+			probe, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			host, port := "127.0.0.1", probe.Addr().(*net.TCPAddr).Port
+			require.NoError(t, probe.Close())
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		gs, err := NewGrpcServer(ctx, &log.Logger, &common.ServerConfig{
-			GrpcMaxRecvMsgSize: util.IntPtr(1 << 20), GrpcMaxSendMsgSize: util.IntPtr(1 << 20),
-			GrpcHostV4: &host, GrpcPortV4: &port,
-		}, nil)
-		require.NoError(t, err)
-		done := make(chan error, 1)
-		go func() { done <- gs.Start(&log.Logger) }()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			gs, err := NewGrpcServer(ctx, &log.Logger, &common.ServerConfig{
+				GrpcMaxRecvMsgSize: util.IntPtr(1 << 20), GrpcMaxSendMsgSize: util.IntPtr(1 << 20),
+				GrpcHostV4: &host, GrpcPortV4: &port,
+			}, nil)
+			require.NoError(t, err)
+			done := make(chan error, 1)
+			go func() { done <- gs.Start(&log.Logger) }()
 
-		addr := fmt.Sprintf("127.0.0.1:%d", port)
-		require.Eventually(t, func() bool {
-			c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
-			if err != nil {
-				return false
+			addr := fmt.Sprintf("127.0.0.1:%d", port)
+			require.Eventually(t, func() bool {
+				c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+				if err != nil {
+					return false
+				}
+				_ = c.Close()
+				return true
+			}, 5*time.Second, 10*time.Millisecond)
+
+			cancel()
+			select {
+			case err := <-done:
+				assert.NoError(t, err, "graceful stop ends Serve cleanly")
+			case <-time.After(5 * time.Second):
+				t.Fatal("Start did not return after the app context ended")
 			}
-			_ = c.Close()
-			return true
-		}, 5*time.Second, 10*time.Millisecond)
-
-		cancel()
-		select {
-		case err := <-done:
-			assert.NoError(t, err, "graceful stop ends Serve cleanly")
-		case <-time.After(5 * time.Second):
-			t.Fatal("Start did not return after the app context ended")
-		}
+		})
 	})
 }

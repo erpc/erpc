@@ -3,6 +3,7 @@ package thirdparty
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -31,39 +32,45 @@ func TestThirdwebVendor_SupportsNetwork(t *testing.T) {
 	}
 	for _, c := range probeCases {
 		t.Run(c.name, func(t *testing.T) {
-			util.ResetGock()
-			defer util.ResetGock()
-			gockProbeReply("https://8453.rpc.thirdweb.com", "/cid", c.body)
+			synctest.Test(t, func(t *testing.T) {
+				util.ResetGock()
+				defer util.ResetGock()
+				gockProbeReply("https://8453.rpc.thirdweb.com", "/cid", c.body)
 
-			ok, err := CreateThirdwebVendor().SupportsNetwork(ctx, &logger, settings, "evm:8453")
-			if c.wantErr {
-				assert.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-			assert.Equal(t, c.want, ok)
+				ok, err := CreateThirdwebVendor().SupportsNetwork(ctx, &logger, settings, "evm:8453")
+				if c.wantErr {
+					assert.Error(t, err)
+				} else {
+					require.NoError(t, err)
+				}
+				assert.Equal(t, c.want, ok)
+			})
 		})
 	}
 
 	t.Run("cached client reused", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		gockProbeReply("https://8453.rpc.thirdweb.com", "/cid", `{"jsonrpc":"2.0","id":1,"result":"0x2105"}`)
-		v := CreateThirdwebVendor()
-		for range 2 {
-			ok, err := v.SupportsNetwork(ctx, &logger, settings, "evm:8453")
-			require.NoError(t, err)
-			assert.True(t, ok)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			gockProbeReply("https://8453.rpc.thirdweb.com", "/cid", `{"jsonrpc":"2.0","id":1,"result":"0x2105"}`)
+			v := CreateThirdwebVendor()
+			for range 2 {
+				ok, err := v.SupportsNetwork(ctx, &logger, settings, "evm:8453")
+				require.NoError(t, err)
+				assert.True(t, ok)
+			}
+		})
 	})
 
 	t.Run("unreachable endpoint", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		gock.New("https://8453.rpc.thirdweb.com").Post("/cid").Persist().ReplyError(assert.AnError)
-		ok, err := CreateThirdwebVendor().SupportsNetwork(ctx, &logger, settings, "evm:8453")
-		assert.Error(t, err)
-		assert.False(t, ok)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			gock.New("https://8453.rpc.thirdweb.com").Post("/cid").Persist().ReplyError(assert.AnError)
+			ok, err := CreateThirdwebVendor().SupportsNetwork(ctx, &logger, settings, "evm:8453")
+			assert.Error(t, err)
+			assert.False(t, ok)
+		})
 	})
 
 	t.Run("non-evm network", func(t *testing.T) {

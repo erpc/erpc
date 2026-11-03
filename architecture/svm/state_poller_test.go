@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -975,44 +976,45 @@ func TestSvmStatePoller_Poll_TrafficGate_PartialFreshnessStillPollsSlots(t *test
 // resets the counter so gating resumes afterwards.
 func TestSvmStatePoller_Poll_TrafficGate_SkipCapForcesFullPoll(t *testing.T) {
 	t.Parallel()
-	up := newScriptedUpstream()
-	scriptAllProbes(up)
-	p := newPollerWithUpstream(t, up)
 
-	// Wide enough that a loaded -race run cannot age the stamps made right
-	// before each Poll out of the gate window.
-	const debounce = 400 * time.Millisecond
-	p.SetDebounceInterval(debounce)
+	synctest.Test(t, func(t *testing.T) {
+		up := newScriptedUpstream()
+		scriptAllProbes(up)
+		p := newPollerWithUpstream(t, up)
 
-	// Expected cumulative getSlot fetches after the i-th poll: polls 1-4 are
-	// gated, poll 5 hits the skip cap (maxConsecutiveSlotPollSkips=4) and
-	// forces a full poll, poll 6 may gate again (counter reset by poll 5).
-	wantSlotCalls := []int{0, 0, 0, 0, 1, 1}
+		const debounce = 400 * time.Millisecond
+		p.SetDebounceInterval(debounce)
 
-	for i, want := range wantSlotCalls {
-		if i > 0 {
-			// Clear the whole-poll debounce so every iteration actually polls.
-			time.Sleep(debounce + 40*time.Millisecond)
-		}
-		// Re-stamp external freshness right before each poll so both views are
-		// always well inside the debounce window.
-		p.SuggestLatestSlot(int64(2000 + i))
-		p.SuggestFinalizedSlot(int64(1990 + i))
-		require.NoError(t, p.Poll(context.Background()))
+		// Expected cumulative getSlot fetches after the i-th poll: polls 1-4 are
+		// gated, poll 5 hits the skip cap (maxConsecutiveSlotPollSkips=4) and
+		// forces a full poll, poll 6 may gate again (counter reset by poll 5).
+		wantSlotCalls := []int{0, 0, 0, 0, 1, 1}
 
-		// Guard against a vacuous pass: getMaxShredInsertSlot runs on every poll
-		// that runs, so a debounce-dropped iteration is caught here, not
-		// mistaken for a gated one.
-		if got := up.callCount("getMaxShredInsertSlot"); got != i+1 {
-			t.Fatalf("poll %d did not run: getMaxShredInsertSlot=%d, want %d", i+1, got, i+1)
+		for i, want := range wantSlotCalls {
+			if i > 0 {
+				// Clear the whole-poll debounce so every iteration actually polls.
+				time.Sleep(debounce + 40*time.Millisecond)
+			}
+			// Re-stamp external freshness right before each poll so both views are
+			// always well inside the debounce window.
+			p.SuggestLatestSlot(int64(2000 + i))
+			p.SuggestFinalizedSlot(int64(1990 + i))
+			require.NoError(t, p.Poll(context.Background()))
+
+			// Guard against a vacuous pass: getMaxShredInsertSlot runs on every poll
+			// that runs, so a debounce-dropped iteration is caught here, not
+			// mistaken for a gated one.
+			if got := up.callCount("getMaxShredInsertSlot"); got != i+1 {
+				t.Fatalf("poll %d did not run: getMaxShredInsertSlot=%d, want %d", i+1, got, i+1)
+			}
+			if got := up.callCount("getSlot:processed"); got != want {
+				t.Fatalf("after poll %d: getSlot(processed)=%d, want %d", i+1, got, want)
+			}
+			if got := up.callCount("getSlot:finalized"); got != want {
+				t.Fatalf("after poll %d: getSlot(finalized)=%d, want %d", i+1, got, want)
+			}
 		}
-		if got := up.callCount("getSlot:processed"); got != want {
-			t.Fatalf("after poll %d: getSlot(processed)=%d, want %d", i+1, got, want)
-		}
-		if got := up.callCount("getSlot:finalized"); got != want {
-			t.Fatalf("after poll %d: getSlot(finalized)=%d, want %d", i+1, got, want)
-		}
-	}
+	})
 }
 
 // TestSvmStatePoller_Poll_TrafficGate_SelfSuggestionsDoNotOpenGate: a full poll
@@ -1020,26 +1022,29 @@ func TestSvmStatePoller_Poll_TrafficGate_SkipCapForcesFullPoll(t *testing.T) {
 // traffic — the next eligible poll must still fetch both slots.
 func TestSvmStatePoller_Poll_TrafficGate_SelfSuggestionsDoNotOpenGate(t *testing.T) {
 	t.Parallel()
-	up := newScriptedUpstream()
-	scriptAllProbes(up)
-	p := newPollerWithUpstream(t, up)
 
-	const debounce = 100 * time.Millisecond
-	p.SetDebounceInterval(debounce)
+	synctest.Test(t, func(t *testing.T) {
+		up := newScriptedUpstream()
+		scriptAllProbes(up)
+		p := newPollerWithUpstream(t, up)
 
-	require.NoError(t, p.Poll(context.Background())) // full poll: updates slots internally
-	time.Sleep(debounce + 40*time.Millisecond)       // clear the whole-poll debounce
-	require.NoError(t, p.Poll(context.Background()))
+		const debounce = 100 * time.Millisecond
+		p.SetDebounceInterval(debounce)
 
-	if got := up.callCount("getMaxShredInsertSlot"); got != 2 {
-		t.Fatalf("second poll did not run: getMaxShredInsertSlot=%d, want 2", got)
-	}
-	if got := up.callCount("getSlot:processed"); got != 2 {
-		t.Errorf("getSlot(processed)=%d, want 2 (self-observed slots must not gate)", got)
-	}
-	if got := up.callCount("getSlot:finalized"); got != 2 {
-		t.Errorf("getSlot(finalized)=%d, want 2 (self-observed slots must not gate)", got)
-	}
+		require.NoError(t, p.Poll(context.Background())) // full poll: updates slots internally
+		time.Sleep(debounce + 40*time.Millisecond)       // clear the whole-poll debounce
+		require.NoError(t, p.Poll(context.Background()))
+
+		if got := up.callCount("getMaxShredInsertSlot"); got != 2 {
+			t.Fatalf("second poll did not run: getMaxShredInsertSlot=%d, want 2", got)
+		}
+		if got := up.callCount("getSlot:processed"); got != 2 {
+			t.Errorf("getSlot(processed)=%d, want 2 (self-observed slots must not gate)", got)
+		}
+		if got := up.callCount("getSlot:finalized"); got != 2 {
+			t.Errorf("getSlot(finalized)=%d, want 2 (self-observed slots must not gate)", got)
+		}
+	})
 }
 
 // TestSvmStatePoller_SetDebounceInterval_UpdatesCadence guards the fix for the
@@ -1357,44 +1362,46 @@ func (b *blockingUpstream) Forward(ctx context.Context, _ *common.NormalizedRequ
 // ticks (or a Poll that ignores the derived context) would leave the blocked
 // poller running until process exit.
 func TestSvmStatePoller_AppCtxCancellation_DrainsEveryLoop(t *testing.T) {
-	// No t.Parallel: asserts a goroutine-lifecycle invariant with real tickers.
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		// No t.Parallel: asserts a goroutine-lifecycle invariant with real tickers.
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	responsive := newScriptedUpstream()
-	scriptAllProbes(responsive)
-	stuck := newBlockingUpstream()
+		responsive := newScriptedUpstream()
+		scriptAllProbes(responsive)
+		stuck := newBlockingUpstream()
 
-	pollers := []*SvmStatePoller{
-		newPollerOnCtx(t, appCtx, responsive),
-		newPollerOnCtx(t, appCtx, stuck),
-	}
-	for _, p := range pollers {
-		require.NoError(t, p.Bootstrap(context.Background()))
-	}
-
-	liveLoops := func() int32 {
-		var n int32
-		for _, p := range pollers {
-			n += p.loopsRunning.Load()
+		pollers := []*SvmStatePoller{
+			newPollerOnCtx(t, appCtx, responsive),
+			newPollerOnCtx(t, appCtx, stuck),
 		}
-		return n
-	}
-	require.Eventually(t, func() bool { return liveLoops() == int32(len(pollers)) },
-		2*time.Second, 5*time.Millisecond, "every bootstrapped poller must bring up its loop")
+		for _, p := range pollers {
+			require.NoError(t, p.Bootstrap(context.Background()))
+		}
 
-	// Do not cancel until the stuck poller is genuinely inside Poll — otherwise
-	// the test would only re-prove the idle-ticker teardown.
-	select {
-	case <-stuck.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("blocking upstream was never called; the poller never entered a poll")
-	}
+		liveLoops := func() int32 {
+			var n int32
+			for _, p := range pollers {
+				n += p.loopsRunning.Load()
+			}
+			return n
+		}
+		require.Eventually(t, func() bool { return liveLoops() == int32(len(pollers)) },
+			2*time.Second, 5*time.Millisecond, "every bootstrapped poller must bring up its loop")
 
-	cancel()
-	require.Eventually(t, func() bool { return liveLoops() == 0 },
-		5*time.Second, 5*time.Millisecond,
-		"appCtx cancellation must drain every poll loop, including one blocked mid-poll")
+		// Do not cancel until the stuck poller is genuinely inside Poll — otherwise
+		// the test would only re-prove the idle-ticker teardown.
+		select {
+		case <-stuck.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("blocking upstream was never called; the poller never entered a poll")
+		}
+
+		cancel()
+		require.Eventually(t, func() bool { return liveLoops() == 0 },
+			5*time.Second, 5*time.Millisecond,
+			"appCtx cancellation must drain every poll loop, including one blocked mid-poll")
+	})
 }
 
 // TestSvmStatePoller_ConcurrentSuggestionsDuringPoll_StaySlotMonotonic runs the

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -342,26 +343,28 @@ func TestEngine_PerMethodSlotsAndLookups(t *testing.T) {
 }
 
 func TestEngine_PauseGatesTicker(t *testing.T) {
-	cfg := &common.SelectionPolicyConfig{EvalFunc: "(ups) => ups", EvalInterval: common.Duration(5 * time.Millisecond)}
-	require.NoError(t, cfg.SetDefaults())
-	logger := zerolog.Nop()
-	e := NewEngine(context.Background(), &logger, "p1", health.NewTracker(&logger, "p1", time.Minute), nil, nil)
-	defer e.Stop()
-	var calls atomic.Int64
-	ups, _ := stubUps("a")
-	require.NoError(t, e.RegisterNetwork("evm:1", "", func() []common.Upstream { calls.Add(1); return ups }, cfg))
-	require.Eventually(t, func() bool { return calls.Load() >= 3 }, 5*time.Second, time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		cfg := &common.SelectionPolicyConfig{EvalFunc: "(ups) => ups", EvalInterval: common.Duration(5 * time.Millisecond)}
+		require.NoError(t, cfg.SetDefaults())
+		logger := zerolog.Nop()
+		e := NewEngine(context.Background(), &logger, "p1", health.NewTracker(&logger, "p1", time.Minute), nil, nil)
+		defer e.Stop()
+		var calls atomic.Int64
+		ups, _ := stubUps("a")
+		require.NoError(t, e.RegisterNetwork("evm:1", "", func() []common.Upstream { calls.Add(1); return ups }, cfg))
+		require.Eventually(t, func() bool { return calls.Load() >= 3 }, 5*time.Second, time.Millisecond)
 
-	e.SetPaused(true)
-	assert.True(t, e.IsPaused())
-	paused := calls.Load()
-	// At most one tick that already passed the gate may still land.
-	require.Never(t, func() bool { return calls.Load() > paused+1 }, 100*time.Millisecond, 5*time.Millisecond)
+		e.SetPaused(true)
+		assert.True(t, e.IsPaused())
+		paused := calls.Load()
+		// At most one tick that already passed the gate may still land.
+		require.Never(t, func() bool { return calls.Load() > paused+1 }, 100*time.Millisecond, 5*time.Millisecond)
 
-	e.SetPaused(false)
-	assert.False(t, e.IsPaused())
-	resumed := calls.Load()
-	require.Eventually(t, func() bool { return calls.Load() >= resumed+2 }, 5*time.Second, time.Millisecond)
+		e.SetPaused(false)
+		assert.False(t, e.IsPaused())
+		resumed := calls.Load()
+		require.Eventually(t, func() bool { return calls.Load() >= resumed+2 }, 5*time.Second, time.Millisecond)
+	})
 }
 
 func TestEngine_TSFunctionSentinels(t *testing.T) {

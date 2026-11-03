@@ -3,6 +3,7 @@ package erpc
 import (
 	"strings"
 	"testing"
+	"testing/synctest"
 )
 
 func TestComputeBucket_ComprehensiveWithRealBlockNumbers(t *testing.T) {
@@ -261,33 +262,35 @@ func TestComputeBucket_ComprehensiveWithRealBlockNumbers(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			start, end, size, label := ComputeBlockHeatmapBucket(tc.blockNumber, tip, "")
+			synctest.Test(t, func(t *testing.T) {
+				start, end, size, label := ComputeBlockHeatmapBucket(tc.blockNumber, tip, "")
 
-			if start != tc.expectedStart {
-				t.Errorf("start: got %d, want %d", start, tc.expectedStart)
-			}
-			if end != tc.expectedEnd {
-				t.Errorf("end: got %d, want %d", end, tc.expectedEnd)
-			}
-			if size != tc.expectedSize {
-				t.Errorf("size: got %d, want %d", size, tc.expectedSize)
-			}
-			if label != tc.expectedLabel {
-				t.Errorf("label: got %s, want %s", label, tc.expectedLabel)
-			}
-
-			// Additional validation
-			if size > 0 {
-				if start%size != 0 {
-					t.Errorf("start %d is not aligned to size %d", start, size)
+				if start != tc.expectedStart {
+					t.Errorf("start: got %d, want %d", start, tc.expectedStart)
 				}
-				// Check that the label doesn't have decimals
-				for i, c := range label {
-					if c == '.' {
-						t.Errorf("label contains decimal point at position %d: %s", i, label)
+				if end != tc.expectedEnd {
+					t.Errorf("end: got %d, want %d", end, tc.expectedEnd)
+				}
+				if size != tc.expectedSize {
+					t.Errorf("size: got %d, want %d", size, tc.expectedSize)
+				}
+				if label != tc.expectedLabel {
+					t.Errorf("label: got %s, want %s", label, tc.expectedLabel)
+				}
+
+				// Additional validation
+				if size > 0 {
+					if start%size != 0 {
+						t.Errorf("start %d is not aligned to size %d", start, size)
+					}
+					// Check that the label doesn't have decimals
+					for i, c := range label {
+						if c == '.' {
+							t.Errorf("label contains decimal point at position %d: %s", i, label)
+						}
 					}
 				}
-			}
+			})
 		})
 	}
 }
@@ -343,11 +346,13 @@ func TestComputeBucket_TipTolerance(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, label := ComputeBlockHeatmapBucket(tc.blockNumber, tip, "")
+			synctest.Test(t, func(t *testing.T) {
+				_, _, _, label := ComputeBlockHeatmapBucket(tc.blockNumber, tip, "")
 
-			if label != tc.expectedLabel {
-				t.Errorf("label: got %s, want %s", label, tc.expectedLabel)
-			}
+				if label != tc.expectedLabel {
+					t.Errorf("label: got %s, want %s", label, tc.expectedLabel)
+				}
+			})
 		})
 	}
 }
@@ -385,16 +390,18 @@ func TestComputeBucket_NoL0Labels(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, label := ComputeBlockHeatmapBucket(tc.blockNumber, tip, "")
+			synctest.Test(t, func(t *testing.T) {
+				_, _, _, label := ComputeBlockHeatmapBucket(tc.blockNumber, tip, "")
 
-			if label != tc.expectedLabel {
-				t.Errorf("label: got %s, want %s", label, tc.expectedLabel)
-			}
+				if label != tc.expectedLabel {
+					t.Errorf("label: got %s, want %s", label, tc.expectedLabel)
+				}
 
-			// Also verify no "-L0" suffix
-			if strings.Contains(label, "-L0") {
-				t.Errorf("label should not contain '-L0': %s", label)
-			}
+				// Also verify no "-L0" suffix
+				if strings.Contains(label, "-L0") {
+					t.Errorf("label should not contain '-L0': %s", label)
+				}
+			})
 		})
 	}
 }
@@ -454,11 +461,13 @@ func TestComputeBucket_WithBlockReferences(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, label := ComputeBlockHeatmapBucket(tc.blockNumber, tip, tc.blockRef)
+			synctest.Test(t, func(t *testing.T) {
+				_, _, _, label := ComputeBlockHeatmapBucket(tc.blockNumber, tip, tc.blockRef)
 
-			if label != tc.expectedLabel {
-				t.Errorf("label: got %s, want %s", label, tc.expectedLabel)
-			}
+				if label != tc.expectedLabel {
+					t.Errorf("label: got %s, want %s", label, tc.expectedLabel)
+				}
+			})
 		})
 	}
 }

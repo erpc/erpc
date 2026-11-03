@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -23,475 +24,483 @@ func init() {
 
 func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 	t.Run("DebugSkipBehavior", func(t *testing.T) {
-		// This test logs the actual behavior to understand what's happening
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			// This test logs the actual behavior to understand what's happening
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		logger := &log.Logger
-		vr := thirdparty.NewVendorsRegistry()
-		pr, _ := thirdparty.NewProvidersRegistry(logger, vr, []*common.ProviderConfig{}, nil)
-		ssr, _ := data.NewSharedStateRegistry(ctx, logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems:     100_000,
-					MaxTotalSize: "1GB",
+			logger := &log.Logger
+			vr := thirdparty.NewVendorsRegistry()
+			pr, _ := thirdparty.NewProvidersRegistry(logger, vr, []*common.ProviderConfig{}, nil)
+			ssr, _ := data.NewSharedStateRegistry(ctx, logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems:     100_000,
+						MaxTotalSize: "1GB",
+					},
 				},
-			},
-		})
-		rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, logger)
-		mt := health.NewTracker(logger, "testProject", 2*time.Second)
+			})
+			rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, logger)
+			mt := health.NewTracker(logger, "testProject", 2*time.Second)
 
-		// Create a single upstream that skips everything
-		up1 := &common.UpstreamConfig{
-			Id:            "upstream1",
-			Type:          common.UpstreamTypeEvm,
-			Endpoint:      "http://rpc1.localhost",
-			IgnoreMethods: []string{"*"}, // Ignore all methods
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
+			// Create a single upstream that skips everything
+			up1 := &common.UpstreamConfig{
+				Id:            "upstream1",
+				Type:          common.UpstreamTypeEvm,
+				Endpoint:      "http://rpc1.localhost",
+				IgnoreMethods: []string{"*"}, // Ignore all methods
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
 
-		upsReg := upstream.NewUpstreamsRegistry(
-			ctx, logger, "testProject",
-			[]*common.UpstreamConfig{up1},
-			ssr, rlr, vr, pr, nil, mt, nil,
-		)
-		upsReg.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			upsReg := upstream.NewUpstreamsRegistry(
+				ctx, logger, "testProject",
+				[]*common.UpstreamConfig{up1},
+				ssr, rlr, vr, pr, nil, mt, nil,
+			)
+			upsReg.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 
-		ntw, _ := NewNetwork(
-			ctx, logger, "testProject",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm:          &common.EvmNetworkConfig{ChainId: 123},
-			},
-			rlr, upsReg, mt,
-			nil,
-		)
-		ntw.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+			ntw, _ := NewNetwork(
+				ctx, logger, "testProject",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm:          &common.EvmNetworkConfig{ChainId: 123},
+				},
+				rlr, upsReg, mt,
+				nil,
+			)
+			ntw.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
 
-		// Add a timeout context to prevent actual infinite loop
-		timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
+			// Add a timeout context to prevent actual infinite loop
+			timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
 
-		startTime := time.Now()
-		resp, err := ntw.Forward(timeoutCtx, req)
-		duration := time.Since(startTime)
+			startTime := time.Now()
+			resp, err := ntw.Forward(timeoutCtx, req)
+			duration := time.Since(startTime)
 
-		log.Logger.Info().
-			Dur("duration", duration).
-			Err(err).
-			Bool("has_response", resp != nil).
-			Msg("Request completed")
-
-		// Check the errors stored for the upstream
-		if exhErr, ok := err.(*common.ErrUpstreamsExhausted); ok {
-			errorsByUpstream := exhErr.Errors()
 			log.Logger.Info().
-				Interface("errors_by_upstream", errorsByUpstream).
-				Msg("Upstream errors")
-		}
+				Dur("duration", duration).
+				Err(err).
+				Bool("has_response", resp != nil).
+				Msg("Request completed")
 
-		// Should complete quickly, not timeout
-		assert.Less(t, duration, 500*time.Millisecond, "Should not take long")
-		assert.Error(t, err)
-		assert.Nil(t, resp)
+			// Check the errors stored for the upstream
+			if exhErr, ok := err.(*common.ErrUpstreamsExhausted); ok {
+				errorsByUpstream := exhErr.Errors()
+				log.Logger.Info().
+					Interface("errors_by_upstream", errorsByUpstream).
+					Msg("Upstream errors")
+			}
+
+			// Should complete quickly, not timeout
+			assert.Less(t, duration, 500*time.Millisecond, "Should not take long")
+			assert.Error(t, err)
+			assert.Nil(t, resp)
+		})
 	})
 
 	t.Run("UseUpstream_SingleMatch_AllSkip_ShouldExhaustNotTimeout", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		logger := &log.Logger
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(logger, vr, []*common.ProviderConfig{}, nil)
-		require.NoError(t, err)
+			logger := &log.Logger
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(logger, vr, []*common.ProviderConfig{}, nil)
+			require.NoError(t, err)
 
-		ssr, err := data.NewSharedStateRegistry(ctx, logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
-			},
-		})
-		require.NoError(t, err)
-
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, logger)
-		require.NoError(t, err)
-
-		mt := health.NewTracker(logger, "testProject", 2*time.Second)
-
-		// Single upstream that will skip eth_getBlockByNumber
-		up1 := &common.UpstreamConfig{
-			Id:            "systx-upstream-1",
-			Type:          common.UpstreamTypeEvm,
-			Endpoint:      "http://rpc1.localhost",
-			IgnoreMethods: []string{"eth_getBlockByNumber"},
-			Evm:           &common.EvmUpstreamConfig{ChainId: 123},
-		}
-
-		upr := upstream.NewUpstreamsRegistry(ctx, logger, "testProject", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, nil)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-
-		ntw, err := NewNetwork(
-			ctx, logger, "testProject",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm:          &common.EvmNetworkConfig{ChainId: 123},
-				Failsafe: []*common.FailsafeConfig{
-					{Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(250 * time.Millisecond)}},
+			ssr, err := data.NewSharedStateRegistry(ctx, logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
 				},
-			},
-			rlr, upr, mt,
-			nil,
-		)
-		require.NoError(t, err)
-		require.NoError(t, ntw.Bootstrap(ctx))
-		time.Sleep(50 * time.Millisecond)
+			})
+			require.NoError(t, err)
 
-		// Request with UseUpstream directive targeting the only upstream
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
-		req.SetDirectives(&common.RequestDirectives{UseUpstream: "systx-*"})
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, logger)
+			require.NoError(t, err)
 
-		start := time.Now()
-		resp, err := ntw.Forward(ctx, req)
-		dur := time.Since(start)
+			mt := health.NewTracker(logger, "testProject", 2*time.Second)
 
-		// EXPECTATION (desired behavior): should NOT spin until timeout; should exhaust immediately
-		// Therefore, we assert UpstreamsExhausted.
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted), "expected upstreams exhausted, got: %v", err)
-		assert.Nil(t, resp)
-		// And it should finish quickly well under the timeout
-		assert.Less(t, dur, 200*time.Millisecond)
+			// Single upstream that will skip eth_getBlockByNumber
+			up1 := &common.UpstreamConfig{
+				Id:            "systx-upstream-1",
+				Type:          common.UpstreamTypeEvm,
+				Endpoint:      "http://rpc1.localhost",
+				IgnoreMethods: []string{"eth_getBlockByNumber"},
+				Evm:           &common.EvmUpstreamConfig{ChainId: 123},
+			}
+
+			upr := upstream.NewUpstreamsRegistry(ctx, logger, "testProject", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, nil)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+
+			ntw, err := NewNetwork(
+				ctx, logger, "testProject",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm:          &common.EvmNetworkConfig{ChainId: 123},
+					Failsafe: []*common.FailsafeConfig{
+						{Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(250 * time.Millisecond)}},
+					},
+				},
+				rlr, upr, mt,
+				nil,
+			)
+			require.NoError(t, err)
+			require.NoError(t, ntw.Bootstrap(ctx))
+			time.Sleep(50 * time.Millisecond)
+
+			// Request with UseUpstream directive targeting the only upstream
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
+			req.SetDirectives(&common.RequestDirectives{UseUpstream: "systx-*"})
+
+			start := time.Now()
+			resp, err := ntw.Forward(ctx, req)
+			dur := time.Since(start)
+
+			// EXPECTATION (desired behavior): should NOT spin until timeout; should exhaust immediately
+			// Therefore, we assert UpstreamsExhausted.
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted), "expected upstreams exhausted, got: %v", err)
+			assert.Nil(t, resp)
+			// And it should finish quickly well under the timeout
+			assert.Less(t, dur, 200*time.Millisecond)
+		})
 	})
 
 	t.Run("AllUpstreamsReturnSkipError_ShouldNotInfiniteLoop", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Create test logger
-		logger := &log.Logger
+			// Create test logger
+			logger := &log.Logger
 
-		// Setup vendors and providers registry
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(logger, vr, []*common.ProviderConfig{}, nil)
-		require.NoError(t, err)
+			// Setup vendors and providers registry
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(logger, vr, []*common.ProviderConfig{}, nil)
+			require.NoError(t, err)
 
-		// Setup shared state registry
-		ssr, err := data.NewSharedStateRegistry(ctx, logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems:     100_000,
-					MaxTotalSize: "1GB",
+			// Setup shared state registry
+			ssr, err := data.NewSharedStateRegistry(ctx, logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems:     100_000,
+						MaxTotalSize: "1GB",
+					},
 				},
-			},
-		})
-		require.NoError(t, err)
+			})
+			require.NoError(t, err)
 
-		// Setup rate limiters registry
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, logger)
-		require.NoError(t, err)
+			// Setup rate limiters registry
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, logger)
+			require.NoError(t, err)
 
-		// Setup metrics tracker
-		mt := health.NewTracker(logger, "testProject", 2*time.Second)
+			// Setup metrics tracker
+			mt := health.NewTracker(logger, "testProject", 2*time.Second)
 
-		// Create three upstreams, all configured to ignore eth_getBlockByNumber
-		up1 := &common.UpstreamConfig{
-			Id:            "upstream1",
-			Type:          common.UpstreamTypeEvm,
-			Endpoint:      "http://rpc1.localhost",
-			IgnoreMethods: []string{"eth_getBlockByNumber"}, // Will skip this method
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		up2 := &common.UpstreamConfig{
-			Id:            "upstream2",
-			Type:          common.UpstreamTypeEvm,
-			Endpoint:      "http://rpc2.localhost",
-			IgnoreMethods: []string{"eth_*"}, // Will skip all eth_ methods
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		up3 := &common.UpstreamConfig{
-			Id:       "upstream3",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc3.localhost",
-			// This upstream ignores everything except specific methods
-			IgnoreMethods: []string{"*"},
-			AllowMethods:  []string{"eth_chainId", "eth_call"}, // Doesn't include eth_getBlockByNumber
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		// Setup upstreams registry
-		upsReg := upstream.NewUpstreamsRegistry(
-			ctx,
-			logger,
-			"testProject",
-			[]*common.UpstreamConfig{up1, up2, up3},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-
-		// Bootstrap upstreams
-		upsReg.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-
-		// Prepare upstreams for the network
-		err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		require.NoError(t, err)
-
-		// Create network with a timeout to prevent actual infinite loop in test
-		ntw, err := NewNetwork(
-			ctx,
-			logger,
-			"testProject",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			// Create three upstreams, all configured to ignore eth_getBlockByNumber
+			up1 := &common.UpstreamConfig{
+				Id:            "upstream1",
+				Type:          common.UpstreamTypeEvm,
+				Endpoint:      "http://rpc1.localhost",
+				IgnoreMethods: []string{"eth_getBlockByNumber"}, // Will skip this method
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{
-					{
-						Timeout: &common.TimeoutPolicyConfig{
-							Duration: common.NewStaticDuration(1 * time.Second), // Timeout to prevent actual infinite loop
+			}
+
+			up2 := &common.UpstreamConfig{
+				Id:            "upstream2",
+				Type:          common.UpstreamTypeEvm,
+				Endpoint:      "http://rpc2.localhost",
+				IgnoreMethods: []string{"eth_*"}, // Will skip all eth_ methods
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
+
+			up3 := &common.UpstreamConfig{
+				Id:       "upstream3",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc3.localhost",
+				// This upstream ignores everything except specific methods
+				IgnoreMethods: []string{"*"},
+				AllowMethods:  []string{"eth_chainId", "eth_call"}, // Doesn't include eth_getBlockByNumber
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
+
+			// Setup upstreams registry
+			upsReg := upstream.NewUpstreamsRegistry(
+				ctx,
+				logger,
+				"testProject",
+				[]*common.UpstreamConfig{up1, up2, up3},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+
+			// Bootstrap upstreams
+			upsReg.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+
+			// Prepare upstreams for the network
+			err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			require.NoError(t, err)
+
+			// Create network with a timeout to prevent actual infinite loop in test
+			ntw, err := NewNetwork(
+				ctx,
+				logger,
+				"testProject",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{
+						{
+							Timeout: &common.TimeoutPolicyConfig{
+								Duration: common.NewStaticDuration(1 * time.Second), // Timeout to prevent actual infinite loop
+							},
 						},
 					},
 				},
-			},
-			rlr,
-			upsReg,
-			mt,
-			nil,
-		)
-		require.NoError(t, err)
+				rlr,
+				upsReg,
+				mt,
+				nil,
+			)
+			require.NoError(t, err)
 
-		// Bootstrap network
-		err = ntw.Bootstrap(ctx)
-		require.NoError(t, err)
-		time.Sleep(100 * time.Millisecond)
+			// Bootstrap network
+			err = ntw.Bootstrap(ctx)
+			require.NoError(t, err)
+			time.Sleep(100 * time.Millisecond)
 
-		// Create a request for eth_getBlockByNumber which all upstreams will skip
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
+			// Create a request for eth_getBlockByNumber which all upstreams will skip
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
 
-		// Start timer to ensure the request doesn't run forever
-		startTime := time.Now()
+			// Start timer to ensure the request doesn't run forever
+			startTime := time.Now()
 
-		// Forward the request - this should NOT infinite loop
-		// The test should complete quickly (within a second) even though all upstreams skip
-		resp, err := ntw.Forward(ctx, req)
+			// Forward the request - this should NOT infinite loop
+			// The test should complete quickly (within a second) even though all upstreams skip
+			resp, err := ntw.Forward(ctx, req)
 
-		// Measure execution time
-		duration := time.Since(startTime)
+			// Measure execution time
+			duration := time.Since(startTime)
 
-		// Assertions
-		// 1. The request should complete within a reasonable time (not infinite loop)
-		assert.Less(t, duration, 2*time.Second, "Request took too long, possible infinite loop")
+			// Assertions
+			// 1. The request should complete within a reasonable time (not infinite loop)
+			assert.Less(t, duration, 2*time.Second, "Request took too long, possible infinite loop")
 
-		// 2. Should get an error (upstreams exhausted)
-		assert.Error(t, err, "Expected error when all upstreams skip the request")
+			// 2. Should get an error (upstreams exhausted)
+			assert.Error(t, err, "Expected error when all upstreams skip the request")
 
-		// 3. The error should be ErrUpstreamsExhausted
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted),
-			"Expected ErrUpstreamsExhausted error, got: %v", err)
+			// 3. The error should be ErrUpstreamsExhausted
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted),
+				"Expected ErrUpstreamsExhausted error, got: %v", err)
 
-		// 4. Response should be nil
-		assert.Nil(t, resp, "Response should be nil when all upstreams skip")
+			// 4. Response should be nil
+			assert.Nil(t, resp, "Response should be nil when all upstreams skip")
 
-		// 5. Verify the error message contains information about skipped upstreams
-		if exhErr, ok := err.(*common.ErrUpstreamsExhausted); ok {
-			// Check that error details show upstreams were skipped
-			errorsByUpstream := exhErr.Errors()
-			assert.NotEmpty(t, errorsByUpstream, "Should have errors for each upstream")
+			// 5. Verify the error message contains information about skipped upstreams
+			if exhErr, ok := err.(*common.ErrUpstreamsExhausted); ok {
+				// Check that error details show upstreams were skipped
+				errorsByUpstream := exhErr.Errors()
+				assert.NotEmpty(t, errorsByUpstream, "Should have errors for each upstream")
 
-			// Verify each upstream has a skip error
-			for _, upErr := range errorsByUpstream {
-				assert.True(t,
-					common.HasErrorCode(upErr, common.ErrCodeUpstreamRequestSkipped) ||
-						common.HasErrorCode(upErr, common.ErrCodeUpstreamMethodIgnored),
-					"Each upstream error should be a skip/ignore error, got: %v", upErr)
+				// Verify each upstream has a skip error
+				for _, upErr := range errorsByUpstream {
+					assert.True(t,
+						common.HasErrorCode(upErr, common.ErrCodeUpstreamRequestSkipped) ||
+							common.HasErrorCode(upErr, common.ErrCodeUpstreamMethodIgnored),
+						"Each upstream error should be a skip/ignore error, got: %v", upErr)
+				}
 			}
-		}
 
-		log.Logger.Info().
-			Dur("duration", duration).
-			Err(err).
-			Msg("Test completed - request properly terminated despite all upstreams skipping")
+			log.Logger.Info().
+				Dur("duration", duration).
+				Err(err).
+				Msg("Test completed - request properly terminated despite all upstreams skipping")
+		})
 	})
 
 	t.Run("MixedUpstreams_SomeSkipSomeWork", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		// Setup a successful response for the upstream that doesn't skip
-		gock.New("http://rpc3.localhost").
-			Post("").
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": map[string]interface{}{
-					"number":     "0x1234",
-					"hash":       "0xabcd",
-					"parentHash": "0xefgh",
+			// Setup a successful response for the upstream that doesn't skip
+			gock.New("http://rpc3.localhost").
+				Post("").
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": map[string]interface{}{
+						"number":     "0x1234",
+						"hash":       "0xabcd",
+						"parentHash": "0xefgh",
+					},
+				})
+
+			defer util.AssertNoPendingMocks(t, 0)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			logger := &log.Logger
+
+			// Setup registries
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(logger, vr, []*common.ProviderConfig{}, nil)
+			require.NoError(t, err)
+
+			ssr, err := data.NewSharedStateRegistry(ctx, logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems:     100_000,
+						MaxTotalSize: "1GB",
+					},
 				},
 			})
+			require.NoError(t, err)
 
-		defer util.AssertNoPendingMocks(t, 0)
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, logger)
+			require.NoError(t, err)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			mt := health.NewTracker(logger, "testProject", 2*time.Second)
 
-		logger := &log.Logger
-
-		// Setup registries
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(logger, vr, []*common.ProviderConfig{}, nil)
-		require.NoError(t, err)
-
-		ssr, err := data.NewSharedStateRegistry(ctx, logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems:     100_000,
-					MaxTotalSize: "1GB",
-				},
-			},
-		})
-		require.NoError(t, err)
-
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, logger)
-		require.NoError(t, err)
-
-		mt := health.NewTracker(logger, "testProject", 2*time.Second)
-
-		// Create upstreams where first two skip but third works
-		up1 := &common.UpstreamConfig{
-			Id:            "upstream1",
-			Type:          common.UpstreamTypeEvm,
-			Endpoint:      "http://rpc1.localhost",
-			IgnoreMethods: []string{"eth_getBlockByNumber"},
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		up2 := &common.UpstreamConfig{
-			Id:            "upstream2",
-			Type:          common.UpstreamTypeEvm,
-			Endpoint:      "http://rpc2.localhost",
-			IgnoreMethods: []string{"eth_*"},
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		up3 := &common.UpstreamConfig{
-			Id:       "upstream3",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc3.localhost",
-			// This one doesn't ignore eth_getBlockByNumber
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		upsReg := upstream.NewUpstreamsRegistry(
-			ctx,
-			logger,
-			"testProject",
-			[]*common.UpstreamConfig{up1, up2, up3},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-
-		upsReg.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-
-		err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		require.NoError(t, err)
-
-		ntw, err := NewNetwork(
-			ctx,
-			logger,
-			"testProject",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			// Create upstreams where first two skip but third works
+			up1 := &common.UpstreamConfig{
+				Id:            "upstream1",
+				Type:          common.UpstreamTypeEvm,
+				Endpoint:      "http://rpc1.localhost",
+				IgnoreMethods: []string{"eth_getBlockByNumber"},
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-			},
-			rlr,
-			upsReg,
-			mt,
-			nil,
-		)
-		require.NoError(t, err)
+			}
 
-		err = ntw.Bootstrap(ctx)
-		require.NoError(t, err)
-		time.Sleep(100 * time.Millisecond)
+			up2 := &common.UpstreamConfig{
+				Id:            "upstream2",
+				Type:          common.UpstreamTypeEvm,
+				Endpoint:      "http://rpc2.localhost",
+				IgnoreMethods: []string{"eth_*"},
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
+			up3 := &common.UpstreamConfig{
+				Id:       "upstream3",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc3.localhost",
+				// This one doesn't ignore eth_getBlockByNumber
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
 
-		// This should succeed as one upstream handles the request
-		resp, err := ntw.Forward(ctx, req)
+			upsReg := upstream.NewUpstreamsRegistry(
+				ctx,
+				logger,
+				"testProject",
+				[]*common.UpstreamConfig{up1, up2, up3},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
 
-		// Should succeed
-		assert.NoError(t, err, "Should succeed when at least one upstream handles the request")
-		assert.NotNil(t, resp, "Should have a response")
+			upsReg.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
 
-		if resp != nil {
-			defer resp.Release()
+			err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			require.NoError(t, err)
 
-			// Verify the response came from upstream3
-			assert.Equal(t, "upstream3", resp.Upstream().Id(), "Response should come from upstream3")
-		}
+			ntw, err := NewNetwork(
+				ctx,
+				logger,
+				"testProject",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+				},
+				rlr,
+				upsReg,
+				mt,
+				nil,
+			)
+			require.NoError(t, err)
+
+			err = ntw.Bootstrap(ctx)
+			require.NoError(t, err)
+			time.Sleep(100 * time.Millisecond)
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
+
+			// This should succeed as one upstream handles the request
+			resp, err := ntw.Forward(ctx, req)
+
+			// Should succeed
+			assert.NoError(t, err, "Should succeed when at least one upstream handles the request")
+			assert.NotNil(t, resp, "Should have a response")
+
+			if resp != nil {
+				defer resp.Release()
+
+				// Verify the response came from upstream3
+				assert.Equal(t, "upstream3", resp.Upstream().Id(), "Response should come from upstream3")
+			}
+		})
 	})
 }
 
@@ -558,54 +567,58 @@ func TestNetwork_Forward_UseUpstreamTagSelector(t *testing.T) {
 	}
 
 	t.Run("TagSelector_RoutesWithinFamily", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		// Only the systx endpoint (rpc1) is allowed to serve the forward; if
-		// routing leaked to the standard family (rpc2), gock would have no
-		// matching mock for the historical-block call and the forward would
-		// error, and AssertNoPendingMocks would catch the unconsumed systx mock.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0", "id": 1,
-				"result": map[string]interface{}{"number": "0x1234", "hash": "0xabcd", "parentHash": "0xefgh"},
-			})
-		defer util.AssertNoPendingMocks(t, 0)
+			// Only the systx endpoint (rpc1) is allowed to serve the forward; if
+			// routing leaked to the standard family (rpc2), gock would have no
+			// matching mock for the historical-block call and the forward would
+			// error, and AssertNoPendingMocks would catch the unconsumed systx mock.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0", "id": 1,
+					"result": map[string]interface{}{"number": "0x1234", "hash": "0xabcd", "parentHash": "0xefgh"},
+				})
+			defer util.AssertNoPendingMocks(t, 0)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		ntw := build(ctx)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ntw := build(ctx)
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
-		req.SetDirectives(&common.RequestDirectives{UseUpstream: "family:systx"})
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
+			req.SetDirectives(&common.RequestDirectives{UseUpstream: "family:systx"})
 
-		resp, err := ntw.Forward(ctx, req)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-		defer resp.Release()
-		assert.Equal(t, "systx-1", resp.Upstream().Id(), "tag selector should route only to the systx family")
+			resp, err := ntw.Forward(ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			defer resp.Release()
+			assert.Equal(t, "systx-1", resp.Upstream().Id(), "tag selector should route only to the systx family")
+		})
 	})
 
 	t.Run("TagSelector_NoMatch_FailsFast", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		ntw := build(ctx)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ntw := build(ctx)
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
-		req.SetDirectives(&common.RequestDirectives{UseUpstream: "family:ghost"})
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
+			req.SetDirectives(&common.RequestDirectives{UseUpstream: "family:ghost"})
 
-		start := time.Now()
-		resp, err := ntw.Forward(ctx, req)
-		assert.Error(t, err, "selector matching no upstream should fail, not hang")
-		assert.Nil(t, resp)
-		assert.Less(t, time.Since(start), 2*time.Second)
+			start := time.Now()
+			resp, err := ntw.Forward(ctx, req)
+			assert.Error(t, err, "selector matching no upstream should fail, not hang")
+			assert.Nil(t, resp)
+			assert.Less(t, time.Since(start), 2*time.Second)
+		})
 	})
 }

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -42,1705 +43,1734 @@ func init() {
 func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardCorrectlyRateLimitedOnNetworkLevel", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
-			&common.RateLimiterConfig{
-				Store: &common.RateLimitStoreConfig{
-					Driver: "memory",
-				},
-				Budgets: []*common.RateLimitBudgetConfig{
-					{
-						Id: "MyLimiterBudget_Test1",
-						Rules: []*common.RateLimitRuleConfig{
-							{
-								Method:     "*",
-								MaxCount:   3,
-								Period:     common.RateLimitPeriodSecond,
-								WaitTime:   common.Duration(0),
-								PerNetwork: true,
+			rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
+				&common.RateLimiterConfig{
+					Store: &common.RateLimitStoreConfig{
+						Driver: "memory",
+					},
+					Budgets: []*common.RateLimitBudgetConfig{
+						{
+							Id: "MyLimiterBudget_Test1",
+							Rules: []*common.RateLimitRuleConfig{
+								{
+									Method:     "*",
+									MaxCount:   3,
+									Period:     common.RateLimitPeriodSecond,
+									WaitTime:   common.Duration(0),
+									PerNetwork: true,
+								},
 							},
 						},
 					},
 				},
-			},
-			&log.Logger,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+				&log.Logger,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Id:       "test",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-			// Ensure foreground waits are sufficient for deterministic tests
-			LockMaxWait:   common.Duration(1 * time.Second),
-			UpdateMaxWait: common.Duration(2 * time.Second),
-		})
-		if err != nil {
-			panic(err)
-		}
-		upsReg := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{
-				up1,
-			},
-			ssr,
-			rateLimitersRegistry,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Id:       "test",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				RateLimitBudget: "MyLimiterBudget_Test1",
-			},
-			rateLimitersRegistry,
-			upsReg,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		upsReg.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+				// Ensure foreground waits are sufficient for deterministic tests
+				LockMaxWait:   common.Duration(1 * time.Second),
+				UpdateMaxWait: common.Duration(2 * time.Second),
+			})
+			if err != nil {
+				panic(err)
+			}
+			upsReg := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{
+					up1,
+				},
+				ssr,
+				rateLimitersRegistry,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					RateLimitBudget: "MyLimiterBudget_Test1",
+				},
+				rateLimitersRegistry,
+				upsReg,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			upsReg.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// Allow async upstream bootstrapping to settle
-		time.Sleep(100 * time.Millisecond)
+			// Allow async upstream bootstrapping to settle
+			time.Sleep(100 * time.Millisecond)
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upsReg)
-		upsReg.OverrideOrderForTest(util.EvmNetworkId(123))
-		// Align to the start of the next second to avoid rate limit window rollover flakiness
-		now := time.Now()
-		time.Sleep(time.Until(now.Truncate(time.Second).Add(time.Second)))
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upsReg)
+			upsReg.OverrideOrderForTest(util.EvmNetworkId(123))
+			// Align to the start of the next second to avoid rate limit window rollover flakiness
+			now := time.Now()
+			time.Sleep(time.Until(now.Truncate(time.Second).Add(time.Second)))
 
-		var lastErr error
-		var lastResp *common.NormalizedResponse
+			var lastErr error
+			var lastResp *common.NormalizedResponse
 
-		for i := 0; i < 5; i++ {
-			fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_call","params":[]}`))
-			lastResp, lastErr = ntw.Forward(ctx, fakeReq)
-		}
+			for i := 0; i < 5; i++ {
+				fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_call","params":[]}`))
+				lastResp, lastErr = ntw.Forward(ctx, fakeReq)
+			}
 
-		var e *common.ErrNetworkRateLimitRuleExceeded
-		if lastErr == nil || !errors.As(lastErr, &e) {
-			t.Errorf("Expected %v, got %v", "ErrNetworkRateLimitRuleExceeded", lastErr)
-		}
+			var e *common.ErrNetworkRateLimitRuleExceeded
+			if lastErr == nil || !errors.As(lastErr, &e) {
+				t.Errorf("Expected %v, got %v", "ErrNetworkRateLimitRuleExceeded", lastErr)
+			}
 
-		log.Logger.Info().Msgf("Last Resp: %+v", lastResp)
+			log.Logger.Info().Msgf("Last Resp: %+v", lastResp)
+		})
 	})
 
 	t.Run("EmptyResultMaxAttempts_CapsEmptyRetries", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Two upstreams, each returns empty once.
-		// With the broad loop, both upstreams are tried in a single execution.
-		// Since the block is available (state poller has the block), the empty
-		// result is accepted immediately — no retry needed.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":null}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":null}`))
+			// Two upstreams, each returns empty once.
+			// With the broad loop, both upstreams are tried in a single execution.
+			// Since the block is available (state poller has the block), the empty
+			// result is accepted immediately — no retry needed.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":null}`))
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":null}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts:            4,
-				EmptyResultMaxAttempts: 2, // cap empties at 2 total attempts
-				// Pin empty accept list so this exercises retry-on-empty regardless of
-				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
-				EmptyResultAccept: []string{},
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-
-		up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
-		up2 := &common.UpstreamConfig{Id: "rpc2", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
-		// Create shared state config with proper timeouts for state poller
-		sharedStateCfg := &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: common.DriverMemory,
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems:     100_000,
-					MaxTotalSize: "1GB",
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts:            4,
+					EmptyResultMaxAttempts: 2, // cap empties at 2 total attempts
+					// Pin empty accept list so this exercises retry-on-empty regardless of
+					// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+					EmptyResultAccept: []string{},
 				},
-			},
-			LockMaxWait:     common.Duration(200 * time.Millisecond),
-			UpdateMaxWait:   common.Duration(200 * time.Millisecond),
-			FallbackTimeout: common.Duration(3 * time.Second),
-			LockTtl:         common.Duration(4 * time.Second),
-		}
-		sharedStateCfg.SetDefaults("test")
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, nil)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
-			t.Fatal(err)
-		}
-		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
+			up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+			up2 := &common.UpstreamConfig{Id: "rpc2", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+			// Create shared state config with proper timeouts for state poller
+			sharedStateCfg := &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: common.DriverMemory,
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems:     100_000,
+						MaxTotalSize: "1GB",
+					},
+				},
+				LockMaxWait:     common.Duration(200 * time.Millisecond),
+				UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+				FallbackTimeout: common.Duration(3 * time.Second),
+				LockTtl:         common.Duration(4 * time.Second),
+			}
+			sharedStateCfg.SetDefaults("test")
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, nil)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
 
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ntw.Bootstrap(ctx)
-		time.Sleep(50 * time.Millisecond)
+			if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+				t.Fatal(err)
+			}
+			if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
-		resp, err := ntw.Forward(ctx, fakeReq)
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
-		// With broad loop: all upstreams tried in one round, block is available,
-		// so HandleIf accepts the empty result without triggering retries.
-		// Physical calls = 2 (rpc1 + rpc2 each returned empty once).
-		if resp.Attempts() != 2 {
-			t.Errorf("expected attempts=2 (rpc1 empty + rpc2 empty in one round), got %d", resp.Attempts())
-		}
+			ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ntw.Bootstrap(ctx)
+			time.Sleep(50 * time.Millisecond)
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			resp, err := ntw.Forward(ctx, fakeReq)
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+			// With broad loop: all upstreams tried in one round, block is available,
+			// so HandleIf accepts the empty result without triggering retries.
+			// Physical calls = 2 (rpc1 + rpc2 each returned empty once).
+			if resp.Attempts() != 2 {
+				t.Errorf("expected attempts=2 (rpc1 empty + rpc2 empty in one round), got %d", resp.Attempts())
+			}
+		})
 	})
 
 	t.Run("EmptyResultMaxAttempts_UnsetEqualsMaxAttempts", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":null}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":null}`))
-		gock.New("http://rpc3.localhost").
-			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":null}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":null}`))
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":null}`))
+			gock.New("http://rpc3.localhost").
+				Post("").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":null}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 3, // no EmptyResultMaxAttempts set
-				// Pin empty accept list so this exercises retry-on-empty regardless of
-				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
-				EmptyResultAccept: []string{},
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-
-		up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
-		up2 := &common.UpstreamConfig{Id: "rpc2", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
-		up3 := &common.UpstreamConfig{Id: "rpc3", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc3.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
-		// Create shared state config with proper timeouts for state poller
-		sharedStateCfg := &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: common.DriverMemory,
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems:     100_000,
-					MaxTotalSize: "1GB",
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 3, // no EmptyResultMaxAttempts set
+					// Pin empty accept list so this exercises retry-on-empty regardless of
+					// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+					EmptyResultAccept: []string{},
 				},
-			},
-			LockMaxWait:     common.Duration(200 * time.Millisecond),
-			UpdateMaxWait:   common.Duration(200 * time.Millisecond),
-			FallbackTimeout: common.Duration(3 * time.Second),
-			LockTtl:         common.Duration(4 * time.Second),
-		}
-		sharedStateCfg.SetDefaults("test")
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2, up3}, ssr, rlr, vr, pr, nil, mt, nil)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-		pup3, err := upr.NewUpstream(up3)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl3, err := clr.GetOrCreateClient(ctx, pup3)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup3.Client = cl3
+			up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+			up2 := &common.UpstreamConfig{Id: "rpc2", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+			up3 := &common.UpstreamConfig{Id: "rpc3", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc3.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+			// Create shared state config with proper timeouts for state poller
+			sharedStateCfg := &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: common.DriverMemory,
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems:     100_000,
+						MaxTotalSize: "1GB",
+					},
+				},
+				LockMaxWait:     common.Duration(200 * time.Millisecond),
+				UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+				FallbackTimeout: common.Duration(3 * time.Second),
+				LockTtl:         common.Duration(4 * time.Second),
+			}
+			sharedStateCfg.SetDefaults("test")
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2, up3}, ssr, rlr, vr, pr, nil, mt, nil)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
 
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ntw.Bootstrap(ctx)
-		time.Sleep(50 * time.Millisecond)
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
-		resp, err := ntw.Forward(ctx, fakeReq)
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
-		// With broad loop: all 3 upstreams tried in one round, block is available,
-		// so HandleIf accepts the empty result without triggering retries.
-		// Physical calls = 3 (rpc1 + rpc2 + rpc3 each returned empty once).
-		if resp.Attempts() != 3 {
-			t.Errorf("expected attempts=3 (rpc1+rpc2+rpc3 empty in one round), got %d", resp.Attempts())
-		}
+			if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
+			pup3, err := upr.NewUpstream(up3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl3, err := clr.GetOrCreateClient(ctx, pup3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup3.Client = cl3
+
+			ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ntw.Bootstrap(ctx)
+			time.Sleep(50 * time.Millisecond)
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			resp, err := ntw.Forward(ctx, fakeReq)
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+			// With broad loop: all 3 upstreams tried in one round, block is available,
+			// so HandleIf accepts the empty result without triggering retries.
+			// Physical calls = 3 (rpc1 + rpc2 + rpc3 each returned empty once).
+			if resp.Attempts() != 3 {
+				t.Errorf("expected attempts=3 (rpc1+rpc2+rpc3 empty in one round), got %d", resp.Attempts())
+			}
+		})
 	})
 
 	t.Run("EmptyResultMaxAttempts_DoesNotAffectErrorRetries", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// First attempt -> 500 error, then empties
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(500).
-			JSON([]byte(`{"error":{"message":"boom"}}`))
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":null}`))
+			// First attempt -> 500 error, then empties
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(500).
+				JSON([]byte(`{"error":{"message":"boom"}}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":null}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultMaxAttempts: 2}}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultMaxAttempts: 2}}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
-		// Create shared state config with proper timeouts for state poller
-		sharedStateCfg := &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: common.DriverMemory,
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems:     100_000,
-					MaxTotalSize: "1GB",
+			up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+			// Create shared state config with proper timeouts for state poller
+			sharedStateCfg := &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: common.DriverMemory,
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems:     100_000,
+						MaxTotalSize: "1GB",
+					},
 				},
-			},
-			LockMaxWait:     common.Duration(200 * time.Millisecond),
-			UpdateMaxWait:   common.Duration(200 * time.Millisecond),
-			FallbackTimeout: common.Duration(3 * time.Second),
-			LockTtl:         common.Duration(4 * time.Second),
-		}
-		sharedStateCfg.SetDefaults("test")
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, nil)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
+				LockMaxWait:     common.Duration(200 * time.Millisecond),
+				UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+				FallbackTimeout: common.Duration(3 * time.Second),
+				LockTtl:         common.Duration(4 * time.Second),
+			}
+			sharedStateCfg.SetDefaults("test")
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, nil)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ntw.Bootstrap(ctx)
-		time.Sleep(50 * time.Millisecond)
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
-		resp, err := ntw.Forward(ctx, fakeReq)
-		if err == nil {
-			// Should return empty response after attempts are capped
-			if resp.Attempts() != 2 {
-				t.Errorf("expected attempts=2, got %d", resp.Attempts())
+			ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
+			if err != nil {
+				t.Fatal(err)
 			}
-			jrr, e := resp.JsonRpcResponse()
-			if e != nil {
-				t.Fatalf("jsonrpc error: %v", e)
+			ntw.Bootstrap(ctx)
+			time.Sleep(50 * time.Millisecond)
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			resp, err := ntw.Forward(ctx, fakeReq)
+			if err == nil {
+				// Should return empty response after attempts are capped
+				if resp.Attempts() != 2 {
+					t.Errorf("expected attempts=2, got %d", resp.Attempts())
+				}
+				jrr, e := resp.JsonRpcResponse()
+				if e != nil {
+					t.Fatalf("jsonrpc error: %v", e)
+				}
+				if jrr == nil || !jrr.IsResultEmptyish(context.TODO()) {
+					t.Fatalf("expected emptyish result")
+				}
+			} else {
+				t.Fatalf("unexpected error: %v", err)
 			}
-			if jrr == nil || !jrr.IsResultEmptyish(context.TODO()) {
-				t.Fatalf("expected emptyish result")
-			}
-		} else {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		})
 	})
 
 	t.Run("EmptyResultMaxAttempts_IgnoredWhenRetryEmptyDisabled", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":null}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":null}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 5, EmptyResultMaxAttempts: 2}}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 5, EmptyResultMaxAttempts: 2}}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
-		// Create shared state config with proper timeouts for state poller
-		sharedStateCfg := &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: common.DriverMemory,
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems:     100_000,
-					MaxTotalSize: "1GB",
+			up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+			// Create shared state config with proper timeouts for state poller
+			sharedStateCfg := &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: common.DriverMemory,
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems:     100_000,
+						MaxTotalSize: "1GB",
+					},
 				},
-			},
-			LockMaxWait:     common.Duration(200 * time.Millisecond),
-			UpdateMaxWait:   common.Duration(200 * time.Millisecond),
-			FallbackTimeout: common.Duration(3 * time.Second),
-			LockTtl:         common.Duration(4 * time.Second),
-		}
-		sharedStateCfg.SetDefaults("test")
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, nil)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
+				LockMaxWait:     common.Duration(200 * time.Millisecond),
+				UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+				FallbackTimeout: common.Duration(3 * time.Second),
+				LockTtl:         common.Duration(4 * time.Second),
+			}
+			sharedStateCfg.SetDefaults("test")
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, nil)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		// RetryEmpty disabled
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.FALSE}}, rlr, upr, mt, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ntw.Bootstrap(ctx)
-		time.Sleep(50 * time.Millisecond)
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
-		resp, err := ntw.Forward(ctx, fakeReq)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if resp.Attempts() != 1 {
-			t.Errorf("expected attempts=1 when RetryEmpty disabled, got %d", resp.Attempts())
-		}
+			// RetryEmpty disabled
+			ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.FALSE}}, rlr, upr, mt, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ntw.Bootstrap(ctx)
+			time.Sleep(50 * time.Millisecond)
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			resp, err := ntw.Forward(ctx, fakeReq)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if resp.Attempts() != 1 {
+				t.Errorf("expected attempts=1 when RetryEmpty disabled, got %d", resp.Attempts())
+			}
+		})
 	})
 
 	t.Run("EmptyResultMaxAttempts_IgnoredWhenMethodInIgnoreList", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":null}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":null}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 5, EmptyResultMaxAttempts: 4, EmptyResultAccept: []string{"eth_getBalance"}}}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 5, EmptyResultMaxAttempts: 4, EmptyResultAccept: []string{"eth_getBalance"}}}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
-		// Create shared state config with proper timeouts for state poller
-		sharedStateCfg := &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: common.DriverMemory,
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems:     100_000,
-					MaxTotalSize: "1GB",
+			up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+			// Create shared state config with proper timeouts for state poller
+			sharedStateCfg := &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: common.DriverMemory,
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems:     100_000,
+						MaxTotalSize: "1GB",
+					},
 				},
-			},
-			LockMaxWait:     common.Duration(200 * time.Millisecond),
-			UpdateMaxWait:   common.Duration(200 * time.Millisecond),
-			FallbackTimeout: common.Duration(3 * time.Second),
-			LockTtl:         common.Duration(4 * time.Second),
-		}
-		sharedStateCfg.SetDefaults("test")
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, nil)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
+				LockMaxWait:     common.Duration(200 * time.Millisecond),
+				UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+				FallbackTimeout: common.Duration(3 * time.Second),
+				LockTtl:         common.Duration(4 * time.Second),
+			}
+			sharedStateCfg.SetDefaults("test")
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, nil)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ntw.Bootstrap(ctx)
-		time.Sleep(50 * time.Millisecond)
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
-		resp, err := ntw.Forward(ctx, fakeReq)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if resp.Attempts() != 1 {
-			t.Errorf("expected attempts=1 when method in EmptyResultAccept, got %d", resp.Attempts())
-		}
+			ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ntw.Bootstrap(ctx)
+			time.Sleep(50 * time.Millisecond)
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			resp, err := ntw.Forward(ctx, fakeReq)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if resp.Attempts() != 1 {
+				t.Errorf("expected attempts=1 when method in EmptyResultAccept, got %d", resp.Attempts())
+			}
+		})
 	})
 
 	t.Run("EmptyResultDelay_AppliedForEmptyResultRetries", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Two upstreams both return empty.
-		// With broad loop: both tried in one round, block is available → accepted immediately.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":null}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":null}`))
+			// Two upstreams both return empty.
+			// With broad loop: both tried in one round, block is available → accepted immediately.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":null}`))
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":null}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts:      2,
-				Delay:            common.Duration(10 * time.Millisecond),  // normal error delay: 10ms
-				EmptyResultDelay: common.Duration(300 * time.Millisecond), // empty result delay: 300ms
-				// Pin empty accept list so this exercises retry-on-empty regardless of
-				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
-				EmptyResultAccept: []string{},
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts:      2,
+					Delay:            common.Duration(10 * time.Millisecond),  // normal error delay: 10ms
+					EmptyResultDelay: common.Duration(300 * time.Millisecond), // empty result delay: 300ms
+					// Pin empty accept list so this exercises retry-on-empty regardless of
+					// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+					EmptyResultAccept: []string{},
+				},
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
-		up2 := &common.UpstreamConfig{Id: "rpc2", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
-		sharedStateCfg := &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: common.DriverMemory,
-				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
-			},
-			LockMaxWait: common.Duration(200 * time.Millisecond), UpdateMaxWait: common.Duration(200 * time.Millisecond),
-			FallbackTimeout: common.Duration(3 * time.Second), LockTtl: common.Duration(4 * time.Second),
-		}
-		sharedStateCfg.SetDefaults("test")
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, nil)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
+			up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+			up2 := &common.UpstreamConfig{Id: "rpc2", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+			sharedStateCfg := &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: common.DriverMemory,
+					Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+				},
+				LockMaxWait: common.Duration(200 * time.Millisecond), UpdateMaxWait: common.Duration(200 * time.Millisecond),
+				FallbackTimeout: common.Duration(3 * time.Second), LockTtl: common.Duration(4 * time.Second),
+			}
+			sharedStateCfg.SetDefaults("test")
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, nil)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ntw.Bootstrap(ctx)
-		time.Sleep(50 * time.Millisecond)
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ntw.Bootstrap(ctx)
+			time.Sleep(50 * time.Millisecond)
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 
-		resp, err := ntw.Forward(ctx, fakeReq)
+			resp, err := ntw.Forward(ctx, fakeReq)
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
-		// With broad loop: all upstreams tried in one round, block is available,
-		// so HandleIf accepts the empty result without triggering retries or delays.
-		// Attempts is the physical-call total: 2 upstreams hit once each = 2.
-		if resp.Attempts() != 2 {
-			t.Errorf("expected attempts=2, got %d", resp.Attempts())
-		}
-		if resp.Retries() != 0 {
-			t.Errorf("expected no retries, got %d", resp.Retries())
-		}
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+			// With broad loop: all upstreams tried in one round, block is available,
+			// so HandleIf accepts the empty result without triggering retries or delays.
+			// Attempts is the physical-call total: 2 upstreams hit once each = 2.
+			if resp.Attempts() != 2 {
+				t.Errorf("expected attempts=2, got %d", resp.Attempts())
+			}
+			if resp.Retries() != 0 {
+				t.Errorf("expected no retries, got %d", resp.Retries())
+			}
+		})
 	})
 
 	t.Run("EmptyResultDelay_DoesNotAffectErrorRetries", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// First attempt -> 500 error, second attempt -> success
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(500).
-			JSON([]byte(`{"error":{"message":"server error"}}`))
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1234"}`))
+			// First attempt -> 500 error, second attempt -> success
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(500).
+				JSON([]byte(`{"error":{"message":"server error"}}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1234"}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts:      3,
-				Delay:            common.Duration(10 * time.Millisecond),  // normal error delay: 10ms
-				EmptyResultDelay: common.Duration(500 * time.Millisecond), // empty result delay: 500ms (should NOT be used)
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts:      3,
+					Delay:            common.Duration(10 * time.Millisecond),  // normal error delay: 10ms
+					EmptyResultDelay: common.Duration(500 * time.Millisecond), // empty result delay: 500ms (should NOT be used)
+				},
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
-		sharedStateCfg := &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: common.DriverMemory,
-				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
-			},
-			LockMaxWait: common.Duration(200 * time.Millisecond), UpdateMaxWait: common.Duration(200 * time.Millisecond),
-			FallbackTimeout: common.Duration(3 * time.Second), LockTtl: common.Duration(4 * time.Second),
-		}
-		sharedStateCfg.SetDefaults("test")
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, nil)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
+			up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+			sharedStateCfg := &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: common.DriverMemory,
+					Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+				},
+				LockMaxWait: common.Duration(200 * time.Millisecond), UpdateMaxWait: common.Duration(200 * time.Millisecond),
+				FallbackTimeout: common.Duration(3 * time.Second), LockTtl: common.Duration(4 * time.Second),
+			}
+			sharedStateCfg.SetDefaults("test")
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, nil)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ntw.Bootstrap(ctx)
-		time.Sleep(50 * time.Millisecond)
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ntw.Bootstrap(ctx)
+			time.Sleep(50 * time.Millisecond)
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 
-		start := time.Now()
-		resp, err := ntw.Forward(ctx, fakeReq)
-		elapsed := time.Since(start)
+			start := time.Now()
+			resp, err := ntw.Forward(ctx, fakeReq)
+			elapsed := time.Since(start)
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
-		if resp.Attempts() != 2 {
-			t.Errorf("expected attempts=2, got %d", resp.Attempts())
-		}
-		// Error retry should use the normal delay (10ms), not the emptyResultDelay (500ms)
-		if elapsed >= 400*time.Millisecond {
-			t.Errorf("expected elapsed < 400ms (normal delay=10ms), got %v — emptyResultDelay should not apply to error retries", elapsed)
-		}
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+			if resp.Attempts() != 2 {
+				t.Errorf("expected attempts=2, got %d", resp.Attempts())
+			}
+			// Error retry should use the normal delay (10ms), not the emptyResultDelay (500ms)
+			if elapsed >= 400*time.Millisecond {
+				t.Errorf("expected elapsed < 400ms (normal delay=10ms), got %v — emptyResultDelay should not apply to error retries", elapsed)
+			}
+		})
 	})
 
 	t.Run("EmptyResultDelay_NotSetUsesNormalDelay", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Two upstreams both return empty
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":null}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":null}`))
+			// Two upstreams both return empty
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":null}`))
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":null}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2,
-				Delay:       common.Duration(10 * time.Millisecond), // normal delay only, no emptyResultDelay
-				// Pin empty accept list so this exercises retry-on-empty regardless of
-				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
-				EmptyResultAccept: []string{},
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
+					Delay:       common.Duration(10 * time.Millisecond), // normal delay only, no emptyResultDelay
+					// Pin empty accept list so this exercises retry-on-empty regardless of
+					// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+					EmptyResultAccept: []string{},
+				},
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
-		up2 := &common.UpstreamConfig{Id: "rpc2", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
-		sharedStateCfg := &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: common.DriverMemory,
-				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
-			},
-			LockMaxWait: common.Duration(200 * time.Millisecond), UpdateMaxWait: common.Duration(200 * time.Millisecond),
-			FallbackTimeout: common.Duration(3 * time.Second), LockTtl: common.Duration(4 * time.Second),
-		}
-		sharedStateCfg.SetDefaults("test")
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, nil)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
+			up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+			up2 := &common.UpstreamConfig{Id: "rpc2", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+			sharedStateCfg := &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: common.DriverMemory,
+					Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+				},
+				LockMaxWait: common.Duration(200 * time.Millisecond), UpdateMaxWait: common.Duration(200 * time.Millisecond),
+				FallbackTimeout: common.Duration(3 * time.Second), LockTtl: common.Duration(4 * time.Second),
+			}
+			sharedStateCfg.SetDefaults("test")
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, nil)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ntw.Bootstrap(ctx)
-		time.Sleep(50 * time.Millisecond)
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ntw.Bootstrap(ctx)
+			time.Sleep(50 * time.Millisecond)
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 
-		resp, err := ntw.Forward(ctx, fakeReq)
+			resp, err := ntw.Forward(ctx, fakeReq)
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
-		// With broad loop: all upstreams tried in one round, block is available,
-		// so HandleIf accepts the empty result without triggering retries or delays.
-		// Attempts is the physical-call total: 2 upstreams hit once each = 2.
-		if resp.Attempts() != 2 {
-			t.Errorf("expected attempts=2, got %d", resp.Attempts())
-		}
-		if resp.Retries() != 0 {
-			t.Errorf("expected no retries, got %d", resp.Retries())
-		}
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+			// With broad loop: all upstreams tried in one round, block is available,
+			// so HandleIf accepts the empty result without triggering retries or delays.
+			// Attempts is the physical-call total: 2 upstreams hit once each = 2.
+			if resp.Attempts() != 2 {
+				t.Errorf("expected attempts=2, got %d", resp.Attempts())
+			}
+			if resp.Retries() != 0 {
+				t.Errorf("expected no retries, got %d", resp.Retries())
+			}
+		})
 	})
 
 	t.Run("ForwardNotRateLimitedOnNetworkLevel", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
-			&common.RateLimiterConfig{
-				Budgets: []*common.RateLimitBudgetConfig{
-					{
-						Id: "MyLimiterBudget_Test2",
-						Rules: []*common.RateLimitRuleConfig{
-							{
-								Method:   "*",
-								MaxCount: 1000,
-								Period:   common.RateLimitPeriodMinute,
+			rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
+				&common.RateLimiterConfig{
+					Budgets: []*common.RateLimitBudgetConfig{
+						{
+							Id: "MyLimiterBudget_Test2",
+							Rules: []*common.RateLimitRuleConfig{
+								{
+									Method:   "*",
+									MaxCount: 1000,
+									Period:   common.RateLimitPeriodMinute,
+								},
 							},
 						},
 					},
 				},
-			},
-			&log.Logger,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+				&log.Logger,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Id:       "test",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-			// Larger best-effort budgets for deterministic tests
-			LockMaxWait:   common.Duration(1 * time.Second),
-			UpdateMaxWait: common.Duration(1 * time.Second),
-		})
-		if err != nil {
-			panic(err)
-		}
-		upsReg := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{
-				up1,
-			},
-			ssr,
-			rateLimitersRegistry,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Id:       "test",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				RateLimitBudget: "MyLimiterBudget_Test2",
-			},
-			rateLimitersRegistry,
-			upsReg,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		upsReg.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+				// Larger best-effort budgets for deterministic tests
+				LockMaxWait:   common.Duration(1 * time.Second),
+				UpdateMaxWait: common.Duration(1 * time.Second),
+			})
+			if err != nil {
+				panic(err)
+			}
+			upsReg := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{
+					up1,
+				},
+				ssr,
+				rateLimitersRegistry,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					RateLimitBudget: "MyLimiterBudget_Test2",
+				},
+				rateLimitersRegistry,
+				upsReg,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			upsReg.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upsReg)
-		upsReg.OverrideOrderForTest(util.EvmNetworkId(123))
-		var lastErr error
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upsReg)
+			upsReg.OverrideOrderForTest(util.EvmNetworkId(123))
+			var lastErr error
 
-		for i := 0; i < 10; i++ {
-			fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
-			_, lastErr = ntw.Forward(ctx, fakeReq)
-		}
+			for i := 0; i < 10; i++ {
+				fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
+				_, lastErr = ntw.Forward(ctx, fakeReq)
+			}
 
-		var e *common.ErrNetworkRateLimitRuleExceeded
-		if lastErr != nil && errors.As(lastErr, &e) {
-			t.Errorf("Did not expect ErrNetworkRateLimitRuleExceeded")
-		}
+			var e *common.ErrNetworkRateLimitRuleExceeded
+			if lastErr != nil && errors.As(lastErr, &e) {
+				t.Errorf("Did not expect ErrNetworkRateLimitRuleExceeded")
+			}
+		})
 	})
 	t.Run("ForwardUpstreamRetryIntermittentFailuresWithoutSuccessAndNoErrCode", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		gock.New("http://rpc1.localhost").
-			Times(3).
-			Post("").
-			Reply(503).
-			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
+			gock.New("http://rpc1.localhost").
+				Times(3).
+				Post("").
+				Reply(503).
+				JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 3,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		vndr := thirdparty.NewVendorsRegistry()
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Id:       "test",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			Failsafe: []*common.FailsafeConfig{fsCfg},
-		}
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 3,
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{
-				up1,
-			},
-			ssr,
-			rlr,
-			vndr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl, err := clr.GetOrCreateClient(ctx, pup)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup.Client = cl
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					ChainId: 123,
-				},
-			},
-			rlr,
-			upr,
-			health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		_, err = ntw.Forward(ctx, fakeReq)
-
-		if err == nil {
-			t.Errorf("Expected an error, got nil")
-		} else if !common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
-			t.Errorf("Expected ErrUpstreamsExhausted wrapping server error, got %v", err)
-		} else if !common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
-			t.Errorf("Expected server-side exception inside ErrUpstreamsExhausted, got %v", err)
-		}
-	})
-
-	t.Run("ForwardRetryFailuresWithoutSuccessErrorWithCode", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1)
-
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
-
-		gock.New("http://rpc1.localhost").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_traceTransaction")
-			}).
-			Post("").
-			Reply(503).
-			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32603,"message":"some random provider issue"}}`))
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 3,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Id:       "test",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			Failsafe: []*common.FailsafeConfig{fsCfg},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{
-				up1,
-			},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl, err := clr.GetOrCreateClient(ctx, pup)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup.Client = cl
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vndr := thirdparty.NewVendorsRegistry()
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Id:       "test",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
 				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		time.Sleep(100 * time.Millisecond)
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		_, err = ntw.Forward(ctx, fakeReq)
+			}
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{
+					up1,
+				},
+				ssr,
+				rlr,
+				vndr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl, err := clr.GetOrCreateClient(ctx, pup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup.Client = cl
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+				},
+				rlr,
+				upr,
+				health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			_, err = ntw.Forward(ctx, fakeReq)
 
-		if err == nil {
-			t.Errorf("Expected an error, got nil")
-		}
+			if err == nil {
+				t.Errorf("Expected an error, got nil")
+			} else if !common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
+				t.Errorf("Expected ErrUpstreamsExhausted wrapping server error, got %v", err)
+			} else if !common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+				t.Errorf("Expected server-side exception inside ErrUpstreamsExhausted, got %v", err)
+			}
+		})
+	})
 
-		if !common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
-			t.Errorf("Expected ErrUpstreamsExhausted wrapping server error, got %v", err)
-		} else if !common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
-			t.Errorf("Expected server-side exception inside ErrUpstreamsExhausted, got %v", err)
-		}
+	t.Run("ForwardRetryFailuresWithoutSuccessErrorWithCode", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 1)
+
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+
+			gock.New("http://rpc1.localhost").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_traceTransaction")
+				}).
+				Post("").
+				Reply(503).
+				JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32603,"message":"some random provider issue"}}`))
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 3,
+				},
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Id:       "test",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+				Failsafe: []*common.FailsafeConfig{fsCfg},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{
+					up1,
+				},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl, err := clr.GetOrCreateClient(ctx, pup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup.Client = cl
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(100 * time.Millisecond)
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			_, err = ntw.Forward(ctx, fakeReq)
+
+			if err == nil {
+				t.Errorf("Expected an error, got nil")
+			}
+
+			if !common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
+				t.Errorf("Expected ErrUpstreamsExhausted wrapping server error, got %v", err)
+			} else if !common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+				t.Errorf("Expected server-side exception inside ErrUpstreamsExhausted, got %v", err)
+			}
+		})
 	})
 
 	t.Run("ForwardSkipsNonRetryableFailuresFromUpstreams", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		gock.New("http://rpc1.localhost").
-			Times(1).
-			Post("").
-			Reply(401).
-			JSON([]byte(`{"error":{"code":-32016,"message":"unauthorized rpc1"}}`))
+			gock.New("http://rpc1.localhost").
+				Times(1).
+				Post("").
+				Reply(401).
+				JSON([]byte(`{"error":{"code":-32016,"message":"unauthorized rpc1"}}`))
 
-		gock.New("http://rpc2.localhost").
-			Times(1).
-			Post("").
-			Reply(503).
-			JSON([]byte(`{"error":"random rpc2 unavailable"}`))
+			gock.New("http://rpc2.localhost").
+				Times(1).
+				Post("").
+				Reply(503).
+				JSON([]byte(`{"error":"random rpc2 unavailable"}`))
 
-		gock.New("http://rpc2.localhost").
-			Times(1).
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"result":"0x1234567"}`))
+			gock.New("http://rpc2.localhost").
+				Times(1).
+				Post("").
+				Reply(200).
+				JSON([]byte(`{"result":"0x1234567"}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
-		upsFsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2,
-			},
-		}
-		ntwFsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			Failsafe: []*common.FailsafeConfig{upsFsCfg},
-		}
-		up2 := &common.UpstreamConfig{
-			Id:       "rpc2",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			Failsafe: []*common.FailsafeConfig{upsFsCfg},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			upsFsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{
-				up1,
-				up2,
-			},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			}
+			ntwFsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
+				},
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Id:       "rpc1",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{ntwFsCfg},
-			},
-			rlr,
-			upr,
-			health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		_, err = ntw.Forward(ctx, fakeReq)
+				Failsafe: []*common.FailsafeConfig{upsFsCfg},
+			}
+			up2 := &common.UpstreamConfig{
+				Id:       "rpc2",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+				Failsafe: []*common.FailsafeConfig{upsFsCfg},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{
+					up1,
+					up2,
+				},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl
 
-		if err != nil {
-			t.Errorf("Expected an nil, got error %v", err)
-		}
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
+
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{ntwFsCfg},
+				},
+				rlr,
+				upr,
+				health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			_, err = ntw.Forward(ctx, fakeReq)
+
+			if err != nil {
+				t.Errorf("Expected an nil, got error %v", err)
+			}
+		})
 	})
 
 	t.Run("ForwardNotSkipsRetryableFailuresFromUpstreams", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		gock.New("http://rpc1.localhost").
-			Times(3).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
-			}).
-			Post("").
-			Reply(503).
-			JSON([]byte(`{"error":"random rpc1 unavailable"}`))
+			gock.New("http://rpc1.localhost").
+				Times(3).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
+				}).
+				Post("").
+				Reply(503).
+				JSON([]byte(`{"error":"random rpc1 unavailable"}`))
 
-		gock.New("http://rpc2.localhost").
-			Times(2).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
-			}).
-			Post("").
-			Reply(503).
-			JSON([]byte(`{"error":"random rpc2 unavailable"}`))
+			gock.New("http://rpc2.localhost").
+				Times(2).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
+				}).
+				Post("").
+				Reply(503).
+				JSON([]byte(`{"error":"random rpc2 unavailable"}`))
 
-		gock.New("http://rpc2.localhost").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
-			}).
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"result":"0x1234567"}`))
+			gock.New("http://rpc2.localhost").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
+				}).
+				Post("").
+				Reply(200).
+				JSON([]byte(`{"result":"0x1234567"}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
-		upsFsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 3,
-			},
-		}
-		ntwFsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			Failsafe: []*common.FailsafeConfig{upsFsCfg},
-		}
-		up2 := &common.UpstreamConfig{
-			Id:       "rpc2",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			Failsafe: []*common.FailsafeConfig{upsFsCfg},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			upsFsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 3,
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{
-				up1,
-				up2,
-			},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			}
+			ntwFsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
+				},
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Id:       "rpc1",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{ntwFsCfg},
-			},
-			rlr,
-			upr,
-			health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		_, err = ntw.Forward(ctx, fakeReq)
+				Failsafe: []*common.FailsafeConfig{upsFsCfg},
+			}
+			up2 := &common.UpstreamConfig{
+				Id:       "rpc2",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+				Failsafe: []*common.FailsafeConfig{upsFsCfg},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{
+					up1,
+					up2,
+				},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl
 
-		if err != nil {
-			t.Errorf("Expected an nil, got error %v", err)
-		}
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
+
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{ntwFsCfg},
+				},
+				rlr,
+				upr,
+				health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			_, err = ntw.Forward(ctx, fakeReq)
+
+			if err != nil {
+				t.Errorf("Expected an nil, got error %v", err)
+			}
+		})
 	})
 	t.Run("NotRetryWhenBlockIsFinalizedNodeIsSynced", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Prepare a JSON-RPC request payload as a byte array
-		var requestBytes = []byte(`{
+			// Prepare a JSON-RPC request payload as a byte array
+			var requestBytes = []byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getLogs",
 			"params": [{
@@ -1751,404 +1781,408 @@ func TestNetwork_Forward(t *testing.T) {
 			"id": 1
 		}`)
 
-		// Mock an empty logs response from the first upstream
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[]}`))
+			// Mock an empty logs response from the first upstream
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[]}`))
 
-		// Mock a non-empty logs response from the second upstream
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[{"logIndex":444}]}`))
+			// Mock a non-empty logs response from the second upstream
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[{"logIndex":444}]}`))
 
-		// Set up a context and a cancellation function
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			// Set up a context and a cancellation function
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Initialize various components for the test environment
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			// Initialize various components for the test environment
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		// Set up upstream configurations
-		up1 := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Id:       "rpc2",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		// Initialize the upstreams registry
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = pup1.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = pup2.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		// Set up the network configuration
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			// Set up upstream configurations
+			up1 := &common.UpstreamConfig{
+				Id:       "rpc1",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{{
-					Retry: &common.RetryPolicyConfig{
-						MaxAttempts:       1,
-						EmptyResultAccept: []string{},
-					}},
+			}
+			up2 := &common.UpstreamConfig{
+				Id:       "rpc2",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
 				},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
 
-		// Bootstrap the network and make the simulated request
-		ntw.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+			// Initialize the upstreams registry
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		poller := pup1.EvmStatePoller()
-		poller.SuggestLatestBlock(9)
-		poller.SuggestFinalizedBlock(8)
+			// Create and register clients for both upstreams
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = pup1.Bootstrap(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		// Create a fake request and forward it through the network
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = pup2.Bootstrap(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			// Set up the network configuration
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{{
+						Retry: &common.RetryPolicyConfig{
+							MaxAttempts:       1,
+							EmptyResultAccept: []string{},
+						}},
+					},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// With EmptyResultAccept disabled, the broad loop tries both upstreams.
-		// rpc1 returns [] (empty), rpc2 returns [{"logIndex":444}] (non-empty).
-		// The broad loop prefers the non-empty result.
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JsonRpcResponse: %v", err)
-		}
+			// Bootstrap the network and make the simulated request
+			ntw.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
 
-		result := jrr.GetResultString()
-		if !strings.Contains(result, "logIndex") {
-			t.Fatalf("Expected non-empty result from second upstream (broad loop prefers non-empty), got %s", result)
-		}
+			poller := pup1.EvmStatePoller()
+			poller.SuggestLatestBlock(9)
+			poller.SuggestFinalizedBlock(8)
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			// Create a fake request and forward it through the network
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			resp, err := ntw.Forward(ctx, fakeReq)
+
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+
+			// With EmptyResultAccept disabled, the broad loop tries both upstreams.
+			// rpc1 returns [] (empty), rpc2 returns [{"logIndex":444}] (non-empty).
+			// The broad loop prefers the non-empty result.
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JsonRpcResponse: %v", err)
+			}
+
+			result := jrr.GetResultString()
+			if !strings.Contains(result, "logIndex") {
+				t.Fatalf("Expected non-empty result from second upstream (broad loop prefers non-empty), got %s", result)
+			}
+		})
 	})
 	t.Run("RetryWhenNodeIsNotSynced", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Prepare a JSON-RPC request payload as a byte array
-		var requestBytes = []byte(`{
+			// Prepare a JSON-RPC request payload as a byte array
+			var requestBytes = []byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getBalance",
 			"params": ["0x1234567890abcdef1234567890abcdef12345678"],
 			"id": 1
 		}`)
 
-		// Mock an empty logs response from the first upstream
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[]}`))
+			// Mock an empty logs response from the first upstream
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[]}`))
 
-		// Mock a non-empty logs response from the second upstream
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[{"logIndex":444}]}`))
+			// Mock a non-empty logs response from the second upstream
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[{"logIndex":444}]}`))
 
-		// Set up a context and a cancellation function
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			// Set up a context and a cancellation function
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Initialize various components for the test environment
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Hedge:   nil,
-			Timeout: nil,
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2, // Allow up to 2 retry attempts
-				// Pin empty accept list so this exercises retry-on-empty regardless of
-				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
-				EmptyResultAccept: []string{},
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-
-		// Set up upstream configurations
-		up1 := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Id:       "rpc2",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		// Initialize the upstreams registry
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			// Initialize various components for the test environment
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Hedge:   nil,
+				Timeout: nil,
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2, // Allow up to 2 retry attempts
+					// Pin empty accept list so this exercises retry-on-empty regardless of
+					// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+					EmptyResultAccept: []string{},
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = pup1.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = pup2.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		// Set up the network configuration
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			// Set up upstream configurations
+			up1 := &common.UpstreamConfig{
+				Id:       "rpc1",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-				DirectiveDefaults: &common.DirectiveDefaultsConfig{
-					RetryEmpty: &common.TRUE,
+			}
+			up2 := &common.UpstreamConfig{
+				Id:       "rpc2",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
 				},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
 
-		// Bootstrap the network and make the simulated request
-		ntw.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+			// Initialize the upstreams registry
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		poller1 := pup1.EvmStatePoller()
-		poller1.SuggestLatestBlock(9)
-		poller1.SuggestFinalizedBlock(8)
+			// Create and register clients for both upstreams
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = pup1.Bootstrap(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		poller2 := pup2.EvmStatePoller()
-		poller2.SuggestLatestBlock(9)
-		poller2.SuggestFinalizedBlock(8)
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = pup2.Bootstrap(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		pup1.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+			// Set up the network configuration
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+					DirectiveDefaults: &common.DirectiveDefaultsConfig{
+						RetryEmpty: &common.TRUE,
+					},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		time.Sleep(100 * time.Millisecond)
+			// Bootstrap the network and make the simulated request
+			ntw.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		// Create a fake request and forward it through the network
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			poller1 := pup1.EvmStatePoller()
+			poller1.SuggestLatestBlock(9)
+			poller1.SuggestFinalizedBlock(8)
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			poller2 := pup2.EvmStatePoller()
+			poller2.SuggestLatestBlock(9)
+			poller2.SuggestFinalizedBlock(8)
 
-		// Convert the raw response to a map to access custom fields like fromHost
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JsonRpcResponse: %v", err)
-		}
-		var result []interface{}
-		err = sonic.Unmarshal(jrr.GetResultBytes(), &result)
-		if err != nil {
-			t.Fatalf("Failed to unmarshal response body: %v", err)
-		}
+			pup1.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
 
-		if len(result) == 0 {
-			t.Fatalf("Expected non-empty result array")
-		}
+			time.Sleep(100 * time.Millisecond)
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			// Create a fake request and forward it through the network
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			resp, err := ntw.Forward(ctx, fakeReq)
+
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+
+			// Convert the raw response to a map to access custom fields like fromHost
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JsonRpcResponse: %v", err)
+			}
+			var result []interface{}
+			err = sonic.Unmarshal(jrr.GetResultBytes(), &result)
+			if err != nil {
+				t.Fatalf("Failed to unmarshal response body: %v", err)
+			}
+
+			if len(result) == 0 {
+				t.Fatalf("Expected non-empty result array")
+			}
+		})
 	})
 
 	t.Run("ForwardRetriesOnPendingBlockIsNotAvailableClientError", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// We expect no leftover mocks after both calls
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// We expect no leftover mocks after both calls
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{
+			var requestBytes = []byte(`{
 			"jsonrpc": "2.0",
 			"id": 1,
 			"method": "eth_call",
@@ -2160,11 +2194,11 @@ func TestNetwork_Forward(t *testing.T) {
 			]
 		}`)
 
-		// First upstream returns the retryable client error
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Reply(400).
-			JSON([]byte(`{
+			// First upstream returns the retryable client error
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Reply(400).
+				JSON([]byte(`{
 				"jsonrpc": "2.0",
 				"id": 1,
 				"error": {
@@ -2173,190 +2207,192 @@ func TestNetwork_Forward(t *testing.T) {
 				}
 			}`))
 
-		// Second upstream responds successfully
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Reply(200).
-			JSON([]byte(`{
+			// Second upstream responds successfully
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Reply(200).
+				JSON([]byte(`{
 				"jsonrpc": "2.0",
 				"id": 1,
 				"result": "0x123"
 			}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		up1 := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		up2 := &common.UpstreamConfig{
-			Id:       "rpc2",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = pup1.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = pup2.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			up1 := &common.UpstreamConfig{
+				Id:       "rpc1",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{{
-					Retry: &common.RetryPolicyConfig{
-						MaxAttempts: 3,
-					}},
+			}
+
+			up2 := &common.UpstreamConfig{
+				Id:       "rpc2",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
 				},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
 
-		ntw.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		poller1 := pup1.EvmStatePoller()
-		poller1.SuggestLatestBlock(9)
-		poller1.SuggestFinalizedBlock(8)
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = pup1.Bootstrap(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		poller2 := pup2.EvmStatePoller()
-		poller2.SuggestLatestBlock(9)
-		poller2.SuggestFinalizedBlock(8)
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = pup2.Bootstrap(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{{
+						Retry: &common.RetryPolicyConfig{
+							MaxAttempts: 3,
+						}},
+					},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// Since "pending block is not available" client error is considered retryable,
-		// aggregator should try the second upstream and succeed.
-		if err != nil {
-			t.Fatalf("Expected no error (success from second upstream), got %v", err)
-		}
-		if resp == nil {
-			t.Fatal("Expected a non-nil response from second upstream, got nil")
-		}
+			ntw.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
 
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Unable to parse JSON-RPC response: %v", err)
-		}
-		if jrr.GetResultBytes() == nil {
-			t.Fatal("Expected a successful 'result' field, got nil")
-		}
+			poller1 := pup1.EvmStatePoller()
+			poller1.SuggestLatestBlock(9)
+			poller1.SuggestFinalizedBlock(8)
 
-		assert.Equal(t, "\"0x123\"", strings.ToLower(jrr.GetResultString()))
+			poller2 := pup2.EvmStatePoller()
+			poller2.SuggestLatestBlock(9)
+			poller2.SuggestFinalizedBlock(8)
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			resp, err := ntw.Forward(ctx, fakeReq)
+
+			// Since "pending block is not available" client error is considered retryable,
+			// aggregator should try the second upstream and succeed.
+			if err != nil {
+				t.Fatalf("Expected no error (success from second upstream), got %v", err)
+			}
+			if resp == nil {
+				t.Fatal("Expected a non-nil response from second upstream, got nil")
+			}
+
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Unable to parse JSON-RPC response: %v", err)
+			}
+			if jrr.GetResultBytes() == nil {
+				t.Fatal("Expected a successful 'result' field, got nil")
+			}
+
+			assert.Equal(t, "\"0x123\"", strings.ToLower(jrr.GetResultString()))
+		})
 	})
 
 	t.Run("ForwardRetriesOnInvalidArgumentCodeClientError", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// We expect no leftover mocks after both calls
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// We expect no leftover mocks after both calls
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"}]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"}]}`)
 
-		// Mock a client error response (400) and code -32602, meaning invalid argument
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Reply(400).
-			JSON([]byte(`{
+			// Mock a client error response (400) and code -32602, meaning invalid argument
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Reply(400).
+				JSON([]byte(`{
 				"jsonrpc": "2.0",
 				"id": 1,
 				"error": {
@@ -2365,5959 +2401,6037 @@ func TestNetwork_Forward(t *testing.T) {
 				}
 			}`))
 
-		// Second upstream responds successfully
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Reply(200).
-			JSON([]byte(`{
+			// Second upstream responds successfully
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Reply(200).
+				JSON([]byte(`{
 				"jsonrpc": "2.0",
 				"id": 1,
 				"result": "0x123"
 			}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		up1 := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		up2 := &common.UpstreamConfig{
-			Id:       "rpc2",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = pup1.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = pup2.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			up1 := &common.UpstreamConfig{
+				Id:       "rpc1",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{{
-					Retry: &common.RetryPolicyConfig{
-						MaxAttempts: 3,
-					}},
+			}
+
+			up2 := &common.UpstreamConfig{
+				Id:       "rpc2",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
 				},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
 
-		ntw.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		poller1 := pup1.EvmStatePoller()
-		poller1.SuggestLatestBlock(9)
-		poller1.SuggestFinalizedBlock(8)
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = pup1.Bootstrap(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		poller2 := pup2.EvmStatePoller()
-		poller2.SuggestLatestBlock(9)
-		poller2.SuggestFinalizedBlock(8)
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = pup2.Bootstrap(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{{
+						Retry: &common.RetryPolicyConfig{
+							MaxAttempts: 3,
+						}},
+					},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// Since "pending block is not available" client error is considered retryable,
-		// aggregator should try the second upstream and succeed.
-		if err != nil {
-			t.Fatalf("Expected no error (success from second upstream), got %v", err)
-		}
-		if resp == nil {
-			t.Fatal("Expected a non-nil response from second upstream, got nil")
-		}
+			ntw.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
 
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Unable to parse JSON-RPC response: %v", err)
-		}
-		if jrr.GetResultBytes() == nil {
-			t.Fatal("Expected a successful 'result' field, got nil")
-		}
+			poller1 := pup1.EvmStatePoller()
+			poller1.SuggestLatestBlock(9)
+			poller1.SuggestFinalizedBlock(8)
 
-		assert.Equal(t, "\"0x123\"", strings.ToLower(jrr.GetResultString()))
+			poller2 := pup2.EvmStatePoller()
+			poller2.SuggestLatestBlock(9)
+			poller2.SuggestFinalizedBlock(8)
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			resp, err := ntw.Forward(ctx, fakeReq)
+
+			// Since "pending block is not available" client error is considered retryable,
+			// aggregator should try the second upstream and succeed.
+			if err != nil {
+				t.Fatalf("Expected no error (success from second upstream), got %v", err)
+			}
+			if resp == nil {
+				t.Fatal("Expected a non-nil response from second upstream, got nil")
+			}
+
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Unable to parse JSON-RPC response: %v", err)
+			}
+			if jrr.GetResultBytes() == nil {
+				t.Fatal("Expected a successful 'result' field, got nil")
+			}
+
+			assert.Equal(t, "\"0x123\"", strings.ToLower(jrr.GetResultString()))
+		})
 	})
 	t.Run("HedgeRequestsBlockedBySharedJsonRpcLock", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer func() {
-			cancel()
-			// Allow hedge requests to complete before cleanup
-			time.Sleep(500 * time.Millisecond)
-		}()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer func() {
+				cancel()
+				// Allow hedge requests to complete before cleanup
+				time.Sleep(500 * time.Millisecond)
+			}()
 
-		// Test parameters
-		hedgeDelay := 100 * time.Millisecond
-		upstream1Delay := 300 * time.Millisecond // Slow upstream
-		upstream2Delay := 50 * time.Millisecond  // Fast upstream
+			// Test parameters
+			hedgeDelay := 100 * time.Millisecond
+			upstream1Delay := 300 * time.Millisecond // Slow upstream
+			upstream2Delay := 50 * time.Millisecond  // Fast upstream
 
-		// Upstream 1: Slow response
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			MatchType("json").
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"method":  "eth_getBlockByNumber",
-				"params":  []interface{}{"0x123", false},
-				"id":      float64(1),
-			}).
-			Reply(200).
-			Delay(upstream1Delay).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": map[string]interface{}{
-					"number": "0x123",
-					"hash":   "0xabc",
+			// Upstream 1: Slow response
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				MatchType("json").
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"method":  "eth_getBlockByNumber",
+					"params":  []interface{}{"0x123", false},
+					"id":      float64(1),
+				}).
+				Reply(200).
+				Delay(upstream1Delay).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": map[string]interface{}{
+						"number": "0x123",
+						"hash":   "0xabc",
+					},
+				})
+
+			// Upstream 2: Fast response
+			gock.New("http://rpc2.localhost").
+				Post("/").
+				MatchType("json").
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"method":  "eth_getBlockByNumber",
+					"params":  []interface{}{"0x123", false},
+					"id":      float64(1),
+				}).
+				Reply(200).
+				Delay(upstream2Delay).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": map[string]interface{}{
+						"number": "0x123",
+						"hash":   "0xdef",
+					},
+				})
+
+			// Configure network with hedge policy
+			fsCfg := &common.FailsafeConfig{
+				Hedge: &common.HedgePolicyConfig{
+					Delay:    common.NewStaticDuration(hedgeDelay),
+					MaxCount: 1,
+				},
+			}
+
+			// Set up the test environment
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+			vr := thirdparty.NewVendorsRegistry()
+			pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+			}
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc2",
+				Endpoint: "http://rpc2.localhost",
+				Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+			}
+
+			ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
 				},
 			})
 
-		// Upstream 2: Fast response
-		gock.New("http://rpc2.localhost").
-			Post("/").
-			MatchType("json").
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"method":  "eth_getBlockByNumber",
-				"params":  []interface{}{"0x123", false},
-				"id":      float64(1),
-			}).
-			Reply(200).
-			Delay(upstream2Delay).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": map[string]interface{}{
-					"number": "0x123",
-					"hash":   "0xdef",
-				},
-			})
+			upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, nil)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			_ = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 
-		// Configure network with hedge policy
-		fsCfg := &common.FailsafeConfig{
-			Hedge: &common.HedgePolicyConfig{
-				Delay:    common.NewStaticDuration(hedgeDelay),
-				MaxCount: 1,
-			},
-		}
+			// Create clients
+			pup1, _ := upr.NewUpstream(up1)
+			cl1, _ := clr.GetOrCreateClient(ctx, pup1)
+			pup1.Client = cl1
 
-		// Set up the test environment
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
-		vr := thirdparty.NewVendorsRegistry()
-		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			pup2, _ := upr.NewUpstream(up2)
+			cl2, _ := clr.GetOrCreateClient(ctx, pup2)
+			pup2.Client = cl2
 
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
-		}
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc2",
-			Endpoint: "http://rpc2.localhost",
-			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
-		}
+			ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm:          &common.EvmNetworkConfig{ChainId: 123},
+				Failsafe:     []*common.FailsafeConfig{fsCfg},
+			}, rlr, upr, mt, nil)
 
-		ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
-			},
-		})
-
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, nil)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		_ = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-
-		// Create clients
-		pup1, _ := upr.NewUpstream(up1)
-		cl1, _ := clr.GetOrCreateClient(ctx, pup1)
-		pup1.Client = cl1
-
-		pup2, _ := upr.NewUpstream(up2)
-		cl2, _ := clr.GetOrCreateClient(ctx, pup2)
-		pup2.Client = cl2
-
-		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{
-			Architecture: common.ArchitectureEvm,
-			Evm:          &common.EvmNetworkConfig{ChainId: 123},
-			Failsafe:     []*common.FailsafeConfig{fsCfg},
-		}, rlr, upr, mt, nil)
-
-		_ = ntw.Bootstrap(ctx)
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		// Make the request
-		fakeReq := common.NewNormalizedRequest([]byte(`{
+			_ = ntw.Bootstrap(ctx)
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			// Make the request
+			fakeReq := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getBlockByNumber",
 			"params": ["0x123", false],
 			"id": 1
 		}`))
 
-		startTime := time.Now()
-		resp, err := ntw.Forward(ctx, fakeReq)
-		totalDuration := time.Since(startTime)
+			startTime := time.Now()
+			resp, err := ntw.Forward(ctx, fakeReq)
+			totalDuration := time.Since(startTime)
 
-		require.NoError(t, err)
-		require.NotNil(t, resp)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
 
-		t.Logf("Total request duration: %v", totalDuration)
+			t.Logf("Total request duration: %v", totalDuration)
 
-		// Calculate expected duration with hedge:
-		// - Request starts with upstream1
-		// - After hedgeDelay (100ms), hedge request goes to upstream2
-		// - Upstream2 responds after upstream2Delay (50ms)
-		// - Total expected: hedgeDelay + upstream2Delay = 150ms
-		expectedMaxDuration := hedgeDelay + upstream2Delay + 50*time.Millisecond // 50ms tolerance
+			// Calculate expected duration with hedge:
+			// - Request starts with upstream1
+			// - After hedgeDelay (100ms), hedge request goes to upstream2
+			// - Upstream2 responds after upstream2Delay (50ms)
+			// - Total expected: hedgeDelay + upstream2Delay = 150ms
+			expectedMaxDuration := hedgeDelay + upstream2Delay + 50*time.Millisecond // 50ms tolerance
 
-		// The total duration should be much less than waiting for upstream1 (300ms)
-		// It should be close to hedgeDelay + upstream2Delay
-		if totalDuration > expectedMaxDuration {
-			t.Errorf("Total duration %v exceeds expected hedged response time %v (hedge delay %v + upstream2 delay %v + tolerance). This indicates hedge was blocked or not triggered properly",
-				totalDuration, expectedMaxDuration, hedgeDelay, upstream2Delay)
-		}
+			// The total duration should be much less than waiting for upstream1 (300ms)
+			// It should be close to hedgeDelay + upstream2Delay
+			if totalDuration > expectedMaxDuration {
+				t.Errorf("Total duration %v exceeds expected hedged response time %v (hedge delay %v + upstream2 delay %v + tolerance). This indicates hedge was blocked or not triggered properly",
+					totalDuration, expectedMaxDuration, hedgeDelay, upstream2Delay)
+			}
 
-		// Also verify it's not too fast (which would mean hedge didn't wait)
-		if totalDuration < hedgeDelay {
-			t.Errorf("Total duration %v is less than hedge delay %v, indicating hedge triggered too early",
-				totalDuration, hedgeDelay)
-		}
+			// Also verify it's not too fast (which would mean hedge didn't wait)
+			if totalDuration < hedgeDelay {
+				t.Errorf("Total duration %v is less than hedge delay %v, indicating hedge triggered too early",
+					totalDuration, hedgeDelay)
+			}
+		})
 	})
 	t.Run("RetryWhenWeDoNotKnowNodeSyncState", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Prepare a JSON-RPC request payload as a byte array
-		var requestBytes = []byte(`{
+			// Prepare a JSON-RPC request payload as a byte array
+			var requestBytes = []byte(`{
 				"jsonrpc": "2.0",
 				"method": "eth_getBalance",
 				"params": ["0x1234567890abcdef1234567890abcdef12345678"],
 				"id": 1
 			}`)
 
-		// Mock an empty logs response from the first upstream
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[]}`))
+			// Mock an empty logs response from the first upstream
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[]}`))
 
-		// Mock a non-empty logs response from the second upstream
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[{"logIndex":444,"fromHost":"rpc2"}]}`))
+			// Mock a non-empty logs response from the second upstream
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[{"logIndex":444,"fromHost":"rpc2"}]}`))
 
-		// Set up a context and a cancellation function
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			// Set up a context and a cancellation function
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Initialize various components for the test environment
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2, // Allow up to 2 retry attempts
-				// Pin empty accept list so this exercises retry-on-empty regardless of
-				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
-				EmptyResultAccept: []string{},
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-
-		// Set up upstream configurations
-		up1 := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Id:       "rpc2",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			// Initialize various components for the test environment
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2, // Allow up to 2 retry attempts
+					// Pin empty accept list so this exercises retry-on-empty regardless of
+					// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+					EmptyResultAccept: []string{},
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		// Initialize the upstreams registry
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = pup1.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = pup2.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		// Set up the network configuration
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			// Set up upstream configurations
+			up1 := &common.UpstreamConfig{
+				Id:       "rpc1",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-				DirectiveDefaults: &common.DirectiveDefaultsConfig{
-					RetryEmpty: &common.TRUE,
+			}
+			up2 := &common.UpstreamConfig{
+				Id:       "rpc2",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
 				},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
 
-		// Bootstrap the network and make the simulated request
-		ntw.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			// Initialize the upstreams registry
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		poller1 := pup1.EvmStatePoller()
-		poller1.SuggestLatestBlock(9)
-		poller1.SuggestFinalizedBlock(8)
+			// Create and register clients for both upstreams
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = pup1.Bootstrap(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		poller2 := pup2.EvmStatePoller()
-		poller2.SuggestLatestBlock(9)
-		poller2.SuggestFinalizedBlock(8)
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = pup2.Bootstrap(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		time.Sleep(100 * time.Millisecond)
+			// Set up the network configuration
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+					DirectiveDefaults: &common.DirectiveDefaultsConfig{
+						RetryEmpty: &common.TRUE,
+					},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		// Create a fake request and forward it through the network
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			// Bootstrap the network and make the simulated request
+			ntw.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			poller1 := pup1.EvmStatePoller()
+			poller1.SuggestLatestBlock(9)
+			poller1.SuggestFinalizedBlock(8)
 
-		// Convert the raw response to a map to access custom fields like fromHost
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			poller2 := pup2.EvmStatePoller()
+			poller2.SuggestLatestBlock(9)
+			poller2.SuggestFinalizedBlock(8)
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			time.Sleep(100 * time.Millisecond)
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
-		if err != nil {
-			t.Fatalf("Failed to get fromHost from result: %v", err)
-		}
-		if fromHost != "rpc2" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
-		}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			// Create a fake request and forward it through the network
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			resp, err := ntw.Forward(ctx, fakeReq)
+
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+
+			// Convert the raw response to a map to access custom fields like fromHost
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
+
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
+
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
+			if err != nil {
+				t.Fatalf("Failed to get fromHost from result: %v", err)
+			}
+			if fromHost != "rpc2" {
+				t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+			}
+		})
 	})
 
 	t.Run("RetryWhenBlockIsNotFinalized", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Prepare a JSON-RPC request payload as a byte array
-		var requestBytes = []byte(`{
+			// Prepare a JSON-RPC request payload as a byte array
+			var requestBytes = []byte(`{
 				"jsonrpc": "2.0",
 				"method": "eth_getBalance",
 				"params": ["0x1234567890abcdef1234567890abcdef12345678"],
 				"id": 1
 			}`)
 
-		// Mock an empty logs response from the first upstream
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[]}`))
+			// Mock an empty logs response from the first upstream
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[]}`))
 
-		// Mock a non-empty logs response from the second upstream
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[{"logIndex":444, "fromHost":"rpc2"}]}`))
+			// Mock a non-empty logs response from the second upstream
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[{"logIndex":444, "fromHost":"rpc2"}]}`))
 
-		// Set up a context and a cancellation function
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			// Set up a context and a cancellation function
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Initialize various components for the test environment
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2, // Allow up to 2 retry attempts
-				// Pin empty accept list so this exercises retry-on-empty regardless of
-				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
-				EmptyResultAccept: []string{},
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-
-		// Set up upstream configurations
-		up1 := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Id:       "rpc2",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			// Initialize various components for the test environment
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2, // Allow up to 2 retry attempts
+					// Pin empty accept list so this exercises retry-on-empty regardless of
+					// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+					EmptyResultAccept: []string{},
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		// Initialize the upstreams registry
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		// Set up the network configuration
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			// Set up upstream configurations
+			up1 := &common.UpstreamConfig{
+				Id:       "rpc1",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-				DirectiveDefaults: &common.DirectiveDefaultsConfig{
-					RetryEmpty: &common.TRUE,
+			}
+			up2 := &common.UpstreamConfig{
+				Id:       "rpc2",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
 				},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
 
-		// Bootstrap the network and make the simulated request
-		ntw.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			// Initialize the upstreams registry
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		// Create a fake request and forward it through the network
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			// Create and register clients for both upstreams
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		// Parse and validate the JSON-RPC response
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			// Set up the network configuration
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+					DirectiveDefaults: &common.DirectiveDefaultsConfig{
+						RetryEmpty: &common.TRUE,
+					},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			// Bootstrap the network and make the simulated request
+			ntw.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
-		if err != nil {
-			t.Fatalf("Failed to get fromHost from result: %v", err)
-		}
-		if fromHost != "rpc2" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
-		}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			// Create a fake request and forward it through the network
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			resp, err := ntw.Forward(ctx, fakeReq)
+
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+
+			// Parse and validate the JSON-RPC response
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
+
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
+
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
+			if err != nil {
+				t.Fatalf("Failed to get fromHost from result: %v", err)
+			}
+			if fromHost != "rpc2" {
+				t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+			}
+		})
 	})
 
 	t.Run("RetryWhenBlockFinalizationIsNotAvailable", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Prepare a JSON-RPC request payload as a byte array
-		var requestBytes = []byte(`{
+			// Prepare a JSON-RPC request payload as a byte array
+			var requestBytes = []byte(`{
 				"jsonrpc": "2.0",
 				"method": "eth_getBalance",
 				"params": ["0x1234567890abcdef1234567890abcdef12345678"],
 				"id": 1
 			}`)
 
-		// Mock an empty logs response from the first upstream
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[]}`))
+			// Mock an empty logs response from the first upstream
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[]}`))
 
-		// Mock a non-empty logs response from the second upstream
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[{"logIndex":444, "fromHost":"rpc2"}]}`))
+			// Mock a non-empty logs response from the second upstream
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[{"logIndex":444, "fromHost":"rpc2"}]}`))
 
-		// Set up a context and a cancellation function
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			// Set up a context and a cancellation function
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Initialize various components for the test environment
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2, // Allow up to 2 retry attempts
-				// Pin empty accept list so this exercises retry-on-empty regardless of
-				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
-				EmptyResultAccept: []string{},
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-
-		// Set up upstream configurations
-		up1 := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Id:       "rpc2",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			// Initialize various components for the test environment
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2, // Allow up to 2 retry attempts
+					// Pin empty accept list so this exercises retry-on-empty regardless of
+					// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+					EmptyResultAccept: []string{},
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		// Initialize the upstreams registry
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		// Set up the network configuration
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			// Set up upstream configurations
+			up1 := &common.UpstreamConfig{
+				Id:       "rpc1",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-				DirectiveDefaults: &common.DirectiveDefaultsConfig{
-					RetryEmpty: &common.TRUE,
+			}
+			up2 := &common.UpstreamConfig{
+				Id:       "rpc2",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
 				},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
 
-		// Bootstrap the network and make the simulated request
-		ntw.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			// Initialize the upstreams registry
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		// Create a fake request and forward it through the network
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			// Create and register clients for both upstreams
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		// Parse and validate the JSON-RPC response
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			// Set up the network configuration
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+					DirectiveDefaults: &common.DirectiveDefaultsConfig{
+						RetryEmpty: &common.TRUE,
+					},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			// Bootstrap the network and make the simulated request
+			ntw.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
-		if err != nil {
-			t.Fatalf("Failed to get fromHost from result: %v", err)
-		}
-		if fromHost != "rpc2" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
-		}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			// Create a fake request and forward it through the network
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			resp, err := ntw.Forward(ctx, fakeReq)
+
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+
+			// Parse and validate the JSON-RPC response
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
+
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
+
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
+			if err != nil {
+				t.Fatalf("Failed to get fromHost from result: %v", err)
+			}
+			if fromHost != "rpc2" {
+				t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+			}
+		})
 	})
 	t.Run("RetryPendingTXsWhenDirectiveIsSet", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Mock a pending transaction response from the first upstream
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc1"}}`))
+			// Mock a pending transaction response from the first upstream
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					b := util.SafeReadBody(request)
+					return strings.Contains(b, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc1"}}`))
 
-		// Mock a non-pending transaction response from the second upstream
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"blockNumber":"0x54C563","hash":"0xabcdef","fromHost":"rpc2"}}`))
+			// Mock a non-pending transaction response from the second upstream
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					b := util.SafeReadBody(request)
+					return strings.Contains(b, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":{"blockNumber":"0x54C563","hash":"0xabcdef","fromHost":"rpc2"}}`))
 
-		// Set up a context and a cancellation function
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			// Set up a context and a cancellation function
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Initialize various components for the test environment
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2, // Allow up to 2 retry attempts
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-
-		// Set up upstream configurations
-		up1 := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Id:       "rpc2",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			// Initialize various components for the test environment
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2, // Allow up to 2 retry attempts
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		// Initialize the upstreams registry
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		// Set up the network configuration
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			// Set up upstream configurations
+			up1 := &common.UpstreamConfig{
+				Id:       "rpc1",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-				DirectiveDefaults: &common.DirectiveDefaultsConfig{
-					RetryEmpty: &common.TRUE,
+			}
+			up2 := &common.UpstreamConfig{
+				Id:       "rpc2",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
 				},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
 
-		// Bootstrap the network and make the simulated request
-		ntw.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			// Initialize the upstreams registry
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		// Create a fake request and forward it through the network
-		fakeReq := common.NewNormalizedRequest([]byte(`{
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			// Create and register clients for both upstreams
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
+
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
+
+			// Set up the network configuration
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+					DirectiveDefaults: &common.DirectiveDefaultsConfig{
+						RetryEmpty: &common.TRUE,
+					},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Bootstrap the network and make the simulated request
+			ntw.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			// Create a fake request and forward it through the network
+			fakeReq := common.NewNormalizedRequest([]byte(`{
 				"jsonrpc": "2.0",
 				"method": "eth_getTransactionByHash",
 				"params": ["0xabcdef"],
 				"id": 1
 			}`))
-		fakeReq.EnrichFromHttp(http.Header{
-			"X-Erpc-Retry-Pending": []string{"true"},
-		}, url.Values{}, common.UserAgentTrackingModeSimplified)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			fakeReq.EnrichFromHttp(http.Header{
+				"X-Erpc-Retry-Pending": []string{"true"},
+			}, url.Values{}, common.UserAgentTrackingModeSimplified)
+			resp, err := ntw.Forward(ctx, fakeReq)
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
 
-		// Parse and validate the JSON-RPC response
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			// Parse and validate the JSON-RPC response
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
 
-		blockNumber, err := jrr.PeekStringByPath(context.TODO(), "blockNumber")
-		if err != nil {
-			t.Fatalf("Failed to get blockNumber from result: %v", err)
-		}
-		if blockNumber != "0x54C563" {
-			t.Errorf("Expected blockNumber to be %q, got %q", "0x54C563", blockNumber)
-		}
+			blockNumber, err := jrr.PeekStringByPath(context.TODO(), "blockNumber")
+			if err != nil {
+				t.Fatalf("Failed to get blockNumber from result: %v", err)
+			}
+			if blockNumber != "0x54C563" {
+				t.Errorf("Expected blockNumber to be %q, got %q", "0x54C563", blockNumber)
+			}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
-		if err != nil {
-			t.Fatalf("Failed to get fromHost from result: %v", err)
-		}
-		if fromHost != "rpc2" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
-		}
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
+			if err != nil {
+				t.Fatalf("Failed to get fromHost from result: %v", err)
+			}
+			if fromHost != "rpc2" {
+				t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+			}
+		})
 	})
 	t.Run("RetryEmptyAndUseLastNonEmptyResponse", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Mock sequence:
-		// 1. First upstream returns empty result (0x0)
-		// 2. Second upstream returns non-empty result
-		// The non-empty result from second upstream should be preserved
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":null}`))
+			// Mock sequence:
+			// 1. First upstream returns empty result (0x0)
+			// 2. Second upstream returns non-empty result
+			// The non-empty result from second upstream should be preserved
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					b := util.SafeReadBody(request)
+					return strings.Contains(b, "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":null}`))
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"blockNumber":"0x1234567890","fromHost":"rpc2"}}`))
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					b := util.SafeReadBody(request)
+					return strings.Contains(b, "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":{"blockNumber":"0x1234567890","fromHost":"rpc2"}}`))
 
-		// Set up a context and a cancellation function
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			// Set up a context and a cancellation function
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Initialize various components for the test environment
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 4, // Allow up to 4 attempts (1 initial + 3 retries)
-				// Pin an empty accept list so this test exercises the
-				// retry-on-empty path regardless of DefaultEmptyResultAccept
-				// (eth_getBalance is now accepted by default).
-				EmptyResultAccept: []string{},
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-
-		// Set up upstream configurations
-		up1 := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Id:       "rpc2",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up3 := &common.UpstreamConfig{
-			Id:       "rpc3",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc3.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			// Initialize various components for the test environment
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 4, // Allow up to 4 attempts (1 initial + 3 retries)
+					// Pin an empty accept list so this test exercises the
+					// retry-on-empty path regardless of DefaultEmptyResultAccept
+					// (eth_getBalance is now accepted by default).
+					EmptyResultAccept: []string{},
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		// Initialize the upstreams registry
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2, up3},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		// Create and register clients for all upstreams
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		pup3, err := upr.NewUpstream(up3)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl3, err := clr.GetOrCreateClient(ctx, pup3)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup3.Client = cl3
-
-		// Set up the network configuration with RetryEmpty directive
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			// Set up upstream configurations
+			up1 := &common.UpstreamConfig{
+				Id:       "rpc1",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-				DirectiveDefaults: &common.DirectiveDefaultsConfig{
-					RetryEmpty: &common.TRUE,
+			}
+			up2 := &common.UpstreamConfig{
+				Id:       "rpc2",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
 				},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			up3 := &common.UpstreamConfig{
+				Id:       "rpc3",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc3.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
 
-		// Bootstrap the network and make the simulated request
-		ntw.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			// Initialize the upstreams registry
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2, up3},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		// Create a fake request with RetryEmpty directive
-		fakeReq := common.NewNormalizedRequest([]byte(`{
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			// Create and register clients for all upstreams
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
+
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
+
+			pup3, err := upr.NewUpstream(up3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl3, err := clr.GetOrCreateClient(ctx, pup3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup3.Client = cl3
+
+			// Set up the network configuration with RetryEmpty directive
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+					DirectiveDefaults: &common.DirectiveDefaultsConfig{
+						RetryEmpty: &common.TRUE,
+					},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Bootstrap the network and make the simulated request
+			ntw.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			// Create a fake request with RetryEmpty directive
+			fakeReq := common.NewNormalizedRequest([]byte(`{
 				"jsonrpc": "2.0",
 				"method": "eth_getBalance",
 				"params": ["0x742d35Cc6634C0532925a3b844Bc9e7595f8fA49", "latest"],
 				"id": 1
 			}`))
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			resp, err := ntw.Forward(ctx, fakeReq)
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
 
-		// Parse and validate the JSON-RPC response
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			// Parse and validate the JSON-RPC response
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
 
-		// The response should be the non-empty result from the second upstream
-		result, err := jrr.PeekStringByPath(context.TODO(), "blockNumber")
-		if err != nil {
-			t.Fatalf("Failed to get result: %v", err)
-		}
-		if result != "0x1234567890" {
-			t.Errorf("Expected result to be %q, got %q", "0x1234567890", result)
-		}
+			// The response should be the non-empty result from the second upstream
+			result, err := jrr.PeekStringByPath(context.TODO(), "blockNumber")
+			if err != nil {
+				t.Fatalf("Failed to get result: %v", err)
+			}
+			if result != "0x1234567890" {
+				t.Errorf("Expected result to be %q, got %q", "0x1234567890", result)
+			}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
-		if err != nil {
-			t.Fatalf("Failed to get fromHost from result: %v", err)
-		}
-		if fromHost != "rpc2" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
-		}
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
+			if err != nil {
+				t.Fatalf("Failed to get fromHost from result: %v", err)
+			}
+			if fromHost != "rpc2" {
+				t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+			}
 
-		// Verify that the request's lastValidResponse was set correctly
-		lastValidResp := fakeReq.LastValidResponse()
-		if lastValidResp == nil {
-			t.Fatalf("Expected lastValidResponse to be set")
-		}
+			// Verify that the request's lastValidResponse was set correctly
+			lastValidResp := fakeReq.LastValidResponse()
+			if lastValidResp == nil {
+				t.Fatalf("Expected lastValidResponse to be set")
+			}
 
-		// Verify that the last upstream is set to the one with non-empty response
-		lastUpstream := fakeReq.LastUpstream()
-		if lastUpstream == nil {
-			t.Fatalf("Expected lastUpstream to be set")
-		}
-		if lastUpstream.Config().Id != "rpc2" {
-			t.Errorf("Expected lastUpstream to be rpc2, got %s", lastUpstream.Config().Id)
-		}
+			// Verify that the last upstream is set to the one with non-empty response
+			lastUpstream := fakeReq.LastUpstream()
+			if lastUpstream == nil {
+				t.Fatalf("Expected lastUpstream to be set")
+			}
+			if lastUpstream.Config().Id != "rpc2" {
+				t.Errorf("Expected lastUpstream to be rpc2, got %s", lastUpstream.Config().Id)
+			}
+		})
 	})
 
 	t.Run("RetryPendingDirectiveFromDefaults", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Mock responses similar to RetryPendingTXsWhenDirectiveIsSet
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc1"}}`))
+			// Mock responses similar to RetryPendingTXsWhenDirectiveIsSet
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc1"}}`))
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"blockNumber":"0x54C563","hash":"0xabcdef","fromHost":"rpc2"}}`))
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":{"blockNumber":"0x54C563","hash":"0xabcdef","fromHost":"rpc2"}}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Initialize test components
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Set up test environment
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Id:       "rpc2",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			// Initialize test components
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		// Set up registry with both upstreams
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
-			t.Fatal(err)
-		}
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// Create and register clients
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		// Set up network with directiveDefaults
-		retryPending := true
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			// Set up test environment
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Id:       "rpc1",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-				DirectiveDefaults: &common.DirectiveDefaultsConfig{
-					RetryPending: &retryPending,
+			}
+			up2 := &common.UpstreamConfig{
+				Id:       "rpc2",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
 				},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
 
-		ntw.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			// Set up registry with both upstreams
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+				t.Fatal(err)
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		// Create request without explicit directives
-		fakeReq := common.NewNormalizedRequest([]byte(`{
+			// Create and register clients
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
+
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
+
+			// Set up network with directiveDefaults
+			retryPending := true
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+					DirectiveDefaults: &common.DirectiveDefaultsConfig{
+						RetryPending: &retryPending,
+					},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			ntw.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			// Create request without explicit directives
+			fakeReq := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getTransactionByHash",
 			"params": ["0xabcdef"],
 			"id": 1
 		}`))
 
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
-		resp, err := ntw.Forward(ctx, fakeReq)
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			resp, err := ntw.Forward(ctx, fakeReq)
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
 
-		// Verify response shows retry behavior from defaults
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			// Verify response shows retry behavior from defaults
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
 
-		blockNumber, err := jrr.PeekStringByPath(context.TODO(), "blockNumber")
-		if err != nil {
-			t.Fatalf("Failed to get blockNumber: %v", err)
-		}
-		if blockNumber != "0x54C563" {
-			t.Errorf("Expected blockNumber %q, got %q", "0x54C563", blockNumber)
-		}
+			blockNumber, err := jrr.PeekStringByPath(context.TODO(), "blockNumber")
+			if err != nil {
+				t.Fatalf("Failed to get blockNumber: %v", err)
+			}
+			if blockNumber != "0x54C563" {
+				t.Errorf("Expected blockNumber %q, got %q", "0x54C563", blockNumber)
+			}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
-		if err != nil {
-			t.Fatalf("Failed to get fromHost: %v", err)
-		}
-		if fromHost != "rpc2" {
-			t.Errorf("Expected fromHost %q, got %q", "rpc2", fromHost)
-		}
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
+			if err != nil {
+				t.Fatalf("Failed to get fromHost: %v", err)
+			}
+			if fromHost != "rpc2" {
+				t.Errorf("Expected fromHost %q, got %q", "rpc2", fromHost)
+			}
+		})
 	})
 	t.Run("ReturnPendingDataEvenAfterRetryingExhaustedWhenDirectiveIsSet", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Mock a pending transaction response from the first upstream
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc1"}}`))
+			// Mock a pending transaction response from the first upstream
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					b := util.SafeReadBody(request)
+					return strings.Contains(b, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc1"}}`))
 
-		// Mock a non-pending transaction response from the second upstream
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc2"}}`))
+			// Mock a non-pending transaction response from the second upstream
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					b := util.SafeReadBody(request)
+					return strings.Contains(b, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc2"}}`))
 
-		// Set up a context and a cancellation function
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			// Set up a context and a cancellation function
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Initialize various components for the test environment
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 3, // Allow up to 3 retry attempts
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-
-		// Set up upstream configurations
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc2",
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			// Initialize various components for the test environment
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 3, // Allow up to 3 retry attempts
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		// Initialize the upstreams registry
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		// Set up the network configuration
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			// Set up upstream configurations
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc2",
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
 
-		// Bootstrap the network and make the simulated request
-		ntw.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			// Initialize the upstreams registry
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		// Create a fake request and forward it through the network
-		fakeReq := common.NewNormalizedRequest([]byte(`{
+			// Create and register clients for both upstreams
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
+
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
+
+			// Set up the network configuration
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Bootstrap the network and make the simulated request
+			ntw.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			// Create a fake request and forward it through the network
+			fakeReq := common.NewNormalizedRequest([]byte(`{
 				"jsonrpc": "2.0",
 				"method": "eth_getTransactionByHash",
 				"params": ["0xabcdef"],
 				"id": 1
 			}`))
 
-		headers := http.Header{
-			"X-Erpc-Retry-Pending": []string{"true"},
-		}
-		queryArgs := url.Values{}
-		fakeReq.EnrichFromHttp(headers, queryArgs, common.UserAgentTrackingModeSimplified)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			headers := http.Header{
+				"X-Erpc-Retry-Pending": []string{"true"},
+			}
+			queryArgs := url.Values{}
+			fakeReq.EnrichFromHttp(headers, queryArgs, common.UserAgentTrackingModeSimplified)
+			resp, err := ntw.Forward(ctx, fakeReq)
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
 
-		// Parse and validate the JSON-RPC response
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			// Parse and validate the JSON-RPC response
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
 
-		hash, err := jrr.PeekStringByPath(context.TODO(), "hash")
-		if err != nil {
-			t.Fatalf("Failed to get hash from result: %v", err)
-		}
-		if hash != "0xabcdef" {
-			t.Errorf("Expected hash to be %q, got %q", "0xabcdef", hash)
-		}
+			hash, err := jrr.PeekStringByPath(context.TODO(), "hash")
+			if err != nil {
+				t.Fatalf("Failed to get hash from result: %v", err)
+			}
+			if hash != "0xabcdef" {
+				t.Errorf("Expected hash to be %q, got %q", "0xabcdef", hash)
+			}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
-		if err != nil {
-			t.Fatalf("Failed to get fromHost from result: %v", err)
-		}
-		if fromHost != "rpc2" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
-		}
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
+			if err != nil {
+				t.Fatalf("Failed to get fromHost from result: %v", err)
+			}
+			if fromHost != "rpc2" {
+				t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+			}
+		})
 	})
 	t.Run("NotRetryPendingTXsWhenDirectiveIsNotSet", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Mock a pending transaction response from the first upstream
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "eth_getTransactionByHash")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc1"}}`))
+			// Mock a pending transaction response from the first upstream
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					b := util.SafeReadBody(request)
+					return strings.Contains(b, "eth_getTransactionByHash")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc1"}}`))
 
-		// Set up a context and a cancellation function
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			// Set up a context and a cancellation function
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Initialize various components for the test environment
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2, // Allow up to 2 retry attempts
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-
-		// Set up upstream configurations
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc2",
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			// Initialize various components for the test environment
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2, // Allow up to 2 retry attempts
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		// Initialize the upstreams registry
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		// Set up the network configuration
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			// Set up upstream configurations
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc2",
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
 
-		// Bootstrap the network and make the simulated request
-		ntw.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			// Initialize the upstreams registry
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		// Create a fake request and forward it through the network
-		fakeReq := common.NewNormalizedRequest([]byte(`{
+			// Create and register clients for both upstreams
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
+
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
+
+			// Set up the network configuration
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Bootstrap the network and make the simulated request
+			ntw.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			// Create a fake request and forward it through the network
+			fakeReq := common.NewNormalizedRequest([]byte(`{
 				"jsonrpc": "2.0",
 				"method": "eth_getTransactionByHash",
 				"params": ["0xabcdef"],
 				"id": 1
 			}`))
 
-		headers := http.Header{}
-		headers.Set("x-erpc-retry-pending", "false")
-		queryArgs := url.Values{}
-		fakeReq.EnrichFromHttp(headers, queryArgs, common.UserAgentTrackingModeSimplified)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			headers := http.Header{}
+			headers.Set("x-erpc-retry-pending", "false")
+			queryArgs := url.Values{}
+			fakeReq.EnrichFromHttp(headers, queryArgs, common.UserAgentTrackingModeSimplified)
+			resp, err := ntw.Forward(ctx, fakeReq)
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
 
-		// Parse and validate the JSON-RPC response
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			// Parse and validate the JSON-RPC response
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
 
-		blockNumber, err := jrr.PeekStringByPath(context.TODO(), "blockNumber")
-		if err != nil {
-			t.Fatalf("Failed to get blockNumber from result: %v", err)
-		}
-		if blockNumber != "" {
-			t.Errorf("Expected blockNumber to be empty, got %q", blockNumber)
-		}
+			blockNumber, err := jrr.PeekStringByPath(context.TODO(), "blockNumber")
+			if err != nil {
+				t.Fatalf("Failed to get blockNumber from result: %v", err)
+			}
+			if blockNumber != "" {
+				t.Errorf("Expected blockNumber to be empty, got %q", blockNumber)
+			}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
-		if err != nil {
-			t.Fatalf("Failed to get fromHost from result: %v", err)
-		}
-		if fromHost != "rpc1" {
-			t.Fatalf("Expected fromHost to be string, got %T", fromHost)
-		}
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
+			if err != nil {
+				t.Fatalf("Failed to get fromHost from result: %v", err)
+			}
+			if fromHost != "rpc1" {
+				t.Fatalf("Expected fromHost to be string, got %T", fromHost)
+			}
+		})
 	})
 
 	t.Run("ForwardMustNotReadFromCacheIfDirectiveIsSet", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		// Mock the upstream response
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(2). // Expect two calls
-			Reply(200).
-			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`))
+			// Mock the upstream response
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(2). // Expect two calls
+				Reply(200).
+				JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		// First request (should be cached)
-		fakeReq1 := common.NewNormalizedRequest(requestBytes)
-		resp1, err := ntw.Forward(ctx, fakeReq1)
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// Second request with no-cache directive
-		fakeReq2 := common.NewNormalizedRequest(requestBytes)
-		headers := http.Header{}
-		headers.Set("x-erpc-skip-cache-read", "true")
-		fakeReq2.EnrichFromHttp(headers, url.Values{}, common.UserAgentTrackingModeSimplified)
-		resp2, err := ntw.Forward(ctx, fakeReq2)
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			// First request (should be cached)
+			fakeReq1 := common.NewNormalizedRequest(requestBytes)
+			resp1, err := ntw.Forward(ctx, fakeReq1)
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
 
-		// Check that both responses are not nil and different
-		if resp1 == nil || resp2 == nil {
-			t.Fatalf("Expected non-nil responses")
-		}
+			// Second request with no-cache directive
+			fakeReq2 := common.NewNormalizedRequest(requestBytes)
+			headers := http.Header{}
+			headers.Set("x-erpc-skip-cache-read", "true")
+			fakeReq2.EnrichFromHttp(headers, url.Values{}, common.UserAgentTrackingModeSimplified)
+			resp2, err := ntw.Forward(ctx, fakeReq2)
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+
+			// Check that both responses are not nil and different
+			if resp1 == nil || resp2 == nil {
+				t.Fatalf("Expected non-nil responses")
+			}
+		})
 	})
 
 	t.Run("ForwardDynamicallyAddsIgnoredMethods", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		gock.New("http://rpc1.localhost").
-			Times(1).
-			Post("").
-			Reply(404).
-			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32601,"message":"Method not supported"}}`))
+			gock.New("http://rpc1.localhost").
+				Times(1).
+				Post("").
+				Reply(404).
+				JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32601,"message":"Method not supported"}}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "test",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			AutoIgnoreUnsupportedMethods: &common.TRUE,
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{
-				up1,
-			},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl, err := clr.GetOrCreateClient(ctx, pup)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup.Client = cl
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "test",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-			},
-			rlr,
-			upr,
-			health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+				AutoIgnoreUnsupportedMethods: &common.TRUE,
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{
+					up1,
+				},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl, err := clr.GetOrCreateClient(ctx, pup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup.Client = cl
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+				},
+				rlr,
+				upr,
+				health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
 
-		// First request marks the method as ignored
-		_, _ = ntw.Forward(ctx, fakeReq)
-		// Second attempt will not have any more upstreams to try
-		_, err = ntw.Forward(ctx, fakeReq)
+			// First request marks the method as ignored
+			_, _ = ntw.Forward(ctx, fakeReq)
+			// Second attempt will not have any more upstreams to try
+			_, err = ntw.Forward(ctx, fakeReq)
 
-		if err == nil {
-			t.Errorf("Expected an error, got nil")
-		}
-		if !strings.Contains(err.Error(), "ErrUpstreamsExhausted") {
-			t.Errorf("Expected %v, got %v", "ErrUpstreamsExhausted", err)
-		}
+			if err == nil {
+				t.Errorf("Expected an error, got nil")
+			}
+			if !strings.Contains(err.Error(), "ErrUpstreamsExhausted") {
+				t.Errorf("Expected %v, got %v", "ErrUpstreamsExhausted", err)
+			}
+		})
 	})
 	t.Run("ForwardMustNotRetryRevertedEthCallsMultiUpstreams", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 2) // 2 not-called upstreams
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 2) // 2 not-called upstreams
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_call","params":[{"to":"0x362fa9d0bca5d19f743db50738345ce2b40ec99f","data":"0xa4baa10c"}]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_call","params":[{"to":"0x362fa9d0bca5d19f743db50738345ce2b40ec99f","data":"0xa4baa10c"}]}`)
 
-		gock.New("http://rpc1.localhost").
-			Times(1).
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
+			gock.New("http://rpc1.localhost").
+				Times(1).
+				Post("").
+				Reply(200).
+				JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
 
-		gock.New("http://rpc2.localhost").
-			Times(1).
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
+			gock.New("http://rpc2.localhost").
+				Times(1).
+				Post("").
+				Reply(200).
+				JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
 
-		gock.New("http://rpc3.localhost").
-			Times(1).
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
+			gock.New("http://rpc3.localhost").
+				Times(1).
+				Post("").
+				Reply(200).
+				JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 3,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "test",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			Failsafe: []*common.FailsafeConfig{fsCfg},
-		}
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "test2",
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			Failsafe: []*common.FailsafeConfig{fsCfg},
-		}
-		up3 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "test3",
-			Endpoint: "http://rpc3.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			Failsafe: []*common.FailsafeConfig{fsCfg},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 3,
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{
-				up1,
-				up2,
-				up3,
-			},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-		pup3, err := upr.NewUpstream(up3)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl3, err := clr.GetOrCreateClient(ctx, pup3)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup3.Client = cl3
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "test",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
 				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "test2",
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+				Failsafe: []*common.FailsafeConfig{fsCfg},
+			}
+			up3 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "test3",
+				Endpoint: "http://rpc3.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+				Failsafe: []*common.FailsafeConfig{fsCfg},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{
+					up1,
+					up2,
+					up3,
+				},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
+			pup3, err := upr.NewUpstream(up3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl3, err := clr.GetOrCreateClient(ctx, pup3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup3.Client = cl3
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
 
-		_, err = ntw.Forward(ctx, fakeReq)
+			_, err = ntw.Forward(ctx, fakeReq)
 
-		if err == nil {
-			t.Errorf("Expected an error, got nil")
-		}
-		if !strings.Contains(err.Error(), "ErrEndpointExecutionException") {
-			t.Errorf("Expected %v, got: %s", "ErrEndpointExecutionException", err.Error())
-		}
-		if strings.Contains(err.Error(), "ErrUpstreamsExhausted") {
-			t.Errorf("Did not expect ErrUpstreamsExhausted, got: %s", err.Error())
-		}
+			if err == nil {
+				t.Errorf("Expected an error, got nil")
+			}
+			if !strings.Contains(err.Error(), "ErrEndpointExecutionException") {
+				t.Errorf("Expected %v, got: %s", "ErrEndpointExecutionException", err.Error())
+			}
+			if strings.Contains(err.Error(), "ErrUpstreamsExhausted") {
+				t.Errorf("Did not expect ErrUpstreamsExhausted, got: %s", err.Error())
+			}
+		})
 	})
 
 	t.Run("ForwardMustNotRetryRevertedEthCallsSingleUpstream", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1) // 1 not-called upstream
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 1) // 1 not-called upstream
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_call","params":[{"to":"0x362fa9d0bca5d19f743db50738345ce2b40ec99f","data":"0xa4baa10c"}]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_call","params":[{"to":"0x362fa9d0bca5d19f743db50738345ce2b40ec99f","data":"0xa4baa10c"}]}`)
 
-		gock.New("http://rpc1.localhost").
-			Times(1).
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
+			gock.New("http://rpc1.localhost").
+				Times(1).
+				Post("").
+				Reply(200).
+				JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
 
-		gock.New("http://rpc1.localhost").
-			Times(1).
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
+			gock.New("http://rpc1.localhost").
+				Times(1).
+				Post("").
+				Reply(200).
+				JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 3,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "test",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			Failsafe: []*common.FailsafeConfig{fsCfg},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 3,
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{
-				up1,
-			},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "test",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
 				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{
+					up1,
+				},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				health.NewTracker(&log.Logger, "prjA", 2*time.Second), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
 
-		_, err = ntw.Forward(ctx, fakeReq)
+			_, err = ntw.Forward(ctx, fakeReq)
 
-		if err == nil {
-			t.Errorf("Expected an error, got nil")
-		}
-		if !strings.Contains(err.Error(), "ErrEndpointExecutionException") {
-			t.Errorf("Expected %v, got: %s", "ErrEndpointExecutionException", err.Error())
-		}
-		if strings.Contains(err.Error(), "ErrUpstreamsExhausted") {
-			t.Errorf("Did not expect ErrUpstreamsExhausted, got: %s", err.Error())
-		}
+			if err == nil {
+				t.Errorf("Expected an error, got nil")
+			}
+			if !strings.Contains(err.Error(), "ErrEndpointExecutionException") {
+				t.Errorf("Expected %v, got: %s", "ErrEndpointExecutionException", err.Error())
+			}
+			if strings.Contains(err.Error(), "ErrUpstreamsExhausted") {
+				t.Errorf("Did not expect ErrUpstreamsExhausted, got: %s", err.Error())
+			}
+		})
 	})
 	t.Run("ForwardMustNotRetryBillingIssues", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		gock.New("http://rpc1.localhost").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
-			}).
-			Post("").
-			Reply(503).
-			JSON([]byte(`{"jsonrpc":"2.0","id":9179,"error":{"code":-32600,"message":"Monthly capacity limit exceeded."}}`))
+			gock.New("http://rpc1.localhost").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
+				}).
+				Post("").
+				Reply(503).
+				JSON([]byte(`{"jsonrpc":"2.0","id":9179,"error":{"code":-32600,"message":"Monthly capacity limit exceeded."}}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 3,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		FALSE := false
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "test",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			JsonRpc: &common.JsonRpcUpstreamConfig{
-				SupportsBatch: &FALSE,
-			},
-			Failsafe: []*common.FailsafeConfig{fsCfg},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 3,
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{
-				up1,
-			},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl, err := clr.GetOrCreateClient(ctx, pup)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup.Client = cl
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			FALSE := false
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "test",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-			},
-			rlr,
-			upr,
-			health.NewTracker(&log.Logger, "prjA", 10*time.Second), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+				JsonRpc: &common.JsonRpcUpstreamConfig{
+					SupportsBatch: &FALSE,
+				},
+				Failsafe: []*common.FailsafeConfig{fsCfg},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{
+					up1,
+				},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl, err := clr.GetOrCreateClient(ctx, pup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup.Client = cl
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+				},
+				rlr,
+				upr,
+				health.NewTracker(&log.Logger, "prjA", 10*time.Second), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		_, err = ntw.Forward(ctx, fakeReq)
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			_, err = ntw.Forward(ctx, fakeReq)
 
-		if err == nil {
-			t.Errorf("Expected an error, got nil")
-		}
-		if strings.Contains(err.Error(), "ErrFailsafeRetryExceeded") {
-			t.Errorf("Did not expect ErrFailsafeRetryExceeded, got %v", err)
-		}
-		if !strings.Contains(err.Error(), "ErrEndpointBillingIssue") {
-			t.Errorf("Expected ErrEndpointBillingIssue, got %v", err)
-		}
+			if err == nil {
+				t.Errorf("Expected an error, got nil")
+			}
+			if strings.Contains(err.Error(), "ErrFailsafeRetryExceeded") {
+				t.Errorf("Did not expect ErrFailsafeRetryExceeded, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "ErrEndpointBillingIssue") {
+				t.Errorf("Expected ErrEndpointBillingIssue, got %v", err)
+			}
+		})
 	})
 
 	t.Run("ForwardNotRateLimitedOnNetworkLevel", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
-			&common.RateLimiterConfig{
-				Budgets: []*common.RateLimitBudgetConfig{
-					{
-						Id: "MyLimiterBudget_Test2",
-						Rules: []*common.RateLimitRuleConfig{
-							{
-								Method:   "*",
-								MaxCount: 1000,
-								Period:   common.RateLimitPeriodMinute,
+			rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
+				&common.RateLimiterConfig{
+					Budgets: []*common.RateLimitBudgetConfig{
+						{
+							Id: "MyLimiterBudget_Test2",
+							Rules: []*common.RateLimitRuleConfig{
+								{
+									Method:   "*",
+									MaxCount: 1000,
+									Period:   common.RateLimitPeriodMinute,
+								},
 							},
 						},
 					},
 				},
-			},
-			&log.Logger,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+				&log.Logger,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upsReg := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{
-				{
-					Type:     common.UpstreamTypeEvm,
-					Id:       "test",
-					Endpoint: "http://rpc1.localhost",
-					Evm: &common.EvmUpstreamConfig{
-						ChainId: 123,
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
 					},
 				},
-			},
-			ssr,
-			rateLimitersRegistry,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-
-		upsReg.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-
-		err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					ChainId: 123,
+			})
+			if err != nil {
+				panic(err)
+			}
+			upsReg := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{
+					{
+						Type:     common.UpstreamTypeEvm,
+						Id:       "test",
+						Endpoint: "http://rpc1.localhost",
+						Evm: &common.EvmUpstreamConfig{
+							ChainId: 123,
+						},
+					},
 				},
-				RateLimitBudget: "MyLimiterBudget_Test2",
-			},
-			rateLimitersRegistry,
-			upsReg,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+				ssr,
+				rateLimitersRegistry,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upsReg)
-		upsReg.OverrideOrderForTest(util.EvmNetworkId(123))
-		var lastErr error
+			upsReg.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
 
-		for i := 0; i < 10; i++ {
-			fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
-			_, lastErr = ntw.Forward(ctx, fakeReq)
-		}
+			err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		var e *common.ErrNetworkRateLimitRuleExceeded
-		if lastErr != nil && errors.As(lastErr, &e) {
-			t.Errorf("Did not expect ErrNetworkRateLimitRuleExceeded")
-		}
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					RateLimitBudget: "MyLimiterBudget_Test2",
+				},
+				rateLimitersRegistry,
+				upsReg,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upsReg)
+			upsReg.OverrideOrderForTest(util.EvmNetworkId(123))
+			var lastErr error
+
+			for i := 0; i < 10; i++ {
+				fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
+				_, lastErr = ntw.Forward(ctx, fakeReq)
+			}
+
+			var e *common.ErrNetworkRateLimitRuleExceeded
+			if lastErr != nil && errors.As(lastErr, &e) {
+				t.Errorf("Did not expect ErrNetworkRateLimitRuleExceeded")
+			}
+		})
 	})
 
 	t.Run("ForwardRetryFailuresWithoutSuccess", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		gock.New("http://rpc1.localhost").
-			Times(3).
-			Post("").
-			Reply(503).
-			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
+			gock.New("http://rpc1.localhost").
+				Times(3).
+				Post("").
+				Reply(503).
+				JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 3,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "test",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 3,
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{
-				up1,
-			},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl, err := clr.GetOrCreateClient(ctx, pup)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup.Client = cl
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "test",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		_, err = ntw.Forward(ctx, fakeReq)
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{
+					up1,
+				},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl, err := clr.GetOrCreateClient(ctx, pup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup.Client = cl
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			_, err = ntw.Forward(ctx, fakeReq)
 
-		if err == nil {
-			t.Errorf("Expected an error, got nil")
-		}
-		if !common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
-			t.Errorf("Expected ErrUpstreamsExhausted after retries exhausted, got %v", err)
-		} else if !common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
-			t.Errorf("Expected server-side exception inside ErrUpstreamsExhausted, got %v", err)
-		}
+			if err == nil {
+				t.Errorf("Expected an error, got nil")
+			}
+			if !common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
+				t.Errorf("Expected ErrUpstreamsExhausted after retries exhausted, got %v", err)
+			} else if !common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+				t.Errorf("Expected server-side exception inside ErrUpstreamsExhausted, got %v", err)
+			}
+		})
 	})
 	t.Run("ForwardRetryFailuresWithSuccess", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		gock.New("http://rpc1.localhost").
-			Times(3).
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
-			}).
-			Reply(503).
-			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
+			gock.New("http://rpc1.localhost").
+				Times(3).
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
+				}).
+				Reply(503).
+				JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 4,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "test",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 4,
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{
-				up1,
-			},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl, err := clr.GetOrCreateClient(ctx, pup)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup.Client = cl
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "test",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{
+					up1,
+				},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl, err := clr.GetOrCreateClient(ctx, pup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup.Client = cl
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			resp, err := ntw.Forward(ctx, fakeReq)
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
 
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected result, got %v", jrr)
-		}
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected result, got %v", jrr)
+			}
 
-		hash, err := jrr.PeekStringByPath(context.TODO(), "hash")
-		if err != nil || hash == "" {
-			t.Fatalf("Expected hash to exist and be non-empty, got %v", hash)
-		}
+			hash, err := jrr.PeekStringByPath(context.TODO(), "hash")
+			if err != nil || hash == "" {
+				t.Fatalf("Expected hash to exist and be non-empty, got %v", hash)
+			}
+		})
 	})
 
 	t.Run("ForwardTimeoutPolicyFail", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
-			}).
-			Reply(200).
-			Delay(100 * time.Millisecond).
-			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
+				}).
+				Reply(200).
+				Delay(100 * time.Millisecond).
+				JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "test",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{
-				up1,
-			},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl, err := clr.GetOrCreateClient(ctx, pup)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup.Client = cl
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "test",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{{
-					Timeout: &common.TimeoutPolicyConfig{
-						Duration: common.NewStaticDuration(30 * time.Millisecond),
-					}},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
 				},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		_, err = ntw.Forward(ctx, fakeReq)
-
-		if err == nil {
-			t.Errorf("Expected error, got nil")
-		}
-
-		// TODO in here we should ONLY see failsafe timeout error but currently sometimes we see upstream timeout, we must fix this
-		if !common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded) &&
-			!common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout) &&
-			!common.HasErrorCode(err, common.ErrCodeNetworkRequestTimeout) {
-			t.Errorf("Expected %v or %v or %v, got %v", common.ErrCodeFailsafeTimeoutExceeded,
-				common.ErrCodeEndpointRequestTimeout,
-				common.ErrCodeNetworkRequestTimeout,
-				err,
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{
+					up1,
+				},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
 			)
-		}
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl, err := clr.GetOrCreateClient(ctx, pup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup.Client = cl
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{{
+						Timeout: &common.TimeoutPolicyConfig{
+							Duration: common.NewStaticDuration(30 * time.Millisecond),
+						}},
+					},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			_, err = ntw.Forward(ctx, fakeReq)
+
+			if err == nil {
+				t.Errorf("Expected error, got nil")
+			}
+
+			// TODO in here we should ONLY see failsafe timeout error but currently sometimes we see upstream timeout, we must fix this
+			if !common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded) &&
+				!common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout) &&
+				!common.HasErrorCode(err, common.ErrCodeNetworkRequestTimeout) {
+				t.Errorf("Expected %v or %v or %v, got %v", common.ErrCodeFailsafeTimeoutExceeded,
+					common.ErrCodeEndpointRequestTimeout,
+					common.ErrCodeNetworkRequestTimeout,
+					err,
+				)
+			}
+		})
 	})
 
 	t.Run("ForwardTimeoutPolicyPass", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Reply(200).
-			Delay(100 * time.Millisecond).
-			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Reply(200).
+				Delay(100 * time.Millisecond).
+				JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Timeout: &common.TimeoutPolicyConfig{
-				Duration: common.NewStaticDuration(1 * time.Second),
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "test",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Timeout: &common.TimeoutPolicyConfig{
+					Duration: common.NewStaticDuration(1 * time.Second),
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{
-				up1,
-			},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl, err := clr.GetOrCreateClient(ctx, pup)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup.Client = cl
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "test",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{
+					up1,
+				},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl, err := clr.GetOrCreateClient(ctx, pup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup.Client = cl
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		_, err = ntw.Forward(ctx, fakeReq)
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			_, err = ntw.Forward(ctx, fakeReq)
 
-		if err != nil {
-			t.Errorf("Expected nil error, got %v", err)
-		}
+			if err != nil {
+				t.Errorf("Expected nil error, got %v", err)
+			}
 
-		var e *common.ErrFailsafeTimeoutExceeded
-		if errors.As(err, &e) {
-			t.Errorf("Did not expect %v", "ErrFailsafeTimeoutExceeded")
-		}
+			var e *common.ErrFailsafeTimeoutExceeded
+			if errors.As(err, &e) {
+				t.Errorf("Did not expect %v", "ErrFailsafeTimeoutExceeded")
+			}
+		})
 	})
 	t.Run("ForwardHedgePolicyTriggered", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
-			Delay(500 * time.Millisecond)
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Reply(200).
+				JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
+				Delay(500 * time.Millisecond)
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`)).
-			Delay(200 * time.Millisecond)
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Reply(200).
+				JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`)).
+				Delay(200 * time.Millisecond)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer func() {
-			cancel()
-			// Allow hedge requests to complete before cleanup
-			time.Sleep(600 * time.Millisecond)
-		}()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer func() {
+				cancel()
+				// Allow hedge requests to complete before cleanup
+				time.Sleep(600 * time.Millisecond)
+			}()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Hedge: &common.HedgePolicyConfig{
-				Delay:    common.NewStaticDuration(200 * time.Millisecond),
-				MaxCount: 1,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc2",
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Hedge: &common.HedgePolicyConfig{
+					Delay:    common.NewStaticDuration(200 * time.Millisecond),
+					MaxCount: 1,
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc2",
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			resp, err := ntw.Forward(ctx, fakeReq)
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected result, got nil")
-		}
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
-		if err != nil || fromHost != "rpc2" {
-			t.Errorf("Expected fromHost to be %v, got %v", "rpc2", fromHost)
-		}
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected result, got nil")
+			}
+
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
+			if err != nil || fromHost != "rpc2" {
+				t.Errorf("Expected fromHost to be %v, got %v", "rpc2", fromHost)
+			}
+		})
 	})
 
 	t.Run("ForwardHedgePolicyNotTriggered", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
-			Delay(20 * time.Millisecond)
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Reply(200).
+				JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
+				Delay(20 * time.Millisecond)
 
-		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+			log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Hedge: &common.HedgePolicyConfig{
-				Delay:    common.NewStaticDuration(100 * time.Millisecond),
-				MaxCount: 5,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc2",
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Hedge: &common.HedgePolicyConfig{
+					Delay:    common.NewStaticDuration(100 * time.Millisecond),
+					MaxCount: 5,
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc2",
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected result, got nil")
-		}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			resp, err := ntw.Forward(ctx, fakeReq)
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
-		if err != nil || fromHost != "rpc1" {
-			t.Errorf("Expected fromHost to be %v, got %v", "rpc1", fromHost)
-		}
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected result, got nil")
+			}
+
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
+			if err != nil || fromHost != "rpc1" {
+				t.Errorf("Expected fromHost to be %v, got %v", "rpc1", fromHost)
+			}
+		})
 	})
 	t.Run("ForwardHedgePolicySkipsWriteMethods", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0x1273c18"]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0x1273c18"]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
-			Delay(2000 * time.Millisecond)
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Reply(200).
+				JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
+				Delay(2000 * time.Millisecond)
 
-		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+			log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Hedge: &common.HedgePolicyConfig{
-				Delay:    common.NewStaticDuration(100 * time.Millisecond),
-				MaxCount: 5,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc2",
-			Endpoint: "http://alchemy.com",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Hedge: &common.HedgePolicyConfig{
+					Delay:    common.NewStaticDuration(100 * time.Millisecond),
+					MaxCount: 5,
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc2",
+				Endpoint: "http://alchemy.com",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected result, got nil")
-		}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			resp, err := ntw.Forward(ctx, fakeReq)
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
-		if err != nil || fromHost != "rpc1" {
-			t.Errorf("Expected fromHost to be %v, got %v", "rpc1", fromHost)
-		}
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected result, got nil")
+			}
+
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
+			if err != nil || fromHost != "rpc1" {
+				t.Errorf("Expected fromHost to be %v, got %v", "rpc1", fromHost)
+			}
+		})
 	})
 
 	t.Run("ForwardCBOpensAfterConstantFailure", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(2).
-			Reply(200).
-			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(2).
+				Reply(200).
+				JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(2).
-			Reply(503).
-			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(2).
+				Reply(503).
+				JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
-				FailureThresholdCount:    2,
-				FailureThresholdCapacity: 4,
-				HalfOpenAfter:            common.Duration(2 * time.Second),
-			},
-		}
-
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "test_cb", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "upstream1",
-			Endpoint: "http://rpc1.localhost",
-			Failsafe: []*common.FailsafeConfig{fsCfg},
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"test_cb",
-			[]*common.UpstreamConfig{up1},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"test_cb",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					ChainId: 123,
-				},
-				Failsafe: nil,
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		var lastErr error
-		for i := 0; i < 10; i++ {
-			fakeReq := common.NewNormalizedRequest(requestBytes)
-			_, lastErr = ntw.Forward(ctx, fakeReq)
-		}
-
-		if lastErr == nil {
-			t.Fatalf("Expected an error, got nil")
-		}
-
-		var e *common.ErrFailsafeCircuitBreakerOpen
-		if !errors.As(lastErr, &e) {
-			t.Errorf("Expected %v, got %v", "ErrFailsafeCircuitBreakerOpen", lastErr)
-		}
-	})
-
-	t.Run("ForwardSkipsOpenedCB", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
-
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(1).
-			Reply(503).
-			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfgNetwork := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 1,
-			},
-		}
-		fsCfgUp1 := &common.FailsafeConfig{
-			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
-				FailureThresholdCount:    1,
-				FailureThresholdCapacity: 1,
-				HalfOpenAfter:            common.Duration(20 * time.Second),
-			},
-		}
-
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "test_cb", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "upstream1",
-			Endpoint: "http://rpc1.localhost",
-			Failsafe: []*common.FailsafeConfig{fsCfgUp1},
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"test_cb",
-			[]*common.UpstreamConfig{up1},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"test_cb",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					ChainId: 123,
-				},
-				Failsafe: []*common.FailsafeConfig{fsCfgNetwork},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		var lastErr error
-		var resp *common.NormalizedResponse
-		for i := 0; i < 2; i++ {
-			fakeReq := common.NewNormalizedRequest(requestBytes)
-			resp, lastErr = ntw.Forward(ctx, fakeReq)
-		}
-
-		if lastErr == nil {
-			t.Fatalf("Expected an error, got nil, resp: %v", resp)
-		}
-		if !strings.Contains(lastErr.Error(), "ErrFailsafeCircuitBreakerOpen") {
-			t.Errorf("Expected error message to contain 'ErrFailsafeCircuitBreakerOpen', got %v", lastErr.Error())
-		}
-	})
-	t.Run("ForwardCBClosesAfterUpstreamIsBackUp", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
-
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(2).
-			Reply(200).
-			JSON([]byte(`{"result":{"hash":"0x111340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
-
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(2).
-			Reply(503).
-			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
-
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(2).
-			Reply(200).
-			JSON([]byte(`{"result":{"hash":"0x222340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "test_cb", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "upstream1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			Failsafe: []*common.FailsafeConfig{{
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
 				CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 					FailureThresholdCount:    2,
 					FailureThresholdCapacity: 4,
-					HalfOpenAfter:            common.Duration(500 * time.Millisecond),
-					SuccessThresholdCount:    2,
-					SuccessThresholdCapacity: 2,
-				}},
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+					HalfOpenAfter:            common.Duration(2 * time.Second),
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"test_cb",
-			[]*common.UpstreamConfig{up1},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		time.Sleep(50 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl
+			}
 
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"test_cb",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "test_cb", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "upstream1",
+				Endpoint: "http://rpc1.localhost",
+				Failsafe: []*common.FailsafeConfig{fsCfg},
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: nil,
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"test_cb",
+				[]*common.UpstreamConfig{up1},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"test_cb",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: nil,
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		r1, e1 := ntw.Forward(ctx, common.NewNormalizedRequest(requestBytes))
-		r2, e2 := ntw.Forward(ctx, common.NewNormalizedRequest(requestBytes))
-		_, e3 := ntw.Forward(ctx, common.NewNormalizedRequest(requestBytes))
-		_, e4 := ntw.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			var lastErr error
+			for i := 0; i < 10; i++ {
+				fakeReq := common.NewNormalizedRequest(requestBytes)
+				_, lastErr = ntw.Forward(ctx, fakeReq)
+			}
 
-		if r1 == nil || r2 == nil {
-			t.Fatalf("Expected a response on first two attempts, got %v, %v", r1, r2)
-		}
-		if e1 != nil || e2 != nil {
-			t.Fatalf("Did not expect an error on first two attempts, got %v, %v", e1, e2)
-		}
-		if e3 == nil || e4 == nil {
-			t.Fatalf("Expected an error on last two attempts, got %v, %v", e3, e4)
-		}
+			if lastErr == nil {
+				t.Fatalf("Expected an error, got nil")
+			}
 
-		time.Sleep(500 * time.Millisecond)
+			var e *common.ErrFailsafeCircuitBreakerOpen
+			if !errors.As(lastErr, &e) {
+				t.Errorf("Expected %v, got %v", "ErrFailsafeCircuitBreakerOpen", lastErr)
+			}
+		})
+	})
 
-		var resp *common.NormalizedResponse
-		var lastErr error
-		for i := 0; i < 2; i++ {
-			fakeReq := common.NewNormalizedRequest(requestBytes)
-			resp, lastErr = ntw.Forward(ctx, fakeReq)
-		}
+	t.Run("ForwardSkipsOpenedCB", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		if lastErr != nil {
-			t.Fatalf("Expected nil error, got %v", lastErr)
-		}
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
-		hash, err := jrr.PeekStringByPath(context.TODO(), "hash")
-		if err != nil || hash == "" {
-			t.Fatalf("Expected hash to exist and be non-empty, got %v", hash)
-		}
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(1).
+				Reply(503).
+				JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfgNetwork := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 1,
+				},
+			}
+			fsCfgUp1 := &common.FailsafeConfig{
+				CircuitBreaker: &common.CircuitBreakerPolicyConfig{
+					FailureThresholdCount:    1,
+					FailureThresholdCapacity: 1,
+					HalfOpenAfter:            common.Duration(20 * time.Second),
+				},
+			}
+
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "test_cb", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "upstream1",
+				Endpoint: "http://rpc1.localhost",
+				Failsafe: []*common.FailsafeConfig{fsCfgUp1},
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"test_cb",
+				[]*common.UpstreamConfig{up1},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
+
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"test_cb",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfgNetwork},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			var lastErr error
+			var resp *common.NormalizedResponse
+			for i := 0; i < 2; i++ {
+				fakeReq := common.NewNormalizedRequest(requestBytes)
+				resp, lastErr = ntw.Forward(ctx, fakeReq)
+			}
+
+			if lastErr == nil {
+				t.Fatalf("Expected an error, got nil, resp: %v", resp)
+			}
+			if !strings.Contains(lastErr.Error(), "ErrFailsafeCircuitBreakerOpen") {
+				t.Errorf("Expected error message to contain 'ErrFailsafeCircuitBreakerOpen', got %v", lastErr.Error())
+			}
+		})
+	})
+	t.Run("ForwardCBClosesAfterUpstreamIsBackUp", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(2).
+				Reply(200).
+				JSON([]byte(`{"result":{"hash":"0x111340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(2).
+				Reply(503).
+				JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
+
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(2).
+				Reply(200).
+				JSON([]byte(`{"result":{"hash":"0x222340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "test_cb", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "upstream1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+				Failsafe: []*common.FailsafeConfig{{
+					CircuitBreaker: &common.CircuitBreakerPolicyConfig{
+						FailureThresholdCount:    2,
+						FailureThresholdCapacity: 4,
+						HalfOpenAfter:            common.Duration(500 * time.Millisecond),
+						SuccessThresholdCount:    2,
+						SuccessThresholdCapacity: 2,
+					}},
+				},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"test_cb",
+				[]*common.UpstreamConfig{up1},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl
+
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"test_cb",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: nil,
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			r1, e1 := ntw.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+			r2, e2 := ntw.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+			_, e3 := ntw.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+			_, e4 := ntw.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+
+			if r1 == nil || r2 == nil {
+				t.Fatalf("Expected a response on first two attempts, got %v, %v", r1, r2)
+			}
+			if e1 != nil || e2 != nil {
+				t.Fatalf("Did not expect an error on first two attempts, got %v, %v", e1, e2)
+			}
+			if e3 == nil || e4 == nil {
+				t.Fatalf("Expected an error on last two attempts, got %v, %v", e3, e4)
+			}
+
+			time.Sleep(500 * time.Millisecond)
+
+			var resp *common.NormalizedResponse
+			var lastErr error
+			for i := 0; i < 2; i++ {
+				fakeReq := common.NewNormalizedRequest(requestBytes)
+				resp, lastErr = ntw.Forward(ctx, fakeReq)
+			}
+
+			if lastErr != nil {
+				t.Fatalf("Expected nil error, got %v", lastErr)
+			}
+
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+			hash, err := jrr.PeekStringByPath(context.TODO(), "hash")
+			if err != nil || hash == "" {
+				t.Fatalf("Expected hash to exist and be non-empty, got %v", hash)
+			}
+		})
 	})
 
 	t.Run("ForwardCorrectResultForUnknownEndpointError", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Reply(500).
-			JSON([]byte(`{"error":{"code":-39999,"message":"my funky random error"}}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Reply(500).
+				JSON([]byte(`{"error":{"code":-39999,"message":"my funky random error"}}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		_, err = ntw.Forward(ctx, fakeReq)
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		if err == nil {
-			t.Fatalf("Expected non-nil error, got nil")
-		}
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		ser, ok := err.(common.StandardError)
-		if !ok {
-			t.Fatalf("Expected error to be StandardError, got %T", err)
-		}
-		sum := common.ErrorSummary(ser.GetCause())
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			_, err = ntw.Forward(ctx, fakeReq)
 
-		if !strings.Contains(sum, "ErrEndpointServerSideException") {
-			t.Fatalf("Expected error code ErrEndpointServerSideException, got %v", sum)
-		}
-		if !strings.Contains(sum, "my funky random error") {
-			t.Fatalf("Expected error text 'my funky random error', but was missing %v", sum)
-		}
+			if err == nil {
+				t.Fatalf("Expected non-nil error, got nil")
+			}
+
+			ser, ok := err.(common.StandardError)
+			if !ok {
+				t.Fatalf("Expected error to be StandardError, got %T", err)
+			}
+			sum := common.ErrorSummary(ser.GetCause())
+
+			if !strings.Contains(sum, "ErrEndpointServerSideException") {
+				t.Fatalf("Expected error code ErrEndpointServerSideException, got %v", sum)
+			}
+			if !strings.Contains(sum, "my funky random error") {
+				t.Fatalf("Expected error text 'my funky random error', but was missing %v", sum)
+			}
+		})
 	})
 	t.Run("ForwardEndpointServerSideExceptionRetrySuccess", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Reply(500).
-			JSON([]byte(`{"error":{"message":"Internal error"}}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Reply(500).
+				JSON([]byte(`{"error":{"message":"Internal error"}}`))
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`))
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Reply(200).
+				JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`))
 
-		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+			log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc2",
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc2",
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			resp, err := ntw.Forward(ctx, fakeReq)
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected result, got nil")
-		}
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
-		if err != nil || fromHost != "rpc2" {
-			t.Errorf("Expected fromHost to be %v, got %v", "rpc2", fromHost)
-		}
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected result, got nil")
+			}
+
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
+			if err != nil || fromHost != "rpc2" {
+				t.Errorf("Expected fromHost to be %v, got %v", "rpc2", fromHost)
+			}
+		})
 	})
 
 	t.Run("ForwardIgnoredMethod", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"ignored_method","params":["0x1273c18",false]}`)
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"ignored_method","params":["0x1273c18",false]}`)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			IgnoreMethods: []string{"ignored_method"},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+				IgnoreMethods: []string{"ignored_method"},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		_, err = ntw.Forward(ctx, fakeReq)
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		if err == nil {
-			t.Fatalf("Expected non-nil error, got nil")
-		}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			_, err = ntw.Forward(ctx, fakeReq)
 
-		if !common.HasErrorCode(err, common.ErrCodeUpstreamMethodIgnored) {
-			t.Fatalf("Expected error code %v, got %v", common.ErrCodeUpstreamMethodIgnored, err)
-		}
+			if err == nil {
+				t.Fatalf("Expected non-nil error, got nil")
+			}
+
+			if !common.HasErrorCode(err, common.ErrCodeUpstreamMethodIgnored) {
+				t.Fatalf("Expected error code %v, got %v", common.ErrCodeUpstreamMethodIgnored, err)
+			}
+		})
 	})
 
 	t.Run("ForwardEthGetLogsEmptyArrayResponseSuccessWithRetryOnEmpty", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getBalance","params":["0x1234567890abcdef1234567890abcdef12345678"],"id": 1}`)
+			var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getBalance","params":["0x1234567890abcdef1234567890abcdef12345678"],"id": 1}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"result":[]}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Reply(200).
+				JSON([]byte(`{"result":[]}`))
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"result":[{"logIndex":444,"fromHost":"rpc2"}]}`))
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Reply(200).
+				JSON([]byte(`{"result":[{"logIndex":444,"fromHost":"rpc2"}]}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2,
-				// Pin empty accept list so this exercises retry-on-empty regardless of
-				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
-				EmptyResultAccept: []string{},
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc2",
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
+					// Pin empty accept list so this exercises retry-on-empty regardless of
+					// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+					EmptyResultAccept: []string{},
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-				DirectiveDefaults: &common.DirectiveDefaultsConfig{
-					RetryEmpty: &common.TRUE,
+			}
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc2",
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
 				},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+					DirectiveDefaults: &common.DirectiveDefaultsConfig{
+						RetryEmpty: &common.TRUE,
+					},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			resp, err := ntw.Forward(ctx, fakeReq)
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
-		if err != nil || fromHost != "rpc2" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
-		}
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
+
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
+
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
+			if err != nil || fromHost != "rpc2" {
+				t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+			}
+		})
 	})
 	t.Run("ForwardEthGetLogsEmptyArrayResponseSuccessWithoutRetryOnEmpty", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getBalance","params":["0x1234567890abcdef1234567890abcdef12345678"],"id": 1}`)
+			var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getBalance","params":["0x1234567890abcdef1234567890abcdef12345678"],"id": 1}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"result":[],"fromHost": "rpc1"}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Reply(200).
+				JSON([]byte(`{"result":[],"fromHost": "rpc1"}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2,
-			},
-		}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc2",
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+			fsCfg := &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
 				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
 				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+			}
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc2",
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1, err := upr.NewUpstream(up1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl1, err := clr.GetOrCreateClient(ctx, pup1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup1.Client = cl1
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		resp, err := ntw.Forward(ctx, fakeReq)
+			pup2, err := upr.NewUpstream(up2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl2, err := clr.GetOrCreateClient(ctx, pup2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pup2.Client = cl2
 
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			resp, err := ntw.Forward(ctx, fakeReq)
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
 
-		if jrr.GetResultString()[0] != '[' || jrr.GetResultString()[1] != ']' {
-			t.Fatalf("Expected result to be an array")
-		}
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
+
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
+
+			if jrr.GetResultString()[0] != '[' || jrr.GetResultString()[1] != ']' {
+				t.Fatalf("Expected result to be an array")
+			}
+		})
 	})
 
 	t.Run("ForwardEthGetLogsBothEmptyArrayResponse", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getBalance","params":["0x1234567890abcdef1234567890abcdef12345678"],"id": 1}`)
+			var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getBalance","params":["0x1234567890abcdef1234567890abcdef12345678"],"id": 1}`)
 
-		emptyResponse := []byte(`{"jsonrpc": "2.0","id": 1,"result":[]}`)
+			emptyResponse := []byte(`{"jsonrpc": "2.0","id": 1,"result":[]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON(emptyResponse)
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON(emptyResponse)
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			JSON(emptyResponse)
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				JSON(emptyResponse)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		defer cancel()
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			defer cancel()
 
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatalf("Failed to create rate limiters registry: %v", err)
-		}
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc2",
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatalf("Failed to prepare upstreams for network: %v", err)
-		}
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatalf("Failed to create rate limiters registry: %v", err)
+			}
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
 					ChainId: 123,
+				},
+			}
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc2",
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatalf("Failed to prepare upstreams for network: %v", err)
+			}
+
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{{
+						Retry: &common.RetryPolicyConfig{
+							MaxAttempts: 2,
+							// Pin empty accept list so this exercises retry-on-empty regardless of
+							// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+							EmptyResultAccept: []string{},
+						}},
+					},
+					DirectiveDefaults: &common.DirectiveDefaultsConfig{
+						RetryEmpty: &common.TRUE,
+					},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("Failed to create network: %v", err)
+			}
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			time.Sleep(300 * time.Millisecond)
+
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+			resp, err := ntw.Forward(ctx, fakeReq)
+
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
+
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
+
+			result := jrr.GetResultString()
+			if len(result) != 2 || result[0] != '[' || result[1] != ']' {
+				t.Errorf("Expected empty array result, got %s", result)
+			}
+		})
+	})
+	t.Run("ForwardQuicknodeEndpointRateLimitResponse", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":["0x1273c18"]}`)
+
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Reply(429).
+				JSON([]byte(`{"error":{"code":-32007,"message":"300/second request limit reached - reduce calls per second or upgrade your account at quicknode.com"}}`))
+
+			log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			fsCfg := &common.FailsafeConfig{}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			FALSE := false
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+				VendorName: "quicknode",
+				JsonRpc: &common.JsonRpcUpstreamConfig{
+					SupportsBatch: &FALSE,
+				},
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatalf("Failed to prepare upstreams for network: %v", err)
+			}
+
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			resp, err := ntw.Forward(ctx, fakeReq)
+
+			if err == nil {
+				t.Errorf("Expected non-nil error, got nil")
+				return
+			}
+
+			if resp != nil {
+				t.Errorf("Expected nil response, got %v", resp)
+				return
+			}
+
+			if !common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded) {
+				t.Errorf("Expected error code %v, got %+v", common.ErrCodeEndpointCapacityExceeded, err)
+			}
+		})
+	})
+
+	t.Run("ForwardLlamaRPCEndpointRateLimitResponseSingle", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1273c18",false]}`)
+
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				BodyString(`error code: 1015`)
+
+			log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			fsCfg := &common.FailsafeConfig{}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+				JsonRpc: &common.JsonRpcUpstreamConfig{
+					SupportsBatch: &common.FALSE,
+				},
+				VendorName: "llama",
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatalf("Failed to prepare upstreams for network: %v", err)
+			}
+
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			resp, err := ntw.Forward(ctx, fakeReq)
+
+			if err == nil {
+				t.Errorf("Expected non-nil error, got nil")
+				return
+			}
+
+			if resp != nil {
+				t.Errorf("Expected nil response, got %v", resp)
+				return
+			}
+
+			if !common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded) {
+				t.Errorf("Expected error code %v, got %+v", common.ErrCodeEndpointCapacityExceeded, err)
+			}
+		})
+	})
+
+	t.Run("ForwardLlamaRPCEndpointRateLimitResponseBatch", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1273c18",false]}`)
+
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(200).
+				BodyString(`error code: 1015`)
+
+			log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			fsCfg := &common.FailsafeConfig{}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+				JsonRpc: &common.JsonRpcUpstreamConfig{
+					SupportsBatch: &common.TRUE,
+				},
+				VendorName: "llama",
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{up1},
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+			err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err != nil {
+				t.Fatalf("Failed to prepare upstreams for network: %v", err)
+			}
+
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			resp, err := ntw.Forward(ctx, fakeReq)
+
+			if err == nil {
+				t.Errorf("Expected non-nil error, got nil")
+				return
+			}
+
+			if resp != nil {
+				t.Errorf("Expected nil response, got %v", resp)
+				return
+			}
+
+			if !common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded) {
+				t.Errorf("Expected error code %v, got %+v", common.ErrCodeEndpointCapacityExceeded, err)
+			}
+		})
+	})
+	t.Run("DynamicMethodSpecificLatencyPreference", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			t.Skip("TODO(phase-10): rewrite against new policy engine — needs `evalPerMethod: true` + per-method weight branching in the eval, or a custom selectionPolicy.eval that switches on ctx.method.")
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 9)
+
+			projectID := "test-project"
+			networkID := "evm:123"
+
+			logger := log.Logger
+			metricsTracker := health.NewTracker(&logger, projectID, 1*time.Hour)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			metricsTracker.Bootstrap(ctx)
+
+			rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &logger)
+			assert.NoError(t, err)
+
+			upstreamConfigs := []*common.UpstreamConfig{
+				{Id: "rpc1", Endpoint: "http://rpc1.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+				{Id: "rpc2", Endpoint: "http://rpc2.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+				{Id: "rpc3", Endpoint: "http://rpc3.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			}
+
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upstreamsRegistry := upstream.NewUpstreamsRegistry(
+				ctx,
+				&logger,
+				projectID,
+				upstreamConfigs,
+				ssr,
+				rateLimitersRegistry,
+				vr,
+				pr,
+				nil,
+				metricsTracker,
+				nil,
+			)
+
+			upstreamsRegistry.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+
+			err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkID)
+			assert.NoError(t, err)
+
+			prj := &PreparedProject{
+				Config: &common.ProjectConfig{
+					Id:       projectID,
+					Networks: []*common.NetworkConfig{},
+				},
+				Logger:       &logger,
+				policyEngine: policy.NewEngine(ctx, &logger, projectID, metricsTracker, stdlib.Install, nil),
+			}
+			networksRegistry := NewNetworksRegistry(
+				prj,
+				ctx,
+				upstreamsRegistry,
+				metricsTracker,
+				nil, // evmJsonRpcCache
+				nil, // svmJsonRpcCache
+				rateLimitersRegistry,
+				prj.policyEngine,
+				&logger,
+			)
+
+			ntw, err := networksRegistry.prepareNetwork(
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm:          &common.EvmNetworkConfig{ChainId: 123},
+				},
+			)
+			assert.NoError(t, err)
+
+			mockRequests := func(method string, upstreamId string, latency time.Duration) {
+				gock.New("http://" + upstreamId + ".localhost").
+					Persist().
+					Post("/").
+					Filter(func(request *http.Request) bool {
+						body := util.SafeReadBody(request)
+						return strings.Contains(body, method) && strings.Contains(request.Host, upstreamId)
+					}).
+					Reply(200).
+					BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1","method":"` + method + `","upstreamId":"` + upstreamId + `","latency":` + fmt.Sprintf("%d", latency.Milliseconds()) + `}`).
+					Delay(latency)
+			}
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upstreamsRegistry)
+			upstreamsRegistry.OverrideOrderForTest(util.EvmNetworkId(123))
+			mockRequests("eth_getLogs", "rpc1", 200*time.Millisecond)
+			mockRequests("eth_getLogs", "rpc2", 100*time.Millisecond)
+			mockRequests("eth_getLogs", "rpc3", 50*time.Millisecond)
+			mockRequests("eth_traceTransaction", "rpc1", 100*time.Millisecond)
+			mockRequests("eth_traceTransaction", "rpc2", 50*time.Millisecond)
+			mockRequests("eth_traceTransaction", "rpc3", 200*time.Millisecond)
+			mockRequests("eth_call", "rpc1", 50*time.Millisecond)
+			mockRequests("eth_call", "rpc2", 200*time.Millisecond)
+			mockRequests("eth_call", "rpc3", 100*time.Millisecond)
+
+			allMethods := []string{"eth_getLogs", "eth_traceTransaction", "eth_call"}
+
+			upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkID)
+			time.Sleep(2 * time.Second)
+
+			upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
+			time.Sleep(2 * time.Second)
+
+			wg := sync.WaitGroup{}
+			for _, method := range allMethods {
+				for i := 0; i < 100; i++ {
+					wg.Add(1)
+					go func(method string) {
+						defer wg.Done()
+						req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[],"id":1}`, method)))
+						req.SetNetwork(ntw)
+						oups, err := upstreamsRegistry.GetSortedUpstreams(context.Background(), networkID, method)
+						upstreamsRegistry.RLockUpstreams()
+						ups := []common.Upstream{}
+						ups = append(ups, oups...)
+						upstreamsRegistry.RUnlockUpstreams()
+						assert.NoError(t, err)
+						for _, up := range ups {
+							_, err = up.Forward(ctx, req, false, false)
+							assert.NoError(t, err)
+						}
+					}(method)
+				}
+			}
+			wg.Wait()
+
+			for i := 0; i < 5; i++ {
+				upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
+				time.Sleep(100 * time.Millisecond)
+			}
+
+			sortedUpstreamsGetLogs, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_getLogs")
+			assert.NoError(t, err)
+			assert.Equal(t, "rpc3", sortedUpstreamsGetLogs[0].Id(), "Expected rpc3 to be preferred for eth_getLogs in Phase 1")
+
+			sortedUpstreamsTraceTransaction, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_traceTransaction")
+			assert.NoError(t, err)
+			assert.Equal(t, "rpc2", sortedUpstreamsTraceTransaction[0].Id(), "Expected rpc2 to be preferred for eth_traceTransaction in Phase 1")
+
+			sortedUpstreamsCall, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_call")
+			assert.NoError(t, err)
+			assert.Equal(t, "rpc1", sortedUpstreamsCall[0].Id(), "Expected rpc1 to be preferred for eth_call in Phase 1")
+		})
+	})
+
+	t.Run("ForwardEnvioUnsupportedNetwork", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			var requestBytes = []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
+
+			gock.New("https://rpc.hypersync.xyz").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+				}).
+				Reply(500).
+				BodyString(`{"error": "Internal Server Error"}`)
+
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[{"logIndex":444}]}`))
+
+			log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			fsCfg := &common.FailsafeConfig{}
+			rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
+				Budgets: []*common.RateLimitBudgetConfig{},
+			}, &log.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+
+			// First upstream (Envio) with unsupported network
+			upEnvio := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "envio",
+				Endpoint: "https://rpc.hypersync.xyz",
+				JsonRpc: &common.JsonRpcUpstreamConfig{
+					SupportsBatch: &common.TRUE,
+				},
+				VendorName: "envio",
+			}
+
+			// Second upstream (RPC1)
+			upRpc1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+				JsonRpc: &common.JsonRpcUpstreamConfig{
+					SupportsBatch: &common.TRUE,
+				},
+			}
+
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			upr := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"prjA",
+				[]*common.UpstreamConfig{upEnvio, upRpc1}, // Both upstreams
+				ssr,
+				rlr,
+				vr,
+				pr,
+				nil,
+				mt,
+				nil,
+			)
+			upr.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+
+			ntw, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{fsCfg},
+				},
+				rlr,
+				upr,
+				mt,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			time.Sleep(300 * time.Millisecond)
+
+			// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+			upr.OverrideOrderForTest(util.EvmNetworkId(123))
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			resp, err := ntw.Forward(ctx, fakeReq)
+			if err != nil {
+				t.Fatalf("Expected nil error, got %v", err)
+			}
+
+			// Convert the raw response to a map to access custom fields like fromHost
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
+
+			// Check that the result field is an empty array as expected
+			result := []interface{}{}
+			err = sonic.Unmarshal(jrr.GetResultBytes(), &result)
+			if err != nil {
+				t.Fatalf("Failed to unmarshal result: %v", err)
+			}
+			if len(result) == 0 {
+				t.Fatalf("Expected non-empty result array")
+			}
+		})
+	})
+	t.Run("ResponseReleasedBeforeCacheSet", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			cacheCfg := &common.CacheConfig{
+				Connectors: []*common.ConnectorConfig{
+					{
+						Id:     "mock",
+						Driver: "mock",
+						Mock: &common.MockConnectorConfig{
+							MemoryConnectorConfig: common.MemoryConnectorConfig{
+								MaxItems: 100_000, MaxTotalSize: "1GB",
+							},
+							// GetDelay: 10 * time.Second,
+							// SetDelay: 10 * time.Second,
+						},
+					},
+				},
+				Policies: []*common.CachePolicyConfig{
+					{
+						Network:   "*",
+						Method:    "*",
+						TTL:       common.FixedDuration(5 * time.Minute),
+						Connector: "mock",
+					},
+				},
+			}
+			cacheCfg.SetDefaults()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkSimple(t, ctx, nil, nil)
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				MatchType("json").
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"method":  "eth_getBalance",
+					"params":  []interface{}{"0x11", "0x11"},
+					"id":      11111,
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      11111,
+					"result": map[string]interface{}{
+						"blockNumber": "0x1111",
+					},
+				})
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				MatchType("json").
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"method":  "eth_getBalance",
+					"params":  []interface{}{"0x22", "0x22"},
+					"id":      22222,
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      22222,
+					"result":  "0x22222222222222",
+				})
+			slowCache, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, cacheCfg)
+			if err != nil {
+				t.Fatalf("Failed to create evm json rpc cache: %v", err)
+			}
+			network.cacheDal = slowCache.WithProjectId("prjA")
+
+			// Make the request
+			req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x11", "0x11"],"id":11111}`))
+			req1.SetCacheDal(slowCache)
+			req1.SetNetwork(network)
+			req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x22", "0x22"],"id":22222}`))
+			req2.SetCacheDal(slowCache)
+			req2.SetNetwork(network)
+
+			// Use a WaitGroup to ensure both goroutines complete
+			var wg sync.WaitGroup
+			wg.Add(2)
+
+			var jrr1Atomic atomic.Value
+			var jrr2Atomic atomic.Value
+
+			// Goroutine 1: Make the request and immediately release the response
+			go func() {
+				defer wg.Done()
+
+				resp1, err := network.Forward(ctx, req1)
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+					return
+				}
+				jrr1Value, err := resp1.JsonRpcResponse()
+				if err != nil {
+					t.Logf("Error getting JsonRpcResponse for req1: %v", err)
+					return
+				}
+				if jrr1Value == nil {
+					t.Logf("JsonRpcResponse returned nil for req1")
+					return
+				}
+				jrr1Atomic.Store(jrr1Value)
+				// Simulate immediate release of the response
+				resp1.Release()
+
+				resp2, err := network.Forward(ctx, req2)
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+					return
+				}
+				jrr2Value, err := resp2.JsonRpcResponse()
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+					return
+				}
+				if jrr2Value == nil {
+					t.Logf("JsonRpcResponse returned nil for req2")
+					return
+				}
+				jrr2Atomic.Store(jrr2Value)
+				resp2.Release()
+			}()
+
+			// Goroutine 2: Access the response concurrently
+			go func() {
+				defer wg.Done()
+				time.Sleep(500 * time.Millisecond)
+				cache1, e1 := slowCache.Get(ctx, req1)
+				cache2, e2 := slowCache.Get(ctx, req2)
+				assert.NoError(t, e1)
+				assert.NoError(t, e2)
+				cjrr1, _ := cache1.JsonRpcResponse()
+				cjrr2, _ := cache2.JsonRpcResponse()
+				assert.NotNil(t, cjrr1)
+				assert.NotNil(t, cjrr2)
+				if cjrr1 != nil {
+					assert.Contains(t, cjrr1.GetResultString(), "0x1111", "0x1111 not found in cjrr1")
+				}
+				if cjrr2 != nil {
+					assert.Contains(t, cjrr2.GetResultString(), "0x22222222222222", "0x22222222222222 not found in cjrr2")
+				}
+			}()
+
+			// Wait for both goroutines to complete
+			wg.Wait()
+		})
+	})
+
+	t.Run("MultiplexerCloneUnderLock_PreventsNoBodyParse", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 1)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkSimple(t, ctx, nil, nil)
+
+			// One upstream call per iteration; enforce using Times(rounds)
+			rounds := 50
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				// Times(rounds).
+				Persist().
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      0, // id is ignored by server; we'll overwrite per request downstream
+					"result":  "0xabcdef",
+				})
+
+			for i := 0; i < rounds; i++ {
+				// Two identical requests (different IDs); they should multiplex to a single upstream call
+				req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x111","latest"],"id":1111}`))
+				req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x111","latest"],"id":2222}`))
+				req1.SetNetwork(network)
+				req2.SetNetwork(network)
+
+				var wg sync.WaitGroup
+				wg.Add(2)
+
+				var errA error
+				var errB error
+
+				go func() {
+					defer wg.Done()
+					resp, e := network.Forward(ctx, req1)
+					if resp != nil {
+						_, _ = resp.JsonRpcResponse()
+						resp.Release()
+					}
+					errA = e
+				}()
+
+				go func() {
+					defer wg.Done()
+					resp, e := network.Forward(ctx, req2)
+					errB = e
+					if resp == nil {
+						return
+					}
+					jrr, e2 := resp.JsonRpcResponse()
+					if e2 != nil {
+						assert.FailNow(t, "unexpected parse error", e2.Error())
+					}
+					if jrr == nil {
+						assert.FailNow(t, "nil JsonRpcResponse returned from multiplexed wait")
+					}
+					if jrr != nil && jrr.Error != nil {
+						assert.NotContains(t, jrr.Error.Message, "no body available to parse JsonRpcResponse", "should never see empty-body parse error from multiplexed copy")
+					}
+					resp.Release()
+				}()
+
+				wg.Wait()
+				require.NoError(t, errA)
+				require.NoError(t, errB)
+			}
+		})
+	})
+
+	t.Run("BatchRequestValidationAndRetry", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			// Set up the test environment
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkSimple(t, ctx, &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "test",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId:                            123,
+					GetLogsAutoSplittingRangeThreshold: 100_000,
+				},
+				JsonRpc: &common.JsonRpcUpstreamConfig{
+					SupportsBatch: &common.TRUE,
 				},
 				Failsafe: []*common.FailsafeConfig{{
 					Retry: &common.RetryPolicyConfig{
 						MaxAttempts: 2,
-						// Pin empty accept list so this exercises retry-on-empty regardless of
-						// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
-						EmptyResultAccept: []string{},
 					}},
 				},
-				DirectiveDefaults: &common.DirectiveDefaultsConfig{
-					RetryEmpty: &common.TRUE,
-				},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatalf("Failed to create network: %v", err)
-		}
+			}, nil)
 
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		time.Sleep(300 * time.Millisecond)
-
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
-		resp, err := ntw.Forward(ctx, fakeReq)
-
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
-
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
-
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
-
-		result := jrr.GetResultString()
-		if len(result) != 2 || result[0] != '[' || result[1] != ']' {
-			t.Errorf("Expected empty array result, got %s", result)
-		}
-	})
-	t.Run("ForwardQuicknodeEndpointRateLimitResponse", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":["0x1273c18"]}`)
-
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Reply(429).
-			JSON([]byte(`{"error":{"code":-32007,"message":"300/second request limit reached - reduce calls per second or upgrade your account at quicknode.com"}}`))
-
-		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		fsCfg := &common.FailsafeConfig{}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		FALSE := false
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			VendorName: "quicknode",
-			JsonRpc: &common.JsonRpcUpstreamConfig{
-				SupportsBatch: &FALSE,
-			},
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatalf("Failed to prepare upstreams for network: %v", err)
-		}
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					ChainId: 123,
-				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		resp, err := ntw.Forward(ctx, fakeReq)
-
-		if err == nil {
-			t.Errorf("Expected non-nil error, got nil")
-			return
-		}
-
-		if resp != nil {
-			t.Errorf("Expected nil response, got %v", resp)
-			return
-		}
-
-		if !common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded) {
-			t.Errorf("Expected error code %v, got %+v", common.ErrCodeEndpointCapacityExceeded, err)
-		}
-	})
-
-	t.Run("ForwardLlamaRPCEndpointRateLimitResponseSingle", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1273c18",false]}`)
-
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			BodyString(`error code: 1015`)
-
-		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		fsCfg := &common.FailsafeConfig{}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			JsonRpc: &common.JsonRpcUpstreamConfig{
-				SupportsBatch: &common.FALSE,
-			},
-			VendorName: "llama",
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatalf("Failed to prepare upstreams for network: %v", err)
-		}
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					ChainId: 123,
-				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		resp, err := ntw.Forward(ctx, fakeReq)
-
-		if err == nil {
-			t.Errorf("Expected non-nil error, got nil")
-			return
-		}
-
-		if resp != nil {
-			t.Errorf("Expected nil response, got %v", resp)
-			return
-		}
-
-		if !common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded) {
-			t.Errorf("Expected error code %v, got %+v", common.ErrCodeEndpointCapacityExceeded, err)
-		}
-	})
-
-	t.Run("ForwardLlamaRPCEndpointRateLimitResponseBatch", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1273c18",false]}`)
-
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(200).
-			BodyString(`error code: 1015`)
-
-		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		fsCfg := &common.FailsafeConfig{}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			JsonRpc: &common.JsonRpcUpstreamConfig{
-				SupportsBatch: &common.TRUE,
-			},
-			VendorName: "llama",
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatalf("Failed to prepare upstreams for network: %v", err)
-		}
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					ChainId: 123,
-				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		resp, err := ntw.Forward(ctx, fakeReq)
-
-		if err == nil {
-			t.Errorf("Expected non-nil error, got nil")
-			return
-		}
-
-		if resp != nil {
-			t.Errorf("Expected nil response, got %v", resp)
-			return
-		}
-
-		if !common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded) {
-			t.Errorf("Expected error code %v, got %+v", common.ErrCodeEndpointCapacityExceeded, err)
-		}
-	})
-	t.Run("DynamicMethodSpecificLatencyPreference", func(t *testing.T) {
-		t.Skip("TODO(phase-10): rewrite against new policy engine — needs `evalPerMethod: true` + per-method weight branching in the eval, or a custom selectionPolicy.eval that switches on ctx.method.")
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 9)
-
-		projectID := "test-project"
-		networkID := "evm:123"
-
-		logger := log.Logger
-		metricsTracker := health.NewTracker(&logger, projectID, 1*time.Hour)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		metricsTracker.Bootstrap(ctx)
-
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &logger)
-		assert.NoError(t, err)
-
-		upstreamConfigs := []*common.UpstreamConfig{
-			{Id: "rpc1", Endpoint: "http://rpc1.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-			{Id: "rpc2", Endpoint: "http://rpc2.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-			{Id: "rpc3", Endpoint: "http://rpc3.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		}
-
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upstreamsRegistry := upstream.NewUpstreamsRegistry(
-			ctx,
-			&logger,
-			projectID,
-			upstreamConfigs,
-			ssr,
-			rateLimitersRegistry,
-			vr,
-			pr,
-			nil,
-			metricsTracker,
-			nil,
-		)
-
-		upstreamsRegistry.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-
-		err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkID)
-		assert.NoError(t, err)
-
-		prj := &PreparedProject{
-			Config: &common.ProjectConfig{
-				Id:       projectID,
-				Networks: []*common.NetworkConfig{},
-			},
-			Logger:       &logger,
-			policyEngine: policy.NewEngine(ctx, &logger, projectID, metricsTracker, stdlib.Install, nil),
-		}
-		networksRegistry := NewNetworksRegistry(
-			prj,
-			ctx,
-			upstreamsRegistry,
-			metricsTracker,
-			nil, // evmJsonRpcCache
-			nil, // svmJsonRpcCache
-			rateLimitersRegistry,
-			prj.policyEngine,
-			&logger,
-		)
-
-		ntw, err := networksRegistry.prepareNetwork(
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm:          &common.EvmNetworkConfig{ChainId: 123},
-			},
-		)
-		assert.NoError(t, err)
-
-		mockRequests := func(method string, upstreamId string, latency time.Duration) {
-			gock.New("http://" + upstreamId + ".localhost").
-				Persist().
+			// Mock the response for the batch request
+			gock.New("http://rpc1.localhost").
 				Post("/").
-				Filter(func(request *http.Request) bool {
-					body := util.SafeReadBody(request)
-					return strings.Contains(body, method) && strings.Contains(request.Host, upstreamId)
-				}).
 				Reply(200).
-				BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1","method":"` + method + `","upstreamId":"` + upstreamId + `","latency":` + fmt.Sprintf("%d", latency.Milliseconds()) + `}`).
-				Delay(latency)
-		}
-
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upstreamsRegistry)
-		upstreamsRegistry.OverrideOrderForTest(util.EvmNetworkId(123))
-		mockRequests("eth_getLogs", "rpc1", 200*time.Millisecond)
-		mockRequests("eth_getLogs", "rpc2", 100*time.Millisecond)
-		mockRequests("eth_getLogs", "rpc3", 50*time.Millisecond)
-		mockRequests("eth_traceTransaction", "rpc1", 100*time.Millisecond)
-		mockRequests("eth_traceTransaction", "rpc2", 50*time.Millisecond)
-		mockRequests("eth_traceTransaction", "rpc3", 200*time.Millisecond)
-		mockRequests("eth_call", "rpc1", 50*time.Millisecond)
-		mockRequests("eth_call", "rpc2", 200*time.Millisecond)
-		mockRequests("eth_call", "rpc3", 100*time.Millisecond)
-
-		allMethods := []string{"eth_getLogs", "eth_traceTransaction", "eth_call"}
-
-		upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkID)
-		time.Sleep(2 * time.Second)
-
-		upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
-		time.Sleep(2 * time.Second)
-
-		wg := sync.WaitGroup{}
-		for _, method := range allMethods {
-			for i := 0; i < 100; i++ {
-				wg.Add(1)
-				go func(method string) {
-					defer wg.Done()
-					req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[],"id":1}`, method)))
-					req.SetNetwork(ntw)
-					oups, err := upstreamsRegistry.GetSortedUpstreams(context.Background(), networkID, method)
-					upstreamsRegistry.RLockUpstreams()
-					ups := []common.Upstream{}
-					ups = append(ups, oups...)
-					upstreamsRegistry.RUnlockUpstreams()
-					assert.NoError(t, err)
-					for _, up := range ups {
-						_, err = up.Forward(ctx, req, false, false)
-						assert.NoError(t, err)
-					}
-				}(method)
-			}
-		}
-		wg.Wait()
-
-		for i := 0; i < 5; i++ {
-			upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
-			time.Sleep(100 * time.Millisecond)
-		}
-
-		sortedUpstreamsGetLogs, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_getLogs")
-		assert.NoError(t, err)
-		assert.Equal(t, "rpc3", sortedUpstreamsGetLogs[0].Id(), "Expected rpc3 to be preferred for eth_getLogs in Phase 1")
-
-		sortedUpstreamsTraceTransaction, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_traceTransaction")
-		assert.NoError(t, err)
-		assert.Equal(t, "rpc2", sortedUpstreamsTraceTransaction[0].Id(), "Expected rpc2 to be preferred for eth_traceTransaction in Phase 1")
-
-		sortedUpstreamsCall, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_call")
-		assert.NoError(t, err)
-		assert.Equal(t, "rpc1", sortedUpstreamsCall[0].Id(), "Expected rpc1 to be preferred for eth_call in Phase 1")
-	})
-
-	t.Run("ForwardEnvioUnsupportedNetwork", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		var requestBytes = []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
-
-		gock.New("https://rpc.hypersync.xyz").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
-			}).
-			Reply(500).
-			BodyString(`{"error": "Internal Server Error"}`)
-
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[{"logIndex":444}]}`))
-
-		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		fsCfg := &common.FailsafeConfig{}
-		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-
-		// First upstream (Envio) with unsupported network
-		upEnvio := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "envio",
-			Endpoint: "https://rpc.hypersync.xyz",
-			JsonRpc: &common.JsonRpcUpstreamConfig{
-				SupportsBatch: &common.TRUE,
-			},
-			VendorName: "envio",
-		}
-
-		// Second upstream (RPC1)
-		upRpc1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			JsonRpc: &common.JsonRpcUpstreamConfig{
-				SupportsBatch: &common.TRUE,
-			},
-		}
-
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{upEnvio, upRpc1}, // Both upstreams
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					ChainId: 123,
-				},
-				Failsafe: []*common.FailsafeConfig{fsCfg},
-			},
-			rlr,
-			upr,
-			mt,
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		time.Sleep(300 * time.Millisecond)
-
-		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-		upr.OverrideOrderForTest(util.EvmNetworkId(123))
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		resp, err := ntw.Forward(ctx, fakeReq)
-		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
-		}
-
-		// Convert the raw response to a map to access custom fields like fromHost
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
-
-		// Check that the result field is an empty array as expected
-		result := []interface{}{}
-		err = sonic.Unmarshal(jrr.GetResultBytes(), &result)
-		if err != nil {
-			t.Fatalf("Failed to unmarshal result: %v", err)
-		}
-		if len(result) == 0 {
-			t.Fatalf("Expected non-empty result array")
-		}
-	})
-	t.Run("ResponseReleasedBeforeCacheSet", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		cacheCfg := &common.CacheConfig{
-			Connectors: []*common.ConnectorConfig{
-				{
-					Id:     "mock",
-					Driver: "mock",
-					Mock: &common.MockConnectorConfig{
-						MemoryConnectorConfig: common.MemoryConnectorConfig{
-							MaxItems: 100_000, MaxTotalSize: "1GB",
-						},
-						// GetDelay: 10 * time.Second,
-						// SetDelay: 10 * time.Second,
-					},
-				},
-			},
-			Policies: []*common.CachePolicyConfig{
-				{
-					Network:   "*",
-					Method:    "*",
-					TTL:       common.FixedDuration(5 * time.Minute),
-					Connector: "mock",
-				},
-			},
-		}
-		cacheCfg.SetDefaults()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkSimple(t, ctx, nil, nil)
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			MatchType("json").
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"method":  "eth_getBalance",
-				"params":  []interface{}{"0x11", "0x11"},
-				"id":      11111,
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      11111,
-				"result": map[string]interface{}{
-					"blockNumber": "0x1111",
-				},
-			})
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			MatchType("json").
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"method":  "eth_getBalance",
-				"params":  []interface{}{"0x22", "0x22"},
-				"id":      22222,
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      22222,
-				"result":  "0x22222222222222",
-			})
-		slowCache, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, cacheCfg)
-		if err != nil {
-			t.Fatalf("Failed to create evm json rpc cache: %v", err)
-		}
-		network.cacheDal = slowCache.WithProjectId("prjA")
-
-		// Make the request
-		req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x11", "0x11"],"id":11111}`))
-		req1.SetCacheDal(slowCache)
-		req1.SetNetwork(network)
-		req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x22", "0x22"],"id":22222}`))
-		req2.SetCacheDal(slowCache)
-		req2.SetNetwork(network)
-
-		// Use a WaitGroup to ensure both goroutines complete
-		var wg sync.WaitGroup
-		wg.Add(2)
-
-		var jrr1Atomic atomic.Value
-		var jrr2Atomic atomic.Value
-
-		// Goroutine 1: Make the request and immediately release the response
-		go func() {
-			defer wg.Done()
-
-			resp1, err := network.Forward(ctx, req1)
-			if err != nil {
-				t.Errorf("Unexpected error: %v", err)
-				return
-			}
-			jrr1Value, err := resp1.JsonRpcResponse()
-			if err != nil {
-				t.Logf("Error getting JsonRpcResponse for req1: %v", err)
-				return
-			}
-			if jrr1Value == nil {
-				t.Logf("JsonRpcResponse returned nil for req1")
-				return
-			}
-			jrr1Atomic.Store(jrr1Value)
-			// Simulate immediate release of the response
-			resp1.Release()
-
-			resp2, err := network.Forward(ctx, req2)
-			if err != nil {
-				t.Errorf("Unexpected error: %v", err)
-				return
-			}
-			jrr2Value, err := resp2.JsonRpcResponse()
-			if err != nil {
-				t.Errorf("Unexpected error: %v", err)
-				return
-			}
-			if jrr2Value == nil {
-				t.Logf("JsonRpcResponse returned nil for req2")
-				return
-			}
-			jrr2Atomic.Store(jrr2Value)
-			resp2.Release()
-		}()
-
-		// Goroutine 2: Access the response concurrently
-		go func() {
-			defer wg.Done()
-			time.Sleep(500 * time.Millisecond)
-			cache1, e1 := slowCache.Get(ctx, req1)
-			cache2, e2 := slowCache.Get(ctx, req2)
-			assert.NoError(t, e1)
-			assert.NoError(t, e2)
-			cjrr1, _ := cache1.JsonRpcResponse()
-			cjrr2, _ := cache2.JsonRpcResponse()
-			assert.NotNil(t, cjrr1)
-			assert.NotNil(t, cjrr2)
-			if cjrr1 != nil {
-				assert.Contains(t, cjrr1.GetResultString(), "0x1111", "0x1111 not found in cjrr1")
-			}
-			if cjrr2 != nil {
-				assert.Contains(t, cjrr2.GetResultString(), "0x22222222222222", "0x22222222222222 not found in cjrr2")
-			}
-		}()
-
-		// Wait for both goroutines to complete
-		wg.Wait()
-	})
-
-	t.Run("MultiplexerCloneUnderLock_PreventsNoBodyParse", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkSimple(t, ctx, nil, nil)
-
-		// One upstream call per iteration; enforce using Times(rounds)
-		rounds := 50
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			// Times(rounds).
-			Persist().
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      0, // id is ignored by server; we'll overwrite per request downstream
-				"result":  "0xabcdef",
-			})
-
-		for i := 0; i < rounds; i++ {
-			// Two identical requests (different IDs); they should multiplex to a single upstream call
-			req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x111","latest"],"id":1111}`))
-			req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x111","latest"],"id":2222}`))
-			req1.SetNetwork(network)
-			req2.SetNetwork(network)
-
-			var wg sync.WaitGroup
-			wg.Add(2)
-
-			var errA error
-			var errB error
-
-			go func() {
-				defer wg.Done()
-				resp, e := network.Forward(ctx, req1)
-				if resp != nil {
-					_, _ = resp.JsonRpcResponse()
-					resp.Release()
-				}
-				errA = e
-			}()
-
-			go func() {
-				defer wg.Done()
-				resp, e := network.Forward(ctx, req2)
-				errB = e
-				if resp == nil {
-					return
-				}
-				jrr, e2 := resp.JsonRpcResponse()
-				if e2 != nil {
-					assert.FailNow(t, "unexpected parse error", e2.Error())
-				}
-				if jrr == nil {
-					assert.FailNow(t, "nil JsonRpcResponse returned from multiplexed wait")
-				}
-				if jrr != nil && jrr.Error != nil {
-					assert.NotContains(t, jrr.Error.Message, "no body available to parse JsonRpcResponse", "should never see empty-body parse error from multiplexed copy")
-				}
-				resp.Release()
-			}()
-
-			wg.Wait()
-			require.NoError(t, errA)
-			require.NoError(t, errB)
-		}
-	})
-
-	t.Run("BatchRequestValidationAndRetry", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		// Set up the test environment
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkSimple(t, ctx, &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "test",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId:                            123,
-				GetLogsAutoSplittingRangeThreshold: 100_000,
-			},
-			JsonRpc: &common.JsonRpcUpstreamConfig{
-				SupportsBatch: &common.TRUE,
-			},
-			Failsafe: []*common.FailsafeConfig{{
-				Retry: &common.RetryPolicyConfig{
-					MaxAttempts: 2,
-				}},
-			},
-		}, nil)
-
-		// Mock the response for the batch request
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Reply(200).
-			BodyString(`[
+				BodyString(`[
 				{
 					"jsonrpc": "2.0",
 					"id": 32,
@@ -8338,10 +8452,10 @@ func TestNetwork_Forward(t *testing.T) {
 					}
 				}
 			]`)
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Reply(200).
-			BodyString(`[
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Reply(200).
+				BodyString(`[
 				{
 					"jsonrpc": "2.0",
 					"id": 43,
@@ -8349,136 +8463,139 @@ func TestNetwork_Forward(t *testing.T) {
 				}
 			]`)
 
-		// Create normalized requests
-		req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":32,"method":"eth_trace","params":[{"fromBlock":"0x35A35CB","toBlock":"0x35AF7CA"}]}`))
-		req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":43,"method":"eth_getBalance","params":["0x742d35Cc6634C0532925a3b844Bc454e4438f44e", "latest"]}`))
+			// Create normalized requests
+			req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":32,"method":"eth_trace","params":[{"fromBlock":"0x35A35CB","toBlock":"0x35AF7CA"}]}`))
+			req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":43,"method":"eth_getBalance","params":["0x742d35Cc6634C0532925a3b844Bc454e4438f44e", "latest"]}`))
 
-		// Process requests
-		var resp1, resp2 *common.NormalizedResponse
-		var err1, err2 error
+			// Process requests
+			var resp1, resp2 *common.NormalizedResponse
+			var err1, err2 error
 
-		wg := sync.WaitGroup{}
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			resp1, err1 = network.Forward(ctx, req1)
-		}()
-		time.Sleep(100 * time.Millisecond)
-		go func() {
-			defer wg.Done()
-			resp2, err2 = network.Forward(ctx, req2)
-		}()
-		wg.Wait()
+			wg := sync.WaitGroup{}
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				resp1, err1 = network.Forward(ctx, req1)
+			}()
+			time.Sleep(100 * time.Millisecond)
+			go func() {
+				defer wg.Done()
+				resp2, err2 = network.Forward(ctx, req2)
+			}()
+			wg.Wait()
 
-		// Assertions for the first request (server-side error, should be retried)
-		assert.Error(t, err1, "Expected an error for the first request")
-		assert.Nil(t, resp1, "Expected nil response for the first request")
-		assert.False(t, common.IsRetryableTowardsUpstream(err1), "Expected a retryable error for the first request")
-		assert.True(t, common.HasErrorCode(err1, common.ErrCodeEndpointUnsupported), "Expected a unsupported method error for the first request")
+			// Assertions for the first request (server-side error, should be retried)
+			assert.Error(t, err1, "Expected an error for the first request")
+			assert.Nil(t, resp1, "Expected nil response for the first request")
+			assert.False(t, common.IsRetryableTowardsUpstream(err1), "Expected a retryable error for the first request")
+			assert.True(t, common.HasErrorCode(err1, common.ErrCodeEndpointUnsupported), "Expected a unsupported method error for the first request")
 
-		// Assertions for the second request (client-side error, should not be retried)
-		assert.Nil(t, err2, "Expected no error for the second request")
-		assert.NotNil(t, resp2, "Expected non-nil response for the second request")
+			// Assertions for the second request (client-side error, should not be retried)
+			assert.Nil(t, err2, "Expected no error for the second request")
+			assert.NotNil(t, resp2, "Expected non-nil response for the second request")
+		})
 	})
 
 	t.Run("ForwardWithMinimumMemoryAllocation", func(t *testing.T) {
-		// reset any previous gock state, and assert at the end that all mocks were exercised
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// Don't assert pending mocks as SetupMocksForEvmStatePoller uses Persist()
+		synctest.Test(t, func(t *testing.T) {
+			// reset any previous gock state, and assert at the end that all mocks were exercised
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// Don't assert pending mocks as SetupMocksForEvmStatePoller uses Persist()
 
-		// Prepare a large payload and allowed overhead
-		sampleSize := 100 * 1024 * 1024
-		allowedMemoryUsageLeft := int(float64(sampleSize) * 0.04)
-		largeResult := strings.Repeat("x", sampleSize)
+			// Prepare a large payload and allowed overhead
+			sampleSize := 100 * 1024 * 1024
+			allowedMemoryUsageLeft := int(float64(sampleSize) * 0.04)
+			largeResult := strings.Repeat("x", sampleSize)
 
-		// Stub only the actual debug_traceTransaction call and return our big string
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "debug_traceTransaction")
-			}).
-			Reply(200).
-			BodyString(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":"%s"}`, largeResult))
+			// Stub only the actual debug_traceTransaction call and return our big string
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "debug_traceTransaction")
+				}).
+				Reply(200).
+				BodyString(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":"%s"}`, largeResult))
 
-		// build a minimal network with a single EVM upstream
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			// build a minimal network with a single EVM upstream
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		upCfg := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		network := setupTestNetworkSimple(t, ctx, upCfg, nil)
+			upCfg := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "rpc1",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
+			network := setupTestNetworkSimple(t, ctx, upCfg, nil)
 
-		// give the poller a moment to start up
-		time.Sleep(100 * time.Millisecond)
+			// give the poller a moment to start up
+			time.Sleep(100 * time.Millisecond)
 
-		// seed the poller with our two known block heights
-		ups := network.upstreamsRegistry.GetNetworkUpstreams(ctx, "evm:123")[0]
-		poller := ups.EvmStatePoller()
-		poller.SuggestLatestBlock(9)
-		poller.SuggestFinalizedBlock(8)
+			// seed the poller with our two known block heights
+			ups := network.upstreamsRegistry.GetNetworkUpstreams(ctx, "evm:123")[0]
+			poller := ups.EvmStatePoller()
+			poller.SuggestLatestBlock(9)
+			poller.SuggestFinalizedBlock(8)
 
-		// prepare the JSON‑RPC request
-		reqBody := []byte(`{
+			// prepare the JSON‑RPC request
+			reqBody := []byte(`{
 			"jsonrpc":"2.0",
 			"method":"debug_traceTransaction",
 			"params":["0x1294567890abcdef1234567890abcdef12345678"],
 			"id":1
 		}`)
-		req := common.NewNormalizedRequest(reqBody)
-		req.SetNetwork(network)
+			req := common.NewNormalizedRequest(reqBody)
+			req.SetNetwork(network)
 
-		// measure heap before invocation
-		var mBefore, mAfter runtime.MemStats
-		runtime.GC()
-		runtime.ReadMemStats(&mBefore)
+			// measure heap before invocation
+			var mBefore, mAfter runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&mBefore)
 
-		// do the forward
-		resp, err := network.Forward(ctx, req)
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
+			// do the forward
+			resp, err := network.Forward(ctx, req)
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
 
-		// measure heap after
-		runtime.GC()
-		runtime.ReadMemStats(&mAfter)
+			// measure heap after
+			runtime.GC()
+			runtime.ReadMemStats(&mAfter)
 
-		// Under the race detector (and due to GC), mAfter.Alloc can be less than
-		// mBefore.Alloc, which would underflow a uint64 subtraction and yield a
-		// gigantic number. Clamp negative deltas to zero.
-		var used uint64
-		if mAfter.Alloc >= mBefore.Alloc {
-			used = mAfter.Alloc - mBefore.Alloc
-		} else {
-			used = 0
-		}
-		t.Logf("Memory used for request: %.2f MB", float64(used)/(1024*1024))
+			// Under the race detector (and due to GC), mAfter.Alloc can be less than
+			// mBefore.Alloc, which would underflow a uint64 subtraction and yield a
+			// gigantic number. Clamp negative deltas to zero.
+			var used uint64
+			if mAfter.Alloc >= mBefore.Alloc {
+				used = mAfter.Alloc - mBefore.Alloc
+			} else {
+				used = 0
+			}
+			t.Logf("Memory used for request: %.2f MB", float64(used)/(1024*1024))
 
-		// assert we stayed under sampleSize + overhead
-		maxAllowed := uint64(sampleSize + allowedMemoryUsageLeft)
-		if used > maxAllowed {
-			maxAllowedStr := fmt.Sprintf("%.2f MB", float64(maxAllowed)/(1024*1024))
-			usedStr := fmt.Sprintf("%.2f MB", float64(used)/(1024*1024))
-			t.Fatalf("Memory usage exceeded max of %s; used %s", maxAllowedStr, usedStr)
-		}
+			// assert we stayed under sampleSize + overhead
+			maxAllowed := uint64(sampleSize + allowedMemoryUsageLeft)
+			if used > maxAllowed {
+				maxAllowedStr := fmt.Sprintf("%.2f MB", float64(maxAllowed)/(1024*1024))
+				usedStr := fmt.Sprintf("%.2f MB", float64(used)/(1024*1024))
+				t.Fatalf("Memory usage exceeded max of %s; used %s", maxAllowedStr, usedStr)
+			}
 
-		// finally, check the payload round‑tripped correctly
-		jrr, err := resp.JsonRpcResponse()
-		assert.NoError(t, err)
-		if jrr == nil {
-			t.Fatalf("JsonRpcResponse returned nil")
-		}
-		// plus 2 bytes of quotes around the string
-		expectedLen := sampleSize + 2
-		if jrr.ResultLength() != expectedLen {
-			t.Fatalf("Expected result length %d, got %d", expectedLen, jrr.ResultLength())
-		}
+			// finally, check the payload round‑tripped correctly
+			jrr, err := resp.JsonRpcResponse()
+			assert.NoError(t, err)
+			if jrr == nil {
+				t.Fatalf("JsonRpcResponse returned nil")
+			}
+			// plus 2 bytes of quotes around the string
+			expectedLen := sampleSize + 2
+			if jrr.ResultLength() != expectedLen {
+				t.Fatalf("Expected result length %d, got %d", expectedLen, jrr.ResultLength())
+			}
+		})
 	})
 }
 
@@ -8595,31 +8712,380 @@ var testMu sync.Mutex
 
 func TestNetwork_InFlightRequests(t *testing.T) {
 	t.Run("MultipleSuccessfulConcurrentRequests", func(t *testing.T) {
-		testMu.Lock()
-		defer testMu.Unlock()
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1)
+		synctest.Test(t, func(t *testing.T) {
+			testMu.Lock()
+			defer testMu.Unlock()
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 1)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkSimple(t, ctx, nil, nil)
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkSimple(t, ctx, nil, nil)
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
-			}).
-			Reply(200).
-			Delay(1 * time.Second). // Delay a bit so in-flight multiplexing kicks in
-			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				}).
+				Reply(200).
+				Delay(1 * time.Second). // Delay a bit so in-flight multiplexing kicks in
+				BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
 
-		var wg sync.WaitGroup
-		for i := 0; i < 10; i++ {
+			var wg sync.WaitGroup
+			for i := 0; i < 10; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					req := common.NewNormalizedRequest(requestBytes)
+					resp, err := network.Forward(ctx, req)
+					assert.NoError(t, err)
+					assert.NotNil(t, resp)
+				}()
+			}
+			wg.Wait()
+		})
+	})
+
+	t.Run("MultipleConcurrentRequestsWithFailure", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			testMu.Lock()
+			defer testMu.Unlock()
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkSimple(t, ctx, nil, nil)
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
+
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				}).
+				Reply(500).
+				Delay(1 * time.Second).
+				BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Internal error"}}`)
+
+			var wg sync.WaitGroup
+			for i := 0; i < 10; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					req := common.NewNormalizedRequest(requestBytes)
+					resp, err := network.Forward(ctx, req)
+					assert.Error(t, err)
+					assert.Nil(t, resp)
+				}()
+			}
+			wg.Wait()
+		})
+	})
+
+	t.Run("MultipleConcurrentRequestsWithContextTimeout", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			testMu.Lock()
+			defer testMu.Unlock()
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 1)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkSimple(t, ctx, &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "test",
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+				Failsafe: []*common.FailsafeConfig{{
+					Retry: nil,
+					Hedge: nil,
+					Timeout: &common.TimeoutPolicyConfig{
+						Duration: common.NewStaticDuration(50 * time.Millisecond),
+					}},
+				},
+			}, nil)
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
+
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					bd := util.SafeReadBody(request)
+					return strings.Contains(bd, "eth_getLogs")
+				}).
+				Reply(200).
+				Delay(100 * time.Second).
+				BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+
+			var wg sync.WaitGroup
+			for i := 0; i < 50; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					ctx, cancel := context.WithTimeout(ctx, 10000*time.Millisecond)
+					defer cancel()
+					req := common.NewNormalizedRequest(requestBytes)
+					resp, err := network.Forward(ctx, req)
+					assert.Error(t, err)
+					if !common.HasErrorCode(err, "ErrFailsafeTimeoutExceeded") {
+						t.Errorf("Expected ErrFailsafeTimeoutExceeded, got %v", err)
+					}
+					assert.Nil(t, resp)
+				}()
+			}
+			wg.Wait()
+		})
+	})
+
+	t.Run("MixedSuccessAndFailureConcurrentRequests", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			testMu.Lock()
+			defer testMu.Unlock()
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkSimple(t, ctx, nil, nil)
+			successRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
+			failureRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"]}`)
+
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				}).
+				Reply(200).
+				Delay(1 * time.Second).
+				BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Times(1).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+				}).
+				Reply(500).
+				Delay(1 * time.Second).
+				BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Internal error"}}`)
+
+			var wg sync.WaitGroup
+			wg.Add(2)
+
+			go func() {
+				defer wg.Done()
+				req := common.NewNormalizedRequest(successRequestBytes)
+				resp, err := network.Forward(ctx, req)
+				assert.NoError(t, err)
+				assert.NotNil(t, resp)
+			}()
+
+			go func() {
+				defer wg.Done()
+				req := common.NewNormalizedRequest(failureRequestBytes)
+				resp, err := network.Forward(ctx, req)
+				assert.Error(t, err)
+				assert.Nil(t, resp)
+			}()
+
+			wg.Wait()
+		})
+	})
+
+	t.Run("SequentialInFlightRequests", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			testMu.Lock()
+			defer testMu.Unlock()
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkSimple(t, ctx, nil, nil)
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
+
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Times(2).
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				}).
+				Reply(200).
+				Delay(1 * time.Second).
+				BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+
+			// First request
+			req1 := common.NewNormalizedRequest(requestBytes)
+			resp1, err1 := network.Forward(ctx, req1)
+			assert.NoError(t, err1)
+			assert.NotNil(t, resp1)
+
+			// Second request (should not be in-flight)
+			req2 := common.NewNormalizedRequest(requestBytes)
+			resp2, err2 := network.Forward(ctx, req2)
+			assert.NoError(t, err2)
+			assert.NotNil(t, resp2)
+		})
+	})
+
+	t.Run("JsonRpcIDConsistencyOnConcurrentRequests", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			testMu.Lock()
+			defer testMu.Unlock()
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 1)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkSimple(t, ctx, nil, nil)
+
+			// Mock the response from the upstream
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Persist().
+				Reply(200).
+				Delay(3 * time.Second).
+				BodyString(`{"jsonrpc":"2.0","id":4,"result":"0x1"}`)
+
+			totalRequests := int64(100)
+
+			// Prepare requests with different IDs
+			requestTemplate := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x742d35Cc6634C0532925a3b844Bc454e4438f44e", "latest"],"id":%d}`
+			requests := make([]*common.NormalizedRequest, totalRequests)
+			for i := int64(0); i < totalRequests; i++ {
+				reqBytes := []byte(fmt.Sprintf(requestTemplate, i+1))
+				requests[i] = common.NewNormalizedRequest(reqBytes)
+			}
+
+			// Process requests concurrently
+			var wg sync.WaitGroup
+			responses := make([]*common.NormalizedResponse, totalRequests)
+			errors := make([]error, totalRequests)
+
+			for i := int64(0); i < totalRequests; i++ {
+				wg.Add(1)
+				go func(index int64) {
+					defer wg.Done()
+					responses[index], errors[index] = network.Forward(ctx, requests[index])
+				}(i)
+			}
+			wg.Wait()
+
+			// Verify results
+			for i := int64(0); i < totalRequests; i++ {
+				assert.NoError(t, errors[i], "Request %d should not return an error", i+1)
+				assert.NotNil(t, responses[i], "Request %d should return a response", i+1)
+
+				if responses[i] != nil {
+					jrr, err := responses[i].JsonRpcResponse()
+					assert.NoError(t, err, "Response %d should be a valid JSON-RPC response", i+1)
+					if jrr != nil {
+						assert.Equal(t, i+1, jrr.ID(), "Response ID should match the request ID for request %d", i+1)
+					} else {
+						t.Errorf("Response %d has nil JsonRpcResponse", i+1)
+					}
+				}
+			}
+		})
+	})
+
+	t.Run("ContextCancellationDuringRequest", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			testMu.Lock()
+			defer testMu.Unlock()
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkSimple(t, ctx, nil, nil)
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
+
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				}).
+				Reply(200).
+				Delay(2 * time.Second). // Delay to ensure context cancellation occurs before response
+				BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+
+			ctxLimited, cancelLimited := context.WithCancel(ctx)
+
+			var wg sync.WaitGroup
+
 			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				time.Sleep(500 * time.Millisecond) // Wait a bit before cancelling
+				cancelLimited()
+			}()
+
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctxLimited, req)
+
+			wg.Wait() // Ensure cancellation has occurred
+
+			assert.Error(t, err)
+			assert.Nil(t, resp)
+			assert.True(t, errors.Is(err, context.Canceled))
+
+			// Verify cleanup
+			inFlightCount := 0
+			network.inFlightRequests.Range(func(key, value interface{}) bool {
+				inFlightCount++
+				return true
+			})
+			assert.Equal(t, 0, inFlightCount, "in-flight requests map should be empty after context cancellation")
+		})
+	})
+
+	t.Run("LongRunningRequest", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			testMu.Lock()
+			defer testMu.Unlock()
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkSimple(t, ctx, nil, nil)
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
+
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				}).
+				Reply(200).
+				Delay(5 * time.Second). // Simulate a long-running request
+				BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+
 			go func() {
 				defer wg.Done()
 				req := common.NewNormalizedRequest(requestBytes)
@@ -8627,905 +9093,590 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 				assert.NoError(t, err)
 				assert.NotNil(t, resp)
 			}()
-		}
-		wg.Wait()
-	})
 
-	t.Run("MultipleConcurrentRequestsWithFailure", func(t *testing.T) {
-		testMu.Lock()
-		defer testMu.Unlock()
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+			// Check in-flight requests during processing
+			time.Sleep(1 * time.Second)
+			inFlightCount := 0
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkSimple(t, ctx, nil, nil)
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
+			network.inFlightRequests.Range(func(key, value interface{}) bool {
+				inFlightCount++
+				return true
+			})
+			assert.Equal(t, 1, inFlightCount, "should have one in-flight request during processing")
 
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
-			}).
-			Reply(500).
-			Delay(1 * time.Second).
-			BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Internal error"}}`)
+			wg.Wait() // Wait for the request to complete
 
-		var wg sync.WaitGroup
-		for i := 0; i < 10; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				req := common.NewNormalizedRequest(requestBytes)
-				resp, err := network.Forward(ctx, req)
-				assert.Error(t, err)
-				assert.Nil(t, resp)
-			}()
-		}
-		wg.Wait()
-	})
-
-	t.Run("MultipleConcurrentRequestsWithContextTimeout", func(t *testing.T) {
-		testMu.Lock()
-		defer testMu.Unlock()
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkSimple(t, ctx, &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "test",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			Failsafe: []*common.FailsafeConfig{{
-				Retry: nil,
-				Hedge: nil,
-				Timeout: &common.TimeoutPolicyConfig{
-					Duration: common.NewStaticDuration(50 * time.Millisecond),
-				}},
-			},
-		}, nil)
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
-
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				bd := util.SafeReadBody(request)
-				return strings.Contains(bd, "eth_getLogs")
-			}).
-			Reply(200).
-			Delay(100 * time.Second).
-			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
-
-		var wg sync.WaitGroup
-		for i := 0; i < 50; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				ctx, cancel := context.WithTimeout(ctx, 10000*time.Millisecond)
-				defer cancel()
-				req := common.NewNormalizedRequest(requestBytes)
-				resp, err := network.Forward(ctx, req)
-				assert.Error(t, err)
-				if !common.HasErrorCode(err, "ErrFailsafeTimeoutExceeded") {
-					t.Errorf("Expected ErrFailsafeTimeoutExceeded, got %v", err)
-				}
-				assert.Nil(t, resp)
-			}()
-		}
-		wg.Wait()
-	})
-
-	t.Run("MixedSuccessAndFailureConcurrentRequests", func(t *testing.T) {
-		testMu.Lock()
-		defer testMu.Unlock()
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkSimple(t, ctx, nil, nil)
-		successRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
-		failureRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"]}`)
-
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
-			}).
-			Reply(200).
-			Delay(1 * time.Second).
-			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
-
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Reply(500).
-			Delay(1 * time.Second).
-			BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Internal error"}}`)
-
-		var wg sync.WaitGroup
-		wg.Add(2)
-
-		go func() {
-			defer wg.Done()
-			req := common.NewNormalizedRequest(successRequestBytes)
-			resp, err := network.Forward(ctx, req)
-			assert.NoError(t, err)
-			assert.NotNil(t, resp)
-		}()
-
-		go func() {
-			defer wg.Done()
-			req := common.NewNormalizedRequest(failureRequestBytes)
-			resp, err := network.Forward(ctx, req)
-			assert.Error(t, err)
-			assert.Nil(t, resp)
-		}()
-
-		wg.Wait()
-	})
-
-	t.Run("SequentialInFlightRequests", func(t *testing.T) {
-		testMu.Lock()
-		defer testMu.Unlock()
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkSimple(t, ctx, nil, nil)
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
-
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Times(2).
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
-			}).
-			Reply(200).
-			Delay(1 * time.Second).
-			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
-
-		// First request
-		req1 := common.NewNormalizedRequest(requestBytes)
-		resp1, err1 := network.Forward(ctx, req1)
-		assert.NoError(t, err1)
-		assert.NotNil(t, resp1)
-
-		// Second request (should not be in-flight)
-		req2 := common.NewNormalizedRequest(requestBytes)
-		resp2, err2 := network.Forward(ctx, req2)
-		assert.NoError(t, err2)
-		assert.NotNil(t, resp2)
-	})
-
-	t.Run("JsonRpcIDConsistencyOnConcurrentRequests", func(t *testing.T) {
-		testMu.Lock()
-		defer testMu.Unlock()
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkSimple(t, ctx, nil, nil)
-
-		// Mock the response from the upstream
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Persist().
-			Reply(200).
-			Delay(3 * time.Second).
-			BodyString(`{"jsonrpc":"2.0","id":4,"result":"0x1"}`)
-
-		totalRequests := int64(100)
-
-		// Prepare requests with different IDs
-		requestTemplate := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x742d35Cc6634C0532925a3b844Bc454e4438f44e", "latest"],"id":%d}`
-		requests := make([]*common.NormalizedRequest, totalRequests)
-		for i := int64(0); i < totalRequests; i++ {
-			reqBytes := []byte(fmt.Sprintf(requestTemplate, i+1))
-			requests[i] = common.NewNormalizedRequest(reqBytes)
-		}
-
-		// Process requests concurrently
-		var wg sync.WaitGroup
-		responses := make([]*common.NormalizedResponse, totalRequests)
-		errors := make([]error, totalRequests)
-
-		for i := int64(0); i < totalRequests; i++ {
-			wg.Add(1)
-			go func(index int64) {
-				defer wg.Done()
-				responses[index], errors[index] = network.Forward(ctx, requests[index])
-			}(i)
-		}
-		wg.Wait()
-
-		// Verify results
-		for i := int64(0); i < totalRequests; i++ {
-			assert.NoError(t, errors[i], "Request %d should not return an error", i+1)
-			assert.NotNil(t, responses[i], "Request %d should return a response", i+1)
-
-			if responses[i] != nil {
-				jrr, err := responses[i].JsonRpcResponse()
-				assert.NoError(t, err, "Response %d should be a valid JSON-RPC response", i+1)
-				if jrr != nil {
-					assert.Equal(t, i+1, jrr.ID(), "Response ID should match the request ID for request %d", i+1)
-				} else {
-					t.Errorf("Response %d has nil JsonRpcResponse", i+1)
-				}
-			}
-		}
-	})
-
-	t.Run("ContextCancellationDuringRequest", func(t *testing.T) {
-		testMu.Lock()
-		defer testMu.Unlock()
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkSimple(t, ctx, nil, nil)
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
-
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
-			}).
-			Reply(200).
-			Delay(2 * time.Second). // Delay to ensure context cancellation occurs before response
-			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
-
-		ctxLimited, cancelLimited := context.WithCancel(ctx)
-
-		var wg sync.WaitGroup
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			time.Sleep(500 * time.Millisecond) // Wait a bit before cancelling
-			cancelLimited()
-		}()
-
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctxLimited, req)
-
-		wg.Wait() // Ensure cancellation has occurred
-
-		assert.Error(t, err)
-		assert.Nil(t, resp)
-		assert.True(t, errors.Is(err, context.Canceled))
-
-		// Verify cleanup
-		inFlightCount := 0
-		network.inFlightRequests.Range(func(key, value interface{}) bool {
-			inFlightCount++
-			return true
+			// Verify cleanup after completion
+			inFlightCount = 0
+			network.inFlightRequests.Range(func(key, value interface{}) bool {
+				inFlightCount++
+				return true
+			})
+			assert.Equal(t, 0, inFlightCount, "in-flight requests map should be empty after request completion")
 		})
-		assert.Equal(t, 0, inFlightCount, "in-flight requests map should be empty after context cancellation")
-	})
-
-	t.Run("LongRunningRequest", func(t *testing.T) {
-		testMu.Lock()
-		defer testMu.Unlock()
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkSimple(t, ctx, nil, nil)
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
-
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
-			}).
-			Reply(200).
-			Delay(5 * time.Second). // Simulate a long-running request
-			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
-
-		var wg sync.WaitGroup
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-			req := common.NewNormalizedRequest(requestBytes)
-			resp, err := network.Forward(ctx, req)
-			assert.NoError(t, err)
-			assert.NotNil(t, resp)
-		}()
-
-		// Check in-flight requests during processing
-		time.Sleep(1 * time.Second)
-		inFlightCount := 0
-
-		network.inFlightRequests.Range(func(key, value interface{}) bool {
-			inFlightCount++
-			return true
-		})
-		assert.Equal(t, 1, inFlightCount, "should have one in-flight request during processing")
-
-		wg.Wait() // Wait for the request to complete
-
-		// Verify cleanup after completion
-		inFlightCount = 0
-		network.inFlightRequests.Range(func(key, value interface{}) bool {
-			inFlightCount++
-			return true
-		})
-		assert.Equal(t, 0, inFlightCount, "in-flight requests map should be empty after request completion")
 	})
 }
 func TestNetwork_SkippingUpstreams(t *testing.T) {
 
 	t.Run("NotSkippedRecentBlockNumberForFullNodeUpstream", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x11118888"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x11118888"]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0, nil)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0, nil)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
-		// Convert the raw response to a map to access custom fields like fromHost
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
+			// Convert the raw response to a map to access custom fields like fromHost
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
-		if err != nil {
-			t.Fatalf("Failed to get fromHost from result: %v", err)
-		}
-		if fromHost != "rpc1" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
-		}
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
+			if err != nil {
+				t.Fatalf("Failed to get fromHost from result: %v", err)
+			}
+			if fromHost != "rpc1" {
+				t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
+			}
+		})
 	})
 
 	t.Run("SkippedHistoricalBlockNumberForFullNodeUpstream", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 1)
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x1"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x1"]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc2"}]}`))
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc2"}]}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0, nil)
-		req := common.NewNormalizedRequest(requestBytes)
-		req.SetNetwork(network)
-		resp, err := network.Forward(ctx, req)
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
-		// Convert the raw response to a map to access custom fields like fromHost
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0, nil)
+			req := common.NewNormalizedRequest(requestBytes)
+			req.SetNetwork(network)
+			resp, err := network.Forward(ctx, req)
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
+			// Convert the raw response to a map to access custom fields like fromHost
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
-		if err != nil {
-			t.Fatalf("Failed to get fromHost from result: %v", err)
-		}
-		if fromHost != "rpc2" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
-		}
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
+			if err != nil {
+				t.Fatalf("Failed to get fromHost from result: %v", err)
+			}
+			if fromHost != "rpc2" {
+				t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+			}
+		})
 	})
 
 	t.Run("NotSkippedHistoricalBlockNumberForArchiveNodeUpstream", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x1"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x1"]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
-		// Convert the raw response to a map to access custom fields like fromHost
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
+			// Convert the raw response to a map to access custom fields like fromHost
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
-		if err != nil {
-			t.Fatalf("Failed to get fromHost from result: %v", err)
-		}
-		if fromHost != "rpc1" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
-		}
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
+			if err != nil {
+				t.Fatalf("Failed to get fromHost from result: %v", err)
+			}
+			if fromHost != "rpc1" {
+				t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
+			}
+		})
 	})
 
 	t.Run("NotSkippedHistoricalBlockForUnknowneNodeUpstream", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x1"]}`)
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x1"]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBalance")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, "", 0, common.EvmNodeTypeArchive, 0, nil)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, "", 0, common.EvmNodeTypeArchive, 0, nil)
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
-		// Convert the raw response to a map to access custom fields like fromHost
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
+			// Convert the raw response to a map to access custom fields like fromHost
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
-		if err != nil {
-			t.Fatalf("Failed to get fromHost from result: %v", err)
-		}
-		if fromHost != "rpc1" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
-		}
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
+			if err != nil {
+				t.Fatalf("Failed to get fromHost from result: %v", err)
+			}
+			if fromHost != "rpc1" {
+				t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
+			}
+		})
 	})
 }
 func TestNetwork_EvmGetLogs(t *testing.T) {
 	t.Run("EnforceLatestBlockUpdateWhenRangeEndIsHigherThanLatestBlock", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
 
-		// Mock eth_getLogs request with toBlock higher than latest block
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x11118899","address":"0x0000000000000000000000000000000000000000"}]}`)
+			// Mock eth_getLogs request with toBlock higher than latest block
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x11118899","address":"0x0000000000000000000000000000000000000000"}]}`)
 
-		// Mock the eth_getBlockByNumber response for latest block force update
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_chainId")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x7b",
-			})
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_chainId")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x7b",
-			})
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": map[string]interface{}{
-					"number": "0x11119999", // Now higher than end range
-				},
-			})
+			// Mock the eth_getBlockByNumber response for latest block force update
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_chainId")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7b",
+				})
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_chainId")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7b",
+				})
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": map[string]interface{}{
+						"number": "0x11119999", // Now higher than end range
+					},
+				})
 
-		// Mock the eth_getLogs response
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
+			// Mock the eth_getLogs response
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
 
-		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
-			EnforceGetLogsBlockRange: util.BoolPtr(true),
-		}
-
-		// Avoid auto-splitting in this test by setting a very large upstream threshold
-		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
-		for _, up := range upsList {
-			if up != nil && up.Config() != nil {
-				if up.Config().Evm == nil {
-					up.Config().Evm = &common.EvmUpstreamConfig{}
-				}
-				up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x7fffffff
+			network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+				EnforceGetLogsBlockRange: util.BoolPtr(true),
 			}
-		}
 
-		// Avoid auto-splitting in this test by setting a very large upstream threshold
-		upsList = network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
-		for _, up := range upsList {
-			if up != nil && up.Config() != nil {
-				if up.Config().Evm == nil {
-					up.Config().Evm = &common.EvmUpstreamConfig{}
+			// Avoid auto-splitting in this test by setting a very large upstream threshold
+			upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+			for _, up := range upsList {
+				if up != nil && up.Config() != nil {
+					if up.Config().Evm == nil {
+						up.Config().Evm = &common.EvmUpstreamConfig{}
+					}
+					up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x7fffffff
 				}
-				up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x7fffffff
 			}
-		}
 
-		// Wait for state poller debounce to pass
-		time.Sleep(1010 * time.Millisecond)
-
-		// Disable auto-splitting so we only issue a single getLogs call covered by mocks
-		upsList = network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
-		for _, up := range upsList {
-			if up != nil && up.Config() != nil {
-				if up.Config().Evm == nil {
-					up.Config().Evm = &common.EvmUpstreamConfig{}
+			// Avoid auto-splitting in this test by setting a very large upstream threshold
+			upsList = network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+			for _, up := range upsList {
+				if up != nil && up.Config() != nil {
+					if up.Config().Evm == nil {
+						up.Config().Evm = &common.EvmUpstreamConfig{}
+					}
+					up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x7fffffff
 				}
-				up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x7fffffff
 			}
-		}
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-		if err != nil {
-			// Best-effort path: if the latest update didn't finish in time, we expect a range error
-			assert.Contains(t, err.Error(), "block not found")
-			return
-		}
-		assert.NotNil(t, resp)
+			// Wait for state poller debounce to pass
+			time.Sleep(1010 * time.Millisecond)
 
-		// Convert the raw response to a map to access custom fields like fromHost
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			// Disable auto-splitting so we only issue a single getLogs call covered by mocks
+			upsList = network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+			for _, up := range upsList {
+				if up != nil && up.Config() != nil {
+					if up.Config().Evm == nil {
+						up.Config().Evm = &common.EvmUpstreamConfig{}
+					}
+					up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x7fffffff
+				}
+			}
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
+			if err != nil {
+				// Best-effort path: if the latest update didn't finish in time, we expect a range error
+				assert.Contains(t, err.Error(), "block not found")
+				return
+			}
+			assert.NotNil(t, resp)
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
-		if err != nil {
-			t.Fatalf("Failed to get fromHost from result: %v", err)
-		}
-		if fromHost != "rpc1" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
-		}
+			// Convert the raw response to a map to access custom fields like fromHost
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
+
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
+
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
+			if err != nil {
+				t.Fatalf("Failed to get fromHost from result: %v", err)
+			}
+			if fromHost != "rpc1" {
+				t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
+			}
+		})
 	})
 
 	t.Run("FailEvenAfterEnforceLatestBlockUpdateWhenRangeEndIsHigherThanLatestBlock", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
 
-		// Mock eth_getLogs request with toBlock higher than latest block
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x11118899","address":"0x0000000000000000000000000000000000000000"}]}`)
+			// Mock eth_getLogs request with toBlock higher than latest block
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x11118899","address":"0x0000000000000000000000000000000000000000"}]}`)
 
-		// Mock the eth_getBlockByNumber response for latest block force update
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_chainId")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x7b",
-			})
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": map[string]interface{}{
-					"number": "0x11118889", // Still lower than end range
-				},
-			})
+			// Mock the eth_getBlockByNumber response for latest block force update
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_chainId")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7b",
+				})
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": map[string]interface{}{
+						"number": "0x11118889", // Still lower than end range
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
 
-		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
-			EnforceGetLogsBlockRange: util.BoolPtr(true),
-		}
-
-		// Disable auto-splitting by setting very large thresholds on all upstreams for this test
-		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
-		for _, up := range upsList {
-			if up != nil && up.Config() != nil {
-				if up.Config().Evm == nil {
-					up.Config().Evm = &common.EvmUpstreamConfig{}
-				}
-				up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x7fffffff
+			network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+				EnforceGetLogsBlockRange: util.BoolPtr(true),
 			}
-		}
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-		assert.Error(t, err)
-		assert.Nil(t, resp)
+			// Disable auto-splitting by setting very large thresholds on all upstreams for this test
+			upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+			for _, up := range upsList {
+				if up != nil && up.Config() != nil {
+					if up.Config().Evm == nil {
+						up.Config().Evm = &common.EvmUpstreamConfig{}
+					}
+					up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x7fffffff
+				}
+			}
 
-		assert.Contains(t, err.Error(), "block not found")
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
+			assert.Error(t, err)
+			assert.Nil(t, resp)
+
+			assert.Contains(t, err.Error(), "block not found")
+		})
 	})
 
 	t.Run("AvoidLatestBlockUpdateWhenRangeEndIsLowerThanLatestBlock", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
 
-		// Mock eth_getLogs request with toBlock lower than latest block
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x100","address":"0x0000000000000000000000000000000000000000"}]}`)
+			// Mock eth_getLogs request with toBlock lower than latest block
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x100","address":"0x0000000000000000000000000000000000000000"}]}`)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_chainId")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x7b",
-			})
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_chainId")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7b",
+				})
 
-		// Mock the eth_getLogs response
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
+			// Mock the eth_getLogs response
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
 
-		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
-			EnforceGetLogsBlockRange: util.BoolPtr(true),
-		}
+			network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+				EnforceGetLogsBlockRange: util.BoolPtr(true),
+			}
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
 
-		// Convert the raw response to a map to access custom fields like fromHost
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
+			// Convert the raw response to a map to access custom fields like fromHost
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			}
 
-		if jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			if jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
-		if err != nil {
-			t.Fatalf("Failed to get fromHost from result: %v", err)
-		}
-		if fromHost != "rpc1" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
-		}
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
+			if err != nil {
+				t.Fatalf("Failed to get fromHost from result: %v", err)
+			}
+			if fromHost != "rpc1" {
+				t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
+			}
 
-		assert.Equal(t, len(gock.Pending()), 1, "Expected no pending mocks")
+			assert.Equal(t, len(gock.Pending()), 1, "Expected no pending mocks")
+		})
 	})
 
 	t.Run("SkipToUpstreamWithCorrectLatestBlockToCoverBlockRangeEnd", func(t *testing.T) {
-		util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.ResetGock()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Mock eth_getLogs request with a block range
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x22228880","toBlock":"0x22228887","address":"0x0000000000000000000000000000000000000000"}]}`)
+			// Mock eth_getLogs request with a block range
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x22228880","toBlock":"0x22228887","address":"0x0000000000000000000000000000000000000000"}]}`)
 
-		// Mock the eth_getLogs response for rpc2 (should be used since the range is within its bounds)
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc2"}]}`))
+			// Mock the eth_getLogs response for rpc2 (should be used since the range is within its bounds)
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc2"}]}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Setup network with two upstreams:
-		// - rpc1: Archive node with latest block 0x11119999 but only 128 blocks available
-		// - rpc2: Full node with latest block 0x11118888 but 1000 blocks available
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(
-			t,
-			ctx,
-			common.EvmNodeTypeArchive, // rpc1 type
-			128,                       // rpc1 max recent blocks
-			common.EvmNodeTypeFull,    // rpc2 type
-			1000,                      // rpc2 max recent blocks
-			&common.FailsafeConfig{
-				MatchMethod: "*",
-				Hedge:       nil,
-				Timeout:     nil,
-				Retry: &common.RetryPolicyConfig{
-					MaxAttempts: 2,
+			// Setup network with two upstreams:
+			// - rpc1: Archive node with latest block 0x11119999 but only 128 blocks available
+			// - rpc2: Full node with latest block 0x11118888 but 1000 blocks available
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(
+				t,
+				ctx,
+				common.EvmNodeTypeArchive, // rpc1 type
+				128,                       // rpc1 max recent blocks
+				common.EvmNodeTypeFull,    // rpc2 type
+				1000,                      // rpc2 max recent blocks
+				&common.FailsafeConfig{
+					MatchMethod: "*",
+					Hedge:       nil,
+					Timeout:     nil,
+					Retry: &common.RetryPolicyConfig{
+						MaxAttempts: 2,
+					},
 				},
-			},
-		)
+			)
 
-		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
-			EnforceGetLogsBlockRange: util.BoolPtr(true),
-		}
+			network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+				EnforceGetLogsBlockRange: util.BoolPtr(true),
+			}
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
 
-		// Convert the raw response to a map to access custom fields like fromHost
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		} else if jrr == nil || jrr.ResultLength() == 0 {
-			t.Fatalf("Expected non-nil result")
-		}
+			// Convert the raw response to a map to access custom fields like fromHost
+			jrr, err := resp.JsonRpcResponse()
+			if err != nil {
+				t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			} else if jrr == nil || jrr.ResultLength() == 0 {
+				t.Fatalf("Expected non-nil result")
+			}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
-		if err != nil {
-			t.Fatalf("Failed to get fromHost from result: %v", err)
-		}
-		if fromHost != "rpc2" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
-		}
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
+			if err != nil {
+				t.Fatalf("Failed to get fromHost from result: %v", err)
+			}
+			if fromHost != "rpc2" {
+				t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+			}
+		})
 	})
 
 	t.Run("FailsDueToMaxAvailableRecentBlocksWhenLowerEndTooEarlWithNoRetry", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Mock eth_getLogs request with fromBlock that's too early compared to maxAvailableRecentBlocks
-		// Latest block is 0x11118888, with 128 max recent blocks, so anything before 0x11118888-128 is too early
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x11117000","toBlock":"0x11118800","address":"0x0000000000000000000000000000000000000000"}]}`)
+			// Mock eth_getLogs request with fromBlock that's too early compared to maxAvailableRecentBlocks
+			// Latest block is 0x11118888, with 128 max recent blocks, so anything before 0x11118888-128 is too early
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x11117000","toBlock":"0x11118800","address":"0x0000000000000000000000000000000000000000"}]}`)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Setup network with a Full node that has limited block history (128 blocks)
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0, nil)
+			// Setup network with a Full node that has limited block history (128 blocks)
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0, nil)
 
-		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
-			EnforceGetLogsBlockRange: util.BoolPtr(true),
-		}
+			network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+				EnforceGetLogsBlockRange: util.BoolPtr(true),
+			}
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Verify that the request was skipped with appropriate error
-		assert.Error(t, err)
-		assert.Nil(t, resp)
-		assert.Contains(t, err.Error(), "block not found")
+			// Verify that the request was skipped with appropriate error
+			assert.Error(t, err)
+			assert.Nil(t, resp)
+			assert.Contains(t, err.Error(), "block not found")
+		})
 	})
 
 	t.Run("SkipsDueToMaxAvailableRecentBlocksWhenLowerEndTooEarlWithRetry", func(t *testing.T) {
@@ -9562,108 +9713,110 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		})
 
 		t.Run("BestEffortFallback_WhenLatestUpdateSlow_ReturnsError", func(t *testing.T) {
-			util.ResetGock()
-			defer util.ResetGock()
+			synctest.Test(t, func(t *testing.T) {
+				util.ResetGock()
+				defer util.ResetGock()
 
-			// Mock eth_chainId
-			gock.New("http://rpc1.localhost").
-				Post("").
-				Persist().
-				Filter(func(request *http.Request) bool {
-					body := util.SafeReadBody(request)
-					return strings.Contains(body, "eth_chainId")
-				}).
-				Reply(200).
-				JSON(map[string]interface{}{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"result":  "0x7b",
-				})
+				// Mock eth_chainId
+				gock.New("http://rpc1.localhost").
+					Post("").
+					Persist().
+					Filter(func(request *http.Request) bool {
+						body := util.SafeReadBody(request)
+						return strings.Contains(body, "eth_chainId")
+					}).
+					Reply(200).
+					JSON(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"result":  "0x7b",
+					})
 
-			// Mock latest block with artificial delay so foreground best-effort returns stale
-			gock.New("http://rpc1.localhost").
-				Post("").
-				Filter(func(request *http.Request) bool {
-					body := util.SafeReadBody(request)
-					return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
-				}).
-				Reply(200).
-				Delay(250 * time.Millisecond).
-				JSON(map[string]interface{}{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"result": map[string]interface{}{
-						"number": "0x11119999",
+				// Mock latest block with artificial delay so foreground best-effort returns stale
+				gock.New("http://rpc1.localhost").
+					Post("").
+					Filter(func(request *http.Request) bool {
+						body := util.SafeReadBody(request)
+						return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+					}).
+					Reply(200).
+					Delay(250 * time.Millisecond).
+					JSON(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"result": map[string]interface{}{
+							"number": "0x11119999",
+						},
+					})
+
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+
+				// Build network with tight best-effort budgets to force fallback
+				rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+				metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+				vr := thirdparty.NewVendorsRegistry()
+				pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+				require.NoError(t, err)
+				ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+					Connector: &common.ConnectorConfig{
+						Driver: "memory",
+						Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
 					},
+					LockMaxWait:   common.Duration(20 * time.Millisecond),
+					UpdateMaxWait: common.Duration(20 * time.Millisecond),
 				})
+				require.NoError(t, err)
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+				up1 := &common.UpstreamConfig{
+					Type:     common.UpstreamTypeEvm,
+					Id:       "rpc1",
+					Endpoint: "http://rpc1.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				}
 
-			// Build network with tight best-effort budgets to force fallback
-			rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
-			metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
-			vr := thirdparty.NewVendorsRegistry()
-			pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
-			require.NoError(t, err)
-			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-				Connector: &common.ConnectorConfig{
-					Driver: "memory",
-					Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
-				},
-				LockMaxWait:   common.Duration(20 * time.Millisecond),
-				UpdateMaxWait: common.Duration(20 * time.Millisecond),
+				upstreamsRegistry := upstream.NewUpstreamsRegistry(
+					ctx,
+					&log.Logger,
+					"test",
+					[]*common.UpstreamConfig{up1},
+					ssr,
+					rateLimitersRegistry,
+					vr,
+					pr,
+					nil,
+					metricsTracker,
+					nil,
+				)
+
+				networkConfig := &common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+						Integrity: &common.EvmIntegrityConfig{
+							EnforceGetLogsBlockRange: util.BoolPtr(true),
+						},
+					},
+				}
+				network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
+				require.NoError(t, err)
+
+				upstreamsRegistry.Bootstrap(ctx)
+				time.Sleep(200 * time.Millisecond)
+				require.NoError(t, upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+				require.NoError(t, network.Bootstrap(ctx))
+				network.PinUpstreamOrderForTest()
+				time.Sleep(50 * time.Millisecond)
+
+				// toBlock is higher than initial latest, but latest update is delayed beyond best-effort budget
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x11118899","address":"0x0000000000000000000000000000000000000000"}]}`))
+				resp, err := network.Forward(ctx, req)
+				assert.Error(t, err)
+				assert.Nil(t, resp)
+				assert.Contains(t, err.Error(), "block not found")
 			})
-			require.NoError(t, err)
-
-			up1 := &common.UpstreamConfig{
-				Type:     common.UpstreamTypeEvm,
-				Id:       "rpc1",
-				Endpoint: "http://rpc1.localhost",
-				Evm: &common.EvmUpstreamConfig{
-					ChainId: 123,
-				},
-			}
-
-			upstreamsRegistry := upstream.NewUpstreamsRegistry(
-				ctx,
-				&log.Logger,
-				"test",
-				[]*common.UpstreamConfig{up1},
-				ssr,
-				rateLimitersRegistry,
-				vr,
-				pr,
-				nil,
-				metricsTracker,
-				nil,
-			)
-
-			networkConfig := &common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					ChainId: 123,
-					Integrity: &common.EvmIntegrityConfig{
-						EnforceGetLogsBlockRange: util.BoolPtr(true),
-					},
-				},
-			}
-			network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
-			require.NoError(t, err)
-
-			upstreamsRegistry.Bootstrap(ctx)
-			time.Sleep(200 * time.Millisecond)
-			require.NoError(t, upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-			require.NoError(t, network.Bootstrap(ctx))
-			network.PinUpstreamOrderForTest()
-			time.Sleep(50 * time.Millisecond)
-
-			// toBlock is higher than initial latest, but latest update is delayed beyond best-effort budget
-			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x11118899","address":"0x0000000000000000000000000000000000000000"}]}`))
-			resp, err := network.Forward(ctx, req)
-			assert.Error(t, err)
-			assert.Nil(t, resp)
-			assert.Contains(t, err.Error(), "block not found")
 		})
 
 		// Re-seed standard poller mocks and rpc2 getLogs mock cleared by the nested subtest
@@ -9697,59 +9850,62 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 	})
 
 	t.Run("BypassMaxAvailableRecentBlocksIfLowerEndStillInRange", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Mock eth_getLogs request with fromBlock that's within the maxAvailableRecentBlocks range
-		// Latest block is 0x11118888, with 128 max recent blocks, so anything after 0x11118888-128 is fine
-		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x11118800","toBlock":"0x11118850","address":"0x0000000000000000000000000000000000000000"}]}`)
+			// Mock eth_getLogs request with fromBlock that's within the maxAvailableRecentBlocks range
+			// Latest block is 0x11118888, with 128 max recent blocks, so anything after 0x11118888-128 is fine
+			requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x11118800","toBlock":"0x11118850","address":"0x0000000000000000000000000000000000000000"}]}`)
 
-		// Mock the eth_getLogs response since we expect the request to succeed
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
+			// Mock the eth_getLogs response since we expect the request to succeed
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs")
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Setup network with a Full node that has limited block history (128 blocks)
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
+			// Setup network with a Full node that has limited block history (128 blocks)
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
 
-		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
-			EnforceGetLogsBlockRange: util.BoolPtr(true),
-		}
+			network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+				EnforceGetLogsBlockRange: util.BoolPtr(true),
+			}
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Verify that the request succeeded
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
+			// Verify that the request succeeded
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
 
-		// Convert the raw response to a map to access custom fields like fromHost
-		jrr, err := resp.JsonRpcResponse()
-		assert.NoError(t, err)
-		assert.NotZero(t, jrr.ResultLength())
+			// Convert the raw response to a map to access custom fields like fromHost
+			jrr, err := resp.JsonRpcResponse()
+			assert.NoError(t, err)
+			assert.NotZero(t, jrr.ResultLength())
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
-		assert.NoError(t, err)
-		assert.Equal(t, "rpc1", fromHost)
+			fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
+			assert.NoError(t, err)
+			assert.Equal(t, "rpc1", fromHost)
+		})
 	})
 
 	t.Run("SplitIntoSubRequestsIfRangeTooBig", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		// Mock eth_getLogs request with a large block range
-		requestBytes := []byte(`{
+			// Mock eth_getLogs request with a large block range
+			requestBytes := []byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getLogs",
 			"params": [{
@@ -9760,185 +9916,187 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			}]
 		}`)
 
-		// Mock responses for the sub-requests
-		// First sub-request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, "0x11118000") &&
-					strings.Contains(body, "0x111180ff")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": []map[string]interface{}{
-					{"logIndex": "0x1", "blockNumber": "0x11118001"},
-				},
-			})
+			// Mock responses for the sub-requests
+			// First sub-request
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs") &&
+						strings.Contains(body, "0x11118000") &&
+						strings.Contains(body, "0x111180ff")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": []map[string]interface{}{
+						{"logIndex": "0x1", "blockNumber": "0x11118001"},
+					},
+				})
 
-		// Second sub-request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, "0x11118100") &&
-					strings.Contains(body, "0x111181ff")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      2,
-				"result": []map[string]interface{}{
-					{"logIndex": "0x2", "blockNumber": "0x11118102"},
-				},
-			})
+			// Second sub-request
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs") &&
+						strings.Contains(body, "0x11118100") &&
+						strings.Contains(body, "0x111181ff")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      2,
+					"result": []map[string]interface{}{
+						{"logIndex": "0x2", "blockNumber": "0x11118102"},
+					},
+				})
 
-		// Third sub-request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, "0x11118200") &&
-					strings.Contains(body, "0x111182ff")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      3,
-				"result": []map[string]interface{}{
-					{"logIndex": "0x3", "blockNumber": "0x11118203"},
-				},
-			})
+			// Third sub-request
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs") &&
+						strings.Contains(body, "0x11118200") &&
+						strings.Contains(body, "0x111182ff")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      3,
+					"result": []map[string]interface{}{
+						{"logIndex": "0x3", "blockNumber": "0x11118203"},
+					},
+				})
 
-		// Fourth sub-request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, "0x11118300") &&
-					strings.Contains(body, "0x111183ff")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      4,
-				"result": []map[string]interface{}{
-					{"logIndex": "0x4", "blockNumber": "0x11118304"},
-				},
-			})
+			// Fourth sub-request
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs") &&
+						strings.Contains(body, "0x11118300") &&
+						strings.Contains(body, "0x111183ff")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      4,
+					"result": []map[string]interface{}{
+						{"logIndex": "0x4", "blockNumber": "0x11118304"},
+					},
+				})
 
-		// Fifth sub-request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, "0x11118400") &&
-					strings.Contains(body, "0x111184ff")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      5,
-				"result": []map[string]interface{}{
-					{"logIndex": "0x5", "blockNumber": "0x11118405"},
-				},
-			})
+			// Fifth sub-request
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs") &&
+						strings.Contains(body, "0x11118400") &&
+						strings.Contains(body, "0x111184ff")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      5,
+					"result": []map[string]interface{}{
+						{"logIndex": "0x5", "blockNumber": "0x11118405"},
+					},
+				})
 
-		// Last sub-request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, "0x11118500") &&
-					strings.Contains(body, "0x11118500")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      5,
-				"result": []map[string]interface{}{
-					{"logIndex": "0x6", "blockNumber": "0x11118506"},
-				},
-			})
+			// Last sub-request
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs") &&
+						strings.Contains(body, "0x11118500") &&
+						strings.Contains(body, "0x11118500")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      5,
+					"result": []map[string]interface{}{
+						{"logIndex": "0x6", "blockNumber": "0x11118506"},
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Setup network with a node that has a small GetLogsAutoSplittingRangeThreshold
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
+			// Setup network with a node that has a small GetLogsAutoSplittingRangeThreshold
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
-		// Configure a small GetLogsAutoSplittingRangeThreshold to force splitting
-		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
-			EnforceGetLogsBlockRange: util.BoolPtr(true),
-		}
-		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
-		// Configure network-level auto-splitting threshold via upstreams (effective min), keep it small to force splitting
-		for _, up := range upsList {
-			if up != nil && up.Config() != nil {
-				if up.Config().Evm == nil {
-					up.Config().Evm = &common.EvmUpstreamConfig{}
-				}
-				up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100
+			// Configure a small GetLogsAutoSplittingRangeThreshold to force splitting
+			network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+				EnforceGetLogsBlockRange: util.BoolPtr(true),
 			}
-		}
+			upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+			// Configure network-level auto-splitting threshold via upstreams (effective min), keep it small to force splitting
+			for _, up := range upsList {
+				if up != nil && up.Config() != nil {
+					if up.Config().Evm == nil {
+						up.Config().Evm = &common.EvmUpstreamConfig{}
+					}
+					up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100
+				}
+			}
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Verify the merged response
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
+			// Verify the merged response
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		assert.NoError(t, err)
-		w := bytes.NewBuffer(nil)
-		jrr.WriteTo(w)
-		result := w.Bytes()
-		t.Logf("merged response: %s", result)
+			jrr, err := resp.JsonRpcResponse()
+			assert.NoError(t, err)
+			w := bytes.NewBuffer(nil)
+			jrr.WriteTo(w)
+			result := w.Bytes()
+			t.Logf("merged response: %s", result)
 
-		// Parse the result to verify all logs from sub-requests are present
-		var respObject map[string]interface{}
-		err = sonic.Unmarshal(result, &respObject)
-		if err != nil {
-			t.Fatalf("Cannot parse response err: %s: %s", err, string(result))
-		}
+			// Parse the result to verify all logs from sub-requests are present
+			var respObject map[string]interface{}
+			err = sonic.Unmarshal(result, &respObject)
+			if err != nil {
+				t.Fatalf("Cannot parse response err: %s: %s", err, string(result))
+			}
 
-		// Verify we got all logs from all sub-requests
-		logs := respObject["result"].([]interface{})
-		assert.Equal(t, 6, len(logs))
+			// Verify we got all logs from all sub-requests
+			logs := respObject["result"].([]interface{})
+			assert.Equal(t, 6, len(logs))
 
-		// Verify logs are from different blocks as expected
-		blockNumbers := make([]string, len(logs))
-		for i, l := range logs {
-			log := l.(map[string]interface{})
-			blockNumbers[i] = log["blockNumber"].(string)
-		}
-		assert.Contains(t, blockNumbers, "0x11118001")
-		assert.Contains(t, blockNumbers, "0x11118102")
-		assert.Contains(t, blockNumbers, "0x11118203")
-		assert.Contains(t, blockNumbers, "0x11118304")
-		assert.Contains(t, blockNumbers, "0x11118405")
-		assert.Contains(t, blockNumbers, "0x11118506")
+			// Verify logs are from different blocks as expected
+			blockNumbers := make([]string, len(logs))
+			for i, l := range logs {
+				log := l.(map[string]interface{})
+				blockNumbers[i] = log["blockNumber"].(string)
+			}
+			assert.Contains(t, blockNumbers, "0x11118001")
+			assert.Contains(t, blockNumbers, "0x11118102")
+			assert.Contains(t, blockNumbers, "0x11118203")
+			assert.Contains(t, blockNumbers, "0x11118304")
+			assert.Contains(t, blockNumbers, "0x11118405")
+			assert.Contains(t, blockNumbers, "0x11118506")
 
-		// Allow some pending mocks since util.SetupMocksForEvmStatePoller may create persistent mocks
-		util.AssertNoPendingMocks(t, 0)
+			// Allow some pending mocks since util.SetupMocksForEvmStatePoller may create persistent mocks
+			util.AssertNoPendingMocks(t, 0)
+		})
 	})
 	t.Run("SplitCorrectlyWhenMaxRangeIsOne", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Mock eth_getLogs request with a small block range
-		requestBytes := []byte(`{
+			// Mock eth_getLogs request with a small block range
+			requestBytes := []byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getLogs",
 			"params": [{
@@ -9949,128 +10107,130 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			}]
 		}`)
 
-		// Mock responses for each individual block
-		// First block (0x11118000)
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118000"`) &&
-					strings.Contains(body, `"toBlock":"0x11118000"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": []map[string]interface{}{
-					{"logIndex": "0x1", "blockNumber": "0x11118000", "data": "0x1"},
-				},
-			})
+			// Mock responses for each individual block
+			// First block (0x11118000)
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs") &&
+						strings.Contains(body, `"fromBlock":"0x11118000"`) &&
+						strings.Contains(body, `"toBlock":"0x11118000"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": []map[string]interface{}{
+						{"logIndex": "0x1", "blockNumber": "0x11118000", "data": "0x1"},
+					},
+				})
 
-		// Second block (0x11118001)
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118001"`) &&
-					strings.Contains(body, `"toBlock":"0x11118001"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      2,
-				"result": []map[string]interface{}{
-					{"logIndex": "0x2", "blockNumber": "0x11118001", "data": "0x2"},
-				},
-			})
+			// Second block (0x11118001)
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs") &&
+						strings.Contains(body, `"fromBlock":"0x11118001"`) &&
+						strings.Contains(body, `"toBlock":"0x11118001"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      2,
+					"result": []map[string]interface{}{
+						{"logIndex": "0x2", "blockNumber": "0x11118001", "data": "0x2"},
+					},
+				})
 
-		// Third block (0x11118002)
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118002"`) &&
-					strings.Contains(body, `"toBlock":"0x11118002"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      3,
-				"result": []map[string]interface{}{
-					{"logIndex": "0x3", "blockNumber": "0x11118002", "data": "0x3"},
-				},
-			})
+			// Third block (0x11118002)
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs") &&
+						strings.Contains(body, `"fromBlock":"0x11118002"`) &&
+						strings.Contains(body, `"toBlock":"0x11118002"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      3,
+					"result": []map[string]interface{}{
+						{"logIndex": "0x3", "blockNumber": "0x11118002", "data": "0x3"},
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Setup network with a node that has GetLogsAutoSplittingRangeThreshold = 1
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 120, nil)
+			// Setup network with a node that has GetLogsAutoSplittingRangeThreshold = 1
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 120, nil)
 
-		time.Sleep(200 * time.Millisecond)
-		network.PinUpstreamOrderForTest()
+			time.Sleep(200 * time.Millisecond)
+			network.PinUpstreamOrderForTest()
 
-		// Configure GetLogsAutoSplittingRangeThreshold = 1 to force splitting into individual blocks
-		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
-			EnforceGetLogsBlockRange: util.BoolPtr(true),
-		}
-		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
-		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 1 // Force splitting into individual blocks
+			// Configure GetLogsAutoSplittingRangeThreshold = 1 to force splitting into individual blocks
+			network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+				EnforceGetLogsBlockRange: util.BoolPtr(true),
+			}
+			upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+			upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 1 // Force splitting into individual blocks
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Verify the merged response
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
+			// Verify the merged response
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		assert.NoError(t, err)
-		w := bytes.NewBuffer(nil)
-		jrr.WriteTo(w)
-		result := w.Bytes()
-		t.Logf("merged response: %s", result)
+			jrr, err := resp.JsonRpcResponse()
+			assert.NoError(t, err)
+			w := bytes.NewBuffer(nil)
+			jrr.WriteTo(w)
+			result := w.Bytes()
+			t.Logf("merged response: %s", result)
 
-		// Parse the result to verify all logs from individual blocks are present
-		var respObject map[string]interface{}
-		err = sonic.Unmarshal(result, &respObject)
-		assert.NoError(t, err, "Failed to unmarshal response: %v", err)
+			// Parse the result to verify all logs from individual blocks are present
+			var respObject map[string]interface{}
+			err = sonic.Unmarshal(result, &respObject)
+			assert.NoError(t, err, "Failed to unmarshal response: %v", err)
 
-		// Verify we got all logs from all blocks
-		logs := respObject["result"].([]interface{})
-		assert.Equal(t, 3, len(logs), "Expected exactly 3 logs (one from each block)")
+			// Verify we got all logs from all blocks
+			logs := respObject["result"].([]interface{})
+			assert.Equal(t, 3, len(logs), "Expected exactly 3 logs (one from each block)")
 
-		// Verify logs are from different blocks and in correct order
-		blockNumbers := make([]string, len(logs))
-		data := make([]string, len(logs))
-		for i, l := range logs {
-			log := l.(map[string]interface{})
-			blockNumbers[i] = log["blockNumber"].(string)
-			data[i] = log["data"].(string)
-		}
+			// Verify logs are from different blocks and in correct order
+			blockNumbers := make([]string, len(logs))
+			data := make([]string, len(logs))
+			for i, l := range logs {
+				log := l.(map[string]interface{})
+				blockNumbers[i] = log["blockNumber"].(string)
+				data[i] = log["data"].(string)
+			}
 
-		// Verify block numbers are in sequence
-		assert.Contains(t, blockNumbers, "0x11118000", "First log should be from block 0x11118000")
-		assert.Contains(t, blockNumbers, "0x11118001", "Second log should be from block 0x11118001")
-		assert.Contains(t, blockNumbers, "0x11118002", "Third log should be from block 0x11118002")
+			// Verify block numbers are in sequence
+			assert.Contains(t, blockNumbers, "0x11118000", "First log should be from block 0x11118000")
+			assert.Contains(t, blockNumbers, "0x11118001", "Second log should be from block 0x11118001")
+			assert.Contains(t, blockNumbers, "0x11118002", "Third log should be from block 0x11118002")
 
-		// Verify data values are in sequence
-		assert.Contains(t, data, "0x1", "First log should have data 0x1")
-		assert.Contains(t, data, "0x2", "Second log should have data 0x2")
-		assert.Contains(t, data, "0x3", "Third log should have data 0x3")
+			// Verify data values are in sequence
+			assert.Contains(t, data, "0x1", "First log should have data 0x1")
+			assert.Contains(t, data, "0x2", "Second log should have data 0x2")
+			assert.Contains(t, data, "0x3", "Third log should have data 0x3")
+		})
 	})
 
 	t.Run("SkipSplitWhenRangeIsWithinBounds", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Mock eth_getLogs request with a range smaller than max range
-		requestBytes := []byte(`{
+			// Mock eth_getLogs request with a range smaller than max range
+			requestBytes := []byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getLogs",
 			"params": [{
@@ -10081,79 +10241,81 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			}]
 		}`)
 
-		// Mock single response since we expect no splitting
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118000"`) &&
-					strings.Contains(body, `"toBlock":"0x11118050"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": []map[string]interface{}{
-					{"logIndex": "0x1", "blockNumber": "0x11118025", "data": "0x1"},
-					{"logIndex": "0x2", "blockNumber": "0x11118035", "data": "0x2"},
-				},
-			})
+			// Mock single response since we expect no splitting
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs") &&
+						strings.Contains(body, `"fromBlock":"0x11118000"`) &&
+						strings.Contains(body, `"toBlock":"0x11118050"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": []map[string]interface{}{
+						{"logIndex": "0x1", "blockNumber": "0x11118025", "data": "0x1"},
+						{"logIndex": "0x2", "blockNumber": "0x11118035", "data": "0x2"},
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Setup network with GetLogsAutoSplittingRangeThreshold = 0x100
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
+			// Setup network with GetLogsAutoSplittingRangeThreshold = 0x100
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
-		time.Sleep(200 * time.Millisecond)
-		network.PinUpstreamOrderForTest()
+			time.Sleep(200 * time.Millisecond)
+			network.PinUpstreamOrderForTest()
 
-		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
-			EnforceGetLogsBlockRange: util.BoolPtr(true),
-		}
-		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
-		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100 // Range that's larger than our test range
+			network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+				EnforceGetLogsBlockRange: util.BoolPtr(true),
+			}
+			upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+			upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100 // Range that's larger than our test range
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Verify the response
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
+			// Verify the response
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		assert.NoError(t, err)
-		w := bytes.NewBuffer(nil)
-		jrr.WriteTo(w)
-		result := w.Bytes()
+			jrr, err := resp.JsonRpcResponse()
+			assert.NoError(t, err)
+			w := bytes.NewBuffer(nil)
+			jrr.WriteTo(w)
+			result := w.Bytes()
 
-		// Parse and verify the response
-		var respObject map[string]interface{}
-		err = sonic.Unmarshal(result, &respObject)
-		assert.NoError(t, err)
+			// Parse and verify the response
+			var respObject map[string]interface{}
+			err = sonic.Unmarshal(result, &respObject)
+			assert.NoError(t, err)
 
-		logs := respObject["result"].([]interface{})
-		assert.Equal(t, 2, len(logs), "Expected exactly 2 logs")
+			logs := respObject["result"].([]interface{})
+			assert.Equal(t, 2, len(logs), "Expected exactly 2 logs")
 
-		// Verify log block numbers
-		blockNumbers := make([]string, len(logs))
-		for i, l := range logs {
-			log := l.(map[string]interface{})
-			blockNumbers[i] = log["blockNumber"].(string)
-		}
-		assert.Contains(t, blockNumbers, "0x11118025")
-		assert.Contains(t, blockNumbers, "0x11118035")
+			// Verify log block numbers
+			blockNumbers := make([]string, len(logs))
+			for i, l := range logs {
+				log := l.(map[string]interface{})
+				blockNumbers[i] = log["blockNumber"].(string)
+			}
+			assert.Contains(t, blockNumbers, "0x11118025")
+			assert.Contains(t, blockNumbers, "0x11118035")
+		})
 	})
 
 	t.Run("SkipSplitWhenRangeIsExactlyEqualToMaxRange", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Mock eth_getLogs request with range exactly equal to max range (0x100)
-		requestBytes := []byte(`{
+			// Mock eth_getLogs request with range exactly equal to max range (0x100)
+			requestBytes := []byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getLogs",
 			"params": [{
@@ -10164,127 +10326,129 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			}]
 		}`)
 
-		// Mock single response since we expect no splitting
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118000"`) &&
-					strings.Contains(body, `"toBlock":"0x111180ff"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": []map[string]interface{}{
-					{"logIndex": "0x1", "blockNumber": "0x11118050", "data": "0x1"},
-					{"logIndex": "0x2", "blockNumber": "0x11118080", "data": "0x2"},
-					{"logIndex": "0x3", "blockNumber": "0x111180f0", "data": "0x3"},
-				},
-			})
+			// Mock single response since we expect no splitting
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs") &&
+						strings.Contains(body, `"fromBlock":"0x11118000"`) &&
+						strings.Contains(body, `"toBlock":"0x111180ff"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": []map[string]interface{}{
+						{"logIndex": "0x1", "blockNumber": "0x11118050", "data": "0x1"},
+						{"logIndex": "0x2", "blockNumber": "0x11118080", "data": "0x2"},
+						{"logIndex": "0x3", "blockNumber": "0x111180f0", "data": "0x3"},
+					},
+				})
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Setup network with GetLogsAutoSplittingRangeThreshold = 0x100
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
+			// Setup network with GetLogsAutoSplittingRangeThreshold = 0x100
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
-		time.Sleep(200 * time.Millisecond)
-		network.PinUpstreamOrderForTest()
+			time.Sleep(200 * time.Millisecond)
+			network.PinUpstreamOrderForTest()
 
-		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
-			EnforceGetLogsBlockRange: util.BoolPtr(true),
-		}
-		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
-		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100 // Range exactly equal to our test range
+			network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+				EnforceGetLogsBlockRange: util.BoolPtr(true),
+			}
+			upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+			upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100 // Range exactly equal to our test range
 
-		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(ctx, req)
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(ctx, req)
 
-		// Verify the response
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
+			// Verify the response
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
 
-		jrr, err := resp.JsonRpcResponse()
-		assert.NoError(t, err)
-		w := bytes.NewBuffer(nil)
-		jrr.WriteTo(w)
-		result := w.Bytes()
+			jrr, err := resp.JsonRpcResponse()
+			assert.NoError(t, err)
+			w := bytes.NewBuffer(nil)
+			jrr.WriteTo(w)
+			result := w.Bytes()
 
-		// Parse and verify the response
-		var respObject map[string]interface{}
-		err = sonic.Unmarshal(result, &respObject)
-		assert.NoError(t, err)
+			// Parse and verify the response
+			var respObject map[string]interface{}
+			err = sonic.Unmarshal(result, &respObject)
+			assert.NoError(t, err)
 
-		logs := respObject["result"].([]interface{})
-		assert.Equal(t, 3, len(logs), "Expected exactly 3 logs")
+			logs := respObject["result"].([]interface{})
+			assert.Equal(t, 3, len(logs), "Expected exactly 3 logs")
 
-		// Verify log block numbers
-		blockNumbers := make([]string, len(logs))
-		for i, l := range logs {
-			log := l.(map[string]interface{})
-			blockNumbers[i] = log["blockNumber"].(string)
-		}
-		assert.Contains(t, blockNumbers, "0x11118050")
-		assert.Contains(t, blockNumbers, "0x11118080")
-		assert.Contains(t, blockNumbers, "0x111180f0")
+			// Verify log block numbers
+			blockNumbers := make([]string, len(logs))
+			for i, l := range logs {
+				log := l.(map[string]interface{})
+				blockNumbers[i] = log["blockNumber"].(string)
+			}
+			assert.Contains(t, blockNumbers, "0x11118050")
+			assert.Contains(t, blockNumbers, "0x11118080")
+			assert.Contains(t, blockNumbers, "0x111180f0")
+		})
 	})
 
 	t.Run("UseCacheWhenOneOfSubRequestsIsAlreadyCached", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Setup cache configuration
-		cacheCfg := &common.CacheConfig{
-			Connectors: []*common.ConnectorConfig{
-				{
-					Id:     "mock",
-					Driver: "mock",
-					Mock: &common.MockConnectorConfig{
-						MemoryConnectorConfig: common.MemoryConnectorConfig{
-							MaxItems: 100_000, MaxTotalSize: "1GB",
+			// Setup cache configuration
+			cacheCfg := &common.CacheConfig{
+				Connectors: []*common.ConnectorConfig{
+					{
+						Id:     "mock",
+						Driver: "mock",
+						Mock: &common.MockConnectorConfig{
+							MemoryConnectorConfig: common.MemoryConnectorConfig{
+								MaxItems: 100_000, MaxTotalSize: "1GB",
+							},
 						},
 					},
 				},
-			},
-			Policies: []*common.CachePolicyConfig{
-				{
-					Network:   "*",
-					Method:    "*",
-					TTL:       common.FixedDuration(5 * time.Minute),
-					Connector: "mock",
-					Finality:  common.DataFinalityStateUnfinalized,
+				Policies: []*common.CachePolicyConfig{
+					{
+						Network:   "*",
+						Method:    "*",
+						TTL:       common.FixedDuration(5 * time.Minute),
+						Connector: "mock",
+						Finality:  common.DataFinalityStateUnfinalized,
+					},
 				},
-			},
-		}
-		cacheCfg.SetDefaults()
+			}
+			cacheCfg.SetDefaults()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
-		time.Sleep(200 * time.Millisecond)
-		network.PinUpstreamOrderForTest()
+			time.Sleep(200 * time.Millisecond)
+			network.PinUpstreamOrderForTest()
 
-		// Configure network for splitting
-		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
-			EnforceGetLogsBlockRange: util.BoolPtr(true),
-		}
-		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
-		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100 // Force splitting into ranges of 256 blocks
+			// Configure network for splitting
+			network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+				EnforceGetLogsBlockRange: util.BoolPtr(true),
+			}
+			upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+			upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100 // Force splitting into ranges of 256 blocks
 
-		// Create and set cache
-		slowCache, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, cacheCfg)
-		if err != nil {
-			t.Fatalf("Failed to create evm json rpc cache: %v", err)
-		}
-		network.cacheDal = slowCache.WithProjectId("prjA")
+			// Create and set cache
+			slowCache, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, cacheCfg)
+			if err != nil {
+				t.Fatalf("Failed to create evm json rpc cache: %v", err)
+			}
+			network.cacheDal = slowCache.WithProjectId("prjA")
 
-		// First, make a request that will be cached for the middle range
-		middleRangeBody := []byte(`{
+			// First, make a request that will be cached for the middle range
+			middleRangeBody := []byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getLogs",
 			"params": [{
@@ -10294,50 +10458,50 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				"topics": ["0x1234567890123456789012345678901234567890123456789012345678901234"]
 			}]
 		}`)
-		middleRangeRequest := common.NewNormalizedRequest(middleRangeBody)
-		middleRangeRequest.SetCacheDal(slowCache)
-		middleRangeRequest.SetNetwork(network)
+			middleRangeRequest := common.NewNormalizedRequest(middleRangeBody)
+			middleRangeRequest.SetCacheDal(slowCache)
+			middleRangeRequest.SetNetwork(network)
 
-		// Mock response for the middle range that will be cached
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118100"`) &&
-					strings.Contains(body, `"toBlock":"0x111181ff"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result": []map[string]interface{}{
-					{"logIndex": "0x2", "blockNumber": "0x11118150", "data": "0x2"},
-				},
-			})
+			// Mock response for the middle range that will be cached
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs") &&
+						strings.Contains(body, `"fromBlock":"0x11118100"`) &&
+						strings.Contains(body, `"toBlock":"0x111181ff"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": []map[string]interface{}{
+						{"logIndex": "0x2", "blockNumber": "0x11118150", "data": "0x2"},
+					},
+				})
 
-		// Make the request to cache the middle range
-		resp, err := network.Forward(ctx, middleRangeRequest)
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
-		resp.Release()
+			// Make the request to cache the middle range
+			resp, err := network.Forward(ctx, middleRangeRequest)
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
+			resp.Release()
 
-		// Forward stores the response in a background goroutine and the memory
-		// connector applies writes asynchronously, so wait until the middle range
-		// is readable before the split request looks it up.
-		require.Eventually(t, func() bool {
-			probe := common.NewNormalizedRequest(middleRangeBody)
-			probe.SetNetwork(network)
-			cached, err := network.cacheDal.Get(ctx, probe)
-			if err != nil || cached == nil {
-				return false
-			}
-			cached.Release()
-			return true
-		}, 5*time.Second, 5*time.Millisecond, "middle range never became readable from cache")
+			// Forward stores the response in a background goroutine and the memory
+			// connector applies writes asynchronously, so wait until the middle range
+			// is readable before the split request looks it up.
+			require.Eventually(t, func() bool {
+				probe := common.NewNormalizedRequest(middleRangeBody)
+				probe.SetNetwork(network)
+				cached, err := network.cacheDal.Get(ctx, probe)
+				if err != nil || cached == nil {
+					return false
+				}
+				cached.Release()
+				return true
+			}, 5*time.Second, 5*time.Millisecond, "middle range never became readable from cache")
 
-		// Now make the full request that should be split into three parts
-		fullRangeRequest := common.NewNormalizedRequest([]byte(`{
+			// Now make the full request that should be split into three parts
+			fullRangeRequest := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getLogs",
 			"params": [{
@@ -10347,104 +10511,105 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				"topics": ["0x1234567890123456789012345678901234567890123456789012345678901234"]
 			}]
 		}`))
-		fullRangeRequest.SetCacheDal(slowCache)
-		fullRangeRequest.SetNetwork(network)
+			fullRangeRequest.SetCacheDal(slowCache)
+			fullRangeRequest.SetNetwork(network)
 
-		// Mock responses for the first and last ranges
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118000"`) &&
-					strings.Contains(body, `"toBlock":"0x111180ff"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      2,
-				"result": []map[string]interface{}{
-					{"logIndex": "0x1", "blockNumber": "0x11118050", "data": "0x1"},
-				},
-			})
+			// Mock responses for the first and last ranges
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs") &&
+						strings.Contains(body, `"fromBlock":"0x11118000"`) &&
+						strings.Contains(body, `"toBlock":"0x111180ff"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      2,
+					"result": []map[string]interface{}{
+						{"logIndex": "0x1", "blockNumber": "0x11118050", "data": "0x1"},
+					},
+				})
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118200"`) &&
-					strings.Contains(body, `"toBlock":"0x111182ff"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      3,
-				"result": []map[string]interface{}{
-					{"logIndex": "0x3", "blockNumber": "0x11118250", "data": "0x3"},
-				},
-			})
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs") &&
+						strings.Contains(body, `"fromBlock":"0x11118200"`) &&
+						strings.Contains(body, `"toBlock":"0x111182ff"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      3,
+					"result": []map[string]interface{}{
+						{"logIndex": "0x3", "blockNumber": "0x11118250", "data": "0x3"},
+					},
+				})
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118300"`) &&
-					strings.Contains(body, `"toBlock":"0x11118300"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      3,
-				"result": []map[string]interface{}{
-					{"logIndex": "0x4", "blockNumber": "0x11118300", "data": "0x4"},
-				},
-			})
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getLogs") &&
+						strings.Contains(body, `"fromBlock":"0x11118300"`) &&
+						strings.Contains(body, `"toBlock":"0x11118300"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      3,
+					"result": []map[string]interface{}{
+						{"logIndex": "0x4", "blockNumber": "0x11118300", "data": "0x4"},
+					},
+				})
 
-		// Make the full request
-		resp, err = network.Forward(ctx, fullRangeRequest)
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
+			// Make the full request
+			resp, err = network.Forward(ctx, fullRangeRequest)
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
 
-		// Verify the merged response
-		jrr, err := resp.JsonRpcResponse()
-		assert.NoError(t, err)
-		if jrr == nil {
-			t.Fatalf("Expected non-nil JsonRpcResponse")
-		}
-		w := bytes.NewBuffer(nil)
-		jrr.WriteTo(w)
-		result := w.Bytes()
+			// Verify the merged response
+			jrr, err := resp.JsonRpcResponse()
+			assert.NoError(t, err)
+			if jrr == nil {
+				t.Fatalf("Expected non-nil JsonRpcResponse")
+			}
+			w := bytes.NewBuffer(nil)
+			jrr.WriteTo(w)
+			result := w.Bytes()
 
-		// Parse and verify the response contains logs from all three ranges
-		var respObject map[string]interface{}
-		err = sonic.Unmarshal(result, &respObject)
-		assert.NoError(t, err)
+			// Parse and verify the response contains logs from all three ranges
+			var respObject map[string]interface{}
+			err = sonic.Unmarshal(result, &respObject)
+			assert.NoError(t, err)
 
-		logs := respObject["result"].([]interface{})
-		assert.Equal(t, 4, len(logs), "Expected exactly 4 logs (one from each range)")
+			logs := respObject["result"].([]interface{})
+			assert.Equal(t, 4, len(logs), "Expected exactly 4 logs (one from each range)")
 
-		// Verify log block numbers and data
-		blockNumbers := make([]string, len(logs))
-		data := make([]string, len(logs))
-		for i, l := range logs {
-			log := l.(map[string]interface{})
-			blockNumbers[i] = log["blockNumber"].(string)
-			data[i] = log["data"].(string)
-		}
+			// Verify log block numbers and data
+			blockNumbers := make([]string, len(logs))
+			data := make([]string, len(logs))
+			for i, l := range logs {
+				log := l.(map[string]interface{})
+				blockNumbers[i] = log["blockNumber"].(string)
+				data[i] = log["data"].(string)
+			}
 
-		// Verify we got logs from all three ranges
-		assert.Contains(t, blockNumbers, "0x11118050", "Missing log from first range")
-		assert.Contains(t, blockNumbers, "0x11118150", "Missing log from cached middle range")
-		assert.Contains(t, blockNumbers, "0x11118250", "Missing log from third range")
-		assert.Contains(t, blockNumbers, "0x11118300", "Missing log from last range")
+			// Verify we got logs from all three ranges
+			assert.Contains(t, blockNumbers, "0x11118050", "Missing log from first range")
+			assert.Contains(t, blockNumbers, "0x11118150", "Missing log from cached middle range")
+			assert.Contains(t, blockNumbers, "0x11118250", "Missing log from third range")
+			assert.Contains(t, blockNumbers, "0x11118300", "Missing log from last range")
 
-		// Verify data values
-		assert.Contains(t, data, "0x1", "Missing data from first range")
-		assert.Contains(t, data, "0x2", "Missing data from cached middle range")
-		assert.Contains(t, data, "0x3", "Missing data from third range")
-		assert.Contains(t, data, "0x4", "Missing data from last range")
+			// Verify data values
+			assert.Contains(t, data, "0x1", "Missing data from first range")
+			assert.Contains(t, data, "0x2", "Missing data from cached middle range")
+			assert.Contains(t, data, "0x3", "Missing data from third range")
+			assert.Contains(t, data, "0x4", "Missing data from last range")
+		})
 	})
 }
 func TestNetwork_ThunderingHerdProtection(t *testing.T) {
@@ -10680,185 +10845,187 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 	})
 
 	t.Run("ForwardThunderingHerdGetLatestBlockWithoutErrors", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		telemetry.MetricUpstreamLatestBlockPolled.Reset()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			telemetry.MetricUpstreamLatestBlockPolled.Reset()
 
-		//------------------------------------------------------------
-		// 1.  RPC stubs
-		//------------------------------------------------------------
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `eth_chainId`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":"0x7b"}`))
+			//------------------------------------------------------------
+			// 1.  RPC stubs
+			//------------------------------------------------------------
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `eth_chainId`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":"0x7b"}`))
 
-		const herd = 10_000
-		// First eth_getBlockByNumber("latest") during the herd – slow so the lock stays held
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(1).
-			Filter(func(r *http.Request) bool {
-				b := util.SafeReadBody(r)
-				return strings.Contains(b, `"eth_getBlockByNumber"`) &&
-					strings.Contains(b, `"latest"`)
-			}).
-			Reply(200).
-			Delay(300 * time.Millisecond).              // <- keeps leader busy
-			JSON([]byte(`{"result":{"number":"0xa"}}`)) // 10
+			const herd = 10_000
+			// First eth_getBlockByNumber("latest") during the herd – slow so the lock stays held
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(1).
+				Filter(func(r *http.Request) bool {
+					b := util.SafeReadBody(r)
+					return strings.Contains(b, `"eth_getBlockByNumber"`) &&
+						strings.Contains(b, `"latest"`)
+				}).
+				Reply(200).
+				Delay(300 * time.Millisecond).              // <- keeps leader busy
+				JSON([]byte(`{"result":{"number":"0xa"}}`)) // 10
 
-		// Subsequent "latest" polls – fast, unlimited
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				b := util.SafeReadBody(r)
-				return strings.Contains(b, `"eth_getBlockByNumber"`) &&
-					strings.Contains(b, `"latest"`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0xa"}}`))
+			// Subsequent "latest" polls – fast, unlimited
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					b := util.SafeReadBody(r)
+					return strings.Contains(b, `"eth_getBlockByNumber"`) &&
+						strings.Contains(b, `"latest"`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":{"number":"0xa"}}`))
 
-		// eth_getBlockByNumber("finalized")
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `"eth_getBlockByNumber"`) &&
-					strings.Contains(body, `"finalized"`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":null}`))
+			// eth_getBlockByNumber("finalized")
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `"eth_getBlockByNumber"`) &&
+						strings.Contains(body, `"finalized"`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":null}`))
 
-		// eth_syncing
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), `"eth_syncing"`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":false}`))
+			// eth_syncing
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), `"eth_syncing"`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":false}`))
 
-		//----------------------------------------------------------------------
-		// 2) Network / poller set-up
-		//----------------------------------------------------------------------
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			//----------------------------------------------------------------------
+			// 2) Network / poller set-up
+			//----------------------------------------------------------------------
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		upCfg := &common.UpstreamConfig{
-			Id:         "rpc1",
-			Type:       common.UpstreamTypeEvm,
-			Endpoint:   "http://rpc1.localhost",
-			VendorName: "vendorA",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId:             123,
-				StatePollerInterval: common.Duration(5000 * time.Millisecond), // we'll drive it manually
-				StatePollerDebounce: common.Duration(5000 * time.Millisecond), // TryUpdateIfStale → 1 s default
-			},
-		}
-
-		vr := thirdparty.NewVendorsRegistry()
-		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-		// Create shared state config with proper timeouts for state poller
-		sharedStateCfg := &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: common.DriverMemory,
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems:     100_000,
-					MaxTotalSize: "1GB",
+			upCfg := &common.UpstreamConfig{
+				Id:         "rpc1",
+				Type:       common.UpstreamTypeEvm,
+				Endpoint:   "http://rpc1.localhost",
+				VendorName: "vendorA",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId:             123,
+					StatePollerInterval: common.Duration(5000 * time.Millisecond), // we'll drive it manually
+					StatePollerDebounce: common.Duration(5000 * time.Millisecond), // TryUpdateIfStale → 1 s default
 				},
-			},
-			LockMaxWait:     common.Duration(200 * time.Millisecond),
-			UpdateMaxWait:   common.Duration(200 * time.Millisecond),
-			FallbackTimeout: common.Duration(3 * time.Second),
-			LockTtl:         common.Duration(4 * time.Second),
-		}
-		sharedStateCfg.SetDefaults("test")
-		ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
-		upr := upstream.NewUpstreamsRegistry(
-			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
-			ssr, rlr, vr, pr, nil, mt, nil,
-		)
-		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-
-		ntwCfg := &common.NetworkConfig{
-			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				ChainId: 123,
-				Integrity: &common.EvmIntegrityConfig{
-					EnforceHighestBlock: util.BoolPtr(true),
-				},
-			},
-		}
-		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, nil)
-		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-		require.NoError(t, ntw.Bootstrap(ctx))
-
-		pup := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))[0]
-		poller := pup.EvmStatePoller()
-
-		// Wait a bit for the poller to be ready
-		time.Sleep(200 * time.Millisecond)
-
-		// Bootstrap value
-		require.NoError(t, poller.Poll(ctx))
-		// Wait for async update to complete (poll for the value)
-		bootstrapDeadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(bootstrapDeadline) {
-			if poller.LatestBlock() == 10 {
-				break
 			}
+
+			vr := thirdparty.NewVendorsRegistry()
+			pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+			// Create shared state config with proper timeouts for state poller
+			sharedStateCfg := &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: common.DriverMemory,
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems:     100_000,
+						MaxTotalSize: "1GB",
+					},
+				},
+				LockMaxWait:     common.Duration(200 * time.Millisecond),
+				UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+				FallbackTimeout: common.Duration(3 * time.Second),
+				LockTtl:         common.Duration(4 * time.Second),
+			}
+			sharedStateCfg.SetDefaults("test")
+			ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+			upr := upstream.NewUpstreamsRegistry(
+				ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
+				ssr, rlr, vr, pr, nil, mt, nil,
+			)
+			upr.Bootstrap(ctx)
 			time.Sleep(100 * time.Millisecond)
-		}
-		require.Equal(t, int64(10), poller.LatestBlock())
 
-		//----------------------------------------------------------------------
-		// 3) Sleep 1.1 s so the cached value becomes "stale"
-		//----------------------------------------------------------------------
-		time.Sleep(1100 * time.Millisecond) // TryUpdateIfStale default is 1 s
+			ntwCfg := &common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+					Integrity: &common.EvmIntegrityConfig{
+						EnforceHighestBlock: util.BoolPtr(true),
+					},
+				},
+			}
+			ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, nil)
+			require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+			require.NoError(t, ntw.Bootstrap(ctx))
 
-		//----------------------------------------------------------------------
-		// 4) Fire 1 000 concurrent PollLatestBlockNumber calls directly
-		//    This bypasses forwarding and reproduces the thundering‑herd inside
-		//    CounterInt64SharedVariable.TryUpdateIfStale.
-		//----------------------------------------------------------------------
-		start := make(chan struct{})
-		var wg sync.WaitGroup
-		wg.Add(herd)
-		for i := 0; i < herd; i++ {
-			go func() {
-				defer wg.Done()
-				<-start // unleash all goroutines at once
-				_, _ = poller.PollLatestBlockNumber(ctx)
-			}()
-		}
-		close(start)
-		wg.Wait()
+			pup := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))[0]
+			poller := pup.EvmStatePoller()
 
-		//----------------------------------------------------------------------
-		// 5) Inspect metrics: single poll, zero multiplexer hits
-		//----------------------------------------------------------------------
-		polled, err := telemetry.MetricUpstreamLatestBlockPolled.
-			GetMetricWithLabelValues("prjA", "vendorA", "n/a", "rpc1")
-		require.NoError(t, err)
+			// Wait a bit for the poller to be ready
+			time.Sleep(200 * time.Millisecond)
 
-		t.Logf("MetricUpstreamLatestBlockPolled   : %.0f", promUtil.ToFloat64(polled))
+			// Bootstrap value
+			require.NoError(t, poller.Poll(ctx))
+			// Wait for async update to complete (poll for the value)
+			bootstrapDeadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(bootstrapDeadline) {
+				if poller.LatestBlock() == 10 {
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			require.Equal(t, int64(10), poller.LatestBlock())
 
-		require.Equal(t,
-			float64(1),
-			promUtil.ToFloat64(polled),
-			"expected two polls (bootstrap + stale refresh)",
-		)
+			//----------------------------------------------------------------------
+			// 3) Sleep 1.1 s so the cached value becomes "stale"
+			//----------------------------------------------------------------------
+			time.Sleep(1100 * time.Millisecond) // TryUpdateIfStale default is 1 s
+
+			//----------------------------------------------------------------------
+			// 4) Fire 1 000 concurrent PollLatestBlockNumber calls directly
+			//    This bypasses forwarding and reproduces the thundering‑herd inside
+			//    CounterInt64SharedVariable.TryUpdateIfStale.
+			//----------------------------------------------------------------------
+			start := make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Add(herd)
+			for i := 0; i < herd; i++ {
+				go func() {
+					defer wg.Done()
+					<-start // unleash all goroutines at once
+					_, _ = poller.PollLatestBlockNumber(ctx)
+				}()
+			}
+			close(start)
+			wg.Wait()
+
+			//----------------------------------------------------------------------
+			// 5) Inspect metrics: single poll, zero multiplexer hits
+			//----------------------------------------------------------------------
+			polled, err := telemetry.MetricUpstreamLatestBlockPolled.
+				GetMetricWithLabelValues("prjA", "vendorA", "n/a", "rpc1")
+			require.NoError(t, err)
+
+			t.Logf("MetricUpstreamLatestBlockPolled   : %.0f", promUtil.ToFloat64(polled))
+
+			require.Equal(t,
+				float64(1),
+				promUtil.ToFloat64(polled),
+				"expected two polls (bootstrap + stale refresh)",
+			)
+		})
 	})
 
 	t.Run("ForwardThunderingHerdSyncing", func(t *testing.T) {
@@ -11266,1057 +11433,1075 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 }
 func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 	t.Run("EvmHighestLatestBlockNumber_ExcludesSyncingNodeFromHighestBlock", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Create two upstreams with different syncing states
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "syncing-node",
-			Endpoint: "http://syncing.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "synced-node",
-			Endpoint: "http://synced.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		gock.New("http://syncing.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `eth_chainId`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":"0x7b"}`))
-		gock.New("http://synced.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `eth_chainId`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":"0x7b"}`))
-
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
-		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
-
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		require.NoError(t, err)
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			// Create two upstreams with different syncing states
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "syncing-node",
+				Endpoint: "http://syncing.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
 				},
-			},
-		})
-		require.NoError(t, err)
-
-		upstreamsRegistry := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"test",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rateLimitersRegistry,
-			vr,
-			pr,
-			nil,
-			metricsTracker,
-			nil,
-		)
-
-		networkConfig := &common.NetworkConfig{
-			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				ChainId: 123,
-			},
-		}
-
-		network, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"test",
-			networkConfig,
-			rateLimitersRegistry,
-			upstreamsRegistry,
-			metricsTracker,
-			nil,
-		)
-		require.NoError(t, err)
-
-		upstreamsRegistry.Bootstrap(ctx)
-		time.Sleep(200 * time.Millisecond)
-
-		initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
-		require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
-
-		err = network.Bootstrap(ctx)
-		require.NoError(t, err)
-		network.PinUpstreamOrderForTest()
-		time.Sleep(250 * time.Millisecond)
-
-		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-		require.Len(t, upsList, 2)
-
-		// Find the specific upstreams by ID
-		var syncingUpstream, syncedUpstream *upstream.Upstream
-		for _, ups := range upsList {
-			if ups.Id() == "syncing-node" {
-				syncingUpstream = ups
-			} else if ups.Id() == "synced-node" {
-				syncedUpstream = ups
 			}
-		}
-		require.NotNil(t, syncingUpstream)
-		require.NotNil(t, syncedUpstream)
 
-		// Set up block numbers - syncing node has higher block number
-		syncingUpstream.EvmStatePoller().SuggestLatestBlock(2000) // Higher block
-		syncedUpstream.EvmStatePoller().SuggestLatestBlock(1000)  // Lower block
-		time.Sleep(50 * time.Millisecond)
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "synced-node",
+				Endpoint: "http://synced.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
 
-		// Set syncing states
-		syncingUpstream.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
-		syncedUpstream.EvmStatePoller().SetSyncingState(common.EvmSyncingStateNotSyncing)
+			gock.New("http://syncing.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `eth_chainId`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":"0x7b"}`))
+			gock.New("http://synced.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `eth_chainId`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":"0x7b"}`))
 
-		// Should return the highest block from non-syncing nodes only
-		highest := common.EvmHighestLatestBlockNumber(network, ctx)
+			rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+			metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
-		assert.Equal(t, int64(1000), highest, "Should exclude syncing node and return highest from synced nodes only")
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			require.NoError(t, err)
+
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			require.NoError(t, err)
+
+			upstreamsRegistry := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"test",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rateLimitersRegistry,
+				vr,
+				pr,
+				nil,
+				metricsTracker,
+				nil,
+			)
+
+			networkConfig := &common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+			}
+
+			network, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"test",
+				networkConfig,
+				rateLimitersRegistry,
+				upstreamsRegistry,
+				metricsTracker,
+				nil,
+			)
+			require.NoError(t, err)
+
+			upstreamsRegistry.Bootstrap(ctx)
+			time.Sleep(200 * time.Millisecond)
+
+			initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
+			require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
+
+			err = network.Bootstrap(ctx)
+			require.NoError(t, err)
+			network.PinUpstreamOrderForTest()
+			time.Sleep(250 * time.Millisecond)
+
+			upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+			require.Len(t, upsList, 2)
+
+			// Find the specific upstreams by ID
+			var syncingUpstream, syncedUpstream *upstream.Upstream
+			for _, ups := range upsList {
+				if ups.Id() == "syncing-node" {
+					syncingUpstream = ups
+				} else if ups.Id() == "synced-node" {
+					syncedUpstream = ups
+				}
+			}
+			require.NotNil(t, syncingUpstream)
+			require.NotNil(t, syncedUpstream)
+
+			// Set up block numbers - syncing node has higher block number
+			syncingUpstream.EvmStatePoller().SuggestLatestBlock(2000) // Higher block
+			syncedUpstream.EvmStatePoller().SuggestLatestBlock(1000)  // Lower block
+			time.Sleep(50 * time.Millisecond)
+
+			// Set syncing states
+			syncingUpstream.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+			syncedUpstream.EvmStatePoller().SetSyncingState(common.EvmSyncingStateNotSyncing)
+
+			// Should return the highest block from non-syncing nodes only
+			highest := common.EvmHighestLatestBlockNumber(network, ctx)
+
+			assert.Equal(t, int64(1000), highest, "Should exclude syncing node and return highest from synced nodes only")
+		})
 	})
 
 	t.Run("EvmHighestLatestBlockNumber_ExcludesSelectionPolicyExcludedNodeFromHighestBlock", func(t *testing.T) {
-		t.Skip("TODO(phase-10): rewrite against new policy engine; legacy EvalFunction + Resample* gone")
-		util.ResetGock()
-		defer util.ResetGock()
+		synctest.Test(t, func(t *testing.T) {
+			t.Skip("TODO(phase-10): rewrite against new policy engine; legacy EvalFunction + Resample* gone")
+			util.ResetGock()
+			defer util.ResetGock()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		selectionPolicy := &common.SelectionPolicyConfig{
-			EvalInterval: common.Duration(50 * time.Millisecond),
-			EvalFunc:     `(upstreams, ctx) => upstreams.filter(u => u.metrics.errorRate < 0.5)`,
-		}
-
-		// Create two upstreams
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "excluded-node",
-			Endpoint: "http://excluded.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "included-node",
-			Endpoint: "http://included.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		gock.New("http://excluded.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `eth_chainId`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":"0x7b"}`))
-		gock.New("http://included.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `eth_chainId`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":"0x7b"}`))
-
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
-		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
-
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		require.NoError(t, err)
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		require.NoError(t, err)
-
-		upstreamsRegistry := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"test",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rateLimitersRegistry,
-			vr,
-			pr,
-			nil,
-			metricsTracker,
-			nil,
-		)
-
-		networkConfig := &common.NetworkConfig{
-			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				ChainId: 123,
-			},
-			SelectionPolicy: selectionPolicy,
-		}
-
-		network, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"test",
-			networkConfig,
-			rateLimitersRegistry,
-			upstreamsRegistry,
-			metricsTracker,
-			nil,
-		)
-		require.NoError(t, err)
-
-		upstreamsRegistry.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-
-		initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
-		require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
-
-		err = network.Bootstrap(ctx)
-		require.NoError(t, err)
-		network.PinUpstreamOrderForTest()
-		time.Sleep(100 * time.Millisecond)
-
-		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-		require.Len(t, upsList, 2)
-
-		// Find the specific upstreams by ID
-		var excludedUpstream, includedUpstream *upstream.Upstream
-		for _, ups := range upsList {
-			if ups.Id() == "excluded-node" {
-				excludedUpstream = ups
-			} else if ups.Id() == "included-node" {
-				includedUpstream = ups
+			selectionPolicy := &common.SelectionPolicyConfig{
+				EvalInterval: common.Duration(50 * time.Millisecond),
+				EvalFunc:     `(upstreams, ctx) => upstreams.filter(u => u.metrics.errorRate < 0.5)`,
 			}
-		}
-		require.NotNil(t, excludedUpstream)
-		require.NotNil(t, includedUpstream)
 
-		// Set up block numbers - excluded node has higher block number
-		excludedUpstream.EvmStatePoller().SuggestLatestBlock(3000) // Higher block
-		includedUpstream.EvmStatePoller().SuggestLatestBlock(2000) // Lower block
-		time.Sleep(50 * time.Millisecond)
+			// Create two upstreams
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "excluded-node",
+				Endpoint: "http://excluded.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
 
-		// Create metrics to make excluded upstream have high error rate
-		metricsTracker.RecordUpstreamRequest(excludedUpstream, "*", common.DataFinalityStateUnknown)
-		metricsTracker.RecordUpstreamFailure(excludedUpstream, "*", common.DataFinalityStateUnknown, fmt.Errorf("test problem"))
-		metricsTracker.RecordUpstreamRequest(excludedUpstream, "*", common.DataFinalityStateUnknown)
-		metricsTracker.RecordUpstreamFailure(excludedUpstream, "*", common.DataFinalityStateUnknown, fmt.Errorf("test problem"))
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "included-node",
+				Endpoint: "http://included.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
 
-		// Create good metrics for included upstream
-		metricsTracker.RecordUpstreamRequest(includedUpstream, "*", common.DataFinalityStateUnknown)
-		metricsTracker.RecordUpstreamDuration(includedUpstream, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+			gock.New("http://excluded.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `eth_chainId`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":"0x7b"}`))
+			gock.New("http://included.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `eth_chainId`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":"0x7b"}`))
 
-		// Wait for selection policy to evaluate
-		time.Sleep(150 * time.Millisecond)
+			rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+			metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
-		// Should return the highest block from policy-included nodes only
-		highest := common.EvmHighestLatestBlockNumber(network, ctx)
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			require.NoError(t, err)
 
-		assert.Equal(t, int64(2000), highest, "Should exclude policy-excluded node and return highest from included nodes only")
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			require.NoError(t, err)
+
+			upstreamsRegistry := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"test",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rateLimitersRegistry,
+				vr,
+				pr,
+				nil,
+				metricsTracker,
+				nil,
+			)
+
+			networkConfig := &common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+				SelectionPolicy: selectionPolicy,
+			}
+
+			network, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"test",
+				networkConfig,
+				rateLimitersRegistry,
+				upstreamsRegistry,
+				metricsTracker,
+				nil,
+			)
+			require.NoError(t, err)
+
+			upstreamsRegistry.Bootstrap(ctx)
+			time.Sleep(100 * time.Millisecond)
+
+			initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
+			require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
+
+			err = network.Bootstrap(ctx)
+			require.NoError(t, err)
+			network.PinUpstreamOrderForTest()
+			time.Sleep(100 * time.Millisecond)
+
+			upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+			require.Len(t, upsList, 2)
+
+			// Find the specific upstreams by ID
+			var excludedUpstream, includedUpstream *upstream.Upstream
+			for _, ups := range upsList {
+				if ups.Id() == "excluded-node" {
+					excludedUpstream = ups
+				} else if ups.Id() == "included-node" {
+					includedUpstream = ups
+				}
+			}
+			require.NotNil(t, excludedUpstream)
+			require.NotNil(t, includedUpstream)
+
+			// Set up block numbers - excluded node has higher block number
+			excludedUpstream.EvmStatePoller().SuggestLatestBlock(3000) // Higher block
+			includedUpstream.EvmStatePoller().SuggestLatestBlock(2000) // Lower block
+			time.Sleep(50 * time.Millisecond)
+
+			// Create metrics to make excluded upstream have high error rate
+			metricsTracker.RecordUpstreamRequest(excludedUpstream, "*", common.DataFinalityStateUnknown)
+			metricsTracker.RecordUpstreamFailure(excludedUpstream, "*", common.DataFinalityStateUnknown, fmt.Errorf("test problem"))
+			metricsTracker.RecordUpstreamRequest(excludedUpstream, "*", common.DataFinalityStateUnknown)
+			metricsTracker.RecordUpstreamFailure(excludedUpstream, "*", common.DataFinalityStateUnknown, fmt.Errorf("test problem"))
+
+			// Create good metrics for included upstream
+			metricsTracker.RecordUpstreamRequest(includedUpstream, "*", common.DataFinalityStateUnknown)
+			metricsTracker.RecordUpstreamDuration(includedUpstream, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+
+			// Wait for selection policy to evaluate
+			time.Sleep(150 * time.Millisecond)
+
+			// Should return the highest block from policy-included nodes only
+			highest := common.EvmHighestLatestBlockNumber(network, ctx)
+
+			assert.Equal(t, int64(2000), highest, "Should exclude policy-excluded node and return highest from included nodes only")
+		})
 	})
 
 	t.Run("EvmHighestLatestBlockNumber_UsesEffectiveBlockWhenUpperBoundConfigured", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Configure upper bound: latestBlockMinus = 100
-		latestMinus := int64(100)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "clamped-node",
-			Endpoint: "http://clamped.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-				BlockAvailability: &common.EvmBlockAvailabilityConfig{
-					Upper: &common.EvmAvailabilityBoundConfig{
-						LatestBlockMinus: &latestMinus,
+			// Configure upper bound: latestBlockMinus = 100
+			latestMinus := int64(100)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "clamped-node",
+				Endpoint: "http://clamped.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Upper: &common.EvmAvailabilityBoundConfig{
+							LatestBlockMinus: &latestMinus,
+						},
 					},
 				},
-			},
-		}
-
-		// No upper bound - should use raw latest block
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "unclamped-node",
-			Endpoint: "http://unclamped.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		gock.New("http://clamped.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `eth_chainId`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":"0x7b"}`))
-		gock.New("http://unclamped.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `eth_chainId`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":"0x7b"}`))
-
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
-		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
-
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		require.NoError(t, err)
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		require.NoError(t, err)
-
-		upstreamsRegistry := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"test",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rateLimitersRegistry,
-			vr,
-			pr,
-			nil,
-			metricsTracker,
-			nil,
-		)
-
-		networkConfig := &common.NetworkConfig{
-			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				ChainId: 123,
-			},
-		}
-
-		network, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"test",
-			networkConfig,
-			rateLimitersRegistry,
-			upstreamsRegistry,
-			metricsTracker,
-			nil,
-		)
-		require.NoError(t, err)
-
-		upstreamsRegistry.Bootstrap(ctx)
-		time.Sleep(200 * time.Millisecond)
-
-		initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
-		require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
-
-		err = network.Bootstrap(ctx)
-		require.NoError(t, err)
-		network.PinUpstreamOrderForTest()
-		time.Sleep(250 * time.Millisecond)
-
-		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-		require.Len(t, upsList, 2)
-
-		// Find the specific upstreams by ID
-		var clampedUpstream, unclampedUpstream *upstream.Upstream
-		for _, ups := range upsList {
-			if ups.Id() == "clamped-node" {
-				clampedUpstream = ups
-			} else if ups.Id() == "unclamped-node" {
-				unclampedUpstream = ups
 			}
-		}
-		require.NotNil(t, clampedUpstream)
-		require.NotNil(t, unclampedUpstream)
 
-		// Set up block numbers. The network head is the corroborated (second-
-		// highest) effective head, so the unclamped node sits between the
-		// clamped node's effective and raw values: only the effective value
-		// yields 1900, the raw value would yield 1950.
-		// Clamped node: raw latest = 2000, effective = 2000 - 100 = 1900
-		clampedUpstream.EvmStatePoller().SuggestLatestBlock(2000)
-		// Unclamped node: raw latest = 1950, effective = 1950
-		unclampedUpstream.EvmStatePoller().SuggestLatestBlock(1950)
-		time.Sleep(50 * time.Millisecond)
+			// No upper bound - should use raw latest block
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "unclamped-node",
+				Endpoint: "http://unclamped.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
 
-		// Second-highest of effective blocks {1900, 1950} = 1900
-		highest := common.EvmHighestLatestBlockNumber(network, ctx)
+			gock.New("http://clamped.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `eth_chainId`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":"0x7b"}`))
+			gock.New("http://unclamped.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `eth_chainId`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":"0x7b"}`))
 
-		assert.Equal(t, int64(1900), highest, "Should use effective (clamped) block values when upper bound is configured")
+			rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+			metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			require.NoError(t, err)
+
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			require.NoError(t, err)
+
+			upstreamsRegistry := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"test",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rateLimitersRegistry,
+				vr,
+				pr,
+				nil,
+				metricsTracker,
+				nil,
+			)
+
+			networkConfig := &common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+			}
+
+			network, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"test",
+				networkConfig,
+				rateLimitersRegistry,
+				upstreamsRegistry,
+				metricsTracker,
+				nil,
+			)
+			require.NoError(t, err)
+
+			upstreamsRegistry.Bootstrap(ctx)
+			time.Sleep(200 * time.Millisecond)
+
+			initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
+			require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
+
+			err = network.Bootstrap(ctx)
+			require.NoError(t, err)
+			network.PinUpstreamOrderForTest()
+			time.Sleep(250 * time.Millisecond)
+
+			upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+			require.Len(t, upsList, 2)
+
+			// Find the specific upstreams by ID
+			var clampedUpstream, unclampedUpstream *upstream.Upstream
+			for _, ups := range upsList {
+				if ups.Id() == "clamped-node" {
+					clampedUpstream = ups
+				} else if ups.Id() == "unclamped-node" {
+					unclampedUpstream = ups
+				}
+			}
+			require.NotNil(t, clampedUpstream)
+			require.NotNil(t, unclampedUpstream)
+
+			// Set up block numbers. The network head is the corroborated (second-
+			// highest) effective head, so the unclamped node sits between the
+			// clamped node's effective and raw values: only the effective value
+			// yields 1900, the raw value would yield 1950.
+			// Clamped node: raw latest = 2000, effective = 2000 - 100 = 1900
+			clampedUpstream.EvmStatePoller().SuggestLatestBlock(2000)
+			// Unclamped node: raw latest = 1950, effective = 1950
+			unclampedUpstream.EvmStatePoller().SuggestLatestBlock(1950)
+			time.Sleep(50 * time.Millisecond)
+
+			// Second-highest of effective blocks {1900, 1950} = 1900
+			highest := common.EvmHighestLatestBlockNumber(network, ctx)
+
+			assert.Equal(t, int64(1900), highest, "Should use effective (clamped) block values when upper bound is configured")
+		})
 	})
 
 	t.Run("EvmHighestLatestBlockNumber_ReturnsRawValueWhenUpperBoundExceedsLatest", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Configure upper bound that exceeds current latest block
-		exactBlock := int64(5000) // Higher than the latest block we'll set
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "high-bound-node",
-			Endpoint: "http://highbound.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-				BlockAvailability: &common.EvmBlockAvailabilityConfig{
-					Upper: &common.EvmAvailabilityBoundConfig{
-						ExactBlock: &exactBlock,
+			// Configure upper bound that exceeds current latest block
+			exactBlock := int64(5000) // Higher than the latest block we'll set
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "high-bound-node",
+				Endpoint: "http://highbound.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Upper: &common.EvmAvailabilityBoundConfig{
+							ExactBlock: &exactBlock,
+						},
 					},
 				},
-			},
-		}
+			}
 
-		gock.New("http://highbound.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `eth_chainId`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":"0x7b"}`))
+			gock.New("http://highbound.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `eth_chainId`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":"0x7b"}`))
 
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
-		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+			rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+			metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		require.NoError(t, err)
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			require.NoError(t, err)
 
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
 				},
-			},
+			})
+			require.NoError(t, err)
+
+			upstreamsRegistry := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"test",
+				[]*common.UpstreamConfig{up1},
+				ssr,
+				rateLimitersRegistry,
+				vr,
+				pr,
+				nil,
+				metricsTracker,
+				nil,
+			)
+
+			networkConfig := &common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+			}
+
+			network, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"test",
+				networkConfig,
+				rateLimitersRegistry,
+				upstreamsRegistry,
+				metricsTracker,
+				nil,
+			)
+			require.NoError(t, err)
+
+			upstreamsRegistry.Bootstrap(ctx)
+			time.Sleep(200 * time.Millisecond)
+
+			initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
+			require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
+
+			err = network.Bootstrap(ctx)
+			require.NoError(t, err)
+			network.PinUpstreamOrderForTest()
+			time.Sleep(250 * time.Millisecond)
+
+			upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+			require.Len(t, upsList, 1)
+
+			// Set latest block to 2000 (less than upper bound of 5000)
+			upsList[0].EvmStatePoller().SuggestLatestBlock(2000)
+			time.Sleep(50 * time.Millisecond)
+
+			// Since upper bound (5000) > latest (2000), should return raw latest (2000)
+			highest := common.EvmHighestLatestBlockNumber(network, ctx)
+
+			assert.Equal(t, int64(2000), highest, "Should return raw latest block when upper bound exceeds latest")
 		})
-		require.NoError(t, err)
-
-		upstreamsRegistry := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"test",
-			[]*common.UpstreamConfig{up1},
-			ssr,
-			rateLimitersRegistry,
-			vr,
-			pr,
-			nil,
-			metricsTracker,
-			nil,
-		)
-
-		networkConfig := &common.NetworkConfig{
-			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				ChainId: 123,
-			},
-		}
-
-		network, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"test",
-			networkConfig,
-			rateLimitersRegistry,
-			upstreamsRegistry,
-			metricsTracker,
-			nil,
-		)
-		require.NoError(t, err)
-
-		upstreamsRegistry.Bootstrap(ctx)
-		time.Sleep(200 * time.Millisecond)
-
-		initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
-		require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
-
-		err = network.Bootstrap(ctx)
-		require.NoError(t, err)
-		network.PinUpstreamOrderForTest()
-		time.Sleep(250 * time.Millisecond)
-
-		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-		require.Len(t, upsList, 1)
-
-		// Set latest block to 2000 (less than upper bound of 5000)
-		upsList[0].EvmStatePoller().SuggestLatestBlock(2000)
-		time.Sleep(50 * time.Millisecond)
-
-		// Since upper bound (5000) > latest (2000), should return raw latest (2000)
-		highest := common.EvmHighestLatestBlockNumber(network, ctx)
-
-		assert.Equal(t, int64(2000), highest, "Should return raw latest block when upper bound exceeds latest")
 	})
 }
 
 func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 	t.Run("EvmHighestFinalizedBlockNumber_UsesEffectiveBlockWhenUpperBoundConfigured", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Configure upper bound: latestBlockMinus = 200
-		// This caps the effective finalized to latest - 200
-		latestMinus := int64(200)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "clamped-node",
-			Endpoint: "http://clamped.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-				BlockAvailability: &common.EvmBlockAvailabilityConfig{
-					Upper: &common.EvmAvailabilityBoundConfig{
-						LatestBlockMinus: &latestMinus,
+			// Configure upper bound: latestBlockMinus = 200
+			// This caps the effective finalized to latest - 200
+			latestMinus := int64(200)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "clamped-node",
+				Endpoint: "http://clamped.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Upper: &common.EvmAvailabilityBoundConfig{
+							LatestBlockMinus: &latestMinus,
+						},
 					},
 				},
-			},
-		}
-
-		// No upper bound - should use raw finalized block
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "unclamped-node",
-			Endpoint: "http://unclamped.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		gock.New("http://clamped.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `eth_chainId`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":"0x7b"}`))
-		gock.New("http://unclamped.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `eth_chainId`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":"0x7b"}`))
-
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
-		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
-
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		require.NoError(t, err)
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		require.NoError(t, err)
-
-		upstreamsRegistry := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"test",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rateLimitersRegistry,
-			vr,
-			pr,
-			nil,
-			metricsTracker,
-			nil,
-		)
-
-		networkConfig := &common.NetworkConfig{
-			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				ChainId: 123,
-			},
-		}
-
-		network, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"test",
-			networkConfig,
-			rateLimitersRegistry,
-			upstreamsRegistry,
-			metricsTracker,
-			nil,
-		)
-		require.NoError(t, err)
-
-		upstreamsRegistry.Bootstrap(ctx)
-		time.Sleep(200 * time.Millisecond)
-
-		initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
-		require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
-
-		err = network.Bootstrap(ctx)
-		require.NoError(t, err)
-		network.PinUpstreamOrderForTest()
-		time.Sleep(250 * time.Millisecond)
-
-		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-		require.Len(t, upsList, 2)
-
-		// Find the specific upstreams by ID
-		var clampedUpstream, unclampedUpstream *upstream.Upstream
-		for _, ups := range upsList {
-			if ups.Id() == "clamped-node" {
-				clampedUpstream = ups
-			} else if ups.Id() == "unclamped-node" {
-				unclampedUpstream = ups
 			}
-		}
-		require.NotNil(t, clampedUpstream)
-		require.NotNil(t, unclampedUpstream)
 
-		// Set up block numbers. Same shape as the latest-axis case: the
-		// unclamped node's finalized head sits between the clamped node's
-		// effective (1800) and raw (1900) finalized values.
-		// Clamped node: latest = 2000, finalized = 1900, upper bound = 2000 - 200 = 1800
-		// So effective finalized = min(1900, 1800) = 1800
-		clampedUpstream.EvmStatePoller().SuggestLatestBlock(2000)
-		clampedUpstream.EvmStatePoller().SuggestFinalizedBlock(1900)
-		// Unclamped node: latest = 1950, finalized = 1850, no upper bound
-		unclampedUpstream.EvmStatePoller().SuggestLatestBlock(1950)
-		unclampedUpstream.EvmStatePoller().SuggestFinalizedBlock(1850)
-		time.Sleep(50 * time.Millisecond)
+			// No upper bound - should use raw finalized block
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "unclamped-node",
+				Endpoint: "http://unclamped.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
 
-		// Second-highest of effective finalized blocks {1800, 1850} = 1800
-		highest := common.EvmHighestFinalizedBlockNumber(network, ctx)
+			gock.New("http://clamped.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `eth_chainId`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":"0x7b"}`))
+			gock.New("http://unclamped.localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `eth_chainId`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":"0x7b"}`))
 
-		assert.Equal(t, int64(1800), highest, "Should use effective (clamped) finalized block values when upper bound is configured")
+			rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+			metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			require.NoError(t, err)
+
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			require.NoError(t, err)
+
+			upstreamsRegistry := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"test",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rateLimitersRegistry,
+				vr,
+				pr,
+				nil,
+				metricsTracker,
+				nil,
+			)
+
+			networkConfig := &common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+			}
+
+			network, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"test",
+				networkConfig,
+				rateLimitersRegistry,
+				upstreamsRegistry,
+				metricsTracker,
+				nil,
+			)
+			require.NoError(t, err)
+
+			upstreamsRegistry.Bootstrap(ctx)
+			time.Sleep(200 * time.Millisecond)
+
+			initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
+			require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
+
+			err = network.Bootstrap(ctx)
+			require.NoError(t, err)
+			network.PinUpstreamOrderForTest()
+			time.Sleep(250 * time.Millisecond)
+
+			upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+			require.Len(t, upsList, 2)
+
+			// Find the specific upstreams by ID
+			var clampedUpstream, unclampedUpstream *upstream.Upstream
+			for _, ups := range upsList {
+				if ups.Id() == "clamped-node" {
+					clampedUpstream = ups
+				} else if ups.Id() == "unclamped-node" {
+					unclampedUpstream = ups
+				}
+			}
+			require.NotNil(t, clampedUpstream)
+			require.NotNil(t, unclampedUpstream)
+
+			// Set up block numbers. Same shape as the latest-axis case: the
+			// unclamped node's finalized head sits between the clamped node's
+			// effective (1800) and raw (1900) finalized values.
+			// Clamped node: latest = 2000, finalized = 1900, upper bound = 2000 - 200 = 1800
+			// So effective finalized = min(1900, 1800) = 1800
+			clampedUpstream.EvmStatePoller().SuggestLatestBlock(2000)
+			clampedUpstream.EvmStatePoller().SuggestFinalizedBlock(1900)
+			// Unclamped node: latest = 1950, finalized = 1850, no upper bound
+			unclampedUpstream.EvmStatePoller().SuggestLatestBlock(1950)
+			unclampedUpstream.EvmStatePoller().SuggestFinalizedBlock(1850)
+			time.Sleep(50 * time.Millisecond)
+
+			// Second-highest of effective finalized blocks {1800, 1850} = 1800
+			highest := common.EvmHighestFinalizedBlockNumber(network, ctx)
+
+			assert.Equal(t, int64(1800), highest, "Should use effective (clamped) finalized block values when upper bound is configured")
+		})
 	})
 
 	t.Run("EvmHighestFinalizedBlockNumber_ReturnsRawValueWhenUpperBoundExceedsFinalizedBlock", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Configure upper bound that exceeds current finalized block
-		exactBlock := int64(5000) // Higher than the finalized block we'll set
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "high-bound-node",
-			Endpoint: "http://highbound.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-				BlockAvailability: &common.EvmBlockAvailabilityConfig{
-					Upper: &common.EvmAvailabilityBoundConfig{
-						ExactBlock: &exactBlock,
+			// Configure upper bound that exceeds current finalized block
+			exactBlock := int64(5000) // Higher than the finalized block we'll set
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "high-bound-node",
+				Endpoint: "http://highbound.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Upper: &common.EvmAvailabilityBoundConfig{
+							ExactBlock: &exactBlock,
+						},
 					},
 				},
-			},
-		}
+			}
 
-		gock.New("http://highbound.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `eth_chainId`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":"0x7b"}`))
+			gock.New("http://highbound.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `eth_chainId`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":"0x7b"}`))
 
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
-		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+			rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+			metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		require.NoError(t, err)
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			require.NoError(t, err)
 
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
 				},
-			},
+			})
+			require.NoError(t, err)
+
+			upstreamsRegistry := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"test",
+				[]*common.UpstreamConfig{up1},
+				ssr,
+				rateLimitersRegistry,
+				vr,
+				pr,
+				nil,
+				metricsTracker,
+				nil,
+			)
+
+			networkConfig := &common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+			}
+
+			network, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"test",
+				networkConfig,
+				rateLimitersRegistry,
+				upstreamsRegistry,
+				metricsTracker,
+				nil,
+			)
+			require.NoError(t, err)
+
+			upstreamsRegistry.Bootstrap(ctx)
+			time.Sleep(200 * time.Millisecond)
+
+			initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
+			require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
+
+			err = network.Bootstrap(ctx)
+			require.NoError(t, err)
+			network.PinUpstreamOrderForTest()
+			time.Sleep(250 * time.Millisecond)
+
+			upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+			require.Len(t, upsList, 1)
+
+			// Set blocks: latest = 3000, finalized = 2000 (both less than upper bound of 5000)
+			upsList[0].EvmStatePoller().SuggestLatestBlock(3000)
+			upsList[0].EvmStatePoller().SuggestFinalizedBlock(2000)
+			time.Sleep(50 * time.Millisecond)
+
+			// Since upper bound (5000) > finalized (2000), should return raw finalized (2000)
+			highest := common.EvmHighestFinalizedBlockNumber(network, ctx)
+
+			assert.Equal(t, int64(2000), highest, "Should return raw finalized block when upper bound exceeds finalized")
 		})
-		require.NoError(t, err)
-
-		upstreamsRegistry := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"test",
-			[]*common.UpstreamConfig{up1},
-			ssr,
-			rateLimitersRegistry,
-			vr,
-			pr,
-			nil,
-			metricsTracker,
-			nil,
-		)
-
-		networkConfig := &common.NetworkConfig{
-			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				ChainId: 123,
-			},
-		}
-
-		network, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"test",
-			networkConfig,
-			rateLimitersRegistry,
-			upstreamsRegistry,
-			metricsTracker,
-			nil,
-		)
-		require.NoError(t, err)
-
-		upstreamsRegistry.Bootstrap(ctx)
-		time.Sleep(200 * time.Millisecond)
-
-		initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
-		require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
-
-		err = network.Bootstrap(ctx)
-		require.NoError(t, err)
-		network.PinUpstreamOrderForTest()
-		time.Sleep(250 * time.Millisecond)
-
-		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-		require.Len(t, upsList, 1)
-
-		// Set blocks: latest = 3000, finalized = 2000 (both less than upper bound of 5000)
-		upsList[0].EvmStatePoller().SuggestLatestBlock(3000)
-		upsList[0].EvmStatePoller().SuggestFinalizedBlock(2000)
-		time.Sleep(50 * time.Millisecond)
-
-		// Since upper bound (5000) > finalized (2000), should return raw finalized (2000)
-		highest := common.EvmHighestFinalizedBlockNumber(network, ctx)
-
-		assert.Equal(t, int64(2000), highest, "Should return raw finalized block when upper bound exceeds finalized")
 	})
 
 	t.Run("EvmHighestFinalizedBlockNumber_ExcludesSyncingNodesEvenWithUpperBound", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		// Syncing node with upper bound (should be excluded)
-		latestMinus := int64(50)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "syncing-clamped",
-			Endpoint: "http://syncingclamped.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-				BlockAvailability: &common.EvmBlockAvailabilityConfig{
-					Upper: &common.EvmAvailabilityBoundConfig{
-						LatestBlockMinus: &latestMinus,
+			// Syncing node with upper bound (should be excluded)
+			latestMinus := int64(50)
+			up1 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "syncing-clamped",
+				Endpoint: "http://syncingclamped.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Upper: &common.EvmAvailabilityBoundConfig{
+							LatestBlockMinus: &latestMinus,
+						},
 					},
 				},
-			},
-		}
-
-		// Synced node without upper bound
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "synced-unclamped",
-			Endpoint: "http://syncedunclamped.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		gock.New("http://syncingclamped.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `eth_chainId`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":"0x7b"}`))
-		gock.New("http://syncedunclamped.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `eth_chainId`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":"0x7b"}`))
-
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
-		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
-
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		require.NoError(t, err)
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		require.NoError(t, err)
-
-		upstreamsRegistry := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"test",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rateLimitersRegistry,
-			vr,
-			pr,
-			nil,
-			metricsTracker,
-			nil,
-		)
-
-		networkConfig := &common.NetworkConfig{
-			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				ChainId: 123,
-			},
-		}
-
-		network, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"test",
-			networkConfig,
-			rateLimitersRegistry,
-			upstreamsRegistry,
-			metricsTracker,
-			nil,
-		)
-		require.NoError(t, err)
-
-		upstreamsRegistry.Bootstrap(ctx)
-		time.Sleep(200 * time.Millisecond)
-
-		initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
-		require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
-
-		err = network.Bootstrap(ctx)
-		require.NoError(t, err)
-		network.PinUpstreamOrderForTest()
-		time.Sleep(250 * time.Millisecond)
-
-		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-		require.Len(t, upsList, 2)
-
-		// Find the specific upstreams by ID
-		var syncingUpstream, syncedUpstream *upstream.Upstream
-		for _, ups := range upsList {
-			if ups.Id() == "syncing-clamped" {
-				syncingUpstream = ups
-			} else if ups.Id() == "synced-unclamped" {
-				syncedUpstream = ups
 			}
-		}
-		require.NotNil(t, syncingUpstream)
-		require.NotNil(t, syncedUpstream)
 
-		// Syncing node has higher effective finalized: latest = 3000, finalized = 2900, upper = 3000 - 50 = 2950
-		// effective finalized = min(2900, 2950) = 2900
-		syncingUpstream.EvmStatePoller().SuggestLatestBlock(3000)
-		syncingUpstream.EvmStatePoller().SuggestFinalizedBlock(2900)
-		// Synced node has lower finalized: latest = 2000, finalized = 1800
-		syncedUpstream.EvmStatePoller().SuggestLatestBlock(2000)
-		syncedUpstream.EvmStatePoller().SuggestFinalizedBlock(1800)
-		time.Sleep(50 * time.Millisecond)
+			// Synced node without upper bound
+			up2 := &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       "synced-unclamped",
+				Endpoint: "http://syncedunclamped.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+			}
 
-		// Mark one as syncing
-		syncingUpstream.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
-		syncedUpstream.EvmStatePoller().SetSyncingState(common.EvmSyncingStateNotSyncing)
+			gock.New("http://syncingclamped.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `eth_chainId`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":"0x7b"}`))
+			gock.New("http://syncedunclamped.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `eth_chainId`)
+				}).
+				Reply(200).
+				JSON([]byte(`{"result":"0x7b"}`))
 
-		// Should exclude syncing node and return synced node's finalized (1800)
-		highest := common.EvmHighestFinalizedBlockNumber(network, ctx)
+			rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+			metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
-		assert.Equal(t, int64(1800), highest, "Should exclude syncing nodes even when they have upper bounds configured")
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(
+				&log.Logger,
+				vr,
+				[]*common.ProviderConfig{},
+				nil,
+			)
+			require.NoError(t, err)
+
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+				},
+			})
+			require.NoError(t, err)
+
+			upstreamsRegistry := upstream.NewUpstreamsRegistry(
+				ctx,
+				&log.Logger,
+				"test",
+				[]*common.UpstreamConfig{up1, up2},
+				ssr,
+				rateLimitersRegistry,
+				vr,
+				pr,
+				nil,
+				metricsTracker,
+				nil,
+			)
+
+			networkConfig := &common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+			}
+
+			network, err := NewNetwork(
+				ctx,
+				&log.Logger,
+				"test",
+				networkConfig,
+				rateLimitersRegistry,
+				upstreamsRegistry,
+				metricsTracker,
+				nil,
+			)
+			require.NoError(t, err)
+
+			upstreamsRegistry.Bootstrap(ctx)
+			time.Sleep(200 * time.Millisecond)
+
+			initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
+			require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
+
+			err = network.Bootstrap(ctx)
+			require.NoError(t, err)
+			network.PinUpstreamOrderForTest()
+			time.Sleep(250 * time.Millisecond)
+
+			upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+			require.Len(t, upsList, 2)
+
+			// Find the specific upstreams by ID
+			var syncingUpstream, syncedUpstream *upstream.Upstream
+			for _, ups := range upsList {
+				if ups.Id() == "syncing-clamped" {
+					syncingUpstream = ups
+				} else if ups.Id() == "synced-unclamped" {
+					syncedUpstream = ups
+				}
+			}
+			require.NotNil(t, syncingUpstream)
+			require.NotNil(t, syncedUpstream)
+
+			// Syncing node has higher effective finalized: latest = 3000, finalized = 2900, upper = 3000 - 50 = 2950
+			// effective finalized = min(2900, 2950) = 2900
+			syncingUpstream.EvmStatePoller().SuggestLatestBlock(3000)
+			syncingUpstream.EvmStatePoller().SuggestFinalizedBlock(2900)
+			// Synced node has lower finalized: latest = 2000, finalized = 1800
+			syncedUpstream.EvmStatePoller().SuggestLatestBlock(2000)
+			syncedUpstream.EvmStatePoller().SuggestFinalizedBlock(1800)
+			time.Sleep(50 * time.Millisecond)
+
+			// Mark one as syncing
+			syncingUpstream.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+			syncedUpstream.EvmStatePoller().SetSyncingState(common.EvmSyncingStateNotSyncing)
+
+			// Should exclude syncing node and return synced node's finalized (1800)
+			highest := common.EvmHighestFinalizedBlockNumber(network, ctx)
+
+			assert.Equal(t, int64(1800), highest, "Should exclude syncing nodes even when they have upper bounds configured")
+		})
 	})
 }
 
 func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 	t.Run("ServeCachedEmptyWhenAllowed", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupTestNetworkSimple(t, ctx, nil, nil)
+			network := setupTestNetworkSimple(t, ctx, nil, nil)
 
-		cache := &common.MockCacheDal{}
-		network.cacheDal = cache
+			cache := &common.MockCacheDal{}
+			network.cacheDal = cache
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x0000000000000000000000000000000000000011"}],"id":1}`))
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x0000000000000000000000000000000000000011"}],"id":1}`))
 
-		jrr, err := common.NewJsonRpcResponse(req.ID(), []interface{}{}, nil)
-		require.NoError(t, err)
-		cachedResp := common.NewNormalizedResponse().
-			WithRequest(req).
-			WithJsonRpcResponse(jrr).
-			WithFromCache(true)
+			jrr, err := common.NewJsonRpcResponse(req.ID(), []interface{}{}, nil)
+			require.NoError(t, err)
+			cachedResp := common.NewNormalizedResponse().
+				WithRequest(req).
+				WithJsonRpcResponse(jrr).
+				WithFromCache(true)
 
-		cache.On("Get", mock.Anything, mock.Anything).Return(cachedResp, nil).Once()
+			cache.On("Get", mock.Anything, mock.Anything).Return(cachedResp, nil).Once()
 
-		resp, err := network.Forward(ctx, req)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-		assert.True(t, resp.FromCache())
-		rjrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Equal(t, "[]", rjrr.GetResultString())
-		cache.AssertExpectations(t)
+			resp, err := network.Forward(ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			assert.True(t, resp.FromCache())
+			rjrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Equal(t, "[]", rjrr.GetResultString())
+			cache.AssertExpectations(t)
+		})
 	})
 
 	t.Run("SkipCachedEmptyWhenIgnored", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		network := setupTestNetworkSimple(t, ctx, nil, nil)
+			network := setupTestNetworkSimple(t, ctx, nil, nil)
 
-		cache := &common.MockCacheDal{}
-		network.cacheDal = cache
+			cache := &common.MockCacheDal{}
+			network.cacheDal = cache
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x0000000000000000000000000000000000000011"}],"id":1}`))
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x0000000000000000000000000000000000000011"}],"id":1}`))
 
-		cache.On("Get", mock.Anything, mock.Anything).Return(nil, nil).Once()
+			cache.On("Get", mock.Anything, mock.Anything).Return(nil, nil).Once()
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			MatchType("json").
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"method":  "eth_getLogs",
-				"params":  []interface{}{map[string]interface{}{"address": "0x0000000000000000000000000000000000000011"}},
-				"id":      float64(1),
-			}).
-			Times(1).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  []interface{}{map[string]interface{}{"logIndex": "0x1"}},
-			})
+			gock.New("http://rpc1.localhost").
+				Post("").
+				MatchType("json").
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"method":  "eth_getLogs",
+					"params":  []interface{}{map[string]interface{}{"address": "0x0000000000000000000000000000000000000011"}},
+					"id":      float64(1),
+				}).
+				Times(1).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  []interface{}{map[string]interface{}{"logIndex": "0x1"}},
+				})
 
-		resp, err := network.Forward(ctx, req)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-		assert.False(t, resp.FromCache())
-		rjrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, rjrr.GetResultString(), `"logIndex":"0x1"`)
-		cache.AssertExpectations(t)
+			resp, err := network.Forward(ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			assert.False(t, resp.FromCache())
+			rjrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, rjrr.GetResultString(), `"logIndex":"0x1"`)
+			cache.AssertExpectations(t)
+		})
 	})
 }
 
@@ -12365,7 +12550,9 @@ func TestTierUpstreamsByGroup(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, ids(tierUpstreamsByGroup(tc.in)))
+			synctest.Test(t, func(t *testing.T) {
+				assert.Equal(t, tc.want, ids(tierUpstreamsByGroup(tc.in)))
+			})
 		})
 	}
 }

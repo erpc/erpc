@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/util"
@@ -63,74 +64,78 @@ func TestErrUpstreamClientInitialization_WrappedWithTaskFatal_IsFatal(t *testing
 // TaskFatal after a single attempt. This covers the "permanent failure"
 // call sites (chainId mismatch, parse error, unsupported client type).
 func TestErrUpstreamClientInitialization_WrappedStopsInitializerRetryLoop(t *testing.T) {
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	logger := zerolog.New(zerolog.NewTestWriter(t))
-	init := util.NewInitializer(appCtx, &logger, &util.InitializerConfig{
-		TaskTimeout:   time.Second,
-		AutoRetry:     true,
-		RetryMinDelay: time.Millisecond,
-		RetryMaxDelay: time.Millisecond * 10,
-		RetryFactor:   1.1,
+		logger := zerolog.New(zerolog.NewTestWriter(t))
+		init := util.NewInitializer(appCtx, &logger, &util.InitializerConfig{
+			TaskTimeout:   time.Second,
+			AutoRetry:     true,
+			RetryMinDelay: time.Millisecond,
+			RetryMaxDelay: time.Millisecond * 10,
+			RetryFactor:   1.1,
+		})
+		require.NotNil(t, init)
+
+		var attempts int32
+		task := util.NewBootstrapTask("chainid-mismatch", func(ctx context.Context) error {
+			atomic.AddInt32(&attempts, 1)
+			return NewTaskFatal(buildUpstreamInitErr(
+				errors.New("chainId mismatch: configured 1, detected 137"),
+			))
+		})
+
+		runCtx, runCancel := context.WithTimeout(appCtx, 200*time.Millisecond)
+		defer runCancel()
+		_ = init.ExecuteTasks(runCtx, task)
+
+		time.Sleep(150 * time.Millisecond)
+		init.Stop(nil)
+
+		got := atomic.LoadInt32(&attempts)
+		assert.Equal(t, int32(1), got,
+			"NewTaskFatal-wrapped ErrUpstreamClientInitialization must stop retries (attempted %d times)", got)
+		assert.Equal(t, util.StateFatal, init.State(),
+			"initializer must be in StateFatal after a permanent init failure")
 	})
-	require.NotNil(t, init)
-
-	var attempts int32
-	task := util.NewBootstrapTask("chainid-mismatch", func(ctx context.Context) error {
-		atomic.AddInt32(&attempts, 1)
-		return NewTaskFatal(buildUpstreamInitErr(
-			errors.New("chainId mismatch: configured 1, detected 137"),
-		))
-	})
-
-	runCtx, runCancel := context.WithTimeout(appCtx, 200*time.Millisecond)
-	defer runCancel()
-	_ = init.ExecuteTasks(runCtx, task)
-
-	time.Sleep(150 * time.Millisecond)
-	init.Stop(nil)
-
-	got := atomic.LoadInt32(&attempts)
-	assert.Equal(t, int32(1), got,
-		"NewTaskFatal-wrapped ErrUpstreamClientInitialization must stop retries (attempted %d times)", got)
-	assert.Equal(t, util.StateFatal, init.State(),
-		"initializer must be in StateFatal after a permanent init failure")
 }
 
 // TestErrUpstreamClientInitialization_TransientCauseIsRetried verifies the
 // other direction: an RPC-failure-path error (unwrapped) keeps the task
 // retryable, so the upstream can self-heal when the provider recovers.
 func TestErrUpstreamClientInitialization_TransientCauseIsRetried(t *testing.T) {
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		appCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	logger := zerolog.New(zerolog.NewTestWriter(t))
-	init := util.NewInitializer(appCtx, &logger, &util.InitializerConfig{
-		TaskTimeout:   time.Second,
-		AutoRetry:     true,
-		RetryMinDelay: time.Millisecond,
-		RetryMaxDelay: time.Millisecond * 10,
-		RetryFactor:   1.1,
+		logger := zerolog.New(zerolog.NewTestWriter(t))
+		init := util.NewInitializer(appCtx, &logger, &util.InitializerConfig{
+			TaskTimeout:   time.Second,
+			AutoRetry:     true,
+			RetryMinDelay: time.Millisecond,
+			RetryMaxDelay: time.Millisecond * 10,
+			RetryFactor:   1.1,
+		})
+		require.NotNil(t, init)
+
+		var attempts int32
+		task := util.NewBootstrapTask("transient-network", func(ctx context.Context) error {
+			atomic.AddInt32(&attempts, 1)
+			return buildUpstreamInitErr(errors.New("connection refused during startup"))
+		})
+
+		runCtx, runCancel := context.WithTimeout(appCtx, 200*time.Millisecond)
+		defer runCancel()
+		_ = init.ExecuteTasks(runCtx, task)
+
+		time.Sleep(150 * time.Millisecond)
+		init.Stop(nil)
+
+		got := atomic.LoadInt32(&attempts)
+		assert.Greater(t, got, int32(5),
+			"bare ErrUpstreamClientInitialization (transient cause) must keep retrying; observed only %d attempts", got)
+		assert.NotEqual(t, util.StateFatal, init.State(),
+			"initializer must NOT enter StateFatal for transient init failures")
 	})
-	require.NotNil(t, init)
-
-	var attempts int32
-	task := util.NewBootstrapTask("transient-network", func(ctx context.Context) error {
-		atomic.AddInt32(&attempts, 1)
-		return buildUpstreamInitErr(errors.New("connection refused during startup"))
-	})
-
-	runCtx, runCancel := context.WithTimeout(appCtx, 200*time.Millisecond)
-	defer runCancel()
-	_ = init.ExecuteTasks(runCtx, task)
-
-	time.Sleep(150 * time.Millisecond)
-	init.Stop(nil)
-
-	got := atomic.LoadInt32(&attempts)
-	assert.Greater(t, got, int32(5),
-		"bare ErrUpstreamClientInitialization (transient cause) must keep retrying; observed only %d attempts", got)
-	assert.NotEqual(t, util.StateFatal, init.State(),
-		"initializer must NOT enter StateFatal for transient init failures")
 }

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -21,56 +22,62 @@ func TestHttpServer_HeadersCoverage(t *testing.T) {
 	cfg := minimalServerConfig()
 
 	t.Run("success path carries full header set", func(t *testing.T) {
-		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
+		synctest.Test(t, func(t *testing.T) {
+			util.SetupMocksForEvmStatePoller()
+			defer util.ResetGock()
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), `"eth_getBalance"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0xdeadbeef",
-			})
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), `"eth_getBalance"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xdeadbeef",
+				})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		statusCode, headers, body := sendRequest(
-			`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`,
-			nil, nil,
-		)
-		require.Equal(t, 200, statusCode, "body=%s", body)
-		assert.Contains(t, body, "0xdeadbeef")
-		assertAllScopeHeadersPresent(t, headers)
+			statusCode, headers, body := sendRequest(
+				`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`,
+				nil, nil,
+			)
+			require.Equal(t, 200, statusCode, "body=%s", body)
+			assert.Contains(t, body, "0xdeadbeef")
+			assertAllScopeHeadersPresent(t, headers)
+		})
 	})
 
 	t.Run("validation error carries headers", func(t *testing.T) {
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
-		defer shutdown()
+		synctest.Test(t, func(t *testing.T) {
+			sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		// Malformed JSON-RPC (missing method) caught by nq.Validate().
-		// Validation errors return 400 (Bad Request) — but per-request
-		// processing built the nq, so the counter headers must be set.
-		statusCode, headers, _ := sendRequest(
-			`{"jsonrpc":"2.0","id":1}`,
-			nil, nil,
-		)
-		assert.Contains(t, []int{200, 400}, statusCode)
-		assertCounterHeadersPresent(t, headers)
+			// Malformed JSON-RPC (missing method) caught by nq.Validate().
+			// Validation errors return 400 (Bad Request) — but per-request
+			// processing built the nq, so the counter headers must be set.
+			statusCode, headers, _ := sendRequest(
+				`{"jsonrpc":"2.0","id":1}`,
+				nil, nil,
+			)
+			assert.Contains(t, []int{200, 400}, statusCode)
+			assertCounterHeadersPresent(t, headers)
+		})
 	})
 
 	t.Run("null body is a parse error, not a panic", func(t *testing.T) {
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
-		defer shutdown()
+		synctest.Test(t, func(t *testing.T) {
+			sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		statusCode, _, body := sendRequest(`null`, nil, nil)
-		assert.Equal(t, 400, statusCode, "body=%s", body)
-		assert.Contains(t, body, "-32700")
-		assert.NotContains(t, body, "panic")
+			statusCode, _, body := sendRequest(`null`, nil, nil)
+			assert.Equal(t, 400, statusCode, "body=%s", body)
+			assert.Contains(t, body, "-32700")
+			assert.NotContains(t, body, "panic")
+		})
 	})
 }
 

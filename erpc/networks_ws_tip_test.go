@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -81,23 +82,25 @@ func setupWsTipNetwork(t *testing.T, ctx context.Context, id, endpoint string) (
 // Once a newHeads head N is about to be delivered, "latest" must not return
 // less than N even while every poller still reports N-1.
 func TestNoteObservedLatestBlock_FloorsEvmHighestLatest(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network, u := setupWsTipNetwork(t, ctx, "rpc1", "http://rpc1.localhost")
-	u.EvmStatePoller().SuggestLatestBlock(1000)
-	time.Sleep(50 * time.Millisecond)
-	require.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx))
+		network, u := setupWsTipNetwork(t, ctx, "rpc1", "http://rpc1.localhost")
+		u.EvmStatePoller().SuggestLatestBlock(1000)
+		time.Sleep(50 * time.Millisecond)
+		require.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx))
 
-	network.NoteObservedLatestBlock(ctx, 1001)
+		network.NoteObservedLatestBlock(ctx, 1001)
 
-	assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx),
-		"after WS tip observation, highest latest must be ≥ delivered head")
-	require.NotNil(t, network.latestBlockShared)
-	assert.GreaterOrEqual(t, network.deliveredLatestBlock.Load(), int64(1001))
-	assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx))
+		assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx),
+			"after WS tip observation, highest latest must be ≥ delivered head")
+		require.NotNil(t, network.latestBlockShared)
+		assert.GreaterOrEqual(t, network.deliveredLatestBlock.Load(), int64(1001))
+		assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx))
+	})
 }
 
 // ingestHead mirrors indexer.Ingest for a head a client subscribed to: the
@@ -114,27 +117,29 @@ func ingestHead(h *networkHandle, sourceId string, blockNumber int64) bool {
 // A WS head always advances its upstream's poller; only a head a client is
 // about to receive moves the delivered-head floor.
 func TestNetworkHandle_SuggestLatestBlock_AdvancesPollerFloorOnlyOnDelivery(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network, u := setupWsTipNetwork(t, ctx, "rpc2", "http://rpc2.localhost")
-	u.EvmStatePoller().SuggestLatestBlock(90677358)
-	time.Sleep(50 * time.Millisecond)
-	require.Equal(t, int64(90677358), network.EvmHighestLatestBlockNumber(ctx))
+		network, u := setupWsTipNetwork(t, ctx, "rpc2", "http://rpc2.localhost")
+		u.EvmStatePoller().SuggestLatestBlock(90677358)
+		time.Sleep(50 * time.Millisecond)
+		require.Equal(t, int64(90677358), network.EvmHighestLatestBlockNumber(ctx))
 
-	handle := &networkHandle{nw: network}
-	floor := network.deliveredLatestBlock.Load()
-	require.True(t, handle.SuggestLatestBlock("ws:rpc2", 90677359))
-	assert.Equal(t, int64(90677359), u.EvmStatePoller().LatestBlock(),
-		"per-upstream poller must advance")
-	assert.Equal(t, floor, network.deliveredLatestBlock.Load(),
-		"a head no client received must leave the floor alone")
+		handle := &networkHandle{nw: network}
+		floor := network.deliveredLatestBlock.Load()
+		require.True(t, handle.SuggestLatestBlock("ws:rpc2", 90677359))
+		assert.Equal(t, int64(90677359), u.EvmStatePoller().LatestBlock(),
+			"per-upstream poller must advance")
+		assert.Equal(t, floor, network.deliveredLatestBlock.Load(),
+			"a head no client received must leave the floor alone")
 
-	handle.DeliveringHead(90677359)
-	assert.GreaterOrEqual(t, network.deliveredLatestBlock.Load(), int64(90677359),
-		"the floor must cover a head before a client receives it")
+		handle.DeliveringHead(90677359)
+		assert.GreaterOrEqual(t, network.deliveredLatestBlock.Load(), int64(90677359),
+			"the floor must cover a head before a client receives it")
+	})
 }
 
 // A head from one WS source must not lift "latest" past the upstreams that
@@ -142,37 +147,39 @@ func TestNetworkHandle_SuggestLatestBlock_AdvancesPollerFloorOnlyOnDelivery(t *t
 // client receives it; then it floors "latest" whichever known source sent it.
 // An unknown source never does.
 func TestNetworkHandle_SuggestLatestBlock_LiftsLatestOnlyForDeliveredHeads(t *testing.T) {
-	defer util.ResetGock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network, ups, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
-		primaryLatest:  "0x3e8", // 1000
-		fallbackLatest: "0x3e8",
-	})
-	require.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx))
-	var fallback *upstream.Upstream
-	for _, u := range ups {
-		if u.Id() == "fallback-1" {
-			fallback = u
+		network, ups, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
+			primaryLatest:  "0x3e8", // 1000
+			fallbackLatest: "0x3e8",
+		})
+		require.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx))
+		var fallback *upstream.Upstream
+		for _, u := range ups {
+			if u.Id() == "fallback-1" {
+				fallback = u
+			}
 		}
-	}
-	require.NotNil(t, fallback)
+		require.NotNil(t, fallback)
 
-	handle := &networkHandle{nw: network}
-	assert.False(t, ingestHead(handle, "ws:unknown", 1020))
-	assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
-		"an unknown source must not lift latest")
+		handle := &networkHandle{nw: network}
+		assert.False(t, ingestHead(handle, "ws:unknown", 1020))
+		assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
+			"an unknown source must not lift latest")
 
-	// No client subscribed: a prewarmed subscription's head.
-	require.True(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
-	assert.Equal(t, int64(1010), fallback.EvmStatePoller().LatestBlock())
-	assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
-		"a head no client received must not lift latest")
+		// No client subscribed: a prewarmed subscription's head.
+		require.True(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
+		assert.Equal(t, int64(1010), fallback.EvmStatePoller().LatestBlock())
+		assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
+			"a head no client received must not lift latest")
 
-	assert.True(t, ingestHead(handle, "ws:fallback-1", 1011))
-	assert.Equal(t, int64(1011), network.EvmHighestLatestBlockNumber(ctx),
-		"a head a client receives from the cordoned fallback floors latest")
+		assert.True(t, ingestHead(handle, "ws:fallback-1", 1011))
+		assert.Equal(t, int64(1011), network.EvmHighestLatestBlockNumber(ctx),
+			"a head a client receives from the cordoned fallback floors latest")
+	})
 }
 
 type fakeHeadSource bool
@@ -198,127 +205,139 @@ func TestNetworkHandle_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 	}
 
 	t.Run("HeldWhileAPrimaryStreams", func(t *testing.T) {
-		defer util.ResetGock()
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network, ups := setup(t, ctx)
+		synctest.Test(t, func(t *testing.T) {
+			defer util.ResetGock()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network, ups := setup(t, ctx)
 
-		handle := &networkHandle{nw: network, heads: map[string]headSource{
-			"primary-1":  fakeHeadSource(false),
-			"primary-2":  fakeHeadSource(true),
-			"fallback-1": fakeHeadSource(true),
-		}}
-		assert.False(t, ingestHead(handle, "ws:fallback-1", 1010))
-		assert.Equal(t, int64(1010), ups["fallback-1"].EvmStatePoller().LatestBlock(),
-			"the fallback's poller still sees its head")
-		assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
-			"a held head must not lift latest")
+			handle := &networkHandle{nw: network, heads: map[string]headSource{
+				"primary-1":  fakeHeadSource(false),
+				"primary-2":  fakeHeadSource(true),
+				"fallback-1": fakeHeadSource(true),
+			}}
+			assert.False(t, ingestHead(handle, "ws:fallback-1", 1010))
+			assert.Equal(t, int64(1010), ups["fallback-1"].EvmStatePoller().LatestBlock(),
+				"the fallback's poller still sees its head")
+			assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
+				"a held head must not lift latest")
 
-		assert.True(t, ingestHead(handle, "ws:primary-2", 1001))
-		assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx))
+			assert.True(t, ingestHead(handle, "ws:primary-2", 1001))
+			assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx))
+		})
 	})
 
 	t.Run("DeliveredWhenNoPrimaryStreams", func(t *testing.T) {
-		defer util.ResetGock()
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network, _ := setup(t, ctx)
+		synctest.Test(t, func(t *testing.T) {
+			defer util.ResetGock()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network, _ := setup(t, ctx)
 
-		// Primaries connected over HTTP only, or with no live subscription.
-		for _, heads := range []map[string]headSource{
-			{"fallback-1": fakeHeadSource(true)},
-			{"primary-1": fakeHeadSource(false), "fallback-1": fakeHeadSource(true)},
-		} {
-			handle := &networkHandle{nw: network, heads: heads}
-			assert.True(t, ingestHead(handle, "ws:fallback-1", 1010))
-		}
-		assert.Equal(t, int64(1010), network.EvmHighestLatestBlockNumber(ctx))
+			// Primaries connected over HTTP only, or with no live subscription.
+			for _, heads := range []map[string]headSource{
+				{"fallback-1": fakeHeadSource(true)},
+				{"primary-1": fakeHeadSource(false), "fallback-1": fakeHeadSource(true)},
+			} {
+				handle := &networkHandle{nw: network, heads: heads}
+				assert.True(t, ingestHead(handle, "ws:fallback-1", 1010))
+			}
+			assert.Equal(t, int64(1010), network.EvmHighestLatestBlockNumber(ctx))
+		})
 	})
 
 	t.Run("DeliveredWhenPolicyExcludesPrimaries", func(t *testing.T) {
-		defer util.ResetGock()
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network, ups := setup(t, ctx)
+		synctest.Test(t, func(t *testing.T) {
+			defer util.ResetGock()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network, ups := setup(t, ctx)
 
-		handle := &networkHandle{nw: network, heads: map[string]headSource{
-			"primary-1":  fakeHeadSource(true),
-			"primary-2":  fakeHeadSource(true),
-			"fallback-1": fakeHeadSource(true),
-		}}
-		require.False(t, ingestHead(handle, "ws:fallback-1", 1010))
+			handle := &networkHandle{nw: network, heads: map[string]headSource{
+				"primary-1":  fakeHeadSource(true),
+				"primary-2":  fakeHeadSource(true),
+				"fallback-1": fakeHeadSource(true),
+			}}
+			require.False(t, ingestHead(handle, "ws:fallback-1", 1010))
 
-		ups["primary-1"].Cordon("*", "test")
-		ups["primary-2"].Cordon("*", "test")
-		policy.TickForTest(network.policyEngine, network.networkId, "*")
+			ups["primary-1"].Cordon("*", "test")
+			ups["primary-2"].Cordon("*", "test")
+			policy.TickForTest(network.policyEngine, network.networkId, "*")
 
-		assert.True(t, ingestHead(handle, "ws:fallback-1", 1011))
-		assert.Equal(t, int64(1011), network.EvmHighestLatestBlockNumber(ctx))
+			assert.True(t, ingestHead(handle, "ws:fallback-1", 1011))
+			assert.Equal(t, int64(1011), network.EvmHighestLatestBlockNumber(ctx))
+		})
 	})
 
 	t.Run("DeliveredWithFailoverOff", func(t *testing.T) {
-		defer util.ResetGock()
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
-			primaryLatest:  "0x3e8",
-			fallbackLatest: "0x3e8",
-		})
+		synctest.Test(t, func(t *testing.T) {
+			defer util.ResetGock()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
+				primaryLatest:  "0x3e8",
+				fallbackLatest: "0x3e8",
+			})
 
-		handle := &networkHandle{nw: network, heads: map[string]headSource{
-			"primary-1":  fakeHeadSource(true),
-			"fallback-1": fakeHeadSource(true),
-		}}
-		assert.True(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
+			handle := &networkHandle{nw: network, heads: map[string]headSource{
+				"primary-1":  fakeHeadSource(true),
+				"fallback-1": fakeHeadSource(true),
+			}}
+			assert.True(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
+		})
 	})
 }
 
 // The delivered-head floor is network-wide: a use-upstream-scoped request is
 // answered from its group's own head.
 func TestDeliveredHeadFloor_SkipsSelectorScopedRequests(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-		{id: "fast-1", chainID: 123, latestBlock: 1050, tags: []string{"family:fast"}},
-		{id: "fast-2", chainID: 123, latestBlock: 1050, tags: []string{"family:fast"}},
-		{id: "slow-1", chainID: 123, latestBlock: 1000, tags: []string{"family:slow"}},
-		{id: "slow-2", chainID: 123, latestBlock: 1000, tags: []string{"family:slow"}},
-	}, &common.EvmServedTipConfig{})
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
-	req.SetDirectives(&common.RequestDirectives{UseUpstream: "family:slow"})
-	slowCtx := context.WithValue(ctx, common.RequestContextKey, req)
+		network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "fast-1", chainID: 123, latestBlock: 1050, tags: []string{"family:fast"}},
+			{id: "fast-2", chainID: 123, latestBlock: 1050, tags: []string{"family:fast"}},
+			{id: "slow-1", chainID: 123, latestBlock: 1000, tags: []string{"family:slow"}},
+			{id: "slow-2", chainID: 123, latestBlock: 1000, tags: []string{"family:slow"}},
+		}, &common.EvmServedTipConfig{})
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+		req.SetDirectives(&common.RequestDirectives{UseUpstream: "family:slow"})
+		slowCtx := context.WithValue(ctx, common.RequestContextKey, req)
 
-	network.NoteObservedLatestBlock(ctx, 1051)
-	assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(slowCtx))
-	assert.Equal(t, int64(1051), network.EvmHighestLatestBlockNumber(ctx))
+		network.NoteObservedLatestBlock(ctx, 1051)
+		assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(slowCtx))
+		assert.Equal(t, int64(1051), network.EvmHighestLatestBlockNumber(ctx))
+	})
 }
 
 // Projects sharing a process (and so a shared-state registry) must not floor
 // each other's "latest" for the same chain.
 func TestDeliveredHeadFloor_IsScopedPerProject(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-		{id: "a", chainID: 123, latestBlock: 1000},
-	}, &common.EvmServedTipConfig{})
-	sibling, err := NewNetwork(ctx, &log.Logger, "sibling", network.cfg,
-		network.rateLimitersRegistry, network.upstreamsRegistry, network.metricsTracker, nil)
-	require.NoError(t, err)
-	require.NotNil(t, sibling.latestBlockShared)
+		network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "a", chainID: 123, latestBlock: 1000},
+		}, &common.EvmServedTipConfig{})
+		sibling, err := NewNetwork(ctx, &log.Logger, "sibling", network.cfg,
+			network.rateLimitersRegistry, network.upstreamsRegistry, network.metricsTracker, nil)
+		require.NoError(t, err)
+		require.NotNil(t, sibling.latestBlockShared)
 
-	network.NoteObservedLatestBlock(ctx, 1001)
-	assert.Equal(t, int64(1001), network.latestBlockShared.GetValue())
-	assert.Equal(t, int64(0), sibling.latestBlockShared.GetValue())
+		network.NoteObservedLatestBlock(ctx, 1001)
+		assert.Equal(t, int64(1001), network.latestBlockShared.GetValue())
+		assert.Equal(t, int64(0), sibling.latestBlockShared.GetValue())
+	})
 }
 
 // Filter subscriptions follow the same tiers as heads: eligible primaries
@@ -352,54 +371,58 @@ func TestTierWsIngresses(t *testing.T) {
 // every real head below it. A proven mismatch also availability-cordons the
 // upstream, so keep-fresh tips stay withheld until chain-identity recovers.
 func TestNetworkHandle_SuggestLatestBlock_WithholdsUnacceptedMajorJump(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network, u := setupWsTipNetwork(t, ctx, "rpc2", "http://rpc2.localhost")
-	u.EvmStatePoller().SuggestLatestBlock(1000)
-	require.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
+		network, u := setupWsTipNetwork(t, ctx, "rpc2", "http://rpc2.localhost")
+		u.EvmStatePoller().SuggestLatestBlock(1000)
+		require.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
 
-	// From here the endpoint answers for another chain.
-	util.ResetGock()
-	gock.New("http://rpc2.localhost").Post("").Persist().
-		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), `eth_chainId`) }).
-		Reply(200).JSON([]byte(`{"result":"0x1"}`))
+		// From here the endpoint answers for another chain.
+		util.ResetGock()
+		gock.New("http://rpc2.localhost").Post("").Persist().
+			Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), `eth_chainId`) }).
+			Reply(200).JSON([]byte(`{"result":"0x1"}`))
 
-	handle := &networkHandle{nw: network}
-	assert.False(t, handle.SuggestLatestBlock("ws:rpc2", 5_000_000), "an unaccepted major jump must not reach clients")
-	time.Sleep(300 * time.Millisecond) // let the async verification finish (and fail / cordon)
-	assert.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
-	assert.Less(t, network.deliveredLatestBlock.Load(), int64(5_000_000))
-	// Still cross-wired: non-major advances must not write through while cordoned.
-	assert.False(t, handle.SuggestLatestBlock("ws:rpc2", 1001))
-	assert.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
+		handle := &networkHandle{nw: network}
+		assert.False(t, handle.SuggestLatestBlock("ws:rpc2", 5_000_000), "an unaccepted major jump must not reach clients")
+		time.Sleep(300 * time.Millisecond) // let the async verification finish (and fail / cordon)
+		assert.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
+		assert.Less(t, network.deliveredLatestBlock.Load(), int64(5_000_000))
+		// Still cross-wired: non-major advances must not write through while cordoned.
+		assert.False(t, handle.SuggestLatestBlock("ws:rpc2", 1001))
+		assert.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
 
-	// Endpoint fixed: recovery runs on a keep-fresh suggestion and delivery resumes.
-	util.ResetGock()
-	gock.New("http://rpc2.localhost").Post("").Persist().
-		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), `eth_chainId`) }).
-		Reply(200).JSON([]byte(`{"result":"0x7b"}`))
-	require.Eventually(t, func() bool {
-		return handle.SuggestLatestBlock("ws:rpc2", 1001)
-	}, 2*time.Second, 20*time.Millisecond, "matching chainId must uncordon and accept the tip")
-	assert.True(t, handle.SuggestLatestBlock("ws:rpc2", 1002))
+		// Endpoint fixed: recovery runs on a keep-fresh suggestion and delivery resumes.
+		util.ResetGock()
+		gock.New("http://rpc2.localhost").Post("").Persist().
+			Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), `eth_chainId`) }).
+			Reply(200).JSON([]byte(`{"result":"0x7b"}`))
+		require.Eventually(t, func() bool {
+			return handle.SuggestLatestBlock("ws:rpc2", 1001)
+		}, 2*time.Second, 20*time.Millisecond, "matching chainId must uncordon and accept the tip")
+		assert.True(t, handle.SuggestLatestBlock("ws:rpc2", 1002))
+	})
 }
 
 // Heads are delivered only once a tip tracker has accepted them, so a head
 // from a source the network can't verify (no such upstream, or one with no
 // tracker) is withheld and leaves the delivered-head floor alone.
 func TestNetworkHandle_SuggestLatestBlock_WithholdsUnverifiableSource(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network, _ := setupWsTipNetwork(t, ctx, "rpc3", "http://rpc3.localhost")
-	handle := &networkHandle{nw: network}
-	floor := network.deliveredLatestBlock.Load()
+		network, _ := setupWsTipNetwork(t, ctx, "rpc3", "http://rpc3.localhost")
+		handle := &networkHandle{nw: network}
+		floor := network.deliveredLatestBlock.Load()
 
-	assert.False(t, handle.SuggestLatestBlock("ws:not-in-this-network", 5_000_000))
-	assert.Equal(t, floor, network.deliveredLatestBlock.Load())
+		assert.False(t, handle.SuggestLatestBlock("ws:not-in-this-network", 5_000_000))
+		assert.Equal(t, floor, network.deliveredLatestBlock.Load())
+	})
 }

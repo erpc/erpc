@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/util"
@@ -44,33 +45,35 @@ func setupTest(clusterKey string) (*sharedStateRegistry, *MockConnector, context
 }
 
 func TestSharedStateRegistry_UpdateCounter_Success(t *testing.T) {
-	registry, connector, ctx := setupTest("my-dev")
+	synctest.Test(t, func(t *testing.T) {
+		registry, connector, ctx := setupTest("my-dev")
 
-	lock := &MockLock{}
-	lock.On("Unlock", mock.Anything).Return(nil)
+		lock := &MockLock{}
+		lock.On("Unlock", mock.Anything).Return(nil)
 
-	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).
-		Return([]byte(`{"v":5,"t":1,"b":"test"}`), nil)
-	connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).Return(nil)
-	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil)
+		connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).
+			Return([]byte(`{"v":5,"t":1,"b":"test"}`), nil)
+		connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).Return(nil)
+		connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil)
 
-	counter := &counterInt64{
-		registry:         registry,
-		key:              "my-dev/test",
-		ignoreRollbackOf: 1024,
-	}
-	counter.value.Store(5)
+		counter := &counterInt64{
+			registry:         registry,
+			key:              "my-dev/test",
+			ignoreRollbackOf: 1024,
+		}
+		counter.value.Store(5)
 
-	result := counter.TryUpdate(ctx, 10)
-	assert.Equal(t, int64(10), result)
+		result := counter.TryUpdate(ctx, 10)
+		assert.Equal(t, int64(10), result)
 
-	// Wait for background push goroutine to complete all operations (Lock, Get, Set, Unlock)
-	// 10ms was too short for busy CI runners
-	time.Sleep(100 * time.Millisecond)
+		// Wait for background push goroutine to complete all operations (Lock, Get, Set, Unlock)
+		// 10ms was too short for busy CI runners
+		time.Sleep(100 * time.Millisecond)
 
-	connector.AssertExpectations(t)
-	lock.AssertExpectations(t)
+		connector.AssertExpectations(t)
+		lock.AssertExpectations(t)
+	})
 }
 
 func TestSharedStateRegistry_UpdateCounter_LockFailure(t *testing.T) {
