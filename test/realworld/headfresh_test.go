@@ -502,8 +502,8 @@ const (
 	p19BlockTime = 250 * time.Millisecond
 	p19Run       = 8 * time.Minute
 	// p19P50Slack, p19P90Slack: how much older the new image's served
-	// latest block may be than the old image's: a fifth and two fifths of
-	// a block.
+	// latest block, and how much slower its answer, may be than the old
+	// image's: a fifth and two fifths of a block.
 	p19P50Slack = 50 * time.Millisecond
 	p19P90Slack = 100 * time.Millisecond
 )
@@ -521,13 +521,14 @@ var p19Ups = []freshUp{
 }
 
 // P19: Arbitrum's 0.25 s blocks, in real time: seven vendors
-// polled every 4-10 s, a cache, quorum 2; per pod, rate head reads a
-// second, half eth_blockNumber and half eth_getBlockByNumber("latest"),
-// sparse next to the blocks. Per answer, its served block's age: from
-// chainsim minting it to the answer. The new image serves blocks no
-// older than the old one, at no more upstream requests.
+// polled every 4-10 s, P17's stepping finality, a cache, quorum 2; per
+// pod, rate head reads a second, half eth_blockNumber and half
+// eth_getBlockByNumber("latest"), and rate/4 eth_getBlockByNumber
+// ("finalized"). Per method, each answer's block age (from chainsim
+// minting it to the answer) and request latency: the new image's are
+// within the slacks of the old one's, at no more upstream requests.
 func p19(rate float64) spec {
-	sp := freshSpec(fmt.Sprintf("P19-r%g", rate), 1, p19Ups, chainsim.Config{BlockTime: p19BlockTime}, chainsim.Faults{}, func(s *scenario) { p19Body(s, rate) })
+	sp := freshSpec(fmt.Sprintf("P19-r%g", rate), 1, p19Ups, chainsim.Config{BlockTime: p19BlockTime, FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, func(s *scenario) { p19Body(s, rate) })
 	sp.cache = true
 	return sp
 }
@@ -549,31 +550,46 @@ func (s *scenario) freshAges(im *freshImage) (ages []time.Duration) {
 func p19Body(s *scenario, rate float64) {
 	s.blocks(10)
 	period := time.Duration(float64(2*time.Second) / rate)
-	imgs, counts := s.freshRun(p19Run, freshLoad{period, "latest", freshHead}, freshLoad{period, "latest", freshLatestBlock})
+	loads := []struct {
+		name  string
+		load  freshLoad
+		slack [2]time.Duration
+	}{
+		{"eth_blockNumber", freshLoad{period, "latest", freshHead}, [2]time.Duration{p19P50Slack, p19P90Slack}},
+		{"eth_getBlockByNumber(latest)", freshLoad{period, "latest", freshLatestBlock}, [2]time.Duration{p19P50Slack, p19P90Slack}},
+		{"eth_getBlockByNumber(finalized)", freshLoad{2 * period, "finalized", freshFinalized}, [2]time.Duration{p17P50Slack, p17P90Slack}},
+	}
+	var fl []freshLoad
+	for _, l := range loads {
+		fl = append(fl, l.load)
+	}
+	imgs, counts := s.freshRun(p19Run, fl...)
 	var b strings.Builder
 	v := s.freshReport(&b, "blocks timed (P19 times answers)", "latest", imgs[0], counts[0], nil, time.Now(), time.Second, p19Run)
-	ages := map[string][]time.Duration{}
-	for i, l := range imgs {
-		for _, im := range l {
-			img, a := s.image(im.pod), s.freshAges(im)
-			ages[img] = append(ages[img], a...)
+	type cell struct{ age, took []time.Duration }
+	for i, l := range loads {
+		by := map[string]cell{}
+		for _, im := range imgs[i] {
+			img := s.image(im.pod)
 			im.mu.Lock()
 			took := slices.Clone(im.took)
 			im.mu.Unlock()
 			slices.Sort(took)
+			by[img] = cell{s.freshAges(im), took}
 			fmt.Fprintf(&b, "pod-%d (%s image) %s: %d answers, served block age p50 %s p90 %s, latency p50 %s p90 %s max %s\n",
-				im.pod+1, img, []string{"eth_blockNumber", "eth_getBlockByNumber(latest)"}[i], len(took), pctl(a, 50), pctl(a, 90), pctl(took, 50), pctl(took, 90), pctl(took, 100))
+				im.pod+1, img, l.name, len(took), pctl(by[img].age, 50), pctl(by[img].age, 90), pctl(took, 50), pctl(took, 90), pctl(took, 100))
+		}
+		o, n := by["old"], by["new"]
+		for _, m := range []struct {
+			what   string
+			on, nn []time.Duration
+		}{{"served block age", o.age, n.age}, {"latency", o.took, n.took}} {
+			if pctl(m.nn, 50) > pctl(m.on, 50)+l.slack[0] || pctl(m.nn, 90) > pctl(m.on, 90)+l.slack[1] {
+				s.violate(s.name, "new image %s %s p50 %s p90 %s, old image p50 %s p90 %s", l.name, m.what, pctl(m.nn, 50), pctl(m.nn, 90), pctl(m.on, 50), pctl(m.on, 90))
+			}
 		}
 	}
-	for img, a := range ages {
-		slices.Sort(a)
-		fmt.Fprintf(&b, "%s image: %d answers, served block age p50 %s p90 %s max %s\n", img, len(a), pctl(a, 50), pctl(a, 90), pctl(a, 100))
-	}
 	s.logf("%s", b.String())
-	o, n := ages["old"], ages["new"]
-	if pctl(n, 50) > pctl(o, 50)+p19P50Slack || pctl(n, 90) > pctl(o, 90)+p19P90Slack {
-		s.violate(s.name, "new image served latest blocks p50 %s p90 %s old, old image p50 %s p90 %s", pctl(n, 50), pctl(n, 90), pctl(o, 50), pctl(o, 90))
-	}
 	if vo, vn := v["old"], v["new"]; vn.requests > vo.requests*p18CostSlack {
 		s.violate(s.name, "new image sent its upstreams %.2f requests/s, old %.2f", vn.requests, vo.requests)
 	}
