@@ -6,7 +6,7 @@ Decisions:
 
 1. The promise: a client that receives block N from any transport can fetch N over HTTP on any instance (§6.4, §6.5).
 2. One `Head` per (network, lane), computed once per change; a request reads it once, and every tag form resolves to that one number (§6.4, §7).
-3. Transports send a block only up to the confirmed head: enough local hash votes, and a number at or below the lane's `Latest` (§6.5).
+3. One view per lane, `{Head, Firm}`, in the tracker's state: HTTP `latest` and every transport read it, so both show block N at the same instant (§6.5).
 4. Numbers travel between instances in shared counters; hashes vote only from this instance's own fetches and pushes, never from client or cached answers (§6.3, §14).
 5. One freshness window W decides every freshness question (§6.1).
 6. Any upstream can be a source, by opt-in; wss upstreams are sources by default. A source pushes when its transport and its upstream can, and polls otherwise (§5).
@@ -44,7 +44,10 @@ Decisions:
 | bench | An upstream whose number age passed its stall window leaves every ballot (§6.1) |
 | lag reference | Policy-free corroborated head: 2nd-highest non-benched upstream, latest and finalized (§6.6) |
 | `Head` | Per (network, lane): `Latest`, `Finalized`, `Leader`, ceiling (§6.4) |
-| `Latest` | The served tip: the q-th highest voter number after caps, regression guard and guarantees |
+| `Latest` | The served tip: the lane's view `Head` (§6.5) |
+| `Firm` | The highest block at or below `Head` that q voters hold; routing only |
+| block clock | A lane's one scheduled head fetch per block when no push brought it (§6.8) |
+| thin region | `Firm` < N ≤ `Head`: served, routed holders first, a miss retried (§6.4) |
 | `Finalized` | The served finalized: the same ballot over voters' finalized numbers |
 | `Leader` | The highest voter within `Latest + maxRetryableBlockDistance` |
 | ceiling | Raw max head of the lane's registered upstreams, minus upstreams cordoned for chain identity |
@@ -52,7 +55,6 @@ Decisions:
 | Ask | "U's latest now": one fetch per upstream, single-flight, outcome to every waiter (§6.8) |
 | number need, hash need | What an Ask must produce: a fresh number (a fresh shared counter does), or a hash vote (only a local fetch does) |
 | settle | An Ask with a hash need, to break a tie in fork choice |
-| poll source | A source without push for `newHeads`: Asked once per cadence while demanded and admitted |
 | tracker | Fork choice for one (network, lane), on one goroutine; the only writer of its chain feed |
 | network-wide tracker | The tracker of lane `""`: it serves taps |
 | group tracker | The tracker of one use-upstream lane; it serves integrity |
@@ -60,7 +62,7 @@ Decisions:
 | root | A held header whose parent is not held; held headers form one tree per root |
 | pin | The canonical hash at a height; the head is the highest pin |
 | pins | The path of pins from a root to the head |
-| confirmed head | The highest pin with `q.Of(hash voters)` hash votes at or above it and a number at or below the lane's `Latest` (§6.5) |
+| `Head` | The view's head: the highest pin one counted hash vote holds, undisputed, within the guarantees, sticky until the pins move (§6.5) |
 | `PinFresh` | Confirmed, evidence quorum met, and undisputed (§6.5) |
 | evidence quorum | 2 distinct vendors when the network has 2 or more, else 1 (§6.10) |
 | tag-state head | The block an upstream executes `latest` at (§6.11) |
@@ -374,7 +376,7 @@ One `Head` per (network, lane). One loop per network computes the lanes a change
 
 | Field | Rule |
 |---|---|
-| `Latest` | q-th highest voter number; caps, regression guard (1024 blocks, 60s, per instance) and guarantees (`servedTip.guaranteedFor`, `guaranteedMethods`) apply as today |
+| `Latest`, `LatestHash`, `Firm` | the lane's view (§6.5): `Head`'s number and hash, read from the tracker's state once per request; no number ballot, no regression guard |
 | `Finalized` | the same ballot over voters' finalized numbers; a voter without a finalized tag (its tag refused 10 times in a row, never answered) reports latest − the derived depth: 30 min of chain at the block time floor (§6.7), at least `fallbackFinalityDepth` (#1079); until either is known, a voter has no finalized vote. It never steps back while a voter still backs it (#1353): each lane keeps a floor, the highest `Finalized` it served, applied after the guarantees; a computed value below the floor serves the floor while the floor is at or below the backing, the lowest of the lane's highest finalized vote and each constraining guarantee subset's highest, and the drop is at most `servedTip.maxRegressionBlocks` (0 = 1024, also with the regression guard off); with no voter backing it, or a deeper drop, the floor drops to the computed value, and a voter that returns later does not restore it. A held value above the served `Latest` is capped at `Latest`, never below the computed value: each voter's finalized is at or below its latest, so the served pair keeps that order. A change of voters (one leaves a majority ballot, a guarantee member leaves, a lagger rejoins a lone leader on a two-upstream network) is no reason for finality to go back. On the network-wide lane the floor is also shared across instances (§14), so a client moved to another instance never sees finality go back either: a computed value above the shared one raises it (held values never publish); a computed value below it serves it under the same rule (backed here, within `maxRegressionBlocks`); a shared value no local voter backs is ignored while unbacked and applies again once a voter backs it, as on main (#1356, #1364) |
 | `Leader` | the highest voter within `Latest + maxRetryableBlockDistance` |
 | ceiling | raw max of the reports of the lane's registered upstreams, minus upstreams cordoned for chain identity and upstreams that are no push source whose polls fail as §6.1 defines (failed polls spanning W with no success since; one failed poll, a 429 included, keeps the upstream counted; a push source's channel is its socket, so its polls never drop it); `OldestReportAt` = the oldest time at which those reports' evidence was taken: for an answer, a poll's or a client request's that reached the upstream as the `latest` tag, the time its request was sent (it can show no later head than the node had then); for a push, its receive time. An interpolated client request is no report: its answer shows the upstream holds block N, not that its head is N |
@@ -386,7 +388,8 @@ Refusal rule, for block N on a request:
 
 | N | Action |
 |---|---|
-| N ≤ `Latest` | serve |
+| N ≤ `Firm` | serve |
+| `Firm` < N ≤ `Latest` (thin) | serve, holders first: an interpolated `latest` routes as block N, upstreams whose hash vote, counter or a by-number answer here holds N first, no credit above `Firm`; an empty or null answer, or a missing-data error, is a retryable miss once per leg: the retry waits for the Ask of the voters lacking N, at most W, then holders first. A family-2 answer at `Latest` whose hash is not `LatestHash` is such a miss |
 | `Latest` < N ≤ ceiling | refresh (Ask with a number need for the lane's upstreams below N that the ceiling counts, voters first, §6.8); an empty or null answer, or a missing-data error, a range refused per upstream included, is a retryable miss once per request, its hedges included; the retry waits for that Ask until it answers, at most W, then orders the request's routed upstreams by the head predicate, head ≥ N first, with no further I/O; the answer after it goes to the client as the upstream gave it |
 | above | future, only when every counted report is younger than 1 bt; the older ones are Asked first (one poll each, single-flight, at most once per bt) and N decided again, counted `future_after_refresh`; a report still older than 1 bt after the Ask keeps N in the band; an estimate of where a stale upstream is now never stands in for asking it; until the first block time sample, every report counts as older than 1 bt |
 
@@ -419,7 +422,6 @@ Fork choice:
 3. Vote: a voter's hash vote moves to its newest header once that header is held; until then its previous vote stays. An ancestor of the current vote does not move it back; a lower header with a later timestamp is no ancestor (a chain that restarted lower, §19 C16).
 4. Choose: take the tree with the most votes; a tie keeps the tree of the pins, else takes the root with the highest block. In it, from the root, follow the child whose subtree holds the most votes; a tie keeps the pinned child; a block with no voted child follows its pinned child. Stop at a block with no child to follow, or at a tie with no pinned child. The last block followed is the head; the path from the root to it is the pins.
 5. Settle: on a tracker that walks (rule 1), a tie in rule 4, or a hash vote off the pins (§6.3), runs a settle (§6.8). A tracker that does not walk takes rule 4's tie-break: its roots never link, so a tie there is the usual state of a chain faster than its polls, not a fork; a vote off the pins still runs a settle there. Each answer is walked like a vote; once held, a voter's answer is its hash vote, and a non-voter's adds one vote for this decision only: it counts while the votes alone still meet that tie or dispute, and backs no head above the one decided. The pins stay while a round is out, at most W from its start; walks still out then count as no answer. No answer: the settle runs again after the Ask's backoff. A tie, dispute or refresh with no target starts no round, logs nothing and sets no retry: the next vote runs rule 4 again. A refresh (§6.3) runs once per voter and fork point; any round that ends over a dispute counts as the refresh of every vote it disputes.
-6. No source with a fresh hash vote, with demand: the tracker Asks the first voter in selection order with a hash need, once per cadence and no faster than the demand's pace. That answer is the only vote until the next one: the asked voter's votes no newer than its last answer count as that answer, and a full or catch-up poll of a voter that is no source does not stop the Asks. An answer that conflicts with the pins starts a settle.
 
 Settle rounds:
 
@@ -428,13 +430,13 @@ Settle rounds:
 - A client that joins a round whose answers are still walking waits for them; a client ctx that ends with answers pending gets `PinRateLimited`, never `PinUnverifiable`.
 - A deferred re-check does not start the 1s reconfirm cooldown.
 
-Confirmed head:
+View: one per lane, `{Head, Firm}`, in the tracker's published state, swapped as one pointer. HTTP `latest` (§7) and every tap read that one state.
 
-- The confirmed head is the highest pin with `q.Of(hash voters)` hash votes at or above it and a number at or below the lane's `Latest`. The second clause proves that q upstreams hold N.
-- Cold window: for W after a tracker starts or resets, a voter that is a source and has not reported yet counts as a hash voter, so a cold instance's first header waits for a second.
-- Every transport delivers only up to the confirmed head (§10). Tap lag is measured from it. A tap waits at most W after the block's first header on its instance, plus the tracker's processing (at most 50 ms): a silent hash voter stops counting exactly at W, and the next pass sends.
-- Catch-up: while a tap is open and `Latest` holds back a pin its hash votes back, the tracker Asks, with a number need, as many of the voters whose number is below it as `Latest` still lacks to reach it, oldest evidence first (§6.8), once per bt and at most 1s apart, and no faster than the demand's pace. When the hash-vote need holds a pin back for one bt, it polls as many of the voters without a fresh hash vote as that need lacks, oldest evidence first; each poll is a hash vote (§6.3). Every move of an upstream's counter, from any path or instance, wakes the tracker, so the pin goes out as soon as `Latest` reaches it.
-- `PinFresh` = confirmed ∧ evidence quorum (§6.10) ∧ undisputed (no hash voter on another branch at that height). `ReconfirmPin(n)` returns `PinFresh` only then; otherwise it settles, or returns `PinRateLimited` when the settle cannot run.
+- `Head` is the highest pin with at least 1 counted hash vote at or above it on the pinned branch, undisputed (no hash voter votes another branch at its height), at most each guarantee subset's majority holder number; the previous `Head` stays while it is still pinned and higher, so only a pins move lowers it. A block served from 1 holder may later be replayed to taps as a 1-block reorg.
+- `Firm` is the highest block at or below `Head` that q voters hold: q counted hash votes at or above it, or the q-th highest of the voters' shared counters and this instance's by-number client answers from them. It routes and decides the thin region (§6.4); nothing serves it alone. Every counter move, on any instance, wakes the lane's tracker.
+- Guarantees, per instance: a tap writes N only from a state whose `Head` ≥ N on N's branch; HTTP answers N only from a state whose `Head` = N, so every tap emits N the instant HTTP shows it; `getBlockByNumber(latest).hash` = the hash taps send at N; `eth_blockNumber` = that number = the request's interpolated `latest`.
+- Every transport delivers only up to its lane's `Head` (§10). Tap lag is measured from it; a lane tap's block is ready when its lane's view reached it.
+- `PinFresh` = q counted hash votes ∧ evidence quorum (§6.10) ∧ undisputed. `ReconfirmPin(n)` returns `PinFresh` only then; otherwise it settles, or returns `PinRateLimited` when the settle cannot run.
 - A hash-proven rollback lowers the shared counters (§14).
 
 Other rules:
@@ -481,24 +483,21 @@ Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, th
 ### 6.8 Fetch schedule: when do we fetch U's head?
 
 - One schedule per upstream, with one backoff: the cadence, doubled per failure in a row, at most 60s. The bench reads this backoff (§6.1).
-- Periodic poll: a poll source is Asked once per cadence while `newHeads` is demanded and the upstream is admitted. Every upstream also keeps its full poll every `statePollerInterval` (30s) plus traffic; its `latest` part is a hash need, a local fetch, met by any local fetch sent within the interval, so requests that Ask the upstream that often pay for it: it is the upstream's hash vote (§6.3) and, on a network no source pushes, the block-time sample (§6.7).
+- Block clock, one per lane tracker with demand (taps needing `newHeads`, or a read of `latest` within W): when no push brought block N+1, it fetches one voter's head at the 95th percentile of N+1's expected first sight (a median fit of the last 32 sights, the offset adapted so 5% of fires come early), less that voter's round trip. A push or any local fetch that brings N+1 first skips the fire. Target: a voter whose turn is due (its last local fetch older than its `statePollerInterval` less 2 bt), else the fastest by round trip plus lateness, round-robin among those within one round trip. An answer still at N retries once after max(2 RTT, bt/10), an explicit `statePollerDebounce` d every d; no answer by RTT p95 + max(RTT, bt/10) hedges to the next voter; fires that bring no block double the next delay, up to W. No demand: the clock stops; the first `latest` read after that waits for one clocked fetch, at most W. Budget: ≤ 1.05 head fetches per new block per lane.
+- Full poll: every upstream keeps its poll every `statePollerInterval` (30s); its `latest` part is a hash need met by any local fetch sent within the interval, a clock turn included, so it adds no head fetch while the clock runs.
 - Ask: single-flight per upstream; it joins a fetch in flight, and every waiter gets the one outcome: the answer, an error, or `backoff` when the upstream is backing off. Each Ask names its need and its pace (table below), the oldest evidence it accepts, never below the cadence. Each answer carries the time its evidence was taken (the meeting fetch's send, or the shared counter's report). A caller that Asks again at its own ticks passes the time of the answer it last took from that upstream: evidence taken at or before it meets no Ask (shared counter, fetch within the pace, fork fetch, backoff), so each tick takes a new answer and the caller fetches at most once per tick. Without it, a tick a few µs short of the pace after the previous one took that tick's fetch, and the near-future wait saw a new head every 2 bt. The near-future wait and settle retries pass it, and a `latest` request's catch-up on a ceiling rise passes the rise; every other Ask passes none: one-shot Askers, and loops that run each pass or at their own answer's Next (the poll source, rule 6, catch-up, fork polls), where a joined fetch is met again on a pass soon after its Next. A number need is met by a shared counter fresher than the pace; a hash need only by a local fetch sent within the pace, cache reads skipped; a fork need (§6.3) only by a fetch sent after the pins moved. A fetch sent within an Ask's pace answers it, whatever that fetch's outcome, so callers keep no fetch pacer of their own; only node failures (transport, timeout, 5xx, 429) double the backoff. So an upstream gets at most one Ask fetch per cadence per instance from callers without a floor, and Asks skip rate limits: client load at an upstream's budget never stalls its head (§19 D8).
 - Oldest evidence first, wherever voters are ordered by it (catch-up, settles, the by-hash wait): a voter's evidence time on an axis is the later of its newest report there and the send time of this instance's last Ask of it on that axis. A voter whose answers sit below its own counter (counters only rise, §14) never refreshes its report time; ordered by reports alone it would take every slot while the voters that could move `Latest` wait (§19 P1).
 
 | Caller | Need | Pace |
 |---|---|---|
-| poll source | hash | cadence |
-| catch-up (§6.5) | number; hash for voters without a fresh hash vote | bt, at most 1s; no faster than the demand's pace |
-| refusal band and stale ceiling (§6.4) | number | 1 bt |
+| block clock (§6.8) | hash | a fetch newer than the clock's last answer from that voter and than the top block's first sight |
+| refusal band, thin retry and stale ceiling (§6.4) | number | 1 bt |
 | near-future wait (§6.4) | number | 1 bt; after the wait's last answer from that voter |
-| a `latest` request's refresh (`eth_blockNumber`, `erigon_blockNumber` latest, a family-2 `latest` tag; §7): the first voter in routing order, waited for by a tag read and by any request while `Latest` rests on reports older than W; then, on the request that saw the lane's ceiling rise above `Latest`, the voters `Latest` lacks to reach it, waited for where the refresh is | number | cadence; the voters `Latest` lacks: sent after the ceiling rose |
 | a request naming the `finalized` tag (§6.4 Finality), waited for | number | the voter whose finalized report is oldest and older than its cadence, and every voter with no finalized number yet: cadence; for W after a finality step, as many of the voters below it as `Finalized` lacks, oldest finalized report first: once since the step began |
 | availability-gate skip (§6.4), in the background | number | cadence |
 | settle: for a tie, the voters whose vote decides neither tied block (no fresh hash vote, a vote below the split or in another tree), then non-voters, up to 3 (hash); for a vote off the pins (§6.3), the voters that back the pins with an older vote and the voters with no fresh hash vote, oldest evidence first, up to 3 (fork) | hash, fork | cadence; a fork need: sent after the pins moved; after the last settle answer from that target |
 | a vote still off the pins after its settle (§6.3) | hash | W |
-| no hash voter, with demand (§6.5 rule 6) | hash | cadence; no faster than the demand's pace |
 
-- A `latest` request (`eth_blockNumber`, `erigon_blockNumber` latest, a family-2 `latest` tag interpolated) refreshes the latest axis before it takes its `Head` as main refreshed the head: one voter per request, the first in routing order, at its own cadence. Main refreshed one upstream per `eth_blockNumber` at its debounce and forwarded each latest-block read to the first upstream; walking every due voter per request instead cost 1.7 times main's upstream calls at 20 reads/s (§19 P19). A family-2 tag read, which main forwarded and answered with the node's head, waits for that Ask; so does any request while `Latest` rests on reports older than W (the q-th newest voter report), as after an idle period; `eth_blockNumber`, which main answered from memory, otherwise Asks in the background and reads `Head` at once, one refresh behind. Then the catch-up for `Latest`'s further votes (§6.5): the one request that sees the lane's ceiling rise above `Latest` Asks the voters `Latest` lacks to reach it, for a fetch sent after the rise, below their cadence, and waits for them where it waits for the refresh. The voter that saw the block gave one vote, and a voter that has it too would else answer only at its own cadence, so `Latest` would trail the first sighting by up to a cadence, not a round trip (§19 P18). Each rise costs at most q-1 such fetches per instance, so a voter that stays ahead of the rest, stuck or a lone fast source, costs at most that per block. So a first voter that trails the rest, a replica ranked before the vendors, holds `Latest` back at most a round trip past its own head (§19 P18). A wait lasts at most W and never fails the request: on timeout or error it reads `Head` as it is. So a sporadic reader after an idle period gets a block no older than W of chain time, not the last full poll's (§19 P13), and a sparse tag read one no older than the first voter's cadence plus a round trip. The request takes its `Head` before the cache (§7), so a cache hit is pinned to it too. Main refreshed only before `eth_blockNumber` (debounce 0.7 bt) and forwarded `eth_getBlockByNumber(latest)` as the tag, whose answers moved the answering vendor's head; family 3-4 `latest` is interpolated with no refresh, as main translated it.
 - The finalized refresh a `finalized`-tag request waits for walks the lane's voters: `Finalized` is the q-th highest finalized vote, a voter's finality depth is its own, and a replica may trail the nodes, so any voter may see a finality step first (§19 P7, P18). Each request polls the voter whose finalized report is oldest, among those older than their cadence, as main sent each `finalized`-tag read to an upstream: successive requests walk the voters, at most one poll per request. A voter with no finalized number yet polls on every request, at its cadence, until it answers or its tag is given up. A voter finalized above the highest any voter reported before, by any poll, the request's own poll included, starts a step: for W after, as many of the voters still below it as `Finalized` lacks to reach it (q less the voters at or above it) poll once since the step began, oldest finalized report first, at once on the request that saw the step too, so `Finalized` follows the step within a round trip of the first poll that saw it (§19 P17, P18). A voter that has not reached the step leaves the next one to the next request; polling every voter below a step cost 6 polls per step (§19 P19). A voter whose `finalized` tag is given up has no finalized poll: its vote is derived from its latest (§6.4), so neither walk polls it.
 - A poller method (`latest`, `finalized`, the syncing check) refused 10 times before any success is given up for 10 min, then retried; an upstream given up on `latest` is no poll source meanwhile.
 - A panic in an Ask fails its waiters and is counted; no waiter hangs (#1060).
@@ -560,8 +559,8 @@ Owner: `architecture/evm/integrity_stateprobe.go`; the skip in `checkEvmUpstream
 
 | Family | Methods | Rule |
 |---|---|---|
-| 1. Head number | `eth_blockNumber`, `erigon_blockNumber` | answer `Latest`, read after the latest refresh (§6.8: waited for, at most W, while `Latest` rests on reports older than W); `erigon_blockNumber` with a block param: `finalized` answers `Finalized`, any value but `latest` is forwarded as is |
-| 2. Block by tag | `eth_getBlockByNumber`, `eth_getBlockReceipts`, `eth_getBlockTransactionCountByNumber`, `eth_getTransactionByBlockNumberAndIndex`, uncle-by-number, `trace_block`, `debug_traceBlockByNumber`, `trace_replayBlockTransactions`, `debug_getRaw*`, `erigon_getHeaderByNumber` | interpolate to `Latest`/`Finalized`; an interpolated `latest` or `finalized` reads `Head` after its axis's refresh (§6.8); `null` for a numbered tag follows `enforceNonNullBlock` |
+| 1. Head number | `eth_blockNumber`, `erigon_blockNumber` | answer `Latest`, the view's `Head`; the first read after W without demand waits for one clocked fetch (§6.8); `erigon_blockNumber` with a block param: `finalized` answers `Finalized`, any value but `latest` is forwarded as is |
+| 2. Block by tag | `eth_getBlockByNumber`, `eth_getBlockReceipts`, `eth_getBlockTransactionCountByNumber`, `eth_getTransactionByBlockNumberAndIndex`, uncle-by-number, `trace_block`, `debug_traceBlockByNumber`, `trace_replayBlockTransactions`, `debug_getRaw*`, `erigon_getHeaderByNumber` | interpolate to `Latest`/`Finalized`; an interpolated `latest` reads the view (its block's hash is `LatestHash`), a `finalized` reads `Head` after the finalized refresh (§6.8); `null` for a numbered tag follows `enforceNonNullBlock` |
 | 3. State at a block | `eth_call`, `eth_estimateGas`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`, `eth_getProof`, `eth_getAccount`, `eth_createAccessList`, `eth_simulateV1`, `eth_callMany`, `debug_traceCall`, `trace_call`, `debug_storageRangeAt` | interpolate every form: an absent param means `latest`; the EIP-1898 `blockNumber` leaf is rewritten; `eth_callMany` and `eth_createAccessList` get method config |
 | 4. Ranges | `eth_getLogs`, `trace_filter`, `eth_query*` | an absent bound means `latest`, so `toBlock` is never above `Latest` and range limits apply |
 | 5. By hash | `eth_getBlockByHash`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `trace_transaction`, `eth_getLogs` by `blockHash`; `debug_traceTransaction` too, but its answer names no block, so it is sent as is | sent as is; an answer from above `Latest` follows §6.4 |
@@ -570,7 +569,7 @@ Owner: `architecture/evm/integrity_stateprobe.go`; the skip in `checkEvmUpstream
 | 8. Absolute | numbers, hashes, `earliest` | sent as is; a number above `Latest` follows the refusal rule (§6.4) |
 | 9. Fees | `eth_feeHistory`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee` | unchanged: `feeHistory` newest block interpolated |
 | 10. Filters | `eth_newFilter`, `eth_newBlockFilter`, `eth_getFilterChanges`, `eth_getFilterLogs` | state stays on one upstream: the one exception to the promise |
-| 11. Subscriptions | ws `newHeads`, `logs`, gRPC `StreamBlocks` | the confirmed head (§6.5) |
+| 11. Subscriptions | ws `newHeads`, `logs`, gRPC `StreamBlocks` | up to the lane's view `Head` (§6.5) |
 
 | Switch | Rule |
 |---|---|
@@ -866,7 +865,7 @@ networks:
 
 | Key | Change |
 |---|---|
-| `upstreams[].evm.subscriptionSource` | new |
+| `upstreams[].evm.subscriptionSource` | new; push only: `true` on an endpoint that is not `ws`/`wss` is refused at load, naming the key (no poll sources: the block clock fetches every other upstream's head, §6.8) |
 | `networks[].evm.chainTracker.reorgWindow` | moved from `integrity.reorgWindow` (project, network, profiles) |
 | `networks[].evm.chainTracker.maxBackfill` | new; replaces `integrity.follow.maxBlocksPerTick` |
 | `networks[].evm.stripSubscribeFromBlockZero` | deleted: no upstream `logs` subscribe |
@@ -876,19 +875,22 @@ networks:
 | `translateLatestTag` default for `arbtrace_*` | off: classic nodes serve them (§7) |
 | `networks[].evm.fallbackStatePollerDebounce` | default removed (was 5s): unset, the cold-start cadence follows bt's 1s default (§6.7) |
 
-Strict decoding rejects the deleted keys and names the key: a breaking config change, no aliases. The head model adds no config key.
+Strict decoding rejects the deleted keys and names the key: a breaking config change, no aliases. The one-view head model (§6.5, §6.8) adds and removes no config key.
 
 ## 17. Signals
 
 | Metric | Change |
 |---|---|
-| `erpc_chain_tracker_invariant_violations_total{project,network,invariant}` | new; invariant: `sent_above_latest`, `sent_unconfirmed`, `tap_gap`, `removed_unsent`, `pins_unlinked`, `final_hash_changed`, `latest_regressed` (only a `Latest` below a block this instance sent while the lane's ballot counts the same voters as before; a fall with a changed counted set, a voter gone or one joined under a majority quorum, is a membership change, logged, not counted; counted once per fall and re-armed when `Latest` reaches that block again); must stay 0 except `final_hash_changed`, which logs a followed majority, and `latest_regressed` when every upstream rewinds (§14) |
-| `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `retried_found`, `retried_missing` (a band read, above `Latest` and at most the ceiling, answered empty or missing after the retry: a vendor head no node serves yet; expected at a low rate where clients read ahead), `served_missing` (`eth_getBlockByNumber` of a block in the head region, `Latest` − `reorgWindow` < N ≤ `Latest`, whose final answer is a JSON `null` or a missing-data error after the retry: the head promise broke on this instance; must stay 0. Other methods are not counted: their `null` or missing-data answer at or below `Latest` can be legit, a transaction or uncle index past the block's count, a state read on a pruned node; nor is a block below the head region, which is block availability, not the head promise), `future`, `future_after_refresh`, `future_after_wait` (near future, §6.4); the by-hash wait (§6.4): `held_served`, `held_null` |
-| `erpc_head_ask_total{project,network,reason,outcome}` | new; reason: the §6.8 caller (`poll`, `catch_up`, `refusal`, `refresh`, `settle`, `no_source`); outcome: `fetched`, `shared_fresh`, `inflight`, `backoff` |
-| `erpc_chain_tracker_confirm_lag_blocks{project,network}` | new: pins head − confirmed head; with no confirmed pin, the number of pins |
-| `erpc_tap_delivery_seconds{transport,kind}` | new: block ready (confirmed-head stamp; logs-head stamp for logs taps) → end of the tap's write |
-| `erpc_served_tip_voters{project,network,lane,rank}` | new gauge: voters per rank |
-| `erpc_served_tip_quorum{project,network,lane}` | new gauge: effective q |
+| `erpc_chain_tracker_invariant_violations_total{project,network,invariant}` | new; invariant: `sent_above_head` (a tap wrote a block above its lane's view Head, or one the pins no longer hold), `tap_gap`, `removed_unsent`, `pins_unlinked`, `final_hash_changed`, `latest_regressed` (a lane's view Head fell while its pin still stands: only a pins move may lower it); must stay 0 except `final_hash_changed`, which logs a followed majority. `sent_above_latest` and `sent_unconfirmed` are deleted, merged into `sent_above_head` |
+| `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `thin_found` and `thin_missing` (a thin-region read, `Firm` < N ≤ `Latest`, found or still empty or missing after its retry), `retried_found`, `retried_missing` (a band read, above `Latest` and at most the ceiling, answered empty or missing after the retry: a vendor head no node serves yet; expected at a low rate where clients read ahead), `served_missing` (`eth_getBlockByNumber` of a block in the head region, `Latest` − `reorgWindow` < N ≤ `Latest`, whose final answer is a JSON `null` or a missing-data error after the retry: the head promise broke on this instance; must stay 0. Other methods are not counted: their `null` or missing-data answer at or below `Latest` can be legit, a transaction or uncle index past the block's count, a state read on a pruned node; nor is a block below the head region, which is block availability, not the head promise), `future`, `future_after_refresh`, `future_after_wait` (near future, §6.4); the by-hash wait (§6.4): `held_served`, `held_null` |
+| `erpc_head_ask_total{project,network,reason,outcome}` | new; reason: the §6.8 caller (`clock`, `refusal`, `settle`); `poll`, `catch_up`, `refresh`, `no_source` are deleted with their callers; outcome: `fetched`, `shared_fresh`, `inflight`, `backoff` |
+| `erpc_head_clock_total{project,network,lane,outcome}` | new; outcome: `new`, `early`, `hedge`, `skipped_push`, `failed` (§6.8) |
+| `erpc_head_view_lag_seconds{project,network,lane}` | new histogram: a block's first local sight → the view swap that made it Head |
+| `erpc_head_firm_lag_blocks{project,network,lane}` | new gauge: Head − Firm, the thin region |
+| `erpc_chain_tracker_confirm_lag_blocks{project,network}` | new: pins head − view Head; with no Head, the number of pins |
+| `erpc_tap_delivery_seconds{transport,kind}` | new: block ready (view-Head stamp, a lane tap's from its lane's view; logs-head stamp for logs taps) → end of the tap's write |
+| `erpc_served_tip_voters`, `erpc_served_tip_quorum` | deleted with the number-vote `Latest` ballot |
+| `erpc_network_served_tip_regression_total` | `axis="latest"` disappears: the regression guard runs on `Finalized` only |
 | `erpc_upstream_report_age_seconds{project,network,upstream,evidence}` | new gauge; evidence: `number`, `hash` (§6.1) |
 | `erpc_upstream_head_benched_total` | existing; bench flaps |
 | `erpc_upstream_tag_state_stale{project,network,upstream}` | new gauge: 1 while the tag-state gate skips it |
