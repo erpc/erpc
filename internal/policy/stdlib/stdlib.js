@@ -716,10 +716,21 @@
     if (weights.errorRate)       p += m.errorRate       * weights.errorRate;
     if (weights.respLatency)     p += m[latencyKey]     * weights.respLatency;
     if (weights.throttledRate)   p += m.throttledRate   * weights.throttledRate;
-    if (weights.blockHeadLag)    p += m.blockHeadLag    * weights.blockHeadLag;
-    if (weights.finalizationLag) p += m.finalizationLag * weights.finalizationLag;
+    if (weights.blockHeadLag)    p += lagUnits(m.blockHeadLag, m.blockHeadLagSeconds) * weights.blockHeadLag;
+    if (weights.finalizationLag) p += lagUnits(m.finalizationLag, m.finalizationLagSeconds) * weights.finalizationLag;
     if (weights.misbehaviors)    p += m.misbehaviorRate * weights.misbehaviors;
     return p;
+  }
+
+  // Lag weighs per block, but never more than per second of lag. Counted
+  // in blocks alone, a chain with sub-second blocks turns a fraction of a
+  // second of staleness into a large penalty: at 10 blocks/s an upstream
+  // 0.4 s behind costs 4, more than 0.24 s of p70 latency (3.6) under
+  // PREFER_FASTEST, so a far but fresh upstream outranks a near one. Chains
+  // with 1 s or slower blocks, and a network whose block time is not yet
+  // estimated (seconds read 0), keep the block count.
+  function lagUnits(blocks, seconds) {
+    return seconds > 0 ? Math.min(blocks, seconds) : blocks;
   }
 
   // sortByScore(base, opts) — rank upstreams best-first. HIGHER score wins.
