@@ -816,6 +816,50 @@ func p20(ahead bool) spec {
 }
 
 const (
+	// p21HeadJitter: each vendor serves each block up to this after its
+	// mint; p21MintJitter: blocks come 0.25 s ± this apart.
+	p21HeadJitter = 20 * time.Millisecond
+	p21MintJitter = 10 * time.Millisecond
+	// p21EarlyShare: at most this share of block-clock fetches may answer
+	// the block before.
+	p21EarlyShare = 0.05
+)
+
+// P21: P19's vendors with jittered serve and mint times, no push source;
+// two pods per image, each image's pair sharing redis. Per image, served
+// age and latency as P19; per new-image pod at most 1.05 head fetches per
+// new block, and at most 5% of block-clock fetches early.
+func p21() spec {
+	sp := freshSpec("P21", 1, p19Ups, chainsim.Config{BlockTime: liveBlockTime, MintJitter: p21MintJitter, FinalityStep: p17Step},
+		chainsim.Faults{FinalityDepth: p17Depth, HeadJitter: p21HeadJitter}, func(s *scenario) {
+			liveCompare(s)
+			s.judgeClockEarly()
+		})
+	sp.pods, sp.oldPods, sp.memory, sp.splitState, sp.cache = 4, []int{0, 1}, false, true, true
+	return sp
+}
+
+// judgeClockEarly flags a new-image pod whose block clock answered the
+// block before on more than p21EarlyShare of its fetches
+// (erpc_head_clock_total, outcome early), or has no clock series.
+func (s *scenario) judgeClockEarly() {
+	for _, p := range s.h.pods {
+		if p.old {
+			continue
+		}
+		total, ok := s.metric(p.idx, "erpc_head_clock_total", nil)
+		if !ok || total == 0 {
+			s.violate(s.name, "pod-%d: no erpc_head_clock_total series: the pod runs no block clock", p.idx+1)
+			continue
+		}
+		early, _ := s.metric(p.idx, "erpc_head_clock_total", map[string]string{"outcome": "early"})
+		if early/total > p21EarlyShare {
+			s.violate(s.name, "pod-%d: %.0f of %.0f block-clock fetches early (%.1f%%), bound %.0f%%", p.idx+1, early, total, 100*early/total, 100*p21EarlyShare)
+		}
+	}
+}
+
+const (
 	x10Run = 3 * time.Minute
 	// x10Sample: pod-1's sampler reads each latest about this often;
 	// x10PeerRate: pod-2's eth_blockNumber reads a second.

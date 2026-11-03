@@ -24,7 +24,10 @@ const (
 type Config struct {
 	ChainID   int64
 	BlockTime time.Duration
-	Seed      uint64
+	// MintJitter mints each block a uniform [0, MintJitter] after its
+	// tick, so block intervals spread over BlockTime ± MintJitter.
+	MintJitter time.Duration
+	Seed       uint64
 	// HeaderPad pads every header's extraData by this many bytes, so few
 	// headers fill a client's socket and flow-control windows.
 	HeaderPad int
@@ -166,6 +169,9 @@ func (c *Chain) Start() {
 			case <-c.stop:
 				return
 			case <-t.C:
+				if j := c.cfg.MintJitter; j > 0 {
+					time.Sleep(rand.N(j + 1))
+				}
 				c.tick()
 			}
 		}
@@ -431,10 +437,11 @@ func (c *Chain) tick() {
 	for f := range c.forks {
 		f.tip = c.mintLocked(f.tip, f.tip.Number+1, c.timeAtLocked(f.tip.Number+1), true)
 	}
+	// Each vendor that serves the new block later refreshes once it does.
 	delays := map[time.Duration]bool{}
 	for _, v := range c.vendors {
-		if d := v.faults.HeadDelay; d > 0 {
-			delays[d] = true
+		if v.faults.HeadDelay > 0 || v.faults.HeadJitter > 0 {
+			delays[v.serveDelayLocked(c.tipLocked())] = true
 		}
 	}
 	c.mu.Unlock()

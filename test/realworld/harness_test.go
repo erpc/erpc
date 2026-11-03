@@ -45,8 +45,10 @@ type harness struct {
 	// vars are the eRPC duration variables the pods run with, by name
 	// (testdata/realworld_vars.go).
 	vars map[string]time.Duration
-	// webSocket is merged into every pod's server.webSocket config.
-	webSocket map[string]interface{}
+	// webSocket is merged into every pod's server.webSocket config;
+	// splitState gives old pods their own cluster key (spec.splitState).
+	webSocket  map[string]interface{}
+	splitState bool
 	// lookups time how long the proxies take to tell pods apart.
 	lookups *lookups
 	// dials counts the TCP connections the harness's clients opened to pods.
@@ -1119,8 +1121,12 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 	}
 	db := m{}
 	if redis != nil {
+		key := clusterKey
+		if p.old && p.h.splitState {
+			key = clusterKey + "-old"
+		}
 		db["sharedState"] = m{
-			"clusterKey": clusterKey,
+			"clusterKey": key,
 			"connector": m{"id": "shared", "driver": "redis", "redis": m{
 				"uri": fmt.Sprintf("redis://127.0.0.1:%d/0", redis.port),
 			}},

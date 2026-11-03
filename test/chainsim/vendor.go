@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net"
 	"net/http"
@@ -23,6 +24,7 @@ type Faults struct {
 	Held          bool          // block and head answers wait until it clears; newHeads pushes nothing meanwhile, then its head
 	Lag           uint64        // serves the canonical block this far below the head
 	HeadDelay     time.Duration // serves a canonical block only this long after it was minted
+	HeadJitter    time.Duration // serves each canonical block a further [0, HeadJitter] after HeadDelay, fixed per vendor and block
 	Frozen        bool          // head stops moving; still answers what it holds
 	WrongChainID  bool          // eth_chainId answers another chain
 	ChainIDHeld   bool          // eth_chainId answers wait until it clears
@@ -376,12 +378,26 @@ func (v *Vendor) targetLocked() *Block {
 			tip = b
 		}
 	}
-	if d := v.faults.HeadDelay; d > 0 {
-		for since := time.Now().Add(-d); tip.MintedAt.After(since) && tip.Parent != nil && tip.Number > v.tip.Number; {
+	if f := v.faults; f.HeadDelay > 0 || f.HeadJitter > 0 {
+		now := time.Now()
+		for tip.Parent != nil && tip.Number > v.tip.Number && now.Before(tip.MintedAt.Add(v.serveDelayLocked(tip))) {
 			tip = tip.Parent
 		}
 	}
 	return tip
+}
+
+// serveDelayLocked is how long after b's mint the vendor serves it:
+// HeadDelay plus b's HeadJitter share, the same at every call.
+func (v *Vendor) serveDelayLocked(b *Block) time.Duration {
+	d := v.faults.HeadDelay
+	if j := v.faults.HeadJitter; j > 0 {
+		h := fnv.New64a()
+		_, _ = h.Write([]byte(v.ID))
+		_, _ = h.Write(b.Hash[:])
+		d += time.Duration(h.Sum64() % uint64(j+1))
+	}
+	return d
 }
 
 func (v *Vendor) setTipLocked(b *Block) {
