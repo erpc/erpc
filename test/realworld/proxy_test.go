@@ -2,6 +2,7 @@ package realworld
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"math/rand/v2"
 	"net"
@@ -51,13 +52,17 @@ type link struct {
 	conns   map[*pconn]bool
 	accepts int64
 	resets  int64 // connections RSTMid reset
-	// reads count the pod's JSON-RPC requests (anyRead) and its
-	// eth_getBlockByNumber requests by tag ("latest", "finalized").
+	// reads count the pod's JSON-RPC requests (anyRead), its
+	// eth_getBlockByNumber requests by tag ("latest", "finalized") and its
+	// eth_blockNumber requests (blockNumberRead).
 	reads map[string]int64
 }
 
 // anyRead keys a link's count of every request.
 const anyRead = "*"
+
+// blockNumberRead keys a link's count of eth_blockNumber requests.
+const blockNumberRead = "blockNumber"
 
 func (l *link) count(kind string, n int) {
 	l.mu.Lock()
@@ -95,9 +100,102 @@ type headerScan struct {
 	l    *link
 	tail []byte
 	cur  string
+	// ws: the pod→vendor side of a ws upstream's proxy. A connection that
+	// opens with an upgrade GET then carries masked frames (RFC 6455
+	// §5.3), unmasked here so its requests count as an HTTP body's do;
+	// mode is wsUnknown until its first chunk, frames a frame cut across
+	// chunks.
+	ws     bool
+	mode   wsMode
+	frames []byte
 
 	mu      sync.Mutex
 	pending map[string]bool
+}
+
+type wsMode uint8
+
+const (
+	wsUnknown   wsMode = iota
+	wsPlain            // HTTP requests
+	wsHandshake        // the upgrade request, until its blank line
+	wsFrames           // client frames
+)
+
+// read counts the requests of a pod→vendor chunk: as is over HTTP, the
+// frames' unmasked payloads over a ws connection.
+func (sc *headerScan) read(b []byte) {
+	if sc.mode == wsUnknown {
+		sc.mode = wsPlain
+		if sc.ws && bytes.HasPrefix(b, []byte("GET ")) {
+			sc.mode = wsHandshake
+		}
+	}
+	switch sc.mode {
+	case wsPlain:
+		sc.request(b)
+		return
+	case wsHandshake:
+		end := bytes.Index(b, []byte("\r\n\r\n"))
+		if end < 0 {
+			return
+		}
+		sc.mode, b = wsFrames, b[end+4:]
+	}
+	sc.frames = append(sc.frames, b...)
+	for {
+		payload, n, ok := wsFrame(sc.frames)
+		if !ok {
+			break
+		}
+		if len(payload) > 0 {
+			sc.request(payload)
+		}
+		sc.frames = sc.frames[n:]
+	}
+	sc.frames = append([]byte(nil), sc.frames...)
+}
+
+// wsFrame parses the frame at the start of b: its unmasked payload, nil
+// for a control frame, and its length; false while b holds less than one.
+func wsFrame(b []byte) (payload []byte, n int, ok bool) {
+	if len(b) < 2 {
+		return nil, 0, false
+	}
+	l, i := uint64(b[1]&0x7f), 2
+	switch l {
+	case 126:
+		if len(b) < 4 {
+			return nil, 0, false
+		}
+		l, i = uint64(binary.BigEndian.Uint16(b[2:])), 4
+	case 127:
+		if len(b) < 10 {
+			return nil, 0, false
+		}
+		l, i = binary.BigEndian.Uint64(b[2:]), 10
+	}
+	var key []byte
+	if b[1]&0x80 != 0 {
+		if len(b) < i+4 {
+			return nil, 0, false
+		}
+		key, i = b[i:i+4], i+4
+	}
+	if uint64(len(b)-i) < l {
+		return nil, 0, false
+	}
+	n = i + int(l)
+	if b[0]&0x0f >= 0x8 {
+		return nil, n, true
+	}
+	payload = append([]byte(nil), b[i:n]...)
+	for k := range key {
+		for j := k; j < len(payload); j += 4 {
+			payload[j] ^= key[k]
+		}
+	}
+	return payload, n, true
 }
 
 // hashKey is how a header's own hash opens in vendor JSON: object keys are
@@ -106,12 +204,13 @@ type headerScan struct {
 var hashKey = []byte(`"hash":"0x`)
 
 var (
-	byNumberKey = []byte(`eth_getBlockByNumber`)
-	latestKey   = []byte(`"latest"`)
-	jsonrpcKey  = []byte(`"jsonrpc"`)
-	idKey       = []byte(`"id":`)
-	answerKey   = []byte(`{"id":`)
-	pushKey     = []byte(`{"jsonrpc"`)
+	byNumberKey    = []byte(`eth_getBlockByNumber`)
+	blockNumberKey = []byte(`"eth_blockNumber"`)
+	latestKey      = []byte(`"latest"`)
+	jsonrpcKey     = []byte(`"jsonrpc"`)
+	idKey          = []byte(`"id":`)
+	answerKey      = []byte(`{"id":`)
+	pushKey        = []byte(`{"jsonrpc"`)
 )
 
 // tagKeys mark an eth_getBlockByNumber message's block param, by the kind
@@ -135,7 +234,7 @@ func (sc *headerScan) request(b []byte) {
 		return
 	}
 	sc.l.count(anyRead, len(starts))
-	if !bytes.Contains(b, byNumberKey) {
+	if !bytes.Contains(b, byNumberKey) && !bytes.Contains(b, blockNumberKey) {
 		return
 	}
 	starts[0] = 0
@@ -145,6 +244,10 @@ func (sc *headerScan) request(b []byte) {
 			to = starts[k+1]
 		}
 		msg := b[from:to]
+		if bytes.Contains(msg, blockNumberKey) {
+			sc.l.count(blockNumberRead, 1)
+			continue
+		}
 		if !bytes.Contains(msg, byNumberKey) {
 			continue
 		}
@@ -445,7 +548,7 @@ func (px *proxy) handle(c net.Conn) {
 	l.mu.Lock()
 	l.conns[pc] = true
 	l.mu.Unlock()
-	sc := &headerScan{h: px.h, pod: p.idx, l: l}
+	sc := &headerScan{h: px.h, pod: p.idx, l: l, ws: px.ws}
 	go l.pipe(pc, s, c, sc, nil)
 	l.pipe(pc, c, s, nil, sc)
 	<-pc.done
@@ -559,7 +662,7 @@ func (l *link) pipe(pc *pconn, src, dst net.Conn, down, up *headerScan) {
 				down.scan(b, time.Now())
 			}
 			if up != nil {
-				up.request(b)
+				up.read(b)
 			}
 			if f.Bandwidth > 0 {
 				select {

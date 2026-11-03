@@ -526,71 +526,28 @@ var p19Ups = []freshUp{
 // eth_getBlockByNumber("latest"), and rate/4 eth_getBlockByNumber
 // ("finalized"). Per method, each answer's block age (from chainsim
 // minting it to the answer) and request latency: the new image's are
-// within the slacks of the old one's, at no more upstream requests.
+// within the slacks of the old one's, and its head-read latency p50 at
+// most the old one's. The new image sends at most 1.05 head fetches per
+// new block, and at one read per block or more no more upstream requests
+// than the old one. No source pushes, so no pod takes a newHeads
+// subscription: X10 holds HTTP against the stream.
 func p19(rate float64) spec {
 	sp := freshSpec(fmt.Sprintf("P19-r%g", rate), 1, p19Ups, chainsim.Config{BlockTime: p19BlockTime, FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, func(s *scenario) { p19Body(s, rate) })
 	sp.cache = true
 	return sp
 }
 
-// freshAges are the ages of im's answers: from chainsim minting the
-// answered block to the answer.
-func (s *scenario) freshAges(im *freshImage) (ages []time.Duration) {
-	im.mu.Lock()
-	defer im.mu.Unlock()
-	for _, a := range im.answers {
-		if b := s.chain.CanonAt(a.n); b != nil {
-			ages = append(ages, max(a.at.Sub(b.MintedAt), 0))
-		}
-	}
-	slices.Sort(ages)
-	return ages
-}
-
 func p19Body(s *scenario, rate float64) {
 	s.blocks(10)
-	period := time.Duration(float64(2*time.Second) / rate)
-	loads := []struct {
-		name  string
-		load  freshLoad
-		slack [2]time.Duration
-	}{
-		{"eth_blockNumber", freshLoad{period, "latest", freshHead}, [2]time.Duration{p19P50Slack, p19P90Slack}},
-		{"eth_getBlockByNumber(latest)", freshLoad{period, "latest", freshLatestBlock}, [2]time.Duration{p19P50Slack, p19P90Slack}},
-		{"eth_getBlockByNumber(finalized)", freshLoad{2 * period, "finalized", freshFinalized}, [2]time.Duration{p17P50Slack, p17P90Slack}},
-	}
-	var fl []freshLoad
-	for _, l := range loads {
-		fl = append(fl, l.load)
-	}
-	imgs, counts := s.freshRun(p19Run, fl...)
+	vl := &viewLog{}
+	reads := append(liveReads(rate, vl), liveRead{"eth_getBlockByNumber(finalized)",
+		freshLoad{time.Duration(float64(4*time.Second) / rate), "finalized", freshFinalized}, [2]time.Duration{p17P50Slack, p17P90Slack}, false})
+	imgs, all, _, from, to := s.liveRun(p19Run, reads, nil)
 	var b strings.Builder
-	v := s.freshReport(&b, "blocks timed (P19 times answers)", "latest", imgs[0], counts[0], nil, time.Now(), time.Second, p19Run)
-	type cell struct{ age, took []time.Duration }
-	for i, l := range loads {
-		by := map[string]cell{}
-		for _, im := range imgs[i] {
-			img := s.image(im.pod)
-			im.mu.Lock()
-			took := slices.Clone(im.took)
-			im.mu.Unlock()
-			slices.Sort(took)
-			by[img] = cell{s.freshAges(im), took}
-			fmt.Fprintf(&b, "pod-%d (%s image) %s: %d answers, served block age p50 %s p90 %s, latency p50 %s p90 %s max %s\n",
-				im.pod+1, img, l.name, len(took), pctl(by[img].age, 50), pctl(by[img].age, 90), pctl(took, 50), pctl(took, 90), pctl(took, 100))
-		}
-		o, n := by["old"], by["new"]
-		for _, m := range []struct {
-			what   string
-			on, nn []time.Duration
-		}{{"served block age", o.age, n.age}, {"latency", o.took, n.took}} {
-			if pctl(m.nn, 50) > pctl(m.on, 50)+l.slack[0] || pctl(m.nn, 90) > pctl(m.on, 90)+l.slack[1] {
-				s.violate(s.name, "new image %s %s p50 %s p90 %s, old image p50 %s p90 %s", l.name, m.what, pctl(m.nn, 50), pctl(m.nn, 90), pctl(m.on, 50), pctl(m.on, 90))
-			}
-		}
+	s.judgeAgeLatency(&b, reads, imgs, from, to)
+	s.judgeFetches(&b, "over the run", all, liveFetchBound)
+	if rate*s.chain.BlockTime().Seconds() >= 1 {
+		s.judgeRequests(&b, all)
 	}
 	s.logf("%s", b.String())
-	if vo, vn := v["old"], v["new"]; vn.requests > vo.requests*p18CostSlack {
-		s.violate(s.name, "new image sent its upstreams %.2f requests/s, old %.2f", vn.requests, vo.requests)
-	}
 }

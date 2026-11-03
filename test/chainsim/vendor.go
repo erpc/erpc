@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net"
 	"net/http"
@@ -23,6 +24,8 @@ type Faults struct {
 	Held          bool          // block and head answers wait until it clears; newHeads pushes nothing meanwhile, then its head
 	Lag           uint64        // serves the canonical block this far below the head
 	HeadDelay     time.Duration // serves a canonical block only this long after it was minted
+	HeadJitter    time.Duration // serves each canonical block a further [0, HeadJitter] after HeadDelay, fixed per vendor and block
+	PushDelay     time.Duration // newHeads pushes leave this long after the vendor serves the block over HTTP
 	Frozen        bool          // head stops moving; still answers what it holds
 	WrongChainID  bool          // eth_chainId answers another chain
 	ChainIDHeld   bool          // eth_chainId answers wait until it clears
@@ -376,12 +379,26 @@ func (v *Vendor) targetLocked() *Block {
 			tip = b
 		}
 	}
-	if d := v.faults.HeadDelay; d > 0 {
-		for since := time.Now().Add(-d); tip.MintedAt.After(since) && tip.Parent != nil && tip.Number > v.tip.Number; {
+	if f := v.faults; f.HeadDelay > 0 || f.HeadJitter > 0 {
+		now := time.Now()
+		for tip.Parent != nil && tip.Number > v.tip.Number && now.Before(tip.MintedAt.Add(v.serveDelayLocked(tip))) {
 			tip = tip.Parent
 		}
 	}
 	return tip
+}
+
+// serveDelayLocked is how long after b's mint the vendor serves it:
+// HeadDelay plus b's HeadJitter share, the same at every call.
+func (v *Vendor) serveDelayLocked(b *Block) time.Duration {
+	d := v.faults.HeadDelay
+	if j := v.faults.HeadJitter; j > 0 {
+		h := fnv.New64a()
+		_, _ = h.Write([]byte(v.ID))
+		_, _ = h.Write(b.Hash[:])
+		d += time.Duration(h.Sum64() % uint64(j+1))
+	}
+	return d
 }
 
 func (v *Vendor) setTipLocked(b *Block) {
@@ -406,7 +423,7 @@ func (v *Vendor) followLocked(out []push) []push {
 }
 
 // headPushesLocked adds the pushes of the vendor's tip on its newHeads
-// subscriptions.
+// subscriptions; with PushDelay they leave on their own timer instead.
 func (v *Vendor) headPushesLocked(out []push) []push {
 	if !v.WS || v.faults.Down || v.faults.SilentHeads {
 		return out
@@ -415,16 +432,20 @@ func (v *Vendor) headPushesLocked(out []push) []push {
 	if v.faults.WrongHashes {
 		raw = ForgeHash(raw)
 	}
-	n := len(out)
+	var mine []push
 	for w := range v.conns {
 		for sub := range w.heads {
-			out = append(out, push{w, sub, raw})
+			mine = append(mine, push{w, sub, raw})
 		}
 	}
-	if v.faults.WrongHashes && len(out) > n {
+	if v.faults.WrongHashes && len(mine) > 0 {
 		v.forgedHeads.Add(1)
 	}
-	return out
+	if d := v.faults.PushDelay; d > 0 && len(mine) > 0 {
+		time.AfterFunc(d, func() { writePushes(mine) })
+		return out
+	}
+	return append(out, mine...)
 }
 
 // pendingPushesLocked adds b's transactions on the vendor's pending
@@ -803,6 +824,14 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		return hexU(v.tip.Number + f.Ahead), nil
 	case "eth_call":
 		return v.callLocked(params)
+	case "eth_getBalance":
+		// Every address holds, at a block, that block's number in wei, so
+		// a balance read tells which block it executed at.
+		at, e := v.stateAtLocked(params, 1)
+		if e != nil {
+			return nil, e
+		}
+		return hexU(at.Number), nil
 	case "eth_getBlockByHash":
 		hs, _ := firstString(params)
 		h, ok := parseHash(hs)
@@ -1006,12 +1035,28 @@ func (v *Vendor) callLocked(params []interface{}) (interface{}, *rpcError) {
 	case !multicall && !arbSys:
 		return "0x0", nil
 	}
+	at, e := v.stateAtLocked(params, 1)
+	if e != nil {
+		return nil, e
+	}
+	n := at.Number
+	if multicall && v.chain.cfg.Nitro {
+		n = ParentNumber(n)
+	}
+	return fmt.Sprintf("0x%064x", n), nil
+}
+
+// stateAtLocked is the block on the vendor's branch whose state a call
+// with block reference params[i] reads: latest (or none) its tip, StaleState
+// below it; a number or an EIP-1898 object its block, "header not found"
+// when the vendor has none.
+func (v *Vendor) stateAtLocked(params []interface{}, i int) (*Block, *rpcError) {
 	at := v.tip
 	if s := v.faults.StaleState; s > 0 {
 		at = v.byNumberLocked(max(v.tip.Number, v.chain.canon[0].Number+s) - s)
 	}
-	if len(params) > 1 {
-		switch ref := params[1].(type) {
+	if len(params) > i {
+		switch ref := params[i].(type) {
 		case string:
 			switch ref {
 			case "latest", "pending":
@@ -1037,11 +1082,7 @@ func (v *Vendor) callLocked(params []interface{}) (interface{}, *rpcError) {
 	if at == nil {
 		return nil, &rpcError{-32000, "header not found"}
 	}
-	n := at.Number
-	if multicall && v.chain.cfg.Nitro {
-		n = ParentNumber(n)
-	}
-	return fmt.Sprintf("0x%064x", n), nil
+	return at, nil
 }
 
 // logsLocked answers eth_getLogs by blockHash or by range on the vendor's

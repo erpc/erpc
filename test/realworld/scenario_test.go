@@ -53,14 +53,17 @@ type spec struct {
 	late []string
 	// pods is how many pods the phase boots (0 is 2); memory: no redis,
 	// each pod keeps its shared state in memory; oldPods run the old
-	// image (X7); cold pods boot only when the body starts them (X3);
+	// image (X7); splitState: old pods share redis under their own
+	// cluster key, so each image's pods share state only among themselves
+	// (P21); cold pods boot only when the body starts them (X3);
 	// webSocket is merged into every pod's server.webSocket (D7). A phase
 	// reads its first spec's.
-	pods      int
-	memory    bool
-	oldPods   []int
-	cold      []int
-	webSocket map[string]interface{}
+	pods       int
+	memory     bool
+	oldPods    []int
+	splitState bool
+	cold       []int
+	webSocket  map[string]interface{}
 	// long: the phase runs in the long tier only (selectedPhases), as a
 	// row whose own timeline takes more than a few minutes.
 	long bool
@@ -330,6 +333,7 @@ func (r *run) phase(t *testing.T, name string, firstChain int64, specs []spec) {
 			pods = 2
 		}
 		h.webSocket = specs[0].webSocket
+		h.splitState = specs[0].splitState
 		h.startPods(pods, specs[0].oldPods, specs[0].cold, nets)
 		var wg sync.WaitGroup
 		for _, sc := range scs {

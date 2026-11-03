@@ -1,6 +1,7 @@
 package realworld
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -324,6 +325,181 @@ func (ra *readAfter) report(s *scenario) {
 	}
 	s.logf("R1 reads:\n%s", b.String())
 	_ = os.WriteFile(filepath.Join(s.dir, "r1-stats.txt"), []byte(b.String()), 0o644)
+}
+
+const (
+	r2Run = 3 * time.Minute
+	// r2Every: each pod's HTTP follower reads latest and follows up about
+	// this often.
+	r2Every = 100 * time.Millisecond
+)
+
+// R2: one wss push vendor and three https vendors at 0.25 s blocks, every
+// https vendor answering after p20RTT; the selection policy ranks http-a
+// first, which serves each block p20Skew after the others (P20-behind's
+// skew). 2 pods sharing redis, each with one ws newHeads client. At each
+// block N a client receives, and about every r2Every on each pod:
+// eth_getBlockByNumber(latest), then at once on the same pod eth_call
+// (Multicall3 getBlockNumber()) and eth_getBalance at the answered block
+// M, and eth_call at latest. No error and no null; at M both answer M; at
+// latest ≥ M, and the block read ≥ N; each within W.
+func r2() spec {
+	fu := &followUps{stats: map[string]*raStat{}}
+	return spec{name: "R2", bound: healthyDelivery, sim: chainsim.Config{BlockTime: liveBlockTime},
+		vendors: []vendorSpec{{"ws-b", "vendor-b", true}, {"http-a", "vendor-a", false}, {"http-c", "vendor-c", false}, {"http-d", "vendor-d", false}},
+		faults: map[string]chainsim.Faults{
+			"ws-b": {Slow: 10 * time.Millisecond}, "http-a": {Slow: p20RTT, HeadDelay: p20Skew},
+			"http-c": {Slow: p20RTT}, "http-d": {Slow: p20RTT},
+		},
+		network: map[string]interface{}{"selectionPolicy": rankFirst("http-a")},
+		clients: func(s *scenario) {
+			for pod := range s.h.pods {
+				s.addHeadsOn(fmt.Sprintf("r2-heads-%d", pod+1), pod, "", true)
+			}
+		},
+		onHead: fu.onHead,
+		body: func(s *scenario) {
+			s.blocks(10)
+			ctx, cancel := context.WithTimeout(s.ctx, r2Run)
+			defer cancel()
+			var wg sync.WaitGroup
+			for pod := range s.h.pods {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for {
+						sleepCtx(ctx, r2Every/2+rand.N(r2Every))
+						if ctx.Err() != nil {
+							return
+						}
+						fu.follow(s, "http", pod, 0)
+					}
+				}()
+			}
+			wg.Wait()
+		},
+		after: fu.report,
+	}
+}
+
+// followUps keeps R2's counts per trigger and check.
+type followUps struct {
+	mu    sync.Mutex
+	stats map[string]*raStat // "<trigger>/<check>"
+}
+
+func (fu *followUps) onHead(s *scenario, _ *headsClient, pod int, n uint64, h hash) {
+	if !s.first(fmt.Sprintf("r2/%d/%s", pod, h.Hex())) {
+		return
+	}
+	s.checks.Add(1)
+	go func() {
+		defer s.checks.Done()
+		fu.follow(s, "newHeads", pod, n)
+	}()
+}
+
+// follow reads pod's latest block, then at once the follow-ups at it; the
+// block read must reach floor (0 none).
+func (fu *followUps) follow(s *scenario, trigger string, pod int, floor uint64) {
+	where := fmt.Sprintf("pod-%d after %s", pod+1, trigger)
+	start := time.Now()
+	n, h, err := viewRead(s, pod, viewLatest)
+	took := time.Since(start)
+	if err != nil {
+		fu.note(s, trigger, "block-latest", start, took, fmt.Sprintf("%s: eth_getBlockByNumber(latest): %v", where, err))
+		return
+	}
+	problem := ""
+	if cb := s.chain.Block(h); cb == nil || cb.Number != n {
+		problem = fmt.Sprintf("%s: eth_getBlockByNumber(latest) answered %d %s, no block of the chain at that number", where, n, short(h))
+	} else if n < floor {
+		problem = fmt.Sprintf("%s: eth_getBlockByNumber(latest) answered %d, below the delivered %d", where, n, floor)
+	}
+	fu.note(s, trigger, "block-latest", start, took, problem)
+	at := hexutil.EncodeUint64(n)
+	checks := []struct {
+		name  string
+		exact bool // answers n; else at least n
+		run   func() (uint64, string)
+	}{
+		{"call-at-block", true, func() (uint64, string) { return raCallAt(s, pod, at) }},
+		{"balance-at-block", true, func() (uint64, string) { return r2BalanceAt(s, pod, at) }},
+		{"call-latest", false, func() (uint64, string) { return raCallAt(s, pod, "latest") }},
+	}
+	var wg sync.WaitGroup
+	for _, ck := range checks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			start := time.Now()
+			got, problem := ck.run()
+			took := time.Since(start)
+			switch {
+			case problem != "":
+				problem = fmt.Sprintf("%s: %s at %d: %s", where, ck.name, n, problem)
+			case ck.exact && got != n:
+				problem = fmt.Sprintf("%s: %s at %d executed at %d", where, ck.name, n, got)
+			case !ck.exact && got < n:
+				problem = fmt.Sprintf("%s: %s executed at %d, below the block read %d", where, ck.name, got, n)
+			}
+			fu.note(s, trigger, ck.name, start, took, problem)
+		}()
+	}
+	wg.Wait()
+}
+
+// note counts one read and flags its problem, or its wait past W.
+func (fu *followUps) note(s *scenario, trigger, check string, start time.Time, took time.Duration, problem string) {
+	switch {
+	case problem != "":
+		s.violate(s.name, "%s", problem)
+	case took > r1ReadBound:
+		s.violate(s.name, "%s", s.h.host.verdict(start, start.Add(took), fmt.Sprintf("%s after %s answered after %s (bound %s)", check, trigger, took.Round(time.Millisecond), r1ReadBound)))
+	}
+	fu.mu.Lock()
+	defer fu.mu.Unlock()
+	st := fu.stats[trigger+"/"+check]
+	if st == nil {
+		st = &raStat{}
+		fu.stats[trigger+"/"+check] = st
+	}
+	if problem != "" {
+		st.fail++
+	} else {
+		st.ok++
+	}
+	st.lat = append(st.lat, took)
+}
+
+// r2BalanceAt is the balance pod answers at block reference at: the number
+// of the block it read state at (chainsim's eth_getBalance).
+func r2BalanceAt(s *scenario, pod int, at interface{}) (uint64, string) {
+	var out hexutil.Big
+	if err := s.call(pod, &out, "eth_getBalance", chainsim.Multicall3.Hex(), at); err != nil {
+		return 0, "error: " + err.Error()
+	}
+	return out.ToInt().Uint64(), ""
+}
+
+// report logs R2's counts and latencies to the transcript and r2-stats.txt.
+func (fu *followUps) report(s *scenario) {
+	fu.mu.Lock()
+	defer fu.mu.Unlock()
+	var b strings.Builder
+	keys := make([]string, 0, len(fu.stats))
+	for k := range fu.stats {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	b.WriteString("trigger/check                ok  fail   p50     p99     max\n")
+	for _, k := range keys {
+		st := fu.stats[k]
+		slices.Sort(st.lat)
+		fmt.Fprintf(&b, "%-26s %5d %5d %7s %7s %7s\n", k, st.ok, st.fail, pctl(st.lat, 50), pctl(st.lat, 99), pctl(st.lat, 100))
+	}
+	s.logf("R2 reads:\n%s", b.String())
+	_ = os.WriteFile(filepath.Join(s.dir, "r2-stats.txt"), []byte(b.String()), 0o644)
 }
 
 // pctl is the p-th percentile of sorted ds, rounded to the millisecond.
