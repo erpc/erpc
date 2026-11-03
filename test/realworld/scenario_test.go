@@ -161,8 +161,7 @@ type scenario struct {
 // (an invariant or a refusal rule) by n on pod: each band probe of a block
 // no vendor has is one retried_missing (§6.4, rows U12, X8, U13, K7), a
 // read of an old-chain block the regression guard still promises one
-// served_missing (row C16), a rewind of every upstream one latest_regressed
-// (§17, row C5).
+// served_missing (row C16).
 func (s *scenario) owe(pod int, series string, n float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

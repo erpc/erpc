@@ -110,15 +110,11 @@ func (s *scenario) requireFlow(cs []cut, watch time.Duration, why string) {
 // eth_blockNumber, getBlockByNumber(latest) and eth_call(latest) succeed on
 // the rewound chain (§14 rollback write). The rewind is deeper than
 // reorgWindow, so newHeads restarts and ws logs close 1013, as in C3.
-// Every pod's Latest falls below a block it sent once: one
-// latest_regressed per pod (§17, row C5).
+// Latest falls by a pins move, so latest_regressed stays 0 (§17).
 func c5() spec {
 	return spec{name: "C5", bound: deepReorgDelivery, allow: []string{"ws:logs-end", "ws:jump"}, body: func(s *scenario) {
 		s.blocks(50)
 		r := s.rewind(c5Depth)
-		for pod := range s.h.pods {
-			s.owe(pod, "latest_regressed", 1)
-		}
 		time.Sleep(time.Until(r.at.Add(c5Follow)))
 		for range c5WatchBlocks {
 			for pod := range s.h.pods {

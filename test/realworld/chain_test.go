@@ -413,9 +413,6 @@ func c16() spec {
 			at := time.Now()
 			ex := s.excuse(-1, at)
 			tip := s.chain.Reset(c16ResetHead)
-			for pod := range s.h.pods {
-				s.owe(pod, "latest_regressed", 1)
-			}
 			s.logf("testnet reset: head %d %s → %d %s", was.Number, short(was.Hash), tip.Number, short(tip.Hash))
 			followed := make([]time.Time, len(s.h.pods))
 			for left := len(s.h.pods); left > 0 && time.Since(at) < c16Follow+reconnectSlack; {

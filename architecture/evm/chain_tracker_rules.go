@@ -741,12 +741,12 @@ func (t *ChainTracker) waits(k roundKey) bool {
 }
 
 // keepsPlace reports whether the last round still holds its place:
-// undecided and before its retry, or decided while its key stands and the
-// votes alone meet its decision. A client's re-check of another key never
+// undecided and before its retry, or decided while its key stands and its
+// answers count (backs). A client's re-check of another key never
 // displaces it.
 func (t *ChainTracker) keepsPlace(s *settleState) bool {
 	if s.decided {
-		return t.stands(s.key) && t.meets(s.key, t.baseVotes())
+		return t.stands(s.key) && t.backs(s, t.baseVotes())
 	}
 	return t.waits(s.key)
 }

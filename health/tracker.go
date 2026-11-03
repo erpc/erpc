@@ -2162,6 +2162,27 @@ func firstVoteAt(fv []firstVote, number int64, at time.Time) []firstVote {
 	return fv
 }
 
+// RewindFirstVotes drops the network's first hash votes above head, the
+// height the network-wide tracker's pins moved down to (spec §14). Those
+// heights' first votes came from the reverted branch: a vote on the new
+// branch below the old branch's counters would age from them and pass W at
+// once, so no voter would count until the rollback write, which only a
+// counted move makes (§19 C5). Every reporter's hash age restarts from the
+// first votes kept.
+func (t *Tracker) RewindFirstVotes(networkId string, head int64) {
+	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
+	ntwMeta.headMu.Lock()
+	defer ntwMeta.headMu.Unlock()
+	i, _ := slices.BinarySearchFunc(ntwMeta.firstVotes, head+1, func(v firstVote, n int64) int { return cmp.Compare(v.number, n) })
+	ntwMeta.firstVotes = ntwMeta.firstVotes[:i]
+	ref, now := ntwMeta.evmLatestBlockNumber.Load(), t.now()
+	for _, r := range ntwMeta.reporters {
+		r.meta.hashBehindSince = time.Time{}
+		r.meta.ageHashVote(ref, ntwMeta.firstVotes, now)
+		t.reportAges(r.ups, r.meta, now)
+	}
+}
+
 // ExpireHashVote ends the freshness of ups's hash vote at once: its socket
 // closed, so its next header can come only after a reconnect (spec §15.1).
 func (t *Tracker) ExpireHashVote(ups common.Upstream) {

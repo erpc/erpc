@@ -1024,7 +1024,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | C2 | reorg `reorgWindow` − 1 deep | as C1; no out of range |
 | C3 | reorg `reorgWindow` + 4 deep | re-anchor; `newHeads` and gRPC get the new branch from the fork point + 1; ws `logs` close `1013`, spread over 60s |
 | C4 | 2 wss voters + 1 https; 1-vs-1 tip split | only the settled hash is sent; the split counts decided rounds of reason `tie` |
-| C5 | head rewinds 50 blocks on every upstream | `latest` reads succeed within 2 bt; `latest_regressed` counts the rewind once per instance |
+| C5 | head rewinds 50 blocks on every upstream | `latest` reads succeed within 2 bt; a settle's answers from more than half the voters move the pins down, the rollback write follows; `latest_regressed` stays 0: a pins move lowers the view |
 | C6 | no blocks for 3 min, with gRPC | nothing reconnects; gRPC not cut; `Latest` frozen |
 | C7 | halt, then 100 blocks in 1s | catch-up within `maxBackfill`; batches at most `reorgWindow`; no gap |
 | C8 | 100 ms blocks; U5 + C1 | same results at 2× rate |

@@ -1454,10 +1454,10 @@ func (t *ChainTracker) rekey(k roundKey) roundKey {
 }
 
 // decide is rule 4 over the counted votes, plus the answers of the last
-// settle round once it ended, while its key stands. While a disputed round
-// is out the pins stay; over a tree without the pins they still extend,
-// as that tree could only take them by a re-anchor (pick). tie is a tie
-// rule 4 still meets.
+// settle round once it ended, while its key stands and they count
+// (backs). While a disputed round is out the pins stay; over a tree
+// without the pins they still extend, as that tree could only take them by
+// a re-anchor (pick). tie is a tie rule 4 still meets.
 func (t *ChainTracker) decide() (path, tie []*node) {
 	base := t.baseVotes()
 	extendOnly := false
@@ -1467,7 +1467,7 @@ func (t *ChainTracker) decide() (path, tie []*node) {
 			return nil, nil
 		case s.inflight && s.key.disputed():
 			extendOnly = true
-		case !s.inflight && t.meets(s.key, base):
+		case !s.inflight && t.backs(s, base):
 			base = append(base, t.settleAnswers(s, base)...)
 		}
 	}
@@ -1531,12 +1531,46 @@ func (t *ChainTracker) settleAnswers(s *settleState, base []voter) []voter {
 	return out
 }
 
+// backs reports whether the answers of ended round s count over the
+// counted votes base: base alone still meets its decision, or the answers
+// of more than half the lane's voters lie on one path. Those answers are
+// fresh evidence of a voter majority, which no minority fork has: after a
+// rewind on every upstream each vote on the new branch stands below the
+// old branch's counters for longer than W, so no vote counts until the
+// rollback write, which only a pins move makes (spec §14, §19 C5).
+func (t *ChainTracker) backs(s *settleState, base []voter) bool {
+	return t.meets(s.key, base) || t.voterMajority(s)
+}
+
+func (t *ChainTracker) voterMajority(s *settleState) bool {
+	if t.voters.all {
+		return false
+	}
+	var vs []voter
+	for _, id := range t.voters.Voters {
+		if a := s.answers[id]; a != nil && t.alive(a) && !t.walking(a) {
+			vs = append(vs, voter{id, a})
+		}
+	}
+	if len(vs)*2 <= len(t.voters.Voters) {
+		return false
+	}
+	path, _ := t.pick(vs)
+	on := 0
+	for _, v := range vs {
+		if slices.Contains(path, v.n) {
+			on++
+		}
+	}
+	return on*2 > len(t.voters.Voters)
+}
+
 // decidedAnswers are the answers of the decided round while its key
-// stands and the votes base alone still meet its decision; none
+// stands and they count (backs); none
 // otherwise.
 func (t *ChainTracker) decidedAnswers(base []voter) []voter {
 	s := t.settle
-	if s == nil || s.inflight || !s.decided || !t.stands(s.key) || !t.meets(s.key, base) {
+	if s == nil || s.inflight || !s.decided || !t.stands(s.key) || !t.backs(s, base) {
 		return nil
 	}
 	return t.settleAnswers(s, base)
@@ -2032,6 +2066,9 @@ func (t *ChainTracker) signalMove(mv move) {
 	}
 	if mv.rewinds {
 		t.rewindHeads(mv.rewind)
+		if r, ok := t.network.(interface{ EvmHeadRewound(head int64) }); ok {
+			t.callNetwork("rewound", func() { r.EvmHeadRewound(int64(mv.head.number)) })
+		}
 	}
 	if mv.alarm.hi > 0 {
 		var ev *zerolog.Event

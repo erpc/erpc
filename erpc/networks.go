@@ -1030,6 +1030,15 @@ func (n *Network) EvmPollForks(ids []string, pace time.Duration) (next time.Time
 	return n.pollHeads(ids, common.HeadNeedFork, pace, common.AskSettle)
 }
 
+// EvmHeadRewound is the network-wide tracker's note that its pins moved
+// down to head (spec §14): the hash ages restart from the first votes at
+// or below it.
+func (n *Network) EvmHeadRewound(head int64) {
+	if n.metricsTracker != nil {
+		n.metricsTracker.RewindFirstVotes(n.networkId, head)
+	}
+}
+
 // EvmRewindHeads is the network-wide tracker's rollback write (spec §14):
 // votes holds, per upstream id, the height of its own hash vote on the
 // tracker's new branch; each counter above it is rewound to it.
