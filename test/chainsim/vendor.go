@@ -824,6 +824,14 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		return hexU(v.tip.Number + f.Ahead), nil
 	case "eth_call":
 		return v.callLocked(params)
+	case "eth_getBalance":
+		// Every address holds, at a block, that block's number in wei, so
+		// a balance read tells which block it executed at.
+		at, e := v.stateAtLocked(params, 1)
+		if e != nil {
+			return nil, e
+		}
+		return hexU(at.Number), nil
 	case "eth_getBlockByHash":
 		hs, _ := firstString(params)
 		h, ok := parseHash(hs)
@@ -1027,12 +1035,28 @@ func (v *Vendor) callLocked(params []interface{}) (interface{}, *rpcError) {
 	case !multicall && !arbSys:
 		return "0x0", nil
 	}
+	at, e := v.stateAtLocked(params, 1)
+	if e != nil {
+		return nil, e
+	}
+	n := at.Number
+	if multicall && v.chain.cfg.Nitro {
+		n = ParentNumber(n)
+	}
+	return fmt.Sprintf("0x%064x", n), nil
+}
+
+// stateAtLocked is the block on the vendor's branch whose state a call
+// with block reference params[i] reads: latest (or none) its tip, StaleState
+// below it; a number or an EIP-1898 object its block, "header not found"
+// when the vendor has none.
+func (v *Vendor) stateAtLocked(params []interface{}, i int) (*Block, *rpcError) {
 	at := v.tip
 	if s := v.faults.StaleState; s > 0 {
 		at = v.byNumberLocked(max(v.tip.Number, v.chain.canon[0].Number+s) - s)
 	}
-	if len(params) > 1 {
-		switch ref := params[1].(type) {
+	if len(params) > i {
+		switch ref := params[i].(type) {
 		case string:
 			switch ref {
 			case "latest", "pending":
@@ -1058,11 +1082,7 @@ func (v *Vendor) callLocked(params []interface{}) (interface{}, *rpcError) {
 	if at == nil {
 		return nil, &rpcError{-32000, "header not found"}
 	}
-	n := at.Number
-	if multicall && v.chain.cfg.Nitro {
-		n = ParentNumber(n)
-	}
-	return fmt.Sprintf("0x%064x", n), nil
+	return at, nil
 }
 
 // logsLocked answers eth_getLogs by blockHash or by range on the vendor's
