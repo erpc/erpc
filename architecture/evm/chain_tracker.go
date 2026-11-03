@@ -258,7 +258,10 @@ type feedState struct {
 	view int
 	// firm is the view's Firm: the highest block at or below Head that q
 	// voters hold; 0 while unknown.
-	firm    uint64
+	firm uint64
+	// viewAt is when the view first stood at its Head: how long it has
+	// stood bounds the Head's age from below (LatestRead).
+	viewAt  time.Time
 	changed chan struct{}  // closed once a newer state is published
 	logs    indexer.Cursor // the logs head (spec §1)
 	// backing is the pins' count of votes, for ReconfirmPin, tap start
@@ -2610,10 +2613,16 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 func (t *ChainTracker) setView(s *feedState, path []*node) {
 	b := t.backingOf(path)
 	s.backing, s.view = b, b.head()
-	if prev := t.state.Load().viewHead(); prev != nil && s.pinAt(prev.number) == prev {
-		s.view = max(s.view, int(prev.number-s.base))
+	prev := t.state.Load()
+	if ph := prev.viewHead(); ph != nil && s.pinAt(ph.number) == ph {
+		s.view = max(s.view, int(ph.number-s.base))
 	}
 	s.firm = b.firm(s.view)
+	if h := s.viewHead(); h != nil && h == prev.viewHead() {
+		s.viewAt = prev.viewAt
+	} else {
+		s.viewAt = time.Now()
+	}
 }
 
 func maxTime(a, b time.Time) time.Time {

@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"cmp"
 	"context"
 	"slices"
 	"time"
@@ -57,8 +58,13 @@ type headClock struct {
 	// it: the next fetch must be newer (Ask's after).
 	taken map[string]time.Time
 	// edge is the fetch that answers the first read after an idle W
-	// (ChainTracker.LatestRead); edgeDone once it answered.
+	// (ChainTracker.LatestRead). Its answer sets edgeTo, the number it
+	// brought: the edge ends once the view reaches it, or at edgeBy, W
+	// after the answer, when it never does (a fork, a walk that fails);
+	// edgeDone ends it at the next run.
 	edge     *clockFire
+	edgeTo   uint64
+	edgeBy   time.Time
 	edgeDone bool
 	// seq names the clock's generation: a reset moves it on, so an answer
 	// from before the reset is dropped.
@@ -160,9 +166,15 @@ func (c *headClock) predict(number uint64, bt time.Duration) time.Time {
 	return top.at.Add(phase + time.Duration(number-top.number)*bt)
 }
 
-// due is when the tracker must look at the clock again: its next fire, or
-// the deadline that hedges the fetch in flight; zero while none is set.
-func (c *headClock) due() time.Time { return c.nextAt }
+// due is when the tracker must look at the clock again: its next fire,
+// the deadline that hedges the fetch in flight, or the end of an answered
+// idle edge; zero while none is set.
+func (c *headClock) due() time.Time {
+	if !c.edgeBy.IsZero() && (c.nextAt.IsZero() || c.edgeBy.Before(c.nextAt)) {
+		return c.edgeBy
+	}
+	return c.nextAt
+}
 
 // voter is v's record, made on first use.
 func (c *headClock) voter(id string) *clockVoter {
@@ -272,8 +284,9 @@ func (t *ChainTracker) clockCandidates() []clockCandidate {
 // A turn is the block's fire too, so only a voter within a quarter block
 // of the fastest takes one, and only one polled less often than every two
 // blocks: a far or lagging voter, or one polled every block, polls on its
-// own. ok false with none.
-func (t *ChainTracker) pickTarget(cands []clockCandidate, skip string, now time.Time, bt time.Duration) (clockCandidate, bool) {
+// own. An idle edge's fetch (edge) has a read waiting on it: it takes no
+// turn. ok false with none.
+func (t *ChainTracker) pickTarget(cands []clockCandidate, skip string, now time.Time, bt time.Duration, edge bool) (clockCandidate, bool) {
 	c := &t.clock
 	score := func(id string) time.Duration {
 		s := c.rttOf(id)
@@ -299,7 +312,7 @@ func (t *ChainTracker) pickTarget(cands []clockCandidate, skip string, now time.
 	var turnAt time.Time
 	for i := range cands {
 		cand := &cands[i]
-		if cand.id == skip || cand.interval <= 2*bt || score(cand.id) > best+bt/4 {
+		if edge || cand.id == skip || cand.interval <= 2*bt || score(cand.id) > best+bt/4 {
 			continue
 		}
 		last := cand.poller.LatestAskAt()
@@ -335,7 +348,9 @@ func (t *ChainTracker) clockDemand(now time.Time) (pace time.Duration, ok bool) 
 
 // runClock runs after every batch: it counts the fires a push made
 // needless, ends a served idle edge, hedges a late fetch, and fires or
-// schedules the next fetch while the lane has demand (spec §6.8).
+// schedules the next fetch while the lane has demand (spec §6.8). An idle
+// edge whose fetch is out or due fires at once and not as a probe; once
+// answered, the clock runs as usual while the edge waits for the view.
 func (t *ChainTracker) runClock() {
 	c := &t.clock
 	if c.skips > 0 {
@@ -344,11 +359,17 @@ func (t *ChainTracker) runClock() {
 	}
 	now, bt := time.Now(), t.BlockTime()
 	edge := t.edge.Load()
+	if edge != nil && c.edgeTo > 0 {
+		if h := t.state.Load().viewHead(); h != nil && h.number >= c.edgeTo || !now.Before(c.edgeBy) {
+			c.edgeDone = true
+		}
+	}
 	if edge != nil && c.edgeDone {
 		close(*edge)
 		t.edge.Store(nil)
-		edge, c.edge, c.edgeDone = nil, nil, false
+		edge, c.edge, c.edgeDone, c.edgeTo, c.edgeBy = nil, nil, false, 0, time.Time{}
 	}
+	waiting := edge != nil && c.edgeTo == 0
 	c.nextAt = time.Time{}
 	pace, demanded := t.clockDemand(now)
 	if !demanded && edge == nil {
@@ -356,7 +377,7 @@ func (t *ChainTracker) runClock() {
 		return
 	}
 	if c.out != nil {
-		if edge != nil && c.edge == nil {
+		if waiting && c.edge == nil {
 			c.edge = c.out
 		}
 		if c.hedge == nil && !c.out.hedged && c.out.top == c.top() {
@@ -364,7 +385,7 @@ func (t *ChainTracker) runClock() {
 				c.nextAt = at
 			} else {
 				c.out.hedged = true
-				if cand, ok := t.pickTarget(t.clockCandidates(), c.out.id, now, bt); ok {
+				if cand, ok := t.pickTarget(t.clockCandidates(), c.out.id, now, bt, waiting); ok {
 					c.hedge = t.fire(cand.id, now)
 					telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), "hedge").Inc()
 				}
@@ -374,7 +395,7 @@ func (t *ChainTracker) runClock() {
 	}
 	if cand, ok := t.staleVoter(t.clockCandidates()); ok {
 		if c.out = t.fire(cand.id, now); c.out != nil {
-			if edge != nil {
+			if waiting {
 				c.edge = c.out
 			}
 			telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), "catch_up").Inc()
@@ -384,7 +405,7 @@ func (t *ChainTracker) runClock() {
 	if target := c.top() + 1; target != c.target {
 		c.target, c.early, c.retryAt = target, 0, time.Time{}
 	}
-	at, probe := now, edge == nil && len(c.sights) > 0
+	at, probe := now, !waiting && len(c.sights) > 0
 	if probe {
 		at = t.fireAt(bt, pace)
 	}
@@ -393,7 +414,7 @@ func (t *ChainTracker) runClock() {
 		return
 	}
 	cands := t.clockCandidates()
-	cand, ok := t.pickTarget(cands, "", now, bt)
+	cand, ok := t.pickTarget(cands, "", now, bt, waiting)
 	if !ok {
 		if edge != nil {
 			c.edgeDone = true
@@ -404,9 +425,37 @@ func (t *ChainTracker) runClock() {
 	if c.out = t.fire(cand.id, now); c.out != nil {
 		c.out.probe = probe
 	}
-	if edge != nil {
+	if waiting {
 		c.edge = c.out
+		for _, id := range t.edgeVoters(cands, cand.id) {
+			t.fire(id, now)
+		}
 	}
+}
+
+// edgeVoters are the voters an idle edge's fetch to first is sent beside:
+// the next fastest by round trip plus lateness, so q voters answer at
+// once. After an idle W the top sight is blocks old and the edge's answer
+// jumps over blocks the pins lack: one vote on it is a root of its own
+// that the older votes outweigh, so q answers link it in one round trip,
+// not one after another (spec §6.8 catch-up).
+func (t *ChainTracker) edgeVoters(cands []clockCandidate, first string) []string {
+	c := &t.clock
+	score := func(id string) time.Duration {
+		s := c.rttOf(id)
+		if v := c.ups[id]; v != nil {
+			s += v.late
+		}
+		return s
+	}
+	var ids []string
+	for _, cand := range cands {
+		if cand.id != first {
+			ids = append(ids, cand.id)
+		}
+	}
+	slices.SortFunc(ids, func(a, b string) int { return cmp.Compare(score(a), score(b)) })
+	return ids[:min(len(ids), max(t.voters.Need, 1)-1)]
 }
 
 // staleVoter is a voter the clock fetches now because a counted vote stands
@@ -518,9 +567,7 @@ func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnsw
 	case c.hedge:
 		c.hedge = nil
 	}
-	if f == c.edge {
-		c.edgeDone = true
-	}
+	edge := f == c.edge
 	now, bt := time.Now(), t.BlockTime()
 	if !a.At.IsZero() {
 		if a.At.After(c.taken[f.id]) {
@@ -531,6 +578,15 @@ func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnsw
 		}
 	}
 	sh, ok := a.Header.(SourceHeader)
+	if edge {
+		// The edge waits for the view to reach what its fetch brought:
+		// a jump over blocks the pins lack reaches it only once linked.
+		if h := t.state.Load().viewHead(); a.Err == nil && ok && sh.h != nil && (h == nil || sh.h.number > h.number) {
+			c.edgeTo, c.edgeBy = sh.h.number, now.Add(t.W())
+		} else {
+			c.edgeDone = true
+		}
+	}
 	outcome := "failed"
 	switch {
 	case a.Err != nil || !ok || sh.h == nil:
@@ -598,10 +654,13 @@ func (t *ChainTracker) clockDebounce(id string) time.Duration {
 
 // LatestRead marks a read of the lane's latest (spec §6.8 demand): for W
 // after it the block clock runs. The first read after W with no demand is
-// the idle edge: every read of that edge waits for the clock's first
-// fetch, at most W or until ctx ends, so none serves a Head older than
-// it; with no pins yet nothing waits, and tags pass through (§7).
-func (t *ChainTracker) LatestRead(ctx context.Context) {
+// the idle edge, which fetches heads at once; every read of that edge
+// waits for the view to reach the fetched head, at most W or until ctx
+// ends, so none serves a Head older than it; with no pins yet nothing
+// waits, and tags pass through (§7). A head number (number) waits only
+// while the view has stood for W, so it is never older than W; else it
+// answers from the view at once, as from memory (§5).
+func (t *ChainTracker) LatestRead(ctx context.Context, number bool) {
 	now := time.Now()
 	prev := t.latestReadAt.Swap(now.UnixNano())
 	edge := t.edge.Load()
@@ -614,7 +673,8 @@ func (t *ChainTracker) LatestRead(ctx context.Context) {
 			edge = t.edge.Load()
 		}
 	}
-	if edge == nil || t.state.Load().viewHead() == nil {
+	s := t.state.Load()
+	if edge == nil || s.viewHead() == nil || number && now.Sub(s.viewAt) < t.W() {
 		return
 	}
 	w := time.NewTimer(t.W())
