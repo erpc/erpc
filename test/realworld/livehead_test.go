@@ -13,6 +13,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rpc"
+
+	"github.com/erpc/erpc/test/chainsim"
 )
 
 // Bounds of the live-head rows (§19 P19-P22, X10, C19, R2).
@@ -780,3 +782,56 @@ func (s *scenario) judgeView(b *strings.Builder, vt *viewTap, vl *viewLog, r vie
 //
 // --- rows ---
 //
+
+const (
+	x10Run = 3 * time.Minute
+	// x10Sample: pod-1's sampler reads each latest about this often;
+	// x10PeerRate: pod-2's eth_blockNumber reads a second.
+	x10Sample   = 10 * time.Millisecond
+	x10PeerRate = 20
+)
+
+// X10: one wss and two https vendors, 2 pods sharing redis. Pod-2 takes
+// x10PeerRate eth_blockNumber a second; pod-1 a ws newHeads subscriber
+// and a sampler reading eth_blockNumber and eth_getBlockByNumber(latest)
+// every x10Sample. On pod-1 HTTP and the stream show one view
+// (judgeView, bound liveViewBound); every pod sends at most 1.05 head
+// fetches per new block; no read fails.
+func x10() spec {
+	return spec{name: "X10", bound: healthyDelivery, sim: chainsim.Config{BlockTime: liveBlockTime},
+		vendors: []vendorSpec{{"ws-a", "vendor-a", true}, {"http-b", "vendor-b", false}, {"http-c", "vendor-c", false}},
+		faults: map[string]chainsim.Faults{
+			"ws-a": {Slow: 10 * time.Millisecond}, "http-b": {Slow: 20 * time.Millisecond}, "http-c": {Slow: 30 * time.Millisecond},
+		},
+		clients: func(*scenario) {}, body: x10Body}
+}
+
+func x10Body(s *scenario) {
+	s.blocks(10)
+	tap := s.startViewTap(0)
+	s.blocks(8)
+	vl := &viewLog{}
+	ctx, cancel := context.WithTimeout(s.ctx, x10Run)
+	defer cancel()
+	a := s.fetchMark()
+	var wg sync.WaitGroup
+	run := func(im *freshImage, period time.Duration, read func(*scenario, int) (uint64, error)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.freshClient(ctx, im, period, func(pod int) (uint64, error) { return read(s, pod) })
+		}()
+	}
+	run(&freshImage{pod: 1}, time.Second/x10PeerRate, vl.reader(viewHead))
+	run(&freshImage{pod: 0}, x10Sample, vl.reader(viewHead))
+	run(&freshImage{pod: 0}, x10Sample, vl.reader(viewLatest))
+	wg.Wait()
+	var all fetchSpan
+	all.add(a, s.fetchMark())
+	time.Sleep(liveViewBound + tapProcessingSlack)
+	var b strings.Builder
+	s.judgeFetches(&b, "over the run", all, liveFetchBound)
+	s.judgeView(&b, tap, vl, viewRules{bound: liveViewBound, numbers: true})
+	s.judgeErrors(vl)
+	s.logf("%s", b.String())
+}
