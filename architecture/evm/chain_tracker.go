@@ -2516,6 +2516,11 @@ type pinBacking struct {
 	// hash voter on another branch the pinned one does not outweigh, or
 	// may yet be reorged away.
 	undisputed int
+	// served is the highest pin index Head may reach by its votes: one
+	// counted vote at or above a pin whose header hashes to its hash, else
+	// need votes (a hash no recompute proves is one upstream's word,
+	// §19 U8 with integrity off); -1 none.
+	served int
 }
 
 // pinBack is one counted vote: the highest pin it backs and its vendor.
@@ -2531,13 +2536,13 @@ func (b *pinBacking) atLeast(i int) int {
 }
 
 // head is the view's Head before rule 5 (spec §6.5): the index of the
-// highest pin one counted vote backs, undisputed and at most the
-// guarantee; -1 while no pin is.
+// highest pin one counted vote backs, hash-proven, else need votes back,
+// undisputed and at most the guarantee; -1 while no pin is.
 func (b *pinBacking) head() int {
-	if len(b.backs) == 0 {
+	if len(b.backs) == 0 || b.served < 0 {
 		return -1
 	}
-	i := min(b.backs[len(b.backs)-1].i, b.undisputed-1)
+	i := min(b.served, b.undisputed-1)
 	if b.guarantee > 0 {
 		if uint64(b.guarantee) < b.base {
 			return -1
@@ -2588,7 +2593,7 @@ func (b *pinBacking) confirms(n uint64) bool {
 // numbers over the same pins.
 func (b *pinBacking) same(o *pinBacking) bool {
 	return o != nil && b.base == o.base && b.need == o.need && b.voters == o.voters && b.vendors == o.vendors &&
-		b.holders == o.holders && b.guarantee == o.guarantee && b.undisputed == o.undisputed && slices.Equal(b.backs, o.backs)
+		b.holders == o.holders && b.guarantee == o.guarantee && b.undisputed == o.undisputed && b.served == o.served && slices.Equal(b.backs, o.backs)
 }
 
 // backingOf counts the votes backing each pin of path. A decided settle's
@@ -2653,6 +2658,20 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 		}
 	}
 	slices.SortFunc(b.backs, func(x, y pinBack) int { return x.i - y.i })
+	b.served = -1
+	if n := len(b.backs); n > 0 {
+		floor := -1
+		if need := max(b.need, 1); n >= need {
+			floor = b.backs[n-need].i
+		}
+		b.served = floor
+		for i := b.backs[n-1].i; i > floor; i-- {
+			if path[i].h.hashRecomputes() {
+				b.served = i
+				break
+			}
+		}
+	}
 	slices.Sort(forks)
 	for j, f := range forks {
 		if held := len(b.backs) - b.atLeast(f+1); held < max(b.need, 1) || held <= j+1 {
