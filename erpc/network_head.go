@@ -12,6 +12,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 )
@@ -88,7 +89,10 @@ func (n *Network) headFor(sel string) *common.EvmHead {
 }
 
 // viewHead sets h's view fields from v, its Head at most limit when that
-// is set; Finalized never above the Head.
+// is set; Finalized never above the Head. A limit the pins do not hold
+// (its upstreams' branch is not linked to them yet) serves the number
+// alone: no hash to check an answer against, and never a block above
+// what the selector's upstreams hold.
 func viewHead(h *common.EvmHead, v evm.View, limit int64) {
 	head, ok := v.Head()
 	if !ok {
@@ -96,9 +100,11 @@ func viewHead(h *common.EvmHead, v evm.View, limit int64) {
 		return
 	}
 	if limit > 0 && uint64(limit) < head.Number {
-		if c, ok := v.PinAt(uint64(limit)); ok {
-			head = c
+		c, pinned := v.PinAt(uint64(limit))
+		if !pinned {
+			c = indexer.Cursor{Number: uint64(limit)}
 		}
+		head = c
 	}
 	h.Latest, h.LatestHash = int64(head.Number), head.Hash
 	h.Firm = int64(min(v.Firm(), head.Number))
