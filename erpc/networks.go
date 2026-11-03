@@ -970,13 +970,15 @@ func (n *Network) catchUpLatest(ctx context.Context, sel string, wait bool) {
 // finalized report is oldest, at its poll cadence, as main sent each
 // finalized-tag read to an upstream: successive requests walk the
 // voters. A voter finalized above every one reported before, by any poll,
-// starts a step: for W after, every voter still below it polls once since
-// the step began, at once on the request that saw it too, so Finalized,
-// the q-th highest vote, follows within a round trip. Every voter with no
-// finalized number yet polls at its cadence, so a cold instance gets its
-// first ballot, or gives a tagless voter's tag up, as soon as it would
-// with every voter polled. Each poller joins a poll in flight, and has
-// none once its finalized tag is given up.
+// starts a step: for W after, as many of the voters still below it as
+// Finalized, the q-th highest vote, lacks to reach it poll once since the
+// step began, oldest finalized report first, at once on the request that
+// saw it too, so Finalized follows within a round trip; a voter that has
+// not reached the step leaves the next one to the next request. Every
+// voter with no finalized number yet polls at its cadence, so a cold
+// instance gets its first ballot, or gives a tagless voter's tag up, as
+// soon as it would with every voter polled. Each poller joins a poll in
+// flight, and has none once its finalized tag is given up.
 func (n *Network) awaitFinalizedRefresh(ctx context.Context, sel string) {
 	s := n.voters(sel, voterQuery{kind: numberVote})
 	if s.count() == 0 {
@@ -994,13 +996,35 @@ func (n *Network) awaitFinalizedRefresh(ctx context.Context, sel string) {
 		}
 		return fetched
 	}
+	var q common.ServedTipQuorum
+	if n.cfg != nil {
+		q = n.cfg.Evm.ServedTipQuorum()
+	}
 	stepRound := func(wg *sync.WaitGroup, top int64, at time.Time) {
+		lacks := q.Of(s.count())
+		var below []common.EvmStatePoller
 		s.each(func(u common.Upstream, _ int64) bool {
-			if sp := u.(common.EvmUpstream).EvmStatePoller(); sp.FinalizedBlock() < top {
-				wg.Go(func() { refresh(sp, time.Since(at)) })
+			switch sp := u.(common.EvmUpstream).EvmStatePoller(); {
+			case sp.FinalizedBlock() >= top:
+				lacks--
+			case sp.FinalizedReportAt().Before(at):
+				below = append(below, sp)
 			}
 			return true
 		})
+		slices.SortFunc(below, func(a, b common.EvmStatePoller) int { return a.FinalizedReportAt().Compare(b.FinalizedReportAt()) })
+		// Each slot polls the oldest voter left until one polls: a voter
+		// with no finalized poll (its tag given up) takes no slot.
+		var next atomic.Int32
+		for range max(0, min(lacks, len(below))) {
+			wg.Go(func() {
+				for i := int(next.Add(1)) - 1; i < len(below); i = int(next.Add(1)) - 1 {
+					if refresh(below[i], time.Since(at)) {
+						return
+					}
+				}
+			})
+		}
 	}
 	var wg sync.WaitGroup
 	top, at := n.finalizedStep(s, w)
