@@ -581,6 +581,49 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
+		// "Invalid chain ID": the transaction's chainId does not match the
+		// network. Every upstream answers the same, so it is not retried, not
+		// even for eth_sendRawTransaction.
+		//
+		// Must run before the generic -32003 / "out of gas" branch below:
+		// some nodes return these messages with code -32003, and that branch
+		// marks eth_sendRawTransaction retryable toward the network.
+		//----------------------------------------------------------------
+
+		if strings.Contains(ml, "invalid chain id") {
+			return common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorTransactionRejected,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		}
+
+		//----------------------------------------------------------------
+		// "Exceeds block gas limit": the transaction's gas limit is above the
+		// block gas limit (geth txpool ErrGasLimit). The block gas limit is
+		// consensus state, so every upstream refuses the same transaction:
+		// not retried, not even for eth_sendRawTransaction.
+		//
+		// Same ordering constraint as "invalid chain id" above.
+		//----------------------------------------------------------------
+
+		if strings.Contains(ml, "exceeds block gas limit") {
+			return common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorTransactionRejected,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		}
+
+		//----------------------------------------------------------------
 		// "Transaction rejected" or "out of gas" errors
 		// Note: This comes AFTER nonce/duplicate detection to avoid masking those errors.
 		//
@@ -618,43 +661,6 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				}
 			}
 			return execErr
-		}
-
-		//----------------------------------------------------------------
-		// "Invalid chain ID": the transaction's chainId does not match the
-		// network. Every upstream answers the same, so it is not retried, not
-		// even for eth_sendRawTransaction.
-		//----------------------------------------------------------------
-
-		if strings.Contains(ml, "invalid chain id") {
-			return common.NewErrEndpointExecutionException(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorTransactionRejected,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-		}
-
-		//----------------------------------------------------------------
-		// "Exceeds block gas limit": the transaction's gas limit is above the
-		// block gas limit (geth txpool ErrGasLimit). The block gas limit is
-		// consensus state, so every upstream refuses the same transaction:
-		// not retried, not even for eth_sendRawTransaction.
-		//----------------------------------------------------------------
-
-		if strings.Contains(ml, "exceeds block gas limit") {
-			return common.NewErrEndpointExecutionException(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorTransactionRejected,
-					err.Message,
-					nil,
-					details,
-				),
-			)
 		}
 
 		//----------------------------------------------------------------
