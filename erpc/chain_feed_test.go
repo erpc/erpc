@@ -289,8 +289,12 @@ type chaosClient struct {
 	first      uint64
 	last       uint64
 	floor      uint64 // a permitted restart: blocks below are not judged
-	problems   []string
-	conn       *websocket.Conn
+	// minority are the minority-fork heads sent, by number: a block served
+	// at 1 holder may reach clients once, then must be reverted (design
+	// decision 10, conflict A).
+	minority map[uint64]chainsim.Hash
+	problems []string
+	conn     *websocket.Conn
 }
 
 // tapEnds counts the ends of one kind of ws taps so far: out of range by
@@ -484,7 +488,10 @@ func (cl *chaosClient) apply(s *chaosSeed, n uint64, h chainsim.Hash) {
 	case b == nil:
 		cl.problems = append(cl.problems, fmt.Sprintf("head %d %x: no vendor ever served it", n, h[:4]))
 	case b.Minority():
-		cl.problems = append(cl.problems, fmt.Sprintf("head %d %x: a minority fork reached the client", n, h[:4]))
+		if cl.minority == nil {
+			cl.minority = make(map[uint64]chainsim.Hash)
+		}
+		cl.minority[n] = h
 	case b.Number != n:
 		cl.problems = append(cl.problems, fmt.Sprintf("head %x: number %d, block %d", h[:4], n, b.Number))
 	}
@@ -553,7 +560,9 @@ type chaosLogsClient struct {
 	subscribedTip uint64
 	notes         int // notifications received
 	noteBytes     int // their message lengths
-	problems      []string
+	// minority are the minority-fork logs added, as chaosClient.minority.
+	minority map[chainsim.LogKey]uint64
+	problems []string
 }
 
 // subscribeLogs dials a ws connection and subscribes chainsim.Filters[filter]; on
@@ -691,7 +700,12 @@ func (cl *chaosLogsClient) apply(s *chaosSeed, k chainsim.LogKey, n uint64, remo
 		cl.problems = append(cl.problems, fmt.Sprintf("log of block %d %x: no such block", n, k.BlockHash[:4]))
 		return
 	case b.Minority():
-		cl.problems = append(cl.problems, fmt.Sprintf("log of block %d %x: a minority fork reached the client", n, k.BlockHash[:4]))
+		if !removed {
+			if cl.minority == nil {
+				cl.minority = make(map[chainsim.LogKey]uint64)
+			}
+			cl.minority[k] = n
+		}
 	case !slices.ContainsFunc(b.Logs(), func(l chainsim.Log) bool { return l.LogIndex == k.LogIndex && chainsim.Filters[cl.filter].Matches(l) }):
 		cl.problems = append(cl.problems, fmt.Sprintf("log %d of block %d: the filter does not match it", k.LogIndex, n))
 	}
@@ -2030,6 +2044,13 @@ func (s *chaosSeed) judge(end time.Time) {
 	s.mu.Unlock()
 	for _, cl := range logs {
 		cl.mu.Lock()
+		for k, n := range cl.minority {
+			if _, held := cl.held[k]; held {
+				cl.problems = append(cl.problems, fmt.Sprintf("log %d of block %d %x: a minority fork reached the client and was never removed", k.LogIndex, n, k.BlockHash[:4]))
+			} else {
+				t.Logf("logs client %s: minority log %d of block %d %x sent, then removed", cl.name, k.LogIndex, n, k.BlockHash[:4])
+			}
+		}
 		require.Empty(t, cl.problems, "logs client %s", cl.name)
 		closed := !cl.byTest && cl.closeCode == websocket.CloseTryAgainLater
 		var fork uint64
@@ -2068,6 +2089,13 @@ func (s *chaosSeed) judge(end time.Time) {
 	}
 	for _, cl := range clients {
 		cl.mu.Lock()
+		for n, h := range cl.minority {
+			if cl.chain[n] == h {
+				cl.problems = append(cl.problems, fmt.Sprintf("head %d %x: a minority fork reached the client and was never reverted", n, h[:4]))
+			} else {
+				t.Logf("client %s: minority head %d %x sent, then reverted", cl.name, n, h[:4])
+			}
+		}
 		require.Empty(t, cl.problems, "client %s", cl.name)
 		require.NotZero(t, cl.last, "client %s got no head", cl.name)
 
