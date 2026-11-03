@@ -9,8 +9,11 @@ import (
 	"github.com/erpc/erpc/telemetry"
 )
 
-// clockFit is how many recent blocks the block clock's phase fits.
-const clockFit = 32
+// clockFit is how many recent blocks the block clock's phase fits. The
+// fit spaces them by the block time estimate, so its error moves the
+// phase by about clockFit/2 of it: few blocks keep a cold estimate (whole
+// second timestamps) from moving fires by a block.
+const clockFit = 8
 
 // clockUnknownRTT stands in for a voter's round trip before the clock
 // measured one.
@@ -27,10 +30,12 @@ type headClock struct {
 	// at most clockFit.
 	sights []clockSight
 	// off is where a fire is sent relative to the next block's predicted
-	// sight, less the target's round trip: it moves up by 0.95 step after
-	// an early answer and down by 0.05 step after a timely one, so it
-	// settles where 5% of the fires come early (k ≈ 1.65 at any spread).
-	off    time.Duration
+	// sight, less the target's round trip, in block times, so it holds
+	// while the block time estimate moves from its cold value: it moves
+	// up by 0.95 step after an early answer and down by 0.05 step after a
+	// timely one, so it settles where 5% of the fires come early (k ≈
+	// 1.65 at any spread).
+	off    float64
 	offSet bool
 	// out is the fetch in flight, hedge the second voter's while out is
 	// late; nil while none is.
@@ -72,6 +77,11 @@ type clockFire struct {
 	// is a new block.
 	top    uint64
 	hedged bool
+	// probe: sent at the phase's fire time (fireAt), not for the idle
+	// edge, a catch-up or a hedge: only a probe's answer says where the
+	// next block's sight is, so only it moves the offset, early count and
+	// misses.
+	probe bool
 }
 
 // clockVoter is what the clock learned of one voter: its round trip's EMA
@@ -248,8 +258,10 @@ func (t *ChainTracker) clockCandidates() []clockCandidate {
 // pickTarget is the voter a fire goes to, never skip: a voter whose turn
 // is due, the one whose last local fetch is oldest, so its full poll's
 // latest part is met (spec §6.8 turns); else the fastest by expected first
-// sight, round trip plus lateness, round-robin among those within one
-// round trip of it, so tip calls spread. ok false with none.
+// sight, round trip plus lateness, round-robin among those within a
+// quarter of its round trip: each millisecond of a slower target adds to
+// the served age, and the first read of the block goes to its holder.
+// ok false with none.
 func (t *ChainTracker) pickTarget(cands []clockCandidate, skip string, now time.Time, bt time.Duration) (clockCandidate, bool) {
 	c := &t.clock
 	var turn *clockCandidate
@@ -292,7 +304,7 @@ func (t *ChainTracker) pickTarget(cands []clockCandidate, skip string, now time.
 	}
 	var near []clockCandidate
 	for _, cand := range cands {
-		if cand.id != skip && score(cand.id) <= best+bestRTT {
+		if cand.id != skip && score(cand.id) <= best+bestRTT/4 {
 			near = append(near, cand)
 		}
 	}
@@ -361,8 +373,8 @@ func (t *ChainTracker) runClock() {
 	if target := c.top() + 1; target != c.target {
 		c.target, c.early, c.retryAt = target, 0, time.Time{}
 	}
-	at := now
-	if edge == nil && len(c.sights) > 0 {
+	at, probe := now, edge == nil && len(c.sights) > 0
+	if probe {
 		at = t.fireAt(bt, pace)
 	}
 	if now.Before(at) {
@@ -378,7 +390,9 @@ func (t *ChainTracker) runClock() {
 		}
 		return
 	}
-	c.out = t.fire(cand.id, now)
+	if c.out = t.fire(cand.id, now); c.out != nil {
+		c.out.probe = probe
+	}
 	if edge != nil {
 		c.edge = c.out
 	}
@@ -424,7 +438,7 @@ func (t *ChainTracker) staleVoter(cands []clockCandidate) (clockCandidate, bool)
 func (t *ChainTracker) fireAt(bt, pace time.Duration) time.Time {
 	c := &t.clock
 	if !c.offSet {
-		c.off, c.offSet = bt/10, true
+		c.off, c.offSet = 0.1, true
 	}
 	var at time.Time
 	switch {
@@ -433,7 +447,7 @@ func (t *ChainTracker) fireAt(bt, pace time.Duration) time.Time {
 	case c.early > 0:
 		at = c.retryAt
 	default:
-		at = c.predict(c.target, bt).Add(c.off - c.bestRTT())
+		at = c.predict(c.target, bt).Add(time.Duration(c.off*float64(bt)) - c.bestRTT())
 	}
 	if p := c.lastFire.Add(pace); pace > 0 && at.Before(p) {
 		at = p
@@ -476,10 +490,11 @@ func (t *ChainTracker) fire(id string, now time.Time) *clockFire {
 }
 
 // clockAnswered takes the answer to fire f on the tracker's goroutine,
-// after the vote it carried: a new block resets the misses and pulls the
-// offset earlier; an answer still at f's top was early, which pushes the
-// offset later and schedules the one retry, or a miss once the retry was
-// spent; an answer below what another voter brought marks its voter late.
+// after the vote it carried: a new block resets the misses, and a probe's
+// pulls the offset earlier; a probe's answer still at f's top was early,
+// which pushes the offset later and schedules the one retry, or a miss
+// once the retry was spent; an answer below what another voter brought
+// marks its voter late. Other fires were counted when sent.
 func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnswer) {
 	c := &t.clock
 	if seq != c.seq {
@@ -506,25 +521,29 @@ func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnsw
 	}
 	sh, ok := a.Header.(SourceHeader)
 	outcome := "failed"
-	step := max(bt/20, time.Millisecond)
 	switch {
 	case a.Err != nil || !ok || sh.h == nil:
 	case sh.h.number > f.top:
 		outcome, c.misses = "new", 0
 		c.sampleLate(f.id, 0)
-		if !f.hedged {
-			c.off = max(c.off-step/20, -bt/2)
+		if f.probe && !f.hedged {
+			c.off = max(c.off-1.0/400, -0.5)
 		}
 	case c.top() > f.top:
 		// Another channel brought the block while this voter still
 		// answered the one before: it lags.
 		outcome = "early"
+		if !f.probe {
+			outcome = ""
+		}
 		if seen := c.sightOf(c.top()); !seen.IsZero() {
 			c.sampleLate(f.id, now.Sub(seen))
 		}
+	case !f.probe:
+		outcome = ""
 	default:
 		outcome = "early"
-		c.off = min(c.off+step*19/20, bt)
+		c.off = min(c.off+19.0/400, 1)
 		c.early++
 		debounce := t.clockDebounce(f.id)
 		switch {
@@ -538,7 +557,9 @@ func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnsw
 			c.misses++
 		}
 	}
-	telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), outcome).Inc()
+	if outcome != "" {
+		telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), outcome).Inc()
+	}
 }
 
 // clockDebounce is voter id's explicit statePollerDebounce, 0 when it

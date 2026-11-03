@@ -284,13 +284,15 @@ var (
 	}, []string{"project", "network"})
 
 	// MetricHeadClockTotal counts a lane's block clock fetches by outcome:
-	// new (a new block), early (the block was not there yet), hedge (sent
-	// to a second voter while the first was late), skipped_push (a push or
-	// another local fetch brought the block before the fire), failed.
+	// new (a new block), early (a probe's answer: the block was not there
+	// yet), hedge (sent to a second voter while the first was late),
+	// catch_up (sent to a voter left behind by an unlinked jump),
+	// skipped_push (a push or another local fetch brought the block before
+	// the fire), failed.
 	MetricHeadClockTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "head_clock_total",
-		Help:      "Block clock fires of a lane's chain tracker, by outcome: new, early, hedge, skipped_push, failed.",
+		Help:      "Block clock fires of a lane's chain tracker, by outcome: new, early, hedge, catch_up, skipped_push, failed.",
 	}, []string{"project", "network", "lane", "outcome"})
 
 	MetricHeadViewLagSeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
