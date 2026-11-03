@@ -542,7 +542,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 		_, parseRequestsSpan := common.StartDetailSpan(httpCtx, "Http.ParseRequests")
 		if len(body) > 0 {
-			lg.Info().RawJSON("body", body).Msgf("received http request")
+			lg.Info().RawJSON("json_body", body).Msgf("received http request")
 		} else {
 			lg.Info().Msgf("received http request with empty body")
 		}
