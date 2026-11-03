@@ -1330,7 +1330,7 @@ func TestRollbackWriteOnlyFromFreshVotesOnALowerBranch(t *testing.T) {
 		for n := from; n <= to; n++ {
 			h, err := parseChainHeader(testHeader(n, testHash(tag, n), parent))
 			require.NoError(t, err)
-			c.observeSource(src, h, at)
+			c.observeSource(src, h, at, false)
 			parent = h.hashHex
 		}
 		c.sync(context.Background())

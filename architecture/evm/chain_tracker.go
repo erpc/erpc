@@ -346,6 +346,7 @@ type trackerMsg struct {
 	raw      json.RawMessage
 	hdr      *chainHeader // set when the sender already parsed raw
 	at       time.Time    // a source vote's evidence time
+	pushed   bool         // a source vote its source pushed, not a poll
 	held     *heldReceipts
 	done     chan struct{}
 	fn       func()
@@ -572,8 +573,8 @@ func (t *ChainTracker) observeAnswer(upstreamId string, h *chainHeader) {
 
 // observeSource is Observe for a source header intake already parsed,
 // with its evidence time.
-func (t *ChainTracker) observeSource(upstreamId string, h *chainHeader, at time.Time) {
-	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteSource, hdr: h, at: at})
+func (t *ChainTracker) observeSource(upstreamId string, h *chainHeader, at time.Time, pushed bool) {
+	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteSource, hdr: h, at: at, pushed: pushed})
 }
 
 // observeFinal takes upstreamId's finalized evidence (finalThrough).
@@ -838,8 +839,22 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 		nd = t.hold(h)
 	}
 	// The block clock's phase: the first local sight of each new number,
-	// on any channel.
-	t.clock.saw(h.number, time.Now())
+	// on any channel. A voter that reports often (within a block) and
+	// newly reaches a number another channel brought first lags by the
+	// gap: the clock never targets it while a voter that does not lag is
+	// as near.
+	now := time.Now()
+	if msg.vote == voteSource {
+		if prev := t.votes[msg.upstream]; t.alive(prev) && prev.h.number < h.number && now.Sub(t.voteAt[msg.upstream]) <= t.BlockTime() {
+			if seen := t.clock.sightOf(h.number); h.number <= t.clock.top() && !seen.IsZero() {
+				t.clock.sampleLate(msg.upstream, now.Sub(seen))
+			}
+		}
+		if h.number > t.clock.top() {
+			t.clock.sampleLate(msg.upstream, 0)
+		}
+	}
+	t.clock.saw(h.number, now, msg.pushed, t.BlockTime())
 	if msg.vote != voteSource {
 		if len(t.pins) == 0 {
 			t.evict()
@@ -4168,11 +4183,11 @@ func GroupTracker(n common.Network, groupKey, selector, lane string) *ChainTrack
 // Each tracker drops it unless u is one of its lane's voters. An upstream
 // without a finalized tag brings its derived finalized number along, as its
 // finalized evidence (spec §6.5).
-func ObserveSourceHeader(n common.Network, u common.Upstream, sh SourceHeader, at time.Time) {
+func ObserveSourceHeader(n common.Network, u common.Upstream, sh SourceHeader, at time.Time, pushed bool) {
 	id := u.Id()
 	derived, ok := derivedFinalized(u)
 	lanesOf(n, u, func(t *ChainTracker) {
-		t.observeSource(id, sh.h, at)
+		t.observeSource(id, sh.h, at, pushed)
 		if ok {
 			t.observeFinal(id, finalEvidence{number: derived, derived: true})
 		}

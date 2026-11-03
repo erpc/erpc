@@ -97,13 +97,21 @@ func (c *headClock) reset() {
 	*c = headClock{seq: seq, ups: make(map[string]*clockVoter), taken: make(map[string]time.Time)}
 }
 
-// saw records the first local sight of number at at.
-func (c *headClock) saw(number uint64, at time.Time) {
+// saw records the first local sight of number at at. A poll, not a push,
+// that brings the target before its scheduled probe shows the probe was
+// late by at least the gap: the offset moves earlier by it, so a voter
+// that lags the chain (an own node behind the vendors) and polls on its
+// own never sets the phase the vendors' blocks are fetched at. A push
+// skips the probe and moves nothing: it costs no fetch.
+func (c *headClock) saw(number uint64, at time.Time, pushed bool, bt time.Duration) {
 	if n := len(c.sights); n > 0 && number <= c.sights[n-1].number {
 		return
 	}
 	if c.scheduled && c.out == nil && number >= c.target {
 		c.skips++
+		if !pushed && c.early == 0 && c.misses == 0 && bt > 0 && c.nextAt.After(at) {
+			c.off = max(c.off-max(float64(c.nextAt.Sub(at))/float64(bt), 1.0/400), -0.5)
+		}
 	}
 	c.scheduled = false
 	c.sights = append(c.sights, clockSight{number, at})
@@ -261,27 +269,12 @@ func (t *ChainTracker) clockCandidates() []clockCandidate {
 // sight, round trip plus lateness, round-robin among those within a
 // quarter of its round trip: each millisecond of a slower target adds to
 // the served age, and the first read of the block goes to its holder.
-// ok false with none.
+// A turn is the block's fire too, so only a voter within a quarter block
+// of the fastest takes one, and only one polled less often than every two
+// blocks: a far or lagging voter, or one polled every block, polls on its
+// own. ok false with none.
 func (t *ChainTracker) pickTarget(cands []clockCandidate, skip string, now time.Time, bt time.Duration) (clockCandidate, bool) {
 	c := &t.clock
-	var turn *clockCandidate
-	var turnAt time.Time
-	for i := range cands {
-		cand := &cands[i]
-		if cand.id == skip || cand.interval <= 0 {
-			continue
-		}
-		last := cand.poller.LatestAskAt()
-		if now.Sub(last) < cand.interval-2*bt {
-			continue
-		}
-		if turn == nil || last.Before(turnAt) {
-			turn, turnAt = cand, last
-		}
-	}
-	if turn != nil {
-		return *turn, true
-	}
 	score := func(id string) time.Duration {
 		s := c.rttOf(id)
 		if v := c.ups[id]; v != nil {
@@ -301,6 +294,24 @@ func (t *ChainTracker) pickTarget(cands []clockCandidate, skip string, now time.
 	}
 	if best < 0 {
 		return clockCandidate{}, false
+	}
+	var turn *clockCandidate
+	var turnAt time.Time
+	for i := range cands {
+		cand := &cands[i]
+		if cand.id == skip || cand.interval <= 2*bt || score(cand.id) > best+bt/4 {
+			continue
+		}
+		last := cand.poller.LatestAskAt()
+		if now.Sub(last) < cand.interval-2*bt {
+			continue
+		}
+		if turn == nil || last.Before(turnAt) {
+			turn, turnAt = cand, last
+		}
+	}
+	if turn != nil {
+		return *turn, true
 	}
 	var near []clockCandidate
 	for _, cand := range cands {

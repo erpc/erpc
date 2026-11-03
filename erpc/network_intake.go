@@ -272,7 +272,7 @@ func (in *networkIntake) header(upstreamId string, sh evm.SourceHeader, kind evm
 	if stream {
 		in.noteStream(upstreamId, int64(cur.Number))
 	}
-	evm.ObserveSourceHeader(in.nw, u, sh, at)
+	evm.ObserveSourceHeader(in.nw, u, sh, at, stream)
 	if in.isVoter(upstreamId) {
 		in.count(upstreamId, "voted")
 	} else {
