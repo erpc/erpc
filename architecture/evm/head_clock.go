@@ -440,6 +440,15 @@ func (t *ChainTracker) runClock() {
 			return
 		}
 	}
+	if cand, ok := t.cappingVoter(t.clockCandidates()); ok {
+		if c.out = t.fire(cand.id, now); c.out != nil {
+			if waiting {
+				c.edge = c.out
+			}
+			telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), "guarantee").Inc()
+			return
+		}
+	}
 	if target := c.top() + 1; target != c.target {
 		c.target, c.early, c.retryAt = target, 0, time.Time{}
 	}
@@ -522,6 +531,27 @@ func (t *ChainTracker) staleVoter(cands []clockCandidate) (clockCandidate, bool)
 	for _, cand := range cands {
 		n := t.votes[cand.id]
 		if t.alive(n) && t.rootOf(n) == pinRoot && t.clock.taken[cand.id].Before(seen) {
+			return cand, true
+		}
+	}
+	return clockCandidate{}, false
+}
+
+// cappingVoter is a guarantee subset's voter the clock fetches now because
+// the guarantee cap holds the Head below the pinned head (spec §6.8): a
+// push brings the pins every block, but only that voter's newer head
+// raises the cap. Each capping voter is fetched once per new pinned head.
+func (t *ChainTracker) cappingVoter(cands []clockCandidate) (clockCandidate, bool) {
+	head, g := t.head(), t.voters.Guarantee
+	if head == nil || g <= 0 || head.number <= uint64(g) {
+		return clockCandidate{}, false
+	}
+	seen := t.clock.sightOf(head.number)
+	if seen.IsZero() {
+		return clockCandidate{}, false
+	}
+	for _, cand := range cands {
+		if slices.Contains(t.voters.Capping, cand.id) && t.clock.taken[cand.id].Before(seen) {
 			return cand, true
 		}
 	}

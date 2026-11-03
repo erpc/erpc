@@ -984,6 +984,10 @@ type HashVoters struct {
 	// guarantee subsets (servedTip.guaranteedFor, guaranteedMethods), which
 	// the view's Head never passes; 0 while none constrains it.
 	Guarantee int64
+	// Capping are the guarantee subsets' number voters at or below
+	// Guarantee: only their newer heads raise it, so the block clock
+	// fetches one of them each block the cap holds the Head back.
+	Capping []string
 	// Vendors is the network's vendor table (meetsEvidence); nil when
 	// intake published none.
 	Vendors *Vendors

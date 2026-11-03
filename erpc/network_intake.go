@@ -878,6 +878,7 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration) evm.HashVoters
 	}
 	hv.Need = q.Of(len(hv.Hash))
 	hv.Holders, hv.Guarantee = n.laneHolders(selector)
+	hv.Capping = n.guaranteeLaggers(selector, hv.Guarantee)
 	return hv
 }
 

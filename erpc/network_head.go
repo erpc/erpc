@@ -449,6 +449,37 @@ func (n *Network) laneHolders(sel string) (holders, guarantee int64) {
 	return common.PickServedTip(heads, q).Tip, guarantee
 }
 
+// guaranteeLaggers are the lane's number voters in a guarantee subset
+// whose head is at or below floor (guaranteedFloor): only their newer
+// heads raise it.
+func (n *Network) guaranteeLaggers(sel string, floor int64) []string {
+	if floor <= 0 || n.cfg == nil || n.cfg.Evm == nil || n.cfg.Evm.ServedTip == nil {
+		return nil
+	}
+	st := n.cfg.Evm.ServedTip
+	member := func(u common.Upstream) bool {
+		for _, g := range st.GuaranteedFor {
+			if m, _ := common.UpstreamMatchesSelector(g, u); m {
+				return true
+			}
+		}
+		for _, m := range st.GuaranteedMethods {
+			if handle, _ := u.ShouldHandleMethod(m); handle {
+				return true
+			}
+		}
+		return false
+	}
+	var ids []string
+	n.voters(sel, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
+		if max(head, n.heldAtLeast(u.Id())) <= floor && member(u) {
+			ids = append(ids, u.Id())
+		}
+		return true
+	})
+	return ids
+}
+
 // laneLeader is the highest number voter of the lane (voterSet) whose head
 // is within latest + maxRetryableBlockDistance (#1154): a head beyond reach
 // of the served one never leads. nil while latest is unknown.
