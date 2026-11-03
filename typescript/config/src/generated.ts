@@ -1451,7 +1451,7 @@ export const ConsensusDefaultPolicyName = "default";
  * caller that skips SetDefaults) cannot disable the selector timeout by
  * accident.
  */
-export const ConsensusDefaultEvalTimeout = 50 * any /* time.Millisecond */;
+export const ConsensusDefaultEvalTimeout = 50000000; /* 50ms as time.Duration nanoseconds */
 /**
  * ConsensusCustomPolicyConfig configures the pre-round consensus-policy
  * selector. EvalFunction is the operator-supplied JS expression evaluating to
