@@ -82,15 +82,20 @@ func setupTestNetworkForInterpolation(t *testing.T, ctx context.Context, network
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	// As the networks registry does: the reconciler binds each poller to
 	// intake, so its latest answers are hash votes. They form the view only
-	// with a hash (spec §6.5); the shared poller mocks carry none, so the
-	// tip block answers hashed, by tag and by its number.
-	mockHashedLatest("rpc1", hashedLatestBody("0x11118888"))
+	// with a hash (spec §6.5): the shared poller mock of the tip, by tag and
+	// by number, answers it hashed here, still counted as a poller mock.
+	for _, m := range gock.GetAll() {
+		probe, _ := http.NewRequest(http.MethodPost, "http://rpc1.localhost", strings.NewReader(`{"method":"eth_getBlockByNumber","params":["latest",false]}`))
+		if ok, _ := m.Match(probe); ok {
+			gock.Remove(m)
+		}
+	}
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Persist().
 		Filter(func(r *http.Request) bool {
 			b := util.SafeReadBody(r)
-			return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, `"0x11118888"`)
+			return strings.Contains(b, "eth_getBlockByNumber") && (strings.Contains(b, `"latest"`) || strings.Contains(b, `"0x11118888"`))
 		}).
 		Reply(200).
 		JSON([]byte(hashedLatestBody("0x11118888")))

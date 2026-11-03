@@ -242,8 +242,9 @@ func TestInterpolation_InstantFinalityLatestStaysRealtime(t *testing.T) {
 	}
 }
 
-// hashedLatestBody is a latest block at number with a hash, so its answer
-// forms the view (spec §6.5); the shared poller mocks carry no hash.
+// hashedLatestBody is the shared poller's tip block at number with a hash,
+// so its answer forms the view (spec §6.5); the shared poller mocks carry
+// none. Its note keeps it a poller mock for util.AssertNoPendingMocks.
 func hashedLatestBody(number string) string {
-	return `{"result":{"number":"` + number + `","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f0"}}`
+	return `{"result":{"number":"` + number + `","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`
 }
