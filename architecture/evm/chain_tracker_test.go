@@ -99,6 +99,7 @@ func newServedChain(t testing.TB, id string) *servedChain {
 	).Maybe()
 	n.On("Id").Return(id).Maybe()
 	n.On("ProjectId").Return("test").Maybe()
+	n.On("Config").Return((*common.NetworkConfig)(nil)).Maybe()
 	n.On("HeadLatest", mock.Anything).Return(int64(1) << 62).Maybe()
 	t.Cleanup(func() {
 		n.mu.Lock()
