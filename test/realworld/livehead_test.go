@@ -860,6 +860,113 @@ func (s *scenario) judgeClockEarly() {
 }
 
 const (
+	// p22PushDelay: vendor-b's pushes trail its HTTP head by this.
+	p22PushDelay = 100 * time.Millisecond
+	// p22Blip, p22BlipEvery: vendor-a's socket goes black that long, that
+	// often.
+	p22Blip      = 2 * time.Second
+	p22BlipEvery = 20 * time.Second
+	p22BlipRun   = 4 * time.Minute
+	// p22Stall: vendor-a's newHeads go silent this long, p22StallLead
+	// into the run; the run goes on as long after.
+	p22Stall     = 60 * time.Second
+	p22StallLead = 60 * time.Second
+	// p22TapP99: a block reaches a newHeads subscriber within 2 blocks of
+	// its mint, at p99.
+	p22TapP99 = 2 * liveBlockTime
+)
+
+// P22: two wss push sources, vendor-a first and vendor-b p22PushDelay
+// behind, and three https vendors; one old-image and one new-image pod,
+// own state each. Blip: vendor-a's socket goes black p22Blip every
+// p22BlipEvery; stall: vendor-a's newHeads go silent p22Stall. On the new
+// image: latest age p90 in the faults at most its p90 outside them + 1
+// block; newHeads p99 at most 2 blocks after the mint; head fetches per
+// new block at most 1.05 in the faults and 0.05 outside; served age and
+// latency within P19's slacks of the old image's.
+func p22(stall bool) spec {
+	name := "P22-blip"
+	if stall {
+		name = "P22-stall"
+	}
+	return spec{name: name, pods: 2, oldPods: []int{0}, memory: true, cache: true, bound: healthyDelivery,
+		sim: chainsim.Config{BlockTime: liveBlockTime},
+		vendors: []vendorSpec{{"ws-a", "vendor-a", true}, {"ws-b", "vendor-b", true},
+			{"http-c", "vendor-c", false}, {"http-d", "vendor-d", false}, {"http-e", "vendor-e", false}},
+		faults: map[string]chainsim.Faults{
+			"ws-a": {Slow: 10 * time.Millisecond}, "ws-b": {Slow: 20 * time.Millisecond, PushDelay: p22PushDelay},
+			"http-c": {Slow: 25 * time.Millisecond}, "http-d": {Slow: 30 * time.Millisecond}, "http-e": {Slow: 40 * time.Millisecond},
+		},
+		clients: func(*scenario) {}, body: func(s *scenario) { p22Body(s, stall) }}
+}
+
+func p22Body(s *scenario, stall bool) {
+	s.blocks(10)
+	var tap *viewTap
+	for _, p := range s.h.pods {
+		if !p.old {
+			tap = s.startViewTap(p.idx)
+		}
+	}
+	s.blocks(8)
+	vl := &viewLog{}
+	reads := liveReads(liveRate, vl)
+	run, fault := p22BlipRun, func(ctx context.Context, w *faultWindows) {
+		for {
+			sleepCtx(ctx, p22BlipEvery-p22Blip)
+			if ctx.Err() != nil {
+				return
+			}
+			w.fault(ctx, p22Blip, func() {
+				for _, p := range s.h.pods {
+					s.proxies["ws-a"].set(p, linkFaults{BlackHole: true})
+				}
+			}, func() {
+				for _, p := range s.h.pods {
+					s.proxies["ws-a"].set(p, linkFaults{})
+				}
+			})
+		}
+	}
+	if stall {
+		run, fault = p22StallLead+p22Stall+p22StallLead, func(ctx context.Context, w *faultWindows) {
+			sleepCtx(ctx, p22StallLead)
+			w.fault(ctx, p22Stall, func() {
+				s.vendors["ws-a"].Update(func(f *chainsim.Faults) { f.SilentHeads = true })
+			}, func() {
+				s.vendors["ws-a"].Update(func(f *chainsim.Faults) { f.SilentHeads = false })
+			})
+		}
+	}
+	imgs, all, w, from, to := s.liveRun(run, reads, fault)
+	var b strings.Builder
+	s.judgeAgeLatency(&b, reads, imgs, from, to)
+	s.judgeFetches(&b, "inside the faults", w.in, liveFetchBound)
+	s.judgeFetches(&b, "outside the faults", all.minus(w.in), livePushFetchBound)
+	for i, rd := range reads {
+		var ims []*freshImage
+		for _, im := range imgs[i] {
+			if !s.h.pods[im.pod].old {
+				ims = append(ims, im)
+			}
+		}
+		in := s.servedAges(ims, w.inside)
+		out := s.servedAges(ims, func(t time.Time) bool { return !w.inside(t) })
+		fmt.Fprintf(&b, "new image %s served age inside the faults p50 %s p90 %s (%d), outside p50 %s p90 %s (%d)\n",
+			rd.name, pctl(in, 50), pctl(in, 90), len(in), pctl(out, 50), pctl(out, 90), len(out))
+		if pctl(in, 90) > pctl(out, 90)+liveBlockTime {
+			s.violate(s.name, "new image %s served age p90 %s inside the faults, %s outside: more than a block (%s) older", rd.name, pctl(in, 90), pctl(out, 90), liveBlockTime)
+		}
+	}
+	ds := s.mintDelays(tap, from, to)
+	fmt.Fprintf(&b, "pod-%d newHeads mint to receipt: %d blocks, p50 %s p99 %s max %s\n", tap.pod+1, len(ds), pctl(ds, 50), pctl(ds, 99), pctl(ds, 100))
+	if pctl(ds, 99) > p22TapP99 {
+		s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("pod-%d newHeads mint to receipt p99 %s, bound %s (max %s)", tap.pod+1, pctl(ds, 99), p22TapP99, pctl(ds, 100))))
+	}
+	s.logf("%s", b.String())
+}
+
+const (
 	x10Run = 3 * time.Minute
 	// x10Sample: pod-1's sampler reads each latest about this often;
 	// x10PeerRate: pod-2's eth_blockNumber reads a second.

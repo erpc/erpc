@@ -25,6 +25,7 @@ type Faults struct {
 	Lag           uint64        // serves the canonical block this far below the head
 	HeadDelay     time.Duration // serves a canonical block only this long after it was minted
 	HeadJitter    time.Duration // serves each canonical block a further [0, HeadJitter] after HeadDelay, fixed per vendor and block
+	PushDelay     time.Duration // newHeads pushes leave this long after the vendor serves the block over HTTP
 	Frozen        bool          // head stops moving; still answers what it holds
 	WrongChainID  bool          // eth_chainId answers another chain
 	ChainIDHeld   bool          // eth_chainId answers wait until it clears
@@ -422,7 +423,7 @@ func (v *Vendor) followLocked(out []push) []push {
 }
 
 // headPushesLocked adds the pushes of the vendor's tip on its newHeads
-// subscriptions.
+// subscriptions; with PushDelay they leave on their own timer instead.
 func (v *Vendor) headPushesLocked(out []push) []push {
 	if !v.WS || v.faults.Down || v.faults.SilentHeads {
 		return out
@@ -431,16 +432,20 @@ func (v *Vendor) headPushesLocked(out []push) []push {
 	if v.faults.WrongHashes {
 		raw = ForgeHash(raw)
 	}
-	n := len(out)
+	var mine []push
 	for w := range v.conns {
 		for sub := range w.heads {
-			out = append(out, push{w, sub, raw})
+			mine = append(mine, push{w, sub, raw})
 		}
 	}
-	if v.faults.WrongHashes && len(out) > n {
+	if v.faults.WrongHashes && len(mine) > 0 {
 		v.forgedHeads.Add(1)
 	}
-	return out
+	if d := v.faults.PushDelay; d > 0 && len(mine) > 0 {
+		time.AfterFunc(d, func() { writePushes(mine) })
+		return out
+	}
+	return append(out, mine...)
 }
 
 // pendingPushesLocked adds b's transactions on the vendor's pending
