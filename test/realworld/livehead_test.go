@@ -181,16 +181,17 @@ func liveReads(rate float64, vl *viewLog) []liveRead {
 	}
 }
 
-// servedAges are the ages of ims' answers whose time keep accepts (nil
-// all): from chainsim minting the answered block to the answer.
+// servedAges are the ages of ims' answers whose request keep accepts by
+// its send time (nil all): from chainsim minting the answered block to the
+// answer. A read sent inside a fault and answered after it is the fault's.
 func (s *scenario) servedAges(ims []*freshImage, keep func(time.Time) bool) []time.Duration {
 	var ages []time.Duration
 	for _, im := range ims {
 		im.mu.Lock()
-		answers := slices.Clone(im.answers)
+		answers, took := slices.Clone(im.answers), slices.Clone(im.took)
 		im.mu.Unlock()
-		for _, a := range answers {
-			if keep != nil && !keep(a.at) {
+		for i, a := range answers {
+			if keep != nil && !keep(a.at.Add(-took[i])) {
 				continue
 			}
 			if bl := s.chain.CanonAt(a.n); bl != nil {
@@ -973,14 +974,20 @@ const (
 	// x10PeerRate: pod-2's eth_blockNumber reads a second.
 	x10Sample   = 10 * time.Millisecond
 	x10PeerRate = 20
+	// x10Far: pod-1's links to the https vendors add this each way, so
+	// pod-2's reports of them reach pod-1 through redis before pod-1's
+	// own fetches answer: a number another pod learned must not show on
+	// pod-1's HTTP before its taps can send it.
+	x10Far = 60 * time.Millisecond
 )
 
-// X10: one wss and two https vendors, 2 pods sharing redis. Pod-2 takes
-// x10PeerRate eth_blockNumber a second; pod-1 a ws newHeads subscriber
-// and a sampler reading eth_blockNumber and eth_getBlockByNumber(latest)
-// every x10Sample. On pod-1 HTTP and the stream show one view
-// (judgeView, bound liveViewBound); every pod sends at most 1.05 head
-// fetches per new block; no read fails.
+// X10: one wss and two https vendors, 2 pods sharing redis, pod-1
+// x10Far from the https vendors. Pod-2 takes x10PeerRate eth_blockNumber
+// a second; pod-1 a ws newHeads subscriber and a sampler reading
+// eth_blockNumber and eth_getBlockByNumber(latest) every x10Sample. On
+// pod-1 HTTP and the stream show one view (judgeView, bound
+// liveViewBound); every pod sends at most 1.05 head fetches per new
+// block; no read fails.
 func x10() spec {
 	return spec{name: "X10", bound: healthyDelivery, sim: chainsim.Config{BlockTime: liveBlockTime},
 		vendors: []vendorSpec{{"ws-a", "vendor-a", true}, {"http-b", "vendor-b", false}, {"http-c", "vendor-c", false}},
@@ -992,6 +999,9 @@ func x10() spec {
 
 func x10Body(s *scenario) {
 	s.blocks(10)
+	for _, key := range []string{"http-b", "http-c"} {
+		s.proxies[key].set(s.h.pods[0], linkFaults{Latency: x10Far})
+	}
 	tap := s.startViewTap(0)
 	s.blocks(8)
 	vl := &viewLog{}

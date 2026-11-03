@@ -524,13 +524,13 @@ var p19Ups = []freshUp{
 // polled every 4-10 s, P17's stepping finality, a cache, quorum 2; per
 // pod, rate head reads a second, half eth_blockNumber and half
 // eth_getBlockByNumber("latest"), and rate/4 eth_getBlockByNumber
-// ("finalized"); a ws newHeads subscriber on the new-image pod. Per
-// method, each answer's block age (from chainsim minting it to the
-// answer) and request latency: the new image's are within the slacks of
-// the old one's, and its head-read latency p50 at most the old one's. The
-// new image sends at most 1.05 head fetches per new block, at one read
-// per block or more no more upstream requests than the old one, and its
-// HTTP latest and newHeads show one view (judgeView).
+// ("finalized"). Per method, each answer's block age (from chainsim
+// minting it to the answer) and request latency: the new image's are
+// within the slacks of the old one's, and its head-read latency p50 at
+// most the old one's. The new image sends at most 1.05 head fetches per
+// new block, and at one read per block or more no more upstream requests
+// than the old one. No source pushes, so no pod takes a newHeads
+// subscription: X10 holds HTTP against the stream.
 func p19(rate float64) spec {
 	sp := freshSpec(fmt.Sprintf("P19-r%g", rate), 1, p19Ups, chainsim.Config{BlockTime: p19BlockTime, FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, func(s *scenario) { p19Body(s, rate) })
 	sp.cache = true
@@ -539,24 +539,15 @@ func p19(rate float64) spec {
 
 func p19Body(s *scenario, rate float64) {
 	s.blocks(10)
-	var tap *viewTap
-	for _, p := range s.h.pods {
-		if !p.old {
-			tap = s.startViewTap(p.idx)
-		}
-	}
-	s.blocks(8)
 	vl := &viewLog{}
 	reads := append(liveReads(rate, vl), liveRead{"eth_getBlockByNumber(finalized)",
 		freshLoad{time.Duration(float64(4*time.Second) / rate), "finalized", freshFinalized}, [2]time.Duration{p17P50Slack, p17P90Slack}, false})
 	imgs, all, _, from, to := s.liveRun(p19Run, reads, nil)
-	time.Sleep(liveViewBound + tapProcessingSlack)
 	var b strings.Builder
 	s.judgeAgeLatency(&b, reads, imgs, from, to)
 	s.judgeFetches(&b, "over the run", all, liveFetchBound)
 	if rate*s.chain.BlockTime().Seconds() >= 1 {
 		s.judgeRequests(&b, all)
 	}
-	s.judgeView(&b, tap, vl, viewRules{bound: liveViewBound, numbers: true})
 	s.logf("%s", b.String())
 }
