@@ -86,6 +86,25 @@ func TestHttpServer_GetBlockByNumberLatest_InterpolatedReachesTipUpstream(t *tes
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
+	// rpc2's head is the tip, hashed, so it forms the view (spec §6.5: the
+	// view is a pin hash votes back; a number alone never moves it), and
+	// persistent: the block clock fetches latest again. The poller mock
+	// answering rpc2's latest without a hash matches first, so it goes.
+	for _, m := range gock.GetAll() {
+		probe, _ := http.NewRequest(http.MethodPost, "http://rpc2.localhost", strings.NewReader(`{"method":"eth_getBlockByNumber","params":["latest",false]}`))
+		if ok, _ := m.Match(probe); ok {
+			gock.Remove(m)
+		}
+	}
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":{"number":"0x22228889","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f1"}}`))
 	defer util.AssertNoPendingMocks(t, 0)
 
 	const tip = int64(0x22228889)
@@ -116,7 +135,7 @@ func TestHttpServer_GetBlockByNumberLatest_InterpolatedReachesTipUpstream(t *tes
 	}, 3)
 	defer shutdown()
 
-	leader.EvmStatePoller().SuggestLatestBlock(tip, time.Now())
+	require.Eventually(t, func() bool { return servedHead(nw, context.Background()).Latest == tip }, 5*time.Second, 50*time.Millisecond)
 
 	require.Equal(t, tip, leader.EvmStatePoller().LatestBlock())
 	require.Equal(t, "rpc2", servedHead(nw, context.Background()).Leader.Id())
