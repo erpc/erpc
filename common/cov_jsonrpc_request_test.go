@@ -503,10 +503,10 @@ func TestCovJsonrpcNormalizedRequest_MarshalZerologObject(t *testing.T) {
 
 	out := render(NewNormalizedRequest([]byte(`{"method":"m"}`)))
 	assert.Contains(t, out, `"lastUpstream":"nil"`)
-	assert.Contains(t, out, `"body":{"method":"m"}`)
+	assert.Contains(t, out, `"json_body":{"method":"m"}`)
 
 	out = render(NewNormalizedRequest([]byte(`garbage`)))
-	assert.Contains(t, out, `"body":"garbage"`)
+	assert.Contains(t, out, `"raw_body":"garbage"`)
 
 	r := NewNormalizedRequestFromJsonRpcRequest(NewJsonRpcRequest("eth_call", nil))
 	r.SetNetwork(&covJsonrpcNetwork{id: "evm:137"})
