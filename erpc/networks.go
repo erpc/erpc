@@ -1023,10 +1023,10 @@ func (n *Network) awaitFinalizedRefresh(ctx context.Context, sel string) {
 			break
 		}
 	}
-	if at.IsZero() {
-		if top, at = n.finalizedStep(s, w); !at.IsZero() {
-			stepRound(&wg, top, at)
-		}
+	// The poll may have seen a new step, also while an earlier one is
+	// under way: else Finalized waits for the next request or poll.
+	if next, nextAt := n.finalizedStep(s, w); !nextAt.IsZero() && (at.IsZero() || next > top) {
+		stepRound(&wg, next, nextAt)
 	}
 	wg.Wait()
 	if l := n.laneFor(sel); moved.Load() && l != nil {
