@@ -73,7 +73,7 @@ A **lane** is not a config object. It is an emergent artifact: when a request ca
 
 The lane key is derived from the **matched upstream set**, not the selector text. `flashblocks*` and `fl*` targeting the same three upstreams produce the same key and share one lane. Cardinality is bounded by the actual upstream topology, not selector diversity.
 
-**Method subsets.** The matched set holds only upstreams that serve the request's method (`ignoreMethods`/`allowMethods`), because only they vote on its [served tip](/reference/evm/block-tracking#served-tip). A request without a selector whose method every upstream serves uses the network-wide lane; one whose method only a proper subset of at least two serves gets that subset's lane, under the same key, name and cap rules.
+**Method subsets.** The matched set holds only upstreams that serve the request's method (`ignoreMethods`/`allowMethods`), because only they vote on its [served tip](/reference/evm/block-tracking#served-tip). A request without a selector whose method every upstream serves, or none does, uses the network-wide lane; one whose method only some upstreams serve gets their lane, a single upstream included, so it keeps its own regression guard, finalized floor and gauges. Each method's voter set and lane are built on its first request and rebuilt when the network's upstreams or an upstream's method filter change; a request reads them with one lookup.
 
 **No lane.** When a selector is complex, matches fewer than two upstreams, matches all upstreams, or arrives past the cap, `servedTipLaneFor` returns nil. The subset pick still applies, with no regression guard, no anchor and no gauge write, so a subset value never overwrites the `lane="all"` gauge.
 
@@ -138,7 +138,7 @@ export default createConfig({
 
 ### Edge cases & gotchas
 
-1. **A single matched upstream does not form a lane.** `partitionKeyFor` requires `len(matched) >= 2`; a single-upstream selector gets that upstream's head and emits no gauge.
+1. **A single matched upstream does not form a selector lane.** `partitionKeyFor` requires `len(matched) >= 2`; a single-upstream selector gets that upstream's head and emits no gauge. A method only one upstream serves does get a lane (method subsets above).
 2. **Matching ALL upstreams does not form a lane.** `len(matched) >= len(all)` also falls through, preventing a match-all selector from shadowing `lane="all"`.
 3. **Boolean combinator selectors are never partitioned.** `alchemy | quicknode` contains `|`; it routes and scopes the tip correctly but never gets a lane.
 4. **The 16-lane cap is a soft guard.** Concurrent goroutines can transiently exceed 16. Beyond the cap, new groups get no lane.

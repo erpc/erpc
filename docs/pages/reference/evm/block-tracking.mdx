@@ -183,7 +183,7 @@ When a pick falls more than `maxRegressionBlocks` (0 = 1024) below the corrobora
 
 #### WebSocket delivered-head floor
 
-Network-wide `latest` (no `use-upstream`) is lifted to the highest head already delivered to a `newHeads` subscriber by this instance, or by any instance through the shared counter `network/<project>/<network>/latestBlock` (`applyDeliveredHeadFloor`). The floor applies only within `maxRetryableBlockDistance` of the ballot's highest head (or when no head is known). The guarantee floors run after it, so it never lifts `latest` past one. Source: <SourceLink file="erpc/networks.go" lines="1519-1547" />
+Network-wide `latest` (no `use-upstream`) is lifted to the highest head already delivered to a `newHeads` subscriber by this instance, or by any instance through the shared counter `network/<project>/<network>/latestBlock` (`applyDeliveredHeadFloor`). The floor applies only within `maxRetryableBlockDistance` of the ballot's highest head (or when no head is known). The guarantee floors run after it, so it never lifts `latest` past one. A request whose method only some upstreams serve gets the floor only for `eth_blockNumber`, which reports the head subscribers already saw and so never goes below a delivered block; any other such method (e.g. `eth_call` when an upstream ignores it) stays pinned to what its own voters have, even below a delivered head, by design. Source: <SourceLink file="erpc/networks.go" lines="1519-1547" />
 
 #### eth_blockNumber
 
@@ -199,7 +199,7 @@ On `finalized`, each lane serves the higher of the tip computed above and its fl
 
 #### Selector-scoped served tip
 
-With a `use-upstream` selector, the candidates narrow to the matching upstreams; the pick is the same rule over that subset. `servedTipLaneFor` returns the request's lane, keyed by its voter set (the selector's matches that serve the request's method): the network-wide lane (`lane="all"`) when that is every upstream, a group's own lane when it is a real sub-group (a simple selector, or none, and at least 2 but not all upstreams), else none. A lane holds no pick state: only its gauge label, advance-age anchor, regression-guard memory and finalized floor. A request without a lane gets the same pick with no guard, no finalized floor and no gauges; only the network-wide lane gets the WebSocket floor. Which voter sets form a lane, naming and the 16-lane cap: [Lanes](/reference/lanes). Source: <SourceLink file="erpc/networks.go" lines="576-756" />
+With a `use-upstream` selector, the candidates narrow to the matching upstreams; the pick is the same rule over that subset. `laneOf` returns the request's lane, keyed by its voter set (the selector's matches that serve the request's method): the network-wide lane (`lane="all"`) when that is every upstream; without a selector, the lane of the upstreams serving the method, a single one included; with a simple selector, a group's own lane when it matches at least 2 but not all upstreams; else none. Each method's voter set and lane are built on its first request and rebuilt when the network's upstreams or an upstream's method filter change, so a request resolves them with one lookup. A lane holds no pick state: only its gauge label, advance-age anchor, regression-guard memory and finalized floor. A request without a lane gets the same pick with no guard, no finalized floor and no gauges. Which voter sets form a lane, naming and the 16-lane cap: [Lanes](/reference/lanes). Source: <SourceLink file="erpc/networks.go" lines="579-892" />
 
 #### Syncing, finality and earliest block
 

@@ -62,11 +62,11 @@ type servedTipFixture struct {
 //
 // Returns the network and the upstream slice in input order. The fixture runs
 // quorum "majority" on both axes.
-func setupServedTipNetwork(t *testing.T, ctx context.Context, fixtures []servedTipFixture) (*Network, []*upstream.Upstream) {
+func setupServedTipNetwork(t testing.TB, ctx context.Context, fixtures []servedTipFixture) (*Network, []*upstream.Upstream) {
 	return setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority})
 }
 
-func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []servedTipFixture, stCfg *common.EvmServedTipConfig) (*Network, []*upstream.Upstream) {
+func setupServedTipNetworkWith(t testing.TB, ctx context.Context, fixtures []servedTipFixture, stCfg *common.EvmServedTipConfig) (*Network, []*upstream.Upstream) {
 	t.Helper()
 
 	if len(fixtures) == 0 {
@@ -467,6 +467,10 @@ func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 	})
 	assert.Equal(t, int64(90), nwB.EvmHighestLatestBlockNumber(ctx),
 		"trace_block supported only by u3 (90) clamps served down to 90")
+	trace := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"trace_block","params":["latest"]}`))
+	traceLane := nwA.servedTipLaneFor(context.WithValue(ctx, common.RequestContextKey, trace))
+	require.NotNil(t, traceLane, "a method one upstream serves keeps a lane: guard, finalized floor, gauges")
+	assert.Equal(t, "u3", traceLane.label)
 
 	for _, host := range []string{"call-1", "call-2"} {
 		gock.New("http://" + host + ".localhost").
@@ -479,9 +483,11 @@ func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 	nwC, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
 		{id: "call-1", chainID: 123, latestBlock: 100},
 		{id: "call-2", chainID: 123, latestBlock: 99},
-		{id: "no-call", chainID: 123, latestBlock: 105, ignoreMethods: []string{"eth_call"}},
+		{id: "no-call", chainID: 123, latestBlock: 105, ignoreMethods: []string{"eth_call", "eth_blockNumber"}},
 	})
 	assert.Equal(t, int64(100), nwC.EvmHighestLatestBlockNumber(ctx), "no request: all three vote")
+	// A newHeads subscriber already got 104.
+	nwC.NoteObservedLatestBlock(ctx, 104)
 	call := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"},"latest"]}`))
 	call.SetNetwork(nwC)
 	_, err := nwC.Forward(ctx, call)
@@ -489,7 +495,10 @@ func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 	jrq, err := call.JsonRpcRequest()
 	require.NoError(t, err)
 	assert.Equal(t, "0x63", jrq.Params[1],
-		"eth_call latest pins to its voters' tip (99): no-call's 105 does not vote")
+		"eth_call latest pins to its voters' tip (99): no-call's 105 does not vote, the delivered 104 does not lift it")
+	bn := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+	assert.Equal(t, int64(104), nwC.EvmHighestLatestBlockNumber(context.WithValue(ctx, common.RequestContextKey, bn)),
+		"eth_blockNumber never goes below a delivered newHeads block, whatever its voters")
 }
 
 // TestServedTip_SelectorScoped pins the use-upstream selector affecting the
