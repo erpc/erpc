@@ -284,8 +284,10 @@ func (t *ChainTracker) clockCandidates() []clockCandidate {
 // A turn is the block's fire too, so only a voter within a quarter block
 // of the fastest takes one, and only one polled less often than every two
 // blocks: a far or lagging voter, or one polled every block, polls on its
-// own. An idle edge's fetch (edge) has a read waiting on it: it takes no
-// turn. ok false with none.
+// own. A voter the clock never measured takes its turn: only a clock
+// answer measures it, so else it would never take one and its full poll
+// would fetch on its own. An idle edge's fetch (edge) has a read waiting
+// on it: it takes no turn. ok false with none.
 func (t *ChainTracker) pickTarget(cands []clockCandidate, skip string, now time.Time, bt time.Duration, edge bool) (clockCandidate, bool) {
 	c := &t.clock
 	score := func(id string) time.Duration {
@@ -312,7 +314,7 @@ func (t *ChainTracker) pickTarget(cands []clockCandidate, skip string, now time.
 	var turnAt time.Time
 	for i := range cands {
 		cand := &cands[i]
-		if edge || cand.id == skip || cand.interval <= 2*bt || score(cand.id) > best+bt/4 {
+		if v := c.ups[cand.id]; edge || cand.id == skip || cand.interval <= 2*bt || v != nil && v.samples > 0 && score(cand.id) > best+bt/4 {
 			continue
 		}
 		last := cand.poller.LatestAskAt()
@@ -337,14 +339,20 @@ func (t *ChainTracker) pickTarget(cands []clockCandidate, skip string, now time.
 }
 
 // clockDemand reports whether the clock runs, and the fastest pace its
-// demand needs heads at (0 every block): a read of latest within W, or a
-// tap that needs newHeads (demand).
+// demand needs heads at (0 every block): a read of latest within
+// readDemand, or a tap that needs newHeads (demand).
 func (t *ChainTracker) clockDemand(now time.Time) (pace time.Duration, ok bool) {
-	if at := t.latestReadAt.Load(); at > 0 && now.Sub(time.Unix(0, at)) < t.W() {
+	if at := t.latestReadAt.Load(); at > 0 && now.Sub(time.Unix(0, at)) < t.readDemand() {
 		return 0, true
 	}
 	return t.demand()
 }
+
+// readDemand is how long a read of latest keeps the clock running: 2 W.
+// Reads W to 2 W apart then meet a running clock, not an idle edge: an
+// edge then costs q fetches, and a view up to W old serves no wait; reads
+// further apart still stop the clock on a network nobody reads.
+func (t *ChainTracker) readDemand() time.Duration { return 2 * t.W() }
 
 // runClock runs after every batch: it counts the fires a push made
 // needless, ends a served idle edge, hedges a late fetch, and fires or
@@ -652,8 +660,8 @@ func (t *ChainTracker) clockDebounce(id string) time.Duration {
 	return d
 }
 
-// LatestRead marks a read of the lane's latest (spec §6.8 demand): for W
-// after it the block clock runs. The first read after W with no demand is
+// LatestRead marks a read of the lane's latest (spec §6.8 demand): for
+// readDemand after it the block clock runs. The first read after that is
 // the idle edge, which fetches heads at once; every read of that edge
 // waits for the view to reach the fetched head, at most W or until ctx
 // ends, so none serves a Head older than it; with no pins yet nothing
@@ -664,7 +672,7 @@ func (t *ChainTracker) LatestRead(ctx context.Context, number bool) {
 	now := time.Now()
 	prev := t.latestReadAt.Swap(now.UnixNano())
 	edge := t.edge.Load()
-	if edge == nil && (prev == 0 || now.Sub(time.Unix(0, prev)) >= t.W()) {
+	if edge == nil && (prev == 0 || now.Sub(time.Unix(0, prev)) >= t.readDemand()) {
 		if pace, ok := t.demand(); !ok || pace > 0 {
 			ch := make(chan struct{})
 			if t.edge.CompareAndSwap(nil, &ch) {
@@ -687,9 +695,10 @@ func (t *ChainTracker) LatestRead(ctx context.Context, number bool) {
 }
 
 // MarkRead marks a lane tap's read, which needs the lane's view to move:
-// the block clock runs for W after it, without the idle edge's wait.
+// the block clock runs for readDemand after it, without the idle edge's
+// wait.
 func (t *ChainTracker) MarkRead() {
-	if prev := t.latestReadAt.Swap(time.Now().UnixNano()); prev == 0 || time.Since(time.Unix(0, prev)) >= t.W() {
+	if prev := t.latestReadAt.Swap(time.Now().UnixNano()); prev == 0 || time.Since(time.Unix(0, prev)) >= t.readDemand() {
 		t.mb.put(trackerMsg{kind: msgTick})
 	}
 }
