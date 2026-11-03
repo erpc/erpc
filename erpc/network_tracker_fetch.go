@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"time"
 
@@ -80,6 +81,27 @@ func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequ
 		n.storeInCache(ctx, trace.SpanContextFromContext(ctx), &lg, method, req, resp)
 	}
 	return resp, nil
+}
+
+// seedHeadBlock writes u's head fetch answer, a block N that passed
+// intake, as the cache entry of eth_getBlockByNumber(N, false) where a
+// policy keeps it (spec §6): a "latest" read interpolated to N hits it
+// (cacheFinalities), so the first latest read of each block forwards
+// nothing.
+func (n *Network) seedHeadBlock(u common.Upstream, sh evm.SourceHeader) {
+	if n.cacheDal == nil {
+		return
+	}
+	jrr, err := common.NewJsonRpcResponseFromBytes([]byte("1"), sh.Raw(), nil)
+	if err != nil {
+		return
+	}
+	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, sh.Cursor().Number)))
+	req.SetNetwork(n)
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+	resp.SetUpstream(u)
+	lg := n.logger.With().Str("method", "eth_getBlockByNumber").Logger()
+	n.storeInCache(n.appCtx, trace.SpanContext{}, &lg, "eth_getBlockByNumber", req, resp)
 }
 
 // sweep tries ups in order and returns the first non-empty answer check

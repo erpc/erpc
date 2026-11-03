@@ -147,7 +147,11 @@ func (in *networkIntake) Polled(upstreamId string, sh evm.SourceHeader, malforme
 		in.count(upstreamId, "malformed")
 		return false
 	}
-	return in.header(upstreamId, sh, kind, false, sent)
+	passed = in.header(upstreamId, sh, kind, false, sent)
+	if u := in.upstream(upstreamId); passed && u != nil {
+		in.nw.seedHeadBlock(u, sh)
+	}
+	return passed
 }
 
 // PollFailed notes a poll of upstreamId's latest, sent at started, that its

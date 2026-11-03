@@ -200,7 +200,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 
 	ntwId := req.NetworkId()
 	finState := req.Finality(ctx)
-	policies, err := c.findGetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState)
+	policies, err := c.findGetPolicies(ntwId, rpcReq.Method, rpcReq.Params, cacheFinalities(ctx, req, finState))
 	span.SetAttributes(
 		attribute.String("request.method", rpcReq.Method),
 		attribute.String("request.finality", finState.String()),
@@ -687,7 +687,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 	finState := resp.Finality(ctx)
 	isEmptyish := resp.IsResultEmptyish()
-	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState, isEmptyish)
+	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, cacheFinalities(ctx, req, finState), isEmptyish)
 	span.SetAttributes(
 		attribute.String("block.finality", finState.String()),
 		attribute.Int("cache.policies_matched", len(policies)),
@@ -1035,7 +1035,32 @@ func networkBlockTime(req *common.NormalizedRequest) time.Duration {
 	return 0
 }
 
-func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) ([]*data.CachePolicy, error) {
+// cacheFinalities are the finalities whose policies a request of finality
+// fin reads and writes: fin, and for a "latest" tag interpolated to a
+// block N above the request Head's Finalized also Unfinalized. Its key is
+// N's (ResolveCacheBlockRef) and N's answer is its answer (spec §7), so
+// N's entries, written by numbered reads and the head fetch's seed (spec
+// §6), serve it, and its answer is N's entry.
+func cacheFinalities(ctx context.Context, req *common.NormalizedRequest, fin common.DataFinalityState) finalities {
+	fs := finalities{f: [2]common.DataFinalityState{fin}, n: 1}
+	if fin != common.DataFinalityStateRealtime || requestBlockTag(ctx, req) != "latest" {
+		return fs
+	}
+	if n := TagBlockNumber(ctx, req, "latest"); n <= 0 || n <= common.EvmHeadOf(req.Network(), ctx, req).Finalized {
+		return fs
+	}
+	fs.f[1], fs.n = common.DataFinalityStateUnfinalized, 2
+	return fs
+}
+
+// finalities holds one or two finalities by value, so a request builds
+// them without an allocation.
+type finalities struct {
+	f [2]common.DataFinalityState
+	n int
+}
+
+func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, fs finalities, isEmptyish bool) ([]*data.CachePolicy, error) {
 	var policies []*data.CachePolicy
 	for _, policy := range c.policies {
 		// Add debug logging for complex param matching
@@ -1043,24 +1068,27 @@ func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []int
 			c.logger.Trace().
 				Str("networkId", networkId).
 				Str("method", method).
-				Str("finality", finality.String()).
+				Interface("finalities", fs.f[:fs.n]).
 				Interface("params", params).
 				Interface("policy", policy).
 				Msg("checking policy match for set")
 		}
 
-		match, err := policy.MatchesForSet(networkId, method, params, finality, isEmptyish)
-		if err != nil {
-			return nil, err
-		}
-		if match {
-			policies = append(policies, policy)
+		for _, finality := range fs.f[:fs.n] {
+			match, err := policy.MatchesForSet(networkId, method, params, finality, isEmptyish)
+			if err != nil {
+				return nil, err
+			}
+			if match {
+				policies = append(policies, policy)
+				break
+			}
 		}
 	}
 	return policies, nil
 }
 
-func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState) ([]*data.CachePolicy, error) {
+func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []interface{}, fs finalities) ([]*data.CachePolicy, error) {
 	var policies []*data.CachePolicy
 	visitedConnectorsMap := make(map[data.Connector]bool)
 	for _, policy := range c.policies {
@@ -1069,20 +1097,23 @@ func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []int
 			c.logger.Trace().
 				Str("networkId", networkId).
 				Str("method", method).
-				Str("finality", finality.String()).
+				Interface("finalities", fs.f[:fs.n]).
 				Interface("params", params).
 				Interface("policy", policy).
 				Msg("checking policy match for get")
 		}
 
-		match, err := policy.MatchesForGet(networkId, method, params, finality)
-		if err != nil {
-			return nil, err
-		}
-		if match {
-			if c := policy.GetConnector(); !visitedConnectorsMap[c] {
-				policies = append(policies, policy)
-				visitedConnectorsMap[c] = true
+		for _, finality := range fs.f[:fs.n] {
+			match, err := policy.MatchesForGet(networkId, method, params, finality)
+			if err != nil {
+				return nil, err
+			}
+			if match {
+				if c := policy.GetConnector(); !visitedConnectorsMap[c] {
+					policies = append(policies, policy)
+					visitedConnectorsMap[c] = true
+				}
+				break
 			}
 		}
 	}
