@@ -650,7 +650,13 @@ func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnsw
 		outcome = ""
 	default:
 		outcome = "early"
-		c.off = min(c.off+32.0/400, 1)
+		// Only the block's first early answer says the phase fired early:
+		// a retry's says the node is still behind, and an operator's
+		// debounce retries many times a block, each of which would push
+		// the offset a further 8% of a block later.
+		if c.early == 0 {
+			c.off = min(c.off+32.0/400, 1)
+		}
 		c.early++
 		debounce := t.clockDebounce(f.id)
 		switch {
