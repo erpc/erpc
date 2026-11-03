@@ -73,9 +73,8 @@ const (
 )
 
 // U2: a network of 3 https vendors, http-a ranked first, http-b and
-// http-c clean, all poll sources, so a cut voter never holds Latest by
-// quorum. http-a's answers are cut half way (FIN, then RST): first every
-// receipts body, over blocks that all carry logs so every block's
+// http-c clean. http-a's answers are cut half way (FIN, then RST): first
+// every receipts body, over blocks that all carry logs so every block's
 // receipts are fetched, until each pod had u2Cuts of them, then every
 // header answer, with time to recover between, since the header cuts
 // demote http-a in routing. Each sweep tries http-a first and fails over
@@ -86,11 +85,6 @@ func u2() spec {
 	return spec{name: "U2", bound: healthyDelivery,
 		vendors: []vendorSpec{{"http-a", "vendor-a", false}, {"http-b", "vendor-b", false}, {"http-c", "vendor-c", false}},
 		network: map[string]interface{}{"selectionPolicy": rankFirst("http-a")},
-		upEvm: map[string]map[string]interface{}{
-			"http-a": {"subscriptionSource": true},
-			"http-b": {"subscriptionSource": true},
-			"http-c": {"subscriptionSource": true},
-		},
 		body: func(s *scenario) {
 			px := s.proxies["http-a"]
 			// cutA cuts every pod's http-a answers to method half way while
@@ -162,14 +156,12 @@ func u2() spec {
 		}}
 }
 
-// U4: http-a, a poll source, has its keep-alive pool black-holed on every
-// pod: each open socket stays open and carries nothing. A pod spends one
-// fetch timeout on it, then opens new connections, and http-a is polled at
-// its cadence again within u4Recover; Latest keeps moving throughout
-// (§19 U4; §8 fetch timeout).
+// U4: http-a has its keep-alive pool black-holed on every pod: each open
+// socket stays open and carries nothing. A pod spends one fetch timeout
+// on it, then opens new connections within u4Recover; Latest keeps moving
+// throughout (§19 U4; §8 fetch timeout).
 func u4() spec {
 	return spec{name: "U4", bound: healthyDelivery,
-		upEvm: map[string]map[string]interface{}{"http-a": {"subscriptionSource": true}},
 		body: func(s *scenario) {
 			s.blocks(25)
 			px, up := s.proxies["http-a"], s.upstream("http-a")
@@ -192,7 +184,6 @@ func u4() spec {
 					s.violate(s.name, "pod-%d opened no new connection to %s within %s of its pool going dead", i+1, up, u4Recover)
 				}
 			}
-			s.requirePolledAtCadence("http-a")
 			stop()
 			s.blocks(25)
 		}}

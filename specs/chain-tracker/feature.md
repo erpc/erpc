@@ -887,7 +887,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_chain_tracker_invariant_violations_total{project,network,invariant}` | new; invariant: `sent_above_head` (a tap wrote a block above its lane's view Head, or one the pins no longer hold), `tap_gap`, `removed_unsent`, `pins_unlinked`, `final_hash_changed`, `latest_regressed` (a lane's view Head fell while its pin still stands: only a pins move may lower it); must stay 0 except `final_hash_changed`, which logs a followed majority. `sent_above_latest` and `sent_unconfirmed` are deleted, merged into `sent_above_head` |
 | `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `thin_found` and `thin_missing` (a thin-region read, `Firm` < N ≤ `Latest`, found or still empty or missing after its retry), `retried_found`, `retried_missing` (a band read, above `Latest` and at most the ceiling, answered empty or missing after the retry: a vendor head no node serves yet; expected at a low rate where clients read ahead), `served_missing` (`eth_getBlockByNumber` of a block in the head region, `Latest` − `reorgWindow` < N ≤ `Latest`, whose final answer is a JSON `null` or a missing-data error after the retry: the head promise broke on this instance; must stay 0. Other methods are not counted: their `null` or missing-data answer at or below `Latest` can be legit, a transaction or uncle index past the block's count, a state read on a pruned node; nor is a block below the head region, which is block availability, not the head promise), `future`, `future_after_refresh`, `future_after_wait` (near future, §6.4); the by-hash wait (§6.4): `held_served`, `held_null` |
 | `erpc_head_ask_total{project,network,reason,outcome}` | new; reason: the §6.8 caller (`clock`, `refusal`, `settle`); `poll`, `catch_up`, `refresh`, `no_source` are deleted with their callers; outcome: `fetched`, `shared_fresh`, `inflight`, `backoff` |
-| `erpc_head_clock_total{project,network,lane,outcome}` | new; outcome: `new`, `early` (a probe's answer only), `hedge` and `catch_up` (counted when sent), `skipped_push`, `failed` (§6.8) |
+| `erpc_head_clock_total{project,network,lane,outcome}` | new; outcome: `new`, `early` (a probe's answer only), `hedge`, `catch_up` and `guarantee` (counted when sent; `guarantee`: a guarantee subset's voter at or below the cap, fetched once per new pinned head while the cap holds the Head below it), `skipped_push`, `failed` (§6.8) |
 | `erpc_head_view_lag_seconds{project,network,lane}` | new histogram: a block's first local sight → the view swap that made it Head |
 | `erpc_head_firm_lag_blocks{project,network,lane}` | new gauge: Head − Firm, the thin region |
 | `erpc_chain_tracker_confirm_lag_blocks{project,network}` | new: pins head − view Head; with no Head, the number of pins |
@@ -1008,8 +1008,8 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | U13 | one endpoint answers another chainId | cordoned, out of ceiling; uncordoned after 2 matches 5 min apart |
 | U14 | archive syncing at head+5; `eth_getBlockByNumber(head+3)` | served by the archive in the refusal band, not `null`; an answer that lands after the other vendors reach head+3 (2 blocks later) comes from them: a latency verdict |
 | U15 | one vendor lacks `eth_getBlockReceipts` | logs from the other vendor; subscribe accepted |
-| U16 | wss refuses `newHeads` as unsupported | polled at cadence; asked again on reconnect and every 10 min |
-| U17 | https refuses `latest` 10 times | give-up; re-probed after 10 min; never a stuck clock target |
+| U16 | wss refuses `newHeads` as unsupported | asked again on reconnect and every 10 min; votes by push once it subscribes |
+| U17 | deleted: an https poll source's give-up; poll sources are deleted (§6.8 block clock) | — |
 | U18 | one HTTP vendor that is no source on a minority fork at the same heights, 20 blocks | taps never send its blocks; HTTP never serves them once W has passed since this instance first polled a fork header from it (its hash vote, §6.3) |
 | U19 | one https vendor answers HTTP 403 with an HTML body (a CDN ban or a revoked key); clients ask head+1 with `shortCircuitFutureBlocks` on | its polls fail (§6.1): its Asks back off and it leaves the ceiling, so a block above every other voter's head is `null` with no dispatch |
 | U20 | the first-ranked https vendor pruned below head−100 answers HTTP 403 with an HTML body (U20-403), or `null` and `[]` for logs (U20-null); gRPC streams resume 200 deep | every stream gets every canonical header up to the head from another vendor; no tap ends out of range |
@@ -1061,7 +1061,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | K1 | YAML and TS configs with each deleted key | boot refuses and names the key |
 | K2 | minimal YAML: 1 wss + 1 https, no `evm` block | wss is a source, https is not; q = 2; subscriptions work |
 | K3 | 2 networks, `reorgWindow` 64 on one; 40-deep reorg on both | 64: Reverted; 32: re-anchor + `1013` |
-| K4 | `subscriptionSource: true` on https, `false` on wss | https polled at cadence; wss no source |
+| K4 | `subscriptionSource: false` on wss; `true` on https | wss no source; https refused at load (no poll sources, §6.8) |
 | K5 | same seed and plan, integrity on vs off | identical client chains and logs |
 | K6 | `servedTip.quorum: majority`, `guaranteedFor`, failover tiers | taps never above the guarantee-clamped `Latest`; no deadlock |
 | K7 | `shortCircuitFutureBlocks` on and off; head+1 polling | on: `null` with 0 dispatch above the ceiling, at most 1 retry in the band; off: at most 2 dispatches; each band probe counts one `retried_missing` |

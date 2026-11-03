@@ -14,8 +14,8 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
-// Bounds of the fetch-schedule scenarios (spec §6.8; §19 U1, U16, U17, C4,
-// C7, D8).
+// Bounds of the fetch-schedule scenarios (spec §6.8; §19 U1, U16, C4, C7,
+// D8).
 const (
 	// u1Slow, u1FaultBlocks: http-a answers every call this late, for this
 	// many blocks (§19 U1).
@@ -39,16 +39,6 @@ const (
 	// u16Reask: the 10 min re-ask of a refused newHeads (§5.1; §15.1 wss
 	// source), shortened through wsupstream.HeadsReaskInterval.
 	u16Reask = 20 * time.Second
-	// pollWindow: how long requirePolledAtCadence watches (harness).
-	pollWindow = 10 * time.Second
-
-	// u17SkipExpiry: the 10 min re-check of a latest give-up (§6.8; §15.1
-	// poller give-up), shortened through evm.PollerGiveUpExpiry.
-	u17SkipExpiry = 40 * time.Second
-	// u17Refusals: refused latest polls before the give-up (§6.8).
-	u17Refusals = 10
-	// u17Settled: refusals that stopped this long are over (harness).
-	u17Settled = 3 * time.Second
 
 	// c4SplitBlocks: blocks the wss voters stay split 1-vs-1 (harness).
 	c4SplitBlocks = 20
@@ -153,11 +143,10 @@ func (s *scenario) projectMetric(pod int, name string, labels map[string]string)
 	return sumOf(ss, name, match)
 }
 
-// U16: ws-a refuses eth_subscribe newHeads as unsupported. Every pod polls
-// it at its cadence, so its hash vote stays within W. It asks again on
-// each reconnect and every u16Reask, and nothing else reconnects it; once
-// the refusal ends, the next ask subscribes and ws-a votes by push (§19
-// U16; §5.1; §5.2; §15.1 wss source: newHeads refused as unsupported).
+// U16: ws-a refuses eth_subscribe newHeads as unsupported. It asks again
+// on each reconnect and every u16Reask, and nothing else reconnects it;
+// once the refusal ends, the next ask subscribes and ws-a votes by push
+// (§19 U16; §5.1; §5.2; §15.1 wss source: newHeads refused as unsupported).
 func u16() spec {
 	return spec{name: "U16", bound: healthyDelivery,
 		faults: map[string]chainsim.Faults{"ws-a": {NoNewHeads: true}},
@@ -165,7 +154,6 @@ func u16() spec {
 		body: func(s *scenario) {
 			s.blocks(25)
 			ws, px, up, pods := s.vendors["ws-a"], s.proxies["ws-a"], s.upstream("ws-a"), int64(len(s.h.pods))
-			s.requirePolledAtCadence("ws-a")
 
 			refused, acc := ws.Stats().HeadsRefused, make([]int64, pods)
 			for i, p := range s.h.pods {
@@ -222,90 +210,6 @@ func u16() spec {
 			}
 			s.blocks(25)
 		}}
-}
-
-// requirePolledAtCadence: for pollWindow, the upstream of vendor key is a
-// hash voter on every pod at each scrape (its hash age within W, plus the
-// gauge's refresh), and its vendor answered at least one latest poll per W
-// per pod (§6.1: a polled voter's hash vote lasts W; §6.8: a poll source
-// is Asked once per cadence).
-func (s *scenario) requirePolledAtCadence(key string) {
-	v, up := s.vendors[key], s.upstream(key)
-	from := time.Now()
-	late := make([]bool, len(s.h.pods))
-	for time.Since(from) < pollWindow {
-		for pod := range s.h.pods {
-			if age, ok := s.metric(pod, "erpc_upstream_report_age_seconds", hashAge(up)); !late[pod] && (!ok || age > (liveBound+ageGaugeEvery).Seconds()) {
-				late[pod] = true
-				s.violate(s.name, "pod-%d: %s hash age %vs (exported %v), above W %s plus the gauge refresh: not polled at its cadence", pod+1, up, age, ok, liveBound)
-			}
-		}
-		time.Sleep(scrapeEvery)
-	}
-	calls := len(v.LatestCalls(from, time.Now()))
-	if want := len(s.h.pods) * int(pollWindow/liveBound); calls < want {
-		s.violate(s.name, "%s answered %d latest polls in %s, below one per W per pod (%d)", up, calls, pollWindow, want)
-	}
-	s.logf("%s answered %d latest polls in %s", up, calls, pollWindow)
-}
-
-// U17: http-a, an https poll source (subscriptionSource: true), refuses
-// latest as unsupported from boot. Each pod's poller gives up after
-// u17Refusals refusals: http-a stops being a poll source, and its latest
-// calls fall below one per W per pod. The refusal then ends, but the
-// give-up holds until its re-check u17SkipExpiry after it began; then
-// http-a is polled at its cadence again: never a stuck poll source (§19
-// U17; §6.8; §15.1 poller give-up).
-func u17() spec {
-	return spec{name: "U17", bound: healthyDelivery,
-		faults: map[string]chainsim.Faults{"http-a": {RefuseLatest: true}},
-		upEvm:  map[string]map[string]interface{}{"http-a": {"subscriptionSource": true}},
-		vars:   map[string]time.Duration{"evm.PollerGiveUpExpiry": u17SkipExpiry},
-		body: func(s *scenario) {
-			v, up, pods := s.vendors["http-a"], s.upstream("http-a"), len(s.h.pods)
-			first, last, refused := awaitRefusalsEnd(s, v)
-			s.logf("%s refused %d latest calls from %s to %s", up, refused, first.Format("15:04:05.000"), last.Format("15:04:05.000"))
-			if refused < u17Refusals*pods {
-				s.violate(s.name, "%s refused %d latest calls, fewer than %d per pod: the give-up was never reached", up, refused, u17Refusals)
-			}
-			v.Update(func(f *chainsim.Faults) { f.RefuseLatest = false })
-			// The earliest give-up began after the first refusal.
-			time.Sleep(time.Until(first.Add(u17SkipExpiry)))
-			quiet := time.Since(last)
-			if calls, limit := len(v.LatestCalls(last.Add(time.Nanosecond), time.Now())), pods*int(quiet/liveBound); calls >= limit {
-				s.violate(s.name, "%s answered %d latest calls in the %s after its last refusal, a poll source's rate (%d): no give-up", up, calls, quiet.Round(time.Second), limit)
-			}
-			recheck := time.Until(last.Add(u17SkipExpiry + reconnectSlack))
-			for pod := range s.h.pods {
-				if _, ok := s.waitMetric(pod, "erpc_upstream_report_age_seconds", hashAge(up), recheck, func(v float64) bool { return v <= liveBound.Seconds() }); !ok {
-					s.violate(s.name, "pod-%d: %s no hash voter %s after its give-up began, past its %s re-check: a stuck poll source", pod+1, up, u17SkipExpiry+reconnectSlack, u17SkipExpiry)
-				}
-			}
-			s.requirePolledAtCadence("http-a")
-			s.blocks(25)
-		}}
-}
-
-// awaitRefusalsEnd waits until v's refused latest calls stopped for
-// u17Settled, or podBootWait passed, and returns when the first and the
-// last came, and how many there were.
-func awaitRefusalsEnd(s *scenario, v *chainsim.Vendor) (first, last time.Time, n int) {
-	deadline := time.Now().Add(podBootWait)
-	for {
-		first, last, n = time.Time{}, time.Time{}, 0
-		for _, c := range v.LatestCalls(time.Time{}, time.Now()) {
-			if c.Refused {
-				if n == 0 {
-					first = c.At
-				}
-				last, n = c.At, n+1
-			}
-		}
-		if n > 0 && time.Since(last) >= u17Settled || time.Now().After(deadline) {
-			return first, last, n
-		}
-		time.Sleep(scrapeEvery)
-	}
 }
 
 // C4: two wss voters and one https voter. ws-b moves to a sibling of the

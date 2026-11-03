@@ -101,7 +101,7 @@ func catalogue() []phaseSpec {
 		{"clients", 11601, []spec{d3(), d5(), d6(), d9()}},
 		{"integrity", 10601, []spec{u8(false), u8(true), u9(), u9Trunc(1), u9Trunc(2), u9Bloom(1), u9Bloom(2), k5()}},
 		{"fetch", 10401, []spec{u1(), c4(), c7(), d8()}},
-		{"fetch-vars", 10501, []spec{u16(), u17()}},
+		{"fetch-vars", 10501, []spec{u16()}},
 		{"c15", 11551, []spec{c15()}},
 		{"consistency", 12301, []spec{p2(), p3(), p4(), p8()}},
 		{"counters", 10801, []spec{c5()}},
