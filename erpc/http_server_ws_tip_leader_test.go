@@ -79,6 +79,29 @@ func setupTipLeaderServer(t *testing.T, evmCfg *common.EvmNetworkConfig, maxAtte
 	return sendRequest, shutdown, nw, leader
 }
 
+// mockHashedLatest makes id's latest answer the hashed block body, so it
+// forms the view (spec §6.5: the view is a pin hash votes back; a number
+// alone never moves it), persistent: the block clock fetches latest
+// again. The poller mock answering id's latest without a hash matches
+// first, so it goes.
+func mockHashedLatest(id, body string) {
+	for _, m := range gock.GetAll() {
+		probe, _ := http.NewRequest(http.MethodPost, "http://"+id+".localhost", strings.NewReader(`{"method":"eth_getBlockByNumber","params":["latest",false]}`))
+		if ok, _ := m.Match(probe); ok {
+			gock.Remove(m)
+		}
+	}
+	gock.New("http://" + id + ".localhost").
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			b := util.SafeReadBody(r)
+			return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, `"latest"`)
+		}).
+		Reply(200).
+		JSON([]byte(body))
+}
+
 // "latest" is interpolated to the Head, a number only the upstream whose
 // poller has the tip can serve: the request must reach it, not settle for
 // the lagging sibling preferred by selection order.
@@ -86,25 +109,7 @@ func TestHttpServer_GetBlockByNumberLatest_InterpolatedReachesTipUpstream(t *tes
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
-	// rpc2's head is the tip, hashed, so it forms the view (spec §6.5: the
-	// view is a pin hash votes back; a number alone never moves it), and
-	// persistent: the block clock fetches latest again. The poller mock
-	// answering rpc2's latest without a hash matches first, so it goes.
-	for _, m := range gock.GetAll() {
-		probe, _ := http.NewRequest(http.MethodPost, "http://rpc2.localhost", strings.NewReader(`{"method":"eth_getBlockByNumber","params":["latest",false]}`))
-		if ok, _ := m.Match(probe); ok {
-			gock.Remove(m)
-		}
-	}
-	gock.New("http://rpc2.localhost").
-		Post("").
-		Persist().
-		Filter(func(r *http.Request) bool {
-			body := util.SafeReadBody(r)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
-		}).
-		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x22228889","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f1"}}`))
+	mockHashedLatest("rpc2", `{"result":{"number":"0x22228889","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f1"}}`)
 	defer util.AssertNoPendingMocks(t, 0)
 
 	const tip = int64(0x22228889)
@@ -166,6 +171,7 @@ func TestHttpServer_GetBlockByNumber_NearTipPrefersTipUpstream(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
+	mockHashedLatest("rpc2", `{"result":{"number":"0x33338889","hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","parentHash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","timestamp":"0x6702a8f1"}}`)
 	// rpc1 tip-null Persist mock is intentionally unused.
 	defer util.AssertNoPendingMocks(t, 1)
 
@@ -215,9 +221,8 @@ func TestHttpServer_GetBlockByNumber_NearTipPrefersTipUpstream(t *testing.T) {
 		ServedTip: &common.EvmServedTipConfig{Quorum: 1},
 	}, 2)
 	defer shutdown()
-	// A major head jump applies only after an async chain-identity check.
-	leader.EvmStatePoller().SuggestLatestBlock(tip, time.Now())
-	require.Eventually(t, func() bool { return leader.EvmStatePoller().LatestBlock() == tip }, 5*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return servedHead(nw, context.Background()).Latest == tip }, 5*time.Second, 50*time.Millisecond)
+	require.Equal(t, tip, leader.EvmStatePoller().LatestBlock())
 	require.Equal(t, "rpc2", servedHead(nw, context.Background()).Leader.Id())
 
 	statusCode, _, body := sendRequest(`{
