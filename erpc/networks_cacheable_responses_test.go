@@ -58,7 +58,9 @@ func (c *countingCacheDAL) Set(_ context.Context, _ *common.NormalizedRequest, r
 func (c *countingCacheDAL) IsObjectNull() bool { return false }
 
 // fakeSelectorConsensus makes consensusPolicySelectorEnabled return true
-// without running a real consensus round.
+// without running a real consensus round. It stamps cacheable=true so the
+// Forward unmarked-under-selector Set gate does not skip the write (mirrors
+// Consensus.Run stamping the inline/default policy).
 type fakeSelectorConsensus struct{}
 
 func (fakeSelectorConsensus) Run(
@@ -66,10 +68,29 @@ func (fakeSelectorConsensus) Run(
 	req *common.NormalizedRequest,
 	inner func(context.Context, *common.NormalizedRequest) (*common.NormalizedResponse, error),
 ) (*common.NormalizedResponse, error) {
-	return inner(ctx, req)
+	resp, err := inner(ctx, req)
+	if resp != nil {
+		yes := true
+		resp.SetCacheable(&yes)
+	}
+	return resp, err
 }
 
 func (fakeSelectorConsensus) HasSelector() bool { return true }
+
+// unmarkedPassThroughConsensus has a selector but never stamps a mark —
+// models a miswired path; Forward must not Set under selector + nil mark.
+type unmarkedPassThroughConsensus struct{}
+
+func (unmarkedPassThroughConsensus) Run(
+	ctx context.Context,
+	req *common.NormalizedRequest,
+	inner func(context.Context, *common.NormalizedRequest) (*common.NormalizedResponse, error),
+) (*common.NormalizedResponse, error) {
+	return inner(ctx, req)
+}
+
+func (unmarkedPassThroughConsensus) HasSelector() bool { return true }
 
 // TestNetworkForward_SelectorReopensCache locks the write-side admission
 // redesign: under a customPolicy selector, Forward consults and writes the
@@ -94,10 +115,18 @@ func TestNetworkForward_SelectorReopensCache(t *testing.T) {
 		Architecture: common.ArchitectureEvm,
 		Evm:          &common.EvmNetworkConfig{ChainId: 123},
 	})
-	network.failsafeExecutors = append(network.failsafeExecutors, &networkExecutor{
-		method:    "*",
-		consensus: fakeSelectorConsensus{},
-	})
+	// Attach selector+stamp to every executor so the matched failsafe path
+	// both enables selectorOn and marks the winner (as Consensus.Run would).
+	// HasConsensus requires cfg.Consensus non-nil.
+	for _, fe := range network.failsafeExecutors {
+		if fe.cfg == nil {
+			fe.cfg = &common.FailsafeConfig{}
+		}
+		if fe.cfg.Consensus == nil {
+			fe.cfg.Consensus = &common.ConsensusPolicyConfig{}
+		}
+		fe.consensus = fakeSelectorConsensus{}
+	}
 	require.True(t, network.consensusPolicySelectorEnabled())
 
 	forwardBalance := func() (*common.NormalizedResponse, error) {
@@ -213,6 +242,56 @@ func TestNetworkForward_SelectorFallbackDoesNotAdmitWrite(t *testing.T) {
 	require.Eventually(t, func() bool { return cache.sets.Load() >= 1 }, 2*time.Second, 10*time.Millisecond,
 		"Forward still invokes Cache.Set; admission lives inside Set")
 	assert.Equal(t, int32(0), cache.admittedSets.Load(), "defaultAllow+false must not admit the write")
+}
+
+// TestNetworkForward_SelectorSkipsUnmarkedSet locks the Codex P1 that a
+// selector-enabled network must not admit nil-mark responses into the shared
+// store (defaultAllow would otherwise write them for later selector Gets).
+func TestNetworkForward_SelectorSkipsUnmarkedSet(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+		}).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0xupstream"}`))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	network := setupTestNetworkSimple(t, ctx, nil, &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+	})
+	for _, fe := range network.failsafeExecutors {
+		if fe.cfg == nil {
+			fe.cfg = &common.FailsafeConfig{}
+		}
+		if fe.cfg.Consensus == nil {
+			fe.cfg.Consensus = &common.ConsensusPolicyConfig{}
+		}
+		fe.consensus = unmarkedPassThroughConsensus{}
+	}
+	require.True(t, network.consensusPolicySelectorEnabled())
+
+	cache := &countingCacheDAL{admitDefaultAllow: true}
+	network.cacheDal = cache
+
+	req := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","0x1"]}`,
+	))
+	req.SetNetwork(network)
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	assert.Nil(t, resp.Cacheable(), "pass-through left mark unset")
+	assert.Equal(t, int32(1), cache.gets.Load())
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, int32(0), cache.sets.Load(), "Forward must not invoke Set for unmarked responses under selector")
+	assert.Equal(t, int32(0), cache.admittedSets.Load())
 }
 
 // TestNetworkForward_NoConsensusUnchanged keeps the non-selector path green:
