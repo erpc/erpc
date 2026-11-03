@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"sort"
 	"strings"
@@ -1017,4 +1018,47 @@ func x10Body(s *scenario) {
 	s.judgeView(&b, tap, vl, viewRules{bound: liveViewBound, numbers: true})
 	s.judgeErrors(vl)
 	s.logf("%s", b.String())
+}
+
+const (
+	c19Run = 2 * time.Minute
+	// c19Rate: latest reads a second per pod, half eth_blockNumber, half
+	// eth_getBlockByNumber(latest).
+	c19Rate = 20
+)
+
+// C19: baseline B's vendors and clients at 0.25 s blocks, reorgs 1-3 deep
+// every 4-8 blocks, c19Rate latest reads a second per pod, 2 pods sharing
+// redis. No read fails; every answered hash is the chain's at its number;
+// every stream keeps its order and is told of each reorg; each
+// eth_getBlockByNumber(latest) hash is one the pod's newHeads stream holds
+// or receives within a block, or reverted less than a block before.
+func c19() spec {
+	return spec{name: "C19", bound: healthyDelivery, sim: chainsim.Config{BlockTime: liveBlockTime}, body: c19Body}
+}
+
+func c19Body(s *scenario) {
+	s.blocks(20)
+	taps := []*viewTap{s.startViewTap(0), s.startViewTap(1)}
+	s.blocks(8)
+	vl := &viewLog{}
+	reads := liveReads(c19Rate, vl)
+	fault := func(ctx context.Context, _ *faultWindows) {
+		for ctx.Err() == nil {
+			sleepCtx(ctx, time.Duration(4+rand.IntN(5))*s.chain.BlockTime())
+			if ctx.Err() == nil {
+				s.reorg(1 + rand.IntN(3))
+			}
+		}
+	}
+	_, all, _, _, _ := s.liveRun(c19Run, reads, fault)
+	s.blocks(4)
+	var b strings.Builder
+	s.judgeFetches(&b, "over the run", all, 0)
+	for _, tap := range taps {
+		s.judgeView(&b, tap, vl, viewRules{bound: s.chain.BlockTime(), grace: s.chain.BlockTime()})
+	}
+	s.judgeErrors(vl)
+	s.logf("%s", b.String())
+	s.requireReorgsTold()
 }
