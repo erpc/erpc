@@ -290,10 +290,6 @@ type chaosClient struct {
 	last       uint64
 	floor      uint64 // a permitted restart: blocks below are not judged
 	problems   []string
-	// minorityAt is a minority fork's head sent at its number, until a
-	// reorg sends another block there: a block served from one holder may
-	// reach a client only as a proper reorg after.
-	minorityAt map[uint64]chainsim.Hash
 	conn       *websocket.Conn
 }
 
@@ -488,10 +484,7 @@ func (cl *chaosClient) apply(s *chaosSeed, n uint64, h chainsim.Hash) {
 	case b == nil:
 		cl.problems = append(cl.problems, fmt.Sprintf("head %d %x: no vendor ever served it", n, h[:4]))
 	case b.Minority():
-		if cl.minorityAt == nil {
-			cl.minorityAt = make(map[uint64]chainsim.Hash)
-		}
-		cl.minorityAt[n] = h
+		cl.problems = append(cl.problems, fmt.Sprintf("head %d %x: a minority fork reached the client", n, h[:4]))
 	case b.Number != n:
 		cl.problems = append(cl.problems, fmt.Sprintf("head %x: number %d, block %d", h[:4], n, b.Number))
 	}
@@ -561,10 +554,6 @@ type chaosLogsClient struct {
 	notes         int // notifications received
 	noteBytes     int // their message lengths
 	problems      []string
-	// minority are the logs of a minority fork's block sent and not yet
-	// removed: a block served from one holder may reach a client, but only
-	// as a proper reorg that removes it after.
-	minority map[chainsim.LogKey]uint64
 }
 
 // subscribeLogs dials a ws connection and subscribes chainsim.Filters[filter]; on
@@ -702,14 +691,7 @@ func (cl *chaosLogsClient) apply(s *chaosSeed, k chainsim.LogKey, n uint64, remo
 		cl.problems = append(cl.problems, fmt.Sprintf("log of block %d %x: no such block", n, k.BlockHash[:4]))
 		return
 	case b.Minority():
-		if cl.minority == nil {
-			cl.minority = make(map[chainsim.LogKey]uint64)
-		}
-		if removed {
-			delete(cl.minority, k)
-		} else {
-			cl.minority[k] = n
-		}
+		cl.problems = append(cl.problems, fmt.Sprintf("log of block %d %x: a minority fork reached the client", n, k.BlockHash[:4]))
 	case !slices.ContainsFunc(b.Logs(), func(l chainsim.Log) bool { return l.LogIndex == k.LogIndex && chainsim.Filters[cl.filter].Matches(l) }):
 		cl.problems = append(cl.problems, fmt.Sprintf("log %d of block %d: the filter does not match it", k.LogIndex, n))
 	}
@@ -2048,9 +2030,6 @@ func (s *chaosSeed) judge(end time.Time) {
 	s.mu.Unlock()
 	for _, cl := range logs {
 		cl.mu.Lock()
-		for k, n := range cl.minority {
-			cl.problems = append(cl.problems, fmt.Sprintf("log %d of block %d %x: a minority fork reached the client and was never removed", k.LogIndex, n, k.BlockHash[:4]))
-		}
 		require.Empty(t, cl.problems, "logs client %s", cl.name)
 		closed := !cl.byTest && cl.closeCode == websocket.CloseTryAgainLater
 		var fork uint64
@@ -2089,11 +2068,6 @@ func (s *chaosSeed) judge(end time.Time) {
 	}
 	for _, cl := range clients {
 		cl.mu.Lock()
-		for n, h := range cl.minorityAt {
-			if cl.chain[n] == h {
-				cl.problems = append(cl.problems, fmt.Sprintf("head %d %x: a minority fork reached the client and no reorg replaced it", n, h[:4]))
-			}
-		}
 		require.Empty(t, cl.problems, "client %s", cl.name)
 		require.NotZero(t, cl.last, "client %s got no head", cl.name)
 
