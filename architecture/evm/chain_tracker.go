@@ -2466,9 +2466,10 @@ type pinBacking struct {
 	// holders and guarantee are the lane's (HashVoters): the q-th highest
 	// holder number, and the cap of the guarantee subsets, 0 none.
 	holders, guarantee int64
-	// undisputed is how many pins, from the lowest, every counted vote
-	// descends from or extends, walking ones included; a pin above them has
-	// a hash voter on another branch, or may yet be reorged away.
+	// undisputed is how many pins, from the lowest, no counted vote
+	// disputes (backingOf), walking ones included; a pin above them has a
+	// hash voter on another branch the pinned one does not outweigh, or
+	// may yet be reorged away.
 	undisputed int
 }
 
@@ -2547,7 +2548,12 @@ func (b *pinBacking) same(o *pinBacking) bool {
 
 // backingOf counts the votes backing each pin of path. A decided settle's
 // answer on the pinned branch backs the whole branch the settle chose, so
-// a split the settle decided flows at once.
+// a split the settle decided flows at once. A vote off the pins disputes
+// the pins above its fork point only while the pinned branch there has
+// fewer than need counted votes, or no more than the votes off it at or
+// below that point: the fork choice weighed those votes, and a lone
+// minority vote never holds back the block a majority backs (rule 2); a
+// branch it may yet win stays disputed (rule 1).
 func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 	vt := t.vendorTable()
 	b := &pinBacking{need: t.voters.Need, voters: len(t.voters.Hash), vendors: vt.Distinct, holders: t.voters.Holders, guarantee: t.voters.Guarantee}
@@ -2584,10 +2590,11 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 		b.backs = append(b.backs, pinBack{i, vt.Of[v.who]})
 	}
 	votes := t.baseVotes()
+	var forks []int
 	for _, v := range votes {
 		backs(v, false, head)
 		if t.conflicts(v.n) {
-			b.undisputed = min(b.undisputed, pinUnder(v.n)+1)
+			forks = append(forks, pinUnder(v.n))
 		}
 	}
 	if answers := t.decidedAnswers(votes); len(answers) > 0 {
@@ -2597,6 +2604,13 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 		}
 	}
 	slices.SortFunc(b.backs, func(x, y pinBack) int { return x.i - y.i })
+	slices.Sort(forks)
+	for j, f := range forks {
+		if held := len(b.backs) - b.atLeast(f+1); held < max(b.need, 1) || held <= j+1 {
+			b.undisputed = min(b.undisputed, f+1)
+			break
+		}
+	}
 	for u, nd := range t.pending {
 		if t.alive(nd) && t.walking(nd) && t.counts(u) {
 			b.undisputed = min(b.undisputed, pinUnder(nd)+1)
