@@ -162,13 +162,19 @@ func (s *scenario) judgeRequests(b *strings.Builder, fs fetchSpan) {
 
 // liveRead is one method's reads on every pod and its bounds against the
 // old image: the slacks on served age and latency at p50 and p90, and
-// noSlower: latency p50 at most the old image's.
+// noSlower: latency p50 and p90 at most the old image's plus
+// latencyNoise.
 type liveRead struct {
 	name     string
 	load     freshLoad
 	slack    [2]time.Duration
 	noSlower bool
 }
+
+// latencyNoise: how far a noSlower latency may sit above the old image's
+// and still count as not slower: percentiles round to the millisecond, so
+// 1 ms against 0 ms is rounding, not a slower path.
+const latencyNoise = 2 * time.Millisecond
 
 // liveReads are P19's head reads, rate a second per pod, half
 // eth_blockNumber and half eth_getBlockByNumber(latest), through vl.
@@ -250,8 +256,12 @@ func (s *scenario) judgeAgeLatency(b *strings.Builder, reads []liveRead, imgs []
 					rd.name, m.what, pctl(m.nn, 50), pctl(m.nn, 90), pctl(m.on, 50), pctl(m.on, 90), rd.slack[0], rd.slack[1])))
 			}
 		}
-		if rd.noSlower && pctl(n.took, 50) > pctl(o.took, 50) {
-			s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("new image %s latency p50 %s, above the old image's %s", rd.name, pctl(n.took, 50), pctl(o.took, 50))))
+		if rd.noSlower {
+			for _, p := range []int{50, 90} {
+				if pctl(n.took, p) > pctl(o.took, p)+latencyNoise {
+					s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("new image %s latency p%d %s, above the old image's %s + %s", rd.name, p, pctl(n.took, p), pctl(o.took, p), latencyNoise)))
+				}
+			}
 		}
 	}
 }
