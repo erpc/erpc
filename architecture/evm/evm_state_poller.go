@@ -328,13 +328,14 @@ func (e *EvmStatePoller) pollLoop(interval time.Duration) {
 		if full {
 			lastFull = time.Now()
 		}
-		e.pollPass(full)
+		e.pollPass(full, interval)
 	}
 }
 
 // pollPass is one pass of the poll loop: the poll source's Ask, then the
-// full state poll when full. A panic ends the pass, never the loop.
-func (e *EvmStatePoller) pollPass(full bool) {
+// full state poll when full, its latest part met by any local fetch sent
+// within interval. A panic ends the pass, never the loop.
+func (e *EvmStatePoller) pollPass(full bool, interval time.Duration) {
 	defer e.recoverHeadPanic("poll-loop")
 	// Calculate timeout based on shared state config:
 	// 1. Wait for distributed lock (up to lockTtl)
@@ -362,7 +363,7 @@ func (e *EvmStatePoller) pollPass(full bool) {
 		err = e.Ask(nctx, common.HeadNeedHash, 0, time.Time{}, common.AskPoll).Err
 	}
 	if full {
-		err = errors.Join(err, e.Poll(nctx))
+		err = errors.Join(err, e.poll(nctx, interval))
 	}
 	if err != nil {
 		if errors.Is(nctx.Err(), context.Canceled) {
@@ -398,7 +399,17 @@ func (e *EvmStatePoller) bindPolledLocked() {
 	e.polledFinalized = telemetry.MetricUpstreamFinalizedBlockPolled.WithLabelValues(e.projectId, e.upstream.VendorName(), e.networkLabel, e.upstream.Id())
 }
 
+// Poll fetches the upstream's state: latest, finalized, syncing and the
+// earliest probes.
 func (e *EvmStatePoller) Poll(ctx context.Context) error {
+	return e.poll(ctx, 0)
+}
+
+// poll is Poll with its latest part met by a local fetch sent within
+// latestPace (at least the cadence): requests that Ask the upstream often
+// enough keep its hash vote as fresh as the interval poll would, and the
+// poll sends no latest fetch of its own (spec §6.8 periodic poll).
+func (e *EvmStatePoller) poll(ctx context.Context, latestPace time.Duration) error {
 	var wg sync.WaitGroup
 	var errs []error
 	ermu := &sync.Mutex{}
@@ -413,7 +424,7 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 		defer wg.Done()
 		actx, cancel := context.WithTimeout(ctx, e.sharedStateRegistry.GetUpdateMaxWait())
 		defer cancel()
-		err := e.Ask(actx, common.HeadNeedHash, 0, time.Time{}, common.AskPoll).Err
+		err := e.Ask(actx, common.HeadNeedHash, latestPace, time.Time{}, common.AskPoll).Err
 		if err != nil && actx.Err() != nil && ctx.Err() == nil {
 			return
 		}
