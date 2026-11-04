@@ -592,6 +592,16 @@ func FindDefaultCacheMethodConfig(method string) *CacheMethodConfig {
 	return defaultCacheMethodsByLower[strings.ToLower(method)]
 }
 
+// IsKnownMethodName reports whether method is, exactly, a name m defines or a
+// built-in table does: a set config bounds, so a cache keyed by it cannot be
+// grown by client input (casing variants included).
+func IsKnownMethodName(m *MethodsConfig, method string) bool {
+	if m != nil && m.Definitions[method] != nil {
+		return true
+	}
+	return defaultCacheMethodsByName[method] != nil
+}
+
 // DefaultWithBlockMethodConfig resolves a method against DefaultWithBlockCacheMethods
 // only — the table that carries the system defaults for block-availability
 // enforcement.

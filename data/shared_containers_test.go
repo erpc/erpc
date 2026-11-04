@@ -27,6 +27,17 @@ var (
 	sharedDynamo   sharedContainer
 )
 
+// dynamoLocalReady waits until DynamoDB Local answers HTTP on its mapped
+// port. A listening port is not enough: docker's proxy accepts the host
+// connection before the JVM serves and resets it, so the first request fails
+// with "connection reset by peer". Any status (400 without auth) means it
+// serves.
+func dynamoLocalReady() wait.Strategy {
+	return wait.ForHTTP("/").WithPort("8000/tcp").
+		WithStatusCodeMatcher(func(int) bool { return true }).
+		WithStartupTimeout(2 * time.Minute)
+}
+
 func TestMain(m *testing.M) {
 	code := m.Run()
 	for _, sc := range []*sharedContainer{&sharedPostgres, &sharedDynamo} {
@@ -87,7 +98,7 @@ func sharedDynamoEndpoint(t *testing.T) string {
 			ContainerRequest: testcontainers.ContainerRequest{
 				Image:        "amazon/dynamodb-local",
 				ExposedPorts: []string{"8000/tcp"},
-				WaitingFor:   wait.ForListeningPort("8000/tcp"),
+				WaitingFor:   dynamoLocalReady(),
 			},
 			Started: true,
 		})

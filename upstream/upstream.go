@@ -1288,6 +1288,22 @@ func (u *Upstream) assertUpstreamLowerBound(ctx context.Context, statePoller com
 	return available, nil
 }
 
+// methodFilterEpoch moves whenever a network's upstream set or an upstream's
+// method filter changes, so a view built from them (a network's served-tip
+// voter sets) knows to rebuild with one atomic load.
+var methodFilterEpoch atomic.Uint64
+
+// MethodFilterEpoch returns the current methodFilterEpoch.
+func MethodFilterEpoch() uint64 { return methodFilterEpoch.Load() }
+
+// MethodFilter returns copies of the upstream's ignoreMethods and
+// allowMethods.
+func (u *Upstream) MethodFilter() (ignore, allow []string) {
+	u.cfgMu.RLock()
+	defer u.cfgMu.RUnlock()
+	return slices.Clone(u.config.IgnoreMethods), slices.Clone(u.config.AllowMethods)
+}
+
 func (u *Upstream) IgnoreMethod(method string) {
 	ai := u.config.AutoIgnoreUnsupportedMethods
 	if ai == nil || !*ai {
@@ -1299,6 +1315,7 @@ func (u *Upstream) IgnoreMethod(method string) {
 	u.config.IgnoreMethods = append(u.config.IgnoreMethods, method)
 	u.cfgMu.Unlock()
 	u.supportedMethods.Store(method, false)
+	methodFilterEpoch.Add(1)
 }
 
 func (u *Upstream) initRateLimitAutoTuner() {

@@ -123,6 +123,43 @@ func BenchmarkNetworkForward_SimpleSuccess(b *testing.B) {
 	})
 }
 
+// BenchmarkServedTip_EthCallLatest measures the served-tip resolution an
+// eth_call at "latest" pays: on a network whose upstreams filter methods alike
+// and on one where an upstream ignores eth_call, so its voters are a subset.
+func BenchmarkServedTip_EthCallLatest(b *testing.B) {
+	util.ConfigureTestLogger()
+	for _, bc := range []struct {
+		name   string
+		ignore []string
+	}{
+		{"unfiltered", nil},
+		{"filtered", []string{"eth_call"}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			util.SetupMocksForEvmStatePoller()
+			defer util.ResetGock()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ntw, _ := setupServedTipNetwork(b, ctx, []servedTipFixture{
+				{id: "bench-1", chainID: 123, latestBlock: 100},
+				{id: "bench-2", chainID: 123, latestBlock: 99},
+				{id: "bench-3", chainID: 123, latestBlock: 105, ignoreMethods: bc.ignore},
+			})
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"},"latest"]}`))
+			req.SetNetwork(ntw)
+			rctx := context.WithValue(ctx, common.RequestContextKey, req)
+			if ntw.EvmHighestLatestBlockNumber(rctx) <= 0 {
+				b.Fatal("no served tip")
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				ntw.EvmHighestLatestBlockNumber(rctx)
+			}
+		})
+	}
+}
+
 // BenchmarkNetworkForward_MethodIgnoreCase simulates a scenario where an upstream
 // does not support a method (returns an error code), tested under repeated load.
 // We expect the Network to mark the method as ignored and skip subsequent calls.
