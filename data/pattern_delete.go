@@ -110,9 +110,10 @@ func unwrapConnector(c Connector) Connector {
 
 const cachePurgeLockTTL = 30 * time.Second
 
-// PurgeConnectors runs pattern deletes across unique writable connectors
-// referenced by cache policies. Unsupported connectors yield a per-row
-// result with Err set; other connectors still run.
+// PurgeConnectors runs pattern deletes across unique connectors referenced by
+// cache policies. Read-only connectors (e.g. gRPC) are still walked so they
+// surface ErrPatternDeleteUnsupported instead of vanishing from the response.
+// Unsupported connectors yield a per-row result with Err set; others still run.
 func PurgeConnectors(ctx context.Context, policies []*CachePolicy, scope common.CachePurgeScope) []common.CachePurgeResult {
 	seen := make(map[string]struct{})
 	var results []common.CachePurgeResult
@@ -137,9 +138,6 @@ func PurgeConnectors(ctx context.Context, policies []*CachePolicy, scope common.
 		if conn == nil {
 			continue
 		}
-		if ro, ok := conn.(ReadOnlyConnector); ok && ro.ReadOnly() {
-			continue
-		}
 		id := conn.Id()
 		if _, dup := seen[id]; dup {
 			continue
@@ -153,10 +151,15 @@ func PurgeConnectors(ctx context.Context, policies []*CachePolicy, scope common.
 			Driver:      connectorDriverName(inner),
 		}
 
+		// Best-effort lock. PostgreSQL advisory locks hold a pooled connection
+		// until Unlock; with minConns=maxConns=1 that deadlocks DeleteByPattern
+		// waiting for another connection — skip the lock on that driver.
 		lockKey := "cache-purge/" + scope.NetworkId
 		var held DistributedLock
-		if lock, err := conn.Lock(ctx, lockKey, cachePurgeLockTTL); err == nil && lock != nil && !lock.IsNil() {
-			held = lock
+		if holdPurgeDistributedLock(inner) {
+			if lock, err := conn.Lock(ctx, lockKey, cachePurgeLockTTL); err == nil && lock != nil && !lock.IsNil() {
+				held = lock
+			}
 		}
 
 		deleter, ok := inner.(PatternDeleter)
@@ -187,12 +190,23 @@ func PurgeConnectors(ctx context.Context, policies []*CachePolicy, scope common.
 	return results
 }
 
+// holdPurgeDistributedLock is false for PostgreSQL: its Lock keeps a pool
+// connection checked out for the lock TTL, which starves DeleteByPattern when
+// the pool has only one connection.
+func holdPurgeDistributedLock(inner Connector) bool {
+	_, isPG := inner.(*PostgreSQLConnector)
+	return !isPG
+}
+
 // matchUnsuffixedMainKey reports whether a physical Redis/Memory main key
-// belongs to an unsuffixed partition for networkId. After the networkId
-// prefix, an unsuffixed key has exactly two unescaped ':' separators in the
-// remainder (blockRef:method:hash). A cacheKeySuffix sibling has three or more.
-// Escaped colons inside block refs (\: ) are not counted.
-func matchUnsuffixedMainKey(networkId, key string) bool {
+// belongs to an unsuffixed partition for networkId.
+//
+// When method is non-empty, the method marker splits partition from range so
+// colon-containing method names (SVM) are not mistaken for a cacheKeySuffix
+// segment. When method is empty, falls back to "exactly two unescaped ':' in
+// the remainder" (blockRef:method:hash) — safe for EVM, may miss rare
+// colon-in-method keys under a network-wide unsuffixed purge.
+func matchUnsuffixedMainKey(networkId, key, method string) bool {
 	if strings.HasPrefix(key, redisReverseIndexPrefix+"#") {
 		return matchUnsuffixedRviKey(networkId, key)
 	}
@@ -200,7 +214,29 @@ func matchUnsuffixedMainKey(networkId, key string) bool {
 	if !strings.HasPrefix(key, prefix) {
 		return false
 	}
-	return countUnescapedColons(key[len(prefix):]) == 2
+	rest := key[len(prefix):]
+	if method != "" {
+		return unsuffixedRestBeforeMethod(rest, method)
+	}
+	return countUnescapedColons(rest) == 2
+}
+
+// unsuffixedRestBeforeMethod is true when rest is `{escapedBlockRef}:{method}:…`
+// with no extra unescaped partition segment (which would be a suffix sibling).
+func unsuffixedRestBeforeMethod(rest, method string) bool {
+	marker := method + ":"
+	// Prefer method:hash form; also accept a bare trailing method.
+	idx := strings.Index(rest, ":"+marker)
+	if idx >= 0 {
+		return countUnescapedColons(rest[:idx]) == 0
+	}
+	if strings.HasSuffix(rest, ":"+method) {
+		return countUnescapedColons(rest[:len(rest)-len(method)-1]) == 0
+	}
+	if rest == method {
+		return true
+	}
+	return false
 }
 
 // matchUnsuffixedRviKey keeps only reverse-index companions whose wildcard

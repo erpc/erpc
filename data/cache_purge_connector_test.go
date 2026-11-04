@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/dgraph-io/ristretto/v2/z"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
@@ -143,6 +144,36 @@ func TestMemoryConnector_Purge_SuffixIsolation(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestMemoryConnector_Purge_ColonInMethod(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+	conn, err := NewMemoryConnector(ctx, &logger, "mem-svm", &common.MemoryConnectorConfig{
+		MaxItems: 1000, MaxTotalSize: "10MB",
+	})
+	require.NoError(t, err)
+
+	rk := "custom:method:deadbeef"
+	require.NoError(t, conn.Set(ctx, "svm:mainnet-beta:42", rk, []byte("keep-me-gone"), nil))
+	require.NoError(t, conn.Set(ctx, "svm:mainnet-beta:systx:42", rk, []byte("sibling"), nil))
+	conn.cache.Wait()
+
+	_, deleted, err := conn.DeleteByPattern(ctx, PatternDeleteOpts{
+		MainPatterns:   []string{"svm:mainnet-beta:*:custom:method:*"},
+		DryRun:         false,
+		UnsuffixedOnly: true,
+		NetworkId:      "svm:mainnet-beta",
+		Method:         "custom:method",
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), deleted)
+
+	_, err = conn.Get(ctx, ConnectorMainIndex, "svm:mainnet-beta:42", rk, nil)
+	require.Error(t, err)
+	val, err := conn.Get(ctx, ConnectorMainIndex, "svm:mainnet-beta:systx:42", rk, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("sibling"), val)
+}
+
 func TestMemoryConnector_Purge_KeyIndexDropsOnEvict(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
@@ -154,7 +185,8 @@ func TestMemoryConnector_Purge_KeyIndexDropsOnEvict(t *testing.T) {
 
 	require.NoError(t, conn.Set(ctx, "evm:1:1", "eth_call:aa", []byte("first"), nil))
 	conn.cache.Wait()
-	_, loaded := conn.keyIndex.Load("evm:1:1:eth_call:aa")
+	h, _ := z.KeyToHash("evm:1:1:eth_call:aa")
+	_, loaded := conn.hashIndex.Load(h)
 	require.True(t, loaded, "key should be indexed after Set")
 
 	payload := make([]byte, 400)
@@ -166,7 +198,7 @@ func TestMemoryConnector_Purge_KeyIndexDropsOnEvict(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		conn.cache.Wait()
-		_, still := conn.keyIndex.Load("evm:1:1:eth_call:aa")
+		_, still := conn.hashIndex.Load(h)
 		return !still
 	}, 3*time.Second, 50*time.Millisecond, "OnEvict/OnReject should drop evicted keys from the purge index")
 }
@@ -204,4 +236,28 @@ func TestPurgeConnectors_UnsupportedReported(t *testing.T) {
 	}
 	require.True(t, sawOK)
 	require.True(t, sawUnsupported)
+}
+
+func TestPurgeConnectors_GrpcReadOnlyReportsUnsupported(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+	grpc := &GrpcConnector{id: "grpc-cache", logger: &logger}
+	require.True(t, grpc.ReadOnly())
+
+	pol, err := NewCachePolicy(&common.CachePolicyConfig{Connector: "grpc-cache", Network: "*", Method: "*"}, grpc)
+	require.NoError(t, err)
+
+	results := PurgeConnectors(ctx, []*CachePolicy{pol}, common.CachePurgeScope{
+		NetworkId: "evm:1",
+		DryRun:    true,
+	})
+	require.Len(t, results, 1, "read-only gRPC must appear in results, not be skipped")
+	require.Equal(t, "grpc-cache", results[0].ConnectorId)
+	require.ErrorIs(t, results[0].Err, ErrPatternDeleteUnsupported)
+}
+
+func TestHoldPurgeDistributedLock_SkipsPostgres(t *testing.T) {
+	require.False(t, holdPurgeDistributedLock(&PostgreSQLConnector{}))
+	require.True(t, holdPurgeDistributedLock(&RedisConnector{}))
+	require.True(t, holdPurgeDistributedLock(&MemoryConnector{}))
 }

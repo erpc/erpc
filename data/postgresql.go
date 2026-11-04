@@ -1502,7 +1502,9 @@ func (p *PostgreSQLConnector) DeleteByPattern(ctx context.Context, opts PatternD
 		n, err := p.deleteUnsuffixedBatch(ctx, pool, pkLike, rkLike, opts)
 		if err != nil {
 			common.SetTraceSpanError(span, err)
-			return 0, 0, err
+			// Preserve partial deletes already committed — same as the
+			// batched DELETE path below.
+			return n, n, err
 		}
 		return n, n, nil
 	}
@@ -1585,6 +1587,8 @@ func (p *PostgreSQLConnector) countUnsuffixed(ctx context.Context, pool *pgxpool
 	return n, rows.Err()
 }
 
+type pgPartitionRange struct{ pk, rk string }
+
 func (p *PostgreSQLConnector) deleteUnsuffixedBatch(ctx context.Context, pool *pgxpool.Pool, pkLike, rkLike string, opts PatternDeleteOpts) (int64, error) {
 	// Keyset-scan the LIKE window so suffix siblings don't stall progress
 	// when a batch filters to zero deletes.
@@ -1619,15 +1623,14 @@ func (p *PostgreSQLConnector) deleteUnsuffixedBatch(ctx context.Context, pool *p
 			return deleted, fmt.Errorf("postgres purge unsuffixed select: %w", err)
 		}
 
-		type pair struct{ pk, rk string }
-		var batch []pair
+		var batch []pgPartitionRange
 		for rows.Next() {
 			var pk, rk string
 			if err := rows.Scan(&pk, &rk); err != nil {
 				rows.Close()
 				return deleted, err
 			}
-			batch = append(batch, pair{pk, rk})
+			batch = append(batch, pgPartitionRange{pk, rk})
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -1641,21 +1644,46 @@ func (p *PostgreSQLConnector) deleteUnsuffixedBatch(ctx context.Context, pool *p
 		lastPK, lastRK = last.pk, last.rk
 		haveCursor = true
 
+		var targets []pgPartitionRange
 		for _, t := range batch {
-			if !partitionMatchesScope(t.pk, opts) || !rangeMatchesMethod(t.rk, opts.Method) {
-				continue
+			if partitionMatchesScope(t.pk, opts) && rangeMatchesMethod(t.rk, opts.Method) {
+				targets = append(targets, t)
 			}
-			tag, err := pool.Exec(ctx, fmt.Sprintf(`
-				DELETE FROM %s WHERE partition_key = $1 AND range_key = $2
-			`, p.table), t.pk, t.rk)
+		}
+		if len(targets) > 0 {
+			n, err := p.deletePartitionRangePairs(ctx, pool, targets)
 			if err != nil {
-				p.handleConnectionFailure(err)
 				return deleted, err
 			}
-			deleted += tag.RowsAffected()
+			deleted += n
 		}
 		if len(batch) < postgresPurgeBatchSize {
 			return deleted, nil
 		}
 	}
+}
+
+// deletePartitionRangePairs removes a filtered batch in one statement so a
+// large unsuffixed purge does not issue one DELETE round-trip per row.
+func (p *PostgreSQLConnector) deletePartitionRangePairs(ctx context.Context, pool *pgxpool.Pool, targets []pgPartitionRange) (int64, error) {
+	if len(targets) == 0 {
+		return 0, nil
+	}
+	args := make([]any, 0, len(targets)*2)
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf(`DELETE FROM %s WHERE (partition_key, range_key) IN (`, p.table))
+	for i, t := range targets {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "($%d,$%d)", i*2+1, i*2+2)
+		args = append(args, t.pk, t.rk)
+	}
+	b.WriteByte(')')
+	tag, err := pool.Exec(ctx, b.String(), args...)
+	if err != nil {
+		p.handleConnectionFailure(err)
+		return 0, fmt.Errorf("postgres purge unsuffixed batch delete: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }

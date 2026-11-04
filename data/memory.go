@@ -30,12 +30,11 @@ type MemoryConnector struct {
 	locks       sync.Map // map[string]*sync.Mutex
 	emitMetrics bool
 
-	// keyIndex tracks keys written via Set so admin purge can iterate.
-	// Ristretto has no public key scan API. hashIndex maps ristretto's
-	// key hash → string so OnEvict/OnReject can drop index entries when
-	// TTL expiry or MaxCost eviction removes items (otherwise the map
-	// grows without bound on the hot path).
-	keyIndex  sync.Map // map[string]struct{}
+	// hashIndex tracks keys written via Set so admin purge can iterate
+	// (Ristretto has no public key scan API). Keyed by ristretto's key hash
+	// so OnEvict/OnReject can drop entries when TTL expiry or MaxCost
+	// eviction removes items — a single map avoids dual-map Set races that
+	// orphaned keyIndex entries outside MaxCost.
 	hashIndex sync.Map // map[uint64]string
 
 	// Previous metric values for calculating deltas
@@ -89,9 +88,7 @@ func NewMemoryConnector(
 		if item == nil {
 			return
 		}
-		if key, ok := c.hashIndex.LoadAndDelete(item.Key); ok {
-			c.keyIndex.Delete(key.(string))
-		}
+		c.hashIndex.Delete(item.Key)
 	}
 
 	ristrettoCfg := &ristretto.Config[string, []byte]{
@@ -163,13 +160,11 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string
 func (m *MemoryConnector) trackKey(key string) {
 	h, _ := z.KeyToHash(key)
 	m.hashIndex.Store(h, key)
-	m.keyIndex.Store(key, struct{}{})
 }
 
 func (m *MemoryConnector) untrackKey(key string) {
 	h, _ := z.KeyToHash(key)
 	m.hashIndex.Delete(h)
-	m.keyIndex.Delete(key)
 }
 
 // isReverseIndexable reports whether the given partition key should have a
@@ -385,15 +380,20 @@ func (m *MemoryConnector) DeleteByPattern(ctx context.Context, opts PatternDelet
 	patterns = append(patterns, opts.RviPatterns...)
 
 	var matched, deleted int64
-	m.keyIndex.Range(func(k, _ any) bool {
-		key, ok := k.(string)
+	m.hashIndex.Range(func(_, v any) bool {
+		key, ok := v.(string)
 		if !ok {
+			return true
+		}
+		// Drop index orphans left by Set↔OnEvict races (entry already gone).
+		if _, alive := m.cache.Get(key); !alive {
+			m.untrackKey(key)
 			return true
 		}
 		if !globMatchAny(key, patterns) {
 			return true
 		}
-		if opts.UnsuffixedOnly && !matchUnsuffixedMainKey(opts.NetworkId, key) {
+		if opts.UnsuffixedOnly && !matchUnsuffixedMainKey(opts.NetworkId, key, opts.Method) {
 			return true
 		}
 		matched++

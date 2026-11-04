@@ -37,12 +37,23 @@ func TestBuildPurgePatterns(t *testing.T) {
 }
 
 func TestMatchUnsuffixedMainKey(t *testing.T) {
-	assert.True(t, matchUnsuffixedMainKey("evm:1", "evm:1:12345:eth_blockNumber:abcd"))
-	assert.False(t, matchUnsuffixedMainKey("evm:1", "evm:1:systx:12345:eth_blockNumber:abcd"))
-	assert.True(t, matchUnsuffixedMainKey("evm:1", "evm:1:foo\\:bar:eth_call:abcd"),
+	assert.True(t, matchUnsuffixedMainKey("evm:1", "evm:1:12345:eth_blockNumber:abcd", ""))
+	assert.False(t, matchUnsuffixedMainKey("evm:1", "evm:1:systx:12345:eth_blockNumber:abcd", ""))
+	assert.True(t, matchUnsuffixedMainKey("evm:1", "evm:1:foo\\:bar:eth_call:abcd", ""),
 		"escaped colon in blockRef stays unsuffixed")
 	assert.True(t, matchUnsuffixedRviKey("evm:1", "rvi#evm:1:*#eth_blockNumber:abcd"))
 	assert.False(t, matchUnsuffixedRviKey("evm:1", "rvi#evm:1:systx:*#eth_blockNumber:abcd"))
+
+	// SVM methods may contain ':' — colon-count alone would treat them as suffix siblings.
+	assert.False(t, matchUnsuffixedMainKey("svm:mainnet-beta",
+		"svm:mainnet-beta:42:custom:method:deadbeef", ""),
+		"without method filter, colon-in-method looks like a suffix sibling")
+	assert.True(t, matchUnsuffixedMainKey("svm:mainnet-beta",
+		"svm:mainnet-beta:42:custom:method:deadbeef", "custom:method"),
+		"method filter splits partition from range without counting method colons")
+	assert.False(t, matchUnsuffixedMainKey("svm:mainnet-beta",
+		"svm:mainnet-beta:systx:42:custom:method:deadbeef", "custom:method"),
+		"suffixed sibling still rejected when method is known")
 }
 
 func TestGlobMatch(t *testing.T) {

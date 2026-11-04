@@ -867,7 +867,7 @@ func (r *RedisConnector) scanUnlinkPattern(ctx context.Context, pattern string, 
 
 		batch := make([]string, 0, len(keys))
 		for _, key := range keys {
-			if opts.UnsuffixedOnly && !matchUnsuffixedMainKey(opts.NetworkId, key) {
+			if opts.UnsuffixedOnly && !matchUnsuffixedMainKey(opts.NetworkId, key, opts.Method) {
 				continue
 			}
 			batch = append(batch, key)
