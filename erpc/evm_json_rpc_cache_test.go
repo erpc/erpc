@@ -2027,11 +2027,15 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 
 	logger := log.Logger
 
-	// Start a DynamoDB local container
+	// Start a DynamoDB local container. A listening port is not readiness:
+	// docker's proxy accepts before the JVM serves and resets the connection,
+	// so wait for any HTTP answer.
 	req := testcontainers.ContainerRequest{
 		Image:        "amazon/dynamodb-local",
 		ExposedPorts: []string{"8000/tcp"},
-		WaitingFor:   wait.ForListeningPort("8000/tcp"),
+		WaitingFor: wait.ForHTTP("/").WithPort("8000/tcp").
+			WithStatusCodeMatcher(func(int) bool { return true }).
+			WithStartupTimeout(2 * time.Minute),
 	}
 	ddbC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
