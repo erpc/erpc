@@ -1448,8 +1448,12 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 	return results, nextToken, nil
 }
 
+const postgresPurgeBatchSize = 5000
+const postgresPurgeTimeout = 5 * time.Minute
+
 // DeleteByPattern removes rows whose partition_key/range_key match the purge
-// scope. PostgreSQL reverse lookups use an index, not companion rvi# rows.
+// scope in bounded SQL batches (avoids per-row round-trips under setTimeout).
+// PostgreSQL reverse lookups use an index, not companion rvi# rows.
 func (p *PostgreSQLConnector) DeleteByPattern(ctx context.Context, opts PatternDeleteOpts) (int64, int64, error) {
 	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.DeleteByPattern")
 	defer span.End()
@@ -1460,65 +1464,198 @@ func (p *PostgreSQLConnector) DeleteByPattern(ctx context.Context, opts PatternD
 	}
 	defer release()
 
-	ctx, cancel := context.WithTimeout(ctx, p.setTimeout)
+	ctx, cancel := context.WithTimeout(ctx, postgresPurgeTimeout)
 	defer cancel()
 
-	var rows pgx.Rows
-	if opts.BlockRef != "" {
-		exact := common.CachePartitionKey(opts.NetworkId, opts.Suffix, opts.BlockRef)
-		rows, err = pool.Query(ctx, fmt.Sprintf(`
-			SELECT partition_key, range_key FROM %s
-			WHERE partition_key = $1
-		`, p.table), exact)
-	} else {
-		likePrefix := opts.NetworkId + ":%"
-		if opts.Suffix != "" {
-			likePrefix = common.CachePartitionKey(opts.NetworkId, opts.Suffix, "") + "%"
-		}
-		rows, err = pool.Query(ctx, fmt.Sprintf(`
-			SELECT partition_key, range_key FROM %s
-			WHERE partition_key LIKE $1
-		`, p.table), likePrefix)
-	}
-	if err != nil {
-		p.handleConnectionFailure(err)
-		common.SetTraceSpanError(span, err)
-		return 0, 0, fmt.Errorf("postgres purge select: %w", err)
-	}
-	defer rows.Close()
+	pkLike, rkLike, exactPK := postgresPurgePredicates(opts)
 
-	type pair struct{ pk, rk string }
-	var targets []pair
-	for rows.Next() {
-		var pk, rk string
-		if err := rows.Scan(&pk, &rk); err != nil {
-			return 0, 0, fmt.Errorf("postgres purge scan: %w", err)
-		}
-		if !partitionMatchesScope(pk, opts) || !rangeMatchesMethod(rk, opts.Method) {
-			continue
-		}
-		targets = append(targets, pair{pk, rk})
-	}
-	if err := rows.Err(); err != nil {
-		return 0, 0, err
-	}
-
-	matched := int64(len(targets))
 	if opts.DryRun {
+		var matched int64
+		var q string
+		var args []any
+		switch {
+		case exactPK != "":
+			q = fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE partition_key = $1 AND range_key LIKE $2`, p.table)
+			args = []any{exactPK, rkLike}
+		default:
+			q = fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE partition_key LIKE $1 AND range_key LIKE $2`, p.table)
+			args = []any{pkLike, rkLike}
+		}
+		if err := pool.QueryRow(ctx, q, args...).Scan(&matched); err != nil {
+			p.handleConnectionFailure(err)
+			common.SetTraceSpanError(span, err)
+			return 0, 0, fmt.Errorf("postgres purge count: %w", err)
+		}
+		// Unsuffixed over-match: COUNT with LIKE may include suffix siblings.
+		// Re-scan candidates and apply partitionMatchesScope when needed.
+		if opts.UnsuffixedOnly && opts.Suffix == "" && opts.BlockRef == "" {
+			matched, err = p.countUnsuffixed(ctx, pool, pkLike, rkLike, opts)
+			if err != nil {
+				common.SetTraceSpanError(span, err)
+				return 0, 0, err
+			}
+		}
 		return matched, 0, nil
 	}
 
-	var deleted int64
-	for _, t := range targets {
-		tag, err := pool.Exec(ctx, fmt.Sprintf(`
-			DELETE FROM %s WHERE partition_key = $1 AND range_key = $2
-		`, p.table), t.pk, t.rk)
+	if opts.UnsuffixedOnly && opts.Suffix == "" && opts.BlockRef == "" {
+		n, err := p.deleteUnsuffixedBatch(ctx, pool, pkLike, rkLike, opts)
+		if err != nil {
+			common.SetTraceSpanError(span, err)
+			return 0, 0, err
+		}
+		return n, n, nil
+	}
+
+	var matched, deleted int64
+	for {
+		var n int64
+		var q string
+		var args []any
+		if exactPK != "" {
+			q = fmt.Sprintf(`
+				DELETE FROM %s WHERE ctid IN (
+					SELECT ctid FROM %s WHERE partition_key = $1 AND range_key LIKE $2 LIMIT %d
+				)`, p.table, p.table, postgresPurgeBatchSize)
+			args = []any{exactPK, rkLike}
+		} else {
+			q = fmt.Sprintf(`
+				DELETE FROM %s WHERE ctid IN (
+					SELECT ctid FROM %s WHERE partition_key LIKE $1 AND range_key LIKE $2 LIMIT %d
+				)`, p.table, p.table, postgresPurgeBatchSize)
+			args = []any{pkLike, rkLike}
+		}
+		tag, err := pool.Exec(ctx, q, args...)
 		if err != nil {
 			p.handleConnectionFailure(err)
 			common.SetTraceSpanError(span, err)
 			return matched, deleted, fmt.Errorf("postgres purge delete: %w", err)
 		}
-		deleted += tag.RowsAffected()
+		n = tag.RowsAffected()
+		matched += n
+		deleted += n
+		if n == 0 {
+			break
+		}
 	}
 	return matched, deleted, nil
+}
+
+func postgresPurgePredicates(opts PatternDeleteOpts) (pkLike, rkLike, exactPK string) {
+	rkLike = "%"
+	if opts.Method != "" {
+		rkLike = escapeLike(opts.Method) + ":%"
+	}
+	if opts.BlockRef != "" {
+		exactPK = common.CachePartitionKey(opts.NetworkId, opts.Suffix, opts.BlockRef)
+		return "", rkLike, exactPK
+	}
+	if opts.Suffix != "" {
+		pkLike = escapeLike(common.CachePartitionKey(opts.NetworkId, opts.Suffix, "")) + "%"
+	} else {
+		pkLike = escapeLike(opts.NetworkId) + ":%"
+	}
+	return pkLike, rkLike, ""
+}
+
+func escapeLike(s string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(s)
+}
+
+func (p *PostgreSQLConnector) countUnsuffixed(ctx context.Context, pool *pgxpool.Pool, pkLike, rkLike string, opts PatternDeleteOpts) (int64, error) {
+	rows, err := pool.Query(ctx, fmt.Sprintf(`
+		SELECT partition_key FROM %s WHERE partition_key LIKE $1 AND range_key LIKE $2
+	`, p.table), pkLike, rkLike)
+	if err != nil {
+		p.handleConnectionFailure(err)
+		return 0, fmt.Errorf("postgres purge unsuffixed count: %w", err)
+	}
+	defer rows.Close()
+	var n int64
+	for rows.Next() {
+		var pk string
+		if err := rows.Scan(&pk); err != nil {
+			return 0, err
+		}
+		if partitionMatchesScope(pk, opts) {
+			n++
+		}
+	}
+	return n, rows.Err()
+}
+
+func (p *PostgreSQLConnector) deleteUnsuffixedBatch(ctx context.Context, pool *pgxpool.Pool, pkLike, rkLike string, opts PatternDeleteOpts) (int64, error) {
+	// Keyset-scan the LIKE window so suffix siblings don't stall progress
+	// when a batch filters to zero deletes.
+	var (
+		deleted        int64
+		lastPK, lastRK string
+		haveCursor     bool
+	)
+	for {
+		var (
+			rows pgx.Rows
+			err  error
+		)
+		if !haveCursor {
+			rows, err = pool.Query(ctx, fmt.Sprintf(`
+				SELECT partition_key, range_key FROM %s
+				WHERE partition_key LIKE $1 AND range_key LIKE $2
+				ORDER BY partition_key, range_key
+				LIMIT %d
+			`, p.table, postgresPurgeBatchSize), pkLike, rkLike)
+		} else {
+			rows, err = pool.Query(ctx, fmt.Sprintf(`
+				SELECT partition_key, range_key FROM %s
+				WHERE partition_key LIKE $1 AND range_key LIKE $2
+				  AND (partition_key, range_key) > ($3, $4)
+				ORDER BY partition_key, range_key
+				LIMIT %d
+			`, p.table, postgresPurgeBatchSize), pkLike, rkLike, lastPK, lastRK)
+		}
+		if err != nil {
+			p.handleConnectionFailure(err)
+			return deleted, fmt.Errorf("postgres purge unsuffixed select: %w", err)
+		}
+
+		type pair struct{ pk, rk string }
+		var batch []pair
+		for rows.Next() {
+			var pk, rk string
+			if err := rows.Scan(&pk, &rk); err != nil {
+				rows.Close()
+				return deleted, err
+			}
+			batch = append(batch, pair{pk, rk})
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return deleted, err
+		}
+		rows.Close()
+		if len(batch) == 0 {
+			return deleted, nil
+		}
+		last := batch[len(batch)-1]
+		lastPK, lastRK = last.pk, last.rk
+		haveCursor = true
+
+		for _, t := range batch {
+			if !partitionMatchesScope(t.pk, opts) || !rangeMatchesMethod(t.rk, opts.Method) {
+				continue
+			}
+			tag, err := pool.Exec(ctx, fmt.Sprintf(`
+				DELETE FROM %s WHERE partition_key = $1 AND range_key = $2
+			`, p.table), t.pk, t.rk)
+			if err != nil {
+				p.handleConnectionFailure(err)
+				return deleted, err
+			}
+			deleted += tag.RowsAffected()
+		}
+		if len(batch) < postgresPurgeBatchSize {
+			return deleted, nil
+		}
+	}
 }

@@ -2,12 +2,18 @@ package data
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/erpc/erpc/common"
 )
+
+// ErrPatternDeleteUnsupported is returned when a connector cannot purge by
+// pattern. Admin metrics/labels must use errors.Is against this sentinel —
+// never substring-match error text.
+var ErrPatternDeleteUnsupported = errors.New("pattern delete unsupported")
 
 // PatternDeleter is an optional connector capability used by admin cache purge.
 // Connectors that do not implement it are reported as unsupported per-row.
@@ -52,11 +58,25 @@ func BuildPurgePatterns(scope common.CachePurgeScope) (main []string, rvi []stri
 		main = []string{common.CachePartitionKey(scope.NetworkId, scope.Suffix, "*")}
 	}
 
-	wildcard := common.CachePartitionKey(scope.NetworkId, scope.Suffix, "*")
-	if scope.Method != "" {
-		rvi = []string{fmt.Sprintf("%s#%s#%s:*", redisReverseIndexPrefix, wildcard, scope.Method)}
-	} else {
-		rvi = []string{fmt.Sprintf("%s#%s#*", redisReverseIndexPrefix, wildcard)}
+	// blockRef-scoped main keys are exact partitions; the rvi# wildcard is
+	// network-wide (rvi#evm:1:*#*), so deleting companions by that pattern
+	// would wipe reverse-index entries for every block. Skip rvi# for
+	// blockRef scopes — dangling companions resolve to a cache miss.
+	if scope.BlockRef != "" {
+		return main, nil
+	}
+
+	// Reverse-index companions are keyed by network-wide wildcard partition, not
+	// by concrete blockRef. Purging rvi# for a blockRef-scoped call would delete
+	// every companion for the network. Skip rvi when BlockRef is set; dangling
+	// companions resolve to a miss on Get.
+	if scope.BlockRef == "" {
+		wildcard := common.CachePartitionKey(scope.NetworkId, scope.Suffix, "*")
+		if scope.Method != "" {
+			rvi = []string{fmt.Sprintf("%s#%s#%s:*", redisReverseIndexPrefix, wildcard, scope.Method)}
+		} else {
+			rvi = []string{fmt.Sprintf("%s#%s#*", redisReverseIndexPrefix, wildcard)}
+		}
 	}
 	return main, rvi
 }
@@ -153,7 +173,7 @@ func PurgeConnectors(ctx context.Context, policies []*CachePolicy, scope common.
 			if held != nil {
 				_ = held.Unlock(ctx)
 			}
-			row.Err = fmt.Errorf("connector %q (%s) does not support pattern delete", id, row.Driver)
+			row.Err = fmt.Errorf("connector %q (%s): %w", id, row.Driver, ErrPatternDeleteUnsupported)
 			row.DurationMs = time.Since(start).Milliseconds()
 			results = append(results, row)
 			continue

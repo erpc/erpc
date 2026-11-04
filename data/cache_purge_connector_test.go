@@ -143,6 +143,27 @@ func TestMemoryConnector_Purge_SuffixIsolation(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestMemoryConnector_Purge_KeyIndexDropsExpired(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+	conn, err := NewMemoryConnector(ctx, &logger, "mem-ttl", &common.MemoryConnectorConfig{
+		MaxItems: 100, MaxTotalSize: "1MB",
+	})
+	require.NoError(t, err)
+
+	ttl := 50 * time.Millisecond
+	require.NoError(t, conn.Set(ctx, "evm:1:1", "eth_call:aa", []byte("x"), &ttl))
+	conn.cache.Wait()
+	_, loaded := conn.keyIndex.Load("evm:1:1:eth_call:aa")
+	require.True(t, loaded, "key should be indexed after Set")
+
+	require.Eventually(t, func() bool {
+		conn.cache.Wait()
+		_, still := conn.keyIndex.Load("evm:1:1:eth_call:aa")
+		return !still
+	}, 3*time.Second, 50*time.Millisecond, "OnEvict should drop expired keys from the purge index")
+}
+
 func TestPurgeConnectors_UnsupportedReported(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()

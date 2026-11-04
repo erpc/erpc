@@ -3,8 +3,8 @@ package erpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/erpc/erpc/auth"
@@ -842,12 +842,14 @@ func (e *ERPC) handlePurgeCache(ctx context.Context, nq *common.NormalizedReques
 				resultLabel = "dry_run"
 			}
 			if r.Err != nil {
-				row.Error = r.Err.Error()
-				row.Unsupported = true
-				resultLabel = "unsupported"
-				if !stringsContainsUnsupported(r.Err.Error()) {
+				if row.Error == "" {
+					row.Error = r.Err.Error()
+				}
+				if errors.Is(r.Err, data.ErrPatternDeleteUnsupported) {
+					row.Unsupported = true
+					resultLabel = "unsupported"
+				} else {
 					resultLabel = "error"
-					row.Unsupported = false
 				}
 			}
 			totalDeleted += r.Deleted
@@ -888,11 +890,6 @@ func (e *ERPC) handlePurgeCache(ctx context.Context, nq *common.NormalizedReques
 		"connectors":   connectors,
 		"totalDeleted": totalDeleted,
 	})
-}
-
-func stringsContainsUnsupported(msg string) bool {
-	lower := strings.ToLower(msg)
-	return strings.Contains(lower, "does not support") || strings.Contains(lower, "unsupported")
 }
 
 // handleListCordoned returns every upstream currently cordoned in a

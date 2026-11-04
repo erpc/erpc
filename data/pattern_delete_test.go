@@ -29,10 +29,10 @@ func TestBuildPurgePatterns(t *testing.T) {
 		assert.Equal(t, []string{"evm:1:*:eth_blockNumber:*"}, main)
 		assert.Equal(t, []string{"rvi#evm:1:*#eth_blockNumber:*"}, rvi)
 	})
-	t.Run("blockRef scoped", func(t *testing.T) {
+	t.Run("blockRef scoped skips rvi", func(t *testing.T) {
 		main, rvi := BuildPurgePatterns(common.CachePurgeScope{NetworkId: "evm:1", BlockRef: "12345"})
 		assert.Equal(t, []string{"evm:1:12345:*"}, main)
-		assert.Equal(t, []string{"rvi#evm:1:*#*"}, rvi)
+		assert.Nil(t, rvi, "blockRef scope must not wipe network-wide rvi companions")
 	})
 }
 

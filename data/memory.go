@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dgraph-io/ristretto/v2"
+	"github.com/dgraph-io/ristretto/v2/z"
 	"github.com/dustin/go-humanize"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -30,8 +31,12 @@ type MemoryConnector struct {
 	emitMetrics bool
 
 	// keyIndex tracks keys written via Set so admin purge can iterate.
-	// Ristretto has no public key scan API.
-	keyIndex sync.Map // map[string]struct{}
+	// Ristretto has no public key scan API. hashIndex maps ristretto's
+	// key hash → string so OnEvict/OnReject can drop index entries when
+	// TTL expiry or MaxCost eviction removes items (otherwise the map
+	// grows without bound on the hot path).
+	keyIndex  sync.Map // map[string]struct{}
+	hashIndex sync.Map // map[uint64]string
 
 	// Previous metric values for calculating deltas
 	prevMetrics struct {
@@ -74,6 +79,21 @@ func NewMemoryConnector(
 	// Determine if metrics should be enabled
 	enableMetrics := cfg.EmitMetrics != nil && *cfg.EmitMetrics
 
+	c := &MemoryConnector{
+		id:          id,
+		logger:      &lg,
+		emitMetrics: enableMetrics,
+	}
+
+	dropIndex := func(item *ristretto.Item[[]byte]) {
+		if item == nil {
+			return
+		}
+		if key, ok := c.hashIndex.LoadAndDelete(item.Key); ok {
+			c.keyIndex.Delete(key.(string))
+		}
+	}
+
 	ristrettoCfg := &ristretto.Config[string, []byte]{
 		NumCounters: int64(3 * cfg.MaxItems), // number of keys to track frequency of.
 		MaxCost:     maxCost,                 // maximum cost of cache.
@@ -82,19 +102,15 @@ func NewMemoryConnector(
 		Cost: func(v []byte) int64 {
 			return int64(len(v) + 256)
 		},
+		OnEvict:  dropIndex,
+		OnReject: dropIndex,
 	}
 
 	cache, err := ristretto.NewCache(ristrettoCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ristretto cache: %w", err)
 	}
-
-	c := &MemoryConnector{
-		id:          id,
-		logger:      &lg,
-		cache:       cache,
-		emitMetrics: enableMetrics,
-	}
+	c.cache = cache
 
 	// Start metrics collection goroutine if enabled
 	if enableMetrics {
@@ -117,11 +133,12 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 
 	if ttl != nil && *ttl > 0 {
-		m.cache.SetWithTTL(key, value, 0, *ttl)
-	} else {
-		m.cache.Set(key, value, 0)
+		if m.cache.SetWithTTL(key, value, 0, *ttl) {
+			m.trackKey(key)
+		}
+	} else if m.cache.Set(key, value, 0) {
+		m.trackKey(key)
 	}
-	m.keyIndex.Store(key, struct{}{})
 
 	// Reverse index: let wildcard Gets ("evm:1:*" / "svm:mainnet-beta:*" /
 	// "evm:998:systx:*") resolve to the concrete partition key that was most
@@ -133,12 +150,25 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string
 	if isReverseIndexable(partitionKey) {
 		if wildcardPartitionKey, ok := reverseIndexWildcardKey(ctx, partitionKey); ok {
 			rviKey := memoryReverseIndexPrefix + "#" + wildcardPartitionKey + "#" + rangeKey
-			m.cache.Set(rviKey, []byte(partitionKey), 0)
-			m.keyIndex.Store(rviKey, struct{}{})
+			if m.cache.Set(rviKey, []byte(partitionKey), 0) {
+				m.trackKey(rviKey)
+			}
 		}
 	}
 
 	return nil
+}
+
+func (m *MemoryConnector) trackKey(key string) {
+	h, _ := z.KeyToHash(key)
+	m.hashIndex.Store(h, key)
+	m.keyIndex.Store(key, struct{}{})
+}
+
+func (m *MemoryConnector) untrackKey(key string) {
+	h, _ := z.KeyToHash(key)
+	m.hashIndex.Delete(h)
+	m.keyIndex.Delete(key)
 }
 
 // isReverseIndexable reports whether the given partition key should have a
@@ -328,7 +358,7 @@ func (m *MemoryConnector) Delete(ctx context.Context, partitionKey, rangeKey str
 
 	// Delete main entry
 	m.cache.Del(key)
-	m.keyIndex.Delete(key)
+	m.untrackKey(key)
 
 	// Clean up reverse index if Set would have written one. Must mirror Set
 	// exactly (same WithReverseIndex ctx) — anything Set writes, Delete must
@@ -338,7 +368,7 @@ func (m *MemoryConnector) Delete(ctx context.Context, partitionKey, rangeKey str
 		if wildcardPartitionKey, ok := reverseIndexWildcardKey(ctx, partitionKey); ok {
 			reverseKey := memoryReverseIndexPrefix + "#" + wildcardPartitionKey + "#" + rangeKey
 			m.cache.Del(reverseKey)
-			m.keyIndex.Delete(reverseKey)
+			m.untrackKey(reverseKey)
 		}
 	}
 
@@ -368,7 +398,7 @@ func (m *MemoryConnector) DeleteByPattern(ctx context.Context, opts PatternDelet
 		matched++
 		if !opts.DryRun {
 			m.cache.Del(key)
-			m.keyIndex.Delete(key)
+			m.untrackKey(key)
 			deleted++
 		}
 		return true

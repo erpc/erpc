@@ -338,5 +338,5 @@ func (f *FailsafeConnector) DeleteByPattern(ctx context.Context, opts PatternDel
 	if d, ok := f.wrapped.(PatternDeleter); ok {
 		return d.DeleteByPattern(ctx, opts)
 	}
-	return 0, 0, fmt.Errorf("connector %q does not support pattern delete", f.wrapped.Id())
+	return 0, 0, fmt.Errorf("connector %q: %w", f.wrapped.Id(), ErrPatternDeleteUnsupported)
 }

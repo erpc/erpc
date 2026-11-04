@@ -575,5 +575,5 @@ func (g *GrpcConnector) checkReady() error {
 func (g *GrpcConnector) DeleteByPattern(ctx context.Context, opts PatternDeleteOpts) (int64, int64, error) {
 	_ = ctx
 	_ = opts
-	return 0, 0, fmt.Errorf("grpc connector does not support pattern delete")
+	return 0, 0, fmt.Errorf("grpc connector: %w", ErrPatternDeleteUnsupported)
 }
