@@ -588,6 +588,9 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	require.NoError(t, cfg.SetDefaults(ups, nil))
 	n := setupTestNetwork(t, ctx, ups, cfg)
 	n.PinUpstreamOrderForTest("rpc1", "rpc2")
+	// As the networks registry does: the reconciler binds each poller to
+	// intake, so its hashed latest answers are the votes the view forms on.
+	n.sources.start(ctx)
 	// The project calls it for a client request; the follow tap starts there.
 	evm.ClientRequested(n)
 	request := func(ref string) *common.NormalizedRequest {
