@@ -4185,8 +4185,8 @@ type networkTrackers struct {
 	// headerVerified: a header of the network verified under a
 	// registered header format (headerProof); sticky for the process.
 	headerVerified atomic.Bool
-	mu        sync.Mutex
-	groups    map[string]*ChainTracker // group key ("" network-wide) -> tracker
+	mu             sync.Mutex
+	groups         map[string]*ChainTracker // group key ("" network-wide) -> tracker
 }
 
 var chainTrackers sync.Map // common.Network -> *networkTrackers
