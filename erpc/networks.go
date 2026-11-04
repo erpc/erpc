@@ -678,7 +678,7 @@ func requestSelector(ctx context.Context) string {
 
 // methodVoters is the served-tip voter set of one method: every upstream
 // (all), or all but excluded, the upstreams that do not serve it, with the
-// lane of those that do (nil past maxServedTipLanes). reportsHead marks
+// lane of those that do (nil for a method no config names). reportsHead marks
 // eth_blockNumber, which keeps the WebSocket delivered-head floor whatever
 // its voters.
 type methodVoters struct {
@@ -692,68 +692,109 @@ type methodVoters struct {
 var everyVoter = &methodVoters{all: true}
 
 // tipMethods is a network's methodVoters per method, for one
-// upstream.MethodFilterEpoch. Immutable: a first miss publishes a copy.
+// upstream.MethodFilterEpoch. Immutable: a change publishes a copy.
+//
+// methods holds only names the methods config defines exactly
+// (common.IsKnownMethodName), so client input cannot grow it: a casing
+// variant or an unknown name is resolved per request instead. Variants are
+// not folded to the config's name because upstream ignoreMethods/allowMethods
+// match case-sensitively, so a variant may have other voters.
 type tipMethods struct {
 	epoch uint64
 	// uniform: every upstream has the same method filter, so every method is
 	// served by all of them or by none, and every voter set is everyVoter.
 	uniform bool
 	methods map[string]*methodVoters
+	// lanes are the method lanes, by groupKey. Derived from config, so they
+	// have their own budget apart from selector lanes (maxServedTipLanes),
+	// and a rebuild keeps only the lanes its methods still map to.
+	lanes map[string]*servedTipLane
 }
-
-// maxTipMethods bounds tipMethods.methods: method names come from clients,
-// so names past it are resolved per request instead of growing the map.
-const maxTipMethods = 1024
 
 // methodVotersFor returns method's voter set. A request pays one atomic load,
 // one epoch compare and, on a network whose upstreams filter methods
-// differently, one map lookup; the set is built under tipMethodsMu on the
-// method's first request and rebuilt after the epoch moves (an upstream
-// registered or reordered, a method auto-ignored).
+// differently, one map lookup; a known method's set is built under
+// tipMethodsMu on its first request, and every set is rebuilt after the
+// epoch moves (an upstream registered or reordered, a method auto-ignored).
 func (n *Network) methodVotersFor(ctx context.Context, method string) *methodVoters {
 	if method == "" {
 		return everyVoter
 	}
-	if m := n.tipMethods.Load(); m != nil && m.epoch == upstream.MethodFilterEpoch() {
-		if m.uniform {
-			return everyVoter
-		}
-		if mv, ok := m.methods[method]; ok {
-			return mv
-		}
-	}
-	return n.buildMethodVoters(ctx, method)
-}
-
-func (n *Network) buildMethodVoters(ctx context.Context, method string) *methodVoters {
-	n.tipMethodsMu.Lock()
-	// The epoch is read before the snapshot, so a change racing the build
-	// moves it and the next request rebuilds.
-	epoch := upstream.MethodFilterEpoch()
 	m := n.tipMethods.Load()
-	if m == nil || m.epoch != epoch {
-		m = &tipMethods{epoch: epoch, uniform: n.uniformMethodFilters(ctx), methods: map[string]*methodVoters{}}
-		n.tipMethods.Store(m)
+	if m == nil || m.epoch != upstream.MethodFilterEpoch() {
+		m = n.rebuildTipMethods(ctx)
 	}
 	if m.uniform {
-		n.tipMethodsMu.Unlock()
 		return everyVoter
 	}
 	if mv, ok := m.methods[method]; ok {
-		n.tipMethodsMu.Unlock()
 		return mv
 	}
-	if len(m.methods) >= maxTipMethods {
-		n.tipMethodsMu.Unlock()
-		return n.computeMethodVoters(ctx, method)
+	var methods *common.MethodsConfig
+	if n.cfg != nil {
+		methods = n.cfg.Methods
 	}
-	mv := n.computeMethodVoters(ctx, method)
-	next := &tipMethods{epoch: m.epoch, methods: make(map[string]*methodVoters, len(m.methods)+1)}
-	maps.Copy(next.methods, m.methods)
+	if !common.IsKnownMethodName(methods, method) {
+		return n.computeMethodVoters(ctx, method, nil)
+	}
+	return n.addTipMethod(ctx, method)
+}
+
+// rebuildTipMethods publishes the current epoch's tipMethods, recomputing
+// every method the previous one held and reusing its lanes by key.
+func (n *Network) rebuildTipMethods(ctx context.Context) *tipMethods {
+	n.tipMethodsMu.Lock()
+	defer n.tipMethodsMu.Unlock()
+	// The epoch is read before the snapshot, so a change racing the build
+	// moves it and the next request rebuilds.
+	epoch := upstream.MethodFilterEpoch()
+	prev := n.tipMethods.Load()
+	if prev != nil && prev.epoch == epoch {
+		return prev
+	}
+	next := &tipMethods{
+		epoch:   epoch,
+		uniform: n.uniformMethodFilters(ctx),
+		methods: map[string]*methodVoters{},
+		lanes:   map[string]*servedTipLane{},
+	}
+	if !next.uniform && prev != nil {
+		for name := range prev.methods {
+			next.methods[name] = n.computeMethodVoters(ctx, name, next.laneIn(prev.lanes))
+		}
+	}
+	n.tipMethods.Store(next)
+	return next
+}
+
+// addTipMethod publishes the current tipMethods with method added.
+func (n *Network) addTipMethod(ctx context.Context, method string) *methodVoters {
+	n.tipMethodsMu.Lock()
+	defer n.tipMethodsMu.Unlock()
+	m := n.tipMethods.Load()
+	if mv, ok := m.methods[method]; ok {
+		return mv
+	}
+	next := &tipMethods{epoch: m.epoch, uniform: m.uniform, methods: maps.Clone(m.methods), lanes: maps.Clone(m.lanes)}
+	mv := n.computeMethodVoters(ctx, method, next.laneIn(nil))
 	next.methods[method] = mv
 	n.tipMethods.Store(next)
-	n.tipMethodsMu.Unlock()
 	return mv
+}
+
+// laneIn returns a resolver of method lanes into m.lanes: m's own lane for a
+// key, else prev's, else a new one. Only for an m not yet published.
+func (m *tipMethods) laneIn(prev map[string]*servedTipLane) func(key string, ids []string) *servedTipLane {
+	return func(key string, ids []string) *servedTipLane {
+		l := m.lanes[key]
+		if l == nil {
+			if l = prev[key]; l == nil {
+				l = &servedTipLane{label: common.LaneName(ids)}
+			}
+			m.lanes[key] = l
+		}
+		return l
+	}
 }
 
 // uniformMethodFilters reports whether every registered upstream has the same
@@ -777,9 +818,9 @@ func (n *Network) uniformMethodFilters(ctx context.Context) bool {
 }
 
 // computeMethodVoters splits the registered upstreams by servesMethod, the
-// filter Forward applies. Like Forward, it keeps every upstream when none
-// serves the method.
-func (n *Network) computeMethodVoters(ctx context.Context, method string) *methodVoters {
+// filter Forward applies, and resolves the servers' lane through lane (nil =
+// no lane). Like Forward, it keeps every upstream when none serves the method.
+func (n *Network) computeMethodVoters(ctx context.Context, method string, lane func(key string, ids []string) *servedTipLane) *methodVoters {
 	if n.upstreamsRegistry == nil {
 		return everyVoter
 	}
@@ -795,11 +836,11 @@ func (n *Network) computeMethodVoters(ctx context.Context, method string) *metho
 	if len(excluded) == 0 || len(ids) == 0 {
 		return everyVoter
 	}
-	return &methodVoters{
-		reportsHead: strings.EqualFold(method, "eth_blockNumber"),
-		lane:        n.laneFor(groupKey(ids), ids),
-		excluded:    excluded,
+	mv := &methodVoters{reportsHead: strings.EqualFold(method, "eth_blockNumber"), excluded: excluded}
+	if lane != nil {
+		mv.lane = lane(groupKey(ids), ids)
 	}
+	return mv
 }
 
 // servedTipLaneFor returns the served-tip lane of the request bound to ctx.
@@ -825,11 +866,17 @@ func (n *Network) laneOf(ctx context.Context, s tipScope) *servedTipLane {
 	return n.laneFor(key, ids)
 }
 
-// laneFor returns the lane of group key ("" = none), materializing it under
-// maxServedTipLanes.
+// laneFor returns the selector lane of group key ("" = none): the method lane
+// of the same set when there is one, so one set never has two lanes, else a
+// lane materialized under maxServedTipLanes.
 func (n *Network) laneFor(key string, ids []string) *servedTipLane {
 	if key == "" {
 		return nil
+	}
+	if m := n.tipMethods.Load(); m != nil {
+		if l := m.lanes[key]; l != nil {
+			return l
+		}
 	}
 	if l, ok := n.servedTipLanes.Load(key); ok {
 		return l.(*servedTipLane)

@@ -499,6 +499,29 @@ func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 	bn := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 	assert.Equal(t, int64(104), nwC.EvmHighestLatestBlockNumber(context.WithValue(ctx, common.RequestContextKey, bn)),
 		"eth_blockNumber never goes below a delivered newHeads block, whatever its voters")
+	assert.Zero(t, nwC.servedTipLaneCount.Load(), "method lanes leave the selector lane budget alone")
+
+	// A client flood of casing variants cannot grow the voter cache, so a
+	// method first seen after it is cached and resolves with no allocation.
+	cached := len(nwC.tipMethods.Load().methods)
+	letters := "ethgetbalance"
+	for i := range 1 << len(letters) {
+		v := []byte("eth_getbalance")
+		for b, j := 0, 0; j < len(v); j++ {
+			if v[j] == '_' {
+				continue
+			}
+			if i&(1<<b) != 0 {
+				v[j] -= 'a' - 'A'
+			}
+			b++
+		}
+		nwC.methodVotersFor(ctx, string(v))
+	}
+	assert.Equal(t, cached+1, len(nwC.tipMethods.Load().methods), "only the config's own name, eth_getBalance, is cached")
+	nwC.methodVotersFor(ctx, "eth_estimateGas")
+	assert.Zero(t, testing.AllocsPerRun(100, func() { nwC.methodVotersFor(ctx, "eth_estimateGas") }),
+		"a method first seen after the flood takes the fast path")
 }
 
 // TestServedTip_SelectorScoped pins the use-upstream selector affecting the
