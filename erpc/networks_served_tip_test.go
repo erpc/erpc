@@ -62,11 +62,11 @@ type servedTipFixture struct {
 //
 // Returns the network and the upstream slice in input order. The fixture runs
 // quorum "majority" on both axes.
-func setupServedTipNetwork(t *testing.T, ctx context.Context, fixtures []servedTipFixture) (*Network, []*upstream.Upstream) {
+func setupServedTipNetwork(t testing.TB, ctx context.Context, fixtures []servedTipFixture) (*Network, []*upstream.Upstream) {
 	return setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority})
 }
 
-func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []servedTipFixture, stCfg *common.EvmServedTipConfig) (*Network, []*upstream.Upstream) {
+func setupServedTipNetworkWith(t testing.TB, ctx context.Context, fixtures []servedTipFixture, stCfg *common.EvmServedTipConfig) (*Network, []*upstream.Upstream) {
 	t.Helper()
 
 	if len(fixtures) == 0 {
@@ -440,7 +440,9 @@ func TestServedTip_ExcludedUpstreamDropsOutOfTip(t *testing.T) {
 // upstream and it lags (90); u1/u2 (99/100) don't support trace_block. Without
 // the guarantee the served tip is the dominant cluster min (99, u3 an outlier);
 // with the guarantee it must drop to 90 so a trace_block("latest") request hits
-// a block u3 actually has.
+// a block u3 actually has. Without any guarantee, a request's own method
+// decides who votes on its tip: an upstream that does not serve it never raises
+// the block the request is pinned to.
 func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -465,6 +467,83 @@ func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 	})
 	assert.Equal(t, int64(90), nwB.EvmHighestLatestBlockNumber(ctx),
 		"trace_block supported only by u3 (90) clamps served down to 90")
+	trace := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"trace_block","params":["latest"]}`))
+	traceLane := nwA.servedTipLaneFor(context.WithValue(ctx, common.RequestContextKey, trace))
+	require.NotNil(t, traceLane, "a method one upstream serves keeps a lane: guard, finalized floor, gauges")
+	assert.Equal(t, "u3", traceLane.label)
+
+	for _, host := range []string{"call-1", "call-2"} {
+		gock.New("http://" + host + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_call") }).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x01"}`))
+	}
+	nwC, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "call-1", chainID: 123, latestBlock: 100},
+		{id: "call-2", chainID: 123, latestBlock: 99},
+		{id: "no-call", chainID: 123, latestBlock: 105, ignoreMethods: []string{"eth_call", "eth_blockNumber"}},
+	})
+	assert.Equal(t, int64(100), nwC.EvmHighestLatestBlockNumber(ctx), "no request: all three vote")
+	// A newHeads subscriber already got 104.
+	nwC.NoteObservedLatestBlock(ctx, 104)
+	call := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"},"latest"]}`))
+	call.SetNetwork(nwC)
+	_, err := nwC.Forward(ctx, call)
+	require.NoError(t, err)
+	jrq, err := call.JsonRpcRequest()
+	require.NoError(t, err)
+	assert.Equal(t, "0x63", jrq.Params[1],
+		"eth_call latest pins to its voters' tip (99): no-call's 105 does not vote, the delivered 104 does not lift it")
+	bn := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+	assert.Equal(t, int64(104), nwC.EvmHighestLatestBlockNumber(context.WithValue(ctx, common.RequestContextKey, bn)),
+		"eth_blockNumber never goes below a delivered newHeads block, whatever its voters")
+	assert.Zero(t, nwC.servedTipLaneCount.Load(), "method lanes leave the selector lane budget alone")
+
+	// A client flood of casing variants cannot grow the voter cache, so a
+	// method first seen after it is cached and resolves with no allocation.
+	cached := len(nwC.tipMethods.Load().methods)
+	letters := "ethgetbalance"
+	for i := range 1 << len(letters) {
+		v := []byte("eth_getbalance")
+		for b, j := 0, 0; j < len(v); j++ {
+			if v[j] == '_' {
+				continue
+			}
+			if i&(1<<b) != 0 {
+				v[j] -= 'a' - 'A'
+			}
+			b++
+		}
+		nwC.methodVotersFor(ctx, string(v))
+	}
+	assert.Equal(t, cached+1, len(nwC.tipMethods.Load().methods), "only the config's own name, eth_getBalance, is cached")
+	nwC.methodVotersFor(ctx, "eth_estimateGas")
+	assert.Zero(t, testing.AllocsPerRun(100, func() { nwC.methodVotersFor(ctx, "eth_estimateGas") }),
+		"a method first seen after the flood takes the fast path")
+
+	// A selector lane created first and a method whose voters are the same
+	// set share one lane, before and after a rebuild, so neither loses the
+	// guard memory or finalized floor that keep its pin from stepping back.
+	nwD, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "call-1", chainID: 123, latestBlock: 100},
+		{id: "call-2", chainID: 123, latestBlock: 99},
+		{id: "no-call", chainID: 123, latestBlock: 105, ignoreMethods: []string{"eth_call"}},
+	})
+	sel := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000001","latest"]}`))
+	sel.SetDirectives(&common.RequestDirectives{UseUpstream: "call-*"})
+	selCtx := context.WithValue(ctx, common.RequestContextKey, sel)
+	callCtx := context.WithValue(ctx, common.RequestContextKey, call)
+	selLane := nwD.servedTipLaneFor(selCtx)
+	require.NotNil(t, selLane)
+	assert.Same(t, selLane, nwD.servedTipLaneFor(callCtx), "eth_call adopts the selector lane of its voter set")
+	pinned := nwD.EvmHighestLatestBlockNumber(selCtx)
+	assert.Equal(t, pinned, nwD.EvmHighestLatestBlockNumber(callCtx))
+	nwD.upstreamsRegistry.OverrideOrderForTest(nwD.networkId)
+	assert.Same(t, selLane, nwD.servedTipLaneFor(callCtx), "a rebuild keeps the one lane")
+	assert.Same(t, selLane, nwD.servedTipLaneFor(selCtx))
+	assert.GreaterOrEqual(t, nwD.EvmHighestLatestBlockNumber(selCtx), pinned, "the selector's pin never steps back")
 }
 
 // TestServedTip_SelectorScoped pins the use-upstream selector affecting the
