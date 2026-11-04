@@ -156,9 +156,16 @@ func TestHttpServer_Gzip_E2E_StreamedJsonRpc(t *testing.T) {
 	// Second call: served from the finalized-block cache (HIT). #990 explicitly
 	// reported cache hits going out uncompressed; assert the HIT path compresses
 	// too. The HIT re-serializes through the same WriteTo -> gzip path.
-	status2, headers2, raw2 := sendRequest(reqBody, map[string]string{"Accept-Encoding": "gzip"}, nil)
-	require.Equal(t, http.StatusOK, status2)
-	assert.Equal(t, "HIT", headers2["X-Erpc-Cache"], "second identical finalized request should be a cache hit")
+	// The cache Set runs in a background goroutine (networks.go), so the
+	// first response can reach the client before the entry lands. Poll for
+	// the HIT instead of assuming the entry is there already.
+	var status2 int
+	var headers2 map[string]string
+	var raw2 string
+	require.Eventually(t, func() bool {
+		status2, headers2, raw2 = sendRequest(reqBody, map[string]string{"Accept-Encoding": "gzip"}, nil)
+		return status2 == http.StatusOK && headers2["X-Erpc-Cache"] == "HIT"
+	}, 5*time.Second, 50*time.Millisecond, "second identical finalized request should be a cache hit")
 	assert.Equal(t, "gzip", headers2["Content-Encoding"], "cache-HIT large response must also be gzip-compressed (issue #990)")
 	assert.Equal(t, expectedBody, gunzipE2E(t, raw2))
 }
