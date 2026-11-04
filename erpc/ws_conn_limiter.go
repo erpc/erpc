@@ -17,6 +17,8 @@ const (
 	wsRejectConnGlobal = "conn_global"
 	wsRejectConnPerIP  = "conn_per_ip"
 	wsRejectSubGlobal  = "sub_global"
+	// Not a cap: upgrades refused once shutdown has begun.
+	wsRejectShuttingDown = "shutting_down"
 )
 
 func newWsConnLimiter(maxTotal, maxPerIP int) *wsConnLimiter {

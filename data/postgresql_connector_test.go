@@ -504,3 +504,32 @@ func TestPostgreSQLConnector_InitFailures(t *testing.T) {
 		assert.Equal(t, "pg-unreachable", c.Id())
 	})
 }
+
+func TestPostgreSQLConnector_Purge_SingleConnAndSuffixIsolation(t *testing.T) {
+	uri := sharedPostgresURI(t)
+	table := newPgTable("pg_purge")
+	cfg := pgConnectorConfig(uri, table)
+	cfg.MinConns = 1
+	cfg.MaxConns = 1 // would deadlock if PurgeConnectors held the advisory-lock connection
+	ctx, c := newReadyPgConnector(t, cfg)
+
+	require.NoError(t, c.Set(ctx, "evm:1:100", "eth_blockNumber:aaa", []byte("unsuffixed"), nil))
+	require.NoError(t, c.Set(ctx, "evm:1:systx:100", "eth_blockNumber:bbb", []byte("suffixed"), nil))
+
+	pol, err := NewCachePolicy(&common.CachePolicyConfig{Connector: c.Id(), Network: "*", Method: "*"}, c)
+	require.NoError(t, err)
+
+	results := PurgeConnectors(ctx, []*CachePolicy{pol}, common.CachePurgeScope{
+		NetworkId: "evm:1",
+		DryRun:    false,
+	})
+	require.Len(t, results, 1)
+	require.NoError(t, results[0].Err)
+	require.GreaterOrEqual(t, results[0].Deleted, int64(1))
+
+	_, err = c.Get(ctx, ConnectorMainIndex, "evm:1:100", "eth_blockNumber:aaa", nil)
+	require.Error(t, err, "unsuffixed row must be deleted")
+	val, err := c.Get(ctx, ConnectorMainIndex, "evm:1:systx:100", "eth_blockNumber:bbb", nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("suffixed"), val)
+}

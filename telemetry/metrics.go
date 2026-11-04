@@ -390,12 +390,12 @@ var (
 	}, []string{"project", "vendor", "network", "upstream"})
 
 	// MetricWebsocketRejectedTotal counts client WebSocket connections and
-	// subscriptions refused by the instance-wide caps, by reason:
-	// conn_global, conn_per_ip or sub_global.
+	// subscriptions refused by the instance-wide caps or during shutdown, by
+	// reason: conn_global, conn_per_ip, sub_global or shutting_down.
 	MetricWebsocketRejectedTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "websocket_rejected_total",
-		Help:      "Client WebSocket connections and subscriptions refused by server.webSocket caps, by reason (conn_global, conn_per_ip, sub_global).",
+		Help:      "Client WebSocket connections and subscriptions refused by server.webSocket caps or during shutdown, by reason (conn_global, conn_per_ip, sub_global, shutting_down).",
 	}, []string{"project", "reason"})
 
 	MetricUpstreamCordoned = DefineGauge(prometheus.GaugeOpts{
@@ -538,6 +538,12 @@ var (
 		Name:      "upstream_cordon_event_total",
 		Help:      "Admin-driven cordon transitions. `action` ∈ {`cordon`,`uncordon`}.",
 	}, []string{"project", "network", "upstream", "action"})
+
+	MetricAdminCachePurgeTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "admin_cache_purge_total",
+		Help:      "Admin erpc_purgeCache outcomes per connector. result ∈ {ok, dry_run, unsupported, error}.",
+	}, []string{"project", "network", "connector", "result"})
 
 	MetricUpstreamCordonDurationSeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
