@@ -2597,10 +2597,22 @@ type mockChain struct {
 	watchers []chan int64
 	// branch is the reorg count of each height; 0 is the first branch.
 	branch map[int64]int64
+	// verified are the first-branch blocks that are real headers
+	// (verifyAt).
+	verified map[int64]verifyingHeader
 }
 
 func newMockChain(head int64, gated bool) *mockChain {
-	return &mockChain{head: head, served: head - 1, gated: gated, branch: make(map[int64]int64)}
+	return &mockChain{head: head, served: head - 1, gated: gated, branch: make(map[int64]int64), verified: make(map[int64]verifyingHeader)}
+}
+
+// verifyAt makes block n a header a registered format verifies: a network
+// that holds it learns its headers verify (spec §6.5), so every other
+// block, whose hash no format reproduces, serves only at q holders.
+func (c *mockChain) verifyAt(t testing.TB, n int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.verified[n] = newVerifyingHeader(t, uint64(n), c.hashLocked(n-1), uint64(1_700_000_000+n))
 }
 
 // Hash is block n's hash on the canonical branch.
@@ -2611,6 +2623,9 @@ func (c *mockChain) Hash(n int64) string {
 }
 
 func (c *mockChain) hashLocked(n int64) string {
+	if v, ok := c.verified[n]; ok && c.branch[n] == 0 {
+		return v.hash
+	}
 	return fmt.Sprintf("0x%048x%016x", c.branch[n], n)
 }
 
@@ -2725,6 +2740,9 @@ func (c *mockChain) run(ctx context.Context, every time.Duration) {
 func (c *mockChain) block(n int64) map[string]interface{} {
 	h := mockHead(n)
 	c.mu.Lock()
+	if v, ok := c.verified[n]; ok && c.branch[n] == 0 {
+		h = maps.Clone(v.fields)
+	}
 	h["hash"], h["parentHash"] = c.hashLocked(n), c.hashLocked(n-1)
 	c.mu.Unlock()
 	h["transactions"] = []interface{}{fmt.Sprintf("0x%064x", n+1_000_000)}

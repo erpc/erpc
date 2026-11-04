@@ -226,6 +226,8 @@ func setupServedTipNetworkEvery(t testing.TB, ctx context.Context, fixtures []se
 	// fixtureChainDepth blocks up to its own head, as live polls of a
 	// growing chain do: heads that close share one pinned branch, and a
 	// head far from the rest (another chain's height) stays its own tree.
+	// The chain's first block verifies, so the network learns its headers
+	// verify and each later one, a mismatch, serves at q holders.
 	var lo, hi int64
 	for i, f := range fixtures {
 		if f.syncing {
@@ -237,6 +239,9 @@ func setupServedTipNetworkEvery(t testing.TB, ctx context.Context, fixtures []se
 			lo = f.latestBlock
 		}
 		hi = max(hi, f.latestBlock)
+	}
+	if lo > 0 {
+		verifyTipAt(t, "a", uint64(max(lo-fixtureChainDepth+1, 1)))
 	}
 	for b := max(lo-fixtureChainDepth+1, 1); lo > 0 && b <= hi; b++ {
 		next := hi + 1

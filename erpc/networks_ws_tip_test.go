@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"slices"
 	"strings"
@@ -25,6 +26,8 @@ import (
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
+	gethcommon "github.com/ethereum/go-ethereum/common"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/h2non/gock"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
@@ -94,13 +97,59 @@ func setupWsTipNetwork(t *testing.T, ctx context.Context, id, endpoint string) (
 }
 
 func tipHash(tag string, n uint64) string {
+	if v, ok := verifiedTips.Load(tipKey{tag, n}); ok {
+		return v.(verifyingHeader).hash
+	}
 	return fmt.Sprintf("0x%s%0*x", tag, 64-len(tag), n)
 }
 
 // tipHead is block n of the linear chain tagged tag.
 func tipHead(tag string, n uint64) json.RawMessage {
+	if v, ok := verifiedTips.Load(tipKey{tag, n}); ok {
+		return v.(verifyingHeader).raw
+	}
 	return json.RawMessage(fmt.Sprintf(`{"number":"0x%x","hash":"%s","parentHash":"%s","timestamp":"0x%x"}`,
 		n, tipHash(tag, n), tipHash(tag, n-1), 1_700_000_000+n))
+}
+
+type tipKey struct {
+	tag string
+	n   uint64
+}
+
+// verifiedTips are the blocks of tipHead chains that are real headers.
+var verifiedTips sync.Map // tipKey -> verifyingHeader
+
+// verifyTipAt makes block n of chain tag, for t, a header a registered
+// format verifies, on the chain's own parent: the network that holds it
+// learns its headers verify (spec §6.5), so every other tipHead, whose
+// hash no format reproduces, is a mismatch that serves only at q holders.
+func verifyTipAt(t testing.TB, tag string, n uint64) {
+	t.Helper()
+	verifiedTips.Store(tipKey{tag, n}, newVerifyingHeader(t, n, tipHash(tag, n-1), 1_700_000_000+n))
+	t.Cleanup(func() { verifiedTips.Delete(tipKey{tag, n}) })
+}
+
+// verifyingHeader is a header whose hash the Ethereum format reproduces.
+type verifyingHeader struct {
+	hash   string
+	raw    json.RawMessage
+	fields map[string]interface{}
+}
+
+// newVerifyingHeader is block n on parent at time ts, with the miner and
+// gas fields mockChain blocks carry, so a vendor serves it as any block.
+func newVerifyingHeader(t testing.TB, n uint64, parent string, ts uint64) verifyingHeader {
+	t.Helper()
+	h := &gethtypes.Header{ParentHash: gethcommon.HexToHash(parent), UncleHash: gethtypes.EmptyUncleHash,
+		Coinbase: gethcommon.HexToAddress("0x0000000000000000000000000000000000000001"), TxHash: gethtypes.EmptyTxsHash,
+		ReceiptHash: gethtypes.EmptyReceiptsHash, Difficulty: big.NewInt(0), Number: new(big.Int).SetUint64(n),
+		GasLimit: 0x1c9c380, GasUsed: 0x5208, Time: ts, BaseFee: big.NewInt(7)}
+	raw, err := h.MarshalJSON()
+	require.NoError(t, err)
+	var fields map[string]interface{}
+	require.NoError(t, json.Unmarshal(raw, &fields))
+	return verifyingHeader{hash: h.Hash().Hex(), raw: raw, fields: fields}
 }
 
 // polledHead is tipHead as a poll hands it to intake, past check 0.
@@ -147,6 +196,8 @@ func TestNetworkIntake_HeaderAdvancesNetworkTip(t *testing.T) {
 	for _, id := range ids {
 		// Latest polls answer block 999, so only pushes move the heads.
 		chains[id] = newMockChain(999, false)
+		// Block 999 verifies, so later blocks, mismatches, need q holders.
+		chains[id].verifyAt(t, 999)
 		v, url := newMockWsVendor(t, chains[id], func(v *mockWsVendor) { v.staleRPC = true })
 		vendors[id] = v
 		upCfgs = append(upCfgs, sourceUpstream(id, url, nil))
@@ -348,6 +399,9 @@ func TestNetworkIntake_NonSourceVoterNeverHoldsTaps(t *testing.T) {
 			t.Cleanup(util.ResetGock)
 
 			chain := newMockChain(1000, false)
+			// Block 1000 verifies, so later blocks, mismatches, need q
+			// holders: the HTTP upstream's own vote.
+			chain.verifyAt(t, 1000)
 			httpVendor, srv := newMockHttpVendor(t, chain)
 			ups := make([]*common.UpstreamConfig, 0, len(tc.wsSources)+1)
 			for _, id := range tc.wsSources {
@@ -389,6 +443,7 @@ func TestNetworkIntake_EligibleSourceLiftsLatest(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	verifyTipAt(t, "a", 1000)
 	network, ups, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{primaryLatest: "0x3e8", fallbackLatest: "0x3e8"})
 	for _, u := range ups {
 		voteHead(t, network, u, 1000)

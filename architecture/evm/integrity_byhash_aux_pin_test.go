@@ -49,6 +49,8 @@ func newByRefNetwork(t *testing.T) *byRefNetwork {
 	).Maybe()
 	n.On("Id").Return("evm:1").Maybe()
 	n.On("ProjectId").Return("test").Maybe()
+	// Holding a header reads the chain id its format verifies with.
+	n.On("Config").Return((*common.NetworkConfig)(nil)).Maybe()
 	// No served tip here: latest never caps the delivery gate.
 	n.On("HeadLatest", mock.Anything).Return(int64(1) << 62).Maybe()
 	return n
