@@ -2727,14 +2727,14 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 
 // setView computes s's view on path, its pins (spec §6.5): Head is the
 // highest pin one counted hash vote backs, undisputed and within every
-// guarantee, or the previous Head while that one is still pinned and
-// higher, so only a pins move lowers it; Firm is the highest block at or
-// below Head that q voters hold.
+// guarantee, or the previous Head while that one is still pinned, higher
+// and within the guarantee, so only a pins move or a guarantee lowers it;
+// Firm is the highest block at or below Head that q voters hold.
 func (t *ChainTracker) setView(s *feedState, path []*node) {
 	b := t.backingOf(path)
 	s.backing, s.view = b, b.head()
 	prev := t.state.Load()
-	if ph := prev.viewHead(); ph != nil && s.pinAt(ph.number) == ph {
+	if ph := prev.viewHead(); ph != nil && s.pinAt(ph.number) == ph && (b.guarantee <= 0 || ph.number <= uint64(b.guarantee)) {
 		s.view = max(s.view, int(ph.number-s.base))
 	}
 	s.firm = b.firm(s.view)

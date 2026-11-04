@@ -437,8 +437,10 @@ func (n *Network) laneFinalized(l *servedTipLane, sel string, latest int64) int6
 // laneHolders is what Firm and the Head read of selector sel's lane (spec
 // §6.5): holders, the q-th highest block its number voters hold, by their
 // head counters (any instance, any path) or by this instance's by-number
-// answers from them (heldAtLeast); and guarantee, the lowest majority of
-// the guarantee subsets, 0 while none constrains it.
+// answers from them (heldAtLeast); and guarantee, the cap the Head never
+// passes, 0 while none constrains it: the lowest majority of the guarantee
+// subsets and, on a lane whose voters are all static caps, the highest cap
+// (no voter serves a block above it, rule 4).
 func (n *Network) laneHolders(sel string) (holders, guarantee int64) {
 	var q common.ServedTipQuorum
 	if n.cfg != nil {
@@ -446,11 +448,17 @@ func (n *Network) laneHolders(sel string) (holders, guarantee int64) {
 	}
 	var buf [16]int64
 	heads := buf[:0]
-	n.voters(sel, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
+	vs := n.voters(sel, voterQuery{kind: numberVote})
+	vs.each(func(u common.Upstream, head int64) bool {
 		heads = append(heads, max(head, n.heldAtLeast(u.Id())))
 		return true
 	})
 	guarantee, _ = n.guaranteedFloor(sel, false)
+	if len(heads) > 0 && !vs.live() {
+		if c := slices.Max(heads); guarantee == 0 || c < guarantee {
+			guarantee = c
+		}
+	}
 	return common.PickServedTip(heads, q).Tip, guarantee
 }
 
