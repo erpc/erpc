@@ -519,6 +519,8 @@ type logsClient struct {
 
 	live  map[chainsim.LogKey]liveLog
 	ever  map[chainsim.LogKey]bool
+	// removed are the logs the client was told removed:true.
+	removed map[chainsim.LogKey]bool
 	conns []*logsConn
 }
 
@@ -683,6 +685,7 @@ func (c *logsClient) onLog(pod, conn int, raw json.RawMessage) {
 			return
 		}
 		delete(c.live, key)
+		c.removed[key] = true
 		c.mu.Unlock()
 		return
 	}

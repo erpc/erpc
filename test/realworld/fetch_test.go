@@ -215,9 +215,10 @@ func u16() spec {
 // C4: two wss voters and one https voter. ws-b moves to a sibling of the
 // next block and stays on that branch for c4SplitBlocks, so the wss voters
 // split 1-vs-1 at every height. Tie settles ask http-c, which serves the
-// canonical branch: only the settled hash is sent (§19 C4; §6.5 ties
-// settle; §6.8 settle asks voters without a fresh hash vote, then
-// non-voters; §17 settle reason).
+// canonical branch. A ws-b block served at 1 holder may reach a client once,
+// at its tip, and is replaced by the settled hash (§19 C4; design decision
+// 10; §6.5 ties settle; §6.8 settle asks voters without a fresh hash vote,
+// then non-voters; §17 settle reason).
 func c4() spec {
 	return spec{name: "C4", bound: settleDelivery,
 		vendors: []vendorSpec{{"ws-a", "vendor-a", true}, {"ws-b", "vendor-b", true}, {"http-c", "vendor-c", false}},

@@ -376,8 +376,12 @@ func hexToHash(s string) (hash, bool) {
 	return hash(b), true
 }
 
-// requireNoMinorityDelivered: no client received a block or a log of a
-// minority fork.
+// requireNoMinorityDelivered is design decision 10 (conflict A): a block
+// served at 1 holder may reach a stream client once, only at its tip. The
+// client's next delivery on that connection is the canonical block at that
+// height, a replace, within the scenario's bound. A block on top of it, a
+// missing replace, or a minority log never told removed:true is a
+// violation.
 func (s *scenario) requireNoMinorityDelivered() {
 	var cs []*clientBase
 	for _, c := range s.heads {
@@ -386,14 +390,44 @@ func (s *scenario) requireNoMinorityDelivered() {
 	for _, g := range s.grpcs {
 		cs = append(cs, &g.clientBase)
 	}
-	for _, c := range s.logs {
-		cs = append(cs, &c.clientBase)
-	}
 	for _, c := range cs {
 		c.mu.Lock()
-		for _, d := range c.deliveries {
-			if b := s.chain.Block(d.hash); b != nil && b.Minority() {
-				s.violate(c.name, "pod-%d: received minority-fork block %d %s", d.pod+1, d.number, short(d.hash))
+		sent := map[hash]bool{}
+		for i, d := range c.deliveries {
+			b := s.chain.Block(d.hash)
+			if b == nil || !b.Minority() {
+				continue
+			}
+			if sent[d.hash] {
+				s.violate(c.name, "pod-%d: received minority-fork block %d %s again", d.pod+1, d.number, short(d.hash))
+			}
+			sent[d.hash] = true
+			var next *delivery
+			var nb *chainsim.Block
+			if i+1 < len(c.deliveries) && c.deliveries[i+1].pod == d.pod && c.deliveries[i+1].connStart.Equal(d.connStart) {
+				next = &c.deliveries[i+1]
+				nb = s.chain.Block(next.hash)
+			}
+			switch {
+			case next == nil:
+				s.violate(c.name, "pod-%d: minority-fork block %d %s was never replaced", d.pod+1, d.number, short(d.hash))
+			case next.number != d.number:
+				s.violate(c.name, "pod-%d: minority-fork block %d %s followed by %d %s, not its replace", d.pod+1, d.number, short(d.hash), next.number, short(next.hash))
+			case nb == nil || nb.Minority():
+				s.violate(c.name, "pod-%d: minority-fork block %d %s replaced by %s, no canonical block", d.pod+1, d.number, short(d.hash), short(next.hash))
+			case next.at.Sub(d.at) > s.bound:
+				s.violate(c.name, "pod-%d: minority-fork block %d %s replaced after %s (bound %s)", d.pod+1, d.number, short(d.hash), next.at.Sub(d.at).Round(time.Millisecond), s.bound)
+			default:
+				s.logf("%s pod-%d: minority-fork block %d %s sent, replaced after %s", c.name, d.pod+1, d.number, short(d.hash), next.at.Sub(d.at).Round(time.Millisecond))
+			}
+		}
+		c.mu.Unlock()
+	}
+	for _, c := range s.logs {
+		c.mu.Lock()
+		for key := range c.ever {
+			if b := s.chain.Block(key.BlockHash); b != nil && b.Minority() && !c.removed[key] {
+				s.violate(c.name, "received log %d of minority-fork block %d %s, never told removed:true", key.LogIndex, b.Number, short(key.BlockHash))
 			}
 		}
 		c.mu.Unlock()

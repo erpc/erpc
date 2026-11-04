@@ -623,7 +623,7 @@ func (s *scenario) addHeadsOn(name string, pod int, sel string, pinned bool, all
 }
 
 func (s *scenario) addLogs(name string, pod, filter int) *logsClient {
-	c := &logsClient{filter: filter, live: map[chainsim.LogKey]liveLog{}, ever: map[chainsim.LogKey]bool{}}
+	c := &logsClient{filter: filter, live: map[chainsim.LogKey]liveLog{}, ever: map[chainsim.LogKey]bool{}, removed: map[chainsim.LogKey]bool{}}
 	s.initBase(&c.clientBase, name, pod, false, nil)
 	s.mu.Lock()
 	s.logs = append(s.logs, c)
