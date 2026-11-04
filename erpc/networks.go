@@ -883,20 +883,35 @@ func (n *Network) awaitFinalizedRefresh(ctx context.Context, sel string) {
 	}
 	var buf [16]common.EvmStatePoller
 	byAge := buf[:0]
+	fresh := 0
 	s.each(func(u common.Upstream, _ int64) bool {
 		if sp := u.(common.EvmUpstream).EvmStatePoller(); sp.FinalizedBlock() > 0 {
 			byAge = append(byAge, sp)
+			if time.Since(sp.FinalizedReportAt()) <= w {
+				fresh++
+			}
 		} else {
 			wg.Go(func() { refresh(sp, 0) })
 		}
 		return true
 	})
 	slices.SortFunc(byAge, func(a, b common.EvmStatePoller) int { return a.FinalizedReportAt().Compare(b.FinalizedReportAt()) })
-	for _, sp := range byAge {
-		if refresh(sp, 0) {
-			break
-		}
+	// One voter per request walks them; after an idle spell, as many as
+	// Finalized, the q-th highest report, lacks fresh ones poll at once,
+	// so the tag never answers a ballot older than W.
+	slots := max(1, q.Of(s.count())-fresh)
+	var next atomic.Int32
+	var polls sync.WaitGroup
+	for range min(slots, len(byAge)) {
+		polls.Go(func() {
+			for i := int(next.Add(1)) - 1; i < len(byAge); i = int(next.Add(1)) - 1 {
+				if refresh(byAge[i], 0) {
+					return
+				}
+			}
+		})
 	}
+	polls.Wait()
 	// The poll may have seen a new step, also while an earlier one is
 	// under way: else Finalized waits for the next request or poll.
 	if next, nextAt := n.finalizedStep(s, w); !nextAt.IsZero() && (at.IsZero() || next > top) {
