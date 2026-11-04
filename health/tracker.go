@@ -1988,12 +1988,15 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 }
 
 // lagReference is the network's latest lag reference (spec §6.6): the
-// corroborated number head, never below the view Head (SetViewHead); the
-// upstream that reported it, nil when the view sets it. Caller holds
+// corroborated number head, never below the view Head (SetViewHead) by
+// up to the rollback tolerance; the upstream that reported it, nil when
+// the view sets it. Counters that fell further are a reset (§19 C16): the
+// view Head is then the old chain, and as floor it would age every vote on
+// the new one, so no hash voter could move the view off it. Caller holds
 // ntwMeta.headMu.
 func lagReference(ntwMeta *NetworkMetadata) (int64, common.Upstream) {
 	ref, reporter := corroboratedNetworkHead(ntwMeta, func(m *NetworkMetadata) int64 { return m.evmLatestBlockNumber.Load() })
-	if v := ntwMeta.viewHead.Load(); v > ref {
+	if v := ntwMeta.viewHead.Load(); v > ref && (ref <= 0 || v-ref <= common.DefaultToleratedBlockHeadRollback) {
 		return v, nil
 	}
 	return ref, reporter
