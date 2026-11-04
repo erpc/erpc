@@ -1436,9 +1436,10 @@ type EvmUpstreamConfig struct {
 	// it lacks fails as missing data so the next upstream answers, instead of an older "latest".
 	// Never a request whose tag reaches upstreams as is (translateLatestTag: false, skip-interpolation).
 	PinLatestTag *bool `yaml:"pinLatestTag,omitempty" json:"pinLatestTag"`
-	// SubscriptionSource makes this upstream a chain-tracker source: it feeds
-	// newHeads by push over ws/wss, by polling eth_getBlockByNumber(latest)
-	// otherwise. Unset: true for ws/wss endpoints, false otherwise.
+	// SubscriptionSource makes this ws/wss upstream a push source of the chain
+	// tracker: it subscribes newHeads from network init. true on any other
+	// endpoint is refused at load: the block clock fetches every upstream's
+	// head. Unset: true for ws/wss endpoints, false otherwise.
 	SubscriptionSource *bool `yaml:"subscriptionSource,omitempty" json:"subscriptionSource"`
 	// Deprecated: never read at runtime. Configure data integrity via the network
 	// `integrity` block instead. Retained only so existing YAML still parses.
