@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"testing/synctest"
 
 	"github.com/erpc/erpc/common"
 	"github.com/stretchr/testify/assert"
@@ -59,30 +60,32 @@ func TestNormalizeResponse_IDByteFidelity(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			body := []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":` + tc.requestID + `}`)
-			req := common.NewNormalizedRequest(body)
+			synctest.Test(t, func(t *testing.T) {
+				body := []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":` + tc.requestID + `}`)
+				req := common.NewNormalizedRequest(body)
 
-			// Upstream echoed back a different id (simulating a multiplexing proxy).
-			jrr := common.MustNewJsonRpcResponseFromBytes(
-				[]byte(`42`),
-				[]byte(`"0x1"`),
-				nil,
-			)
-			resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+				// Upstream echoed back a different id (simulating a multiplexing proxy).
+				jrr := common.MustNewJsonRpcResponseFromBytes(
+					[]byte(`42`),
+					[]byte(`"0x1"`),
+					nil,
+				)
+				resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
 
-			require.NoError(t, network.normalizeResponse(ctx, req, resp))
+				require.NoError(t, network.normalizeResponse(ctx, req, resp))
 
-			out, err := resp.JsonRpcResponse(ctx)
-			require.NoError(t, err)
+				out, err := resp.JsonRpcResponse(ctx)
+				require.NoError(t, err)
 
-			var buf bytes.Buffer
-			_, err = out.WriteTo(&buf)
-			require.NoError(t, err)
+				var buf bytes.Buffer
+				_, err = out.WriteTo(&buf)
+				require.NoError(t, err)
 
-			// Wire output must contain the original id verbatim — no truncation,
-			// no canonicalization.
-			assert.Contains(t, buf.String(), `"id":`+tc.wantID,
-				"response wire output must preserve the request id byte-for-byte; got %q", buf.String())
+				// Wire output must contain the original id verbatim — no truncation,
+				// no canonicalization.
+				assert.Contains(t, buf.String(), `"id":`+tc.wantID,
+					"response wire output must preserve the request id byte-for-byte; got %q", buf.String())
+			})
 		})
 	}
 }
@@ -103,29 +106,31 @@ func TestNormalizeResponse_NullIDEchoIsSolanaOnly(t *testing.T) {
 		{name: "evm_keeps_typed_id", route: `,"networkId":"evm:1"`, wantNull: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"getSlot","id":null` + tc.route + `}`))
-			jrq, err := req.JsonRpcRequest(ctx)
-			require.NoError(t, err)
+			synctest.Test(t, func(t *testing.T) {
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"getSlot","id":null` + tc.route + `}`))
+				jrq, err := req.JsonRpcRequest(ctx)
+				require.NoError(t, err)
 
-			resp := common.NewNormalizedResponse().WithJsonRpcResponse(
-				common.MustNewJsonRpcResponseFromBytes([]byte(`42`), []byte(`1`), nil))
-			require.NoError(t, network.normalizeResponse(ctx, req, resp))
-			out, err := resp.JsonRpcResponse(ctx)
-			require.NoError(t, err)
-			var buf bytes.Buffer
-			_, err = out.WriteTo(&buf)
-			require.NoError(t, err)
+				resp := common.NewNormalizedResponse().WithJsonRpcResponse(
+					common.MustNewJsonRpcResponseFromBytes([]byte(`42`), []byte(`1`), nil))
+				require.NoError(t, network.normalizeResponse(ctx, req, resp))
+				out, err := resp.JsonRpcResponse(ctx)
+				require.NoError(t, err)
+				var buf bytes.Buffer
+				_, err = out.WriteTo(&buf)
+				require.NoError(t, err)
 
-			errBody := buildErrorResponseBody(req, common.NewErrInvalidRequest(assert.AnError), nil, nil).(*HttpJsonRpcErrorResponse)
+				errBody := buildErrorResponseBody(req, common.NewErrInvalidRequest(assert.AnError), nil, nil).(*HttpJsonRpcErrorResponse)
 
-			if tc.wantNull {
-				assert.Contains(t, buf.String(), `"id":null`)
-				assert.Equal(t, json.RawMessage(`null`), errBody.Id)
-			} else {
-				assert.NotContains(t, buf.String(), `"id":null`)
-				assert.Equal(t, jrq.ID, errBody.Id)
-				assert.NotNil(t, jrq.ID)
-			}
+				if tc.wantNull {
+					assert.Contains(t, buf.String(), `"id":null`)
+					assert.Equal(t, json.RawMessage(`null`), errBody.Id)
+				} else {
+					assert.NotContains(t, buf.String(), `"id":null`)
+					assert.Equal(t, jrq.ID, errBody.Id)
+					assert.NotNil(t, jrq.ID)
+				}
+			})
 		})
 	}
 }
@@ -151,15 +156,17 @@ func TestNormalizeResponse_IDLossyRejected(t *testing.T) {
 
 	for _, idJSON := range lossy {
 		t.Run(idJSON, func(t *testing.T) {
-			body := []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":` + idJSON + `}`)
-			req := common.NewNormalizedRequest(body)
+			synctest.Test(t, func(t *testing.T) {
+				body := []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":` + idJSON + `}`)
+				req := common.NewNormalizedRequest(body)
 
-			jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`42`), []byte(`"0x1"`), nil)
-			resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+				jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`42`), []byte(`"0x1"`), nil)
+				resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
 
-			err := network.normalizeResponse(ctx, req, resp)
-			require.Error(t, err, "lossy id %s must be rejected, not silently converted", idJSON)
-			assert.Contains(t, err.Error(), "cannot be represented as a 64-bit integer")
+				err := network.normalizeResponse(ctx, req, resp)
+				require.Error(t, err, "lossy id %s must be rejected, not silently converted", idJSON)
+				assert.Contains(t, err.Error(), "cannot be represented as a 64-bit integer")
+			})
 		})
 	}
 }
@@ -184,20 +191,24 @@ func TestJsonRpcRequest_IDRawBytes(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := &common.JsonRpcRequest{}
-			require.NoError(t, req.UnmarshalJSON([]byte(tc.body)))
-			got := req.IDRawBytes()
-			if tc.want == "" {
-				assert.Nil(t, got, "expected no idRaw for case %q", tc.name)
-			} else {
-				assert.Equal(t, tc.want, string(got))
-			}
+			synctest.Test(t, func(t *testing.T) {
+				req := &common.JsonRpcRequest{}
+				require.NoError(t, req.UnmarshalJSON([]byte(tc.body)))
+				got := req.IDRawBytes()
+				if tc.want == "" {
+					assert.Nil(t, got, "expected no idRaw for case %q", tc.name)
+				} else {
+					assert.Equal(t, tc.want, string(got))
+				}
+			})
 		})
 	}
 
 	t.Run("programmatic_request_no_raw", func(t *testing.T) {
-		req := common.NewJsonRpcRequest("eth_chainId", nil)
-		assert.Nil(t, req.IDRawBytes(), "programmatically-built requests should have no idRaw")
+		synctest.Test(t, func(t *testing.T) {
+			req := common.NewJsonRpcRequest("eth_chainId", nil)
+			assert.Nil(t, req.IDRawBytes(), "programmatically-built requests should have no idRaw")
+		})
 	})
 }
 

@@ -11,17 +11,23 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
+	"github.com/erpc/erpc/util"
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func init() {
+	clients.WsNetDialContext = util.DialInMemory
+}
 
 // --- test doubles -------------------------------------------------------
 
@@ -71,7 +77,7 @@ type notifyRequest struct {
 func newNotifyServer(t *testing.T) *notifyServer {
 	n := &notifyServer{newConn: make(chan *notifyConn, 16)}
 	upgrader := websocket.Upgrader{}
-	n.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	n.srv = httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
@@ -80,7 +86,7 @@ func newNotifyServer(t *testing.T) *notifyServer {
 		n.newConn <- nc
 		go nc.serve(n.gate, n.rejectNewHeads)
 	}))
-	t.Cleanup(n.srv.Close)
+	util.RouteInMemory(t, n.srv)
 	return n
 }
 
@@ -233,51 +239,53 @@ func nextEvent(t *testing.T, sink *fakeSink, kind indexer.EventKind) indexer.Str
 // be retried rather than leave the adapter without heads until the next
 // reconnect.
 func TestAdapterResubscribesWithRetryAfterReconnect(t *testing.T) {
-	compressResubRetry(t)
-	server := newNotifyServer(t)
-	a, sink := newTestAdapter(t, server.wsURL(t))
-	conn1 := <-server.newConn
+	synctest.Test(t, func(t *testing.T) {
+		compressResubRetry(t)
+		server := newNotifyServer(t)
+		a, sink := newTestAdapter(t, server.wsURL(t))
+		conn1 := <-server.newConn
 
-	var forwardCalls, failuresLeft atomic.Int64
-	const failuresPerEpoch = 2
-	failuresLeft.Store(failuresPerEpoch)
-	send := a.forward
-	a.forward = func(ctx context.Context, nq *common.NormalizedRequest, bypass bool) (*common.NormalizedResponse, error) {
-		forwardCalls.Add(1)
-		if failuresLeft.Add(-1) >= 0 {
-			return nil, errors.New("circuit breaker is open on upstream-level")
+		var forwardCalls, failuresLeft atomic.Int64
+		const failuresPerEpoch = 2
+		failuresLeft.Store(failuresPerEpoch)
+		send := a.forward
+		a.forward = func(ctx context.Context, nq *common.NormalizedRequest, bypass bool) (*common.NormalizedResponse, error) {
+			forwardCalls.Add(1)
+			if failuresLeft.Add(-1) >= 0 {
+				return nil, errors.New("circuit breaker is open on upstream-level")
+			}
+			return send(ctx, nq, bypass)
 		}
-		return send(ctx, nq, bypass)
-	}
 
-	require.False(t, a.HeadsLive(), "no heads before the subscribe succeeds")
-	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
+		require.False(t, a.HeadsLive(), "no heads before the subscribe succeeds")
+		require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
 
-	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond,
-		"adapter never subscribed newHeads despite the failures stopping after %d", failuresPerEpoch)
-	require.True(t, a.HeadsLive())
-	require.GreaterOrEqual(t, forwardCalls.Load(), int64(failuresPerEpoch+1),
-		"expected the subscribe to be retried through failures")
+		require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond,
+			"adapter never subscribed newHeads despite the failures stopping after %d", failuresPerEpoch)
+		require.True(t, a.HeadsLive())
+		require.GreaterOrEqual(t, forwardCalls.Load(), int64(failuresPerEpoch+1),
+			"expected the subscribe to be retried through failures")
 
-	conn1.sendNewHead(conn1.nextRequest(t, methodEthSubscribe).SubID, 100)
-	require.Equal(t, int64(100), nextEvent(t, sink, indexer.KindNewHead).Block.Number)
+		conn1.sendNewHead(conn1.nextRequest(t, methodEthSubscribe).SubID, 100)
+		require.Equal(t, int64(100), nextEvent(t, sink, indexer.KindNewHead).Block.Number)
 
-	// Ungraceful upstream death: kill the TCP connection with no close
-	// handshake. The adapter must clear its stale subscription, then retry
-	// the resubscribe through a fresh round of failures.
-	failuresLeft.Store(failuresPerEpoch)
-	_ = conn1.conn.UnderlyingConn().Close()
-	var conn2 *notifyConn
-	select {
-	case conn2 = <-server.newConn:
-	case <-time.After(3 * time.Second):
-		t.Fatal("client never re-dialed after the upstream connection was killed")
-	}
+		// Ungraceful upstream death: kill the TCP connection with no close
+		// handshake. The adapter must clear its stale subscription, then retry
+		// the resubscribe through a fresh round of failures.
+		failuresLeft.Store(failuresPerEpoch)
+		_ = conn1.conn.UnderlyingConn().Close()
+		var conn2 *notifyConn
+		select {
+		case conn2 = <-server.newConn:
+		case <-time.After(3 * time.Second):
+			t.Fatal("client never re-dialed after the upstream connection was killed")
+		}
 
-	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond,
-		"adapter never re-established the newHeads subscription after reconnect")
-	conn2.sendNewHead(conn2.nextRequest(t, methodEthSubscribe).SubID, 101)
-	require.Equal(t, int64(101), nextEvent(t, sink, indexer.KindNewHead).Block.Number)
+		require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond,
+			"adapter never re-established the newHeads subscription after reconnect")
+		conn2.sendNewHead(conn2.nextRequest(t, methodEthSubscribe).SubID, 101)
+		require.Equal(t, int64(101), nextEvent(t, sink, indexer.KindNewHead).Block.Number)
+	})
 }
 
 // TestAdapterResubscribesAllFiltersAfterReconnect: subscription ids come
@@ -285,192 +293,206 @@ func TestAdapterResubscribesWithRetryAfterReconnect(t *testing.T) {
 // ids for different subscriptions. Every filter must deliver after the
 // resubscribe, and each must be subscribed exactly once.
 func TestAdapterResubscribesAllFiltersAfterReconnect(t *testing.T) {
-	compressResubRetry(t)
-	server := newNotifyServer(t)
-	a, sink := newTestAdapter(t, server.wsURL(t))
-	conn1 := <-server.newConn
-	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
-	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		compressResubRetry(t)
+		server := newNotifyServer(t)
+		a, sink := newTestAdapter(t, server.wsURL(t))
+		conn1 := <-server.newConn
+		require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
+		require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 
-	const numFilters = 8
-	for i := 0; i < numFilters; i++ {
-		params := logsParams(fmt.Sprintf("0x%x", i))
-		require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, indexer.BuildParamsKey(params), params))
-	}
-
-	_ = conn1.conn.UnderlyingConn().Close()
-	conn2 := <-server.newConn
-	subscribes := make(map[string]string) // sub id -> first param
-	for i := 0; i < numFilters+1; i++ {
-		req := conn2.nextRequest(t, methodEthSubscribe)
-		subscribes[req.SubID] = fmt.Sprint(req.Params[0])
-	}
-	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
-
-	for id, subType := range subscribes {
-		if subType == indexer.SubTypeLogs {
-			conn2.sendLog(id, 2)
+		const numFilters = 8
+		for i := 0; i < numFilters; i++ {
+			params := logsParams(fmt.Sprintf("0x%x", i))
+			require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, indexer.BuildParamsKey(params), params))
 		}
-	}
-	delivered := make(map[string]bool)
-	for len(delivered) < numFilters {
-		delivered[nextEvent(t, sink, indexer.KindLog).FilterHash] = true
-	}
 
-	select {
-	case req := <-conn2.requests:
-		if req.Method == methodEthSubscribe {
-			t.Fatalf("unexpected extra subscribe after resubscribe: %v", req.Params)
+		_ = conn1.conn.UnderlyingConn().Close()
+		conn2 := <-server.newConn
+		subscribes := make(map[string]string) // sub id -> first param
+		for i := 0; i < numFilters+1; i++ {
+			req := conn2.nextRequest(t, methodEthSubscribe)
+			subscribes[req.SubID] = fmt.Sprint(req.Params[0])
 		}
-	case <-time.After(200 * time.Millisecond):
-	}
+		require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
+
+		for id, subType := range subscribes {
+			if subType == indexer.SubTypeLogs {
+				conn2.sendLog(id, 2)
+			}
+		}
+		delivered := make(map[string]bool)
+		for len(delivered) < numFilters {
+			delivered[nextEvent(t, sink, indexer.KindLog).FilterHash] = true
+		}
+
+		select {
+		case req := <-conn2.requests:
+			if req.Method == methodEthSubscribe {
+				t.Fatalf("unexpected extra subscribe after resubscribe: %v", req.Params)
+			}
+		case <-time.After(200 * time.Millisecond):
+		}
+	})
 }
 
 // TestAdapterDeliversFirstNotificationAfterSubscribe: the upstream sends a
 // log right behind the subscribe response; it must not be dropped.
 func TestAdapterDeliversFirstNotificationAfterSubscribe(t *testing.T) {
-	server := newNotifyServer(t)
-	a, sink := newTestAdapter(t, server.wsURL(t))
-	<-server.newConn
-	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	a.sink = sink
+	synctest.Test(t, func(t *testing.T) {
+		server := newNotifyServer(t)
+		a, sink := newTestAdapter(t, server.wsURL(t))
+		<-server.newConn
+		require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
+		a.sink = sink
 
-	params := logsParams("0xabc")
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, indexer.BuildParamsKey(params), params))
-	assert.Equal(t, indexer.BuildParamsKey(params), nextEvent(t, sink, indexer.KindLog).FilterHash)
+		params := logsParams("0xabc")
+		require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, indexer.BuildParamsKey(params), params))
+		assert.Equal(t, indexer.BuildParamsKey(params), nextEvent(t, sink, indexer.KindLog).FilterHash)
+	})
 }
 
 // TestAdapterRemoveFilterDuringSubscribe: RemoveFilter while the subscribe
 // is in flight must not leave the late subscription behind upstream.
 func TestAdapterRemoveFilterDuringSubscribe(t *testing.T) {
-	server := newNotifyServer(t)
-	server.gate = make(chan struct{})
-	a, sink := newTestAdapter(t, server.wsURL(t))
-	conn := <-server.newConn
-	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	a.sink = sink
+	synctest.Test(t, func(t *testing.T) {
+		server := newNotifyServer(t)
+		server.gate = make(chan struct{})
+		a, sink := newTestAdapter(t, server.wsURL(t))
+		conn := <-server.newConn
+		require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
+		a.sink = sink
 
-	params := logsParams("0xabc")
-	hash := indexer.BuildParamsKey(params)
-	ensured := make(chan error, 1)
-	go func() { ensured <- a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params) }()
-	subID := conn.nextRequest(t, methodEthSubscribe).SubID
+		params := logsParams("0xabc")
+		hash := indexer.BuildParamsKey(params)
+		ensured := make(chan error, 1)
+		go func() { ensured <- a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params) }()
+		subID := conn.nextRequest(t, methodEthSubscribe).SubID
 
-	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeLogs, hash))
-	server.gate <- struct{}{}
-	require.NoError(t, <-ensured)
+		require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeLogs, hash))
+		server.gate <- struct{}{}
+		require.NoError(t, <-ensured)
 
-	unsub := conn.nextRequest(t, methodEthUnsubscribe)
-	assert.Equal(t, []interface{}{subID}, unsub.Params)
-	a.subsMu.Lock()
-	assert.Empty(t, a.filters)
-	a.subsMu.Unlock()
+		unsub := conn.nextRequest(t, methodEthUnsubscribe)
+		assert.Equal(t, []interface{}{subID}, unsub.Params)
+		a.subsMu.Lock()
+		assert.Empty(t, a.filters)
+		a.subsMu.Unlock()
+	})
 }
 
 // TestAdapterEnsureFilterWhileDisconnected: EnsureFilter must report the
 // failure (so the indexer tries other ingresses) and keep the filter, to
 // subscribe it once connected.
 func TestAdapterEnsureFilterWhileDisconnected(t *testing.T) {
-	server := newNotifyServer(t)
-	u := server.wsURL(t)
-	server.srv.Close()
-	a, _ := newTestAdapter(t, u)
+	synctest.Test(t, func(t *testing.T) {
+		server := newNotifyServer(t)
+		u := server.wsURL(t)
+		server.srv.Close()
+		a, _ := newTestAdapter(t, u)
 
-	params := logsParams("0xabc")
-	hash := indexer.BuildParamsKey(params)
-	err := a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params)
-	require.ErrorIs(t, err, errNotConnected)
-	assert.False(t, a.FilterLive(indexer.SubTypeLogs, hash))
-	a.subsMu.Lock()
-	assert.Len(t, a.filters, 1)
-	a.subsMu.Unlock()
+		params := logsParams("0xabc")
+		hash := indexer.BuildParamsKey(params)
+		err := a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params)
+		require.ErrorIs(t, err, errNotConnected)
+		assert.False(t, a.FilterLive(indexer.SubTypeLogs, hash))
+		a.subsMu.Lock()
+		assert.Len(t, a.filters, 1)
+		a.subsMu.Unlock()
+	})
 }
 
 // TestAdapterRetriesFailedEnsureFilter: a filter whose subscribe failed on
 // a live connection is retried in the background until it is live, and
 // RemoveFilter ends that.
 func TestAdapterRetriesFailedEnsureFilter(t *testing.T) {
-	compressResubRetry(t)
-	server := newNotifyServer(t)
-	a, sink := newTestAdapter(t, server.wsURL(t))
-	<-server.newConn
-	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
-	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		compressResubRetry(t)
+		server := newNotifyServer(t)
+		a, sink := newTestAdapter(t, server.wsURL(t))
+		<-server.newConn
+		require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
+		require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 
-	var failuresLeft atomic.Int64
-	failuresLeft.Store(2)
-	send := a.forward
-	a.forward = func(ctx context.Context, nq *common.NormalizedRequest, bypass bool) (*common.NormalizedResponse, error) {
-		if m, _ := nq.Method(); m == methodEthSubscribe && failuresLeft.Add(-1) >= 0 {
-			return nil, errors.New("circuit breaker is open on upstream-level")
+		var failuresLeft atomic.Int64
+		failuresLeft.Store(2)
+		send := a.forward
+		a.forward = func(ctx context.Context, nq *common.NormalizedRequest, bypass bool) (*common.NormalizedResponse, error) {
+			if m, _ := nq.Method(); m == methodEthSubscribe && failuresLeft.Add(-1) >= 0 {
+				return nil, errors.New("circuit breaker is open on upstream-level")
+			}
+			return send(ctx, nq, bypass)
 		}
-		return send(ctx, nq, bypass)
-	}
 
-	params := logsParams("0xabc")
-	hash := indexer.BuildParamsKey(params)
-	require.Error(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params))
-	require.Eventually(t, func() bool { return a.FilterLive(indexer.SubTypeLogs, hash) },
-		3*time.Second, 10*time.Millisecond, "the failed filter must be retried until live")
+		params := logsParams("0xabc")
+		hash := indexer.BuildParamsKey(params)
+		require.Error(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params))
+		require.Eventually(t, func() bool { return a.FilterLive(indexer.SubTypeLogs, hash) },
+			3*time.Second, 10*time.Millisecond, "the failed filter must be retried until live")
 
-	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeLogs, hash))
-	assert.False(t, a.FilterLive(indexer.SubTypeLogs, hash))
+		require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeLogs, hash))
+		assert.False(t, a.FilterLive(indexer.SubTypeLogs, hash))
+	})
 }
 
 // Cancelling a subscription upstream must not depend on the caller's
 // context: a client that unsubscribes and disconnects at once still releases
 // the upstream subscription.
 func TestAdapterRemoveFilterWithCancelledContextUnsubscribes(t *testing.T) {
-	server := newNotifyServer(t)
-	a, sink := newTestAdapter(t, server.wsURL(t))
-	conn := <-server.newConn
-	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	a.sink = sink
-	// Like the real path, refuse to send once the context is done.
-	send := a.forward
-	a.forward = func(ctx context.Context, nq *common.NormalizedRequest, bypass bool) (*common.NormalizedResponse, error) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+	synctest.Test(t, func(t *testing.T) {
+		server := newNotifyServer(t)
+		a, sink := newTestAdapter(t, server.wsURL(t))
+		conn := <-server.newConn
+		require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
+		a.sink = sink
+		// Like the real path, refuse to send once the context is done.
+		send := a.forward
+		a.forward = func(ctx context.Context, nq *common.NormalizedRequest, bypass bool) (*common.NormalizedResponse, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return send(ctx, nq, bypass)
 		}
-		return send(ctx, nq, bypass)
-	}
 
-	params := logsParams("0xabc")
-	hash := indexer.BuildParamsKey(params)
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params))
-	subID := conn.nextRequest(t, methodEthSubscribe).SubID
+		params := logsParams("0xabc")
+		hash := indexer.BuildParamsKey(params)
+		require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params))
+		subID := conn.nextRequest(t, methodEthSubscribe).SubID
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	require.NoError(t, a.RemoveFilter(ctx, indexer.SubTypeLogs, hash))
-	unsub := conn.nextRequest(t, methodEthUnsubscribe)
-	assert.Equal(t, []interface{}{subID}, unsub.Params)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		require.NoError(t, a.RemoveFilter(ctx, indexer.SubTypeLogs, hash))
+		unsub := conn.nextRequest(t, methodEthUnsubscribe)
+		assert.Equal(t, []interface{}{subID}, unsub.Params)
+	})
 }
 
 // A caller deadline still in the future bounds the upstream cancel, so
 // connection teardown keeps its budget when the upstream stops answering.
 func TestAdapterReleaseHonoursLiveCallerDeadline(t *testing.T) {
-	server := newNotifyServer(t)
-	a, sink := newTestAdapter(t, server.wsURL(t))
-	conn := <-server.newConn
-	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	a.sink = sink
+	synctest.Test(t, func(t *testing.T) {
+		server := newNotifyServer(t)
+		a, sink := newTestAdapter(t, server.wsURL(t))
+		conn := <-server.newConn
+		require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
+		a.sink = sink
 
-	params := logsParams("0xabc")
-	hash := indexer.BuildParamsKey(params)
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params))
-	_ = conn.nextRequest(t, methodEthSubscribe)
+		params := logsParams("0xabc")
+		hash := indexer.BuildParamsKey(params)
+		require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params))
+		_ = conn.nextRequest(t, methodEthSubscribe)
 
-	// The upstream never answers the unsubscribe.
-	a.forward = func(ctx context.Context, _ *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	start := time.Now()
-	require.NoError(t, a.RemoveFilter(ctx, indexer.SubTypeLogs, hash))
-	assert.Less(t, time.Since(start), 2*time.Second, "release must stop at the caller's deadline, not the attempt timeout")
+		// The upstream never answers the unsubscribe.
+		a.forward = func(ctx context.Context, _ *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		require.NoError(t, a.RemoveFilter(ctx, indexer.SubTypeLogs, hash))
+		assert.Less(t, time.Since(start), 2*time.Second, "release must stop at the caller's deadline, not the attempt timeout")
+	})
 }
 
 func failFirstUnsubscribe(a *Adapter) *atomic.Bool {
@@ -488,87 +510,93 @@ func failFirstUnsubscribe(a *Adapter) *atomic.Bool {
 // RemoveFilter's unsubscribe fails while the connection stays up; the
 // still-live upstream subscription must be cancelled when it next notifies.
 func TestAdapterFailedUnsubscribeIsRetried(t *testing.T) {
-	server := newNotifyServer(t)
-	a, sink := newTestAdapter(t, server.wsURL(t))
-	conn := <-server.newConn
-	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	a.sink = sink
-	failed := failFirstUnsubscribe(a)
+	synctest.Test(t, func(t *testing.T) {
+		server := newNotifyServer(t)
+		a, sink := newTestAdapter(t, server.wsURL(t))
+		conn := <-server.newConn
+		require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
+		a.sink = sink
+		failed := failFirstUnsubscribe(a)
 
-	params := logsParams("0xabc")
-	hash := indexer.BuildParamsKey(params)
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params))
-	subID := conn.nextRequest(t, methodEthSubscribe).SubID
-	nextEvent(t, sink, indexer.KindLog)
+		params := logsParams("0xabc")
+		hash := indexer.BuildParamsKey(params)
+		require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params))
+		subID := conn.nextRequest(t, methodEthSubscribe).SubID
+		nextEvent(t, sink, indexer.KindLog)
 
-	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeLogs, hash))
-	require.True(t, failed.Load())
+		require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeLogs, hash))
+		require.True(t, failed.Load())
 
-	conn.sendLog(subID, 2) // the upstream subscription is still live
-	unsub := conn.nextRequest(t, methodEthUnsubscribe)
-	assert.Equal(t, []interface{}{subID}, unsub.Params)
-	select {
-	case ev := <-sink.events:
-		t.Fatalf("removed filter delivered %+v", ev)
-	default:
-	}
+		conn.sendLog(subID, 2) // the upstream subscription is still live
+		unsub := conn.nextRequest(t, methodEthUnsubscribe)
+		assert.Equal(t, []interface{}{subID}, unsub.Params)
+		select {
+		case ev := <-sink.events:
+			t.Fatalf("removed filter delivered %+v", ev)
+		default:
+		}
+	})
 }
 
 // The same, for an in-flight subscribe whose result is released because its
 // filter was removed meanwhile.
 func TestAdapterFailedReleaseOfUncommittedSubscribeIsRetried(t *testing.T) {
-	server := newNotifyServer(t)
-	gate := make(chan struct{})
-	server.gate = gate
-	a, sink := newTestAdapter(t, server.wsURL(t))
-	conn := <-server.newConn
-	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	a.sink = sink
-	failed := failFirstUnsubscribe(a)
+	synctest.Test(t, func(t *testing.T) {
+		server := newNotifyServer(t)
+		gate := make(chan struct{})
+		server.gate = gate
+		a, sink := newTestAdapter(t, server.wsURL(t))
+		conn := <-server.newConn
+		require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
+		a.sink = sink
+		failed := failFirstUnsubscribe(a)
 
-	params := logsParams("0xabc")
-	hash := indexer.BuildParamsKey(params)
-	done := make(chan error, 1)
-	go func() { done <- a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params) }()
-	subID := conn.nextRequest(t, methodEthSubscribe).SubID
-	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeLogs, hash))
-	close(gate)
-	require.NoError(t, <-done)
-	require.True(t, failed.Load())
+		params := logsParams("0xabc")
+		hash := indexer.BuildParamsKey(params)
+		done := make(chan error, 1)
+		go func() { done <- a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params) }()
+		subID := conn.nextRequest(t, methodEthSubscribe).SubID
+		require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeLogs, hash))
+		close(gate)
+		require.NoError(t, <-done)
+		require.True(t, failed.Load())
 
-	conn.sendLog(subID, 2)
-	unsub := conn.nextRequest(t, methodEthUnsubscribe)
-	assert.Equal(t, []interface{}{subID}, unsub.Params)
+		conn.sendLog(subID, 2)
+		unsub := conn.nextRequest(t, methodEthUnsubscribe)
+		assert.Equal(t, []interface{}{subID}, unsub.Params)
+	})
 }
 
 // A filter subscribe whose reply never arrives must still return: callers
 // hold locks across it (the indexer's reconcile, client subscribes).
 func TestAdapterEnsureFilterIsBounded(t *testing.T) {
-	server := newNotifyServer(t)
-	a, sink := newTestAdapter(t, server.wsURL(t))
-	a.attemptTimeout = 300 * time.Millisecond
-	// The failed subscribe starts a background retry that outlives the test.
-	nop := zerolog.Nop()
-	a.logger = &nop
-	t.Cleanup(func() {
-		a.subsMu.Lock()
-		if a.resubCancel != nil {
-			a.resubCancel()
+	synctest.Test(t, func(t *testing.T) {
+		server := newNotifyServer(t)
+		a, sink := newTestAdapter(t, server.wsURL(t))
+		a.attemptTimeout = 300 * time.Millisecond
+		// The failed subscribe starts a background retry that outlives the test.
+		nop := zerolog.Nop()
+		a.logger = &nop
+		t.Cleanup(func() {
+			a.subsMu.Lock()
+			if a.resubCancel != nil {
+				a.resubCancel()
+			}
+			a.subsMu.Unlock()
+		})
+		<-server.newConn
+		require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
+		a.sink = sink
+		// The upstream never answers the subscribe.
+		a.forward = func(ctx context.Context, _ *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
 		}
-		a.subsMu.Unlock()
-	})
-	<-server.newConn
-	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	a.sink = sink
-	// The upstream never answers the subscribe.
-	a.forward = func(ctx context.Context, _ *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}
 
-	params := logsParams("0xabc")
-	start := time.Now()
-	err := a.EnsureFilter(context.Background(), indexer.SubTypeLogs, indexer.BuildParamsKey(params), params)
-	require.Error(t, err)
-	assert.Less(t, time.Since(start), 3*time.Second, "EnsureFilter must stop at the attempt timeout")
+		params := logsParams("0xabc")
+		start := time.Now()
+		err := a.EnsureFilter(context.Background(), indexer.SubTypeLogs, indexer.BuildParamsKey(params), params)
+		require.Error(t, err)
+		assert.Less(t, time.Since(start), 3*time.Second, "EnsureFilter must stop at the attempt timeout")
+	})
 }

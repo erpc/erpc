@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -97,16 +98,10 @@ func authStrategyDirectivesCfg() *common.Config {
 // The project denies all client directives; only the ops strategy re-grants
 // them. So `X-ERPC-Use-Upstream: rpc2` must pin the response to rpc2 for the
 // ops caller and be silently dropped for everyone else.
-func TestHttpServer_AuthStrategyClientDirectives(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-	// Both result mocks are persisted so every subtest (plus the selection
-	// policy's background probe of the non-pinned upstream) is served
-	// deterministically instead of racing a single-use mock. They remain
-	// pending by design, hence expecting 2.
-	defer util.AssertNoPendingMocks(t, 2)
-
+// mockDirectiveUpstreams persists both upstreams' results, so every request
+// (plus the selection policy's background probe of the non-pinned upstream)
+// is served deterministically instead of racing a single-use mock.
+func mockDirectiveUpstreams() {
 	gock.New("http://rpc1.localhost").
 		Post("/").
 		Persist().
@@ -123,28 +118,42 @@ func TestHttpServer_AuthStrategyClientDirectives(t *testing.T) {
 		}).
 		Reply(200).
 		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 222, "result": "0x2222222"})
+}
 
-	sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(authStrategyDirectivesCfg(), t)
-	defer shutdown()
+func TestHttpServer_AuthStrategyClientDirectives(t *testing.T) {
+	// setup starts a server for one subtest. Both result mocks remain
+	// pending by design, hence expecting 2.
+	setup := func(t *testing.T) func(body string, headers map[string]string, queryParams map[string]string) (int, map[string]string, string) {
+		util.ResetGock()
+		t.Cleanup(util.ResetGock)
+		util.SetupMocksForEvmStatePoller()
+		t.Cleanup(func() { util.AssertNoPendingMocks(t, 2) })
+		mockDirectiveUpstreams()
 
-	prj, err := erpcInstance.GetProject("test_project")
-	require.NoError(t, err)
-	policy.OverrideAllForTest(prj.policyEngine)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(authStrategyDirectivesCfg(), t)
+		t.Cleanup(shutdown)
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		policy.OverrideAllForTest(prj.policyEngine)
+		return sendRequest
+	}
 
 	const body = `{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`
 
-	// Deny cases run first so rpc2 has served no traffic when the unpinned
-	// selection happens — the pinned case cannot influence them.
 	t.Run("StrategyWithoutOverrideInheritsProjectDenyAll", func(t *testing.T) {
-		status, headers, respBody := sendRequest(body, map[string]string{
-			"X-ERPC-Secret-Token": authDirectivesCustomerToken,
-			"X-ERPC-Use-Upstream": "rpc2",
-		}, nil)
+		synctest.Test(t, func(t *testing.T) {
+			sendRequest := setup(t)
+			status, headers, respBody := sendRequest(body, map[string]string{
+				"X-ERPC-Secret-Token": authDirectivesCustomerToken,
+				"X-ERPC-Use-Upstream": "rpc2",
+			}, nil)
 
-		require.Equal(t, http.StatusOK, status)
-		assert.Equal(t, "rpc1", headers["X-Erpc-Upstream"],
-			"customer strategy leaves allowClientDirectives unset, so the project deny-all applies and the pin must be dropped")
-		assert.Contains(t, respBody, "0x1111111")
+			require.Equal(t, http.StatusOK, status)
+			assert.Equal(t, "rpc1", headers["X-Erpc-Upstream"],
+				"customer strategy leaves allowClientDirectives unset, so the project deny-all applies and the pin must be dropped")
+			assert.Contains(t, respBody, "0x1111111")
+		})
 	})
 
 	// The single most important behavior: identity asserted through the
@@ -152,28 +161,34 @@ func TestHttpServer_AuthStrategyClientDirectives(t *testing.T) {
 	// capability, even when the spoofed id is byte-identical to the ops
 	// strategy's user id.
 	t.Run("SpoofedTrustedUserIdHeaderCannotWidenDirectives", func(t *testing.T) {
-		status, headers, respBody := sendRequest(body, map[string]string{
-			"X-ERPC-Secret-Token": authDirectivesCustomerToken,
-			"X-ERPC-User-Id":      authDirectivesOpsUserId,
-			"X-ERPC-Use-Upstream": "rpc2",
-		}, nil)
+		synctest.Test(t, func(t *testing.T) {
+			sendRequest := setup(t)
+			status, headers, respBody := sendRequest(body, map[string]string{
+				"X-ERPC-Secret-Token": authDirectivesCustomerToken,
+				"X-ERPC-User-Id":      authDirectivesOpsUserId,
+				"X-ERPC-Use-Upstream": "rpc2",
+			}, nil)
 
-		require.Equal(t, http.StatusOK, status)
-		assert.Equal(t, "rpc1", headers["X-Erpc-Upstream"],
-			"claiming the ops user id via X-ERPC-User-Id must not grant the ops strategy's directive capability")
-		assert.Contains(t, respBody, "0x1111111")
+			require.Equal(t, http.StatusOK, status)
+			assert.Equal(t, "rpc1", headers["X-Erpc-Upstream"],
+				"claiming the ops user id via X-ERPC-User-Id must not grant the ops strategy's directive capability")
+			assert.Contains(t, respBody, "0x1111111")
+		})
 	})
 
 	t.Run("StrategyOverrideGrantsDirectiveDeniedProjectWide", func(t *testing.T) {
-		status, headers, respBody := sendRequest(body, map[string]string{
-			"X-ERPC-Secret-Token": authDirectivesOpsToken,
-			"X-ERPC-Use-Upstream": "rpc2",
-		}, nil)
+		synctest.Test(t, func(t *testing.T) {
+			sendRequest := setup(t)
+			status, headers, respBody := sendRequest(body, map[string]string{
+				"X-ERPC-Secret-Token": authDirectivesOpsToken,
+				"X-ERPC-Use-Upstream": "rpc2",
+			}, nil)
 
-		require.Equal(t, http.StatusOK, status)
-		assert.Equal(t, "rpc2", headers["X-Erpc-Upstream"],
-			"ops strategy sets allowClientDirectives to \"*\", overriding the project deny-all, so the pin must take effect")
-		assert.Contains(t, respBody, "0x2222222")
+			require.Equal(t, http.StatusOK, status)
+			assert.Equal(t, "rpc2", headers["X-Erpc-Upstream"],
+				"ops strategy sets allowClientDirectives to \"*\", overriding the project deny-all, so the pin must take effect")
+			assert.Contains(t, respBody, "0x2222222")
+		})
 	})
 }
 
@@ -182,43 +197,32 @@ func TestHttpServer_AuthStrategyClientDirectives(t *testing.T) {
 // request obey the same allowClientDirectives rules, for single and batch
 // requests alike.
 func TestWebSocket_AuthStrategyClientDirectives(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	// setup starts a server for one subtest and returns its address.
+	setup := func(t *testing.T) string {
+		util.ResetGock()
+		t.Cleanup(util.ResetGock)
+		util.SetupMocksForEvmStatePoller()
+		mockDirectiveUpstreams()
 
-	gock.New("http://rpc1.localhost").
-		Post("/").
-		Persist().
-		Filter(func(request *http.Request) bool {
-			return strings.Contains(util.SafeReadBody(request), "eth_getBlockNumber")
-		}).
-		Reply(200).
-		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 111, "result": "0x1111111"})
-	gock.New("http://rpc2.localhost").
-		Post("/").
-		Persist().
-		Filter(func(request *http.Request) bool {
-			return strings.Contains(util.SafeReadBody(request), "eth_getBlockNumber")
-		}).
-		Reply(200).
-		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 222, "result": "0x2222222"})
+		cfg := authStrategyDirectivesCfg()
+		cfg.Server.ListenV4 = util.BoolPtr(true)
+		srv, addr, cancel := startTestERPCServer(t, cfg)
+		t.Cleanup(func() { _ = srv.Shutdown(&log.Logger); cancel() })
 
-	cfg := authStrategyDirectivesCfg()
-	cfg.Server.ListenV4 = util.BoolPtr(true)
-	srv, addr, cancel := startTestERPCServer(t, cfg)
-	defer func() { _ = srv.Shutdown(&log.Logger); cancel() }()
-
-	prj, err := srv.erpc.GetProject("test_project")
-	require.NoError(t, err)
-	_, err = prj.GetNetwork(context.Background(), "evm:123")
-	require.NoError(t, err)
-	policy.OverrideAllForTest(prj.policyEngine)
+		prj, err := srv.erpc.GetProject("test_project")
+		require.NoError(t, err)
+		_, err = prj.GetNetwork(context.Background(), "evm:123")
+		require.NoError(t, err)
+		policy.OverrideAllForTest(prj.policyEngine)
+		return addr
+	}
 
 	send := func(t *testing.T, token, body string) string {
+		addr := setup(t)
 		hdr := http.Header{}
 		hdr.Set("X-ERPC-Secret-Token", token)
 		hdr.Set("X-ERPC-Use-Upstream", "rpc2")
-		conn, _, err := websocket.DefaultDialer.Dial("ws://"+addr+"/test_project/evm/123", hdr)
+		conn, _, err := testWsDialer.Dial("ws://"+addr+"/test_project/evm/123", hdr)
 		require.NoError(t, err)
 		defer conn.Close()
 		require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(body)))
@@ -231,17 +235,24 @@ func TestWebSocket_AuthStrategyClientDirectives(t *testing.T) {
 	const single = `{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`
 	const batch = `[` + single + `]`
 
-	// Deny cases first, so rpc2 has served no traffic when they select.
 	t.Run("SingleDeniedDirectiveIsDropped", func(t *testing.T) {
-		assert.Contains(t, send(t, authDirectivesCustomerToken, single), "0x1111111")
+		synctest.Test(t, func(t *testing.T) {
+			assert.Contains(t, send(t, authDirectivesCustomerToken, single), "0x1111111")
+		})
 	})
 	t.Run("BatchDeniedDirectiveIsDropped", func(t *testing.T) {
-		assert.Contains(t, send(t, authDirectivesCustomerToken, batch), "0x1111111")
+		synctest.Test(t, func(t *testing.T) {
+			assert.Contains(t, send(t, authDirectivesCustomerToken, batch), "0x1111111")
+		})
 	})
 	t.Run("SingleGrantedDirectiveApplies", func(t *testing.T) {
-		assert.Contains(t, send(t, authDirectivesOpsToken, single), "0x2222222")
+		synctest.Test(t, func(t *testing.T) {
+			assert.Contains(t, send(t, authDirectivesOpsToken, single), "0x2222222")
+		})
 	})
 	t.Run("BatchGrantedDirectiveApplies", func(t *testing.T) {
-		assert.Contains(t, send(t, authDirectivesOpsToken, batch), "0x2222222")
+		synctest.Test(t, func(t *testing.T) {
+			assert.Contains(t, send(t, authDirectivesOpsToken, batch), "0x2222222")
+		})
 	})
 }

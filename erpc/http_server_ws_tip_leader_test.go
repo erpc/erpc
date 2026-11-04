@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -82,133 +83,137 @@ func setupTipLeaderServer(t *testing.T, evmCfg *common.EvmNetworkConfig, maxAtte
 // EnforceHighestBlock's tip re-fetch must reach the upstream whose poller has
 // the tip, not settle for the lagging sibling that answered "latest" first.
 func TestHttpServer_GetBlockByNumberLatest_RefetchReachesTipUpstream(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, 0)
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
-	const tip = int64(0x22228889)
-	tipHex := "0x22228889"
-	var leaderHits atomic.Int64
+		const tip = int64(0x22228889)
+		tipHex := "0x22228889"
+		var leaderHits atomic.Int64
 
-	gock.New("http://rpc2.localhost").
-		Post("").
-		Filter(func(r *http.Request) bool {
-			body := util.SafeReadBody(r)
-			if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, tipHex) {
-				return false
-			}
-			leaderHits.Add(1)
-			return true
-		}).
-		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x22228889","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f1"}}`))
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, tipHex) {
+					return false
+				}
+				leaderHits.Add(1)
+				return true
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x22228889","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f1"}}`))
 
-	// rpc1 lags, so the initial "latest" comes from it and triggers the
-	// EnforceHighestBlock re-fetch.
-	sendRequest, shutdown, nw, leader := setupTipLeaderServer(t, &common.EvmNetworkConfig{
-		ChainId: 123,
-		Integrity: &common.EvmIntegrityConfig{
-			EnforceHighestBlock: util.BoolPtr(true),
-		},
-	}, 3)
-	defer shutdown()
+		// rpc1 lags, so the initial "latest" comes from it and triggers the
+		// EnforceHighestBlock re-fetch.
+		sendRequest, shutdown, nw, leader := setupTipLeaderServer(t, &common.EvmNetworkConfig{
+			ChainId: 123,
+			Integrity: &common.EvmIntegrityConfig{
+				EnforceHighestBlock: util.BoolPtr(true),
+			},
+		}, 3)
+		defer shutdown()
 
-	// Mirror WS ingest: the tip-source poller and the delivered-head floor
-	// advance before any client sees the head.
-	leader.EvmStatePoller().SuggestLatestBlock(tip)
-	nw.NoteObservedLatestBlock(context.Background(), tip)
+		// Mirror WS ingest: the tip-source poller and the delivered-head floor
+		// advance before any client sees the head.
+		leader.EvmStatePoller().SuggestLatestBlock(tip)
+		nw.NoteObservedLatestBlock(context.Background(), tip)
 
-	require.Equal(t, tip, leader.EvmStatePoller().LatestBlock())
-	require.Equal(t, "rpc2", nw.EvmLeaderUpstream(context.Background()).Id())
-	require.Equal(t, tip, nw.EvmHighestLatestBlockNumber(context.Background()))
+		require.Equal(t, tip, leader.EvmStatePoller().LatestBlock())
+		require.Equal(t, "rpc2", nw.EvmLeaderUpstream(context.Background()).Id())
+		require.Equal(t, tip, nw.EvmHighestLatestBlockNumber(context.Background()))
 
-	statusCode, _, body := sendRequest(`{
+		statusCode, _, body := sendRequest(`{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "eth_getBlockByNumber",
 		"params": ["latest", false]
 	}`, nil, nil)
 
-	require.Equal(t, http.StatusOK, statusCode)
+		require.Equal(t, http.StatusOK, statusCode)
 
-	var respObject map[string]interface{}
-	require.NoError(t, sonic.UnmarshalString(body, &respObject))
-	result, ok := respObject["result"].(map[string]interface{})
-	require.True(t, ok, "response should have a result object, got: %s", body)
-	assert.Equal(t, tipHex, result["number"])
-	assert.Equal(t, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", result["hash"])
-	assert.GreaterOrEqual(t, leaderHits.Load(), int64(1),
-		"the tip re-fetch must reach the upstream that has the tip")
+		var respObject map[string]interface{}
+		require.NoError(t, sonic.UnmarshalString(body, &respObject))
+		result, ok := respObject["result"].(map[string]interface{})
+		require.True(t, ok, "response should have a result object, got: %s", body)
+		assert.Equal(t, tipHex, result["number"])
+		assert.Equal(t, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", result["hash"])
+		assert.GreaterOrEqual(t, leaderHits.Load(), int64(1),
+			"the tip re-fetch must reach the upstream that has the tip")
+	})
 }
 
 // Direct eth_getBlockByNumber(tip) goes first to the upstream that has the
 // tip, not to a lagging sibling preferred by selection order.
 func TestHttpServer_GetBlockByNumber_NearTipPrefersTipUpstream(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-	// rpc1 tip-null Persist mock is intentionally unused.
-	defer util.AssertNoPendingMocks(t, 1)
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		// rpc1 tip-null Persist mock is intentionally unused.
+		defer util.AssertNoPendingMocks(t, 1)
 
-	const tip = int64(0x33338889)
-	tipHex := "0x33338889"
-	var leaderHits atomic.Int64
-	var laggingHits atomic.Int64
+		const tip = int64(0x33338889)
+		tipHex := "0x33338889"
+		var leaderHits atomic.Int64
+		var laggingHits atomic.Int64
 
-	gock.New("http://rpc1.localhost").
-		Post("").
-		Persist().
-		Filter(func(r *http.Request) bool {
-			if r.URL.Host != "rpc1.localhost" {
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				if r.URL.Host != "rpc1.localhost" {
+					return false
+				}
+				body := util.SafeReadBody(r)
+				if strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, tipHex) {
+					laggingHits.Add(1)
+					return true
+				}
 				return false
-			}
-			body := util.SafeReadBody(r)
-			if strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, tipHex) {
-				laggingHits.Add(1)
-				return true
-			}
-			return false
-		}).
-		Reply(200).
-		JSON([]byte(`{"result":null}`))
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":null}`))
 
-	gock.New("http://rpc2.localhost").
-		Post("").
-		Filter(func(r *http.Request) bool {
-			if r.URL.Host != "rpc2.localhost" {
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				if r.URL.Host != "rpc2.localhost" {
+					return false
+				}
+				body := util.SafeReadBody(r)
+				if strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, tipHex) {
+					leaderHits.Add(1)
+					return true
+				}
 				return false
-			}
-			body := util.SafeReadBody(r)
-			if strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, tipHex) {
-				leaderHits.Add(1)
-				return true
-			}
-			return false
-		}).
-		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x33338889","hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","parentHash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","timestamp":"0x6702a8f1"}}`))
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x33338889","hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","parentHash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","timestamp":"0x6702a8f1"}}`))
 
-	sendRequest, shutdown, nw, leader := setupTipLeaderServer(t, &common.EvmNetworkConfig{ChainId: 123}, 2)
-	defer shutdown()
-	leader.EvmStatePoller().SuggestLatestBlock(tip)
-	require.Equal(t, "rpc2", nw.EvmLeaderUpstream(context.Background()).Id())
+		sendRequest, shutdown, nw, leader := setupTipLeaderServer(t, &common.EvmNetworkConfig{ChainId: 123}, 2)
+		defer shutdown()
+		leader.EvmStatePoller().SuggestLatestBlock(tip)
+		require.Equal(t, "rpc2", nw.EvmLeaderUpstream(context.Background()).Id())
 
-	statusCode, _, body := sendRequest(`{
+		statusCode, _, body := sendRequest(`{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "eth_getBlockByNumber",
 		"params": ["`+tipHex+`", false]
 	}`, nil, nil)
 
-	require.Equal(t, http.StatusOK, statusCode, "body=%s", body)
-	var respObject map[string]interface{}
-	require.NoError(t, sonic.UnmarshalString(body, &respObject))
-	result, ok := respObject["result"].(map[string]interface{})
-	require.True(t, ok, "got: %s", body)
-	assert.Equal(t, tipHex, result["number"])
-	assert.GreaterOrEqual(t, leaderHits.Load(), int64(1),
-		"near-tip getBlock must go to the upstream that has the tip")
-	assert.Equal(t, int64(0), laggingHits.Load(),
-		"lagging sibling must not receive the near-tip getBlock")
+		require.Equal(t, http.StatusOK, statusCode, "body=%s", body)
+		var respObject map[string]interface{}
+		require.NoError(t, sonic.UnmarshalString(body, &respObject))
+		result, ok := respObject["result"].(map[string]interface{})
+		require.True(t, ok, "got: %s", body)
+		assert.Equal(t, tipHex, result["number"])
+		assert.GreaterOrEqual(t, leaderHits.Load(), int64(1),
+			"near-tip getBlock must go to the upstream that has the tip")
+		assert.Equal(t, int64(0), laggingHits.Load(),
+			"lagging sibling must not receive the near-tip getBlock")
+	})
 }

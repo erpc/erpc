@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -18,117 +19,123 @@ import (
 // non-empty response arrives, the analyzer resolves within maxWaitOnResult
 // even if a sibling participant is still running.
 func TestWaitCap_MaxWaitOnResult_BoundsTailLatency(t *testing.T) {
-	logger := zerolog.New(zerolog.NewTestWriter(t))
+	synctest.Test(t, func(t *testing.T) {
+		logger := zerolog.New(zerolog.NewTestWriter(t))
 
-	pol := newBuilder().
-		WithLogger(&logger).
-		WithMaxParticipants(3).
-		WithAgreementThreshold(3). // require 3 to disable short-circuit
-		WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
-		WithMaxWaitOnResult(common.NewStaticDuration(100 * time.Millisecond)).
-		Build()
+		pol := newBuilder().
+			WithLogger(&logger).
+			WithMaxParticipants(3).
+			WithAgreementThreshold(3). // require 3 to disable short-circuit
+			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
+			WithMaxWaitOnResult(common.NewStaticDuration(100 * time.Millisecond)).
+			Build()
 
-	req := newTestRequest()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		req := newTestRequest()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	var slot atomic.Int32
-	start := time.Now()
-	resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-		idx := slot.Add(1)
-		switch idx {
-		case 1:
-			// fast non-empty response — arms maxWaitOnResult deadline
-			return validResponseWithValue("0xfast"), nil
-		case 2:
-			// medium speed (well within cap) — also non-empty
-			time.Sleep(20 * time.Millisecond)
-			return validResponseWithValue("0xfast"), nil
-		default:
-			// slow straggler — exceeds the cap, should be cancelled
-			time.Sleep(2 * time.Second)
-			return validResponseWithValue("0xslow"), nil
-		}
+		var slot atomic.Int32
+		start := time.Now()
+		resp, err := pol.Run(ctx, req, func(ctx context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			idx := slot.Add(1)
+			switch idx {
+			case 1:
+				// fast non-empty response — arms maxWaitOnResult deadline
+				return validResponseWithValue("0xfast"), nil
+			case 2:
+				// medium speed (well within cap) — also non-empty
+				time.Sleep(20 * time.Millisecond)
+				return validResponseWithValue("0xfast"), nil
+			default:
+				// slow straggler — exceeds the cap, should be cancelled
+				sleepCtx(ctx, 2*time.Second)
+				return validResponseWithValue("0xslow"), nil
+			}
+		})
+		elapsed := time.Since(start)
+
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.Less(t, elapsed, 800*time.Millisecond,
+			"wait cap must bound elapsed time well below the straggler's 2s")
 	})
-	elapsed := time.Since(start)
-
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-	assert.Less(t, elapsed, 800*time.Millisecond,
-		"wait cap must bound elapsed time well below the straggler's 2s")
 }
 
 // TestWaitCap_MaxWaitOnEmpty_TighterFloor verifies that when ONLY empty
 // responses have arrived, the (typically larger) maxWaitOnEmpty cap
 // applies — bounded even if no real answer is ever produced.
 func TestWaitCap_MaxWaitOnEmpty_TighterFloor(t *testing.T) {
-	logger := zerolog.New(zerolog.NewTestWriter(t))
+	synctest.Test(t, func(t *testing.T) {
+		logger := zerolog.New(zerolog.NewTestWriter(t))
 
-	pol := newBuilder().
-		WithLogger(&logger).
-		WithMaxParticipants(3).
-		WithAgreementThreshold(3).
-		WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
-		WithMaxWaitOnEmpty(common.NewStaticDuration(150 * time.Millisecond)).
-		Build()
+		pol := newBuilder().
+			WithLogger(&logger).
+			WithMaxParticipants(3).
+			WithAgreementThreshold(3).
+			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
+			WithMaxWaitOnEmpty(common.NewStaticDuration(150 * time.Millisecond)).
+			Build()
 
-	req := newTestRequest()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		req := newTestRequest()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	var slot atomic.Int32
-	start := time.Now()
-	_, _ = pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-		idx := slot.Add(1)
-		switch idx {
-		case 1:
-			// first response is empty — arms maxWaitOnEmpty
-			return validResponseWithValue(""), nil
-		case 2:
-			time.Sleep(20 * time.Millisecond)
-			return validResponseWithValue(""), nil
-		default:
-			// straggler way over the cap
-			time.Sleep(2 * time.Second)
-			return validResponseWithValue("0xslow"), nil
-		}
+		var slot atomic.Int32
+		start := time.Now()
+		_, _ = pol.Run(ctx, req, func(ctx context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			idx := slot.Add(1)
+			switch idx {
+			case 1:
+				// first response is empty — arms maxWaitOnEmpty
+				return validResponseWithValue(""), nil
+			case 2:
+				time.Sleep(20 * time.Millisecond)
+				return validResponseWithValue(""), nil
+			default:
+				// straggler way over the cap
+				sleepCtx(ctx, 2*time.Second)
+				return validResponseWithValue("0xslow"), nil
+			}
+		})
+		elapsed := time.Since(start)
+
+		assert.Less(t, elapsed, 800*time.Millisecond,
+			"maxWaitOnEmpty must bound elapsed time well below the straggler's 2s")
 	})
-	elapsed := time.Since(start)
-
-	assert.Less(t, elapsed, 800*time.Millisecond,
-		"maxWaitOnEmpty must bound elapsed time well below the straggler's 2s")
 }
 
 // TestWaitCap_NoCap_WaitsForEveryone confirms the default behavior is
 // unchanged: zero caps = wait for every participant.
 func TestWaitCap_NoCap_WaitsForEveryone(t *testing.T) {
-	logger := zerolog.New(zerolog.NewTestWriter(t))
+	synctest.Test(t, func(t *testing.T) {
+		logger := zerolog.New(zerolog.NewTestWriter(t))
 
-	pol := newBuilder().
-		WithLogger(&logger).
-		WithMaxParticipants(2).
-		WithAgreementThreshold(2).
-		WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
-		Build()
+		pol := newBuilder().
+			WithLogger(&logger).
+			WithMaxParticipants(2).
+			WithAgreementThreshold(2).
+			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
+			Build()
 
-	req := newTestRequest()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		req := newTestRequest()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	var slot atomic.Int32
-	start := time.Now()
-	_, _ = pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-		idx := slot.Add(1)
-		if idx == 1 {
+		var slot atomic.Int32
+		start := time.Now()
+		_, _ = pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			idx := slot.Add(1)
+			if idx == 1 {
+				return validResponseWithValue("0x1"), nil
+			}
+			time.Sleep(250 * time.Millisecond)
 			return validResponseWithValue("0x1"), nil
-		}
-		time.Sleep(250 * time.Millisecond)
-		return validResponseWithValue("0x1"), nil
-	})
-	elapsed := time.Since(start)
+		})
+		elapsed := time.Since(start)
 
-	assert.GreaterOrEqual(t, elapsed, 250*time.Millisecond,
-		"with no wait cap, consensus must wait for the slower participant")
+		assert.GreaterOrEqual(t, elapsed, 250*time.Millisecond,
+			"with no wait cap, consensus must wait for the slower participant")
+	})
 }
 
 // skippedParticipantErr builds the error a participant slot produces when its
@@ -144,50 +151,52 @@ func skippedParticipantErr(method, upstreamId string) error {
 // keep waiting for the only real participant even though it is far slower
 // than both caps.
 func TestWaitCap_NotArmedBySkippedParticipants(t *testing.T) {
-	logger := zerolog.New(zerolog.NewTestWriter(t))
+	synctest.Test(t, func(t *testing.T) {
+		logger := zerolog.New(zerolog.NewTestWriter(t))
 
-	pol := newBuilder().
-		WithLogger(&logger).
-		WithMaxParticipants(3).
-		WithAgreementThreshold(3). // disable short-circuit; the collection loop must decide
-		WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
-		WithMaxWaitOnEmpty(common.NewStaticDuration(30 * time.Millisecond)).
-		WithMaxWaitOnResult(common.NewStaticDuration(30 * time.Millisecond)).
-		Build()
+		pol := newBuilder().
+			WithLogger(&logger).
+			WithMaxParticipants(3).
+			WithAgreementThreshold(3). // disable short-circuit; the collection loop must decide
+			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
+			WithMaxWaitOnEmpty(common.NewStaticDuration(30 * time.Millisecond)).
+			WithMaxWaitOnResult(common.NewStaticDuration(30 * time.Millisecond)).
+			Build()
 
-	req := newTestRequest()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		req := newTestRequest()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	var slot atomic.Int32
-	start := time.Now()
-	resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-		idx := slot.Add(1)
-		switch idx {
-		case 1:
-			// Config-static skip — produced locally in microseconds.
-			return nil, skippedParticipantErr("eth_getLogs", "archive-1")
-		case 2:
-			// A slot that exhausted the shared cursor after burning its
-			// retries on skipped upstreams — also produced in microseconds.
-			return nil, common.NewErrFailsafeRetryExceeded(common.ScopeNetwork,
-				common.NewErrUpstreamsExhaustedWithCause(errors.Join(
-					skippedParticipantErr("eth_getLogs", "archive-1"),
-					skippedParticipantErr("eth_getLogs", "archive-2"),
-				)), nil)
-		default:
-			// The only real participant — far beyond both caps.
-			time.Sleep(150 * time.Millisecond)
-			return validResponseWithValue("0xreal"), nil
-		}
+		var slot atomic.Int32
+		start := time.Now()
+		resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			idx := slot.Add(1)
+			switch idx {
+			case 1:
+				// Config-static skip — produced locally in microseconds.
+				return nil, skippedParticipantErr("eth_getLogs", "archive-1")
+			case 2:
+				// A slot that exhausted the shared cursor after burning its
+				// retries on skipped upstreams — also produced in microseconds.
+				return nil, common.NewErrFailsafeRetryExceeded(common.ScopeNetwork,
+					common.NewErrUpstreamsExhaustedWithCause(errors.Join(
+						skippedParticipantErr("eth_getLogs", "archive-1"),
+						skippedParticipantErr("eth_getLogs", "archive-2"),
+					)), nil)
+			default:
+				// The only real participant — far beyond both caps.
+				time.Sleep(150 * time.Millisecond)
+				return validResponseWithValue("0xreal"), nil
+			}
+		})
+		elapsed := time.Since(start)
+
+		require.NoError(t, err,
+			"instant skips must not resolve the round with only infrastructure errors")
+		require.NotNil(t, resp)
+		assert.GreaterOrEqual(t, elapsed, 150*time.Millisecond,
+			"round must wait for the real participant; skips must not start the countdown")
 	})
-	elapsed := time.Since(start)
-
-	require.NoError(t, err,
-		"instant skips must not resolve the round with only infrastructure errors")
-	require.NotNil(t, resp)
-	assert.GreaterOrEqual(t, elapsed, 150*time.Millisecond,
-		"round must wait for the real participant; skips must not start the countdown")
 }
 
 // TestWaitCap_AllParticipantsSkipped_ResolvesImmediately verifies that when
@@ -227,35 +236,37 @@ func TestWaitCap_AllParticipantsSkipped_ResolvesImmediately(t *testing.T) {
 // a genuine attempt failure (connection reset, 5xx, timeout) proves the round
 // is live and MUST still arm maxWaitOnEmpty, bounding a slow straggler.
 func TestWaitCap_ArmedByRealAttemptFailures(t *testing.T) {
-	logger := zerolog.New(zerolog.NewTestWriter(t))
+	synctest.Test(t, func(t *testing.T) {
+		logger := zerolog.New(zerolog.NewTestWriter(t))
 
-	pol := newBuilder().
-		WithLogger(&logger).
-		WithMaxParticipants(2).
-		WithAgreementThreshold(2).
-		WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
-		WithMaxWaitOnEmpty(common.NewStaticDuration(50 * time.Millisecond)).
-		Build()
+		pol := newBuilder().
+			WithLogger(&logger).
+			WithMaxParticipants(2).
+			WithAgreementThreshold(2).
+			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
+			WithMaxWaitOnEmpty(common.NewStaticDuration(50 * time.Millisecond)).
+			Build()
 
-	req := newTestRequest()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		req := newTestRequest()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	var slot atomic.Int32
-	start := time.Now()
-	_, _ = pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-		idx := slot.Add(1)
-		if idx == 1 {
-			// Real attempt failure: a plain transport error, not a skip.
-			return nil, errors.New("connection reset by peer")
-		}
-		time.Sleep(2 * time.Second)
-		return validResponseWithValue("0xslow"), nil
+		var slot atomic.Int32
+		start := time.Now()
+		_, _ = pol.Run(ctx, req, func(ctx context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			idx := slot.Add(1)
+			if idx == 1 {
+				// Real attempt failure: a plain transport error, not a skip.
+				return nil, errors.New("connection reset by peer")
+			}
+			sleepCtx(ctx, 2*time.Second)
+			return validResponseWithValue("0xslow"), nil
+		})
+		elapsed := time.Since(start)
+
+		assert.Less(t, elapsed, 800*time.Millisecond,
+			"a real attempt failure must arm maxWaitOnEmpty and bound the straggler")
 	})
-	elapsed := time.Since(start)
-
-	assert.Less(t, elapsed, 800*time.Millisecond,
-		"a real attempt failure must arm maxWaitOnEmpty and bound the straggler")
 }
 
 // TestIsNoAttemptError pins the classification used by considerWaitCap.
@@ -307,86 +318,102 @@ func TestIsNoAttemptError(t *testing.T) {
 // alone is not a round-completion barrier (calls may ignore ctx), so a
 // MissingData waiver must not fire on the partial bag.
 func TestWaitCap_DoesNotSealWaivers(t *testing.T) {
-	logger := zerolog.New(zerolog.NewTestWriter(t))
-	internal := common.NewFakeUpstream("internal-1", common.WithTags("type:internal"))
-	ext1 := common.NewFakeUpstream("external-1", common.WithTags("type:external"))
-	ext2 := common.NewFakeUpstream("external-2", common.WithTags("type:external"))
+	synctest.Test(t, func(t *testing.T) {
+		logger := zerolog.New(zerolog.NewTestWriter(t))
+		internal := common.NewFakeUpstream("internal-1", common.WithTags("type:internal"))
+		ext1 := common.NewFakeUpstream("external-1", common.WithTags("type:external"))
+		ext2 := common.NewFakeUpstream("external-2", common.WithTags("type:external"))
 
-	pol := newBuilder().
-		WithLogger(&logger).
-		WithMaxParticipants(4).
-		WithAgreementThreshold(2).
-		WithMaxWaitOnEmpty(common.NewStaticDuration(80 * time.Millisecond)).
-		WithRequiredParticipants([]*common.ConsensusRequiredParticipant{
-			{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1, WaiveAgreementOnMissingData: true},
-			{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
-		}).
-		Build()
+		pol := newBuilder().
+			WithLogger(&logger).
+			WithMaxParticipants(4).
+			WithAgreementThreshold(2).
+			WithMaxWaitOnEmpty(common.NewStaticDuration(80 * time.Millisecond)).
+			WithRequiredParticipants([]*common.ConsensusRequiredParticipant{
+				{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1, WaiveAgreementOnMissingData: true},
+				{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
+			}).
+			Build()
 
-	req := newTestRequest()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		req := newTestRequest()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	var slot atomic.Int32
-	_, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-		idx := slot.Add(1)
-		switch idx {
-		case 1:
-			return nil, common.NewErrEndpointMissingData(fmt.Errorf("missing trie node"), internal)
-		case 2:
-			return validResponseWithValue("0xaa").SetUpstream(ext1), nil
-		case 3:
-			return validResponseWithValue("0xaa").SetUpstream(ext2), nil
-		default:
-			time.Sleep(2 * time.Second)
-			return validResponseWithValue("0xstill-in-flight").SetUpstream(internal), nil
-		}
+		var slot atomic.Int32
+		_, err := pol.Run(ctx, req, func(ctx context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			idx := slot.Add(1)
+			switch idx {
+			case 1:
+				return nil, common.NewErrEndpointMissingData(fmt.Errorf("missing trie node"), internal)
+			case 2:
+				return validResponseWithValue("0xaa").SetUpstream(ext1), nil
+			case 3:
+				return validResponseWithValue("0xaa").SetUpstream(ext2), nil
+			default:
+				sleepCtx(ctx, 2*time.Second)
+				return validResponseWithValue("0xstill-in-flight").SetUpstream(internal), nil
+			}
+		})
+		require.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeConsensusCompositionDispute),
+			"wait-cap must not seal the bag and waive a partial round, got: %v", err)
 	})
-	require.Error(t, err)
-	assert.True(t, common.HasErrorCode(err, common.ErrCodeConsensusCompositionDispute),
-		"wait-cap must not seal the bag and waive a partial round, got: %v", err)
 }
 
 // TestWaitCap_FireAndForgetDoesNotSealWaivers pins the same fail-closed bag
 // for fire-and-forget (which also skips cancelRemaining on wait-cap).
 func TestWaitCap_FireAndForgetDoesNotSealWaivers(t *testing.T) {
-	logger := zerolog.New(zerolog.NewTestWriter(t))
-	internal := common.NewFakeUpstream("internal-1", common.WithTags("type:internal"))
-	ext1 := common.NewFakeUpstream("external-1", common.WithTags("type:external"))
-	ext2 := common.NewFakeUpstream("external-2", common.WithTags("type:external"))
+	synctest.Test(t, func(t *testing.T) {
+		logger := zerolog.New(zerolog.NewTestWriter(t))
+		internal := common.NewFakeUpstream("internal-1", common.WithTags("type:internal"))
+		ext1 := common.NewFakeUpstream("external-1", common.WithTags("type:external"))
+		ext2 := common.NewFakeUpstream("external-2", common.WithTags("type:external"))
 
-	pol := newBuilder().
-		WithLogger(&logger).
-		WithMaxParticipants(4).
-		WithAgreementThreshold(2).
-		WithFireAndForget(true).
-		WithMaxWaitOnEmpty(common.NewStaticDuration(80 * time.Millisecond)).
-		WithRequiredParticipants([]*common.ConsensusRequiredParticipant{
-			{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1, WaiveAgreementOnMissingData: true},
-			{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
-		}).
-		Build()
+		pol := newBuilder().
+			WithLogger(&logger).
+			WithMaxParticipants(4).
+			WithAgreementThreshold(2).
+			WithFireAndForget(true).
+			WithMaxWaitOnEmpty(common.NewStaticDuration(80 * time.Millisecond)).
+			WithRequiredParticipants([]*common.ConsensusRequiredParticipant{
+				{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1, WaiveAgreementOnMissingData: true},
+				{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
+			}).
+			Build()
 
-	req := newTestRequest()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		req := newTestRequest()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	var slot atomic.Int32
-	_, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-		idx := slot.Add(1)
-		switch idx {
-		case 1:
-			return nil, common.NewErrEndpointMissingData(fmt.Errorf("missing trie node"), internal)
-		case 2:
-			return validResponseWithValue("0xaa").SetUpstream(ext1), nil
-		case 3:
-			return validResponseWithValue("0xaa").SetUpstream(ext2), nil
-		default:
-			time.Sleep(2 * time.Second)
-			return validResponseWithValue("0xstill-in-flight").SetUpstream(internal), nil
-		}
+		var slot atomic.Int32
+		_, err := pol.Run(ctx, req, func(ctx context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			idx := slot.Add(1)
+			switch idx {
+			case 1:
+				return nil, common.NewErrEndpointMissingData(fmt.Errorf("missing trie node"), internal)
+			case 2:
+				return validResponseWithValue("0xaa").SetUpstream(ext1), nil
+			case 3:
+				return validResponseWithValue("0xaa").SetUpstream(ext2), nil
+			default:
+				sleepCtx(ctx, 2*time.Second)
+				return validResponseWithValue("0xstill-in-flight").SetUpstream(internal), nil
+			}
+		})
+		require.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeConsensusCompositionDispute),
+			"fire-and-forget wait-cap must not seal the bag and waive a still-running round, got: %v", err)
+		// Fire-and-forget does not cancel the straggler: let it return
+		// before the test ends.
+		time.Sleep(2 * time.Second)
 	})
-	require.Error(t, err)
-	assert.True(t, common.HasErrorCode(err, common.ErrCodeConsensusCompositionDispute),
-		"fire-and-forget wait-cap must not seal the bag and waive a still-running round, got: %v", err)
+}
+
+// sleepCtx waits for d, or until ctx ends: a slow upstream that the caller
+// can cancel.
+func sleepCtx(ctx context.Context, d time.Duration) {
+	select {
+	case <-time.After(d):
+	case <-ctx.Done():
+	}
 }

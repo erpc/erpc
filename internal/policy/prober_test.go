@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -124,108 +125,114 @@ func TestProber_MirrorsToExcludedUpstreams(t *testing.T) {
 // TestProber_SkipsWriteMethods — eth_sendRawTransaction (and friends)
 // must NEVER be mirrored. Verifies the safety gate.
 func TestProber_SkipsWriteMethods(t *testing.T) {
-	deps := &stubEngine{}
-	dead := &stubProbeUpstream{id: "dead"}
-	deps.setExcluded("evm:1", []common.Upstream{dead})
+	synctest.Test(t, func(t *testing.T) {
+		deps := &stubEngine{}
+		dead := &stubProbeUpstream{id: "dead"}
+		deps.setExcluded("evm:1", []common.Upstream{dead})
 
-	p, _ := newTestProber(t, deps, &ProbeConfig{
-		SampleRate:    1.0,
-		MaxConcurrent: 4,
-		Timeout:       5 * time.Second,
+		p, _ := newTestProber(t, deps, &ProbeConfig{
+			SampleRate:    1.0,
+			MaxConcurrent: 4,
+			Timeout:       5 * time.Second,
+		})
+		defer p.Stop()
+
+		for _, m := range []string{
+			"eth_sendRawTransaction",
+			"eth_sendTransaction",
+			"eth_signTypedData_v4",
+			"personal_sign",
+		} {
+			p.Publish(makeProbeReq(t, m))
+		}
+		time.Sleep(150 * time.Millisecond)
+		assert.Equal(t, int64(0), dead.calls.Load(),
+			"prober must skip write methods entirely (mutability risk)")
 	})
-	defer p.Stop()
-
-	for _, m := range []string{
-		"eth_sendRawTransaction",
-		"eth_sendTransaction",
-		"eth_signTypedData_v4",
-		"personal_sign",
-	} {
-		p.Publish(makeProbeReq(t, m))
-	}
-	time.Sleep(150 * time.Millisecond)
-	assert.Equal(t, int64(0), dead.calls.Load(),
-		"prober must skip write methods entirely (mutability risk)")
 }
 
 // TestProber_HonorsRoutingProbeOff — upstream with routing.probe="off"
 // must never receive shadow traffic, even when excluded.
 func TestProber_HonorsRoutingProbeOff(t *testing.T) {
-	deps := &stubEngine{}
-	dead := &stubProbeUpstream{
-		id:      "dead",
-		routing: &common.UpstreamRoutingConfig{Probe: common.ProbeModeOff},
-	}
-	deps.setExcluded("evm:1", []common.Upstream{dead})
+	synctest.Test(t, func(t *testing.T) {
+		deps := &stubEngine{}
+		dead := &stubProbeUpstream{
+			id:      "dead",
+			routing: &common.UpstreamRoutingConfig{Probe: common.ProbeModeOff},
+		}
+		deps.setExcluded("evm:1", []common.Upstream{dead})
 
-	p, _ := newTestProber(t, deps, &ProbeConfig{
-		SampleRate:    1.0,
-		MaxConcurrent: 4,
-		Timeout:       5 * time.Second,
+		p, _ := newTestProber(t, deps, &ProbeConfig{
+			SampleRate:    1.0,
+			MaxConcurrent: 4,
+			Timeout:       5 * time.Second,
+		})
+		defer p.Stop()
+
+		p.Publish(makeProbeReq(t, "eth_getBalance"))
+		time.Sleep(150 * time.Millisecond)
+		assert.Equal(t, int64(0), dead.calls.Load(),
+			"opted-out upstream (routing.probe=off) must receive zero probe traffic")
 	})
-	defer p.Stop()
-
-	p.Publish(makeProbeReq(t, "eth_getBalance"))
-	time.Sleep(150 * time.Millisecond)
-	assert.Equal(t, int64(0), dead.calls.Load(),
-		"opted-out upstream (routing.probe=off) must receive zero probe traffic")
 }
 
 // TestProber_RespectsMaxConcurrent — with maxConcurrent=2 and a stub
 // that blocks Forward indefinitely, the third publish should be
 // gated. Once we release the held probes, the gate opens.
 func TestProber_RespectsMaxConcurrent(t *testing.T) {
-	deps := &stubEngine{}
-	dead := &stubProbeUpstream{
-		id:         "dead",
-		blockUntil: make(chan struct{}),
-	}
-	deps.setExcluded("evm:1", []common.Upstream{dead})
+	synctest.Test(t, func(t *testing.T) {
+		deps := &stubEngine{}
+		dead := &stubProbeUpstream{
+			id:         "dead",
+			blockUntil: make(chan struct{}),
+		}
+		deps.setExcluded("evm:1", []common.Upstream{dead})
 
-	p, _ := newTestProber(t, deps, &ProbeConfig{
-		SampleRate:    1.0,
-		MaxConcurrent: 2,
-		Timeout:       10 * time.Second,
+		p, _ := newTestProber(t, deps, &ProbeConfig{
+			SampleRate:    1.0,
+			MaxConcurrent: 2,
+			Timeout:       10 * time.Second,
+		})
+		defer p.Stop()
+
+		// Publish 4 — only 2 should reach Forward; the others should be
+		// skipped via the max_concurrent gate.
+		p.Publish(makeProbeReq(t, "eth_getBalance"))
+		p.Publish(makeProbeReq(t, "eth_getBalance"))
+		// Give the dispatcher a moment to dispatch the first two before
+		// the cap engages.
+		time.Sleep(50 * time.Millisecond)
+		p.Publish(makeProbeReq(t, "eth_getBalance"))
+		p.Publish(makeProbeReq(t, "eth_getBalance"))
+
+		// At this point we should have exactly 2 in-flight Forward calls,
+		// and the other two should have been skipped via the
+		// max_concurrent gate.
+		time.Sleep(100 * time.Millisecond)
+		require.Equal(t, int64(2), dead.calls.Load(),
+			"maxConcurrent=2 must cap concurrent probes; extras get skipped")
+
+		// Release the held probes; they exit. Wait for the inflight
+		// counter to drain so the new publishes don't race ahead of the
+		// release. NOTE: closing the channel makes every subsequent
+		// `<-s.blockUntil` in Forward return immediately, so we don't
+		// need to (and must not — it'd race the stub's read) set the
+		// field to nil.
+		close(dead.blockUntil)
+		counter := p.getInflight("dead")
+		deadline := time.Now().Add(1 * time.Second)
+		for time.Now().Before(deadline) && counter.Load() > 0 {
+			time.Sleep(5 * time.Millisecond)
+		}
+		require.Equal(t, int64(0), counter.Load(),
+			"inflight counter must drain after released probes complete")
+
+		p.Publish(makeProbeReq(t, "eth_getBalance"))
+		p.Publish(makeProbeReq(t, "eth_getBalance"))
+		got := waitForCalls(dead, 4, 1*time.Second)
+		assert.Equal(t, int64(4), got,
+			"after held probes drained, subsequent publishes must dispatch normally")
 	})
-	defer p.Stop()
-
-	// Publish 4 — only 2 should reach Forward; the others should be
-	// skipped via the max_concurrent gate.
-	p.Publish(makeProbeReq(t, "eth_getBalance"))
-	p.Publish(makeProbeReq(t, "eth_getBalance"))
-	// Give the dispatcher a moment to dispatch the first two before
-	// the cap engages.
-	time.Sleep(50 * time.Millisecond)
-	p.Publish(makeProbeReq(t, "eth_getBalance"))
-	p.Publish(makeProbeReq(t, "eth_getBalance"))
-
-	// At this point we should have exactly 2 in-flight Forward calls,
-	// and the other two should have been skipped via the
-	// max_concurrent gate.
-	time.Sleep(100 * time.Millisecond)
-	require.Equal(t, int64(2), dead.calls.Load(),
-		"maxConcurrent=2 must cap concurrent probes; extras get skipped")
-
-	// Release the held probes; they exit. Wait for the inflight
-	// counter to drain so the new publishes don't race ahead of the
-	// release. NOTE: closing the channel makes every subsequent
-	// `<-s.blockUntil` in Forward return immediately, so we don't
-	// need to (and must not — it'd race the stub's read) set the
-	// field to nil.
-	close(dead.blockUntil)
-	counter := p.getInflight("dead")
-	deadline := time.Now().Add(1 * time.Second)
-	for time.Now().Before(deadline) && counter.Load() > 0 {
-		time.Sleep(5 * time.Millisecond)
-	}
-	require.Equal(t, int64(0), counter.Load(),
-		"inflight counter must drain after released probes complete")
-
-	p.Publish(makeProbeReq(t, "eth_getBalance"))
-	p.Publish(makeProbeReq(t, "eth_getBalance"))
-	got := waitForCalls(dead, 4, 1*time.Second)
-	assert.Equal(t, int64(4), got,
-		"after held probes drained, subsequent publishes must dispatch normally")
 }
 
 // TestProber_FeedsTracker — every successful probe call increments
@@ -304,38 +311,40 @@ func TestProber_PublishNonBlockingOnFullBus(t *testing.T) {
 // closed, the floor guarantees we accumulate samples to re-evaluate
 // the excludeIf predicates.
 func TestProber_MinSamplesFloorBypassesSampleRate(t *testing.T) {
-	deps := &stubEngine{}
-	dead := &stubProbeUpstream{id: "dead"}
-	deps.setExcluded("evm:1", []common.Upstream{dead})
+	synctest.Test(t, func(t *testing.T) {
+		deps := &stubEngine{}
+		dead := &stubProbeUpstream{id: "dead"}
+		deps.setExcluded("evm:1", []common.Upstream{dead})
 
-	p, _ := newTestProber(t, deps, &ProbeConfig{
-		SampleRate:       0.0, // rate gate fully closed
-		MinSamples:       5,   // but floor demands 5 probes
-		MinSamplesWindow: time.Minute,
-		MaxConcurrent:    100, // high — this test is about the floor, not the cap (which has its own test)
-		Timeout:          5 * time.Second,
+		p, _ := newTestProber(t, deps, &ProbeConfig{
+			SampleRate:       0.0, // rate gate fully closed
+			MinSamples:       5,   // but floor demands 5 probes
+			MinSamplesWindow: time.Minute,
+			MaxConcurrent:    100, // high — this test is about the floor, not the cap (which has its own test)
+			Timeout:          5 * time.Second,
+		})
+		defer p.Stop()
+
+		// Publish enough requests that the floor would clear several times
+		// over if it weren't bounded. Expect EXACTLY MinSamples probes to
+		// fire (after that the floor is satisfied and sampleRate=0
+		// suppresses subsequent ones).
+		for i := 0; i < 50; i++ {
+			p.Publish(makeProbeReq(t, "eth_getBalance"))
+		}
+
+		// Wait for floor to be reached. We expect ~5 calls.
+		got := waitForCalls(dead, 5, 2*time.Second)
+		require.Equal(t, int64(5), got,
+			"floor must fire exactly MinSamples=5 probes despite sampleRate=0")
+
+		// Give the dispatcher a beat to confirm no MORE probes fire — once
+		// floor is satisfied and sampleRate=0, every subsequent publish
+		// should hit the sampled_out gate.
+		time.Sleep(150 * time.Millisecond)
+		assert.Equal(t, int64(5), dead.calls.Load(),
+			"after floor is satisfied, sampleRate=0 must suppress further probes")
 	})
-	defer p.Stop()
-
-	// Publish enough requests that the floor would clear several times
-	// over if it weren't bounded. Expect EXACTLY MinSamples probes to
-	// fire (after that the floor is satisfied and sampleRate=0
-	// suppresses subsequent ones).
-	for i := 0; i < 50; i++ {
-		p.Publish(makeProbeReq(t, "eth_getBalance"))
-	}
-
-	// Wait for floor to be reached. We expect ~5 calls.
-	got := waitForCalls(dead, 5, 2*time.Second)
-	require.Equal(t, int64(5), got,
-		"floor must fire exactly MinSamples=5 probes despite sampleRate=0")
-
-	// Give the dispatcher a beat to confirm no MORE probes fire — once
-	// floor is satisfied and sampleRate=0, every subsequent publish
-	// should hit the sampled_out gate.
-	time.Sleep(150 * time.Millisecond)
-	assert.Equal(t, int64(5), dead.calls.Load(),
-		"after floor is satisfied, sampleRate=0 must suppress further probes")
 }
 
 // TestProber_MinSamplesZeroDisablesFloor — minSamples=0 explicitly
@@ -343,60 +352,64 @@ func TestProber_MinSamplesFloorBypassesSampleRate(t *testing.T) {
 // operators can opt out of the floor entirely if they want sampleRate
 // to be authoritative.
 func TestProber_MinSamplesZeroDisablesFloor(t *testing.T) {
-	deps := &stubEngine{}
-	dead := &stubProbeUpstream{id: "dead"}
-	deps.setExcluded("evm:1", []common.Upstream{dead})
+	synctest.Test(t, func(t *testing.T) {
+		deps := &stubEngine{}
+		dead := &stubProbeUpstream{id: "dead"}
+		deps.setExcluded("evm:1", []common.Upstream{dead})
 
-	p, _ := newTestProber(t, deps, &ProbeConfig{
-		SampleRate:       0.0,
-		MinSamples:       0, // floor disabled
-		MinSamplesWindow: time.Minute,
-		MaxConcurrent:    4,
-		Timeout:          5 * time.Second,
+		p, _ := newTestProber(t, deps, &ProbeConfig{
+			SampleRate:       0.0,
+			MinSamples:       0, // floor disabled
+			MinSamplesWindow: time.Minute,
+			MaxConcurrent:    4,
+			Timeout:          5 * time.Second,
+		})
+		defer p.Stop()
+
+		for i := 0; i < 20; i++ {
+			p.Publish(makeProbeReq(t, "eth_getBalance"))
+		}
+		time.Sleep(150 * time.Millisecond)
+		assert.Equal(t, int64(0), dead.calls.Load(),
+			"minSamples=0 + sampleRate=0 must suppress all probes")
 	})
-	defer p.Stop()
-
-	for i := 0; i < 20; i++ {
-		p.Publish(makeProbeReq(t, "eth_getBalance"))
-	}
-	time.Sleep(150 * time.Millisecond)
-	assert.Equal(t, int64(0), dead.calls.Load(),
-		"minSamples=0 + sampleRate=0 must suppress all probes")
 }
 
 // TestProber_UpdateConfigHotSwap — calling UpdateConfig with new
 // values takes effect on subsequent publishes without restarting
 // the prober.
 func TestProber_UpdateConfigHotSwap(t *testing.T) {
-	deps := &stubEngine{}
-	dead := &stubProbeUpstream{id: "dead"}
-	deps.setExcluded("evm:1", []common.Upstream{dead})
+	synctest.Test(t, func(t *testing.T) {
+		deps := &stubEngine{}
+		dead := &stubProbeUpstream{id: "dead"}
+		deps.setExcluded("evm:1", []common.Upstream{dead})
 
-	p, _ := newTestProber(t, deps, &ProbeConfig{
-		SampleRate:    0.0, // start disabled (everything sampled out)
-		MaxConcurrent: 4,
-		Timeout:       5 * time.Second,
-	})
-	defer p.Stop()
+		p, _ := newTestProber(t, deps, &ProbeConfig{
+			SampleRate:    0.0, // start disabled (everything sampled out)
+			MaxConcurrent: 4,
+			Timeout:       5 * time.Second,
+		})
+		defer p.Stop()
 
-	// At sampleRate=0, every publish is sampled out — no calls.
-	for i := 0; i < 10; i++ {
+		// At sampleRate=0, every publish is sampled out — no calls.
+		for i := 0; i < 10; i++ {
+			p.Publish(makeProbeReq(t, "eth_getBalance"))
+		}
+		time.Sleep(150 * time.Millisecond)
+		require.Equal(t, int64(0), dead.calls.Load(),
+			"sampleRate=0 must drop every probe")
+
+		// Hot-swap config to sampleRate=1; subsequent publishes mirror.
+		p.UpdateConfig(&ProbeConfig{
+			SampleRate:    1.0,
+			MaxConcurrent: 4,
+			Timeout:       5 * time.Second,
+		})
 		p.Publish(makeProbeReq(t, "eth_getBalance"))
-	}
-	time.Sleep(150 * time.Millisecond)
-	require.Equal(t, int64(0), dead.calls.Load(),
-		"sampleRate=0 must drop every probe")
-
-	// Hot-swap config to sampleRate=1; subsequent publishes mirror.
-	p.UpdateConfig(&ProbeConfig{
-		SampleRate:    1.0,
-		MaxConcurrent: 4,
-		Timeout:       5 * time.Second,
+		got := waitForCalls(dead, 1, 1*time.Second)
+		assert.Equal(t, int64(1), got,
+			"after hot-swap to sampleRate=1, publishes must mirror")
 	})
-	p.Publish(makeProbeReq(t, "eth_getBalance"))
-	got := waitForCalls(dead, 1, 1*time.Second)
-	assert.Equal(t, int64(1), got,
-		"after hot-swap to sampleRate=1, publishes must mirror")
 }
 
 // TestProber_HighRPSBurst_RespectsCapStrictly — regression for the
@@ -413,45 +426,47 @@ func TestProber_UpdateConfigHotSwap(t *testing.T) {
 // exactly MaxConcurrent probes reach Forward; the other 998 are
 // rejected via the max_concurrent gate.
 func TestProber_HighRPSBurst_RespectsCapStrictly(t *testing.T) {
-	deps := &stubEngine{}
-	dead := &stubProbeUpstream{
-		id:         "dead",
-		blockUntil: make(chan struct{}), // every probe blocks
-	}
-	deps.setExcluded("evm:1", []common.Upstream{dead})
-
-	const cap = 4
-	p, _ := newTestProber(t, deps, &ProbeConfig{
-		SampleRate:    1.0,
-		MaxConcurrent: cap,
-		Timeout:       30 * time.Second,
-	})
-	defer func() {
-		close(dead.blockUntil)
-		p.Stop()
-	}()
-
-	// Burst — publishes happen faster than goroutines can run their
-	// `counter.Add(1)`. The old buggy code would spawn hundreds of
-	// goroutines here; the fix keeps it at exactly `cap`.
-	for i := 0; i < 1000; i++ {
-		p.Publish(makeProbeReq(t, "eth_getBalance"))
-	}
-
-	// Give the dispatcher plenty of time to drain its feed channel
-	// and spawn all the goroutines it's going to spawn.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if dead.calls.Load() >= int64(cap) {
-			break
+	synctest.Test(t, func(t *testing.T) {
+		deps := &stubEngine{}
+		dead := &stubProbeUpstream{
+			id:         "dead",
+			blockUntil: make(chan struct{}), // every probe blocks
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	// Brief settling window in case the dispatcher tries to spawn one
-	// more (the bug would manifest as the counter racing past cap).
-	time.Sleep(200 * time.Millisecond)
+		deps.setExcluded("evm:1", []common.Upstream{dead})
 
-	got := dead.calls.Load()
-	assert.Equal(t, int64(cap), got,
-		"high-RPS burst MUST stop at exactly MaxConcurrent=%d goroutines spawned; got %d (the goroutine-runaway bug would show way more)", cap, got)
+		const cap = 4
+		p, _ := newTestProber(t, deps, &ProbeConfig{
+			SampleRate:    1.0,
+			MaxConcurrent: cap,
+			Timeout:       30 * time.Second,
+		})
+		defer func() {
+			close(dead.blockUntil)
+			p.Stop()
+		}()
+
+		// Burst — publishes happen faster than goroutines can run their
+		// `counter.Add(1)`. The old buggy code would spawn hundreds of
+		// goroutines here; the fix keeps it at exactly `cap`.
+		for i := 0; i < 1000; i++ {
+			p.Publish(makeProbeReq(t, "eth_getBalance"))
+		}
+
+		// Give the dispatcher plenty of time to drain its feed channel
+		// and spawn all the goroutines it's going to spawn.
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if dead.calls.Load() >= int64(cap) {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		// Brief settling window in case the dispatcher tries to spawn one
+		// more (the bug would manifest as the counter racing past cap).
+		time.Sleep(200 * time.Millisecond)
+
+		got := dead.calls.Load()
+		assert.Equal(t, int64(cap), got,
+			"high-RPS burst MUST stop at exactly MaxConcurrent=%d goroutines spawned; got %d (the goroutine-runaway bug would show way more)", cap, got)
+	})
 }

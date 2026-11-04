@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/telemetry"
@@ -41,22 +42,24 @@ func pushingHeadsUpstream(t *testing.T) *httptest.Server {
 }
 
 func TestWebSocket_LastHeadTimestampCarriesProjectAndNetwork(t *testing.T) {
-	mockUpstream := pushingHeadsUpstream(t)
-	defer mockUpstream.Close()
-	setupGock()
-	defer util.ResetGock()
+	synctest.Test(t, func(t *testing.T) {
+		mockUpstream := pushingHeadsUpstream(t)
+		defer mockUpstream.Close()
+		setupGock()
+		defer util.ResetGock()
 
-	addr, cleanup := setupTestERPCServer(t, standardWsConfig("ws"+strings.TrimPrefix(mockUpstream.URL, "http")))
-	defer cleanup()
+		addr, cleanup := setupTestERPCServer(t, standardWsConfig("ws"+strings.TrimPrefix(mockUpstream.URL, "http")))
+		defer cleanup()
 
-	conn := dialWs(t, addr)
-	defer conn.Close()
-	resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
-	require.Nil(t, resp["error"])
+		conn := dialWs(t, addr)
+		defer conn.Close()
+		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+		require.Nil(t, resp["error"])
 
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
-	_, _, err := conn.ReadMessage()
-	require.NoError(t, err, "head notification")
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+		_, _, err := conn.ReadMessage()
+		require.NoError(t, err, "head notification")
 
-	assert.Positive(t, testutil.ToFloat64(telemetry.MetricNetworkSubscriptionLastHeadTimestamp.WithLabelValues("test_ws", "evm:123")))
+		assert.Positive(t, testutil.ToFloat64(telemetry.MetricNetworkSubscriptionLastHeadTimestamp.WithLabelValues("test_ws", "evm:123")))
+	})
 }

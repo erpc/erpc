@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
@@ -356,141 +357,160 @@ func TestNetworkQuery_Shim(t *testing.T) {
 	ntw := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, nil)
 
 	t.Run("blocks page ends at target with real block references", func(t *testing.T) {
-		result, code := queryJson(t, ctx, ntw, "eth_queryBlocks",
-			`[{"fromBlock":"0x64","toBlock":"0x66","target":"0x2","fields":{"blocks":["number","miner"]},"filter":{"miner":[]}}]`)
-		require.Zero(t, code)
-		blocks := qtData(result, "blocks")
-		assert.Equal(t, []interface{}{"0x64", "0x65"}, qtField(blocks, "number"))
-		assert.Equal(t, map[string]interface{}{"number": "0x65", "miner": qtMiner}, blocks[1], "only selected fields")
-		assert.Equal(t, map[string]interface{}{"number": "0x64", "hash": qtHash(0x64), "parentHash": qtHash(0x63)}, result["fromBlock"])
-		assert.Equal(t, map[string]interface{}{"number": "0x66", "hash": qtHash(0x66), "parentHash": qtHash(0x65)}, result["toBlock"])
-		assert.Equal(t, map[string]interface{}{"number": "0x65", "hash": qtHash(0x65), "parentHash": qtHash(0x64)}, result["cursorBlock"])
+		synctest.Test(t, func(t *testing.T) {
+			result, code := queryJson(t, ctx, ntw, "eth_queryBlocks",
+				`[{"fromBlock":"0x64","toBlock":"0x66","target":"0x2","fields":{"blocks":["number","miner"]},"filter":{"miner":[]}}]`)
+			require.Zero(t, code)
+			blocks := qtData(result, "blocks")
+			assert.Equal(t, []interface{}{"0x64", "0x65"}, qtField(blocks, "number"))
+			assert.Equal(t, map[string]interface{}{"number": "0x65", "miner": qtMiner}, blocks[1], "only selected fields")
+			assert.Equal(t, map[string]interface{}{"number": "0x64", "hash": qtHash(0x64), "parentHash": qtHash(0x63)}, result["fromBlock"])
+			assert.Equal(t, map[string]interface{}{"number": "0x66", "hash": qtHash(0x66), "parentHash": qtHash(0x65)}, result["toBlock"])
+			assert.Equal(t, map[string]interface{}{"number": "0x65", "hash": qtHash(0x65), "parentHash": qtHash(0x64)}, result["cursorBlock"])
 
-		// The next page resumes after cursorBlock and runs to toBlock.
-		result, code = queryJson(t, ctx, ntw, "eth_queryBlocks",
-			`[{"fromBlock":"0x66","toBlock":"0x66","target":"0x2","fields":{"blocks":["number"]}}]`)
-		require.Zero(t, code)
-		assert.Equal(t, []interface{}{"0x66"}, qtField(qtData(result, "blocks"), "number"))
-		assert.Equal(t, "0x66", result["cursorBlock"].(map[string]interface{})["number"])
+			// The next page resumes after cursorBlock and runs to toBlock.
+			result, code = queryJson(t, ctx, ntw, "eth_queryBlocks",
+				`[{"fromBlock":"0x66","toBlock":"0x66","target":"0x2","fields":{"blocks":["number"]}}]`)
+			require.Zero(t, code)
+			assert.Equal(t, []interface{}{"0x66"}, qtField(qtData(result, "blocks"), "number"))
+			assert.Equal(t, "0x66", result["cursorBlock"].(map[string]interface{})["number"])
+		})
 	})
 
 	t.Run("transactions desc with receipt fields, selector filter and blocks relation", func(t *testing.T) {
-		result, code := queryJson(t, ctx, ntw, "eth_queryTransactions",
-			`[{"fromBlock":"0x66","toBlock":"0x64","order":"desc","filter":{"from":["`+qtAddrA+`","`+qtAddrC+`"]},
+		synctest.Test(t, func(t *testing.T) {
+			result, code := queryJson(t, ctx, ntw, "eth_queryTransactions",
+				`[{"fromBlock":"0x66","toBlock":"0x64","order":"desc","filter":{"from":["`+qtAddrA+`","`+qtAddrC+`"]},
 			  "fields":{"transactions":["blockNumber","transactionIndex","status","contractAddress"],"blocks":["number","timestamp"]}}]`)
-		require.Zero(t, code)
-		txs := qtData(result, "transactions")
-		assert.Equal(t, []interface{}{"0x66", "0x66", "0x65", "0x65", "0x64", "0x64"}, qtField(txs, "blockNumber"))
-		assert.Equal(t, []interface{}{"0x1", "0x0", "0x1", "0x0", "0x1", "0x0"}, qtField(txs, "transactionIndex"), "desc reverses within a block")
-		assert.Equal(t, []interface{}{"0x1", "0x1", "0x0", "0x1", "0x1", "0x1"}, qtField(txs, "status"))
-		assert.Equal(t, []interface{}{qtAddrB, nil, qtAddrB, nil, qtAddrB, nil}, qtField(txs, "contractAddress"))
-		assert.Equal(t, []interface{}{"0x66", "0x65", "0x64"}, qtField(qtData(result, "blocks"), "number"))
-		assert.Equal(t, "0x64", result["cursorBlock"].(map[string]interface{})["number"])
+			require.Zero(t, code)
+			txs := qtData(result, "transactions")
+			assert.Equal(t, []interface{}{"0x66", "0x66", "0x65", "0x65", "0x64", "0x64"}, qtField(txs, "blockNumber"))
+			assert.Equal(t, []interface{}{"0x1", "0x0", "0x1", "0x0", "0x1", "0x0"}, qtField(txs, "transactionIndex"), "desc reverses within a block")
+			assert.Equal(t, []interface{}{"0x1", "0x1", "0x0", "0x1", "0x1", "0x1"}, qtField(txs, "status"))
+			assert.Equal(t, []interface{}{qtAddrB, nil, qtAddrB, nil, qtAddrB, nil}, qtField(txs, "contractAddress"))
+			assert.Equal(t, []interface{}{"0x66", "0x65", "0x64"}, qtField(qtData(result, "blocks"), "number"))
+			assert.Equal(t, "0x64", result["cursorBlock"].(map[string]interface{})["number"])
 
-		result, code = queryJson(t, ctx, ntw, "eth_queryTransactions",
-			`[{"fromBlock":"0x64","toBlock":"0x64","filter":{"selector":"0xa9059cbb"},"fields":{"transactions":["hash"]}}]`)
-		require.Zero(t, code)
-		assert.Equal(t, []interface{}{qtTxHash(0x64, 0)}, qtField(qtData(result, "transactions"), "hash"))
+			result, code = queryJson(t, ctx, ntw, "eth_queryTransactions",
+				`[{"fromBlock":"0x64","toBlock":"0x64","filter":{"selector":"0xa9059cbb"},"fields":{"transactions":["hash"]}}]`)
+			require.Zero(t, code)
+			assert.Equal(t, []interface{}{qtTxHash(0x64, 0)}, qtField(qtData(result, "transactions"), "hash"))
+		})
 	})
 
 	t.Run("logs with the transactions relation joined once", func(t *testing.T) {
-		result, code := queryJson(t, ctx, ntw, "eth_queryLogs",
-			`[{"fromBlock":"0x64","toBlock":"0x66","target":"0x1","filter":{"address":"`+qtToken+`","topics":[["`+qtTopic+`"]]},
+		synctest.Test(t, func(t *testing.T) {
+			result, code := queryJson(t, ctx, ntw, "eth_queryLogs",
+				`[{"fromBlock":"0x64","toBlock":"0x66","target":"0x1","filter":{"address":"`+qtToken+`","topics":[["`+qtTopic+`"]]},
 			  "fields":{"logs":["blockNumber","logIndex","data","transactionHash"],"transactions":["hash","status"]}}]`)
-		require.Zero(t, code)
-		logs := qtData(result, "logs")
-		assert.Equal(t, []interface{}{"0x01", "0x02"}, qtField(logs, "data"), "the page holds the whole first block")
-		assert.Equal(t, []interface{}{qtTxHash(0x64, 0)}, qtField(qtData(result, "transactions"), "hash"))
-		assert.Equal(t, "0x64", result["cursorBlock"].(map[string]interface{})["number"])
+			require.Zero(t, code)
+			logs := qtData(result, "logs")
+			assert.Equal(t, []interface{}{"0x01", "0x02"}, qtField(logs, "data"), "the page holds the whole first block")
+			assert.Equal(t, []interface{}{qtTxHash(0x64, 0)}, qtField(qtData(result, "transactions"), "hash"))
+			assert.Equal(t, "0x64", result["cursorBlock"].(map[string]interface{})["number"])
+		})
 	})
 
 	t.Run("traces fall back to debug_traceBlockByNumber and omit reverted frames", func(t *testing.T) {
-		result, code := queryJson(t, ctx, ntw, "eth_queryTraces",
-			`[{"fromBlock":"0x64","toBlock":"0x64","fields":{"traces":["transactionIndex","traceAddress","reverted","type"]}}]`)
-		require.Zero(t, code)
-		traces := qtData(result, "traces")
-		require.Len(t, traces, 4)
-		assert.Equal(t, []interface{}{[]interface{}{}, []interface{}{float64(1)}, []interface{}{}, []interface{}{float64(1)}}, qtField(traces, "traceAddress"))
-		assert.Equal(t, []interface{}{false, false, false, false}, qtField(traces, "reverted"))
+		synctest.Test(t, func(t *testing.T) {
+			result, code := queryJson(t, ctx, ntw, "eth_queryTraces",
+				`[{"fromBlock":"0x64","toBlock":"0x64","fields":{"traces":["transactionIndex","traceAddress","reverted","type"]}}]`)
+			require.Zero(t, code)
+			traces := qtData(result, "traces")
+			require.Len(t, traces, 4)
+			assert.Equal(t, []interface{}{[]interface{}{}, []interface{}{float64(1)}, []interface{}{}, []interface{}{float64(1)}}, qtField(traces, "traceAddress"))
+			assert.Equal(t, []interface{}{false, false, false, false}, qtField(traces, "reverted"))
 
-		result, code = queryJson(t, ctx, ntw, "eth_queryTraces",
-			`[{"fromBlock":"0x64","toBlock":"0x64","order":"desc","filter":{"includeReverted":true},"fields":{"traces":["transactionIndex","traceAddress","reverted","error"]}}]`)
-		require.Zero(t, code)
-		traces = qtData(result, "traces")
-		require.Len(t, traces, 8)
-		assert.Equal(t, []interface{}{float64(1)}, traces[0]["traceAddress"], "desc reverses frames too")
-		assert.Equal(t, []interface{}{float64(0), float64(0)}, traces[1]["traceAddress"])
-		assert.Equal(t, true, traces[1]["reverted"], "a frame below a failed call is reverted")
-		assert.Nil(t, traces[1]["error"])
-		assert.Equal(t, "execution reverted", traces[2]["error"])
+			result, code = queryJson(t, ctx, ntw, "eth_queryTraces",
+				`[{"fromBlock":"0x64","toBlock":"0x64","order":"desc","filter":{"includeReverted":true},"fields":{"traces":["transactionIndex","traceAddress","reverted","error"]}}]`)
+			require.Zero(t, code)
+			traces = qtData(result, "traces")
+			require.Len(t, traces, 8)
+			assert.Equal(t, []interface{}{float64(1)}, traces[0]["traceAddress"], "desc reverses frames too")
+			assert.Equal(t, []interface{}{float64(0), float64(0)}, traces[1]["traceAddress"])
+			assert.Equal(t, true, traces[1]["reverted"], "a frame below a failed call is reverted")
+			assert.Nil(t, traces[1]["error"])
+			assert.Equal(t, "execution reverted", traces[2]["error"])
+		})
 	})
 
 	t.Run("transfers skip zero-value frames", func(t *testing.T) {
-		result, code := queryJson(t, ctx, ntw, "eth_queryTransfers",
-			`[{"fromBlock":"0x65","toBlock":"0x65","fields":{"transfers":["from","to","value","type"],"blocks":["number"]}}]`)
-		require.Zero(t, code)
-		transfers := qtData(result, "transfers")
-		require.Len(t, transfers, 2)
-		assert.Equal(t, []interface{}{"0x10", "0x10"}, qtField(transfers, "value"))
-		assert.Equal(t, []interface{}{"0x65"}, qtField(qtData(result, "blocks"), "number"))
+		synctest.Test(t, func(t *testing.T) {
+			result, code := queryJson(t, ctx, ntw, "eth_queryTransfers",
+				`[{"fromBlock":"0x65","toBlock":"0x65","fields":{"transfers":["from","to","value","type"],"blocks":["number"]}}]`)
+			require.Zero(t, code)
+			transfers := qtData(result, "transfers")
+			require.Len(t, transfers, 2)
+			assert.Equal(t, []interface{}{"0x10", "0x10"}, qtField(transfers, "value"))
+			assert.Equal(t, []interface{}{"0x65"}, qtField(qtData(result, "blocks"), "number"))
+		})
 	})
 
 	t.Run("errors carry the MIP-16 codes", func(t *testing.T) {
-		for _, tc := range []struct {
-			name, method, params string
-			code                 int
-		}{
-			{"inverted asc range", "eth_queryBlocks", `[{"fromBlock":"0x66","toBlock":"0x64"}]`, -32602},
-			{"inverted desc range", "eth_queryLogs", `[{"fromBlock":"0x64","toBlock":"0x66","order":"desc"}]`, -32602},
-			{"params not an array", "eth_queryLogs", `{"fromBlock":"0x64"}`, -32602},
-			{"unknown request key", "eth_queryTraces", `[{"fromBlock":"0x64","limit":"0x1"}]`, -32602},
-			{"block above the chain head", "eth_queryTransactions", `[{"fromBlock":"0x64","toBlock":"0xffffffff"}]`, -32001},
-		} {
-			_, code := queryJson(t, ctx, ntw, tc.method, tc.params)
-			assert.Equal(t, tc.code, code, tc.name)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, method, params string
+				code                 int
+			}{
+				{"inverted asc range", "eth_queryBlocks", `[{"fromBlock":"0x66","toBlock":"0x64"}]`, -32602},
+				{"inverted desc range", "eth_queryLogs", `[{"fromBlock":"0x64","toBlock":"0x66","order":"desc"}]`, -32602},
+				{"params not an array", "eth_queryLogs", `{"fromBlock":"0x64"}`, -32602},
+				{"unknown request key", "eth_queryTraces", `[{"fromBlock":"0x64","limit":"0x1"}]`, -32602},
+				{"block above the chain head", "eth_queryTransactions", `[{"fromBlock":"0x64","toBlock":"0xffffffff"}]`, -32001},
+			} {
+				_, code := queryJson(t, ctx, ntw, tc.method, tc.params)
+				assert.Equal(t, tc.code, code, tc.name)
+			}
+		})
 	})
 
 	t.Run("a page never crosses a reorg", func(t *testing.T) {
-		// 0x68's parentHash is not 0x67's hash: the page ends at 0x67 and the
-		// next page starts on the other fork.
-		result, code := queryJson(t, ctx, ntw, "eth_queryBlocks", `[{"fromBlock":"0x65","toBlock":"0x69","fields":{"blocks":["number"]}}]`)
-		require.Zero(t, code)
-		assert.Equal(t, []interface{}{"0x65", "0x66", "0x67"}, qtField(qtData(result, "blocks"), "number"))
-		assert.Equal(t, map[string]interface{}{"number": "0x67", "hash": qtHash(0x67), "parentHash": qtHash(0x66)}, result["cursorBlock"])
-		assert.Equal(t, "0x69", result["toBlock"].(map[string]interface{})["number"])
+		synctest.Test(t, func(t *testing.T) {
+			// 0x68's parentHash is not 0x67's hash: the page ends at 0x67 and the
+			// next page starts on the other fork.
+			result, code := queryJson(t, ctx, ntw, "eth_queryBlocks", `[{"fromBlock":"0x65","toBlock":"0x69","fields":{"blocks":["number"]}}]`)
+			require.Zero(t, code)
+			assert.Equal(t, []interface{}{"0x65", "0x66", "0x67"}, qtField(qtData(result, "blocks"), "number"))
+			assert.Equal(t, map[string]interface{}{"number": "0x67", "hash": qtHash(0x67), "parentHash": qtHash(0x66)}, result["cursorBlock"])
+			assert.Equal(t, "0x69", result["toBlock"].(map[string]interface{})["number"])
 
-		// In desc order the same break ends the page at 0x68.
-		result, code = queryJson(t, ctx, ntw, "eth_queryBlocks", `[{"fromBlock":"0x69","toBlock":"0x65","order":"desc","fields":{"blocks":["number"]}}]`)
-		require.Zero(t, code)
-		assert.Equal(t, []interface{}{"0x69", "0x68"}, qtField(qtData(result, "blocks"), "number"))
+			// In desc order the same break ends the page at 0x68.
+			result, code = queryJson(t, ctx, ntw, "eth_queryBlocks", `[{"fromBlock":"0x69","toBlock":"0x65","order":"desc","fields":{"blocks":["number"]}}]`)
+			require.Zero(t, code)
+			assert.Equal(t, []interface{}{"0x69", "0x68"}, qtField(qtData(result, "blocks"), "number"))
 
-		// A log whose blockHash is not its block's header hash: the page ends
-		// before that block.
-		result, code = queryJson(t, ctx, ntw, "eth_queryLogs", `[{"fromBlock":"0x68","toBlock":"0x69","fields":{"logs":["blockNumber","data"]}}]`)
-		require.Zero(t, code)
-		assert.Empty(t, qtData(result, "logs"))
-		assert.Equal(t, "0x68", result["cursorBlock"].(map[string]interface{})["number"])
+			// A log whose blockHash is not its block's header hash: the page ends
+			// before that block.
+			result, code = queryJson(t, ctx, ntw, "eth_queryLogs", `[{"fromBlock":"0x68","toBlock":"0x69","fields":{"logs":["blockNumber","data"]}}]`)
+			require.Zero(t, code)
+			assert.Empty(t, qtData(result, "logs"))
+			assert.Equal(t, "0x68", result["cursorBlock"].(map[string]interface{})["number"])
 
-		// A page whose first block is not consistent has no block-aligned
-		// page: a transient failure, erpc's retryable server error, never
-		// the MIP-16 budget code -32005.
-		_, code = queryJson(t, ctx, ntw, "eth_queryLogs", `[{"fromBlock":"0x69","toBlock":"0x69"}]`)
-		assert.Equal(t, -32603, code)
+			// A page whose first block is not consistent has no block-aligned
+			// page: a transient failure, erpc's retryable server error, never
+			// the MIP-16 budget code -32005.
+			_, code = queryJson(t, ctx, ntw, "eth_queryLogs", `[{"fromBlock":"0x69","toBlock":"0x69"}]`)
+			assert.Equal(t, -32603, code)
+		})
 	})
 
 	t.Run("a shim upstream that does not serve a sub-request the query needs", func(t *testing.T) {
-		// Every upstream ignores eth_getBlockReceipts: a query that selects
-		// receipt fields is not served (-32004) before any scan, and one
-		// that does not still is.
-		noReceipts := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, []string{"eth_getBlockReceipts"})
-		_, code := queryJson(t, ctx, noReceipts, "eth_queryTransactions", `[{"fromBlock":"0x64","toBlock":"0x64","fields":{"transactions":["hash","status"]}}]`)
-		assert.Equal(t, -32004, code)
-		_, code = queryJson(t, ctx, noReceipts, "eth_queryLogs", `[{"fromBlock":"0x64","toBlock":"0x64","fields":{"logs":["data"],"transactions":["status"]}}]`)
-		assert.Equal(t, -32004, code, "a joined relation's receipt fields need receipts too")
-		result, code := queryJson(t, ctx, noReceipts, "eth_queryTransactions", `[{"fromBlock":"0x64","toBlock":"0x64","fields":{"transactions":["hash"]}}]`)
-		require.Zero(t, code)
-		assert.Len(t, qtData(result, "transactions"), 2)
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			// Every upstream ignores eth_getBlockReceipts: a query that selects
+			// receipt fields is not served (-32004) before any scan, and one
+			// that does not still is.
+			noReceipts := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, []string{"eth_getBlockReceipts"})
+			_, code := queryJson(t, ctx, noReceipts, "eth_queryTransactions", `[{"fromBlock":"0x64","toBlock":"0x64","fields":{"transactions":["hash","status"]}}]`)
+			assert.Equal(t, -32004, code)
+			_, code = queryJson(t, ctx, noReceipts, "eth_queryLogs", `[{"fromBlock":"0x64","toBlock":"0x64","fields":{"logs":["data"],"transactions":["status"]}}]`)
+			assert.Equal(t, -32004, code, "a joined relation's receipt fields need receipts too")
+			result, code := queryJson(t, ctx, noReceipts, "eth_queryTransactions", `[{"fromBlock":"0x64","toBlock":"0x64","fields":{"transactions":["hash"]}}]`)
+			require.Zero(t, code)
+			assert.Len(t, qtData(result, "transactions"), 2)
+		})
 	})
 
 	// rpc3 serves 0x66 but answers null for its receipts (it lags); rpc4,
@@ -510,108 +530,117 @@ func TestNetworkQuery_Shim(t *testing.T) {
 	failing := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, nil, "rpc3", "rpc4")
 
 	t.Run("a lagging upstream's null does not hide the other upstream's error", func(t *testing.T) {
-		_, code := queryJson(t, ctx, failing, "eth_queryTransactions", `[{"fromBlock":"0x66","toBlock":"0x66","fields":{"transactions":["hash","status"]}}]`)
-		assert.NotZero(t, code)
-		assert.NotContains(t, []int{-32001, -32005}, code, "rpc4's failure, not a missing block or the budget")
+		synctest.Test(t, func(t *testing.T) {
+			_, code := queryJson(t, ctx, failing, "eth_queryTransactions", `[{"fromBlock":"0x66","toBlock":"0x66","fields":{"transactions":["hash","status"]}}]`)
+			assert.NotZero(t, code)
+			assert.NotContains(t, []int{-32001, -32005}, code, "rpc4's failure, not a missing block or the budget")
+		})
 	})
 
 	t.Run("gRPC streams projected shim pages and maps every failure to a status", func(t *testing.T) {
-		client, gctx := queryGrpc(t, ctx, ntw)
-		target := uint32(2)
-		stream, err := client.QueryTransactions(gctx, &bdsevm.QueryTransactionsRequest{
-			FromBlock: util.StringPtr("0x64"), ToBlock: util.StringPtr("0x65"), Target: &target,
-			TransactionFields: &bdsevm.TransactionFieldSelection{Hash: true, Gas: true, Status: true, BlockNumber: true, BlockTimestamp: true},
-			// Transactions point into the header the blocks relation holds:
-			// clearing the header's unselected number and timestamp must not
-			// clear the transactions' blockNumber and blockTimestamp.
-			BlockFields: &bdsevm.BlockFieldSelection{Hash: true},
+		synctest.Test(t, func(t *testing.T) {
+			client, gctx := queryGrpc(t, ctx, ntw)
+			target := uint32(2)
+			stream, err := client.QueryTransactions(gctx, &bdsevm.QueryTransactionsRequest{
+				FromBlock: util.StringPtr("0x64"), ToBlock: util.StringPtr("0x65"), Target: &target,
+				TransactionFields: &bdsevm.TransactionFieldSelection{Hash: true, Gas: true, Status: true, BlockNumber: true, BlockTimestamp: true},
+				// Transactions point into the header the blocks relation holds:
+				// clearing the header's unselected number and timestamp must not
+				// clear the transactions' blockNumber and blockTimestamp.
+				BlockFields: &bdsevm.BlockFieldSelection{Hash: true},
+			})
+			pages, code := grpcPages(t, stream, err)
+			require.Equal(t, codes.OK, code)
+			require.Len(t, pages, 2, "one page per block at target 2")
+			for i, page := range pages {
+				n := uint64(0x64 + i)
+				require.Len(t, page.Transactions, 2)
+				tx := page.Transactions[0]
+				assert.Equal(t, n, page.CursorBlock.GetNumber())
+				assert.NotEmpty(t, tx.Hash, "selected")
+				assert.Equal(t, uint64(0x5208), tx.GasLimit, `"gas" selects gasLimit`)
+				require.NotNil(t, tx.Status, "selected receipt field")
+				assert.Equal(t, uint32(1), *tx.Status)
+				require.NotNil(t, tx.BlockNumber, "selected")
+				assert.Equal(t, n, *tx.BlockNumber)
+				require.NotNil(t, tx.BlockTimestamp, "selected")
+				assert.Equal(t, 1000+n, *tx.BlockTimestamp)
+				assert.Empty(t, tx.From, "unselected")
+				assert.Empty(t, tx.Input, "unselected")
+				assert.Empty(t, tx.Value, "unselected")
+				assert.Nil(t, tx.GasUsed, "unselected receipt field")
+				require.Len(t, page.Blocks, 1)
+				assert.Equal(t, qtHash(n), bdsevm.BytesToHex(page.Blocks[0].Hash), "selected")
+				assert.Zero(t, page.Blocks[0].Number, "unselected")
+				assert.Zero(t, page.Blocks[0].Timestamp, "unselected")
+				assert.Equal(t, n, page.CursorBlock.GetNumber(), "block references are never projected")
+			}
+
+			// The JSON transport renders the same request from the same blocks
+			// with every selected field intact.
+			result, jsonCode := queryJson(t, ctx, ntw, "eth_queryTransactions",
+				`[{"fromBlock":"0x64","toBlock":"0x64","fields":{"transactions":["blockNumber","blockTimestamp"],"blocks":["hash"]}}]`)
+			require.Zero(t, jsonCode)
+			assert.Equal(t, []interface{}{"0x64", "0x64"}, qtField(qtData(result, "transactions"), "blockNumber"))
+			assert.Equal(t, []interface{}{"0x44c", "0x44c"}, qtField(qtData(result, "transactions"), "blockTimestamp"))
+
+			order := bdsevm.SortOrder_DESC
+			stream, err = client.QueryTransactions(gctx, &bdsevm.QueryTransactionsRequest{FromBlock: util.StringPtr("0x64"), ToBlock: util.StringPtr("0x65"), Order: &order})
+			_, code = grpcPages(t, stream, err)
+			assert.Equal(t, codes.InvalidArgument, code, "inverted desc range")
+			stream, err = client.QueryTransactions(gctx, &bdsevm.QueryTransactionsRequest{FromBlock: util.StringPtr("0x64"), ToBlock: util.StringPtr("0xffffffff")})
+			_, code = grpcPages(t, stream, err)
+			assert.Equal(t, codes.OutOfRange, code, "block above the chain head")
+			logs, err := client.QueryLogs(gctx, &bdsevm.QueryLogsRequest{FromBlock: util.StringPtr("0x69"), ToBlock: util.StringPtr("0x69")})
+			_, code = grpcPages(t, logs, err)
+			assert.Equal(t, codes.Unavailable, code, "fromBlock inconsistent: retry later")
+
+			// A sub-request failure with no MIP-16 meaning gets erpc's status.
+			failingClient, fctx := queryGrpc(t, ctx, failing)
+			stream, err = failingClient.QueryTransactions(fctx, &bdsevm.QueryTransactionsRequest{
+				FromBlock: util.StringPtr("0x66"), ToBlock: util.StringPtr("0x66"),
+				TransactionFields: &bdsevm.TransactionFieldSelection{Hash: true, Status: true},
+			})
+			_, code = grpcPages(t, stream, err)
+			assert.Equal(t, codes.Unavailable, code)
 		})
-		pages, code := grpcPages(t, stream, err)
-		require.Equal(t, codes.OK, code)
-		require.Len(t, pages, 2, "one page per block at target 2")
-		for i, page := range pages {
-			n := uint64(0x64 + i)
-			require.Len(t, page.Transactions, 2)
-			tx := page.Transactions[0]
-			assert.Equal(t, n, page.CursorBlock.GetNumber())
-			assert.NotEmpty(t, tx.Hash, "selected")
-			assert.Equal(t, uint64(0x5208), tx.GasLimit, `"gas" selects gasLimit`)
-			require.NotNil(t, tx.Status, "selected receipt field")
-			assert.Equal(t, uint32(1), *tx.Status)
-			require.NotNil(t, tx.BlockNumber, "selected")
-			assert.Equal(t, n, *tx.BlockNumber)
-			require.NotNil(t, tx.BlockTimestamp, "selected")
-			assert.Equal(t, 1000+n, *tx.BlockTimestamp)
-			assert.Empty(t, tx.From, "unselected")
-			assert.Empty(t, tx.Input, "unselected")
-			assert.Empty(t, tx.Value, "unselected")
-			assert.Nil(t, tx.GasUsed, "unselected receipt field")
-			require.Len(t, page.Blocks, 1)
-			assert.Equal(t, qtHash(n), bdsevm.BytesToHex(page.Blocks[0].Hash), "selected")
-			assert.Zero(t, page.Blocks[0].Number, "unselected")
-			assert.Zero(t, page.Blocks[0].Timestamp, "unselected")
-			assert.Equal(t, n, page.CursorBlock.GetNumber(), "block references are never projected")
-		}
-
-		// The JSON transport renders the same request from the same blocks
-		// with every selected field intact.
-		result, jsonCode := queryJson(t, ctx, ntw, "eth_queryTransactions",
-			`[{"fromBlock":"0x64","toBlock":"0x64","fields":{"transactions":["blockNumber","blockTimestamp"],"blocks":["hash"]}}]`)
-		require.Zero(t, jsonCode)
-		assert.Equal(t, []interface{}{"0x64", "0x64"}, qtField(qtData(result, "transactions"), "blockNumber"))
-		assert.Equal(t, []interface{}{"0x44c", "0x44c"}, qtField(qtData(result, "transactions"), "blockTimestamp"))
-
-		order := bdsevm.SortOrder_DESC
-		stream, err = client.QueryTransactions(gctx, &bdsevm.QueryTransactionsRequest{FromBlock: util.StringPtr("0x64"), ToBlock: util.StringPtr("0x65"), Order: &order})
-		_, code = grpcPages(t, stream, err)
-		assert.Equal(t, codes.InvalidArgument, code, "inverted desc range")
-		stream, err = client.QueryTransactions(gctx, &bdsevm.QueryTransactionsRequest{FromBlock: util.StringPtr("0x64"), ToBlock: util.StringPtr("0xffffffff")})
-		_, code = grpcPages(t, stream, err)
-		assert.Equal(t, codes.OutOfRange, code, "block above the chain head")
-		logs, err := client.QueryLogs(gctx, &bdsevm.QueryLogsRequest{FromBlock: util.StringPtr("0x69"), ToBlock: util.StringPtr("0x69")})
-		_, code = grpcPages(t, logs, err)
-		assert.Equal(t, codes.Unavailable, code, "fromBlock inconsistent: retry later")
-
-		// A sub-request failure with no MIP-16 meaning gets erpc's status.
-		failingClient, fctx := queryGrpc(t, ctx, failing)
-		stream, err = failingClient.QueryTransactions(fctx, &bdsevm.QueryTransactionsRequest{
-			FromBlock: util.StringPtr("0x66"), ToBlock: util.StringPtr("0x66"),
-			TransactionFields: &bdsevm.TransactionFieldSelection{Hash: true, Status: true},
-		})
-		_, code = grpcPages(t, stream, err)
-		assert.Equal(t, codes.Unavailable, code)
 	})
 
 	t.Run("a lagging upstream's null never hides an available block", func(t *testing.T) {
-		// rpc2 is selected first and lags: it answers null for 0x66, which
-		// rpc1 has. The page asks the other upstream and completes.
-		var lagged atomic.Int32
-		for n := uint64(qtFirstNo - 1); n <= 0x66; n++ {
-			ref := fmt.Sprintf(`"0x%x"`, n)
-			var block interface{} = qtBlock(n)
-			if n == 0x66 {
-				block = nil
-			}
-			gock.New("http://rpc2.localhost").Post("").Persist().
-				Filter(func(r *http.Request) bool {
-					body := util.SafeReadBody(r)
-					if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, ref) {
-						return false
-					}
-					if block == nil {
-						lagged.Add(1)
-					}
-					return true
-				}).
-				Reply(200).JSON(qtReply(block))
-		}
-		lagging := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, nil, "rpc2", "rpc1")
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		result, code := queryJson(t, ctx, lagging, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x66","fields":{"blocks":["number","hash"]}}]`)
-		require.Zero(t, code)
-		assert.Equal(t, []interface{}{"0x64", "0x65", "0x66"}, qtField(qtData(result, "blocks"), "number"))
-		assert.Equal(t, map[string]interface{}{"number": "0x66", "hash": qtHash(0x66), "parentHash": qtHash(0x65)}, result["cursorBlock"])
-		assert.Positive(t, lagged.Load(), "rpc2 must have been asked for 0x66 and answered null")
+			// rpc2 is selected first and lags: it answers null for 0x66, which
+			// rpc1 has. The page asks the other upstream and completes.
+			var lagged atomic.Int32
+			for n := uint64(qtFirstNo - 1); n <= 0x66; n++ {
+				ref := fmt.Sprintf(`"0x%x"`, n)
+				var block interface{} = qtBlock(n)
+				if n == 0x66 {
+					block = nil
+				}
+				gock.New("http://rpc2.localhost").Post("").Persist().
+					Filter(func(r *http.Request) bool {
+						body := util.SafeReadBody(r)
+						if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, ref) {
+							return false
+						}
+						if block == nil {
+							lagged.Add(1)
+						}
+						return true
+					}).
+					Reply(200).JSON(qtReply(block))
+			}
+			lagging := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, nil, "rpc2", "rpc1")
+
+			result, code := queryJson(t, ctx, lagging, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x66","fields":{"blocks":["number","hash"]}}]`)
+			require.Zero(t, code)
+			assert.Equal(t, []interface{}{"0x64", "0x65", "0x66"}, qtField(qtData(result, "blocks"), "number"))
+			assert.Equal(t, map[string]interface{}{"number": "0x66", "hash": qtHash(0x66), "parentHash": qtHash(0x65)}, result["cursorBlock"])
+			assert.Positive(t, lagged.Load(), "rpc2 must have been asked for 0x66 and answered null")
+		})
 	})
 }
 
@@ -621,18 +650,25 @@ func TestNetworkQuery_ShimLimits(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	mockQueryChain(time.Second)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	t.Run("no upstream serves the method", func(t *testing.T) {
-		ntw := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true), AllowedMethods: []string{"eth_queryLogs"}}, nil)
-		_, code := queryJson(t, ctx, ntw, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x64"}]`)
-		assert.Equal(t, -32004, code)
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			ntw := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true), AllowedMethods: []string{"eth_queryLogs"}}, nil)
+			_, code := queryJson(t, ctx, ntw, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x64"}]`)
+			assert.Equal(t, -32004, code)
+		})
 	})
 
 	t.Run("budget ends before fromBlock completes", func(t *testing.T) {
-		ntw := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true), MaxPageDuration: common.Duration(200 * time.Millisecond)}, nil)
-		_, code := queryJson(t, ctx, ntw, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x66"}]`)
-		assert.Equal(t, -32005, code)
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			ntw := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true), MaxPageDuration: common.Duration(200 * time.Millisecond)}, nil)
+			_, code := queryJson(t, ctx, ntw, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x66"}]`)
+			assert.Equal(t, -32005, code)
+		})
 	})
 }

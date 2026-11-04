@@ -5,6 +5,7 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
@@ -209,16 +210,18 @@ func TestCordonAdmin_DetectorsCannotLiftAnOperatorCordon(t *testing.T) {
 }
 
 func TestCordonAdmin_MemoryDriverStaysInProcess(t *testing.T) {
-	ctx := context.Background()
-	a := newCordonTestUpstream(t, "")
-	b := newCordonTestUpstream(t, "")
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		a := newCordonTestUpstream(t, "")
+		b := newCordonTestUpstream(t, "")
 
-	a.CordonAdmin(ctx, "local only")
-	require.True(t, cordoned(a)())
-	time.Sleep(200 * time.Millisecond)
-	require.False(t, cordoned(b)(), "memory driver shares nothing")
-	a.UncordonAdmin(ctx, "done")
-	require.True(t, notCordoned(a)())
+		a.CordonAdmin(ctx, "local only")
+		require.True(t, cordoned(a)())
+		time.Sleep(200 * time.Millisecond)
+		require.False(t, cordoned(b)(), "memory driver shares nothing")
+		a.UncordonAdmin(ctx, "done")
+		require.True(t, notCordoned(a)())
+	})
 }
 
 // When the shared operator counter is already zero, UncordonAdmin must still

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"testing/synctest"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -49,27 +50,31 @@ func guaranteedForNetwork(t *testing.T, ctx context.Context, fx []servedTipFixtu
 
 // Unset is today's behaviour, exactly: the network-wide majority stands.
 func TestGuaranteedFor_UnsetIsNoOp(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993}),
-		&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority})
-	assert.Equal(t, int64(1000), n.EvmHighestLatestBlockNumber(ctx))
+		n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993}),
+			&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority})
+		assert.Equal(t, int64(1000), n.EvmHighestLatestBlockNumber(ctx))
+	})
 }
 
 // The advertised tip is one the named group can actually serve.
 func TestGuaranteedFor_ClampsToTheNamedGroupsMajority(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993}),
-		&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority, GuaranteedFor: []string{tagInternal}})
-	assert.Equal(t, int64(993), n.EvmHighestLatestBlockNumber(ctx),
-		"network majority is 1000, but the internals only have 993")
+		n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993}),
+			&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority, GuaranteedFor: []string{tagInternal}})
+		assert.Equal(t, int64(993), n.EvmHighestLatestBlockNumber(ctx),
+			"network majority is 1000, but the internals only have 993")
+	})
 }
 
 // The clamp tracks the group's ACTUAL lag — no configured constant to keep in
@@ -101,79 +106,89 @@ func TestGuaranteedFor_TracksTheActualLag(t *testing.T) {
 // The clamp is a group MAJORITY, not a group minimum: one frozen member is
 // outvoted inside its own group and cannot pin the network.
 func TestGuaranteedFor_StuckMemberDoesNotPinTheNetwork(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993, 400}),
-		&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority, GuaranteedFor: []string{tagInternal}})
-	assert.Equal(t, int64(993), n.EvmHighestLatestBlockNumber(ctx),
-		"int3 frozen at 400 is outvoted by its own group")
+		n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993, 400}),
+			&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority, GuaranteedFor: []string{tagInternal}})
+		assert.Equal(t, int64(993), n.EvmHighestLatestBlockNumber(ctx),
+			"int3 frozen at 400 is outvoted by its own group")
+	})
 }
 
 // A one-member group has no majority to outvote a stall, so that upstream does
 // set the tip. Same property guaranteedMethods already has for a method only
 // one upstream supports — naming a single upstream IS declaring it mandatory.
 func TestGuaranteedFor_SingleMemberGroupSetsTheTip(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{400}),
-		&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority, GuaranteedFor: []string{tagInternal}})
-	assert.Equal(t, int64(400), n.EvmHighestLatestBlockNumber(ctx))
+		n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{400}),
+			&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority, GuaranteedFor: []string{tagInternal}})
+		assert.Equal(t, int64(400), n.EvmHighestLatestBlockNumber(ctx))
+	})
 }
 
 // A selector matching nothing constrains nothing — it never pins the tip to 0.
 func TestGuaranteedFor_UnmatchedGroupConstrainsNothing(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993}),
-		&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority, GuaranteedFor: []string{"type:nonexistent"}})
-	assert.Equal(t, int64(1000), n.EvmHighestLatestBlockNumber(ctx))
+		n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993}),
+			&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority, GuaranteedFor: []string{"type:nonexistent"}})
+		assert.Equal(t, int64(1000), n.EvmHighestLatestBlockNumber(ctx))
+	})
 }
 
 // Several groups fold to the LOWEST of their majorities — the tip must be
 // servable by every named group, not just one.
 func TestGuaranteedFor_MultipleGroupsTakeTheLowest(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	fx := []servedTipFixture{
-		{id: "ext1", chainID: 123, latestBlock: 1000, tags: []string{tagExternal}},
-		{id: "ext2", chainID: 123, latestBlock: 1000, tags: []string{tagExternal}},
-		{id: "ext3", chainID: 123, latestBlock: 1000, tags: []string{tagExternal}},
-		{id: "int1", chainID: 123, latestBlock: 993, tags: []string{tagInternal}},
-		{id: "int2", chainID: 123, latestBlock: 993, tags: []string{tagInternal}},
-		{id: "arch1", chainID: 123, latestBlock: 980, tags: []string{"role:archive"}},
-		{id: "arch2", chainID: 123, latestBlock: 980, tags: []string{"role:archive"}},
-	}
-	n := guaranteedForNetwork(t, ctx, fx, &common.EvmServedTipConfig{
-		Quorum:        common.ServedTipQuorumMajority,
-		GuaranteedFor: []string{tagInternal, "role:archive"},
+		fx := []servedTipFixture{
+			{id: "ext1", chainID: 123, latestBlock: 1000, tags: []string{tagExternal}},
+			{id: "ext2", chainID: 123, latestBlock: 1000, tags: []string{tagExternal}},
+			{id: "ext3", chainID: 123, latestBlock: 1000, tags: []string{tagExternal}},
+			{id: "int1", chainID: 123, latestBlock: 993, tags: []string{tagInternal}},
+			{id: "int2", chainID: 123, latestBlock: 993, tags: []string{tagInternal}},
+			{id: "arch1", chainID: 123, latestBlock: 980, tags: []string{"role:archive"}},
+			{id: "arch2", chainID: 123, latestBlock: 980, tags: []string{"role:archive"}},
+		}
+		n := guaranteedForNetwork(t, ctx, fx, &common.EvmServedTipConfig{
+			Quorum:        common.ServedTipQuorumMajority,
+			GuaranteedFor: []string{tagInternal, "role:archive"},
+		})
+		assert.Equal(t, int64(980), n.EvmHighestLatestBlockNumber(ctx),
+			"lowest group majority wins: archives at 980 below internals at 993")
 	})
-	assert.Equal(t, int64(980), n.EvmHighestLatestBlockNumber(ctx),
-		"lowest group majority wins: archives at 980 below internals at 993")
 }
 
 // An id glob selects too — guaranteedFor takes the same selector vocabulary as
 // use-upstream and consensus.requiredParticipants.
 func TestGuaranteedFor_MatchesByUpstreamIdGlob(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993}),
-		&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority, GuaranteedFor: []string{"int*"}})
-	assert.Equal(t, int64(993), n.EvmHighestLatestBlockNumber(ctx))
+		n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993}),
+			&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority, GuaranteedFor: []string{"int*"}})
+		assert.Equal(t, int64(993), n.EvmHighestLatestBlockNumber(ctx))
+	})
 }
 
 // The guarantee applies to the finalized axis on its own terms: the finalized
@@ -181,61 +196,67 @@ func TestGuaranteedFor_MatchesByUpstreamIdGlob(t *testing.T) {
 // A group member leaving the ballot cannot pull it back down while a live
 // member still reports it finalized (#1353).
 func TestGuaranteedFor_AppliesToTheFinalizedAxis(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	util.SetupMocksForEvmStatePoller()
-	fx := mixedPool([]int64{1000, 1000, 1000, 1000}, []int64{993, 993, 993})
-	network, ups := setupServedTipNetworkWith(t, ctx, fx, &common.EvmServedTipConfig{
-		Quorum:        common.ServedTipQuorumMajority,
-		GuaranteedFor: []string{tagInternal},
+		util.SetupMocksForEvmStatePoller()
+		fx := mixedPool([]int64{1000, 1000, 1000, 1000}, []int64{993, 993, 993})
+		network, ups := setupServedTipNetworkWith(t, ctx, fx, &common.EvmServedTipConfig{
+			Quorum:        common.ServedTipQuorumMajority,
+			GuaranteedFor: []string{tagInternal},
+		})
+
+		finalized := []int64{900, 900, 900, 900, 880, 880, 850} // externals first, then internals
+		for i, u := range ups {
+			setServedTipFinalized(t, u, finalized[i])
+		}
+
+		assert.Equal(t, int64(880), network.EvmHighestFinalizedBlockNumber(ctx),
+			"finalized majority is 900; the internals have only finalized 880")
+
+		network.PinUpstreamOrderForTest("ext1", "ext2", "ext3", "ext4", "int1", "int3")
+		assert.Equal(t, int64(880), network.EvmHighestFinalizedBlockNumber(ctx),
+			"the internals' majority is now 850, but int1 still reports 880 finalized")
+
+		network.PinUpstreamOrderForTest("ext1", "ext2", "ext3", "ext4", "int3")
+		assert.Equal(t, int64(850), network.EvmHighestFinalizedBlockNumber(ctx),
+			"no internal reports 880 finalized any more: the guarantee binds")
 	})
-
-	finalized := []int64{900, 900, 900, 900, 880, 880, 850} // externals first, then internals
-	for i, u := range ups {
-		setServedTipFinalized(t, u, finalized[i])
-	}
-
-	assert.Equal(t, int64(880), network.EvmHighestFinalizedBlockNumber(ctx),
-		"finalized majority is 900; the internals have only finalized 880")
-
-	network.PinUpstreamOrderForTest("ext1", "ext2", "ext3", "ext4", "int1", "int3")
-	assert.Equal(t, int64(880), network.EvmHighestFinalizedBlockNumber(ctx),
-		"the internals' majority is now 850, but int1 still reports 880 finalized")
-
-	network.PinUpstreamOrderForTest("ext1", "ext2", "ext3", "ext4", "int3")
-	assert.Equal(t, int64(850), network.EvmHighestFinalizedBlockNumber(ctx),
-		"no internal reports 880 finalized any more: the guarantee binds")
 }
 
 // A head already delivered to a WebSocket subscriber floors "latest", but it
 // can never lift the tip past a guarantee: the named group still cannot serve
 // the delivered block, and the guarantee is the operator's hard clamp.
 func TestGuaranteedFor_DeliveredHeadFloorDoesNotLiftPastTheGuarantee(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993}),
-		&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority, GuaranteedFor: []string{tagInternal}})
-	n.NoteObservedLatestBlock(ctx, 1000)
-	assert.Equal(t, int64(993), n.EvmHighestLatestBlockNumber(ctx),
-		"the internals only have 993; a delivered 1000 must not override the guarantee")
+		n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993}),
+			&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority, GuaranteedFor: []string{tagInternal}})
+		n.NoteObservedLatestBlock(ctx, 1000)
+		assert.Equal(t, int64(993), n.EvmHighestLatestBlockNumber(ctx),
+			"the internals only have 993; a delivered 1000 must not override the guarantee")
+	})
 }
 
 // Without a guarantee the delivered-head floor still applies on top of the
 // majority served tip.
 func TestGuaranteedFor_DeliveredHeadFloorAppliesWhenUnset(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993}),
-		&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority})
-	n.NoteObservedLatestBlock(ctx, 1001)
-	assert.Equal(t, int64(1001), n.EvmHighestLatestBlockNumber(ctx))
+		n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993}),
+			&common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority})
+		n.NoteObservedLatestBlock(ctx, 1001)
+		assert.Equal(t, int64(1001), n.EvmHighestLatestBlockNumber(ctx))
+	})
 }

@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -46,32 +47,40 @@ func newRetryDistanceNetwork(t *testing.T, configured *int64, blocksPerSecond in
 
 func TestMaxRetryableBlockDistance(t *testing.T) {
 	t.Run("UnknownBlockTimeKeepsTheBlockCountDefault", func(t *testing.T) {
-		n := newRetryDistanceNetwork(t, nil, 0)
-		assert.Equal(t, defaultMaxRetryableBlockDistance, n.maxRetryableBlockDistance())
+		synctest.Test(t, func(t *testing.T) {
+			n := newRetryDistanceNetwork(t, nil, 0)
+			assert.Equal(t, defaultMaxRetryableBlockDistance, n.maxRetryableBlockDistance())
+		})
 	})
 
 	t.Run("SlowChainKeepsTheBlockCountDefault", func(t *testing.T) {
-		// 1 block/s: 60s of chain is 60 blocks, inside the 128 default, so the
-		// larger of the two leaves this chain untouched.
-		n := newRetryDistanceNetwork(t, nil, 1)
-		assert.Equal(t, defaultMaxRetryableBlockDistance, n.maxRetryableBlockDistance())
+		synctest.Test(t, func(t *testing.T) {
+			// 1 block/s: 60s of chain is 60 blocks, inside the 128 default, so the
+			// larger of the two leaves this chain untouched.
+			n := newRetryDistanceNetwork(t, nil, 1)
+			assert.Equal(t, defaultMaxRetryableBlockDistance, n.maxRetryableBlockDistance())
+		})
 	})
 
 	t.Run("FastChainWidensToTheTimeHorizon", func(t *testing.T) {
-		// 10 blocks/s: 128 blocks is only ~13 seconds of this chain, so a block
-		// half a minute out would be refused a retry it would have won. 60s of
-		// chain progress is 600 blocks.
-		n := newRetryDistanceNetwork(t, nil, 10)
-		assert.Equal(t, int64(600), n.maxRetryableBlockDistance())
-		assert.Greater(t, n.maxRetryableBlockDistance(), defaultMaxRetryableBlockDistance,
-			"widening is the safe direction: it can cost retries, never a failed request")
+		synctest.Test(t, func(t *testing.T) {
+			// 10 blocks/s: 128 blocks is only ~13 seconds of this chain, so a block
+			// half a minute out would be refused a retry it would have won. 60s of
+			// chain progress is 600 blocks.
+			n := newRetryDistanceNetwork(t, nil, 10)
+			assert.Equal(t, int64(600), n.maxRetryableBlockDistance())
+			assert.Greater(t, n.maxRetryableBlockDistance(), defaultMaxRetryableBlockDistance,
+				"widening is the safe direction: it can cost retries, never a failed request")
+		})
 	})
 
 	t.Run("ExplicitConfigIsNeverOverridden", func(t *testing.T) {
-		// An operator who pins this has made a deliberate choice; the derived
-		// floor must not widen it, even on a chain where it otherwise would.
-		pinned := int64(4)
-		n := newRetryDistanceNetwork(t, &pinned, 10)
-		assert.Equal(t, int64(4), n.maxRetryableBlockDistance())
+		synctest.Test(t, func(t *testing.T) {
+			// An operator who pins this has made a deliberate choice; the derived
+			// floor must not widen it, even on a chain where it otherwise would.
+			pinned := int64(4)
+			n := newRetryDistanceNetwork(t, &pinned, 10)
+			assert.Equal(t, int64(4), n.maxRetryableBlockDistance())
+		})
 	})
 }

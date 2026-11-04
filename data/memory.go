@@ -36,6 +36,10 @@ type MemoryConnector struct {
 	}
 	metricsMutex sync.RWMutex
 	stopMetrics  context.CancelFunc
+
+	// cacheMu keeps Close from running concurrently with cache operations,
+	// which ristretto does not support.
+	cacheMu sync.RWMutex
 }
 
 func NewMemoryConnector(
@@ -100,6 +104,8 @@ func NewMemoryConnector(
 		lg.Info().Msg("Ristretto metrics collection enabled")
 	}
 
+	context.AfterFunc(ctx, func() { _ = c.Close() })
+
 	return c, nil
 }
 
@@ -111,6 +117,9 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string
 	m.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Int("len", len(value)).Msg("writing to memory (ristretto)")
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
+
+	m.cacheMu.RLock()
+	defer m.cacheMu.RUnlock()
 
 	if ttl != nil && *ttl > 0 {
 		m.cache.SetWithTTL(key, value, 0, *ttl)
@@ -155,6 +164,9 @@ func isReverseIndexable(partitionKey string) bool {
 }
 
 func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, _ interface{}) ([]byte, error) {
+	m.cacheMu.RLock()
+	defer m.cacheMu.RUnlock()
+
 	if index == ConnectorReverseIndex && strings.HasSuffix(partitionKey, "*") {
 		fullKey, found := m.cache.Get(memoryReverseIndexPrefix + "#" + partitionKey + "#" + rangeKey)
 		// Replace wildcard partitionKey with the resolved concrete value if found
@@ -319,6 +331,9 @@ func (m *MemoryConnector) Delete(ctx context.Context, partitionKey, rangeKey str
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 	m.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("deleting from memory (ristretto)")
 
+	m.cacheMu.RLock()
+	defer m.cacheMu.RUnlock()
+
 	// Delete main entry
 	m.cache.Del(key)
 
@@ -350,7 +365,9 @@ func (m *MemoryConnector) Close() error {
 		m.stopMetrics()
 	}
 	if m.cache != nil {
+		m.cacheMu.Lock()
 		m.cache.Close()
+		m.cacheMu.Unlock()
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -327,72 +328,76 @@ func TestRace_TwoParticipants_ShortCircuit_LateArrivalReleased(t *testing.T) {
 // two valid responses should produce consensus. The nil must NOT inflate
 // totalParticipants in a way that triggers low-participants.
 func TestRace_ThreeParticipants_OneCancelledBeforeExec_TwoValid(t *testing.T) {
-	logger := zerolog.New(zerolog.NewTestWriter(t))
+	synctest.Test(t, func(t *testing.T) {
+		logger := zerolog.New(zerolog.NewTestWriter(t))
 
-	pol := NewConsensusPolicyBuilder().
-		WithMaxParticipants(3).
-		WithAgreementThreshold(2).
-		WithLogger(&logger).
-		Build()
+		pol := NewConsensusPolicyBuilder().
+			WithMaxParticipants(3).
+			WithAgreementThreshold(2).
+			WithLogger(&logger).
+			Build()
 
-	req := newTestRequest()
+		req := newTestRequest()
 
-	var callCount atomic.Int32
-	gate := make(chan struct{})
+		var callCount atomic.Int32
+		gate := make(chan struct{})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ctx = context.WithValue(ctx, common.RequestContextKey, req)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	type result struct {
-		resp *common.NormalizedResponse
-		err  error
-	}
-	resultCh := make(chan result, 1)
-
-	go func() {
-		resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-			n := callCount.Add(1)
-			if n == 1 {
-				// First participant: signal readiness, then wait for cancel to
-				// happen. By the time we return, ctx is cancelled but our result
-				// is still valid.
-				close(gate)
-				time.Sleep(20 * time.Millisecond) // give cancel a head start
-			}
-			return validResponse(), nil
-		})
-		resultCh <- result{resp, err}
-	}()
-
-	// Cancel after first participant has started but (hopefully) before all
-	// three have passed the pre-execution ctx.Err() check. This creates
-	// a mix of nil and valid responses.
-	<-gate
-	cancel()
-
-	select {
-	case r := <-resultCh:
-		// If the two valid responses reached the analyzer, we get consensus.
-		// If cancel races unfavorably, context.Canceled is acceptable.
-		// ErrConsensusLowParticipants is ONLY correct if truly < 2 valid
-		// responses — but given N=3 with at least 1 guaranteed valid, and
-		// the innerFn is fast, at least 2 should complete in most runs.
-		if r.err != nil {
-			if common.HasErrorCode(r.err, common.ErrCodeConsensusLowParticipants) {
-				// Low-participants is correct ONLY if fewer than threshold
-				// participants actually entered innerFn. If 2+ ran (and
-				// therefore produced valid responses), reporting low-
-				// participants is the exact regression this PR fixes.
-				completed := callCount.Load()
-				assert.Less(t, completed, int32(2),
-					"ErrConsensusLowParticipants with %d completed participants (>= threshold=2) is a regression", completed)
-			}
-			// context.Canceled is always acceptable (caller abandoned).
+		type result struct {
+			resp *common.NormalizedResponse
+			err  error
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("mixed participation: deadlock")
-	}
+		resultCh := make(chan result, 1)
+
+		go func() {
+			resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				n := callCount.Add(1)
+				if n == 1 {
+					// First participant: signal readiness, then wait for cancel to
+					// happen. By the time we return, ctx is cancelled but our result
+					// is still valid.
+					close(gate)
+					time.Sleep(20 * time.Millisecond) // give cancel a head start
+				}
+				return validResponse(), nil
+			})
+			resultCh <- result{resp, err}
+		}()
+
+		// Cancel after first participant has started but (hopefully) before all
+		// three have passed the pre-execution ctx.Err() check. This creates
+		// a mix of nil and valid responses.
+		<-gate
+		cancel()
+
+		select {
+		case r := <-resultCh:
+			// If the two valid responses reached the analyzer, we get consensus.
+			// If cancel races unfavorably, context.Canceled is acceptable.
+			// ErrConsensusLowParticipants is ONLY correct if truly < 2 valid
+			// responses — but given N=3 with at least 1 guaranteed valid, and
+			// the innerFn is fast, at least 2 should complete in most runs.
+			if r.err != nil {
+				if common.HasErrorCode(r.err, common.ErrCodeConsensusLowParticipants) {
+					// Low-participants is correct ONLY if fewer than threshold
+					// participants actually entered innerFn. If 2+ ran (and
+					// therefore produced valid responses), reporting low-
+					// participants is the exact regression this PR fixes.
+					completed := callCount.Load()
+					assert.Less(t, completed, int32(2),
+						"ErrConsensusLowParticipants with %d completed participants (>= threshold=2) is a regression", completed)
+				}
+				// context.Canceled is always acceptable (caller abandoned).
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("mixed participation: deadlock")
+		}
+		// Let in-flight participants return before the test ends.
+		time.Sleep(time.Second)
+	})
 }
 
 // ===== SCENARIO E: outcomeCh vs ctx.Done() select race ====================

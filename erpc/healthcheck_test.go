@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -88,91 +89,93 @@ func createTestNetworkWithSelectionPolicy(t *testing.T, ctx context.Context) *Ne
 // by architecture+chainId the same way EVM proxies do, returning id/state in
 // networks mode instead of an empty list.
 func TestHealthCheckSvmNetworkScope(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForSvmStatePoller("svm-hc-rpc1.localhost", 1000, 990)
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForSvmStatePoller("svm-hc-rpc1.localhost", 1000, 990)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	logger := &log.Logger
-	vr := thirdparty.NewVendorsRegistry()
-	pr, err := thirdparty.NewProvidersRegistry(logger, vr, nil, nil)
-	require.NoError(t, err)
-	ssr, err := data.NewSharedStateRegistry(ctx, logger, &common.SharedStateConfig{
-		ClusterKey: "test",
-		Connector: &common.ConnectorConfig{
-			Driver: common.DriverMemory,
-			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 100_000, MaxTotalSize: "1GB",
+		logger := &log.Logger
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(logger, vr, nil, nil)
+		require.NoError(t, err)
+		ssr, err := data.NewSharedStateRegistry(ctx, logger, &common.SharedStateConfig{
+			ClusterKey: "test",
+			Connector: &common.ConnectorConfig{
+				Driver: common.DriverMemory,
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000, MaxTotalSize: "1GB",
+				},
 			},
-		},
+		})
+		require.NoError(t, err)
+		mtk := health.NewTracker(logger, "test", time.Second)
+
+		svmUp := &common.UpstreamConfig{
+			Id:       "svm-upstream",
+			Type:     common.UpstreamTypeSvm,
+			Endpoint: "http://svm-hc-rpc1.localhost",
+			Svm: &common.SvmUpstreamConfig{
+				Cluster: "mainnet-beta",
+			},
+		}
+
+		pp := &PreparedProject{
+			Config: &common.ProjectConfig{
+				Id:        "solana-mainnet-beta",
+				Upstreams: []*common.UpstreamConfig{svmUp},
+				Networks: []*common.NetworkConfig{
+					{
+						Architecture: common.ArchitectureSvm,
+						Svm:          &common.SvmNetworkConfig{Cluster: "mainnet-beta"},
+					},
+				},
+			},
+			upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{svmUp}, ssr, nil, vr, pr, nil, mtk, nil),
+		}
+		pp.upstreamsRegistry.Bootstrap(ctx)
+		pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
+
+		s := &HttpServer{
+			logger: logger,
+			erpc: &ERPC{
+				projectsRegistry: &ProjectsRegistry{
+					preparedProjects: map[string]*PreparedProject{
+						"solana-mainnet-beta": pp,
+					},
+				},
+			},
+			healthCheckCfg: &common.HealthCheckConfig{
+				Mode: common.HealthCheckModeNetworks,
+			},
+			draining: &atomic.Bool{},
+		}
+
+		time.Sleep(200 * time.Millisecond)
+
+		w := httptest.NewRecorder()
+		startTime := time.Now()
+		encoder := common.SonicCfg.NewEncoder(w)
+		s.handleHealthCheck(
+			ctx, w,
+			&http.Request{Method: "GET", URL: &url.URL{Path: "/"}},
+			&startTime,
+			"solana-mainnet-beta", "svm", "mainnet-beta",
+			encoder,
+			func(ctx context.Context, statusCode int, body error) {
+				w.WriteHeader(statusCode)
+				_ = encoder.Encode(map[string]string{"error": body.Error()})
+			},
+		)
+
+		resp := w.Result()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Contains(t, string(body), `"id":"svm:mainnet-beta"`)
+		assert.Contains(t, string(body), `"state":"OK"`)
 	})
-	require.NoError(t, err)
-	mtk := health.NewTracker(logger, "test", time.Second)
-
-	svmUp := &common.UpstreamConfig{
-		Id:       "svm-upstream",
-		Type:     common.UpstreamTypeSvm,
-		Endpoint: "http://svm-hc-rpc1.localhost",
-		Svm: &common.SvmUpstreamConfig{
-			Cluster: "mainnet-beta",
-		},
-	}
-
-	pp := &PreparedProject{
-		Config: &common.ProjectConfig{
-			Id:        "solana-mainnet-beta",
-			Upstreams: []*common.UpstreamConfig{svmUp},
-			Networks: []*common.NetworkConfig{
-				{
-					Architecture: common.ArchitectureSvm,
-					Svm:          &common.SvmNetworkConfig{Cluster: "mainnet-beta"},
-				},
-			},
-		},
-		upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{svmUp}, ssr, nil, vr, pr, nil, mtk, nil),
-	}
-	pp.upstreamsRegistry.Bootstrap(ctx)
-	pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
-
-	s := &HttpServer{
-		logger: logger,
-		erpc: &ERPC{
-			projectsRegistry: &ProjectsRegistry{
-				preparedProjects: map[string]*PreparedProject{
-					"solana-mainnet-beta": pp,
-				},
-			},
-		},
-		healthCheckCfg: &common.HealthCheckConfig{
-			Mode: common.HealthCheckModeNetworks,
-		},
-		draining: &atomic.Bool{},
-	}
-
-	time.Sleep(200 * time.Millisecond)
-
-	w := httptest.NewRecorder()
-	startTime := time.Now()
-	encoder := common.SonicCfg.NewEncoder(w)
-	s.handleHealthCheck(
-		ctx, w,
-		&http.Request{Method: "GET", URL: &url.URL{Path: "/"}},
-		&startTime,
-		"solana-mainnet-beta", "svm", "mainnet-beta",
-		encoder,
-		func(ctx context.Context, statusCode int, body error) {
-			w.WriteHeader(statusCode)
-			_ = encoder.Encode(map[string]string{"error": body.Error()})
-		},
-	)
-
-	resp := w.Result()
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Contains(t, string(body), `"id":"svm:mainnet-beta"`)
-	assert.Contains(t, string(body), `"state":"OK"`)
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -37,35 +38,299 @@ import (
 // continues and the participant can recover via a subsequent hedge execution.
 
 func TestHedgeConsensus_AllUpstreamsMissingData_HedgeRecovery(t *testing.T) {
-	// All 3 upstreams return MissingData on first call, then success on second call.
-	// With 3 consensus participants and hedge maxCount=1:
-	//   - Each participant's first hedge exec hits one upstream → MissingData (fast)
-	//   - CancelIf evaluates the MissingData error
-	//   - BUG: CancelIf returns true → cancels recovery hedge → participant stuck with error
-	//   - FIX: CancelIf returns false → recovery hedge fires → tries upstream again → success
-	//
-	// With the bug: 0 valid results → consensus fails
-	// After fix: 3 valid results → consensus succeeds (3/3 agree)
+	synctest.Test(t, func(t *testing.T) {
+		// All 3 upstreams return MissingData on first call, then success on second call.
+		// With 3 consensus participants and hedge maxCount=1:
+		//   - Each participant's first hedge exec hits one upstream → MissingData (fast)
+		//   - CancelIf evaluates the MissingData error
+		//   - BUG: CancelIf returns true → cancels recovery hedge → participant stuck with error
+		//   - FIX: CancelIf returns false → recovery hedge fires → tries upstream again → success
+		//
+		// With the bug: 0 valid results → consensus fails
+		// After fix: 3 valid results → consensus succeeds (3/3 agree)
 
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	var rpc1Calls, rpc2Calls, rpc3Calls atomic.Int32
+		var rpc1Calls, rpc2Calls, rpc3Calls atomic.Int32
 
-	for i, host := range []string{"rpc1", "rpc2", "rpc3"} {
-		counter := []*atomic.Int32{&rpc1Calls, &rpc2Calls, &rpc3Calls}[i]
-		endpoint := fmt.Sprintf("http://%s.localhost", host)
+		for i, host := range []string{"rpc1", "rpc2", "rpc3"} {
+			counter := []*atomic.Int32{&rpc1Calls, &rpc2Calls, &rpc3Calls}[i]
+			endpoint := fmt.Sprintf("http://%s.localhost", host)
 
-		// First call: MissingData (consumed by participant's initial hedge exec)
-		gock.New(endpoint).
+			// First call: MissingData (consumed by participant's initial hedge exec)
+			gock.New(endpoint).
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Times(1).
+				Reply(200).
+				Map(func(r *http.Response) *http.Response { counter.Add(1); return r }).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "header not found",
+					},
+				})
+
+			// Second call: success (consumed by participant's recovery hedge exec)
+			gock.New(endpoint).
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Times(1).
+				Reply(200).
+				Map(func(r *http.Response) *http.Response { counter.Add(1); return r }).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xde0b6b3a7640000",
+				})
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithHedgeAndConsensus(t, ctx,
+			3,
+			&common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(200 * time.Millisecond),
+				MaxCount: 1,
+			},
+			&common.ConsensusPolicyConfig{
+				MaxParticipants:         3,
+				AgreementThreshold:      2,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+				PreferNonEmpty:          &common.TRUE,
+				PreferLargerResponses:   &common.TRUE,
+			},
+			&common.RetryPolicyConfig{
+				MaxAttempts: 1,
+			},
+		)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+
+		resp, err := network.Forward(ctx, req)
+
+		t.Logf("rpc1=%d rpc2=%d rpc3=%d err=%v", rpc1Calls.Load(), rpc2Calls.Load(), rpc3Calls.Load(), err)
+
+		// BUG: All participants' recovery hedges are cancelled by CancelIf → 0 valid results
+		// → consensus fails because no agreement can be reached.
+		//
+		// EXPECTED (after fix): Recovery hedges fire → all participants get success on second
+		// call → consensus has 3 agreeing results → success.
+		require.NoError(t, err,
+			"All participants should recover via hedge after initial MissingData, "+
+				"but CancelIf cancels the recovery hedges for transient errors")
+		require.NotNil(t, resp)
+
+		jrr, jrrErr := resp.JsonRpcResponse()
+		require.NoError(t, jrrErr)
+		assert.Contains(t, jrr.GetResultString(), "0xde0b6b3a7640000")
+
+		// Each upstream should be called twice: first MissingData, then success via hedge
+		totalCalls := rpc1Calls.Load() + rpc2Calls.Load() + rpc3Calls.Load()
+		assert.GreaterOrEqual(t, totalCalls, int32(4),
+			"at least 4 upstream calls expected (3 initial + at least 1 hedge recovery)")
+	})
+}
+
+func TestHedgeConsensus_ServerError_HedgeRecovery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// Same pattern as MissingData but with HTTP 500 errors.
+		// Server-side errors are also transient — CancelIf should NOT cancel hedges.
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		var rpc1Calls, rpc2Calls, rpc3Calls atomic.Int32
+
+		for i, host := range []string{"rpc1", "rpc2", "rpc3"} {
+			counter := []*atomic.Int32{&rpc1Calls, &rpc2Calls, &rpc3Calls}[i]
+			endpoint := fmt.Sprintf("http://%s.localhost", host)
+
+			// First call: 500 error
+			gock.New(endpoint).
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Times(1).
+				Reply(500).
+				Map(func(r *http.Response) *http.Response { counter.Add(1); return r }).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "Internal server error",
+					},
+				})
+
+			// Second call: success
+			gock.New(endpoint).
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Times(1).
+				Reply(200).
+				Map(func(r *http.Response) *http.Response { counter.Add(1); return r }).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x5678",
+				})
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithHedgeAndConsensus(t, ctx,
+			3,
+			&common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(200 * time.Millisecond),
+				MaxCount: 1,
+			},
+			&common.ConsensusPolicyConfig{
+				MaxParticipants:         3,
+				AgreementThreshold:      2,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+				PreferNonEmpty:          &common.TRUE,
+				PreferLargerResponses:   &common.TRUE,
+			},
+			&common.RetryPolicyConfig{
+				MaxAttempts: 1,
+			},
+		)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+
+		resp, err := network.Forward(ctx, req)
+
+		t.Logf("rpc1=%d rpc2=%d rpc3=%d err=%v", rpc1Calls.Load(), rpc2Calls.Load(), rpc3Calls.Load(), err)
+
+		require.NoError(t, err,
+			"Server errors are transient — hedge recovery should not be cancelled")
+		require.NotNil(t, resp)
+
+		jrr, jrrErr := resp.JsonRpcResponse()
+		require.NoError(t, jrrErr)
+		assert.Contains(t, jrr.GetResultString(), "0x5678")
+	})
+}
+
+func TestHedgeConsensus_ExecutionReverted_CancelsHedge(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// Execution reverted is deterministic — all upstreams would return the same
+		// result. CancelIf SHOULD cancel hedges for terminal errors to avoid wasting
+		// resources. This test verifies the fix doesn't break terminal error cancellation.
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		var rpc1Calls, rpc2Calls, rpc3Calls atomic.Int32
+
+		for i, host := range []string{"rpc1", "rpc2", "rpc3"} {
+			counter := []*atomic.Int32{&rpc1Calls, &rpc2Calls, &rpc3Calls}[i]
+			endpoint := fmt.Sprintf("http://%s.localhost", host)
+
+			// All upstreams return execution reverted (deterministic)
+			gock.New(endpoint).
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_call")
+				}).
+				Persist().
+				Reply(200).
+				Map(func(r *http.Response) *http.Response { counter.Add(1); return r }).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    3,
+						"message": "execution reverted",
+						"data":    "0x08c379a0",
+					},
+				})
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithHedgeAndConsensus(t, ctx,
+			3,
+			&common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(200 * time.Millisecond),
+				MaxCount: 1,
+			},
+			&common.ConsensusPolicyConfig{
+				MaxParticipants:         3,
+				AgreementThreshold:      2,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+				PreferNonEmpty:          &common.TRUE,
+				PreferLargerResponses:   &common.TRUE,
+			},
+			&common.RetryPolicyConfig{
+				MaxAttempts: 1,
+			},
+		)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+
+		start := time.Now()
+		_, err := network.Forward(ctx, req)
+		elapsed := time.Since(start)
+
+		t.Logf("rpc1=%d rpc2=%d rpc3=%d elapsed=%v err=%v",
+			rpc1Calls.Load(), rpc2Calls.Load(), rpc3Calls.Load(), elapsed, err)
+
+		require.Error(t, err, "execution reverted is a terminal error that should propagate")
+		assert.True(t,
+			common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
+			"should contain execution exception, got: %v", err)
+
+		// Should complete fast — terminal error cancels hedges, no need to wait
+		assert.Less(t, elapsed, 400*time.Millisecond,
+			"terminal error should cancel hedges promptly")
+	})
+}
+
+func TestHedgeConsensus_OneUpstreamMissingData_OthersSucceed_StillWorks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// When only one upstream returns MissingData and others succeed,
+		// the consensus should work regardless of CancelIf behavior because
+		// enough participants succeed independently.
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		// rpc1: always MissingData
+		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(r *http.Request) bool {
 				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
 			}).
-			Times(1).
+			Persist().
 			Reply(200).
-			Map(func(r *http.Response) *http.Response { counter.Add(1); return r }).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -75,403 +340,149 @@ func TestHedgeConsensus_AllUpstreamsMissingData_HedgeRecovery(t *testing.T) {
 				},
 			})
 
-		// Second call: success (consumed by participant's recovery hedge exec)
-		gock.New(endpoint).
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Times(1).
-			Reply(200).
-			Map(func(r *http.Response) *http.Response { counter.Add(1); return r }).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0xde0b6b3a7640000",
-			})
-	}
+		// rpc2 and rpc3: always success
+		for _, host := range []string{"rpc2", "rpc3"} {
+			gock.New(fmt.Sprintf("http://%s.localhost", host)).
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xabc",
+				})
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network := setupTestNetworkWithHedgeAndConsensus(t, ctx,
-		3,
-		&common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(200 * time.Millisecond),
-			MaxCount: 1,
-		},
-		&common.ConsensusPolicyConfig{
-			MaxParticipants:         3,
-			AgreementThreshold:      2,
-			DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
-			LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
-			PreferNonEmpty:          &common.TRUE,
-			PreferLargerResponses:   &common.TRUE,
-		},
-		&common.RetryPolicyConfig{
-			MaxAttempts: 1,
-		},
-	)
-
-	requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
-	req := common.NewNormalizedRequest(requestBytes)
-	req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
-
-	resp, err := network.Forward(ctx, req)
-
-	t.Logf("rpc1=%d rpc2=%d rpc3=%d err=%v", rpc1Calls.Load(), rpc2Calls.Load(), rpc3Calls.Load(), err)
-
-	// BUG: All participants' recovery hedges are cancelled by CancelIf → 0 valid results
-	// → consensus fails because no agreement can be reached.
-	//
-	// EXPECTED (after fix): Recovery hedges fire → all participants get success on second
-	// call → consensus has 3 agreeing results → success.
-	require.NoError(t, err,
-		"All participants should recover via hedge after initial MissingData, "+
-			"but CancelIf cancels the recovery hedges for transient errors")
-	require.NotNil(t, resp)
-
-	jrr, jrrErr := resp.JsonRpcResponse()
-	require.NoError(t, jrrErr)
-	assert.Contains(t, jrr.GetResultString(), "0xde0b6b3a7640000")
-
-	// Each upstream should be called twice: first MissingData, then success via hedge
-	totalCalls := rpc1Calls.Load() + rpc2Calls.Load() + rpc3Calls.Load()
-	assert.GreaterOrEqual(t, totalCalls, int32(4),
-		"at least 4 upstream calls expected (3 initial + at least 1 hedge recovery)")
-}
-
-func TestHedgeConsensus_ServerError_HedgeRecovery(t *testing.T) {
-	// Same pattern as MissingData but with HTTP 500 errors.
-	// Server-side errors are also transient — CancelIf should NOT cancel hedges.
-
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	var rpc1Calls, rpc2Calls, rpc3Calls atomic.Int32
-
-	for i, host := range []string{"rpc1", "rpc2", "rpc3"} {
-		counter := []*atomic.Int32{&rpc1Calls, &rpc2Calls, &rpc3Calls}[i]
-		endpoint := fmt.Sprintf("http://%s.localhost", host)
-
-		// First call: 500 error
-		gock.New(endpoint).
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Times(1).
-			Reply(500).
-			Map(func(r *http.Response) *http.Response { counter.Add(1); return r }).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32000,
-					"message": "Internal server error",
-				},
-			})
-
-		// Second call: success
-		gock.New(endpoint).
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Times(1).
-			Reply(200).
-			Map(func(r *http.Response) *http.Response { counter.Add(1); return r }).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x5678",
-			})
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network := setupTestNetworkWithHedgeAndConsensus(t, ctx,
-		3,
-		&common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(200 * time.Millisecond),
-			MaxCount: 1,
-		},
-		&common.ConsensusPolicyConfig{
-			MaxParticipants:         3,
-			AgreementThreshold:      2,
-			DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
-			LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
-			PreferNonEmpty:          &common.TRUE,
-			PreferLargerResponses:   &common.TRUE,
-		},
-		&common.RetryPolicyConfig{
-			MaxAttempts: 1,
-		},
-	)
-
-	requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
-	req := common.NewNormalizedRequest(requestBytes)
-	req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
-
-	resp, err := network.Forward(ctx, req)
-
-	t.Logf("rpc1=%d rpc2=%d rpc3=%d err=%v", rpc1Calls.Load(), rpc2Calls.Load(), rpc3Calls.Load(), err)
-
-	require.NoError(t, err,
-		"Server errors are transient — hedge recovery should not be cancelled")
-	require.NotNil(t, resp)
-
-	jrr, jrrErr := resp.JsonRpcResponse()
-	require.NoError(t, jrrErr)
-	assert.Contains(t, jrr.GetResultString(), "0x5678")
-}
-
-func TestHedgeConsensus_ExecutionReverted_CancelsHedge(t *testing.T) {
-	// Execution reverted is deterministic — all upstreams would return the same
-	// result. CancelIf SHOULD cancel hedges for terminal errors to avoid wasting
-	// resources. This test verifies the fix doesn't break terminal error cancellation.
-
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	var rpc1Calls, rpc2Calls, rpc3Calls atomic.Int32
-
-	for i, host := range []string{"rpc1", "rpc2", "rpc3"} {
-		counter := []*atomic.Int32{&rpc1Calls, &rpc2Calls, &rpc3Calls}[i]
-		endpoint := fmt.Sprintf("http://%s.localhost", host)
-
-		// All upstreams return execution reverted (deterministic)
-		gock.New(endpoint).
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_call")
-			}).
-			Persist().
-			Reply(200).
-			Map(func(r *http.Response) *http.Response { counter.Add(1); return r }).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    3,
-					"message": "execution reverted",
-					"data":    "0x08c379a0",
-				},
-			})
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network := setupTestNetworkWithHedgeAndConsensus(t, ctx,
-		3,
-		&common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(200 * time.Millisecond),
-			MaxCount: 1,
-		},
-		&common.ConsensusPolicyConfig{
-			MaxParticipants:         3,
-			AgreementThreshold:      2,
-			DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
-			LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
-			PreferNonEmpty:          &common.TRUE,
-			PreferLargerResponses:   &common.TRUE,
-		},
-		&common.RetryPolicyConfig{
-			MaxAttempts: 1,
-		},
-	)
-
-	requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
-	req := common.NewNormalizedRequest(requestBytes)
-	req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
-
-	start := time.Now()
-	_, err := network.Forward(ctx, req)
-	elapsed := time.Since(start)
-
-	t.Logf("rpc1=%d rpc2=%d rpc3=%d elapsed=%v err=%v",
-		rpc1Calls.Load(), rpc2Calls.Load(), rpc3Calls.Load(), elapsed, err)
-
-	require.Error(t, err, "execution reverted is a terminal error that should propagate")
-	assert.True(t,
-		common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
-		"should contain execution exception, got: %v", err)
-
-	// Should complete fast — terminal error cancels hedges, no need to wait
-	assert.Less(t, elapsed, 400*time.Millisecond,
-		"terminal error should cancel hedges promptly")
-}
-
-func TestHedgeConsensus_OneUpstreamMissingData_OthersSucceed_StillWorks(t *testing.T) {
-	// When only one upstream returns MissingData and others succeed,
-	// the consensus should work regardless of CancelIf behavior because
-	// enough participants succeed independently.
-
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	// rpc1: always MissingData
-	gock.New("http://rpc1.localhost").
-		Post("").
-		Filter(func(r *http.Request) bool {
-			return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-		}).
-		Persist().
-		Reply(200).
-		JSON(map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"error": map[string]interface{}{
-				"code":    -32000,
-				"message": "header not found",
+		network := setupTestNetworkWithHedgeAndConsensus(t, ctx,
+			3,
+			&common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(100 * time.Millisecond),
+				MaxCount: 1,
 			},
-		})
+			&common.ConsensusPolicyConfig{
+				MaxParticipants:         3,
+				AgreementThreshold:      2,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+				PreferNonEmpty:          &common.TRUE,
+				PreferLargerResponses:   &common.TRUE,
+			},
+			&common.RetryPolicyConfig{
+				MaxAttempts: 2,
+				Delay:       common.Duration(50 * time.Millisecond),
+			},
+		)
 
-	// rpc2 and rpc3: always success
-	for _, host := range []string{"rpc2", "rpc3"} {
-		gock.New(fmt.Sprintf("http://%s.localhost", host)).
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
-			}).
-			Persist().
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0xabc",
-			})
-	}
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		resp, err := network.Forward(ctx, req)
 
-	network := setupTestNetworkWithHedgeAndConsensus(t, ctx,
-		3,
-		&common.HedgePolicyConfig{
-			Delay:    common.NewStaticDuration(100 * time.Millisecond),
-			MaxCount: 1,
-		},
-		&common.ConsensusPolicyConfig{
-			MaxParticipants:         3,
-			AgreementThreshold:      2,
-			DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
-			LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
-			PreferNonEmpty:          &common.TRUE,
-			PreferLargerResponses:   &common.TRUE,
-		},
-		&common.RetryPolicyConfig{
-			MaxAttempts: 2,
-			Delay:       common.Duration(50 * time.Millisecond),
-		},
-	)
+		// 2 of 3 participants succeed independently → consensus should pass
+		require.NoError(t, err)
+		require.NotNil(t, resp)
 
-	requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
-	req := common.NewNormalizedRequest(requestBytes)
-	req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
-
-	resp, err := network.Forward(ctx, req)
-
-	// 2 of 3 participants succeed independently → consensus should pass
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-
-	jrr, jrrErr := resp.JsonRpcResponse()
-	require.NoError(t, jrrErr)
-	assert.Contains(t, jrr.GetResultString(), "0xabc")
+		jrr, jrrErr := resp.JsonRpcResponse()
+		require.NoError(t, jrrErr)
+		assert.Contains(t, jrr.GetResultString(), "0xabc")
+	})
 }
 
 func TestHedgeConsensus_EmptyTxLookupIsKeptAsSlotVote(t *testing.T) {
-	// Live smokebox shape: two internals return JSON-RPC null for a pruned
-	// eth_getTransactionByHash; two archives agree on the tx. Hedge keep()
-	// used to reject that null (method not in emptyResultAccept) and the
-	// recovery leg then returned n/a ErrUpstreamsExhausted, so the empty
-	// vote never reached analysis.groups and the empty-outside-retention
-	// waiver could not fire.
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		// Live smokebox shape: two internals return JSON-RPC null for a pruned
+		// eth_getTransactionByHash; two archives agree on the tx. Hedge keep()
+		// used to reject that null (method not in emptyResultAccept) and the
+		// recovery leg then returned n/a ErrUpstreamsExhausted, so the empty
+		// vote never reached analysis.groups and the empty-outside-retention
+		// waiver could not fire.
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	tx := map[string]interface{}{
-		"hash":        "0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060",
-		"blockNumber": "0x10",
-	}
-	nullBody := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil}
-	txBody := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": tx}
-	isHashLookup := func(r *http.Request) bool {
-		return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
-	}
-	for _, host := range []string{"rpc1", "rpc2"} {
-		gock.New(fmt.Sprintf("http://%s.localhost", host)).
-			Post("").
-			Filter(isHashLookup).
-			Persist().
-			Reply(200).
-			JSON(nullBody)
-	}
-	for _, host := range []string{"rpc3", "rpc4"} {
-		gock.New(fmt.Sprintf("http://%s.localhost", host)).
-			Post("").
-			Filter(isHashLookup).
-			Persist().
-			Reply(200).
-			JSON(txBody)
-	}
+		tx := map[string]interface{}{
+			"hash":        "0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060",
+			"blockNumber": "0x10",
+		}
+		nullBody := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil}
+		txBody := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": tx}
+		isHashLookup := func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+		}
+		for _, host := range []string{"rpc1", "rpc2"} {
+			gock.New(fmt.Sprintf("http://%s.localhost", host)).
+				Post("").
+				Filter(isHashLookup).
+				Persist().
+				Reply(200).
+				JSON(nullBody)
+		}
+		for _, host := range []string{"rpc3", "rpc4"} {
+			gock.New(fmt.Sprintf("http://%s.localhost", host)).
+				Post("").
+				Filter(isHashLookup).
+				Persist().
+				Reply(200).
+				JSON(txBody)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	upstreamConfigs := []*common.UpstreamConfig{
-		{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Tags: []string{"type:internal"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Tags: []string{"type:internal"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "rpc3", Endpoint: "http://rpc3.localhost", Tags: []string{"type:external"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "rpc4", Endpoint: "http://rpc4.localhost", Tags: []string{"type:external"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-	}
-	consensusCfg := &common.ConsensusPolicyConfig{
-		MaxParticipants:       4,
-		AgreementThreshold:    2,
-		DisputeBehavior:       common.ConsensusDisputeBehaviorReturnError,
-		PreferNonEmpty:        &common.TRUE,
-		PreferLargerResponses: &common.TRUE,
-		BlockEvidenceFields: map[string][]string{
-			"eth_getTransactionByHash": {"blockNumber"},
-		},
-		RequiredParticipants: []*common.ConsensusRequiredParticipant{
-			{Tag: "type:internal", MinParticipants: 2, MinAgreement: 1, WaiveAgreementOnEmptyOutsideRetention: true, RetentionBlocks: 100},
-			{Tag: "type:external", MinParticipants: 2, MinAgreement: 1},
-		},
-	}
-	require.NoError(t, consensusCfg.SetDefaults())
-
-	networkConfig := &common.NetworkConfig{
-		Architecture: common.ArchitectureEvm,
-		Evm:          &common.EvmNetworkConfig{ChainId: 123},
-		Failsafe: []*common.FailsafeConfig{{
-			MatchMethod: "*",
-			Hedge: &common.HedgePolicyConfig{
-				Delay:    common.NewStaticDuration(50 * time.Millisecond),
-				MaxCount: 1,
+		upstreamConfigs := []*common.UpstreamConfig{
+			{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Tags: []string{"type:internal"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Tags: []string{"type:internal"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "rpc3", Endpoint: "http://rpc3.localhost", Tags: []string{"type:external"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "rpc4", Endpoint: "http://rpc4.localhost", Tags: []string{"type:external"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		}
+		consensusCfg := &common.ConsensusPolicyConfig{
+			MaxParticipants:       4,
+			AgreementThreshold:    2,
+			DisputeBehavior:       common.ConsensusDisputeBehaviorReturnError,
+			PreferNonEmpty:        &common.TRUE,
+			PreferLargerResponses: &common.TRUE,
+			BlockEvidenceFields: map[string][]string{
+				"eth_getTransactionByHash": {"blockNumber"},
 			},
-			Retry:     &common.RetryPolicyConfig{MaxAttempts: 1},
-			Consensus: consensusCfg,
-		}},
-	}
+			RequiredParticipants: []*common.ConsensusRequiredParticipant{
+				{Tag: "type:internal", MinParticipants: 2, MinAgreement: 1, WaiveAgreementOnEmptyOutsideRetention: true, RetentionBlocks: 100},
+				{Tag: "type:external", MinParticipants: 2, MinAgreement: 1},
+			},
+		}
+		require.NoError(t, consensusCfg.SetDefaults())
 
-	network := setupTestNetwork(t, ctx, upstreamConfigs, networkConfig)
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060"]}`))
-	req.SetDirectives(&common.RequestDirectives{RetryEmpty: false})
+		networkConfig := &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm:          &common.EvmNetworkConfig{ChainId: 123},
+			Failsafe: []*common.FailsafeConfig{{
+				MatchMethod: "*",
+				Hedge: &common.HedgePolicyConfig{
+					Delay:    common.NewStaticDuration(50 * time.Millisecond),
+					MaxCount: 1,
+				},
+				Retry:     &common.RetryPolicyConfig{MaxAttempts: 1},
+				Consensus: consensusCfg,
+			}},
+		}
 
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err, "empty internals must remain consensus votes so the empty-outside-retention waiver can fire, got: %v", err)
-	require.NotNil(t, resp)
-	jrr, jrrErr := resp.JsonRpcResponse()
-	require.NoError(t, jrrErr)
-	assert.Contains(t, jrr.GetResultString(), `"blockNumber":"0x10"`)
+		network := setupTestNetwork(t, ctx, upstreamConfigs, networkConfig)
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060"]}`))
+		req.SetDirectives(&common.RequestDirectives{RetryEmpty: false})
+
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err, "empty internals must remain consensus votes so the empty-outside-retention waiver can fire, got: %v", err)
+		require.NotNil(t, resp)
+		jrr, jrrErr := resp.JsonRpcResponse()
+		require.NoError(t, jrrErr)
+		assert.Contains(t, jrr.GetResultString(), `"blockNumber":"0x10"`)
+	})
 }
 
 func setupTestNetworkWithHedgeAndConsensus(

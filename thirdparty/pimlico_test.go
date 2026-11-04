@@ -3,6 +3,7 @@ package thirdparty
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -19,12 +20,14 @@ func TestPimlicoVendor_SupportsNetwork(t *testing.T) {
 	logger := zerolog.Nop()
 
 	t.Run("known chain short-circuits without probe or apiKey", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		gock.New("https://api.pimlico.io").Persist().ReplyError(assert.AnError)
-		ok, err := CreatePimlicoVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{}, "evm:8453")
-		require.NoError(t, err)
-		assert.True(t, ok)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			gock.New("https://api.pimlico.io").Persist().ReplyError(assert.AnError)
+			ok, err := CreatePimlicoVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{}, "evm:8453")
+			require.NoError(t, err)
+			assert.True(t, ok)
+		})
 	})
 
 	probeCases := []struct {
@@ -45,39 +48,45 @@ func TestPimlicoVendor_SupportsNetwork(t *testing.T) {
 	}
 	for _, c := range probeCases {
 		t.Run(c.name, func(t *testing.T) {
-			util.ResetGock()
-			defer util.ResetGock()
-			gockProbeReply(c.host, c.path, c.body)
+			synctest.Test(t, func(t *testing.T) {
+				util.ResetGock()
+				defer util.ResetGock()
+				gockProbeReply(c.host, c.path, c.body)
 
-			ok, err := CreatePimlicoVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": c.apiKey}, pimlicoUnknownChain)
-			if c.wantErr {
-				assert.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-			assert.Equal(t, c.want, ok)
+				ok, err := CreatePimlicoVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": c.apiKey}, pimlicoUnknownChain)
+				if c.wantErr {
+					assert.Error(t, err)
+				} else {
+					require.NoError(t, err)
+				}
+				assert.Equal(t, c.want, ok)
+			})
 		})
 	}
 
 	t.Run("cached client reused", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		gockProbeReply("https://api.pimlico.io", "/v2/999888/rpc", `{"jsonrpc":"2.0","id":1,"result":"0xf41d0"}`)
-		v := CreatePimlicoVendor()
-		for range 2 {
-			ok, err := v.SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, pimlicoUnknownChain)
-			require.NoError(t, err)
-			assert.True(t, ok)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			gockProbeReply("https://api.pimlico.io", "/v2/999888/rpc", `{"jsonrpc":"2.0","id":1,"result":"0xf41d0"}`)
+			v := CreatePimlicoVendor()
+			for range 2 {
+				ok, err := v.SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, pimlicoUnknownChain)
+				require.NoError(t, err)
+				assert.True(t, ok)
+			}
+		})
 	})
 
 	t.Run("unreachable endpoint", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		gock.New("https://api.pimlico.io").Post("/v2/999888/rpc").Persist().ReplyError(assert.AnError)
-		ok, err := CreatePimlicoVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, pimlicoUnknownChain)
-		assert.Error(t, err)
-		assert.False(t, ok)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			gock.New("https://api.pimlico.io").Post("/v2/999888/rpc").Persist().ReplyError(assert.AnError)
+			ok, err := CreatePimlicoVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, pimlicoUnknownChain)
+			assert.Error(t, err)
+			assert.False(t, ok)
+		})
 	})
 
 	t.Run("non-evm network", func(t *testing.T) {

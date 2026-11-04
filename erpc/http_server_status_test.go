@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -170,15 +171,17 @@ func TestDetermineResponseStatusCode_ExhaustedBundlePrunePreservesStatus(t *test
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// sync.Map.Range randomizes independently of insertion order, so
-			// replay: the status must be a pure function of the multiset of
-			// causes, never of whichever one the prune happens to elect.
-			for i := range 20 {
-				bundle := wrappedExhaustedBundle(tc.causes)
-				body := buildErrorResponseBody(newSendRawTxRequest(t), bundle, bundle, nil)
-				require.Containsf(t, tc.wantOneOf, determineResponseStatusCode(body),
-					"iteration %d: %s", i, tc.why)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				// sync.Map.Range randomizes independently of insertion order, so
+				// replay: the status must be a pure function of the multiset of
+				// causes, never of whichever one the prune happens to elect.
+				for i := range 20 {
+					bundle := wrappedExhaustedBundle(tc.causes)
+					body := buildErrorResponseBody(newSendRawTxRequest(t), bundle, bundle, nil)
+					require.Containsf(t, tc.wantOneOf, determineResponseStatusCode(body),
+						"iteration %d: %s", i, tc.why)
+				}
+			})
 		})
 	}
 }
@@ -286,11 +289,13 @@ func TestDetermineResponseStatusCode_SvmRequestErrorsAre200(t *testing.T) {
 		{name: "evm_invalid_request", err: invalid, hint: common.ArchitectureEvm, want: http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.nq != nil {
-				_, _ = tc.nq.JsonRpcRequest()
-			}
-			body := buildErrorResponseBody(tc.nq, tc.err, tc.err, nil, tc.hint)
-			require.Equal(t, tc.want, determineResponseStatusCode(body, tc.hint))
+			synctest.Test(t, func(t *testing.T) {
+				if tc.nq != nil {
+					_, _ = tc.nq.JsonRpcRequest()
+				}
+				body := buildErrorResponseBody(tc.nq, tc.err, tc.err, nil, tc.hint)
+				require.Equal(t, tc.want, determineResponseStatusCode(body, tc.hint))
+			})
 		})
 	}
 }

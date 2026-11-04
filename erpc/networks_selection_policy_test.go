@@ -29,6 +29,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -419,42 +420,44 @@ func resetGockHits() {
 // threshold. The hardened default's `keepHealthy(maxP95Ms: 10_000)`
 // excludes it BEFORE scoring.
 func TestNetworkPolicy_SlowUpstream_Excluded(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-	setupGockObserver(t)
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		setupGockObserver(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
-		{Type: common.UpstreamTypeEvm, Id: "fast", Endpoint: upstreamHostFromID("fast"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "slow", Endpoint: upstreamHostFromID("slow"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
+			{Type: common.UpstreamTypeEvm, Id: "fast", Endpoint: upstreamHostFromID("fast"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "slow", Endpoint: upstreamHostFromID("slow"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		})
+
+		// Simulate prod-observed state: "slow" has served 100 requests at
+		// 12s p95 latency; "fast" has served 100 at 10ms.
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "fast"), seedSpec{
+			successful: 100, successAvgMs: 10,
+		})
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "slow"), seedSpec{
+			successful: 100, successAvgMs: 12_000,
+		})
+
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
+
+		// Mock both upstreams — the test asserts on which one was hit.
+		mockClean(t, upstreamHostFromID("fast"), "eth_getBalance", "0x1111")
+		mockClean(t, upstreamHostFromID("slow"), "eth_getBalance", "0x2222")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		assert.GreaterOrEqual(t, gockHits(upstreamHostFromID("fast")), 1, "fast must serve the request")
+		assert.Equal(t, 0, gockHits(upstreamHostFromID("slow")),
+			"slow (p95=12s) must be excluded by keepHealthy(maxP95Ms:10_000); never gets HTTP")
 	})
-
-	// Simulate prod-observed state: "slow" has served 100 requests at
-	// 12s p95 latency; "fast" has served 100 at 10ms.
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "fast"), seedSpec{
-		successful: 100, successAvgMs: 10,
-	})
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "slow"), seedSpec{
-		successful: 100, successAvgMs: 12_000,
-	})
-
-	policy.TickForTest(network.policyEngine, network.networkId, "*")
-
-	// Mock both upstreams — the test asserts on which one was hit.
-	mockClean(t, upstreamHostFromID("fast"), "eth_getBalance", "0x1111")
-	mockClean(t, upstreamHostFromID("slow"), "eth_getBalance", "0x2222")
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-
-	assert.GreaterOrEqual(t, gockHits(upstreamHostFromID("fast")), 1, "fast must serve the request")
-	assert.Equal(t, 0, gockHits(upstreamHostFromID("slow")),
-		"slow (p95=12s) must be excluded by keepHealthy(maxP95Ms:10_000); never gets HTTP")
 }
 
 // TestNetworkPolicy_ErroringUpstream_Excluded — the most common
@@ -464,43 +467,45 @@ func TestNetworkPolicy_SlowUpstream_Excluded(t *testing.T) {
 // hardened default's `excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))`,
 // it's out.
 func TestNetworkPolicy_ErroringUpstream_Excluded(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-	setupGockObserver(t)
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		setupGockObserver(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
-		{Type: common.UpstreamTypeEvm, Id: "good", Endpoint: upstreamHostFromID("good"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "errs", Endpoint: upstreamHostFromID("errs"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
+			{Type: common.UpstreamTypeEvm, Id: "good", Endpoint: upstreamHostFromID("good"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "errs", Endpoint: upstreamHostFromID("errs"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		})
+
+		// "errs": 80% error rate (80 failures + 20 successful) — clearly
+		// past the default's 0.7 threshold, with 100 samples to clear
+		// samplesAbove(10).
+		// "good": 100 clean successes.
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "errs"), seedSpec{
+			successful: 20, successAvgMs: 10, failed: 80,
+		})
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "good"), seedSpec{
+			successful: 100, successAvgMs: 10,
+		})
+
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
+
+		mockClean(t, upstreamHostFromID("good"), "eth_getBalance", "0xgood")
+		mockClean(t, upstreamHostFromID("errs"), "eth_getBalance", "0xerrs")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		assert.GreaterOrEqual(t, gockHits(upstreamHostFromID("good")), 1, "good must serve the request")
+		assert.Equal(t, 0, gockHits(upstreamHostFromID("errs")),
+			"errs (errorRate=0.8) must be excluded by excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))")
 	})
-
-	// "errs": 80% error rate (80 failures + 20 successful) — clearly
-	// past the default's 0.7 threshold, with 100 samples to clear
-	// samplesAbove(10).
-	// "good": 100 clean successes.
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "errs"), seedSpec{
-		successful: 20, successAvgMs: 10, failed: 80,
-	})
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "good"), seedSpec{
-		successful: 100, successAvgMs: 10,
-	})
-
-	policy.TickForTest(network.policyEngine, network.networkId, "*")
-
-	mockClean(t, upstreamHostFromID("good"), "eth_getBalance", "0xgood")
-	mockClean(t, upstreamHostFromID("errs"), "eth_getBalance", "0xerrs")
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-
-	assert.GreaterOrEqual(t, gockHits(upstreamHostFromID("good")), 1, "good must serve the request")
-	assert.Equal(t, 0, gockHits(upstreamHostFromID("errs")),
-		"errs (errorRate=0.8) must be excluded by excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))")
 }
 
 // TestNetworkPolicy_LaggingUpstream_Excluded — reproduces the
@@ -510,44 +515,46 @@ func TestNetworkPolicy_ErroringUpstream_Excluded(t *testing.T) {
 // it lower; with the hardened default's `keepHealthy(maxBlockHeadLag: 16)`
 // it's filtered out entirely.
 func TestNetworkPolicy_LaggingUpstream_Excluded(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-	setupGockObserver(t)
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		setupGockObserver(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
-		{Type: common.UpstreamTypeEvm, Id: "tip", Endpoint: upstreamHostFromID("tip"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "lagger", Endpoint: upstreamHostFromID("lagger"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
+			{Type: common.UpstreamTypeEvm, Id: "tip", Endpoint: upstreamHostFromID("tip"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "lagger", Endpoint: upstreamHostFromID("lagger"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		})
+
+		// Both serve 100 clean requests at 10ms. Then we directly set
+		// lagger's blockHeadLag to 30 (clearly past the maxBlockHeadLag:16
+		// threshold). This is the same mechanism the state-poller would
+		// produce when an upstream's head trails network tip — the metric
+		// store is updated atomically without going through Record*.
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "tip"), seedSpec{
+			successful: 100, successAvgMs: 10,
+		})
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "lagger"), seedSpec{
+			successful: 100, successAvgMs: 10, blockHeadLag: 30,
+		})
+
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
+
+		mockClean(t, upstreamHostFromID("tip"), "eth_getBlockByNumber", `{"number":"0x3e8"}`)
+		mockClean(t, upstreamHostFromID("lagger"), "eth_getBlockByNumber", `{"number":"0x3d2"}`)
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		assert.GreaterOrEqual(t, gockHits(upstreamHostFromID("tip")), 1, "tip must serve")
+		assert.Equal(t, 0, gockHits(upstreamHostFromID("lagger")),
+			"lagger (blockHeadLag=30) must be excluded by keepHealthy(maxBlockHeadLag:16)")
 	})
-
-	// Both serve 100 clean requests at 10ms. Then we directly set
-	// lagger's blockHeadLag to 30 (clearly past the maxBlockHeadLag:16
-	// threshold). This is the same mechanism the state-poller would
-	// produce when an upstream's head trails network tip — the metric
-	// store is updated atomically without going through Record*.
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "tip"), seedSpec{
-		successful: 100, successAvgMs: 10,
-	})
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "lagger"), seedSpec{
-		successful: 100, successAvgMs: 10, blockHeadLag: 30,
-	})
-
-	policy.TickForTest(network.policyEngine, network.networkId, "*")
-
-	mockClean(t, upstreamHostFromID("tip"), "eth_getBlockByNumber", `{"number":"0x3e8"}`)
-	mockClean(t, upstreamHostFromID("lagger"), "eth_getBlockByNumber", `{"number":"0x3d2"}`)
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-
-	assert.GreaterOrEqual(t, gockHits(upstreamHostFromID("tip")), 1, "tip must serve")
-	assert.Equal(t, 0, gockHits(upstreamHostFromID("lagger")),
-		"lagger (blockHeadLag=30) must be excluded by keepHealthy(maxBlockHeadLag:16)")
 }
 
 // TestNetworkPolicy_ThrottledUpstream_Excluded — vendor is
@@ -560,41 +567,43 @@ func TestNetworkPolicy_LaggingUpstream_Excluded(t *testing.T) {
 // it isn't sized for full pool traffic. Filtering by throttle rate
 // prevents the throttled vendor from being selected at all.
 func TestNetworkPolicy_ThrottledUpstream_Excluded(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-	setupGockObserver(t)
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		setupGockObserver(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
-		{Type: common.UpstreamTypeEvm, Id: "open", Endpoint: upstreamHostFromID("open"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "quota", Endpoint: upstreamHostFromID("quota"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
+			{Type: common.UpstreamTypeEvm, Id: "open", Endpoint: upstreamHostFromID("open"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "quota", Endpoint: upstreamHostFromID("quota"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		})
+
+		// "quota": 50% throttled (50 throttled + 50 successful out of 100).
+		// "open": clean.
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "open"), seedSpec{
+			successful: 100, successAvgMs: 10,
+		})
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "quota"), seedSpec{
+			successful: 50, successAvgMs: 10, throttled: 50,
+		})
+
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
+
+		mockClean(t, upstreamHostFromID("open"), "eth_getBalance", "0xopen")
+		mockClean(t, upstreamHostFromID("quota"), "eth_getBalance", "0xquota")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		assert.GreaterOrEqual(t, gockHits(upstreamHostFromID("open")), 1, "open must serve")
+		assert.Equal(t, 0, gockHits(upstreamHostFromID("quota")),
+			"quota (throttledRate=0.5) must be excluded by excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))")
 	})
-
-	// "quota": 50% throttled (50 throttled + 50 successful out of 100).
-	// "open": clean.
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "open"), seedSpec{
-		successful: 100, successAvgMs: 10,
-	})
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "quota"), seedSpec{
-		successful: 50, successAvgMs: 10, throttled: 50,
-	})
-
-	policy.TickForTest(network.policyEngine, network.networkId, "*")
-
-	mockClean(t, upstreamHostFromID("open"), "eth_getBalance", "0xopen")
-	mockClean(t, upstreamHostFromID("quota"), "eth_getBalance", "0xquota")
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-
-	assert.GreaterOrEqual(t, gockHits(upstreamHostFromID("open")), 1, "open must serve")
-	assert.Equal(t, 0, gockHits(upstreamHostFromID("quota")),
-		"quota (throttledRate=0.5) must be excluded by excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))")
 }
 
 // TestNetworkPolicy_MixedDegraded_OnlyHealthyServed reproduces a real
@@ -602,45 +611,47 @@ func TestNetworkPolicy_ThrottledUpstream_Excluded(t *testing.T) {
 // different ways (slow, erroring, lagging). The healthy fourth is the
 // only one that should receive traffic.
 func TestNetworkPolicy_MixedDegraded_OnlyHealthyServed(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-	setupGockObserver(t)
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		setupGockObserver(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
-		{Type: common.UpstreamTypeEvm, Id: "healthy", Endpoint: upstreamHostFromID("healthy"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "slow", Endpoint: upstreamHostFromID("slow"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "errs", Endpoint: upstreamHostFromID("errs"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "lagger", Endpoint: upstreamHostFromID("lagger"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
+			{Type: common.UpstreamTypeEvm, Id: "healthy", Endpoint: upstreamHostFromID("healthy"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "slow", Endpoint: upstreamHostFromID("slow"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "errs", Endpoint: upstreamHostFromID("errs"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "lagger", Endpoint: upstreamHostFromID("lagger"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		})
+
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "healthy"), seedSpec{successful: 100, successAvgMs: 10})
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "slow"), seedSpec{successful: 100, successAvgMs: 15_000})
+		// errs: 85% errors (15 successful + 85 failed) — clearly past 0.7
+		// default threshold with 100 samples to clear samplesAbove(10).
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "errs"), seedSpec{successful: 15, successAvgMs: 10, failed: 85})
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "lagger"), seedSpec{successful: 100, successAvgMs: 10, blockHeadLag: 25})
+
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
+
+		mockClean(t, upstreamHostFromID("healthy"), "eth_getBalance", "0xhealthy")
+		mockClean(t, upstreamHostFromID("slow"), "eth_getBalance", "0xslow")
+		mockClean(t, upstreamHostFromID("errs"), "eth_getBalance", "0xerrs")
+		mockClean(t, upstreamHostFromID("lagger"), "eth_getBalance", "0xlagger")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		assert.GreaterOrEqual(t, gockHits(upstreamHostFromID("healthy")), 1, "healthy must serve")
+		for _, bad := range []string{"slow", "errs", "lagger"} {
+			assert.Equal(t, 0, gockHits(upstreamHostFromID(bad)),
+				"%s must be excluded by keepHealthy", bad)
+		}
 	})
-
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "healthy"), seedSpec{successful: 100, successAvgMs: 10})
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "slow"), seedSpec{successful: 100, successAvgMs: 15_000})
-	// errs: 85% errors (15 successful + 85 failed) — clearly past 0.7
-	// default threshold with 100 samples to clear samplesAbove(10).
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "errs"), seedSpec{successful: 15, successAvgMs: 10, failed: 85})
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "lagger"), seedSpec{successful: 100, successAvgMs: 10, blockHeadLag: 25})
-
-	policy.TickForTest(network.policyEngine, network.networkId, "*")
-
-	mockClean(t, upstreamHostFromID("healthy"), "eth_getBalance", "0xhealthy")
-	mockClean(t, upstreamHostFromID("slow"), "eth_getBalance", "0xslow")
-	mockClean(t, upstreamHostFromID("errs"), "eth_getBalance", "0xerrs")
-	mockClean(t, upstreamHostFromID("lagger"), "eth_getBalance", "0xlagger")
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-
-	assert.GreaterOrEqual(t, gockHits(upstreamHostFromID("healthy")), 1, "healthy must serve")
-	for _, bad := range []string{"slow", "errs", "lagger"} {
-		assert.Equal(t, 0, gockHits(upstreamHostFromID(bad)),
-			"%s must be excluded by keepHealthy", bad)
-	}
 }
 
 // TestNetworkPolicy_FallbackTier_ActivatesWhenPrimaryAllBroken
@@ -651,45 +662,47 @@ func TestNetworkPolicy_MixedDegraded_OnlyHealthyServed(t *testing.T) {
 // primaries fail keepHealthy AND the safety net puts them back AND
 // preferTag sees no healthy primaries, it switches to the fallback tier.
 func TestNetworkPolicy_FallbackTier_ActivatesWhenPrimaryAllBroken(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-	setupGockObserver(t)
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		setupGockObserver(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
-		{Type: common.UpstreamTypeEvm, Id: "primA", Endpoint: upstreamHostFromID("primA"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "primB", Endpoint: upstreamHostFromID("primB"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "backup", Tags: []string{"tier:fallback"}, Endpoint: upstreamHostFromID("backup"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
+			{Type: common.UpstreamTypeEvm, Id: "primA", Endpoint: upstreamHostFromID("primA"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "primB", Endpoint: upstreamHostFromID("primB"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "backup", Tags: []string{"tier:fallback"}, Endpoint: upstreamHostFromID("backup"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		})
+
+		// Both primaries broken; backup is healthy.
+		for _, id := range []string{"primA", "primB"} {
+			seedDegraded(network.metricsTracker, upstreamByID(t, network, id),
+				seedSpec{successful: 20, successAvgMs: 10, failed: 80})
+		}
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "backup"),
+			seedSpec{successful: 100, successAvgMs: 10})
+
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
+
+		mockClean(t, upstreamHostFromID("primA"), "eth_getBalance", "0xA")
+		mockClean(t, upstreamHostFromID("primB"), "eth_getBalance", "0xB")
+		mockClean(t, upstreamHostFromID("backup"), "eth_getBalance", "0xbackup")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		assert.GreaterOrEqual(t, gockHits(upstreamHostFromID("backup")), 1,
+			"backup (tier:fallback) must take over when primary tier is empty")
+		assert.Equal(t, 0, gockHits(upstreamHostFromID("primA")),
+			"primA filtered by keepHealthy; preferTag picks fallback")
+		assert.Equal(t, 0, gockHits(upstreamHostFromID("primB")),
+			"primB filtered; preferTag picks fallback")
 	})
-
-	// Both primaries broken; backup is healthy.
-	for _, id := range []string{"primA", "primB"} {
-		seedDegraded(network.metricsTracker, upstreamByID(t, network, id),
-			seedSpec{successful: 20, successAvgMs: 10, failed: 80})
-	}
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "backup"),
-		seedSpec{successful: 100, successAvgMs: 10})
-
-	policy.TickForTest(network.policyEngine, network.networkId, "*")
-
-	mockClean(t, upstreamHostFromID("primA"), "eth_getBalance", "0xA")
-	mockClean(t, upstreamHostFromID("primB"), "eth_getBalance", "0xB")
-	mockClean(t, upstreamHostFromID("backup"), "eth_getBalance", "0xbackup")
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-
-	assert.GreaterOrEqual(t, gockHits(upstreamHostFromID("backup")), 1,
-		"backup (tier:fallback) must take over when primary tier is empty")
-	assert.Equal(t, 0, gockHits(upstreamHostFromID("primA")),
-		"primA filtered by keepHealthy; preferTag picks fallback")
-	assert.Equal(t, 0, gockHits(upstreamHostFromID("primB")),
-		"primB filtered; preferTag picks fallback")
 }
 
 // TestNetworkPolicy_SafetyNet_WhenAllBroken — every upstream is
@@ -698,38 +711,40 @@ func TestNetworkPolicy_FallbackTier_ActivatesWhenPrimaryAllBroken(t *testing.T) 
 // restores the raw set so the network attempts SOMETHING rather than
 // failing closed. Better a flaky response than no response.
 func TestNetworkPolicy_SafetyNet_WhenAllBroken(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-	setupGockObserver(t)
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		setupGockObserver(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
-		{Type: common.UpstreamTypeEvm, Id: "broken1", Endpoint: upstreamHostFromID("broken1"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "broken2", Endpoint: upstreamHostFromID("broken2"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
+			{Type: common.UpstreamTypeEvm, Id: "broken1", Endpoint: upstreamHostFromID("broken1"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "broken2", Endpoint: upstreamHostFromID("broken2"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		})
+
+		// Both broken: 90% errors.
+		for _, id := range []string{"broken1", "broken2"} {
+			seedDegraded(network.metricsTracker, upstreamByID(t, network, id),
+				seedSpec{successful: 10, successAvgMs: 10, failed: 90})
+		}
+
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
+
+		mockClean(t, upstreamHostFromID("broken1"), "eth_getBalance", "0xbroken1")
+		mockClean(t, upstreamHostFromID("broken2"), "eth_getBalance", "0xbroken2")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp,
+			"safety net: when every upstream fails the filter, return the raw set rather than fail closed")
+
+		total := gockHits(upstreamHostFromID("broken1")) + gockHits(upstreamHostFromID("broken2"))
+		assert.GreaterOrEqual(t, total, 1, "at least one upstream must have been attempted")
 	})
-
-	// Both broken: 90% errors.
-	for _, id := range []string{"broken1", "broken2"} {
-		seedDegraded(network.metricsTracker, upstreamByID(t, network, id),
-			seedSpec{successful: 10, successAvgMs: 10, failed: 90})
-	}
-
-	policy.TickForTest(network.policyEngine, network.networkId, "*")
-
-	mockClean(t, upstreamHostFromID("broken1"), "eth_getBalance", "0xbroken1")
-	mockClean(t, upstreamHostFromID("broken2"), "eth_getBalance", "0xbroken2")
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err)
-	require.NotNil(t, resp,
-		"safety net: when every upstream fails the filter, return the raw set rather than fail closed")
-
-	total := gockHits(upstreamHostFromID("broken1")) + gockHits(upstreamHostFromID("broken2"))
-	assert.GreaterOrEqual(t, total, 1, "at least one upstream must have been attempted")
 }
 
 // TestNetworkPolicy_StickyPrimary_AllFinalities — the hardened
@@ -745,54 +760,56 @@ func TestNetworkPolicy_SafetyNet_WhenAllBroken(t *testing.T) {
 func TestNetworkPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 	for _, finality := range []string{"realtime", "unfinalized", "finalized"} {
 		t.Run(finality+"_holds_prior_primary", func(t *testing.T) {
-			util.ResetGock()
-			defer util.ResetGock()
-			util.SetupMocksForEvmStatePoller()
-			setupGockObserver(t)
+			synctest.Test(t, func(t *testing.T) {
+				util.ResetGock()
+				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
+				setupGockObserver(t)
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
 
-			network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
-				{Type: common.UpstreamTypeEvm, Id: "rpcA", Endpoint: upstreamHostFromID("rpcA"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-				{Type: common.UpstreamTypeEvm, Id: "rpcB", Endpoint: upstreamHostFromID("rpcB"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+				network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
+					{Type: common.UpstreamTypeEvm, Id: "rpcA", Endpoint: upstreamHostFromID("rpcA"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+					{Type: common.UpstreamTypeEvm, Id: "rpcB", Endpoint: upstreamHostFromID("rpcB"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+				})
+
+				policy.SetFinalityForTest(network.policyEngine, network.networkId, "*", finality)
+
+				// Tick 1 — equal metrics; whichever upstream wins by score
+				// tiebreak becomes the incumbent. The engine records
+				// lastSwitchAt here, starting the sticky cooldown.
+				for _, id := range []string{"rpcA", "rpcB"} {
+					seedDegraded(network.metricsTracker, upstreamByID(t, network, id),
+						seedSpec{successful: 100, successAvgMs: 10})
+				}
+				policy.TickForTest(network.policyEngine, network.networkId, "*")
+
+				order := network.policyEngine.GetOrdered(network.networkId, "*", "*")
+				require.Len(t, order, 2)
+				incumbent := order[0].Id()
+				challenger := order[1].Id()
+
+				// Degrade the incumbent (errorRate 0.23 — well below the 0.7
+				// default ceiling so it still passes excludeIf) so score
+				// favours the challenger. The 30s sticky cooldown should hold
+				// the incumbent regardless of finality.
+				seedDegraded(network.metricsTracker, upstreamByID(t, network, incumbent),
+					seedSpec{failed: 30})
+				policy.TickForTest(network.policyEngine, network.networkId, "*")
+
+				mockClean(t, upstreamHostFromID("rpcA"), "eth_getBalance", "0xA")
+				mockClean(t, upstreamHostFromID("rpcB"), "eth_getBalance", "0xB")
+
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+				resp, err := network.Forward(ctx, req)
+				require.NoError(t, err)
+				require.NotNil(t, resp)
+
+				assert.GreaterOrEqual(t, gockHits(upstreamHostFromID(incumbent)), 1,
+					"%s must remain primary under finality=%s (incumbent=%s, challenger=%s)",
+					incumbent, finality, incumbent, challenger)
 			})
-
-			policy.SetFinalityForTest(network.policyEngine, network.networkId, "*", finality)
-
-			// Tick 1 — equal metrics; whichever upstream wins by score
-			// tiebreak becomes the incumbent. The engine records
-			// lastSwitchAt here, starting the sticky cooldown.
-			for _, id := range []string{"rpcA", "rpcB"} {
-				seedDegraded(network.metricsTracker, upstreamByID(t, network, id),
-					seedSpec{successful: 100, successAvgMs: 10})
-			}
-			policy.TickForTest(network.policyEngine, network.networkId, "*")
-
-			order := network.policyEngine.GetOrdered(network.networkId, "*", "*")
-			require.Len(t, order, 2)
-			incumbent := order[0].Id()
-			challenger := order[1].Id()
-
-			// Degrade the incumbent (errorRate 0.23 — well below the 0.7
-			// default ceiling so it still passes excludeIf) so score
-			// favours the challenger. The 30s sticky cooldown should hold
-			// the incumbent regardless of finality.
-			seedDegraded(network.metricsTracker, upstreamByID(t, network, incumbent),
-				seedSpec{failed: 30})
-			policy.TickForTest(network.policyEngine, network.networkId, "*")
-
-			mockClean(t, upstreamHostFromID("rpcA"), "eth_getBalance", "0xA")
-			mockClean(t, upstreamHostFromID("rpcB"), "eth_getBalance", "0xB")
-
-			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
-			resp, err := network.Forward(ctx, req)
-			require.NoError(t, err)
-			require.NotNil(t, resp)
-
-			assert.GreaterOrEqual(t, gockHits(upstreamHostFromID(incumbent)), 1,
-				"%s must remain primary under finality=%s (incumbent=%s, challenger=%s)",
-				incumbent, finality, incumbent, challenger)
 		})
 	}
 }
@@ -810,50 +827,52 @@ func TestNetworkPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 // (mirrored real traffic); this test simulates that by directly
 // seeding the tracker, the same way a probe call would.
 func TestNetworkPolicy_NoTimeBasedReadmit_OnlyMetricsHeal(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-	setupGockObserver(t)
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		setupGockObserver(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
-		{Type: common.UpstreamTypeEvm, Id: "alive", Endpoint: upstreamHostFromID("alive"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "dead", Endpoint: upstreamHostFromID("dead"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
+			{Type: common.UpstreamTypeEvm, Id: "alive", Endpoint: upstreamHostFromID("alive"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "dead", Endpoint: upstreamHostFromID("dead"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		})
+
+		// "dead" is broken (90% error rate); "alive" is healthy.
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "alive"),
+			seedSpec{successful: 100, successAvgMs: 10})
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "dead"),
+			seedSpec{successful: 10, successAvgMs: 10, failed: 90})
+
+		// Tick 1 — dead excluded.
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
+		require.Equal(t, []string{"alive"},
+			idsFromUpstreams(network.policyEngine.GetOrdered(network.networkId, "*", "*")))
+
+		// Advance virtual time arbitrarily — dead MUST stay excluded since
+		// no metric improvement has occurred. The new probeExcluded has no
+		// time-based readmit.
+		policy.AdvanceEvalNowForTest(network.policyEngine, network.networkId, "*", 10*time.Minute)
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
+		require.Equal(t, []string{"alive"},
+			idsFromUpstreams(network.policyEngine.GetOrdered(network.networkId, "*", "*")),
+			"dead must still be excluded after arbitrary time — no time-based readmit")
+
+		// Now simulate the prober feeding clean samples to "dead" — enough
+		// to swamp its prior 90 failures and drag the rolling error rate
+		// below the 0.7 threshold.
+		seedDegraded(network.metricsTracker, upstreamByID(t, network, "dead"),
+			seedSpec{successful: 2000, successAvgMs: 10})
+
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
+		order := network.policyEngine.GetOrdered(network.networkId, "*", "*")
+		assert.Contains(t, idsFromUpstreams(order), "dead",
+			"once shadow-probe-fed samples healed dead's error rate, next tick must re-admit it")
+		assert.Contains(t, idsFromUpstreams(order), "alive")
 	})
-
-	// "dead" is broken (90% error rate); "alive" is healthy.
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "alive"),
-		seedSpec{successful: 100, successAvgMs: 10})
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "dead"),
-		seedSpec{successful: 10, successAvgMs: 10, failed: 90})
-
-	// Tick 1 — dead excluded.
-	policy.TickForTest(network.policyEngine, network.networkId, "*")
-	require.Equal(t, []string{"alive"},
-		idsFromUpstreams(network.policyEngine.GetOrdered(network.networkId, "*", "*")))
-
-	// Advance virtual time arbitrarily — dead MUST stay excluded since
-	// no metric improvement has occurred. The new probeExcluded has no
-	// time-based readmit.
-	policy.AdvanceEvalNowForTest(network.policyEngine, network.networkId, "*", 10*time.Minute)
-	policy.TickForTest(network.policyEngine, network.networkId, "*")
-	require.Equal(t, []string{"alive"},
-		idsFromUpstreams(network.policyEngine.GetOrdered(network.networkId, "*", "*")),
-		"dead must still be excluded after arbitrary time — no time-based readmit")
-
-	// Now simulate the prober feeding clean samples to "dead" — enough
-	// to swamp its prior 90 failures and drag the rolling error rate
-	// below the 0.7 threshold.
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "dead"),
-		seedSpec{successful: 2000, successAvgMs: 10})
-
-	policy.TickForTest(network.policyEngine, network.networkId, "*")
-	order := network.policyEngine.GetOrdered(network.networkId, "*", "*")
-	assert.Contains(t, idsFromUpstreams(order), "dead",
-		"once shadow-probe-fed samples healed dead's error rate, next tick must re-admit it")
-	assert.Contains(t, idsFromUpstreams(order), "alive")
 }
 
 func idsFromUpstreams(ups []common.Upstream) []string {
@@ -873,47 +892,49 @@ func idsFromUpstreams(ups []common.Upstream) []string {
 // include spreadAcrossTags; operators wanting this behaviour opt in
 // via a custom eval.
 func TestNetworkPolicy_SpreadAcrossTags_PreventsCohortCascade(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-	setupGockObserver(t)
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		setupGockObserver(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	tagCohort1 := []string{"cohort:cohort-1"}
-	tagCohort2 := []string{"cohort:cohort-2"}
-	upstreamConfigs := []*common.UpstreamConfig{
-		{Type: common.UpstreamTypeEvm, Id: "cohort1-A", Tags: tagCohort1, Endpoint: upstreamHostFromID("cohort1-A"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "cohort1-B", Tags: tagCohort1, Endpoint: upstreamHostFromID("cohort1-B"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "cohort1-C", Tags: tagCohort1, Endpoint: upstreamHostFromID("cohort1-C"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "cohort2-A", Tags: tagCohort2, Endpoint: upstreamHostFromID("cohort2-A"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-	}
-	network := setupSelectionPolicyNetworkWithEval(t, ctx, upstreamConfigs,
-		`(upstreams, ctx) =>
+		tagCohort1 := []string{"cohort:cohort-1"}
+		tagCohort2 := []string{"cohort:cohort-2"}
+		upstreamConfigs := []*common.UpstreamConfig{
+			{Type: common.UpstreamTypeEvm, Id: "cohort1-A", Tags: tagCohort1, Endpoint: upstreamHostFromID("cohort1-A"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "cohort1-B", Tags: tagCohort1, Endpoint: upstreamHostFromID("cohort1-B"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "cohort1-C", Tags: tagCohort1, Endpoint: upstreamHostFromID("cohort1-C"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "cohort2-A", Tags: tagCohort2, Endpoint: upstreamHostFromID("cohort2-A"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		}
+		network := setupSelectionPolicyNetworkWithEval(t, ctx, upstreamConfigs,
+			`(upstreams, ctx) =>
 			upstreams.sortByScore(PREFER_FASTEST).spreadAcrossTags('cohort:')`)
 
-	// All clean.
-	for _, u := range upstreamConfigs {
-		seedDegraded(network.metricsTracker, upstreamByID(t, network, u.Id),
-			seedSpec{successful: 100, successAvgMs: 10})
-	}
-	policy.TickForTest(network.policyEngine, network.networkId, "*")
+		// All clean.
+		for _, u := range upstreamConfigs {
+			seedDegraded(network.metricsTracker, upstreamByID(t, network, u.Id),
+				seedSpec{successful: 100, successAvgMs: 10})
+		}
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
 
-	order := network.policyEngine.GetOrdered(network.networkId, "*", "*")
-	require.Len(t, order, 4)
+		order := network.policyEngine.GetOrdered(network.networkId, "*", "*")
+		require.Len(t, order, 4)
 
-	// position[0] is cohort-1 best; position[1] MUST be cohort-2 (the
-	// only non-cohort-1 upstream); positions[2,3] are the remaining
-	// cohort-1s. Critical assertion: positions 0 and 1 must NOT share
-	// a cohort.
-	c0 := firstTagWithPrefix(order[0].Config().Tags, "cohort:")
-	c1 := firstTagWithPrefix(order[1].Config().Tags, "cohort:")
-	assert.NotEqual(t, c0, c1,
-		"primary and first runner-up must be different cohorts (no cascade); got %s, %s",
-		c0, c1)
-	assert.Equal(t, "cohort:cohort-2", c1,
-		"cohort:cohort-2 (the only one) must be position[1] under spreadAcrossTags('cohort:')")
+		// position[0] is cohort-1 best; position[1] MUST be cohort-2 (the
+		// only non-cohort-1 upstream); positions[2,3] are the remaining
+		// cohort-1s. Critical assertion: positions 0 and 1 must NOT share
+		// a cohort.
+		c0 := firstTagWithPrefix(order[0].Config().Tags, "cohort:")
+		c1 := firstTagWithPrefix(order[1].Config().Tags, "cohort:")
+		assert.NotEqual(t, c0, c1,
+			"primary and first runner-up must be different cohorts (no cascade); got %s, %s",
+			c0, c1)
+		assert.Equal(t, "cohort:cohort-2", c1,
+			"cohort:cohort-2 (the only one) must be position[1] under spreadAcrossTags('cohort:')")
+	})
 }
 
 // TestNetworkPolicy_BlockMethods_SkipsUpstreamForOneMethodOnly walks
@@ -921,58 +942,60 @@ func TestNetworkPolicy_SpreadAcrossTags_PreventsCohortCascade(t *testing.T) {
 // only, eth_call keeps it, the blocked upstream is a probe
 // candidate for traces alone, and blocking every upstream keeps them all.
 func TestNetworkPolicy_BlockMethods_SkipsUpstreamForOneMethodOnly(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-	setupGockObserver(t)
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		setupGockObserver(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	const trace = "debug_traceBlockByNumber"
-	upstreamConfigs := []*common.UpstreamConfig{
-		{Type: common.UpstreamTypeEvm, Id: "slowtrace", Endpoint: upstreamHostFromID("slowtrace"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "fasttrace", Endpoint: upstreamHostFromID("fasttrace"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-	}
-	network := setupSelectionPolicyNetworkWithEval(t, ctx, upstreamConfigs,
-		`(upstreams, ctx) => upstreams
+		const trace = "debug_traceBlockByNumber"
+		upstreamConfigs := []*common.UpstreamConfig{
+			{Type: common.UpstreamTypeEvm, Id: "slowtrace", Endpoint: upstreamHostFromID("slowtrace"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Type: common.UpstreamTypeEvm, Id: "fasttrace", Endpoint: upstreamHostFromID("fasttrace"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		}
+		network := setupSelectionPolicyNetworkWithEval(t, ctx, upstreamConfigs,
+			`(upstreams, ctx) => upstreams
 			.blockMethods({ match: ['debug_trace*', 'trace_*'], when: all(samplesAbove(20), latencyAbove(5000, 99)) })
 			.probeExcluded({ sampleRate: 1, minSamples: 0 })`)
 
-	slow, fast := upstreamByID(t, network, "slowtrace"), upstreamByID(t, network, "fasttrace")
-	for _, u := range []common.Upstream{slow, fast} {
-		seedDegraded(network.metricsTracker, u, seedSpec{method: "eth_call", successful: 100, successAvgMs: 10})
-	}
-	seedDegraded(network.metricsTracker, slow, seedSpec{method: trace, successful: 100, successAvgMs: 9000})
-	seedDegraded(network.metricsTracker, fast, seedSpec{method: trace, successful: 100, successAvgMs: 300})
-	policy.TickForTest(network.policyEngine, network.networkId, "*")
+		slow, fast := upstreamByID(t, network, "slowtrace"), upstreamByID(t, network, "fasttrace")
+		for _, u := range []common.Upstream{slow, fast} {
+			seedDegraded(network.metricsTracker, u, seedSpec{method: "eth_call", successful: 100, successAvgMs: 10})
+		}
+		seedDegraded(network.metricsTracker, slow, seedSpec{method: trace, successful: 100, successAvgMs: 9000})
+		seedDegraded(network.metricsTracker, fast, seedSpec{method: trace, successful: 100, successAvgMs: 300})
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
 
-	listed := func(method string) []string {
-		ids := idsFromUpstreams(network.policyEngine.GetOrdered(network.networkId, method, "*"))
-		sort.Strings(ids)
-		return ids
-	}
-	assert.Equal(t, []string{"fasttrace"}, listed(trace), "trace p99 9s must block slowtrace for traces")
-	assert.Equal(t, []string{"fasttrace", "slowtrace"}, listed("eth_call"), "the block must not touch eth_call")
-	assert.Equal(t, []string{"slowtrace"}, idsFromUpstreams(network.policyEngine.GetExcluded(network.networkId, trace, "*")),
-		"the blocked upstream is a trace probe candidate")
-	assert.Empty(t, network.policyEngine.GetExcluded(network.networkId, "eth_call", "*"),
-		"no eth_call probes: nothing is blocked for eth_call")
+		listed := func(method string) []string {
+			ids := idsFromUpstreams(network.policyEngine.GetOrdered(network.networkId, method, "*"))
+			sort.Strings(ids)
+			return ids
+		}
+		assert.Equal(t, []string{"fasttrace"}, listed(trace), "trace p99 9s must block slowtrace for traces")
+		assert.Equal(t, []string{"fasttrace", "slowtrace"}, listed("eth_call"), "the block must not touch eth_call")
+		assert.Equal(t, []string{"slowtrace"}, idsFromUpstreams(network.policyEngine.GetExcluded(network.networkId, trace, "*")),
+			"the blocked upstream is a trace probe candidate")
+		assert.Empty(t, network.policyEngine.GetExcluded(network.networkId, "eth_call", "*"),
+			"no eth_call probes: nothing is blocked for eth_call")
 
-	// Forward drops slowtrace from every trace request, whatever the order.
-	mockClean(t, upstreamHostFromID("slowtrace"), trace, "0x1")
-	mockClean(t, upstreamHostFromID("fasttrace"), trace, "0x2")
-	for i := 0; i < 5; i++ {
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + trace + `","params":["0x10",{"tracer":"callTracer"}]}`))
-		resp, err := network.Forward(ctx, req)
-		require.NoError(t, err)
-		require.Equal(t, "fasttrace", resp.Upstream().Id(), "a blocked upstream never serves the blocked method")
-	}
+		// Forward drops slowtrace from every trace request, whatever the order.
+		mockClean(t, upstreamHostFromID("slowtrace"), trace, "0x1")
+		mockClean(t, upstreamHostFromID("fasttrace"), trace, "0x2")
+		for i := 0; i < 5; i++ {
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + trace + `","params":["0x10",{"tracer":"callTracer"}]}`))
+			resp, err := network.Forward(ctx, req)
+			require.NoError(t, err)
+			require.Equal(t, "fasttrace", resp.Upstream().Id(), "a blocked upstream never serves the blocked method")
+		}
 
-	// Both upstreams slow for traces: a method never loses every upstream.
-	seedDegraded(network.metricsTracker, fast, seedSpec{method: trace, successful: 1000, successAvgMs: 9000})
-	policy.TickForTest(network.policyEngine, network.networkId, "*")
-	assert.Equal(t, []string{"fasttrace", "slowtrace"}, listed(trace), "all blocked: traces keep every upstream")
+		// Both upstreams slow for traces: a method never loses every upstream.
+		seedDegraded(network.metricsTracker, fast, seedSpec{method: trace, successful: 1000, successAvgMs: 9000})
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
+		assert.Equal(t, []string{"fasttrace", "slowtrace"}, listed(trace), "all blocked: traces keep every upstream")
+	})
 }
 
 // firstTagWithPrefix returns the first tag in `tags` whose value

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -128,49 +129,53 @@ var underflowedIdx = []string{"0xfffffff7", "0xfffffff8", "0xfffffff9", "0xfffff
 // content-validation error, which is retryable-toward-network, so the request
 // fails over to the second upstream and the canonical receipt is served.
 func TestIntegrity_Network_CorruptReceiptFailsOver(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	mockReceipt("http://rpc1.localhost", receiptBody(underflowedIdx...), 1) // corrupt → rejected
-	mockReceipt("http://rpc2.localhost", receiptBody(canonicalIdx...), 1)   // canonical → served
+		mockReceipt("http://rpc1.localhost", receiptBody(underflowedIdx...), 1) // corrupt → rejected
+		mockReceipt("http://rpc2.localhost", receiptBody(canonicalIdx...), 1)   // canonical → served
 
-	ntw := buildIntegrityNetwork(t, ctx)
-	resp, err := forwardReceipt(t, ctx, ntw)
-	require.NoError(t, err, "must fail over to the healthy upstream")
-	require.NotNil(t, resp)
+		ntw := buildIntegrityNetwork(t, ctx)
+		resp, err := forwardReceipt(t, ctx, ntw)
+		require.NoError(t, err, "must fail over to the healthy upstream")
+		require.NotNil(t, resp)
 
-	jrr, err := resp.JsonRpcResponse(ctx)
-	require.NoError(t, err)
-	li, err := jrr.PeekStringByPath(ctx, "logs", 0, "logIndex")
-	require.NoError(t, err)
-	assert.Equal(t, "0x0", li, "the served receipt must be the canonical one, not the corrupt upstream's")
+		jrr, err := resp.JsonRpcResponse(ctx)
+		require.NoError(t, err)
+		li, err := jrr.PeekStringByPath(ctx, "logs", 0, "logIndex")
+		require.NoError(t, err)
+		assert.Equal(t, "0x0", li, "the served receipt must be the canonical one, not the corrupt upstream's")
+	})
 }
 
 // TestIntegrity_Network_CleanReceiptPasses asserts a canonical receipt is served
 // untouched (the engine does not over-reject real data).
 func TestIntegrity_Network_CleanReceiptPasses(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	mockReceipt("http://rpc1.localhost", receiptBody(canonicalIdx...), 1)
+		mockReceipt("http://rpc1.localhost", receiptBody(canonicalIdx...), 1)
 
-	ntw := buildIntegrityNetwork(t, ctx)
-	resp, err := forwardReceipt(t, ctx, ntw)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-	jrr, err := resp.JsonRpcResponse(ctx)
-	require.NoError(t, err)
-	li, err := jrr.PeekStringByPath(ctx, "logs", 0, "logIndex")
-	require.NoError(t, err)
-	assert.Equal(t, "0x0", li)
+		ntw := buildIntegrityNetwork(t, ctx)
+		resp, err := forwardReceipt(t, ctx, ntw)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		jrr, err := resp.JsonRpcResponse(ctx)
+		require.NoError(t, err)
+		li, err := jrr.PeekStringByPath(ctx, "logs", 0, "logIndex")
+		require.NoError(t, err)
+		assert.Equal(t, "0x0", li)
+	})
 }
 
 // TestIntegrity_Network_SavedRequestFlagged proves the "saved" signal: a corrupt
@@ -229,61 +234,65 @@ func mockMethod(url, method, body string) {
 // the corroboration tier with no per-request directive — the same plausible-
 // but-wrong receipt is force-fetched, rejected, and failed over.
 func TestIntegrity_Network_ConfigLevelDrivesCorroboration(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	gock.New("http://rpc1.localhost").Post("").Times(1).
-		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt") }).
-		Reply(200).JSON([]byte(receiptOneLog("0x5")))
-	gock.New("http://rpc2.localhost").Post("").Times(1).
-		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt") }).
-		Reply(200).JSON([]byte(receiptOneLog("0x0")))
-	mockMethod("http://rpc1.localhost", "eth_getBlockReceipts", blockReceiptsOneLog("0x0"))
-	mockMethod("http://rpc2.localhost", "eth_getBlockReceipts", blockReceiptsOneLog("0x0"))
+		gock.New("http://rpc1.localhost").Post("").Times(1).
+			Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt") }).
+			Reply(200).JSON([]byte(receiptOneLog("0x5")))
+		gock.New("http://rpc2.localhost").Post("").Times(1).
+			Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt") }).
+			Reply(200).JSON([]byte(receiptOneLog("0x0")))
+		mockMethod("http://rpc1.localhost", "eth_getBlockReceipts", blockReceiptsOneLog("0x0"))
+		mockMethod("http://rpc2.localhost", "eth_getBlockReceipts", blockReceiptsOneLog("0x0"))
 
-	ntw := buildIntegrityNetwork(t, ctx)
-	// Enable the authoritative tier via CONFIG, not a per-request directive.
-	ntw.Config().Integrity = &common.IntegrityConfig{
-		IntegritySettings: common.IntegritySettings{Level: "authoritative"},
-	}
+		ntw := buildIntegrityNetwork(t, ctx)
+		// Enable the authoritative tier via CONFIG, not a per-request directive.
+		ntw.Config().Integrity = &common.IntegrityConfig{
+			IntegritySettings: common.IntegritySettings{Level: "authoritative"},
+		}
 
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`))
-	resp, err := ntw.Forward(ctx, req)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`))
+		resp, err := ntw.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
 
-	jrr, err := resp.JsonRpcResponse(ctx)
-	require.NoError(t, err)
-	li, err := jrr.PeekStringByPath(ctx, "logs", 0, "logIndex")
-	require.NoError(t, err)
-	assert.Equal(t, "0x0", li, "config level:authoritative must drive corroboration without any directive")
+		jrr, err := resp.JsonRpcResponse(ctx)
+		require.NoError(t, err)
+		li, err := jrr.PeekStringByPath(ctx, "logs", 0, "logIndex")
+		require.NoError(t, err)
+		assert.Equal(t, "0x0", li, "config level:authoritative must drive corroboration without any directive")
+	})
 }
 
 // TestIntegrity_Network_AllUpstreamsCorrupt asserts that when every upstream
 // returns corrupt data the request fails (rather than serving garbage).
 func TestIntegrity_Network_AllUpstreamsCorrupt(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	mockReceipt("http://rpc1.localhost", receiptBody(underflowedIdx...), 1)
-	mockReceipt("http://rpc2.localhost", receiptBody(underflowedIdx...), 1)
+		mockReceipt("http://rpc1.localhost", receiptBody(underflowedIdx...), 1)
+		mockReceipt("http://rpc2.localhost", receiptBody(underflowedIdx...), 1)
 
-	ntw := buildIntegrityNetwork(t, ctx)
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`))
-	req.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+		ntw := buildIntegrityNetwork(t, ctx)
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`))
+		req.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 
-	_, err := ntw.Forward(ctx, req)
-	require.Error(t, err, "no upstream returned valid data, so the request must fail")
-	// Every candidate was integrity-rejected → the request is flagged caught with a
-	// recorded reason, so project.Forward emits integrity_failed_total{check}.
-	assert.True(t, req.IntegrityCaught(), "failed request must be flagged integrity-caught")
-	assert.NotEmpty(t, req.IntegrityRejectedCheck(), "the rejecting check (the why) must be recorded")
+		_, err := ntw.Forward(ctx, req)
+		require.Error(t, err, "no upstream returned valid data, so the request must fail")
+		// Every candidate was integrity-rejected → the request is flagged caught with a
+		// recorded reason, so project.Forward emits integrity_failed_total{check}.
+		assert.True(t, req.IntegrityCaught(), "failed request must be flagged integrity-caught")
+		assert.NotEmpty(t, req.IntegrityRejectedCheck(), "the rejecting check (the why) must be recorded")
+	})
 }

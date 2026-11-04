@@ -3,6 +3,7 @@ package stdlib_test
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -21,48 +22,50 @@ import (
 // If prod's missing lag-exclusion is a rotation/eviction-vs-lag-rollup
 // interaction, this fails (lag at {*, All} collapses to 0).
 func TestTracker_BlockHeadLag_SurvivesContinuousRotationEviction(t *testing.T) {
-	logger := zerolog.Nop()
-	tracker := health.NewTracker(&logger, "p1", 100*time.Millisecond) // rotate ~every 10ms
-	tracker.EnableFinalityTracking()
-	tracker.SetIdleEvictionAfter(50 * time.Millisecond) // aggressive eviction
+	synctest.Test(t, func(t *testing.T) {
+		logger := zerolog.Nop()
+		tracker := health.NewTracker(&logger, "p1", 100*time.Millisecond) // rotate ~every 10ms
+		tracker.EnableFinalityTracking()
+		tracker.SetIdleEvictionAfter(50 * time.Millisecond) // aggressive eviction
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	tracker.Bootstrap(ctx) // start rotation + idle-sweep loops
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx) // start rotation + idle-sweep loops
 
-	ups := mkUps("rpc1", "rpc2", "rpc3")
-	fin := common.DataFinalityStateUnfinalized
+		ups := mkUps("rpc1", "rpc2", "rpc3")
+		fin := common.DataFinalityStateUnfinalized
 
-	// Churn for ~1.5s across many rotation + eviction cycles. rpc2 and rpc3
-	// advance at the tip; rpc1 stays frozen ~900+ blocks behind.
-	deadline := time.Now().Add(1500 * time.Millisecond)
-	tip := int64(1000)
-	checks := 0
-	for time.Now().Before(deadline) {
-		for _, u := range ups {
-			tracker.RecordUpstreamRequest(u, "eth_getLogs", fin)
-			tracker.RecordUpstreamDuration(u, "eth_getLogs", 5*time.Millisecond, true, "none", fin, "n/a")
+		// Churn for ~1.5s across many rotation + eviction cycles. rpc2 and rpc3
+		// advance at the tip; rpc1 stays frozen ~900+ blocks behind.
+		deadline := time.Now().Add(1500 * time.Millisecond)
+		tip := int64(1000)
+		checks := 0
+		for time.Now().Before(deadline) {
+			for _, u := range ups {
+				tracker.RecordUpstreamRequest(u, "eth_getLogs", fin)
+				tracker.RecordUpstreamDuration(u, "eth_getLogs", 5*time.Millisecond, true, "none", fin, "n/a")
+			}
+			tracker.SetLatestBlockNumber(ups[1], tip, 0) // rpc2 at tip
+			tracker.SetLatestBlockNumber(ups[2], tip, 0) // rpc3 corroborates it
+			tracker.SetLatestBlockNumber(ups[0], 100, 0) // rpc1 frozen
+			tip += 5
+
+			// Mid-flight assertion: the {*, All} rollup must already reflect the lag.
+			if m := tracker.GetUpstreamMethodMetrics(ups[0], "*", common.DataFinalityStateAll); m != nil {
+				lag := m.BlockHeadLag.Load()
+				require.Greater(t, lag, int64(16),
+					"rpc1 lag must stay visible at {*, All} (got %d) — the policy reads this", lag)
+				checks++
+			}
+			time.Sleep(12 * time.Millisecond)
 		}
-		tracker.SetLatestBlockNumber(ups[1], tip, 0) // rpc2 at tip
-		tracker.SetLatestBlockNumber(ups[2], tip, 0) // rpc3 corroborates it
-		tracker.SetLatestBlockNumber(ups[0], 100, 0) // rpc1 frozen
-		tip += 5
 
-		// Mid-flight assertion: the {*, All} rollup must already reflect the lag.
-		if m := tracker.GetUpstreamMethodMetrics(ups[0], "*", common.DataFinalityStateAll); m != nil {
-			lag := m.BlockHeadLag.Load()
-			require.Greater(t, lag, int64(16),
-				"rpc1 lag must stay visible at {*, All} (got %d) — the policy reads this", lag)
-			checks++
-		}
-		time.Sleep(12 * time.Millisecond)
-	}
+		require.Positive(t, checks, "expected at least one mid-flight check")
 
-	require.Positive(t, checks, "expected at least one mid-flight check")
-
-	// Final: still visible after the last rotation/eviction cycle.
-	final := tracker.GetUpstreamMethodMetrics(ups[0], "*", common.DataFinalityStateAll)
-	require.NotNil(t, final)
-	require.Greater(t, final.BlockHeadLag.Load(), int64(16),
-		"rpc1 lag must remain at {*, All} after continuous churn")
+		// Final: still visible after the last rotation/eviction cycle.
+		final := tracker.GetUpstreamMethodMetrics(ups[0], "*", common.DataFinalityStateAll)
+		require.NotNil(t, final)
+		require.Greater(t, final.BlockHeadLag.Load(), int64(16),
+			"rpc1 lag must remain at {*, All} after continuous churn")
+	})
 }

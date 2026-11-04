@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -194,93 +195,99 @@ func setupLowerOnlyRaceNetwork(t *testing.T, ctx context.Context, fixtures []low
 // every upstream and Forward returns ErrUpstreamsExhausted (wrapping
 // ErrUpstreamBlockUnavailable) without ever querying the upstream for the block.
 func TestNetworkAvailability_Issue934_LowerOnly_FreshBlockAboveStaleTip_Forward(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	const staleTip = int64(0x1e8480) // 2,000,000
-	const freshBlockHex = "0x1e8481" // 2,000,001 == staleTip + 1
-	network, _ := setupLowerOnlyRaceNetwork(t, ctx, []lowerOnlyRaceFixture{
-		{id: "rpc1", staleTip: staleTip},
-		{id: "rpc2", staleTip: staleTip},
-	}, freshBlockHex)
+		const staleTip = int64(0x1e8480) // 2,000,000
+		const freshBlockHex = "0x1e8481" // 2,000,001 == staleTip + 1
+		network, _ := setupLowerOnlyRaceNetwork(t, ctx, []lowerOnlyRaceFixture{
+			{id: "rpc1", staleTip: staleTip},
+			{id: "rpc2", staleTip: staleTip},
+		}, freshBlockHex)
 
-	req := common.NewNormalizedRequest([]byte(
-		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["` + freshBlockHex + `",false]}`))
-	req.SetNetwork(network)
+		req := common.NewNormalizedRequest([]byte(
+			`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["` + freshBlockHex + `",false]}`))
+		req.SetNetwork(network)
 
-	resp, err := network.Forward(ctx, req)
+		resp, err := network.Forward(ctx, req)
 
-	require.NoError(t, err,
-		"issue #934: a lower-only blockAvailability config must not enable the implicit "+
-			"upper-bound check; block %s is within the lower bound and the co-located upstream "+
-			"already has it (client saw it via newHeads), so it must be served instead of rejected", freshBlockHex)
-	require.NotNil(t, resp)
-	jrr, jerr := resp.JsonRpcResponse(ctx)
-	require.NoError(t, jerr)
-	require.Contains(t, jrr.GetResultString(), "0xfresh",
-		"expected the upstream to actually serve the fresh block")
-	resp.Release()
+		require.NoError(t, err,
+			"issue #934: a lower-only blockAvailability config must not enable the implicit "+
+				"upper-bound check; block %s is within the lower bound and the co-located upstream "+
+				"already has it (client saw it via newHeads), so it must be served instead of rejected", freshBlockHex)
+		require.NotNil(t, resp)
+		jrr, jerr := resp.JsonRpcResponse(ctx)
+		require.NoError(t, jerr)
+		require.Contains(t, jrr.GetResultString(), "0xfresh",
+			"expected the upstream to actually serve the fresh block")
+		resp.Release()
+	})
 }
 
 // TestNetworkAvailability_Issue934_LowerOnly_DoesNotTriggerImplicitUpperBound_Direct
 // pins the exact gating decision in isolation (no retries/hedging), mirroring the
 // style of the existing direct checkUpstreamBlockAvailability tests.
 func TestNetworkAvailability_Issue934_LowerOnly_DoesNotTriggerImplicitUpperBound_Direct(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	const staleTip = int64(0x1e8480)
-	const freshBlock = int64(0x1e8481)
-	const freshBlockHex = "0x1e8481"
-	network, ups := setupLowerOnlyRaceNetwork(t, ctx, []lowerOnlyRaceFixture{
-		{id: "rpc1", staleTip: staleTip},
-	}, freshBlockHex)
+		const staleTip = int64(0x1e8480)
+		const freshBlock = int64(0x1e8481)
+		const freshBlockHex = "0x1e8481"
+		network, ups := setupLowerOnlyRaceNetwork(t, ctx, []lowerOnlyRaceFixture{
+			{id: "rpc1", staleTip: staleTip},
+		}, freshBlockHex)
 
-	req := common.NewNormalizedRequest([]byte(
-		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["` + freshBlockHex + `",false]}`))
-	req.SetNetwork(network)
-	req.SetEvmBlockNumber(freshBlock)
+		req := common.NewNormalizedRequest([]byte(
+			`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["` + freshBlockHex + `",false]}`))
+		req.SetNetwork(network)
+		req.SetEvmBlockNumber(freshBlock)
 
-	skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups[0], req, "eth_getBlockByNumber")
-	require.NoError(t, skipErr,
-		"issue #934: lower-only config must not reject block %d (one above the stale poller tip %d) "+
-			"via the implicit upper-bound check", freshBlock, staleTip)
+		skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups[0], req, "eth_getBlockByNumber")
+		require.NoError(t, skipErr,
+			"issue #934: lower-only config must not reject block %d (one above the stale poller tip %d) "+
+				"via the implicit upper-bound check", freshBlock, staleTip)
+	})
 }
 
 // TestNetworkAvailability_Issue934_LowerBound_StillEnforced is the guardrail:
 // the fix must NOT throw away pruned-node protection. A request for a block
 // below the configured lower bound must still be skipped (non-retryable).
 func TestNetworkAvailability_Issue934_LowerBound_StillEnforced(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	const staleTip = int64(0x1e8480) // 2,000,000
-	const freshBlockHex = "0x1e8481"
-	network, ups := setupLowerOnlyRaceNetwork(t, ctx, []lowerOnlyRaceFixture{
-		{id: "rpc1", staleTip: staleTip},
-	}, freshBlockHex)
+		const staleTip = int64(0x1e8480) // 2,000,000
+		const freshBlockHex = "0x1e8481"
+		network, ups := setupLowerOnlyRaceNetwork(t, ctx, []lowerOnlyRaceFixture{
+			{id: "rpc1", staleTip: staleTip},
+		}, freshBlockHex)
 
-	// lower bound = staleTip - 237600 = 1,762,400. Request a much older block.
-	const oldBlock = int64(1000)
-	req := common.NewNormalizedRequest([]byte(
-		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x3e8",false]}`))
-	req.SetNetwork(network)
-	req.SetEvmBlockNumber(oldBlock)
+		// lower bound = staleTip - 237600 = 1,762,400. Request a much older block.
+		const oldBlock = int64(1000)
+		req := common.NewNormalizedRequest([]byte(
+			`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x3e8",false]}`))
+		req.SetNetwork(network)
+		req.SetEvmBlockNumber(oldBlock)
 
-	skipErr, isRetryable := network.checkUpstreamBlockAvailability(ctx, ups[0], req, "eth_getBlockByNumber")
-	require.Error(t, skipErr, "block below the configured lower bound must still be skipped (pruned-node protection)")
-	require.True(t, common.HasErrorCode(skipErr, common.ErrCodeUpstreamBlockUnavailable),
-		"expected ErrUpstreamBlockUnavailable, got: %v", skipErr)
-	require.False(t, isRetryable, "below lower bound is not retryable")
+		skipErr, isRetryable := network.checkUpstreamBlockAvailability(ctx, ups[0], req, "eth_getBlockByNumber")
+		require.Error(t, skipErr, "block below the configured lower bound must still be skipped (pruned-node protection)")
+		require.True(t, common.HasErrorCode(skipErr, common.ErrCodeUpstreamBlockUnavailable),
+			"expected ErrUpstreamBlockUnavailable, got: %v", skipErr)
+		require.False(t, isRetryable, "below lower bound is not retryable")
+	})
 }
 
 // ----------------------------------------------------------------------------
@@ -365,22 +372,24 @@ func balanceReqAt(network *Network, blockHex string, bn int64) *common.Normalize
 // network level. The block being ahead of the poller tip is irrelevant — head/tip
 // awareness is owned by served-tip + enforceHighestBlock, not this path.
 func TestNetworkAvailability_Issue934_NoBounds_EnforceTrue_AboveTip_Allowed(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network, ups := setupDirectAvailabilityNetwork(t, ctx,
-		&common.EvmUpstreamConfig{}, // no blockAvailability bounds at all
-		&common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123, EnforceBlockAvailability: b(true)}},
-	)
+		network, ups := setupDirectAvailabilityNetwork(t, ctx,
+			&common.EvmUpstreamConfig{}, // no blockAvailability bounds at all
+			&common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123, EnforceBlockAvailability: b(true)}},
+		)
 
-	req := balanceReqAt(network, "0x111188ba", issue934MockTip+50) // 50 blocks ahead of tip
-	skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getBalance")
-	require.NoError(t, skipErr,
-		"an upstream with no configured bounds must not be head-gated, even with enforceBlockAvailability:true (issue #934)")
+		req := balanceReqAt(network, "0x111188ba", issue934MockTip+50) // 50 blocks ahead of tip
+		skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getBalance")
+		require.NoError(t, skipErr,
+			"an upstream with no configured bounds must not be head-gated, even with enforceBlockAvailability:true (issue #934)")
+	})
 }
 
 // (2) An explicit upper cap is a real structural bound: a block above the cap is
@@ -388,127 +397,135 @@ func TestNetworkAvailability_Issue934_NoBounds_EnforceTrue_AboveTip_Allowed(t *t
 // head, so a block 3 above it is servable 3 blocks later (retryable); an exactBlock
 // cap never moves, so the same skip is final.
 func TestNetworkAvailability_Issue934_ExplicitUpperCap_BelowHead_Enforced(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network, ups := setupDirectAvailabilityNetwork(t, ctx,
-		&common.EvmUpstreamConfig{
-			BlockAvailability: &common.EvmBlockAvailabilityConfig{
-				Upper: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(5)}, // cap = tip-5
-			},
-		}, nil,
-	)
+		network, ups := setupDirectAvailabilityNetwork(t, ctx,
+			&common.EvmUpstreamConfig{
+				BlockAvailability: &common.EvmBlockAvailabilityConfig{
+					Upper: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(5)}, // cap = tip-5
+				},
+			}, nil,
+		)
 
-	// tip-2 (0x11118886) is above the cap (tip-5): skipped, reopens as the head advances.
-	above := balanceReqAt(network, "0x11118886", issue934MockTip-2)
-	skipErr, retryable := network.checkUpstreamBlockAvailability(ctx, ups, above, "eth_getBalance")
-	require.Error(t, skipErr, "block above the configured upper cap must be skipped")
-	require.True(t, common.HasErrorCode(skipErr, common.ErrCodeUpstreamBlockUnavailable))
-	require.True(t, retryable, "a moving cap 3 below the block reaches it within MaxRetryableBlockDistance")
+		// tip-2 (0x11118886) is above the cap (tip-5): skipped, reopens as the head advances.
+		above := balanceReqAt(network, "0x11118886", issue934MockTip-2)
+		skipErr, retryable := network.checkUpstreamBlockAvailability(ctx, ups, above, "eth_getBalance")
+		require.Error(t, skipErr, "block above the configured upper cap must be skipped")
+		require.True(t, common.HasErrorCode(skipErr, common.ErrCodeUpstreamBlockUnavailable))
+		require.True(t, retryable, "a moving cap 3 below the block reaches it within MaxRetryableBlockDistance")
 
-	// tip-8 (0x11118880) is at/below the cap → served.
-	below := balanceReqAt(network, "0x11118880", issue934MockTip-8)
-	skipErr2, _ := network.checkUpstreamBlockAvailability(ctx, ups, below, "eth_getBalance")
-	require.NoError(t, skipErr2, "block within the configured upper cap must be served")
+		// tip-8 (0x11118880) is at/below the cap → served.
+		below := balanceReqAt(network, "0x11118880", issue934MockTip-8)
+		skipErr2, _ := network.checkUpstreamBlockAvailability(ctx, ups, below, "eth_getBalance")
+		require.NoError(t, skipErr2, "block within the configured upper cap must be served")
+	})
 }
 
 func TestNetworkAvailability_Issue934_ExactUpperCap_NeverRetryable(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network, ups := setupDirectAvailabilityNetwork(t, ctx,
-		&common.EvmUpstreamConfig{
-			BlockAvailability: &common.EvmBlockAvailabilityConfig{
-				Upper: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(issue934MockTip - 5)},
-			},
-		}, nil,
-	)
+		network, ups := setupDirectAvailabilityNetwork(t, ctx,
+			&common.EvmUpstreamConfig{
+				BlockAvailability: &common.EvmBlockAvailabilityConfig{
+					Upper: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(issue934MockTip - 5)},
+				},
+			}, nil,
+		)
 
-	above := balanceReqAt(network, "0x11118886", issue934MockTip-2)
-	skipErr, retryable := network.checkUpstreamBlockAvailability(ctx, ups, above, "eth_getBalance")
-	require.Error(t, skipErr)
-	require.False(t, retryable, "a fixed cap never reaches the block, so waiting cannot help")
+		above := balanceReqAt(network, "0x11118886", issue934MockTip-2)
+		skipErr, retryable := network.checkUpstreamBlockAvailability(ctx, ups, above, "eth_getBalance")
+		require.Error(t, skipErr)
+		require.False(t, retryable, "a fixed cap never reaches the block, so waiting cannot help")
+	})
 }
 
 // (3) The migration path / opt-in head gating: blockAvailability.upper.latestBlockMinus:0
 // reproduces the old "serve only blocks the node has actually synced" behavior. At the
 // head is allowed; one block ahead is a retryable skip; far ahead is non-retryable.
 func TestNetworkAvailability_Issue934_UpperLatestMinusZero_OptInHeadGating(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network, ups := setupDirectAvailabilityNetwork(t, ctx,
-		&common.EvmUpstreamConfig{
-			BlockAvailability: &common.EvmBlockAvailabilityConfig{
-				Upper: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(0)}, // cap = tip
-			},
-		}, nil,
-	)
+		network, ups := setupDirectAvailabilityNetwork(t, ctx,
+			&common.EvmUpstreamConfig{
+				BlockAvailability: &common.EvmBlockAvailabilityConfig{
+					Upper: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(0)}, // cap = tip
+				},
+			}, nil,
+		)
 
-	// at the head → allowed
-	atHead := balanceReqAt(network, "0x11118888", issue934MockTip)
-	skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups, atHead, "eth_getBalance")
-	require.NoError(t, skipErr, "a block at the head is within upper=latestBlockMinus:0 and must be served")
+		// at the head → allowed
+		atHead := balanceReqAt(network, "0x11118888", issue934MockTip)
+		skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups, atHead, "eth_getBalance")
+		require.NoError(t, skipErr, "a block at the head is within upper=latestBlockMinus:0 and must be served")
 
-	// one block ahead → retryable skip
-	ahead := balanceReqAt(network, "0x11118889", issue934MockTip+1)
-	skipErr2, retryable2 := network.checkUpstreamBlockAvailability(ctx, ups, ahead, "eth_getBalance")
-	require.Error(t, skipErr2)
-	require.True(t, common.HasErrorCode(skipErr2, common.ErrCodeUpstreamBlockUnavailable))
-	require.True(t, retryable2, "one block ahead of the head is retryable (node may catch up)")
+		// one block ahead → retryable skip
+		ahead := balanceReqAt(network, "0x11118889", issue934MockTip+1)
+		skipErr2, retryable2 := network.checkUpstreamBlockAvailability(ctx, ups, ahead, "eth_getBalance")
+		require.Error(t, skipErr2)
+		require.True(t, common.HasErrorCode(skipErr2, common.ErrCodeUpstreamBlockUnavailable))
+		require.True(t, retryable2, "one block ahead of the head is retryable (node may catch up)")
 
-	// far ahead (> MaxRetryableBlockDistance) → non-retryable
-	farAhead := balanceReqAt(network, "0x11119999", issue934MockTip+0x1111)
-	skipErr3, retryable3 := network.checkUpstreamBlockAvailability(ctx, ups, farAhead, "eth_getBalance")
-	require.Error(t, skipErr3)
-	require.False(t, retryable3, "far ahead of the head (> MaxRetryableBlockDistance) is not retryable")
+		// far ahead (> MaxRetryableBlockDistance) → non-retryable
+		farAhead := balanceReqAt(network, "0x11119999", issue934MockTip+0x1111)
+		skipErr3, retryable3 := network.checkUpstreamBlockAvailability(ctx, ups, farAhead, "eth_getBalance")
+		require.Error(t, skipErr3)
+		require.False(t, retryable3, "far ahead of the head (> MaxRetryableBlockDistance) is not retryable")
+	})
 }
 
 // (4) An explicit method-level enforceBlockAvailability:false is an operator opt-out
 // that disables bound enforcement even on an upstream that has bounds configured.
 func TestNetworkAvailability_Issue934_MethodLevelEnforceFalse_DisablesBounds(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	// eth_getBalance has no system default for EnforceBlockAvailability, so a
-	// method-level false is a genuine user override (disables enforcement).
-	ntwCfg := &common.NetworkConfig{
-		Architecture: common.ArchitectureEvm,
-		Evm:          &common.EvmNetworkConfig{ChainId: 123},
-		Methods: &common.MethodsConfig{Definitions: map[string]*common.CacheMethodConfig{
-			"eth_getBalance": {EnforceBlockAvailability: b(false)},
-		}},
-	}
-	network, ups := setupDirectAvailabilityNetwork(t, ctx,
-		&common.EvmUpstreamConfig{
-			BlockAvailability: &common.EvmBlockAvailabilityConfig{
-				Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(100)},
-			},
-		}, ntwCfg,
-	)
+		// eth_getBalance has no system default for EnforceBlockAvailability, so a
+		// method-level false is a genuine user override (disables enforcement).
+		ntwCfg := &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm:          &common.EvmNetworkConfig{ChainId: 123},
+			Methods: &common.MethodsConfig{Definitions: map[string]*common.CacheMethodConfig{
+				"eth_getBalance": {EnforceBlockAvailability: b(false)},
+			}},
+		}
+		network, ups := setupDirectAvailabilityNetwork(t, ctx,
+			&common.EvmUpstreamConfig{
+				BlockAvailability: &common.EvmBlockAvailabilityConfig{
+					Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(100)},
+				},
+			}, ntwCfg,
+		)
 
-	// Block 50 is below the configured lower bound, but the method-level opt-out
-	// disables enforcement → allowed.
-	req := balanceReqAt(network, "0x32", 50)
-	skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getBalance")
-	require.NoError(t, skipErr,
-		"method-level enforceBlockAvailability:false must disable bound enforcement even with bounds configured")
+		// Block 50 is below the configured lower bound, but the method-level opt-out
+		// disables enforcement → allowed.
+		req := balanceReqAt(network, "0x32", 50)
+		skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getBalance")
+		require.NoError(t, skipErr,
+			"method-level enforceBlockAvailability:false must disable bound enforcement even with bounds configured")
+	})
 }
 
 // (5) A configured upper bound that sits ABOVE the head must not reactivate the head
@@ -516,27 +533,29 @@ func TestNetworkAvailability_Issue934_MethodLevelEnforceFalse_DisablesBounds(t *
 // window is served. This is the issue #934 scenario with a window rather than
 // lower-only.
 func TestNetworkAvailability_Issue934_Window_AboveTipWithinWindow_Allowed(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network, ups := setupDirectAvailabilityNetwork(t, ctx,
-		&common.EvmUpstreamConfig{
-			BlockAvailability: &common.EvmBlockAvailabilityConfig{
-				Lower: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(237600)},
-				Upper: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(issue934MockTip + 1000)}, // upper well above the head
-			},
-		}, nil,
-	)
+		network, ups := setupDirectAvailabilityNetwork(t, ctx,
+			&common.EvmUpstreamConfig{
+				BlockAvailability: &common.EvmBlockAvailabilityConfig{
+					Lower: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(237600)},
+					Upper: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(issue934MockTip + 1000)}, // upper well above the head
+				},
+			}, nil,
+		)
 
-	// tip+1 is above the stale poller tip but well within [tip-237600, tip+1000].
-	req := balanceReqAt(network, "0x11118889", issue934MockTip+1)
-	skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getBalance")
-	require.NoError(t, skipErr,
-		"a configured upper bound above the head must not reintroduce the implicit head race (issue #934)")
+		// tip+1 is above the stale poller tip but well within [tip-237600, tip+1000].
+		req := balanceReqAt(network, "0x11118889", issue934MockTip+1)
+		skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getBalance")
+		require.NoError(t, skipErr,
+			"a configured upper bound above the head must not reintroduce the implicit head race (issue #934)")
+	})
 }
 
 // (6) Range methods (eth_getLogs, trace_filter, arbtrace_filter) are gated by their
@@ -544,30 +563,32 @@ func TestNetworkAvailability_Issue934_Window_AboveTipWithinWindow_Allowed(t *tes
 // single-block path. Even with bounds configured and a clearly out-of-range block,
 // this path must defer to the hook (return no skip).
 func TestNetworkAvailability_Issue934_RangeMethod_DeferredToHook(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	network, ups := setupDirectAvailabilityNetwork(t, ctx,
-		&common.EvmUpstreamConfig{
-			BlockAvailability: &common.EvmBlockAvailabilityConfig{
-				Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(1_000_000)},
-			},
-		}, nil,
-	)
+		network, ups := setupDirectAvailabilityNetwork(t, ctx,
+			&common.EvmUpstreamConfig{
+				BlockAvailability: &common.EvmBlockAvailabilityConfig{
+					Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(1_000_000)},
+				},
+			}, nil,
+		)
 
-	// fromBlock 0x1 is far below the lower bound; a single-block gate would skip it,
-	// but eth_getLogs must be deferred to the block-range hook here.
-	req := common.NewNormalizedRequest([]byte(
-		`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x2","address":"0x0000000000000000000000000000000000000000"}]}`))
-	req.SetNetwork(network)
+		// fromBlock 0x1 is far below the lower bound; a single-block gate would skip it,
+		// but eth_getLogs must be deferred to the block-range hook here.
+		req := common.NewNormalizedRequest([]byte(
+			`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x2","address":"0x0000000000000000000000000000000000000000"}]}`))
+		req.SetNetwork(network)
 
-	skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getLogs")
-	require.NoError(t, skipErr,
-		"eth_getLogs is gated by its dedicated range hook, not by checkUpstreamBlockAvailability")
+		skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getLogs")
+		require.NoError(t, skipErr,
+			"eth_getLogs is gated by its dedicated range hook, not by checkUpstreamBlockAvailability")
+	})
 }
 
 // mockIssue934Node mocks the EVM state-poller endpoints for one node plus the
@@ -608,14 +629,15 @@ func mockIssue934Node(endpoint, chainIDHex, staleTipHex, finalizedHex, freshBloc
 // ahead of the stale poller tip — the exact scenario in the report — is SERVED
 // rather than rejected with ErrUpstreamBlockUnavailable.
 func TestNetworkAvailability_Issue934_ExactConfigFromYAML_ServesFreshBlock(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	// The exact config from https://github.com/erpc/erpc/issues/934
-	const yamlCfg = `
+		// The exact config from https://github.com/erpc/erpc/issues/934
+		const yamlCfg = `
 logLevel: debug
 projects:
   - id: my-chain
@@ -637,85 +659,86 @@ projects:
             lower:
               latestBlockMinus: 237600
 `
-	fs := afero.NewMemMapFs()
-	require.NoError(t, afero.WriteFile(fs, "erpc.yaml", []byte(yamlCfg), 0644))
-	cfg, err := common.LoadConfig(fs, "erpc.yaml", &common.DefaultOptions{})
-	require.NoError(t, err, "issue #934 config must load and validate")
+		fs := afero.NewMemMapFs()
+		require.NoError(t, afero.WriteFile(fs, "erpc.yaml", []byte(yamlCfg), 0644))
+		cfg, err := common.LoadConfig(fs, "erpc.yaml", &common.DefaultOptions{})
+		require.NoError(t, err, "issue #934 config must load and validate")
 
-	// --- Config-side: the literal YAML must resolve to a lower-only bound ---
-	require.Len(t, cfg.Projects, 1)
-	upCfgs := cfg.Projects[0].Upstreams
-	require.Len(t, upCfgs, 2)
-	for _, u := range upCfgs {
-		require.NotNil(t, u.Evm.BlockAvailability, "blockAvailability must be parsed for %s", u.Id)
-		require.NotNil(t, u.Evm.BlockAvailability.Lower, "lower bound must be present for %s", u.Id)
-		require.NotNil(t, u.Evm.BlockAvailability.Lower.LatestBlockMinus)
-		require.Equal(t, int64(237600), *u.Evm.BlockAvailability.Lower.LatestBlockMinus)
-		require.Nil(t, u.Evm.BlockAvailability.Upper,
-			"a lower-only config must NOT synthesize an upper bound (issue #934)")
-	}
+		// --- Config-side: the literal YAML must resolve to a lower-only bound ---
+		require.Len(t, cfg.Projects, 1)
+		upCfgs := cfg.Projects[0].Upstreams
+		require.Len(t, upCfgs, 2)
+		for _, u := range upCfgs {
+			require.NotNil(t, u.Evm.BlockAvailability, "blockAvailability must be parsed for %s", u.Id)
+			require.NotNil(t, u.Evm.BlockAvailability.Lower, "lower bound must be present for %s", u.Id)
+			require.NotNil(t, u.Evm.BlockAvailability.Lower.LatestBlockMinus)
+			require.Equal(t, int64(237600), *u.Evm.BlockAvailability.Lower.LatestBlockMinus)
+			require.Nil(t, u.Evm.BlockAvailability.Upper,
+				"a lower-only config must NOT synthesize an upper bound (issue #934)")
+		}
 
-	// --- Behavioral: build a real network from the resolved configs and serve ---
-	const chainID = int64(5042002)
-	const chainIDHex = "0x4cef52"    // 5042002
-	const staleTip = int64(0x4c4b40) // 5,000,000
-	const finalizedHex = "0x4c4b30"  // staleTip - 16
-	const freshBlockHex = "0x4c4b41" // staleTip + 1 (the block the client saw via newHeads)
-	staleTipHex := fmt.Sprintf("0x%x", staleTip)
-	for _, u := range upCfgs {
-		mockIssue934Node(u.Endpoint, chainIDHex, staleTipHex, finalizedHex, freshBlockHex)
-	}
+		// --- Behavioral: build a real network from the resolved configs and serve ---
+		const chainID = int64(5042002)
+		const chainIDHex = "0x4cef52"    // 5042002
+		const staleTip = int64(0x4c4b40) // 5,000,000
+		const finalizedHex = "0x4c4b30"  // staleTip - 16
+		const freshBlockHex = "0x4c4b41" // staleTip + 1 (the block the client saw via newHeads)
+		staleTipHex := fmt.Sprintf("0x%x", staleTip)
+		for _, u := range upCfgs {
+			mockIssue934Node(u.Endpoint, chainIDHex, staleTipHex, finalizedHex, freshBlockHex)
+		}
 
-	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
-	mt := health.NewTracker(&log.Logger, "my-chain", 2*time.Second)
-	vr := thirdparty.NewVendorsRegistry()
-	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	sharedStateCfg := &common.SharedStateConfig{
-		Connector: &common.ConnectorConfig{
-			Driver: common.DriverMemory,
-			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
-		},
-		LockMaxWait:     common.Duration(200 * time.Millisecond),
-		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
-		FallbackTimeout: common.Duration(3 * time.Second),
-		LockTtl:         common.Duration(4 * time.Second),
-	}
-	sharedStateCfg.SetDefaults("test")
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "my-chain", upCfgs, ssr, rlr, vr, pr, nil, mt, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+		rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+		mt := health.NewTracker(&log.Logger, "my-chain", 2*time.Second)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+		sharedStateCfg := &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: common.DriverMemory,
+				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+			},
+			LockMaxWait:     common.Duration(200 * time.Millisecond),
+			UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+			FallbackTimeout: common.Duration(3 * time.Second),
+			LockTtl:         common.Duration(4 * time.Second),
+		}
+		sharedStateCfg.SetDefaults("test")
+		ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "my-chain", upCfgs, ssr, rlr, vr, pr, nil, mt, nil)
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
-	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: chainID}}
-	network, err := NewNetwork(ctx, &log.Logger, "my-chain", ntwCfg, rlr, upr, mt, nil)
-	require.NoError(t, err)
-	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(chainID)))
-	require.NoError(t, network.Bootstrap(ctx))
-	network.PinUpstreamOrderForTest()
+		ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: chainID}}
+		network, err := NewNetwork(ctx, &log.Logger, "my-chain", ntwCfg, rlr, upr, mt, nil)
+		require.NoError(t, err)
+		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(chainID)))
+		require.NoError(t, network.Bootstrap(ctx))
+		network.PinUpstreamOrderForTest()
 
-	// Wait for both pollers to settle on the stale tip via real HTTP polling.
-	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(chainID))
-	require.Len(t, ups, 2)
-	for _, u := range ups {
-		uu := u
-		require.Eventually(t, func() bool { return uu.EvmStatePoller().LatestBlock() == staleTip }, 3*time.Second, 25*time.Millisecond,
-			"poller for %s should settle on stale tip", u.Id())
-	}
+		// Wait for both pollers to settle on the stale tip via real HTTP polling.
+		ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(chainID))
+		require.Len(t, ups, 2)
+		for _, u := range ups {
+			uu := u
+			require.Eventually(t, func() bool { return uu.EvmStatePoller().LatestBlock() == staleTip }, 3*time.Second, 25*time.Millisecond,
+				"poller for %s should settle on stale tip", u.Id())
+		}
 
-	// The client already saw freshBlock via newHeads; request it through eRPC while the
-	// poller is still a block behind. It must be served, not rejected.
-	req := common.NewNormalizedRequest([]byte(
-		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["` + freshBlockHex + `",false]}`))
-	req.SetNetwork(network)
+		// The client already saw freshBlock via newHeads; request it through eRPC while the
+		// poller is still a block behind. It must be served, not rejected.
+		req := common.NewNormalizedRequest([]byte(
+			`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["` + freshBlockHex + `",false]}`))
+		req.SetNetwork(network)
 
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err,
-		"issue #934: with the literal config, a block one ahead of the stale poller tip must be served (the upstream has it)")
-	require.NotNil(t, resp)
-	jrr, jerr := resp.JsonRpcResponse(ctx)
-	require.NoError(t, jerr)
-	require.Contains(t, jrr.GetResultString(), "0xfresh", "the fresh block must be served from the upstream")
-	resp.Release()
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err,
+			"issue #934: with the literal config, a block one ahead of the stale poller tip must be served (the upstream has it)")
+		require.NotNil(t, resp)
+		jrr, jerr := resp.JsonRpcResponse(ctx)
+		require.NoError(t, jerr)
+		require.Contains(t, jrr.GetResultString(), "0xfresh", "the fresh block must be served from the upstream")
+		resp.Release()
+	})
 }
 
 // TestNetworkAvailability_Issue934_ArcSyncFlow_CustomMethodAndFreshBlock mirrors the
@@ -733,50 +756,52 @@ projects:
 // eRPC only for the follow-up JSON-RPC calls; eRPC's own WebSocket server and
 // eth_subscribe are not part of this flow.
 func TestNetworkAvailability_Issue934_ArcSyncFlow_CustomMethodAndFreshBlock(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	const staleTip = int64(0x1e8480) // 2,000,000
-	const freshBlockHex = "0x1e8481" // staleTip + 1 (the head the client just saw)
-	network, _ := setupLowerOnlyRaceNetwork(t, ctx, []lowerOnlyRaceFixture{
-		{id: "rpc1", staleTip: staleTip},
-		{id: "rpc2", staleTip: staleTip},
-	}, freshBlockHex)
+		const staleTip = int64(0x1e8480) // 2,000,000
+		const freshBlockHex = "0x1e8481" // staleTip + 1 (the head the client just saw)
+		network, _ := setupLowerOnlyRaceNetwork(t, ctx, []lowerOnlyRaceFixture{
+			{id: "rpc1", staleTip: staleTip},
+			{id: "rpc2", staleTip: staleTip},
+		}, freshBlockHex)
 
-	// The Arc consensus custom method, served by the node for the fresh block.
-	for _, id := range []string{"rpc1", "rpc2"} {
-		gock.New("http://" + id + ".localhost").Post("").Persist().
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "arc_getCertificate")
-			}).
-			Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"certificate":"0xcert"}}`))
-	}
+		// The Arc consensus custom method, served by the node for the fresh block.
+		for _, id := range []string{"rpc1", "rpc2"} {
+			gock.New("http://" + id + ".localhost").Post("").Persist().
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "arc_getCertificate")
+				}).
+				Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"certificate":"0xcert"}}`))
+		}
 
-	// 1) eth_getBlockByNumber(N) for the fresh head → served (issue #934 fix).
-	reqBlock := common.NewNormalizedRequest([]byte(
-		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["` + freshBlockHex + `",false]}`))
-	reqBlock.SetNetwork(network)
-	respBlock, err := network.Forward(ctx, reqBlock)
-	require.NoError(t, err, "fresh head block must be served, not rejected by the stale poller")
-	jrrBlock, jerr := respBlock.JsonRpcResponse(ctx)
-	require.NoError(t, jerr)
-	require.Contains(t, jrrBlock.GetResultString(), "0xfresh")
-	respBlock.Release()
+		// 1) eth_getBlockByNumber(N) for the fresh head → served (issue #934 fix).
+		reqBlock := common.NewNormalizedRequest([]byte(
+			`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["` + freshBlockHex + `",false]}`))
+		reqBlock.SetNetwork(network)
+		respBlock, err := network.Forward(ctx, reqBlock)
+		require.NoError(t, err, "fresh head block must be served, not rejected by the stale poller")
+		jrrBlock, jerr := respBlock.JsonRpcResponse(ctx)
+		require.NoError(t, jerr)
+		require.Contains(t, jrrBlock.GetResultString(), "0xfresh")
+		respBlock.Release()
 
-	// 2) arc_getCertificate(N) — custom method for the same fresh block. eRPC cannot
-	// extract a block reference, so gating fails open and it is forwarded regardless of
-	// the lower-only bounds or the lagging state poller.
-	reqCert := common.NewNormalizedRequest([]byte(
-		`{"jsonrpc":"2.0","id":2,"method":"arc_getCertificate","params":["` + freshBlockHex + `"]}`))
-	reqCert.SetNetwork(network)
-	respCert, err := network.Forward(ctx, reqCert)
-	require.NoError(t, err,
-		"a custom method (arc_getCertificate) must be forwarded, never constrained by the state poller")
-	jrrCert, jerr := respCert.JsonRpcResponse(ctx)
-	require.NoError(t, jerr)
-	require.Contains(t, jrrCert.GetResultString(), "0xcert", "the custom method response must be served from the upstream")
-	respCert.Release()
+		// 2) arc_getCertificate(N) — custom method for the same fresh block. eRPC cannot
+		// extract a block reference, so gating fails open and it is forwarded regardless of
+		// the lower-only bounds or the lagging state poller.
+		reqCert := common.NewNormalizedRequest([]byte(
+			`{"jsonrpc":"2.0","id":2,"method":"arc_getCertificate","params":["` + freshBlockHex + `"]}`))
+		reqCert.SetNetwork(network)
+		respCert, err := network.Forward(ctx, reqCert)
+		require.NoError(t, err,
+			"a custom method (arc_getCertificate) must be forwarded, never constrained by the state poller")
+		jrrCert, jerr := respCert.JsonRpcResponse(ctx)
+		require.NoError(t, jerr)
+		require.Contains(t, jrrCert.GetResultString(), "0xcert", "the custom method response must be served from the upstream")
+		respCert.Release()
+	})
 }

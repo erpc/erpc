@@ -5,6 +5,7 @@ import (
 	"math"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -212,20 +213,22 @@ func TestSuggestLatestBlock_ChainIdRecoveryOnNonMajorAdvance(t *testing.T) {
 // While still cross-wired, a non-major keep-fresh suggestion must be dropped —
 // accepting it would poison the shared counter on every tick until a major jump.
 func TestSuggestLatestBlock_CordonedNonMajorAdvanceRejectedUntilRecovered(t *testing.T) {
-	up := newSuggestGateUpstream(123, "999", nil)
-	p := newGateTestPoller(t, up)
+	synctest.Test(t, func(t *testing.T) {
+		up := newSuggestGateUpstream(123, "999", nil)
+		p := newGateTestPoller(t, up)
 
-	p.SuggestLatestBlock(1000)
-	require.Equal(t, int64(1000), p.LatestBlock())
-	p.SuggestLatestBlock(5_000_000)
-	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
+		p.SuggestLatestBlock(1000)
+		require.Equal(t, int64(1000), p.LatestBlock())
+		p.SuggestLatestBlock(5_000_000)
+		require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
 
-	// Still wrong chain: small advance must not write through.
-	p.SuggestLatestBlock(1000 + gateTolerance)
-	require.Never(t, func() bool {
-		return p.LatestBlock() != 1000
-	}, 300*time.Millisecond, 20*time.Millisecond, "cordoned non-major sample must be rejected while chainId still mismatches")
-	assert.True(t, up.isCordoned())
+		// Still wrong chain: small advance must not write through.
+		p.SuggestLatestBlock(1000 + gateTolerance)
+		require.Never(t, func() bool {
+			return p.LatestBlock() != 1000
+		}, 300*time.Millisecond, 20*time.Millisecond, "cordoned non-major sample must be rejected while chainId still mismatches")
+		assert.True(t, up.isCordoned())
+	})
 }
 
 // After an operator UncordonAdmin clears the tracker bit, cordonedByChainId
@@ -252,19 +255,21 @@ func TestSuggestLatestBlock_MismatchAfterAdminClearReCordons(t *testing.T) {
 }
 
 func TestSuggestLatestBlock_MajorJumpChainIdErrorDroppedNotCordoned(t *testing.T) {
-	// A transient eth_chainId failure (not a proven mismatch) drops the sample
-	// for now and does NOT cordon — the next verified poll re-observes it.
-	up := newSuggestGateUpstream(123, "", assert.AnError)
-	p := newGateTestPoller(t, up)
+	synctest.Test(t, func(t *testing.T) {
+		// A transient eth_chainId failure (not a proven mismatch) drops the sample
+		// for now and does NOT cordon — the next verified poll re-observes it.
+		up := newSuggestGateUpstream(123, "", assert.AnError)
+		p := newGateTestPoller(t, up)
 
-	p.SuggestLatestBlock(1000)
-	require.Equal(t, int64(1000), p.LatestBlock())
+		p.SuggestLatestBlock(1000)
+		require.Equal(t, int64(1000), p.LatestBlock())
 
-	p.SuggestLatestBlock(5_000_000) // MAJOR
-	require.Never(t, func() bool {
-		return p.LatestBlock() != 1000
-	}, 300*time.Millisecond, 20*time.Millisecond, "unverifiable major jump must be dropped")
-	assert.False(t, up.isCordoned(), "a transient probe error must not cordon")
+		p.SuggestLatestBlock(5_000_000) // MAJOR
+		require.Never(t, func() bool {
+			return p.LatestBlock() != 1000
+		}, 300*time.Millisecond, 20*time.Millisecond, "unverifiable major jump must be dropped")
+		assert.False(t, up.isCordoned(), "a transient probe error must not cordon")
+	})
 }
 
 func TestSuggestLatestBlock_MajorJumpTypedMismatchErrorCordons(t *testing.T) {

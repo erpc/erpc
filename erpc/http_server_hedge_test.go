@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -30,2776 +31,2830 @@ func matchesGetBalanceTestReq(request *http.Request) bool {
 
 func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("SimpleHedgePolicyDifferentUpstreams", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(10 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(5 * time.Millisecond),
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(10 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(5 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			Delay(30 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x111111",
-			})
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			Delay(6 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x222222",
-			})
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				Delay(30 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x111111",
+				})
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				Delay(6 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x222222",
+				})
 
-		// Set up test fixtures
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			// Set up test fixtures
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x222222")
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0x222222")
+		})
 	})
 
 	t.Run("PrimaryFailsBeforeHedgeStarts", func(t *testing.T) {
-		// With try-all-upstreams, loop continues past rpc1's failure
-		// to rpc2 (503) then rpc3 (success). All mocks are consumed.
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			// With try-all-upstreams, loop continues past rpc1's failure
+			// to rpc2 (503) then rpc3 (success). All mocks are consumed.
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 2,
-										Delay:    common.NewStaticDuration(30 * time.Millisecond),
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 2,
+											Delay:    common.NewStaticDuration(30 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc3",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc3.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc3",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc3.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		// rpc1: Primary request - fails with 500 error
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(500).
-			Delay(15 * time.Millisecond). // Fails before hedge delay (100ms)
-			JSON(map[string]interface{}{
-				"error": "internal server error",
-			})
+			// rpc1: Primary request - fails with 500 error
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(500).
+				Delay(15 * time.Millisecond). // Fails before hedge delay (100ms)
+				JSON(map[string]interface{}{
+					"error": "internal server error",
+				})
 
-		// rpc2: 503 error, rpc3: success — with try-all-upstreams, the loop
-		// continues past rpc1's failure to rpc2 (fails) then rpc3 (succeeds).
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(503).
-			JSON(map[string]interface{}{
-				"error": "service unavailable",
-			})
+			// rpc2: 503 error, rpc3: success — with try-all-upstreams, the loop
+			// continues past rpc1's failure to rpc2 (fails) then rpc3 (succeeds).
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(503).
+				JSON(map[string]interface{}{
+					"error": "service unavailable",
+				})
 
-		gock.New("http://rpc3.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x333333",
-			})
+			gock.New("http://rpc3.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x333333",
+				})
 
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		// With try-all-upstreams, rpc1 fails → rpc2 fails → rpc3 succeeds
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x333333")
+			// With try-all-upstreams, rpc1 fails → rpc2 fails → rpc3 succeeds
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0x333333")
+		})
 	})
 
 	t.Run("HedgeDoesNotCancelOnFailuresWhenRunning", func(t *testing.T) {
-		// When hedge is already running, failures don't cancel other attempts
-		// This ensures resilience - other hedges might succeed even if one fails
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			// When hedge is already running, failures don't cancel other attempts
+			// This ensures resilience - other hedges might succeed even if one fails
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 2,
-										Delay:    common.NewStaticDuration(9 * time.Millisecond), // Short delay
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 2,
+											Delay:    common.NewStaticDuration(9 * time.Millisecond), // Short delay
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc3",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc3.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc3",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc3.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		// rpc1: Primary request - fails after hedge starts
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(500).
-			Delay(15 * time.Millisecond). // Fails after hedge starts (30ms)
-			JSON(map[string]interface{}{
-				"error": "internal server error",
-			})
+			// rpc1: Primary request - fails after hedge starts
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(500).
+				Delay(15 * time.Millisecond). // Fails after hedge starts (30ms)
+				JSON(map[string]interface{}{
+					"error": "internal server error",
+				})
 
-		// rpc2: First hedge - also fails
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(503).
-			Delay(12 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"error": "service unavailable",
-			})
+			// rpc2: First hedge - also fails
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(503).
+				Delay(12 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"error": "service unavailable",
+				})
 
-		// rpc3: Second hedge - succeeds
-		gock.New("http://rpc3.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			Delay(15 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x333333",
-			})
+			// rpc3: Second hedge - succeeds
+			gock.New("http://rpc3.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				Delay(15 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x333333",
+				})
 
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		// Should succeed with result from rpc3, even though rpc1 and rpc2 failed
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x333333")
+			// Should succeed with result from rpc3, even though rpc1 and rpc2 failed
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0x333333")
+		})
 	})
 
 	t.Run("RetryImmediateWhenPrimaryFailsBeforeHedge", func(t *testing.T) {
-		// When primary fails before hedge delay, retry kicks in immediately
-		// No waiting for hedge since it never starts
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			// When primary fails before hedge delay, retry kicks in immediately
+			// No waiting for hedge since it never starts
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Retry: &common.RetryPolicyConfig{
-										MaxAttempts: 2,
-										Delay:       common.Duration(0), // No retry delay
-									},
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										// Large, never-fired hedge delay: the primary fails at
-										// ~10ms (before this), so the retry path is exercised
-										// without the hedge. A big value decouples the timing
-										// assertion below from loaded-CI jitter.
-										Delay: common.NewStaticDuration(150 * time.Millisecond),
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Retry: &common.RetryPolicyConfig{
+											MaxAttempts: 2,
+											Delay:       common.Duration(0), // No retry delay
+										},
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											// Large, never-fired hedge delay: the primary fails at
+											// ~10ms (before this), so the retry path is exercised
+											// without the hedge. A big value decouples the timing
+											// assertion below from loaded-CI jitter.
+											Delay: common.NewStaticDuration(150 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		// rpc1: First attempt - fails immediately
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(500).
-			Delay(5 * time.Millisecond). // Fails very quickly
-			JSON(map[string]interface{}{
-				"error": "internal server error",
-			})
+			// rpc1: First attempt - fails immediately
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(500).
+				Delay(5 * time.Millisecond). // Fails very quickly
+				JSON(map[string]interface{}{
+					"error": "internal server error",
+				})
 
-		// rpc2: Retry attempt - succeeds
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			Delay(15 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x222222",
-			})
+			// rpc2: Retry attempt - succeeds
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				Delay(15 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x222222",
+				})
 
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
-		start := time.Now()
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
+			start := time.Now()
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
-		elapsed := time.Since(start)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			elapsed := time.Since(start)
 
-		// Should retry immediately without waiting for hedge delay
-		// Total time: ~10ms (primary fail) + 50ms (retry execution) = ~60ms
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x222222")
-		assert.Less(t, elapsed, 120*time.Millisecond, "Should retry immediately, not wait for the ~150ms hedge delay")
+			// Should retry immediately without waiting for hedge delay
+			// Total time: ~10ms (primary fail) + 50ms (retry execution) = ~60ms
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0x222222")
+			assert.Less(t, elapsed, 120*time.Millisecond, "Should retry immediately, not wait for the ~150ms hedge delay")
+		})
 	})
 
 	t.Run("RetryWaitsForHedgeWhenHedgeIsRunning", func(t *testing.T) {
-		// When hedge is already running and primary fails, retry waits for hedge to complete
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// The hedge mock is persisted (see below) because whether the hedge fires
-		// before a fast retry is timing-dependent; it remains pending by design (1).
-		defer util.AssertNoPendingMocks(t, 1)
+		synctest.Test(t, func(t *testing.T) {
+			// When hedge is already running and primary fails, retry waits for hedge to complete
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// The hedge mock is persisted (see below) because whether the hedge fires
+			// before a fast retry is timing-dependent; it remains pending by design (1).
+			defer util.AssertNoPendingMocks(t, 1)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Retry: &common.RetryPolicyConfig{
-										MaxAttempts: 2,
-										Delay:       common.Duration(0), // No retry delay
-									},
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(9 * time.Millisecond), // Short hedge delay
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Retry: &common.RetryPolicyConfig{
+											MaxAttempts: 2,
+											Delay:       common.Duration(0), // No retry delay
+										},
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(9 * time.Millisecond), // Short hedge delay
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		// First attempt: both fail but hedge is running
-		// rpc1: Primary - fails after hedge starts
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Times(1).
-			Reply(500).
-			Delay(60 * time.Millisecond). // Fails well after the 30ms hedge fires, so the hedge reliably runs (wide margin for loaded CI)
-			JSON(map[string]interface{}{
-				"error": "internal server error",
-			})
+			// First attempt: both fail but hedge is running
+			// rpc1: Primary - fails after hedge starts
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Times(1).
+				Reply(500).
+				Delay(60 * time.Millisecond). // Fails well after the 30ms hedge fires, so the hedge reliably runs (wide margin for loaded CI)
+				JSON(map[string]interface{}{
+					"error": "internal server error",
+				})
 
-		// rpc2: Hedge - also fails (persisted: the hedge may lose the race to a
-		// fast retry on a loaded runner, so it is not required to be consumed).
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Persist().
-			Reply(503).
-			Delay(30 * time.Millisecond). // Takes longer
-			JSON(map[string]interface{}{
-				"error": "service unavailable",
-			})
+			// rpc2: Hedge - also fails (persisted: the hedge may lose the race to a
+			// fast retry on a loaded runner, so it is not required to be consumed).
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Persist().
+				Reply(503).
+				Delay(30 * time.Millisecond). // Takes longer
+				JSON(map[string]interface{}{
+					"error": "service unavailable",
+				})
 
-		// Second attempt (retry): succeeds
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Times(1).
-			Reply(200).
-			Delay(6 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0xRetrySuccess",
-			})
+			// Second attempt (retry): succeeds
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Times(1).
+				Reply(200).
+				Delay(6 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xRetrySuccess",
+				})
 
-		start := time.Now()
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			start := time.Now()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
-		_ = start
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			_ = start
 
-		// The retry must ultimately succeed after the primary fails. Whether the
-		// hedge actually fires first (and thus the exact latency) is timing-
-		// dependent on a loaded runner — the hedge can lose the race to a fast
-		// retry — so we assert the outcome, not the wall-clock. The hedge mock is
-		// persisted (pending by design) so a non-firing hedge does not leave a
-		// stray unconsumed mock.
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0xRetrySuccess")
+			// The retry must ultimately succeed after the primary fails. Whether the
+			// hedge actually fires first (and thus the exact latency) is timing-
+			// dependent on a loaded runner — the hedge can lose the race to a fast
+			// retry — so we assert the outcome, not the wall-clock. The hedge mock is
+			// persisted (pending by design) so a non-firing hedge does not leave a
+			// stray unconsumed mock.
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0xRetrySuccess")
+		})
 	})
 
 	t.Run("HedgeCancelsOnSuccess", func(t *testing.T) {
-		// Test that successful response cancels other hedges
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 3) // primary + 2 hedge mocks all persisted by design
+		synctest.Test(t, func(t *testing.T) {
+			// Test that successful response cancels other hedges
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 3) // primary + 2 hedge mocks all persisted by design
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 2,
-										Delay:    common.NewStaticDuration(15 * time.Millisecond),
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 2,
+											Delay:    common.NewStaticDuration(15 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc3",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc3.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc3",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc3.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		// rpc1: Primary - succeeds quickly
-		// Primary persisted + filtered: its fast 0x111111 must always be available
-		// (and immune to the state-poller archive probe) so the primary
-		// deterministically wins and cancels the hedges.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Persist().
-			Reply(200).
-			Delay(22 * time.Millisecond). // Succeeds before the hedges
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x111111",
-			})
+			// rpc1: Primary - succeeds quickly
+			// Primary persisted + filtered: its fast 0x111111 must always be available
+			// (and immune to the state-poller archive probe) so the primary
+			// deterministically wins and cancels the hedges.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Persist().
+				Reply(200).
+				Delay(22 * time.Millisecond). // Succeeds before the hedges
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x111111",
+				})
 
-		// rpc2: First hedge - would succeed but gets cancelled
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist(). // Might be cancelled
-			Reply(200).
-			Delay(60 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x222222",
-			})
+			// rpc2: First hedge - would succeed but gets cancelled
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Persist(). // Might be cancelled
+				Reply(200).
+				Delay(60 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x222222",
+				})
 
-		// rpc3: Second hedge - would succeed but gets cancelled
-		gock.New("http://rpc3.localhost").
-			Post("").
-			Persist(). // Might be cancelled
-			Reply(200).
-			Delay(60 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x333333",
-			})
+			// rpc3: Second hedge - would succeed but gets cancelled
+			gock.New("http://rpc3.localhost").
+				Post("").
+				Persist(). // Might be cancelled
+				Reply(200).
+				Delay(60 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x333333",
+				})
 
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		// Should get result from primary (rpc1) which succeeds first
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x111111")
+			// Should get result from primary (rpc1) which succeeds first
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0x111111")
+		})
 	})
 
 	t.Run("PrimaryFastSuccessHedgeNotTriggered", func(t *testing.T) {
-		// Primary succeeds before hedge delay - hedge never starts
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 2) // persisted primary + the never-called second upstream
+		synctest.Test(t, func(t *testing.T) {
+			// Primary succeeds before hedge delay - hedge never starts
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 2) // persisted primary + the never-called second upstream
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										// Wide hedge delay vs the 15ms primary so the primary
-										// reliably completes before the hedge would fire, even
-										// under loaded-CI jitter (the hedge never fires here, so
-										// the large delay has no lingering-goroutine cost).
-										Delay: common.NewStaticDuration(300 * time.Millisecond),
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											// Wide hedge delay vs the 15ms primary so the primary
+											// reliably completes before the hedge would fire, even
+											// under loaded-CI jitter (the hedge never fires here, so
+											// the large delay has no lingering-goroutine cost).
+											Delay: common.NewStaticDuration(300 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		// rpc1: Primary - succeeds quickly. Persisted so its fast result is always
-		// available (immune to a structural re-race) and deterministically wins.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Persist().
-			Reply(200).
-			Delay(15 * time.Millisecond). // Much faster than hedge delay
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x111111",
-			})
+			// rpc1: Primary - succeeds quickly. Persisted so its fast result is always
+			// available (immune to a structural re-race) and deterministically wins.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Persist().
+				Reply(200).
+				Delay(15 * time.Millisecond). // Much faster than hedge delay
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x111111",
+				})
 
-		// rpc2: Would be hedge but never called
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x222222",
-			})
+			// rpc2: Would be hedge but never called
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x222222",
+				})
 
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x111111")
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0x111111")
+		})
 	})
 
 	t.Run("PrimarySlowSuccessHedgeFastSuccess", func(t *testing.T) {
-		// Primary is slow but succeeds, hedge is fast and succeeds - hedge wins
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1) // Primary mock cancelled when hedge succeeds
+		synctest.Test(t, func(t *testing.T) {
+			// Primary is slow but succeeds, hedge is fast and succeeds - hedge wins
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 1) // Primary mock cancelled when hedge succeeds
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(30 * time.Millisecond),
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(30 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		// rpc1: Primary - slow but succeeds
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist(). // Might be cancelled
-			Reply(200).
-			Delay(150 * time.Millisecond). // Very slow
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x111111",
-			})
+			// rpc1: Primary - slow but succeeds
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Persist(). // Might be cancelled
+				Reply(200).
+				Delay(150 * time.Millisecond). // Very slow
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x111111",
+				})
 
-		// rpc2: Hedge - fast and succeeds
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Reply(200).
-			Delay(15 * time.Millisecond). // Fast
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x222222",
-			})
+			// rpc2: Hedge - fast and succeeds
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Reply(200).
+				Delay(15 * time.Millisecond). // Fast
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x222222",
+				})
 
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x222222") // Hedge wins
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0x222222") // Hedge wins
+		})
 	})
 
 	t.Run("PrimarySlowSuccessHedgeFastFail", func(t *testing.T) {
-		// Primary is slow but succeeds, hedge is fast but fails - primary wins
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// The fast-failing hedge (retryable 500) triggers retries that, on a loaded
-		// runner, can exhaust single-use mocks before the 300ms primary succeeds.
-		// Persist both mocks so the primary's success is always available regardless
-		// of retry timing; the 2 persisted mocks remain pending by design.
-		defer util.AssertNoPendingMocks(t, 2)
+		synctest.Test(t, func(t *testing.T) {
+			// Primary is slow but succeeds, hedge is fast but fails - primary wins
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// The fast-failing hedge (retryable 500) triggers retries that, on a loaded
+			// runner, can exhaust single-use mocks before the 300ms primary succeeds.
+			// Persist both mocks so the primary's success is always available regardless
+			// of retry timing; the 2 persisted mocks remain pending by design.
+			defer util.AssertNoPendingMocks(t, 2)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(30 * time.Millisecond),
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(30 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		// rpc1: Primary - slow but succeeds
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Persist().
-			Reply(200).
-			Delay(90 * time.Millisecond). // Slow
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x111111",
-			})
+			// rpc1: Primary - slow but succeeds
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Persist().
+				Reply(200).
+				Delay(90 * time.Millisecond). // Slow
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x111111",
+				})
 
-		// rpc2: Hedge - fast but fails
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Persist().
-			Reply(500).
-			Delay(15 * time.Millisecond). // Fast fail
-			JSON(map[string]interface{}{
-				"error": "internal server error",
-			})
+			// rpc2: Hedge - fast but fails
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Persist().
+				Reply(500).
+				Delay(15 * time.Millisecond). // Fast fail
+				JSON(map[string]interface{}{
+					"error": "internal server error",
+				})
 
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x111111") // Primary wins despite hedge failing fast
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0x111111") // Primary wins despite hedge failing fast
+		})
 	})
 
 	t.Run("PrimaryFastFailBeforeHedge", func(t *testing.T) {
-		// With try-all-upstreams, rpc1 fails → loop continues to rpc2 (success).
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			// With try-all-upstreams, rpc1 fails → loop continues to rpc2 (success).
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(30 * time.Millisecond),
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(30 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		// rpc1: Primary - fails quickly
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(500).
-			Delay(15 * time.Millisecond). // Fast fail
-			JSON(map[string]interface{}{
-				"error": "internal server error",
-			})
+			// rpc1: Primary - fails quickly
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(500).
+				Delay(15 * time.Millisecond). // Fast fail
+				JSON(map[string]interface{}{
+					"error": "internal server error",
+				})
 
-		// rpc2: With try-all-upstreams, the loop continues past rpc1's failure
-		// to rpc2 which succeeds.
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x222222",
-			})
+			// rpc2: With try-all-upstreams, the loop continues past rpc1's failure
+			// to rpc2 which succeeds.
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x222222",
+				})
 
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		// With try-all-upstreams, rpc1 fails → rpc2 succeeds
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x222222")
+			// With try-all-upstreams, rpc1 fails → rpc2 succeeds
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0x222222")
+		})
 	})
 
 	t.Run("PrimaryFailsAfterHedgeStartsAndSucceeds", func(t *testing.T) {
-		// Primary fails after hedge starts, hedge succeeds - request succeeds
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			// Primary fails after hedge starts, hedge succeeds - request succeeds
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(15 * time.Millisecond), // Hedge starts quickly
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(15 * time.Millisecond), // Hedge starts quickly
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		// rpc1: Primary - fails after hedge has started
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(500).
-			Delay(30 * time.Millisecond). // Fails after hedge starts (50ms)
-			JSON(map[string]interface{}{
-				"error": "internal server error",
-			})
+			// rpc1: Primary - fails after hedge has started
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(500).
+				Delay(30 * time.Millisecond). // Fails after hedge starts (50ms)
+				JSON(map[string]interface{}{
+					"error": "internal server error",
+				})
 
-		// rpc2: Hedge - succeeds quickly
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			Delay(9 * time.Millisecond). // Quick success
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0xHedgeSuccess",
-			})
+			// rpc2: Hedge - succeeds quickly
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				Delay(9 * time.Millisecond). // Quick success
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xHedgeSuccess",
+				})
 
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		// Should succeed with hedge result
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0xHedgeSuccess")
+			// Should succeed with hedge result
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0xHedgeSuccess")
+		})
 	})
 
 	t.Run("PrimarySlowFailHedgeFastSuccess", func(t *testing.T) {
-		// Primary is slow and fails, hedge is fast and succeeds - hedge wins
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			// Primary is slow and fails, hedge is fast and succeeds - hedge wins
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(30 * time.Millisecond),
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(30 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		// rpc1: Primary - slow and fails
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(500).
-			Delay(90 * time.Millisecond). // Slow fail
-			JSON(map[string]interface{}{
-				"error": "internal server error",
-			})
+			// rpc1: Primary - slow and fails
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(500).
+				Delay(90 * time.Millisecond). // Slow fail
+				JSON(map[string]interface{}{
+					"error": "internal server error",
+				})
 
-		// rpc2: Hedge - fast and succeeds
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Reply(200).
-			Delay(15 * time.Millisecond). // Fast success
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x222222",
-			})
+			// rpc2: Hedge - fast and succeeds
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Reply(200).
+				Delay(15 * time.Millisecond). // Fast success
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x222222",
+				})
 
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x222222") // Hedge wins quickly
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0x222222") // Hedge wins quickly
+		})
 	})
 
 	t.Run("BothFailDifferentErrorsBeforeHedge", func(t *testing.T) {
-		// Primary fails before hedge starts - should return immediately with primary error
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1) // rpc2 never called
+		synctest.Test(t, func(t *testing.T) {
+			// Primary fails before hedge starts - should return immediately with primary error
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 1) // rpc2 never called
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(30 * time.Millisecond),
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(30 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		// rpc1: Primary - fails before hedge starts
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(500).
-			Delay(15 * time.Millisecond). // Fails before hedge delay (100ms)
-			JSON(map[string]interface{}{
-				"error": "internal server error",
-			})
+			// rpc1: Primary - fails before hedge starts
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(500).
+				Delay(15 * time.Millisecond). // Fails before hedge delay (100ms)
+				JSON(map[string]interface{}{
+					"error": "internal server error",
+				})
 
-		// rpc2: fires after the hedge delay because the executor keeps
-		// racing on a transient primary failure. Returns 503 so we end
-		// up with both errors in the exhausted wrapper.
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Persist().
-			Reply(503).
-			JSON(map[string]interface{}{
-				"error": "service unavailable",
-			})
+			// rpc2: fires after the hedge delay because the executor keeps
+			// racing on a transient primary failure. Returns 503 so we end
+			// up with both errors in the exhausted wrapper.
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Persist().
+				Reply(503).
+				JSON(map[string]interface{}{
+					"error": "service unavailable",
+				})
 
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		// Both upstreams fail with different errors. The exhausted-wrapper
-		// surfaces both — `internal server error` (rpc1's 500) AND
-		// `service unavailable` (rpc2's 503) both end up in the cause
-		// chain. Asserting on either signal is fine; we pick the
-		// upstream-exhausted code as the canonical client-visible
-		// classification.
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "ErrUpstreamsExhausted")
-		assert.Contains(t, body, "service unavailable")
+			// Both upstreams fail with different errors. The exhausted-wrapper
+			// surfaces both — `internal server error` (rpc1's 500) AND
+			// `service unavailable` (rpc2's 503) both end up in the cause
+			// chain. Asserting on either signal is fine; we pick the
+			// upstream-exhausted code as the canonical client-visible
+			// classification.
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "ErrUpstreamsExhausted")
+			assert.Contains(t, body, "service unavailable")
+		})
 	})
 
 	t.Run("BothFailDifferentErrorsWithHedgeRunning", func(t *testing.T) {
-		// When hedge is already running and both fail, should wait for both
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			// When hedge is already running and both fail, should wait for both
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(150 * time.Millisecond), // Short delay
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(150 * time.Millisecond), // Short delay
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		// rpc1: Primary - fails after hedge starts
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(500).
-			Delay(240 * time.Millisecond). // Fails after hedge starts (500ms)
-			JSON(map[string]interface{}{
-				"error": "internal server error",
-			})
+			// rpc1: Primary - fails after hedge starts
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(500).
+				Delay(240 * time.Millisecond). // Fails after hedge starts (500ms)
+				JSON(map[string]interface{}{
+					"error": "internal server error",
+				})
 
-		// rpc2: Hedge - also fails
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(503).
-			Delay(270 * time.Millisecond). // Takes slightly longer
-			JSON(map[string]interface{}{
-				"error": "service unavailable",
-			})
+			// rpc2: Hedge - also fails
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(503).
+				Delay(270 * time.Millisecond). // Takes slightly longer
+				JSON(map[string]interface{}{
+					"error": "service unavailable",
+				})
 
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		// Should wait for both to complete and return error
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "error")
+			// Should wait for both to complete and return error
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "error")
+		})
 	})
 
 	t.Run("SingleUpstreamHedgeContinuesPrimary", func(t *testing.T) {
-		// Test that with a single upstream, when hedge can't find an available upstream
-		// (because primary is using it), the primary continues and succeeds
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			// Test that with a single upstream, when hedge can't find an available upstream
+			// (because primary is using it), the primary continues and succeeds
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(15 * time.Millisecond),
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(15 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		// rpc1: Primary request - succeeds after hedge would trigger
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Reply(200).
-			Delay(60 * time.Millisecond). // Slower than hedge delay
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x111111",
-			})
+			// rpc1: Primary request - succeeds after hedge would trigger
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Reply(200).
+				Delay(60 * time.Millisecond). // Slower than hedge delay
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x111111",
+				})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		// Should succeed with primary result even though hedge couldn't find an upstream
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x111111")
+			// Should succeed with primary result even though hedge couldn't find an upstream
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0x111111")
+		})
 	})
 
 	t.Run("SingleUpstreamHedgeContinuesPrimary", func(t *testing.T) {
-		// Test that with a single upstream, when hedge can't find an available upstream
-		// (because primary is using it), the primary continues and succeeds
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			// Test that with a single upstream, when hedge can't find an available upstream
+			// (because primary is using it), the primary continues and succeeds
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										Delay:    common.NewStaticDuration(5 * time.Millisecond),
-										MaxCount: 2,
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											Delay:    common.NewStaticDuration(5 * time.Millisecond),
+											MaxCount: 2,
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
 							},
 						},
 					},
 				},
-			},
-		}
+			}
 
-		// rpc1: Primary request - slow but succeeds
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			Delay(60 * time.Millisecond). // Slow response
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x111111",
-			})
+			// rpc1: Primary request - slow but succeeds
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				Delay(60 * time.Millisecond). // Slow response
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x111111",
+				})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`
-		statusCode, _, respBody := sendRequest(body, nil, nil)
+			body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`
+			statusCode, _, respBody := sendRequest(body, nil, nil)
 
-		assert.Equal(t, http.StatusOK, statusCode)
-		var resp map[string]interface{}
-		err := json.Unmarshal([]byte(respBody), &resp)
-		require.NoError(t, err)
-		assert.Equal(t, "0x111111", resp["result"])
+			assert.Equal(t, http.StatusOK, statusCode)
+			var resp map[string]interface{}
+			err := json.Unmarshal([]byte(respBody), &resp)
+			require.NoError(t, err)
+			assert.Equal(t, "0x111111", resp["result"])
+		})
 	})
 
 	t.Run("BothSuccessPrimaryWins", func(t *testing.T) {
-		// Both primary and hedge succeed, but primary is faster
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// Persist both mocks so the fast primary result is always available and
-		// deterministically wins the race regardless of loaded-CI scheduling; the
-		// 2 persisted mocks remain pending by design.
-		defer util.AssertNoPendingMocks(t, 2)
+		synctest.Test(t, func(t *testing.T) {
+			// Both primary and hedge succeed, but primary is faster
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// Persist both mocks so the fast primary result is always available and
+			// deterministically wins the race regardless of loaded-CI scheduling; the
+			// 2 persisted mocks remain pending by design.
+			defer util.AssertNoPendingMocks(t, 2)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										Delay:    common.NewStaticDuration(10 * time.Millisecond),
-										MaxCount: 2,
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											Delay:    common.NewStaticDuration(10 * time.Millisecond),
+											MaxCount: 2,
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
 							},
-						},
-						{
-							Id:       "rpc2",
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+							{
+								Id:       "rpc2",
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
 							},
 						},
 					},
 				},
-			},
-		}
+			}
 
-		// rpc1: Primary - completes shortly after the hedge fires (so both fire)
-		// but well before the hedge's response, so the primary deterministically
-		// wins even under loaded-CI jitter.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Persist().
-			Reply(200).
-			Delay(60 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0xPrimary",
-			})
+			// rpc1: Primary - completes shortly after the hedge fires (so both fire)
+			// but well before the hedge's response, so the primary deterministically
+			// wins even under loaded-CI jitter.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Persist().
+				Reply(200).
+				Delay(60 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xPrimary",
+				})
 
-		// rpc2: Hedge - slower success
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Persist().
-			Reply(200).
-			Delay(300 * time.Millisecond). // large margin over the 60ms primary so the primary wins deterministically
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0xHedge",
-			})
+			// rpc2: Hedge - slower success
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Persist().
+				Reply(200).
+				Delay(300 * time.Millisecond). // large margin over the 60ms primary so the primary wins deterministically
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xHedge",
+				})
 
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`
-		statusCode, _, respBody := sendRequest(body, nil, nil)
+			body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`
+			statusCode, _, respBody := sendRequest(body, nil, nil)
 
-		assert.Equal(t, http.StatusOK, statusCode)
-		var resp map[string]interface{}
-		err = json.Unmarshal([]byte(respBody), &resp)
-		require.NoError(t, err)
-		assert.Equal(t, "0xPrimary", resp["result"]) // Primary wins
+			assert.Equal(t, http.StatusOK, statusCode)
+			var resp map[string]interface{}
+			err = json.Unmarshal([]byte(respBody), &resp)
+			require.NoError(t, err)
+			assert.Equal(t, "0xPrimary", resp["result"]) // Primary wins
+		})
 	})
 
 	t.Run("BothSuccessHedgeWins", func(t *testing.T) {
-		// Both primary and hedge succeed, but hedge is faster
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			// Both primary and hedge succeed, but hedge is faster
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										Delay:    common.NewStaticDuration(15 * time.Millisecond),
-										MaxCount: 2,
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											Delay:    common.NewStaticDuration(15 * time.Millisecond),
+											MaxCount: 2,
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
 							},
-						},
-						{
-							Id:       "rpc2",
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+							{
+								Id:       "rpc2",
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
 							},
 						},
 					},
 				},
-			},
-		}
+			}
 
-		// rpc1: Primary - slow success
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			Delay(60 * time.Millisecond). // Would finish at 200ms
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0xPrimary",
-			})
+			// rpc1: Primary - slow success
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				Delay(60 * time.Millisecond). // Would finish at 200ms
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xPrimary",
+				})
 
-		// rpc2: Hedge - fast success
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			Delay(6 * time.Millisecond). // Finishes at 70ms (50ms hedge delay + 20ms)
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0xHedge",
-			})
+			// rpc2: Hedge - fast success
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				Delay(6 * time.Millisecond). // Finishes at 70ms (50ms hedge delay + 20ms)
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xHedge",
+				})
 
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`
-		statusCode, _, respBody := sendRequest(body, nil, nil)
+			body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`
+			statusCode, _, respBody := sendRequest(body, nil, nil)
 
-		assert.Equal(t, http.StatusOK, statusCode)
-		var resp map[string]interface{}
-		err = json.Unmarshal([]byte(respBody), &resp)
-		require.NoError(t, err)
-		assert.Equal(t, "0xHedge", resp["result"]) // Hedge wins
+			assert.Equal(t, http.StatusOK, statusCode)
+			var resp map[string]interface{}
+			err = json.Unmarshal([]byte(respBody), &resp)
+			require.NoError(t, err)
+			assert.Equal(t, "0xHedge", resp["result"]) // Hedge wins
+		})
 	})
 
 	t.Run("HedgeWithRetryOnPrimaryFailure", func(t *testing.T) {
-		// Primary fails, hedge fails, then retry kicks in and succeeds
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// The hedge (rpc2) only fires when the 50ms hedge delay elapses before the
-		// primary settles; the primary here fails fast (~20ms), so whether the
-		// hedge actually fires is timing-dependent. Persist the hedge mock so it is
-		// served deterministically if it fires and simply stays pending if it does
-		// not — the assertion that matters is that the retry on rpc1 succeeds. The
-		// persisted hedge mock remains pending by design (1).
-		defer util.AssertNoPendingMocks(t, 1)
+		synctest.Test(t, func(t *testing.T) {
+			// Primary fails, hedge fails, then retry kicks in and succeeds
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// The hedge (rpc2) only fires when the 50ms hedge delay elapses before the
+			// primary settles; the primary here fails fast (~20ms), so whether the
+			// hedge actually fires is timing-dependent. Persist the hedge mock so it is
+			// served deterministically if it fires and simply stays pending if it does
+			// not — the assertion that matters is that the retry on rpc1 succeeds. The
+			// persisted hedge mock remains pending by design (1).
+			defer util.AssertNoPendingMocks(t, 1)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Retry: &common.RetryPolicyConfig{
-										MaxAttempts: 3,
-										Delay:       common.Duration(10 * time.Millisecond),
-									},
-									Hedge: &common.HedgePolicyConfig{
-										Delay:    common.NewStaticDuration(15 * time.Millisecond),
-										MaxCount: 2,
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Retry: &common.RetryPolicyConfig{
+											MaxAttempts: 3,
+											Delay:       common.Duration(10 * time.Millisecond),
+										},
+										Hedge: &common.HedgePolicyConfig{
+											Delay:    common.NewStaticDuration(15 * time.Millisecond),
+											MaxCount: 2,
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
 							},
-						},
-						{
-							Id:       "rpc2",
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+							{
+								Id:       "rpc2",
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
 							},
 						},
 					},
 				},
-			},
-		}
+			}
 
-		// First attempt: both fail
-		// rpc1: Primary - fails fast
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Times(1).
-			Reply(500).
-			Delay(6 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"error": "internal server error",
-			})
+			// First attempt: both fail
+			// rpc1: Primary - fails fast
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Times(1).
+				Reply(500).
+				Delay(6 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"error": "internal server error",
+				})
 
-		// rpc2: Hedge - also fails (persisted: the hedge may or may not fire
-		// depending on timing relative to the fast-failing primary).
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Persist().
-			Reply(503).
-			Delay(9 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"error": "service unavailable",
-			})
+			// rpc2: Hedge - also fails (persisted: the hedge may or may not fire
+			// depending on timing relative to the fast-failing primary).
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Persist().
+				Reply(503).
+				Delay(9 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"error": "service unavailable",
+				})
 
-		// Second attempt (retry): succeeds
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Times(1).
-			Reply(200).
-			Delay(5 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0xRetrySuccess",
-			})
+			// Second attempt (retry): succeeds
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Times(1).
+				Reply(200).
+				Delay(5 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xRetrySuccess",
+				})
 
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		time.Sleep(500 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`
-		statusCode, _, respBody := sendRequest(body, nil, nil)
+			body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`
+			statusCode, _, respBody := sendRequest(body, nil, nil)
 
-		assert.Equal(t, http.StatusOK, statusCode)
-		var resp map[string]interface{}
-		err = json.Unmarshal([]byte(respBody), &resp)
-		require.NoError(t, err)
-		assert.Equal(t, "0xRetrySuccess", resp["result"]) // Retry succeeds
+			assert.Equal(t, http.StatusOK, statusCode)
+			var resp map[string]interface{}
+			err = json.Unmarshal([]byte(respBody), &resp)
+			require.NoError(t, err)
+			assert.Equal(t, "0xRetrySuccess", resp["result"]) // Retry succeeds
+		})
 	})
 
 	t.Run("SimpleHedgePolicyAvoidSameUpstream", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 1)
 
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(10 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(5 * time.Millisecond),
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(10 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(5 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			Delay(30 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x111111",
-			})
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			Delay(6 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x222222",
-			})
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				Delay(30 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x111111",
+				})
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				Delay(6 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x222222",
+				})
 
-		// Set up test fixtures
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			// Set up test fixtures
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x111111")
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0x111111")
+		})
 	})
 
 	t.Run("SimpleHedgePolicyWithoutOtherPoliciesBatchingEnabled", func(t *testing.T) {
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(10 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Timeout: nil,
-									Retry:   nil,
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(30 * time.Millisecond),
+		synctest.Test(t, func(t *testing.T) {
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(10 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Timeout: nil,
+										Retry:   nil,
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(30 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Timeout: nil,
-									Retry:   nil,
-									Hedge:   nil,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Timeout: nil,
+										Retry:   nil,
+										Hedge:   nil,
+									},
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.TRUE,
+									BatchMaxWait:  common.Duration(5 * time.Millisecond),
 								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.TRUE,
-								BatchMaxWait:  common.Duration(5 * time.Millisecond),
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Timeout: nil,
-									Retry:   nil,
-									Hedge:   nil,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
 								},
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.TRUE,
-								BatchMaxWait:  common.Duration(5 * time.Millisecond),
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Timeout: nil,
+										Retry:   nil,
+										Hedge:   nil,
+									},
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.TRUE,
+									BatchMaxWait:  common.Duration(5 * time.Millisecond),
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := string(util.SafeReadBody(request))
-				return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "111")
-			}).
-			Reply(200).
-			Delay(300 * time.Millisecond).
-			JSON([]interface{}{
-				map[string]interface{}{
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := string(util.SafeReadBody(request))
+					return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "111")
+				}).
+				Reply(200).
+				Delay(300 * time.Millisecond).
+				JSON([]interface{}{
+					map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      111,
+						"result":  "0x111_SLOW",
+					}})
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "111")
+				}).
+				Reply(200).
+				Delay(15 * time.Millisecond).
+				JSON([]interface{}{map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      111,
-					"result":  "0x111_SLOW",
+					"result":  "0x111_FAST",
 				}})
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "111")
-			}).
-			Reply(200).
-			Delay(15 * time.Millisecond).
-			JSON([]interface{}{map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      111,
-				"result":  "0x111_FAST",
-			}})
 
-		// Set up test fixtures
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			// Set up test fixtures
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":111}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":111}`, nil, nil)
 
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x111_FAST")
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0x111_FAST")
+		})
 	})
 
 	t.Run("HedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamTimesOut", func(t *testing.T) {
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(2 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Retry: nil,
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(15 * time.Millisecond),
-									},
-									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(300 * time.Millisecond),
+		synctest.Test(t, func(t *testing.T) {
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(2 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Retry: nil,
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(15 * time.Millisecond),
+										},
+										Timeout: &common.TimeoutPolicyConfig{
+											Duration: common.NewStaticDuration(300 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Retry: nil,
-									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(30 * time.Millisecond),
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Retry: nil,
+										Timeout: &common.TimeoutPolicyConfig{
+											Duration: common.NewStaticDuration(30 * time.Millisecond),
+										},
 									},
 								},
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Retry: nil,
-									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(150 * time.Millisecond),
-									},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
 								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Retry: nil,
+										Timeout: &common.TimeoutPolicyConfig{
+											Duration: common.NewStaticDuration(150 * time.Millisecond),
+										},
+									},
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			Delay(60 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x111111",
-			})
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				Delay(60 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x111111",
+				})
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			Delay(6 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x222222",
-			})
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				Delay(6 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x222222",
+				})
 
-		// Set up test fixtures
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			// Set up test fixtures
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x222222")
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0x222222")
+		})
 	})
 
 	t.Run("HedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamReturnsSlowBillingIssues", func(t *testing.T) {
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(2 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
+		synctest.Test(t, func(t *testing.T) {
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(2 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Retry: nil,
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(30 * time.Millisecond),
+										},
+										Timeout: &common.TimeoutPolicyConfig{
+											Duration: common.NewStaticDuration(300 * time.Millisecond),
+										},
+									},
+								},
 							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Retry: nil,
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(30 * time.Millisecond),
+						},
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Retry: nil,
+										Timeout: &common.TimeoutPolicyConfig{
+											Duration: common.NewStaticDuration(300 * time.Millisecond),
+										},
 									},
-									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(300 * time.Millisecond),
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
+							},
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Retry: nil,
+										Timeout: &common.TimeoutPolicyConfig{
+											Duration: common.NewStaticDuration(300 * time.Millisecond),
+										},
 									},
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
 								},
 							},
 						},
 					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Retry: nil,
-									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(300 * time.Millisecond),
-									},
-								},
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Retry: nil,
-									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(300 * time.Millisecond),
-									},
-								},
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
+				},
+				RateLimiters: &common.RateLimiterConfig{},
+			}
+
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(402).
+				Delay(150 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32005,
+						"message": "Monthly capacity limit exceeded. Visit https://dashboard.alchemyapi.io/settings/billing to upgrade your scaling policy for continued service.",
 					},
-				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				})
 
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				Delay(15 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x222222",
+				})
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(402).
-			Delay(150 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32005,
-					"message": "Monthly capacity limit exceeded. Visit https://dashboard.alchemyapi.io/settings/billing to upgrade your scaling policy for continued service.",
-				},
-			})
+			// Set up test fixtures
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			Delay(15 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x222222",
-			})
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		// Set up test fixtures
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
-
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
-
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x222222")
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, "0x222222")
+		})
 	})
 
 	t.Run("ServerTimesOutBeforeHedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamHasTimeout", func(t *testing.T) {
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(30 * time.Millisecond).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
+		synctest.Test(t, func(t *testing.T) {
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					MaxTimeout: common.Duration(30 * time.Millisecond).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm: &common.EvmNetworkConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Retry: nil,
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(5 * time.Millisecond),
+										},
+										Timeout: &common.TimeoutPolicyConfig{
+											Duration: common.NewStaticDuration(90 * time.Millisecond),
+										},
+									},
+								},
 							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Retry: nil,
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(5 * time.Millisecond),
+						},
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Timeout: &common.TimeoutPolicyConfig{
+											Duration: common.NewStaticDuration(45 * time.Millisecond),
+										},
+										Retry: nil,
 									},
-									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(90 * time.Millisecond),
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
+							},
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								Failsafe: []*common.FailsafeConfig{
+									{
+										Timeout: &common.TimeoutPolicyConfig{
+											Duration: common.NewStaticDuration(60 * time.Millisecond),
+										},
+										Retry: nil,
 									},
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
 								},
 							},
 						},
 					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(45 * time.Millisecond),
-									},
-									Retry: nil,
-								},
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(60 * time.Millisecond),
-									},
-									Retry: nil,
-								},
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
+				},
+				RateLimiters: &common.RateLimiterConfig{},
+			}
+
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(402).
+				Delay(450 * time.Millisecond). // slow path; kept well under MaxTimeout to avoid timeout races + reduce lingering gock-sleep goroutines that starve later subtests
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32005,
+						"message": "Monthly capacity limit exceeded. Visit https://dashboard.alchemyapi.io/settings/billing to upgrade your scaling policy for continued service.",
 					},
-				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				})
 
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Reply(200).
+				Delay(45 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x222222",
+				})
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(402).
-			Delay(450 * time.Millisecond). // slow path; kept well under MaxTimeout to avoid timeout races + reduce lingering gock-sleep goroutines that starve later subtests
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error": map[string]interface{}{
-					"code":    -32005,
-					"message": "Monthly capacity limit exceeded. Visit https://dashboard.alchemyapi.io/settings/billing to upgrade your scaling policy for continued service.",
-				},
-			})
+			// Set up test fixtures
+			sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Reply(200).
-			Delay(45 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x222222",
-			})
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		// Set up test fixtures
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
-		defer shutdown()
-
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
-
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, ErrHandlerTimeout.Error())
+			assert.Equal(t, http.StatusOK, statusCode)
+			assert.Contains(t, body, ErrHandlerTimeout.Error())
+		})
 	})
 
 	t.Run("HedgeDiscardsSlowerCallFirstRequestCancelled", func(t *testing.T) {
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				// Enough total server time to let hedged calls finish.
-				MaxTimeout: common.Duration(2 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm:          &common.EvmNetworkConfig{ChainId: 123},
-							Failsafe: []*common.FailsafeConfig{
-								// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(5 * time.Millisecond),
+		synctest.Test(t, func(t *testing.T) {
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					// Enough total server time to let hedged calls finish.
+					MaxTimeout: common.Duration(2 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm:          &common.EvmNetworkConfig{ChainId: 123},
+								Failsafe: []*common.FailsafeConfig{
+									// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(5 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		// Mock #1 (slower) – "original request"
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance") && strings.Contains(string(body), "SLOW")
-			}).
-			Reply(200).
-			Delay(450 * time.Millisecond). // canceled when the 50ms hedge wins; large gap so the fast result wins deterministically under load (<2s MaxTimeout)
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      99,
-				"result":  "0xSLOW",
-			})
+			// Mock #1 (slower) – "original request"
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(string(body), "eth_getBalance") && strings.Contains(string(body), "SLOW")
+				}).
+				Reply(200).
+				Delay(450 * time.Millisecond). // canceled when the 50ms hedge wins; large gap so the fast result wins deterministically under load (<2s MaxTimeout)
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      99,
+					"result":  "0xSLOW",
+				})
 
-		// Mock #2 (faster) – "hedge request"
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance") && strings.Contains(string(body), "FAST")
-			}).
-			Reply(200).
-			Delay(15 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      99,
-				"result":  "0xFAST",
-			})
+			// Mock #2 (faster) – "hedge request"
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(string(body), "eth_getBalance") && strings.Contains(string(body), "FAST")
+				}).
+				Reply(200).
+				Delay(15 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      99,
+					"result":  "0xFAST",
+				})
 
-		// Launch the test server with above config
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			// Launch the test server with above config
+			sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		// We'll ask for a single "eth_getBalance" call but pass distinct markers SLOW/FAST to
-		// ensure that Gock can differentiate which is the "original" vs. "hedge" request body.
-		// In real usage, hedged calls have identical payloads. Here we just need to disambiguate
-		// the two mocks so we can see which is canceled, which returns successfully, etc.
-		jsonBody := `{"jsonrpc":"2.0","id":99,"method":"eth_getBalance","params":["0xSLOW","true","0xFAST","true"]}`
+			// We'll ask for a single "eth_getBalance" call but pass distinct markers SLOW/FAST to
+			// ensure that Gock can differentiate which is the "original" vs. "hedge" request body.
+			// In real usage, hedged calls have identical payloads. Here we just need to disambiguate
+			// the two mocks so we can see which is canceled, which returns successfully, etc.
+			jsonBody := `{"jsonrpc":"2.0","id":99,"method":"eth_getBalance","params":["0xSLOW","true","0xFAST","true"]}`
 
-		statusCode, _, body := sendRequest(jsonBody, nil, nil)
+			statusCode, _, body := sendRequest(jsonBody, nil, nil)
 
-		// From the user's perspective, we must see a 200 + "0xFAST" rather than "context canceled"
-		assert.Equal(t, http.StatusOK, statusCode, "Expected 200 OK from hedged request")
-		assert.Contains(t, body, "0xFAST", "Expected final result from faster hedge call")
-		assert.NotContains(t, body, "context canceled", "Must never return 'context canceled' to the user")
+			// From the user's perspective, we must see a 200 + "0xFAST" rather than "context canceled"
+			assert.Equal(t, http.StatusOK, statusCode, "Expected 200 OK from hedged request")
+			assert.Contains(t, body, "0xFAST", "Expected final result from faster hedge call")
+			assert.NotContains(t, body, "context canceled", "Must never return 'context canceled' to the user")
+		})
 	})
 	t.Run("HedgeDiscardsSlowerCallSecondRequestCancelled", func(t *testing.T) {
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				// Enough total server time to let hedged calls finish.
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm:          &common.EvmNetworkConfig{ChainId: 123},
-							Failsafe: []*common.FailsafeConfig{
-								// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(5 * time.Millisecond),
+		synctest.Test(t, func(t *testing.T) {
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					// Enough total server time to let hedged calls finish.
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm:          &common.EvmNetworkConfig{ChainId: 123},
+								Failsafe: []*common.FailsafeConfig{
+									// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(5 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 2) // both result mocks persisted by design
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 2) // both result mocks persisted by design
 
-		// Mock #1 (faster) – "original request"
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Persist().
-			Reply(200).
-			Delay(90 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      99,
-				"result":  "0xFAST",
-			})
+			// Mock #1 (faster) – "original request"
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Persist().
+				Reply(200).
+				Delay(90 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      99,
+					"result":  "0xFAST",
+				})
 
-		// Mock #2 (slower) – "hedge request"
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Persist().
-			Reply(200).
-			// Slow hedge (1200ms, ~13x the 90ms fast). Both mocks are persisted so
-			// the fast result is always available and deterministically wins the
-			// race regardless of loaded-CI scheduling.
-			Delay(1200 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      99,
-				"result":  "0xSLOW",
-			})
+			// Mock #2 (slower) – "hedge request"
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Persist().
+				Reply(200).
+				// Slow hedge (1200ms, ~13x the 90ms fast). Both mocks are persisted so
+				// the fast result is always available and deterministically wins the
+				// race regardless of loaded-CI scheduling.
+				Delay(1200 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      99,
+					"result":  "0xSLOW",
+				})
 
-		// Launch the test server with above config
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			// Launch the test server with above config
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		// Pin upstream order so the primary is deterministically rpc1 (the fast,
-		// 300ms upstream). Without this, selection non-determinism can make the
-		// slow (5s) upstream primary, and its delay races the server timeout.
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			// Pin upstream order so the primary is deterministically rpc1 (the fast,
+			// 300ms upstream). Without this, selection non-determinism can make the
+			// slow (5s) upstream primary, and its delay races the server timeout.
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		jsonBody := `{"jsonrpc":"2.0","id":99,"method":"eth_getBalance","params":["0x1234"]}`
+			jsonBody := `{"jsonrpc":"2.0","id":99,"method":"eth_getBalance","params":["0x1234"]}`
 
-		statusCode, _, body := sendRequest(jsonBody, nil, nil)
+			statusCode, _, body := sendRequest(jsonBody, nil, nil)
 
-		// From the user's perspective, we must see a 200 + "0xFAST" rather than "context canceled"
-		assert.Equal(t, http.StatusOK, statusCode, "Expected 200 OK from hedged request")
-		assert.Contains(t, body, "0xFAST", "Expected final result from faster hedge call")
-		assert.NotContains(t, body, "context canceled", "Must never return 'context canceled' to the user")
+			// From the user's perspective, we must see a 200 + "0xFAST" rather than "context canceled"
+			assert.Equal(t, http.StatusOK, statusCode, "Expected 200 OK from hedged request")
+			assert.Contains(t, body, "0xFAST", "Expected final result from faster hedge call")
+			assert.NotContains(t, body, "context canceled", "Must never return 'context canceled' to the user")
+		})
 	})
 
 	t.Run("HedgeReturnsFirstResponseWhenInitiallySlowRequestCompletesFaster", func(t *testing.T) {
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				// Enough total server time to let hedged calls finish
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm:          &common.EvmNetworkConfig{ChainId: 123},
-							Failsafe: []*common.FailsafeConfig{
-								// Network-level hedge configuration
-								{
-									Hedge: &common.HedgePolicyConfig{
-										MaxCount: 1,
-										Delay:    common.NewStaticDuration(30 * time.Millisecond),
+		synctest.Test(t, func(t *testing.T) {
+			cfg := &common.Config{
+				Server: &common.ServerConfig{
+					// Enough total server time to let hedged calls finish
+					MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				},
+				Projects: []*common.ProjectConfig{
+					{
+						Id: "test_project",
+						Networks: []*common.NetworkConfig{
+							{
+								Architecture: common.ArchitectureEvm,
+								Evm:          &common.EvmNetworkConfig{ChainId: 123},
+								Failsafe: []*common.FailsafeConfig{
+									// Network-level hedge configuration
+									{
+										Hedge: &common.HedgePolicyConfig{
+											MaxCount: 1,
+											Delay:    common.NewStaticDuration(30 * time.Millisecond),
+										},
 									},
 								},
 							},
 						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
+						Upstreams: []*common.UpstreamConfig{
+							{
+								Id:       "rpc1",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc1.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
+							{
+								Id:       "rpc2",
+								Type:     common.UpstreamTypeEvm,
+								Endpoint: "http://rpc2.localhost",
+								Evm: &common.EvmUpstreamConfig{
+									ChainId: 123,
+								},
+								JsonRpc: &common.JsonRpcUpstreamConfig{
+									SupportsBatch: &common.FALSE,
+								},
 							},
 						},
 					},
 				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
+				RateLimiters: &common.RateLimiterConfig{},
+			}
 
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		// Persist both mocks: the primary (rpc1) result must remain available even
-		// if a structural race retries it, so the fast 90ms response always wins
-		// over the slow 1350ms hedge regardless of loaded-CI scheduling. The 2
-		// persisted mocks remain pending by design.
-		defer util.AssertNoPendingMocks(t, 2)
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			// Persist both mocks: the primary (rpc1) result must remain available even
+			// if a structural race retries it, so the fast 90ms response always wins
+			// over the slow 1350ms hedge regardless of loaded-CI scheduling. The 2
+			// persisted mocks remain pending by design.
+			defer util.AssertNoPendingMocks(t, 2)
 
-		// Mock first upstream - fast (90ms): triggers the 30ms hedge but completes
-		// well before the slow hedge response, so the primary deterministically wins.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Persist().
-			Reply(200).
-			Delay(90 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x1234567", // Valid hex string for primary upstream
-			})
+			// Mock first upstream - fast (90ms): triggers the 30ms hedge but completes
+			// well before the slow hedge response, so the primary deterministically wins.
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Persist().
+				Reply(200).
+				Delay(90 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x1234567", // Valid hex string for primary upstream
+				})
 
-		// Mock second upstream - the slow hedge (1350ms), ~15x the 90ms primary.
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(matchesGetBalanceTestReq).
-			Persist().
-			Reply(200).
-			Delay(1350 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x7890123", // Valid hex string for backup upstream
-			})
+			// Mock second upstream - the slow hedge (1350ms), ~15x the 90ms primary.
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(matchesGetBalanceTestReq).
+				Persist().
+				Reply(200).
+				Delay(1350 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7890123", // Valid hex string for backup upstream
+				})
 
-		// Launch test server with config
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
+			// Launch test server with config
+			sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
-		// Pin upstream order so the primary is deterministically rpc1 (the
-		// initially-slow-but-faster 300ms upstream), not the 1000ms hedge target.
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
+			// Pin upstream order so the primary is deterministically rpc1 (the
+			// initially-slow-but-faster 300ms upstream), not the 1000ms hedge target.
+			prj, err := erpcInstance.GetProject("test_project")
+			require.NoError(t, err)
+			policy.OverrideAllForTest(prj.policyEngine)
 
-		// Time the request to verify we don't wait for the slower hedge
-		start := time.Now()
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1}`, nil, nil)
-		elapsed := time.Since(start)
+			// Time the request to verify we don't wait for the slower hedge
+			start := time.Now()
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1}`, nil, nil)
+			elapsed := time.Since(start)
 
-		// Verify correct response was returned
-		assert.Equal(t, http.StatusOK, statusCode, "Expected 200 OK response")
-		assert.Contains(t, body, "0x1234567", "Expected result from primary upstream")
+			// Verify correct response was returned
+			assert.Equal(t, http.StatusOK, statusCode, "Expected 200 OK response")
+			assert.Contains(t, body, "0x1234567", "Expected result from primary upstream")
 
-		// Check that response time is approximately equal to the first request latency
-		// and NOT waiting for the second request to finish (which would be ~1000ms)
-		// We add a small buffer for processing time
-		assert.Less(t, elapsed, 900*time.Millisecond,
-			"Response time should track the ~90ms primary, not the ~1.35s hedge — 900ms leaves generous loaded-CI headroom while staying below the hedge completion")
-		assert.GreaterOrEqual(t, elapsed, 90*time.Millisecond,
-			"Response time should be at least equal to the simulated primary upstream delay")
+			// Check that response time is approximately equal to the first request latency
+			// and NOT waiting for the second request to finish (which would be ~1000ms)
+			// We add a small buffer for processing time
+			assert.Less(t, elapsed, 900*time.Millisecond,
+				"Response time should track the ~90ms primary, not the ~1.35s hedge — 900ms leaves generous loaded-CI headroom while staying below the hedge completion")
+			assert.GreaterOrEqual(t, elapsed, 90*time.Millisecond,
+				"Response time should be at least equal to the simulated primary upstream delay")
 
-		// Make sure we don't return context canceled errors to the user
-		assert.NotContains(t, body, "context canceled", "Must never return 'context canceled' to the user")
+			// Make sure we don't return context canceled errors to the user
+			assert.NotContains(t, body, "context canceled", "Must never return 'context canceled' to the user")
+		})
 	})
 }

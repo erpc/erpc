@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -20,12 +21,14 @@ func TestEnvioVendor_SupportsNetwork(t *testing.T) {
 	logger := zerolog.Nop()
 
 	t.Run("known chain short-circuits without probe", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		gock.New("https://1.rpc.hypersync.xyz").Persist().ReplyError(assert.AnError)
-		ok, err := CreateEnvioVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{}, "evm:1")
-		require.NoError(t, err)
-		assert.True(t, ok)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			gock.New("https://1.rpc.hypersync.xyz").Persist().ReplyError(assert.AnError)
+			ok, err := CreateEnvioVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{}, "evm:1")
+			require.NoError(t, err)
+			assert.True(t, ok)
+		})
 	})
 
 	probeCases := []struct {
@@ -46,49 +49,57 @@ func TestEnvioVendor_SupportsNetwork(t *testing.T) {
 	}
 	for _, c := range probeCases {
 		t.Run(c.name, func(t *testing.T) {
-			util.ResetGock()
-			defer util.ResetGock()
-			gockProbeReply(c.host, c.path, c.body)
+			synctest.Test(t, func(t *testing.T) {
+				util.ResetGock()
+				defer util.ResetGock()
+				gockProbeReply(c.host, c.path, c.body)
 
-			ok, err := CreateEnvioVendor().SupportsNetwork(ctx, &logger, c.settings, envioUnknownChain)
-			if c.wantErr {
-				assert.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-			assert.Equal(t, c.want, ok)
+				ok, err := CreateEnvioVendor().SupportsNetwork(ctx, &logger, c.settings, envioUnknownChain)
+				if c.wantErr {
+					assert.Error(t, err)
+				} else {
+					require.NoError(t, err)
+				}
+				assert.Equal(t, c.want, ok)
+			})
 		})
 	}
 
 	t.Run("cached client reused", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		gockProbeReply("https://999888.rpc.hypersync.xyz", "/k1", `{"jsonrpc":"2.0","id":1,"result":"0xf41d0"}`)
-		v := CreateEnvioVendor()
-		for range 2 {
-			ok, err := v.SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, envioUnknownChain)
-			require.NoError(t, err)
-			assert.True(t, ok)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			gockProbeReply("https://999888.rpc.hypersync.xyz", "/k1", `{"jsonrpc":"2.0","id":1,"result":"0xf41d0"}`)
+			v := CreateEnvioVendor()
+			for range 2 {
+				ok, err := v.SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, envioUnknownChain)
+				require.NoError(t, err)
+				assert.True(t, ok)
+			}
+		})
 	})
 
 	t.Run("certificate failure means unsupported", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		gock.New("https://999888.rpc.hypersync.xyz").Post("/k1").Persist().
-			ReplyError(errors.New("tls: failed to verify certificate: x509: certificate is valid for other.host"))
-		ok, err := CreateEnvioVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, envioUnknownChain)
-		require.NoError(t, err)
-		assert.False(t, ok)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			gock.New("https://999888.rpc.hypersync.xyz").Post("/k1").Persist().
+				ReplyError(errors.New("tls: failed to verify certificate: x509: certificate is valid for other.host"))
+			ok, err := CreateEnvioVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, envioUnknownChain)
+			require.NoError(t, err)
+			assert.False(t, ok)
+		})
 	})
 
 	t.Run("other transport failure is an error", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		gock.New("https://999888.rpc.hypersync.xyz").Post("/k1").Persist().ReplyError(errors.New("connection refused"))
-		ok, err := CreateEnvioVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, envioUnknownChain)
-		assert.Error(t, err)
-		assert.False(t, ok)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			gock.New("https://999888.rpc.hypersync.xyz").Post("/k1").Persist().ReplyError(errors.New("connection refused"))
+			ok, err := CreateEnvioVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, envioUnknownChain)
+			assert.Error(t, err)
+			assert.False(t, ok)
+		})
 	})
 
 	t.Run("non-evm network", func(t *testing.T) {

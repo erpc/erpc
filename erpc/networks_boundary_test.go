@@ -3,6 +3,7 @@ package erpc
 import (
 	"math"
 	"testing"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/require"
 )
@@ -74,12 +75,14 @@ func TestEligibleLane(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := eligibleLane(tc.bounds, tc.bn)
-			if tc.want == nil {
-				require.Nil(t, got)
-				return
-			}
-			require.Equal(t, tc.want, got)
+			synctest.Test(t, func(t *testing.T) {
+				got := eligibleLane(tc.bounds, tc.bn)
+				if tc.want == nil {
+					require.Nil(t, got)
+					return
+				}
+				require.Equal(t, tc.want, got)
+			})
 		})
 	}
 }

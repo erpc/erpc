@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -62,33 +63,36 @@ func newTestCache(t *testing.T) *SvmJsonRpcCache {
 
 func TestSvmCache_SetThenGet_RoundTripsFinalizedResult(t *testing.T) {
 	t.Parallel()
-	c := newTestCache(t)
-	ctx := context.Background()
 
-	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[100,{"commitment":"finalized"}]}`)
-	req := common.NewNormalizedRequest(body)
-	// Attach a fake network — req.Finality() returns Unknown without one, which
-	// would make the Finalized policy skip the request entirely.
-	req.SetNetwork(finalizedNetwork{})
-	// Build a response carrying the same request so Finality() can resolve.
-	jrr, err := common.NewJsonRpcResponse(1, map[string]interface{}{"blockhash": "abc"}, nil)
-	require.NoError(t, err)
-	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+	synctest.Test(t, func(t *testing.T) {
+		c := newTestCache(t)
+		ctx := context.Background()
 
-	require.NoError(t, c.Set(ctx, req, resp))
-	time.Sleep(ristrettoSettleDelay)
+		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[100,{"commitment":"finalized"}]}`)
+		req := common.NewNormalizedRequest(body)
+		// Attach a fake network — req.Finality() returns Unknown without one, which
+		// would make the Finalized policy skip the request entirely.
+		req.SetNetwork(finalizedNetwork{})
+		// Build a response carrying the same request so Finality() can resolve.
+		jrr, err := common.NewJsonRpcResponse(1, map[string]interface{}{"blockhash": "abc"}, nil)
+		require.NoError(t, err)
+		resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 
-	// A fresh request with identical body must hit the cache. Using the exact same
-	// bytes guarantees CacheHash() is stable.
-	req2 := common.NewNormalizedRequest(body)
-	req2.SetNetwork(finalizedNetwork{})
-	got, err := c.Get(ctx, req2)
-	require.NoError(t, err)
-	require.NotNil(t, got, "expected cache hit for identical request body")
+		require.NoError(t, c.Set(ctx, req, resp))
+		time.Sleep(ristrettoSettleDelay)
 
-	gotJrr, err := got.JsonRpcResponse()
-	require.NoError(t, err)
-	require.Contains(t, string(gotJrr.GetResultBytes()), "abc")
+		// A fresh request with identical body must hit the cache. Using the exact same
+		// bytes guarantees CacheHash() is stable.
+		req2 := common.NewNormalizedRequest(body)
+		req2.SetNetwork(finalizedNetwork{})
+		got, err := c.Get(ctx, req2)
+		require.NoError(t, err)
+		require.NotNil(t, got, "expected cache hit for identical request body")
+
+		gotJrr, err := got.JsonRpcResponse()
+		require.NoError(t, err)
+		require.Contains(t, string(gotJrr.GetResultBytes()), "abc")
+	})
 }
 
 // TestSvmCache_NeverCacheMethods_AreNotStoredOrRead is the regression guard for
@@ -98,44 +102,50 @@ func TestSvmCache_SetThenGet_RoundTripsFinalizedResult(t *testing.T) {
 // They must not be.
 func TestSvmCache_NeverCacheMethods_AreNotStoredOrRead(t *testing.T) {
 	t.Parallel()
-	c := newTestCache(t)
-	ctx := context.Background()
 
-	for _, method := range []string{"sendTransaction", "getLatestBlockhash", "getSignatureStatuses"} {
-		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":["x"]}`)
-		req := common.NewNormalizedRequest(body)
-		req.SetNetwork(finalizedNetwork{})
-		jrr, _ := common.NewJsonRpcResponse(1, "should-not-be-cached", nil)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+	synctest.Test(t, func(t *testing.T) {
+		c := newTestCache(t)
+		ctx := context.Background()
 
-		require.NoError(t, c.Set(ctx, req, resp), "%s Set", method)
-		time.Sleep(ristrettoSettleDelay)
+		for _, method := range []string{"sendTransaction", "getLatestBlockhash", "getSignatureStatuses"} {
+			body := []byte(`{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":["x"]}`)
+			req := common.NewNormalizedRequest(body)
+			req.SetNetwork(finalizedNetwork{})
+			jrr, _ := common.NewJsonRpcResponse(1, "should-not-be-cached", nil)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 
-		req2 := common.NewNormalizedRequest(body)
-		req2.SetNetwork(finalizedNetwork{})
-		got, err := c.Get(ctx, req2)
-		require.NoError(t, err, "%s Get", method)
-		require.Nil(t, got, "%s must never be cached (neverCacheMethods)", method)
-	}
+			require.NoError(t, c.Set(ctx, req, resp), "%s Set", method)
+			time.Sleep(ristrettoSettleDelay)
+
+			req2 := common.NewNormalizedRequest(body)
+			req2.SetNetwork(finalizedNetwork{})
+			got, err := c.Get(ctx, req2)
+			require.NoError(t, err, "%s Get", method)
+			require.Nil(t, got, "%s must never be cached (neverCacheMethods)", method)
+		}
+	})
 }
 
 func TestSvmCache_Get_MissesForDifferentParams(t *testing.T) {
 	t.Parallel()
-	c := newTestCache(t)
-	ctx := context.Background()
 
-	// Populate one key.
-	reqA := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[100]}`))
-	jrr, _ := common.NewJsonRpcResponse(1, "value-for-block-100", nil)
-	respA := common.NewNormalizedResponse().WithRequest(reqA).WithJsonRpcResponse(jrr)
-	require.NoError(t, c.Set(ctx, reqA, respA))
-	time.Sleep(ristrettoSettleDelay)
+	synctest.Test(t, func(t *testing.T) {
+		c := newTestCache(t)
+		ctx := context.Background()
 
-	// Different block number → different params hash → miss.
-	reqB := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"getBlock","params":[101]}`))
-	got, err := c.Get(ctx, reqB)
-	require.NoError(t, err)
-	require.Nil(t, got, "different params must not reuse cached entry")
+		// Populate one key.
+		reqA := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[100]}`))
+		jrr, _ := common.NewJsonRpcResponse(1, "value-for-block-100", nil)
+		respA := common.NewNormalizedResponse().WithRequest(reqA).WithJsonRpcResponse(jrr)
+		require.NoError(t, c.Set(ctx, reqA, respA))
+		time.Sleep(ristrettoSettleDelay)
+
+		// Different block number → different params hash → miss.
+		reqB := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"getBlock","params":[101]}`))
+		got, err := c.Get(ctx, reqB)
+		require.NoError(t, err)
+		require.Nil(t, got, "different params must not reuse cached entry")
+	})
 }
 
 func TestSvmCache_Set_SkipsResponsesWithJsonRpcError(t *testing.T) {
@@ -186,29 +196,32 @@ func TestSvmCache_ExtractSlotRef_MinContextSlotBecomesPartitionKey(t *testing.T)
 
 func TestSvmCache_ConcreteSlotHitIsIsolatedFromWildcardSlot(t *testing.T) {
 	t.Parallel()
-	c := newTestCache(t)
-	ctx := context.Background()
 
-	// Set with a concrete minContextSlot. Partition key: svm:test:12345
-	slotBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey",{"minContextSlot":12345}]}`)
-	slotReq := common.NewNormalizedRequest(slotBody)
-	slotReq.SetNetwork(finalizedNetwork{})
-	jrr, _ := common.NewJsonRpcResponse(1, map[string]interface{}{"lamports": 99}, nil)
-	require.NoError(t, c.Set(ctx, slotReq, common.NewNormalizedResponse().WithRequest(slotReq).WithJsonRpcResponse(jrr)))
-	time.Sleep(ristrettoSettleDelay)
+	synctest.Test(t, func(t *testing.T) {
+		c := newTestCache(t)
+		ctx := context.Background()
 
-	// A second Get WITHOUT minContextSlot has different params → different
-	// requestKey → miss regardless of index routing. This locks in the
-	// invariant that a concrete-slot Set is NOT accidentally returned when
-	// the caller asks for a different (wildcard) slot — which would be a
-	// silent correctness regression for cache-ability boundaries.
-	wildBody := []byte(`{"jsonrpc":"2.0","id":2,"method":"getAccountInfo","params":["pubkey"]}`)
-	wildReq := common.NewNormalizedRequest(wildBody)
-	wildReq.SetNetwork(finalizedNetwork{})
+		// Set with a concrete minContextSlot. Partition key: svm:test:12345
+		slotBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey",{"minContextSlot":12345}]}`)
+		slotReq := common.NewNormalizedRequest(slotBody)
+		slotReq.SetNetwork(finalizedNetwork{})
+		jrr, _ := common.NewJsonRpcResponse(1, map[string]interface{}{"lamports": 99}, nil)
+		require.NoError(t, c.Set(ctx, slotReq, common.NewNormalizedResponse().WithRequest(slotReq).WithJsonRpcResponse(jrr)))
+		time.Sleep(ristrettoSettleDelay)
 
-	got, err := c.Get(ctx, wildReq)
-	require.NoError(t, err)
-	require.Nil(t, got, "concrete-slot entry must not leak to wildcard-slot get (different requestKey)")
+		// A second Get WITHOUT minContextSlot has different params → different
+		// requestKey → miss regardless of index routing. This locks in the
+		// invariant that a concrete-slot Set is NOT accidentally returned when
+		// the caller asks for a different (wildcard) slot — which would be a
+		// silent correctness regression for cache-ability boundaries.
+		wildBody := []byte(`{"jsonrpc":"2.0","id":2,"method":"getAccountInfo","params":["pubkey"]}`)
+		wildReq := common.NewNormalizedRequest(wildBody)
+		wildReq.SetNetwork(finalizedNetwork{})
+
+		got, err := c.Get(ctx, wildReq)
+		require.NoError(t, err)
+		require.Nil(t, got, "concrete-slot entry must not leak to wildcard-slot get (different requestKey)")
+	})
 }
 
 func TestSvmCache_Get_RespectsSkipCacheReadDirective(t *testing.T) {
@@ -310,23 +323,26 @@ func TestSvmCache_RequestKey_IsTypeAndStructureDelimited(t *testing.T) {
 // Set→Get path: caching account A must never satisfy a lookup for account a.
 func TestSvmCache_CaseDifferingAddressesDoNotShareCachedData(t *testing.T) {
 	t.Parallel()
-	c := newTestCache(t)
-	ctx := context.Background()
 
-	const upper = "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"
-	const lower = "4nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"
+	synctest.Test(t, func(t *testing.T) {
+		c := newTestCache(t)
+		ctx := context.Background()
 
-	setReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["` + upper + `"]}`))
-	setReq.SetNetwork(finalizedNetwork{})
-	jrr, _ := common.NewJsonRpcResponse(1, map[string]interface{}{"lamports": 42}, nil)
-	require.NoError(t, c.Set(ctx, setReq, common.NewNormalizedResponse().WithRequest(setReq).WithJsonRpcResponse(jrr)))
-	time.Sleep(ristrettoSettleDelay)
+		const upper = "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"
+		const lower = "4nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"
 
-	getReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"getAccountInfo","params":["` + lower + `"]}`))
-	getReq.SetNetwork(finalizedNetwork{})
-	got, err := c.Get(ctx, getReq)
-	require.NoError(t, err)
-	require.Nil(t, got, "a different account (case-differing base58) must not be served cached data")
+		setReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["` + upper + `"]}`))
+		setReq.SetNetwork(finalizedNetwork{})
+		jrr, _ := common.NewJsonRpcResponse(1, map[string]interface{}{"lamports": 42}, nil)
+		require.NoError(t, c.Set(ctx, setReq, common.NewNormalizedResponse().WithRequest(setReq).WithJsonRpcResponse(jrr)))
+		time.Sleep(ristrettoSettleDelay)
+
+		getReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"getAccountInfo","params":["` + lower + `"]}`))
+		getReq.SetNetwork(finalizedNetwork{})
+		got, err := c.Get(ctx, getReq)
+		require.NoError(t, err)
+		require.Nil(t, got, "a different account (case-differing base58) must not be served cached data")
+	})
 }
 
 // TestSvmCache_CompressionRoundTrip proves the SVM path honors cache.compression
@@ -334,54 +350,57 @@ func TestSvmCache_CaseDifferingAddressesDoNotShareCachedData(t *testing.T) {
 // ignoring the (default-on) setting silently multiplies storage cost.
 func TestSvmCache_CompressionRoundTrip(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 
-	enabled := true
-	c, err := NewSvmJsonRpcCache(ctx, &log.Logger, &common.CacheConfig{
-		Connectors: []*common.ConnectorConfig{
-			{Id: "mem", Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 1000, MaxTotalSize: "8MB"}},
-		},
-		Policies: []*common.CachePolicyConfig{
-			{Connector: "mem", Network: "*", Method: "*", Finality: common.DataFinalityStateFinalized},
-		},
-		Compression: &common.CompressionConfig{Enabled: &enabled, ZstdLevel: "fastest", Threshold: 512},
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+
+		enabled := true
+		c, err := NewSvmJsonRpcCache(ctx, &log.Logger, &common.CacheConfig{
+			Connectors: []*common.ConnectorConfig{
+				{Id: "mem", Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 1000, MaxTotalSize: "8MB"}},
+			},
+			Policies: []*common.CachePolicyConfig{
+				{Connector: "mem", Network: "*", Method: "*", Finality: common.DataFinalityStateFinalized},
+			},
+			Compression: &common.CompressionConfig{Enabled: &enabled, ZstdLevel: "fastest", Threshold: 512},
+		})
+		require.NoError(t, err)
+
+		// Highly compressible, comfortably over the threshold.
+		blob := strings.Repeat("SolanaBlockPayload", 400)
+		compressed := c.compress([]byte(blob))
+		require.Less(t, len(compressed), len(blob), "large payloads must actually shrink")
+		require.Equal(t, []byte{0x28, 0xB5, 0x2F, 0xFD}, compressed[:4], "stored bytes must carry the zstd magic")
+		back, err := c.decompress(compressed)
+		require.NoError(t, err)
+		require.Equal(t, blob, string(back))
+
+		// Sub-threshold payloads are stored verbatim and read back untouched.
+		small := []byte(`{"lamports":1}`)
+		require.Equal(t, small, c.compress(small))
+		passthrough, err := c.decompress(small)
+		require.NoError(t, err)
+		require.Equal(t, small, passthrough)
+
+		// End-to-end: a compressed entry must decode transparently on Get.
+		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[7,{"commitment":"finalized"}]}`)
+		req := common.NewNormalizedRequest(body)
+		req.SetNetwork(finalizedNetwork{})
+		jrr, err := common.NewJsonRpcResponse(1, map[string]interface{}{"blockhash": blob}, nil)
+		require.NoError(t, err)
+		require.NoError(t, c.Set(ctx, req, common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)))
+		time.Sleep(ristrettoSettleDelay)
+
+		req2 := common.NewNormalizedRequest(body)
+		req2.SetNetwork(finalizedNetwork{})
+		got, err := c.Get(ctx, req2)
+		require.NoError(t, err)
+		require.NotNil(t, got, "compressed entry must be readable")
+		gotJrr, err := got.JsonRpcResponse()
+		require.NoError(t, err)
+		require.Contains(t, string(gotJrr.GetResultBytes()), blob)
 	})
-	require.NoError(t, err)
-
-	// Highly compressible, comfortably over the threshold.
-	blob := strings.Repeat("SolanaBlockPayload", 400)
-	compressed := c.compress([]byte(blob))
-	require.Less(t, len(compressed), len(blob), "large payloads must actually shrink")
-	require.Equal(t, []byte{0x28, 0xB5, 0x2F, 0xFD}, compressed[:4], "stored bytes must carry the zstd magic")
-	back, err := c.decompress(compressed)
-	require.NoError(t, err)
-	require.Equal(t, blob, string(back))
-
-	// Sub-threshold payloads are stored verbatim and read back untouched.
-	small := []byte(`{"lamports":1}`)
-	require.Equal(t, small, c.compress(small))
-	passthrough, err := c.decompress(small)
-	require.NoError(t, err)
-	require.Equal(t, small, passthrough)
-
-	// End-to-end: a compressed entry must decode transparently on Get.
-	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[7,{"commitment":"finalized"}]}`)
-	req := common.NewNormalizedRequest(body)
-	req.SetNetwork(finalizedNetwork{})
-	jrr, err := common.NewJsonRpcResponse(1, map[string]interface{}{"blockhash": blob}, nil)
-	require.NoError(t, err)
-	require.NoError(t, c.Set(ctx, req, common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)))
-	time.Sleep(ristrettoSettleDelay)
-
-	req2 := common.NewNormalizedRequest(body)
-	req2.SetNetwork(finalizedNetwork{})
-	got, err := c.Get(ctx, req2)
-	require.NoError(t, err)
-	require.NotNil(t, got, "compressed entry must be readable")
-	gotJrr, err := got.JsonRpcResponse()
-	require.NoError(t, err)
-	require.Contains(t, string(gotJrr.GetResultBytes()), blob)
 }
 
 // finalizedNetwork stubs common.Network so req.Finality(ctx) resolves to

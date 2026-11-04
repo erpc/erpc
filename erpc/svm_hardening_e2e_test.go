@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/architecture/svm"
@@ -102,49 +103,51 @@ func TestSvm_NonRetryableWrite_NeverDispatchedToSecondUpstream(t *testing.T) {
 		{"sendRawTransaction", "sendraw", "sendRawTransaction", `["base64tx"]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// No t.Parallel: gock's mock registry is process-global.
-			util.ResetGock()
-			defer util.ResetGock()
+			synctest.Test(t, func(t *testing.T) {
+				// No t.Parallel: gock's mock registry is process-global.
+				util.ResetGock()
+				defer util.ResetGock()
 
-			h1 := "svm-nrw-" + tc.host + "-rpc1.localhost"
-			h2 := "svm-nrw-" + tc.host + "-rpc2.localhost"
-			util.SetupMocksForSvmStatePoller(h1, 1000, 990)
-			util.SetupMocksForSvmStatePoller(h2, 1000, 990)
+				h1 := "svm-nrw-" + tc.host + "-rpc1.localhost"
+				h2 := "svm-nrw-" + tc.host + "-rpc2.localhost"
+				util.SetupMocksForSvmStatePoller(h1, 1000, 990)
+				util.SetupMocksForSvmStatePoller(h2, 1000, 990)
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
 
-			// Primary fails with a SERVER-side error — the one class that would
-			// otherwise be retried across upstreams.
-			primary := svmCountedMock(h1, tc.method, 0, 500,
-				`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error"}}`)
-			// Secondary would happily succeed. If the guard regresses, this mock
-			// gets consumed — that IS the duplicate effect on a real cluster.
-			secondary := svmCountedMock(h2, tc.method, 0, 200,
-				`{"jsonrpc":"2.0","id":1,"result":"DuplicateEffectSignature"}`)
+				// Primary fails with a SERVER-side error — the one class that would
+				// otherwise be retried across upstreams.
+				primary := svmCountedMock(h1, tc.method, 0, 500,
+					`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error"}}`)
+				// Secondary would happily succeed. If the guard regresses, this mock
+				// gets consumed — that IS the duplicate effect on a real cluster.
+				secondary := svmCountedMock(h2, tc.method, 0, 200,
+					`{"jsonrpc":"2.0","id":1,"result":"DuplicateEffectSignature"}`)
 
-			net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-				svmUpstreamConfig("rpc1", h1),
-				svmUpstreamConfig("rpc2", h2),
-			})
-			net.PinUpstreamOrderForTest("rpc1", "rpc2")
+				net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
+					svmUpstreamConfig("rpc1", h1),
+					svmUpstreamConfig("rpc2", h2),
+				})
+				net.PinUpstreamOrderForTest("rpc1", "rpc2")
 
-			req := common.NewNormalizedRequest(fmt.Appendf(nil,
-				`{"jsonrpc":"2.0","id":1,"method":%q,"params":%s}`, tc.method, tc.params))
-			resp, err := svmProjectForward(ctx, net, req)
+				req := common.NewNormalizedRequest(fmt.Appendf(nil,
+					`{"jsonrpc":"2.0","id":1,"method":%q,"params":%s}`, tc.method, tc.params))
+				resp, err := svmProjectForward(ctx, net, req)
 
-			require.EqualValues(t, 1, primary.Load(),
-				"the primary must receive the write exactly once")
-			require.Zero(t, secondary.Load(),
-				"%s was re-dispatched to a second upstream after an effective first attempt", tc.method)
+				require.EqualValues(t, 1, primary.Load(),
+					"the primary must receive the write exactly once")
+				require.Zero(t, secondary.Load(),
+					"%s was re-dispatched to a second upstream after an effective first attempt", tc.method)
 
-			// The failure must surface, not be papered over by a silent failover.
-			require.Error(t, err, "the primary's error must reach the caller")
-			if resp != nil {
-				if jrr, jerr := resp.JsonRpcResponse(); jerr == nil && jrr != nil {
-					assert.NotContains(t, string(jrr.GetResultBytes()), "DuplicateEffectSignature")
+				// The failure must surface, not be papered over by a silent failover.
+				require.Error(t, err, "the primary's error must reach the caller")
+				if resp != nil {
+					if jrr, jerr := resp.JsonRpcResponse(); jerr == nil && jrr != nil {
+						assert.NotContains(t, string(jrr.GetResultBytes()), "DuplicateEffectSignature")
+					}
 				}
-			}
+			})
 		})
 	}
 }
@@ -155,41 +158,43 @@ func TestSvm_NonRetryableWrite_NeverDispatchedToSecondUpstream(t *testing.T) {
 // would pass the write tests while silently disabling failover for the entire
 // architecture.
 func TestSvm_ReadMethod_StillFailsOverInTheSameSetup(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
 
-	h1 := "svm-nrw-read-rpc1.localhost"
-	h2 := "svm-nrw-read-rpc2.localhost"
-	util.SetupMocksForSvmStatePoller(h1, 1000, 990)
-	util.SetupMocksForSvmStatePoller(h2, 1000, 990)
+		h1 := "svm-nrw-read-rpc1.localhost"
+		h2 := "svm-nrw-read-rpc2.localhost"
+		util.SetupMocksForSvmStatePoller(h1, 1000, 990)
+		util.SetupMocksForSvmStatePoller(h2, 1000, 990)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	primary := svmCountedMock(h1, "getBalance", 0, 500,
-		`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error"}}`)
-	secondary := svmCountedMock(h2, "getBalance", 0, 200,
-		`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1000},"value":777}}`)
+		primary := svmCountedMock(h1, "getBalance", 0, 500,
+			`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error"}}`)
+		secondary := svmCountedMock(h2, "getBalance", 0, 200,
+			`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1000},"value":777}}`)
 
-	net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-		svmUpstreamConfig("rpc1", h1),
-		svmUpstreamConfig("rpc2", h2),
+		net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
+			svmUpstreamConfig("rpc1", h1),
+			svmUpstreamConfig("rpc2", h2),
+		})
+		net.PinUpstreamOrderForTest("rpc1", "rpc2")
+
+		req := common.NewNormalizedRequest([]byte(
+			`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["pubkey"]}`))
+		resp, err := svmProjectForward(ctx, net, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Contains(t, string(jrr.GetResultBytes()), "777",
+			"a read method must still fail over to the healthy upstream")
+		require.EqualValues(t, 1, primary.Load())
+		require.EqualValues(t, 1, secondary.Load(),
+			"the guard must be method-scoped; reads still sweep to the next upstream")
 	})
-	net.PinUpstreamOrderForTest("rpc1", "rpc2")
-
-	req := common.NewNormalizedRequest([]byte(
-		`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["pubkey"]}`))
-	resp, err := svmProjectForward(ctx, net, req)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-
-	jrr, err := resp.JsonRpcResponse()
-	require.NoError(t, err)
-	assert.Contains(t, string(jrr.GetResultBytes()), "777",
-		"a read method must still fail over to the healthy upstream")
-	require.EqualValues(t, 1, primary.Load())
-	require.EqualValues(t, 1, secondary.Load(),
-		"the guard must be method-scoped; reads still sweep to the next upstream")
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -243,68 +248,70 @@ func svmMinimalCachePolicyNetwork(t *testing.T, ctx context.Context, net *Networ
 //     entire value for the ETL workload, so both directions are asserted here
 //     against the same policy — a fix in either direction alone fails this test.
 func TestSvm_MinimalCachePolicy_MovingHeadReadNeverGoesStaleForever(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
 
-	host := "svm-stale-rpc1.localhost"
-	util.SetupMocksForSvmStatePoller(host, 1000, 990)
+		host := "svm-stale-rpc1.localhost"
+		util.SetupMocksForSvmStatePoller(host, 1000, 990)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	// Balance answer A, then the on-chain balance changes and the upstream
-	// answers B. Registration order is the serving order in gock, so the
-	// Times(1) mock covers the first call and the persistent one every call
-	// after it.
-	firstBalance := svmCountedMock(host, "getBalance", 1, 200,
-		`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1000},"value":111}}`)
-	laterBalance := svmCountedMock(host, "getBalance", 0, 200,
-		`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1001},"value":222}}`)
+		// Balance answer A, then the on-chain balance changes and the upstream
+		// answers B. Registration order is the serving order in gock, so the
+		// Times(1) mock covers the first call and the persistent one every call
+		// after it.
+		firstBalance := svmCountedMock(host, "getBalance", 1, 200,
+			`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1000},"value":111}}`)
+		laterBalance := svmCountedMock(host, "getBalance", 0, 200,
+			`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1001},"value":222}}`)
 
-	// The same shape for a slot-pinned read: if the second answer is ever
-	// observed by the caller, the cache failed to serve an immutable response.
-	firstBlock := svmCountedMock(host, "getBlock", 1, 200,
-		`{"jsonrpc":"2.0","id":1,"result":{"blockhash":"immutable-block-42"}}`)
-	laterBlock := svmCountedMock(host, "getBlock", 0, 200,
-		`{"jsonrpc":"2.0","id":1,"result":{"blockhash":"SHOULD-NEVER-BE-SERVED"}}`)
+		// The same shape for a slot-pinned read: if the second answer is ever
+		// observed by the caller, the cache failed to serve an immutable response.
+		firstBlock := svmCountedMock(host, "getBlock", 1, 200,
+			`{"jsonrpc":"2.0","id":1,"result":{"blockhash":"immutable-block-42"}}`)
+		laterBlock := svmCountedMock(host, "getBlock", 0, 200,
+			`{"jsonrpc":"2.0","id":1,"result":{"blockhash":"SHOULD-NEVER-BE-SERVED"}}`)
 
-	net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{svmUpstreamConfig("rpc1", host)})
-	svmMinimalCachePolicyNetwork(t, ctx, net)
+		net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{svmUpstreamConfig("rpc1", host)})
+		svmMinimalCachePolicyNetwork(t, ctx, net)
 
-	balanceReq := []byte(`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["SoLAddr111",{"commitment":"finalized"}]}`)
-	blockReq := []byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[42,{"commitment":"finalized"}]}`)
+		balanceReq := []byte(`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["SoLAddr111",{"commitment":"finalized"}]}`)
+		blockReq := []byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[42,{"commitment":"finalized"}]}`)
 
-	resultOf := func(body []byte) string {
-		t.Helper()
-		resp, err := svmProjectForward(ctx, net, common.NewNormalizedRequest(body))
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		return string(jrr.GetResultBytes())
-	}
+		resultOf := func(body []byte) string {
+			t.Helper()
+			resp, err := svmProjectForward(ctx, net, common.NewNormalizedRequest(body))
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			return string(jrr.GetResultBytes())
+		}
 
-	// --- moving-head read: must NOT be pinned to its first observed value ---
-	require.Contains(t, resultOf(balanceReq), "111")
-	// Let ristretto flush its admission buffer, so a wrongly-written entry has
-	// every chance to become visible before the second read.
-	time.Sleep(100 * time.Millisecond)
-	require.Contains(t, resultOf(balanceReq), "222",
-		"getBalance at commitment:finalized was served from a permanent cache entry; "+
-			"the balance is pinned to its first observed value forever")
-	require.EqualValues(t, 1, firstBalance.Load())
-	require.EqualValues(t, 1, laterBalance.Load(),
-		"the second getBalance must reach the upstream, not the cache")
+		// --- moving-head read: must NOT be pinned to its first observed value ---
+		require.Contains(t, resultOf(balanceReq), "111")
+		// Let ristretto flush its admission buffer, so a wrongly-written entry has
+		// every chance to become visible before the second read.
+		time.Sleep(100 * time.Millisecond)
+		require.Contains(t, resultOf(balanceReq), "222",
+			"getBalance at commitment:finalized was served from a permanent cache entry; "+
+				"the balance is pinned to its first observed value forever")
+		require.EqualValues(t, 1, firstBalance.Load())
+		require.EqualValues(t, 1, laterBalance.Load(),
+			"the second getBalance must reach the upstream, not the cache")
 
-	// --- slot-pinned read: must STILL be served from cache -----------------
-	require.Contains(t, resultOf(blockReq), "immutable-block-42")
-	time.Sleep(100 * time.Millisecond)
-	require.Contains(t, resultOf(blockReq), "immutable-block-42",
-		"getBlock(slot) at commitment:finalized must still be served from cache — "+
-			"over-correcting the moving-head fix destroys the cache for the ETL workload")
-	require.EqualValues(t, 1, firstBlock.Load())
-	require.Zero(t, laterBlock.Load(),
-		"a second getBlock reached the upstream; the immutable response was not cached")
+		// --- slot-pinned read: must STILL be served from cache -----------------
+		require.Contains(t, resultOf(blockReq), "immutable-block-42")
+		time.Sleep(100 * time.Millisecond)
+		require.Contains(t, resultOf(blockReq), "immutable-block-42",
+			"getBlock(slot) at commitment:finalized must still be served from cache — "+
+				"over-correcting the moving-head fix destroys the cache for the ETL workload")
+		require.EqualValues(t, 1, firstBlock.Load())
+		require.Zero(t, laterBlock.Load(),
+			"a second getBlock reached the upstream; the immutable response was not cached")
+	})
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -462,80 +469,82 @@ func svmRepolicy(t *testing.T, net *Network, reg *upstream.UpstreamsRegistry, ct
 // rather than by re-writing mocks mid-flight, which keeps the test deterministic
 // against the 400ms background ticker.
 func TestSvm_UnhealthyUpstream_ExcludedFromRouting(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
 
-	h1 := "svm-cordon-rpc1.localhost"
-	h2 := "svm-cordon-rpc2.localhost"
-	// rpc1: shred watermark 600 slots AHEAD of the replayed slot — ingestion is
-	// fine, replay is stuck. Lag 600 > common.MaxShredInsertSlotLagThreshold.
-	util.SetupMocksForSvmStatePollerWithShred(h1, 1000, 990, 1600)
-	// rpc2: watermark level with the processed slot — healthy.
-	util.SetupMocksForSvmStatePollerWithShred(h2, 1000, 990, 1000)
+		h1 := "svm-cordon-rpc1.localhost"
+		h2 := "svm-cordon-rpc2.localhost"
+		// rpc1: shred watermark 600 slots AHEAD of the replayed slot — ingestion is
+		// fine, replay is stuck. Lag 600 > common.MaxShredInsertSlotLagThreshold.
+		util.SetupMocksForSvmStatePollerWithShred(h1, 1000, 990, 1600)
+		// rpc2: watermark level with the processed slot — healthy.
+		util.SetupMocksForSvmStatePollerWithShred(h2, 1000, 990, 1000)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	// rpc1 answers forever; rpc2 answers exactly once. The single-use mock is
-	// what makes the recovery phase a real assertion: once it is spent, only a
-	// re-admitted rpc1 can serve the request at all.
-	rpc1Hits := svmCountedMock(h1, "getBalance", 0, 200,
-		`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1000},"value":1}}`)
-	rpc2Hits := svmCountedMock(h2, "getBalance", 1, 200,
-		`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1000},"value":2}}`)
+		// rpc1 answers forever; rpc2 answers exactly once. The single-use mock is
+		// what makes the recovery phase a real assertion: once it is spent, only a
+		// re-admitted rpc1 can serve the request at all.
+		rpc1Hits := svmCountedMock(h1, "getBalance", 0, 200,
+			`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1000},"value":1}}`)
+		rpc2Hits := svmCountedMock(h2, "getBalance", 1, 200,
+			`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1000},"value":2}}`)
 
-	net, reg := setupSvmSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
-		svmUpstreamConfig("rpc1", h1),
-		svmUpstreamConfig("rpc2", h2),
+		net, reg := setupSvmSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
+			svmUpstreamConfig("rpc1", h1),
+			svmUpstreamConfig("rpc2", h2),
+		})
+		poller1 := svmPollerFor(t, reg, ctx, net.networkId, "rpc1")
+		poller2 := svmPollerFor(t, reg, ctx, net.networkId, "rpc2")
+
+		req := func() *common.NormalizedRequest {
+			return common.NewNormalizedRequest([]byte(
+				`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["pubkey"]}`))
+		}
+
+		// --- phase 1: rpc1 degraded, must be routed around ---------------------
+		svmAwaitHealthVerdict(t, ctx, poller1, false, "shred lag 600 must read as unhealthy")
+		svmAwaitHealthVerdict(t, ctx, poller2, true, "a level watermark must read as healthy")
+		svmRepolicy(t, net, reg, ctx)
+
+		require.NotContains(t, net.PolicyOrderedUpstreams("*"), "rpc1",
+			"a cordoned upstream must be dropped from the selection order")
+
+		rpc1Before := rpc1Hits.Load()
+		resp, err := svmProjectForward(ctx, net, req())
+		require.NoError(t, err)
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Contains(t, string(jrr.GetResultBytes()), `"value":2`,
+			"the request must be served by the healthy upstream")
+		require.Equal(t, rpc1Before, rpc1Hits.Load(),
+			"the unhealthy upstream received user traffic despite being cordoned")
+		require.EqualValues(t, 1, rpc2Hits.Load())
+
+		// --- phase 2: replay catches up, rpc1 must be selectable again ---------
+		// Live traffic observes rpc1 at slot 1600, level with its shred watermark,
+		// so the ingestion lag is gone. (The poller's own getSlot still answers
+		// 1000, but that is a rollback within the tolerated window and the shared
+		// counter ignores it, so the recovered view survives background ticks.)
+		poller1.SuggestLatestSlot(1600)
+		svmAwaitHealthVerdict(t, ctx, poller1, true, "lag back to zero must read as healthy")
+		svmRepolicy(t, net, reg, ctx)
+
+		require.Contains(t, net.PolicyOrderedUpstreams("*"), "rpc1",
+			"a recovered upstream must be re-admitted to the selection order")
+
+		// rpc2's mock is spent, so this can only succeed via rpc1.
+		resp, err = svmProjectForward(ctx, net, req())
+		require.NoError(t, err, "no upstream served the request after recovery")
+		jrr, err = resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Contains(t, string(jrr.GetResultBytes()), `"value":1`,
+			"the recovered upstream must serve traffic again")
+		require.Positive(t, rpc1Hits.Load(),
+			"the recovered upstream never received traffic; uncordon had no routing effect")
 	})
-	poller1 := svmPollerFor(t, reg, ctx, net.networkId, "rpc1")
-	poller2 := svmPollerFor(t, reg, ctx, net.networkId, "rpc2")
-
-	req := func() *common.NormalizedRequest {
-		return common.NewNormalizedRequest([]byte(
-			`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["pubkey"]}`))
-	}
-
-	// --- phase 1: rpc1 degraded, must be routed around ---------------------
-	svmAwaitHealthVerdict(t, ctx, poller1, false, "shred lag 600 must read as unhealthy")
-	svmAwaitHealthVerdict(t, ctx, poller2, true, "a level watermark must read as healthy")
-	svmRepolicy(t, net, reg, ctx)
-
-	require.NotContains(t, net.PolicyOrderedUpstreams("*"), "rpc1",
-		"a cordoned upstream must be dropped from the selection order")
-
-	rpc1Before := rpc1Hits.Load()
-	resp, err := svmProjectForward(ctx, net, req())
-	require.NoError(t, err)
-	jrr, err := resp.JsonRpcResponse()
-	require.NoError(t, err)
-	assert.Contains(t, string(jrr.GetResultBytes()), `"value":2`,
-		"the request must be served by the healthy upstream")
-	require.Equal(t, rpc1Before, rpc1Hits.Load(),
-		"the unhealthy upstream received user traffic despite being cordoned")
-	require.EqualValues(t, 1, rpc2Hits.Load())
-
-	// --- phase 2: replay catches up, rpc1 must be selectable again ---------
-	// Live traffic observes rpc1 at slot 1600, level with its shred watermark,
-	// so the ingestion lag is gone. (The poller's own getSlot still answers
-	// 1000, but that is a rollback within the tolerated window and the shared
-	// counter ignores it, so the recovered view survives background ticks.)
-	poller1.SuggestLatestSlot(1600)
-	svmAwaitHealthVerdict(t, ctx, poller1, true, "lag back to zero must read as healthy")
-	svmRepolicy(t, net, reg, ctx)
-
-	require.Contains(t, net.PolicyOrderedUpstreams("*"), "rpc1",
-		"a recovered upstream must be re-admitted to the selection order")
-
-	// rpc2's mock is spent, so this can only succeed via rpc1.
-	resp, err = svmProjectForward(ctx, net, req())
-	require.NoError(t, err, "no upstream served the request after recovery")
-	jrr, err = resp.JsonRpcResponse()
-	require.NoError(t, err)
-	assert.Contains(t, string(jrr.GetResultBytes()), `"value":1`,
-		"the recovered upstream must serve traffic again")
-	require.Positive(t, rpc1Hits.Load(),
-		"the recovered upstream never received traffic; uncordon had no routing effect")
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -624,35 +633,37 @@ func TestSvm_HttpStatusClassification_WithJsonRpcErrorBody(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// No t.Parallel: gock's mock registry is process-global.
-			util.ResetGock()
-			defer util.ResetGock()
+			synctest.Test(t, func(t *testing.T) {
+				// No t.Parallel: gock's mock registry is process-global.
+				util.ResetGock()
+				defer util.ResetGock()
 
-			host := "svm-http-" + tc.host + ".localhost"
-			util.SetupMocksForSvmStatePoller(host, 1000, 990)
+				host := "svm-http-" + tc.host + ".localhost"
+				util.SetupMocksForSvmStatePoller(host, 1000, 990)
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
 
-			svmCountedMock(host, "getBalance", 0, tc.status, tc.body)
+				svmCountedMock(host, "getBalance", 0, tc.status, tc.body)
 
-			net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-				svmUpstreamConfig("rpc1", host),
+				net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
+					svmUpstreamConfig("rpc1", host),
+				})
+
+				req := common.NewNormalizedRequest([]byte(
+					`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["pubkey"]}`))
+				_, err := svmProjectForward(ctx, net, req)
+				require.Error(t, err)
+				require.Truef(t, common.HasErrorCode(err, tc.wantCode),
+					"HTTP %d with body %q must classify as %s, got: %v", tc.status, tc.body, tc.wantCode, err)
+
+				got := svmClientErrorCode(t, req, err)
+				require.EqualValues(t, tc.wantWire, got,
+					"client-visible json-rpc code changed for HTTP %d", tc.status)
+				require.NotEqualValues(t, tc.forbidden, got,
+					"eRPC synthesized %d on an SVM path; a Solana client reads that as an agave condition, not an eRPC verdict",
+					tc.forbidden)
 			})
-
-			req := common.NewNormalizedRequest([]byte(
-				`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["pubkey"]}`))
-			_, err := svmProjectForward(ctx, net, req)
-			require.Error(t, err)
-			require.Truef(t, common.HasErrorCode(err, tc.wantCode),
-				"HTTP %d with body %q must classify as %s, got: %v", tc.status, tc.body, tc.wantCode, err)
-
-			got := svmClientErrorCode(t, req, err)
-			require.EqualValues(t, tc.wantWire, got,
-				"client-visible json-rpc code changed for HTTP %d", tc.status)
-			require.NotEqualValues(t, tc.forbidden, got,
-				"eRPC synthesized %d on an SVM path; a Solana client reads that as an agave condition, not an eRPC verdict",
-				tc.forbidden)
 		})
 	}
 }
@@ -743,78 +754,80 @@ func TestSvm_BareHttpFailure_ClassifiedFromStatusAndFailsOver(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// --- classification: one upstream, so the verdict reaches the caller ---
-			func() {
-				// No t.Parallel: gock's mock registry is process-global.
+			synctest.Test(t, func(t *testing.T) {
+				// --- classification: one upstream, so the verdict reaches the caller ---
+				func() {
+					// No t.Parallel: gock's mock registry is process-global.
+					util.ResetGock()
+					defer util.ResetGock()
+
+					host := "svm-bare-" + tc.host + ".localhost"
+					util.SetupMocksForSvmStatePoller(host, 1000, 990)
+
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+
+					svmCountedMock(host, "getBalance", 0, tc.status, tc.body)
+					net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
+						svmUpstreamConfig("rpc1", host),
+					})
+
+					req := common.NewNormalizedRequest([]byte(
+						`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["pubkey"]}`))
+					_, err := svmProjectForward(ctx, net, req)
+					require.Error(t, err)
+					require.Truef(t, common.HasErrorCode(err, tc.wantCode),
+						"HTTP %d with a non-JSON body must classify as %s, got: %v", tc.status, tc.wantCode, err)
+
+					// The regression itself: a bare HTTP failure must never land in
+					// the caller-side bucket. That class is what stops the sweep.
+					require.Falsef(t, common.HasErrorCode(err, common.ErrCodeEndpointClientSideException),
+						"HTTP %d with a non-JSON body was blamed on the caller; the sweep stops and no upstream failover happens", tc.status)
+
+					got := svmClientErrorCode(t, req, err)
+					require.EqualValues(t, tc.wantWire, got,
+						"client-visible json-rpc code changed for HTTP %d with a non-JSON body", tc.status)
+					// -32005 is eRPC's CapacityExceeded AND agave's NodeUnhealthy.
+					// A Solana client that reads it on a rate-limited response backs
+					// off waiting for a validator to catch up instead of slowing its
+					// own request rate, and eRPC's own quota verdict is already
+					// carried by the outer class plus the 429 status.
+					require.NotEqualValues(t, common.JsonRpcErrorCapacityExceeded, got,
+						"eRPC synthesized -32005 for a rate limit; a Solana client decodes that as agave NodeUnhealthy")
+				}()
+
+				// --- routing consequence: the request must reach a healthy node ---
 				util.ResetGock()
 				defer util.ResetGock()
 
-				host := "svm-bare-" + tc.host + ".localhost"
-				util.SetupMocksForSvmStatePoller(host, 1000, 990)
+				h1 := "svm-bare-" + tc.host + "-p.localhost"
+				h2 := "svm-bare-" + tc.host + "-s.localhost"
+				util.SetupMocksForSvmStatePoller(h1, 1000, 990)
+				util.SetupMocksForSvmStatePoller(h2, 1000, 990)
 
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 
-				svmCountedMock(host, "getBalance", 0, tc.status, tc.body)
+				primary := svmCountedMock(h1, "getBalance", 0, tc.status, tc.body)
+				secondary := svmCountedMock(h2, "getBalance", 0, 200,
+					`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1000},"value":777}}`)
+
 				net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-					svmUpstreamConfig("rpc1", host),
+					svmUpstreamConfig("rpc1", h1),
+					svmUpstreamConfig("rpc2", h2),
 				})
+				net.PinUpstreamOrderForTest("rpc1", "rpc2")
 
-				req := common.NewNormalizedRequest([]byte(
-					`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["pubkey"]}`))
-				_, err := svmProjectForward(ctx, net, req)
-				require.Error(t, err)
-				require.Truef(t, common.HasErrorCode(err, tc.wantCode),
-					"HTTP %d with a non-JSON body must classify as %s, got: %v", tc.status, tc.wantCode, err)
-
-				// The regression itself: a bare HTTP failure must never land in
-				// the caller-side bucket. That class is what stops the sweep.
-				require.Falsef(t, common.HasErrorCode(err, common.ErrCodeEndpointClientSideException),
-					"HTTP %d with a non-JSON body was blamed on the caller; the sweep stops and no upstream failover happens", tc.status)
-
-				got := svmClientErrorCode(t, req, err)
-				require.EqualValues(t, tc.wantWire, got,
-					"client-visible json-rpc code changed for HTTP %d with a non-JSON body", tc.status)
-				// -32005 is eRPC's CapacityExceeded AND agave's NodeUnhealthy.
-				// A Solana client that reads it on a rate-limited response backs
-				// off waiting for a validator to catch up instead of slowing its
-				// own request rate, and eRPC's own quota verdict is already
-				// carried by the outer class plus the 429 status.
-				require.NotEqualValues(t, common.JsonRpcErrorCapacityExceeded, got,
-					"eRPC synthesized -32005 for a rate limit; a Solana client decodes that as agave NodeUnhealthy")
-			}()
-
-			// --- routing consequence: the request must reach a healthy node ---
-			util.ResetGock()
-			defer util.ResetGock()
-
-			h1 := "svm-bare-" + tc.host + "-p.localhost"
-			h2 := "svm-bare-" + tc.host + "-s.localhost"
-			util.SetupMocksForSvmStatePoller(h1, 1000, 990)
-			util.SetupMocksForSvmStatePoller(h2, 1000, 990)
-
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
-			primary := svmCountedMock(h1, "getBalance", 0, tc.status, tc.body)
-			secondary := svmCountedMock(h2, "getBalance", 0, 200,
-				`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1000},"value":777}}`)
-
-			net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-				svmUpstreamConfig("rpc1", h1),
-				svmUpstreamConfig("rpc2", h2),
+				resp, err := svmProjectForward(ctx, net, common.NewNormalizedRequest([]byte(
+					`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["pubkey"]}`)))
+				require.NoErrorf(t, err,
+					"HTTP %d with a non-JSON body did not fail over to the healthy upstream", tc.status)
+				jrr, jerr := resp.JsonRpcResponse()
+				require.NoError(t, jerr)
+				require.Contains(t, string(jrr.GetResultBytes()), "777")
+				require.EqualValues(t, 1, primary.Load(), "the degraded upstream must be tried exactly once")
+				require.EqualValues(t, 1, secondary.Load(), "the healthy upstream must serve the request")
 			})
-			net.PinUpstreamOrderForTest("rpc1", "rpc2")
-
-			resp, err := svmProjectForward(ctx, net, common.NewNormalizedRequest([]byte(
-				`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["pubkey"]}`)))
-			require.NoErrorf(t, err,
-				"HTTP %d with a non-JSON body did not fail over to the healthy upstream", tc.status)
-			jrr, jerr := resp.JsonRpcResponse()
-			require.NoError(t, jerr)
-			require.Contains(t, string(jrr.GetResultBytes()), "777")
-			require.EqualValues(t, 1, primary.Load(), "the degraded upstream must be tried exactly once")
-			require.EqualValues(t, 1, secondary.Load(), "the healthy upstream must serve the request")
 		})
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -827,29 +828,32 @@ func TestCovSvmPoller_FloorProbeFailuresLeaveFloorUnknown(t *testing.T) {
 // becomes known once the background fetch lands.
 func TestCovSvmPoller_SlowFloorProbeCompletesAsync(t *testing.T) {
 	t.Parallel()
-	release := make(chan struct{})
-	up := &covSvmFuncUpstream{id: "covsvm-slowfloor",
-		fwd: func(ctx context.Context, req *common.NormalizedRequest, key string) (*common.NormalizedResponse, error) {
-			if key == "oldestBlock" {
-				select {
-				case <-release:
-				case <-ctx.Done():
-					return nil, ctx.Err()
+
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		up := &covSvmFuncUpstream{id: "covsvm-slowfloor",
+			fwd: func(ctx context.Context, req *common.NormalizedRequest, key string) (*common.NormalizedResponse, error) {
+				if key == "oldestBlock" {
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
 				}
-			}
-			return covSvmHealthyAnswer(req, key)
-		}}
-	p := newPollerWithUpstream(t, up)
+				return covSvmHealthyAnswer(req, key)
+			}}
+		p := newPollerWithUpstream(t, up)
 
-	require.NoError(t, p.Poll(context.Background()))
-	_, known := p.FirstAvailableSlot()
-	require.False(t, known, "the floor must not be known before the probe answers")
+		require.NoError(t, p.Poll(context.Background()))
+		_, known := p.FirstAvailableSlot()
+		require.False(t, known, "the floor must not be known before the probe answers")
 
-	close(release)
-	require.Eventually(t, func() bool {
-		floor, known := p.FirstAvailableSlot()
-		return known && floor == 200
-	}, 5*time.Second, 5*time.Millisecond)
+		close(release)
+		require.Eventually(t, func() bool {
+			floor, known := p.FirstAvailableSlot()
+			return known && floor == 200
+		}, 5*time.Second, 5*time.Millisecond)
+	})
 }
 
 func TestCovSvmPoller_LargeRollbackIsRecorded(t *testing.T) {

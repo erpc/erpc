@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -256,130 +257,146 @@ func TestNetwork_TipGetBlockOrdersByPollAgeCreditedHead(t *testing.T) {
 	}
 
 	t.Run("poller stops at tip after serving", func(t *testing.T) {
-		e := newPollAgeEnv(t, trio(), "fast", "slow", "reader")
-		s := e.head
-		e.movers = []string{"slow", "reader"}
-		e.step(3)
-		require.Equal(t, s, e.polled("fast"))
-		assert.Equal(t, "fast", e.first(e.head), "6s after its poll, a head 3 behind only aged: it keeps its place")
-		e.step(7)
-		assert.InDelta(t, s+5, e.headOf("fast"), 1, "the credit froze one poll period after the last report")
-		assert.Equal(t, "slow", e.first(e.head), "silent past its poll period while the chain moved: demoted")
+		synctest.Test(t, func(t *testing.T) {
+			e := newPollAgeEnv(t, trio(), "fast", "slow", "reader")
+			s := e.head
+			e.movers = []string{"slow", "reader"}
+			e.step(3)
+			require.Equal(t, s, e.polled("fast"))
+			assert.Equal(t, "fast", e.first(e.head), "6s after its poll, a head 3 behind only aged: it keeps its place")
+			e.step(7)
+			assert.InDelta(t, s+5, e.headOf("fast"), 1, "the credit froze one poll period after the last report")
+			assert.Equal(t, "slow", e.first(e.head), "silent past its poll period while the chain moved: demoted")
+		})
 	})
 
 	t.Run("stuck head while its polls succeed", func(t *testing.T) {
-		e := newPollAgeEnv(t, trio(), "fast", "slow", "reader")
-		s := e.head
-		e.movers = []string{"slow", "reader"}
-		e.step(5)
-		e.report("fast", s)
-		assert.Equal(t, s, e.headOf("fast"), "a report of the same head ends the credit")
-		assert.Equal(t, "slow", e.first(e.head), "demoted within one poll period")
-		for i := 1; i <= 15; i++ {
-			e.step(1)
-			if i%5 == 0 {
-				e.report("fast", s)
+		synctest.Test(t, func(t *testing.T) {
+			e := newPollAgeEnv(t, trio(), "fast", "slow", "reader")
+			s := e.head
+			e.movers = []string{"slow", "reader"}
+			e.step(5)
+			e.report("fast", s)
+			assert.Equal(t, s, e.headOf("fast"), "a report of the same head ends the credit")
+			assert.Equal(t, "slow", e.first(e.head), "demoted within one poll period")
+			for i := 1; i <= 15; i++ {
+				e.step(1)
+				if i%5 == 0 {
+					e.report("fast", s)
+				}
+				require.LessOrEqual(t, e.headOf("fast"), e.head-5, "step %d: lag at its last report stays", i)
 			}
-			require.LessOrEqual(t, e.headOf("fast"), e.head-5, "step %d: lag at its last report stays", i)
-		}
-		require.True(t, e.network.metricsTracker.IsHeadBenched(e.ups["fast"]), "a head stuck behind moving peers is benched")
-		e.report("fast", s)
-		e.step(1)
-		assert.Equal(t, s, e.headOf("fast"), "a benched head gets no credit")
-		assert.Equal(t, "slow", e.first(e.head))
+			require.True(t, e.network.metricsTracker.IsHeadBenched(e.ups["fast"]), "a head stuck behind moving peers is benched")
+			e.report("fast", s)
+			e.step(1)
+			assert.Equal(t, s, e.headOf("fast"), "a benched head gets no credit")
+			assert.Equal(t, "slow", e.first(e.head))
+		})
 	})
 
 	t.Run("steady lag of 5 blocks, network head jumps on a late peer", func(t *testing.T) {
-		e := newPollAgeEnv(t, []servedTipFixture{
-			{id: "lagger", latestBlock: 995},
-			{id: "slow", latestBlock: 1000},
-			{id: "late", latestBlock: 990, ignoreMethods: ignoreGetBlock},
-		}, "lagger", "slow", "late")
-		e.movers = []string{"slow", "late"}
-		for i := 1; i <= 20; i++ {
-			if i == 7 {
-				e.offset["late"] = 0 // catches up at once: the network head jumps 10
+		synctest.Test(t, func(t *testing.T) {
+			e := newPollAgeEnv(t, []servedTipFixture{
+				{id: "lagger", latestBlock: 995},
+				{id: "slow", latestBlock: 1000},
+				{id: "late", latestBlock: 990, ignoreMethods: ignoreGetBlock},
+			}, "lagger", "slow", "late")
+			e.movers = []string{"slow", "late"}
+			for i := 1; i <= 20; i++ {
+				if i == 7 {
+					e.offset["late"] = 0 // catches up at once: the network head jumps 10
+				}
+				e.step(1)
+				if i%5 == 0 {
+					e.report("lagger", e.head-5)
+				}
+				require.LessOrEqual(t, e.headOf("lagger"), e.head-5, "step %d: never presumed above network - 5", i)
 			}
-			e.step(1)
-			if i%5 == 0 {
-				e.report("lagger", e.head-5)
-			}
-			require.LessOrEqual(t, e.headOf("lagger"), e.head-5, "step %d: never presumed above network - 5", i)
-		}
-		assert.Equal(t, "slow", e.first(e.head))
+			assert.Equal(t, "slow", e.first(e.head))
+		})
 	})
 
 	t.Run("never reported a head", func(t *testing.T) {
-		e := newPollAgeEnv(t, []servedTipFixture{
-			{id: "never"},
-			{id: "slow", latestBlock: 1000},
-			{id: "reader", latestBlock: 1000, ignoreMethods: ignoreGetBlock},
-		}, "never", "slow", "reader")
-		e.step(3)
-		require.Zero(t, e.polled("never"))
-		before := e.first(e.head)
-		e.step(1)
-		assert.Zero(t, e.headOf("never"), "served traffic, still no head: no credit")
-		assert.Equal(t, before, e.first(e.head), "order unchanged by the credit")
+		synctest.Test(t, func(t *testing.T) {
+			e := newPollAgeEnv(t, []servedTipFixture{
+				{id: "never"},
+				{id: "slow", latestBlock: 1000},
+				{id: "reader", latestBlock: 1000, ignoreMethods: ignoreGetBlock},
+			}, "never", "slow", "reader")
+			e.step(3)
+			require.Zero(t, e.polled("never"))
+			before := e.first(e.head)
+			e.step(1)
+			assert.Zero(t, e.headOf("never"), "served traffic, still no head: no credit")
+			assert.Equal(t, before, e.first(e.head), "order unchanged by the credit")
+		})
 	})
 
 	t.Run("slow-to-answer upstream with the fresher poll", func(t *testing.T) {
-		e := newPollAgeEnv(t, trio(), "fast", "slow", "reader")
-		e.movers = []string{"slow", "reader"}
-		e.step(3)
-		assert.Equal(t, "fast", e.first(e.head), "a fresher poll alone does not make a tip leader")
-		e.movers = []string{"fast", "reader"}
-		e.step(3)
-		assert.LessOrEqual(t, e.headOf("slow"), e.head, "credit never above the corroborated head")
-		assert.Equal(t, "fast", e.first(e.head))
-		assert.Equal(t, "fast", e.first(e.head+1), "credit never makes a tip leader")
+		synctest.Test(t, func(t *testing.T) {
+			e := newPollAgeEnv(t, trio(), "fast", "slow", "reader")
+			e.movers = []string{"slow", "reader"}
+			e.step(3)
+			assert.Equal(t, "fast", e.first(e.head), "a fresher poll alone does not make a tip leader")
+			e.movers = []string{"fast", "reader"}
+			e.step(3)
+			assert.LessOrEqual(t, e.headOf("slow"), e.head, "credit never above the corroborated head")
+			assert.Equal(t, "fast", e.first(e.head))
+			assert.Equal(t, "fast", e.first(e.head+1), "credit never makes a tip leader")
+		})
 	})
 
 	t.Run("far-ahead rogue", func(t *testing.T) {
-		e := newPollAgeEnv(t, []servedTipFixture{
-			{id: "fast", latestBlock: 1000},
-			{id: "slow", latestBlock: 1000},
-			{id: "rogue", latestBlock: 1000},
-		}, "rogue", "fast", "slow")
-		s := e.head
-		e.movers = []string{"fast", "slow"}
-		// The rogue is on another chain: its poller refuses the jump it verifies,
-		// while the tracker stores the far-ahead head it reported.
-		e.wrongChain["rogue"].Store(true)
-		e.report("rogue", 103_000)
-		e.step(3)
-		require.Equal(t, s, e.polled("rogue"), "the poller never adopts a head on another chain")
-		assert.Equal(t, s, e.headOf("rogue"), "a tracked head above the network earns no credit")
-		for _, id := range []string{"fast", "slow"} {
-			assert.Equal(t, e.head, e.headOf(id), "%s: at the network head, never above it", id)
-		}
-		assert.Equal(t, "fast", e.first(e.head), "the rogue stays demoted")
+		synctest.Test(t, func(t *testing.T) {
+			e := newPollAgeEnv(t, []servedTipFixture{
+				{id: "fast", latestBlock: 1000},
+				{id: "slow", latestBlock: 1000},
+				{id: "rogue", latestBlock: 1000},
+			}, "rogue", "fast", "slow")
+			s := e.head
+			e.movers = []string{"fast", "slow"}
+			// The rogue is on another chain: its poller refuses the jump it verifies,
+			// while the tracker stores the far-ahead head it reported.
+			e.wrongChain["rogue"].Store(true)
+			e.report("rogue", 103_000)
+			e.step(3)
+			require.Equal(t, s, e.polled("rogue"), "the poller never adopts a head on another chain")
+			assert.Equal(t, s, e.headOf("rogue"), "a tracked head above the network earns no credit")
+			for _, id := range []string{"fast", "slow"} {
+				assert.Equal(t, e.head, e.headOf(id), "%s: at the network head, never above it", id)
+			}
+			assert.Equal(t, "fast", e.first(e.head), "the rogue stays demoted")
+		})
 	})
 
 	t.Run("poller stops at tip, never served", func(t *testing.T) {
-		e := newPollAgeEnv(t, trio(), "fast", "slow", "reader")
-		s := e.head
-		// Peers are known to the tracker; fast has served nothing.
-		for _, id := range []string{"slow", "reader"} {
-			e.network.metricsTracker.GetUpstreamMethodMetrics(e.ups[id], "eth_getBlockByNumber", common.DataFinalityStateAll)
-		}
-		e.movers = []string{"slow", "reader"}
-		e.step(10)
-		assert.InDelta(t, s+5, e.headOf("fast"), 1, "the credit froze one poll period after the last report")
-		assert.Equal(t, "slow", e.first(e.head), "demoted as if it had served")
+		synctest.Test(t, func(t *testing.T) {
+			e := newPollAgeEnv(t, trio(), "fast", "slow", "reader")
+			s := e.head
+			// Peers are known to the tracker; fast has served nothing.
+			for _, id := range []string{"slow", "reader"} {
+				e.network.metricsTracker.GetUpstreamMethodMetrics(e.ups[id], "eth_getBlockByNumber", common.DataFinalityStateAll)
+			}
+			e.movers = []string{"slow", "reader"}
+			e.step(10)
+			assert.InDelta(t, s+5, e.headOf("fast"), 1, "the credit froze one poll period after the last report")
+			assert.Equal(t, "slow", e.first(e.head), "demoted as if it had served")
+		})
 	})
 
 	t.Run("two upstreams only", func(t *testing.T) {
-		e := newPollAgeEnv(t, []servedTipFixture{
-			{id: "fast", latestBlock: 1000},
-			{id: "slow", latestBlock: 1000},
-		}, "fast", "slow")
-		s := e.head
-		e.movers = []string{"slow"}
-		e.step(3)
-		assert.Equal(t, s, e.headOf("fast"), "the corroborated head is the lower one: no credit")
-		assert.Equal(t, "slow", e.first(e.head), "same order as without the credit")
-		e.step(20)
-		assert.Equal(t, "slow", e.first(e.head), "still demoted once benched")
+		synctest.Test(t, func(t *testing.T) {
+			e := newPollAgeEnv(t, []servedTipFixture{
+				{id: "fast", latestBlock: 1000},
+				{id: "slow", latestBlock: 1000},
+			}, "fast", "slow")
+			s := e.head
+			e.movers = []string{"slow"}
+			e.step(3)
+			assert.Equal(t, s, e.headOf("fast"), "the corroborated head is the lower one: no credit")
+			assert.Equal(t, "slow", e.first(e.head), "same order as without the credit")
+			e.step(20)
+			assert.Equal(t, "slow", e.first(e.head), "still demoted once benched")
+		})
 	})
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -65,121 +66,131 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 	defer util.ResetGock()
 
 	t.Run("Bug_FreshResponseAboveTipMustBePinnedToServedTip", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		setupBniPollerMocks()
-		setupBniBlockNumberMocks()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			setupBniPollerMocks()
+			setupBniBlockNumberMocks()
 
-		// Fresh upstream first: rpc2 serves 0x1000, above the served tip.
-		send, _, shutdown := bniServedTipBoot(t, bniConfig(false, nil), "rpc2", "rpc1")
-		defer shutdown()
+			// Fresh upstream first: rpc2 serves 0x1000, above the served tip.
+			send, _, shutdown := bniServedTipBoot(t, bniConfig(false, nil), "rpc2", "rpc1")
+			defer shutdown()
 
-		got, hdrs := bniSend(t, send, nil, nil)
-		assert.Equal(t, bniLaggingHead, got,
-			"eth_blockNumber must be pinned to the served tip (0x%x) that \"latest\" interpolation uses, not the fresher upstream head (0x%x)",
-			bniLaggingHead, bniHealthyHead)
-		assert.Empty(t, hdrs["X-Erpc-Upstream"],
-			"the pin discards any upstream answer, so the served tip must be answered without dispatching")
+			got, hdrs := bniSend(t, send, nil, nil)
+			assert.Equal(t, bniLaggingHead, got,
+				"eth_blockNumber must be pinned to the served tip (0x%x) that \"latest\" interpolation uses, not the fresher upstream head (0x%x)",
+				bniLaggingHead, bniHealthyHead)
+			assert.Empty(t, hdrs["X-Erpc-Upstream"],
+				"the pin discards any upstream answer, so the served tip must be answered without dispatching")
+		})
 	})
 
 	t.Run("Bug_CacheHitAboveTipMustBePinnedToServedTip", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		setupBniPollerMocks()
-		setupBniBlockNumberMocks()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			setupBniPollerMocks()
+			setupBniBlockNumberMocks()
 
-		send, ntw, shutdown := bniServedTipBoot(t, bniConfig(true, nil), "rpc2", "rpc1")
-		defer shutdown()
+			send, ntw, shutdown := bniServedTipBoot(t, bniConfig(true, nil), "rpc2", "rpc1")
+			defer shutdown()
 
-		// A fresh rpc2 response planted in the (possibly shared) cache — the
-		// dominant path in practice: eth_blockNumber is realtime-cached, so
-		// most reads are HITs carrying a value above the served tip.
-		bniSeedCache(t, ntw, "0x1000")
+			// A fresh rpc2 response planted in the (possibly shared) cache — the
+			// dominant path in practice: eth_blockNumber is realtime-cached, so
+			// most reads are HITs carrying a value above the served tip.
+			bniSeedCache(t, ntw, "0x1000")
 
-		got, hdrs := bniSend(t, send, nil, nil)
-		t.Logf("response: block=0x%x cacheHeader=%q", got, hdrs["X-Erpc-Cache"])
-		assert.Equal(t, bniLaggingHead, got,
-			"a cache-hit response above the served tip must be pinned down just like a fresh response")
+			got, hdrs := bniSend(t, send, nil, nil)
+			t.Logf("response: block=0x%x cacheHeader=%q", got, hdrs["X-Erpc-Cache"])
+			assert.Equal(t, bniLaggingHead, got,
+				"a cache-hit response above the served tip must be pinned down just like a fresh response")
+		})
 	})
 
 	t.Run("Baseline_ResponseAtServedTipPassesThrough", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		setupBniPollerMocks()
-		setupBniBlockNumberMocks()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			setupBniPollerMocks()
+			setupBniBlockNumberMocks()
 
-		// Lagging upstream first: rpc1 serves 0x800 == the served tip.
-		send, _, shutdown := bniServedTipBoot(t, bniConfig(false, nil), "rpc1", "rpc2")
-		defer shutdown()
+			// Lagging upstream first: rpc1 serves 0x800 == the served tip.
+			send, _, shutdown := bniServedTipBoot(t, bniConfig(false, nil), "rpc1", "rpc2")
+			defer shutdown()
 
-		got, _ := bniSend(t, send, nil, nil)
-		assert.Equal(t, bniLaggingHead, got)
+			got, _ := bniSend(t, send, nil, nil)
+			assert.Equal(t, bniLaggingHead, got)
+		})
 	})
 
 	t.Run("Baseline_PerRequestOverrideServesRawValue", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		setupBniPollerMocks()
-		setupBniBlockNumberMocks()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			setupBniPollerMocks()
+			setupBniBlockNumberMocks()
 
-		send, _, shutdown := bniServedTipBoot(t, bniConfig(false, nil), "rpc2", "rpc1")
-		defer shutdown()
+			send, _, shutdown := bniServedTipBoot(t, bniConfig(false, nil), "rpc2", "rpc1")
+			defer shutdown()
 
-		// enforce-highest-block=false must bypass the pin exactly like it
-		// bypasses max-mode enforcement.
-		got, _ := bniSend(t, send, nil, map[string]string{"enforce-highest-block": "false"})
-		assert.Equal(t, bniHealthyHead, got)
+			// enforce-highest-block=false must bypass the pin exactly like it
+			// bypasses max-mode enforcement.
+			got, _ := bniSend(t, send, nil, map[string]string{"enforce-highest-block": "false"})
+			assert.Equal(t, bniHealthyHead, got)
+		})
 	})
 
 	t.Run("LocalAnswerRefreshesBallotPollers", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
 
-		// Heads move up 5 blocks once `moved` flips. Registered before the
-		// static bootstrap mocks so gock matches them first; until the flip
-		// they decline and the static heads (0x800/0x1000) answer.
-		var moved atomic.Bool
-		for host, head := range map[string]string{
-			"http://rpc1.localhost": "0x805",
-			"http://rpc2.localhost": "0x1005",
-		} {
-			gock.New(host).Post("").Persist().
-				Filter(func(r *http.Request) bool {
-					b := util.SafeReadBody(r)
-					return moved.Load() && strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
-				}).
-				Reply(200).
-				JSON([]byte(fmt.Sprintf(`{"result":{"number":"%s","timestamp":"0x6702a8f0"}}`, head)))
-		}
-		setupBniPollerMocks()
-		setupBniBlockNumberMocks()
+			// Heads move up 5 blocks once `moved` flips. Registered before the
+			// static bootstrap mocks so gock matches them first; until the flip
+			// they decline and the static heads (0x800/0x1000) answer.
+			var moved atomic.Bool
+			for host, head := range map[string]string{
+				"http://rpc1.localhost": "0x805",
+				"http://rpc2.localhost": "0x1005",
+			} {
+				gock.New(host).Post("").Persist().
+					Filter(func(r *http.Request) bool {
+						b := util.SafeReadBody(r)
+						return moved.Load() && strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
+					}).
+					Reply(200).
+					JSON([]byte(fmt.Sprintf(`{"result":{"number":"%s","timestamp":"0x6702a8f0"}}`, head)))
+			}
+			setupBniPollerMocks()
+			setupBniBlockNumberMocks()
 
-		// A 30s ticker cannot poll during the test; a 100ms debounce lets each
-		// eth_blockNumber answer kick a refresh almost at once.
-		cfg := bniConfig(false, nil)
-		for _, u := range cfg.Projects[0].Upstreams {
-			u.Evm.StatePollerInterval = common.Duration(30 * time.Second)
-			u.Evm.StatePollerDebounce = common.Duration(100 * time.Millisecond)
-		}
-		// rpc3 is a static serving range (upper.exactBlock below its head), first
-		// in routing order: it never votes, so it must not take a refresh slot
-		// from the voters rpc2 and rpc1.
-		rangeEnd := int64(0x700)
-		cfg.Projects[0].Upstreams[2].Evm.BlockAvailability = &common.EvmBlockAvailabilityConfig{
-			Upper: &common.EvmAvailabilityBoundConfig{ExactBlock: &rangeEnd},
-		}
-		send, _, shutdown := bniServedTipBoot(t, cfg, "rpc3", "rpc2", "rpc1")
-		defer shutdown()
+			// A 30s ticker cannot poll during the test; a 100ms debounce lets each
+			// eth_blockNumber answer kick a refresh almost at once.
+			cfg := bniConfig(false, nil)
+			for _, u := range cfg.Projects[0].Upstreams {
+				u.Evm.StatePollerInterval = common.Duration(30 * time.Second)
+				u.Evm.StatePollerDebounce = common.Duration(100 * time.Millisecond)
+			}
+			// rpc3 is a static serving range (upper.exactBlock below its head), first
+			// in routing order: it never votes, so it must not take a refresh slot
+			// from the voters rpc2 and rpc1.
+			rangeEnd := int64(0x700)
+			cfg.Projects[0].Upstreams[2].Evm.BlockAvailability = &common.EvmBlockAvailabilityConfig{
+				Upper: &common.EvmAvailabilityBoundConfig{ExactBlock: &rangeEnd},
+			}
+			send, _, shutdown := bniServedTipBoot(t, cfg, "rpc3", "rpc2", "rpc1")
+			defer shutdown()
 
-		got, _ := bniSend(t, send, nil, nil)
-		require.Equal(t, bniLaggingHead, got)
-
-		moved.Store(true)
-		require.Eventually(t, func() bool {
 			got, _ := bniSend(t, send, nil, nil)
-			return got == bniLaggingHead+5
-		}, 3*time.Second, 50*time.Millisecond,
-			"eth_blockNumber must refresh the ballot's pollers and reach the moved served head (0x%x) without waiting for the 30s poll interval",
-			bniLaggingHead+5)
+			require.Equal(t, bniLaggingHead, got)
+
+			moved.Store(true)
+			require.Eventually(t, func() bool {
+				got, _ := bniSend(t, send, nil, nil)
+				return got == bniLaggingHead+5
+			}, 3*time.Second, 50*time.Millisecond,
+				"eth_blockNumber must refresh the ballot's pollers and reach the moved served head (0x%x) without waiting for the 30s poll interval",
+				bniLaggingHead+5)
+		})
 	})
 }

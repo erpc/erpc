@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -144,43 +145,45 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 }
 
 func TestEvmJsonRpcCache_Set_UseUpstreamGating(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
-	// connector[0] caches system-transaction data (tagged systx); connector[1] is a neutral cache.
-	systxPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-		Network: "evm:123",
-		Method:  "eth_getBlockByNumber",
-	}, mockConnectors[0])
-	require.NoError(t, err)
-	systxPolicy.SetConnectorTags([]string{"systx"})
+		// connector[0] caches system-transaction data (tagged systx); connector[1] is a neutral cache.
+		systxPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network: "evm:123",
+			Method:  "eth_getBlockByNumber",
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		systxPolicy.SetConnectorTags([]string{"systx"})
 
-	neutralPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-		Network: "evm:123",
-		Method:  "eth_getBlockByNumber",
-	}, mockConnectors[1])
-	require.NoError(t, err)
+		neutralPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network: "evm:123",
+			Method:  "eth_getBlockByNumber",
+		}, mockConnectors[1])
+		require.NoError(t, err)
 
-	cache.SetPolicies([]*data.CachePolicy{systxPolicy, neutralPolicy})
+		cache.SetPolicies([]*data.CachePolicy{systxPolicy, neutralPolicy})
 
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x2",false],"id":1}`))
-	req.SetNetwork(mockNetwork)
-	req.SetCacheDal(cache)
-	// Caller pinned away from systx sources, so the systx-tagged cache must be skipped.
-	req.SetDirectives(&common.RequestDirectives{UseUpstream: "!systx*"})
-	resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xabc","number":"0x2"}}`))
-	resp.SetUpstream(mockUpstreams[0])
-	req.SetLastValidResponse(ctx, resp)
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x2",false],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+		// Caller pinned away from systx sources, so the systx-tagged cache must be skipped.
+		req.SetDirectives(&common.RequestDirectives{UseUpstream: "!systx*"})
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xabc","number":"0x2"}}`))
+		resp.SetUpstream(mockUpstreams[0])
+		req.SetLastValidResponse(ctx, resp)
 
-	mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	mockConnectors[1].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockConnectors[1].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
-	err = cache.Set(context.Background(), req, resp)
-	assert.NoError(t, err)
+		err = cache.Set(context.Background(), req, resp)
+		assert.NoError(t, err)
 
-	mockConnectors[0].AssertNotCalled(t, "Set")
-	mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:2", mock.Anything, mock.Anything, mock.Anything)
+		mockConnectors[0].AssertNotCalled(t, "Set")
+		mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:2", mock.Anything, mock.Anything, mock.Anything)
+	})
 }
 
 // Non-canonical method casings must get the same cache treatment as canonical
@@ -195,11 +198,67 @@ func TestEvmJsonRpcCache_Set_UseUpstreamGating(t *testing.T) {
 func TestEvmJsonRpcCache_Set_MethodCasingEquivalence(t *testing.T) {
 	for _, method := range []string{"eth_getTransactionReceipt", "ETH_GETTRANSACTIONRECEIPT", "eth_GetTransactionReceipt"} {
 		t.Run(method, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"` + method + `","params":["0xabc"],"id":1}`))
+				req.SetNetwork(mockNetwork)
+				req.SetCacheDal(cache)
+				resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xabc","blockNumber":"0x2"}}`))
+				resp.SetUpstream(mockUpstreams[0])
+				req.SetLastValidResponse(ctx, resp)
+
+				policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+					Network:  "evm:123",
+					Method:   "*",
+					Finality: common.DataFinalityStateFinalized,
+				}, mockConnectors[0])
+				require.NoError(t, err)
+				cache.SetPolicies([]*data.CachePolicy{policy})
+
+				mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+				err = cache.Set(context.Background(), req, resp)
+				assert.NoError(t, err)
+				// Identical cache decision for every casing: the block ref comes from
+				// the response blockNumber (0x2, finalized), so the same partition key
+				// is derived and the finalized-only policy matches.
+				mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:2", mock.Anything, mock.Anything, mock.Anything)
+			})
+		})
+	}
+}
+
+func TestEvmJsonRpcCache_Set(t *testing.T) {
+	t.Run("DoNotCacheWhenEthGetTransactionByHashMissingBlockNumber", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
-			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"` + method + `","params":["0xabc"],"id":1}`))
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","blockNumber":null}}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
+
+			err := cache.Set(context.Background(), req, resp)
+
+			assert.NoError(t, err)
+			mockConnectors[0].AssertNotCalled(t, "Set")
+		})
+	})
+
+	t.Run("CacheIfBlockNumberIsFinalizedWhenBlockIsIrrelevantForPrimaryKey", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabc",false],"id":1}`))
 			req.SetNetwork(mockNetwork)
 			req.SetCacheDal(cache)
 			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xabc","blockNumber":"0x2"}}`))
@@ -208,118 +267,72 @@ func TestEvmJsonRpcCache_Set_MethodCasingEquivalence(t *testing.T) {
 
 			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 				Network:  "evm:123",
-				Method:   "*",
+				Method:   "eth_getTransactionReceipt",
 				Finality: common.DataFinalityStateFinalized,
 			}, mockConnectors[0])
 			require.NoError(t, err)
-			cache.SetPolicies([]*data.CachePolicy{policy})
+			cache.SetPolicies([]*data.CachePolicy{
+				policy,
+			})
 
 			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
 			err = cache.Set(context.Background(), req, resp)
+
 			assert.NoError(t, err)
-			// Identical cache decision for every casing: the block ref comes from
-			// the response blockNumber (0x2, finalized), so the same partition key
-			// is derived and the finalized-only policy matches.
 			mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:2", mock.Anything, mock.Anything, mock.Anything)
 		})
-	}
-}
-
-func TestEvmJsonRpcCache_Set(t *testing.T) {
-	t.Run("DoNotCacheWhenEthGetTransactionByHashMissingBlockNumber", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","blockNumber":null}}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
-
-		err := cache.Set(context.Background(), req, resp)
-
-		assert.NoError(t, err)
-		mockConnectors[0].AssertNotCalled(t, "Set")
-	})
-
-	t.Run("CacheIfBlockNumberIsFinalizedWhenBlockIsIrrelevantForPrimaryKey", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabc",false],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xabc","blockNumber":"0x2"}}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
-
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getTransactionReceipt",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{
-			policy,
-		})
-
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-		err = cache.Set(context.Background(), req, resp)
-
-		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:2", mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("CacheIfBlockNumberIsFinalizedWhenBlockIsUsedForPrimaryKey", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x2",false],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xabc","number":"0x2"}}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x2",false],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xabc","number":"0x2"}}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBlockByNumber",
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{
-			policy,
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network: "evm:123",
+				Method:  "eth_getBlockByNumber",
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{
+				policy,
+			})
+
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+			err = cache.Set(context.Background(), req, resp)
+
+			assert.NoError(t, err)
+			mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:2", mock.Anything, mock.Anything, mock.Anything)
 		})
-
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-		err = cache.Set(context.Background(), req, resp)
-
-		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:2", mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("SkipWhenNoRefAndNoBlockNumberFound", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x1234"}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x1234"}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
 
-		err := cache.Set(context.Background(), req, resp)
+			err := cache.Set(context.Background(), req, resp)
 
-		assert.NoError(t, err)
-		mockConnectors[0].AssertNotCalled(t, "Set")
+			assert.NoError(t, err)
+			mockConnectors[0].AssertNotCalled(t, "Set")
+		})
 	})
 
 	t.Run("CacheIfBlockRefFoundWhetherBlockNumberExistsOrNot", func(t *testing.T) {
@@ -355,275 +368,295 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
-				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"` + tc.method + `","params":` + tc.params + `,"id":1}`))
-				req.SetNetwork(mockNetwork)
-				req.SetCacheDal(cache)
-				resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(tc.result))
-				resp.SetUpstream(mockUpstreams[0])
-				req.SetLastValidResponse(ctx, resp)
+				synctest.Test(t, func(t *testing.T) {
+					req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"` + tc.method + `","params":` + tc.params + `,"id":1}`))
+					req.SetNetwork(mockNetwork)
+					req.SetCacheDal(cache)
+					resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(tc.result))
+					resp.SetUpstream(mockUpstreams[0])
+					req.SetLastValidResponse(ctx, resp)
 
-				policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-					Network:  "evm:123",
-					Method:   tc.method,
-					Finality: tc.finality,
-				}, mockConnectors[0])
-				require.NoError(t, err)
-				cache.SetPolicies([]*data.CachePolicy{
-					policy,
+					policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+						Network:  "evm:123",
+						Method:   tc.method,
+						Finality: tc.finality,
+					}, mockConnectors[0])
+					require.NoError(t, err)
+					cache.SetPolicies([]*data.CachePolicy{
+						policy,
+					})
+
+					mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+
+					err = cache.Set(context.Background(), req, resp)
+
+					assert.NoError(t, err)
+					mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.MatchedBy(func(key string) bool {
+						return key == "evm:123:"+tc.expectedRef
+					}), mock.Anything, mock.Anything, mock.Anything)
 				})
-
-				mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
-
-				err = cache.Set(context.Background(), req, resp)
-
-				assert.NoError(t, err)
-				mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.MatchedBy(func(key string) bool {
-					return key == "evm:123:"+tc.expectedRef
-				}), mock.Anything, mock.Anything, mock.Anything)
 			})
 		}
 	})
 
 	t.Run("CacheResponseForFinalizedBlock", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1",false],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"number":"0x1","hash":"0xabc"}}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1",false],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"number":"0x1","hash":"0xabc"}}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBlockByNumber",
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{
-			policy,
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network: "evm:123",
+				Method:  "eth_getBlockByNumber",
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{
+				policy,
+			})
+
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+			err = cache.Set(context.Background(), req, resp)
+
+			assert.NoError(t, err)
+			mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 		})
-
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-		err = cache.Set(context.Background(), req, resp)
-
-		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("SkipCachingForUnfinalizedBlock", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x399",false],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"number":"0x399","hash":"0xdef"}}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x399",false],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"number":"0x399","hash":"0xdef"}}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
 
-		err := cache.Set(context.Background(), req, resp)
+			err := cache.Set(context.Background(), req, resp)
 
-		assert.NoError(t, err)
-		mockConnectors[0].AssertNotCalled(t, "Set")
+			assert.NoError(t, err)
+			mockConnectors[0].AssertNotCalled(t, "Set")
+		})
 	})
 
 	t.Run("ShouldNotCacheEmptyResponseIfNodeNotSynced", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 15}})
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 15}})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
 
-		err := cache.Set(context.Background(), req, resp)
+			err := cache.Set(context.Background(), req, resp)
 
-		assert.NoError(t, err)
-		mockConnectors[0].AssertNotCalled(t, "Set")
+			assert.NoError(t, err)
+			mockConnectors[0].AssertNotCalled(t, "Set")
+		})
 	})
 
 	t.Run("ShouldNotCacheEmptyResponseIfUnknownSyncState", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
 
-		err := cache.Set(context.Background(), req, resp)
+			err := cache.Set(context.Background(), req, resp)
 
-		assert.NoError(t, err)
-		mockConnectors[0].AssertNotCalled(t, "Set")
+			assert.NoError(t, err)
+			mockConnectors[0].AssertNotCalled(t, "Set")
+		})
 	})
 
 	t.Run("ShouldNotCacheEmptyResponseIfBlockNotFinalized", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x14"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x14"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
 
-		err := cache.Set(context.Background(), req, resp)
+			err := cache.Set(context.Background(), req, resp)
 
-		assert.NoError(t, err)
-		mockConnectors[0].AssertNotCalled(t, "Set")
+			assert.NoError(t, err)
+			mockConnectors[0].AssertNotCalled(t, "Set")
+		})
 	})
 
 	t.Run("ShouldNotCacheEmptyResponseIfCannotDetermineBlockNumber", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
 
-		err := cache.Set(context.Background(), req, resp)
+			err := cache.Set(context.Background(), req, resp)
 
-		assert.NoError(t, err)
-		mockConnectors[0].AssertNotCalled(t, "Set")
+			assert.NoError(t, err)
+			mockConnectors[0].AssertNotCalled(t, "Set")
+		})
 	})
 
 	t.Run("ShouldCacheEmptyResponseIfNodeSyncedAndBlockFinalized", func(t *testing.T) {
-		util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
-		defer util.AssertNoPendingMocks(t, 0)
+		synctest.Test(t, func(t *testing.T) {
+			util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.ResetGock()
+			defer util.AssertNoPendingMocks(t, 0)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBalance",
-			Empty:   common.CacheEmptyBehaviorAllow,
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{
-			policy,
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network: "evm:123",
+				Method:  "eth_getBalance",
+				Empty:   common.CacheEmptyBehaviorAllow,
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{
+				policy,
+			})
+
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+			err = cache.Set(context.Background(), req, resp)
+
+			assert.NoError(t, err)
+			mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, mock.Anything)
 		})
-
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-		err = cache.Set(context.Background(), req, resp)
-
-		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("StoreOnAllMatchingConnectors", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			// Note: Suggest* are async; use high values so async poller bootstrap won't downgrade counters
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 0x11117777, lstBn: 0x11118888},
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				// Note: Suggest* are async; use high values so async poller bootstrap won't downgrade counters
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 0x11117777, lstBn: 0x11118888},
+			})
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0x123"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0x123","blockNumber":"0x1"}}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
+
+			// Create two policies with different connectors and finality states
+			policy1, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:   "*",
+				Method:    "*",
+				Finality:  common.DataFinalityStateFinalized,
+				Connector: "mock1",
+			}, mockConnectors[0])
+			require.NoError(t, err)
+
+			policy2, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:   "*",
+				Method:    "*",
+				Finality:  common.DataFinalityStateFinalized,
+				Connector: "mock2",
+			}, mockConnectors[1])
+			require.NoError(t, err)
+
+			cache.SetPolicies([]*data.CachePolicy{policy1, policy2})
+
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+			mockConnectors[1].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+			err = cache.Set(context.Background(), req, resp)
+
+			assert.NoError(t, err)
+			mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:1", mock.Anything, mock.Anything, mock.Anything)
+			mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:1", mock.Anything, mock.Anything, mock.Anything)
 		})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0x123"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0x123","blockNumber":"0x1"}}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
-
-		// Create two policies with different connectors and finality states
-		policy1, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
-			Connector: "mock1",
-		}, mockConnectors[0])
-		require.NoError(t, err)
-
-		policy2, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
-			Connector: "mock2",
-		}, mockConnectors[1])
-		require.NoError(t, err)
-
-		cache.SetPolicies([]*data.CachePolicy{policy1, policy2})
-
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-		mockConnectors[1].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-		err = cache.Set(context.Background(), req, resp)
-
-		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:1", mock.Anything, mock.Anything, mock.Anything)
-		mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:1", mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("RespectFinalityStateWhenStoring", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+			})
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","blockNumber":"0x1"}}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
+
+			// Create policies with different finality states
+			policy1, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:   "*",
+				Method:    "*",
+				Finality:  common.DataFinalityStateFinalized,
+				Connector: "mock1",
+			}, mockConnectors[0])
+			require.NoError(t, err)
+
+			policy2, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:   "*",
+				Method:    "*",
+				Finality:  common.DataFinalityStateUnfinalized,
+				Connector: "mock2",
+			}, mockConnectors[1])
+			require.NoError(t, err)
+
+			cache.SetPolicies([]*data.CachePolicy{policy1, policy2})
+
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+			mockConnectors[1].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+			err = cache.Set(context.Background(), req, resp)
+
+			assert.NoError(t, err)
+			// Only the finalized policy connector should be called since block 5 is finalized
+			mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:1", mock.Anything, mock.Anything, mock.Anything)
+			mockConnectors[1].AssertNotCalled(t, "Set")
 		})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","blockNumber":"0x1"}}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
-
-		// Create policies with different finality states
-		policy1, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
-			Connector: "mock1",
-		}, mockConnectors[0])
-		require.NoError(t, err)
-
-		policy2, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateUnfinalized,
-			Connector: "mock2",
-		}, mockConnectors[1])
-		require.NoError(t, err)
-
-		cache.SetPolicies([]*data.CachePolicy{policy1, policy2})
-
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-		mockConnectors[1].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-		err = cache.Set(context.Background(), req, resp)
-
-		assert.NoError(t, err)
-		// Only the finalized policy connector should be called since block 5 is finalized
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:1", mock.Anything, mock.Anything, mock.Anything)
-		mockConnectors[1].AssertNotCalled(t, "Set")
 	})
 
 	t.Run("CachingBehaviorWithDefaultConfig", func(t *testing.T) {
@@ -807,752 +840,794 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
-				// clear any connector call history from previous table row
-				mockConnectors[0].Calls = nil
-				mockConnectors[0].ExpectedCalls = nil
-				// Select policies per scenario:
-				policies := []*data.CachePolicy{finalizedPolicy, unfinalizedPolicy}
-				if tc.expectedPolicy == unknownPolicy {
-					policies = append(policies, unknownPolicy)
-				}
-				cache.SetPolicies(policies)
+				synctest.Test(t, func(t *testing.T) {
+					// clear any connector call history from previous table row
+					mockConnectors[0].Calls = nil
+					mockConnectors[0].ExpectedCalls = nil
+					// Select policies per scenario:
+					policies := []*data.CachePolicy{finalizedPolicy, unfinalizedPolicy}
+					if tc.expectedPolicy == unknownPolicy {
+						policies = append(policies, unknownPolicy)
+					}
+					cache.SetPolicies(policies)
 
-				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":%s,"id":1}`, tc.method, tc.params)))
-				req.SetNetwork(mockNetwork)
-				req.SetCacheDal(cache)
-				resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,%s}`, tc.result)))
-				resp.SetUpstream(mockUpstreams[0])
-				req.SetLastValidResponse(ctx, resp)
+					req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":%s,"id":1}`, tc.method, tc.params)))
+					req.SetNetwork(mockNetwork)
+					req.SetCacheDal(cache)
+					resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,%s}`, tc.result)))
+					resp.SetUpstream(mockUpstreams[0])
+					req.SetLastValidResponse(ctx, resp)
 
-				if tc.expectedCache {
-					mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-				}
+					if tc.expectedCache {
+						mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+					}
 
-				err := cache.Set(ctx, req, resp)
+					err := cache.Set(ctx, req, resp)
 
-				assert.NoError(t, err)
-				if tc.expectedCache {
-					mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, tc.expectedPolicy.GetTTL())
-				} else {
-					mockConnectors[0].AssertNotCalled(t, "Set",
-						mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
-				}
+					assert.NoError(t, err)
+					if tc.expectedCache {
+						mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, tc.expectedPolicy.GetTTL())
+					} else {
+						mockConnectors[0].AssertNotCalled(t, "Set",
+							mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+					}
+				})
 			})
 		}
 	})
 
 	t.Run("CustomPolicyForLatestBlocks", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+			})
+
+			// Create a custom policy specifically for latest block requests
+			latestBlockPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:  "evm:123",
+				Method:   "eth_getBlockByNumber",
+				Params:   []interface{}{"latest", "*"},
+				TTL:      common.FixedDuration(5 * time.Second),
+				Finality: common.DataFinalityStateRealtime,
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{latestBlockPolicy})
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
+
+			ttl := time.Duration(5 * time.Second)
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl).Return(nil)
+
+			err = cache.Set(context.Background(), req, resp)
+
+			assert.NoError(t, err)
+			mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl)
 		})
-
-		// Create a custom policy specifically for latest block requests
-		latestBlockPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Params:   []interface{}{"latest", "*"},
-			TTL:      common.FixedDuration(5 * time.Second),
-			Finality: common.DataFinalityStateRealtime,
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{latestBlockPolicy})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
-
-		ttl := time.Duration(5 * time.Second)
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl).Return(nil)
-
-		err = cache.Set(context.Background(), req, resp)
-
-		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl)
 	})
 
 	t.Run("CustomPolicyForFinalizedTag", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
+			})
+
+			// Create a custom policy specifically for finalized block requests
+			finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:  "evm:123",
+				Method:   "eth_getBlockByNumber",
+				Params:   []interface{}{"finalized", "*"},
+				TTL:      common.FixedDuration(5 * time.Second),
+				Finality: common.DataFinalityStateRealtime,
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{finalizedPolicy})
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["finalized",false],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().
+				WithRequest(req).
+				WithBody(stringToReaderCloser(`{"result":{"number":"0x14","hash":"0xabc"}}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
+
+			ttl := time.Duration(5 * time.Second)
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl).Return(nil)
+
+			err = cache.Set(context.Background(), req, resp)
+
+			assert.NoError(t, err)
+			mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl)
 		})
-
-		// Create a custom policy specifically for finalized block requests
-		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Params:   []interface{}{"finalized", "*"},
-			TTL:      common.FixedDuration(5 * time.Second),
-			Finality: common.DataFinalityStateRealtime,
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{finalizedPolicy})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["finalized",false],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().
-			WithRequest(req).
-			WithBody(stringToReaderCloser(`{"result":{"number":"0x14","hash":"0xabc"}}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
-
-		ttl := time.Duration(5 * time.Second)
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl).Return(nil)
-
-		err = cache.Set(context.Background(), req, resp)
-
-		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl)
 	})
 
 	t.Run("ServeFinalizedBlock_WhenRequestedByFinalizedBlockNumber", func(t *testing.T) {
-		// The upstream just marked block 0x14 (20 dec) as finalized.
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
+		synctest.Test(t, func(t *testing.T) {
+			// The upstream just marked block 0x14 (20 dec) as finalized.
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
+			})
+
+			// Default-style Finalized wildcard policy.
+			finalizedDefault, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:   "*",
+				Method:    "*",
+				Finality:  common.DataFinalityStateFinalized,
+				TTL:       nil, // forever
+				Connector: "mock1",
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{finalizedDefault})
+
+			// The client now requests that exact finalized block (0x14).
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x14",false],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().
+				WithRequest(req).
+				WithBody(stringToReaderCloser(`{"result":{"number":"0x14","hash":"0xfeed"}}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
+
+			// Expect the cache to store under the default-finalized policy's TTL (0 — forever).
+			mockConnectors[0].On("Set", mock.Anything, "evm:123:20", mock.Anything, mock.Anything, finalizedDefault.GetTTL()).Return(nil)
+
+			err = cache.Set(context.Background(), req, resp)
+			assert.NoError(t, err)
+			mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:20", mock.Anything, mock.Anything, finalizedDefault.GetTTL())
 		})
-
-		// Default-style Finalized wildcard policy.
-		finalizedDefault, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
-			TTL:       nil, // forever
-			Connector: "mock1",
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{finalizedDefault})
-
-		// The client now requests that exact finalized block (0x14).
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x14",false],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().
-			WithRequest(req).
-			WithBody(stringToReaderCloser(`{"result":{"number":"0x14","hash":"0xfeed"}}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
-
-		// Expect the cache to store under the default-finalized policy's TTL (0 — forever).
-		mockConnectors[0].On("Set", mock.Anything, "evm:123:20", mock.Anything, mock.Anything, finalizedDefault.GetTTL()).Return(nil)
-
-		err = cache.Set(context.Background(), req, resp)
-		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:20", mock.Anything, mock.Anything, finalizedDefault.GetTTL())
 	})
 
 	t.Run("SkipCache_WhenRequestedByFinalizedTag_WithDefaultFinalizedPolicy", func(t *testing.T) {
-		// The upstream just marked block 0x14 (20 dec) as finalized
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
+		synctest.Test(t, func(t *testing.T) {
+			// The upstream just marked block 0x14 (20 dec) as finalized
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
+			})
+
+			// Default-style Finalized wildcard policy.
+			finalizedDefault, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:   "*",
+				Method:    "*",
+				Finality:  common.DataFinalityStateFinalized,
+				TTL:       nil, // forever
+				Connector: "mock1",
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{finalizedDefault})
+
+			// 1) Simulate a finalized tag request and store its response (block 0xf == 15)
+			reqLatest := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["finalized",false],"id":1}`))
+			reqLatest.SetNetwork(mockNetwork)
+			reqLatest.SetCacheDal(cache)
+			respLatest := common.NewNormalizedResponse().
+				WithRequest(reqLatest).
+				WithBody(stringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
+			respLatest.SetUpstream(mockUpstreams[0])
+			reqLatest.SetLastValidResponse(ctx, respLatest)
+
+			err = cache.Set(context.Background(), reqLatest, respLatest)
+			require.NoError(t, err)
+			// The 'finalized' tag is classified as Realtime and should NOT match the
+			// default-finalized policy, therefore nothing is written to cache.
+			mockConnectors[0].AssertNumberOfCalls(t, "Set", 0)
+
+			// 2/ client asks for block (0xf == 15) explicitly
+			reqExact := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0xf",false],"id":2}`))
+			reqExact.SetNetwork(mockNetwork)
+			reqExact.SetCacheDal(cache)
+
+			// Expect a lookup on the finalized-policy key that returns "record not found".
+			mockConnectors[0].
+				On("Get", mock.Anything, mock.Anything, "evm:123:15", mock.Anything, mock.Anything).
+				Return("", common.NewErrRecordNotFound("evm:123:15", "some-key", "mock1")).Once()
 		})
-
-		// Default-style Finalized wildcard policy.
-		finalizedDefault, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
-			TTL:       nil, // forever
-			Connector: "mock1",
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{finalizedDefault})
-
-		// 1) Simulate a finalized tag request and store its response (block 0xf == 15)
-		reqLatest := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["finalized",false],"id":1}`))
-		reqLatest.SetNetwork(mockNetwork)
-		reqLatest.SetCacheDal(cache)
-		respLatest := common.NewNormalizedResponse().
-			WithRequest(reqLatest).
-			WithBody(stringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
-		respLatest.SetUpstream(mockUpstreams[0])
-		reqLatest.SetLastValidResponse(ctx, respLatest)
-
-		err = cache.Set(context.Background(), reqLatest, respLatest)
-		require.NoError(t, err)
-		// The 'finalized' tag is classified as Realtime and should NOT match the
-		// default-finalized policy, therefore nothing is written to cache.
-		mockConnectors[0].AssertNumberOfCalls(t, "Set", 0)
-
-		// 2/ client asks for block (0xf == 15) explicitly
-		reqExact := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0xf",false],"id":2}`))
-		reqExact.SetNetwork(mockNetwork)
-		reqExact.SetCacheDal(cache)
-
-		// Expect a lookup on the finalized-policy key that returns "record not found".
-		mockConnectors[0].
-			On("Get", mock.Anything, mock.Anything, "evm:123:15", mock.Anything, mock.Anything).
-			Return("", common.NewErrRecordNotFound("evm:123:15", "some-key", "mock1")).Once()
 	})
 
 	t.Run("SkipCache_WhenRequestedByFinalizedTag_WithRealtimePolicy", func(t *testing.T) {
-		// The upstream just marked block 0x14 (20 dec) as finalized
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
+		synctest.Test(t, func(t *testing.T) {
+			// The upstream just marked block 0x14 (20 dec) as finalized
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
+			})
+
+			// Realtime policy: cache "latest" for 5 min
+			realtimePolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:   "evm:123",
+				Method:    "eth_getBlockByNumber",
+				Params:    []interface{}{"latest", "*"},
+				TTL:       common.FixedDuration(5 * time.Minute),
+				Finality:  common.DataFinalityStateRealtime,
+				Connector: "mock1",
+			}, mockConnectors[0])
+			require.NoError(t, err)
+
+			// Default-style Finalized wildcard policy.
+			finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:   "*",
+				Method:    "*",
+				Finality:  common.DataFinalityStateFinalized,
+				TTL:       nil,
+				Connector: "mock1",
+			}, mockConnectors[0])
+			require.NoError(t, err)
+
+			cache.SetPolicies([]*data.CachePolicy{realtimePolicy, finalizedPolicy})
+
+			// 1) write via "latest" (Realtime) – stored under evm:123:latest
+			reqLatest := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
+			reqLatest.SetNetwork(mockNetwork)
+			reqLatest.SetCacheDal(cache)
+			respLatest := common.NewNormalizedResponse().
+				WithRequest(reqLatest).
+				WithBody(stringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
+			respLatest.SetUpstream(mockUpstreams[0])
+			reqLatest.SetLastValidResponse(ctx, respLatest)
+
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+			err = cache.Set(context.Background(), reqLatest, respLatest)
+			require.NoError(t, err)
+			mockConnectors[0].AssertNumberOfCalls(t, "Set", 1)
+
+			// 2) numeric request for 0xf should MISS (entry not stored under evm:123:15)
+			reqExact := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0xf",false],"id":2}`))
+			reqExact.SetNetwork(mockNetwork)
+			reqExact.SetCacheDal(cache)
+
+			mockConnectors[0].
+				On("Get", mock.Anything, mock.Anything, "evm:123:15", mock.Anything, mock.Anything).
+				Return("", common.NewErrRecordNotFound("evm:123:15", "cache-key", "mock1")).Once()
 		})
-
-		// Realtime policy: cache "latest" for 5 min
-		realtimePolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "evm:123",
-			Method:    "eth_getBlockByNumber",
-			Params:    []interface{}{"latest", "*"},
-			TTL:       common.FixedDuration(5 * time.Minute),
-			Finality:  common.DataFinalityStateRealtime,
-			Connector: "mock1",
-		}, mockConnectors[0])
-		require.NoError(t, err)
-
-		// Default-style Finalized wildcard policy.
-		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
-			TTL:       nil,
-			Connector: "mock1",
-		}, mockConnectors[0])
-		require.NoError(t, err)
-
-		cache.SetPolicies([]*data.CachePolicy{realtimePolicy, finalizedPolicy})
-
-		// 1) write via "latest" (Realtime) – stored under evm:123:latest
-		reqLatest := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
-		reqLatest.SetNetwork(mockNetwork)
-		reqLatest.SetCacheDal(cache)
-		respLatest := common.NewNormalizedResponse().
-			WithRequest(reqLatest).
-			WithBody(stringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
-		respLatest.SetUpstream(mockUpstreams[0])
-		reqLatest.SetLastValidResponse(ctx, respLatest)
-
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
-		err = cache.Set(context.Background(), reqLatest, respLatest)
-		require.NoError(t, err)
-		mockConnectors[0].AssertNumberOfCalls(t, "Set", 1)
-
-		// 2) numeric request for 0xf should MISS (entry not stored under evm:123:15)
-		reqExact := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0xf",false],"id":2}`))
-		reqExact.SetNetwork(mockNetwork)
-		reqExact.SetCacheDal(cache)
-
-		mockConnectors[0].
-			On("Get", mock.Anything, mock.Anything, "evm:123:15", mock.Anything, mock.Anything).
-			Return("", common.NewErrRecordNotFound("evm:123:15", "cache-key", "mock1")).Once()
 	})
 
 	t.Run("SkipCache_WhenFinalizedTagAfterNumericCache_WithDefaultFinalizedPolicy", func(t *testing.T) {
-		// upstream finalized height = 25 (0x19); we will write block 0x18 (24).
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 25, lstBn: 30},
+		synctest.Test(t, func(t *testing.T) {
+			// upstream finalized height = 25 (0x19); we will write block 0x18 (24).
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 25, lstBn: 30},
+			})
+
+			// Default-style Finalized wildcard policy.
+			finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:   "*",
+				Method:    "*",
+				Finality:  common.DataFinalityStateFinalized,
+				TTL:       nil, // forever
+				Connector: "mock1",
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{finalizedPolicy})
+
+			// 1) numeric request → cached under pk evm:123:24
+			reqNum := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x18",false],"id":1}`))
+			reqNum.SetNetwork(mockNetwork)
+			reqNum.SetCacheDal(cache)
+			respNum := common.NewNormalizedResponse().
+				WithRequest(reqNum).
+				WithBody(stringToReaderCloser(`{"result":{"number":"0x18","hash":"0xbeef"}}`))
+			respNum.SetUpstream(mockUpstreams[0])
+			reqNum.SetLastValidResponse(ctx, respNum)
+
+			mockConnectors[0].On("Set", mock.Anything, "evm:123:24", mock.Anything, mock.Anything, finalizedPolicy.GetTTL()).Return(nil).Once()
+			err = cache.Set(context.Background(), reqNum, respNum)
+			require.NoError(t, err)
+			mockConnectors[0].AssertNumberOfCalls(t, "Set", 1)
+
+			// 2) "finalized" tag request must MISS the cache.
+			reqTag := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["finalized",false],"id":2}`))
+			reqTag.SetNetwork(mockNetwork)
+			reqTag.SetCacheDal(cache)
+
+			resp, err := cache.Get(context.Background(), reqTag)
+			assert.NoError(t, err)
+			assert.Nil(t, resp)
+
+			// Verify the connector was **not** touched.
+			mockConnectors[0].AssertNumberOfCalls(t, "Get", 0)
 		})
-
-		// Default-style Finalized wildcard policy.
-		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
-			TTL:       nil, // forever
-			Connector: "mock1",
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{finalizedPolicy})
-
-		// 1) numeric request → cached under pk evm:123:24
-		reqNum := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x18",false],"id":1}`))
-		reqNum.SetNetwork(mockNetwork)
-		reqNum.SetCacheDal(cache)
-		respNum := common.NewNormalizedResponse().
-			WithRequest(reqNum).
-			WithBody(stringToReaderCloser(`{"result":{"number":"0x18","hash":"0xbeef"}}`))
-		respNum.SetUpstream(mockUpstreams[0])
-		reqNum.SetLastValidResponse(ctx, respNum)
-
-		mockConnectors[0].On("Set", mock.Anything, "evm:123:24", mock.Anything, mock.Anything, finalizedPolicy.GetTTL()).Return(nil).Once()
-		err = cache.Set(context.Background(), reqNum, respNum)
-		require.NoError(t, err)
-		mockConnectors[0].AssertNumberOfCalls(t, "Set", 1)
-
-		// 2) "finalized" tag request must MISS the cache.
-		reqTag := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["finalized",false],"id":2}`))
-		reqTag.SetNetwork(mockNetwork)
-		reqTag.SetCacheDal(cache)
-
-		resp, err := cache.Get(context.Background(), reqTag)
-		assert.NoError(t, err)
-		assert.Nil(t, resp)
-
-		// Verify the connector was **not** touched.
-		mockConnectors[0].AssertNumberOfCalls(t, "Get", 0)
 	})
 
 	t.Run("EthGetLogs_SameBlockRange_Finalized", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		// Use mockConnectors[0] which is mock1, matching default policy connector
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
-		})
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			// Use mockConnectors[0] which is mock1, matching default policy connector
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+			})
 
-		// Policy that caches finalized eth_getLogs requests on mock1
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "evm:123", // Matches mockNetwork
-			Method:    "eth_getLogs",
-			Finality:  common.DataFinalityStateFinalized,
-			Connector: "mock1", // Matches mockConnectors[0].Id()
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{policy})
+			// Policy that caches finalized eth_getLogs requests on mock1
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:   "evm:123", // Matches mockNetwork
+				Method:    "eth_getLogs",
+				Finality:  common.DataFinalityStateFinalized,
+				Connector: "mock1", // Matches mockConnectors[0].Id()
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{policy})
 
-		// Request for eth_getLogs for a single finalized block (e.g., block 0x5)
-		// Upstream finalized block is 10 (0xa)
-		req := common.NewNormalizedRequest([]byte(`{
+			// Request for eth_getLogs for a single finalized block (e.g., block 0x5)
+			// Upstream finalized block is 10 (0xa)
+			req := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getLogs",
 			"params": [{"fromBlock": "0x5", "toBlock": "0x5"}],
 			"id": 1
 		}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
 
-		// Dummy response for eth_getLogs
-		respBody := `[{"address":"0x123","topics":["0xabc"],"data":"0xdef"}]`
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(fmt.Sprintf(`{"result":%s}`, respBody)))
-		resp.SetUpstream(mockUpstreams[0]) // associate with an upstream that has finalized block info
-		req.SetLastValidResponse(ctx, resp)
+			// Dummy response for eth_getLogs
+			respBody := `[{"address":"0x123","topics":["0xabc"],"data":"0xdef"}]`
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(fmt.Sprintf(`{"result":%s}`, respBody)))
+			resp.SetUpstream(mockUpstreams[0]) // associate with an upstream that has finalized block info
+			req.SetLastValidResponse(ctx, resp)
 
-		// Expect Set to be called on the connector
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+			// Expect Set to be called on the connector
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
 
-		err = cache.Set(context.Background(), req, resp)
-		assert.NoError(t, err)
+			err = cache.Set(context.Background(), req, resp)
+			assert.NoError(t, err)
 
-		// Verify that Set was called. The exact cache key for eth_getLogs can be complex,
-		// so we check that Set was called with any key for the correct method and network.
-		// More specific key checks would require replicating EvmJsonRpcCache's internal key generation.
-		mockConnectors[0].AssertCalled(t, "Set",
-			mock.Anything, // context
-			mock.MatchedBy(func(key string) bool { return key == "evm:123:5" }),                     // Partition key is specific block for same block range
-			mock.MatchedBy(func(key string) bool { return strings.HasPrefix(key, "eth_getLogs:") }), // rangeKey starts with method name
-			mock.Anything, // value
-			mock.Anything, // ttl
-		)
+			// Verify that Set was called. The exact cache key for eth_getLogs can be complex,
+			// so we check that Set was called with any key for the correct method and network.
+			// More specific key checks would require replicating EvmJsonRpcCache's internal key generation.
+			mockConnectors[0].AssertCalled(t, "Set",
+				mock.Anything, // context
+				mock.MatchedBy(func(key string) bool { return key == "evm:123:5" }),                     // Partition key is specific block for same block range
+				mock.MatchedBy(func(key string) bool { return strings.HasPrefix(key, "eth_getLogs:") }), // rangeKey starts with method name
+				mock.Anything, // value
+				mock.Anything, // ttl
+			)
+		})
 	})
 
 	t.Run("EthGetLogs_DifferentBlockRange_Finalized", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
-		})
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+			})
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "evm:123",
-			Method:    "eth_getLogs",
-			Finality:  common.DataFinalityStateFinalized,
-			Connector: "mock1",
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{policy})
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:   "evm:123",
+				Method:    "eth_getLogs",
+				Finality:  common.DataFinalityStateFinalized,
+				Connector: "mock1",
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{policy})
 
-		// Request for eth_getLogs for a range of finalized blocks (e.g., 0x3 to 0x5)
-		// Upstream finalized block is 10 (0xa)
-		req := common.NewNormalizedRequest([]byte(`{
+			// Request for eth_getLogs for a range of finalized blocks (e.g., 0x3 to 0x5)
+			// Upstream finalized block is 10 (0xa)
+			req := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getLogs",
 			"params": [{"fromBlock": "0x3", "toBlock": "0x5"}],
 			"id": 1
 		}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
 
-		respBody := `[{"address":"0x456","topics":["0xdef"],"data":"0xghi"}]`
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(fmt.Sprintf(`{"result":%s}`, respBody)))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
+			respBody := `[{"address":"0x456","topics":["0xdef"],"data":"0xghi"}]`
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(fmt.Sprintf(`{"result":%s}`, respBody)))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
 
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
 
-		err = cache.Set(context.Background(), req, resp)
-		assert.NoError(t, err)
+			err = cache.Set(context.Background(), req, resp)
+			assert.NoError(t, err)
 
-		mockConnectors[0].AssertCalled(t, "Set",
-			mock.Anything, // context
-			mock.MatchedBy(func(key string) bool { return key == "evm:123:*" }),                     // partitionKey for eth_getLogs
-			mock.MatchedBy(func(key string) bool { return strings.HasPrefix(key, "eth_getLogs:") }), // rangeKey starts with method name
-			mock.Anything, // value
-			mock.Anything, // ttl
-		)
+			mockConnectors[0].AssertCalled(t, "Set",
+				mock.Anything, // context
+				mock.MatchedBy(func(key string) bool { return key == "evm:123:*" }),                     // partitionKey for eth_getLogs
+				mock.MatchedBy(func(key string) bool { return strings.HasPrefix(key, "eth_getLogs:") }), // rangeKey starts with method name
+				mock.Anything, // value
+				mock.Anything, // ttl
+			)
+		})
 	})
 
 	t.Run("HandleNilResponseGracefully", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+			})
+
+			// Create a policy with empty behavior set to "ignore"
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:  "evm:123",
+				Method:   "eth_getBalance",
+				Finality: common.DataFinalityStateFinalized,
+				Empty:    common.CacheEmptyBehaviorIgnore,
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{policy})
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+
+			// Pass nil response to test the nil check
+			err = cache.Set(context.Background(), req, nil)
+
+			// Should not panic and should complete without error
+			assert.NoError(t, err)
+
+			// Should not attempt to cache since response is nil (empty)
+			mockConnectors[0].AssertNotCalled(t, "Set")
 		})
-
-		// Create a policy with empty behavior set to "ignore"
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBalance",
-			Finality: common.DataFinalityStateFinalized,
-			Empty:    common.CacheEmptyBehaviorIgnore,
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{policy})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-
-		// Pass nil response to test the nil check
-		err = cache.Set(context.Background(), req, nil)
-
-		// Should not panic and should complete without error
-		assert.NoError(t, err)
-
-		// Should not attempt to cache since response is nil (empty)
-		mockConnectors[0].AssertNotCalled(t, "Set")
 	})
 
 	t.Run("HandleNilResponseWithAllowEmptyPolicy", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+			})
+
+			// Create a policy with empty behavior set to "allow"
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:  "evm:123",
+				Method:   "eth_getBalance",
+				Finality: common.DataFinalityStateFinalized,
+				Empty:    common.CacheEmptyBehaviorAllow,
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{policy})
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+
+			// Pass nil response to test the nil check
+			err = cache.Set(context.Background(), req, nil)
+
+			// Should not panic and should complete without error
+			assert.NoError(t, err)
+
+			// Should still not cache since we can't actually cache a nil response
+			mockConnectors[0].AssertNotCalled(t, "Set")
 		})
-
-		// Create a policy with empty behavior set to "allow"
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBalance",
-			Finality: common.DataFinalityStateFinalized,
-			Empty:    common.CacheEmptyBehaviorAllow,
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{policy})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-
-		// Pass nil response to test the nil check
-		err = cache.Set(context.Background(), req, nil)
-
-		// Should not panic and should complete without error
-		assert.NoError(t, err)
-
-		// Should still not cache since we can't actually cache a nil response
-		mockConnectors[0].AssertNotCalled(t, "Set")
 	})
 }
 
 func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 	t.Run("ShouldSetTTLWhenPolicyDefinesIt", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+			})
+
+			ttl := time.Duration(5 * time.Minute)
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network: "evm:123",
+				Method:  "eth_getBalance",
+				TTL:     common.FixedDuration(ttl),
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{
+				policy,
+			})
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x2"}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
+
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl).Return(nil)
+
+			err = cache.Set(context.Background(), req, resp)
+
+			assert.NoError(t, err)
+			mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, mock.AnythingOfType("*time.Duration"))
 		})
-
-		ttl := time.Duration(5 * time.Minute)
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBalance",
-			TTL:     common.FixedDuration(ttl),
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{
-			policy,
-		})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x2"}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
-
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl).Return(nil)
-
-		err = cache.Set(context.Background(), req, resp)
-
-		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, mock.AnythingOfType("*time.Duration"))
 	})
 
 	t.Run("ShouldNotSetTTLWhenPolicyDoesNotDefineIt", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
 
-		err := cache.Set(context.Background(), req, resp)
+			err := cache.Set(context.Background(), req, resp)
 
-		assert.NoError(t, err)
-		mockConnectors[0].AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, (*time.Duration)(nil))
+			assert.NoError(t, err)
+			mockConnectors[0].AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, (*time.Duration)(nil))
+		})
 	})
 
 	t.Run("ShouldRespectPolicyNetworkAndMethodMatching", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
 
-		policy0, err0 := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBlockByNumber",
-			TTL:     common.FixedDuration(2 * time.Minute),
-		}, mockConnectors[0])
-		require.NoError(t, err0)
+			policy0, err0 := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network: "evm:123",
+				Method:  "eth_getBlockByNumber",
+				TTL:     common.FixedDuration(2 * time.Minute),
+			}, mockConnectors[0])
+			require.NoError(t, err0)
 
-		ttl := common.Duration(6 * time.Minute)
-		policy1, err1 := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBalance",
-			TTL:     &common.BlockTimeAdaptiveDuration{Fallback: ttl},
-		}, mockConnectors[1])
-		require.NoError(t, err1)
+			ttl := common.Duration(6 * time.Minute)
+			policy1, err1 := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network: "evm:123",
+				Method:  "eth_getBalance",
+				TTL:     &common.BlockTimeAdaptiveDuration{Fallback: ttl},
+			}, mockConnectors[1])
+			require.NoError(t, err1)
 
-		cache.SetPolicies([]*data.CachePolicy{
-			policy0,
-			policy1,
+			cache.SetPolicies([]*data.CachePolicy{
+				policy0,
+				policy1,
+			})
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x1"}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
+
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+			mockConnectors[1].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+			err := cache.Set(context.Background(), req, resp)
+
+			assert.NoError(t, err)
+			mockConnectors[0].AssertNotCalled(t, "Set")
+			mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, mock.AnythingOfType("*time.Duration"))
 		})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x1"}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
-
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-		mockConnectors[1].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-		err := cache.Set(context.Background(), req, resp)
-
-		assert.NoError(t, err)
-		mockConnectors[0].AssertNotCalled(t, "Set")
-		mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, mock.AnythingOfType("*time.Duration"))
 	})
 }
 
 func TestEvmJsonRpcCache_Get(t *testing.T) {
 	t.Run("ReturnCachedResponseForFinalizedBlock", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1",false],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1",false],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBlockByNumber",
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{
-			policy,
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network: "evm:123",
+				Method:  "eth_getBlockByNumber",
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{
+				policy,
+			})
+
+			cachedResponse := `{"number":"0x1","hash":"0xabc"}`
+			mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return([]byte(cachedResponse), nil)
+
+			resp, err := cache.Get(context.Background(), req)
+
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
+			assert.True(t, resp.FromCache())
+			jrr, err := resp.JsonRpcResponse()
+			assert.NoError(t, err)
+			assert.Equal(t, cachedResponse, jrr.GetResultString())
 		})
-
-		cachedResponse := `{"number":"0x1","hash":"0xabc"}`
-		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return([]byte(cachedResponse), nil)
-
-		resp, err := cache.Get(context.Background(), req)
-
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
-		assert.True(t, resp.FromCache())
-		jrr, err := resp.JsonRpcResponse()
-		assert.NoError(t, err)
-		assert.Equal(t, cachedResponse, jrr.GetResultString())
 	})
 
 	t.Run("SkipCacheForUnfinalizedBlock", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x32345",false],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp, err := cache.Get(context.Background(), req)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x32345",false],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp, err := cache.Get(context.Background(), req)
 
-		assert.NoError(t, err)
-		assert.Nil(t, resp)
-		mockConnectors[0].AssertNotCalled(t, "Get")
+			assert.NoError(t, err)
+			assert.Nil(t, resp)
+			mockConnectors[0].AssertNotCalled(t, "Get")
+		})
 	})
 
 	t.Run("CheckAllConnectorsInOrder", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+			})
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1",false],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+
+			// Create two policies with different connectors
+			policy1, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:   "evm:123",
+				Method:    "eth_getBlockByNumber",
+				Connector: "mock1",
+			}, mockConnectors[0])
+			require.NoError(t, err)
+
+			policy2, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:   "evm:123",
+				Method:    "eth_getBlockByNumber",
+				Connector: "mock2",
+			}, mockConnectors[1])
+			require.NoError(t, err)
+
+			cache.SetPolicies([]*data.CachePolicy{policy1, policy2})
+
+			// First connector returns nil
+			mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return([]byte(""), common.NewErrRecordNotFound("evm:123:1", "some-key", "mock1"))
+
+			// Second connector returns data
+			cachedResponse := `{"number":"0x1","hash":"0xabc"}`
+			mockConnectors[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return([]byte(cachedResponse), nil)
+
+			resp, err := cache.Get(context.Background(), req)
+
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
+			assert.True(t, resp.FromCache())
+			jrr, err := resp.JsonRpcResponse()
+			assert.NoError(t, err)
+			assert.Equal(t, cachedResponse, jrr.GetResultString())
+
+			// Verify both connectors were dispatched. Fan-out is parallel, so
+			// connector[1] can return before connector[0]'s goroutine has even
+			// entered its mock call under heavy CI load. assert.Eventually
+			// gives both goroutines a chance to finish before failing.
+			assert.Eventually(t, func() bool {
+				return mockConnectors[0].AssertCalled(new(testing.T), "Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything) &&
+					mockConnectors[1].AssertCalled(new(testing.T), "Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything)
+			}, 2*time.Second, 20*time.Millisecond, "both connectors should be dispatched by the fan-out")
 		})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1",false],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-
-		// Create two policies with different connectors
-		policy1, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "evm:123",
-			Method:    "eth_getBlockByNumber",
-			Connector: "mock1",
-		}, mockConnectors[0])
-		require.NoError(t, err)
-
-		policy2, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "evm:123",
-			Method:    "eth_getBlockByNumber",
-			Connector: "mock2",
-		}, mockConnectors[1])
-		require.NoError(t, err)
-
-		cache.SetPolicies([]*data.CachePolicy{policy1, policy2})
-
-		// First connector returns nil
-		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return([]byte(""), common.NewErrRecordNotFound("evm:123:1", "some-key", "mock1"))
-
-		// Second connector returns data
-		cachedResponse := `{"number":"0x1","hash":"0xabc"}`
-		mockConnectors[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return([]byte(cachedResponse), nil)
-
-		resp, err := cache.Get(context.Background(), req)
-
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
-		assert.True(t, resp.FromCache())
-		jrr, err := resp.JsonRpcResponse()
-		assert.NoError(t, err)
-		assert.Equal(t, cachedResponse, jrr.GetResultString())
-
-		// Verify both connectors were dispatched. Fan-out is parallel, so
-		// connector[1] can return before connector[0]'s goroutine has even
-		// entered its mock call under heavy CI load. assert.Eventually
-		// gives both goroutines a chance to finish before failing.
-		assert.Eventually(t, func() bool {
-			return mockConnectors[0].AssertCalled(new(testing.T), "Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything) &&
-				mockConnectors[1].AssertCalled(new(testing.T), "Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything)
-		}, 2*time.Second, 20*time.Millisecond, "both connectors should be dispatched by the fan-out")
 	})
 }
 
 func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 	t.Run("ShouldNotCacheEmptyResponseWhenUpstreamIsNotSynced", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 15}})
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 15}})
 
-		req := common.NewNormalizedRequest([]byte(`{
+			req := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getBalance",
 			"params": ["0x123", "0x5"],
 			"id": 1
 		}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
 
-		resp := common.NewNormalizedResponse().WithBody(stringToReaderCloser(`{"result":null}`)).WithRequest(req)
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
+			resp := common.NewNormalizedResponse().WithBody(stringToReaderCloser(`{"result":null}`)).WithRequest(req)
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
 
-		err := cache.Set(context.Background(), req, resp)
-		assert.NoError(t, err)
-		mockConnectors[0].AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+			err := cache.Set(context.Background(), req, resp)
+			assert.NoError(t, err)
+			mockConnectors[0].AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		})
 	})
 
 	t.Run("ShouldNotCacheEmptyResponseWhenBlockNotFinalizedOnSpecificUpstream", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 3, lstBn: 15},
-			{id: "upsB", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 16},
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 3, lstBn: 15},
+				{id: "upsB", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 16},
+			})
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithBody(stringToReaderCloser(`{"result":null}`)).WithRequest(req)
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
+
+			err := cache.Set(context.Background(), req, resp)
+
+			assert.NoError(t, err)
+			mockConnectors[0].AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 		})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithBody(stringToReaderCloser(`{"result":null}`)).WithRequest(req)
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
-
-		err := cache.Set(context.Background(), req, resp)
-
-		assert.NoError(t, err)
-		mockConnectors[0].AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("ShouldCacheEmptyResponseWhenBlockFinalizedOnSpecificUpstream", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 3, lstBn: 15},
-			{id: "upsB", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 16},
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 3, lstBn: 15},
+				{id: "upsB", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 16},
+			})
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithBody(stringToReaderCloser(`{"result":null}`)).WithRequest(req)
+			resp.SetUpstream(mockUpstreams[1])
+			req.SetLastValidResponse(ctx, resp)
+
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network: "evm:123",
+				Method:  "eth_getBalance",
+				Empty:   common.CacheEmptyBehaviorAllow,
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{
+				policy,
+			})
+
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+			err = cache.Set(context.Background(), req, resp)
+
+			assert.NoError(t, err)
+			mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 		})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithBody(stringToReaderCloser(`{"result":null}`)).WithRequest(req)
-		resp.SetUpstream(mockUpstreams[1])
-		req.SetLastValidResponse(ctx, resp)
-
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBalance",
-			Empty:   common.CacheEmptyBehaviorAllow,
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{
-			policy,
-		})
-
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-		err = cache.Set(context.Background(), req, resp)
-
-		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("ShouldCacheEmptyResponseWhenBlockFinalizedOnSpecificNonSyncedUpstream", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 3, lstBn: 15},
-			{id: "upsB", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 16},
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 3, lstBn: 15},
+				{id: "upsB", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 16},
+			})
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithBody(stringToReaderCloser(`{"result":null}`)).WithRequest(req)
+			resp.SetUpstream(mockUpstreams[1])
+			req.SetLastValidResponse(ctx, resp)
+
+			err := cache.Set(context.Background(), req, resp)
+
+			assert.NoError(t, err)
+			mockConnectors[0].AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 		})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithBody(stringToReaderCloser(`{"result":null}`)).WithRequest(req)
-		resp.SetUpstream(mockUpstreams[1])
-		req.SetLastValidResponse(ctx, resp)
-
-		err := cache.Set(context.Background(), req, resp)
-
-		assert.NoError(t, err)
-		mockConnectors[0].AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 }
 
@@ -1754,17 +1829,19 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			policy, err := data.NewCachePolicy(tc.config, mockConnector)
-			require.NoError(t, err)
+			synctest.Test(t, func(t *testing.T) {
+				policy, err := data.NewCachePolicy(tc.config, mockConnector)
+				require.NoError(t, err)
 
-			// Test both Set and Get matching
-			matchesSet, err := policy.MatchesForSet(tc.config.Network, tc.method, tc.params, common.DataFinalityStateFinalized, false)
-			require.NoError(t, err)
-			matchesGet, err := policy.MatchesForGet(tc.config.Network, tc.method, tc.params, common.DataFinalityStateFinalized)
-			require.NoError(t, err)
+				// Test both Set and Get matching
+				matchesSet, err := policy.MatchesForSet(tc.config.Network, tc.method, tc.params, common.DataFinalityStateFinalized, false)
+				require.NoError(t, err)
+				matchesGet, err := policy.MatchesForGet(tc.config.Network, tc.method, tc.params, common.DataFinalityStateFinalized)
+				require.NoError(t, err)
 
-			assert.Equal(t, tc.matches, matchesSet, "MatchesForSet returned unexpected result")
-			assert.Equal(t, tc.matches, matchesGet, "MatchesForGet returned unexpected result")
+				assert.Equal(t, tc.matches, matchesSet, "MatchesForSet returned unexpected result")
+				assert.Equal(t, tc.matches, matchesGet, "MatchesForGet returned unexpected result")
+			})
 		})
 	}
 }
@@ -1857,57 +1934,59 @@ func TestEvmJsonRpcCache_EmptyStates(t *testing.T) {
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
-				// Create policy with specific empty behavior
-				policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-					Network:  "evm:123",
-					Method:   "eth_getBalance",
-					Empty:    tc.emptyBehavior,
-					Finality: common.DataFinalityStateFinalized,
-				}, mockConnectors[0])
-				require.NoError(t, err)
-				cache.SetPolicies([]*data.CachePolicy{policy})
+				synctest.Test(t, func(t *testing.T) {
+					// Create policy with specific empty behavior
+					policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+						Network:  "evm:123",
+						Method:   "eth_getBalance",
+						Empty:    tc.emptyBehavior,
+						Finality: common.DataFinalityStateFinalized,
+					}, mockConnectors[0])
+					require.NoError(t, err)
+					cache.SetPolicies([]*data.CachePolicy{policy})
 
-				// Create request and response
-				req := common.NewNormalizedRequest([]byte(`{
+					// Create request and response
+					req := common.NewNormalizedRequest([]byte(`{
 					"jsonrpc": "2.0",
 					"method": "eth_getBalance",
 					"params": ["0x123", "0x5"],
 					"id": 1
 				}`))
-				req.SetNetwork(mockNetwork)
-				req.SetCacheDal(cache)
-				resp := common.NewNormalizedResponse().
-					WithBody(stringToReaderCloser(tc.response)).
-					WithRequest(req)
-				resp.SetUpstream(mockUpstreams[0])
-				req.SetLastValidResponse(ctx, resp)
+					req.SetNetwork(mockNetwork)
+					req.SetCacheDal(cache)
+					resp := common.NewNormalizedResponse().
+						WithBody(stringToReaderCloser(tc.response)).
+						WithRequest(req)
+					resp.SetUpstream(mockUpstreams[0])
+					req.SetLastValidResponse(ctx, resp)
 
-				// Reset mock and set expectations
-				mockConnectors[0].ExpectedCalls = nil
-				if tc.shouldCache {
-					mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-				}
+					// Reset mock and set expectations
+					mockConnectors[0].ExpectedCalls = nil
+					if tc.shouldCache {
+						mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+					}
 
-				// Test caching behavior
-				err = cache.Set(context.Background(), req, resp)
+					// Test caching behavior
+					err = cache.Set(context.Background(), req, resp)
 
-				if tc.expectedError {
-					assert.Error(t, err)
-					if tc.errorContains != "" {
-						if err == nil {
-							t.Fatalf("expected error, got nil")
+					if tc.expectedError {
+						assert.Error(t, err)
+						if tc.errorContains != "" {
+							if err == nil {
+								t.Fatalf("expected error, got nil")
+							} else {
+								assert.Contains(t, err.Error(), tc.errorContains)
+							}
+						}
+					} else {
+						assert.NoError(t, err)
+						if tc.shouldCache {
+							mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 						} else {
-							assert.Contains(t, err.Error(), tc.errorContains)
+							mockConnectors[0].AssertNotCalled(t, "Set")
 						}
 					}
-				} else {
-					assert.NoError(t, err)
-					if tc.shouldCache {
-						mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
-					} else {
-						mockConnectors[0].AssertNotCalled(t, "Set")
-					}
-				}
+				})
 			})
 		}
 	})
@@ -1968,47 +2047,49 @@ func TestEvmJsonRpcCache_ItemSizeLimits(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-				Network:     "evm:123",
-				Method:      "eth_getBalance",
-				MinItemSize: tc.minSize,
-				MaxItemSize: tc.maxSize,
-				Finality:    common.DataFinalityStateFinalized,
-			}, mockConnectors[0])
+			synctest.Test(t, func(t *testing.T) {
+				policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+					Network:     "evm:123",
+					Method:      "eth_getBalance",
+					MinItemSize: tc.minSize,
+					MaxItemSize: tc.maxSize,
+					Finality:    common.DataFinalityStateFinalized,
+				}, mockConnectors[0])
 
-			if tc.expectedError {
-				assert.Error(t, err)
-				return
-			}
+				if tc.expectedError {
+					assert.Error(t, err)
+					return
+				}
 
-			require.NoError(t, err)
-			cache.SetPolicies([]*data.CachePolicy{policy})
+				require.NoError(t, err)
+				cache.SetPolicies([]*data.CachePolicy{policy})
 
-			// Create response with specific size
-			responseBody := strings.Repeat("x", tc.responseSize)
+				// Create response with specific size
+				responseBody := strings.Repeat("x", tc.responseSize)
 
-			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
-			req.SetNetwork(mockNetwork)
-			req.SetCacheDal(cache)
-			resp := common.NewNormalizedResponse().
-				WithBody(stringToReaderCloser(fmt.Sprintf(`{"result":"%s"}`, responseBody))).
-				WithRequest(req)
-			resp.SetUpstream(mockUpstreams[0])
-			req.SetLastValidResponse(ctx, resp)
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+				req.SetNetwork(mockNetwork)
+				req.SetCacheDal(cache)
+				resp := common.NewNormalizedResponse().
+					WithBody(stringToReaderCloser(fmt.Sprintf(`{"result":"%s"}`, responseBody))).
+					WithRequest(req)
+				resp.SetUpstream(mockUpstreams[0])
+				req.SetLastValidResponse(ctx, resp)
 
-			mockConnectors[0].ExpectedCalls = nil
-			if tc.shouldCache {
-				mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-			}
+				mockConnectors[0].ExpectedCalls = nil
+				if tc.shouldCache {
+					mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+				}
 
-			err = cache.Set(context.Background(), req, resp)
-			assert.NoError(t, err)
+				err = cache.Set(context.Background(), req, resp)
+				assert.NoError(t, err)
 
-			if tc.shouldCache {
-				mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
-			} else {
-				mockConnectors[0].AssertNotCalled(t, "Set")
-			}
+				if tc.shouldCache {
+					mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+				} else {
+					mockConnectors[0].AssertNotCalled(t, "Set")
+				}
+			})
 		})
 	}
 }
@@ -2756,215 +2837,225 @@ func createMockUpstream(t *testing.T, ctx context.Context, chainId int64, upstre
 
 func TestEvmJsonRpcCache_Compression(t *testing.T) {
 	t.Run("CompressionDisabled", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		logger := log.Logger
+			logger := log.Logger
 
-		// Create cache without compression
-		cacheCfg := &common.CacheConfig{}
-		cacheCfg.SetDefaults()
+			// Create cache without compression
+			cacheCfg := &common.CacheConfig{}
+			cacheCfg.SetDefaults()
 
-		_, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
-		require.NoError(t, err)
+			_, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
+			require.NoError(t, err)
 
-		// Verify compression is disabled (can't directly check private field)
-		// Test will verify behavior in other test cases
+			// Verify compression is disabled (can't directly check private field)
+			// Test will verify behavior in other test cases
+		})
 	})
 
 	t.Run("CompressionEnabled_HappyPath", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
-			[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
-			&common.CompressionConfig{
-				Enabled:   util.BoolPtr(true),
-				Threshold: 100, // Low threshold for testing
-				ZstdLevel: "fastest",
-			})
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
+				[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+				&common.CompressionConfig{
+					Enabled:   util.BoolPtr(true),
+					Threshold: 100, // Low threshold for testing
+					ZstdLevel: "fastest",
+				})
 
-		// Create a large response that should be compressed
-		largeData := strings.Repeat("abcdefghijklmnopqrstuvwxyz", 100) // 2600 bytes
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
+			// Create a large response that should be compressed
+			largeData := strings.Repeat("abcdefghijklmnopqrstuvwxyz", 100) // 2600 bytes
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
 
-		resp := common.NewNormalizedResponse().
-			WithRequest(req).
-			WithBody(stringToReaderCloser(`{"result":{"data":"` + largeData + `"}}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
+			resp := common.NewNormalizedResponse().
+				WithRequest(req).
+				WithBody(stringToReaderCloser(`{"result":{"data":"` + largeData + `"}}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{policy})
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:  "evm:123",
+				Method:   "eth_getBlockByNumber",
+				Finality: common.DataFinalityStateFinalized,
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{policy})
 
-		// Mock the Set call and capture the value
-		var storedValue []byte
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-			Run(func(args mock.Arguments) {
-				storedValue = args.Get(3).([]byte)
-			}).Return(nil)
+			// Mock the Set call and capture the value
+			var storedValue []byte
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+				Run(func(args mock.Arguments) {
+					storedValue = args.Get(3).([]byte)
+				}).Return(nil)
 
-		err = cache.Set(ctx, req, resp)
-		require.NoError(t, err)
+			err = cache.Set(ctx, req, resp)
+			require.NoError(t, err)
 
-		// Verify compression occurred - check for zstd magic bytes
-		assert.True(t, len(storedValue) >= 4 && storedValue[0] == 0x28 && storedValue[1] == 0xB5 && storedValue[2] == 0x2F && storedValue[3] == 0xFD)
-		assert.Less(t, len(storedValue), len(largeData)) // Compressed should be smaller
+			// Verify compression occurred - check for zstd magic bytes
+			assert.True(t, len(storedValue) >= 4 && storedValue[0] == 0x28 && storedValue[1] == 0xB5 && storedValue[2] == 0x2F && storedValue[3] == 0xFD)
+			assert.Less(t, len(storedValue), len(largeData)) // Compressed should be smaller
 
-		// Mock the Get call to return the compressed value
-		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:5", mock.Anything, mock.Anything).
-			Return(storedValue, nil)
+			// Mock the Get call to return the compressed value
+			mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:5", mock.Anything, mock.Anything).
+				Return(storedValue, nil)
 
-		// Get from cache and verify decompression
-		cachedResp, err := cache.Get(ctx, req)
-		require.NoError(t, err)
-		require.NotNil(t, cachedResp)
+			// Get from cache and verify decompression
+			cachedResp, err := cache.Get(ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, cachedResp)
 
-		jrr, err := cachedResp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), largeData)
+			jrr, err := cachedResp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, jrr.GetResultString(), largeData)
+		})
 	})
 
 	t.Run("CompressionThreshold_BelowThreshold", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
-			[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
-			&common.CompressionConfig{
-				Enabled:   util.BoolPtr(true),
-				Threshold: 1000, // High threshold
-				ZstdLevel: "default",
-			})
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
+				[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+				&common.CompressionConfig{
+					Enabled:   util.BoolPtr(true),
+					Threshold: 1000, // High threshold
+					ZstdLevel: "default",
+				})
 
-		// Create a small response that should NOT be compressed
-		smallData := "small response"
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
+			// Create a small response that should NOT be compressed
+			smallData := "small response"
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
 
-		resp := common.NewNormalizedResponse().
-			WithRequest(req).
-			WithBody(stringToReaderCloser(`{"result":"` + smallData + `"}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
+			resp := common.NewNormalizedResponse().
+				WithRequest(req).
+				WithBody(stringToReaderCloser(`{"result":"` + smallData + `"}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{policy})
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:  "evm:123",
+				Method:   "eth_getBlockByNumber",
+				Finality: common.DataFinalityStateFinalized,
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{policy})
 
-		// Mock the Set call and capture the value
-		var storedValue []byte
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-			Run(func(args mock.Arguments) {
-				storedValue = args.Get(3).([]byte)
-			}).Return(nil)
+			// Mock the Set call and capture the value
+			var storedValue []byte
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+				Run(func(args mock.Arguments) {
+					storedValue = args.Get(3).([]byte)
+				}).Return(nil)
 
-		err = cache.Set(ctx, req, resp)
-		require.NoError(t, err)
+			err = cache.Set(ctx, req, resp)
+			require.NoError(t, err)
 
-		// Verify NO compression occurred
-		assert.False(t, len(storedValue) >= 4 && storedValue[0] == 0x28 && storedValue[1] == 0xB5 && storedValue[2] == 0x2F && storedValue[3] == 0xFD)
-		assert.Equal(t, `"`+smallData+`"`, string(storedValue))
+			// Verify NO compression occurred
+			assert.False(t, len(storedValue) >= 4 && storedValue[0] == 0x28 && storedValue[1] == 0xB5 && storedValue[2] == 0x2F && storedValue[3] == 0xFD)
+			assert.Equal(t, `"`+smallData+`"`, string(storedValue))
+		})
 	})
 
 	t.Run("CompressionNotBeneficial", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
-			[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
-			&common.CompressionConfig{
-				Enabled:   util.BoolPtr(true),
-				Threshold: 10, // Very low threshold
-				ZstdLevel: "best",
-			})
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
+				[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+				&common.CompressionConfig{
+					Enabled:   util.BoolPtr(true),
+					Threshold: 10, // Very low threshold
+					ZstdLevel: "best",
+				})
 
-		// Create random data that doesn't compress well
-		randomData := generateRandomString(100)
-		resultJSON := `"` + randomData + `"`
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
+			// Create random data that doesn't compress well
+			randomData := generateRandomString(100)
+			resultJSON := `"` + randomData + `"`
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
 
-		resp := common.NewNormalizedResponse().
-			WithRequest(req).
-			WithBody(stringToReaderCloser(`{"result":` + resultJSON + `}`))
-		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(ctx, resp)
+			resp := common.NewNormalizedResponse().
+				WithRequest(req).
+				WithBody(stringToReaderCloser(`{"result":` + resultJSON + `}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{policy})
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:  "evm:123",
+				Method:   "eth_getBlockByNumber",
+				Finality: common.DataFinalityStateFinalized,
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{policy})
 
-		// Mock the Set call and capture the value
-		var storedValue []byte
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-			Run(func(args mock.Arguments) {
-				storedValue = args.Get(3).([]byte)
-			}).Return(nil)
+			// Mock the Set call and capture the value
+			var storedValue []byte
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+				Run(func(args mock.Arguments) {
+					storedValue = args.Get(3).([]byte)
+				}).Return(nil)
 
-		err = cache.Set(ctx, req, resp)
-		require.NoError(t, err)
+			err = cache.Set(ctx, req, resp)
+			require.NoError(t, err)
 
-		// The production code only uses compression when it actually saves space
-		// (compressed < original). Compare against the actual JSON result size
-		// (which includes quotes), not the raw random string length.
-		isCompressed := len(storedValue) >= 4 && storedValue[0] == 0x28 && storedValue[1] == 0xB5 && storedValue[2] == 0x2F && storedValue[3] == 0xFD
-		if isCompressed {
-			assert.Less(t, len(storedValue), len(resultJSON))
-		}
+			// The production code only uses compression when it actually saves space
+			// (compressed < original). Compare against the actual JSON result size
+			// (which includes quotes), not the raw random string length.
+			isCompressed := len(storedValue) >= 4 && storedValue[0] == 0x28 && storedValue[1] == 0xB5 && storedValue[2] == 0x2F && storedValue[3] == 0xFD
+			if isCompressed {
+				assert.Less(t, len(storedValue), len(resultJSON))
+			}
+		})
 	})
 
 	t.Run("DecompressionError_CorruptedData", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		mockConnectors, mockNetwork, _, cache := createCacheTestFixturesWithCompression(ctx,
-			[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
-			&common.CompressionConfig{
-				Enabled:   util.BoolPtr(true),
-				Threshold: 100,
-				ZstdLevel: "fastest",
-			})
+			mockConnectors, mockNetwork, _, cache := createCacheTestFixturesWithCompression(ctx,
+				[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+				&common.CompressionConfig{
+					Enabled:   util.BoolPtr(true),
+					Threshold: 100,
+					ZstdLevel: "fastest",
+				})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{policy})
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:  "evm:123",
+				Method:   "eth_getBlockByNumber",
+				Finality: common.DataFinalityStateFinalized,
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{policy})
 
-		// Mock Get to return corrupted compressed data
-		corruptedData := []byte{0x28, 0xB5, 0x2F, 0xFD, 0xFF, 0xFF, 0xFF, 0xFF} // Valid magic but invalid zstd
-		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:5", mock.Anything, mock.Anything).
-			Return(corruptedData, nil)
+			// Mock Get to return corrupted compressed data
+			corruptedData := []byte{0x28, 0xB5, 0x2F, 0xFD, 0xFF, 0xFF, 0xFF, 0xFF} // Valid magic but invalid zstd
+			mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:5", mock.Anything, mock.Anything).
+				Return(corruptedData, nil)
 
-		// Get from cache should return nil (cache miss due to decompression error)
-		// The error is logged but not returned to avoid cache poisoning
-		cachedResp, err := cache.Get(ctx, req)
-		assert.NoError(t, err)
-		assert.Nil(t, cachedResp)
+			// Get from cache should return nil (cache miss due to decompression error)
+			// The error is logged but not returned to avoid cache poisoning
+			cachedResp, err := cache.Get(ctx, req)
+			assert.NoError(t, err)
+			assert.Nil(t, cachedResp)
+		})
 	})
 
 	t.Run("CompressionLevels", func(t *testing.T) {
@@ -2982,22 +3073,24 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 
 		for _, tc := range testCases {
 			t.Run(tc.level, func(t *testing.T) {
-				ctx, cancel := context.WithCancel(context.Background())
-				defer cancel()
+				synctest.Test(t, func(t *testing.T) {
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
 
-				logger := log.Logger
-				cacheCfg := &common.CacheConfig{
-					Compression: &common.CompressionConfig{
-						Enabled:   util.BoolPtr(true),
-						Threshold: 100,
-						ZstdLevel: tc.level,
-					},
-				}
-				cacheCfg.SetDefaults()
+					logger := log.Logger
+					cacheCfg := &common.CacheConfig{
+						Compression: &common.CompressionConfig{
+							Enabled:   util.BoolPtr(true),
+							Threshold: 100,
+							ZstdLevel: tc.level,
+						},
+					}
+					cacheCfg.SetDefaults()
 
-				cache, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
-				require.NoError(t, err)
-				assert.NotNil(t, cache)
+					cache, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
+					require.NoError(t, err)
+					assert.NotNil(t, cache)
+				})
 			})
 		}
 	})
@@ -3048,191 +3141,199 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
-				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[{"to":"0x123"},"0x5"],"id":1}`))
-				req.SetNetwork(mockNetwork)
-				req.SetCacheDal(cache)
+				synctest.Test(t, func(t *testing.T) {
+					req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[{"to":"0x123"},"0x5"],"id":1}`))
+					req.SetNetwork(mockNetwork)
+					req.SetCacheDal(cache)
 
-				resp := common.NewNormalizedResponse().
-					WithRequest(req).
-					WithBody(stringToReaderCloser(tc.responseData))
-				resp.SetUpstream(mockUpstreams[0])
-				req.SetLastValidResponse(ctx, resp)
+					resp := common.NewNormalizedResponse().
+						WithRequest(req).
+						WithBody(stringToReaderCloser(tc.responseData))
+					resp.SetUpstream(mockUpstreams[0])
+					req.SetLastValidResponse(ctx, resp)
 
-				policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-					Network:  "evm:123",
-					Method:   "eth_call",
-					Finality: common.DataFinalityStateFinalized,
-				}, mockConnectors[0])
-				require.NoError(t, err)
-				cache.SetPolicies([]*data.CachePolicy{policy})
+					policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+						Network:  "evm:123",
+						Method:   "eth_call",
+						Finality: common.DataFinalityStateFinalized,
+					}, mockConnectors[0])
+					require.NoError(t, err)
+					cache.SetPolicies([]*data.CachePolicy{policy})
 
-				// Reset mock
-				mockConnectors[0].ExpectedCalls = nil
-				mockConnectors[0].Calls = nil
+					// Reset mock
+					mockConnectors[0].ExpectedCalls = nil
+					mockConnectors[0].Calls = nil
 
-				var storedValue []byte
-				mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-					Run(func(args mock.Arguments) {
-						storedValue = args.Get(3).([]byte)
-					}).Return(nil)
+					var storedValue []byte
+					mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+						Run(func(args mock.Arguments) {
+							storedValue = args.Get(3).([]byte)
+						}).Return(nil)
 
-				err = cache.Set(ctx, req, resp)
-				require.NoError(t, err)
+					err = cache.Set(ctx, req, resp)
+					require.NoError(t, err)
 
-				isCompressed := len(storedValue) >= 4 && storedValue[0] == 0x28 && storedValue[1] == 0xB5 && storedValue[2] == 0x2F && storedValue[3] == 0xFD
-				if tc.shouldCompress {
-					assert.True(t, isCompressed, "Expected compression for %s", tc.name)
-				} else {
-					assert.False(t, isCompressed, "Expected no compression for %s", tc.name)
-				}
+					isCompressed := len(storedValue) >= 4 && storedValue[0] == 0x28 && storedValue[1] == 0xB5 && storedValue[2] == 0x2F && storedValue[3] == 0xFD
+					if tc.shouldCompress {
+						assert.True(t, isCompressed, "Expected compression for %s", tc.name)
+					} else {
+						assert.False(t, isCompressed, "Expected no compression for %s", tc.name)
+					}
+				})
 			})
 		}
 	})
 
 	t.Run("ConcurrentCompression", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
-			[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
-			&common.CompressionConfig{
-				Enabled:   util.BoolPtr(true),
-				Threshold: 100,
-				ZstdLevel: "fastest",
-			})
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
+				[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+				&common.CompressionConfig{
+					Enabled:   util.BoolPtr(true),
+					Threshold: 100,
+					ZstdLevel: "fastest",
+				})
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{policy})
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:  "evm:123",
+				Method:   "eth_getBlockByNumber",
+				Finality: common.DataFinalityStateFinalized,
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{policy})
 
-		// Set up mock to accept any calls
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+			// Set up mock to accept any calls
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
-		// Run multiple compressions concurrently
-		var wg sync.WaitGroup
-		numGoroutines := 10
+			// Run multiple compressions concurrently
+			var wg sync.WaitGroup
+			numGoroutines := 10
 
-		for i := 0; i < numGoroutines; i++ {
-			wg.Add(1)
-			go func(index int) {
-				defer wg.Done()
+			for i := 0; i < numGoroutines; i++ {
+				wg.Add(1)
+				go func(index int) {
+					defer wg.Done()
 
-				largeData := strings.Repeat(fmt.Sprintf("data%d", index), 100)
-				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x%x",false],"id":%d}`, index+1, index)))
-				req.SetNetwork(mockNetwork)
-				req.SetCacheDal(cache)
+					largeData := strings.Repeat(fmt.Sprintf("data%d", index), 100)
+					req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x%x",false],"id":%d}`, index+1, index)))
+					req.SetNetwork(mockNetwork)
+					req.SetCacheDal(cache)
 
-				resp := common.NewNormalizedResponse().
-					WithRequest(req).
-					WithBody(stringToReaderCloser(`{"result":{"data":"` + largeData + `"}}`))
-				resp.SetUpstream(mockUpstreams[0])
-				req.SetLastValidResponse(ctx, resp)
+					resp := common.NewNormalizedResponse().
+						WithRequest(req).
+						WithBody(stringToReaderCloser(`{"result":{"data":"` + largeData + `"}}`))
+					resp.SetUpstream(mockUpstreams[0])
+					req.SetLastValidResponse(ctx, resp)
 
-				err := cache.Set(ctx, req, resp)
-				assert.NoError(t, err)
-			}(i)
-		}
+					err := cache.Set(ctx, req, resp)
+					assert.NoError(t, err)
+				}(i)
+			}
 
-		wg.Wait()
+			wg.Wait()
 
-		// Verify all calls were made
-		mockConnectors[0].AssertNumberOfCalls(t, "Set", numGoroutines)
+			// Verify all calls were made
+			mockConnectors[0].AssertNumberOfCalls(t, "Set", numGoroutines)
+		})
 	})
 
 	t.Run("CompressionPoolExhaustion", func(t *testing.T) {
-		// This test verifies the pool handles exhaustion gracefully
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		synctest.Test(t, func(t *testing.T) {
+			// This test verifies the pool handles exhaustion gracefully
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
-			[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
-			&common.CompressionConfig{
-				Enabled:   util.BoolPtr(true),
-				Threshold: 100,
-				ZstdLevel: "fastest",
-			})
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
+				[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+				&common.CompressionConfig{
+					Enabled:   util.BoolPtr(true),
+					Threshold: 100,
+					ZstdLevel: "fastest",
+				})
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{policy})
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:  "evm:123",
+				Method:   "eth_getBlockByNumber",
+				Finality: common.DataFinalityStateFinalized,
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{policy})
 
-		// Set up mock to accept any calls
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+			// Set up mock to accept any calls
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
-		// Create many concurrent requests to potentially exhaust the pool
-		var wg sync.WaitGroup
-		numGoroutines := 100
+			// Create many concurrent requests to potentially exhaust the pool
+			var wg sync.WaitGroup
+			numGoroutines := 100
 
-		for i := 0; i < numGoroutines; i++ {
-			wg.Add(1)
-			go func(index int) {
-				defer wg.Done()
+			for i := 0; i < numGoroutines; i++ {
+				wg.Add(1)
+				go func(index int) {
+					defer wg.Done()
 
-				largeData := strings.Repeat("x", 1000)
-				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x%x",false],"id":%d}`, index+1, index)))
-				req.SetNetwork(mockNetwork)
-				req.SetCacheDal(cache)
+					largeData := strings.Repeat("x", 1000)
+					req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x%x",false],"id":%d}`, index+1, index)))
+					req.SetNetwork(mockNetwork)
+					req.SetCacheDal(cache)
 
-				resp := common.NewNormalizedResponse().
-					WithRequest(req).
-					WithBody(stringToReaderCloser(`{"result":"` + largeData + `"}`))
-				resp.SetUpstream(mockUpstreams[0])
-				req.SetLastValidResponse(ctx, resp)
+					resp := common.NewNormalizedResponse().
+						WithRequest(req).
+						WithBody(stringToReaderCloser(`{"result":"` + largeData + `"}`))
+					resp.SetUpstream(mockUpstreams[0])
+					req.SetLastValidResponse(ctx, resp)
 
-				// Should not panic or error even under high concurrency
-				err := cache.Set(ctx, req, resp)
-				assert.NoError(t, err)
-			}(i)
-		}
+					// Should not panic or error even under high concurrency
+					err := cache.Set(ctx, req, resp)
+					assert.NoError(t, err)
+				}(i)
+			}
 
-		wg.Wait()
+			wg.Wait()
+		})
 	})
 
 	t.Run("DecompressionOfNonCompressedData", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		mockConnectors, mockNetwork, _, cache := createCacheTestFixturesWithCompression(ctx,
-			[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
-			&common.CompressionConfig{
-				Enabled:   util.BoolPtr(true),
-				Threshold: 100,
-				ZstdLevel: "fastest",
-			})
+			mockConnectors, mockNetwork, _, cache := createCacheTestFixturesWithCompression(ctx,
+				[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+				&common.CompressionConfig{
+					Enabled:   util.BoolPtr(true),
+					Threshold: 100,
+					ZstdLevel: "fastest",
+				})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
-		req.SetNetwork(mockNetwork)
-		req.SetCacheDal(cache)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
-		require.NoError(t, err)
-		cache.SetPolicies([]*data.CachePolicy{policy})
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:  "evm:123",
+				Method:   "eth_getBlockByNumber",
+				Finality: common.DataFinalityStateFinalized,
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{policy})
 
-		// Mock Get to return non-compressed data (simulating old cache entries)
-		nonCompressedData := []byte(`{"number":"0x5","hash":"0xabc"}`)
-		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:5", mock.Anything, mock.Anything).
-			Return(nonCompressedData, nil)
+			// Mock Get to return non-compressed data (simulating old cache entries)
+			nonCompressedData := []byte(`{"number":"0x5","hash":"0xabc"}`)
+			mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:5", mock.Anything, mock.Anything).
+				Return(nonCompressedData, nil)
 
-		// Get from cache should work fine with non-compressed data
-		cachedResp, err := cache.Get(ctx, req)
-		require.NoError(t, err)
-		require.NotNil(t, cachedResp)
+			// Get from cache should work fine with non-compressed data
+			cachedResp, err := cache.Get(ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, cachedResp)
 
-		jrr, err := cachedResp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Equal(t, string(nonCompressedData), jrr.GetResultString())
+			jrr, err := cachedResp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Equal(t, string(nonCompressedData), jrr.GetResultString())
+		})
 	})
 
 	t.Run("CompressionBoundaryConditions", func(t *testing.T) {

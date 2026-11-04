@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/architecture/svm"
@@ -135,38 +136,44 @@ func TestNetworksPaths_EligibleLane(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, eligibleLane(tc.bounds, tc.bn))
+			synctest.Test(t, func(t *testing.T) {
+				assert.Equal(t, tc.want, eligibleLane(tc.bounds, tc.bn))
+			})
 		})
 	}
 }
 
 func TestNetworksPaths_UpstreamOrderingHelpers(t *testing.T) {
 	t.Run("TierUpstreamsByGroupMovesFallbacksLast", func(t *testing.T) {
-		fb := common.WithTags(common.TagTierFallback)
-		ups := []common.Upstream{
-			pathsFakeUpstream("fb1", 1, 1, fb),
-			pathsFakeUpstream("p1", 1, 1),
-			pathsFakeUpstream("fb2", 1, 1, fb),
-			pathsFakeUpstream("p2", 1, 1),
-		}
-		assert.Equal(t, []string{"p1", "p2", "fb1", "fb2"}, pathsIds(tierUpstreamsByGroup(ups)))
+		synctest.Test(t, func(t *testing.T) {
+			fb := common.WithTags(common.TagTierFallback)
+			ups := []common.Upstream{
+				pathsFakeUpstream("fb1", 1, 1, fb),
+				pathsFakeUpstream("p1", 1, 1),
+				pathsFakeUpstream("fb2", 1, 1, fb),
+				pathsFakeUpstream("p2", 1, 1),
+			}
+			assert.Equal(t, []string{"p1", "p2", "fb1", "fb2"}, pathsIds(tierUpstreamsByGroup(ups)))
 
-		plain := []common.Upstream{pathsFakeUpstream("p1", 1, 1), pathsFakeUpstream("p2", 1, 1)}
-		assert.Equal(t, []string{"p1", "p2"}, pathsIds(tierUpstreamsByGroup(plain)))
+			plain := []common.Upstream{pathsFakeUpstream("p1", 1, 1), pathsFakeUpstream("p2", 1, 1)}
+			assert.Equal(t, []string{"p1", "p2"}, pathsIds(tierUpstreamsByGroup(plain)))
+		})
 	})
 
 	t.Run("PartitionByLatestBlockMovesBehindHeadsLast", func(t *testing.T) {
-		ups := []common.Upstream{
-			pathsFakeUpstream("behind", 50, 1),
-			pathsFakeUpstream("ahead", 200, 1),
-			pathsFakeUpstream("unknown", 0, 0),
-			pathsFakeUpstream("at", 150, 1),
-		}
-		assert.Equal(t, []string{"ahead", "unknown", "at", "behind"}, pathsIds((&Network{}).partitionUpstreamsByLatestBlock(ups, 100)))
-		assert.Equal(t, pathsIds(ups), pathsIds((&Network{}).partitionUpstreamsByLatestBlock(ups, 0)), "no block keeps order")
-		assert.Equal(t, []string{"behind"}, pathsIds((&Network{}).partitionUpstreamsByLatestBlock(ups[:1], 100)))
-		noPoller := []common.Upstream{common.NewFakeUpstream("np1"), common.NewFakeUpstream("np2")}
-		assert.Equal(t, []string{"np1", "np2"}, pathsIds((&Network{}).partitionUpstreamsByLatestBlock(noPoller, 100)))
+		synctest.Test(t, func(t *testing.T) {
+			ups := []common.Upstream{
+				pathsFakeUpstream("behind", 50, 1),
+				pathsFakeUpstream("ahead", 200, 1),
+				pathsFakeUpstream("unknown", 0, 0),
+				pathsFakeUpstream("at", 150, 1),
+			}
+			assert.Equal(t, []string{"ahead", "unknown", "at", "behind"}, pathsIds((&Network{}).partitionUpstreamsByLatestBlock(ups, 100)))
+			assert.Equal(t, pathsIds(ups), pathsIds((&Network{}).partitionUpstreamsByLatestBlock(ups, 0)), "no block keeps order")
+			assert.Equal(t, []string{"behind"}, pathsIds((&Network{}).partitionUpstreamsByLatestBlock(ups[:1], 100)))
+			noPoller := []common.Upstream{common.NewFakeUpstream("np1"), common.NewFakeUpstream("np2")}
+			assert.Equal(t, []string{"np1", "np2"}, pathsIds((&Network{}).partitionUpstreamsByLatestBlock(noPoller, 100)))
+		})
 	})
 
 	t.Run("PreferTipLeaderForNearTipGetBlock", func(t *testing.T) {
@@ -193,7 +200,9 @@ func TestNetworksPaths_UpstreamOrderingHelpers(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				assert.Equal(t, tc.want, pathsIds((&Network{}).preferTipLeaderForNearTipGetBlock(tc.ups, tc.method, tc.bn)))
+				synctest.Test(t, func(t *testing.T) {
+					assert.Equal(t, tc.want, pathsIds((&Network{}).preferTipLeaderForNearTipGetBlock(tc.ups, tc.method, tc.bn)))
+				})
 			})
 		}
 	})
@@ -243,10 +252,12 @@ func TestNetworksPaths_TipVoterRank(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			head, rank, ok := tipVoterRank(tc.u, tc.finalized, nil)
-			assert.Equal(t, tc.ok, ok)
-			assert.Equal(t, tc.head, head)
-			assert.Equal(t, tc.rank, rank)
+			synctest.Test(t, func(t *testing.T) {
+				head, rank, ok := tipVoterRank(tc.u, tc.finalized, nil)
+				assert.Equal(t, tc.ok, ok)
+				assert.Equal(t, tc.head, head)
+				assert.Equal(t, tc.rank, rank)
+			})
 		})
 	}
 }
@@ -255,109 +266,125 @@ func TestNetworksPaths_BareNetworkAccessors(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("LabelPrefersAliasThenId", func(t *testing.T) {
-		var nilNet *Network
-		assert.Equal(t, "", nilNet.Label())
-		n := pathsBareNetwork(nil)
-		assert.Equal(t, "evm:123", n.Label())
-		n.networkLabel = "mainnet"
-		assert.Equal(t, "mainnet", n.Label())
-		assert.Equal(t, "paths", n.ProjectId())
-		assert.Same(t, n.cfg, n.Config())
-		assert.Same(t, n.logger, n.Logger())
+		synctest.Test(t, func(t *testing.T) {
+			var nilNet *Network
+			assert.Equal(t, "", nilNet.Label())
+			n := pathsBareNetwork(nil)
+			assert.Equal(t, "evm:123", n.Label())
+			n.networkLabel = "mainnet"
+			assert.Equal(t, "mainnet", n.Label())
+			assert.Equal(t, "paths", n.ProjectId())
+			assert.Same(t, n.cfg, n.Config())
+			assert.Same(t, n.logger, n.Logger())
+		})
 	})
 
 	t.Run("ArchitectureDefaultsToEvmWhenEvmConfigured", func(t *testing.T) {
-		n := pathsBareNetwork(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{ChainId: 1}})
-		assert.Equal(t, common.ArchitectureEvm, n.Architecture())
-		assert.Equal(t, common.ArchitectureEvm, n.cfg.Architecture, "the default is persisted on the config")
-		empty := pathsBareNetwork(&common.NetworkConfig{})
-		assert.Equal(t, common.NetworkArchitecture(""), empty.Architecture())
+		synctest.Test(t, func(t *testing.T) {
+			n := pathsBareNetwork(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{ChainId: 1}})
+			assert.Equal(t, common.ArchitectureEvm, n.Architecture())
+			assert.Equal(t, common.ArchitectureEvm, n.cfg.Architecture, "the default is persisted on the config")
+			empty := pathsBareNetwork(&common.NetworkConfig{})
+			assert.Equal(t, common.NetworkArchitecture(""), empty.Architecture())
+		})
 	})
 
 	t.Run("PolicyAccessorsWithoutEngine", func(t *testing.T) {
-		n := pathsBareNetwork(nil)
-		assert.Nil(t, n.PolicyScores(""))
-		assert.Nil(t, n.RecentPolicyDecisions("", 10))
-		assert.True(t, n.PolicyLastSwitchAt("").IsZero())
-		assert.Nil(t, n.PolicyOrderedUpstreams(""))
-		n.SetPolicyEnginePaused(true)
-		n.SetPolicyStepLogEnabled(true)
-		assert.Nil(t, n.policyEngine)
-		require.NoError(t, n.Bootstrap(ctx), "bootstrap without an engine is a no-op")
+		synctest.Test(t, func(t *testing.T) {
+			n := pathsBareNetwork(nil)
+			assert.Nil(t, n.PolicyScores(""))
+			assert.Nil(t, n.RecentPolicyDecisions("", 10))
+			assert.True(t, n.PolicyLastSwitchAt("").IsZero())
+			assert.Nil(t, n.PolicyOrderedUpstreams(""))
+			n.SetPolicyEnginePaused(true)
+			n.SetPolicyStepLogEnabled(true)
+			assert.Nil(t, n.policyEngine)
+			require.NoError(t, n.Bootstrap(ctx), "bootstrap without an engine is a no-op")
+		})
 	})
 
 	t.Run("RegistryLessReadsFailOpen", func(t *testing.T) {
-		n := pathsBareNetwork(nil)
-		assert.Nil(t, n.MetricsTracker())
-		assert.Equal(t, time.Duration(0), n.EvmBlockTime())
-		assert.Nil(t, n.AllUpstreams())
-		assert.Empty(t, n.EvmAllUpstreams(ctx))
-		assert.Nil(t, n.GetMethodMetrics(""))
-		head, known := n.futureBlockCeiling(ctx)
-		assert.False(t, known)
-		assert.Equal(t, int64(0), head)
-		var visited int
-		n.walkTipCandidates(ctx, func(common.Upstream) bool { visited++; return true })
-		assert.Equal(t, 0, visited)
-		key, ids := n.partitionKeyFor(ctx, "primary-*")
-		assert.Equal(t, "", key)
-		assert.Nil(t, ids)
-		key, lane := n.EvmUpstreamGroupForSelector(ctx, "a|b")
-		assert.Equal(t, "", key)
-		assert.Equal(t, "", lane)
+		synctest.Test(t, func(t *testing.T) {
+			n := pathsBareNetwork(nil)
+			assert.Nil(t, n.MetricsTracker())
+			assert.Equal(t, time.Duration(0), n.EvmBlockTime())
+			assert.Nil(t, n.AllUpstreams())
+			assert.Empty(t, n.EvmAllUpstreams(ctx))
+			assert.Nil(t, n.GetMethodMetrics(""))
+			head, known := n.futureBlockCeiling(ctx)
+			assert.False(t, known)
+			assert.Equal(t, int64(0), head)
+			var visited int
+			n.walkTipCandidates(ctx, func(common.Upstream) bool { visited++; return true })
+			assert.Equal(t, 0, visited)
+			key, ids := n.partitionKeyFor(ctx, "primary-*")
+			assert.Equal(t, "", key)
+			assert.Nil(t, ids)
+			key, lane := n.EvmUpstreamGroupForSelector(ctx, "a|b")
+			assert.Equal(t, "", key)
+			assert.Equal(t, "", lane)
+		})
 	})
 
 	t.Run("ServedTipLaneForWithoutSelectorIsNetworkWide", func(t *testing.T) {
-		n := pathsBareNetwork(nil)
-		assert.Same(t, &n.servedTipAll, n.servedTipLaneFor(ctx))
+		synctest.Test(t, func(t *testing.T) {
+			n := pathsBareNetwork(nil)
+			assert.Same(t, &n.servedTipAll, n.servedTipLaneFor(ctx))
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
-		req.SetDirectives(&common.RequestDirectives{UseUpstream: "primary-*"})
-		rctx := context.WithValue(ctx, common.RequestContextKey, req)
-		assert.Equal(t, "primary-*", requestSelector(rctx))
-		assert.Nil(t, n.servedTipLaneFor(rctx), "a selector that forms no group gets no lane")
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+			req.SetDirectives(&common.RequestDirectives{UseUpstream: "primary-*"})
+			rctx := context.WithValue(ctx, common.RequestContextKey, req)
+			assert.Equal(t, "primary-*", requestSelector(rctx))
+			assert.Nil(t, n.servedTipLaneFor(rctx), "a selector that forms no group gets no lane")
+		})
 	})
 
 	t.Run("NoteObservedLatestBlockIsMonotonic", func(t *testing.T) {
-		var nilNet *Network
-		nilNet.NoteObservedLatestBlock(ctx, 10)
+		synctest.Test(t, func(t *testing.T) {
+			var nilNet *Network
+			nilNet.NoteObservedLatestBlock(ctx, 10)
 
-		n := pathsBareNetwork(nil)
-		var nilCtx context.Context
-		n.NoteObservedLatestBlock(nilCtx, 10)
-		assert.Equal(t, int64(10), n.deliveredLatestBlock.Load())
-		n.NoteObservedLatestBlock(ctx, 5)
-		assert.Equal(t, int64(10), n.deliveredLatestBlock.Load(), "a lower head never moves it back")
-		n.NoteObservedLatestBlock(ctx, 0)
-		n.NoteObservedLatestBlock(ctx, -3)
-		assert.Equal(t, int64(10), n.deliveredLatestBlock.Load())
-		n.appCtx = ctx
-		n.NoteObservedLatestBlock(nilCtx, 25)
-		assert.Equal(t, int64(25), n.deliveredLatestBlock.Load())
+			n := pathsBareNetwork(nil)
+			var nilCtx context.Context
+			n.NoteObservedLatestBlock(nilCtx, 10)
+			assert.Equal(t, int64(10), n.deliveredLatestBlock.Load())
+			n.NoteObservedLatestBlock(ctx, 5)
+			assert.Equal(t, int64(10), n.deliveredLatestBlock.Load(), "a lower head never moves it back")
+			n.NoteObservedLatestBlock(ctx, 0)
+			n.NoteObservedLatestBlock(ctx, -3)
+			assert.Equal(t, int64(10), n.deliveredLatestBlock.Load())
+			n.appCtx = ctx
+			n.NoteObservedLatestBlock(nilCtx, 25)
+			assert.Equal(t, int64(25), n.deliveredLatestBlock.Load())
+		})
 	})
 
 	t.Run("RetryDistanceAndRegressionDefaults", func(t *testing.T) {
-		n := pathsBareNetwork(nil)
-		assert.Equal(t, defaultMaxRetryableBlockDistance, n.maxRetryableBlockDistance())
-		n.cfg.Evm.MaxRetryableBlockDistance = i64(7)
-		assert.Equal(t, int64(7), n.maxRetryableBlockDistance())
+		synctest.Test(t, func(t *testing.T) {
+			n := pathsBareNetwork(nil)
+			assert.Equal(t, defaultMaxRetryableBlockDistance, n.maxRetryableBlockDistance())
+			n.cfg.Evm.MaxRetryableBlockDistance = i64(7)
+			assert.Equal(t, int64(7), n.maxRetryableBlockDistance())
 
-		assert.Equal(t, int64(common.DefaultToleratedBlockHeadRollback), n.servedTipMaxRegressionBlocks())
-		n.cfg.Evm.ServedTip = &common.EvmServedTipConfig{MaxRegressionBlocks: -1}
-		assert.Equal(t, int64(-1), n.servedTipMaxRegressionBlocks())
-		n.cfg.Evm.ServedTip.MaxRegressionBlocks = 0
-		assert.Equal(t, int64(common.DefaultToleratedBlockHeadRollback), n.servedTipMaxRegressionBlocks())
+			assert.Equal(t, int64(common.DefaultToleratedBlockHeadRollback), n.servedTipMaxRegressionBlocks())
+			n.cfg.Evm.ServedTip = &common.EvmServedTipConfig{MaxRegressionBlocks: -1}
+			assert.Equal(t, int64(-1), n.servedTipMaxRegressionBlocks())
+			n.cfg.Evm.ServedTip.MaxRegressionBlocks = 0
+			assert.Equal(t, int64(common.DefaultToleratedBlockHeadRollback), n.servedTipMaxRegressionBlocks())
+		})
 	})
 
 	t.Run("SvmEnforceBlockAvailabilityDefaultsOn", func(t *testing.T) {
-		n := pathsBareNetwork(nil)
-		assert.True(t, n.SvmEnforceBlockAvailability())
-		n.cfg.Svm = &common.SvmNetworkConfig{}
-		assert.True(t, n.SvmEnforceBlockAvailability())
-		n.cfg.Svm.EnforceBlockAvailability = util.BoolPtr(false)
-		assert.False(t, n.SvmEnforceBlockAvailability())
-		n.cfg.Svm.EnforceBlockAvailability = util.BoolPtr(true)
-		assert.True(t, n.SvmEnforceBlockAvailability())
+		synctest.Test(t, func(t *testing.T) {
+			n := pathsBareNetwork(nil)
+			assert.True(t, n.SvmEnforceBlockAvailability())
+			n.cfg.Svm = &common.SvmNetworkConfig{}
+			assert.True(t, n.SvmEnforceBlockAvailability())
+			n.cfg.Svm.EnforceBlockAvailability = util.BoolPtr(false)
+			assert.False(t, n.SvmEnforceBlockAvailability())
+			n.cfg.Svm.EnforceBlockAvailability = util.BoolPtr(true)
+			assert.True(t, n.SvmEnforceBlockAvailability())
+		})
 	})
 }
 
@@ -395,14 +422,16 @@ func TestNetworksPaths_ShouldHandleMethod(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := n.shouldHandleMethod(newReq(tc.method, tc.use), tc.method, tc.ups)
-			if !tc.wantErr {
-				assert.NoError(t, err)
-				return
-			}
-			require.Error(t, err)
-			assert.True(t, common.HasErrorCode(err, common.ErrCodeNotImplemented), "got %v", err)
-			assert.Contains(t, err.Error(), tc.msg)
+			synctest.Test(t, func(t *testing.T) {
+				err := n.shouldHandleMethod(newReq(tc.method, tc.use), tc.method, tc.ups)
+				if !tc.wantErr {
+					assert.NoError(t, err)
+					return
+				}
+				require.Error(t, err)
+				assert.True(t, common.HasErrorCode(err, common.ErrCodeNotImplemented), "got %v", err)
+				assert.Contains(t, err.Error(), tc.msg)
+			})
 		})
 	}
 }
@@ -526,30 +555,42 @@ func TestNetworksPaths_EnrichStatePoller(t *testing.T) {
 	}
 
 	t.Run("LatestTagFromParamsSuggestsLatest", func(t *testing.T) {
-		sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`, nil, `{"number":"0xc8"}`)
-		assert.Equal(t, int64(200), sp.LatestBlock())
-		assert.Equal(t, int64(90), sp.FinalizedBlock())
+		synctest.Test(t, func(t *testing.T) {
+			sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`, nil, `{"number":"0xc8"}`)
+			assert.Equal(t, int64(200), sp.LatestBlock())
+			assert.Equal(t, int64(90), sp.FinalizedBlock())
+		})
 	})
 	t.Run("FinalizedTagFromBlockRefSuggestsFinalized", func(t *testing.T) {
-		sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x5f",false]}`, "finalized", `{"number":"0x5f"}`)
-		assert.Equal(t, int64(95), sp.FinalizedBlock())
-		assert.Equal(t, int64(100), sp.LatestBlock())
+		synctest.Test(t, func(t *testing.T) {
+			sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x5f",false]}`, "finalized", `{"number":"0x5f"}`)
+			assert.Equal(t, int64(95), sp.FinalizedBlock())
+			assert.Equal(t, int64(100), sp.LatestBlock())
+		})
 	})
 	t.Run("NumberedBlockIsIgnored", func(t *testing.T) {
-		sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x500",false]}`, nil, `{"number":"0x500"}`)
-		assert.Equal(t, int64(100), sp.LatestBlock())
+		synctest.Test(t, func(t *testing.T) {
+			sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x500",false]}`, nil, `{"number":"0x500"}`)
+			assert.Equal(t, int64(100), sp.LatestBlock())
+		})
 	})
 	t.Run("MissingNumberIsIgnored", func(t *testing.T) {
-		sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`, nil, `{"hash":"0x1"}`)
-		assert.Equal(t, int64(100), sp.LatestBlock())
+		synctest.Test(t, func(t *testing.T) {
+			sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`, nil, `{"hash":"0x1"}`)
+			assert.Equal(t, int64(100), sp.LatestBlock())
+		})
 	})
 	t.Run("BadNumberIsIgnored", func(t *testing.T) {
-		sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`, nil, `{"number":"zz"}`)
-		assert.Equal(t, int64(100), sp.LatestBlock())
+		synctest.Test(t, func(t *testing.T) {
+			sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`, nil, `{"number":"zz"}`)
+			assert.Equal(t, int64(100), sp.LatestBlock())
+		})
 	})
 	t.Run("BlockNumberSuggestsLatest", func(t *testing.T) {
-		sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`, nil, `"0x12c"`)
-		assert.Equal(t, int64(300), sp.LatestBlock())
+		synctest.Test(t, func(t *testing.T) {
+			sp := run(t, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`, nil, `"0x12c"`)
+			assert.Equal(t, int64(300), sp.LatestBlock())
+		})
 	})
 }
 
@@ -625,96 +666,104 @@ func TestNetworksPaths_Multiplexing(t *testing.T) {
 	}
 
 	t.Run("DisabledAndWriteMethodsNeverMultiplex", func(t *testing.T) {
-		ctx := context.Background()
-		n := pathsBareNetwork(nil)
-		n.cfg.Multiplexing = util.BoolPtr(false)
-		mlx, resp, err := n.handleMultiplexing(ctx, &lg, common.NewNormalizedRequest(body(1, "0xa")), time.Now())
-		assert.Nil(t, mlx)
-		assert.Nil(t, resp)
-		assert.NoError(t, err)
+		synctest.Test(t, func(t *testing.T) {
+			ctx := context.Background()
+			n := pathsBareNetwork(nil)
+			n.cfg.Multiplexing = util.BoolPtr(false)
+			mlx, resp, err := n.handleMultiplexing(ctx, &lg, common.NewNormalizedRequest(body(1, "0xa")), time.Now())
+			assert.Nil(t, mlx)
+			assert.Nil(t, resp)
+			assert.NoError(t, err)
 
-		n.cfg.Multiplexing = nil
-		write := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_newFilter","params":[{}]}`))
-		mlx, resp, err = n.handleMultiplexing(ctx, &lg, write, time.Now())
-		assert.Nil(t, mlx)
-		assert.Nil(t, resp)
-		assert.NoError(t, err)
+			n.cfg.Multiplexing = nil
+			write := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_newFilter","params":[{}]}`))
+			mlx, resp, err = n.handleMultiplexing(ctx, &lg, write, time.Now())
+			assert.Nil(t, mlx)
+			assert.Nil(t, resp)
+			assert.NoError(t, err)
 
-		mlx, resp, err = n.handleMultiplexing(ctx, &lg, common.NewNormalizedRequest([]byte(`not-json`)), time.Now())
-		assert.Nil(t, mlx, "no hash means no multiplexer")
-		assert.Nil(t, resp)
-		assert.NoError(t, err)
+			mlx, resp, err = n.handleMultiplexing(ctx, &lg, common.NewNormalizedRequest([]byte(`not-json`)), time.Now())
+			assert.Nil(t, mlx, "no hash means no multiplexer")
+			assert.Nil(t, resp)
+			assert.NoError(t, err)
+		})
 	})
 
 	t.Run("FollowerCopiesLeaderResultThenCleanupReleases", func(t *testing.T) {
-		ctx := context.Background()
-		n := pathsBareNetwork(nil)
-		leaderReq := common.NewNormalizedRequest(body(1, "0xb"))
-		mlx, resp, err := n.handleMultiplexing(ctx, &lg, leaderReq, time.Now())
-		require.NoError(t, err)
-		require.Nil(t, resp)
-		require.NotNil(t, mlx, "first request leads")
+		synctest.Test(t, func(t *testing.T) {
+			ctx := context.Background()
+			n := pathsBareNetwork(nil)
+			leaderReq := common.NewNormalizedRequest(body(1, "0xb"))
+			mlx, resp, err := n.handleMultiplexing(ctx, &lg, leaderReq, time.Now())
+			require.NoError(t, err)
+			require.Nil(t, resp)
+			require.NotNil(t, mlx, "first request leads")
 
-		leaderResp := common.NewNormalizedResponse().WithRequest(leaderReq).
-			WithJsonRpcResponse(common.MustNewJsonRpcResponseFromBytes([]byte(`1`), []byte(`"0xbeef"`), nil))
-		mlx.Close(ctx, leaderResp, nil)
+			leaderResp := common.NewNormalizedResponse().WithRequest(leaderReq).
+				WithJsonRpcResponse(common.MustNewJsonRpcResponseFromBytes([]byte(`1`), []byte(`"0xbeef"`), nil))
+			mlx.Close(ctx, leaderResp, nil)
 
-		followerReq := common.NewNormalizedRequest(body(2, "0xb"))
-		fmlx, fresp, ferr := n.handleMultiplexing(ctx, &lg, followerReq, time.Now())
-		require.NoError(t, ferr)
-		assert.Nil(t, fmlx, "a follower does not lead")
-		assert.Equal(t, `"0xbeef"`, pathsResult(t, fresp))
+			followerReq := common.NewNormalizedRequest(body(2, "0xb"))
+			fmlx, fresp, ferr := n.handleMultiplexing(ctx, &lg, followerReq, time.Now())
+			require.NoError(t, ferr)
+			assert.Nil(t, fmlx, "a follower does not lead")
+			assert.Equal(t, `"0xbeef"`, pathsResult(t, fresp))
 
-		n.cleanupMultiplexer(mlx)
-		_, stillThere := n.inFlightRequests.Load(mlx.hash)
-		assert.False(t, stillThere, "cleanup removes the in-flight entry")
-		mlx.mu.RLock()
-		assert.Nil(t, mlx.resp, "cleanup releases the leader response")
-		mlx.mu.RUnlock()
+			n.cleanupMultiplexer(mlx)
+			_, stillThere := n.inFlightRequests.Load(mlx.hash)
+			assert.False(t, stillThere, "cleanup removes the in-flight entry")
+			mlx.mu.RLock()
+			assert.Nil(t, mlx.resp, "cleanup releases the leader response")
+			mlx.mu.RUnlock()
 
-		again, _, err := n.handleMultiplexing(ctx, &lg, common.NewNormalizedRequest(body(3, "0xb")), time.Now())
-		require.NoError(t, err)
-		require.NotNil(t, again, "after cleanup the next identical request leads")
-		again.Close(ctx, nil, errors.New("done"))
-		n.cleanupMultiplexer(again)
+			again, _, err := n.handleMultiplexing(ctx, &lg, common.NewNormalizedRequest(body(3, "0xb")), time.Now())
+			require.NoError(t, err)
+			require.NotNil(t, again, "after cleanup the next identical request leads")
+			again.Close(ctx, nil, errors.New("done"))
+			n.cleanupMultiplexer(again)
+		})
 	})
 
 	t.Run("FollowerSharesLeaderError", func(t *testing.T) {
-		ctx := context.Background()
-		n := pathsBareNetwork(nil)
-		mlx, _, err := n.handleMultiplexing(ctx, &lg, common.NewNormalizedRequest(body(1, "0xc")), time.Now())
-		require.NoError(t, err)
-		require.NotNil(t, mlx)
-		leaderErr := common.NewErrNoUpstreamsFound("paths", "evm:123")
-		mlx.Close(ctx, nil, leaderErr)
+		synctest.Test(t, func(t *testing.T) {
+			ctx := context.Background()
+			n := pathsBareNetwork(nil)
+			mlx, _, err := n.handleMultiplexing(ctx, &lg, common.NewNormalizedRequest(body(1, "0xc")), time.Now())
+			require.NoError(t, err)
+			require.NotNil(t, mlx)
+			leaderErr := common.NewErrNoUpstreamsFound("paths", "evm:123")
+			mlx.Close(ctx, nil, leaderErr)
 
-		_, resp, ferr := n.handleMultiplexing(ctx, &lg, common.NewNormalizedRequest(body(2, "0xc")), time.Now())
-		assert.Nil(t, resp)
-		require.Error(t, ferr)
-		assert.True(t, common.HasErrorCode(ferr, "ErrNoUpstreamsFound"), "got %v", ferr)
-		n.cleanupMultiplexer(mlx)
+			_, resp, ferr := n.handleMultiplexing(ctx, &lg, common.NewNormalizedRequest(body(2, "0xc")), time.Now())
+			assert.Nil(t, resp)
+			require.Error(t, ferr)
+			assert.True(t, common.HasErrorCode(ferr, "ErrNoUpstreamsFound"), "got %v", ferr)
+			n.cleanupMultiplexer(mlx)
+		})
 	})
 
 	t.Run("FollowerDeadlineAndCancel", func(t *testing.T) {
-		n := pathsBareNetwork(nil)
-		mlx, _, err := n.handleMultiplexing(context.Background(), &lg, common.NewNormalizedRequest(body(1, "0xd")), time.Now())
-		require.NoError(t, err)
-		require.NotNil(t, mlx)
+		synctest.Test(t, func(t *testing.T) {
+			n := pathsBareNetwork(nil)
+			mlx, _, err := n.handleMultiplexing(context.Background(), &lg, common.NewNormalizedRequest(body(1, "0xd")), time.Now())
+			require.NoError(t, err)
+			require.NotNil(t, mlx)
 
-		tctx, tcancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-		defer tcancel()
-		_, resp, ferr := n.handleMultiplexing(tctx, &lg, common.NewNormalizedRequest(body(2, "0xd")), time.Now())
-		assert.Nil(t, resp)
-		assert.True(t, common.HasErrorCode(ferr, common.ErrCodeNetworkRequestTimeout), "got %v", ferr)
+			tctx, tcancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+			defer tcancel()
+			_, resp, ferr := n.handleMultiplexing(tctx, &lg, common.NewNormalizedRequest(body(2, "0xd")), time.Now())
+			assert.Nil(t, resp)
+			assert.True(t, common.HasErrorCode(ferr, common.ErrCodeNetworkRequestTimeout), "got %v", ferr)
 
-		cctx, ccancel := context.WithCancel(context.Background())
-		ccancel()
-		_, resp, ferr = n.handleMultiplexing(cctx, &lg, common.NewNormalizedRequest(body(3, "0xd")), time.Now())
-		assert.Nil(t, resp)
-		assert.ErrorIs(t, ferr, context.Canceled)
+			cctx, ccancel := context.WithCancel(context.Background())
+			ccancel()
+			_, resp, ferr = n.handleMultiplexing(cctx, &lg, common.NewNormalizedRequest(body(3, "0xd")), time.Now())
+			assert.Nil(t, resp)
+			assert.ErrorIs(t, ferr, context.Canceled)
 
-		mlx.Close(context.Background(), nil, errors.New("done"))
-		n.cleanupMultiplexer(mlx)
+			mlx.Close(context.Background(), nil, errors.New("done"))
+			n.cleanupMultiplexer(mlx)
+		})
 	})
 }
 
@@ -821,79 +870,95 @@ func TestNetworksPaths_ForwardOnLiveNetwork(t *testing.T) {
 	}
 
 	t.Run("RegistryAccessors", func(t *testing.T) {
-		all := network.AllUpstreams()
-		require.Len(t, all, 1)
-		assert.Equal(t, "test", all[0].Id())
-		assert.Equal(t, []string{"test"}, pathsIds(network.EvmAllUpstreams(ctx)))
-		assert.Empty(t, network.ShadowUpstreams())
-		leader := network.EvmLeaderUpstream(ctx)
-		require.NotNil(t, leader)
-		assert.Equal(t, "test", leader.Id())
-		assert.NotNil(t, network.MetricsTracker())
-		network.EvmRefreshLatestBlock(ctx)
-		assert.Equal(t, head, network.EvmHighestLatestBlockNumber(ctx), "one voter: the served tip is its head")
+		synctest.Test(t, func(t *testing.T) {
+			all := network.AllUpstreams()
+			require.Len(t, all, 1)
+			assert.Equal(t, "test", all[0].Id())
+			assert.Equal(t, []string{"test"}, pathsIds(network.EvmAllUpstreams(ctx)))
+			assert.Empty(t, network.ShadowUpstreams())
+			leader := network.EvmLeaderUpstream(ctx)
+			require.NotNil(t, leader)
+			assert.Equal(t, "test", leader.Id())
+			assert.NotNil(t, network.MetricsTracker())
+			network.EvmRefreshLatestBlock(ctx)
+			assert.Equal(t, head, network.EvmHighestLatestBlockNumber(ctx), "one voter: the served tip is its head")
+		})
 	})
 
 	t.Run("FinalityHeuristicFromRegistry", func(t *testing.T) {
-		lowest := network.EvmLowestFinalizedBlockNumber(ctx)
-		require.Greater(t, lowest, int64(0))
-		below := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1",false]}`))
-		assert.Equal(t, common.DataFinalityStateFinalized, network.GetFinality(ctx, below, nil))
-		above := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, lowest+1000)))
-		assert.Equal(t, common.DataFinalityStateUnfinalized, network.GetFinality(ctx, above, nil))
+		synctest.Test(t, func(t *testing.T) {
+			lowest := network.EvmLowestFinalizedBlockNumber(ctx)
+			require.Greater(t, lowest, int64(0))
+			below := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1",false]}`))
+			assert.Equal(t, common.DataFinalityStateFinalized, network.GetFinality(ctx, below, nil))
+			above := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, lowest+1000)))
+			assert.Equal(t, common.DataFinalityStateUnfinalized, network.GetFinality(ctx, above, nil))
+		})
 	})
 
 	t.Run("FutureBlockShortCircuitsToNull", func(t *testing.T) {
-		resp, err := forward(fmt.Sprintf(`{"jsonrpc":"2.0","id":7,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, head+100000))
-		require.NoError(t, err)
-		assert.Equal(t, "null", pathsResult(t, resp), "a block beyond every head is null without dispatch")
-		assert.Equal(t, head+100000, resp.EvmBlockNumber())
+		synctest.Test(t, func(t *testing.T) {
+			resp, err := forward(fmt.Sprintf(`{"jsonrpc":"2.0","id":7,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, head+100000))
+			require.NoError(t, err)
+			assert.Equal(t, "null", pathsResult(t, resp), "a block beyond every head is null without dispatch")
+			assert.Equal(t, head+100000, resp.EvmBlockNumber())
 
-		within := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, head)))
-		_, ok := network.tryShortCircuitFutureBlock(ctx, within, "eth_getBlockByNumber")
-		assert.False(t, ok, "a block at the head is dispatched")
+			within := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, head)))
+			_, ok := network.tryShortCircuitFutureBlock(ctx, within, "eth_getBlockByNumber")
+			assert.False(t, ok, "a block at the head is dispatched")
+		})
 	})
 
 	t.Run("UnsupportedMethodRejectedBeforeDispatch", func(t *testing.T) {
-		_, err := forward(`{"jsonrpc":"2.0","id":1,"method":"eth_accounts","params":[]}`)
-		require.Error(t, err)
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeNotImplemented), "got %v", err)
+		synctest.Test(t, func(t *testing.T) {
+			_, err := forward(`{"jsonrpc":"2.0","id":1,"method":"eth_accounts","params":[]}`)
+			require.Error(t, err)
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeNotImplemented), "got %v", err)
+		})
 	})
 
 	t.Run("MissingRateLimitBudgetFailsForward", func(t *testing.T) {
-		network.cfg.RateLimitBudget = "paths-no-such-budget"
-		defer func() { network.cfg.RateLimitBudget = "" }()
-		_, err := forward(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1","0x1"]}`)
-		require.Error(t, err)
-		assert.True(t, common.HasErrorCode(err, "ErrRateLimitBudgetNotFound"), "got %v", err)
+		synctest.Test(t, func(t *testing.T) {
+			network.cfg.RateLimitBudget = "paths-no-such-budget"
+			defer func() { network.cfg.RateLimitBudget = "" }()
+			_, err := forward(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1","0x1"]}`)
+			require.Error(t, err)
+			assert.True(t, common.HasErrorCode(err, "ErrRateLimitBudgetNotFound"), "got %v", err)
+		})
 	})
 
 	t.Run("CacheHitServedWithoutUpstream", func(t *testing.T) {
-		cache.mode.Store(&pathsCacheMode{result: `"0xcached"`})
-		defer cache.mode.Store(nil)
-		resp, err := forward(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x2","0x1"]}`)
-		require.NoError(t, err)
-		assert.Equal(t, `"0xcached"`, pathsResult(t, resp))
+		synctest.Test(t, func(t *testing.T) {
+			cache.mode.Store(&pathsCacheMode{result: `"0xcached"`})
+			defer cache.mode.Store(nil)
+			resp, err := forward(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x2","0x1"]}`)
+			require.NoError(t, err)
+			assert.Equal(t, `"0xcached"`, pathsResult(t, resp))
+		})
 	})
 
 	t.Run("CacheErrorFallsThroughToUpstream", func(t *testing.T) {
-		cache.mode.Store(&pathsCacheMode{err: errors.New("cache down")})
-		defer cache.mode.Store(nil)
-		resp, err := forward(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x3","0x1"]}`)
-		require.NoError(t, err)
-		assert.Equal(t, `"0xupstream"`, pathsResult(t, resp))
+		synctest.Test(t, func(t *testing.T) {
+			cache.mode.Store(&pathsCacheMode{err: errors.New("cache down")})
+			defer cache.mode.Store(nil)
+			resp, err := forward(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x3","0x1"]}`)
+			require.NoError(t, err)
+			assert.Equal(t, `"0xupstream"`, pathsResult(t, resp))
+		})
 	})
 
 	t.Run("StaticResponseServedWithoutUpstream", func(t *testing.T) {
-		network.cfg.StaticResponses = []*common.StaticResponseConfig{{
-			Method:   "eth_getBalance",
-			Params:   []interface{}{"0x4", "0x1"},
-			Response: &common.StaticResponseBodyConfig{Result: "0xstatic"},
-		}}
-		defer func() { network.cfg.StaticResponses = nil }()
-		resp, err := forward(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x4","0x1"]}`)
-		require.NoError(t, err)
-		assert.Equal(t, `"0xstatic"`, pathsResult(t, resp))
+		synctest.Test(t, func(t *testing.T) {
+			network.cfg.StaticResponses = []*common.StaticResponseConfig{{
+				Method:   "eth_getBalance",
+				Params:   []interface{}{"0x4", "0x1"},
+				Response: &common.StaticResponseBodyConfig{Result: "0xstatic"},
+			}}
+			defer func() { network.cfg.StaticResponses = nil }()
+			resp, err := forward(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x4","0x1"]}`)
+			require.NoError(t, err)
+			assert.Equal(t, `"0xstatic"`, pathsResult(t, resp))
+		})
 	})
 }
 
@@ -924,82 +989,90 @@ func TestNetworksPaths_PolicyAccessorsAndGroupLanes(t *testing.T) {
 	})
 
 	t.Run("PauseAndStepLogToggleEngine", func(t *testing.T) {
-		network.SetPolicyEnginePaused(true)
-		assert.True(t, network.policyEngine.IsPaused())
-		network.SetPolicyEnginePaused(false)
-		assert.False(t, network.policyEngine.IsPaused())
-		network.SetPolicyStepLogEnabled(true)
-		assert.True(t, network.policyEngine.IsStepLogEnabled())
-		network.SetPolicyStepLogEnabled(false)
-		assert.False(t, network.policyEngine.IsStepLogEnabled())
+		synctest.Test(t, func(t *testing.T) {
+			network.SetPolicyEnginePaused(true)
+			assert.True(t, network.policyEngine.IsPaused())
+			network.SetPolicyEnginePaused(false)
+			assert.False(t, network.policyEngine.IsPaused())
+			network.SetPolicyStepLogEnabled(true)
+			assert.True(t, network.policyEngine.IsStepLogEnabled())
+			network.SetPolicyStepLogEnabled(false)
+			assert.False(t, network.policyEngine.IsStepLogEnabled())
+		})
 	})
 
 	t.Run("GroupForSelector", func(t *testing.T) {
-		key, lane := network.EvmUpstreamGroupForSelector(ctx, "primary-*")
-		assert.True(t, strings.HasPrefix(key, "grp:"), "got %q", key)
-		assert.Equal(t, "primary", lane)
-		key2, _ := network.EvmUpstreamGroupForSelector(ctx, "primary-*")
-		assert.Equal(t, key, key2, "the key is stable")
-		fkey, flane := network.EvmUpstreamGroupForSelector(ctx, "fallback-*")
-		assert.NotEqual(t, key, fkey)
-		assert.Equal(t, "fallback", flane)
+		synctest.Test(t, func(t *testing.T) {
+			key, lane := network.EvmUpstreamGroupForSelector(ctx, "primary-*")
+			assert.True(t, strings.HasPrefix(key, "grp:"), "got %q", key)
+			assert.Equal(t, "primary", lane)
+			key2, _ := network.EvmUpstreamGroupForSelector(ctx, "primary-*")
+			assert.Equal(t, key, key2, "the key is stable")
+			fkey, flane := network.EvmUpstreamGroupForSelector(ctx, "fallback-*")
+			assert.NotEqual(t, key, fkey)
+			assert.Equal(t, "fallback", flane)
 
-		for _, sel := range []string{"*", "primary-1", "nothing-*", "a|b"} {
-			k, l := network.EvmUpstreamGroupForSelector(ctx, sel)
-			assert.Equal(t, "", k, "selector %q forms no group", sel)
-			assert.Equal(t, "", l)
-		}
-		k, l := network.EvmUpstreamGroupForSelector(ctx, "*-1")
-		assert.True(t, strings.HasPrefix(k, "grp:"))
-		assert.Equal(t, "1", l, "the shared id token names the lane")
+			for _, sel := range []string{"*", "primary-1", "nothing-*", "a|b"} {
+				k, l := network.EvmUpstreamGroupForSelector(ctx, sel)
+				assert.Equal(t, "", k, "selector %q forms no group", sel)
+				assert.Equal(t, "", l)
+			}
+			k, l := network.EvmUpstreamGroupForSelector(ctx, "*-1")
+			assert.True(t, strings.HasPrefix(k, "grp:"))
+			assert.Equal(t, "1", l, "the shared id token names the lane")
+		})
 	})
 
 	t.Run("ServedTipLanesMaterializeOncePerGroupUpToCap", func(t *testing.T) {
-		laneCtx := func(sel string) context.Context {
-			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
-			req.SetDirectives(&common.RequestDirectives{UseUpstream: sel})
-			return context.WithValue(ctx, common.RequestContextKey, req)
-		}
-		first := network.servedTipLaneFor(laneCtx("primary-*"))
-		require.NotNil(t, first)
-		assert.Equal(t, "primary", first.label)
-		assert.Same(t, first, network.servedTipLaneFor(laneCtx("primary-*")), "a group reuses its lane")
-		assert.Nil(t, network.servedTipLaneFor(laneCtx("primary-1")), "a single upstream is no group")
+		synctest.Test(t, func(t *testing.T) {
+			laneCtx := func(sel string) context.Context {
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+				req.SetDirectives(&common.RequestDirectives{UseUpstream: sel})
+				return context.WithValue(ctx, common.RequestContextKey, req)
+			}
+			first := network.servedTipLaneFor(laneCtx("primary-*"))
+			require.NotNil(t, first)
+			assert.Equal(t, "primary", first.label)
+			assert.Same(t, first, network.servedTipLaneFor(laneCtx("primary-*")), "a group reuses its lane")
+			assert.Nil(t, network.servedTipLaneFor(laneCtx("primary-1")), "a single upstream is no group")
 
-		count := network.servedTipLaneCount.Load()
-		network.servedTipLaneCount.Store(maxServedTipLanes)
-		assert.Nil(t, network.servedTipLaneFor(laneCtx("fallback-*")), "beyond the cap a new group gets no lane")
-		assert.Same(t, first, network.servedTipLaneFor(laneCtx("primary-*")), "existing lanes still resolve at the cap")
-		network.servedTipLaneCount.Store(count)
+			count := network.servedTipLaneCount.Load()
+			network.servedTipLaneCount.Store(maxServedTipLanes)
+			assert.Nil(t, network.servedTipLaneFor(laneCtx("fallback-*")), "beyond the cap a new group gets no lane")
+			assert.Same(t, first, network.servedTipLaneFor(laneCtx("primary-*")), "existing lanes still resolve at the cap")
+			network.servedTipLaneCount.Store(count)
+		})
 	})
 }
 
 func TestNetworksPaths_SvmSlotReadouts(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	const host = "svm-paths-rpc1.localhost"
-	util.SetupMocksForSvmStatePollerWithShred(host, 1000, 990, 1005)
-	gock.New("http://" + host).
-		Post("").
-		Persist().
-		Filter(func(r *http.Request) bool {
-			return r.URL.Host == host && strings.Contains(util.SafeReadBody(r), `"method":"getAccountInfo"`)
-		}).
-		Reply(200).
-		BodyString(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1000},"value":{"lamports":7}}}`)
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		const host = "svm-paths-rpc1.localhost"
+		util.SetupMocksForSvmStatePollerWithShred(host, 1000, 990, 1005)
+		gock.New("http://" + host).
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return r.URL.Host == host && strings.Contains(util.SafeReadBody(r), `"method":"getAccountInfo"`)
+			}).
+			Reply(200).
+			BodyString(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1000},"value":{"lamports":7}}}`)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{svmUpstreamConfig("rpc1", host)})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{svmUpstreamConfig("rpc1", host)})
 
-	require.Eventually(t, func() bool {
-		return net.SvmHighestLatestSlot(ctx) == 1000 && net.SvmHighestIndexedSlot(ctx) == 1005
-	}, 5*time.Second, 20*time.Millisecond)
-	assert.Equal(t, int64(990), net.SvmHighestFinalizedSlot(ctx))
-	assert.Equal(t, int64(990), net.SvmHighestFinalizedSlotMax(ctx))
+		require.Eventually(t, func() bool {
+			return net.SvmHighestLatestSlot(ctx) == 1000 && net.SvmHighestIndexedSlot(ctx) == 1005
+		}, 5*time.Second, 20*time.Millisecond)
+		assert.Equal(t, int64(990), net.SvmHighestFinalizedSlot(ctx))
+		assert.Equal(t, int64(990), net.SvmHighestFinalizedSlotMax(ctx))
 
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey",{"minContextSlot":500}]}`))
-	resp, err := svmProjectForward(ctx, net, req)
-	require.NoError(t, err)
-	assert.Contains(t, pathsResult(t, resp), `"lamports":7`, "an upstream past minContextSlot serves")
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey",{"minContextSlot":500}]}`))
+		resp, err := svmProjectForward(ctx, net, req)
+		require.NoError(t, err)
+		assert.Contains(t, pathsResult(t, resp), `"lamports":7`, "an upstream past minContextSlot serves")
+	})
 }

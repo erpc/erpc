@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -55,110 +56,114 @@ func TestNetworkForward_PrecompileStateGap_FailsOverToUpstreamWithState(t *testi
 
 	for _, tc := range cases {
 		t.Run(tc.method, func(t *testing.T) {
-			util.ResetGock()
-			defer util.ResetGock()
-			util.SetupMocksForEvmStatePoller()
-			defer util.AssertNoPendingMocks(t, 0)
+			synctest.Test(t, func(t *testing.T) {
+				util.ResetGock()
+				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
+				defer util.AssertNoPendingMocks(t, 0)
 
-			gock.New("http://rpc1.localhost").
-				Post("").
-				Filter(func(r *http.Request) bool {
-					return strings.Contains(util.SafeReadBody(r), tc.method)
-				}).
-				Times(1).
-				Reply(200).
-				JSON(precompileStateGapReply())
-			gock.New("http://rpc2.localhost").
-				Post("").
-				Filter(func(r *http.Request) bool {
-					return strings.Contains(util.SafeReadBody(r), tc.method)
-				}).
-				Times(1).
-				Reply(200).
-				BodyString(`{"jsonrpc":"2.0","id":1,"result":` + tc.result + `}`)
+				gock.New("http://rpc1.localhost").
+					Post("").
+					Filter(func(r *http.Request) bool {
+						return strings.Contains(util.SafeReadBody(r), tc.method)
+					}).
+					Times(1).
+					Reply(200).
+					JSON(precompileStateGapReply())
+				gock.New("http://rpc2.localhost").
+					Post("").
+					Filter(func(r *http.Request) bool {
+						return strings.Contains(util.SafeReadBody(r), tc.method)
+					}).
+					Times(1).
+					Reply(200).
+					BodyString(`{"jsonrpc":"2.0","id":1,"result":` + tc.result + `}`)
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
 
-			// No network retries: the failover must happen inside a single
-			// sweep, as it does for any other upstream that lacks the data.
-			network := setupTestNetworkForMissingDataRetry(t, ctx, nil,
-				&common.RetryPolicyConfig{MaxAttempts: 1},
-			)
-			network.PinUpstreamOrderForTest("rpc1", "rpc2")
+				// No network retries: the failover must happen inside a single
+				// sweep, as it does for any other upstream that lacks the data.
+				network := setupTestNetworkForMissingDataRetry(t, ctx, nil,
+					&common.RetryPolicyConfig{MaxAttempts: 1},
+				)
+				network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
-			req := common.NewNormalizedRequest([]byte(
-				`{"jsonrpc":"2.0","id":1,"method":"` + tc.method + `","params":` + tc.params + `}`))
+				req := common.NewNormalizedRequest([]byte(
+					`{"jsonrpc":"2.0","id":1,"method":"` + tc.method + `","params":` + tc.params + `}`))
 
-			resp, err := network.Forward(ctx, req)
-			require.NoError(t, err, "the upstream that holds HyperCore state must answer")
-			require.NotNil(t, resp)
+				resp, err := network.Forward(ctx, req)
+				require.NoError(t, err, "the upstream that holds HyperCore state must answer")
+				require.NotNil(t, resp)
 
-			jrr, err := resp.JsonRpcResponse()
-			require.NoError(t, err)
-			require.Nil(t, jrr.Error)
-			assert.JSONEq(t, tc.result, string(jrr.GetResultBytes()))
-			assert.Equal(t, "rpc2", resp.UpstreamId())
+				jrr, err := resp.JsonRpcResponse()
+				require.NoError(t, err)
+				require.Nil(t, jrr.Error)
+				assert.JSONEq(t, tc.result, string(jrr.GetResultBytes()))
+				assert.Equal(t, "rpc2", resp.UpstreamId())
+			})
 		})
 	}
 }
 
 func TestHttpServer_PrecompileStateGap_AllUpstreamsLackStateSurfacesNodeMessage(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	synctest.Test(t, func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
-	for _, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
-		gock.New(host).
-			Post("").
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_call")
-			}).
-			Persist().
-			Reply(200).
-			JSON(precompileStateGapReply())
-	}
+		for _, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
+			gock.New(host).
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_call")
+				}).
+				Persist().
+				Reply(200).
+				JSON(precompileStateGapReply())
+		}
 
-	cfg := &common.Config{
-		Server: &common.ServerConfig{
-			MaxTimeout: common.Duration(10 * time.Second).Ptr(),
-		},
-		Projects: []*common.ProjectConfig{{
-			Id: "test_project",
-			Networks: []*common.NetworkConfig{{
-				Architecture: common.ArchitectureEvm,
-				Evm:          &common.EvmNetworkConfig{ChainId: 123},
-			}},
-			Upstreams: []*common.UpstreamConfig{
-				{
-					Id:       "rpc1",
-					Endpoint: "http://rpc1.localhost",
-					Type:     common.UpstreamTypeEvm,
-					Evm:      &common.EvmUpstreamConfig{ChainId: 123},
-				},
-				{
-					Id:       "rpc2",
-					Endpoint: "http://rpc2.localhost",
-					Type:     common.UpstreamTypeEvm,
-					Evm:      &common.EvmUpstreamConfig{ChainId: 123},
-				},
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: common.Duration(10 * time.Second).Ptr(),
 			},
-		}},
-	}
+			Projects: []*common.ProjectConfig{{
+				Id: "test_project",
+				Networks: []*common.NetworkConfig{{
+					Architecture: common.ArchitectureEvm,
+					Evm:          &common.EvmNetworkConfig{ChainId: 123},
+				}},
+				Upstreams: []*common.UpstreamConfig{
+					{
+						Id:       "rpc1",
+						Endpoint: "http://rpc1.localhost",
+						Type:     common.UpstreamTypeEvm,
+						Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+					},
+					{
+						Id:       "rpc2",
+						Endpoint: "http://rpc2.localhost",
+						Type:     common.UpstreamTypeEvm,
+						Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+					},
+				},
+			}},
+		}
 
-	sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
-	defer shutdown()
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
 
-	statusCode, _, body := sendRequest(
-		`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[`+oraclePxCall+`,"0x11118800"]}`, nil, nil)
-	assert.Equal(t, http.StatusOK, statusCode)
+		statusCode, _, body := sendRequest(
+			`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[`+oraclePxCall+`,"0x11118800"]}`, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode)
 
-	var respObject map[string]interface{}
-	require.NoError(t, sonic.UnmarshalString(body, &respObject))
-	errObj, ok := respObject["error"].(map[string]interface{})
-	require.True(t, ok, "response must carry a JSON-RPC error: %s", body)
-	// -32014 tells the client the data is missing on the node, not that its
-	// call ran out of gas, and the node's own wording is kept verbatim.
-	assert.Equal(t, float64(common.JsonRpcErrorMissingData), errObj["code"])
-	assert.Equal(t, precompileStateGapMessage, errObj["message"])
+		var respObject map[string]interface{}
+		require.NoError(t, sonic.UnmarshalString(body, &respObject))
+		errObj, ok := respObject["error"].(map[string]interface{})
+		require.True(t, ok, "response must carry a JSON-RPC error: %s", body)
+		// -32014 tells the client the data is missing on the node, not that its
+		// call ran out of gas, and the node's own wording is kept verbatim.
+		assert.Equal(t, float64(common.JsonRpcErrorMissingData), errObj["code"])
+		assert.Equal(t, precompileStateGapMessage, errObj["message"])
+	})
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -21,8 +22,8 @@ const adminApiSecret = "admin-api-secret"
 // authenticates consumers through a Redis-backed ("keys") and a memory-backed
 // ("memkeys") database strategy, next to "open_project" without any auth.
 type adminApiFixture struct {
-	baseURL string
-	redis   *miniredis.Miniredis
+	srv   *httptest.Server
+	redis *miniredis.Miniredis
 }
 
 func newAdminApiFixture(t *testing.T, admin *common.AdminConfig) *adminApiFixture {
@@ -66,9 +67,9 @@ func newAdminApiFixture(t *testing.T, admin *common.AdminConfig) *adminApiFixtur
 		},
 		RateLimiters: &common.RateLimiterConfig{},
 	}
-	_, _, baseURL, shutdown, _ := createServerTestFixtures(cfg, t)
+	_, _, srv, shutdown, _ := createServerTestFixtures(cfg, t)
 	t.Cleanup(shutdown)
-	return &adminApiFixture{baseURL: baseURL, redis: redis}
+	return &adminApiFixture{srv: srv, redis: redis}
 }
 
 func adminSecretConfig() *common.AdminConfig {
@@ -82,13 +83,13 @@ func adminSecretConfig() *common.AdminConfig {
 func (f *adminApiFixture) call(t *testing.T, secret, method, params string) (int, map[string]interface{}) {
 	t.Helper()
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":7,"method":%q,"params":%s}`, method, params)
-	req, err := http.NewRequest(http.MethodPost, f.baseURL+"/admin", strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, f.srv.URL+"/admin", strings.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	if secret != "" {
 		req.Header.Set("X-ERPC-Secret-Token", secret)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := f.srv.Client().Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	var out map[string]interface{}

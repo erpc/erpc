@@ -139,10 +139,7 @@ func NewGenericHttpJsonRpcClient(
 		client.proxyPool = proxyPool
 	}
 
-	go func() {
-		<-appCtx.Done()
-		client.shutdown()
-	}()
+	context.AfterFunc(appCtx, client.shutdown)
 
 	return client, nil
 }
