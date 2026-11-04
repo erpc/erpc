@@ -960,10 +960,11 @@ func isSimpleGroupSelector(selector string) bool {
 
 // refreshFinalized refreshes the finalized numbers of selector sel's
 // voters for a finalized-tag request (spec §6.4 Finality, §6.8). While q
-// voters reported finalized within one full poll interval the request
-// waits for nothing: it takes Finalized at once and the refresh runs in
-// the background, one at a time per lane. Only at the idle edge, fewer
-// than q such reports, it waits for the refresh, at most W.
+// voters reported finalized within W the request waits for nothing: it
+// takes Finalized at once and the refresh runs in the background, one at
+// a time per lane. Only at the idle edge, fewer than q such reports, it
+// waits for the refresh, at most W: a report up to one full poll old
+// would serve a finalized block older than the tag gets live (§19 P7).
 func (n *Network) refreshFinalized(ctx context.Context, sel string) {
 	s := n.voters(tipScope{sel: sel}, voterQuery{kind: numberVote})
 	if s.count() == 0 {
@@ -977,7 +978,7 @@ func (n *Network) refreshFinalized(ctx context.Context, sel string) {
 	fresh := 0
 	s.each(func(u common.Upstream, _ int64) bool {
 		sp := u.(common.EvmUpstream).EvmStatePoller()
-		if sp.FinalizedBlock() > 0 && time.Since(sp.FinalizedReportAt()) <= fullPollAge(u, w) {
+		if sp.FinalizedBlock() > 0 && time.Since(sp.FinalizedReportAt()) <= w {
 			fresh++
 		}
 		return true
@@ -1008,15 +1009,6 @@ func (n *Network) refreshFinalized(ctx context.Context, sel string) {
 		}()
 		n.pollFinalized(context.WithoutCancel(ctx), sel, s, q, w, 1)
 	}()
-}
-
-// fullPollAge is how old u's finalized report may be and still count as
-// fresh: its full poll interval, or W when its full poll is off.
-func fullPollAge(u common.Upstream, w time.Duration) time.Duration {
-	if c := u.Config(); c != nil && c.Evm != nil && c.Evm.StatePollerInterval > 0 {
-		return c.Evm.StatePollerInterval.Duration()
-	}
-	return w
 }
 
 // pollFinalized polls the finalized numbers of voters s of selector sel
