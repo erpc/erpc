@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dgraph-io/ristretto/v2"
+	"github.com/dgraph-io/ristretto/v2/z"
 	"github.com/dustin/go-humanize"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -28,6 +29,13 @@ type MemoryConnector struct {
 	cache       *ristretto.Cache[string, []byte]
 	locks       sync.Map // map[string]*sync.Mutex
 	emitMetrics bool
+
+	// hashIndex tracks keys written via Set so admin purge can iterate
+	// (Ristretto has no public key scan API). Keyed by ristretto's key hash
+	// so OnEvict/OnReject can drop entries when TTL expiry or MaxCost
+	// eviction removes items — a single map avoids dual-map Set races that
+	// orphaned keyIndex entries outside MaxCost.
+	hashIndex sync.Map // map[uint64]string
 
 	// Previous metric values for calculating deltas
 	prevMetrics struct {
@@ -70,27 +78,37 @@ func NewMemoryConnector(
 	// Determine if metrics should be enabled
 	enableMetrics := cfg.EmitMetrics != nil && *cfg.EmitMetrics
 
+	c := &MemoryConnector{
+		id:          id,
+		logger:      &lg,
+		emitMetrics: enableMetrics,
+	}
+
+	dropIndex := func(item *ristretto.Item[[]byte]) {
+		if item == nil {
+			return
+		}
+		c.hashIndex.Delete(item.Key)
+	}
+
 	ristrettoCfg := &ristretto.Config[string, []byte]{
-		NumCounters: int64(3 * cfg.MaxItems), // number of keys to track frequency of.
-		MaxCost:     maxCost,                 // maximum cost of cache.
-		BufferItems: 64,                      // number of keys per Get buffer.
-		Metrics:     enableMetrics,           // enable metrics based on config
+		NumCounters:            int64(3 * cfg.MaxItems), // number of keys to track frequency of.
+		MaxCost:                maxCost,                 // maximum cost of cache.
+		BufferItems:            64,                      // number of keys per Get buffer.
+		Metrics:                enableMetrics,           // enable metrics based on config
+		TtlTickerDurationInSec: 1,                       // expire TTL'd keys promptly for index cleanup
 		Cost: func(v []byte) int64 {
 			return int64(len(v) + 256)
 		},
+		OnEvict:  dropIndex,
+		OnReject: dropIndex,
 	}
 
 	cache, err := ristretto.NewCache(ristrettoCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ristretto cache: %w", err)
 	}
-
-	c := &MemoryConnector{
-		id:          id,
-		logger:      &lg,
-		cache:       cache,
-		emitMetrics: enableMetrics,
-	}
+	c.cache = cache
 
 	// Start metrics collection goroutine if enabled
 	if enableMetrics {
@@ -113,9 +131,11 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 
 	if ttl != nil && *ttl > 0 {
-		m.cache.SetWithTTL(key, value, 0, *ttl)
-	} else {
-		m.cache.Set(key, value, 0)
+		if m.cache.SetWithTTL(key, value, 0, *ttl) {
+			m.trackKey(key)
+		}
+	} else if m.cache.Set(key, value, 0) {
+		m.trackKey(key)
 	}
 
 	// Reverse index: let wildcard Gets ("evm:1:*" / "svm:mainnet-beta:*" /
@@ -127,11 +147,24 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string
 	// opaque concrete key.
 	if isReverseIndexable(partitionKey) {
 		if wildcardPartitionKey, ok := reverseIndexWildcardKey(ctx, partitionKey); ok {
-			m.cache.Set(memoryReverseIndexPrefix+"#"+wildcardPartitionKey+"#"+rangeKey, []byte(partitionKey), 0)
+			rviKey := memoryReverseIndexPrefix + "#" + wildcardPartitionKey + "#" + rangeKey
+			if m.cache.Set(rviKey, []byte(partitionKey), 0) {
+				m.trackKey(rviKey)
+			}
 		}
 	}
 
 	return nil
+}
+
+func (m *MemoryConnector) trackKey(key string) {
+	h, _ := z.KeyToHash(key)
+	m.hashIndex.Store(h, key)
+}
+
+func (m *MemoryConnector) untrackKey(key string) {
+	h, _ := z.KeyToHash(key)
+	m.hashIndex.Delete(h)
 }
 
 // isReverseIndexable reports whether the given partition key should have a
@@ -321,6 +354,7 @@ func (m *MemoryConnector) Delete(ctx context.Context, partitionKey, rangeKey str
 
 	// Delete main entry
 	m.cache.Del(key)
+	m.untrackKey(key)
 
 	// Clean up reverse index if Set would have written one. Must mirror Set
 	// exactly (same WithReverseIndex ctx) — anything Set writes, Delete must
@@ -330,10 +364,89 @@ func (m *MemoryConnector) Delete(ctx context.Context, partitionKey, rangeKey str
 		if wildcardPartitionKey, ok := reverseIndexWildcardKey(ctx, partitionKey); ok {
 			reverseKey := memoryReverseIndexPrefix + "#" + wildcardPartitionKey + "#" + rangeKey
 			m.cache.Del(reverseKey)
+			m.untrackKey(reverseKey)
 		}
 	}
 
 	return nil
+}
+
+// DeleteByPattern iterates the in-process key index under the connector lock
+// map and deletes (or counts) keys matching the purge patterns. Memory purge
+// is per-replica only — Ristretto has no shared backend.
+func (m *MemoryConnector) DeleteByPattern(ctx context.Context, opts PatternDeleteOpts) (int64, int64, error) {
+	_ = ctx
+	patterns := append([]string{}, opts.MainPatterns...)
+	patterns = append(patterns, opts.RviPatterns...)
+
+	var matched, deleted int64
+	m.hashIndex.Range(func(_, v any) bool {
+		key, ok := v.(string)
+		if !ok {
+			return true
+		}
+		// Drop index orphans left by Set↔OnEvict races (entry already gone).
+		if _, alive := m.cache.Get(key); !alive {
+			m.untrackKey(key)
+			return true
+		}
+		if !globMatchAny(key, patterns) {
+			return true
+		}
+		if opts.UnsuffixedOnly {
+			if !matchUnsuffixedMainKey(opts.NetworkId, key, opts.Method) {
+				return true
+			}
+		} else if opts.Method != "" && !physicalKeyMatchesMethod(key, opts.Method) {
+			return true
+		}
+		matched++
+		if !opts.DryRun {
+			m.cache.Del(key)
+			m.untrackKey(key)
+			deleted++
+		}
+		return true
+	})
+	return matched, deleted, nil
+}
+
+// globMatchAny is a minimal '*' glob matcher for memory purge patterns.
+func globMatchAny(s string, patterns []string) bool {
+	for _, p := range patterns {
+		if globMatch(p, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func globMatch(pattern, s string) bool {
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == s
+	}
+	if parts[0] != "" {
+		if !strings.HasPrefix(s, parts[0]) {
+			return false
+		}
+		s = s[len(parts[0]):]
+	}
+	for i := 1; i < len(parts)-1; i++ {
+		if parts[i] == "" {
+			continue
+		}
+		idx := strings.Index(s, parts[i])
+		if idx < 0 {
+			return false
+		}
+		s = s[idx+len(parts[i]):]
+	}
+	last := parts[len(parts)-1]
+	if last == "" {
+		return true
+	}
+	return strings.HasSuffix(s, last)
 }
 
 func (m *MemoryConnector) List(ctx context.Context, index string, limit int, paginationToken string) ([]KeyValuePair, string, error) {

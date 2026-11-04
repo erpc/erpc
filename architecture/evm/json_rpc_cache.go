@@ -912,6 +912,15 @@ func (c *EvmJsonRpcCache) IsObjectNull() bool {
 	return c == nil || c.logger == nil
 }
 
+// Purge implements common.CachePurger: deletes (or dry-runs) cache entries
+// matching scope across every unique writable connector in the policy set.
+func (c *EvmJsonRpcCache) Purge(ctx context.Context, scope common.CachePurgeScope) ([]common.CachePurgeResult, error) {
+	if c == nil {
+		return nil, fmt.Errorf("evm json rpc cache is nil")
+	}
+	return data.PurgeConnectors(ctx, c.policies, scope), nil
+}
+
 // defaultRealtimeColdStartTTL bounds realtime staleness when a policy sets
 // ttlBlockTimeMultiplier but has no static ttl and the network's block time
 // isn't known yet (cold start / not head-tracked), so the guard never accepts

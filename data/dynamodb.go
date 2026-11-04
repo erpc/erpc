@@ -981,3 +981,95 @@ func (d *DynamoDBConnector) List(ctx context.Context, index string, limit int, p
 
 	return results, nextToken, nil
 }
+
+// DeleteByPattern scans matching partition/range rows and batch-deletes them.
+// DynamoDB has no rvi# companion keys (reverse lookups use a GSI).
+func (d *DynamoDBConnector) DeleteByPattern(ctx context.Context, opts PatternDeleteOpts) (int64, int64, error) {
+	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.DeleteByPattern")
+	defer span.End()
+
+	if d.readClient == nil || d.writeClient == nil {
+		err := fmt.Errorf("DynamoDB client not initialized yet")
+		common.SetTraceSpanError(span, err)
+		return 0, 0, err
+	}
+
+	var matched, deleted int64
+	var startKey map[string]*dynamodb.AttributeValue
+
+	for {
+		out, err := d.readClient.ScanWithContext(ctx, &dynamodb.ScanInput{
+			TableName:         aws.String(d.table),
+			ExclusiveStartKey: startKey,
+			Limit:             aws.Int64(100),
+		})
+		if err != nil {
+			common.SetTraceSpanError(span, err)
+			return matched, deleted, fmt.Errorf("dynamodb scan: %w", err)
+		}
+
+		var batch []*dynamodb.WriteRequest
+		for _, item := range out.Items {
+			pkAttr := item[d.partitionKeyName]
+			rkAttr := item[d.rangeKeyName]
+			if pkAttr == nil || pkAttr.S == nil || rkAttr == nil || rkAttr.S == nil {
+				continue
+			}
+			pk, rk := *pkAttr.S, *rkAttr.S
+			if !partitionMatchesScope(pk, opts) || !rangeMatchesMethod(rk, opts.Method) {
+				continue
+			}
+			matched++
+			if opts.DryRun {
+				continue
+			}
+			batch = append(batch, &dynamodb.WriteRequest{
+				DeleteRequest: &dynamodb.DeleteRequest{
+					Key: map[string]*dynamodb.AttributeValue{
+						d.partitionKeyName: {S: aws.String(pk)},
+						d.rangeKeyName:     {S: aws.String(rk)},
+					},
+				},
+			})
+			if len(batch) == 25 {
+				n, err := d.flushDeleteBatch(ctx, batch)
+				deleted += n
+				if err != nil {
+					common.SetTraceSpanError(span, err)
+					return matched, deleted, err
+				}
+				batch = batch[:0]
+			}
+		}
+		if !opts.DryRun && len(batch) > 0 {
+			n, err := d.flushDeleteBatch(ctx, batch)
+			deleted += n
+			if err != nil {
+				common.SetTraceSpanError(span, err)
+				return matched, deleted, err
+			}
+		}
+
+		if out.LastEvaluatedKey == nil {
+			break
+		}
+		startKey = out.LastEvaluatedKey
+	}
+	return matched, deleted, nil
+}
+
+func (d *DynamoDBConnector) flushDeleteBatch(ctx context.Context, batch []*dynamodb.WriteRequest) (int64, error) {
+	req := map[string][]*dynamodb.WriteRequest{d.table: batch}
+	out, err := d.writeClient.BatchWriteItemWithContext(ctx, &dynamodb.BatchWriteItemInput{
+		RequestItems: req,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("dynamodb BatchWriteItem: %w", err)
+	}
+	deleted := int64(len(batch))
+	if unprocessed := out.UnprocessedItems[d.table]; len(unprocessed) > 0 {
+		deleted -= int64(len(unprocessed))
+		return deleted, fmt.Errorf("dynamodb BatchWriteItem left %d unprocessed deletes", len(unprocessed))
+	}
+	return deleted, nil
+}
