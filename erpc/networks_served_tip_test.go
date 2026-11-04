@@ -128,7 +128,6 @@ func setupServedTipNetworkEvery(t testing.TB, ctx context.Context, fixtures []se
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":"0x7b"}`))
-		mockTestChain(endpoint)
 	}
 
 	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)

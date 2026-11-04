@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -216,12 +217,14 @@ func (e *pollAgeEnv) step(n int) {
 }
 
 // report is one successful poll of id answering h, moved or not, the way the
-// poller reports it: the tracker first, with the block timestamp, then the
-// poller's counter, dated by the pinned clock as a poll's send time.
+// poller reports it: the tracker first, with the block timestamp, then
+// intake, as a hash vote that moves the poller's counter unless the poller
+// refuses it, dated by the pinned clock as a poll's send time.
 func (e *pollAgeEnv) report(id string, h int64) {
 	u := e.ups[id]
 	e.network.metricsTracker.SetLatestBlockNumber(u, h, 1_800_000_000+2*(h-1000))
-	u.EvmStatePoller().SuggestLatestBlock(h, servedTipClock())
+	e.network.intake.Polled(id, polledHead(e.t, "a", uint64(h)), nil, evm.HeaderPolled, servedTipClock())
+	evm.SyncTrackersForTest(e.ctx, e.network)
 }
 
 // first is the upstream Forward tries first for eth_getBlockByNumber(bn);

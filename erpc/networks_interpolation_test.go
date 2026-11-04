@@ -1973,6 +1973,7 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 	network.PinUpstreamOrderForTest()
+	voteTip(t, ctx, network)
 
 	// Build request with 'latest' which will be interpolated to highest latest block (from rpc3)
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
@@ -2103,6 +2104,7 @@ func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 	network.PinUpstreamOrderForTest()
+	voteTip(t, ctx, network)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
 	req.SetNetwork(network)
