@@ -139,7 +139,9 @@ func TestForward_FutureBlock_HaltedChainAskDatesReport(t *testing.T) {
 		{id: ids[2], chainID: 123, latestBlock: 100},
 	})
 	network.cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
-	sampleBlockTime(t, network) // bt 1s
+	sampleBlockTime(t, network)
+	// The fixture chain's header times feed the sample too: bt is near 1s.
+	bt := network.EvmBlockTime()
 	// As a registry's network does: every poll's header goes through intake.
 	network.sources.start(ctx)
 	var polls atomic.Int64
@@ -164,7 +166,7 @@ func TestForward_FutureBlock_HaltedChainAskDatesReport(t *testing.T) {
 	for round := 1; round <= 3; round++ {
 		// Every report is older than 1 bt and the last Ask's fetch is
 		// older than its pace: the request Asks each upstream once.
-		time.Sleep(1200 * time.Millisecond)
+		time.Sleep(bt + 200*time.Millisecond)
 		before := polls.Load()
 		resp := forwardGetBlockByNumber(t, ctx, network, "0x44d") // 1101
 		require.GreaterOrEqual(t, polls.Load()-before, int64(len(ids)), "round %d: the request Asks each stale upstream", round)
