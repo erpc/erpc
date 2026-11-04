@@ -2118,7 +2118,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		resp, err := n.cacheDal.Get(ctx, req)
 		if err != nil {
 			lg.Debug().Err(err).Msgf("could not find response in cache")
-		} else if resp != nil && n.cfg.Architecture == common.ArchitectureEvm && evm.OffViewBlock(ctx, req, resp, req.EvmHead()) {
+		} else if _, off := evm.OffViewBlock(ctx, req, resp, req.EvmHead()); resp != nil && n.cfg.Architecture == common.ArchitectureEvm && off {
 			// A cached block at the view's number from another branch is a
 			// miss, as an upstream's is (spec §7 family 2).
 			resp.Release()
@@ -2554,9 +2554,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 				// One view (spec §6.5, §7 family 2): a block at the
 				// request's Head on another branch than the Head's hash is
-				// never served under the Head's number; it is a miss.
-				if err == nil && evm.OffViewBlock(loopCtx, effectiveReq, r, effectiveReq.EvmHead()) {
-					r, err = nil, common.NewErrEndpointMissingData(fmt.Errorf("upstream answered another branch's block at the head"), u)
+				// never served under the Head's number; it is a miss, unless
+				// the view moves onto it.
+				if err == nil {
+					if c, off := evm.OffViewBlock(loopCtx, effectiveReq, r, effectiveReq.EvmHead()); off && !n.awaitViewOnto(loopCtx, effectiveReq, c) {
+						r, err = nil, common.NewErrEndpointMissingData(fmt.Errorf("upstream answered another branch's block at the head"), u)
+					}
 				}
 
 				// The refusal rule (spec §6.4): an empty or missing answer for a

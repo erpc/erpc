@@ -671,6 +671,38 @@ func (n *Network) awaitBandAsk(ctx context.Context, sel string, block int64) {
 	wg.Wait()
 }
 
+// awaitViewOnto reports whether c, an upstream's block at req's Head
+// number on another branch, is pinned at or below the Head of req's lane
+// view now or within one bt (spec §6.5, §7 family 2). An upstream may show
+// a reorg before this instance's tracker applied it; once the view moved,
+// c is the chain's block there and no upstream serves the Head req took
+// any more. A minority fork's block is never pinned: it stays a miss.
+func (n *Network) awaitViewOnto(ctx context.Context, req *common.NormalizedRequest, c indexer.Cursor) bool {
+	sel := ""
+	if d := req.Directives(); d != nil {
+		sel = d.UseUpstream
+	}
+	t := n.laneTracker(sel)
+	if t == nil {
+		return false
+	}
+	timer := time.NewTimer(n.blockTimeOrCold())
+	defer timer.Stop()
+	for {
+		v := t.View()
+		if head, ok := v.Head(); ok && c.Number <= head.Number && v.Pinned(c) {
+			return true
+		}
+		select {
+		case <-v.Changed():
+		case <-timer.C:
+			return false
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
 // bandPollers are the pollers of the upstreams sel's lane ceiling counts
 // whose head is below block, number voters (voterSet) first.
 func (n *Network) bandPollers(sel string, block int64) []common.EvmStatePoller {
