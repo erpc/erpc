@@ -393,6 +393,28 @@ func c16() spec {
 				s.violate("harness", "no old block below the finalized tag holds transactions")
 				return
 			}
+			// A block is cached as final once N ≤ Head.Finalized and N ≤
+			// its serving upstream's own finalized report (§6.4 Finality),
+			// which trails the tag by up to one full poll: the probe waits
+			// until every voter's report on every pod covers it.
+			for until := time.Now().Add(c16FullPoll + liveBound); ; time.Sleep(scrapeEvery) {
+				low := ""
+				for pod := range s.h.pods {
+					for key := range s.vendors {
+						id := s.upstream(key)
+						if v, _ := s.metric(pod, "erpc_upstream_finalized_block_number", map[string]string{"upstream": id}); uint64(v) < old.Number {
+							low = fmt.Sprintf("pod-%d: %s finalized %v", pod+1, id, v)
+						}
+					}
+				}
+				if low == "" {
+					break
+				}
+				if time.Now().After(until) {
+					s.violate(s.name, "%s, below block %d the tag covered %s ago (bound one full poll)", low, old.Number, c16FullPoll+liveBound)
+					return
+				}
+			}
 			for pod := range s.h.pods {
 				s.requireCachedAs(pod, old.Number, cacheFinal)
 				if got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(old.Number), false); got != old.Hash.Hex() {
