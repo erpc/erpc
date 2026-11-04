@@ -865,18 +865,20 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 		}
 		return
 	}
-	// Rule 1 without history: a vote off the pins' tree is a root at once,
-	// and it replaces the older trees. Votes earlier in the batch move
-	// first, as an update after each message would move them, so another
-	// voter's vote that left an old tree no longer keeps it.
-	if !t.served && t.counts(msg.upstream) && t.rootOf(nd) != t.pinRoot() {
+	// Rule 1: a vote whose tree does not reach the pins walks down to them
+	// when the tracker walks. Without history, a vote off the pins' tree
+	// that does not walk is a root at once, and it replaces the older
+	// trees. Votes earlier in the batch move first, as an update after each
+	// message would move them, so another voter's vote that left an old
+	// tree no longer keeps it.
+	t.walkFrom(nd, msg.upstream)
+	if !t.served && t.counts(msg.upstream) && t.rootOf(nd) != t.pinRoot() && !t.walking(nd) {
 		t.moveVotes()
 		t.replaceOlder(nd, msg.upstream)
 	}
 	// Rule 3: the vote moves once its walk ends; until then the previous
 	// one stays.
 	t.pending[msg.upstream], t.pendingAt[msg.upstream] = nd, msg.at
-	t.walkFrom(nd, msg.upstream)
 }
 
 // moveVotes ends the walks nothing waits on and moves the votes whose walks

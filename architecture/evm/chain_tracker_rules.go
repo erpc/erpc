@@ -111,6 +111,20 @@ func (t *ChainTracker) extends() bool {
 	return t.served && t.canFetch()
 }
 
+// walks reports whether the tracker walks a vote's tree down to the pins:
+// it extends, or its lane has demand (clockDemand). A tracker no history
+// serves walks too while its view is read: a vote that skipped a block
+// the tracker never fetched links by one fetch, where a root at once held
+// the view below it until a voter majority re-anchored the pins. It never
+// fills.
+func (t *ChainTracker) walks() bool {
+	if t.extends() {
+		return true
+	}
+	_, demanded := t.clockDemand(time.Now())
+	return demanded && t.canFetch()
+}
+
 // replaceOlder is rule 1 for a tracker that no history serves: voter u's
 // counted vote nd off the pins' tree is a root at once, which no walk or
 // fill will join to another tree, and it replaces the older trees: every
@@ -186,9 +200,9 @@ func (t *ChainTracker) pinRoot() *node {
 // walkFrom is rule 1 for a vote nd whose tree does not reach the pins: walk
 // it in class 1, asking its sender by hash on a mismatch. An empty tracker's
 // first vote, a vote more than maxBackfill after the head, and every vote
-// of a tracker that does not extend become roots at once.
+// of a tracker that does not walk become roots at once.
 func (t *ChainTracker) walkFrom(nd *node, sender string) {
-	if !t.extends() || len(t.pins) == 0 || t.farAhead(nd.h) {
+	if !t.walks() || len(t.pins) == 0 || t.farAhead(nd.h) {
 		return
 	}
 	r := t.rootOf(nd)
@@ -200,9 +214,8 @@ func (t *ChainTracker) walkFrom(nd *node, sender string) {
 }
 
 // endWalks ends each walk whose tree came to hold the pins, so the votes
-// in it apply at once, each walk no pending vote or settle answer waits on
-// any more, and every walk once history no longer serves the tracker; fill
-// goes on from where it stopped.
+// in it apply at once, and each walk no pending vote or settle answer
+// waits on any more; fill goes on from where it stopped.
 func (t *ChainTracker) endWalks() {
 	pinRoot := t.pinRoot()
 	var awaited map[*node]bool
@@ -210,7 +223,7 @@ func (t *ChainTracker) endWalks() {
 		if e.walk == 0 {
 			continue
 		}
-		if t.served && r != pinRoot {
+		if r != pinRoot && t.canFetch() {
 			if awaited == nil {
 				awaited = t.rootsHolding(false)
 			}
@@ -336,14 +349,15 @@ func (t *ChainTracker) fillRoots() map[*node]bool {
 	return roots
 }
 
-// extendRoots starts the next step of every root's walk or fill.
+// extendRoots starts the next step of every root's walk or fill; a tracker
+// no history serves only walks.
 func (t *ChainTracker) extendRoots() {
-	if !t.extends() {
+	if !t.canFetch() {
 		return
 	}
-	pinRoot, reads := t.pinRoot(), t.fillRoots()
+	pinRoot, reads, fills := t.pinRoot(), t.fillRoots(), t.extends()
 	for r, e := range t.exts {
-		if uncapped := r == pinRoot || reads[r]; !e.busy && !e.atBase && (!e.capped || uncapped) {
+		if uncapped := r == pinRoot || reads[r]; !e.busy && !e.atBase && (!e.capped || uncapped) && (fills || e.walk > 0) {
 			t.extend(r, e, uncapped)
 		}
 	}

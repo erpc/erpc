@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"runtime"
 	"strings"
 	"sync"
@@ -18,6 +19,8 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
+	gethcommon "github.com/ethereum/go-ethereum/common"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -465,60 +468,86 @@ func TestChainTracker(t *testing.T) {
 	t.Run("an idle tracker walks and fills nothing until a tap opens", func(t *testing.T) {
 		ctx := context.Background()
 		net := newServedChain(t, "evm:idle")
+		// Blocks above 222 carry headers whose hash recomputes, so one
+		// holder serves them (spec §6.5).
+		hashes, raws := map[uint64]string{}, map[uint64]json.RawMessage{}
 		for n := uint64(1); n <= 300; n++ {
-			net.serve(n, testHash("a", n), testHeader(n, testHash("a", n), testHash("a", n-1)))
+			if n <= 222 {
+				hashes[n], raws[n] = testHash("a", n), testHeader(n, testHash("a", n), testHash("a", n-1))
+			} else {
+				h := &gethtypes.Header{Number: new(big.Int).SetUint64(n), ParentHash: gethcommon.HexToHash(hashes[n-1]), Time: 1_700_000_000 + n, Difficulty: big.NewInt(0)}
+				raw, err := h.MarshalJSON()
+				require.NoError(t, err)
+				hashes[n], raws[n] = h.Hash().Hex(), raw
+			}
+			net.serve(n, hashes[n], raws[n])
 		}
 		c := newChainTracker(t.Context(), net, 32, time.Hour, "", "", "", nil, newFetchScheduler(t.Context(), net))
 		reanchors := func() float64 {
 			return testutil.ToFloat64(telemetry.MetricChainTrackerReanchorTotal.WithLabelValues("test", "evm:idle"))
 		}
 		before := reanchors()
-		vote := func(n uint64) {
-			for _, src := range []string{"a", "b"} {
-				c.Observe(src, testHeader(n, testHash("a", n), testHash("a", n-1)), true)
+		vote := func(n uint64, srcs ...string) {
+			for _, src := range srcs {
+				c.Observe(src, raws[n], true)
 			}
 			c.Sync(ctx)
 		}
 		for _, n := range []uint64{100, 161, 222} {
-			vote(n)
+			vote(n, "a", "b")
 			require.Eventually(t, func() bool {
 				c.Sync(ctx)
 				v, _ := c.HashAt(int64(n))
-				return v == testHash("a", n)
+				return v == hashes[n]
 			}, 5*time.Second, 5*time.Millisecond, "each poll's vote is the head")
 		}
 		assert.Zero(t, net.fetches.Load(), "no walk and no fill")
 		assert.Equal(t, before, reanchors(), "a root without history is no re-anchor")
 		for _, gone := range []uint64{100, 161, 221} {
-			_, held := c.HeldNumber(testHash("a", gone))
+			_, held := c.HeldNumber(hashes[gone])
 			assert.False(t, held, "block %d: the newest root replaced the older trees", gone)
 		}
 		head, ok := c.View().Head()
 		require.True(t, ok)
 		assert.Equal(t, uint64(222), head.Number, "the confirmed head follows the votes")
 
+		// While its view is read, one voter's vote that skipped a block the
+		// tracker never fetched walks to the pins: one fetch links it, and
+		// the view takes it from its one holder, where a root at once held
+		// the view below it until a voter majority moved.
+		c.MarkRead()
+		fetched := net.fetches.Load()
+		vote(224, "a")
+		require.Eventually(t, func() bool {
+			c.Sync(ctx)
+			h, ok := c.View().Head()
+			return ok && h.Number == 224
+		}, 5*time.Second, 5*time.Millisecond, "the view takes the walked vote")
+		assert.Equal(t, fetched+1, net.fetches.Load(), "one fetch walks the skipped block")
+		assert.Equal(t, before, reanchors(), "a walk that links is no re-anchor")
+
 		t.Cleanup(c.Want(indexer.ReadOpts{}))
 		c.Sync(ctx)
 		start, err := c.Head(ctx)
 		require.NoError(t, err)
-		assert.Equal(t, uint64(222), start.Number, "the first tap starts at the head")
+		assert.Equal(t, uint64(224), start.Number, "the first tap starts at the head")
 		// A capacity refusal is no evidence against the number path: fill
 		// retries by number under the key's backoff, never by hash.
 		net.mu.Lock()
 		net.refuse["0xd2"] = 2
 		net.mu.Unlock()
-		vote(232)
+		vote(232, "a", "b")
 		require.Eventually(t, func() bool {
 			c.Sync(ctx)
 			v, _ := c.HashAt(201)
-			return v == testHash("a", 201)
-		}, 5*time.Second, 5*time.Millisecond, "the walk links 232 to 222 and fill runs reorgWindow below the head")
+			return v == hashes[201]
+		}, 5*time.Second, 5*time.Millisecond, "the walk links 232 to 224 and fill runs reorgWindow below the head")
 		assert.Zero(t, net.byHash.Load(), "a 429 on a by-number fetch keeps fill by number")
 		b, err := c.Read(ctx, start, indexer.ReadOpts{})
 		require.NoError(t, err)
 		require.NotEmpty(t, b.Applied)
 		assert.Empty(t, b.Reverted)
-		assert.Equal(t, uint64(223), b.Applied[0].Number, "the tap continues from its start with no gap")
+		assert.Equal(t, uint64(225), b.Applied[0].Number, "the tap continues from its start with no gap")
 		assert.Equal(t, uint64(232), b.Applied[len(b.Applied)-1].Number)
 		assert.Equal(t, before, reanchors(), "a walk that links is no re-anchor")
 	})
