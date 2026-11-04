@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,9 +34,13 @@ import (
 // served head is 0x800 while rpc2 answers 0x1000.
 
 // stpHeads registers, ahead of setupBniPollerMocks' static heads, every
-// upstream's latest header at head(): hash and parentHash derived from the
-// number, so each poll is a hash vote of one chain.
+// upstream's latest header at head(), and each block below it by number:
+// hash and parentHash derived from the number, so each poll is a hash vote
+// of one chain, and a tracker that walks a jump finds the blocks it skipped.
 func stpHeads(head func() int64) {
+	header := func(n int64) string {
+		return fmt.Sprintf(`{"result":{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","timestamp":"0x6702a8f0"}}`, n, n, n-1)
+	}
 	for _, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost", "http://rpc3.localhost"} {
 		gock.New(host).Post("").Persist().
 			Filter(func(r *http.Request) bool {
@@ -44,11 +49,36 @@ func stpHeads(head func() int64) {
 			}).
 			Reply(200).
 			Map(func(res *http.Response) *http.Response {
-				n := head()
-				res.Body = io.NopCloser(strings.NewReader(fmt.Sprintf(`{"result":{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","timestamp":"0x6702a8f0"}}`, n, n, n-1)))
+				res.Body = io.NopCloser(strings.NewReader(header(head())))
+				return res
+			})
+		gock.New(host).Post("").Persist().
+			Filter(func(r *http.Request) bool {
+				n, ok := stpByNumber(util.SafeReadBody(r))
+				return ok && n <= head()
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				n, _ := stpByNumber(util.SafeReadBody(res.Request))
+				res.Body = io.NopCloser(strings.NewReader(header(n)))
 				return res
 			})
 	}
+}
+
+// stpByNumber reads the block number of an eth_getBlockByNumber request
+// for a numbered block.
+func stpByNumber(body string) (int64, bool) {
+	var req struct {
+		Method string        `json:"method"`
+		Params []interface{} `json:"params"`
+	}
+	if json.Unmarshal([]byte(body), &req) != nil || req.Method != "eth_getBlockByNumber" || len(req.Params) == 0 {
+		return 0, false
+	}
+	ref, _ := req.Params[0].(string)
+	n, err := common.HexToInt64(ref)
+	return n, err == nil && strings.HasPrefix(ref, "0x")
 }
 
 // bniServedTipBoot mirrors bniBoot with a caller-chosen upstream order and
