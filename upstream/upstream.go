@@ -59,6 +59,8 @@ func classifyUpstreamOutcome(resp *common.NormalizedResponse, err error) common.
 			return common.UpstreamOutcomeRateLimited
 		case common.HasErrorCode(err, common.ErrCodeEndpointMissingData):
 			return common.UpstreamOutcomeMissingData
+		case common.HasErrorCode(err, common.ErrCodeEndpointUnsupported):
+			return common.UpstreamOutcomeUnsupported
 		case common.HasErrorCode(err, common.ErrCodeEndpointExecutionException):
 			return common.UpstreamOutcomeExecRevert
 		case common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable):
