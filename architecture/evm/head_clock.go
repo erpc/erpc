@@ -271,7 +271,9 @@ type clockCandidate struct {
 }
 
 // candidates are the lane's voters the clock may fetch now, in selection
-// order: each with a poller, not backing off.
+// order: each with a poller, not backing off, and not cordoned for
+// another chain's identity, whose heads never vote (spec §5): its fast
+// answers would win every fire while the view waits.
 func (t *ChainTracker) clockCandidates() []clockCandidate {
 	n, ok := t.network.(interface {
 		EvmAllUpstreams(context.Context) []common.Upstream
@@ -293,6 +295,9 @@ func (t *ChainTracker) clockCandidates() []clockCandidate {
 		}
 		p := eu.EvmStatePoller()
 		if p == nil || p.IsObjectNull() || p.HeadBackingOff() {
+			continue
+		}
+		if c, ok := p.(interface{ ChainIdCordoned() bool }); ok && c.ChainIdCordoned() {
 			continue
 		}
 		cand := clockCandidate{id: id, poller: p}

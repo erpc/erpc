@@ -1037,24 +1037,6 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		assert.Error(t, err, "no message for the id-less call, got %q", extra)
 	})
 
-	// An HTTP-only network whose upstream is not a subscription source has
-	// nothing to feed newHeads.
-	t.Run("SubscribeWithoutSubscriptionSourceFails", func(t *testing.T) {
-		setupGock()
-		t.Cleanup(util.ResetGock)
-
-		addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
-		defer cleanup()
-
-		conn := dialWs(t, addr)
-		defer conn.Close()
-
-		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
-		errObj, ok := resp["error"].(map[string]interface{})
-		require.True(t, ok, "should return error when no upstream is a subscription source: %v", resp)
-		assert.EqualValues(t, common.JsonRpcErrorUnsupportedException, errObj["code"], "ErrNoSubscriptionSource maps to -32601")
-	})
-
 	// Verifies eth_unsubscribe with a nonexistent ID fails as geth's does
 	t.Run("UnsubscribeUnknownIDFails", func(t *testing.T) {
 		setupGock()
@@ -1250,33 +1232,6 @@ func TestWebSocket_UpstreamClient(t *testing.T) {
 //
 // --- Tests: subscription recovery after upstream reconnect ---
 //
-
-func TestWebSocket_SubscriptionRecovery(t *testing.T) {
-	// Verifies that eth_subscribe returns an error when the only WS upstream
-	// never initialises (it closes every connection before answering).
-	t.Run("SubscribeFailsWhenWsUpstreamNeverInitialises", func(t *testing.T) {
-		mockUpstream := mockWsUpstream(t, func(conn *websocket.Conn) {
-			conn.Close()
-		})
-		defer mockUpstream.Close()
-
-		setupGock()
-		t.Cleanup(util.ResetGock)
-
-		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
-		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
-		defer cleanup()
-
-		time.Sleep(2 * time.Second)
-
-		conn := dialWs(t, addr)
-		defer conn.Close()
-
-		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
-		assert.NotNil(t, resp["error"], "should return error when upstream WS is not connected")
-		t.Logf("got expected error: %v", resp["error"])
-	})
-}
 
 //
 // --- Tests: subscription deduplication ---
@@ -1752,9 +1707,10 @@ func TestWebSocket_FailedSubscribeKeepsConnectionOpen(t *testing.T) {
 	conn := dialWs(t, addr)
 	defer conn.Close()
 
-	// Subscribe MUST fail (no WS upstream configured) but the connection
+	// Subscribe MUST fail (an unknown subscription type; newHeads now
+	// streams from any poller through the block clock) but the connection
 	// must remain open for subsequent requests.
-	resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+	resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["noSuchSubscription"]}`)
 	require.NotNil(t, resp["error"], "subscribe should fail")
 
 	// Connection should still work — send a normal RPC after failed subscribe.
@@ -2069,9 +2025,9 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 	})
 
 	// A cold instance pins ws-a's heads while the other sources, held,
-	// have not reported: the delivery gate stays shut, then opens several
-	// blocks up at once. A logs client subscribed while it was shut gets
-	// the logs of every block minted after its subscription id arrived.
+	// have not reported: one hash vote serves (design section 4, cold window
+	// deleted). A logs client subscribed then gets the logs of every block
+	// minted after its subscription id arrived, through the sources' return.
 	t.Run("subscribed before the first sendable head", func(t *testing.T) {
 		s := newChaosSeed(t, 9, true, chaosOpts{})
 		for _, v := range []*chainsim.Vendor{s.wsB, s.httpA, s.httpB} {
@@ -2081,13 +2037,9 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		defer s.stopERPC()
 		tr := s.tracker()
 		require.Eventually(t, func() bool { _, ok := tr.Tip(); return ok }, 10*time.Second, 10*time.Millisecond, "ws-a's heads are pinned")
-		_, sendable := tr.View().Head()
-		require.False(t, sendable, "the delivery gate waits for the held sources")
 		s.dialLogs("cold")
 		from := s.chain.Tip().Number + 1
 		s.blocks(4)
-		_, sendable = tr.View().Head()
-		require.False(t, sendable, "the gate is still shut %d blocks after the subscription", 4)
 		for _, v := range []*chainsim.Vendor{s.wsB, s.httpA, s.httpB} {
 			v.Update(func(f *chainsim.Faults) { f.Held = false })
 		}
@@ -3203,90 +3155,6 @@ func pollsSettle(t *testing.T, polls *atomic.Int64, window time.Duration, msg st
 	}, 10*time.Second, 10*time.Millisecond, msg)
 }
 
-// An HTTP-only network whose upstream is a subscription source feeds
-// newHeads by polling: heads arrive in order, projected without
-// transactions. Beside it, sources that cannot serve heads: a syncing HTTP
-// source is never polled as a source and a syncing wss source never votes
-// (#202); an HTTP source that refuses latest as unsupported stops being
-// polled after 10 refusals and is asked again once its give-up expires
-// (#240). The client's heads stay contiguous throughout.
-func TestWebSocket_HttpSourcePolledHeads(t *testing.T) {
-	setupGock()
-	t.Cleanup(util.ResetGock)
-	prevBackoff, prevExpiry := evm.AskMaxBackoff.Load(), evm.PollerGiveUpExpiry.Load()
-	evm.AskMaxBackoff.Store(200 * time.Millisecond)
-	evm.PollerGiveUpExpiry.Store(3 * time.Second)
-	defer func() {
-		evm.AskMaxBackoff.Store(prevBackoff)
-		evm.PollerGiveUpExpiry.Store(prevExpiry)
-	}()
-
-	chain := newMockChain(0x100, true)
-	_, srv := newMockHttpVendor(t, chain)
-	syncingHttp, syncingSrv := newMockHttpVendor(t, chain)
-	syncingHttp.syncing.Store(true)
-	noLatest, noLatestSrv := newMockHttpVendor(t, chain)
-	noLatest.noLatest.Store(true)
-	_, syncingWsURL := newMockWsVendor(t, chain, func(v *mockWsVendor) { v.syncing = true })
-	ctx, stop := context.WithCancel(context.Background())
-	defer stop()
-	go chain.run(ctx, 150*time.Millisecond)
-
-	erpcSrv, addr, cancel := startTestERPCServer(t, sourcesConfig(nil,
-		sourceUpstream("rpc-a", srv.URL, util.BoolPtr(true)),
-		sourceUpstream("rpc-syncing", syncingSrv.URL, util.BoolPtr(true)),
-		sourceUpstream("rpc-no-latest", noLatestSrv.URL, util.BoolPtr(true)),
-		sourceUpstream("ws-syncing", syncingWsURL, nil),
-	))
-	defer func() { _ = erpcSrv.Shutdown(&log.Logger); cancel() }()
-	prj, err := erpcSrv.erpc.GetProject("test_ws")
-	require.NoError(t, err)
-	nw, err := prj.GetNetwork(ctx, "evm:123")
-	require.NoError(t, err)
-	conn := dialWs(t, addr)
-	defer conn.Close()
-	subscribeNewHeads(t, conn)
-
-	var prev int64
-	for range 5 {
-		n, head := nextNewHead(t, conn, 10*time.Second)
-		if prev != 0 {
-			require.Equal(t, prev+1, n, "polled heads arrive in order")
-		}
-		prev = n
-		assert.Equal(t, fmt.Sprintf("0x%064x", n), head["hash"])
-		assert.NotContains(t, head, "transactions", "newHeads is projected")
-	}
-
-	for _, id := range []string{"rpc-syncing", "ws-syncing"} {
-		require.Eventually(t, func() bool {
-			for _, u := range nw.upstreamsRegistry.GetNetworkUpstreams(ctx, nw.networkId) {
-				if u.Id() == id {
-					return u.EvmSyncingState() == common.EvmSyncingStateSyncing
-				}
-			}
-			return false
-		}, 5*time.Second, 10*time.Millisecond, "%s reports itself syncing", id)
-	}
-	heads := func(outcome string) float64 {
-		return testutil.ToFloat64(telemetry.MetricChainTrackerSourceHeadsTotal.WithLabelValues("test_ws", "evm:123", "ws-syncing", outcome))
-	}
-	pollsSettle(t, &syncingHttp.latestPolls, 700*time.Millisecond, "a syncing source is not polled for heads")
-	syncingPolls, voted, gated := syncingHttp.latestPolls.Load(), heads("voted"), heads("gated_voter")
-	require.Eventually(t, func() bool { return heads("gated_voter") >= gated+3 }, 10*time.Second, 10*time.Millisecond,
-		"a syncing wss source's heads reach intake and are held back")
-	prev = requireContiguous(t, conn, 3, prev)
-	assert.Equal(t, syncingPolls, syncingHttp.latestPolls.Load(), "a syncing source is not polled for heads")
-	assert.Equal(t, voted, heads("voted"), "a syncing wss source's heads never vote")
-
-	pollsSettle(t, &noLatest.latestPolls, 700*time.Millisecond, "a source that refuses latest stops being polled")
-	refused := noLatest.latestPolls.Load()
-	assert.GreaterOrEqual(t, refused, int64(10), "polled until 10 refusals")
-	require.Eventually(t, func() bool { return noLatest.latestPolls.Load() > refused }, 10*time.Second, 20*time.Millisecond,
-		"latest is asked again once the give-up expires")
-	requireContiguous(t, conn, 3, prev)
-}
-
 // A poll source that starts answering for another chain, with a head far
 // above, is cordoned by the chain-identity gate. Its cordon lifts only
 // after 2 matching eth_chainId checks a recheck interval apart (#997), and
@@ -3351,205 +3219,6 @@ func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
 	require.Eventually(t, cordoned, 5*time.Second, 10*time.Millisecond,
 		"a major move right after the lift goes through the chain-identity gate again")
 	requireContiguous(t, conn, 3, last)
-}
-
-// A network with a wss source and an HTTP poll source: each head reaches
-// the client once. A 2-block reorg on both vendors then reaches the client
-// as each head of the new branch, oldest first, and the client's chain
-// ends equal to the vendors'. A jump of more than reorgWindow blocks then
-// reaches the client as every block of it, in order, with no lag restart:
-// the jump's blocks just arrived (spec §10.2). One tap is open while the
-// client is subscribed, none after it leaves.
-func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
-	setupGock()
-	t.Cleanup(util.ResetGock)
-
-	chain := newMockChain(0x100, false)
-	httpVendor, srv := newMockHttpVendor(t, chain)
-	_, wsURL := newMockWsVendor(t, chain, nil)
-	ctx, stop := context.WithCancel(context.Background())
-	defer stop()
-	go chain.run(ctx, 200*time.Millisecond)
-
-	addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil,
-		sourceUpstream("rpc-http", srv.URL, util.BoolPtr(true)),
-		sourceUpstream("rpc-ws", wsURL, nil),
-	))
-	defer cleanup()
-	conn := dialWs(t, addr)
-	defer conn.Close()
-	subscribeNewHeads(t, conn)
-	tapLabels := []string{"test_ws", "evm:123", "ws", indexer.SubTypeNewHeads}
-	openTaps := func() float64 { return testutil.ToFloat64(telemetry.MetricTaps.WithLabelValues(tapLabels...)) }
-	lagged := telemetry.MetricTapEndTotal.WithLabelValues(append(tapLabels, indexer.TapEndLagging, indexer.OutOfRangeLag)...)
-	require.Eventually(t, func() bool { return openTaps() == 1 }, 5*time.Second, 10*time.Millisecond, "one tap per subscription")
-	requireInvariantsHeld(t, "test_ws", "evm:123")
-
-	// The client applies each head as a geth client does: a number it
-	// already has replaces that number and every number above it.
-	client := make(map[int64]string)
-	var first, last int64
-	apply := func(n int64, head map[string]interface{}) {
-		for k := range client {
-			if k >= n {
-				delete(client, k)
-			}
-		}
-		client[n], _ = head["hash"].(string)
-		if first == 0 {
-			first = n
-		}
-		last = n
-	}
-	next := func(msg string) {
-		n, head := nextNewHead(t, conn, 10*time.Second)
-		if last != 0 {
-			require.Equal(t, last+1, n, msg)
-		}
-		apply(n, head)
-	}
-
-	polledBefore := httpVendor.latestPolls.Load()
-	for range 8 {
-		next("heads must arrive once each, in order")
-	}
-	assert.Greater(t, httpVendor.latestPolls.Load(), polledBefore+2, "the HTTP source polls while a client wants heads")
-
-	// Hold the chain past one tick, so the client reaches its head before
-	// the reorg.
-	chain.setPaused(true)
-	time.Sleep(300 * time.Millisecond)
-	for last < chain.Head() {
-		next("heads must arrive once each, in order")
-	}
-	tip := chain.reorg(2)
-	for _, want := range []int64{tip - 2, tip - 1, tip} {
-		n, head := nextNewHead(t, conn, 10*time.Second)
-		require.Equal(t, want, n, "after a reorg each head of the new branch arrives, oldest first")
-		require.Equal(t, chain.Hash(n), head["hash"], "block %d is the new branch's", n)
-		apply(n, head)
-	}
-	chain.setPaused(false)
-	for range 3 {
-		next("heads continue in order after the reorg")
-	}
-	for n := first; n <= last; n++ {
-		require.Equal(t, chain.Hash(n), client[n], "the client's block %d is the vendors' canonical one", n)
-	}
-	requireInvariantsHeld(t, "test_ws", "evm:123")
-
-	// The sources stall, then return more than reorgWindow (default 32)
-	// blocks ahead: the tracker re-anchors there and fills back down to the
-	// client's cursor. The filled blocks are fresh, so the client reads them
-	// all, in batches, and never restarts.
-	lagBefore := testutil.ToFloat64(lagged)
-	chain.setPaused(true)
-	time.Sleep(300 * time.Millisecond)
-	for last < chain.Head() {
-		next("heads must arrive once each, in order")
-	}
-	jumped := chain.jump(40)
-	for last < jumped {
-		next("every block of a jump arrives once, in order")
-	}
-	require.Equal(t, chain.Hash(jumped), client[jumped], "the client's head is the vendors' after the jump")
-	chain.setPaused(false)
-	for range 2 {
-		next("heads continue in order after the jump")
-	}
-	assert.Equal(t, lagBefore, testutil.ToFloat64(lagged), "a jump is no lag")
-	assert.Equal(t, 1.0, openTaps(), "the subscription keeps its one tap")
-
-	require.NoError(t, conn.Close())
-	require.Eventually(t, func() bool { return openTaps() == 0 }, 5*time.Second, 10*time.Millisecond, "the tap closes with the client")
-}
-
-// With failover on, a fallback-tier poll source polls only while no primary
-// has been a hash voter for primaryLeadAfter; the client's heads stay
-// contiguous across both hand-overs. A fallback-tier wss source subscribes
-// newPendingTransactions only while topic admission admits it too.
-func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
-	setupGock()
-	t.Cleanup(util.ResetGock)
-	prevLead := primaryLeadAfter.Load()
-	primaryLeadAfter.Store(1500 * time.Millisecond)
-	defer primaryLeadAfter.Store(prevLead)
-
-	chain := newMockChain(0x100, false)
-	fallback, srv := newMockHttpVendor(t, chain)
-	primary, wsURL := newMockWsVendor(t, chain, nil)
-	// Its heads would vote while it is authoritative; only its pending
-	// subscription is under test.
-	wsFallback, wsFallbackURL := newMockWsVendor(t, chain, func(v *mockWsVendor) { v.pushing.Store(false) })
-
-	fallbackCfg := sourceUpstream("rpc-fallback", srv.URL, util.BoolPtr(true))
-	fallbackCfg.Tags = []string{common.TagTierFallback}
-	wsFallbackCfg := sourceUpstream("rpc-fallback-ws", wsFallbackURL, nil)
-	wsFallbackCfg.Tags = []string{common.TagTierFallback}
-	// Its polls move the lag reference past a primary that stops pushing,
-	// so the primary's hash vote ages out (spec §6.1).
-	wsFallbackCfg.Evm.StatePollerInterval = common.Duration(300 * time.Millisecond)
-	primaryCfg := sourceUpstream("rpc-primary", wsURL, nil)
-	// The primary's own polls let the network see blocks it stops pushing.
-	primaryCfg.Evm.StatePollerInterval = common.Duration(300 * time.Millisecond)
-	cfg := sourcesConfig(func(nw *common.NetworkConfig) {
-		nw.Failover = &common.FailoverConfig{OnDefaultsExhausted: util.BoolPtr(true)}
-		// Every upstream eligible; the identity function itself would select the rich default.
-		nw.SelectionPolicy = &common.SelectionPolicyConfig{EvalFunc: `(upstreams, ctx) => upstreams.filter(u => true)`}
-		nw.Evm.ServedTip = &common.EvmServedTipConfig{Quorum: 1}
-	}, primaryCfg, fallbackCfg, wsFallbackCfg)
-	addr, cleanup := setupTestERPCServer(t, cfg)
-	defer cleanup()
-	conn := dialWs(t, addr)
-	defer conn.Close()
-	subscribeNewHeads(t, conn)
-	pending := dialWs(t, addr)
-	defer pending.Close()
-	resp := sendAndReceive(t, pending, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newPendingTransactions"]}`)
-	require.NotNil(t, resp["result"], "subscribe failed: %v", resp)
-	pendingOn := func(primaryLive, fallbackLive int) func() bool {
-		return func() bool { return primary.pendingLive() == primaryLive && wsFallback.pendingLive() == fallbackLive }
-	}
-	require.Eventually(t, pendingOn(1, 1), 5*time.Second, 10*time.Millisecond,
-		"while no primary leads, the fallback subscribes newPendingTransactions too")
-
-	// The chain starts after the subscribe, so no primary leads yet.
-	ctx, stop := context.WithCancel(context.Background())
-	defer stop()
-	go chain.run(ctx, 200*time.Millisecond)
-
-	last := requireContiguous(t, conn, 3, 0)
-	assert.Greater(t, fallback.latestPolls.Load(), int64(2), "the fallback polls while no primary leads")
-
-	pollsSettle(t, &fallback.latestPolls, 700*time.Millisecond, "the fallback stops polling once the primary leads")
-	require.Eventually(t, pendingOn(1, 0), 5*time.Second, 10*time.Millisecond,
-		"the fallback drops newPendingTransactions once the primary leads")
-	last = requireContiguous(t, conn, 3, last)
-
-	// The primary goes silent once its pushes are out; the next block is
-	// seen only over RPC.
-	chain.setPaused(true)
-	time.Sleep(300 * time.Millisecond)
-	primary.pushing.Store(false)
-	if h := chain.Head(); h > last {
-		last = requireContiguous(t, conn, int(h-last), last)
-	}
-	stalled := fallback.latestPolls.Load()
-	chain.advance()
-	last = requireContiguous(t, conn, 1, last)
-	// The primary's polls still vote, so the client has the block at once;
-	// the primary stops streaming W after that block reached this instance
-	// (spec §6.2).
-	// W is 3s: 3 × the mock's 1s block time.
-	w := 3 * time.Second
-	require.Eventually(t, func() bool { return fallback.latestPolls.Load() > stalled }, w+time.Second, 10*time.Millisecond,
-		"the fallback polls again once the primary stops streaming")
-	require.Eventually(t, pendingOn(1, 1), 10*time.Second, 10*time.Millisecond,
-		"the fallback subscribes newPendingTransactions again once the primary stops streaming")
-
-	chain.setGated(true)
-	chain.setPaused(false)
-	requireContiguous(t, conn, 4, last)
 }
 
 // Polls stop sourceIdleStop after the last client leaves. A later client
@@ -3695,160 +3364,4 @@ func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
 	time.Sleep(2500 * time.Millisecond)
 	assert.Equal(t, asked+2, vendor.subscribes.Load(), "asked once per interval, not retried with backoff")
 	requireContiguous(t, conn, 2, 0)
-}
-
-// What integrity follow costs upstreams on an HTTP-only network, the shape
-// of most production networks (no subscription source, so §6.5 rule 6
-// Asks): an idle network, no client yet, sends nothing; the first client
-// request starts the follow tap and the state probes (spec §13, §6.11).
-// The follow tap alone needs a head once per integrity.follow.interval
-// (1s), not every 300ms block (spec §3 demand), so in a window of T the
-// head Asks that fetch are, by reason:
-//   - no_source: rule 6 Asks at the follow pace and again at the answer's
-//     Next, a pace after its fetch, at most T/pace + 1;
-//   - catch_up: gate sets catchUpAt at least a pace ahead for either kind
-//     of round, at most T/pace + 1 rounds; a round Asks only the voters
-//     Latest lacks to reach the pin (quorum 2), and the pin's own voter is
-//     at it, so one voter per round;
-//   - refusal: none, since a pinned probe goes only to upstreams at its
-//     block (spec §13); settle, refresh and poll: none on one linear chain
-//     with no client request and an hour's poll interval.
-//
-// Then one voter's node falls 40 blocks behind its own counter (a restart,
-// §19 P1): its answers sit below the counter, which only rises (§14), so
-// its report time stays where it was. Catch-up orders by evidence, which
-// counts this instance's Asks of it (§6.8), so it never takes the slot
-// twice in a row while the voters that could move Latest wait.
-func TestWebSocket_IntegrityFollowCost(t *testing.T) {
-	setupGock()
-	t.Cleanup(util.ResetGock)
-
-	chain := newMockChain(0x100, false)
-	var vendors []*mockHttpVendor
-	var ups []*common.UpstreamConfig
-	ids := []string{"rpc-a", "rpc-b", "rpc-c", "rpc-d", "rpc-e"}
-	for _, id := range ids {
-		v, srv := newMockHttpVendor(t, chain)
-		vendors = append(vendors, v)
-		up := sourceUpstream(id, srv.URL, nil)
-		up.Evm.StatePollerInterval = common.Duration(time.Hour)
-		ups = append(ups, up)
-	}
-	requests := func() (n int64) {
-		for _, v := range vendors {
-			n += v.requests.Load()
-		}
-		return n
-	}
-	asks := func() (n int64) {
-		for _, v := range vendors {
-			n += v.latestPolls.Load() + v.headNumbers.Load()
-		}
-		return n
-	}
-	ctx, stop := context.WithCancel(context.Background())
-	defer stop()
-	go chain.run(ctx, 300*time.Millisecond)
-
-	erpcSrv, addr, cancel := startTestERPCServer(t, sourcesConfig(func(nw *common.NetworkConfig) {
-		nw.Integrity = &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{
-			Follow:     &common.IntegrityFollowConfig{Enabled: util.BoolPtr(true)},
-			StateProbe: &common.IntegrityStateProbeConfig{Enabled: util.BoolPtr(true)},
-		}}
-	}, ups...))
-	defer func() { _ = erpcSrv.Shutdown(&log.Logger); cancel() }()
-
-	// Idle: once the upstreams' bootstrap calls are done, nothing.
-	start := time.Now()
-	settled := assert.Eventually(t, func() bool {
-		before := requests()
-		time.Sleep(time.Second)
-		return requests() == before
-	}, 10*time.Second, 10*time.Millisecond, "an idle network sends no requests")
-	from, at := requests(), time.Now()
-	time.Sleep(3 * time.Second)
-	idle := float64(requests()-from) / time.Since(at).Minutes()
-	t.Logf("idle network: %.0f requests/min (settled %v after %s)", idle, settled, time.Since(start).Round(time.Second))
-	assert.Zero(t, idle, "an idle network sends no requests per minute")
-
-	resp, err := http.Post(fmt.Sprintf("http://%s/test_ws/evm/123", addr), "application/json",
-		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`))
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-	pace := common.DefaultIntegrityFollowInterval
-	reasons := []common.AskReason{common.AskClock, common.AskRefusal, common.AskRefusal, common.AskSettle, common.AskRefusal, common.AskClock}
-	fetched := func() map[common.AskReason]float64 {
-		out := map[common.AskReason]float64{}
-		for _, r := range reasons {
-			out[r] = testutil.ToFloat64(telemetry.MetricHeadAskTotal.WithLabelValues("test_ws", "evm:123", string(r), string(common.AskFetched)))
-		}
-		return out
-	}
-	time.Sleep(time.Second)
-	from, at = requests(), time.Now()
-	asked, before := asks(), fetched()
-	time.Sleep(5 * time.Second)
-	after, vendorAsks, secs := fetched(), asks()-asked, time.Since(at).Seconds()
-	follow := float64(requests()-from) / secs
-	rounds := float64(int(secs/pace.Seconds()) + 1)
-	by := map[common.AskReason]float64{}
-	for _, r := range reasons {
-		by[r] = after[r] - before[r]
-	}
-	t.Logf("follow-only network over %.1fs: %.1f requests/s, %d vendor head requests, fetched Asks by reason %v", secs, follow, vendorAsks, by)
-	assert.Positive(t, follow, "the first client request starts the follow tap and the probes")
-	assert.LessOrEqual(t, by[common.AskClock], rounds, "rule 6 Asks once per follow pace")
-	assert.LessOrEqual(t, by[common.AskRefusal], rounds, "one catch-up round per follow pace, one lagging voter each")
-	for _, r := range []common.AskReason{common.AskRefusal, common.AskSettle, common.AskRefusal, common.AskClock} {
-		assert.Zero(t, by[r], "no %s Asks on a follow-only network", r)
-	}
-	assert.LessOrEqual(t, float64(vendorAsks), 2*rounds, "every vendor head request is one of those Asks")
-
-	prj, err := erpcSrv.erpc.GetProject("test_ws")
-	require.NoError(t, err)
-	network, err := prj.GetNetwork(context.Background(), "evm:123")
-	require.NoError(t, err)
-	voters := network.EvmHashVoters("", network.chainTracker.W()).Voters
-	require.Len(t, voters, len(ids))
-	// Rule 6 Asks the first voter; every other voter's latest poll is a
-	// catch-up slot. The lagging node is the other voter with the oldest
-	// report: next in line for the slot.
-	var lagging string
-	var counter int64
-	var oldest time.Time
-	for _, u := range network.upstreamsRegistry.GetNetworkUpstreams(context.Background(), network.networkId) {
-		sp := u.EvmStatePoller()
-		if at := sp.LatestReportAt(); u.Id() != voters[0] && (lagging == "" || at.Before(oldest)) {
-			lagging, counter, oldest = u.Id(), sp.LatestBlock(), at
-		}
-	}
-	var slotsMu sync.Mutex
-	var slots []string
-	for i, v := range vendors {
-		id := ids[i]
-		polled := func() {
-			if id == voters[0] {
-				return
-			}
-			slotsMu.Lock()
-			slots = append(slots, id)
-			slotsMu.Unlock()
-		}
-		v.onLatest.Store(&polled)
-	}
-	vendors[slices.Index(ids, lagging)].lag.Store(chain.Head() - counter + 40)
-	// 40 blocks of 300ms: its answers stay below its counter all along,
-	// and its report stays younger than the 30s bench.
-	time.Sleep(8 * time.Second)
-	for _, v := range vendors {
-		v.onLatest.Store(nil)
-	}
-	slotsMu.Lock()
-	defer slotsMu.Unlock()
-	t.Logf("catch-up slots with %s 40 blocks behind its counter: %v", lagging, slots)
-	require.GreaterOrEqual(t, len(slots), 3, "catch-up keeps Asking while Latest holds the pin back")
-	for i := 1; i < len(slots); i++ {
-		require.False(t, slots[i] == lagging && slots[i-1] == lagging,
-			"%s, answering below its counter, takes the catch-up slot twice in a row: %v", lagging, slots)
-	}
 }
