@@ -504,6 +504,18 @@ func (t *ChainTracker) runClock() {
 			return
 		}
 	}
+	if holders := t.holderVoters(t.clockCandidates()); len(holders) > 0 {
+		// All at once: the pin serves once q counted votes back it.
+		if c.out = t.fire(holders[0].id, now, "holder"); c.out != nil {
+			for _, cand := range holders[1:] {
+				t.fire(cand.id, now, "holder")
+			}
+			if waiting {
+				c.edge = c.out
+			}
+			return
+		}
+	}
 	if target := c.top() + 1; target != c.target {
 		c.target, c.early, c.retryAt = target, 0, time.Time{}
 	}
@@ -640,6 +652,44 @@ func (t *ChainTracker) cappingVoter(cands []clockCandidate) (clockCandidate, boo
 		}
 	}
 	return clockCandidate{}, false
+}
+
+// holderVoters are the voters the clock fetches now because the highest
+// voted pin lacks holders: its header serves only at q counted votes (a
+// mismatch, spec §6.5), so the view's Head stays below it. A push brings
+// such a pin every block and makes each probe needless, so without these
+// fetches the view would stay below the pins until the next full poll.
+// Each is a voter whose vote is on the pins below that pin and whose last
+// answer the clock took was sent before the pin was sighted, as many as
+// the pin lacks; each is fetched once per such pin.
+func (t *ChainTracker) holderVoters(cands []clockCandidate) []clockCandidate {
+	s := t.state.Load()
+	b := s.backing
+	if b == nil || len(b.backs) == 0 {
+		return nil
+	}
+	top := b.backs[len(b.backs)-1].i
+	pin := s.pinAt(b.base + uint64(top))
+	lacks := max(b.need, 1) - (len(b.backs) - b.atLeast(top))
+	if b.served >= top || pin == nil || lacks <= 0 {
+		return nil
+	}
+	seen := t.clock.sightOf(pin.number)
+	if seen.IsZero() {
+		return nil
+	}
+	pinRoot := t.pinRoot()
+	var out []clockCandidate
+	for _, cand := range cands {
+		if len(out) == lacks {
+			break
+		}
+		n := t.votes[cand.id]
+		if t.alive(n) && t.rootOf(n) == pinRoot && n.h.number < pin.number && t.clock.taken[cand.id].Before(seen) {
+			out = append(out, cand)
+		}
+	}
+	return out
 }
 
 // fireAt is when the clock fetches its target: the target's predicted
