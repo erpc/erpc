@@ -732,9 +732,10 @@ var byHashFamily = map[string][]interface{}{
 // after the wait began (AskReaching: a counter fresher than 1 bt is no
 // evidence their nodes lack the block), and past 1 bt until those Asks
 // answered, at most W: a fetch over a slow link or on a loaded host
-// answers after 1 bt, and only its answer is evidence. It is then sent if
-// Latest includes the block, else it is null, as it is when ctx ends
-// first. Each wait counts its outcome. held: resp was replaced by null.
+// answers after 1 bt, and only its answer is evidence. Once the tracker
+// took those answers, it is sent if Latest includes the block, else it is
+// null, as it is when ctx ends first. Each wait counts its outcome. held:
+// resp was replaced by null.
 func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (out *common.NormalizedResponse, held bool) {
 	bn := byHashBlock(ctx, req, resp)
 	if bn <= 0 {
@@ -786,6 +787,11 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 			continue
 		case <-settled:
 		case <-asks.Done():
+		}
+		if t != nil {
+			// The Asks returned once intake had their headers; the votes
+			// may still wait in the tracker's mailbox.
+			t.Sync(ctx)
 		}
 		if at, _ = latest(); at < bn {
 			n.countHeadRefusal("held_null")

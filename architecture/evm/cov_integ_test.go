@@ -302,7 +302,7 @@ func TestCovInteg_HasVerifiedEmptyTraceBlock(t *testing.T) {
 	}
 	pin := func(c *ChainTracker, n, gasUsed uint64) {
 		c.Observe("a", covIntegEmptyHeader(t, n, gasUsed), true)
-		c.sync(context.Background())
+		c.Sync(context.Background())
 	}
 	pin(StartChainTrackers(ctx, net), 0x10, 0)
 
@@ -404,7 +404,7 @@ func TestCovInteg_ObserveViews(t *testing.T) {
 		observeBlockView(ctx, c, nil, nil)
 		observeBlockView(ctx, c, nil, covIntegResp(`"0x1"`))
 		observeBlockView(ctx, c, nil, covIntegResp(`{"number":"0x1"}`))
-		c.sync(ctx)
+		c.Sync(ctx)
 		_, ok := c.HashAt(1)
 		assert.False(t, ok)
 		assert.Zero(t, covIntegHeldCount(c))
@@ -420,17 +420,17 @@ func TestCovInteg_ObserveViews(t *testing.T) {
 		observeNarrowView(ctx, nil, evmUp, anchor)
 		observeNarrowView(ctx, c, evmUp, nil)
 		observeNarrowView(ctx, c, covIntegPlainUp{evmUp}, anchor)
-		c.sync(ctx)
+		c.Sync(ctx)
 		_, ok := c.HashAt(0x10)
 		assert.False(t, ok, "a non-EVM upstream's answer anchors nothing")
 
 		observeNarrowView(ctx, c, evmUp, covIntegResp(`{"blockNumber":"0x11","blockHash":""}`))
-		c.sync(ctx)
+		c.Sync(ctx)
 		_, ok = c.HashAt(0x11)
 		assert.False(t, ok, "an anchor without a hash anchors nothing")
 
 		observeNarrowView(ctx, c, evmUp, anchor)
-		c.sync(ctx)
+		c.Sync(ctx)
 		got, ok := c.HashAt(0x10)
 		require.True(t, ok)
 		assert.Equal(t, hash, got)
@@ -693,7 +693,7 @@ func TestCovInteg_StateProber(t *testing.T) {
 		v := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
 		v.Observe("a", json.RawMessage(fmt.Sprintf(`{"number":"0x%x","hash":"%s","parentHash":"%s","stateRoot":"%s"}`,
 			head, testHash("e", uint64(head)), testHash("f", uint64(head-1)), root)), true)
-		v.sync(t.Context())
+		v.Sync(t.Context())
 		p := &stateProber{
 			network: net, view: v, pinnedProbes: true,
 			lastProbe: map[string]time.Time{}, work: make(chan int64, 1),

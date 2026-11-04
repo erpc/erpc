@@ -43,7 +43,7 @@ func voteChain(t *testing.T, c *ChainTracker, src, tag string, from, to uint64, 
 		c.Observe(src, testHeader(n, h, parent), true)
 		parent = h
 	}
-	c.sync(context.Background())
+	c.Sync(context.Background())
 }
 
 // servedChain serves header fetches by number and by hash from the blocks
@@ -192,7 +192,7 @@ func TestChainTracker(t *testing.T) {
 		c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
 		voteChain(t, c, "a", "a", 5, 6, testHash("f", 4))
 		c.Observe("a", testHeader(5, testHash("a", 5), testHash("f", 4)), true)
-		c.sync(context.Background())
+		c.Sync(context.Background())
 		v, ok := c.HashAt(6)
 		require.True(t, ok)
 		assert.Equal(t, testHash("a", 6), v)
@@ -205,15 +205,15 @@ func TestChainTracker(t *testing.T) {
 		// c and then d follow a fork at 11.
 		fork := testHeader(11, testHash("b", 11), testHash("a", 10))
 		c.Observe("c", fork, true)
-		c.sync(context.Background())
+		c.Sync(context.Background())
 		v, _ := c.HashAt(11)
 		assert.Equal(t, testHash("a", 11), v, "2 votes against 1 keep the branch")
 		c.Observe("b", fork, true)
-		c.sync(context.Background())
+		c.Sync(context.Background())
 		v, _ = c.HashAt(11)
 		assert.Equal(t, testHash("b", 11), v, "2 votes against 1 move the pins")
 		c.Observe("d", testHeader(11, testHash("a", 11), testHash("a", 10)), true)
-		c.sync(context.Background())
+		c.Sync(context.Background())
 		v, _ = c.HashAt(11)
 		assert.Equal(t, testHash("b", 11), v, "a tie keeps the pinned child")
 	})
@@ -249,7 +249,7 @@ func TestChainTracker(t *testing.T) {
 		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
 		c.Observe("a", json.RawMessage(`{"number":"0x3","hash":"","parentHash":"0x1"}`), true)
 		c.Observe("a", json.RawMessage(`{"number":"0x3","hash":"0xabc","parentHash":"0x1"}`), true)
-		c.sync(context.Background())
+		c.Sync(context.Background())
 		_, ok := c.HashAt(3)
 		assert.False(t, ok)
 	})
@@ -268,11 +268,11 @@ func TestChainTracker(t *testing.T) {
 			net.serve(n, h, hdr)
 			if n == 21 {
 				c.Observe("b", testHeader(n+30_000_000, h, parent), true)
-				c.sync(context.Background())
+				c.Sync(context.Background())
 			}
 			c.Observe("a", hdr, true)
 			c.Observe("b", hdr, true)
-			c.sync(context.Background())
+			c.Sync(context.Background())
 			parent = h
 		}
 		for n := uint64(15); n <= 30; n++ {
@@ -349,13 +349,13 @@ func TestChainTracker(t *testing.T) {
 		c.Observe("a", b(11), true)
 		c.Observe("b", b(11), true)
 		c.Observe("client", b(8), false)
-		c.sync(ctx)
+		c.Sync(ctx)
 		v, _ := c.HashAt(10)
 		assert.Equal(t, testHash("a", 10), v, "the votes wait while their walk is out")
 
 		net.release("0x7")
 		require.Eventually(t, func() bool {
-			c.sync(ctx)
+			c.Sync(ctx)
 			v, _ := c.HashAt(11)
 			return v == testHash("b", 11)
 		}, 5*time.Second, 5*time.Millisecond, "the walk links b7 to a6 and the votes move")
@@ -425,7 +425,7 @@ func TestChainTracker(t *testing.T) {
 			c.Observe(src, b(21), true)
 		}
 		require.Eventually(t, func() bool {
-			c.sync(ctx)
+			c.Sync(ctx)
 			v, _ := c.HashAt(21)
 			_, held := c.HeldNumber(testHash("b", 7))
 			return v == testHash("b", 21) && held
@@ -435,7 +435,7 @@ func TestChainTracker(t *testing.T) {
 		// round Asks the others.
 		c.Observe("d", testHeader(21, testHash("d", 21), testHash("b", 20)), true)
 		require.Eventually(t, func() bool {
-			c.sync(ctx)
+			c.Sync(ctx)
 			return net.asks.Load() > 0
 		}, 5*time.Second, 5*time.Millisecond, "d's refresh starts a round")
 
@@ -477,12 +477,12 @@ func TestChainTracker(t *testing.T) {
 			for _, src := range []string{"a", "b"} {
 				c.Observe(src, testHeader(n, testHash("a", n), testHash("a", n-1)), true)
 			}
-			c.sync(ctx)
+			c.Sync(ctx)
 		}
 		for _, n := range []uint64{100, 161, 222} {
 			vote(n)
 			require.Eventually(t, func() bool {
-				c.sync(ctx)
+				c.Sync(ctx)
 				v, _ := c.HashAt(int64(n))
 				return v == testHash("a", n)
 			}, 5*time.Second, 5*time.Millisecond, "each poll's vote is the head")
@@ -498,7 +498,7 @@ func TestChainTracker(t *testing.T) {
 		assert.Equal(t, uint64(222), head.Number, "the confirmed head follows the votes")
 
 		t.Cleanup(c.Want(indexer.ReadOpts{}))
-		c.sync(ctx)
+		c.Sync(ctx)
 		start, err := c.Head(ctx)
 		require.NoError(t, err)
 		assert.Equal(t, uint64(222), start.Number, "the first tap starts at the head")
@@ -509,7 +509,7 @@ func TestChainTracker(t *testing.T) {
 		net.mu.Unlock()
 		vote(232)
 		require.Eventually(t, func() bool {
-			c.sync(ctx)
+			c.Sync(ctx)
 			v, _ := c.HashAt(201)
 			return v == testHash("a", 201)
 		}, 5*time.Second, 5*time.Millisecond, "the walk links 232 to 222 and fill runs reorgWindow below the head")
@@ -542,11 +542,11 @@ func TestChainTracker(t *testing.T) {
 		voteChain(t, c, "b", "a", 0, 20, testHash("f", 0))
 		c.Observe("client", testHeader(15, testHash("e", 15), testHash("e", 14)), false)
 		require.Eventually(t, func() bool {
-			c.sync(ctx)
+			c.Sync(ctx)
 			return net.byHash.Load() > 0
 		}, 5*time.Second, 5*time.Millisecond, "fill asks the orphan's parent by hash once by number answers another block")
 		for end := time.Now().Add(2500 * time.Millisecond); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
-			c.sync(ctx)
+			c.Sync(ctx)
 		}
 		assert.EqualValues(t, 1, net.byHash.Load(), "one sweep that finds the parent nowhere ends the fill; the key's backoff (200ms doubling) would have retried it 3 times")
 		_, held := c.HeldNumber(testHash("e", 15))
@@ -576,7 +576,7 @@ func TestChainTracker(t *testing.T) {
 			c.Observe(src, testHeader(300, testHash("a", 300), testHash("a", 299)), true)
 		}
 		require.Eventually(t, func() bool {
-			c.sync(ctx)
+			c.Sync(ctx)
 			v, _ := c.HashAt(268)
 			return v == testHash("a", 268)
 		}, 5*time.Second, 5*time.Millisecond, "fill runs reorgWindow below the head")
@@ -652,7 +652,7 @@ func TestChainTracker(t *testing.T) {
 			v, ok := c.HashAt(fin)
 			require.True(t, ok)
 			require.Equal(t, testHash("c", fin), v, "the pins follow the upstream's branch")
-			c.sync(ctx)
+			c.Sync(ctx)
 			return c
 		}
 		before := alarms()
@@ -684,7 +684,7 @@ func putReceipts(c *ChainTracker, blockHash string, receipts []integrity.Receipt
 		panic(err)
 	}
 	c.mb.put(trackerMsg{kind: msgReceipts, held: r})
-	c.sync(context.Background())
+	c.Sync(context.Background())
 }
 
 func TestChainTracker_Receipts(t *testing.T) {
@@ -716,7 +716,7 @@ func TestChainTracker_Receipts(t *testing.T) {
 func TestChainTracker_NarrowAnchors(t *testing.T) {
 	anchors := func(c *ChainTracker, fin int64, body string) {
 		c.observeNarrowAnchors(fin, "vendor-a", []byte(body))
-		c.sync(context.Background())
+		c.Sync(context.Background())
 	}
 	t.Run("finalized block → anchored", func(t *testing.T) {
 		c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
@@ -763,7 +763,7 @@ func TestChainTracker_NarrowAnchors(t *testing.T) {
 		voteChain(t, c, "b", "c", 0x20, 0x30, testHash("c", 0x1f))
 		say := func(vendor, hash string) {
 			c.observeNarrowAnchors(0x40, vendor, []byte(fmt.Sprintf(`{"blockNumber":"0x10","blockHash":"%s"}`, hash)))
-			c.sync(context.Background())
+			c.Sync(context.Background())
 		}
 		validate := func(hash string) integrity.Result {
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x10",false]}`))
@@ -823,7 +823,7 @@ func TestChainTracker_NarrowAnchors(t *testing.T) {
 		queued := len(c.mb.queue)
 		c.mb.mu.Unlock()
 		close(release)
-		c.sync(context.Background())
+		c.Sync(context.Background())
 		assert.Zero(t, queued, "anchors and answers below the window wait in no mailbox")
 		v, ok := c.HashAt(0x10)
 		require.True(t, ok)
@@ -876,7 +876,7 @@ func TestObserveBlockView(t *testing.T) {
 
 		observeBlockView(context.Background(), c, nil, blockResponse("eth_getBlockByHash", 0x10, testHash("e", 0x10), testHash("f", 0xf)))
 		observeBlockView(context.Background(), c, nil, blockResponse("eth_getBlockByNumber", 0x11, testHash("d", 0x11), testHash("a", 0x10)))
-		c.sync(context.Background())
+		c.Sync(context.Background())
 
 		v, ok := c.HashAt(0x10)
 		require.True(t, ok)
@@ -892,7 +892,7 @@ func TestObserveBlockView(t *testing.T) {
 	t.Run("an answer for an unseen number creates no pin", func(t *testing.T) {
 		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
 		observeBlockView(context.Background(), c, nil, blockResponse("eth_getBlockByNumber", 0x20, testHash("c", 0x20), testHash("c", 0x1f)))
-		c.sync(context.Background())
+		c.Sync(context.Background())
 		_, ok := c.HashAt(0x20)
 		assert.False(t, ok)
 	})
@@ -908,9 +908,9 @@ func TestObserveBlockView(t *testing.T) {
 		}
 
 		observeBlockView(context.Background(), c, nil, answer("0x01"))
-		c.sync(context.Background())
+		c.Sync(context.Background())
 		observeBlockView(context.Background(), c, nil, answer("0x02"))
-		c.sync(context.Background())
+		c.Sync(context.Background())
 
 		h, held := c.held.Load(testHash("e", 0x10))
 		require.True(t, held)
@@ -920,7 +920,7 @@ func TestObserveBlockView(t *testing.T) {
 		latest := fmt.Sprintf(`{"number":"0x11","hash":"%s","parentHash":"%s","size":"0x220","transactions":[{"hash":"%s","input":"0x00"}],"uncles":[]}`,
 			testHash("e", 0x11), testHash("e", 0x10), testHash("b", 2))
 		c.Observe("client", json.RawMessage(latest), false)
-		c.sync(context.Background())
+		c.Sync(context.Background())
 		h, held = c.held.Load(testHash("e", 0x11))
 		require.True(t, held)
 		assert.JSONEq(t, fmt.Sprintf(`{"number":"0x11","hash":"%s","parentHash":"%s","size":"0x220"}`, testHash("e", 0x11), testHash("e", 0x10)),
@@ -947,7 +947,7 @@ func BenchmarkObserveLatestAnswer(b *testing.B) {
 			c.Observe("a", testHeader(n, testHash("a", n), parent), true)
 			parent = testHash("a", n)
 		}
-		c.sync(context.Background())
+		c.Sync(context.Background())
 		return c
 	}
 	b.Run("held", func(b *testing.B) {
@@ -956,7 +956,7 @@ func BenchmarkObserveLatestAnswer(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			c.Observe("client", answer, false)
-			c.sync(context.Background())
+			c.Sync(context.Background())
 		}
 	})
 	b.Run("new", func(b *testing.B) {
@@ -969,7 +969,7 @@ func BenchmarkObserveLatestAnswer(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			c.Observe("client", answers[i%len(answers)], false)
-			c.sync(context.Background())
+			c.Sync(context.Background())
 			i++
 		}
 	})
@@ -1003,7 +1003,7 @@ func BenchmarkDeepFill(b *testing.B) {
 					for _, src := range []string{"a", "b"} {
 						c.Observe(src, testHeader(top, testHash("a", top), testHash("a", top-1)), true)
 					}
-					c.sync(ctx)
+					c.Sync(ctx)
 					if _, _, ok := c.FollowedRange(); ok {
 						break
 					}
@@ -1051,7 +1051,7 @@ func TestChainTracker_DeepWindow(t *testing.T) {
 		vote := func(from, to uint64) {
 			for n := from; n <= to; n++ {
 				c.Observe("a", header(n, ts(n)), true)
-				c.sync(ctx)
+				c.Sync(ctx)
 			}
 		}
 		vote(1, 200)
@@ -1264,7 +1264,7 @@ func TestSettleAnswersCountForTheirDecisionOnly(t *testing.T) {
 	c.Observe("b", testHeader(11, testHash("bb", 11), testHash("0", 10)), true)
 	c.Observe("a", x, true)
 	require.Eventually(t, func() bool {
-		c.sync(context.Background())
+		c.Sync(context.Background())
 		v, _ := c.HashAt(11)
 		return v == testHash("aa", 11)
 	}, 5*time.Second, 5*time.Millisecond, "3 non-voters' answers settle the 1-vs-1 tie")
@@ -1272,7 +1272,7 @@ func TestSettleAnswersCountForTheirDecisionOnly(t *testing.T) {
 	z := testHeader(11, testHash("cc", 11), testHash("0", 10))
 	c.Observe("a", z, true)
 	c.Observe("b", z, true)
-	c.sync(context.Background())
+	c.Sync(context.Background())
 	v, _ := c.HashAt(11)
 	assert.Equal(t, testHash("cc", 11), v, "both voters left the tie: its answers no longer count")
 }
@@ -1333,12 +1333,12 @@ func TestRollbackWriteOnlyFromFreshVotesOnALowerBranch(t *testing.T) {
 			c.observeSource(src, h, at, false)
 			parent = h.hashHex
 		}
-		c.sync(context.Background())
+		c.Sync(context.Background())
 	}
 	pinned := func(n int64, want string) {
 		t.Helper()
 		require.Eventually(t, func() bool {
-			c.sync(context.Background())
+			c.Sync(context.Background())
 			v, _ := c.HashAt(n)
 			return v == want
 		}, 5*time.Second, 5*time.Millisecond)
@@ -1355,7 +1355,7 @@ func TestRollbackWriteOnlyFromFreshVotesOnALowerBranch(t *testing.T) {
 	c.Observe("b", testHeader(50, testHash("b", 50), testHash("b", 49)), true)
 	pinned(50, testHash("b", 50))
 	c.Observe("c", testHeader(50, testHash("b", 50), testHash("b", 49)), true)
-	c.sync(context.Background())
+	c.Sync(context.Background())
 	assert.Empty(t, net.rewinds(), "a re-anchor up is a catch-up: no rollback write")
 
 	// A reorg to a lower head: a and b's fresh votes on the new branch are
@@ -1369,11 +1369,11 @@ func TestRollbackWriteOnlyFromFreshVotesOnALowerBranch(t *testing.T) {
 	require.Eventually(t, func() bool { return len(net.rewinds()) == 2 }, 5*time.Second, 5*time.Millisecond)
 	assert.Equal(t, map[string]int64{"a": 48, "b": 48}, net.rewinds())
 	c.Observe("c", fork, true)
-	require.Eventually(t, func() bool { c.sync(context.Background()); return len(net.rewinds()) == 3 }, 5*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { c.Sync(context.Background()); return len(net.rewinds()) == 3 }, 5*time.Second, 5*time.Millisecond)
 	c.Observe("p", fork, true)
-	require.Eventually(t, func() bool { c.sync(context.Background()); return len(net.rewinds()) == 4 }, 5*time.Second, 5*time.Millisecond,
+	require.Eventually(t, func() bool { c.Sync(context.Background()); return len(net.rewinds()) == 4 }, 5*time.Second, 5*time.Millisecond,
 		"a voter with no vote at the switch is rewound once its fresh vote reaches the pins")
-	c.sync(context.Background())
+	c.Sync(context.Background())
 	assert.Equal(t, map[string]int64{"a": 48, "b": 48, "c": 48, "p": 48}, net.rewinds(), "a stale vote is no evidence for a rewind")
 }
 
@@ -1391,20 +1391,20 @@ func TestSettleRefreshRunsOncePerForkPoint(t *testing.T) {
 	}
 
 	c.Observe("c", off("dd"), true)
-	require.Eventually(t, func() bool { c.sync(context.Background()); return net.forkAsks() == 3 }, 5*time.Second, 5*time.Millisecond,
+	require.Eventually(t, func() bool { c.Sync(context.Background()); return net.forkAsks() == 3 }, 5*time.Second, 5*time.Millisecond,
 		"c's vote off the pins refreshes a, b and d first")
 	net.smu.Lock()
 	net.latest["d"] = off("ee")
 	net.smu.Unlock()
 	c.Observe("d", off("ee"), true)
-	require.Eventually(t, func() bool { c.sync(context.Background()); return net.forkAsks() == 5 }, 5*time.Second, 5*time.Millisecond,
+	require.Eventually(t, func() bool { c.Sync(context.Background()); return net.forkAsks() == 5 }, 5*time.Second, 5*time.Millisecond,
 		"d's vote on another branch refreshes a and b")
 	// c's next head on its branch is newer evidence than every vote
 	// behind the pins, yet its fork point is the one refreshed.
 	c.Observe("c", testHeader(11, testHash("dd", 11), testHash("dd", 10)), true)
 	for range 10 {
 		c.VotersChanged()
-		c.sync(context.Background())
+		c.Sync(context.Background())
 		time.Sleep(5 * time.Millisecond)
 	}
 	assert.Equal(t, 5, net.forkAsks(), "c's refresh at its fork point already ran")

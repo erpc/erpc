@@ -208,7 +208,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		hash, status := c.ReconfirmPin(context.Background(), height)
 		assert.Equal(t, integrity.PinFresh, status)
 		assert.Equal(t, orphan, hash)
-		c.sync(context.Background())
+		c.Sync(context.Background())
 		assert.Zero(t, net.calls())
 		assert.Empty(t, net.askedNeeds())
 	})
@@ -222,7 +222,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		voteChain(t, c, "a", "0", 5, uint64(height), zero)
 		voteChain(t, c, "b", "0", 5, uint64(height), zero)
 		time.Sleep(300 * time.Millisecond)
-		c.sync(context.Background())
+		c.Sync(context.Background())
 		assert.Zero(t, net.calls())
 	})
 

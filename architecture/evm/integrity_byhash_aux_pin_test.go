@@ -72,7 +72,7 @@ func TestByHashAuxFetchDoesNotMoveThePin(t *testing.T) {
 		h, ok := c.headerByHash(context.Background(), orphan)
 		require.True(t, ok)
 		require.Equal(t, orphan, h.Hash)
-		c.sync(context.Background())
+		c.Sync(context.Background())
 
 		pin, known := c.HashAt(height)
 		require.True(t, known)
@@ -87,7 +87,7 @@ func TestByHashAuxFetchDoesNotMoveThePin(t *testing.T) {
 
 		_, ok := c.headerByHash(context.Background(), orphan)
 		require.True(t, ok)
-		c.sync(context.Background())
+		c.Sync(context.Background())
 
 		_, held := c.held.Load(orphan)
 		assert.True(t, held, "the header is content-addressed and immutable — holding it is always safe")
@@ -99,7 +99,7 @@ func TestByHashAuxFetchDoesNotMoveThePin(t *testing.T) {
 
 		_, ok := c.headerByNumber(context.Background(), height, heightHex)
 		require.True(t, ok)
-		c.sync(context.Background())
+		c.Sync(context.Background())
 
 		_, known := c.HashAt(height)
 		assert.False(t, known, "only votes move pins")

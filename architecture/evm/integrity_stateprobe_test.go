@@ -73,7 +73,7 @@ func proberFor(pn *probeNetwork, headN int64, stateRoot string) (*stateProber, *
 	v := newChainTracker(context.Background(), pn, 32, 0, "", "", "", nil, newFetchScheduler(context.Background(), pn))
 	v.Observe("a", json.RawMessage(fmt.Sprintf(`{"number":"0x%x","hash":"%s","parentHash":"%s","stateRoot":"%s"}`,
 		headN, testHash("e", uint64(headN)), testHash("f", uint64(headN-1)), stateRoot)), true)
-	v.sync(context.Background())
+	v.Sync(context.Background())
 	p := &stateProber{
 		network: pn, view: v, interval: 0,
 		lastProbe: map[string]time.Time{}, work: make(chan int64, 1),

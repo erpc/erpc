@@ -589,8 +589,9 @@ func (t *ChainTracker) observeFetched(upstreamId string, h *chainHeader) {
 	t.mb.put(trackerMsg{kind: msgFetched, upstream: upstreamId, vote: voteNone, hdr: h})
 }
 
-// sync waits until the tracker handled every message sent before it.
-func (t *ChainTracker) sync(ctx context.Context) {
+// Sync waits until the tracker handled every message sent before it, or
+// ctx ends.
+func (t *ChainTracker) Sync(ctx context.Context) {
 	done := make(chan struct{})
 	t.mb.put(trackerMsg{kind: msgSync, done: done})
 	select {
@@ -3347,7 +3348,7 @@ func (t *ChainTracker) fetchCursor(ctx context.Context, c indexer.Cursor) (retry
 	if res.val.(*chainHeader).number != c.Number {
 		return time.Time{}, unknown
 	}
-	t.sync(ctx)
+	t.Sync(ctx)
 	if ctx.Err() != nil {
 		return time.Time{}, ctx.Err()
 	}
@@ -4276,7 +4277,7 @@ func seedLane(ctx context.Context, wide, t *ChainTracker) {
 	}})
 	select {
 	case <-seeded:
-		t.sync(ctx)
+		t.Sync(ctx)
 	case <-ctx.Done():
 	}
 }
@@ -4336,7 +4337,7 @@ func SyncTrackersForTest(ctx context.Context, n common.Network) {
 	}
 	nt.mu.Unlock()
 	for _, t := range ts {
-		t.sync(ctx)
+		t.Sync(ctx)
 	}
 }
 
