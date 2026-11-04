@@ -143,25 +143,32 @@ func TestMemoryConnector_Purge_SuffixIsolation(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestMemoryConnector_Purge_KeyIndexDropsExpired(t *testing.T) {
+func TestMemoryConnector_Purge_KeyIndexDropsOnEvict(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
-	conn, err := NewMemoryConnector(ctx, &logger, "mem-ttl", &common.MemoryConnectorConfig{
-		MaxItems: 100, MaxTotalSize: "1MB",
+	// Tiny MaxTotalSize so subsequent Sets force eviction of the first key.
+	conn, err := NewMemoryConnector(ctx, &logger, "mem-evict", &common.MemoryConnectorConfig{
+		MaxItems: 10, MaxTotalSize: "1KB",
 	})
 	require.NoError(t, err)
 
-	ttl := 50 * time.Millisecond
-	require.NoError(t, conn.Set(ctx, "evm:1:1", "eth_call:aa", []byte("x"), &ttl))
+	require.NoError(t, conn.Set(ctx, "evm:1:1", "eth_call:aa", []byte("first"), nil))
 	conn.cache.Wait()
 	_, loaded := conn.keyIndex.Load("evm:1:1:eth_call:aa")
 	require.True(t, loaded, "key should be indexed after Set")
+
+	payload := make([]byte, 400)
+	for i := 0; i < 20; i++ {
+		pk := fmt.Sprintf("evm:1:%d", i+10)
+		require.NoError(t, conn.Set(ctx, pk, "eth_call:bb", payload, nil))
+	}
+	conn.cache.Wait()
 
 	require.Eventually(t, func() bool {
 		conn.cache.Wait()
 		_, still := conn.keyIndex.Load("evm:1:1:eth_call:aa")
 		return !still
-	}, 3*time.Second, 50*time.Millisecond, "OnEvict should drop expired keys from the purge index")
+	}, 3*time.Second, 50*time.Millisecond, "OnEvict/OnReject should drop evicted keys from the purge index")
 }
 
 func TestPurgeConnectors_UnsupportedReported(t *testing.T) {

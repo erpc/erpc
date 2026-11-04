@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/erpc/erpc/auth"
@@ -728,6 +729,11 @@ func parsePurgeCacheParams(nq *common.NormalizedRequest) (purgeCacheParams, erro
 	}
 	if p.NetworkID == "*" && p.Confirm != "WIPE" {
 		return p, common.NewErrInvalidRequest(fmt.Errorf("purgeCache admin: networkId \"*\" requires confirm: \"WIPE\""))
+	}
+	// Reject Redis/glob metacharacters in optional filters so a scoped call
+	// cannot silently widen into a network-wide wipe.
+	if strings.ContainsAny(p.Method, "*?[") || strings.ContainsAny(p.BlockRef, "*?[") {
+		return p, common.NewErrInvalidRequest(fmt.Errorf("purgeCache admin: method and blockRef must not contain glob metacharacters (* ? [)"))
 	}
 	return p, nil
 }

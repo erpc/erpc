@@ -136,6 +136,7 @@ func TestAdminPurgeCache_Validation(t *testing.T) {
 		{"missing params", `[]`, "params is required"},
 		{"missing networkId", `[{"projectId":"test_project"}]`, "projectId and networkId are required"},
 		{"star without confirm", `[{"projectId":"test_project","networkId":"*"}]`, "WIPE"},
+		{"method glob rejected", `[{"projectId":"test_project","networkId":"evm:123","method":"*"}]`, "glob metacharacters"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -847,14 +847,22 @@ func (r *RedisConnector) DeleteByPattern(ctx context.Context, opts PatternDelete
 	return matched, deleted, nil
 }
 
+// escapeRedisScanPattern doubles backslashes so Redis MATCH treats them as
+// literals (keys may contain CachePartitionKey escapes like \:). Intentional
+// '*' wildcards are left alone.
+func escapeRedisScanPattern(pattern string) string {
+	return strings.ReplaceAll(pattern, `\`, `\\`)
+}
+
 func (r *RedisConnector) scanUnlinkPattern(ctx context.Context, pattern string, opts PatternDeleteOpts) (int64, int64, error) {
 	var matched, deleted int64
 	var cursor uint64
+	scanPattern := escapeRedisScanPattern(pattern)
 	for {
-		keys, next, err := r.client.Scan(ctx, cursor, pattern, redisPurgeScanCount).Result()
+		keys, next, err := r.client.Scan(ctx, cursor, scanPattern, redisPurgeScanCount).Result()
 		if err != nil {
 			r.markConnectionAsLostIfNecessary(err)
-			return matched, deleted, fmt.Errorf("redis SCAN %q: %w", pattern, err)
+			return matched, deleted, fmt.Errorf("redis SCAN %q: %w", scanPattern, err)
 		}
 
 		batch := make([]string, 0, len(keys))

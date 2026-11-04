@@ -66,17 +66,11 @@ func BuildPurgePatterns(scope common.CachePurgeScope) (main []string, rvi []stri
 		return main, nil
 	}
 
-	// Reverse-index companions are keyed by network-wide wildcard partition, not
-	// by concrete blockRef. Purging rvi# for a blockRef-scoped call would delete
-	// every companion for the network. Skip rvi when BlockRef is set; dangling
-	// companions resolve to a miss on Get.
-	if scope.BlockRef == "" {
-		wildcard := common.CachePartitionKey(scope.NetworkId, scope.Suffix, "*")
-		if scope.Method != "" {
-			rvi = []string{fmt.Sprintf("%s#%s#%s:*", redisReverseIndexPrefix, wildcard, scope.Method)}
-		} else {
-			rvi = []string{fmt.Sprintf("%s#%s#*", redisReverseIndexPrefix, wildcard)}
-		}
+	wildcard := common.CachePartitionKey(scope.NetworkId, scope.Suffix, "*")
+	if scope.Method != "" {
+		rvi = []string{fmt.Sprintf("%s#%s#%s:*", redisReverseIndexPrefix, wildcard, scope.Method)}
+	} else {
+		rvi = []string{fmt.Sprintf("%s#%s#*", redisReverseIndexPrefix, wildcard)}
 	}
 	return main, rvi
 }

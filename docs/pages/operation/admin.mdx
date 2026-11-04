@@ -468,6 +468,8 @@ Source: [`cmd/erpc/main.go:L97-L142`](https://github.com/erpc/erpc/blob/main/cmd
 18. **Unsuffixed purge must not delete `cacheKeySuffix` siblings.** `SCAN evm:1:*` also matches `evm:1:systx:…` on a shared Redis. When the network has no suffix, the connector post-filters to the unsuffixed partition shape (escaped `:` in block refs still count as unsuffixed). Suffixed networks use the tighter `{networkId}:{suffix}:*` pattern.
 19. **Tip-tag `blockRef` values after chain-tracker tip resolution.** Prefer purging by `networkId` ± `method`, or a concrete decimal block number — not `blockRef: "latest"` / `"finalized"` once tip tags resolve to numbers in the partition key. Soft invalidation on reorg is not key deletion; ops purge remains required for intentional wipes.
 20. **`networkId: "*"` without `confirm: "WIPE"` is rejected before any store touch.** Unsupported connectors surface per-row; other connectors still purge.
+21. **`networkId: "*"` only covers networks already bootstrapped on this replica.** `GetNetworks()` returns in-memory prepared networks — keys written for networks only ever loaded on other pods (or before a restart) are not scanned. Prefer an exact `networkId` when possible.
+22. **`blockRef`-scoped purge skips `rvi#` companions.** Reverse-index keys are network-wide wildcards; deleting them for one block would wipe companions for every block. Dangling companions resolve to a miss on Get.
 
 ### Block heatmap algorithm
 

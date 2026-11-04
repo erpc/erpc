@@ -95,10 +95,11 @@ func NewMemoryConnector(
 	}
 
 	ristrettoCfg := &ristretto.Config[string, []byte]{
-		NumCounters: int64(3 * cfg.MaxItems), // number of keys to track frequency of.
-		MaxCost:     maxCost,                 // maximum cost of cache.
-		BufferItems: 64,                      // number of keys per Get buffer.
-		Metrics:     enableMetrics,           // enable metrics based on config
+		NumCounters:            int64(3 * cfg.MaxItems), // number of keys to track frequency of.
+		MaxCost:                maxCost,                 // maximum cost of cache.
+		BufferItems:            64,                      // number of keys per Get buffer.
+		Metrics:                enableMetrics,           // enable metrics based on config
+		TtlTickerDurationInSec: 1,                       // expire TTL'd keys promptly for index cleanup
 		Cost: func(v []byte) int64 {
 			return int64(len(v) + 256)
 		},
