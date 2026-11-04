@@ -7,7 +7,6 @@ import (
 	"maps"
 	"math/big"
 	"strconv"
-	"strings"
 
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -52,16 +51,10 @@ func deriveKnownBlockFields() map[string]struct{} {
 }
 
 // ethereumBlockHash is the standard Ethereum header format (HeaderFormat):
-// keccak(RLP(header)) of a block's top-level keys, as 0x hex. ok is false
-// for a key the reference encoder does not know or a required field
-// missing. A timestamp counts in any form ParseTimestamp reads, so a node
-// that sends it as an integer is still judged.
+// keccak(RLP(header)) of a block's top-level keys (gethHeaderHash). A
+// timestamp counts in any form ParseTimestamp reads, so a node that sends
+// it as an integer is still judged.
 func ethereumBlockHash(_ int64, fields map[string]json.RawMessage) (hash string, ok bool) {
-	for k := range fields {
-		if _, ok := knownBlockFields[k]; !ok {
-			return "", false
-		}
-	}
 	if ts := fields["timestamp"]; len(ts) > 0 && !bytes.HasPrefix(ts, []byte(`"0x`)) {
 		v, ok := JSONTimestamp(ts)
 		if !ok {
@@ -70,15 +63,7 @@ func ethereumBlockHash(_ int64, fields map[string]json.RawMessage) (hash string,
 		fields = maps.Clone(fields)
 		fields["timestamp"] = json.RawMessage(`"0x` + strconv.FormatInt(v, 16) + `"`)
 	}
-	raw, err := json.Marshal(fields)
-	if err != nil {
-		return "", false
-	}
-	var gh gethtypes.Header
-	if err := gh.UnmarshalJSON(raw); err != nil {
-		return "", false
-	}
-	return strings.ToLower(gh.Hash().Hex()), true
+	return gethHeaderHash(fields)
 }
 
 func init() {
