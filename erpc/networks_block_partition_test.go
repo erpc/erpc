@@ -253,15 +253,15 @@ func (e *pollAgeEnv) polled(id string) int64 { return e.ups[id].EvmStatePoller()
 // A polled head ages by up to a poll interval (10s here, on a 2s chain); the
 // tracker credits that age (HeadCredit) and tip reads order by it. Each row is
 // one way an upstream can be wrong, and asserts that the credit never puts it
-// where a fresh head would be. "reader" and "late" serve no
-// eth_getBlockByNumber: they only move the network head.
+// where a fresh head would be. "reader" and "late" come last in routing
+// order: they move the network head, and vote on eth_getBlockByNumber's
+// head only because they serve it (spec §6.2).
 func TestNetwork_TipGetBlockOrdersByPollAgeCreditedHead(t *testing.T) {
-	ignoreGetBlock := []string{"eth_getBlockByNumber"}
 	trio := func() []servedTipFixture {
 		return []servedTipFixture{
 			{id: "fast", latestBlock: 1000},
 			{id: "slow", latestBlock: 1000},
-			{id: "reader", latestBlock: 1000, ignoreMethods: ignoreGetBlock},
+			{id: "reader", latestBlock: 1000},
 		}
 	}
 
@@ -303,7 +303,7 @@ func TestNetwork_TipGetBlockOrdersByPollAgeCreditedHead(t *testing.T) {
 		e := newPollAgeEnv(t, []servedTipFixture{
 			{id: "lagger", latestBlock: 995},
 			{id: "slow", latestBlock: 1000},
-			{id: "late", latestBlock: 990, ignoreMethods: ignoreGetBlock},
+			{id: "late", latestBlock: 990},
 		}, "lagger", "slow", "late")
 		e.movers = []string{"slow", "late"}
 		for i := 1; i <= 20; i++ {
@@ -323,7 +323,7 @@ func TestNetwork_TipGetBlockOrdersByPollAgeCreditedHead(t *testing.T) {
 		e := newPollAgeEnv(t, []servedTipFixture{
 			{id: "never"},
 			{id: "slow", latestBlock: 1000},
-			{id: "reader", latestBlock: 1000, ignoreMethods: ignoreGetBlock},
+			{id: "reader", latestBlock: 1000},
 		}, "never", "slow", "reader")
 		e.step(3)
 		require.Zero(t, e.polled("never"))
