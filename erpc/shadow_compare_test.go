@@ -683,6 +683,7 @@ func TestShadowCompare_ForwardPathPinsLatestTag(t *testing.T) {
 	})
 	for _, u := range f.prj.upstreamsRegistry.GetNetworkUpstreams(f.ctx, util.EvmNetworkId(123)) {
 		shadowCmpWaitHead(t, u, 0x11118888)
+		voteHead(t, f.network, u, 0x11118888) // the view moves on hashed heads
 	}
 	shadowCmpMock("rpc1.localhost", "eth_getBalance", `{"jsonrpc":"2.0","id":1,"result":"0x5"}`)
 	hits := shadowCmpMock("rpc2.localhost", "eth_getBalance", `{"jsonrpc":"2.0","id":1,"result":"0x5"}`)

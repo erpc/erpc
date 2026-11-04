@@ -222,6 +222,13 @@ func TestNetwork_PinLatestTag(t *testing.T) {
 			require.Eventually(t, func() bool { return u.EvmStatePoller().LatestBlock() == want },
 				3*time.Second, 25*time.Millisecond, "poller for %s should settle on %d", u.Id(), want)
 		}
+		// The polls' answers carry no hash; the view moves on hashed heads,
+		// one chain up from the lower head.
+		for _, u := range upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123)) {
+			for n := min(pinnedHead, head); n <= heads[u.Id()]; n++ {
+				voteHead(t, network, u, n)
+			}
+		}
 
 		req := common.NewNormalizedRequest([]byte(
 			`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"},"latest"]}`))

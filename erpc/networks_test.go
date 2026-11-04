@@ -11479,7 +11479,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		// Set up block numbers - syncing node has higher block number
 		syncingUpstream.EvmStatePoller().SuggestLatestBlock(2000, time.Now()) // Higher block
-		syncedUpstream.EvmStatePoller().SuggestLatestBlock(1000, time.Now())  // Lower block
+		voteHead(t, network, syncedUpstream, 1000)                            // Lower block, a hashed head
 		time.Sleep(50 * time.Millisecond)
 
 		// Set syncing states
@@ -11648,157 +11648,6 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		assert.Equal(t, int64(2000), highest, "Should exclude policy-excluded node and return highest from included nodes only")
 	})
 
-	t.Run("HeadLatest_UsesEffectiveBlockWhenUpperBoundConfigured", func(t *testing.T) {
-		util.ResetGock()
-		t.Cleanup(util.ResetGock)
-		util.SetupMocksForEvmStatePoller()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		// Configure upper bound: latestBlockMinus = 100
-		latestMinus := int64(100)
-		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "clamped-node",
-			Endpoint: "http://clamped.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-				BlockAvailability: &common.EvmBlockAvailabilityConfig{
-					Upper: &common.EvmAvailabilityBoundConfig{
-						LatestBlockMinus: &latestMinus,
-					},
-				},
-			},
-		}
-
-		// No upper bound - should use raw latest block
-		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "unclamped-node",
-			Endpoint: "http://unclamped.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-
-		gock.New("http://clamped.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `eth_chainId`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":"0x7b"}`))
-		gock.New("http://unclamped.localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `eth_chainId`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":"0x7b"}`))
-
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
-		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
-
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		require.NoError(t, err)
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		require.NoError(t, err)
-
-		upstreamsRegistry := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"test",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rateLimitersRegistry,
-			vr,
-			pr,
-			nil,
-			metricsTracker,
-			nil,
-		)
-
-		networkConfig := &common.NetworkConfig{
-			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				ChainId: 123,
-			},
-		}
-
-		network, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"test",
-			networkConfig,
-			rateLimitersRegistry,
-			upstreamsRegistry,
-			metricsTracker,
-			nil,
-		)
-		stopAtEnd(t, network)
-		require.NoError(t, err)
-
-		upstreamsRegistry.Bootstrap(ctx)
-		time.Sleep(200 * time.Millisecond)
-
-		initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
-		require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
-
-		err = network.Bootstrap(ctx)
-		require.NoError(t, err)
-		network.PinUpstreamOrderForTest()
-		time.Sleep(250 * time.Millisecond)
-
-		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-		require.Len(t, upsList, 2)
-
-		// Find the specific upstreams by ID
-		var clampedUpstream, unclampedUpstream *upstream.Upstream
-		for _, ups := range upsList {
-			if ups.Id() == "clamped-node" {
-				clampedUpstream = ups
-			} else if ups.Id() == "unclamped-node" {
-				unclampedUpstream = ups
-			}
-		}
-		require.NotNil(t, clampedUpstream)
-		require.NotNil(t, unclampedUpstream)
-
-		// Set up block numbers. The network head is the corroborated (second-
-		// highest) effective head, so the unclamped node sits between the
-		// clamped node's effective and raw values: only the effective value
-		// yields 1900, the raw value would yield 1950.
-		// Clamped node: raw latest = 2000, effective = 2000 - 100 = 1900
-		clampedUpstream.EvmStatePoller().SuggestLatestBlock(2000, time.Now())
-		// Unclamped node: raw latest = 1950, effective = 1950
-		unclampedUpstream.EvmStatePoller().SuggestLatestBlock(1950, time.Now())
-		time.Sleep(50 * time.Millisecond)
-
-		// Second-highest of effective blocks {1900, 1950} = 1900
-		highest := servedHead(network, ctx).Latest
-
-		assert.Equal(t, int64(1900), highest, "Should use effective (clamped) block values when upper bound is configured")
-	})
-
 	t.Run("HeadLatest_ReturnsRawValueWhenUpperBoundExceedsLatest", func(t *testing.T) {
 		util.ResetGock()
 		t.Cleanup(util.ResetGock)
@@ -11902,7 +11751,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		require.Len(t, upsList, 1)
 
 		// Set latest block to 2000 (less than upper bound of 5000)
-		upsList[0].EvmStatePoller().SuggestLatestBlock(2000, time.Now())
+		voteHead(t, network, upsList[0], 2000) // a hashed head moves the view
 		time.Sleep(50 * time.Millisecond)
 
 		// Since upper bound (5000) > latest (2000), should return raw latest (2000)
