@@ -961,16 +961,20 @@ func p22Body(s *scenario, stall bool) {
 	s.judgeFetches(&b, "inside the faults", w.in, liveFetchBound)
 	s.judgeFetches(&b, "outside the faults", all.minus(w.in), livePushFetchBound)
 	for i, rd := range reads {
-		var ims []*freshImage
+		var ims, olds []*freshImage
 		for _, im := range imgs[i] {
-			if !s.h.pods[im.pod].old {
+			if s.h.pods[im.pod].old {
+				olds = append(olds, im)
+			} else {
 				ims = append(ims, im)
 			}
 		}
 		in := s.servedAges(ims, w.inside)
 		out := s.servedAges(ims, func(t time.Time) bool { return !w.inside(t) })
-		fmt.Fprintf(&b, "new image %s served age inside the faults p50 %s p90 %s (%d), outside p50 %s p90 %s (%d)\n",
-			rd.name, pctl(in, 50), pctl(in, 90), len(in), pctl(out, 50), pctl(out, 90), len(out))
+		oldIn := s.servedAges(olds, w.inside)
+		fmt.Fprintf(&b, "new image %s served age inside the faults p50 %s p90 %s (%d, %d slower than 1s), outside p50 %s p90 %s (%d); old image inside p50 %s p90 %s (%d, %d slower than 1s)\n",
+			rd.name, pctl(in, 50), pctl(in, 90), len(in), slowReads(ims, w.inside), pctl(out, 50), pctl(out, 90), len(out),
+			pctl(oldIn, 50), pctl(oldIn, 90), len(oldIn), slowReads(olds, w.inside))
 		if pctl(in, 90) > pctl(out, 90)+liveBlockTime {
 			s.violate(s.name, "new image %s served age p90 %s inside the faults, %s outside: more than a block (%s) older", rd.name, pctl(in, 90), pctl(out, 90), liveBlockTime)
 		}
@@ -981,6 +985,22 @@ func p22Body(s *scenario, stall bool) {
 		s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("pod-%d newHeads mint to receipt p99 %s, bound %s (max %s)", tap.pod+1, pctl(ds, 99), p22TapP99, pctl(ds, 100))))
 	}
 	s.logf("%s", b.String())
+}
+
+// slowReads counts the reads of ims sent while keep holds that took over
+// 1s: a read held on a silent upstream.
+func slowReads(ims []*freshImage, keep func(time.Time) bool) int {
+	n := 0
+	for _, im := range ims {
+		im.mu.Lock()
+		for i, a := range im.answers {
+			if keep(a.at.Add(-im.took[i])) && im.took[i] > time.Second {
+				n++
+			}
+		}
+		im.mu.Unlock()
+	}
+	return n
 }
 
 const (
