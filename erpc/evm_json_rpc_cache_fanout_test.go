@@ -479,40 +479,45 @@ func TestEvmJsonRpcCache_FanOut_WrappedCancellationDoesNotInflateError(t *testin
 // fix breaks out of the drain loop on first acceptable hit; stragglers
 // drain into the buffered channel on their own.
 func TestEvmJsonRpcCache_FanOut_SlowPeerDoesNotBlockFastWinner(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-		{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+		})
+		cache.SetPolicies(fanOutPolicies(t, conns))
+
+		cached := `{"number":"0x1","hash":"0xfast"}`
+		conns[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+			Return([]byte(cached), nil) // immediate hit
+
+		// Peer that intentionally ignores ctx.Done — simulates a connector with
+		// buffered work or a stack that doesn't honor cancellation promptly. If
+		// the consumer waited for this peer, Get() would block for the full
+		// slowDelay before returning.
+		const slowDelay = 800 * time.Millisecond
+		conns[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) {
+				time.Sleep(slowDelay)
+			}).
+			Return(nil, common.NewErrRecordNotFound("evm:123:1", "k", "slow")).Maybe()
+
+		t0 := time.Now()
+		resp, err := cache.Get(context.Background(), newGetBlockByNumberRequest(t, network, cache))
+		elapsed := time.Since(t0)
+
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Equal(t, cached, jrr.GetResultString())
+		assert.Less(t, elapsed, 200*time.Millisecond,
+			"fast hit should not wait for unresponsive peer (took %v); slow peer would have taken %v",
+			elapsed, slowDelay)
+
+		// Let the slow peer return before the test ends.
+		time.Sleep(slowDelay)
 	})
-	cache.SetPolicies(fanOutPolicies(t, conns))
-
-	cached := `{"number":"0x1","hash":"0xfast"}`
-	conns[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
-		Return([]byte(cached), nil) // immediate hit
-
-	// Peer that intentionally ignores ctx.Done — simulates a connector with
-	// buffered work or a stack that doesn't honor cancellation promptly. If
-	// the consumer waited for this peer, Get() would block for the full
-	// slowDelay before returning.
-	const slowDelay = 800 * time.Millisecond
-	conns[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
-		Run(func(args mock.Arguments) {
-			time.Sleep(slowDelay)
-		}).
-		Return(nil, common.NewErrRecordNotFound("evm:123:1", "k", "slow")).Maybe()
-
-	t0 := time.Now()
-	resp, err := cache.Get(context.Background(), newGetBlockByNumberRequest(t, network, cache))
-	elapsed := time.Since(t0)
-
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-	jrr, err := resp.JsonRpcResponse()
-	require.NoError(t, err)
-	assert.Equal(t, cached, jrr.GetResultString())
-	assert.Less(t, elapsed, 200*time.Millisecond,
-		"fast hit should not wait for unresponsive peer (took %v); slow peer would have taken %v",
-		elapsed, slowDelay)
 }
 
 // missReasonValues enumerates every value the fan-out classifier can put on

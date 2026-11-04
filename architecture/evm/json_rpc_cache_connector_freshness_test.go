@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -93,85 +94,107 @@ func logsJrr() *common.JsonRpcResponse {
 func TestEvmJsonRpcCache_ConnectorFreshnessGuard(t *testing.T) {
 	ctx := context.Background()
 	cache := freshGuardCache()
-	now := time.Now().Unix()
+	now := func() int64 { return time.Now().Unix() }
 
 	// --- response-timestamp path (block-bearing methods; pre-existing behavior) ---
 
 	t.Run("ResponseTimestampFreshAccepted", func(t *testing.T) {
-		policy := tsPolicy(t, plainConnector("conn"), time.Minute)
-		req := realtimeReq("eth_getBlockByNumber", `["latest",false]`)
-		assert.True(t, cache.shouldAcceptCachedResult(ctx, req, blockJrr(now-5), policy))
+		synctest.Test(t, func(t *testing.T) {
+			policy := tsPolicy(t, plainConnector("conn"), time.Minute)
+			req := realtimeReq("eth_getBlockByNumber", `["latest",false]`)
+			assert.True(t, cache.shouldAcceptCachedResult(ctx, req, blockJrr(now()-5), policy))
+		})
 	})
 
 	t.Run("ResponseTimestampStaleRejected", func(t *testing.T) {
-		policy := tsPolicy(t, plainConnector("conn"), time.Minute)
-		req := realtimeReq("eth_getBlockByNumber", `["latest",false]`)
-		assert.False(t, cache.shouldAcceptCachedResult(ctx, req, blockJrr(now-120), policy))
+		synctest.Test(t, func(t *testing.T) {
+			policy := tsPolicy(t, plainConnector("conn"), time.Minute)
+			req := realtimeReq("eth_getBlockByNumber", `["latest",false]`)
+			assert.False(t, cache.shouldAcceptCachedResult(ctx, req, blockJrr(now()-120), policy))
+		})
 	})
 
 	// --- connector-fallback path (methods whose response carries no block timestamp) ---
 
 	t.Run("NoResponseTsConnectorFreshAccepted", func(t *testing.T) {
-		policy := tsPolicy(t, newHeadReportingConnector("conn", now-5, true), time.Minute)
-		req := realtimeReq("eth_gasPrice", `[]`)
-		assert.True(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		synctest.Test(t, func(t *testing.T) {
+			policy := tsPolicy(t, newHeadReportingConnector("conn", now()-5, true), time.Minute)
+			req := realtimeReq("eth_gasPrice", `[]`)
+			assert.True(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		})
 	})
 
 	t.Run("NoResponseTsConnectorStaleRejected", func(t *testing.T) {
-		policy := tsPolicy(t, newHeadReportingConnector("conn", now-120, true), time.Minute)
-		req := realtimeReq("eth_gasPrice", `[]`)
-		assert.False(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		synctest.Test(t, func(t *testing.T) {
+			policy := tsPolicy(t, newHeadReportingConnector("conn", now()-120, true), time.Minute)
+			req := realtimeReq("eth_gasPrice", `[]`)
+			assert.False(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		})
 	})
 
 	// The motivating win: getLogs carries no top-level block timestamp, so only the connector's
 	// reported head can detect a lagging source.
 	t.Run("GetLogsConnectorStaleRejected", func(t *testing.T) {
-		policy := tsPolicy(t, newHeadReportingConnector("conn", now-120, true), time.Minute)
-		req := realtimeReq("eth_getLogs", `[{"fromBlock":"latest","toBlock":"latest"}]`)
-		assert.False(t, cache.shouldAcceptCachedResult(ctx, req, logsJrr(), policy))
+		synctest.Test(t, func(t *testing.T) {
+			policy := tsPolicy(t, newHeadReportingConnector("conn", now()-120, true), time.Minute)
+			req := realtimeReq("eth_getLogs", `[{"fromBlock":"latest","toBlock":"latest"}]`)
+			assert.False(t, cache.shouldAcceptCachedResult(ctx, req, logsJrr(), policy))
+		})
 	})
 
 	t.Run("EthBlockNumberConnectorStaleRejected", func(t *testing.T) {
-		policy := tsPolicy(t, newHeadReportingConnector("conn", now-120, true), time.Minute)
-		req := realtimeReq("eth_blockNumber", `[]`)
-		assert.False(t, cache.shouldAcceptCachedResult(ctx, req, common.MustNewJsonRpcResponse(1, "0x1234", nil), policy))
+		synctest.Test(t, func(t *testing.T) {
+			policy := tsPolicy(t, newHeadReportingConnector("conn", now()-120, true), time.Minute)
+			req := realtimeReq("eth_blockNumber", `[]`)
+			assert.False(t, cache.shouldAcceptCachedResult(ctx, req, common.MustNewJsonRpcResponse(1, "0x1234", nil), policy))
+		})
 	})
 
 	// --- fail-open cases ---
 
 	t.Run("NoResponseTsConnectorNotHeadAwareAccepted", func(t *testing.T) {
-		policy := tsPolicy(t, plainConnector("conn"), time.Minute)
-		req := realtimeReq("eth_gasPrice", `[]`)
-		assert.True(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		synctest.Test(t, func(t *testing.T) {
+			policy := tsPolicy(t, plainConnector("conn"), time.Minute)
+			req := realtimeReq("eth_gasPrice", `[]`)
+			assert.True(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		})
 	})
 
 	t.Run("NoResponseTsConnectorHeadUnknownAccepted", func(t *testing.T) {
-		policy := tsPolicy(t, newHeadReportingConnector("conn", 0, false), time.Minute)
-		req := realtimeReq("eth_gasPrice", `[]`)
-		assert.True(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		synctest.Test(t, func(t *testing.T) {
+			policy := tsPolicy(t, newHeadReportingConnector("conn", 0, false), time.Minute)
+			req := realtimeReq("eth_gasPrice", `[]`)
+			assert.True(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		})
 	})
 
 	// --- precedence + bypass ---
 
 	t.Run("ResponseTimestampPreferredOverConnector", func(t *testing.T) {
-		// Response is fresh but the connector's polled head looks stale: the per-response timestamp
-		// wins (fresher, no poll lag), so the result is accepted.
-		policy := tsPolicy(t, newHeadReportingConnector("conn", now-120, true), time.Minute)
-		req := realtimeReq("eth_getBlockByNumber", `["latest",false]`)
-		assert.True(t, cache.shouldAcceptCachedResult(ctx, req, blockJrr(now-5), policy))
+		synctest.Test(t, func(t *testing.T) {
+			// Response is fresh but the connector's polled head looks stale: the per-response timestamp
+			// wins (fresher, no poll lag), so the result is accepted.
+			policy := tsPolicy(t, newHeadReportingConnector("conn", now()-120, true), time.Minute)
+			req := realtimeReq("eth_getBlockByNumber", `["latest",false]`)
+			assert.True(t, cache.shouldAcceptCachedResult(ctx, req, blockJrr(now()-5), policy))
+		})
 	})
 
 	t.Run("NonRealtimeFinalityAccepted", func(t *testing.T) {
-		policy := tsPolicy(t, newHeadReportingConnector("conn", now-100000, true), time.Minute)
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_gasPrice","params":[],"id":1}`))
-		req.SetNetwork(&testNetwork{finalityState: common.DataFinalityStateFinalized})
-		assert.True(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		synctest.Test(t, func(t *testing.T) {
+			policy := tsPolicy(t, newHeadReportingConnector("conn", now()-100000, true), time.Minute)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_gasPrice","params":[],"id":1}`))
+			req.SetNetwork(&testNetwork{finalityState: common.DataFinalityStateFinalized})
+			assert.True(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		})
 	})
 
 	t.Run("NoTTLAccepted", func(t *testing.T) {
-		policy := tsPolicy(t, newHeadReportingConnector("conn", now-100000, true), 0)
-		req := realtimeReq("eth_gasPrice", `[]`)
-		assert.True(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		synctest.Test(t, func(t *testing.T) {
+			policy := tsPolicy(t, newHeadReportingConnector("conn", now()-100000, true), 0)
+			req := realtimeReq("eth_gasPrice", `[]`)
+			assert.True(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		})
 	})
 }
 
@@ -182,7 +205,7 @@ func TestEvmJsonRpcCache_ConnectorFreshnessThroughFailsafeWrapper(t *testing.T) 
 	ctx := context.Background()
 	cache := freshGuardCache()
 	logger := log.Logger
-	now := time.Now().Unix()
+	now := func() int64 { return time.Now().Unix() }
 
 	wrap := func(t *testing.T, base data.Connector) data.Connector {
 		t.Helper()
@@ -192,21 +215,27 @@ func TestEvmJsonRpcCache_ConnectorFreshnessThroughFailsafeWrapper(t *testing.T) 
 	}
 
 	t.Run("RejectsWhenWrappedConnectorStale", func(t *testing.T) {
-		policy := tsPolicy(t, wrap(t, newHeadReportingConnector("conn", now-120, true)), time.Minute)
-		req := realtimeReq("eth_gasPrice", `[]`)
-		assert.False(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		synctest.Test(t, func(t *testing.T) {
+			policy := tsPolicy(t, wrap(t, newHeadReportingConnector("conn", now()-120, true)), time.Minute)
+			req := realtimeReq("eth_gasPrice", `[]`)
+			assert.False(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		})
 	})
 
 	t.Run("AcceptsWhenWrappedConnectorFresh", func(t *testing.T) {
-		policy := tsPolicy(t, wrap(t, newHeadReportingConnector("conn", now-5, true)), time.Minute)
-		req := realtimeReq("eth_gasPrice", `[]`)
-		assert.True(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		synctest.Test(t, func(t *testing.T) {
+			policy := tsPolicy(t, wrap(t, newHeadReportingConnector("conn", now()-5, true)), time.Minute)
+			req := realtimeReq("eth_gasPrice", `[]`)
+			assert.True(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		})
 	})
 
 	t.Run("FailsOpenWhenWrappedBaseNotHeadAware", func(t *testing.T) {
-		policy := tsPolicy(t, wrap(t, plainConnector("conn")), time.Minute)
-		req := realtimeReq("eth_gasPrice", `[]`)
-		assert.True(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		synctest.Test(t, func(t *testing.T) {
+			policy := tsPolicy(t, wrap(t, plainConnector("conn")), time.Minute)
+			req := realtimeReq("eth_gasPrice", `[]`)
+			assert.True(t, cache.shouldAcceptCachedResult(ctx, req, scalarJrr(), policy))
+		})
 	})
 }
 

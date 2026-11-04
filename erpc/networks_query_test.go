@@ -495,17 +495,22 @@ func TestNetworkQuery_Shim(t *testing.T) {
 	})
 
 	t.Run("a shim upstream that does not serve a sub-request the query needs", func(t *testing.T) {
-		// Every upstream ignores eth_getBlockReceipts: a query that selects
-		// receipt fields is not served (-32004) before any scan, and one
-		// that does not still is.
-		noReceipts := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, []string{"eth_getBlockReceipts"})
-		_, code := queryJson(t, ctx, noReceipts, "eth_queryTransactions", `[{"fromBlock":"0x64","toBlock":"0x64","fields":{"transactions":["hash","status"]}}]`)
-		assert.Equal(t, -32004, code)
-		_, code = queryJson(t, ctx, noReceipts, "eth_queryLogs", `[{"fromBlock":"0x64","toBlock":"0x64","fields":{"logs":["data"],"transactions":["status"]}}]`)
-		assert.Equal(t, -32004, code, "a joined relation's receipt fields need receipts too")
-		result, code := queryJson(t, ctx, noReceipts, "eth_queryTransactions", `[{"fromBlock":"0x64","toBlock":"0x64","fields":{"transactions":["hash"]}}]`)
-		require.Zero(t, code)
-		assert.Len(t, qtData(result, "transactions"), 2)
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			// Every upstream ignores eth_getBlockReceipts: a query that selects
+			// receipt fields is not served (-32004) before any scan, and one
+			// that does not still is.
+			noReceipts := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, []string{"eth_getBlockReceipts"})
+			_, code := queryJson(t, ctx, noReceipts, "eth_queryTransactions", `[{"fromBlock":"0x64","toBlock":"0x64","fields":{"transactions":["hash","status"]}}]`)
+			assert.Equal(t, -32004, code)
+			_, code = queryJson(t, ctx, noReceipts, "eth_queryLogs", `[{"fromBlock":"0x64","toBlock":"0x64","fields":{"logs":["data"],"transactions":["status"]}}]`)
+			assert.Equal(t, -32004, code, "a joined relation's receipt fields need receipts too")
+			result, code := queryJson(t, ctx, noReceipts, "eth_queryTransactions", `[{"fromBlock":"0x64","toBlock":"0x64","fields":{"transactions":["hash"]}}]`)
+			require.Zero(t, code)
+			assert.Len(t, qtData(result, "transactions"), 2)
+		})
 	})
 
 	// rpc3 serves 0x66 but answers null for its receipts (it lags); rpc4,
@@ -602,35 +607,40 @@ func TestNetworkQuery_Shim(t *testing.T) {
 	})
 
 	t.Run("a lagging upstream's null never hides an available block", func(t *testing.T) {
-		// rpc2 is selected first and lags: it answers null for 0x66, which
-		// rpc1 has. The page asks the other upstream and completes.
-		var lagged atomic.Int32
-		for n := uint64(qtFirstNo - 1); n <= 0x66; n++ {
-			ref := fmt.Sprintf(`"0x%x"`, n)
-			var block interface{} = qtBlock(n)
-			if n == 0x66 {
-				block = nil
-			}
-			gock.New("http://rpc2.localhost").Post("").Persist().
-				Filter(func(r *http.Request) bool {
-					body := util.SafeReadBody(r)
-					if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, ref) {
-						return false
-					}
-					if block == nil {
-						lagged.Add(1)
-					}
-					return true
-				}).
-				Reply(200).JSON(qtReply(block))
-		}
-		lagging := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, nil, "rpc2", "rpc1")
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		result, code := queryJson(t, ctx, lagging, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x66","fields":{"blocks":["number","hash"]}}]`)
-		require.Zero(t, code)
-		assert.Equal(t, []interface{}{"0x64", "0x65", "0x66"}, qtField(qtData(result, "blocks"), "number"))
-		assert.Equal(t, map[string]interface{}{"number": "0x66", "hash": qtHash(0x66), "parentHash": qtHash(0x65)}, result["cursorBlock"])
-		assert.Positive(t, lagged.Load(), "rpc2 must have been asked for 0x66 and answered null")
+			// rpc2 is selected first and lags: it answers null for 0x66, which
+			// rpc1 has. The page asks the other upstream and completes.
+			var lagged atomic.Int32
+			for n := uint64(qtFirstNo - 1); n <= 0x66; n++ {
+				ref := fmt.Sprintf(`"0x%x"`, n)
+				var block interface{} = qtBlock(n)
+				if n == 0x66 {
+					block = nil
+				}
+				gock.New("http://rpc2.localhost").Post("").Persist().
+					Filter(func(r *http.Request) bool {
+						body := util.SafeReadBody(r)
+						if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, ref) {
+							return false
+						}
+						if block == nil {
+							lagged.Add(1)
+						}
+						return true
+					}).
+					Reply(200).JSON(qtReply(block))
+			}
+			lagging := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, nil, "rpc2", "rpc1")
+
+			result, code := queryJson(t, ctx, lagging, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x66","fields":{"blocks":["number","hash"]}}]`)
+			require.Zero(t, code)
+			assert.Equal(t, []interface{}{"0x64", "0x65", "0x66"}, qtField(qtData(result, "blocks"), "number"))
+			assert.Equal(t, map[string]interface{}{"number": "0x66", "hash": qtHash(0x66), "parentHash": qtHash(0x65)}, result["cursorBlock"])
+			assert.Positive(t, lagged.Load(), "rpc2 must have been asked for 0x66 and answered null")
+		})
 	})
 }
 
@@ -640,18 +650,25 @@ func TestNetworkQuery_ShimLimits(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	mockQueryChain(time.Second)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	t.Run("no upstream serves the method", func(t *testing.T) {
-		ntw := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true), AllowedMethods: []string{"eth_queryLogs"}}, nil)
-		_, code := queryJson(t, ctx, ntw, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x64"}]`)
-		assert.Equal(t, -32004, code)
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			ntw := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true), AllowedMethods: []string{"eth_queryLogs"}}, nil)
+			_, code := queryJson(t, ctx, ntw, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x64"}]`)
+			assert.Equal(t, -32004, code)
+		})
 	})
 
 	t.Run("budget ends before fromBlock completes", func(t *testing.T) {
-		ntw := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true), MaxPageDuration: common.Duration(200 * time.Millisecond)}, nil)
-		_, code := queryJson(t, ctx, ntw, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x66"}]`)
-		assert.Equal(t, -32005, code)
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			ntw := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true), MaxPageDuration: common.Duration(200 * time.Millisecond)}, nil)
+			_, code := queryJson(t, ctx, ntw, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x66"}]`)
+			assert.Equal(t, -32005, code)
+		})
 	})
 }

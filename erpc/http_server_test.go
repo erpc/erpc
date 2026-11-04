@@ -3752,24 +3752,32 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 }
 
 func TestHttpServer_HandleHealthCheck(t *testing.T) {
-	testCtx, testCtxCancel := context.WithCancel(context.Background())
-	defer testCtxCancel()
-
 	logger := &log.Logger
-	vr := thirdparty.NewVendorsRegistry()
-	pr, err := thirdparty.NewProvidersRegistry(logger, vr, []*common.ProviderConfig{}, nil)
-	require.NoError(t, err)
-	ssr, err := data.NewSharedStateRegistry(testCtx, logger, &common.SharedStateConfig{
-		ClusterKey: "test",
-		Connector: &common.ConnectorConfig{
-			Driver: common.DriverMemory,
-			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 100_000, MaxTotalSize: "1GB",
+	var (
+		vr  *thirdparty.VendorsRegistry
+		pr  *thirdparty.ProvidersRegistry
+		ssr data.SharedStateRegistry
+		mtk *health.Tracker
+	)
+	// newRegistries makes the registries that the cases share. Each subtest
+	// calls it, so the registries belong to the subtest's bubble.
+	newRegistries := func(t *testing.T, ctx context.Context) {
+		var err error
+		vr = thirdparty.NewVendorsRegistry()
+		pr, err = thirdparty.NewProvidersRegistry(logger, vr, []*common.ProviderConfig{}, nil)
+		require.NoError(t, err)
+		ssr, err = data.NewSharedStateRegistry(ctx, logger, &common.SharedStateConfig{
+			ClusterKey: "test",
+			Connector: &common.ConnectorConfig{
+				Driver: common.DriverMemory,
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000, MaxTotalSize: "1GB",
+				},
 			},
-		},
-	})
-	require.NoError(t, err)
-	mtk := health.NewTracker(logger, "test", 1*time.Second)
+		})
+		require.NoError(t, err)
+		mtk = health.NewTracker(logger, "test", 1*time.Second)
+	}
 	up1 := &common.UpstreamConfig{
 		Id:       "test-upstream",
 		Type:     common.UpstreamTypeEvm,
@@ -4534,33 +4542,36 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			util.ResetGock()
-			defer util.ResetGock()
-			util.SetupMocksForEvmStatePoller()
+			synctest.Test(t, func(t *testing.T) {
+				util.ResetGock()
+				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
 
-			ctx, ctxCancel := context.WithCancel(testCtx)
-			defer ctxCancel()
+				ctx, ctxCancel := context.WithCancel(context.Background())
+				defer ctxCancel()
 
-			s := tt.setupServer(ctx)
-			time.Sleep(100 * time.Millisecond)
-			w := httptest.NewRecorder()
-			startTime := time.Now()
+				newRegistries(t, ctx)
+				s := tt.setupServer(ctx)
+				time.Sleep(100 * time.Millisecond)
+				w := httptest.NewRecorder()
+				startTime := time.Now()
 
-			encoder := common.SonicCfg.NewEncoder(w)
-			s.handleHealthCheck(ctx, w, tt.request, &startTime, tt.projectId, tt.architecture, tt.chainId, encoder, func(ctx context.Context, statusCode int, body error) {
-				w.WriteHeader(statusCode)
-				encoder.Encode(map[string]string{"error": body.Error()})
+				encoder := common.SonicCfg.NewEncoder(w)
+				s.handleHealthCheck(ctx, w, tt.request, &startTime, tt.projectId, tt.architecture, tt.chainId, encoder, func(ctx context.Context, statusCode int, body error) {
+					w.WriteHeader(statusCode)
+					encoder.Encode(map[string]string{"error": body.Error()})
+				})
+
+				resp := w.Result()
+				body, _ := io.ReadAll(resp.Body)
+
+				assert.Equal(t, tt.wantStatus, resp.StatusCode)
+				assert.Contains(t, string(body), tt.wantBody)
+
+				if tt.wantCacheHit {
+					assert.Equal(t, "HIT", resp.Header.Get("X-ERPC-Cache"))
+				}
 			})
-
-			resp := w.Result()
-			body, _ := io.ReadAll(resp.Body)
-
-			assert.Equal(t, tt.wantStatus, resp.StatusCode)
-			assert.Contains(t, string(body), tt.wantBody)
-
-			if tt.wantCacheHit {
-				assert.Equal(t, "HIT", resp.Header.Get("X-ERPC-Cache"))
-			}
 		})
 	}
 }

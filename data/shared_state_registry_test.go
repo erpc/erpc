@@ -28,25 +28,25 @@ func (m *MockLock) Unlock(ctx context.Context) error {
 	return args.Error(0)
 }
 
-func setupTest(clusterKey string) (*sharedStateRegistry, *MockConnector, context.Context) {
+func setupTest(t *testing.T, clusterKey string) (*sharedStateRegistry, *MockConnector, context.Context) {
 	connector := &MockConnector{}
 	registry := &sharedStateRegistry{
 		clusterKey:      clusterKey,
-		appCtx:          context.Background(),
+		appCtx:          t.Context(),
 		logger:          &log.Logger,
 		connector:       connector,
 		fallbackTimeout: 500 * time.Millisecond,
 		lockTtl:         2 * time.Second,
 		lockMaxWait:     100 * time.Millisecond,
 		updateMaxWait:   50 * time.Millisecond,
-		initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+		initializer:     util.NewInitializer(t.Context(), &log.Logger, nil),
 	}
-	return registry, connector, context.Background()
+	return registry, connector, t.Context()
 }
 
 func TestSharedStateRegistry_UpdateCounter_Success(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		registry, connector, ctx := setupTest("my-dev")
+		registry, connector, ctx := setupTest(t, "my-dev")
 
 		lock := &MockLock{}
 		lock.On("Unlock", mock.Anything).Return(nil)
@@ -77,7 +77,7 @@ func TestSharedStateRegistry_UpdateCounter_Success(t *testing.T) {
 }
 
 func TestSharedStateRegistry_UpdateCounter_LockFailure(t *testing.T) {
-	registry, connector, ctx := setupTest("my-dev")
+	registry, connector, ctx := setupTest(t, "my-dev")
 
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).
 		Return(nil, errors.New("lock acquisition failed"))
@@ -101,7 +101,7 @@ func TestSharedStateRegistry_UpdateCounter_LockFailure(t *testing.T) {
 }
 
 func TestSharedStateRegistry_UpdateCounter_GetFailure(t *testing.T) {
-	registry, connector, ctx := setupTest("my-dev")
+	registry, connector, ctx := setupTest(t, "my-dev")
 
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil)
@@ -130,7 +130,7 @@ func TestSharedStateRegistry_UpdateCounter_GetFailure(t *testing.T) {
 }
 
 func TestSharedStateRegistry_UpdateCounter_SetFailure(t *testing.T) {
-	registry, connector, ctx := setupTest("my-dev")
+	registry, connector, ctx := setupTest(t, "my-dev")
 
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil)
@@ -160,7 +160,7 @@ func TestSharedStateRegistry_UpdateCounter_SetFailure(t *testing.T) {
 }
 
 func TestSharedStateRegistry_UpdateCounter_PublishFailure(t *testing.T) {
-	registry, connector, ctx := setupTest("my-dev")
+	registry, connector, ctx := setupTest(t, "my-dev")
 
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil)
@@ -189,7 +189,7 @@ func TestSharedStateRegistry_UpdateCounter_PublishFailure(t *testing.T) {
 }
 
 func TestSharedStateRegistry_UpdateCounter_RemoteHigherValue(t *testing.T) {
-	registry, connector, ctx := setupTest("my-dev")
+	registry, connector, ctx := setupTest(t, "my-dev")
 
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil)
@@ -222,7 +222,7 @@ func TestSharedStateRegistry_UpdateCounter_RemoteHigherValue(t *testing.T) {
 }
 
 func TestSharedStateRegistry_UpdateCounter_ConcurrentUpdates(t *testing.T) {
-	registry, connector, ctx := setupTest("my-dev")
+	registry, connector, ctx := setupTest(t, "my-dev")
 
 	// Remote push is best-effort and deduped; for this test we only care about local correctness.
 	// Provide an optional Lock expectation to avoid unexpected-call panics if a background push runs.
@@ -254,42 +254,46 @@ func TestSharedStateRegistry_UpdateCounter_ConcurrentUpdates(t *testing.T) {
 }
 
 func TestSharedStateRegistry_GetCounterInt64_WatchSetup(t *testing.T) {
-	registry, connector, _ := setupTest("my-dev")
+	synctest.Test(t, func(t *testing.T) {
+		registry, connector, _ := setupTest(t, "my-dev")
 
-	updates := make(chan CounterInt64State, 1)
-	connector.On("WatchCounterInt64", mock.Anything, "my-dev/test").Return(updates, func() {}, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).
-		Return([]byte(`{"v":5,"t":1,"b":"test"}`), nil)
+		updates := make(chan CounterInt64State, 1)
+		connector.On("WatchCounterInt64", mock.Anything, "my-dev/test").Return(updates, func() {}, nil)
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).
+			Return([]byte(`{"v":5,"t":1,"b":"test"}`), nil)
 
-	counter := registry.GetCounterInt64("test", 1024)
-	assert.NotNil(t, counter)
+		counter := registry.GetCounterInt64("test", 1024)
+		assert.NotNil(t, counter)
 
-	// Simulate an update
-	updates <- CounterInt64State{Value: 42, UpdatedAt: 2, UpdatedBy: "test"}
-	time.Sleep(100 * time.Millisecond) // Give time for the update to process
+		// Simulate an update
+		updates <- CounterInt64State{Value: 42, UpdatedAt: 2, UpdatedBy: "test"}
+		time.Sleep(100 * time.Millisecond) // Give time for the update to process
 
-	assert.Equal(t, int64(42), counter.GetValue())
+		assert.Equal(t, int64(42), counter.GetValue())
 
-	connector.AssertExpectations(t)
+		connector.AssertExpectations(t)
+	})
 }
 
 func TestSharedStateRegistry_GetCounterInt64_WatchFailure(t *testing.T) {
-	registry, connector, _ := setupTest("my-dev")
+	synctest.Test(t, func(t *testing.T) {
+		registry, connector, _ := setupTest(t, "my-dev")
 
-	lock := &MockLock{}
-	lock.On("Unlock", mock.Anything).Return(nil).Times(1)
+		lock := &MockLock{}
+		lock.On("Unlock", mock.Anything).Return(nil).Times(1)
 
-	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).
-		Return([]byte(`{"v":5,"t":1,"b":"test"}`), nil)
-	connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).Return(nil)
-	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil)
+		connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).
+			Return([]byte(`{"v":5,"t":1,"b":"test"}`), nil)
+		connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).Return(nil)
+		connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil)
 
-	connector.On("WatchCounterInt64", mock.Anything, "my-dev/test").
-		Return(nil, nil, errors.New("watch setup failed"))
+		connector.On("WatchCounterInt64", mock.Anything, "my-dev/test").
+			Return(nil, nil, errors.New("watch setup failed"))
 
-	counter := registry.GetCounterInt64("test", 1024)
-	assert.NotNil(t, counter)
-	counter.TryUpdate(context.Background(), 42)
-	assert.Equal(t, int64(42), counter.GetValue()) // Should still work with local value
+		counter := registry.GetCounterInt64("test", 1024)
+		assert.NotNil(t, counter)
+		counter.TryUpdate(context.Background(), 42)
+		assert.Equal(t, int64(42), counter.GetValue()) // Should still work with local value
+	})
 }

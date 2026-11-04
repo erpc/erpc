@@ -1628,8 +1628,7 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	var ctx context.Context
 
 	// stallAfter mirrors the tracker's stall window: three poll periods, never
 	// under 30s. A poll period is the longer of the poll interval and the
@@ -1688,672 +1687,762 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 	}
 
 	t.Run("stall, bench, replay, rejoin", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "live", chainID: 123, latestBlock: 1_000},
-			{id: "stalled", chainID: 123, latestBlock: 1_000},
-		}, nil)
-		live, stalled := ups[0], ups[1]
-		tr := network.metricsTracker
-		finalizedOf := func() int64 { return network.EvmHighestFinalizedBlockNumber(ctx) }
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
 
-		// Both report finalized heads; stalled's stays frozen with its head.
-		const stalledFinalized = int64(990)
-		setServedTipFinalized(t, live, stalledFinalized)
-		setServedTipFinalized(t, stalled, stalledFinalized)
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "live", chainID: 123, latestBlock: 1_000},
+				{id: "stalled", chainID: 123, latestBlock: 1_000},
+			}, nil)
+			live, stalled := ups[0], ups[1]
+			tr := network.metricsTracker
+			finalizedOf := func() int64 { return network.EvmHighestFinalizedBlockNumber(ctx) }
 
-		// Healthy: both move together.
-		head := int64(1_000)
-		for range 5 {
-			advance(2 * time.Second)
-			head += 2
-			live.EvmStatePoller().SuggestLatestBlock(head)
-			stalled.EvmStatePoller().SuggestLatestBlock(head)
-		}
-		served(t, network, head, "a healthy pair")
-		stalledAt := head
+			// Both report finalized heads; stalled's stays frozen with its head.
+			const stalledFinalized = int64(990)
+			setServedTipFinalized(t, live, stalledFinalized)
+			setServedTipFinalized(t, stalled, stalledFinalized)
 
-		// stalled stops advancing; live keeps moving, finalized included.
-		// Inside the stall window nothing changes: quorum 2 still serves the
-		// lower heads on both axes.
-		window := stallAfter(stalled, 0)
-		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
-			advance(2 * time.Second)
+			// Healthy: both move together.
+			head := int64(1_000)
+			for range 5 {
+				advance(2 * time.Second)
+				head += 2
+				live.EvmStatePoller().SuggestLatestBlock(head)
+				stalled.EvmStatePoller().SuggestLatestBlock(head)
+			}
+			served(t, network, head, "a healthy pair")
+			stalledAt := head
+
+			// stalled stops advancing; live keeps moving, finalized included.
+			// Inside the stall window nothing changes: quorum 2 still serves the
+			// lower heads on both axes.
+			window := stallAfter(stalled, 0)
+			for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
+				advance(2 * time.Second)
+				head += 2
+				live.EvmStatePoller().SuggestLatestBlock(head)
+				setServedTipFinalized(t, live, head-10)
+			}
+			require.False(t, tr.IsHeadBenched(stalled), "a peer below for less than its stall window is not benched")
+			served(t, network, stalledAt, "inside the stall window")
+			require.Equal(t, stalledFinalized, finalizedOf(), "finalized: quorum 2 holds the stalled one's finalized inside the stall window")
+			require.Zero(t, lagOf(network, stalled), "inside the stall window the lower head is still the lag reference")
+
+			// Past the stall window, the next head live reports benches stalled.
+			advance(4 * time.Second)
 			head += 2
 			live.EvmStatePoller().SuggestLatestBlock(head)
 			setServedTipFinalized(t, live, head-10)
-		}
-		require.False(t, tr.IsHeadBenched(stalled), "a peer below for less than its stall window is not benched")
-		served(t, network, stalledAt, "inside the stall window")
-		require.Equal(t, stalledFinalized, finalizedOf(), "finalized: quorum 2 holds the stalled one's finalized inside the stall window")
-		require.Zero(t, lagOf(network, stalled), "inside the stall window the lower head is still the lag reference")
+			require.True(t, tr.IsHeadBenched(stalled), "a head below a moving peer for its stall window is benched")
+			require.False(t, tr.IsHeadBenched(live))
+			served(t, network, head, "a benched head leaves the ballot")
+			require.Equal(t, head-10, finalizedOf(), "finalized: a benched head leaves the finalized ballot too")
+			require.Equal(t, head-stalledAt, lagOf(network, stalled),
+				"the benched head is measured against the live one, so blockNumberLagAbove can route around it")
+			require.Zero(t, lagOf(network, live))
 
-		// Past the stall window, the next head live reports benches stalled.
-		advance(4 * time.Second)
-		head += 2
-		live.EvmStatePoller().SuggestLatestBlock(head)
-		setServedTipFinalized(t, live, head-10)
-		require.True(t, tr.IsHeadBenched(stalled), "a head below a moving peer for its stall window is benched")
-		require.False(t, tr.IsHeadBenched(live))
-		served(t, network, head, "a benched head leaves the ballot")
-		require.Equal(t, head-10, finalizedOf(), "finalized: a benched head leaves the finalized ballot too")
-		require.Equal(t, head-stalledAt, lagOf(network, stalled),
-			"the benched head is measured against the live one, so blockNumberLagAbove can route around it")
-		require.Zero(t, lagOf(network, live))
+			// stalled comes back and replays: moving, but behind. It stays benched
+			// and "latest" never drops back to it.
+			last := head
+			for replay := stalledAt; replay < head-10; replay += 20 {
+				advance(time.Second)
+				head++
+				live.EvmStatePoller().SuggestLatestBlock(head)
+				stalled.EvmStatePoller().SuggestLatestBlock(replay)
+				require.True(t, tr.IsHeadBenched(stalled), "a replaying head stays benched until it catches up (at %d, live %d)", replay, head)
+				got := network.EvmHighestLatestBlockNumber(ctx)
+				require.GreaterOrEqual(t, got, last, "latest must never regress while a benched head replays")
+				last = got
+			}
+			served(t, network, head, "while the benched head replays")
 
-		// stalled comes back and replays: moving, but behind. It stays benched
-		// and "latest" never drops back to it.
-		last := head
-		for replay := stalledAt; replay < head-10; replay += 20 {
+			// stalled catches up on both axes: it rejoins and its lag is 0 again.
 			advance(time.Second)
-			head++
-			live.EvmStatePoller().SuggestLatestBlock(head)
-			stalled.EvmStatePoller().SuggestLatestBlock(replay)
-			require.True(t, tr.IsHeadBenched(stalled), "a replaying head stays benched until it catches up (at %d, live %d)", replay, head)
-			got := network.EvmHighestLatestBlockNumber(ctx)
-			require.GreaterOrEqual(t, got, last, "latest must never regress while a benched head replays")
-			last = got
-		}
-		served(t, network, head, "while the benched head replays")
-
-		// stalled catches up on both axes: it rejoins and its lag is 0 again.
-		advance(time.Second)
-		stalled.EvmStatePoller().SuggestLatestBlock(head)
-		require.False(t, tr.IsHeadBenched(stalled), "a benched head that caught up rejoins")
-		require.Zero(t, lagOf(network, stalled))
-		served(t, network, head, "after the rejoin")
-		setServedTipFinalized(t, live, head-10)
-		setServedTipFinalized(t, stalled, head-10)
-		require.Equal(t, head-10, finalizedOf(), "finalized after the rejoin")
+			stalled.EvmStatePoller().SuggestLatestBlock(head)
+			require.False(t, tr.IsHeadBenched(stalled), "a benched head that caught up rejoins")
+			require.Zero(t, lagOf(network, stalled))
+			served(t, network, head, "after the rejoin")
+			setServedTipFinalized(t, live, head-10)
+			setServedTipFinalized(t, stalled, head-10)
+			require.Equal(t, head-10, finalizedOf(), "finalized after the rejoin")
+		})
 	})
 
 	t.Run("chain halt benches nobody", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "a", chainID: 123, latestBlock: 2_000},
-			{id: "b", chainID: 123, latestBlock: 2_000},
-		}, nil)
-		tr := network.metricsTracker
-		// Every poll returns the same head, with the same old block timestamp,
-		// for ten minutes.
-		haltedTs := servedTipClock().Add(-10 * time.Minute).Unix()
-		for range 60 {
-			advance(10 * time.Second)
-			for _, u := range ups {
-				report(tr, u, 2_000, haltedTs)
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
+
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "a", chainID: 123, latestBlock: 2_000},
+				{id: "b", chainID: 123, latestBlock: 2_000},
+			}, nil)
+			tr := network.metricsTracker
+			// Every poll returns the same head, with the same old block timestamp,
+			// for ten minutes.
+			haltedTs := servedTipClock().Add(-10 * time.Minute).Unix()
+			for range 60 {
+				advance(10 * time.Second)
+				for _, u := range ups {
+					report(tr, u, 2_000, haltedTs)
+				}
 			}
-		}
-		for _, u := range ups {
-			require.False(t, tr.IsHeadBenched(u), "%s: nobody moved, so nobody is below a moving peer", u.Id())
-			require.Zero(t, lagOf(network, u))
-		}
-		served(t, network, 2_000, "a halted chain")
+			for _, u := range ups {
+				require.False(t, tr.IsHeadBenched(u), "%s: nobody moved, so nobody is below a moving peer", u.Id())
+				require.Zero(t, lagOf(network, u))
+			}
+			served(t, network, 2_000, "a halted chain")
+		})
 	})
 
 	t.Run("static far-future upstream is never served, benches nobody, and never blocks a rejoin", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "honest-a", chainID: 123, latestBlock: 3_000},
-			{id: "honest-b", chainID: 123, latestBlock: 3_000},
-			{id: "rogue", chainID: 123, latestBlock: 3_000},
-		}, nil)
-		a, b, rogue := ups[0], ups[1], ups[2]
-		tr := network.metricsTracker
-		suggestServedTipHead(rogue, 103_000)
-		require.Equal(t, int64(103_000), rogue.EvmStatePoller().LatestBlock())
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
 
-		head := int64(3_000)
-		for range 60 {
-			advance(10 * time.Second)
-			head++
-			a.EvmStatePoller().SuggestLatestBlock(head)
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "honest-a", chainID: 123, latestBlock: 3_000},
+				{id: "honest-b", chainID: 123, latestBlock: 3_000},
+				{id: "rogue", chainID: 123, latestBlock: 3_000},
+			}, nil)
+			a, b, rogue := ups[0], ups[1], ups[2]
+			tr := network.metricsTracker
+			suggestServedTipHead(rogue, 103_000)
+			require.Equal(t, int64(103_000), rogue.EvmStatePoller().LatestBlock())
+
+			head := int64(3_000)
+			for range 60 {
+				advance(10 * time.Second)
+				head++
+				a.EvmStatePoller().SuggestLatestBlock(head)
+				b.EvmStatePoller().SuggestLatestBlock(head)
+				tr.SetLatestBlockNumber(rogue, 103_000, 0)
+				require.False(t, tr.IsHeadBenched(a), "a static head above never benches the moving ones")
+				require.False(t, tr.IsHeadBenched(b), "a static head above never benches the moving ones")
+			}
+			require.False(t, tr.IsHeadBenched(rogue))
+			require.Zero(t, lagOf(network, a), "the rogue is not the lag reference")
+			served(t, network, head, "a lone far-future head is never served")
+
+			// b stalls past its window and is benched; the rogue stays a voter.
+			for elapsed := time.Duration(0); elapsed <= stallAfter(b, 0); elapsed += 10 * time.Second {
+				advance(10 * time.Second)
+				head++
+				a.EvmStatePoller().SuggestLatestBlock(head)
+			}
+			require.True(t, tr.IsHeadBenched(b))
+			served(t, network, head, "quorum 2 over {a, rogue} still serves the honest head")
+
+			// b catches up with a. The rogue's head is out of anyone's reach, so it
+			// must not be the rejoin bar.
+			advance(time.Second)
 			b.EvmStatePoller().SuggestLatestBlock(head)
-			tr.SetLatestBlockNumber(rogue, 103_000, 0)
-			require.False(t, tr.IsHeadBenched(a), "a static head above never benches the moving ones")
-			require.False(t, tr.IsHeadBenched(b), "a static head above never benches the moving ones")
-		}
-		require.False(t, tr.IsHeadBenched(rogue))
-		require.Zero(t, lagOf(network, a), "the rogue is not the lag reference")
-		served(t, network, head, "a lone far-future head is never served")
-
-		// b stalls past its window and is benched; the rogue stays a voter.
-		for elapsed := time.Duration(0); elapsed <= stallAfter(b, 0); elapsed += 10 * time.Second {
-			advance(10 * time.Second)
-			head++
-			a.EvmStatePoller().SuggestLatestBlock(head)
-		}
-		require.True(t, tr.IsHeadBenched(b))
-		served(t, network, head, "quorum 2 over {a, rogue} still serves the honest head")
-
-		// b catches up with a. The rogue's head is out of anyone's reach, so it
-		// must not be the rejoin bar.
-		advance(time.Second)
-		b.EvmStatePoller().SuggestLatestBlock(head)
-		require.False(t, tr.IsHeadBenched(b), "a caught-up head rejoins even with a far-future voter above it")
-		require.Zero(t, lagOf(network, b))
-		served(t, network, head, "after the rejoin")
+			require.False(t, tr.IsHeadBenched(b), "a caught-up head rejoins even with a far-future voter above it")
+			require.Zero(t, lagOf(network, b))
+			served(t, network, head, "after the rejoin")
+		})
 	})
 
 	t.Run("moving far-future upstream never benches a stalled honest one", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "honest", chainID: 123, latestBlock: 4_000},
-			{id: "rogue", chainID: 123, latestBlock: 4_000},
-		}, nil)
-		honest, rogue := ups[0], ups[1]
-		tr := network.metricsTracker
-		rogueHead := int64(104_000)
-		suggestServedTipHead(rogue, rogueHead)
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
 
-		// honest's poller dies for well past its stall window while the
-		// wrong-chain head keeps advancing: a lead no chain produced in that
-		// time is another chain, not a stall.
-		for range 30 {
-			advance(10 * time.Second)
-			rogueHead += 5
-			tr.SetLatestBlockNumber(rogue, rogueHead, 0)
-		}
-		require.False(t, tr.IsHeadBenched(honest), "an implausible lead must not bench the honest head")
-		require.Zero(t, lagOf(network, honest), "the rogue is not the lag reference")
-		served(t, network, 4_000, "a lone moving far-future head is never served")
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "honest", chainID: 123, latestBlock: 4_000},
+				{id: "rogue", chainID: 123, latestBlock: 4_000},
+			}, nil)
+			honest, rogue := ups[0], ups[1]
+			tr := network.metricsTracker
+			rogueHead := int64(104_000)
+			suggestServedTipHead(rogue, rogueHead)
+
+			// honest's poller dies for well past its stall window while the
+			// wrong-chain head keeps advancing: a lead no chain produced in that
+			// time is another chain, not a stall.
+			for range 30 {
+				advance(10 * time.Second)
+				rogueHead += 5
+				tr.SetLatestBlockNumber(rogue, rogueHead, 0)
+			}
+			require.False(t, tr.IsHeadBenched(honest), "an implausible lead must not bench the honest head")
+			require.Zero(t, lagOf(network, honest), "the rogue is not the lag reference")
+			served(t, network, 4_000, "a lone moving far-future head is never served")
+		})
 	})
 
 	t.Run("a process that starts mid-stall benches the stalled head", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "live", chainID: 123, latestBlock: 47_880_000},
-			{id: "stalled-a", chainID: 123, latestBlock: 1_800_000},
-			{id: "stalled-b", chainID: 123, latestBlock: 1_800_000},
-		}, nil)
-		live, stalls := ups[0], ups[1:]
-		tr := network.metricsTracker
-		const stalledAt = int64(1_800_000)
-		// The stalled heads' block was produced two years before this process.
-		// Each has two non-benched peers and only live is younger, so the time
-		// rule never fires: only the height rule can bench them, and with the
-		// network block time unknown (the corroborated head is the stalled
-		// one) that rule needs live's own block time.
-		stalledTs := servedTipClock().Add(-2 * 365 * 24 * time.Hour).Unix()
-		head := int64(47_880_000)
-		poll := func(d time.Duration) {
-			advance(d)
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
+
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "live", chainID: 123, latestBlock: 47_880_000},
+				{id: "stalled-a", chainID: 123, latestBlock: 1_800_000},
+				{id: "stalled-b", chainID: 123, latestBlock: 1_800_000},
+			}, nil)
+			live, stalls := ups[0], ups[1:]
+			tr := network.metricsTracker
+			const stalledAt = int64(1_800_000)
+			// The stalled heads' block was produced two years before this process.
+			// Each has two non-benched peers and only live is younger, so the time
+			// rule never fires: only the height rule can bench them, and with the
+			// network block time unknown (the corroborated head is the stalled
+			// one) that rule needs live's own block time.
+			stalledTs := servedTipClock().Add(-2 * 365 * 24 * time.Hour).Unix()
+			head := int64(47_880_000)
+			poll := func(d time.Duration) {
+				advance(d)
+				for _, u := range stalls {
+					report(tr, u, stalledAt, stalledTs)
+				}
+				head += int64(d / (2 * time.Second))
+				report(tr, live, head, servedTipClock().Unix())
+			}
 			for _, u := range stalls {
 				report(tr, u, stalledAt, stalledTs)
 			}
-			head += int64(d / (2 * time.Second))
-			report(tr, live, head, servedTipClock().Unix())
-		}
-		for _, u := range stalls {
-			report(tr, u, stalledAt, stalledTs)
-		}
-		served(t, network, stalledAt, "at boot quorum 2 serves the stalled head")
+			served(t, network, stalledAt, "at boot quorum 2 serves the stalled head")
 
-		// Three timestamped head changes: live's block time is not known yet.
-		for range 3 {
+			// Three timestamped head changes: live's block time is not known yet.
+			for range 3 {
+				poll(2 * time.Second)
+			}
+			for _, u := range ups {
+				require.False(t, tr.IsHeadBenched(u), "%s: nobody is benched before live's block time is known", u.Id())
+			}
+			served(t, network, stalledAt, "before live's block time is known")
+
+			// The fourth settles it; the stall window runs from there.
 			poll(2 * time.Second)
-		}
-		for _, u := range ups {
-			require.False(t, tr.IsHeadBenched(u), "%s: nobody is benched before live's block time is known", u.Id())
-		}
-		served(t, network, stalledAt, "before live's block time is known")
+			window := stallAfter(stalls[0], 0)
+			for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
+				poll(2 * time.Second)
+			}
+			for _, u := range stalls {
+				require.False(t, tr.IsHeadBenched(u), "%s: not benched inside its stall window", u.Id())
+			}
+			served(t, network, stalledAt, "inside the stall window")
 
-		// The fourth settles it; the stall window runs from there.
-		poll(2 * time.Second)
-		window := stallAfter(stalls[0], 0)
-		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
-			poll(2 * time.Second)
-		}
-		for _, u := range stalls {
-			require.False(t, tr.IsHeadBenched(u), "%s: not benched inside its stall window", u.Id())
-		}
-		served(t, network, stalledAt, "inside the stall window")
-
-		poll(4 * time.Second)
-		for _, u := range stalls {
-			require.True(t, tr.IsHeadBenched(u), "%s: a head frozen since before the process started is benched after its stall window", u.Id())
-		}
-		require.False(t, tr.IsHeadBenched(live))
-		served(t, network, head, "the stalled heads leave the ballot")
-		require.Equal(t, head-stalledAt, lagOf(network, stalls[0]), "the benched head is measured against the live one")
-		require.Zero(t, lagOf(network, live))
+			poll(4 * time.Second)
+			for _, u := range stalls {
+				require.True(t, tr.IsHeadBenched(u), "%s: a head frozen since before the process started is benched after its stall window", u.Id())
+			}
+			require.False(t, tr.IsHeadBenched(live))
+			served(t, network, head, "the stalled heads leave the ballot")
+			require.Equal(t, head-stalledAt, lagOf(network, stalls[0]), "the benched head is measured against the live one")
+			require.Zero(t, lagOf(network, live))
+		})
 	})
 
 	t.Run("a node replaying far behind the tip is benched while it moves", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "live", chainID: 123, latestBlock: 100_000},
-			{id: "replaying", chainID: 123, latestBlock: 99_400},
-		}, nil)
-		live, replaying := ups[0], ups[1]
-		tr := network.metricsTracker
-		// A 2s chain. replaying restarted from a snapshot 600 blocks (20 min)
-		// old and replays 4 blocks per 2s, so it moves on every poll. Once the
-		// block time is known, every other move of each upstream arrives
-		// without its block timestamp, as a peer pod's poll does through
-		// shared state.
-		start := servedTipClock().Unix()
-		tsOf := func(n int64) int64 { return start + (n-100_000)*2 }
-		head, behind := int64(100_000), int64(99_400)
-		polls := 0
-		poll := func(d time.Duration) {
-			advance(d)
-			polls++
-			ts := func(n int64) int64 {
-				if polls > 4 && polls%2 == 0 {
-					return 0
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
+
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "live", chainID: 123, latestBlock: 100_000},
+				{id: "replaying", chainID: 123, latestBlock: 99_400},
+			}, nil)
+			live, replaying := ups[0], ups[1]
+			tr := network.metricsTracker
+			// A 2s chain. replaying restarted from a snapshot 600 blocks (20 min)
+			// old and replays 4 blocks per 2s, so it moves on every poll. Once the
+			// block time is known, every other move of each upstream arrives
+			// without its block timestamp, as a peer pod's poll does through
+			// shared state.
+			start := servedTipClock().Unix()
+			tsOf := func(n int64) int64 { return start + (n-100_000)*2 }
+			head, behind := int64(100_000), int64(99_400)
+			polls := 0
+			poll := func(d time.Duration) {
+				advance(d)
+				polls++
+				ts := func(n int64) int64 {
+					if polls > 4 && polls%2 == 0 {
+						return 0
+					}
+					return tsOf(n)
 				}
-				return tsOf(n)
+				behind = min(behind+int64(d/(500*time.Millisecond)), head)
+				report(tr, replaying, behind, ts(behind))
+				head += int64(d / (2 * time.Second))
+				report(tr, live, head, ts(head))
 			}
-			behind = min(behind+int64(d/(500*time.Millisecond)), head)
-			report(tr, replaying, behind, ts(behind))
-			head += int64(d / (2 * time.Second))
-			report(tr, live, head, ts(head))
-		}
-		report(tr, replaying, behind, tsOf(behind))
-		report(tr, live, head, tsOf(head))
-		served(t, network, behind, "at boot quorum 2 serves the replaying head")
+			report(tr, replaying, behind, tsOf(behind))
+			report(tr, live, head, tsOf(head))
+			served(t, network, behind, "at boot quorum 2 serves the replaying head")
 
-		window := stallAfter(replaying, 2*time.Second)
-		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
-			poll(2 * time.Second)
-		}
-		require.False(t, tr.IsHeadBenched(replaying), "not benched inside its stall window")
-		served(t, network, behind, "inside the stall window quorum 2 serves the replaying head")
+			window := stallAfter(replaying, 2*time.Second)
+			for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
+				poll(2 * time.Second)
+			}
+			require.False(t, tr.IsHeadBenched(replaying), "not benched inside its stall window")
+			served(t, network, behind, "inside the stall window quorum 2 serves the replaying head")
 
-		// Its own moves never reset the window: its head block stays a stall
-		// window older than live's.
-		poll(4 * time.Second)
-		require.True(t, tr.IsHeadBenched(replaying), "a head replaying far behind a live peer for its stall window is benched")
-		require.False(t, tr.IsHeadBenched(live))
-		served(t, network, head, "the replaying head leaves the ballot")
-		require.Equal(t, head-behind, lagOf(network, replaying), "a benched head that moves lags by its real distance")
-		require.Greater(t, lagOf(network, replaying), int64(16), "past the default blockNumberLagAbove, so routing leaves it")
+			// Its own moves never reset the window: its head block stays a stall
+			// window older than live's.
+			poll(4 * time.Second)
+			require.True(t, tr.IsHeadBenched(replaying), "a head replaying far behind a live peer for its stall window is benched")
+			require.False(t, tr.IsHeadBenched(live))
+			served(t, network, head, "the replaying head leaves the ballot")
+			require.Equal(t, head-behind, lagOf(network, replaying), "a benched head that moves lags by its real distance")
+			require.Greater(t, lagOf(network, replaying), int64(16), "past the default blockNumberLagAbove, so routing leaves it")
 
-		// It gains 3 blocks a poll. It rejoins on the report that reaches live's
-		// head, not before, and "latest" never drops back to it meanwhile.
-		last := head
-		for polls := 0; tr.IsHeadBenched(replaying); polls++ {
-			require.Less(t, polls, 400, "a replaying head rejoins once it catches up")
-			poll(2 * time.Second)
-			got := network.EvmHighestLatestBlockNumber(ctx)
-			require.GreaterOrEqual(t, got, last, "latest never regresses while it replays")
-			last = got
-		}
-		require.Equal(t, head-1, behind, "it rejoins on reaching live's head; live then moved one on")
+			// It gains 3 blocks a poll. It rejoins on the report that reaches live's
+			// head, not before, and "latest" never drops back to it meanwhile.
+			last := head
+			for polls := 0; tr.IsHeadBenched(replaying); polls++ {
+				require.Less(t, polls, 400, "a replaying head rejoins once it catches up")
+				poll(2 * time.Second)
+				got := network.EvmHighestLatestBlockNumber(ctx)
+				require.GreaterOrEqual(t, got, last, "latest never regresses while it replays")
+				last = got
+			}
+			require.Equal(t, head-1, behind, "it rejoins on reaching live's head; live then moved one on")
 
-		// Back at the tip it trails live by one block, far less than its stall
-		// window of chain time: it votes again and is never benched.
-		for range 3 * int(window/(2*time.Second)) {
-			poll(2 * time.Second)
-			require.False(t, tr.IsHeadBenched(replaying), "a node one block behind is never benched (at %d, live %d)", behind, head)
-		}
-		require.Equal(t, head-1, behind)
-		require.Zero(t, lagOf(network, replaying), "the lower voter is the lag reference again")
-		served(t, network, behind, "quorum 2 serves the lower of two heads at the tip")
+			// Back at the tip it trails live by one block, far less than its stall
+			// window of chain time: it votes again and is never benched.
+			for range 3 * int(window/(2*time.Second)) {
+				poll(2 * time.Second)
+				require.False(t, tr.IsHeadBenched(replaying), "a node one block behind is never benched (at %d, live %d)", behind, head)
+			}
+			require.Equal(t, head-1, behind)
+			require.Zero(t, lagOf(network, replaying), "the lower voter is the lag reference again")
+			served(t, network, behind, "quorum 2 serves the lower of two heads at the tip")
+		})
 	})
 
 	t.Run("a staleness verdict ends when the node catches up, so a plausible rogue cannot keep it", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "live", chainID: 123, latestBlock: 50_000},
-			{id: "trailing", chainID: 123, latestBlock: 49_940},
-			{id: "rogue", chainID: 123, latestBlock: 50_000},
-		}, nil)
-		live, trailing, rogue := ups[0], ups[1], ups[2]
-		tr := network.metricsTracker
-		// A 2s chain. trailing keeps pace 60 blocks (120s) back, more than its
-		// 90s stall window of chain time, so its own timestamps prove it stale.
-		start := servedTipClock().Unix()
-		tsOf := func(n int64) int64 { return start + (n-50_000)*2 }
-		head := int64(50_000)
-		for range 5 {
-			advance(2 * time.Second)
-			head++
-			report(tr, trailing, head-60, tsOf(head-60))
-			report(tr, live, head, tsOf(head))
-			report(tr, rogue, head, tsOf(head))
-		}
-		require.False(t, tr.IsHeadBenched(trailing), "not benched inside its stall window")
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
 
-		// It catches up through a peer pod's poll (no timestamp). Then the
-		// rogue claims a head 60 blocks above the tip and keeps moving: a lead
-		// a stall window of blocks ahead, but no proof trailing is stale.
-		advance(2 * time.Second)
-		head++
-		report(tr, trailing, head, 0)
-		report(tr, live, head, tsOf(head))
-		report(tr, rogue, head, tsOf(head))
-		for range 3 * int(stallAfter(trailing, 2*time.Second)/(2*time.Second)) {
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "live", chainID: 123, latestBlock: 50_000},
+				{id: "trailing", chainID: 123, latestBlock: 49_940},
+				{id: "rogue", chainID: 123, latestBlock: 50_000},
+			}, nil)
+			live, trailing, rogue := ups[0], ups[1], ups[2]
+			tr := network.metricsTracker
+			// A 2s chain. trailing keeps pace 60 blocks (120s) back, more than its
+			// 90s stall window of chain time, so its own timestamps prove it stale.
+			start := servedTipClock().Unix()
+			tsOf := func(n int64) int64 { return start + (n-50_000)*2 }
+			head := int64(50_000)
+			for range 5 {
+				advance(2 * time.Second)
+				head++
+				report(tr, trailing, head-60, tsOf(head-60))
+				report(tr, live, head, tsOf(head))
+				report(tr, rogue, head, tsOf(head))
+			}
+			require.False(t, tr.IsHeadBenched(trailing), "not benched inside its stall window")
+
+			// It catches up through a peer pod's poll (no timestamp). Then the
+			// rogue claims a head 60 blocks above the tip and keeps moving: a lead
+			// a stall window of blocks ahead, but no proof trailing is stale.
 			advance(2 * time.Second)
 			head++
 			report(tr, trailing, head, 0)
 			report(tr, live, head, tsOf(head))
-			report(tr, rogue, head+60, tsOf(head+60))
-			require.False(t, tr.IsHeadBenched(trailing), "a node at the tip is never benched by a verdict it disproved (head %d)", head)
-		}
-		require.Zero(t, lagOf(network, trailing))
-		served(t, network, head, "the rogue's lone head above the tip is never served")
+			report(tr, rogue, head, tsOf(head))
+			for range 3 * int(stallAfter(trailing, 2*time.Second)/(2*time.Second)) {
+				advance(2 * time.Second)
+				head++
+				report(tr, trailing, head, 0)
+				report(tr, live, head, tsOf(head))
+				report(tr, rogue, head+60, tsOf(head+60))
+				require.False(t, tr.IsHeadBenched(trailing), "a node at the tip is never benched by a verdict it disproved (head %d)", head)
+			}
+			require.Zero(t, lagOf(network, trailing))
+			served(t, network, head, "the rogue's lone head above the tip is never served")
+		})
 	})
 
 	t.Run("a benched replay that reaches a voter as stale as itself stays benched", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "live", chainID: 123, latestBlock: 100_000},
-			{id: "restored", chainID: 123, latestBlock: 99_200},
-			{id: "peer-replay", chainID: 123, latestBlock: 99_300},
-		}, nil)
-		live, restored, peerReplay := ups[0], ups[1], ups[2]
-		tr := network.metricsTracker
-		// A 2s chain. Two nodes replay from old snapshots. restored gains 4
-		// blocks per 2s with its own block timestamps, so it is proven stale
-		// and benched. peer-replay gains 3, and each of its moves reaches this
-		// process without a timestamp (a peer pod's poll), so nothing proves
-		// it stale: it stays a voter and sets the bar restored must reach.
-		start := servedTipClock().Unix()
-		tsOf := func(n int64) int64 { return start + (n-100_000)*2 }
-		head, r, p := int64(100_000), int64(99_200), int64(99_300)
-		window := stallAfter(restored, 2*time.Second)
-		last, wasBenched := int64(0), false
-		for polls := 0; !wasBenched || tr.IsHeadBenched(restored); polls++ {
-			require.Less(t, polls, 1000, "restored rejoins once it replays to the tip")
-			advance(2 * time.Second)
-			r = min(r+4, head)
-			report(tr, restored, r, tsOf(r))
-			p = min(p+3, head)
-			report(tr, peerReplay, p, 0)
-			head++
-			report(tr, live, head, tsOf(head))
-			wasBenched = wasBenched || tr.IsHeadBenched(restored)
-			if wasBenched && (head-r)*2 >= 2*int64(window/time.Second) {
-				require.True(t, tr.IsHeadBenched(restored), "a benched head two stall windows behind the tip stays benched, even once it reaches a stale voter (restored %d, peer-replay %d, live %d)", r, p, head)
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
+
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "live", chainID: 123, latestBlock: 100_000},
+				{id: "restored", chainID: 123, latestBlock: 99_200},
+				{id: "peer-replay", chainID: 123, latestBlock: 99_300},
+			}, nil)
+			live, restored, peerReplay := ups[0], ups[1], ups[2]
+			tr := network.metricsTracker
+			// A 2s chain. Two nodes replay from old snapshots. restored gains 4
+			// blocks per 2s with its own block timestamps, so it is proven stale
+			// and benched. peer-replay gains 3, and each of its moves reaches this
+			// process without a timestamp (a peer pod's poll), so nothing proves
+			// it stale: it stays a voter and sets the bar restored must reach.
+			start := servedTipClock().Unix()
+			tsOf := func(n int64) int64 { return start + (n-100_000)*2 }
+			head, r, p := int64(100_000), int64(99_200), int64(99_300)
+			window := stallAfter(restored, 2*time.Second)
+			last, wasBenched := int64(0), false
+			for polls := 0; !wasBenched || tr.IsHeadBenched(restored); polls++ {
+				require.Less(t, polls, 1000, "restored rejoins once it replays to the tip")
+				advance(2 * time.Second)
+				r = min(r+4, head)
+				report(tr, restored, r, tsOf(r))
+				p = min(p+3, head)
+				report(tr, peerReplay, p, 0)
+				head++
+				report(tr, live, head, tsOf(head))
+				wasBenched = wasBenched || tr.IsHeadBenched(restored)
+				if wasBenched && (head-r)*2 >= 2*int64(window/time.Second) {
+					require.True(t, tr.IsHeadBenched(restored), "a benched head two stall windows behind the tip stays benched, even once it reaches a stale voter (restored %d, peer-replay %d, live %d)", r, p, head)
+				}
+				got := network.EvmHighestLatestBlockNumber(ctx)
+				require.GreaterOrEqual(t, got, last, "latest never regresses (restored %d, peer-replay %d, live %d)", r, p, head)
+				last = got
 			}
-			got := network.EvmHighestLatestBlockNumber(ctx)
-			require.GreaterOrEqual(t, got, last, "latest never regresses (restored %d, peer-replay %d, live %d)", r, p, head)
-			last = got
-		}
-		require.Less(t, head-r, int64(window/(2*time.Second))+2, "it rejoins once within a stall window of chain time of the tip")
-		served(t, network, r, "after the rejoin quorum 2 serves the restored head")
+			require.Less(t, head-r, int64(window/(2*time.Second))+2, "it rejoins once within a stall window of chain time of the tip")
+			served(t, network, r, "after the rejoin quorum 2 serves the restored head")
+		})
 	})
 
 	t.Run("heads frozen above a chain that restarted lower are benched and routed around", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "fork-a", chainID: 123, latestBlock: 9_060},
-			{id: "fork-b", chainID: 123, latestBlock: 9_060},
-			{id: "canon-a", chainID: 123, latestBlock: 9_000},
-			{id: "canon-b", chainID: 123, latestBlock: 9_000},
-		}, nil)
-		forks, canons := ups[:2], ups[2:]
-		tr := network.metricsTracker
-		const forkAt = int64(9_060)
-		forkTs := servedTipClock().Add(-10 * time.Minute).Unix()
-		canon := int64(9_000)
-		poll := func(d time.Duration) {
-			advance(d)
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
+
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "fork-a", chainID: 123, latestBlock: 9_060},
+				{id: "fork-b", chainID: 123, latestBlock: 9_060},
+				{id: "canon-a", chainID: 123, latestBlock: 9_000},
+				{id: "canon-b", chainID: 123, latestBlock: 9_000},
+			}, nil)
+			forks, canons := ups[:2], ups[2:]
+			tr := network.metricsTracker
+			const forkAt = int64(9_060)
+			forkTs := servedTipClock().Add(-10 * time.Minute).Unix()
+			canon := int64(9_000)
+			poll := func(d time.Duration) {
+				advance(d)
+				for _, u := range forks {
+					report(tr, u, forkAt, forkTs)
+				}
+				canon += int64(d / (2 * time.Second))
+				for _, u := range canons {
+					report(tr, u, canon, servedTipClock().Unix())
+				}
+			}
+
+			// The corroborated head is a frozen fork's, so the network block time
+			// stays unknown.
+			window := stallAfter(forks[0], 0)
+			for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
+				poll(2 * time.Second)
+			}
 			for _, u := range forks {
-				report(tr, u, forkAt, forkTs)
+				require.False(t, tr.IsHeadBenched(u), "%s: not benched inside its stall window", u.Id())
 			}
-			canon += int64(d / (2 * time.Second))
+			served(t, network, forkAt, "inside the stall window quorum 2 still serves the frozen pair")
+
+			// The forks re-report first in each poll, so the bench lands before the
+			// canonical pair moves: the canonical head at bench time is `canon` now.
+			benchedAt := canon
+			poll(4 * time.Second)
+			for _, u := range forks {
+				require.True(t, tr.IsHeadBenched(u), "%s: a head whose block is far older than its moving peers' is benched", u.Id())
+			}
 			for _, u := range canons {
-				report(tr, u, canon, servedTipClock().Unix())
+				require.False(t, tr.IsHeadBenched(u), "%s", u.Id())
+				require.Zero(t, lagOf(network, u), "%s: the canonical pair is the lag reference", u.Id())
 			}
-		}
+			served(t, network, canon, "both forks benched: the canonical pair defines latest")
 
-		// The corroborated head is a frozen fork's, so the network block time
-		// stays unknown.
-		window := stallAfter(forks[0], 0)
-		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
-			poll(2 * time.Second)
-		}
-		for _, u := range forks {
-			require.False(t, tr.IsHeadBenched(u), "%s: not benched inside its stall window", u.Id())
-		}
-		served(t, network, forkAt, "inside the stall window quorum 2 still serves the frozen pair")
-
-		// The forks re-report first in each poll, so the bench lands before the
-		// canonical pair moves: the canonical head at bench time is `canon` now.
-		benchedAt := canon
-		poll(4 * time.Second)
-		for _, u := range forks {
-			require.True(t, tr.IsHeadBenched(u), "%s: a head whose block is far older than its moving peers' is benched", u.Id())
-		}
-		for _, u := range canons {
-			require.False(t, tr.IsHeadBenched(u), "%s", u.Id())
-			require.Zero(t, lagOf(network, u), "%s: the canonical pair is the lag reference", u.Id())
-		}
-		served(t, network, canon, "both forks benched: the canonical pair defines latest")
-
-		// The canonical chain passes the frozen height. The frozen head still
-		// lags by what the chain made since its bench, not by the one block it
-		// now trails: its blocks up to forkAt are the dead fork's.
-		for canon <= forkAt {
-			poll(2 * time.Second)
-		}
-		for _, u := range forks {
-			require.True(t, tr.IsHeadBenched(u), "%s: a frozen head never rejoins", u.Id())
-		}
-		lag := lagOf(network, forks[0])
-		require.Equal(t, canon-benchedAt, lag, "a frozen benched head lags by what the chain made since its bench")
-		require.Greater(t, lag, int64(16), "past the default blockNumberLagAbove, so routing leaves the frozen head")
-		served(t, network, canon, "as the canonical chain moves on")
+			// The canonical chain passes the frozen height. The frozen head still
+			// lags by what the chain made since its bench, not by the one block it
+			// now trails: its blocks up to forkAt are the dead fork's.
+			for canon <= forkAt {
+				poll(2 * time.Second)
+			}
+			for _, u := range forks {
+				require.True(t, tr.IsHeadBenched(u), "%s: a frozen head never rejoins", u.Id())
+			}
+			lag := lagOf(network, forks[0])
+			require.Equal(t, canon-benchedAt, lag, "a frozen benched head lags by what the chain made since its bench")
+			require.Greater(t, lag, int64(16), "past the default blockNumberLagAbove, so routing leaves the frozen head")
+			served(t, network, canon, "as the canonical chain moves on")
+		})
 	})
 
 	t.Run("benching a pair frozen far above the chain trips no regression hold", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "fork-a", chainID: 123, latestBlock: 20_000},
-			{id: "fork-b", chainID: 123, latestBlock: 20_000},
-			{id: "canon-a", chainID: 123, latestBlock: 9_000},
-			{id: "canon-b", chainID: 123, latestBlock: 8_999},
-		}, nil)
-		forks, canons := ups[:2], ups[2:]
-		tr := network.metricsTracker
-		forkTs := servedTipClock().Add(-10 * time.Minute).Unix()
-		canon := int64(9_000)
-		poll := func(d time.Duration) {
-			advance(d)
-			for _, u := range forks {
-				report(tr, u, 20_000, forkTs)
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
+
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "fork-a", chainID: 123, latestBlock: 20_000},
+				{id: "fork-b", chainID: 123, latestBlock: 20_000},
+				{id: "canon-a", chainID: 123, latestBlock: 9_000},
+				{id: "canon-b", chainID: 123, latestBlock: 8_999},
+			}, nil)
+			forks, canons := ups[:2], ups[2:]
+			tr := network.metricsTracker
+			forkTs := servedTipClock().Add(-10 * time.Minute).Unix()
+			canon := int64(9_000)
+			poll := func(d time.Duration) {
+				advance(d)
+				for _, u := range forks {
+					report(tr, u, 20_000, forkTs)
+				}
+				canon += int64(d / (2 * time.Second))
+				// The canonical pair stays one block apart, so its highest head is
+				// not the quorum pick.
+				report(tr, canons[0], canon, servedTipClock().Unix())
+				report(tr, canons[1], canon-1, servedTipClock().Unix())
 			}
-			canon += int64(d / (2 * time.Second))
-			// The canonical pair stays one block apart, so its highest head is
-			// not the quorum pick.
-			report(tr, canons[0], canon, servedTipClock().Unix())
-			report(tr, canons[1], canon-1, servedTipClock().Unix())
-		}
 
-		window := stallAfter(forks[0], 0)
-		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
-			poll(2 * time.Second)
-		}
-		served(t, network, 20_000, "inside the stall window the frozen pair carries quorum 2, and the guard remembers it")
-		held := servedTipRegressionCount(network, "latest", "held")
-		failedOpen := servedTipRegressionCount(network, "latest", "failed_open")
+			window := stallAfter(forks[0], 0)
+			for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
+				poll(2 * time.Second)
+			}
+			served(t, network, 20_000, "inside the stall window the frozen pair carries quorum 2, and the guard remembers it")
+			held := servedTipRegressionCount(network, "latest", "held")
+			failedOpen := servedTipRegressionCount(network, "latest", "failed_open")
 
-		poll(4 * time.Second)
-		for _, u := range forks {
-			require.True(t, tr.IsHeadBenched(u), "%s", u.Id())
-		}
-		served(t, network, canon-1, "the live voters agree with the pick: the guard must not hold the frozen pair's height, nor serve canon-a's head alone")
-		for end := servedTipClock().Add(servedTipRegressionTTL + 2*time.Second); servedTipClock().Before(end); {
-			poll(2 * time.Second)
-			served(t, network, canon-1, "while the remembered height ages out")
-		}
-		assert.Equal(t, held, servedTipRegressionCount(network, "latest", "held"), "a bench is not a regression")
-		assert.Equal(t, failedOpen, servedTipRegressionCount(network, "latest", "failed_open"), "a guard that never held does not fail open")
+			poll(4 * time.Second)
+			for _, u := range forks {
+				require.True(t, tr.IsHeadBenched(u), "%s", u.Id())
+			}
+			served(t, network, canon-1, "the live voters agree with the pick: the guard must not hold the frozen pair's height, nor serve canon-a's head alone")
+			for end := servedTipClock().Add(servedTipRegressionTTL + 2*time.Second); servedTipClock().Before(end); {
+				poll(2 * time.Second)
+				served(t, network, canon-1, "while the remembered height ages out")
+			}
+			assert.Equal(t, held, servedTipRegressionCount(network, "latest", "held"), "a bench is not a regression")
+			assert.Equal(t, failedOpen, servedTipRegressionCount(network, "latest", "failed_open"), "a guard that never held does not fail open")
+		})
 	})
 
 	t.Run("one moving wrong-chain peer cannot bench a halted fleet by block age", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "a", chainID: 123, latestBlock: 5_000},
-			{id: "b", chainID: 123, latestBlock: 5_000},
-			{id: "rogue", chainID: 123, latestBlock: 1_000},
-		}, nil)
-		a, b, rogue := ups[0], ups[1], ups[2]
-		tr := network.metricsTracker
-		haltedTs := servedTipClock().Add(-10 * time.Minute).Unix()
-		rogueHead := int64(1_000)
-		for range 300 {
-			advance(2 * time.Second)
-			report(tr, a, 5_000, haltedTs)
-			report(tr, b, 5_000, haltedTs)
-			rogueHead++
-			report(tr, rogue, rogueHead, servedTipClock().Unix())
-			require.False(t, tr.IsHeadBenched(a), "one younger peer is not enough while two peers exist")
-			require.False(t, tr.IsHeadBenched(b), "one younger peer is not enough while two peers exist")
-		}
-		require.Zero(t, lagOf(network, a))
-		require.Zero(t, lagOf(network, b))
-		served(t, network, 5_000, "a halted fleet beside one moving wrong-chain peer")
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
+
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "a", chainID: 123, latestBlock: 5_000},
+				{id: "b", chainID: 123, latestBlock: 5_000},
+				{id: "rogue", chainID: 123, latestBlock: 1_000},
+			}, nil)
+			a, b, rogue := ups[0], ups[1], ups[2]
+			tr := network.metricsTracker
+			haltedTs := servedTipClock().Add(-10 * time.Minute).Unix()
+			rogueHead := int64(1_000)
+			for range 300 {
+				advance(2 * time.Second)
+				report(tr, a, 5_000, haltedTs)
+				report(tr, b, 5_000, haltedTs)
+				rogueHead++
+				report(tr, rogue, rogueHead, servedTipClock().Unix())
+				require.False(t, tr.IsHeadBenched(a), "one younger peer is not enough while two peers exist")
+				require.False(t, tr.IsHeadBenched(b), "one younger peer is not enough while two peers exist")
+			}
+			require.Zero(t, lagOf(network, a))
+			require.Zero(t, lagOf(network, b))
+			served(t, network, 5_000, "a halted fleet beside one moving wrong-chain peer")
+		})
 	})
 
 	t.Run("an endpoint serving another chain with the same chain id is benched by block age", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "chain", chainID: 123, latestBlock: 47_900_000},
-			{id: "other", chainID: 123, latestBlock: 1_823_000},
-		}, nil)
-		chain, other := ups[0], ups[1]
-		tr := network.metricsTracker
-		// Two chains share the chain id: ours makes a block every 2s, the other
-		// (an on-demand rollup testnet) one every 5 minutes, both with fresh
-		// timestamps. 46M blocks apart, no lead is plausible, so only block
-		// age can tell them apart.
-		const gap = 5 * time.Minute
-		window := stallAfter(other, 0)
-		require.Less(t, 2*window, gap, "the other chain's gap must outlast its bench delay")
-		head, otherHead := int64(47_900_000), int64(1_823_000)
-		report(tr, chain, head, servedTipClock().Unix())
-		report(tr, other, otherHead, servedTipClock().Unix())
-		served(t, network, otherHead, "until block age tells the chains apart, quorum 2 serves the lower head")
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
 
-		for elapsed := time.Duration(0); elapsed < gap; elapsed += 2 * time.Second {
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "chain", chainID: 123, latestBlock: 47_900_000},
+				{id: "other", chainID: 123, latestBlock: 1_823_000},
+			}, nil)
+			chain, other := ups[0], ups[1]
+			tr := network.metricsTracker
+			// Two chains share the chain id: ours makes a block every 2s, the other
+			// (an on-demand rollup testnet) one every 5 minutes, both with fresh
+			// timestamps. 46M blocks apart, no lead is plausible, so only block
+			// age can tell them apart.
+			const gap = 5 * time.Minute
+			window := stallAfter(other, 0)
+			require.Less(t, 2*window, gap, "the other chain's gap must outlast its bench delay")
+			head, otherHead := int64(47_900_000), int64(1_823_000)
+			report(tr, chain, head, servedTipClock().Unix())
+			report(tr, other, otherHead, servedTipClock().Unix())
+			served(t, network, otherHead, "until block age tells the chains apart, quorum 2 serves the lower head")
+
+			for elapsed := time.Duration(0); elapsed < gap; elapsed += 2 * time.Second {
+				advance(2 * time.Second)
+				head++
+				report(tr, chain, head, servedTipClock().Unix())
+			}
+			require.True(t, tr.IsHeadBenched(other), "a head whose block stays a stall window older than its peer's is benched")
+			require.False(t, tr.IsHeadBenched(chain))
+			served(t, network, head, "the chain that keeps producing blocks defines latest")
+			require.Greater(t, lagOf(network, other), int64(16), "past the default blockNumberLagAbove, so routing leaves it")
+
+			// Its next block never brings it back: it cannot reach our head.
 			advance(2 * time.Second)
 			head++
+			report(tr, other, otherHead+1, servedTipClock().Unix())
 			report(tr, chain, head, servedTipClock().Unix())
-		}
-		require.True(t, tr.IsHeadBenched(other), "a head whose block stays a stall window older than its peer's is benched")
-		require.False(t, tr.IsHeadBenched(chain))
-		served(t, network, head, "the chain that keeps producing blocks defines latest")
-		require.Greater(t, lagOf(network, other), int64(16), "past the default blockNumberLagAbove, so routing leaves it")
-
-		// Its next block never brings it back: it cannot reach our head.
-		advance(2 * time.Second)
-		head++
-		report(tr, other, otherHead+1, servedTipClock().Unix())
-		report(tr, chain, head, servedTipClock().Unix())
-		require.True(t, tr.IsHeadBenched(other))
-		served(t, network, head, "after the other chain's next block")
+			require.True(t, tr.IsHeadBenched(other))
+			served(t, network, head, "after the other chain's next block")
+		})
 	})
 
 	t.Run("a static head at a slow chain's tip is not benched while peers catch up", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "tip", chainID: 123, latestBlock: 6_000},
-			{id: "c1", chainID: 123, latestBlock: 5_000},
-			{id: "c2", chainID: 123, latestBlock: 5_000},
-		}, nil)
-		tip, catchers := ups[0], ups[1:]
-		tr := network.metricsTracker
-		start := servedTipClock()
-		tipTs := start.Add(-50 * time.Second).Unix()
-		// A 60s-block chain: the catchers replay blocks produced ~20h ago.
-		tsOf := func(n int64) int64 { return start.Add(-20*time.Hour).Unix() + (n-5_000)*60 }
-		c := int64(5_000)
-		for range 30 {
-			advance(10 * time.Second)
-			report(tr, tip, 6_000, tipTs)
-			c += 5
-			for _, u := range catchers {
-				report(tr, u, c, tsOf(c))
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
+
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "tip", chainID: 123, latestBlock: 6_000},
+				{id: "c1", chainID: 123, latestBlock: 5_000},
+				{id: "c2", chainID: 123, latestBlock: 5_000},
+			}, nil)
+			tip, catchers := ups[0], ups[1:]
+			tr := network.metricsTracker
+			start := servedTipClock()
+			tipTs := start.Add(-50 * time.Second).Unix()
+			// A 60s-block chain: the catchers replay blocks produced ~20h ago.
+			tsOf := func(n int64) int64 { return start.Add(-20*time.Hour).Unix() + (n-5_000)*60 }
+			c := int64(5_000)
+			for range 30 {
+				advance(10 * time.Second)
+				report(tr, tip, 6_000, tipTs)
+				c += 5
+				for _, u := range catchers {
+					report(tr, u, c, tsOf(c))
+				}
+				require.False(t, tr.IsHeadBenched(tip), "peers below with older blocks never prove the tip stalled (at %d)", c)
 			}
-			require.False(t, tr.IsHeadBenched(tip), "peers below with older blocks never prove the tip stalled (at %d)", c)
-		}
-		served(t, network, c, "quorum 2 serves the catching-up pair")
+			served(t, network, c, "quorum 2 serves the catching-up pair")
+		})
 	})
 
 	t.Run("quorum majority: three of five stall", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "live-a", chainID: 123, latestBlock: 7_000},
-			{id: "live-b", chainID: 123, latestBlock: 7_000},
-			{id: "stalled-a", chainID: 123, latestBlock: 7_000},
-			{id: "stalled-b", chainID: 123, latestBlock: 7_000},
-			{id: "stalled-c", chainID: 123, latestBlock: 7_000},
-		}, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority})
-		lives, stalls := ups[:2], ups[2:]
-		tr := network.metricsTracker
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
 
-		head := int64(7_000)
-		for range 5 {
-			advance(2 * time.Second)
-			head += 2
-			for _, u := range ups {
-				u.EvmStatePoller().SuggestLatestBlock(head)
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "live-a", chainID: 123, latestBlock: 7_000},
+				{id: "live-b", chainID: 123, latestBlock: 7_000},
+				{id: "stalled-a", chainID: 123, latestBlock: 7_000},
+				{id: "stalled-b", chainID: 123, latestBlock: 7_000},
+				{id: "stalled-c", chainID: 123, latestBlock: 7_000},
+			}, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority})
+			lives, stalls := ups[:2], ups[2:]
+			tr := network.metricsTracker
+
+			head := int64(7_000)
+			for range 5 {
+				advance(2 * time.Second)
+				head += 2
+				for _, u := range ups {
+					u.EvmStatePoller().SuggestLatestBlock(head)
+				}
 			}
-		}
-		served(t, network, head, "a healthy fleet")
-		stalledAt := head
+			served(t, network, head, "a healthy fleet")
+			stalledAt := head
 
-		window := stallAfter(stalls[0], 0)
-		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
-			advance(2 * time.Second)
+			window := stallAfter(stalls[0], 0)
+			for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
+				advance(2 * time.Second)
+				head += 2
+				for _, u := range lives {
+					u.EvmStatePoller().SuggestLatestBlock(head)
+				}
+			}
+			for _, u := range stalls {
+				require.False(t, tr.IsHeadBenched(u), "%s: inside its stall window", u.Id())
+			}
+			served(t, network, stalledAt, "inside the stall window the stalled majority (3 of 5) holds latest")
+
+			advance(4 * time.Second)
 			head += 2
 			for _, u := range lives {
 				u.EvmStatePoller().SuggestLatestBlock(head)
 			}
-		}
-		for _, u := range stalls {
-			require.False(t, tr.IsHeadBenched(u), "%s: inside its stall window", u.Id())
-		}
-		served(t, network, stalledAt, "inside the stall window the stalled majority (3 of 5) holds latest")
+			for _, u := range stalls {
+				require.True(t, tr.IsHeadBenched(u), "%s: benched after its stall window", u.Id())
+				require.Equal(t, head-stalledAt, lagOf(network, u), "%s", u.Id())
+			}
+			for _, u := range lives {
+				require.False(t, tr.IsHeadBenched(u), "%s", u.Id())
+			}
+			served(t, network, head, "the live pair is the majority of the non-benched voters")
 
-		advance(4 * time.Second)
-		head += 2
-		for _, u := range lives {
-			u.EvmStatePoller().SuggestLatestBlock(head)
-		}
-		for _, u := range stalls {
-			require.True(t, tr.IsHeadBenched(u), "%s: benched after its stall window", u.Id())
-			require.Equal(t, head-stalledAt, lagOf(network, u), "%s", u.Id())
-		}
-		for _, u := range lives {
-			require.False(t, tr.IsHeadBenched(u), "%s", u.Id())
-		}
-		served(t, network, head, "the live pair is the majority of the non-benched voters")
-
-		advance(time.Second)
-		stalls[0].EvmStatePoller().SuggestLatestBlock(head)
-		require.False(t, tr.IsHeadBenched(stalls[0]), "a stalled head that caught up rejoins")
-		require.Zero(t, lagOf(network, stalls[0]))
-		for _, u := range stalls[1:] {
-			require.True(t, tr.IsHeadBenched(u), "%s", u.Id())
-		}
-		served(t, network, head, "after one rejoins")
+			advance(time.Second)
+			stalls[0].EvmStatePoller().SuggestLatestBlock(head)
+			require.False(t, tr.IsHeadBenched(stalls[0]), "a stalled head that caught up rejoins")
+			require.Zero(t, lagOf(network, stalls[0]))
+			for _, u := range stalls[1:] {
+				require.True(t, tr.IsHeadBenched(u), "%s", u.Id())
+			}
+			served(t, network, head, "after one rejoins")
+		})
 	})
 
 	t.Run("a benched head still votes when every other voter leaves", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "live", chainID: 123, latestBlock: 8_000},
-			{id: "stalled", chainID: 123, latestBlock: 8_000},
-		}, nil)
-		live, stalled := ups[0], ups[1]
-		tr := network.metricsTracker
-		const stalledAt = int64(8_000)
-		head := stalledAt
-		for elapsed := time.Duration(0); elapsed <= stallAfter(stalled, 0); elapsed += 2 * time.Second {
-			advance(2 * time.Second)
-			head += 2
-			live.EvmStatePoller().SuggestLatestBlock(head)
-		}
-		require.True(t, tr.IsHeadBenched(stalled), "precondition: stalled is benched")
-		served(t, network, head, "precondition: live defines latest")
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
 
-		live.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
-		require.Equal(t, stalledAt, network.EvmHighestLatestBlockNumber(ctx),
-			"with no non-benched voter left, latest fails open to the benched head instead of 0")
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "live", chainID: 123, latestBlock: 8_000},
+				{id: "stalled", chainID: 123, latestBlock: 8_000},
+			}, nil)
+			live, stalled := ups[0], ups[1]
+			tr := network.metricsTracker
+			const stalledAt = int64(8_000)
+			head := stalledAt
+			for elapsed := time.Duration(0); elapsed <= stallAfter(stalled, 0); elapsed += 2 * time.Second {
+				advance(2 * time.Second)
+				head += 2
+				live.EvmStatePoller().SuggestLatestBlock(head)
+			}
+			require.True(t, tr.IsHeadBenched(stalled), "precondition: stalled is benched")
+			served(t, network, head, "precondition: live defines latest")
+
+			live.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+			require.Equal(t, stalledAt, network.EvmHighestLatestBlockNumber(ctx),
+				"with no non-benched voter left, latest fails open to the benched head instead of 0")
+		})
 	})
 }
 
@@ -2524,97 +2613,120 @@ func TestServedTip_Finalized_FloorLimits(t *testing.T) {
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	var ctx context.Context
 
 	t.Run("a lagger rejoining a lone leader does not pull finalized back", func(t *testing.T) {
-		network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
-			{id: "lead", chainID: 123, latestBlock: 1_000},
-			{id: "lag", chainID: 123, latestBlock: 1_000, syncing: true},
-		})
-		setServedTipFinalized(t, ups[0], 201)
-		setServedTipFinalized(t, ups[1], 150)
-		require.Equal(t, int64(201), network.EvmHighestFinalizedBlockNumber(ctx), "the syncing lagger does not vote")
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
 
-		ups[1].EvmStatePoller().SetSyncingState(common.EvmSyncingStateNotSyncing)
-		assert.Equal(t, int64(201), network.EvmHighestFinalizedBlockNumber(ctx),
-			"the pair's pick is 150, but the leader still reports 201 finalized")
+			network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+				{id: "lead", chainID: 123, latestBlock: 1_000},
+				{id: "lag", chainID: 123, latestBlock: 1_000, syncing: true},
+			})
+			setServedTipFinalized(t, ups[0], 201)
+			setServedTipFinalized(t, ups[1], 150)
+			require.Equal(t, int64(201), network.EvmHighestFinalizedBlockNumber(ctx), "the syncing lagger does not vote")
+
+			ups[1].EvmStatePoller().SetSyncingState(common.EvmSyncingStateNotSyncing)
+			assert.Equal(t, int64(201), network.EvmHighestFinalizedBlockNumber(ctx),
+				"the pair's pick is 150, but the leader still reports 201 finalized")
+		})
 	})
 
 	t.Run("a far-ahead voter served alone cannot hold the floor", func(t *testing.T) {
-		advance := pinServedTipClock(t)
-		network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
-			{id: "rogue", chainID: 123, latestBlock: 10_000},
-			{id: "honest1", chainID: 123, latestBlock: 10_000},
-			{id: "honest2", chainID: 123, latestBlock: 10_000},
-		})
-		setServedTipFinalized(t, ups[0], 9_000)
-		require.Equal(t, int64(9_000), network.EvmHighestFinalizedBlockNumber(ctx),
-			"the honest upstreams have no finalized head yet, so the only voter defines it")
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
 
-		setServedTipFinalized(t, ups[1], 500)
-		setServedTipFinalized(t, ups[2], 500)
-		advance(servedTipRegressionTTL + time.Second)
-		assert.Equal(t, int64(500), network.EvmHighestFinalizedBlockNumber(ctx),
-			"past the guard's window, a drop deeper than the tolerance is not the floor's to hold")
+			advance := pinServedTipClock(t)
+			network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+				{id: "rogue", chainID: 123, latestBlock: 10_000},
+				{id: "honest1", chainID: 123, latestBlock: 10_000},
+				{id: "honest2", chainID: 123, latestBlock: 10_000},
+			})
+			setServedTipFinalized(t, ups[0], 9_000)
+			require.Equal(t, int64(9_000), network.EvmHighestFinalizedBlockNumber(ctx),
+				"the honest upstreams have no finalized head yet, so the only voter defines it")
+
+			setServedTipFinalized(t, ups[1], 500)
+			setServedTipFinalized(t, ups[2], 500)
+			advance(servedTipRegressionTTL + time.Second)
+			assert.Equal(t, int64(500), network.EvmHighestFinalizedBlockNumber(ctx),
+				"past the guard's window, a drop deeper than the tolerance is not the floor's to hold")
+		})
 	})
 
 	t.Run("a held finalized never exceeds the served latest", func(t *testing.T) {
-		network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
-			{id: "lead1", chainID: 123, latestBlock: 1_000},
-			{id: "lead2", chainID: 123, latestBlock: 1_000},
-			{id: "lead3", chainID: 123, latestBlock: 1_000},
-			{id: "lag1", chainID: 123, latestBlock: 180},
-			{id: "lag2", chainID: 123, latestBlock: 180},
-		})
-		for i, u := range ups {
-			fin := int64(201)
-			if i >= 3 {
-				fin = 150
-			}
-			setServedTipFinalized(t, u, fin)
-		}
-		require.Equal(t, int64(201), network.EvmHighestFinalizedBlockNumber(ctx))
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
 
-		ups[2].EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
-		latest := network.EvmHighestLatestBlockNumber(ctx)
-		require.Equal(t, int64(180), latest, "the laggers are now the latest majority too")
-		assert.Equal(t, latest, network.EvmHighestFinalizedBlockNumber(ctx),
-			"the floor backs 201, but finalized must not pass the served latest")
+			network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+				{id: "lead1", chainID: 123, latestBlock: 1_000},
+				{id: "lead2", chainID: 123, latestBlock: 1_000},
+				{id: "lead3", chainID: 123, latestBlock: 1_000},
+				{id: "lag1", chainID: 123, latestBlock: 180},
+				{id: "lag2", chainID: 123, latestBlock: 180},
+			})
+			for i, u := range ups {
+				fin := int64(201)
+				if i >= 3 {
+					fin = 150
+				}
+				setServedTipFinalized(t, u, fin)
+			}
+			require.Equal(t, int64(201), network.EvmHighestFinalizedBlockNumber(ctx))
+
+			ups[2].EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+			latest := network.EvmHighestLatestBlockNumber(ctx)
+			require.Equal(t, int64(180), latest, "the laggers are now the latest majority too")
+			assert.Equal(t, latest, network.EvmHighestFinalizedBlockNumber(ctx),
+				"the floor backs 201, but finalized must not pass the served latest")
+		})
 	})
 
 	t.Run("the shared floor holds only within the tolerance above the computed tip", func(t *testing.T) {
-		network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
-			{id: "lead1", chainID: 123, latestBlock: 20_000},
-			{id: "lead2", chainID: 123, latestBlock: 20_000},
-			{id: "lag1", chainID: 123, latestBlock: 20_000, syncing: true},
-			{id: "lag2", chainID: 123, latestBlock: 20_000, syncing: true},
-			{id: "lag3", chainID: 123, latestBlock: 20_000, syncing: true},
+		synctest.Test(t, func(t *testing.T) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			defer cancel()
+
+			network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+				{id: "lead1", chainID: 123, latestBlock: 20_000},
+				{id: "lead2", chainID: 123, latestBlock: 20_000},
+				{id: "lag1", chainID: 123, latestBlock: 20_000, syncing: true},
+				{id: "lag2", chainID: 123, latestBlock: 20_000, syncing: true},
+				{id: "lag3", chainID: 123, latestBlock: 20_000, syncing: true},
+			})
+			lead, lag := ups[:2], ups[2:]
+			for _, u := range lead {
+				setServedTipFinalized(t, u, 10_900)
+			}
+			for _, u := range lag {
+				setServedTipFinalized(t, u, 10_000)
+			}
+			require.Equal(t, int64(10_900), network.EvmHighestFinalizedBlockNumber(ctx), "the syncing laggers do not vote")
+
+			for _, u := range lead {
+				setServedTipFinalized(t, u, 11_800)
+			}
+			replica, err := NewNetwork(ctx, &log.Logger, network.projectId, network.cfg,
+				network.rateLimitersRegistry, network.upstreamsRegistry, network.metricsTracker, nil)
+			require.NoError(t, err)
+			require.Equal(t, int64(11_800), replica.EvmHighestFinalizedBlockNumber(ctx),
+				"another instance serves the leaders' new head and shares it")
+
+			lead[1].EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+			for _, u := range lag {
+				u.EvmStatePoller().SetSyncingState(common.EvmSyncingStateNotSyncing)
+			}
+			assert.Equal(t, int64(10_900), network.EvmHighestFinalizedBlockNumber(ctx),
+				"the pick is 10,000: the lane's floor 900 above it holds, the shared 11,800 is 1,800 above it")
 		})
-		lead, lag := ups[:2], ups[2:]
-		for _, u := range lead {
-			setServedTipFinalized(t, u, 10_900)
-		}
-		for _, u := range lag {
-			setServedTipFinalized(t, u, 10_000)
-		}
-		require.Equal(t, int64(10_900), network.EvmHighestFinalizedBlockNumber(ctx), "the syncing laggers do not vote")
-
-		for _, u := range lead {
-			setServedTipFinalized(t, u, 11_800)
-		}
-		replica, err := NewNetwork(ctx, &log.Logger, network.projectId, network.cfg,
-			network.rateLimitersRegistry, network.upstreamsRegistry, network.metricsTracker, nil)
-		require.NoError(t, err)
-		require.Equal(t, int64(11_800), replica.EvmHighestFinalizedBlockNumber(ctx),
-			"another instance serves the leaders' new head and shares it")
-
-		lead[1].EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
-		for _, u := range lag {
-			u.EvmStatePoller().SetSyncingState(common.EvmSyncingStateNotSyncing)
-		}
-		assert.Equal(t, int64(10_900), network.EvmHighestFinalizedBlockNumber(ctx),
-			"the pick is 10,000: the lane's floor 900 above it holds, the shared 11,800 is 1,800 above it")
 	})
 }
 

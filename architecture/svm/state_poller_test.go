@@ -281,49 +281,52 @@ func newPollerOnCtx(t *testing.T, appCtx context.Context, up common.Upstream) *S
 
 func TestSvmStatePoller_Poll_FansOutAllCalls(t *testing.T) {
 	t.Parallel()
-	up := newScriptedUpstream()
 
-	up.script("getSlot:processed", []byte(`1000`))
-	up.script("getSlot:finalized", []byte(`990`))
-	// The shred watermark is structurally AHEAD of the replayed slot, so
-	// ingestion lag = 1002 - 1000 = 2 (healthy).
-	up.script("getMaxShredInsertSlot", []byte(`1002`))
-	up.script("oldestBlock", []byte(`[200]`))
+	synctest.Test(t, func(t *testing.T) {
+		up := newScriptedUpstream()
 
-	p := newPollerWithUpstream(t, up)
-	require.NoError(t, p.Poll(context.Background()))
+		up.script("getSlot:processed", []byte(`1000`))
+		up.script("getSlot:finalized", []byte(`990`))
+		// The shred watermark is structurally AHEAD of the replayed slot, so
+		// ingestion lag = 1002 - 1000 = 2 (healthy).
+		up.script("getMaxShredInsertSlot", []byte(`1002`))
+		up.script("oldestBlock", []byte(`[200]`))
 
-	if up.callCount("getSlot:processed") != 1 {
-		t.Errorf("getSlot(processed) called %d times, want 1", up.callCount("getSlot:processed"))
-	}
-	if up.callCount("getSlot:finalized") != 1 {
-		t.Errorf("getSlot(finalized) called %d times, want 1", up.callCount("getSlot:finalized"))
-	}
-	if up.callCount("getMaxShredInsertSlot") != 1 {
-		t.Errorf("getMaxShredInsertSlot called %d times, want 1", up.callCount("getMaxShredInsertSlot"))
-	}
-	if up.callCount("oldestBlock") != 1 {
-		t.Errorf("floor probe called %d times, want 1", up.callCount("oldestBlock"))
-	}
+		p := newPollerWithUpstream(t, up)
+		require.NoError(t, p.Poll(context.Background()))
 
-	if p.LatestSlot() != 1000 {
-		t.Errorf("LatestSlot = %d, want 1000", p.LatestSlot())
-	}
-	if p.FinalizedSlot() != 990 {
-		t.Errorf("FinalizedSlot = %d, want 990", p.FinalizedSlot())
-	}
-	if p.MaxShredInsertSlotLag() != 2 {
-		t.Errorf("MaxShredInsertSlotLag = %d, want 2 (maxShredInsertSlot 1002 - processedSlot 1000)", p.MaxShredInsertSlotLag())
-	}
-	if !p.IsHealthy() {
-		t.Error("IsHealthy should be true: probes answering + lag within threshold")
-	}
-	// The floor fetch may finish after Poll's bounded foreground wait under
-	// -race; it still lands via the async closure.
-	require.Eventually(t, func() bool {
-		floor, known := p.FirstAvailableSlot()
-		return known && floor == 200
-	}, 5*time.Second, 10*time.Millisecond, "FirstAvailableSlot must become (200, true)")
+		if up.callCount("getSlot:processed") != 1 {
+			t.Errorf("getSlot(processed) called %d times, want 1", up.callCount("getSlot:processed"))
+		}
+		if up.callCount("getSlot:finalized") != 1 {
+			t.Errorf("getSlot(finalized) called %d times, want 1", up.callCount("getSlot:finalized"))
+		}
+		if up.callCount("getMaxShredInsertSlot") != 1 {
+			t.Errorf("getMaxShredInsertSlot called %d times, want 1", up.callCount("getMaxShredInsertSlot"))
+		}
+		if up.callCount("oldestBlock") != 1 {
+			t.Errorf("floor probe called %d times, want 1", up.callCount("oldestBlock"))
+		}
+
+		if p.LatestSlot() != 1000 {
+			t.Errorf("LatestSlot = %d, want 1000", p.LatestSlot())
+		}
+		if p.FinalizedSlot() != 990 {
+			t.Errorf("FinalizedSlot = %d, want 990", p.FinalizedSlot())
+		}
+		if p.MaxShredInsertSlotLag() != 2 {
+			t.Errorf("MaxShredInsertSlotLag = %d, want 2 (maxShredInsertSlot 1002 - processedSlot 1000)", p.MaxShredInsertSlotLag())
+		}
+		if !p.IsHealthy() {
+			t.Error("IsHealthy should be true: probes answering + lag within threshold")
+		}
+		// The floor fetch may finish after Poll's bounded foreground wait under
+		// -race; it still lands via the async closure.
+		require.Eventually(t, func() bool {
+			floor, known := p.FirstAvailableSlot()
+			return known && floor == 200
+		}, 5*time.Second, 10*time.Millisecond, "FirstAvailableSlot must become (200, true)")
+	})
 }
 
 // The ledger floor is the one poll whose absence must never cost us an
@@ -399,24 +402,27 @@ func TestSvmStatePoller_FirstAvailableSlot_PolledWithoutDeclaredBound(t *testing
 // FirstAvailableSlot returns a second value instead of just the counter.
 func TestSvmStatePoller_FirstAvailableSlot_ZeroIsKnown(t *testing.T) {
 	t.Parallel()
-	up := newScriptedUpstream()
 
-	up.script("getSlot:processed", []byte(`1000`))
-	up.script("getSlot:finalized", []byte(`990`))
-	up.script("getMaxShredInsertSlot", []byte(`1002`))
-	up.script("oldestBlock", []byte(`[0]`))
+	synctest.Test(t, func(t *testing.T) {
+		up := newScriptedUpstream()
 
-	p := newPollerWithUpstream(t, up)
-	require.NoError(t, p.Poll(context.Background()))
+		up.script("getSlot:processed", []byte(`1000`))
+		up.script("getSlot:finalized", []byte(`990`))
+		up.script("getMaxShredInsertSlot", []byte(`1002`))
+		up.script("oldestBlock", []byte(`[0]`))
 
-	// Under -race the foreground wait can time out while the fetch completes
-	// asynchronously; the closure then marks the floor known.
-	require.Eventually(t, func() bool {
-		_, known := p.FirstAvailableSlot()
-		return known
-	}, 5*time.Second, 10*time.Millisecond, "an observed floor of 0 must read as KNOWN")
-	floor, _ := p.FirstAvailableSlot()
-	require.Zero(t, floor)
+		p := newPollerWithUpstream(t, up)
+		require.NoError(t, p.Poll(context.Background()))
+
+		// Under -race the foreground wait can time out while the fetch completes
+		// asynchronously; the closure then marks the floor known.
+		require.Eventually(t, func() bool {
+			_, known := p.FirstAvailableSlot()
+			return known
+		}, 5*time.Second, 10*time.Millisecond, "an observed floor of 0 must read as KNOWN")
+		floor, _ := p.FirstAvailableSlot()
+		require.Zero(t, floor)
+	})
 }
 
 // An empty getBlocksWithLimit(0, 1) is no observation, not a genesis floor:

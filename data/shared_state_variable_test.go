@@ -376,7 +376,7 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 
-				registry, connector, _ := setupTest("my-dev")
+				registry, connector, _ := setupTest(t, "my-dev")
 				lock := &MockLock{}
 				tt.setupMocks(connector, lock)
 
@@ -409,7 +409,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 		initialValue  int64
 		staleness     time.Duration
 		updateValue   int64
-		lastProcessed time.Time
+		age           time.Duration
 		expectedValue int64
 		eventualValue int64
 		eventual      bool
@@ -424,7 +424,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			initialValue:  5,
 			staleness:     time.Second,
 			updateValue:   10,
-			lastProcessed: time.Now(),
+			age:           0,
 			expectedValue: 5,
 			expectedError: nil,
 			expectedCalls: 0,
@@ -437,7 +437,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			initialValue:  5,
 			staleness:     time.Second,
 			updateValue:   5,
-			lastProcessed: time.Now().Add(-2 * time.Second),
+			age:           2 * time.Second,
 			expectedValue: 5,
 			expectedError: nil,
 			expectedCalls: 1,
@@ -455,7 +455,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			initialValue:  5,
 			staleness:     time.Second,
 			updateValue:   10,
-			lastProcessed: time.Now().Add(-2 * time.Second),
+			age:           2 * time.Second,
 			expectedValue: 10,
 			expectedError: nil,
 			expectedCalls: 1,
@@ -471,10 +471,10 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 				// Background push publishes local snapshot best-effort.
 				c.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil)
 			},
-			initialValue:  5,
-			staleness:     time.Second,
-			updateValue:   10,
-			lastProcessed: time.Now().Add(-2 * time.Second),
+			initialValue: 5,
+			staleness:    time.Second,
+			updateValue:  10,
+			age:          2 * time.Second,
 			// Foreground path is local-only: it returns the refresh result (10).
 			// Remote reconciliation happens asynchronously and should eventually raise the local value to 15.
 			expectedValue: 10,
@@ -491,7 +491,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			initialValue:  5,
 			staleness:     time.Second,
 			updateValue:   0, // Will return error
-			lastProcessed: time.Now().Add(-2 * time.Second),
+			age:           2 * time.Second,
 			expectedValue: 5,
 			expectedError: errors.New("update failed"),
 			expectedCalls: 1,
@@ -500,45 +500,47 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
 
-			registry, connector, _ := setupTest("my-dev")
-			lock := &MockLock{}
-			tt.setupMocks(connector, lock)
+				registry, connector, _ := setupTest(t, "my-dev")
+				lock := &MockLock{}
+				tt.setupMocks(connector, lock)
 
-			counter := &counterInt64{
-				registry:         registry,
-				key:              "test",
-				ignoreRollbackOf: 1024,
-			}
-			counter.value.Store(tt.initialValue)
-			counter.updatedAtUnixMs.Store(tt.lastProcessed.UnixMilli())
-
-			getNewValue := func(ctx context.Context) (int64, error) {
-				if tt.expectedError != nil {
-					return 0, tt.expectedError
+				counter := &counterInt64{
+					registry:         registry,
+					key:              "test",
+					ignoreRollbackOf: 1024,
 				}
-				return tt.updateValue, nil
-			}
+				counter.value.Store(tt.initialValue)
+				counter.updatedAtUnixMs.Store(time.Now().Add(-tt.age).UnixMilli())
 
-			result, err := counter.TryUpdateIfStale(ctx, tt.staleness, getNewValue)
+				getNewValue := func(ctx context.Context) (int64, error) {
+					if tt.expectedError != nil {
+						return 0, tt.expectedError
+					}
+					return tt.updateValue, nil
+				}
 
-			if tt.expectedError != nil {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-			assert.Equal(t, tt.expectedValue, result)
-			// Give background goroutines (remote reconciliation/push) time to run when applicable.
-			time.Sleep(100 * time.Millisecond)
-			if tt.eventual {
-				assert.Eventually(t, func() bool {
-					return counter.GetValue() == tt.eventualValue
-				}, 500*time.Millisecond, 10*time.Millisecond, "counter should eventually converge to the higher remote value")
-			}
-			connector.AssertExpectations(t)
-			lock.AssertExpectations(t)
+				result, err := counter.TryUpdateIfStale(ctx, tt.staleness, getNewValue)
+
+				if tt.expectedError != nil {
+					assert.Error(t, err)
+				} else {
+					assert.NoError(t, err)
+				}
+				assert.Equal(t, tt.expectedValue, result)
+				// Give background goroutines (remote reconciliation/push) time to run when applicable.
+				time.Sleep(100 * time.Millisecond)
+				if tt.eventual {
+					assert.Eventually(t, func() bool {
+						return counter.GetValue() == tt.eventualValue
+					}, 500*time.Millisecond, 10*time.Millisecond, "counter should eventually converge to the higher remote value")
+				}
+				connector.AssertExpectations(t)
+				lock.AssertExpectations(t)
+			})
 		})
 	}
 }
@@ -547,7 +549,7 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	registry, connector, _ := setupTest("my-dev")
+	registry, connector, _ := setupTest(t, "my-dev")
 	lock := &MockLock{}
 
 	// Remote reconciliation/push is best-effort and deduped; this test focuses on local correctness.
@@ -593,36 +595,38 @@ func TestCounterInt64_GetValue(t *testing.T) {
 
 func TestCounterInt64_IsStale(t *testing.T) {
 	tests := []struct {
-		name          string
-		lastProcessed time.Time
-		staleness     time.Duration
-		expected      bool
+		name      string
+		age       time.Duration
+		staleness time.Duration
+		expected  bool
 	}{
 		{
-			name:          "not stale",
-			lastProcessed: time.Now(),
-			staleness:     time.Second,
-			expected:      false,
+			name:      "not stale",
+			age:       0,
+			staleness: time.Second,
+			expected:  false,
 		},
 		{
-			name:          "stale",
-			lastProcessed: time.Now().Add(-2 * time.Second),
-			staleness:     time.Second,
-			expected:      true,
+			name:      "stale",
+			age:       2 * time.Second,
+			staleness: time.Second,
+			expected:  true,
 		},
 		{
-			name:          "exactly at staleness threshold",
-			lastProcessed: time.Now().Add(-time.Second),
-			staleness:     time.Second,
-			expected:      true,
+			name:      "exactly at staleness threshold",
+			age:       time.Second,
+			staleness: time.Second,
+			expected:  false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			counter := &counterInt64{}
-			counter.updatedAtUnixMs.Store(tt.lastProcessed.UnixMilli())
-			assert.Equal(t, tt.expected, counter.IsStale(tt.staleness))
+			synctest.Test(t, func(t *testing.T) {
+				counter := &counterInt64{}
+				counter.updatedAtUnixMs.Store(time.Now().Add(-tt.age).UnixMilli())
+				assert.Equal(t, tt.expected, counter.IsStale(tt.staleness))
+			})
 		})
 	}
 }
@@ -782,7 +786,7 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 
-				registry, connector, _ := setupTest("my-dev")
+				registry, connector, _ := setupTest(t, "my-dev")
 				lock := &MockLock{}
 				tt.setupMocks(connector, lock)
 
@@ -818,7 +822,7 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 
 func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) {
 	ctx := context.Background()
-	registry, connector, _ := setupTest("my-dev")
+	registry, connector, _ := setupTest(t, "my-dev")
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -853,7 +857,7 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) 
 
 func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 	ctx := context.Background()
-	registry, connector, _ := setupTest("my-dev")
+	registry, connector, _ := setupTest(t, "my-dev")
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -908,7 +912,7 @@ func TestCounterInt64_TryUpdateIfStale_FnTimeoutFromCtxDeadline(t *testing.T) {
 	}
 
 	t.Run("ctx deadline longer than fallback is honored", func(t *testing.T) {
-		registry, _, _ := setupTest("my-dev")
+		registry, _, _ := setupTest(t, "my-dev")
 		registry.fallbackTimeout = 500 * time.Millisecond
 		registry.updateMaxWait = 5 * time.Second
 
@@ -934,7 +938,7 @@ func TestCounterInt64_TryUpdateIfStale_FnTimeoutFromCtxDeadline(t *testing.T) {
 	})
 
 	t.Run("no ctx deadline falls back to fallbackTimeout", func(t *testing.T) {
-		registry, _, _ := setupTest("my-dev")
+		registry, _, _ := setupTest(t, "my-dev")
 		registry.fallbackTimeout = 500 * time.Millisecond
 
 		counter := makeCounter(t, registry, "test-no-deadline")
@@ -954,7 +958,7 @@ func TestCounterInt64_TryUpdateIfStale_FnTimeoutFromCtxDeadline(t *testing.T) {
 	})
 
 	t.Run("ctx deadline shorter than fallback uses fallback", func(t *testing.T) {
-		registry, _, _ := setupTest("my-dev")
+		registry, _, _ := setupTest(t, "my-dev")
 		registry.fallbackTimeout = 2 * time.Second
 		registry.updateMaxWait = 5 * time.Second
 
@@ -1903,7 +1907,7 @@ func TestCounterInt64_FresherLocalPushesToStaleRemote(t *testing.T) {
 }
 
 func TestCounterInt64_TryUpdate_NoRemoteWriteWithoutAdvance(t *testing.T) {
-	registry, connector, ctx := setupTest("no-advance")
+	registry, connector, ctx := setupTest(t, "no-advance")
 	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
 	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(nil).Maybe()
 
@@ -1925,7 +1929,7 @@ func TestCounterInt64_TryUpdate_NoRemoteWriteWithoutAdvance(t *testing.T) {
 // A lagging instance advancing its local value must not overwrite a higher
 // remote value just because its local timestamp is newer.
 func TestCounterInt64_BackgroundPush_DoesNotRegressHigherRemote(t *testing.T) {
-	registry, connector, ctx := setupTest("no-regress")
+	registry, connector, ctx := setupTest(t, "no-regress")
 
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil)
@@ -2090,7 +2094,7 @@ func TestCounterInt64_ZeroIsNotAHeadObservation(t *testing.T) {
 // arrives after fallbackTimeout must still be applied.
 func TestCounterInt64_TryUpdateIfStale_AsyncResultWithinExtendedTimeoutIsApplied(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		registry, connector, _ := setupTest("my-dev")
+		registry, connector, _ := setupTest(t, "my-dev")
 		registry.fallbackTimeout = 200 * time.Millisecond
 		registry.updateMaxWait = 20 * time.Millisecond
 		connector.On("PublishCounterInt64", mock.Anything, "my-dev/test-async-extended", mock.Anything).Return(nil).Maybe()

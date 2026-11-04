@@ -1431,17 +1431,22 @@ func TestGetFailsafeExecutor_MatchRequestKind(t *testing.T) {
 	})
 
 	t.Run("unset kind matches both (backward compatible)", func(t *testing.T) {
-		anyKind := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, []*common.FailsafeConfig{
-			{MatchMethod: "*", Retry: &common.RetryPolicyConfig{MaxAttempts: 3}},
-		})
-		internal := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
-		internal.SetNetwork(anyKind)
-		internal.SetDirectives(&common.RequestDirectives{IsInternal: true})
-		require.NotNil(t, anyKind.getFailsafeExecutor(ctx, internal))
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		user := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
-		user.SetNetwork(anyKind)
-		require.NotNil(t, anyKind.getFailsafeExecutor(ctx, user))
+			anyKind := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, []*common.FailsafeConfig{
+				{MatchMethod: "*", Retry: &common.RetryPolicyConfig{MaxAttempts: 3}},
+			})
+			internal := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
+			internal.SetNetwork(anyKind)
+			internal.SetDirectives(&common.RequestDirectives{IsInternal: true})
+			require.NotNil(t, anyKind.getFailsafeExecutor(ctx, internal))
+
+			user := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
+			user.SetNetwork(anyKind)
+			require.NotNil(t, anyKind.getFailsafeExecutor(ctx, user))
+		})
 	})
 }
 

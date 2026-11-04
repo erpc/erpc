@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -17,46 +18,60 @@ func TestMemoryConnector_TTL(t *testing.T) {
 	// Setup
 	logger := zerolog.New(io.Discard)
 	ctx := context.Background()
-	connector, err := NewMemoryConnector(ctx, &logger, "test", &common.MemoryConnectorConfig{
-		MaxItems: 100_000, MaxTotalSize: "1GB",
-	})
-	require.NoError(t, err)
+	var connector *MemoryConnector
+	// newConnector gives each subtest its own connector, made in its bubble.
+	newConnector := func(t *testing.T) {
+		var err error
+		connector, err = NewMemoryConnector(t.Context(), &logger, "test", &common.MemoryConnectorConfig{
+			MaxItems: 100_000, MaxTotalSize: "1GB",
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = connector.Close() })
+	}
 
 	// Test cases
 	t.Run("item expires after TTL", func(t *testing.T) {
-		// Set item with 100ms TTL
-		ttl := 100 * time.Millisecond
-		err := connector.Set(ctx, "pk1", "rk1", []byte("value1"), &ttl)
-		require.NoError(t, err)
+		synctest.Test(t, func(t *testing.T) {
+			newConnector(t)
 
-		time.Sleep(30 * time.Millisecond)
+			// Set item with 100ms TTL
+			ttl := 100 * time.Millisecond
+			err := connector.Set(ctx, "pk1", "rk1", []byte("value1"), &ttl)
+			require.NoError(t, err)
 
-		// Verify item exists immediately
-		val, err := connector.Get(ctx, "", "pk1", "rk1", nil)
-		require.NoError(t, err)
-		require.Equal(t, []byte("value1"), val)
+			time.Sleep(30 * time.Millisecond)
 
-		// Wait for TTL to expire
-		time.Sleep(150 * time.Millisecond)
+			// Verify item exists immediately
+			val, err := connector.Get(ctx, "", "pk1", "rk1", nil)
+			require.NoError(t, err)
+			require.Equal(t, []byte("value1"), val)
 
-		// Verify item is gone
-		_, err = connector.Get(ctx, "", "pk1", "rk1", nil)
-		require.Error(t, err)
-		require.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound))
+			// Wait for TTL to expire
+			time.Sleep(150 * time.Millisecond)
+
+			// Verify item is gone
+			_, err = connector.Get(ctx, "", "pk1", "rk1", nil)
+			require.Error(t, err)
+			require.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound))
+		})
 	})
 
 	t.Run("item without TTL doesn't expire", func(t *testing.T) {
-		// Set item with no TTL
-		err := connector.Set(ctx, "pk3", "rk1", []byte("value1"), nil)
-		require.NoError(t, err)
+		synctest.Test(t, func(t *testing.T) {
+			newConnector(t)
 
-		// Wait a bit (less than typical eviction times for a non-full cache)
-		time.Sleep(100 * time.Millisecond)
+			// Set item with no TTL
+			err := connector.Set(ctx, "pk3", "rk1", []byte("value1"), nil)
+			require.NoError(t, err)
 
-		// Verify item still exists
-		val, err := connector.Get(ctx, "", "pk3", "rk1", nil)
-		require.NoError(t, err)
-		require.Equal(t, []byte("value1"), val)
+			// Wait a bit (less than typical eviction times for a non-full cache)
+			time.Sleep(100 * time.Millisecond)
+
+			// Verify item still exists
+			val, err := connector.Get(ctx, "", "pk3", "rk1", nil)
+			require.NoError(t, err)
+			require.Equal(t, []byte("value1"), val)
+		})
 	})
 }
 

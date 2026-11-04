@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -325,8 +326,6 @@ func TestCovErrors_UpstreamRequest_Accessors(t *testing.T) {
 }
 
 func TestCovErrors_FailsafeErrors_MessagesAndDeepest(t *testing.T) {
-	start := time.Now().Add(-2 * time.Second)
-
 	type ctor func(Scope, error, *time.Time) error
 	cases := []struct {
 		name      string
@@ -342,29 +341,32 @@ func TestCovErrors_FailsafeErrors_MessagesAndDeepest(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			timed := tc.ctor(ScopeNetwork, nil, &start)
-			var se StandardError
-			require.True(t, errors.As(timed, &se))
-			assert.True(t, strings.HasPrefix(se.Base().Message, tc.withStart), se.Base().Message)
-			if tc.hasDurMs {
-				assert.GreaterOrEqual(t, se.Base().Details["durationMs"].(int64), int64(2000))
-			}
-			assert.Equal(t, se.Base().Message, se.DeepestMessage(), "no cause: deepest message is own message")
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now().Add(-2 * time.Second)
+				timed := tc.ctor(ScopeNetwork, nil, &start)
+				var se StandardError
+				require.True(t, errors.As(timed, &se))
+				assert.True(t, strings.HasPrefix(se.Base().Message, tc.withStart), se.Base().Message)
+				if tc.hasDurMs {
+					assert.GreaterOrEqual(t, se.Base().Details["durationMs"].(int64), int64(2000))
+				}
+				assert.Equal(t, se.Base().Message, se.DeepestMessage(), "no cause: deepest message is own message")
 
-			untimed := tc.ctor(ScopeNetwork, nil, nil)
-			require.True(t, errors.As(untimed, &se))
-			assert.Equal(t, tc.noStart, se.Base().Message)
-			assert.Nil(t, se.Base().Details)
+				untimed := tc.ctor(ScopeNetwork, nil, nil)
+				require.True(t, errors.As(untimed, &se))
+				assert.Equal(t, tc.noStart, se.Base().Message)
+				assert.Nil(t, se.Base().Details)
 
-			stdCause := NewErrEndpointCapacityExceeded(NewErrJsonRpcExceptionInternal(0, 0, "slow down", nil, nil))
-			withStd := tc.ctor(ScopeNetwork, stdCause, nil)
-			require.True(t, errors.As(withStd, &se))
-			assert.Equal(t, tc.noStart+": slow down", se.DeepestMessage())
-			assert.True(t, HasErrorCode(withStd, tc.code, ErrCodeEndpointCapacityExceeded))
+				stdCause := NewErrEndpointCapacityExceeded(NewErrJsonRpcExceptionInternal(0, 0, "slow down", nil, nil))
+				withStd := tc.ctor(ScopeNetwork, stdCause, nil)
+				require.True(t, errors.As(withStd, &se))
+				assert.Equal(t, tc.noStart+": slow down", se.DeepestMessage())
+				assert.True(t, HasErrorCode(withStd, tc.code, ErrCodeEndpointCapacityExceeded))
 
-			withPlain := tc.ctor(ScopeNetwork, errors.New("boom"), nil)
-			require.True(t, errors.As(withPlain, &se))
-			assert.Equal(t, tc.noStart+": boom", se.DeepestMessage())
+				withPlain := tc.ctor(ScopeNetwork, errors.New("boom"), nil)
+				require.True(t, errors.As(withPlain, &se))
+				assert.Equal(t, tc.noStart+": boom", se.DeepestMessage())
+			})
 		})
 	}
 	assert.Equal(t, http.StatusGatewayTimeout, NewErrFailsafeTimeoutExceeded(ScopeUpstream, nil, nil).(*ErrFailsafeTimeoutExceeded).ErrorStatusCode())

@@ -20,86 +20,107 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 	// Setup
 	logger := zerolog.New(io.Discard)
 	ctx := context.Background()
-	connector, err := NewMemoryConnector(ctx, &logger, "test", &common.MemoryConnectorConfig{
-		MaxItems: 100_000, MaxTotalSize: "1GB",
-	})
-	require.NoError(t, err)
-	defer connector.Close()
+	var connector *MemoryConnector
+	// newConnector gives each subtest its own connector, made in its bubble.
+	newConnector := func(t *testing.T) {
+		var err error
+		connector, err = NewMemoryConnector(t.Context(), &logger, "test", &common.MemoryConnectorConfig{
+			MaxItems: 100_000, MaxTotalSize: "1GB",
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = connector.Close() })
+	}
 
 	t.Run("small values are not compressed", func(t *testing.T) {
-		smallValue := `{"jsonrpc":"2.0","result":"0x1bc16d674ec80000","id":1}`
-		err := connector.Set(ctx, "test", "small", []byte(smallValue), nil)
-		require.NoError(t, err)
+		synctest.Test(t, func(t *testing.T) {
+			newConnector(t)
 
-		// Wait for Ristretto to process the write
-		time.Sleep(10 * time.Millisecond)
+			smallValue := `{"jsonrpc":"2.0","result":"0x1bc16d674ec80000","id":1}`
+			err := connector.Set(ctx, "test", "small", []byte(smallValue), nil)
+			require.NoError(t, err)
 
-		// Verify value is stored and retrieved correctly
-		retrieved, err := connector.Get(ctx, "", "test", "small", nil)
-		require.NoError(t, err)
-		require.Equal(t, []byte(smallValue), retrieved)
+			// Wait for Ristretto to process the write
+			time.Sleep(10 * time.Millisecond)
+
+			// Verify value is stored and retrieved correctly
+			retrieved, err := connector.Get(ctx, "", "test", "small", nil)
+			require.NoError(t, err)
+			require.Equal(t, []byte(smallValue), retrieved)
+		})
 	})
 
 	t.Run("large values are compressed transparently", func(t *testing.T) {
-		// Create a large EVM-like JSON response (> 512 bytes)
-		largeValue := createLargeEvmResponse()
-		require.Greater(t, len(largeValue), 512, "Test value should be larger than compression threshold")
+		synctest.Test(t, func(t *testing.T) {
+			newConnector(t)
 
-		err := connector.Set(ctx, "test", "large", []byte(largeValue), nil)
-		require.NoError(t, err)
+			// Create a large EVM-like JSON response (> 512 bytes)
+			largeValue := createLargeEvmResponse()
+			require.Greater(t, len(largeValue), 512, "Test value should be larger than compression threshold")
 
-		// Wait for Ristretto to process the write
-		time.Sleep(10 * time.Millisecond)
+			err := connector.Set(ctx, "test", "large", []byte(largeValue), nil)
+			require.NoError(t, err)
 
-		// Verify value is stored and retrieved correctly (compression is transparent)
-		retrieved, err := connector.Get(ctx, "", "test", "large", nil)
-		require.NoError(t, err)
-		require.Equal(t, []byte(largeValue), retrieved)
+			// Wait for Ristretto to process the write
+			time.Sleep(10 * time.Millisecond)
+
+			// Verify value is stored and retrieved correctly (compression is transparent)
+			retrieved, err := connector.Get(ctx, "", "test", "large", nil)
+			require.NoError(t, err)
+			require.Equal(t, []byte(largeValue), retrieved)
+		})
 	})
 
 	t.Run("mixed size values work correctly", func(t *testing.T) {
-		testCases := []struct {
-			key   string
-			value string
-		}{
-			{"small1", `{"jsonrpc":"2.0","result":"0x123","id":1}`},
-			{"medium1", createMediumEvmResponse()},
-			{"large1", createLargeEvmResponse()},
-			{"small2", `{"jsonrpc":"2.0","result":false,"id":2}`},
-			{"large2", createLargeEvmResponse()},
-		}
+		synctest.Test(t, func(t *testing.T) {
+			newConnector(t)
 
-		// Store all values
-		for _, tc := range testCases {
-			err := connector.Set(ctx, "mixed", tc.key, []byte(tc.value), nil)
-			require.NoError(t, err)
-		}
+			testCases := []struct {
+				key   string
+				value string
+			}{
+				{"small1", `{"jsonrpc":"2.0","result":"0x123","id":1}`},
+				{"medium1", createMediumEvmResponse()},
+				{"large1", createLargeEvmResponse()},
+				{"small2", `{"jsonrpc":"2.0","result":false,"id":2}`},
+				{"large2", createLargeEvmResponse()},
+			}
 
-		// Wait for Ristretto to process all writes
-		time.Sleep(50 * time.Millisecond)
+			// Store all values
+			for _, tc := range testCases {
+				err := connector.Set(ctx, "mixed", tc.key, []byte(tc.value), nil)
+				require.NoError(t, err)
+			}
 
-		// Retrieve and verify all values
-		for _, tc := range testCases {
-			retrieved, err := connector.Get(ctx, "", "mixed", tc.key, nil)
-			require.NoError(t, err)
-			require.Equal(t, []byte(tc.value), retrieved, "Value mismatch for key: %s", tc.key)
-		}
+			// Wait for Ristretto to process all writes
+			time.Sleep(50 * time.Millisecond)
+
+			// Retrieve and verify all values
+			for _, tc := range testCases {
+				retrieved, err := connector.Get(ctx, "", "mixed", tc.key, nil)
+				require.NoError(t, err)
+				require.Equal(t, []byte(tc.value), retrieved, "Value mismatch for key: %s", tc.key)
+			}
+		})
 	})
 
 	t.Run("compression works with TTL", func(t *testing.T) {
-		largeValue := createLargeEvmResponse()
-		ttl := 100 * time.Second
+		synctest.Test(t, func(t *testing.T) {
+			newConnector(t)
 
-		err := connector.Set(ctx, "test", "ttl", []byte(largeValue), &ttl)
-		require.NoError(t, err)
+			largeValue := createLargeEvmResponse()
+			ttl := 100 * time.Second
 
-		// Wait for Ristretto to process the write
-		time.Sleep(10 * time.Millisecond)
+			err := connector.Set(ctx, "test", "ttl", []byte(largeValue), &ttl)
+			require.NoError(t, err)
 
-		// Verify value is stored and retrieved correctly
-		retrieved, err := connector.Get(ctx, "", "test", "ttl", nil)
-		require.NoError(t, err)
-		require.Equal(t, []byte(largeValue), retrieved)
+			// Wait for Ristretto to process the write
+			time.Sleep(10 * time.Millisecond)
+
+			// Verify value is stored and retrieved correctly
+			retrieved, err := connector.Get(ctx, "", "test", "ttl", nil)
+			require.NoError(t, err)
+			require.Equal(t, []byte(largeValue), retrieved)
+		})
 	})
 }
 

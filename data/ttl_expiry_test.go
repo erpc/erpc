@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -115,7 +116,7 @@ func TestConnectorTTLExpiry(t *testing.T) {
 					MaxItems:     1000,
 					MaxTotalSize: "10MB",
 				}
-				conn, err := NewMemoryConnector(ctx, &lg, "test-memory", cfg)
+				conn, err := NewMemoryConnector(t.Context(), &lg, "test-memory", cfg)
 				require.NoError(t, err)
 				require.NotNil(t, conn)
 				return conn
@@ -126,10 +127,24 @@ func TestConnectorTTLExpiry(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			conn := tc.createConnector(t)
+			// The in-process connector is made per subtest, inside the
+			// subtest's synctest bubble. The others are shared.
+			var shared Connector
+			if tc.name != "Memory" {
+				shared = tc.createConnector(t)
+			}
+			run := func(name string, f func(t *testing.T, conn Connector)) {
+				t.Run(name, func(t *testing.T) {
+					if shared != nil {
+						f(t, shared)
+						return
+					}
+					synctest.Test(t, func(t *testing.T) { f(t, tc.createConnector(t)) })
+				})
+			}
 
 			// Test 1: Direct Get with expired TTL
-			t.Run("DirectGet_ExpiredTTL", func(t *testing.T) {
+			run("DirectGet_ExpiredTTL", func(t *testing.T, conn Connector) {
 				pk := fmt.Sprintf("test:ttl:direct:%d", time.Now().UnixNano())
 				rk := "request-hash-1"
 				value := []byte("test-value-1")
@@ -162,7 +177,7 @@ func TestConnectorTTLExpiry(t *testing.T) {
 
 			// Test 2: Reverse index Get with expired TTL (realtime cache scenario)
 			if !tc.skipReverseIndex {
-				t.Run("ReverseIndexGet_ExpiredTTL", func(t *testing.T) {
+				run("ReverseIndexGet_ExpiredTTL", func(t *testing.T, conn Connector) {
 					// Simulate a realtime cache entry
 					networkId := "evm:1"
 					pk := fmt.Sprintf("%s:*", networkId)           // Wildcard partition key for realtime
@@ -194,7 +209,7 @@ func TestConnectorTTLExpiry(t *testing.T) {
 
 			// Test 3: Wildcard Get with expired TTL (PostgreSQL specific)
 			if tc.name == "PostgreSQL" {
-				t.Run("WildcardGet_ExpiredTTL", func(t *testing.T) {
+				run("WildcardGet_ExpiredTTL", func(t *testing.T, conn Connector) {
 					pk := fmt.Sprintf("test:wildcard:%d", time.Now().UnixNano())
 					rk := "request-*" // Wildcard range key
 					actualRk := "request-123"
@@ -223,7 +238,7 @@ func TestConnectorTTLExpiry(t *testing.T) {
 
 			// Test 4: Multiple entries with different TTLs
 			if !tc.skipReverseIndex {
-				t.Run("MultipleEntries_DifferentTTLs", func(t *testing.T) {
+				run("MultipleEntries_DifferentTTLs", func(t *testing.T, conn Connector) {
 					networkId := "evm:1"
 					pk1 := fmt.Sprintf("%s:block1", networkId)
 					pk2 := fmt.Sprintf("%s:block2", networkId)
@@ -263,12 +278,6 @@ func TestConnectorTTLExpiry(t *testing.T) {
 						assert.Equal(t, value2, result)
 					}
 				})
-			}
-
-			// Clean up for connectors that support it
-			if tc.name == "PostgreSQL" || tc.name == "DynamoDB" {
-				// Tables will be cleaned up by database TTL or test cleanup
-				// For production, you'd want to drop/delete tables here
 			}
 		})
 	}

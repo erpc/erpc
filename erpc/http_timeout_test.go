@@ -22,7 +22,11 @@ func init() {
 func TestTimeoutHandler_TimeoutReturnsJsonRpcError(t *testing.T) {
 	// Handler that takes longer than the timeout
 	slowHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`))
 	})
@@ -30,27 +34,31 @@ func TestTimeoutHandler_TimeoutReturnsJsonRpcError(t *testing.T) {
 	handler := TimeoutHandler(&log.Logger, slowHandler, 10*time.Millisecond, false)
 
 	t.Run("POST request timeout returns 200 with JSON-RPC error body", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}`))
-		rec := httptest.NewRecorder()
+		synctest.Test(t, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}`))
+			rec := httptest.NewRecorder()
 
-		handler.ServeHTTP(rec, req)
+			handler.ServeHTTP(rec, req)
 
-		assert.Equal(t, http.StatusOK, rec.Code)
-		body := rec.Body.String()
-		assert.NotEmpty(t, body, "response body should not be empty")
-		assert.Contains(t, body, `"jsonrpc":"2.0"`)
-		assert.Contains(t, body, `"error"`)
-		assert.Contains(t, body, `"code":-32603`)
-		assert.Contains(t, body, "timeout")
+			assert.Equal(t, http.StatusOK, rec.Code)
+			body := rec.Body.String()
+			assert.NotEmpty(t, body, "response body should not be empty")
+			assert.Contains(t, body, `"jsonrpc":"2.0"`)
+			assert.Contains(t, body, `"error"`)
+			assert.Contains(t, body, `"code":-32603`)
+			assert.Contains(t, body, "timeout")
+		})
 	})
 
 	t.Run("GET request timeout returns 504 Gateway Timeout", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/test", nil)
-		rec := httptest.NewRecorder()
+		synctest.Test(t, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			rec := httptest.NewRecorder()
 
-		handler.ServeHTTP(rec, req)
+			handler.ServeHTTP(rec, req)
 
-		assert.Equal(t, http.StatusGatewayTimeout, rec.Code)
+			assert.Equal(t, http.StatusGatewayTimeout, rec.Code)
+		})
 	})
 }
 

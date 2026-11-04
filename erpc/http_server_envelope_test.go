@@ -54,37 +54,39 @@ func envelopeTestConfig() *common.Config {
 // carries no architecture or chain in its path.
 func TestHttpServer_RequestEnvelope(t *testing.T) {
 	t.Run("RepeatedMethodMemberReachesNoUpstream", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-
-		// Neither spelling may be forwarded, so stand up a mock for each and
-		// require both to go unused.
-		for _, method := range []string{"eth_getBalance", "eth_sendRawTransaction"} {
-			gock.New("http://rpc1.localhost").
-				Post("/").
-				Filter(func(request *http.Request) bool {
-					return strings.Contains(util.SafeReadBody(request), method)
-				}).
-				Reply(200).
-				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0xdeadbeef"})
-		}
-		defer util.AssertNoPendingMocks(t, 2)
-
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(envelopeTestConfig(), t)
-		defer shutdown()
-		time.Sleep(1500 * time.Millisecond)
-
 		for name, body := range map[string]string{
 			"repeated key":   `{"jsonrpc":"2.0","method":"eth_getBalance","method":"eth_sendRawTransaction","params":[],"id":1}`,
 			"escaped repeat": `{"jsonrpc":"2.0","\u006dethod":"eth_getBalance","method":"eth_sendRawTransaction","params":[],"id":1}`,
 			"case variant":   `{"jsonrpc":"2.0","method":"eth_getBalance","Method":"eth_sendRawTransaction","params":[],"id":1}`,
 		} {
 			t.Run(name, func(t *testing.T) {
-				statusCode, _, respBody := sendRequest(body, nil, nil)
-				assert.Equal(t, http.StatusBadRequest, statusCode, "body: %s", respBody)
-				assert.Contains(t, respBody, "method")
-				assert.NotContains(t, respBody, "0xdeadbeef")
+				synctest.Test(t, func(t *testing.T) {
+					util.ResetGock()
+					defer util.ResetGock()
+					util.SetupMocksForEvmStatePoller()
+
+					// Neither spelling may be forwarded, so stand up a mock for each and
+					// require both to go unused.
+					for _, method := range []string{"eth_getBalance", "eth_sendRawTransaction"} {
+						gock.New("http://rpc1.localhost").
+							Post("/").
+							Filter(func(request *http.Request) bool {
+								return strings.Contains(util.SafeReadBody(request), method)
+							}).
+							Reply(200).
+							JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0xdeadbeef"})
+					}
+					defer util.AssertNoPendingMocks(t, 2)
+
+					sendRequest, _, _, shutdown, _ := createServerTestFixtures(envelopeTestConfig(), t)
+					defer shutdown()
+					time.Sleep(1500 * time.Millisecond)
+
+					statusCode, _, respBody := sendRequest(body, nil, nil)
+					assert.Equal(t, http.StatusBadRequest, statusCode, "body: %s", respBody)
+					assert.Contains(t, respBody, "method")
+					assert.NotContains(t, respBody, "0xdeadbeef")
+				})
 			})
 		}
 	})
