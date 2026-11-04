@@ -844,16 +844,38 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration) evm.HashVoters
 	now := time.Now()
 	policy, all := n.eligibleSet(context.Background())
 	voters := n.voters(selector, voterQuery{kind: hashVote}).list()
+	votes := make([]health.HashVote, len(voters))
+	voted := make([]bool, len(voters))
+	var laneTop int64
+	for i, u := range voters {
+		votes[i], voted[i] = n.intake.hashVote(u)
+		if voted[i] && !votes[i].Expired {
+			laneTop = max(laneTop, votes[i].Number)
+		}
+	}
+	// A lane's hash age runs from its own top vote: how long since the
+	// network first saw a block above the voter's vote, less that time for
+	// the lane's top vote. A lane whose upstreams all trail the
+	// network-wide reference (a lagging group, §19 P10) would else lose
+	// every hash voter after W, and its view would stand.
+	laneAge := func(v health.HashVote) time.Duration { return v.Age }
+	if selector != "" && laneTop > 0 && n.metricsTracker != nil {
+		mt, topLag := n.metricsTracker, n.metricsTracker.HashAgeAt(n.networkId, laneTop)
+		laneAge = func(v health.HashVote) time.Duration {
+			return min(v.Age, max(0, mt.HashAgeAt(n.networkId, v.Number)-topLag))
+		}
+	}
 	var stale []string
 	hv.Voters = make([]string, 0, len(voters))
 	hv.Hash = make([]string, 0, len(voters))
-	for _, u := range voters {
+	for i, u := range voters {
 		hv.Voters = append(hv.Voters, u.Id())
-		v, voted := n.intake.hashVote(u)
-		if voted && (v.Expired || v.Age > w) && n.sources.pushSource(u.Id()) {
+		v := votes[i]
+		if voted[i] && (v.Expired || v.Age > w) && n.sources.pushSource(u.Id()) {
 			stale = append(stale, u.Id())
 		}
-		ok, at := freshVote(v, voted, w, now)
+		v.Age = laneAge(v)
+		ok, at := freshVote(v, voted[i], w, now)
 		if !ok {
 			continue
 		}
