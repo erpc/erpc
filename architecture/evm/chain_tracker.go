@@ -845,13 +845,20 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 	// The block clock's phase: the first local sight of each new number,
 	// on any channel. A voter that reports often (within a block) and
 	// newly reaches a number another channel brought first lags by the
-	// gap: the clock never targets it while a voter that does not lag is
-	// as near.
+	// gap; a fetch sent after the next number's first sight that answers
+	// below it lags at least by that gap, however rarely its voter is
+	// polled: the clock never targets it while a voter that does not lag
+	// is as near.
 	now := time.Now()
 	if msg.vote == voteSource {
 		if prev := t.votes[msg.upstream]; t.alive(prev) && prev.h.number < h.number && now.Sub(t.voteAt[msg.upstream]) <= t.BlockTime() {
 			if seen := t.clock.sightOf(h.number); h.number <= t.clock.top() && !seen.IsZero() {
 				t.clock.sampleLate(msg.upstream, now.Sub(seen))
+			}
+		}
+		if !msg.pushed && h.number < t.clock.top() {
+			if next := t.clock.sightOf(h.number + 1); !next.IsZero() && msg.at.After(next) {
+				t.clock.sampleLate(msg.upstream, msg.at.Sub(next))
 			}
 		}
 		if h.number > t.clock.top() {

@@ -388,7 +388,7 @@ func (e *EvmStatePoller) poll(ctx context.Context, latestPace time.Duration) err
 		defer wg.Done()
 		actx, cancel := context.WithTimeout(ctx, e.sharedStateRegistry.GetUpdateMaxWait())
 		defer cancel()
-		err := e.Ask(actx, common.HeadNeedHash, latestPace, time.Time{}, common.AskClock).Err
+		err := e.Ask(actx, common.HeadNeedHash, latestPace, time.Time{}, common.AskPoll).Err
 		if err != nil && actx.Err() != nil && ctx.Err() == nil {
 			return
 		}

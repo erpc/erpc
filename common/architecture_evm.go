@@ -35,9 +35,12 @@ const (
 type AskReason string
 
 const (
-	// AskClock: a lane's block clock (spec §6.8), and the latest part of
-	// an upstream's full poll, the clock's turn when no fire met it.
-	AskClock   AskReason = "clock"
+	// AskClock: a lane's block clock (spec §6.8); every such fetch is a
+	// fire erpc_head_clock_total counts by kind.
+	AskClock AskReason = "clock"
+	// AskPoll: the latest part of an upstream's full poll, every
+	// statePollerInterval; a clock fetch within the interval meets it.
+	AskPoll    AskReason = "poll"
 	AskRefusal AskReason = "refusal"
 	AskSettle  AskReason = "settle"
 )

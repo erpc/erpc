@@ -856,9 +856,10 @@ func p21() spec {
 	return sp
 }
 
-// judgeClockEarly flags a new-image pod whose block clock answered the
-// block before on more than p21EarlyShare of its fetches
-// (erpc_head_clock_total, outcome early), or has no clock series.
+// judgeClockEarly flags a new-image pod whose block clock's probes and
+// retries answered the block before (erpc_head_clock_total, outcome early
+// or behind) on more than p21EarlyShare of its fetches (every outcome but
+// joined and skipped_push), or has no clock series.
 func (s *scenario) judgeClockEarly() {
 	for _, p := range s.h.pods {
 		if p.old {
@@ -869,9 +870,19 @@ func (s *scenario) judgeClockEarly() {
 			s.violate(s.name, "pod-%d: no erpc_head_clock_total series: the pod runs no block clock", p.idx+1)
 			continue
 		}
-		early, _ := s.metric(p.idx, "erpc_head_clock_total", map[string]string{"outcome": "early"})
-		if early/total > p21EarlyShare {
-			s.violate(s.name, "pod-%d: %.0f of %.0f block-clock fetches early (%.1f%%), bound %.0f%%", p.idx+1, early, total, 100*early/total, 100*p21EarlyShare)
+		for _, o := range []string{"joined", "skipped_push"} {
+			v, _ := s.metric(p.idx, "erpc_head_clock_total", map[string]string{"outcome": o})
+			total -= v
+		}
+		var early float64
+		for _, kind := range []string{"probe", "retry"} {
+			for _, o := range []string{"early", "behind"} {
+				v, _ := s.metric(p.idx, "erpc_head_clock_total", map[string]string{"kind": kind, "outcome": o})
+				early += v
+			}
+		}
+		if total <= 0 || early/total > p21EarlyShare {
+			s.violate(s.name, "pod-%d: %.0f of %.0f block-clock fetches early (%.1f%%), bound %.0f%%", p.idx+1, early, total, 100*early/max(total, 1), 100*p21EarlyShare)
 		}
 	}
 }

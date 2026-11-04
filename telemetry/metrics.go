@@ -283,17 +283,20 @@ var (
 		Help:      "Blocks between the network-wide chain tracker's highest pin and its view's Head.",
 	}, []string{"project", "network"})
 
-	// MetricHeadClockTotal counts a lane's block clock fetches by outcome:
-	// new (a new block), early (a probe's answer: the block was not there
-	// yet), hedge (sent to a second voter while the first was late),
-	// catch_up (sent to a voter left behind by an unlinked jump),
-	// skipped_push (a push or another local fetch brought the block before
-	// the fire), failed.
+	// MetricHeadClockTotal counts a lane's block clock fetches, one per
+	// answer, by kind (probe, retry, hedge, catch_up, guarantee, edge,
+	// cold) and outcome: new (a new block), early (a probe's or retry's
+	// answer: the block was not there yet), behind (another channel
+	// brought the block first), same (another kind's answer brought
+	// none), failed, joined (another fetch met the Ask: no fetch),
+	// dropped (answered after a clock reset), and skipped_push (a probe a
+	// push or another local fetch made needless: no fetch). Fetches are
+	// every outcome but joined and skipped_push.
 	MetricHeadClockTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "head_clock_total",
-		Help:      "Block clock fires of a lane's chain tracker, by outcome: new, early, hedge, catch_up, skipped_push, failed.",
-	}, []string{"project", "network", "lane", "outcome"})
+		Help:      "Block clock fetches of a lane's chain tracker, by kind (probe, retry, hedge, catch_up, guarantee, edge, cold) and outcome (new, early, behind, same, failed, joined, dropped, skipped_push).",
+	}, []string{"project", "network", "lane", "kind", "outcome"})
 
 	MetricHeadViewLagSeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",

@@ -97,12 +97,17 @@ type clockFire struct {
 	// is a new block.
 	top    uint64
 	hedged bool
-	// probe: sent at the phase's fire time (fireAt), not for the idle
-	// edge, a catch-up or a hedge: only a probe's answer says where the
-	// next block's sight is, so only it moves the offset, early count and
-	// misses.
-	probe bool
+	// kind is why it was sent, the kind label of erpc_head_clock_total:
+	// probe (at the phase's fire time, fireAt), retry (a probe's after an
+	// early answer), hedge, catch_up, guarantee, edge (the idle edge's),
+	// cold (before any sight). Only a probe's or retry's answer says where
+	// the next block's sight is, so only they move the offset, early count
+	// and misses.
+	kind string
 }
+
+// probe reports whether f was sent at the phase's fire time.
+func (f *clockFire) probe() bool { return f.kind == "probe" || f.kind == "retry" }
 
 // clockVoter is what the clock learned of one voter: its round trip's EMA
 // and mean deviation, and late, an EMA of how far behind the first sight
@@ -439,7 +444,7 @@ func (t *ChainTracker) readDemand() time.Duration { return 2 * t.W() }
 func (t *ChainTracker) runClock() {
 	c := &t.clock
 	if c.skips > 0 {
-		telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), "skipped_push").Add(float64(c.skips))
+		telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), "probe", "skipped_push").Add(float64(c.skips))
 		c.skips = 0
 	}
 	now, bt := time.Now(), t.BlockTime()
@@ -471,8 +476,7 @@ func (t *ChainTracker) runClock() {
 			} else {
 				c.out.hedged = true
 				if cand, ok := t.pickTarget(t.clockCandidates(), c.out.id, now, bt, waiting); ok {
-					c.hedge = t.fire(cand.id, now)
-					telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), "hedge").Inc()
+					c.hedge = t.fire(cand.id, now, "hedge")
 				}
 			}
 		}
@@ -482,23 +486,21 @@ func (t *ChainTracker) runClock() {
 		// All at once: each answer moves one vote, and the jumped tree takes
 		// the pins only with more votes than the older one (rule 4), so one
 		// after another costs a round trip each.
-		if c.out = t.fire(stale[0].id, now); c.out != nil {
+		if c.out = t.fire(stale[0].id, now, "catch_up"); c.out != nil {
 			for _, cand := range stale[1:] {
-				t.fire(cand.id, now)
+				t.fire(cand.id, now, "catch_up")
 			}
 			if waiting {
 				c.edge = c.out
 			}
-			telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), "catch_up").Add(float64(len(stale)))
 			return
 		}
 	}
 	if cand, ok := t.cappingVoter(t.clockCandidates()); ok {
-		if c.out = t.fire(cand.id, now); c.out != nil {
+		if c.out = t.fire(cand.id, now, "guarantee"); c.out != nil {
 			if waiting {
 				c.edge = c.out
 			}
-			telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), "guarantee").Inc()
 			return
 		}
 	}
@@ -522,13 +524,20 @@ func (t *ChainTracker) runClock() {
 		}
 		return
 	}
-	if c.out = t.fire(cand.id, now); c.out != nil {
-		c.out.probe = probe
+	kind := "cold"
+	switch {
+	case waiting:
+		kind = "edge"
+	case probe && c.early > 0:
+		kind = "retry"
+	case probe:
+		kind = "probe"
 	}
+	c.out = t.fire(cand.id, now, kind)
 	if waiting {
 		c.edge = c.out
 		for _, id := range t.edgeVoters(cands, cand.id) {
-			t.fire(id, now)
+			t.fire(id, now, "edge")
 		}
 	}
 }
@@ -675,13 +684,13 @@ func (c *headClock) bestRTT() time.Duration {
 	return best
 }
 
-// fire sends the clock's fetch to voter id: a hash Ask newer than the
-// last answer the clock took from it and than the top sight, so neither a
-// fetch the clock already read nor one sent before the top block was seen
-// meets it.
-func (t *ChainTracker) fire(id string, now time.Time) *clockFire {
+// fire sends the clock's fetch of kind to voter id: a hash Ask newer than
+// the last answer the clock took from it and than the top sight, so
+// neither a fetch the clock already read nor one sent before the top
+// block was seen meets it.
+func (t *ChainTracker) fire(id string, now time.Time, kind string) *clockFire {
 	c := &t.clock
-	f := &clockFire{id: id, sent: now, top: c.top()}
+	f := &clockFire{id: id, sent: now, top: c.top(), kind: kind}
 	after := c.taken[id]
 	if n := len(c.sights); n > 0 && c.sights[n-1].at.After(after) {
 		after = c.sights[n-1].at
@@ -699,10 +708,11 @@ func (t *ChainTracker) fire(id string, now time.Time) *clockFire {
 // pulls the offset earlier; a probe's answer still at f's top was early,
 // which pushes the offset later and schedules the one retry, or a miss
 // once the retry was spent; an answer below what another voter brought
-// marks its voter late. Other fires were counted when sent.
+// marks its voter late. Every answer is counted by f's kind and outcome.
 func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnswer) {
 	c := &t.clock
 	if seq != c.seq {
+		t.countFire(f, a, "dropped")
 		return
 	}
 	switch f {
@@ -738,21 +748,18 @@ func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnsw
 	case sh.h.number > f.top:
 		outcome, c.misses = "new", 0
 		c.sampleLate(f.id, 0)
-		if f.probe && !f.hedged {
+		if f.probe() && !f.hedged {
 			c.off = max(c.off-1.0/400, -0.5)
 		}
 	case c.top() > f.top:
 		// Another channel brought the block while this voter still
 		// answered the one before: it lags.
-		outcome = "early"
-		if !f.probe {
-			outcome = ""
-		}
+		outcome = "behind"
 		if seen := c.sightOf(c.top()); !seen.IsZero() {
 			c.sampleLate(f.id, now.Sub(seen))
 		}
-	case !f.probe:
-		outcome = ""
+	case !f.probe():
+		outcome = "same"
 	default:
 		outcome = "early"
 		// Only the block's first early answer says the phase fired early:
@@ -775,9 +782,16 @@ func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnsw
 			c.misses++
 		}
 	}
-	if outcome != "" {
-		telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), outcome).Inc()
+	t.countFire(f, a, outcome)
+}
+
+// countFire counts fire f's answer by kind and outcome; an Ask another
+// fetch met is joined: it fetched nothing.
+func (t *ChainTracker) countFire(f *clockFire, a common.HeadAnswer, outcome string) {
+	if a.Outcome != common.AskFetched {
+		outcome = "joined"
 	}
+	telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), f.kind, outcome).Inc()
 }
 
 // clockDebounce is voter id's explicit statePollerDebounce, 0 when it
