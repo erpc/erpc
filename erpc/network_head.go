@@ -91,14 +91,19 @@ func (n *Network) headFor(sel string) *common.EvmHead {
 
 // viewHead sets h's view fields from v, its Head at most limit when that
 // is set; Finalized never above the Head. A limit the pins do not hold
-// (its upstreams' branch is not linked to them yet) serves the number
-// alone: no hash to check an answer against, and never a block above
-// what the selector's upstreams hold.
+// (its upstreams' branch is not linked to them yet), or a guarantee cap
+// below the pins (View.Capped), serves the number alone: no hash to check
+// an answer against, and never a block above what the selector's or the
+// guarantee's upstreams hold.
 func viewHead(h *common.EvmHead, v evm.View, limit int64) {
 	head, ok := v.Head()
 	if !ok {
-		h.Latest, h.LatestHash, h.Firm = 0, [32]byte{}, 0
-		return
+		n, capped := v.Capped()
+		if !capped {
+			h.Latest, h.LatestHash, h.Firm = 0, [32]byte{}, 0
+			return
+		}
+		head = indexer.Cursor{Number: n}
 	}
 	if limit > 0 && uint64(limit) < head.Number {
 		c, pinned := v.PinAt(uint64(limit))

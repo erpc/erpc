@@ -3467,6 +3467,17 @@ func (v View) Head() (head indexer.Cursor, ok bool) {
 // Firm is the view's Firm, 0 while unknown; at most Head.
 func (v View) Firm() uint64 { return v.s.firm }
 
+// Capped is the guarantee cap when it lies below the pins while votes back
+// a pin: the view has no Head then, so taps hold, and HTTP serves that
+// number alone (spec §6.5); ok false otherwise.
+func (v View) Capped() (n uint64, ok bool) {
+	b := v.s.backing
+	if b == nil || b.guarantee <= 0 || uint64(b.guarantee) >= b.base || b.served < 0 {
+		return 0, false
+	}
+	return uint64(b.guarantee), true
+}
+
 // Pinned reports whether c is pinned in the view's pins.
 func (v View) Pinned(c indexer.Cursor) bool { return v.s.pinned(c) != nil }
 
@@ -4205,8 +4216,8 @@ func (nt *networkTrackers) trackers() []*ChainTracker {
 
 func (nt *networkTrackers) get(n common.Network, groupKey, selector, lane string) *ChainTracker {
 	nt.mu.Lock()
-	defer nt.mu.Unlock()
 	if t := nt.groups[groupKey]; t != nil {
+		nt.mu.Unlock()
 		return t
 	}
 	// Only the network-wide tracker holds maxBackfill of chain time; group
@@ -4224,7 +4235,50 @@ func (nt *networkTrackers) get(n common.Network, groupKey, selector, lane string
 	if nt.requested.Load() {
 		startFollow(nt, n, t)
 	}
+	wide := nt.groups[""]
+	nt.mu.Unlock()
+	if wide != nil && wide != t {
+		seedLane(nt.ctx, wide, t)
+	}
 	return t
+}
+
+// seedLane gives lane tracker t, made on its lane's first read, the
+// network-wide tracker wide's pins within t's window and its voters'
+// current votes, and waits at most W for t to take them: the read that
+// made t serves its Head at once (rule 4), from votes linked as wide links
+// them, not after the voters' next votes. The pins are held as history,
+// never as sights of the block clock; t drops the votes of upstreams
+// outside its lane.
+func seedLane(ctx context.Context, wide, t *ChainTracker) {
+	ctx, cancel := context.WithTimeout(ctx, wide.W())
+	defer cancel()
+	seeded := make(chan struct{})
+	wide.mb.put(trackerMsg{kind: msgCall, fn: func() {
+		defer close(seeded)
+		pins := wide.pins[max(0, len(wide.pins)-t.window):]
+		held := make([]*chainHeader, len(pins))
+		for i, nd := range pins {
+			held[i] = nd.h
+		}
+		t.mb.put(trackerMsg{kind: msgCall, fn: func() {
+			for _, h := range held {
+				if t.nodes[h.hash] == nil {
+					t.hold(h)
+				}
+			}
+		}})
+		for id, nd := range wide.votes {
+			if wide.alive(nd) {
+				t.observeSource(id, nd.h, wide.voteAt[id], false)
+			}
+		}
+	}})
+	select {
+	case <-seeded:
+		t.sync(ctx)
+	case <-ctx.Done():
+	}
 }
 
 // ClientRequested starts n's state probes and an integrity follow tap per
@@ -4265,6 +4319,24 @@ func ClientRequested(n common.Network) {
 func startFollow(nt *networkTrackers, n common.Network, t *ChainTracker) {
 	if cfg := n.Config(); cfg != nil && cfg.Integrity != nil && cfg.Integrity.Follow.IsEnabled() {
 		nt.fetch.bg.Go(func() { t.follow(nt.ctx) })
+	}
+}
+
+// SyncTrackersForTest waits until every tracker of n handled every message
+// sent to it before the call.
+func SyncTrackersForTest(ctx context.Context, n common.Network) {
+	nt := registeredTrackers(n)
+	if nt == nil {
+		return
+	}
+	nt.mu.Lock()
+	ts := make([]*ChainTracker, 0, len(nt.groups))
+	for _, t := range nt.groups {
+		ts = append(ts, t)
+	}
+	nt.mu.Unlock()
+	for _, t := range ts {
+		t.sync(ctx)
 	}
 }
 
