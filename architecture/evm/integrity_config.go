@@ -31,6 +31,7 @@ func compileIntegritySettings(s *common.IntegritySettings, chainId int64) (integ
 			applyCheckOverride(cs, id, oc)
 		}
 	}
+	integrity.BindChainId(cs, chainId)
 
 	if ib := s.InvalidBehavior; ib != nil {
 		if b, ok := parseBehavior(ib.Finalized); ok {

@@ -66,6 +66,23 @@ func ethereumBlockHash(_ int64, fields map[string]json.RawMessage) (hash string,
 	return gethHeaderHash(fields)
 }
 
+// BindChainId gives blockHashRecompute the chain id that chain-bound header
+// formats hash with; without it they encode nothing and the check skips.
+// Applied after the operator's overrides, which replace a check's params.
+func BindChainId(cs CheckSet, chainId int64) {
+	cfg, ok := cs["blockHashRecompute"]
+	if !ok || chainId == 0 {
+		return
+	}
+	params := maps.Clone(cfg.Params)
+	if params == nil {
+		params = make(map[string]string, 1)
+	}
+	params["chainId"] = strconv.FormatInt(chainId, 10)
+	cfg.Params = params
+	cs["blockHashRecompute"] = cfg
+}
+
 func init() {
 	// blockHashRecompute — keccak(RLP(header)) must equal the reported hash.
 	register(&Check{
@@ -76,7 +93,8 @@ func init() {
 			if h == nil || h.Hash == "" {
 				return Skipped
 			}
-			format, encodable := VerifyBlockHash(0, d.raw)
+			chainId, _ := strconv.ParseInt(cfg.param("chainId", "0"), 10, 64)
+			format, encodable := VerifyBlockHash(chainId, d.raw)
 			switch {
 			case format != "":
 				return nil
