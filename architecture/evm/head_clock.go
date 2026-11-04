@@ -436,12 +436,18 @@ func (t *ChainTracker) runClock() {
 		}
 		return
 	}
-	if cand, ok := t.staleVoter(t.clockCandidates()); ok {
-		if c.out = t.fire(cand.id, now); c.out != nil {
+	if stale := t.staleVoters(t.clockCandidates()); len(stale) > 0 {
+		// All at once: each answer moves one vote, and the jumped tree takes
+		// the pins only with more votes than the older one (rule 4), so one
+		// after another costs a round trip each.
+		if c.out = t.fire(stale[0].id, now); c.out != nil {
+			for _, cand := range stale[1:] {
+				t.fire(cand.id, now)
+			}
 			if waiting {
 				c.edge = c.out
 			}
-			telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), "catch_up").Inc()
+			telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), "catch_up").Add(float64(len(stale)))
 			return
 		}
 	}
@@ -510,17 +516,18 @@ func (t *ChainTracker) edgeVoters(cands []clockCandidate, first string) []string
 	return ids[:min(len(ids), max(t.voters.Need, 1)-1)]
 }
 
-// staleVoter is a voter the clock fetches now because a counted vote stands
-// above the pins off their tree (spec §6.8 catch-up): a tracker no history
-// serves holds a vote that jumped blocks as a root of its own, and rule 4
-// weighs it against the older votes on the pins, so the pins stay until
-// those voters vote again. It is a voter whose vote is on the pins and
-// whose last fetch the clock took was sent before that vote was sighted;
-// each voter is fetched once per such vote.
-func (t *ChainTracker) staleVoter(cands []clockCandidate) (clockCandidate, bool) {
+// staleVoters are the voters the clock fetches now because a counted vote
+// stands above the pins off their tree (spec §6.8 catch-up): a tracker no
+// history serves holds a vote that jumped blocks as a root of its own, and
+// rule 4 weighs it against the older votes on the pins, so the pins stay
+// until those voters vote again. Each is a voter whose vote is on the pins
+// and whose last fetch the clock took was sent before that vote was
+// sighted, as many as the jumped tree lacks to outvote the pins' tree if
+// each answer moves a vote; each voter is fetched once per such vote.
+func (t *ChainTracker) staleVoters(cands []clockCandidate) []clockCandidate {
 	head := t.head()
 	if head == nil {
-		return clockCandidate{}, false
+		return nil
 	}
 	pinRoot := t.pinRoot()
 	var ahead *node
@@ -530,16 +537,37 @@ func (t *ChainTracker) staleVoter(cands []clockCandidate) (clockCandidate, bool)
 		}
 	}
 	if ahead == nil {
-		return clockCandidate{}, false
+		return nil
 	}
-	seen := t.clock.sightOf(ahead.h.number)
-	for _, cand := range cands {
-		n := t.votes[cand.id]
-		if t.alive(n) && t.rootOf(n) == pinRoot && t.clock.taken[cand.id].Before(seen) {
-			return cand, true
+	aheadRoot := t.rootOf(ahead)
+	onPins, onAhead := 0, 0
+	for u, n := range t.votes {
+		switch {
+		case !t.counts(u) || !t.alive(n):
+		case t.rootOf(n) == pinRoot:
+			onPins++
+		case t.rootOf(n) == aheadRoot:
+			onAhead++
 		}
 	}
-	return clockCandidate{}, false
+	// A tracker history serves re-anchors only with more than half the
+	// lane's voters (rule 4).
+	lacks := max(1, (onPins-onAhead)/2+1)
+	if t.served {
+		lacks = max(lacks, len(t.voters.Voters)/2+1-onAhead)
+	}
+	seen := t.clock.sightOf(ahead.h.number)
+	var out []clockCandidate
+	for _, cand := range cands {
+		if len(out) == lacks {
+			break
+		}
+		n := t.votes[cand.id]
+		if t.alive(n) && t.rootOf(n) == pinRoot && t.clock.taken[cand.id].Before(seen) {
+			out = append(out, cand)
+		}
+	}
+	return out
 }
 
 // cappingVoter is a guarantee subset's voter the clock fetches now because
