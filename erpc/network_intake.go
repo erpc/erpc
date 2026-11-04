@@ -542,33 +542,33 @@ type voterQuery struct {
 	member    func(common.Upstream) bool
 }
 
-// voterSet is voter(u) over the lane of selector sel ("" network-wide),
-// the one place its rule applies (spec §6.2): upstreams in the policy's
-// eligible set, else every registered one (tipCandidates), that sel
-// matches, with a state poller and not syncing, of the best rank present
-// (tipVoterRank), minus what the query's kind excludes (voteKind). No
-// tier filter: the fallback tier votes too. voters finds the best rank in
-// one pass and each walks again, so neither allocates.
+// voterSet is voter(u) over scope s (tipScope), the one place its rule
+// applies (spec §6.2): upstreams in the policy's eligible set, else every
+// registered one (tipCandidates), that s's selector matches and that serve
+// its method, with a state poller and not syncing, of the best rank
+// present (tipVoterRank), minus what the query's kind excludes
+// (voteKind). No tier filter: the fallback tier votes too. voters finds
+// the best rank in one pass and each walks again, so neither allocates.
 type voterSet struct {
 	n     *Network
-	sel   string
+	scope tipScope
 	q     voterQuery
 	best  int
 	ranks tipRanks
 }
 
-// voters is the voter set of sel's lane for q.
-func (n *Network) voters(sel string, q voterQuery) voterSet {
-	s := voterSet{n: n, sel: sel, q: q, best: -1}
-	for u := range n.tipCandidates(sel) {
-		if _, rank, ok := s.rank(u); ok {
-			s.ranks[rank]++
-			if s.best < 0 || rank < s.best {
-				s.best = rank
+// voters is the voter set of scope s for q.
+func (n *Network) voters(s tipScope, q voterQuery) voterSet {
+	vs := voterSet{n: n, scope: s, q: q, best: -1}
+	for u := range n.tipCandidates(s) {
+		if _, rank, ok := vs.rank(u); ok {
+			vs.ranks[rank]++
+			if vs.best < 0 || rank < vs.best {
+				vs.best = rank
 			}
 		}
 	}
-	return s
+	return vs
 }
 
 // rank is u's rank for the query; ok is false when u casts no such vote
@@ -609,7 +609,7 @@ func (s voterSet) each(yield func(u common.Upstream, head int64) bool) {
 	if s.best < 0 {
 		return
 	}
-	for u := range s.n.tipCandidates(s.sel) {
+	for u := range s.n.tipCandidates(s.scope) {
 		if head, rank, ok := s.rank(u); ok && rank == s.best && !yield(u, head) {
 			return
 		}
@@ -690,7 +690,7 @@ func (in *networkIntake) isVoter(upstreamId string) bool {
 	policy, all := in.nw.eligibleSet(context.Background())
 	s := in.voterIds.Load()
 	if s == nil || !s.of(policy, all) {
-		vs := in.nw.voters("", voterQuery{kind: hashVote}).list()
+		vs := in.nw.voters(tipScope{}, voterQuery{kind: hashVote}).list()
 		ids := make([]string, 0, len(vs))
 		for _, u := range vs {
 			ids = append(ids, u.Id())
@@ -761,7 +761,7 @@ func freshVote(v health.HashVote, voted bool, w time.Duration, now time.Time) (o
 // A source streams while its stream head's hash age is at most w. next is
 // when a primary's streaming or lead next changes, 0 when no clock runs.
 func (in *networkIntake) admit(now time.Time, w time.Duration) (next time.Duration) {
-	voters := in.nw.voters("", voterQuery{kind: admissionVote}).list()
+	voters := in.nw.voters(tipScope{}, voterQuery{kind: admissionVote}).list()
 	soonest := func(d time.Duration) {
 		if next == 0 || d < next {
 			next = max(d, time.Millisecond)
@@ -843,7 +843,7 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration) evm.HashVoters
 	hv.Vendors = n.intake.vendorsOf(n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId))
 	now := time.Now()
 	policy, all := n.eligibleSet(context.Background())
-	voters := n.voters(selector, voterQuery{kind: hashVote}).list()
+	voters := n.voters(tipScope{sel: selector}, voterQuery{kind: hashVote}).list()
 	votes := make([]health.HashVote, len(voters))
 	voted := make([]bool, len(voters))
 	var laneTop int64
@@ -890,7 +890,7 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration) evm.HashVoters
 			n.intake.voterIds.Store(&voterSnapshot{ids: hv.Voters, policy: policy, all: slices.Clone(all)})
 		}
 	}
-	for c := range n.tipCandidates(selector) {
+	for c := range n.tipCandidates(tipScope{sel: selector}) {
 		if syncing(c) || slices.Contains(hv.Voters, c.Id()) {
 			continue
 		}
@@ -899,7 +899,7 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration) evm.HashVoters
 		}
 	}
 	hv.Need = q.Of(len(hv.Hash))
-	hv.Holders, hv.Guarantee = n.laneHolders(selector)
+	hv.Holders, hv.Guarantee = n.laneHolders(tipScope{sel: selector})
 	hv.Capping = n.guaranteeLaggers(selector, hv.Guarantee)
 	return hv
 }

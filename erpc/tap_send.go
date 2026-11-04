@@ -50,7 +50,7 @@ func (s *tapSends) gate(blk indexer.Block) (sendSnapshot, bool) {
 		if lt := s.nw.laneTracker(s.selector); lt != nil {
 			snap.laneChanged = lt.Changed()
 		}
-		lh := s.nw.headFor(s.selector)
+		lh := s.nw.headFor(tipScope{sel: s.selector})
 		switch {
 		case lh.Latest <= 0:
 			snap.headOK = false

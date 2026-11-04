@@ -299,7 +299,7 @@ func TestNetworksPaths_BareNetworkAccessors(t *testing.T) {
 		assert.False(t, known)
 		assert.Equal(t, int64(0), head)
 		var visited int
-		n.walkTipCandidates("", func(common.Upstream) bool { visited++; return true })
+		n.walkTipCandidates(tipScope{}, func(common.Upstream) bool { visited++; return true })
 		assert.Equal(t, 0, visited)
 		key, ids := n.partitionKeyFor(ctx, "primary-*")
 		assert.Equal(t, "", key)

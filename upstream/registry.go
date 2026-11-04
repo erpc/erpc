@@ -444,6 +444,7 @@ func (u *UpstreamsRegistry) OverrideOrderForTest(networkId string, ids ...string
 	cp := make([]*Upstream, len(reordered))
 	copy(cp, reordered)
 	u.networkUpstreamsAtomic.Store(networkId, cp)
+	methodFilterEpoch.Add(1)
 }
 
 func (u *UpstreamsRegistry) GetNetworkUpstreams(ctx context.Context, networkId string) []*Upstream {
@@ -471,6 +472,7 @@ func (u *UpstreamsRegistry) GetNetworkUpstreams(ctx context.Context, networkId s
 	copy(cp, ups)
 	// Populate snapshot while still holding RLock to avoid stale overwrite after a writer runs
 	u.networkUpstreamsAtomic.Store(networkId, cp)
+	methodFilterEpoch.Add(1)
 	u.upstreamsMu.RUnlock()
 	return cp
 }
@@ -771,6 +773,7 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 		if !exists {
 			hook = u.networkUpstreamHooks[networkId]
 		}
+		methodFilterEpoch.Add(1)
 	}
 	u.upstreamsMu.Unlock()
 

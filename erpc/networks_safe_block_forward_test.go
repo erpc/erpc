@@ -166,7 +166,7 @@ func TestHttpServer_SafeGetLogsTakesTheSafeLaneHead(t *testing.T) {
 	}
 	require.Eventually(t, func() bool { return servedHead(nw, context.Background()).Latest == sourceHead+5 }, 5*time.Second, 5*time.Millisecond,
 		"network-wide head: %+v", servedHead(nw, context.Background()))
-	require.Equal(t, sourceHead, nw.headFor("tier:source").Latest, "the safe lane is 5 blocks behind the network-wide lane")
+	require.Equal(t, sourceHead, nw.headFor(tipScope{sel: "tier:source"}).Latest, "the safe lane is 5 blocks behind the network-wide lane")
 
 	status, _, body := sendRequest(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"safe","toBlock":"latest"}]}`, nil, nil)
 	require.Equal(t, http.StatusOK, status, "body=%s", body)

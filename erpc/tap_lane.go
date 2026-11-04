@@ -63,7 +63,7 @@ func (f laneFeed) Read(ctx context.Context, c indexer.Cursor, o indexer.ReadOpts
 			lt.MarkRead()
 			moved = lt.Changed()
 		}
-		h := f.nw.headFor(f.selector)
+		h := f.nw.headFor(tipScope{sel: f.selector})
 		keep := len(b.Applied)
 		for keep > 0 && (h.Latest <= 0 || b.Applied[keep-1].Number > uint64(h.Latest) ||
 			b.Applied[keep-1].Number == uint64(h.Latest) && b.Applied[keep-1].Hash != h.LatestHash) {

@@ -1299,6 +1299,29 @@ func (u *Upstream) assertUpstreamLowerBound(ctx context.Context, statePoller com
 // serves it again (spec §10, §13.1).
 var autoIgnoreExpiry = 10 * time.Minute
 
+// methodFilterEpoch moves whenever a network's upstream set or an upstream's
+// method filter changes, so a view built from them (a network's served-tip
+// voter sets) knows to rebuild with one atomic load.
+var methodFilterEpoch atomic.Uint64
+
+// MethodFilterEpoch returns the current methodFilterEpoch.
+func MethodFilterEpoch() uint64 { return methodFilterEpoch.Load() }
+
+// MethodFilter returns copies of the upstream's ignoreMethods, with its
+// auto-ignored methods appended in order, and allowMethods.
+func (u *Upstream) MethodFilter() (ignore, allow []string) {
+	u.cfgMu.RLock()
+	ignore, allow = slices.Clone(u.config.IgnoreMethods), slices.Clone(u.config.AllowMethods)
+	u.cfgMu.RUnlock()
+	var auto []string
+	u.autoIgnored.Range(func(m, _ any) bool {
+		auto = append(auto, m.(string))
+		return true
+	})
+	slices.Sort(auto)
+	return append(ignore, auto...), allow
+}
+
 func (u *Upstream) IgnoreMethod(method string) {
 	ai := u.config.AutoIgnoreUnsupportedMethods
 	if ai == nil || !*ai {
@@ -1306,6 +1329,7 @@ func (u *Upstream) IgnoreMethod(method string) {
 	}
 	u.logger.Warn().Str("method", method).Dur("for", autoIgnoreExpiry).Msg("upstream does not support method, ignoring it for a while")
 	u.autoIgnored.Store(method, time.Now().Add(autoIgnoreExpiry))
+	methodFilterEpoch.Add(1)
 }
 
 func (u *Upstream) initRateLimitAutoTuner() {
@@ -1365,7 +1389,9 @@ func (u *Upstream) ShouldHandleMethod(method string) (bool, error) {
 		if time.Now().Before(until.(time.Time)) {
 			return false, nil
 		}
-		u.autoIgnored.CompareAndDelete(method, until)
+		if u.autoIgnored.CompareAndDelete(method, until) {
+			methodFilterEpoch.Add(1)
+		}
 	}
 	return true, nil
 }

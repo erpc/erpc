@@ -73,7 +73,9 @@ A **lane** is not a config object. It is an emergent artifact: when a request ca
 
 The lane key is derived from the **matched upstream set**, not the selector text. `flashblocks*` and `fl*` targeting the same three upstreams produce the same key and share one lane. Cardinality is bounded by the actual upstream topology, not selector diversity.
 
-**No lane.** When a selector is complex, matches fewer than two upstreams, matches all upstreams, or arrives past the cap, `servedTipLaneFor` returns nil. The subset pick still applies, with no regression guard, no anchor and no gauge write, so a subset value never overwrites the `lane="all"` gauge.
+**Method subsets.** Only upstreams that serve the request's method (`ignoreMethods`/`allowMethods`) vote on its [served tip](/reference/evm/block-tracking#served-tip). A request whose method every upstream serves, or none does, uses its selector's lane. One whose method only some upstreams serve forms no lane of its own: it reads its selector lane's view capped at the block `servedTip.quorum` of the serving upstreams hold, with the stateless pick (no guard, no finalized floor, no gauges). Each method's voter set is built on its first request and rebuilt when the network's upstreams or an upstream's method filter change; a request reads it with one lookup. Only method names the config or the built-in tables define exactly are cached; a casing variant (`ETH_CALL`) or an unknown name is resolved per request.
+
+**No lane.** When a selector is complex, matches fewer than two upstreams, matches all upstreams, or arrives past the cap, `laneFor` returns nil. The subset pick still applies, with no regression guard, no anchor and no gauge write, so a subset value never overwrites the `lane="all"` gauge.
 
 **UseUpstream directive precedence** (highest to lowest):
 

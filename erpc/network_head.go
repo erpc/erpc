@@ -33,12 +33,12 @@ func (n *Network) EvmHead(ctx context.Context, req *common.NormalizedRequest) co
 		req, _ = ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
 	}
 	if req == nil {
-		return *n.headFor("")
+		return *n.headFor(tipScope{})
 	}
 	return *n.requestHead(ctx, req)
 }
 
-// requestHead is the Head req took once from its lane; every later reader
+// requestHead is the Head req took once from its scope; every later reader
 // of req gets that value, so retries, hedges, the cache key and
 // interpolation all see the same Latest. A request naming the finalized
 // tag takes it after the lane's finalized refresh (spec §6.4 Finality): a
@@ -56,34 +56,44 @@ func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest
 	if n.cfg != nil {
 		req.ApplyDirectiveDefaults(n.cfg.DirectiveDefaults)
 	}
-	sel := ""
-	if d := req.Directives(); d != nil {
-		sel = d.UseUpstream
-	}
+	s := n.requestScope(ctx, req)
 	if evm.NamesFinalizedTag(ctx, req) {
-		n.awaitFinalizedRefresh(ctx, sel)
+		n.awaitFinalizedRefresh(ctx, s.sel)
 	} else if reads, number := evm.ReadsLatest(ctx, n, req); reads {
-		if t := n.laneTracker(sel); t != nil {
+		if t := n.laneTracker(s.sel); t != nil {
 			t.LatestRead(ctx, number)
 		}
 	}
-	return req.TakeEvmHead(n.headFor(sel))
+	return req.TakeEvmHead(n.headFor(s))
 }
 
-// headFor is the Head of selector sel, read once: its lane's number facts
-// and its tracker's view (spec §6.4, §6.5). A selector that forms no lane
-// takes the stateless pick of the facts and the network-wide view, its
-// Head capped at the block q of its upstreams hold.
-func (n *Network) headFor(sel string) *common.EvmHead {
+// requestScope is whose heads req's Head counts: the upstreams its
+// use-upstream selector matches that serve its method (spec §6.2).
+func (n *Network) requestScope(ctx context.Context, req *common.NormalizedRequest) tipScope {
+	var s tipScope
+	if d := req.Directives(); d != nil {
+		s.sel = d.UseUpstream
+	}
+	method, _ := req.Method()
+	s.excluded = n.nonServers(ctx, method)
+	return s
+}
+
+// headFor is the Head of scope s, read once: its selector lane's number
+// facts and its tracker's view (spec §6.4, §6.5). A selector that forms
+// no lane, or a method only some of its upstreams serve, takes the
+// stateless pick of the facts and the selector lane's view, its Head
+// capped at the block q of the scope's upstreams hold.
+func (n *Network) headFor(s tipScope) *common.EvmHead {
 	var h common.EvmHead
 	var limit int64
-	if l := n.laneFor(sel); l != nil {
+	if l := n.laneFor(s.sel); l != nil && len(s.excluded) == 0 {
 		h = *l.published()
 	} else {
-		h = n.computeHead(nil, sel)
-		limit, _ = n.laneHolders(sel)
+		h = n.computeHead(nil, s)
+		limit, _ = n.laneHolders(s)
 	}
-	if t := n.laneTracker(sel); t != nil {
+	if t := n.laneTracker(s.sel); t != nil {
 		viewHead(&h, t.View(), limit)
 	}
 	return &h
@@ -146,7 +156,7 @@ func (n *Network) EvmLaneHead(groupKey, selector string) common.EvmHead {
 	if groupKey == "" {
 		selector = ""
 	}
-	return *n.headFor(selector)
+	return *n.headFor(tipScope{sel: selector})
 }
 
 func (l *servedTipLane) published() *common.EvmHead {
@@ -306,7 +316,7 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	old := l.published()
-	h := n.computeHead(l, l.selector)
+	h := n.computeHead(l, tipScope{sel: l.selector})
 	// A fall through an unknown Ceiling counts at its first known value.
 	h.CeilingPeak, h.CeilingFellAt = max(old.CeilingPeak, h.Ceiling), old.CeilingFellAt
 	if h.Ceiling > 0 && h.Ceiling < old.CeilingPeak && (old.Ceiling == 0 || h.Ceiling < old.Ceiling) {
@@ -320,25 +330,27 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	l.head.Store(&pub)
 }
 
-// computeHead computes the number facts of selector sel (spec §6.4):
+// computeHead computes the number facts of scope s (spec §6.4):
 // Finalized, Leader and the ceiling, against the lane's view's Head; l is
-// its lane, nil for the stateless pick of a selector that forms none: no
+// its lane, nil for the stateless pick of a scope that forms none: no
 // guard, no gauges, no anchor.
-func (n *Network) computeHead(l *servedTipLane, sel string) common.EvmHead {
+func (n *Network) computeHead(l *servedTipLane, s tipScope) common.EvmHead {
 	var latest int64
 	t := n.chainTracker
 	if l != nil {
 		// By the lane itself: a lane being made is not yet laneFor's.
 		t = n.trackerOf(l)
+	} else {
+		t = n.laneTracker(s.sel)
 	}
 	if t != nil {
 		if head, ok := t.View().Head(); ok {
 			latest = int64(head.Number)
 		}
 	}
-	h := common.EvmHead{Finalized: n.laneFinalized(l, sel, latest)}
-	h.Leader = n.laneLeader(sel, latest)
-	h.Ceiling, h.OldestReportAt = n.laneCeiling(sel)
+	h := common.EvmHead{Finalized: n.laneFinalized(l, s, latest)}
+	h.Leader = n.laneLeader(s, latest)
+	h.Ceiling, h.OldestReportAt = n.laneCeiling(s.sel)
 	if l != nil {
 		if l.gauges == nil {
 			l.gauges = n.bindLaneGauges(l.label)
@@ -367,12 +379,12 @@ func (n *Network) computeHead(l *servedTipLane, sel string) common.EvmHead {
 // rogue value can pin, freeze or poison the result
 // (networks_served_tip_invariants_test.go pins those outcomes against
 // the frozen-tip regression).
-func (n *Network) laneFinalized(l *servedTipLane, sel string, latest int64) int64 {
+func (n *Network) laneFinalized(l *servedTipLane, s tipScope, latest int64) int64 {
 	var q common.ServedTipQuorum
 	if n.cfg != nil {
 		q = n.cfg.Evm.ServedTipQuorum()
 	}
-	pick, live := n.evmTipBallot(sel, true, q, nil)
+	pick, live := n.evmTipBallot(s, true, q, nil)
 	tip := pick.Tip
 
 	// Regression guard: "finalized" cannot drop far below the corroborated
@@ -389,7 +401,7 @@ func (n *Network) laneFinalized(l *servedTipLane, sel string, latest int64) int6
 	// (guaranteedFor).
 	backing := pick.Max
 	if tip > 0 {
-		floor, subsets := n.guaranteedFloor(sel, true)
+		floor, subsets := n.guaranteedFloor(s.sel, true)
 		if floor > 0 && floor < tip {
 			tip = floor
 		}
@@ -434,26 +446,26 @@ func (n *Network) laneFinalized(l *servedTipLane, sel string, latest int64) int6
 	return tip
 }
 
-// laneHolders is what Firm and the Head read of selector sel's lane (spec
-// §6.5): holders, the q-th highest block its number voters hold, by their
-// head counters (any instance, any path) or by this instance's by-number
+// laneHolders is what Firm and the Head read of scope s (spec §6.5):
+// holders, the q-th highest block its number voters hold, by their head
+// counters (any instance, any path) or by this instance's by-number
 // answers from them (heldAtLeast); and guarantee, the cap the Head never
 // passes, 0 while none constrains it: the lowest majority of the guarantee
-// subsets and, on a lane whose voters are all static caps, the highest cap
-// (no voter serves a block above it, rule 4).
-func (n *Network) laneHolders(sel string) (holders, guarantee int64) {
+// subsets and, on a scope whose voters are all static caps, the highest
+// cap (no voter serves a block above it, rule 4).
+func (n *Network) laneHolders(s tipScope) (holders, guarantee int64) {
 	var q common.ServedTipQuorum
 	if n.cfg != nil {
 		q = n.cfg.Evm.ServedTipQuorum()
 	}
 	var buf [16]int64
 	heads := buf[:0]
-	vs := n.voters(sel, voterQuery{kind: numberVote})
+	vs := n.voters(s, voterQuery{kind: numberVote})
 	vs.each(func(u common.Upstream, head int64) bool {
 		heads = append(heads, max(head, n.heldAtLeast(u.Id())))
 		return true
 	})
-	guarantee, _ = n.guaranteedFloor(sel, false)
+	guarantee, _ = n.guaranteedFloor(s.sel, false)
 	if len(heads) > 0 && !vs.live() {
 		if c := slices.Max(heads); guarantee == 0 || c < guarantee {
 			guarantee = c
@@ -484,7 +496,7 @@ func (n *Network) guaranteeLaggers(sel string, floor int64) []string {
 		return false
 	}
 	var ids []string
-	n.voters(sel, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
+	n.voters(tipScope{sel: sel}, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
 		if max(head, n.heldAtLeast(u.Id())) <= floor && member(u) {
 			ids = append(ids, u.Id())
 		}
@@ -493,18 +505,18 @@ func (n *Network) guaranteeLaggers(sel string, floor int64) []string {
 	return ids
 }
 
-// laneLeader is the highest number voter of the lane (voterSet) whose head
+// laneLeader is the highest number voter of scope s (voterSet) whose head
 // is within latest + maxRetryableBlockDistance (#1154): a head beyond reach
 // of the served one never leads. nil while latest is unknown.
-func (n *Network) laneLeader(sel string, latest int64) common.Upstream {
+func (n *Network) laneLeader(s tipScope, latest int64) common.Upstream {
 	if latest <= 0 {
 		return nil
 	}
 	reach := latest + n.maxRetryableBlockDistance()
 	var leader common.Upstream
 	var top int64
-	s := n.voters(sel, voterQuery{kind: numberVote})
-	s.each(func(u common.Upstream, head int64) bool {
+	vs := n.voters(s, voterQuery{kind: numberVote})
+	vs.each(func(u common.Upstream, head int64) bool {
 		if head <= reach && head > top {
 			leader, top = u, head
 		}
@@ -613,7 +625,7 @@ func (n *Network) EvmAwaitCeiling(ctx context.Context, sel string, block int64) 
 	defer cancel()
 	taken := map[string]time.Time{}
 	ask := func() {
-		n.voters(sel, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
+		n.voters(tipScope{sel: sel}, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
 			if head < block {
 				if sp := u.(common.EvmUpstream).EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 					if at := sp.AskBackground(common.HeadNeedNumber, bt, taken[u.Id()], common.AskRefusal).At; !at.IsZero() {
@@ -629,7 +641,7 @@ func (n *Network) EvmAwaitCeiling(ctx context.Context, sel string, block int64) 
 	defer tick.Stop()
 	for {
 		computed := n.headsComputed()
-		h := n.headFor(sel)
+		h := n.headFor(tipScope{sel: sel})
 		if h.Ceiling >= block {
 			return h.Ceiling, h.OldestReportAt
 		}
@@ -638,7 +650,7 @@ func (n *Network) EvmAwaitCeiling(ctx context.Context, sel string, block int64) 
 		case <-tick.C:
 			ask()
 		case <-wait.Done():
-			h = n.headFor(sel)
+			h = n.headFor(tipScope{sel: sel})
 			return h.Ceiling, h.OldestReportAt
 		}
 	}
@@ -707,7 +719,7 @@ func (n *Network) awaitViewOnto(ctx context.Context, req *common.NormalizedReque
 // whose head is below block, number voters (voterSet) first.
 func (n *Network) bandPollers(sel string, block int64) []common.EvmStatePoller {
 	ups := slices.Collect(n.countedUpstreams(sel))
-	s := n.voters(sel, voterQuery{kind: numberVote})
+	s := n.voters(tipScope{sel: sel}, voterQuery{kind: numberVote})
 	voters := s.list()
 	out := make([]common.EvmStatePoller, 0, len(ups))
 	for _, first := range [2]bool{true, false} {
@@ -783,7 +795,7 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 		if t != nil {
 			moved = t.Changed()
 		}
-		return n.headFor(sel).Latest, moved
+		return n.headFor(tipScope{sel: sel}).Latest, moved
 	}
 	at, moved := latest()
 	if at <= 0 || bn <= at {

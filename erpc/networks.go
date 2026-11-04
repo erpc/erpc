@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"maps"
 	"math"
 	"runtime/debug"
 	"slices"
@@ -89,6 +90,10 @@ type Network struct {
 	// topology) and capped by maxServedTipLanes.
 	servedTipLanes     sync.Map // map[string]*servedTipLane (key = "grp:<hash>")
 	servedTipLaneCount atomic.Int32
+	// tipMethods holds each method's served-tip voter set (methodVotersFor);
+	// tipMethodsMu serializes its builds.
+	tipMethods   atomic.Pointer[tipMethods]
+	tipMethodsMu sync.Mutex
 
 	// headWake wakes the head loop to compute the dirty lanes
 	// (refreshDirtyHeads); headPass is closed and replaced after each
@@ -532,7 +537,7 @@ func (n *Network) Logger() *zerolog.Logger {
 }
 
 // evmTipBallot builds the served-tip pick for an axis under quorum q from the
-// number votes of sel's lane (voterSet) that satisfy member (nil = all of
+// number votes of scope s (voterSet) that satisfy member (nil = all of
 // them). live reports whether live, non-capped heads decided it (benched or
 // not): a cap-only ballot gives the regression guard no live reference.
 //
@@ -544,17 +549,17 @@ func (n *Network) Logger() *zerolog.Logger {
 // serve — so it keeps voting. (No live head means no live reference for the
 // regression guard either; it falls back to its own last corroborated pick,
 // see guardServedTipRegression.)
-func (n *Network) evmTipBallot(sel string, useFinalized bool, q common.ServedTipQuorum, member func(common.Upstream) bool) (pick common.ServedTipPick, live bool) {
+func (n *Network) evmTipBallot(s tipScope, useFinalized bool, q common.ServedTipQuorum, member func(common.Upstream) bool) (pick common.ServedTipPick, live bool) {
 	// Typical pools fit the stack buffer, so the ballot stays off the heap;
 	// append moves a larger one there.
 	var buf [16]int64
 	heads := buf[:0]
-	s := n.voters(sel, voterQuery{kind: numberVote, finalized: useFinalized, member: member})
-	s.each(func(_ common.Upstream, head int64) bool {
+	vs := n.voters(s, voterQuery{kind: numberVote, finalized: useFinalized, member: member})
+	vs.each(func(_ common.Upstream, head int64) bool {
 		heads = append(heads, head)
 		return true
 	})
-	return common.PickServedTip(heads, q), s.live()
+	return common.PickServedTip(heads, q), vs.live()
 }
 
 // evmTipObservation returns an upstream's effective head for the axis, plus
@@ -630,23 +635,34 @@ func configuredUpperExactBlock(u common.Upstream) *int64 {
 // arbitrary selector value can never grow per-pod memory. No-op when there is
 // no request or no selector in ctx (background/admin callers).
 func (n *Network) EvmRoutableUpstreams(ctx context.Context) iter.Seq[common.Upstream] {
-	return n.tipCandidates(requestSelector(ctx))
+	return n.tipCandidates(tipScope{sel: requestSelector(ctx)})
 }
 
-// tipCandidates is EvmRoutableUpstreams for the use-upstream selector sel
-// ("" = every upstream).
-func (n *Network) tipCandidates(sel string) iter.Seq[common.Upstream] {
+// tipScope is whose heads a Head counts: the upstreams use-upstream
+// selector sel matches ("" = every upstream), less excluded, those that do
+// not serve the request's method (nonServers). The zero scope is every
+// upstream.
+type tipScope struct {
+	sel      string
+	excluded []common.Upstream
+}
+
+// tipCandidates is EvmRoutableUpstreams for scope s.
+func (n *Network) tipCandidates(s tipScope) iter.Seq[common.Upstream] {
 	// Kept this small so it inlines: the closure then stays on the caller's
 	// stack instead of costing a heap allocation per walk.
-	return func(yield func(common.Upstream) bool) { n.walkTipCandidates(sel, yield) }
+	return func(yield func(common.Upstream) bool) { n.walkTipCandidates(s, yield) }
 }
 
-func (n *Network) walkTipCandidates(sel string, yield func(common.Upstream) bool) {
+func (n *Network) walkTipCandidates(s tipScope, yield func(common.Upstream) bool) {
 	visit := func(u common.Upstream) bool {
-		if sel != "" {
-			if m, _ := common.UpstreamMatchesSelector(sel, u); !m {
+		if s.sel != "" {
+			if m, _ := common.UpstreamMatchesSelector(s.sel, u); !m {
 				return true
 			}
+		}
+		if slices.Contains(s.excluded, u) {
+			return true
 		}
 		return yield(u)
 	}
@@ -661,6 +677,133 @@ func (n *Network) walkTipCandidates(sel string, yield func(common.Upstream) bool
 			return
 		}
 	}
+}
+
+// tipMethods is a network's nonServers per method, for one
+// upstream.MethodFilterEpoch. Immutable: a change publishes a copy.
+//
+// methods holds only names the methods config defines exactly
+// (common.IsKnownMethodName), so client input cannot grow it: a casing
+// variant or an unknown name is resolved per request instead. Variants are
+// not folded to the config's name because upstream ignoreMethods/allowMethods
+// match case-sensitively, so a variant may have other voters.
+type tipMethods struct {
+	epoch uint64
+	// uniform: every upstream filters methods alike, so every method is
+	// served by all of them or by none, and every method has every voter.
+	uniform bool
+	methods map[string][]common.Upstream
+}
+
+// nonServers is the upstreams excluded from method's voters (tipScope):
+// those that do not serve it (servesMethod, the filter Forward applies),
+// none when no upstream serves it, as Forward then keeps them all, and
+// none for eth_blockNumber, answered from the view whatever its voters. A
+// request pays one atomic load, one epoch compare and, on a network whose
+// upstreams filter methods differently, one map lookup; a known method's
+// set is built under tipMethodsMu on its first request, and every set is
+// rebuilt after the epoch moves (an upstream registered or reordered, a
+// method auto-ignored or its auto-ignore expired).
+func (n *Network) nonServers(ctx context.Context, method string) []common.Upstream {
+	if method == "" || method == "eth_blockNumber" {
+		return nil
+	}
+	m := n.tipMethods.Load()
+	if m == nil || m.epoch != upstream.MethodFilterEpoch() {
+		m = n.rebuildTipMethods(ctx)
+	}
+	if m.uniform {
+		return nil
+	}
+	if ex, ok := m.methods[method]; ok {
+		return ex
+	}
+	var methods *common.MethodsConfig
+	if n.cfg != nil {
+		methods = n.cfg.Methods
+	}
+	if !common.IsKnownMethodName(methods, method) {
+		return n.computeNonServers(ctx, method)
+	}
+	return n.addTipMethod(ctx, method)
+}
+
+// rebuildTipMethods publishes the current epoch's tipMethods, recomputing
+// every method the previous one held.
+func (n *Network) rebuildTipMethods(ctx context.Context) *tipMethods {
+	n.tipMethodsMu.Lock()
+	defer n.tipMethodsMu.Unlock()
+	// The epoch is read before the snapshot, so a change racing the build
+	// moves it and the next request rebuilds.
+	epoch := upstream.MethodFilterEpoch()
+	prev := n.tipMethods.Load()
+	if prev != nil && prev.epoch == epoch {
+		return prev
+	}
+	next := &tipMethods{epoch: epoch, uniform: n.uniformMethodFilters(ctx), methods: map[string][]common.Upstream{}}
+	if !next.uniform && prev != nil {
+		for name := range prev.methods {
+			next.methods[name] = n.computeNonServers(ctx, name)
+		}
+	}
+	n.tipMethods.Store(next)
+	return next
+}
+
+// addTipMethod publishes the current tipMethods with method added.
+func (n *Network) addTipMethod(ctx context.Context, method string) []common.Upstream {
+	n.tipMethodsMu.Lock()
+	defer n.tipMethodsMu.Unlock()
+	m := n.tipMethods.Load()
+	if ex, ok := m.methods[method]; ok {
+		return ex
+	}
+	next := &tipMethods{epoch: m.epoch, uniform: m.uniform, methods: maps.Clone(m.methods)}
+	ex := n.computeNonServers(ctx, method)
+	next.methods[method] = ex
+	n.tipMethods.Store(next)
+	return ex
+}
+
+// uniformMethodFilters reports whether every registered upstream has the
+// same method filter (Upstream.MethodFilter).
+func (n *Network) uniformMethodFilters(ctx context.Context) bool {
+	if n.upstreamsRegistry == nil {
+		return true
+	}
+	all := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	if len(all) == 0 {
+		return true
+	}
+	ignore0, allow0 := all[0].MethodFilter()
+	for _, u := range all[1:] {
+		ignore, allow := u.MethodFilter()
+		if !slices.Equal(ignore, ignore0) || !slices.Equal(allow, allow0) {
+			return false
+		}
+	}
+	return true
+}
+
+// computeNonServers is the registered upstreams that do not serve method
+// (servesMethod), nil when every one or none serves it.
+func (n *Network) computeNonServers(ctx context.Context, method string) []common.Upstream {
+	if n.upstreamsRegistry == nil {
+		return nil
+	}
+	var excluded []common.Upstream
+	serving := 0
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+		if servesMethod(u, method) {
+			serving++
+		} else {
+			excluded = append(excluded, u)
+		}
+	}
+	if serving == 0 {
+		return nil
+	}
+	return excluded
 }
 
 // eligibleSet is the policy's eligible set, or, while it has none, every
@@ -830,7 +973,7 @@ func isSimpleGroupSelector(selector string) bool {
 // soon as it would with every voter polled. Each poller joins a poll in
 // flight, and has none once its finalized tag is given up.
 func (n *Network) awaitFinalizedRefresh(ctx context.Context, sel string) {
-	s := n.voters(sel, voterQuery{kind: numberVote})
+	s := n.voters(tipScope{sel: sel}, voterQuery{kind: numberVote})
 	if s.count() == 0 {
 		return
 	}
@@ -977,7 +1120,7 @@ func (n *Network) lackingVoters(selector string, block int64) []common.EvmStateP
 // below block as quorum lacks to hold it (quorum less the voters at or
 // above it), oldest evidence first.
 func (n *Network) lacking(out []common.EvmStatePoller, selector string, block int64, q voterQuery, quorum common.ServedTipQuorum) []common.EvmStatePoller {
-	s := n.voters(selector, q)
+	s := n.voters(tipScope{sel: selector}, q)
 	if s.count() == 0 {
 		return out
 	}
@@ -1025,7 +1168,7 @@ func oldestEvidenceFirst(pollers []common.EvmStatePoller) {
 // brings the vote that moves the view's Head there (spec §6.4 by-hash
 // wait); nil while none holds it.
 func (n *Network) firstHolder(selector string, block int64) (out common.EvmStatePoller) {
-	n.voters(selector, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
+	n.voters(tipScope{sel: selector}, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
 		if head < block {
 			return true
 		}
@@ -1756,7 +1899,7 @@ func (n *Network) guaranteedFloor(sel string, useFinalized bool) (floor, backing
 // So a cap-only ballot floors only when the REGISTERED set, which eligibility
 // churn cannot change, has no live member (anyRegisteredLiveHead).
 func (n *Network) guaranteedSubsetPick(sel string, useFinalized bool, member func(common.Upstream) bool) common.ServedTipPick {
-	pick, live := n.evmTipBallot(sel, useFinalized, common.ServedTipQuorumMajority, member)
+	pick, live := n.evmTipBallot(tipScope{sel: sel}, useFinalized, common.ServedTipQuorumMajority, member)
 	if pick.Inputs == 0 || (!live && n.anyRegisteredLiveHead(member, useFinalized)) {
 		return common.ServedTipPick{}
 	}
@@ -3763,19 +3906,15 @@ func (n *Network) shouldHandleMethod(req *common.NormalizedRequest, method strin
 	return nil
 }
 
-// filterMethodEligible returns the upstreams expected to serve `method` per
-// their ignoreMethods/allowMethods config (Upstream.ShouldHandleMethod, which
-// is memoized per method), plus the number dropped. The input slice is never
-// mutated — selection-policy slots hand out their cached backing array as
-// read-only — and is returned as-is when nothing is dropped. Matcher errors
-// fail open (the upstream stays in) so a malformed pattern degrades to the
-// forward-time skip rather than silently shrinking the pool.
+// filterMethodEligible returns the upstreams expected to serve `method`
+// (servesMethod), plus the number dropped. The input slice is never mutated —
+// selection-policy slots hand out their cached backing array as read-only —
+// and is returned as-is when nothing is dropped.
 func filterMethodEligible(ups []common.Upstream, method string) ([]common.Upstream, int) {
 	eligible := ups
 	dropped := 0
 	for i, u := range ups {
-		ok, err := u.ShouldHandleMethod(method)
-		if err == nil && !ok {
+		if !servesMethod(u, method) {
 			if dropped == 0 {
 				// First drop: materialize a fresh slice with the survivors so far.
 				eligible = make([]common.Upstream, i, len(ups))
@@ -3789,6 +3928,19 @@ func filterMethodEligible(ups []common.Upstream, method string) ([]common.Upstre
 		}
 	}
 	return eligible, dropped
+}
+
+// servesMethod reports whether u is expected to serve method ("" = any) per
+// its ignoreMethods/allowMethods config (Upstream.ShouldHandleMethod, which is
+// memoized per method). Matcher errors fail open (the upstream stays in) so a
+// malformed pattern degrades to the forward-time skip rather than silently
+// shrinking the pool.
+func servesMethod(u common.Upstream, method string) bool {
+	if method == "" {
+		return true
+	}
+	ok, err := u.ShouldHandleMethod(method)
+	return ok || err != nil
 }
 
 // evmTargetBlock is the block a request targets: the response's, or the
@@ -4229,7 +4381,7 @@ func (n *Network) noteHeld(u common.Upstream, bn int64) {
 	held := v.(*atomic.Int64)
 	for cur := held.Load(); bn > cur; cur = held.Load() {
 		if held.CompareAndSwap(cur, bn) {
-			if h := n.headFor(""); bn > h.Firm && bn <= h.Latest {
+			if h := n.headFor(tipScope{}); bn > h.Firm && bn <= h.Latest {
 				evm.HoldersMoved(n, u)
 			}
 			return

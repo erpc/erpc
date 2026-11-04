@@ -66,7 +66,7 @@ func voteChain(t testing.TB, n *Network, heads ...int64) {
 // bound to ctx; a selector with no lane gets its stateless pick.
 func servedHead(n *Network, ctx context.Context) common.EvmHead {
 	n.refreshHeads()
-	return *n.headFor(requestSelector(ctx))
+	return *n.headFor(tipScope{sel: requestSelector(ctx)})
 }
 
 // laneCeilingOf is the network-wide lane's ceiling and whether it is known.

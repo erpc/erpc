@@ -65,11 +65,11 @@ type servedTipFixture struct {
 //
 // Returns the network and the upstream slice in input order. The fixture runs
 // quorum "majority" on both axes.
-func setupServedTipNetwork(t *testing.T, ctx context.Context, fixtures []servedTipFixture) (*Network, []*upstream.Upstream) {
+func setupServedTipNetwork(t testing.TB, ctx context.Context, fixtures []servedTipFixture) (*Network, []*upstream.Upstream) {
 	return setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority})
 }
 
-func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []servedTipFixture, stCfg *common.EvmServedTipConfig) (*Network, []*upstream.Upstream) {
+func setupServedTipNetworkWith(t testing.TB, ctx context.Context, fixtures []servedTipFixture, stCfg *common.EvmServedTipConfig) (*Network, []*upstream.Upstream) {
 	t.Helper()
 	return setupServedTipNetworkEvery(t, ctx, fixtures, stCfg, headRefreshInterval)
 }
@@ -484,7 +484,9 @@ func TestServedTip_ExcludedUpstreamDropsOutOfTip(t *testing.T) {
 // upstream and it lags (90); u1/u2 (99/100) don't support trace_block. Without
 // the guarantee the served tip is the dominant cluster min (99, u3 an outlier);
 // with the guarantee it must drop to 90 so a trace_block("latest") request hits
-// a block u3 actually has.
+// a block u3 actually has. Without any guarantee, a request's own method
+// decides who votes on its tip: an upstream that does not serve it never raises
+// the block the request is pinned to.
 func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
@@ -509,6 +511,61 @@ func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 	})
 	assert.Equal(t, int64(90), servedHead(nwB, ctx).Latest,
 		"trace_block supported only by u3 (90) clamps served down to 90")
+	scopeHead := func(n *Network, body string) common.EvmHead {
+		req := common.NewNormalizedRequest([]byte(body))
+		n.refreshHeads()
+		return *n.headFor(n.requestScope(ctx, req))
+	}
+	assert.Equal(t, int64(90), scopeHead(nwA, `{"jsonrpc":"2.0","id":1,"method":"trace_block","params":["latest"]}`).Latest,
+		"trace_block latest pins to its one voter u3 (90)")
+
+	for _, host := range []string{"call-1", "call-2"} {
+		gock.New("http://" + host + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_call") }).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x01"}`))
+	}
+	nwC, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "call-1", chainID: 123, latestBlock: 100},
+		{id: "call-2", chainID: 123, latestBlock: 99},
+		{id: "no-call", chainID: 123, latestBlock: 105, ignoreMethods: []string{"eth_call", "eth_blockNumber"}},
+	})
+	viewHead := servedHead(nwC, ctx).Latest
+	assert.Greater(t, viewHead, int64(99), "no request: the view counts all three")
+	call := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"},"latest"]}`))
+	call.SetNetwork(nwC)
+	_, err := nwC.Forward(ctx, call)
+	require.NoError(t, err)
+	jrq, err := call.JsonRpcRequest()
+	require.NoError(t, err)
+	assert.Equal(t, "0x63", jrq.Params[1],
+		"eth_call latest pins to its voters' tip (99): no-call's 105 does not vote")
+	assert.Equal(t, viewHead, scopeHead(nwC, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`).Latest,
+		"eth_blockNumber reports the view's Head, whatever its voters")
+
+	// A client flood of casing variants cannot grow the voter cache, so a
+	// method first seen after it is cached and resolves with no allocation.
+	cached := len(nwC.tipMethods.Load().methods)
+	letters := "ethgetbalance"
+	for i := range 1 << len(letters) {
+		v := []byte("eth_getbalance")
+		for b, j := 0, 0; j < len(v); j++ {
+			if v[j] == '_' {
+				continue
+			}
+			if i&(1<<b) != 0 {
+				v[j] -= 'a' - 'A'
+			}
+			b++
+		}
+		nwC.nonServers(ctx, string(v))
+	}
+	assert.Equal(t, cached+1, len(nwC.tipMethods.Load().methods), "only the config's own name, eth_getBalance, is cached")
+	nwC.nonServers(ctx, "eth_estimateGas")
+	assert.Zero(t, testing.AllocsPerRun(100, func() { nwC.nonServers(ctx, "eth_estimateGas") }),
+		"a method first seen after the flood takes the fast path")
 }
 
 // TestServedTip_SelectorScoped pins the use-upstream selector affecting the
