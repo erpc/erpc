@@ -844,6 +844,9 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	// matches, and that copy runs in a background bootstrap task. The
 	// executor's rejection is then only a log line and the upstream drops out.
 	if p.UpstreamDefaults != nil {
+		if err := p.UpstreamDefaults.Routing.Validate(); err != nil {
+			return fmt.Errorf("project '%s' upstreamDefaults: %w", p.Id, err)
+		}
 		for _, fs := range p.UpstreamDefaults.Failsafe {
 			if fs != nil && fs.Consensus != nil {
 				return fmt.Errorf("project.*.upstreamDefaults: failsafe.consensus is only supported for network-level failsafe")
@@ -1105,6 +1108,9 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	if !skipEndpointCheck && u.Endpoint == "" {
 		return fmt.Errorf("upstream.*.endpoint is required")
 	}
+	if err := u.Routing.Validate(); err != nil {
+		return fmt.Errorf("upstream '%s': %w", u.Id, err)
+	}
 	if ca := u.CreditAllowance; ca != nil && (ca.Credits <= 0 || ca.ApiKey == "") {
 		return fmt.Errorf("upstream '%s': creditAllowance needs credits > 0 and apiKey", u.Id)
 	}
@@ -1169,6 +1175,18 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 		}
 	}
 	return nil
+}
+
+func (r *UpstreamRoutingConfig) Validate() error {
+	if r == nil {
+		return nil
+	}
+	switch r.Probe {
+	case "", ProbeModeOn, ProbeModeOff:
+		return nil
+	default:
+		return fmt.Errorf("routing.probe '%s' is invalid, must be one of: %s, %s", r.Probe, ProbeModeOn, ProbeModeOff)
+	}
 }
 
 func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
