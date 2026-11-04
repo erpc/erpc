@@ -160,6 +160,15 @@ func TestSvmUpstreamConfig_Validate(t *testing.T) {
 		assert.Contains(t, err.Error(), "upstream.*.svm.cluster")
 	})
 
+	t.Run("negative statePollerDebounce rejected", func(t *testing.T) {
+		err := (&SvmUpstreamConfig{
+			Cluster:             "mainnet-beta",
+			StatePollerDebounce: Duration(-1),
+		}).Validate(svmUps)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "upstream.*.svm.statePollerDebounce")
+	})
+
 	t.Run("valid blockAvailability is accepted", func(t *testing.T) {
 		err := (&SvmUpstreamConfig{
 			Cluster: "mainnet-beta",

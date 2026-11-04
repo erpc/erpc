@@ -2108,6 +2108,9 @@ func (s *SvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	if !isValidSvmSegment(s.Cluster) {
 		return fmt.Errorf("upstream.*.svm.cluster '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Cluster)
 	}
+	if s.StatePollerDebounce.Duration() < 0 {
+		return fmt.Errorf("upstream.*.svm.statePollerDebounce must be greater than or equal to 0")
+	}
 	if s.BlockAvailability != nil {
 		if err := s.BlockAvailability.Validate(); err != nil {
 			return err

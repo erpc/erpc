@@ -305,9 +305,10 @@ func (e *SvmStatePoller) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
-// SetDebounceInterval wires the configured poll-throttle gate from
-// SvmNetworkConfig.StatePollerDebounce (see upstream.SetNetworkConfig). Callable
-// at any time; takes effect on the next ticker fire.
+// SetDebounceInterval wires the effective poll-throttle gate (per-upstream
+// override when set, else SvmNetworkConfig.StatePollerDebounce — see
+// upstream.SetNetworkConfig). Callable at any time; takes effect on the next
+// ticker fire.
 func (e *SvmStatePoller) SetDebounceInterval(d time.Duration) {
 	if d > 0 {
 		e.debounceInterval.Store(int64(d))

@@ -1785,6 +1785,14 @@ export interface SvmUpstreamConfig {
    */
   checkGenesisHash?: boolean;
   /**
+   * StatePollerDebounce is a hard per-upstream override for the poll fan-out
+   * gate. When non-zero it short-circuits networks[*].svm.statePollerDebounce
+   * for this upstream only (same precedence shape as upstreams[*].evm.statePollerDebounce).
+   * Zero / omit inherits the network debounce after defaults. Does not disable
+   * the poller — 0 means inherit, never "off".
+   */
+  statePollerDebounce?: Duration;
+  /**
    * BlockAvailability is an operator restriction on the slot window this
    * upstream may serve. Only what the operator declares is enforced; the
    * upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed for
