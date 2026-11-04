@@ -241,6 +241,7 @@ type PolicyDecisionMetrics struct {
 	FinalizationLag        int64   `json:"finalizationLag"`
 	BlockHeadLagSeconds    float64 `json:"blockHeadLagSeconds,omitempty"`
 	FinalizationLagSeconds float64 `json:"finalizationLagSeconds,omitempty"`
+	BlockHeadMissing       bool    `json:"blockHeadMissing,omitempty"`
 	P50ResponseMs          float64 `json:"p50Ms"`
 	P70ResponseMs          float64 `json:"p70Ms"`
 	P90ResponseMs          float64 `json:"p90Ms"`
@@ -330,6 +331,7 @@ type UpstreamStatsRow struct {
 	FinalizationLag        int     `json:"finalizationLag"`
 	BlockHeadLagSeconds    float64 `json:"blockHeadLagSeconds"` // block-count × tracker's EMA block-time
 	FinalizationLagSeconds float64 `json:"finalizationLagSeconds"`
+	BlockHeadMissing       bool    `json:"blockHeadMissing,omitempty"` // network has a head, this upstream never reported one
 	Cordoned               bool    `json:"cordoned,omitempty"`
 	CordonedReason         string  `json:"cordonedReason,omitempty"`
 	RequestsTotal          int64   `json:"requestsTotal"` // sample size in the current window — useful for sparse-data signal
