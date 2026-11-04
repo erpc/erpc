@@ -234,6 +234,9 @@ type ChainTracker struct {
 	// served: history serves the tracker (spec §6.5 rule 1), read once per
 	// batch (readServed).
 	served bool
+	// headerVerified stands in for the network's headerVerified on a
+	// tracker no registry holds (headersVerified).
+	headerVerified atomic.Bool
 }
 
 type receiptsEntry struct {
@@ -834,6 +837,13 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 	if nd != nil && nd.h.number != h.number {
 		return
 	}
+	// A header verifies when any held copy of its hash does.
+	if nd != nil && nd.h != h && !nd.h.verified.Load() && !bytes.Equal(nd.h.raw, h.raw) {
+		if h.verify(t.chainID()); h.verified.Load() {
+			nd.h.verified.Store(true)
+			t.headersVerified().Store(true)
+		}
+	}
 	if nd == nil {
 		// Rule 1: every vote is held. Answers are held only inside the
 		// window, and never walk.
@@ -1147,6 +1157,10 @@ func (t *ChainTracker) trackForks() {
 // the root of h's tree, so a client answer inside a walked branch never
 // ends the walk before it reaches the pins (rule 1).
 func (t *ChainTracker) hold(h *chainHeader) *node {
+	proof, reason := t.headerProof(h)
+	if t.selector == "" {
+		telemetry.CounterHandle(telemetry.MetricChainTrackerHeaderProofTotal, t.projectId(), t.networkLabel(), proof, reason).Inc()
+	}
 	nd := &node{h: h}
 	if p := t.nodes[h.parentHash]; p != nil && p.h.number+1 == h.number {
 		nd.parent = p
@@ -2714,7 +2728,7 @@ func (t *ChainTracker) backingOf(path []*node) *pinBacking {
 		}
 		b.served = floor
 		for i := b.backs[n-1].i; i > floor; i-- {
-			if path[i].h.hashRecomputes() {
+			if t.servesAlone(path[i].h) {
 				b.served = i
 				break
 			}
@@ -4168,6 +4182,9 @@ type networkTrackers struct {
 	// (ClientRequested), under mu; it is read without mu on the request
 	// path.
 	requested atomic.Bool
+	// headerVerified: a header of the network verified under a
+	// registered header format (headerProof); sticky for the process.
+	headerVerified atomic.Bool
 	mu        sync.Mutex
 	groups    map[string]*ChainTracker // group key ("" network-wide) -> tracker
 }

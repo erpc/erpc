@@ -36,8 +36,12 @@ type chainHeader struct {
 	// no transactions and no receipts.
 	emptyTxs bool
 
-	recompute  sync.Once
-	recomputes bool // the header hashes to its hash (blockHashRecompute)
+	// verified: a registered header format reproduces the hash, from this
+	// copy or another held copy of it; encodable: a format encodes this
+	// copy. Set once by verify.
+	verifyOnce sync.Once
+	verified   atomic.Bool
+	encodable  bool
 
 	// intakePassed: this header passed intake's header checks, so a source
 	// that sends the same hash is not validated again.
@@ -216,14 +220,73 @@ func (h *chainHeader) logsReady() time.Time {
 	return time.Now()
 }
 
-// hashRecomputes reports whether the header's JSON hashes to its hash
-// (blockHashRecompute); computed once, on first use.
-func (h *chainHeader) hashRecomputes() bool {
-	h.recompute.Do(func() {
-		got, ok := integrity.RecomputeBlockHash(h.raw)
-		h.recomputes = ok && strings.EqualFold(got, h.hashHex)
+// verify decides once whether a registered header format reproduces the
+// header's hash (integrity.VerifyBlockHash) for chain chainID.
+func (h *chainHeader) verify(chainID int64) {
+	h.verifyOnce.Do(func() {
+		format, encodable := integrity.VerifyBlockHash(chainID, h.raw)
+		h.encodable = encodable
+		if format != "" {
+			h.verified.Store(true)
+		}
 	})
-	return h.recomputes
+}
+
+// hashRecomputes reports whether a registered header format reproduces
+// the header's hash, so its fields (logsBloom, roots) are the block's.
+// The tracker verifies a header with its chain id when it holds it.
+func (h *chainHeader) hashRecomputes() bool {
+	h.verify(0)
+	return h.verified.Load()
+}
+
+// headerProof is what h's hash proves (spec §6.5): verified when a
+// registered format reproduces it; else unverified while no header of the
+// network ever verified, mismatch once one did; reason says why it is not
+// verified: unknown_keys (no format encodes it) or hash_differs.
+func (t *ChainTracker) headerProof(h *chainHeader) (proof, reason string) {
+	if h.verify(t.chainID()); h.verified.Load() {
+		t.headersVerified().Store(true)
+		return "verified", ""
+	}
+	reason = "unknown_keys"
+	if h.encodable {
+		reason = "hash_differs"
+	}
+	if t.headersVerified().Load() {
+		return "mismatch", reason
+	}
+	return "unverified", reason
+}
+
+// servesAlone reports whether one holder serves h (spec §6.5): its hash
+// verified, or the network never verified a header; a mismatch needs q
+// holders.
+func (t *ChainTracker) servesAlone(h *chainHeader) bool {
+	p, _ := t.headerProof(h)
+	return p != "mismatch"
+}
+
+// headersVerified is whether a header of the tracker's network verified,
+// shared by its trackers.
+func (t *ChainTracker) headersVerified() *atomic.Bool {
+	if t.network != nil {
+		if nt := registeredTrackers(t.network); nt != nil {
+			return &nt.headerVerified
+		}
+	}
+	return &t.headerVerified
+}
+
+// chainID is the network's configured chain id, 0 when it has none.
+func (t *ChainTracker) chainID() int64 {
+	if t.network == nil {
+		return 0
+	}
+	if cfg := t.network.Config(); cfg != nil && cfg.Evm != nil {
+		return cfg.Evm.ChainId
+	}
+	return 0
 }
 
 func trimHexPrefix(s string) (string, bool) {

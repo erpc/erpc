@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"math/big"
 	"strconv"
+	"strings"
 
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -49,16 +51,12 @@ func deriveKnownBlockFields() map[string]struct{} {
 	return set
 }
 
-// RecomputeBlockHash is keccak(RLP(header)) of a block's JSON, as 0x hex. ok
-// is false when the header is not fully understood: not an object, a
-// custom field, or a required field missing. A timestamp counts in any
-// form ParseTimestamp reads, so a node that sends it as an integer is
-// still judged.
-func RecomputeBlockHash(raw []byte) (hash string, ok bool) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return "", false
-	}
+// ethereumBlockHash is the standard Ethereum header format (HeaderFormat):
+// keccak(RLP(header)) of a block's top-level keys, as 0x hex. ok is false
+// for a key the reference encoder does not know or a required field
+// missing. A timestamp counts in any form ParseTimestamp reads, so a node
+// that sends it as an integer is still judged.
+func ethereumBlockHash(_ int64, fields map[string]json.RawMessage) (hash string, ok bool) {
 	for k := range fields {
 		if _, ok := knownBlockFields[k]; !ok {
 			return "", false
@@ -69,17 +67,18 @@ func RecomputeBlockHash(raw []byte) (hash string, ok bool) {
 		if !ok {
 			return "", false
 		}
+		fields = maps.Clone(fields)
 		fields["timestamp"] = json.RawMessage(`"0x` + strconv.FormatInt(v, 16) + `"`)
-		var err error
-		if raw, err = json.Marshal(fields); err != nil {
-			return "", false
-		}
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return "", false
 	}
 	var gh gethtypes.Header
 	if err := gh.UnmarshalJSON(raw); err != nil {
 		return "", false
 	}
-	return gh.Hash().Hex(), true
+	return strings.ToLower(gh.Hash().Hex()), true
 }
 
 func init() {
@@ -92,14 +91,14 @@ func init() {
 			if h == nil || h.Hash == "" {
 				return Skipped
 			}
-			got, ok := RecomputeBlockHash(d.raw)
-			if !ok {
+			format, encodable := VerifyBlockHash(0, d.raw)
+			switch {
+			case format != "":
+				return nil
+			case !encodable:
 				return Skipped
 			}
-			if !eqHex(got, h.Hash) {
-				return failf("block hash %s does not match recomputed %s", h.Hash, got)
-			}
-			return nil
+			return failf("block hash %s matches no header format that encodes the block", h.Hash)
 		},
 	})
 

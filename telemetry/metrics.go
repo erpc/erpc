@@ -235,6 +235,18 @@ var (
 		Help:      "Times a chain tracker's pins moved to another tree of held headers.",
 	}, []string{"project", "network"})
 
+	// MetricChainTrackerHeaderProofTotal counts the headers the network-wide
+	// chain tracker held, by what their hash proves under the registered
+	// header formats: verified; unverified (no format reproduces it and no
+	// header of the network ever verified: served at one holder); mismatch
+	// (none reproduces it after one did: q holders); reason unknown_keys or
+	// hash_differs for the last two.
+	MetricChainTrackerHeaderProofTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "chain_tracker_header_proof_total",
+		Help:      "Headers the network-wide chain tracker held, by hash proof (verified, unverified, mismatch) and reason (unknown_keys, hash_differs).",
+	}, []string{"project", "network", "proof", "reason"})
+
 	MetricChainTrackerResetTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "chain_tracker_reset_total",
