@@ -183,6 +183,9 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 				return err
 			}
 			ups.SetNetworkConfig(ntw.cfg)
+			// Routing and head votes read the policy's eligible set: evaluate
+			// it now so the upstream joins them without waiting for evalInterval.
+			pp.policyEngine.UpstreamsChanged(ntwId)
 			return nil
 		},
 	)
