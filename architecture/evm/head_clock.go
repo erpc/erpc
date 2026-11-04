@@ -30,6 +30,16 @@ type headClock struct {
 	// sights are the first local sights of the newest numbers, ascending,
 	// at most clockFit.
 	sights []clockSight
+	// fit is the sights the phase reads (phasePoint), ascending, at most
+	// clockFit: when blocks become available, not when one first reached
+	// this instance.
+	fit []clockSight
+	// pushLane: a push brought a first sight since the reset, so only
+	// on-time pushes and fetch answers before the predicted sight move the
+	// phase. missed counts the first sights in a row no on-time push
+	// brought (pushFed).
+	pushLane bool
+	missed   int
 	// off is where a fire is sent relative to the next block's predicted
 	// sight, less the target's round trip, in block times, so it holds
 	// while the block time estimate moves from its cold value: it moves
@@ -75,8 +85,9 @@ type headClock struct {
 type clockSight struct {
 	number uint64
 	at     time.Time
-	// pushed: a push, not a fetch, brought it first.
-	pushed bool
+	// pushed: a push, not a fetch, brought it first; onTime: a push no
+	// later than its predicted sight plus the push allowance (pushLate).
+	pushed, onTime bool
 }
 
 type clockFire struct {
@@ -123,10 +134,45 @@ func (c *headClock) saw(number uint64, at time.Time, pushed bool, bt time.Durati
 		}
 	}
 	c.scheduled = false
-	c.sights = append(c.sights, clockSight{number, at, pushed})
-	if over := len(c.sights) - clockFit; over > 0 {
-		c.sights = slices.Delete(c.sights, 0, over)
+	s := clockSight{number: number, at: at, pushed: pushed}
+	s.onTime = pushed && (!c.pushLane || bt <= 0 || !at.After(c.predict(number, bt).Add(c.pushLate(bt))))
+	if c.phasePoint(s, bt) {
+		c.fit = appendSight(c.fit, s)
 	}
+	c.pushLane = c.pushLane || pushed
+	if s.onTime {
+		c.missed = 0
+	} else {
+		c.missed++
+	}
+	c.sights = appendSight(c.sights, s)
+}
+
+// phasePoint reports whether sight s moves the phase. Until a push
+// brought a block, every sight does: the lane's blocks come by fetch. In
+// a push lane, an on-time push does, and, while the lane is not push-fed,
+// a fetch answer before its predicted sight: an answer only bounds when
+// the block became available from above, so a later one says nothing,
+// and a late push says when that source sent it, not when the block was
+// out. The off/early rule stays the only way the fires move later.
+func (c *headClock) phasePoint(s clockSight, bt time.Duration) bool {
+	switch {
+	case !c.pushLane || len(c.fit) == 0 || bt <= 0:
+		return true
+	case s.pushed:
+		return s.onTime
+	default:
+		return !c.pushFed() && s.at.Before(c.predict(s.number, bt))
+	}
+}
+
+// appendSight appends s to sights, keeping the newest clockFit.
+func appendSight(sights []clockSight, s clockSight) []clockSight {
+	sights = append(sights, s)
+	if over := len(sights) - clockFit; over > 0 {
+		sights = slices.Delete(sights, 0, over)
+	}
+	return sights
 }
 
 // top is the highest number sighted, 0 before any.
@@ -155,44 +201,40 @@ func (c *headClock) sightOf(number uint64) time.Time {
 	return c.sights[i].at
 }
 
-// predict is when number's first sight is due: a robust fit of the recent
-// sights' phase, the median of each sight's time less its number's
+// predict is when number's first sight is due: a robust fit of the
+// phase points' phase, the median of each point's time less its number's
 // multiple of bt, plus number's multiple of bt.
 func (c *headClock) predict(number uint64, bt time.Duration) time.Time {
-	top := c.sights[len(c.sights)-1]
-	offsets := make([]time.Duration, len(c.sights))
-	for i, s := range c.sights {
+	top, phase := c.phase(bt)
+	return top.at.Add(phase[len(phase)/2] + time.Duration(number-top.number)*bt)
+}
+
+// phase is the newest phase point and every point's offset from it, less
+// the blocks between at bt, ascending.
+func (c *headClock) phase(bt time.Duration) (clockSight, []time.Duration) {
+	top := c.fit[len(c.fit)-1]
+	offsets := make([]time.Duration, len(c.fit))
+	for i, s := range c.fit {
 		offsets[i] = s.at.Sub(top.at) - time.Duration(s.number-top.number)*bt
 	}
 	slices.Sort(offsets)
-	phase := offsets[len(offsets)/2]
-	return top.at.Add(phase + time.Duration(number-top.number)*bt)
+	return top, offsets
 }
 
-// pushFed reports whether pushes brought most of the recent sights: the
-// lane's blocks come by push, so a fetch only hedges a late one (spec
-// §6.8 skip) and is sent at pushLate after the predicted sight, not a
-// round trip before it.
+// pushFed reports whether on-time pushes bring the lane's blocks: a fetch
+// only hedges a late one (spec §6.8 skip) and is sent at pushLate after
+// the predicted sight, not a round trip before it. After clockFit/2 first
+// sights in a row that no on-time push brought (late pushes, fetches) the
+// clock fetches every block, until an on-time push returns.
 func (c *headClock) pushFed() bool {
-	pushed := 0
-	for _, s := range c.sights {
-		if s.pushed {
-			pushed++
-		}
-	}
-	return 2*pushed > len(c.sights)
+	return c.pushLane && c.missed < clockFit/2
 }
 
 // pushLate is how long after its predicted sight a pushed block is late:
-// the fit's largest residual over the recent sights, about their 95th
+// the fit's largest residual over the phase points, about their 95th
 // percentile, at least bt/10 and at most bt.
 func (c *headClock) pushLate(bt time.Duration) time.Duration {
-	top := c.sights[len(c.sights)-1]
-	offsets := make([]time.Duration, len(c.sights))
-	for i, s := range c.sights {
-		offsets[i] = s.at.Sub(top.at) - time.Duration(s.number-top.number)*bt
-	}
-	slices.Sort(offsets)
+	_, offsets := c.phase(bt)
 	return min(max(offsets[len(offsets)-1]-offsets[len(offsets)/2], bt/10), bt)
 }
 
