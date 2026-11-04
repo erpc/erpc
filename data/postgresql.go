@@ -1447,3 +1447,78 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 
 	return results, nextToken, nil
 }
+
+// DeleteByPattern removes rows whose partition_key/range_key match the purge
+// scope. PostgreSQL reverse lookups use an index, not companion rvi# rows.
+func (p *PostgreSQLConnector) DeleteByPattern(ctx context.Context, opts PatternDeleteOpts) (int64, int64, error) {
+	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.DeleteByPattern")
+	defer span.End()
+
+	pool, release, err := p.acquirePool(span)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer release()
+
+	ctx, cancel := context.WithTimeout(ctx, p.setTimeout)
+	defer cancel()
+
+	var rows pgx.Rows
+	if opts.BlockRef != "" {
+		exact := common.CachePartitionKey(opts.NetworkId, opts.Suffix, opts.BlockRef)
+		rows, err = pool.Query(ctx, fmt.Sprintf(`
+			SELECT partition_key, range_key FROM %s
+			WHERE partition_key = $1
+		`, p.table), exact)
+	} else {
+		likePrefix := opts.NetworkId + ":%"
+		if opts.Suffix != "" {
+			likePrefix = common.CachePartitionKey(opts.NetworkId, opts.Suffix, "") + "%"
+		}
+		rows, err = pool.Query(ctx, fmt.Sprintf(`
+			SELECT partition_key, range_key FROM %s
+			WHERE partition_key LIKE $1
+		`, p.table), likePrefix)
+	}
+	if err != nil {
+		p.handleConnectionFailure(err)
+		common.SetTraceSpanError(span, err)
+		return 0, 0, fmt.Errorf("postgres purge select: %w", err)
+	}
+	defer rows.Close()
+
+	type pair struct{ pk, rk string }
+	var targets []pair
+	for rows.Next() {
+		var pk, rk string
+		if err := rows.Scan(&pk, &rk); err != nil {
+			return 0, 0, fmt.Errorf("postgres purge scan: %w", err)
+		}
+		if !partitionMatchesScope(pk, opts) || !rangeMatchesMethod(rk, opts.Method) {
+			continue
+		}
+		targets = append(targets, pair{pk, rk})
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+
+	matched := int64(len(targets))
+	if opts.DryRun {
+		return matched, 0, nil
+	}
+
+	var deleted int64
+	for _, t := range targets {
+		tag, err := pool.Exec(ctx, fmt.Sprintf(`
+			DELETE FROM %s WHERE partition_key = $1 AND range_key = $2
+		`, p.table), t.pk, t.rk)
+		if err != nil {
+			p.handleConnectionFailure(err)
+			common.SetTraceSpanError(span, err)
+			return matched, deleted, fmt.Errorf("postgres purge delete: %w", err)
+		}
+		deleted += tag.RowsAffected()
+	}
+	return matched, deleted, nil
+}

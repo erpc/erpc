@@ -439,6 +439,12 @@ var (
 		Help:      "Admin-driven cordon transitions. `action` ∈ {`cordon`,`uncordon`}.",
 	}, []string{"project", "network", "upstream", "action"})
 
+	MetricAdminCachePurgeTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "admin_cache_purge_total",
+		Help:      "Admin erpc_purgeCache outcomes per connector. result ∈ {ok, dry_run, unsupported, error}.",
+	}, []string{"project", "network", "connector", "result"})
+
 	MetricUpstreamCordonDurationSeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordon_duration_seconds",

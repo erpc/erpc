@@ -29,6 +29,10 @@ type MemoryConnector struct {
 	locks       sync.Map // map[string]*sync.Mutex
 	emitMetrics bool
 
+	// keyIndex tracks keys written via Set so admin purge can iterate.
+	// Ristretto has no public key scan API.
+	keyIndex sync.Map // map[string]struct{}
+
 	// Previous metric values for calculating deltas
 	prevMetrics struct {
 		setsDropped  uint64
@@ -117,6 +121,7 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string
 	} else {
 		m.cache.Set(key, value, 0)
 	}
+	m.keyIndex.Store(key, struct{}{})
 
 	// Reverse index: let wildcard Gets ("evm:1:*" / "svm:mainnet-beta:*" /
 	// "evm:998:systx:*") resolve to the concrete partition key that was most
@@ -127,7 +132,9 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string
 	// opaque concrete key.
 	if isReverseIndexable(partitionKey) {
 		if wildcardPartitionKey, ok := reverseIndexWildcardKey(ctx, partitionKey); ok {
-			m.cache.Set(memoryReverseIndexPrefix+"#"+wildcardPartitionKey+"#"+rangeKey, []byte(partitionKey), 0)
+			rviKey := memoryReverseIndexPrefix + "#" + wildcardPartitionKey + "#" + rangeKey
+			m.cache.Set(rviKey, []byte(partitionKey), 0)
+			m.keyIndex.Store(rviKey, struct{}{})
 		}
 	}
 
@@ -321,6 +328,7 @@ func (m *MemoryConnector) Delete(ctx context.Context, partitionKey, rangeKey str
 
 	// Delete main entry
 	m.cache.Del(key)
+	m.keyIndex.Delete(key)
 
 	// Clean up reverse index if Set would have written one. Must mirror Set
 	// exactly (same WithReverseIndex ctx) — anything Set writes, Delete must
@@ -330,10 +338,80 @@ func (m *MemoryConnector) Delete(ctx context.Context, partitionKey, rangeKey str
 		if wildcardPartitionKey, ok := reverseIndexWildcardKey(ctx, partitionKey); ok {
 			reverseKey := memoryReverseIndexPrefix + "#" + wildcardPartitionKey + "#" + rangeKey
 			m.cache.Del(reverseKey)
+			m.keyIndex.Delete(reverseKey)
 		}
 	}
 
 	return nil
+}
+
+// DeleteByPattern iterates the in-process key index under the connector lock
+// map and deletes (or counts) keys matching the purge patterns. Memory purge
+// is per-replica only — Ristretto has no shared backend.
+func (m *MemoryConnector) DeleteByPattern(ctx context.Context, opts PatternDeleteOpts) (int64, int64, error) {
+	_ = ctx
+	patterns := append([]string{}, opts.MainPatterns...)
+	patterns = append(patterns, opts.RviPatterns...)
+
+	var matched, deleted int64
+	m.keyIndex.Range(func(k, _ any) bool {
+		key, ok := k.(string)
+		if !ok {
+			return true
+		}
+		if !globMatchAny(key, patterns) {
+			return true
+		}
+		if opts.UnsuffixedOnly && !matchUnsuffixedMainKey(opts.NetworkId, key) {
+			return true
+		}
+		matched++
+		if !opts.DryRun {
+			m.cache.Del(key)
+			m.keyIndex.Delete(key)
+			deleted++
+		}
+		return true
+	})
+	return matched, deleted, nil
+}
+
+// globMatchAny is a minimal '*' glob matcher for memory purge patterns.
+func globMatchAny(s string, patterns []string) bool {
+	for _, p := range patterns {
+		if globMatch(p, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func globMatch(pattern, s string) bool {
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == s
+	}
+	if parts[0] != "" {
+		if !strings.HasPrefix(s, parts[0]) {
+			return false
+		}
+		s = s[len(parts[0]):]
+	}
+	for i := 1; i < len(parts)-1; i++ {
+		if parts[i] == "" {
+			continue
+		}
+		idx := strings.Index(s, parts[i])
+		if idx < 0 {
+			return false
+		}
+		s = s[idx+len(parts[i]):]
+	}
+	last := parts[len(parts)-1]
+	if last == "" {
+		return true
+	}
+	return strings.HasSuffix(s, last)
 }
 
 func (m *MemoryConnector) List(ctx context.Context, index string, limit int, paginationToken string) ([]KeyValuePair, string, error) {
