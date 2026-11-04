@@ -201,42 +201,122 @@ func holdPurgeDistributedLock(inner Connector) bool {
 // matchUnsuffixedMainKey reports whether a physical Redis/Memory main key
 // belongs to an unsuffixed partition for networkId.
 //
-// When method is non-empty, the method marker splits partition from range so
-// colon-containing method names (SVM) are not mistaken for a cacheKeySuffix
-// segment. When method is empty, falls back to "exactly two unescaped ':' in
-// the remainder" (blockRef:method:hash) — safe for EVM, may miss rare
-// colon-in-method keys under a network-wide unsuffixed purge.
+// Physical keys are `{partitionKey}:{rangeKey}` with rangeKey `method:hash`
+// (see JsonRpcRequest.CacheHash / svmRequestKey). Method names may contain
+// ':' (SVM); partition segments escape theirs. Matching peels the trailing
+// hash and compares the full method — never a `method:` prefix — so purging
+// `custom` cannot delete `custom:method`. When method is empty, a network-wide
+// unsuffixed purge still keeps colon-in-method keys (aligned with SQL/Dynamo
+// partition/range columns) while rejecting real cacheKeySuffix siblings.
 func matchUnsuffixedMainKey(networkId, key, method string) bool {
 	if strings.HasPrefix(key, redisReverseIndexPrefix+"#") {
+		if method != "" && !rviKeyMatchesMethod(key, method) {
+			return false
+		}
 		return matchUnsuffixedRviKey(networkId, key)
 	}
 	prefix := networkId + ":"
 	if !strings.HasPrefix(key, prefix) {
 		return false
 	}
-	rest := key[len(prefix):]
-	if method != "" {
-		return unsuffixedRestBeforeMethod(rest, method)
-	}
-	return countUnescapedColons(rest) == 2
+	return matchUnsuffixedRest(key[len(prefix):], method)
 }
 
-// unsuffixedRestBeforeMethod is true when rest is `{escapedBlockRef}:{method}:…`
-// with no extra unescaped partition segment (which would be a suffix sibling).
-func unsuffixedRestBeforeMethod(rest, method string) bool {
-	marker := method + ":"
-	// Prefer method:hash form; also accept a bare trailing method.
-	idx := strings.Index(rest, ":"+marker)
-	if idx >= 0 {
-		return countUnescapedColons(rest[:idx]) == 0
+// matchUnsuffixedRest inspects the key remainder after `networkId:`.
+func matchUnsuffixedRest(rest, method string) bool {
+	left, _, peeled := peelTrailingHash(rest)
+	if !peeled {
+		if method != "" {
+			return legacyUnsuffixedMethod(rest, method)
+		}
+		return countUnescapedColons(rest) == 2
+	}
+
+	foundUnsuffixed, foundSuffixSibling := false, false
+	forEachUnescapedColon(left, func(i int) {
+		part, meth := left[:i], left[i+1:]
+		if meth == "" {
+			return
+		}
+		if method != "" && meth != method {
+			return
+		}
+		switch countUnescapedColons(part) {
+		case 0:
+			foundUnsuffixed = true
+		case 1:
+			if isCacheKeySuffixPartition(part) {
+				foundSuffixSibling = true
+			}
+		}
+	})
+	if foundSuffixSibling {
+		return false
+	}
+	return foundUnsuffixed
+}
+
+// legacyUnsuffixedMethod handles keys that lack a trailing :hash segment.
+func legacyUnsuffixedMethod(rest, method string) bool {
+	if rest == method {
+		return true
 	}
 	if strings.HasSuffix(rest, ":"+method) {
 		return countUnescapedColons(rest[:len(rest)-len(method)-1]) == 0
 	}
-	if rest == method {
+	return false
+}
+
+// isCacheKeySuffixPartition reports `{suffix}:{blockRef}` where suffix looks
+// like a configured cacheKeySuffix (identifier, not a pure numeric/`*` slot
+// ref). Purely numeric first segments are treated as blockRefs so SVM methods
+// with ':' (`42:custom:method`) stay unsuffixed.
+func isCacheKeySuffixPartition(part string) bool {
+	j := indexUnescapedColon(part)
+	if j < 0 {
+		return false
+	}
+	suf, br := part[:j], part[j+1:]
+	if suf == "" || br == "" {
+		return false
+	}
+	if countUnescapedColons(suf) != 0 || countUnescapedColons(br) != 0 {
+		return false
+	}
+	if suf == "*" || isAllDigits(suf) {
+		return false
+	}
+	return true
+}
+
+func rviKeyMatchesMethod(key, method string) bool {
+	parts := strings.SplitN(key, "#", 3)
+	if len(parts) < 3 {
+		return false
+	}
+	return rangeMatchesMethod(parts[2], method)
+}
+
+// physicalKeyMatchesMethod reports whether a Redis/Memory key's range method
+// equals method exactly (prefix matches are rejected).
+func physicalKeyMatchesMethod(key, method string) bool {
+	if method == "" {
 		return true
 	}
-	return false
+	if strings.HasPrefix(key, redisReverseIndexPrefix+"#") {
+		return rviKeyMatchesMethod(key, method)
+	}
+	left, _, ok := peelTrailingHash(key)
+	if !ok {
+		return strings.HasSuffix(key, ":"+method) || strings.HasSuffix(key, method)
+	}
+	matched := left == method
+	forEachUnescapedColon(left, func(i int) {
+		if left[i+1:] == method {
+			matched = true
+		}
+	})
+	return matched
 }
 
 // matchUnsuffixedRviKey keeps only reverse-index companions whose wildcard
@@ -244,6 +324,65 @@ func unsuffixedRestBeforeMethod(rest, method string) bool {
 func matchUnsuffixedRviKey(networkId, key string) bool {
 	expected := fmt.Sprintf("%s#%s#", redisReverseIndexPrefix, common.CachePartitionKey(networkId, "", "*"))
 	return strings.HasPrefix(key, expected)
+}
+
+func peelTrailingHash(s string) (left, hash string, ok bool) {
+	i := lastIndexUnescapedColon(s)
+	if i < 0 || i+1 >= len(s) {
+		return "", "", false
+	}
+	return s[:i], s[i+1:], true
+}
+
+func indexUnescapedColon(s string) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+			continue
+		}
+		if s[i] == ':' {
+			return i
+		}
+	}
+	return -1
+}
+
+func lastIndexUnescapedColon(s string) int {
+	last := -1
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+			continue
+		}
+		if s[i] == ':' {
+			last = i
+		}
+	}
+	return last
+}
+
+func forEachUnescapedColon(s string, fn func(int)) {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+			continue
+		}
+		if s[i] == ':' {
+			fn(i)
+		}
+	}
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func countUnescapedColons(s string) int {
@@ -282,9 +421,16 @@ func partitionMatchesScope(partitionKey string, opts PatternDeleteOpts) bool {
 	return true
 }
 
+// rangeMatchesMethod reports whether rangeKey is exactly `method` or
+// `method:hash` (hash has no ':'). A prefix like method=`custom` must not
+// match rangeKey=`custom:method:…`.
 func rangeMatchesMethod(rangeKey, method string) bool {
 	if method == "" {
 		return true
 	}
-	return strings.HasPrefix(rangeKey, method+":") || rangeKey == method
+	left, _, ok := peelTrailingHash(rangeKey)
+	if !ok {
+		return rangeKey == method
+	}
+	return left == method
 }

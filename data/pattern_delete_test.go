@@ -44,16 +44,30 @@ func TestMatchUnsuffixedMainKey(t *testing.T) {
 	assert.True(t, matchUnsuffixedRviKey("evm:1", "rvi#evm:1:*#eth_blockNumber:abcd"))
 	assert.False(t, matchUnsuffixedRviKey("evm:1", "rvi#evm:1:systx:*#eth_blockNumber:abcd"))
 
-	// SVM methods may contain ':' — colon-count alone would treat them as suffix siblings.
-	assert.False(t, matchUnsuffixedMainKey("svm:mainnet-beta",
+	// SVM methods may contain ':' — broad unsuffixed purge must still keep them
+	// (SQL/Dynamo do via separate columns); only real cacheKeySuffix siblings drop.
+	assert.True(t, matchUnsuffixedMainKey("svm:mainnet-beta",
 		"svm:mainnet-beta:42:custom:method:deadbeef", ""),
-		"without method filter, colon-in-method looks like a suffix sibling")
+		"colon-in-method stays unsuffixed on network-wide purge")
 	assert.True(t, matchUnsuffixedMainKey("svm:mainnet-beta",
 		"svm:mainnet-beta:42:custom:method:deadbeef", "custom:method"),
-		"method filter splits partition from range without counting method colons")
+		"method filter matches the full method, not a prefix")
+	assert.False(t, matchUnsuffixedMainKey("svm:mainnet-beta",
+		"svm:mainnet-beta:42:custom:method:deadbeef", "custom"),
+		"method=custom must not match custom:method")
 	assert.False(t, matchUnsuffixedMainKey("svm:mainnet-beta",
 		"svm:mainnet-beta:systx:42:custom:method:deadbeef", "custom:method"),
 		"suffixed sibling still rejected when method is known")
+	assert.False(t, matchUnsuffixedMainKey("svm:mainnet-beta",
+		"svm:mainnet-beta:systx:42:custom:method:deadbeef", ""),
+		"suffixed sibling rejected on network-wide purge")
+}
+
+func TestRangeMatchesMethod_Exact(t *testing.T) {
+	assert.True(t, rangeMatchesMethod("custom:method:deadbeef", "custom:method"))
+	assert.False(t, rangeMatchesMethod("custom:method:deadbeef", "custom"))
+	assert.True(t, rangeMatchesMethod("eth_blockNumber:abcd", "eth_blockNumber"))
+	assert.True(t, rangeMatchesMethod("eth_blockNumber", "eth_blockNumber"))
 }
 
 func TestGlobMatch(t *testing.T) {

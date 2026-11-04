@@ -393,7 +393,11 @@ func (m *MemoryConnector) DeleteByPattern(ctx context.Context, opts PatternDelet
 		if !globMatchAny(key, patterns) {
 			return true
 		}
-		if opts.UnsuffixedOnly && !matchUnsuffixedMainKey(opts.NetworkId, key, opts.Method) {
+		if opts.UnsuffixedOnly {
+			if !matchUnsuffixedMainKey(opts.NetworkId, key, opts.Method) {
+				return true
+			}
+		} else if opts.Method != "" && !physicalKeyMatchesMethod(key, opts.Method) {
 			return true
 		}
 		matched++

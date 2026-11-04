@@ -153,7 +153,9 @@ func TestMemoryConnector_Purge_ColonInMethod(t *testing.T) {
 	require.NoError(t, err)
 
 	rk := "custom:method:deadbeef"
+	rkShort := "custom:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	require.NoError(t, conn.Set(ctx, "svm:mainnet-beta:42", rk, []byte("keep-me-gone"), nil))
+	require.NoError(t, conn.Set(ctx, "svm:mainnet-beta:42", rkShort, []byte("short-method"), nil))
 	require.NoError(t, conn.Set(ctx, "svm:mainnet-beta:systx:42", rk, []byte("sibling"), nil))
 	conn.cache.Wait()
 
@@ -169,7 +171,25 @@ func TestMemoryConnector_Purge_ColonInMethod(t *testing.T) {
 
 	_, err = conn.Get(ctx, ConnectorMainIndex, "svm:mainnet-beta:42", rk, nil)
 	require.Error(t, err)
-	val, err := conn.Get(ctx, ConnectorMainIndex, "svm:mainnet-beta:systx:42", rk, nil)
+	val, err := conn.Get(ctx, ConnectorMainIndex, "svm:mainnet-beta:42", rkShort, nil)
+	require.NoError(t, err, "method=custom:method must not delete method=custom")
+	require.Equal(t, []byte("short-method"), val)
+	val, err = conn.Get(ctx, ConnectorMainIndex, "svm:mainnet-beta:systx:42", rk, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("sibling"), val)
+
+	// Network-wide unsuffixed purge removes colon-in-method keys but not suffix siblings.
+	_, deleted, err = conn.DeleteByPattern(ctx, PatternDeleteOpts{
+		MainPatterns:   []string{"svm:mainnet-beta:*"},
+		DryRun:         false,
+		UnsuffixedOnly: true,
+		NetworkId:      "svm:mainnet-beta",
+	})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, deleted, int64(1))
+	_, err = conn.Get(ctx, ConnectorMainIndex, "svm:mainnet-beta:42", rkShort, nil)
+	require.Error(t, err)
+	val, err = conn.Get(ctx, ConnectorMainIndex, "svm:mainnet-beta:systx:42", rk, nil)
 	require.NoError(t, err)
 	require.Equal(t, []byte("sibling"), val)
 }
