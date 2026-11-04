@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 )
 
@@ -339,10 +338,10 @@ func buildConsensusTestCaseFromDSL(t *testing.T, spec string) consensusTestCase 
 	expResult, expError := parseExpectedOutcomeFromSpec(t, rhs, upstreamSpecs)
 
 	// Setup function for leader/block heights if needed
-	var setupFn func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry)
+	var setupFn func(t *testing.T, ctx context.Context, n *Network)
 	if leaderIndex > 0 || len(blockHeights) > 0 {
-		setupFn = func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
-			ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+		setupFn = func(t *testing.T, ctx context.Context, n *Network) {
+			ups := n.upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 
 			// Set block heights
 			for idx, height := range blockHeights {

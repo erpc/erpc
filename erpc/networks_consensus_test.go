@@ -38,7 +38,7 @@ type consensusTestCase struct {
 	expectedResult       *expectedResult
 	expectedError        *expectedError
 	expectedPendingMocks int
-	setupFn              func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry)
+	setupFn              func(t *testing.T, ctx context.Context, n *Network)
 	requestMethod        string
 	requestParams        []interface{}
 }
@@ -84,14 +84,10 @@ func TestConsensusPolicy(t *testing.T) {
 			},
 			expectedCalls: []int{1, 1, 1},
 			expectedError: &expectedError{code: common.ErrCodeUpstreamRequest, contains: "leader error"},
-			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
-				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+			setupFn: func(t *testing.T, ctx context.Context, n *Network) {
 				// upstream 1 is leader: the highest head within Latest (100)
 				// + maxRetryableBlockDistance (128) (spec §6.4, #1154)
-				ups[0].EvmStatePoller().SuggestLatestBlock(150, time.Now())
-				ups[1].EvmStatePoller().SuggestLatestBlock(100, time.Now())
-				ups[2].EvmStatePoller().SuggestLatestBlock(100, time.Now())
-				time.Sleep(50 * time.Millisecond)
+				voteChain(t, n, 150, 100, 100)
 			},
 		},
 		{
@@ -376,14 +372,10 @@ func TestConsensusPolicy(t *testing.T) {
 			},
 			expectedCalls:  []int{1, 1, 1},
 			expectedResult: &expectedResult{jsonRpcResult: `"0xleader"`},
-			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
-				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+			setupFn: func(t *testing.T, ctx context.Context, n *Network) {
 				// Set unique leader: upstream 1 has the highest latest block
 				// within reach of Latest (spec §6.4, #1154)
-				ups[0].EvmStatePoller().SuggestLatestBlock(150, time.Now())
-				ups[1].EvmStatePoller().SuggestLatestBlock(100, time.Now())
-				ups[2].EvmStatePoller().SuggestLatestBlock(100, time.Now())
-				time.Sleep(50 * time.Millisecond)
+				voteChain(t, n, 150, 100, 100)
 			},
 		},
 		{
@@ -402,12 +394,8 @@ func TestConsensusPolicy(t *testing.T) {
 			},
 			expectedCalls:  []int{1, 1, 1},
 			expectedResult: &expectedResult{jsonRpcResult: `"0xleader"`},
-			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
-				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-				ups[0].EvmStatePoller().SuggestLatestBlock(150, time.Now())
-				ups[1].EvmStatePoller().SuggestLatestBlock(100, time.Now())
-				ups[2].EvmStatePoller().SuggestLatestBlock(100, time.Now())
-				time.Sleep(50 * time.Millisecond)
+			setupFn: func(t *testing.T, ctx context.Context, n *Network) {
+				voteChain(t, n, 150, 100, 100)
 			},
 		},
 		{
@@ -426,12 +414,8 @@ func TestConsensusPolicy(t *testing.T) {
 			},
 			expectedCalls:  []int{1, 1, 1},
 			expectedResult: &expectedResult{jsonRpcResult: `"0xagreed"`},
-			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
-				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-				ups[0].EvmStatePoller().SuggestLatestBlock(150, time.Now())
-				ups[1].EvmStatePoller().SuggestLatestBlock(100, time.Now())
-				ups[2].EvmStatePoller().SuggestLatestBlock(100, time.Now())
-				time.Sleep(50 * time.Millisecond)
+			setupFn: func(t *testing.T, ctx context.Context, n *Network) {
+				voteChain(t, n, 150, 100, 100)
 			},
 		},
 		{
@@ -449,11 +433,8 @@ func TestConsensusPolicy(t *testing.T) {
 			},
 			expectedCalls:  []int{1, 1},
 			expectedResult: &expectedResult{jsonRpcResult: `"0xleader"`},
-			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
-				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-				ups[0].EvmStatePoller().SuggestLatestBlock(150, time.Now())
-				ups[1].EvmStatePoller().SuggestLatestBlock(100, time.Now())
-				time.Sleep(50 * time.Millisecond)
+			setupFn: func(t *testing.T, ctx context.Context, n *Network) {
+				voteChain(t, n, 150, 100)
 			},
 		},
 		{
@@ -471,11 +452,8 @@ func TestConsensusPolicy(t *testing.T) {
 			},
 			expectedCalls: []int{1, 1},
 			expectedError: &expectedError{code: common.ErrCodeConsensusLowParticipants, contains: "not enough participants"},
-			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
-				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-				ups[0].EvmStatePoller().SuggestLatestBlock(150, time.Now())
-				ups[1].EvmStatePoller().SuggestLatestBlock(100, time.Now())
-				time.Sleep(50 * time.Millisecond)
+			setupFn: func(t *testing.T, ctx context.Context, n *Network) {
+				voteChain(t, n, 150, 100)
 			},
 		},
 		{
@@ -2870,11 +2848,11 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 	}()
 
 	// Setup Network AFTER mocks to avoid races during background initialization
-	ntw, upsReg := setupNetworkForConsensusTest(t, ctx, tc)
+	ntw, _ := setupNetworkForConsensusTest(t, ctx, tc)
 
 	// Apply special setup if any (e.g., block heights/leader)
 	if tc.setupFn != nil {
-		tc.setupFn(t, ctx, upsReg)
+		tc.setupFn(t, ctx, ntw)
 	}
 
 	// Allow background bootstrap to settle to avoid flakiness in tests

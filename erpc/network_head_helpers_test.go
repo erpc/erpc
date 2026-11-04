@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -43,6 +44,21 @@ func voteTip(t testing.TB, ctx context.Context, n *Network) {
 		}
 	}
 	voteHead(t, n, tip, tip.EvmStatePoller().LatestBlock())
+}
+
+// voteChain grows the voteHead chain from the lowest of heads up, the
+// network's i-th upstream voting each block up to heads[i].
+func voteChain(t testing.TB, n *Network, heads ...int64) {
+	t.Helper()
+	ups := n.upstreamsRegistry.GetNetworkUpstreams(n.appCtx, n.networkId)
+	lo, hi := slices.Min(heads), slices.Max(heads)
+	for b := lo; b <= hi; b++ {
+		for i, h := range heads {
+			if h >= b {
+				voteHead(t, n, ups[i], b)
+			}
+		}
+	}
 }
 
 // servedHead computes every lane's Head, as a head move or the 1s timer
