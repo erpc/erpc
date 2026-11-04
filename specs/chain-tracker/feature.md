@@ -1025,7 +1025,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | C1 | reorg 1–3 at the tip | `newHeads` gets the new branch; logs `removed:true`; gRPC resends from the fork point |
 | C2 | reorg `reorgWindow` − 1 deep | as C1; no out of range |
 | C3 | reorg `reorgWindow` + 4 deep | re-anchor; `newHeads` and gRPC get the new branch from the fork point + 1; ws `logs` close `1013`, spread over 60s |
-| C4 | 2 wss voters + 1 https; 1-vs-1 tip split | a 1-holder block may reach a stream client once, at its tip; the client's next delivery is the canonical block at that height as a replace, within the bound; its logs come back `removed: true` (decision 10); the split counts decided rounds of reason `tie` |
+| C4 | 2 wss voters + 1 https; 1-vs-1 tip split | a 1-holder block may reach a stream client once, at its tip; the client's next delivery is the canonical block at that height as a replace, within the bound; its logs come back `removed: true` (§6.5 `Head`: served from 1 holder, replayed as a 1-block reorg); the split counts decided rounds of reason `tie` |
 | C5 | head rewinds 50 blocks on every upstream | `latest` reads succeed within 2 bt; a settle's answers from more than half the voters move the pins down, the rollback write follows; `latest_regressed` stays 0: a pins move lowers the view |
 | C6 | no blocks for 3 min, with gRPC | nothing reconnects; gRPC not cut; `Latest` frozen |
 | C7 | halt, then 100 blocks in 1s | catch-up within `maxBackfill`; batches at most `reorgWindow`; no gap |
