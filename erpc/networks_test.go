@@ -11210,7 +11210,7 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 			t.Fatal(err)
 		}
 		upsList[0].EvmStatePoller().SuggestFinalizedBlock(h, time.Now())
-		upsList[0].EvmStatePoller().SuggestLatestBlock(h, time.Now())
+		voteHead(t, network, upsList[0], h)
 		time.Sleep(50 * time.Millisecond)
 	}
 

@@ -104,7 +104,7 @@ func tipHead(tag string, n uint64) json.RawMessage {
 }
 
 // polledHead is tipHead as a poll hands it to intake, past check 0.
-func polledHead(t *testing.T, tag string, n uint64) evm.SourceHeader {
+func polledHead(t testing.TB, tag string, n uint64) evm.SourceHeader {
 	t.Helper()
 	sh, err := evm.ParseSourceHeader(tipHead(tag, n))
 	require.NoError(t, err)

@@ -152,10 +152,16 @@ func TestHttpServer_SafeGetLogsTakesTheSafeLaneHead(t *testing.T) {
 	nw, err := prj.GetNetwork(context.Background(), "evm:123")
 	require.NoError(t, err)
 
+	// The view moves on hash votes alone (design: one live head): source
+	// votes its head, other the 5 blocks above it.
 	for _, u := range nw.upstreamsRegistry.GetNetworkUpstreams(context.Background(), "evm:123") {
 		require.Eventually(t, func() bool { return u.EvmStatePoller().LatestBlock() == sourceHead }, 5*time.Second, 5*time.Millisecond)
+		top := sourceHead
 		if u.Id() == "other" {
-			u.EvmStatePoller().SuggestLatestBlock(sourceHead+5, time.Now())
+			top += 5
+		}
+		for b := sourceHead; b <= top; b++ {
+			voteHead(t, nw, u, b)
 		}
 	}
 	require.Eventually(t, func() bool { return servedHead(nw, context.Background()).Latest == sourceHead+5 }, 5*time.Second, 5*time.Millisecond,

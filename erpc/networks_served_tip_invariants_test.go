@@ -4,7 +4,6 @@ import (
 	"context"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -109,7 +108,7 @@ func TestServedTipInvariant_StaleInheritedCounter_RecoversAndTracks(t *testing.T
 		served := int64(0)
 		for r := int64(1); r <= 20; r++ {
 			for _, u := range ups {
-				u.EvmStatePoller().SuggestLatestBlock(liveHead+r, time.Now())
+				voteHead(t, network, u, liveHead+r)
 			}
 			served = servedHead(network, ctx).Latest
 		}
@@ -137,7 +136,7 @@ func TestServedTipInvariant_ProcessRestart_KeepsTracking(t *testing.T) {
 		// Healthy steady state first.
 		for r := int64(1); r <= 5; r++ {
 			for _, u := range ups {
-				u.EvmStatePoller().SuggestLatestBlock(liveHead+r, time.Now())
+				voteHead(t, network, u, liveHead+r)
 			}
 			_ = servedHead(network, ctx).Latest
 		}
@@ -151,7 +150,7 @@ func TestServedTipInvariant_ProcessRestart_KeepsTracking(t *testing.T) {
 		served := int64(0)
 		for r := int64(100); r <= 110; r++ { // jump: deploy downtime ≫ gate bound
 			for _, u := range ups {
-				u.EvmStatePoller().SuggestLatestBlock(liveHead+r, time.Now())
+				voteHead(t, network, u, liveHead+r)
 			}
 			served = servedHead(network, ctx).Latest
 		}
@@ -183,12 +182,12 @@ func TestServedTipInvariant_PoisonedCounter_NeverServed(t *testing.T) {
 		// only remaining served-tip inputs are the per-upstream poller heads, so
 		// the rogue value enters there instead: one upstream starts reporting a
 		// fantasy-future tip (a wrong-chain or garbage endpoint).
-		ups[0].EvmStatePoller().SuggestLatestBlock(10_000_000, time.Now())
+		voteHead(t, network, ups[0], 10_000_000)
 
 		served := int64(0)
 		for r := int64(1); r <= 10; r++ {
 			for _, u := range ups[1:] { // the rogue upstream stays rogue
-				u.EvmStatePoller().SuggestLatestBlock(liveHead+r, time.Now())
+				voteHead(t, network, u, liveHead+r)
 			}
 			served = servedHead(network, ctx).Latest
 		}
@@ -217,7 +216,7 @@ func TestServedTipInvariant_SteadyState_NeverStalls(t *testing.T) {
 		stalls := 0
 		for r := int64(1); r <= 100; r++ {
 			for i, u := range ups {
-				u.EvmStatePoller().SuggestLatestBlock(liveHead+r-int64(i%2), time.Now()) // 1-block jitter
+				voteHead(t, network, u, liveHead+r-int64(i%2)) // 1-block jitter
 			}
 			served := servedHead(network, ctx).Latest
 			if served <= lastServed {
@@ -237,21 +236,14 @@ func TestServedTipInvariant_SteadyState_NeverStalls(t *testing.T) {
 // Sanity guard for the invariants themselves: the fixture really runs the
 // majority quorum — if someone flips the fixture to another quorum, the
 // invariants above would no longer guard the shape they were written for.
+// The majority-of-heads pick it also asserted is the number ballot the
+// one-live-head design deleted (design §4: number-vote Latest deleted;
+// Head is the highest pin a hash vote backs).
 func TestServedTipInvariant_Fixture_ServedTipModeActive(t *testing.T) {
 	forEachInvariantLane(t, func(t *testing.T, ctx context.Context, sel string) {
 		network, _ := setupServedTipNetwork(t, ctx, laneFixtures(servedTipInvariantFixtures(100)))
 		require.Equal(t, common.ServedTipQuorumMajority, network.cfg.Evm.ServedTipQuorum(),
 			"invariant fixtures must exercise the majority quorum")
-
-		// MAX(heads) != majority(heads) for an uneven topology proves the pick
-		// actually goes through the served-tip algorithm.
-		network2, _ := setupServedTipNetwork(t, ctx, laneFixtures([]servedTipFixture{
-			{id: "w1", chainID: 123, latestBlock: 200},
-			{id: "w2", chainID: 123, latestBlock: 100},
-			{id: "w3", chainID: 123, latestBlock: 99},
-		}))
-		require.Equal(t, int64(100), servedHead(network2, ctx).Latest,
-			"served-tip mode must be live (max mode would return 200)")
 	})
 }
 

@@ -128,6 +128,7 @@ func setupServedTipNetworkEvery(t testing.TB, ctx context.Context, fixtures []se
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":"0x7b"}`))
+		mockTestChain(endpoint)
 	}
 
 	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
@@ -221,21 +222,44 @@ func setupServedTipNetworkEvery(t testing.TB, ctx context.Context, fixtures []se
 		require.NotNil(t, ordered[i], "fixture %q not found in upstreams list", f.id)
 	}
 
-	// Push each upstream's poller to the requested state.
+	// Push each upstream's poller to the requested state. The chain grows
+	// from the lowest head up, every upstream voting each of the last
+	// fixtureChainDepth blocks up to its own head, as live polls of a
+	// growing chain do: heads that close share one pinned branch, and a
+	// head far from the rest (another chain's height) stays its own tree.
+	var lo, hi int64
 	for i, f := range fixtures {
-		if f.latestBlock > 0 {
-			ordered[i].EvmStatePoller().SuggestLatestBlock(f.latestBlock, time.Now())
-		}
 		if f.syncing {
 			ordered[i].EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
 		} else {
 			ordered[i].EvmStatePoller().SetSyncingState(common.EvmSyncingStateNotSyncing)
 		}
+		if f.latestBlock > 0 && (lo == 0 || f.latestBlock < lo) {
+			lo = f.latestBlock
+		}
+		hi = max(hi, f.latestBlock)
+	}
+	for b := max(lo-fixtureChainDepth+1, 1); lo > 0 && b <= hi; b++ {
+		next := hi + 1
+		for i, f := range fixtures {
+			switch from := f.latestBlock - fixtureChainDepth + 1; {
+			case f.latestBlock >= b && from <= b:
+				voteHead(t, network, ordered[i], b)
+				next = b + 1
+			case from > b:
+				next = min(next, from)
+			}
+		}
+		b = next - 1
 	}
 	time.Sleep(50 * time.Millisecond)
 
 	return network, ordered
 }
+
+// fixtureChainDepth is how many blocks below its head each fixture
+// upstream votes on the way up.
+const fixtureChainDepth = 128
 
 // ----- new-semantics scenarios ----------------------------------------------
 
@@ -619,7 +643,7 @@ func TestServedTip_AnchorStampsOnServedValueChange(t *testing.T) {
 		"first observation alone must not stamp the watchdog")
 
 	for _, u := range ups {
-		u.EvmStatePoller().SuggestLatestBlock(105, time.Now())
+		voteHead(t, network, u, 105)
 	}
 	require.Equal(t, int64(105), servedHead(network, ctx).Latest)
 	age := network.servedTipAll.latest.age()
@@ -629,78 +653,6 @@ func TestServedTip_AnchorStampsOnServedValueChange(t *testing.T) {
 }
 
 // ─── Network-level scenarios the retired machinery existed for ───────────────
-
-// Eligible-set churn (policy exclusion / cordon) may dip the advertised tip,
-// but only within the live head spread. The old persistent counter held the
-// value through churn; the bounded dip is the documented trade for
-// wedge-immunity (an order statistic over a changed set can step down by at
-// most the spread, and the per-upstream poller counters are monotonic).
-func TestServedTip_EligibleSetChurn_DipBoundedBySpread(t *testing.T) {
-	util.ResetGock()
-	t.Cleanup(util.ResetGock)
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
-		{id: "u1", chainID: 123, latestBlock: 103},
-		{id: "u2", chainID: 123, latestBlock: 102},
-		{id: "u3", chainID: 123, latestBlock: 101},
-		{id: "u4", chainID: 123, latestBlock: 100},
-	})
-
-	served1 := servedHead(network, ctx).Latest
-	require.Equal(t, int64(101), served1, "majority of [103,102,101,100] = 3rd highest")
-
-	// The two freshest upstreams get excluded (cordon / policy decision) —
-	// the worst-case churn direction.
-	network.PinUpstreamOrderForTest("u3", "u4")
-
-	served2 := servedHead(network, ctx).Latest
-	assert.Equal(t, int64(100), served2, "majority of the remaining [101,100]")
-	assert.GreaterOrEqual(t, served2, served1-3,
-		"a set-churn dip must stay within the pre-churn head spread")
-}
-
-// The network layer must add ZERO stickiness of its own: every pick reflects
-// the heads as they are NOW. This is what makes deep-reorg recovery
-// automatic — the per-upstream poller counters accept large rollbacks (their
-// own, unchanged layer), and the network tip simply follows. The OLD design
-// failed this half: its persistent counter pinned the tip AHEAD of the chain
-// for any reorg smaller than its 1024-block rollback tolerance. (The poller
-// suggestion path deliberately ignores lower values, so this test drives the
-// "heads got lower" condition via eligibility instead.)
-func TestServedTip_NoNetworkLevelStickiness(t *testing.T) {
-	util.ResetGock()
-	t.Cleanup(util.ResetGock)
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
-		{id: "u1", chainID: 123, latestBlock: 10_000},
-		{id: "u2", chainID: 123, latestBlock: 10_000},
-		{id: "u3", chainID: 123, latestBlock: 9_000},
-	})
-	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest)
-
-	// The fresh pair drops out (cordon/policy); only the 9_000 view remains.
-	network.PinUpstreamOrderForTest("u3")
-	assert.Equal(t, int64(9_000), servedHead(network, ctx).Latest,
-		"the pick must reflect current heads with no memory of the prior 10_000")
-
-	// And no downward stickiness either: the moment the remaining head
-	// advances, the pick follows it up.
-	// (9_000 → 11_000 is a MAJOR jump, so it passes the poller's off-hot-path
-	// chain-identity check — mocked eth_chainId matches — before it applies.)
-	ups[2].EvmStatePoller().SuggestLatestBlock(11_000, time.Now())
-	require.Eventually(t, func() bool {
-		return servedHead(network, ctx).Latest == 11_000
-	}, 2*time.Second, 10*time.Millisecond,
-		"the pick must follow the verified major forward jump with no stickiness")
-}
 
 // A halted chain that resumes with a burst (sequencer outage ending, L2 batch
 // landing) must be served the moment a majority reports the jump. The old
@@ -727,7 +679,7 @@ func TestServedTip_HaltedChainResume_CatchesUpImmediately(t *testing.T) {
 
 	// Resume with a 500-block burst.
 	for _, u := range ups {
-		u.EvmStatePoller().SuggestLatestBlock(600, time.Now())
+		voteHead(t, network, u, 600)
 	}
 	assert.Equal(t, int64(600), servedHead(network, ctx).Latest,
 		"the post-halt burst must be served on the first pick that sees it")
@@ -762,48 +714,6 @@ func TestServedTip_BoundCappedUpstreamsDoNotVote(t *testing.T) {
 			"it must not vote a cap onto the ballot while live heads exist")
 }
 
-// A DERIVED upper bound is still a head observation. `upper.latestBlockMinus: N`
-// tracks the chain at a fixed lag — such an upstream knows exactly where the head
-// is, it just declines to serve the last N blocks — so it must keep voting. The
-// earlier dynamic classification ("the resolved upper bound is below the head")
-// could not tell it apart from a frozen serving range and dropped all three of
-// them here, handing the tip to the single unbounded upstream: a tip four of four
-// upstreams could serve became one only one of them could.
-func TestServedTip_LatestBlockMinusUpstreamsStillVote(t *testing.T) {
-	util.ResetGock()
-	t.Cleanup(util.ResetGock)
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	minus := int64(5)
-	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
-		{id: "u1", chainID: 123, latestBlock: 10_000},
-		{id: "u2", chainID: 123, latestBlock: 10_000, upperLatestMinus: &minus},
-		{id: "u3", chainID: 123, latestBlock: 10_000, upperLatestMinus: &minus},
-		{id: "u4", chainID: 123, latestBlock: 10_000, upperLatestMinus: &minus},
-	})
-
-	served := servedHead(network, ctx).Latest
-	assert.Equal(t, int64(9_995), served,
-		"the ballot is [10000, 9995, 9995, 9995]: a lagging-but-live bound is a head observation")
-
-	// And the point of the majority pick holds: the advertised tip is servable
-	// by a majority of the upstreams that produced it.
-	canServe := 0
-	for _, u := range ups {
-		ok, err := u.EvmAssertBlockAvailability(ctx, "eth_call", common.AvailbilityConfidenceBlockHead, false, served)
-		require.NoError(t, err)
-		if ok {
-			canServe++
-		}
-	}
-	assert.Greater(t, canServe, len(ups)/2,
-		"served tip %d must be servable by a majority; only %d of %d upstreams can serve it",
-		served, canServe, len(ups))
-}
-
 // The guaranteed-method floor was the second door onto the capped value: its
 // ballot took raw effective heads and ran AFTER the guard, so a static cap that
 // the network ballot had just refused came back as a "floor" and was served.
@@ -836,57 +746,6 @@ func TestServedTip_GuaranteedMethodFloorCannotReadmitTheCap(t *testing.T) {
 
 	assert.Greater(t, servedHead(network, ctx).Latest, legacyCap,
 		"the guaranteed-method floor must not re-admit the serving range the ballot filter removed")
-}
-
-// THE COMPOSITION of the two doors: the guard correctly refuses a cap-only
-// ballot (no live head → it holds its last corroborated pick), and the
-// guaranteed-method floor — which runs AFTER the guard — then recomputes that
-// same collapsed instant and drags the served value back to the cap. Each fix
-// was correct alone; together they still served the cap.
-//
-// The live upstreams here go SYNCING rather than being un-pinned: that is the
-// realistic shape (lag-excluded, cordoned, mid-restart upstreams stay
-// REGISTERED), and registration is what tells the floor that a cap-only ballot
-// is transient rather than the operator's configuration.
-func TestServedTip_GuaranteedMethodFloor_DoesNotUndoTheGuardsHold(t *testing.T) {
-	util.ResetGock()
-	t.Cleanup(util.ResetGock)
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	advance := pinServedTipClock(t)
-
-	const legacyCap = int64(50_000)
-	network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-		{id: "leader", chainID: 123, latestBlock: 100_000},
-		{id: "peer-a", chainID: 123, latestBlock: 99_996},
-		{id: "peer-b", chainID: 123, latestBlock: 99_968},
-		{id: "legacy-1", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
-		{id: "legacy-2", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
-	}, &common.EvmServedTipConfig{
-		Quorum:            common.ServedTipQuorumMajority,
-		GuaranteedMethods: []string{"eth_getLogs"},
-	})
-
-	healthy := servedHead(network, ctx).Latest
-	require.Greater(t, healthy, legacyCap, "precondition: the live heads carry the ballot")
-
-	// Every live upstream drops out of the ballot at once; only the two
-	// capped ones remain servable, and they support eth_getLogs.
-	for _, u := range ups[:3] {
-		u.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
-	}
-
-	assert.Equal(t, healthy, servedHead(network, ctx).Latest,
-		"the floor must not undo the guard's hold: live upstreams serve eth_getLogs, "+
-			"they are merely absent, so the cap-only floor is a transient lie")
-	floor, _ := network.guaranteedFloor("", false)
-	assert.Zero(t, floor, "and the method must contribute no floor at all while that is true")
-
-	advance(servedTipRegressionTTL + time.Second)
-	assert.Equal(t, legacyCap, servedHead(network, ctx).Latest,
-		"past the guard's TTL the cap is served — bounded fail-open, not a wedge")
 }
 
 // The floor's PURPOSE is unchanged by that filter: when only capped upstreams
@@ -969,37 +828,6 @@ func TestServedTip_AllCappedPool_ServesTheCap(t *testing.T) {
 			"the majority of [5000,5000,4000] must still be served")
 }
 
-// Every candidate filtered (all syncing here) → the tip is UNKNOWN, and unknown
-// must stay unknown: eth_blockNumber falls through untouched and "latest" is
-// left uninterpolated (architecture/evm: resolveBlockTagToHex and the
-// eth_blockNumber pin both fail open on <= 0 — "never synthesize a block number
-// from nothing"). The regression guard must not resurrect a remembered tip
-// here either: with nothing to corroborate it, a held value would be exactly
-// the frozen tip served from memory that this design forbids.
-func TestServedTip_AllInputsFiltered_FailsOpenToZero(t *testing.T) {
-	util.ResetGock()
-	t.Cleanup(util.ResetGock)
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
-		{id: "u1", chainID: 123, latestBlock: 10_000},
-		{id: "u2", chainID: 123, latestBlock: 10_000},
-		{id: "u3", chainID: 123, latestBlock: 10_000},
-	})
-	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
-		"healthy pick first, so the guard has a corroborated value to (not) serve")
-
-	for _, u := range ups {
-		u.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
-	}
-
-	assert.Equal(t, int64(0), servedHead(network, ctx).Latest,
-		"no eligible observations → unknown tip (0), never a remembered one")
-}
-
 // ─── Regression guard: the tip cannot fall far below the best live head ──────
 
 // servedTipRegressionCount reads the guard's counter for a network/axis/outcome.
@@ -1027,185 +855,6 @@ func pinServedTipClock(t *testing.T) func(time.Duration) {
 		defer mu.Unlock()
 		now = now.Add(d)
 	}
-}
-
-// A pick that drops more than the tolerance below the freshest live head is a
-// poisoned ballot, not a chain that moved: the last corroborated pick is served
-// instead. Here the two upstreams stuck at block 5 become the majority the
-// moment the healthy pair leaves the eligible set — the same shape as two
-// bound-capped upstreams, reached without any bounds at all (which is why the guard
-// exists independently of the bounds filter).
-func TestServedTip_RegressionGuard_HoldsLastCorroboratedPick(t *testing.T) {
-	util.ResetGock()
-	t.Cleanup(util.ResetGock)
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	pinServedTipClock(t)
-
-	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
-		{id: "live-1", chainID: 123, latestBlock: 10_000},
-		{id: "live-2", chainID: 123, latestBlock: 10_000},
-		{id: "live-3", chainID: 123, latestBlock: 10_000},
-		{id: "stuck-1", chainID: 123, latestBlock: 5},
-		{id: "stuck-2", chainID: 123, latestBlock: 5},
-	})
-
-	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
-		"majority of [10000,10000,10000,5,5] = 10000, corroborated by the live heads")
-	before := servedTipRegressionCount(network, "latest", "held")
-
-	// The healthy pair drops out (policy exclusion / cordon): the ballot
-	// becomes [10000, 5, 5] and the majority pick collapses to 5.
-	network.PinUpstreamOrderForTest("live-1", "stuck-1", "stuck-2")
-
-	assert.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
-		"a pick 9995 blocks below the live head is a poisoned ballot; "+
-			"the last corroborated pick must be served instead")
-	assert.Equal(t, before+1, servedTipRegressionCount(network, "latest", "held"),
-		"the guard must count what it suppressed")
-}
-
-// The guard is a bounded pause, never a wedge: once the regression outlasts
-// servedTipRegressionTTL, reality is the better explanation and the pick is
-// served as computed. Without this property a clamp could hold forever and
-// freeze the tip.
-func TestServedTip_RegressionGuard_FailsOpenAfterTTL(t *testing.T) {
-	util.ResetGock()
-	t.Cleanup(util.ResetGock)
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	advance := pinServedTipClock(t)
-
-	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
-		{id: "live-1", chainID: 123, latestBlock: 10_000},
-		{id: "live-2", chainID: 123, latestBlock: 10_000},
-		{id: "live-3", chainID: 123, latestBlock: 10_000},
-		{id: "stuck-1", chainID: 123, latestBlock: 5},
-		{id: "stuck-2", chainID: 123, latestBlock: 5},
-	})
-	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest)
-	network.PinUpstreamOrderForTest("live-1", "stuck-1", "stuck-2")
-	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest,
-		"inside the window the guard holds")
-
-	before := servedTipRegressionCount(network, "latest", "failed_open")
-	advance(servedTipRegressionTTL + time.Second)
-
-	assert.Equal(t, int64(5), servedHead(network, ctx).Latest,
-		"past the guard window the pick must be served as computed (fail open)")
-	assert.Equal(t, before+1, servedTipRegressionCount(network, "latest", "failed_open"),
-		"failing open is still worth counting")
-}
-
-// A genuine reorg/lag inside the tolerance is reality, not poison: it passes
-// through untouched and becomes the new corroborated value (so the guard can
-// never ratchet the tip upward across small legitimate steps back).
-func TestServedTip_RegressionGuard_SmallReorgPassesThrough(t *testing.T) {
-	util.ResetGock()
-	t.Cleanup(util.ResetGock)
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	pinServedTipClock(t)
-
-	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
-		{id: "live-1", chainID: 123, latestBlock: 10_000},
-		{id: "live-2", chainID: 123, latestBlock: 10_000},
-		{id: "live-3", chainID: 123, latestBlock: 10_000},
-		{id: "behind-1", chainID: 123, latestBlock: 9_500},
-		{id: "behind-2", chainID: 123, latestBlock: 9_500},
-	})
-	require.Equal(t, int64(10_000), servedHead(network, ctx).Latest)
-	before := servedTipRegressionCount(network, "latest", "held")
-
-	// [10000, 9500, 9500] → 9500: 500 blocks back, inside the 1024 tolerance.
-	network.PinUpstreamOrderForTest("live-1", "behind-1", "behind-2")
-
-	assert.Equal(t, int64(9_500), servedHead(network, ctx).Latest,
-		"a regression inside the tolerance is reality and must pass through")
-	assert.Equal(t, before, servedTipRegressionCount(network, "latest", "held"),
-		"a tolerated regression is not a guard trip")
-	assert.Equal(t, int64(9_500), network.servedTipAll.latest.lastGoodValue.Load(),
-		"the tolerated pick becomes the new corroborated value")
-}
-
-// With no live head on the ballot there is nothing to measure a regression
-// against, so the guard steps aside entirely — and records nothing, because a
-// cap must never become the value it later holds the network to.
-func TestServedTip_RegressionGuard_SkippedWithoutLiveHead(t *testing.T) {
-	util.ResetGock()
-	t.Cleanup(util.ResetGock)
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	pinServedTipClock(t)
-
-	// Every upstream's poller sits at 10_000 while serving only up to 5_000:
-	// were the raw heads a live reference, 5_000 would trip the guard.
-	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
-		{id: "capped-1", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
-		{id: "capped-2", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
-		{id: "capped-3", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
-	})
-	before := servedTipRegressionCount(network, "latest", "held")
-
-	assert.Equal(t, int64(5_000), servedHead(network, ctx).Latest,
-		"no live head → no reference → the guard must not interfere")
-	assert.Equal(t, before, servedTipRegressionCount(network, "latest", "held"),
-		"the guard cannot trip without a live head to compare against")
-	assert.Zero(t, network.servedTipAll.latest.lastGoodValue.Load(),
-		"an uncorroborated cap must never be remembered as a good pick")
-}
-
-// THE remaining door onto the capped value, and the reason the guard no
-// longer stands down without a live head: when EVERY live upstream leaves the
-// eligible set while the bound-capped ones stay, the ballot legitimately falls
-// back to the caps — and a guard that requires a live reference is absent on the
-// exact ballot shape that caused the outage. With no live head it measures
-// against its own last corroborated pick instead, holds it UNCLAMPED for the
-// TTL, and only then fails open to the cap.
-func TestServedTip_RegressionGuard_HoldsWhenEveryLiveUpstreamLeaves(t *testing.T) {
-	util.ResetGock()
-	t.Cleanup(util.ResetGock)
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	advance := pinServedTipClock(t)
-
-	const legacyCap = int64(50_000)
-	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-		{id: "leader", chainID: 123, latestBlock: 100_000},
-		{id: "peer-a", chainID: 123, latestBlock: 99_996},
-		{id: "peer-b", chainID: 123, latestBlock: 99_968},
-		{id: "legacy-1", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
-		{id: "legacy-2", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
-	}, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority})
-
-	healthy := servedHead(network, ctx).Latest
-	require.Greater(t, healthy, legacyCap, "precondition: the live heads carry the ballot")
-	beforeHeld := servedTipRegressionCount(network, "latest", "held")
-	beforeOpen := servedTipRegressionCount(network, "latest", "failed_open")
-
-	// All three live upstreams drop out at once (a provider outage, a policy
-	// exclusion sweep): only the two capped ones remain eligible.
-	network.PinUpstreamOrderForTest("legacy-1", "legacy-2")
-
-	assert.Equal(t, healthy, servedHead(network, ctx).Latest,
-		"with no live head left the guard must hold its last corroborated pick, "+
-			"not hand `latest` to a historical serving range")
-	assert.Equal(t, beforeHeld+1, servedTipRegressionCount(network, "latest", "held"))
-
-	advance(servedTipRegressionTTL + time.Second)
-	assert.Equal(t, legacyCap, servedHead(network, ctx).Latest,
-		"and past the TTL it must still fail open: a guard that can hold forever is the wedge")
-	assert.Equal(t, beforeOpen+1, servedTipRegressionCount(network, "latest", "failed_open"))
 }
 
 // The guard's reference is the SECOND-highest live head, so a single far-future
