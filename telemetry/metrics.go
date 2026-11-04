@@ -237,14 +237,14 @@ var (
 
 	// MetricChainTrackerHeaderProofTotal counts the headers the network-wide
 	// chain tracker held, by what their hash proves under the registered
-	// header formats: verified; unverified (no format reproduces it and no
-	// header of the network ever verified: served at one holder); mismatch
-	// (none reproduces it after one did: q holders); reason unknown_keys or
+	// header formats: verified; mismatch (after a header of the network
+	// verified, the network's format encodes it to another hash: q holders);
+	// unverified (any other: served at one holder); reason unencodable or
 	// hash_differs for the last two.
 	MetricChainTrackerHeaderProofTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "chain_tracker_header_proof_total",
-		Help:      "Headers the network-wide chain tracker held, by hash proof (verified, unverified, mismatch) and reason (unknown_keys, hash_differs).",
+		Help:      "Headers the network-wide chain tracker held, by hash proof (verified, unverified, mismatch) and reason (unencodable, hash_differs).",
 	}, []string{"project", "network", "proof", "reason"})
 
 	MetricChainTrackerResetTotal = DefineCounter(prometheus.CounterOpts{

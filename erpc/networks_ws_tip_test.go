@@ -103,13 +103,24 @@ func tipHash(tag string, n uint64) string {
 	return fmt.Sprintf("0x%s%0*x", tag, 64-len(tag), n)
 }
 
-// tipHead is block n of the linear chain tagged tag.
+// tipHead is block n of the linear chain tagged tag: a complete Ethereum
+// header carrying tipHash, so the Ethereum format encodes it to another
+// hash (spec §6.5): unverified while no header of the network verified, a
+// mismatch that serves only at q holders once one did (verifyTipAt). Its
+// roots are not the empty trie's: the block has transactions.
 func tipHead(tag string, n uint64) json.RawMessage {
 	if v, ok := verifiedTips.Load(tipKey{tag, n}); ok {
 		return v.(verifyingHeader).raw
 	}
-	return json.RawMessage(fmt.Sprintf(`{"number":"0x%x","hash":"%s","parentHash":"%s","timestamp":"0x%x"}`,
-		n, tipHash(tag, n), tipHash(tag, n-1), 1_700_000_000+n))
+	fields := ethereumHeaderFields(n, tipHash(tag, n-1), 1_700_000_000+n)
+	fields["hash"] = tipHash(tag, n)
+	fields["transactionsRoot"] = "0x" + strings.Repeat("1", 64)
+	fields["receiptsRoot"] = "0x" + strings.Repeat("2", 64)
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		panic(err)
+	}
+	return raw
 }
 
 type tipKey struct {
@@ -122,8 +133,9 @@ var verifiedTips sync.Map // tipKey -> verifyingHeader
 
 // verifyTipAt makes block n of chain tag, for t, a header a registered
 // format verifies, on the chain's own parent: the network that holds it
-// learns its headers verify (spec §6.5), so every other tipHead, whose
-// hash no format reproduces, is a mismatch that serves only at q holders.
+// learns its headers verify (spec §6.5), so every other tipHead, which the
+// Ethereum format encodes to another hash, is a mismatch that serves only
+// at q holders.
 func verifyTipAt(t testing.TB, tag string, n uint64) {
 	t.Helper()
 	verifiedTips.Store(tipKey{tag, n}, newVerifyingHeader(t, n, tipHash(tag, n-1), 1_700_000_000+n))
@@ -141,15 +153,32 @@ type verifyingHeader struct {
 // gas fields mockChain blocks carry, so a vendor serves it as any block.
 func newVerifyingHeader(t testing.TB, n uint64, parent string, ts uint64) verifyingHeader {
 	t.Helper()
-	h := &gethtypes.Header{ParentHash: gethcommon.HexToHash(parent), UncleHash: gethtypes.EmptyUncleHash,
-		Coinbase: gethcommon.HexToAddress("0x0000000000000000000000000000000000000001"), TxHash: gethtypes.EmptyTxsHash,
-		ReceiptHash: gethtypes.EmptyReceiptsHash, Difficulty: big.NewInt(0), Number: new(big.Int).SetUint64(n),
-		GasLimit: 0x1c9c380, GasUsed: 0x5208, Time: ts, BaseFee: big.NewInt(7)}
+	h := ethereumHeader(n, parent, ts)
 	raw, err := h.MarshalJSON()
 	require.NoError(t, err)
 	var fields map[string]interface{}
 	require.NoError(t, json.Unmarshal(raw, &fields))
 	return verifyingHeader{hash: h.Hash().Hex(), raw: raw, fields: fields}
+}
+
+func ethereumHeader(n uint64, parent string, ts uint64) *gethtypes.Header {
+	return &gethtypes.Header{ParentHash: gethcommon.HexToHash(parent), UncleHash: gethtypes.EmptyUncleHash,
+		Coinbase: gethcommon.HexToAddress("0x0000000000000000000000000000000000000001"), TxHash: gethtypes.EmptyTxsHash,
+		ReceiptHash: gethtypes.EmptyReceiptsHash, Difficulty: big.NewInt(0), Number: new(big.Int).SetUint64(n),
+		GasLimit: 0x1c9c380, GasUsed: 0x5208, Time: ts, BaseFee: big.NewInt(7)}
+}
+
+// ethereumHeaderFields is ethereumHeader's JSON object.
+func ethereumHeaderFields(n uint64, parent string, ts uint64) map[string]interface{} {
+	raw, err := ethereumHeader(n, parent, ts).MarshalJSON()
+	if err != nil {
+		panic(err)
+	}
+	var fields map[string]interface{}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		panic(err)
+	}
+	return fields
 }
 
 // polledHead is tipHead as a poll hands it to intake, past check 0.

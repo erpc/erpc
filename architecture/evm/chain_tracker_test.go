@@ -472,7 +472,6 @@ func TestChainTracker(t *testing.T) {
 		// holder serves them (spec §6.5); 225's also carries a field no
 		// registered header format knows.
 		hashes, raws := map[uint64]string{}, map[uint64]json.RawMessage{}
-		var plain225 json.RawMessage
 		withField := func(raw json.RawMessage, k, v string) json.RawMessage {
 			var fields map[string]json.RawMessage
 			require.NoError(t, json.Unmarshal(raw, &fields))
@@ -490,7 +489,7 @@ func TestChainTracker(t *testing.T) {
 				require.NoError(t, err)
 				hashes[n], raws[n] = h.Hash().Hex(), raw
 				if n == 225 {
-					plain225, raws[n] = raw, withField(raw, "chainContext", `"0x01"`)
+					raws[n] = withField(raw, "chainContext", `"0x01"`)
 				}
 			}
 			net.serve(n, hashes[n], raws[n])
@@ -539,42 +538,34 @@ func TestChainTracker(t *testing.T) {
 		assert.Equal(t, fetched+1, net.fetches.Load(), "one fetch walks the skipped block")
 		assert.Equal(t, before, reanchors(), "a walk that links is no re-anchor")
 
-		// Header proof (spec §6.5): this network verified headers, so one
-		// no registered format reproduces is a mismatch and needs q
-		// holders, whether a format cannot encode it (unknown_keys) or
-		// encodes it to another hash (hash_differs, a forged hash); a
-		// header verifies once any held copy of its hash does.
+		// Header proof (spec §6.5): this network verified headers. A header
+		// its format cannot encode (a key it does not know) is unverified and
+		// serves from one holder; one it encodes to another hash (a lossy
+		// copy or a forged hash) is a mismatch and needs q holders, until a
+		// held copy of that hash verifies.
 		proofs := func(p, reason string) float64 {
 			return testutil.ToFloat64(telemetry.MetricChainTrackerHeaderProofTotal.WithLabelValues("test", "evm:idle", p, reason))
 		}
-		assert.Positive(t, proofs("unverified", "unknown_keys"), "headers no format encodes, before any verified, are unverified")
-		unknownKeys, differs := proofs("mismatch", "unknown_keys"), proofs("mismatch", "hash_differs")
+		assert.Positive(t, proofs("unverified", "unencodable"), "headers no format encodes, before any verified, are unverified")
+		unencodable, differs := proofs("unverified", "unencodable"), proofs("mismatch", "hash_differs")
 		vote(225, "a")
-		h, ok := c.View().Head()
-		require.True(t, ok)
-		assert.Equal(t, uint64(224), h.Number, "after headers verified, a header no format encodes needs q holders")
-		assert.Equal(t, unknownKeys+1, proofs("mismatch", "unknown_keys"))
-		c.Observe("a", plain225, true)
 		require.Eventually(t, func() bool {
 			c.Sync(ctx)
 			h, ok := c.View().Head()
 			return ok && h.Number == 225
-		}, 5*time.Second, 5*time.Millisecond, "a copy of 225 that verifies serves it from one holder")
-		forged := &gethtypes.Header{Number: big.NewInt(226), ParentHash: gethcommon.HexToHash(hashes[225]), Time: 1_700_000_999, Difficulty: big.NewInt(0)}
-		forgedRaw, err := forged.MarshalJSON()
-		require.NoError(t, err)
-		forgedRaw = withField(forgedRaw, "hash", `"`+testHash("f", 226)+`"`)
-		c.Observe("a", forgedRaw, true)
+		}, 5*time.Second, 5*time.Millisecond, "after headers verified, a header the format cannot encode serves from one holder")
+		assert.Equal(t, unencodable+1, proofs("unverified", "unencodable"))
+		c.Observe("a", withField(raws[226], "baseFeePerGas", `"0x7"`), true)
 		c.Sync(ctx)
-		h, _ = c.View().Head()
-		assert.Equal(t, uint64(225), h.Number, "a forged hash does not serve from one holder")
+		h, _ := c.View().Head()
+		assert.Equal(t, uint64(225), h.Number, "a copy its format hashes otherwise does not serve from one holder")
 		assert.Equal(t, differs+1, proofs("mismatch", "hash_differs"))
-		vote(226, "a", "b")
+		vote(226, "a")
 		require.Eventually(t, func() bool {
 			c.Sync(ctx)
 			h, ok := c.View().Head()
 			return ok && h.Number == 226 && h.Hash == gethcommon.HexToHash(hashes[226])
-		}, 5*time.Second, 5*time.Millisecond, "the view takes the real 226")
+		}, 5*time.Second, 5*time.Millisecond, "a copy of 226 that verifies serves it from one holder")
 
 		t.Cleanup(c.Want(indexer.ReadOpts{}))
 		c.Sync(ctx)

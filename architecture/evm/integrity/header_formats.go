@@ -46,13 +46,17 @@ var headerFormats = []HeaderFormat{
 }
 
 // lastFormat is, per chain id, the index in headerFormats of the format
-// its last verified header took.
+// its last verified header took. Chain id 0 (unknown) learns none.
 var lastFormat sync.Map // int64 -> int
 
 // VerifyBlockHash parses raw once and tries the format chainID last
 // verified with, then each registered format in order: format is the name
-// of the first that reproduces raw's claimed hash, "" when none does;
-// encodable is whether any format could derive a hash at all.
+// of the first that reproduces raw's claimed hash, "" when none does.
+// encodable is whether the chain's format derives a hash from raw: the
+// format it last verified with, else any registered format. A header that
+// format cannot encode lacks keys it needs or carries keys it does not
+// know, as from a source that re-serializes blocks: its hash is unproven,
+// even when the standard format encodes the header to another hash.
 func VerifyBlockHash(chainID int64, raw []byte) (format string, encodable bool) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
@@ -66,9 +70,14 @@ func VerifyBlockHash(chainID int64, raw []byte) (format string, encodable bool) 
 	if v, ok := lastFormat.Load(chainID); ok {
 		last = v.(int)
 	}
+	lastEncodes, anyEncodes := false, false
 	try := func(i int) bool {
 		got, ok := headerFormats[i].Hash(chainID, fields)
-		encodable = encodable || ok
+		if i == last {
+			lastEncodes = ok
+		} else {
+			anyEncodes = anyEncodes || ok
+		}
 		return ok && strings.EqualFold(got, claimed)
 	}
 	if last >= 0 && try(last) {
@@ -76,9 +85,14 @@ func VerifyBlockHash(chainID int64, raw []byte) (format string, encodable bool) 
 	}
 	for i := range headerFormats {
 		if i != last && try(i) {
-			lastFormat.Store(chainID, i)
+			if chainID != 0 {
+				lastFormat.Store(chainID, i)
+			}
 			return headerFormats[i].Name, true
 		}
 	}
-	return "", encodable
+	if last >= 0 {
+		return "", lastEncodes
+	}
+	return "", anyEncodes
 }

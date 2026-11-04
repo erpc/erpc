@@ -37,8 +37,8 @@ type chainHeader struct {
 	emptyTxs bool
 
 	// verified: a registered header format reproduces the hash, from this
-	// copy or another held copy of it; encodable: a format encodes this
-	// copy. Set once by verify.
+	// copy or another held copy of it; encodable: the chain's format
+	// encodes this copy (integrity.VerifyBlockHash). Set once by verify.
 	verifyOnce sync.Once
 	verified   atomic.Bool
 	encodable  bool
@@ -241,27 +241,27 @@ func (h *chainHeader) hashRecomputes() bool {
 }
 
 // headerProof is what h's hash proves (spec §6.5): verified when a
-// registered format reproduces it; else unverified while no header of the
-// network ever verified, mismatch once one did; reason says why it is not
-// verified: unknown_keys (no format encodes it) or hash_differs.
+// registered format reproduces it; mismatch when, after a header of the
+// network verified, the network's format encodes h to another hash;
+// unverified otherwise: no header verified yet, or the network's format
+// cannot encode h (a source that drops or adds keys). reason says why it
+// is not verified: unencodable or hash_differs.
 func (t *ChainTracker) headerProof(h *chainHeader) (proof, reason string) {
 	if h.verify(t.chainID()); h.verified.Load() {
 		t.headersVerified().Store(true)
 		return "verified", ""
 	}
-	reason = "unknown_keys"
-	if h.encodable {
-		reason = "hash_differs"
+	if !h.encodable {
+		return "unverified", "unencodable"
 	}
 	if t.headersVerified().Load() {
-		return "mismatch", reason
+		return "mismatch", "hash_differs"
 	}
-	return "unverified", reason
+	return "unverified", "hash_differs"
 }
 
-// servesAlone reports whether one holder serves h (spec §6.5): its hash
-// verified, or the network never verified a header; a mismatch needs q
-// holders.
+// servesAlone reports whether one holder serves h (spec §6.5): any proof
+// but a mismatch; a mismatch needs q holders.
 func (t *ChainTracker) servesAlone(h *chainHeader) bool {
 	p, _ := t.headerProof(h)
 	return p != "mismatch"

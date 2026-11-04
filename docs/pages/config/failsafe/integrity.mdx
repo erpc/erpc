@@ -262,7 +262,7 @@ Methods column: **block** = `eth_getBlockByNumber`/`eth_getBlockByHash`; **recei
 | `txFieldUniqueness` | intrinsic | block | duplicate / non-32-byte tx hashes (hydrated blocks) |
 | `txBlockInfo` | intrinsic | block | `tx.blockHash`/`blockNumber`/`transactionIndex` ≠ header |
 | `bloomMatch` | intrinsic | receipts | `logsBloom` ≠ bloom recomputed from the logs |
-| `blockHashRecompute` | intrinsic | block | `keccak(RLP(header))` ≠ the claimed block hash |
+| `blockHashRecompute` | intrinsic | block | the hash the chain's header format derives from the header ≠ the claimed block hash; skipped when that format cannot encode the header (keys dropped or unknown) |
 | `transactionsRootRecompute` | intrinsic | block | the transactions' Merkle-Patricia root ≠ header `transactionsRoot` |
 | `senderRecovery` | intrinsic | txByHash | `ecrecover(signature)` ≠ the reported `from` |
 | `blockByHashIdentity` | intrinsic | `eth_getBlockByHash` | the returned block isn't the one whose hash was requested |
