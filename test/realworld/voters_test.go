@@ -2,6 +2,7 @@ package realworld
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -378,10 +379,12 @@ func hexToHash(s string) (hash, bool) {
 
 // requireNoMinorityDelivered is design decision 10 (conflict A): a block
 // served at 1 holder may reach a stream client once, only at its tip. The
-// client's next delivery on that connection is the canonical block at that
-// height, a replace, within the scenario's bound. A block on top of it, a
-// missing replace, or a minority log never told removed:true is a
-// violation.
+// client's next delivery is the canonical block at that height, a replace,
+// within the scenario's bound; a gRPC client the harness moved to the
+// other pod resumes from it, so the replace comes there. A ws client the
+// harness reconnected starts a new subscription after the pod's head, which
+// owes no replace. A block on top of it, a missing replace, or a minority
+// log never told removed:true is a violation.
 func (s *scenario) requireNoMinorityDelivered() {
 	var cs []*clientBase
 	for _, c := range s.heads {
@@ -404,9 +407,13 @@ func (s *scenario) requireNoMinorityDelivered() {
 			sent[d.hash] = true
 			var next *delivery
 			var nb *chainsim.Block
-			if i+1 < len(c.deliveries) && c.deliveries[i+1].pod == d.pod && c.deliveries[i+1].connStart.Equal(d.connStart) {
+			if i+1 < len(c.deliveries) {
 				next = &c.deliveries[i+1]
 				nb = s.chain.Block(next.hash)
+			}
+			if next != nil && !next.connStart.Equal(d.connStart) && next.number > d.number && c.clientEnded(d.at, next.at) {
+				s.logf("%s pod-%d: minority-fork block %d %s sent, then the harness reconnected the client", c.name, d.pod+1, d.number, short(d.hash))
+				continue
 			}
 			switch {
 			case next == nil:
@@ -432,6 +439,12 @@ func (s *scenario) requireNoMinorityDelivered() {
 		}
 		c.mu.Unlock()
 	}
+}
+
+// clientEnded reports whether the harness itself ended one of c's
+// connections between from and to. Caller holds c.mu.
+func (c *clientBase) clientEnded(from, to time.Time) bool {
+	return slices.ContainsFunc(c.ends, func(e clientEnd) bool { return !e.server && !e.at.Before(from) && !e.at.After(to) })
 }
 
 // K6: quorum majority, Latest guaranteed for vendor-b's group, vendor-a in
