@@ -522,6 +522,28 @@ func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 	nwC.methodVotersFor(ctx, "eth_estimateGas")
 	assert.Zero(t, testing.AllocsPerRun(100, func() { nwC.methodVotersFor(ctx, "eth_estimateGas") }),
 		"a method first seen after the flood takes the fast path")
+
+	// A selector lane created first and a method whose voters are the same
+	// set share one lane, before and after a rebuild, so neither loses the
+	// guard memory or finalized floor that keep its pin from stepping back.
+	nwD, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "call-1", chainID: 123, latestBlock: 100},
+		{id: "call-2", chainID: 123, latestBlock: 99},
+		{id: "no-call", chainID: 123, latestBlock: 105, ignoreMethods: []string{"eth_call"}},
+	})
+	sel := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000001","latest"]}`))
+	sel.SetDirectives(&common.RequestDirectives{UseUpstream: "call-*"})
+	selCtx := context.WithValue(ctx, common.RequestContextKey, sel)
+	callCtx := context.WithValue(ctx, common.RequestContextKey, call)
+	selLane := nwD.servedTipLaneFor(selCtx)
+	require.NotNil(t, selLane)
+	assert.Same(t, selLane, nwD.servedTipLaneFor(callCtx), "eth_call adopts the selector lane of its voter set")
+	pinned := nwD.EvmHighestLatestBlockNumber(selCtx)
+	assert.Equal(t, pinned, nwD.EvmHighestLatestBlockNumber(callCtx))
+	nwD.upstreamsRegistry.OverrideOrderForTest(nwD.networkId)
+	assert.Same(t, selLane, nwD.servedTipLaneFor(callCtx), "a rebuild keeps the one lane")
+	assert.Same(t, selLane, nwD.servedTipLaneFor(selCtx))
+	assert.GreaterOrEqual(t, nwD.EvmHighestLatestBlockNumber(selCtx), pinned, "the selector's pin never steps back")
 }
 
 // TestServedTip_SelectorScoped pins the use-upstream selector affecting the

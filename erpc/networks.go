@@ -760,7 +760,7 @@ func (n *Network) rebuildTipMethods(ctx context.Context) *tipMethods {
 	}
 	if !next.uniform && prev != nil {
 		for name := range prev.methods {
-			next.methods[name] = n.computeMethodVoters(ctx, name, next.laneIn(prev.lanes))
+			next.methods[name] = n.computeMethodVoters(ctx, name, n.laneIn(next, prev.lanes))
 		}
 	}
 	n.tipMethods.Store(next)
@@ -776,20 +776,26 @@ func (n *Network) addTipMethod(ctx context.Context, method string) *methodVoters
 		return mv
 	}
 	next := &tipMethods{epoch: m.epoch, uniform: m.uniform, methods: maps.Clone(m.methods), lanes: maps.Clone(m.lanes)}
-	mv := n.computeMethodVoters(ctx, method, next.laneIn(nil))
+	mv := n.computeMethodVoters(ctx, method, n.laneIn(next, nil))
 	next.methods[method] = mv
 	n.tipMethods.Store(next)
 	return mv
 }
 
 // laneIn returns a resolver of method lanes into m.lanes: m's own lane for a
-// key, else prev's, else a new one. Only for an m not yet published.
-func (m *tipMethods) laneIn(prev map[string]*servedTipLane) func(key string, ids []string) *servedTipLane {
+// key, else prev's, else the selector lane of the same set, else a new one, so
+// a set never has two lanes. Only under tipMethodsMu, for an m not yet
+// published.
+func (n *Network) laneIn(m *tipMethods, prev map[string]*servedTipLane) func(key string, ids []string) *servedTipLane {
 	return func(key string, ids []string) *servedTipLane {
 		l := m.lanes[key]
 		if l == nil {
 			if l = prev[key]; l == nil {
-				l = &servedTipLane{label: common.LaneName(ids)}
+				if sl, ok := n.servedTipLanes.Load(key); ok {
+					l = sl.(*servedTipLane)
+				} else {
+					l = &servedTipLane{label: common.LaneName(ids)}
+				}
 			}
 			m.lanes[key] = l
 		}
@@ -866,30 +872,38 @@ func (n *Network) laneOf(ctx context.Context, s tipScope) *servedTipLane {
 	return n.laneFor(key, ids)
 }
 
-// laneFor returns the selector lane of group key ("" = none): the method lane
-// of the same set when there is one, so one set never has two lanes, else a
-// lane materialized under maxServedTipLanes.
+// laneFor returns the selector lane of group key ("" = none). A set has one
+// lane across selectors and methods: a selector adopts the method lane of its
+// set, registered as its own so a rebuild that drops the method keeps it, and
+// laneIn adopts a selector's. New lanes count against maxServedTipLanes. The
+// slow path holds tipMethodsMu, which laneIn runs under, so the two never
+// create one set's lane twice.
 func (n *Network) laneFor(key string, ids []string) *servedTipLane {
 	if key == "" {
 		return nil
 	}
-	if m := n.tipMethods.Load(); m != nil {
-		if l := m.lanes[key]; l != nil {
-			return l
-		}
-	}
 	if l, ok := n.servedTipLanes.Load(key); ok {
 		return l.(*servedTipLane)
 	}
-	// Cap backstop (also bounds a race racing past the cap).
+	n.tipMethodsMu.Lock()
+	defer n.tipMethodsMu.Unlock()
+	if l, ok := n.servedTipLanes.Load(key); ok {
+		return l.(*servedTipLane)
+	}
+	var l *servedTipLane
+	if m := n.tipMethods.Load(); m != nil {
+		l = m.lanes[key]
+	}
+	// Cap backstop: past it a selector still shares its set's method lane.
 	if n.servedTipLaneCount.Load() >= maxServedTipLanes {
-		return nil
+		return l
 	}
-	actual, loaded := n.servedTipLanes.LoadOrStore(key, &servedTipLane{label: common.LaneName(ids)})
-	if !loaded {
-		n.servedTipLaneCount.Add(1)
+	if l == nil {
+		l = &servedTipLane{label: common.LaneName(ids)}
 	}
-	return actual.(*servedTipLane)
+	n.servedTipLanes.Store(key, l)
+	n.servedTipLaneCount.Add(1)
+	return l
 }
 
 // groupKey is the stable key of an upstream set: a hash of its sorted ids, so
