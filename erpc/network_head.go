@@ -41,12 +41,12 @@ func (n *Network) EvmHead(ctx context.Context, req *common.NormalizedRequest) co
 // requestHead is the Head req took once from its scope; every later reader
 // of req gets that value, so retries, hedges, the cache key and
 // interpolation all see the same Latest. A request naming the finalized
-// tag takes it after the lane's finalized refresh (spec §6.4 Finality): a
-// Finalized up to one full poll old would serve older blocks than the tag
-// gets live. A read of latest (evm.ReadsLatest) is the block clock's
-// demand (§6.8); the first after W without demand waits for the view to
-// reach the idle edge's fetch, before the cache: a cache hit is pinned to
-// that Head too. A head number waits only on a view that stood for W.
+// tag takes it after the lane's finalized refresh starts (spec §6.4
+// Finality): it waits for it only at the idle edge. A read of latest
+// (evm.ReadsLatest) is the block clock's demand (§6.8); the first after W
+// without demand waits for the view to reach the idle edge's fetch,
+// before the cache: a cache hit is pinned to that Head too. A head number
+// waits only on a view that stood for W.
 func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest) *common.EvmHead {
 	if h := req.EvmHead(); h != nil {
 		return h
@@ -58,7 +58,7 @@ func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest
 	}
 	s := n.requestScope(ctx, req)
 	if evm.NamesFinalizedTag(ctx, req) {
-		n.awaitFinalizedRefresh(ctx, s.sel)
+		n.refreshFinalized(ctx, s.sel)
 	} else if reads, number := evm.ReadsLatest(ctx, n, req); reads {
 		if t := n.laneTracker(s.sel); t != nil {
 			t.LatestRead(ctx, number)

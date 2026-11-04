@@ -1842,10 +1842,13 @@ func TestServedTip_Finalized_FloorLimits(t *testing.T) {
 	})
 }
 
-// A finalized-tag request's refresh (spec §6.4 Finality, §6.8) polls every
-// voter with a finalized tag and waits for them, at most W, even when a
-// poll outlasts the shared counter's foreground budget (UpdateMaxWait); a
-// voter whose finalized tag is given up has no finalized poll and gets none.
+// A finalized-tag request's refresh (spec §6.4 Finality, §6.8) waits only
+// at the idle edge, fewer than q voters with a finalized report within one
+// full poll: then it polls the voters with a finalized tag and waits for
+// them, at most W, even when a poll outlasts the shared counter's
+// foreground budget (UpdateMaxWait). While q reports are fresh the request
+// takes Finalized at once and the refresh polls in the background. A voter
+// whose finalized tag is given up has no finalized poll and gets none.
 func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
@@ -1854,11 +1857,12 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Once the chain finalizes 10000, the vendors answer it slower than the
-	// shared state's default UpdateMaxWait (50ms) and well within W.
+	// From stage 1 the chain finalizes 9999, from stage 2 10000; the
+	// vendors answer those slower than the shared state's default
+	// UpdateMaxWait (50ms) and well within W.
 	const slowPoll = 300 * time.Millisecond
 	var mu sync.Mutex
-	var finalizedMore atomic.Bool
+	var stage atomic.Int32
 	polls := map[string]int{}
 	finalizedMock := func(id string, when func() bool, delay time.Duration, reply string) {
 		gock.New("http://" + id + ".localhost").
@@ -1879,10 +1883,12 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 			JSON([]byte(reply))
 	}
 	always := func() bool { return true }
+	at := func(s int32) func() bool { return func() bool { return stage.Load() == s } }
 	finalizedMock("tagless", always, 0, `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid block number tag finalized"}}`)
 	for _, id := range []string{"fin-a", "fin-b"} {
-		finalizedMock(id, finalizedMore.Load, slowPoll, `{"jsonrpc":"2.0","id":1,"result":{"number":"0x2710","timestamp":"0x6702a8e1"}}`)
-		finalizedMock(id, func() bool { return !finalizedMore.Load() }, 0, `{"jsonrpc":"2.0","id":1,"result":{"number":"0x270f","timestamp":"0x6702a8e0"}}`)
+		finalizedMock(id, at(2), slowPoll, `{"jsonrpc":"2.0","id":1,"result":{"number":"0x2710","timestamp":"0x6702a8e2"}}`)
+		finalizedMock(id, at(1), slowPoll, `{"jsonrpc":"2.0","id":1,"result":{"number":"0x270f","timestamp":"0x6702a8e1"}}`)
+		finalizedMock(id, at(0), 0, `{"jsonrpc":"2.0","id":1,"result":{"number":"0x270e","timestamp":"0x6702a8e0"}}`)
 	}
 	finalizedPolls := func() map[string]int {
 		mu.Lock()
@@ -1904,10 +1910,10 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 		_, _ = tagless.PollFinalizedBlockNumber(ctx)
 		return tagless.GetDiagnostics().SkipFinalizedCheck
 	}, 5*time.Second, 5*time.Millisecond, "tagless gives its finalized tag up after 10 refusals")
-	// Finalized one block below latest: a finalized debounce of the
+	// Finalized two blocks below latest: a finalized debounce of the
 	// depth's fraction stays below the poll cadence (§6.8 #1265).
-	setServedTipFinalized(t, ups[1], 9_999)
-	setServedTipFinalized(t, ups[2], 9_999)
+	setServedTipFinalized(t, ups[1], 9_998)
+	setServedTipFinalized(t, ups[2], 9_998)
 	time.Sleep(10 * time.Millisecond) // past every finalized debounce
 
 	// Reads above Finalized poll no finalized (spec §6.4 Finality): only
@@ -1934,14 +1940,38 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	t.Logf("reads above Finalized for %s: %d finalized polls (%v → %v), %d per minute", window, reads, from, finalizedPolls(), reads*int(time.Minute/window))
 	assert.Zero(t, reads, "a read above Finalized polls no finalized")
 
-	finalizedMore.Store(true)
+	// The reads polled nothing for longer than W: the reports are past
+	// their full poll age (W with the full poll off), the idle edge.
+	time.Sleep(health.FreshnessWindow(network.EvmBlockTime()))
+	stage.Store(1)
+	tagRead := func() common.EvmHead {
+		r := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["finalized",false]}`))
+		r.SetNetwork(network)
+		return network.EvmHead(ctx, r)
+	}
 	before := finalizedPolls()
-	tagReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["finalized",false]}`))
-	tagReq.SetNetwork(network)
-	head := network.EvmHead(ctx, tagReq)
+	head := tagRead()
 	now := finalizedPolls()
 	assert.True(t, now["fin-a"] > before["fin-a"] && now["fin-b"] > before["fin-b"],
-		"the refresh polls both voters with a finalized tag (polls %v → %v)", before, now)
-	assert.Equal(t, int64(10_000), head.Finalized, "the finalized-tag request waits for the slow polls and takes their answer")
+		"at the idle edge the refresh polls both voters with a finalized tag (polls %v → %v)", before, now)
+	assert.Equal(t, int64(9_999), head.Finalized, "at the idle edge the finalized-tag request waits for the slow polls and takes their answer")
+	assert.Equal(t, before["tagless"], now["tagless"], "a given-up finalized tag is not polled")
+
+	// Both reports are fresh now: each request takes Finalized at once,
+	// and once a report is past its poll cadence one starts the
+	// background refresh, which sees the step and polls the other voter.
+	stage.Store(2)
+	before = finalizedPolls()
+	var slowest time.Duration
+	assert.Eventually(t, func() bool {
+		began := time.Now()
+		h := tagRead()
+		slowest = max(slowest, time.Since(began))
+		return h.Finalized == 10_000
+	}, health.FreshnessWindow(network.EvmBlockTime()), 10*time.Millisecond, "a background refresh moves Finalized to the step")
+	assert.Less(t, slowest, slowPoll, "with q fresh reports no finalized-tag request waits for a poll")
+	now = finalizedPolls()
+	assert.True(t, now["fin-a"] > before["fin-a"] && now["fin-b"] > before["fin-b"],
+		"the step reaches both voters (polls %v → %v)", before, now)
 	assert.Equal(t, before["tagless"], now["tagless"], "a given-up finalized tag is not polled")
 }
