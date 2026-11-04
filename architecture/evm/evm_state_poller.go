@@ -2046,11 +2046,21 @@ func (e *EvmStatePoller) fallbackFinalityDepth() int64 {
 	return depth
 }
 
+// IsBlockFinalized reports whether this upstream finalized blockNumber:
+// at or below its finalized tag's answer, or, while it has none (its tag
+// refused, given up or not yet), at or below latest − the derived depth
+// (spec §6.4): an upstream still retrying its tag never makes fewer
+// blocks permanent than a tagless one.
 func (e *EvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
-	if e.latestBlockShared.GetValue() == 0 && e.finalizedBlockShared.GetValue() == 0 {
+	latest, tagged := e.latestBlockShared.GetValue(), e.finalizedBlockShared.GetValue()
+	if latest == 0 && tagged == 0 {
 		return false, common.NewErrFinalizedBlockUnavailable(blockNumber)
 	}
-	return blockNumber <= e.FinalizedBlock(), nil
+	if tagged > 0 {
+		return blockNumber <= tagged, nil
+	}
+	depth := e.fallbackFinalityDepth()
+	return latest > depth && blockNumber <= latest-depth, nil
 }
 
 func (e *EvmStatePoller) SyncingState() common.EvmSyncingState {
