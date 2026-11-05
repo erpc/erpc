@@ -341,6 +341,185 @@ func p16Body(s *scenario) {
 	s.freshJudge(v, "a block", "minted it", p16P50Slack, p16P90Slack)
 }
 
+const (
+	// p16SpreadDelay: each P16-spread vendor serves each block this long
+	// after its mint, on Ethereum's clock, plus a share of
+	// p16SpreadJitter, already scaled, fixed per vendor and block: 0.8 s
+	// plus up to 2.0 s, so first arrivals spread as mainnet's do (p50
+	// about 1.8 s).
+	p16SpreadDelay  = 800 * time.Millisecond
+	p16SpreadJitter = 250 * time.Millisecond
+	// p16Blip, p16BlipEvery: vendor-a is black-holed 2 s every 20 s on
+	// Ethereum's clock.
+	p16Blip      = 250 * time.Millisecond
+	p16BlipEvery = 2500 * time.Millisecond
+	// p16BlipSlack: how much older the new image's served latest p90 may
+	// be inside the blips than outside them: one rung spacing of the
+	// block clock's ladder (about 0.33 s on mainnet), scaled.
+	p16BlipSlack = 40 * time.Millisecond
+	// p16IrregularBlockTime, p16IrregularJitter: Linea's blocks, 2-12 s
+	// apart, on Ethereum's clock.
+	p16IrregularBlockTime = 7 * time.Second
+	p16IrregularJitter    = 5 * time.Second
+)
+
+// p16SpreadUps are freshUps' four vendors, without the reader: mainnet
+// has no sub-block reader. Each serves each block p16SpreadDelay after
+// its mint, plus its jitter.
+func p16SpreadUps() []freshUp {
+	var ups []freshUp
+	for _, u := range freshUps {
+		if u.key != "http-r" {
+			u.delay = p16SpreadDelay
+			ups = append(ups, u)
+		}
+	}
+	return ups
+}
+
+// P16-spread: P16's chain and vendors as mainnet's (p16SpreadUps), per
+// pod p16Rate head reads a second, half eth_blockNumber and half
+// eth_getBlockByNumber(latest), for p16Run. The new image's served
+// latest age and latency within P16's slacks of the old image's (main
+// reads latest live from an upstream), at most turnBound head fetches per
+// new block, no more upstream requests. P16-spread-blip: vendor-a
+// black-holed p16Blip every p16BlipEvery; inside the blips the new
+// image's served age p90 at most its p90 outside + p16BlipSlack.
+func p16Spread(blip bool) spec {
+	name := "P16-spread"
+	if blip {
+		name = "P16-spread-blip"
+	}
+	ups := p16SpreadUps()
+	return freshSpec(name, p16Scale, ups, chainsim.Config{}, chainsim.Faults{HeadJitter: p16SpreadJitter}, func(s *scenario) { p16SpreadBody(s, ups, blip) })
+}
+
+// P16-irregular: P16-spread on Linea's irregular blocks,
+// p16IrregularBlockTime ± p16IrregularJitter apart.
+func p16Irregular() spec {
+	ups := p16SpreadUps()
+	sim := chainsim.Config{BlockTime: p16IrregularBlockTime, MintJitter: p16IrregularJitter / p16Scale}
+	return freshSpec("P16-irregular", p16Scale, ups, sim, chainsim.Faults{HeadJitter: p16SpreadJitter}, func(s *scenario) { p16SpreadBody(s, ups, false) })
+}
+
+func p16SpreadBody(s *scenario, ups []freshUp, blip bool) {
+	s.blocks(10)
+	vl := &viewLog{}
+	reads := liveReads(p16Rate, s.chain.BlockTime(), vl)
+	for i := range reads {
+		reads[i].slack = [2]time.Duration{p16P50Slack, p16P90Slack}
+	}
+	var fault func(context.Context, *faultWindows)
+	if blip {
+		hole := func(on bool) {
+			for _, p := range s.h.pods {
+				s.proxies["http-a"].set(p, linkFaults{BlackHole: on})
+			}
+		}
+		fault = func(ctx context.Context, w *faultWindows) {
+			for {
+				sleepCtx(ctx, p16BlipEvery-p16Blip)
+				if ctx.Err() != nil {
+					return
+				}
+				w.fault(ctx, p16Blip, func() { hole(true) }, func() { hole(false) })
+			}
+		}
+	}
+	before := s.clockMix()
+	imgs, all, w, from, to := s.liveRun(p16Run, reads, fault)
+	var b strings.Builder
+	s.judgeAgeLatency(&b, reads, imgs, from, to)
+	s.judgeFetches(&b, "over the run", all, turnBound(ups, p16Scale, s.chain.BlockTime()))
+	s.judgeRequests(&b, all)
+	reportClockMix(&b, before, s.clockMix(), all.blocks)
+	if blip {
+		for i, rd := range reads {
+			var ims []*freshImage
+			for _, im := range imgs[i] {
+				if !s.h.pods[im.pod].old {
+					ims = append(ims, im)
+				}
+			}
+			in := s.servedAges(ims, w.inside)
+			out := s.servedAges(ims, func(t time.Time) bool { return !w.inside(t) })
+			fmt.Fprintf(&b, "new image %s served age inside the blips p50 %s p90 %s (%d), outside p50 %s p90 %s (%d)\n",
+				rd.name, pctl(in, 50), pctl(in, 90), len(in), pctl(out, 50), pctl(out, 90), len(out))
+			if pctl(in, 90) > pctl(out, 90)+p16BlipSlack {
+				s.violate(s.name, "new image %s served age p90 %s inside the blips, %s outside: more than %s older", rd.name, pctl(in, 90), pctl(out, 90), p16BlipSlack)
+			}
+		}
+	}
+	s.logf("%s", b.String())
+}
+
+// turnBound is spec §6.8's head fetch budget per new block of a lane
+// whose voters ups are polled every interval, divided by scale, on a
+// chain of block time bt: each voter's turn at most once a block and
+// once an interval, at least one fetch a block, plus 5% for tail rungs
+// and hedges.
+func turnBound(ups []freshUp, scale int, bt time.Duration) float64 {
+	var turns float64
+	for _, u := range ups {
+		if iv := u.interval / time.Duration(scale); iv > 0 {
+			turns += min(1, bt.Seconds()/iv.Seconds())
+		}
+	}
+	return max(1, turns) + 0.05
+}
+
+// clockMix is, per new-image pod, where its head fetches went: its block
+// clock's Asks by kind and outcome (erpc_head_clock_total) and its head
+// Asks that fetched, by reason (erpc_head_ask_total).
+func (s *scenario) clockMix() map[int]map[string]float64 {
+	out := map[int]map[string]float64{}
+	for _, p := range s.h.pods {
+		if p.old {
+			continue
+		}
+		ss, err := p.scrape()
+		if err != nil {
+			continue
+		}
+		m := map[string]float64{}
+		for _, x := range ss {
+			if x.labels["project"] != s.project || x.labels["network"] != s.network() {
+				continue
+			}
+			switch {
+			case x.name == "erpc_head_clock_total":
+				m["clock "+x.labels["kind"]+" "+x.labels["outcome"]] += x.value
+			case x.name == "erpc_head_ask_total" && x.labels["outcome"] == "fetched":
+				m["ask "+x.labels["reason"]+" fetched"] += x.value
+			}
+		}
+		out[p.idx] = m
+	}
+	return out
+}
+
+// reportClockMix writes each pod's clockMix between before and after per
+// new block, over blocks.
+func reportClockMix(b *strings.Builder, before, after map[int]map[string]float64, blocks uint64) {
+	if blocks == 0 {
+		return
+	}
+	for pod, m := range after {
+		var keys []string
+		for k := range m {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		fmt.Fprintf(b, "pod-%d head fetches per new block by cause:", pod+1)
+		for _, k := range keys {
+			if d := m[k] - before[pod][k]; d > 0 {
+				fmt.Fprintf(b, " %s %.3f;", k, d/float64(blocks))
+			}
+		}
+		b.WriteString("\n")
+	}
+}
+
 // freshJudge flags a new image later than the old one past the slacks, or
 // reading the tag from its upstreams (polls and forwarded client reads)
 // more than freshCostSlack times as often as the old one.

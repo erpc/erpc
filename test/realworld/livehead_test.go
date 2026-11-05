@@ -23,7 +23,9 @@ const (
 	// liveBlockTime: the live-head rows' blocks, P19's 0.25 s.
 	liveBlockTime = p19BlockTime
 	// liveFetchBound: head fetches a new-image instance may send per new
-	// block: one clocked fetch plus early retries and hedges.
+	// block, turnBound of the live rows' voters: polled every 4 s or less
+	// often on 0.25 s blocks, their turns come 0.28 times a block, so one
+	// fetch a block plus 5%.
 	liveFetchBound = 1.05
 	// livePushFetchBound: the same while a push source brings every
 	// block: full polls only.
