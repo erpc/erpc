@@ -324,14 +324,18 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	if h.Ceiling > 0 && h.Ceiling < old.CeilingPeak && (old.Ceiling == 0 || h.Ceiling < old.Ceiling) {
 		h.CeilingFellAt = time.Now()
 	}
-	if t := n.trackerOf(l); t != nil {
-		if head, ok := t.View().Head(); ok {
-			latest := int64(head.Number)
-			if old.Finalized > 0 && h.Finalized > old.Finalized && latest >= h.Finalized {
-				l.learnFinalizedStep(h.Finalized-old.Finalized, latest-h.Finalized)
-			}
-			n.dueFinalizedStep(l, h.Finalized, latest)
+	// The voters' q-th highest latest: they report a block before the view
+	// holds it on q hash votes, and their finalized moves with their own
+	// heads.
+	var q common.ServedTipQuorum
+	if n.cfg != nil {
+		q = n.cfg.Evm.ServedTipQuorum()
+	}
+	if pick, _ := n.evmTipBallot(tipScope{sel: l.selector}, false, q, nil); pick.Tip > 0 {
+		if latest := pick.Tip; old.Finalized > 0 && h.Finalized > old.Finalized && latest >= h.Finalized {
+			l.learnFinalizedStep(h.Finalized-old.Finalized, latest-h.Finalized)
 		}
+		n.dueFinalizedStep(l, h.Finalized, pick.Tip)
 	}
 	if h == *old {
 		return

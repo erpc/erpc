@@ -1032,10 +1032,10 @@ func (n *Network) refreshFinalized(ctx context.Context, sel string) {
 }
 
 // dueFinalizedStep starts lane l's refresh for its next finality step
-// once its Latest makes the step due: Latest at least Finalized + the
-// learned step + the learned depth, as the voters' own finality moved
-// before (spec §6.8). It runs while the lane has finality demand, once per
-// Latest; callers hold l.mu.
+// once latest, the voters' q-th highest, makes the step due: at least
+// Finalized + the learned step + the learned depth, as the voters' own
+// finality moved before (spec §6.8). It runs while the lane has finality
+// demand, once per latest; callers hold l.mu.
 func (n *Network) dueFinalizedStep(l *servedTipLane, finalized, latest int64) {
 	size, depth := l.finalizedStepSize.Load(), l.finalizedStepDepth.Load()
 	if size <= 0 || finalized <= 0 || latest < finalized+size+depth || latest <= l.finalizedDueAt.Load() || n.appCtx == nil {
