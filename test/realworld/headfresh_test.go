@@ -650,7 +650,7 @@ func p17Celo() spec {
 	})
 	sp.cache = true
 	f := sp.faults["http-r"]
-	f.NoFinalized = true
+	f.RefuseFinalized = true
 	sp.faults["http-r"] = f
 	return sp
 }

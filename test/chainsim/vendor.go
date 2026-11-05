@@ -20,43 +20,44 @@ import (
 
 // Faults are a vendor's app-level faults; the zero value is a healthy node.
 type Faults struct {
-	Down          bool          // HTTP 503, ws upgrades refused, open sockets closed
-	Held          bool          // block and head answers wait until it clears; newHeads pushes nothing meanwhile, then its head
-	Lag           uint64        // serves the canonical block this far below the head
-	HeadDelay     time.Duration // serves a canonical block only this long after it was minted
-	HeadJitter    time.Duration // serves each canonical block a further [0, HeadJitter] after HeadDelay, fixed per vendor and block
-	PushDelay     time.Duration // newHeads pushes leave this long after the vendor serves the block over HTTP
-	Frozen        bool          // head stops moving; still answers what it holds
-	WrongChainID  bool          // eth_chainId answers another chain
-	ChainIDHeld   bool          // eth_chainId answers wait until it clears
-	NullHeld      bool          // null for blocks by number or hash, even below its head
-	WrongHashes   bool          // newHeads pushes carry a hash the header does not hash to
-	BareHeaders   bool          // blocks and newHeads pushes lack stateRoot (Bare): no header format encodes them
-	NullReceipts  bool          // eth_getBlockReceipts answers null
-	ReceiptsDown  bool          // eth_getBlockReceipts answers -32603
-	LogsDown      bool          // eth_getLogs answers -32603
-	CapLogs       bool          // eth_getLogs one log short where the bloom and logIndexes hide it (lastLogCovered)
-	TruncReceipts bool          // receipts without their last 10
-	ForgedLog     bool          // receipts whose first log's data is forged
-	WrongBloom    bool          // receipts whose logsBloom is zero
-	ParentHash    bool          // receipts that name the parent's hash as their blockHash
-	OffBloom      bool          // receipts whose logsBloom is set but not the header's (bloomMatch)
-	NoReceipts    bool          // eth_getBlockReceipts answers -32601
-	Throttled     bool          // HTTP 429; -32005 over ws
-	Capacity      bool          // -32005 compute units exceeded, on every method
-	NoNewHeads    bool          // eth_subscribe newHeads answers unsupported
-	RefuseLatest  bool          // eth_getBlockByNumber(latest) answers unsupported
-	NoFinalized   bool          // the finalized and safe tags answer invalid, as on a chain with none
-	Slow          time.Duration // every answer waits this long
-	SlowReceipts  time.Duration // receipts and logs answers wait this long more
-	SlowHistory   time.Duration // answers by hash, and by number below its head, wait this long more
-	SilentHeads   bool          // newHeads subscriptions stay open and push nothing
-	SilentPending bool          // newPendingTransactions subscriptions push nothing
-	Ahead         uint64        // eth_blockNumber and the latest tag claim a head this far above its own
-	Syncing       bool          // eth_syncing answers in progress; still serves what it holds
-	FinalityDepth uint64        // finalized tag this far below its head; 0 is FinalizedLag
-	StaleState    uint64        // eth_call at latest (or no block) executes this far below its head; numbered calls are right
-	Forbidden     bool          // HTTP 403 with an HTML body on every call and ws upgrade, as a CDN ban or a revoked key
+	Down            bool          // HTTP 503, ws upgrades refused, open sockets closed
+	Held            bool          // block and head answers wait until it clears; newHeads pushes nothing meanwhile, then its head
+	Lag             uint64        // serves the canonical block this far below the head
+	HeadDelay       time.Duration // serves a canonical block only this long after it was minted
+	HeadJitter      time.Duration // serves each canonical block a further [0, HeadJitter] after HeadDelay, fixed per vendor and block
+	PushDelay       time.Duration // newHeads pushes leave this long after the vendor serves the block over HTTP
+	Frozen          bool          // head stops moving; still answers what it holds
+	WrongChainID    bool          // eth_chainId answers another chain
+	ChainIDHeld     bool          // eth_chainId answers wait until it clears
+	NullHeld        bool          // null for blocks by number or hash, even below its head
+	WrongHashes     bool          // newHeads pushes carry a hash the header does not hash to
+	BareHeaders     bool          // blocks and newHeads pushes lack stateRoot (Bare): no header format encodes them
+	NullReceipts    bool          // eth_getBlockReceipts answers null
+	ReceiptsDown    bool          // eth_getBlockReceipts answers -32603
+	LogsDown        bool          // eth_getLogs answers -32603
+	CapLogs         bool          // eth_getLogs one log short where the bloom and logIndexes hide it (lastLogCovered)
+	TruncReceipts   bool          // receipts without their last 10
+	ForgedLog       bool          // receipts whose first log's data is forged
+	WrongBloom      bool          // receipts whose logsBloom is zero
+	ParentHash      bool          // receipts that name the parent's hash as their blockHash
+	OffBloom        bool          // receipts whose logsBloom is set but not the header's (bloomMatch)
+	NoReceipts      bool          // eth_getBlockReceipts answers -32601
+	Throttled       bool          // HTTP 429; -32005 over ws
+	Capacity        bool          // -32005 compute units exceeded, on every method
+	NoNewHeads      bool          // eth_subscribe newHeads answers unsupported
+	RefuseLatest    bool          // eth_getBlockByNumber(latest) answers unsupported
+	NoFinalized     bool          // the finalized and safe tags answer invalid, as on a chain with none
+	RefuseFinalized bool          // the finalized and safe tags answer unsupported, as Prism's readers do
+	Slow            time.Duration // every answer waits this long
+	SlowReceipts    time.Duration // receipts and logs answers wait this long more
+	SlowHistory     time.Duration // answers by hash, and by number below its head, wait this long more
+	SilentHeads     bool          // newHeads subscriptions stay open and push nothing
+	SilentPending   bool          // newPendingTransactions subscriptions push nothing
+	Ahead           uint64        // eth_blockNumber and the latest tag claim a head this far above its own
+	Syncing         bool          // eth_syncing answers in progress; still serves what it holds
+	FinalityDepth   uint64        // finalized tag this far below its head; 0 is FinalizedLag
+	StaleState      uint64        // eth_call at latest (or no block) executes this far below its head; numbered calls are right
+	Forbidden       bool          // HTTP 403 with an HTML body on every call and ws upgrade, as a CDN ban or a revoked key
 	// Pruned: history more than this far below its head is gone, as on a
 	// tip-only plan: blocks by number or hash, receipts, logs and calls
 	// there answer null ([] for eth_getLogs).
@@ -867,6 +868,9 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		case "finalized", "safe":
 			if c.cfg.NoFinalized || f.NoFinalized {
 				return nil, &rpcError{-32602, "invalid block number tag " + tag}
+			}
+			if f.RefuseFinalized {
+				return nil, &rpcError{-32000, tag + " block tag not supported"}
 			}
 			depth := uint64(FinalizedLag)
 			if f.FinalityDepth > 0 {
