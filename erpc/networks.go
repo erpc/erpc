@@ -2112,12 +2112,19 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	// Selector-enabled requests must not share results across callers: the
-	// multiplex hash and the EVM cache key omit the consensus policy and the
-	// caller's auth, so a strict caller could receive a concurrent or cached
-	// fallback / waive-missing result (Copilot finding). Until both keys
-	// carry the policy+auth, disable multiplexing and cache reads/writes for
-	// selector-enabled networks.
+	// Selector-enabled requests must not share in-flight results across
+	// callers: the multiplex hash omits the consensus policy and the caller's
+	// auth, so a strict caller could receive a concurrent fallback /
+	// waive-missing result. Keep multiplexing disabled under selector.
+	//
+	// Cache Get/Set reopen under selector: write-side admission
+	// (cachingStrategy × response mark from Consensus.Run) keeps weaker
+	// grades out of the store. Keys still omit policy+auth. Under selector,
+	// Forward also skips Set when the mark is nil so unmarked no-consensus
+	// routes cannot poison the shared store for later selector reads
+	// (defaultAllow would otherwise admit nil). Pre-feature warm entries
+	// still Get until TTL — flush/rotate the connector when first enabling
+	// customPolicy on a previously caching network.
 	selectorOn := n.consensusPolicySelectorEnabled()
 
 	var mlx *Multiplexer
@@ -2145,7 +2152,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		defer n.cleanupMultiplexer(mlx)
 	}
 
-	if n.cacheDal != nil && !selectorOn && !req.ShouldSkipCacheRead("") {
+	if n.cacheDal != nil && !req.ShouldSkipCacheRead("") {
 		lg.Debug().Msgf("checking cache for request")
 		resp, err := n.cacheDal.Get(ctx, req)
 		if err != nil {
@@ -2867,7 +2874,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	if resp != nil {
-		if n.cacheDal != nil && !selectorOn {
+		// Under a customPolicy selector the store is shared across grades and
+		// with no-consensus routes on the same network (keys omit policy/auth).
+		// Consensus.Run always stamps an explicit mark; unmarked (nil) means no
+		// module voted — typically a sibling failsafe entry without consensus.
+		// Skip Set so defaultAllow cannot admit those into the selector-shared
+		// store. Cache.Set still applies strategy × mark for stamped responses.
+		skipUnmarkedSelectorSet := selectorOn && resp.Cacheable() == nil
+		if n.cacheDal != nil && !skipUnmarkedSelectorSet {
 			// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
 			// TODO For other architectures we might need a different approach
 			_, _ = resp.JsonRpcResponse(ctx)
@@ -2897,6 +2911,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					lg.Warn().Err(err).Msgf("could not store response in cache")
 				}
 			})(resp, forwardSpan)
+		} else if skipUnmarkedSelectorSet {
+			lg.Debug().Msg("skipping cache write: unmarked response on selector-enabled network")
 		}
 
 		// Per-request execution counters + full upstream-attempt trace.

@@ -319,6 +319,7 @@ func buildPolicy(cfg *common.ConsensusPolicyConfig, logger *zerolog.Logger, poli
 			b = b.WithDisputeLogLevel(level)
 		}
 	}
+	b = b.WithCacheableResponses(cfg.CacheableResponses)
 
 	return b.build()
 }
@@ -351,5 +352,11 @@ func (c *Consensus) Run(
 	}
 
 	ex := &executor{consensusPolicy: pol}
-	return ex.Run(ctx, req, inner)
+	resp, err := ex.Run(ctx, req, inner)
+	// Stamp write-admission from the governing policy. Cache.Set combines this
+	// mark with cachingStrategy; the cache never sees policy names.
+	if resp != nil {
+		resp.SetCacheable(pol.cacheableResponses)
+	}
+	return resp, err
 }

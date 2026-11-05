@@ -407,6 +407,12 @@ func (s *SharedStateConfig) Validate() error {
 }
 
 func (c *CacheConfig) Validate() error {
+	switch c.CachingStrategy {
+	case "", CachingStrategyDefaultAllow, CachingStrategyDefaultIgnore:
+		// empty is fine pre-SetDefaults; after SetDefaults it is defaultAllow
+	default:
+		return fmt.Errorf("cache.*.cachingStrategy must be 'defaultAllow' or 'defaultIgnore', got %q", c.CachingStrategy)
+	}
 	existingIds := make(map[string]bool)
 	for _, connector := range c.Connectors {
 		if err := connector.Validate(); err != nil {
