@@ -628,10 +628,11 @@ var p17CeloUps = []freshUp{
 
 const (
 	// p17CeloDepth, p17CeloStep: OP-stack finality on celo's 1 s blocks,
-	// minutes behind the head, moving in steps; p17CeloHistory keeps the
-	// blocks a voter without the tag derives (30 min below its head).
+	// minutes behind the head, moving an L1 block (12 s) at a time;
+	// p17CeloHistory keeps the blocks a voter without the tag derives (30
+	// min below its head).
 	p17CeloDepth   = 600
-	p17CeloStep    = 32
+	p17CeloStep    = 12
 	p17CeloHistory = 2000
 	// p17CeloEvery: the period of each image's finalized-tag and
 	// eth_blockNumber clients, the shadow's celo reads (prod's state
@@ -646,15 +647,19 @@ const (
 // old image forwards each tag read upstream, so its share of slow reads
 // is no reference: the new image serves the tag from its Head and cache,
 // so at most p17SlowSlack of its reads are slow (a read that waits for a
-// finalized poll is). With one read per W and a step per 32 reads, it may
-// read the finalized block by number once per step, where the old image
-// forwards every read.
+// finalized poll is). With one read per W, a step every 4 reads may cost
+// a by-number read of the new finalized block, so the cost bound is the
+// tag's whole upstream traffic: the new image's finalized polls and
+// by-number block reads at most freshCostSlack times the old image's
+// finalized-tag requests.
 func p17Celo() spec {
 	sim := chainsim.Config{BlockTime: time.Second, FinalityStep: p17CeloStep, History: p17CeloHistory}
 	sp := freshSpec("P17-celo", 1, p17CeloUps, sim, chainsim.Faults{FinalityDepth: p17CeloDepth}, func(s *scenario) {
 		r := p17Body(s, p17CeloEvery, p17CeloDepth, freshLoad{p17CeloEvery, "latest", freshHead})
-		if n := r.numbered["new"]; n > float64(r.steps) {
-			s.violate(s.name, "new image sent %.0f by-number block reads for %d finality steps", n, r.steps)
+		perMin := float64(time.Minute) / float64(p17Run)
+		cost := func(img string) float64 { return r.v[img].reads + r.numbered[img]*perMin }
+		if n, o := cost("new"), cost("old"); n > o*freshCostSlack {
+			s.violate(s.name, "new image sent %.2f finalized-tag and by-number block reads a minute, old %.2f", n, o)
 		}
 		if r.slow["new"] > p17SlowSlack {
 			s.violate(s.name, "%.1f%% of the new image's finalized-tag reads took over %s", 100*r.slow["new"], p17SlowRead)
