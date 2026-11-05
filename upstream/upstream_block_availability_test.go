@@ -80,7 +80,7 @@ func (m *mockEvmStatePollerEnhanced) RefreshFinalized(context.Context, time.Dura
 func (m *mockEvmStatePollerEnhanced) FinalizedReportAt() time.Time               { return time.Time{} }
 func (m *mockEvmStatePollerEnhanced) LatestReportAt() time.Time                  { return time.Time{} }
 func (m *mockEvmStatePollerEnhanced) LatestAskAt() time.Time                     { return time.Time{} }
-func (m *mockEvmStatePollerEnhanced) ClockTurns(time.Time)                       {}
+func (m *mockEvmStatePollerEnhanced) ClockTurn(time.Time)                        {}
 func (m *mockEvmStatePollerEnhanced) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerEnhanced) IsObjectNull() bool                         { return m.isNull }
 func (m *mockEvmStatePollerEnhanced) Wait()                                      {}
@@ -664,7 +664,7 @@ func (m *mockEvmStatePollerWithCustomBehavior) RefreshFinalized(context.Context,
 func (m *mockEvmStatePollerWithCustomBehavior) FinalizedReportAt() time.Time               { return time.Time{} }
 func (m *mockEvmStatePollerWithCustomBehavior) LatestReportAt() time.Time                  { return time.Time{} }
 func (m *mockEvmStatePollerWithCustomBehavior) LatestAskAt() time.Time                     { return time.Time{} }
-func (m *mockEvmStatePollerWithCustomBehavior) ClockTurns(time.Time)                       {}
+func (m *mockEvmStatePollerWithCustomBehavior) ClockTurn(time.Time)                        {}
 func (m *mockEvmStatePollerWithCustomBehavior) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerWithCustomBehavior) IsObjectNull() bool                         { return false }
 func (m *mockEvmStatePollerWithCustomBehavior) Wait()                                      {}

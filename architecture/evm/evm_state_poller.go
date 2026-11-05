@@ -53,6 +53,9 @@ const (
 	// ChainIdCordonRecheck apart, lift a chain-identity cordon: one match
 	// can be a load balancer's right backend among wrong ones.
 	chainIdCordonMatches = 2
+
+	// chainIdCheckTimeout bounds the eth_chainId check of a major head move.
+	chainIdCheckTimeout = 5 * time.Second
 )
 
 // askMaxCadence caps the head Ask's cadence (pollCadence).
@@ -135,9 +138,9 @@ type EvmStatePoller struct {
 
 	// headAsk is the upstream's one head fetch schedule (Ask).
 	headAsk headAsk
-	// clockTurns is the unix nanoseconds until which the lane's block
-	// clock takes this upstream's latest polls as its turns (ClockTurns).
-	clockTurns atomic.Int64
+	// clockTurn is the unix nanoseconds by which a lane's block clock
+	// planned a turn of this upstream, the latest of its lanes' (ClockTurn).
+	clockTurn atomic.Int64
 
 	// chainIdRecheck is the pending eth_chainId check of a chain-identity
 	// cordon, nil while none; chainIdRecheckUnwatch stops watching appCtx
@@ -341,21 +344,30 @@ func (e *EvmStatePoller) pollPass(interval time.Duration) {
 }
 
 // latestPace is how old a local fetch may be and still meet a full poll's
-// latest part: interval, or, while the block clock takes this upstream's
-// turns (ClockTurns), interval plus a block: a turn lands at most a block
-// after it is due, so the poll fetches only when the clock missed one.
+// latest part: interval, or, while a block clock has a turn of this
+// upstream planned (ClockTurn), interval plus a block, at most two
+// intervals: the turn lands at most a block after it is due, so the poll
+// fetches only when the clock did not send it. A clock that planned no
+// turn of the upstream never holds its poll past the interval, whatever
+// its block time estimate.
 func (e *EvmStatePoller) latestPace(interval time.Duration) time.Duration {
-	if e.tracker == nil || time.Now().UnixNano() >= e.clockTurns.Load() {
+	if e.tracker == nil || time.Now().UnixNano() > e.clockTurn.Load() {
 		return interval
 	}
-	return interval + e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
+	return interval + min(e.tracker.GetNetworkBlockTime(e.upstream.NetworkId()), interval)
 }
 
-// ClockTurns hands the upstream's latest polls to its lane's block clock
-// until until (spec §6.8, latestPace).
-func (e *EvmStatePoller) ClockTurns(until time.Time) {
-	if !e.IsObjectNull() {
-		e.clockTurns.Store(until.UnixNano())
+// ClockTurn notes that a lane's block clock planned a turn of the
+// upstream by by (spec §6.8, latestPace).
+func (e *EvmStatePoller) ClockTurn(by time.Time) {
+	if e.IsObjectNull() {
+		return
+	}
+	for n := by.UnixNano(); ; {
+		cur := e.clockTurn.Load()
+		if cur >= n || e.clockTurn.CompareAndSwap(cur, n) {
+			return
+		}
 	}
 }
 
@@ -1172,14 +1184,25 @@ func (e *EvmStatePoller) RewindLatestBlock(blockNumber int64) {
 }
 
 // ObserveHead is the per-upstream part of intake for a source header's
-// height n, its evidence taken at at: n goes through SuggestLatestBlock,
-// so a major jump is verified before it moves the counter. accepted: the
-// counter holds n now.
+// height n, its evidence taken at at. A major jump waits for its
+// chain-identity check, so a header that passes it votes now: the
+// background check of SuggestLatestBlock moves only the counter, and the
+// header it held back would never vote. accepted: the counter holds n
+// now.
 func (e *EvmStatePoller) ObserveHead(n int64, at time.Time) (accepted bool) {
 	if n < 0 {
 		return false
 	}
-	e.SuggestLatestBlock(n, at)
+	if current := e.latestBlockShared.GetValue(); current > 0 && n-current > e.majorHeadMoveThreshold() {
+		ctx, cancel := context.WithTimeout(e.appCtx, chainIdCheckTimeout)
+		defer cancel()
+		if !e.verifyChainIdOnMajorHeadMove(ctx, "latest", current, n) {
+			return false
+		}
+		e.latestBlockShared.TryUpdate(e.appCtx, n, at)
+	} else {
+		e.SuggestLatestBlock(n, at)
+	}
 	return e.LatestBlock() >= n
 }
 
@@ -1296,7 +1319,7 @@ func (e *EvmStatePoller) verifyThenSuggestLatestBlock(blockNumber int64, at time
 	if !e.bg.Go(func() {
 		defer e.latestMajorVerifyInProgress.Unlock()
 
-		ctx, cancel := context.WithTimeout(e.appCtx, 5*time.Second)
+		ctx, cancel := context.WithTimeout(e.appCtx, chainIdCheckTimeout)
 		defer cancel()
 
 		// Re-read: another path may have advanced the head while this was queued,

@@ -336,8 +336,8 @@ func (p *FakeEvmStatePoller) LatestAskAt() time.Time {
 	return time.Time{}
 }
 
-// ClockTurns is a no-op: a fake has no full poll.
-func (p *FakeEvmStatePoller) ClockTurns(time.Time) {}
+// ClockTurn is a no-op: a fake has no full poll.
+func (p *FakeEvmStatePoller) ClockTurn(time.Time) {}
 
 // HeadBackingOff is false: a fake never fails a fetch.
 func (p *FakeEvmStatePoller) HeadBackingOff() bool {

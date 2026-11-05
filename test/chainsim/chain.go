@@ -27,7 +27,13 @@ type Config struct {
 	// MintJitter mints each block a uniform [0, MintJitter] after its
 	// tick, so block intervals spread over BlockTime ± MintJitter.
 	MintJitter time.Duration
-	Seed       uint64
+	// Slot, when set, replaces MintJitter: per tick, how long after it the
+	// block is minted, or missed: the tick mints none, as a missed slot.
+	Slot func() (delay time.Duration, missed bool)
+	// Halted: the chain starts halted; its ticks mint nothing until
+	// Halt(false).
+	Halted bool
+	Seed   uint64
 	// HeaderPad pads every header's extraData by this many bytes, so few
 	// headers fill a client's socket and flow-control windows.
 	HeaderPad int
@@ -129,7 +135,7 @@ type txRef struct {
 func NewChain(cfg Config) *Chain {
 	c := &Chain{cfg: cfg, rng: rand.New(rand.NewPCG(cfg.Seed, uint64(cfg.ChainID))), noise: rand.New(rand.NewPCG(cfg.Seed, uint64(cfg.ChainID)+1)),
 		byHash: make(map[Hash]*Block), byTx: make(map[Hash]txRef), forks: make(map[*Fork]bool), pushed: make(map[Hash]bool), traps: make(map[Hash]*Trap),
-		stop: make(chan struct{}), done: make(chan struct{}), tickCh: make(chan struct{})}
+		stop: make(chan struct{}), done: make(chan struct{}), tickCh: make(chan struct{}), halted: cfg.Halted}
 	history := cfg.History
 	if history == 0 {
 		history = HistoryBlocks
@@ -169,10 +175,15 @@ func (c *Chain) Start() {
 			case <-c.stop:
 				return
 			case <-t.C:
-				if j := c.cfg.MintJitter; j > 0 {
-					time.Sleep(rand.N(j + 1))
+				delay, missed := time.Duration(0), false
+				switch {
+				case c.cfg.Slot != nil:
+					delay, missed = c.cfg.Slot()
+				case c.cfg.MintJitter > 0:
+					delay = rand.N(c.cfg.MintJitter + 1)
 				}
-				c.tick()
+				time.Sleep(delay)
+				c.tick(missed)
 			}
 		}
 	}()
@@ -425,13 +436,13 @@ func (c *Chain) Orphan(parent *Block) *Block {
 	return c.mintLocked(parent, parent.Number+1, time.Now(), true)
 }
 
-// tick adds a canonical block unless the chain halted, grows every fork,
-// and lets each vendor follow; wss vendors first push the new block's
-// transactions as pending ones.
-func (c *Chain) tick() {
+// tick adds a canonical block unless the chain halted or the slot is
+// missed, grows every fork, and lets each vendor follow; wss vendors first
+// push the new block's transactions as pending ones.
+func (c *Chain) tick(missed bool) {
 	c.mu.Lock()
 	var pushes []push
-	if !c.halted {
+	if !c.halted && !missed {
 		pushes = c.mintCanonLocked()
 	}
 	for f := range c.forks {

@@ -2711,7 +2711,11 @@ func (m *NetworkMetadata) sampleBlockTime(blockNumber int64, blockTimestamp int6
 
 	spanNs, blocks := float64(timestampDeltaSec)*1e9, float64(blockGap)
 	prevSpanNs, prevBlocks := m.evmBlockTimeEmaSpanNs, m.evmBlockTimeEmaBlocks
-	if m.evmBlockTimeSamples == 0 {
+	// The seed is one span, and one across a pause overstates the block
+	// time by the pause (linea's seeded 62 s): the next sample, blocks
+	// made cap times faster, seeds again, as the halt clip clips a span.
+	reseed := m.evmBlockTimeSamples == 1 && blockTimeSampleCap*spanNs*prevBlocks < prevSpanNs*blocks
+	if m.evmBlockTimeSamples == 0 || reseed {
 		// No EMA yet tells a halt apart, so the seed never enters the
 		// floor: it restarts at the seed's end, as the halt clip does.
 		m.evmBlockTimeEmaSpanNs, m.evmBlockTimeEmaBlocks = spanNs, blocks

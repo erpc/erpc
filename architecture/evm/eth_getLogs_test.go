@@ -1777,7 +1777,7 @@ func (p *fixedPoller) RefreshFinalized(context.Context, time.Duration) bool { re
 func (p *fixedPoller) FinalizedReportAt() time.Time                         { return time.Time{} }
 func (p *fixedPoller) LatestReportAt() time.Time                            { return time.Time{} }
 func (p *fixedPoller) LatestAskAt() time.Time                               { return time.Time{} }
-func (p *fixedPoller) ClockTurns(time.Time)                                 {}
+func (p *fixedPoller) ClockTurn(time.Time)                                  {}
 
 func (p *fixedPoller) FinalizedBlock() int64 { return p.finalized }
 

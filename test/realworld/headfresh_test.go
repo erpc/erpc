@@ -402,6 +402,56 @@ func p16Irregular() spec {
 	return freshSpec("P16-irregular", p16Scale, ups, sim, chainsim.Faults{HeadJitter: p16SpreadJitter}, func(s *scenario) { p16SpreadBody(s, ups, false) })
 }
 
+const (
+	// p16PauseJitter: P16-pause's vendors serve each block up to this
+	// after p16SpreadDelay, P16-spread's spread in real time.
+	p16PauseJitter = p16SpreadJitter * p16Scale
+	// p16PauseStill: how long the chain stays halted after the block each
+	// pod sees first after boot, so its first block time sample spans a
+	// pause of about a minute, as linea's did on 2026-11-05 (62 s).
+	p16PauseStill = 50 * time.Second
+	// p16PauseSeen: longer than the vendors' 10 s poll interval, so every
+	// pod has polled the head.
+	p16PauseSeen = 11 * time.Second
+	p16PauseRun  = 6 * time.Minute
+)
+
+// P16-pause: linea in real time: P16-irregular's blocks and vendors
+// polled every 10 s, the chain halted from the start; one block, then
+// p16PauseStill without blocks, so each pod's first block time sample
+// spans the pause, then blocks again. Over p16PauseRun after that, as
+// P16-spread: the new image's served latest age and latency within P16's
+// slacks, on the Ethereum clock, of the old image's, at most turnBound
+// head fetches per new block.
+func p16Pause() spec {
+	ups := p16SpreadUps()
+	sim := chainsim.Config{BlockTime: p16IrregularBlockTime, MintJitter: p16IrregularJitter, Halted: true}
+	return freshSpec("P16-pause", 1, ups, sim, chainsim.Faults{HeadJitter: p16PauseJitter}, func(s *scenario) {
+		tip := s.chain.Tip().Number
+		// Every pod has the head; one block after it is the first
+		// timestamp change each sees, where its first sample starts.
+		time.Sleep(p16PauseSeen)
+		s.chain.Burst(1, 0)
+		time.Sleep(p16PauseStill)
+		s.chain.Halt(false)
+		s.logf("one block after %d, then no blocks for %s: blocks again", tip, p16PauseStill)
+		s.blocks(2)
+		vl := &viewLog{}
+		reads := liveReads(p16Rate/p16Scale, s.chain.BlockTime(), vl)
+		for i := range reads {
+			reads[i].slack = [2]time.Duration{p16P50Slack * p16Scale, p16P90Slack * p16Scale}
+		}
+		before := s.clockMix()
+		imgs, all, _, from, to := s.liveRun(p16PauseRun, reads, nil)
+		var b strings.Builder
+		s.judgeAgeLatency(&b, reads, imgs, from, to)
+		s.judgeFetches(&b, "over the run", all, turnBound(ups, 1, s.chain.BlockTime()))
+		s.judgeRequests(&b, all)
+		reportClockMix(&b, before, s.clockMix(), all.blocks)
+		s.logf("%s", b.String())
+	})
+}
+
 func p16SpreadBody(s *scenario, ups []freshUp, blip bool) {
 	s.blocks(10)
 	vl := &viewLog{}
