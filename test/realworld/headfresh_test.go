@@ -372,28 +372,97 @@ const (
 	// read the new image may send above the old image's: with a cache,
 	// one per finality step, not one per read.
 	p17NumberedSlack = 0.05
+	// p17SlowRead: a finalized-tag read slower than this waited or went
+	// past the cache and the nearest upstream; p17SlowSlack: the share of
+	// such reads the new image may take above the old image's.
+	p17SlowRead  = 50 * time.Millisecond
+	p17SlowSlack = 0.01
+	// p17AvaxBlockTime: Avalanche's C-chain blocks, real time;
+	// p17AvaxRate: each image's finalized-tag reads a second;
+	// p17AvaxHeadEvery: the period of each of its two head-read clients,
+	// 7.5 reads a second in all: the shadow's mirrored avalanche mix.
+	p17AvaxBlockTime = 1200 * time.Millisecond
+	p17AvaxRate      = 3
+	p17AvaxHeadEvery = 2 * time.Second * 2 / 15
 )
+
+// p17AvaxUps are Avalanche's voters on Kubernetes: a near holder 5 ms
+// away whose headers no format encodes (Prism's, BareHeaders), and seven
+// far voters 75-250 ms away, every one polled every 5 s.
+var p17AvaxUps = []freshUp{
+	{"http-r", "reader", 5 * time.Millisecond, 5 * time.Second, 0, 0},
+	{"http-a", "vendor-a", 75 * time.Millisecond, 5 * time.Second, 0, 0},
+	{"http-b", "vendor-b", 100 * time.Millisecond, 5 * time.Second, 0, 0},
+	{"http-c", "vendor-c", 125 * time.Millisecond, 5 * time.Second, 0, 0},
+	{"http-d", "vendor-d", 150 * time.Millisecond, 5 * time.Second, 0, 0},
+	{"http-e", "vendor-e", 175 * time.Millisecond, 5 * time.Second, 0, 0},
+	{"http-f", "vendor-f", 200 * time.Millisecond, 5 * time.Second, 0, 0},
+	{"http-g", "vendor-g", 250 * time.Millisecond, 5 * time.Second, 0, 0},
+}
 
 // P17: P16's layout, time-scaled by p17Scale, with finality moving in
 // steps and a cache; one client per image reads
 // eth_getBlockByNumber("finalized") every reader poll interval. Per step,
 // the time from chainsim's step to each pod first answering it: the new
-// image is no later than the old, at no more finalized polls, and its
-// reads of the finalized block by number hit the cache.
+// image is no later than the old, at no more finalized polls, its reads
+// of the finalized block by number hit the cache, and no larger share of
+// its finalized-tag reads is slow (p17SlowRead).
 func p17() spec {
-	sp := freshSpec("P17", p17Scale, freshUps, chainsim.Config{FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, p17Body)
+	sp := freshSpec("P17", p17Scale, freshUps, chainsim.Config{FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth},
+		func(s *scenario) { p17Body(s, time.Second/p17Scale, p17Depth) })
 	sp.cache = true
 	return sp
 }
 
-func p17Body(s *scenario) {
+// P17-avax: P17's verdicts on Avalanche: 1.2 s blocks in real time,
+// finality one block below the head, so it moves every block;
+// p17AvaxUps; per image p17AvaxRate finalized-tag reads a second beside
+// eth_blockNumber and eth_getBlockByNumber(latest) every
+// p17AvaxHeadEvery each. The new image holds the near holder's headers
+// unverified.
+func p17Avax() spec {
+	sp := freshSpec("P17-avax", 1, p17AvaxUps, chainsim.Config{BlockTime: p17AvaxBlockTime}, chainsim.Faults{FinalityDepth: 1}, func(s *scenario) {
+		p17Body(s, time.Second/p17AvaxRate, 1, freshLoad{p17AvaxHeadEvery, "latest", freshHead}, freshLoad{p17AvaxHeadEvery, "latest", freshLatestBlock})
+		for pod := range s.h.pods {
+			if s.image(pod) != "new" {
+				continue
+			}
+			if v, _ := s.metric(pod, "erpc_chain_tracker_header_proof_total", map[string]string{"proof": "unverified", "reason": "unencodable"}); v == 0 {
+				s.violate(s.name, "pod-%d held no unverified header: the near holder's bare headers never reached its tracker", pod+1)
+			}
+		}
+	})
+	sp.cache = true
+	f := sp.faults["http-r"]
+	f.BareHeaders = true
+	sp.faults["http-r"] = f
+	return sp
+}
+
+// p17Body reads the finalized tag every period beside extra loads.
+func p17Body(s *scenario, period time.Duration, depth uint64, extra ...freshLoad) {
 	s.blocks(10)
 	start := time.Now()
-	imgs, counts := s.freshRun(p17Run, freshLoad{time.Second / p17Scale, "finalized", freshFinalized})
+	imgs, counts := s.freshRun(p17Run, append([]freshLoad{{period, "finalized", freshFinalized}}, extra...)...)
 	end := time.Now()
-	events := s.freshSteps(start, end.Add(-3*s.chain.BlockTime()), p17Depth)
+	events := s.freshSteps(start, end.Add(-3*s.chain.BlockTime()), depth)
 	var b strings.Builder
 	v := s.freshReport(&b, "steps", "finalized", imgs[0], counts[0], events, end, time.Minute, p17Run)
+	slow := map[string]float64{}
+	for _, im := range imgs[0] {
+		im.mu.Lock()
+		n := 0
+		for _, d := range im.took {
+			if d > p17SlowRead {
+				n++
+			}
+		}
+		if len(im.took) > 0 {
+			slow[s.image(im.pod)] = float64(n) / float64(len(im.took))
+		}
+		fmt.Fprintf(&b, "pod-%d (%s image): %d of %d finalized-tag reads over %s\n", im.pod+1, s.image(im.pod), n, len(im.took), p17SlowRead)
+		im.mu.Unlock()
+	}
 	s.logf("%s", b.String())
 	if len(events) == 0 {
 		s.violate(s.name, "chainsim made no finality step in %s", p17Run)
@@ -401,6 +470,9 @@ func p17Body(s *scenario) {
 	s.freshJudge(v, "a finality step", "made it", p17P50Slack, p17P90Slack)
 	if o, n := v["old"], v["new"]; n.numberedPerRead > o.numberedPerRead+p17NumberedSlack {
 		s.violate(s.name, "new image sent %.3f by-number block reads per finalized-tag read, old %.3f", n.numberedPerRead, o.numberedPerRead)
+	}
+	if slow["new"] > slow["old"]+p17SlowSlack {
+		s.violate(s.name, "%.1f%% of the new image's finalized-tag reads took over %s, old %.1f%%", 100*slow["new"], p17SlowRead, 100*slow["old"])
 	}
 }
 

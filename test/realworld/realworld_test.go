@@ -128,6 +128,7 @@ func catalogue() []phaseSpec {
 		{"p15", 13401, []spec{p15()}},
 		{"p16", 13451, []spec{p16()}},
 		{"p17", 13501, []spec{p17()}},
+		{"p17-avax", 14301, []spec{p17Avax()}},
 		{"p18-d1", 13551, []spec{p18(time.Second)}},
 		{"p18-d2", 13601, []spec{p18(2 * time.Second)}},
 		{"p18-d4", 13651, []spec{p18(4 * time.Second)}},

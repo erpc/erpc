@@ -385,6 +385,19 @@ func ForgeHash(raw json.RawMessage) json.RawMessage {
 	return out
 }
 
+// Bare is raw without its stateRoot, as from a source that re-serializes
+// blocks without fields its chain hashes: no header format encodes it, so
+// its hash is unproven.
+func Bare(raw json.RawMessage) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		panic(err)
+	}
+	delete(fields, "stateRoot")
+	out, _ := json.Marshal(fields)
+	return out
+}
+
 // WithNumber is raw with its number field set to n: a header that claims
 // a height it is not at.
 func WithNumber(raw json.RawMessage, n uint64) json.RawMessage {

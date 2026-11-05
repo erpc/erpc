@@ -31,6 +31,7 @@ type Faults struct {
 	ChainIDHeld   bool          // eth_chainId answers wait until it clears
 	NullHeld      bool          // null for blocks by number or hash, even below its head
 	WrongHashes   bool          // newHeads pushes carry a hash the header does not hash to
+	BareHeaders   bool          // blocks and newHeads pushes lack stateRoot (Bare): no header format encodes them
 	NullReceipts  bool          // eth_getBlockReceipts answers null
 	ReceiptsDown  bool          // eth_getBlockReceipts answers -32603
 	LogsDown      bool          // eth_getLogs answers -32603
@@ -428,7 +429,7 @@ func (v *Vendor) headPushesLocked(out []push) []push {
 	if !v.WS || v.faults.Down || v.faults.SilentHeads {
 		return out
 	}
-	raw := v.tip.JSON()
+	raw := v.blockJSON(v.tip)
 	if v.faults.WrongHashes {
 		raw = ForgeHash(raw)
 	}
@@ -446,6 +447,14 @@ func (v *Vendor) headPushesLocked(out []push) []push {
 		return out
 	}
 	return append(out, mine...)
+}
+
+// blockJSON is b as the vendor serves it: Bare under BareHeaders.
+func (v *Vendor) blockJSON(b *Block) json.RawMessage {
+	if v.faults.BareHeaders {
+		return Bare(b.JSON())
+	}
+	return b.JSON()
 }
 
 // pendingPushesLocked adds b's transactions on the vendor's pending
@@ -841,7 +850,7 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		if f.NullHeld || !v.seen[h] {
 			return nil, nil
 		}
-		return c.byHash[h].JSON(), nil
+		return v.blockJSON(c.byHash[h]), nil
 	case "eth_getBlockByNumber":
 		tag, _ := firstString(params)
 		var b *Block
@@ -852,7 +861,7 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 				return nil, &rpcError{-32000, "latest block tag not supported"}
 			}
 			if f.Ahead > 0 {
-				return WithNumber(v.tip.JSON(), v.tip.Number+f.Ahead), nil
+				return WithNumber(v.blockJSON(v.tip), v.tip.Number+f.Ahead), nil
 			}
 			b = v.tip
 		case "finalized", "safe":
@@ -881,7 +890,7 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		if b == nil {
 			return nil, nil
 		}
-		return b.JSON(), nil
+		return v.blockJSON(b), nil
 	case "eth_getBlockReceipts":
 		v.receiptsCalls.Add(1)
 		hs, _ := firstString(params)
