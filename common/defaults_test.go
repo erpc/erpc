@@ -1893,6 +1893,46 @@ func TestApplyDefaults_UpstreamDefaultsSvm(t *testing.T) {
 
 		require.Nil(t, u.Svm)
 	})
+
+	t.Run("statePollerDebounce inherits from upstreamDefaults when upstream omits it", func(t *testing.T) {
+		d := &UpstreamConfig{Svm: &SvmUpstreamConfig{
+			Cluster:             "mainnet-beta",
+			StatePollerDebounce: Duration(5 * time.Second),
+		}}
+		u := &UpstreamConfig{
+			Id: "u1", Type: UpstreamTypeSvm, Endpoint: "http://localhost:8899",
+			Svm: &SvmUpstreamConfig{Cluster: "mainnet-beta"},
+		}
+		require.NoError(t, u.ApplyDefaults(d))
+		require.Equal(t, 5*time.Second, u.Svm.StatePollerDebounce.Duration())
+	})
+
+	t.Run("upstream statePollerDebounce wins over upstreamDefaults", func(t *testing.T) {
+		d := &UpstreamConfig{Svm: &SvmUpstreamConfig{
+			Cluster:             "mainnet-beta",
+			StatePollerDebounce: Duration(5 * time.Second),
+		}}
+		u := &UpstreamConfig{
+			Id: "u1", Type: UpstreamTypeSvm, Endpoint: "http://localhost:8899",
+			Svm: &SvmUpstreamConfig{
+				Cluster:             "mainnet-beta",
+				StatePollerDebounce: Duration(2 * time.Second),
+			},
+		}
+		require.NoError(t, u.ApplyDefaults(d))
+		require.Equal(t, 2*time.Second, u.Svm.StatePollerDebounce.Duration())
+	})
+
+	t.Run("wholesale svm inherit copies statePollerDebounce", func(t *testing.T) {
+		d := &UpstreamConfig{Svm: &SvmUpstreamConfig{
+			Cluster:             "mainnet-beta",
+			StatePollerDebounce: Duration(5 * time.Second),
+		}}
+		u := &UpstreamConfig{Id: "u1", Type: UpstreamTypeSvm, Endpoint: "http://localhost:8899"}
+		require.NoError(t, u.ApplyDefaults(d))
+		require.NotNil(t, u.Svm)
+		require.Equal(t, 5*time.Second, u.Svm.StatePollerDebounce.Duration())
+	})
 }
 
 // Hook dispatch (architecture/evm/hooks.go) routes method names

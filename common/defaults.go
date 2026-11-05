@@ -1886,6 +1886,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if defaults.Svm.CheckGenesisHash {
 			u.Svm.CheckGenesisHash = true
 		}
+		if u.Svm.StatePollerDebounce == 0 && defaults.Svm.StatePollerDebounce != 0 {
+			u.Svm.StatePollerDebounce = defaults.Svm.StatePollerDebounce
+		}
 		if u.Svm.BlockAvailability == nil && defaults.Svm.BlockAvailability != nil {
 			u.Svm.BlockAvailability = defaults.Svm.BlockAvailability.Copy()
 		}

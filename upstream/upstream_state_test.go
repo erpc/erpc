@@ -124,15 +124,21 @@ func TestUpstreamState_CircuitBreakerState_ReflectsCatchAllBreaker(t *testing.T)
 
 // mockSvmStatePollerWiring records what SetNetworkConfig pushes into the
 // poller, so the default-false / opt-in-true of svm.skipProcessedSlotProbe
-// is pinned at the wiring layer rather than only in poller unit tests.
+// and the per-upstream debounce override are pinned at the wiring layer
+// rather than only in poller unit tests.
 type mockSvmStatePollerWiring struct {
 	skipProcessed bool
 	setSkipCalls  int
+	debounce      time.Duration
+	setDebounceN  int
 }
 
 func (m *mockSvmStatePollerWiring) Bootstrap(ctx context.Context) error { return nil }
 func (m *mockSvmStatePollerWiring) IsObjectNull() bool                  { return false }
-func (m *mockSvmStatePollerWiring) SetDebounceInterval(time.Duration)   {}
+func (m *mockSvmStatePollerWiring) SetDebounceInterval(d time.Duration) {
+	m.debounce = d
+	m.setDebounceN++
+}
 func (m *mockSvmStatePollerWiring) SetSkipProcessedSlotProbe(v bool) {
 	m.skipProcessed = v
 	m.setSkipCalls++
@@ -167,6 +173,67 @@ func TestUpstreamState_SetNetworkConfig_WiresSvmSkipProcessedSlotProbe(t *testin
 			assert.Equal(t, tc.want, m.skipProcessed)
 		})
 	}
+}
+
+func TestUpstreamState_SetNetworkConfig_WiresSvmStatePollerDebounce(t *testing.T) {
+	netDebounce := common.Duration(400 * time.Millisecond)
+	upOverride := common.Duration(5 * time.Second)
+
+	t.Run("omit inherits network debounce", func(t *testing.T) {
+		m := &mockSvmStatePollerWiring{}
+		u := &Upstream{
+			config:         &common.UpstreamConfig{Id: "tip", Svm: &common.SvmUpstreamConfig{Cluster: "mainnet-beta"}},
+			svmStatePoller: m,
+		}
+		u.SetNetworkConfig(&common.NetworkConfig{
+			Architecture: common.ArchitectureSvm,
+			Svm:          &common.SvmNetworkConfig{Cluster: "mainnet-beta", StatePollerDebounce: netDebounce},
+		})
+		assert.Equal(t, 1, m.setDebounceN)
+		assert.Equal(t, netDebounce.Duration(), m.debounce)
+	})
+
+	t.Run("zero inherits network debounce", func(t *testing.T) {
+		m := &mockSvmStatePollerWiring{}
+		u := &Upstream{
+			config: &common.UpstreamConfig{Id: "tip", Svm: &common.SvmUpstreamConfig{
+				Cluster:             "mainnet-beta",
+				StatePollerDebounce: 0,
+			}},
+			svmStatePoller: m,
+		}
+		u.SetNetworkConfig(&common.NetworkConfig{
+			Architecture: common.ArchitectureSvm,
+			Svm:          &common.SvmNetworkConfig{Cluster: "mainnet-beta", StatePollerDebounce: netDebounce},
+		})
+		assert.Equal(t, netDebounce.Duration(), m.debounce)
+	})
+
+	t.Run("non-zero upstream override wins", func(t *testing.T) {
+		m := &mockSvmStatePollerWiring{}
+		u := &Upstream{
+			config: &common.UpstreamConfig{Id: "archive", Svm: &common.SvmUpstreamConfig{
+				Cluster:             "mainnet-beta",
+				StatePollerDebounce: upOverride,
+			}},
+			svmStatePoller: m,
+		}
+		u.SetNetworkConfig(&common.NetworkConfig{
+			Architecture: common.ArchitectureSvm,
+			Svm:          &common.SvmNetworkConfig{Cluster: "mainnet-beta", StatePollerDebounce: netDebounce},
+		})
+		assert.Equal(t, upOverride.Duration(), m.debounce)
+	})
+
+	t.Run("nil upstream svm inherits network", func(t *testing.T) {
+		m := &mockSvmStatePollerWiring{}
+		u := &Upstream{config: &common.UpstreamConfig{Id: "bare"}, svmStatePoller: m}
+		u.SetNetworkConfig(&common.NetworkConfig{
+			Architecture: common.ArchitectureSvm,
+			Svm:          &common.SvmNetworkConfig{Cluster: "mainnet-beta", StatePollerDebounce: netDebounce},
+		})
+		assert.Equal(t, netDebounce.Duration(), m.debounce)
+	})
 }
 
 func TestUpstreamState_SetNetworkConfig(t *testing.T) {

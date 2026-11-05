@@ -533,7 +533,16 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 		// which has no direct network reference. SkipProcessedSlotProbe is
 		// opt-in (default false = poll), the inverse of the old nil-true
 		// statePollerProcessedSlot framing.
-		u.svmStatePoller.SetDebounceInterval(cfg.Svm.StatePollerDebounce.Duration())
+		//
+		// Debounce: upstream.svm.statePollerDebounce > 0 is a hard override
+		// (same shape as EVM); zero/omit inherits the network gate.
+		debounce := cfg.Svm.StatePollerDebounce.Duration()
+		if u.config != nil && u.config.Svm != nil {
+			if d := u.config.Svm.StatePollerDebounce.Duration(); d > 0 {
+				debounce = d
+			}
+		}
+		u.svmStatePoller.SetDebounceInterval(debounce)
 		u.svmStatePoller.SetSkipProcessedSlotProbe(cfg.Svm.SkipProcessedSlotProbe)
 	}
 	// Always set networkId from the provided config
