@@ -33,6 +33,8 @@ github.com/blockchain-data-standards/manifesto v0.0.0-20261029092821-6b4e2e22ad1
 github.com/blockchain-data-standards/manifesto v0.0.0-20261029092821-6b4e2e22ad10/go.mod h1:BEP+UJDL+dSqF4UddiHmITKlV2l0aaDEagPS9nbbYIc=
 github.com/blockchain-data-standards/manifesto v0.0.0-20261105121714-2b510d35d82e h1:ofd2cASYPeAH9Zi+1Zao58HJAPTdvUxFpOM6jICFK5w=
 github.com/blockchain-data-standards/manifesto v0.0.0-20261105121714-2b510d35d82e/go.mod h1:BEP+UJDL+dSqF4UddiHmITKlV2l0aaDEagPS9nbbYIc=
+github.com/blockchain-data-standards/manifesto v0.0.0-20261105132038-bc812f032e6a h1:Eqy5FkAZpapgSCswfsdL0M+iTGqVcy/Y8mru0NzDIvI=
+github.com/blockchain-data-standards/manifesto v0.0.0-20261105132038-bc812f032e6a/go.mod h1:BEP+UJDL+dSqF4UddiHmITKlV2l0aaDEagPS9nbbYIc=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
 github.com/bsm/ginkgo/v2 v2.12.0/go.mod h1:SwYbGRRDovPVboqFv0tPTcG1sN61LM1Z4ARdbAV9g4c=
 github.com/bsm/gomega v1.27.10 h1:yeMWxP2pV2fG3FgAODIY8EiRE3dy0aeFYt4l7wh6yKA=

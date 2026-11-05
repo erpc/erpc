@@ -229,11 +229,7 @@ func (gs *GrpcServer) GetBlockByNumber(ctx context.Context, req *evm.GetBlockByN
 	if string(result) == "null" {
 		return &evm.GetBlockResponse{}, nil
 	}
-	var block evm.JsonRpcBlock
-	if err := sonic.Unmarshal(result, &block); err != nil {
-		return nil, grpcStatusOf(err)
-	}
-	protoBlock, err := block.ToProto()
+	protoBlock, err := evm.ParseJsonRpcBlock(result, sonic.Unmarshal)
 	if err != nil {
 		return nil, grpcStatusOf(err)
 	}
@@ -261,11 +257,7 @@ func (gs *GrpcServer) GetBlockByHash(ctx context.Context, req *evm.GetBlockByHas
 	if string(result) == "null" {
 		return &evm.GetBlockResponse{}, nil
 	}
-	var block evm.JsonRpcBlock
-	if err := sonic.Unmarshal(result, &block); err != nil {
-		return nil, grpcStatusOf(err)
-	}
-	protoBlock, err := block.ToProto()
+	protoBlock, err := evm.ParseJsonRpcBlock(result, sonic.Unmarshal)
 	if err != nil {
 		return nil, grpcStatusOf(err)
 	}

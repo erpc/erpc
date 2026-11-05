@@ -660,11 +660,7 @@ func (qe *EvmQueryExecutor) fetchBlock(ctx context.Context, pg *shimPageState, n
 	if isJSONNull(result) {
 		return nil, queryRangeUnavailable("block %#x is not available", n)
 	}
-	var block evm.JsonRpcBlock
-	if err := sonic.Unmarshal(result, &block); err != nil {
-		return nil, fmt.Errorf("decode block %#x: %w", n, err)
-	}
-	protoBlock, err := block.ToProto()
+	protoBlock, err := evm.ParseJsonRpcBlock(result, sonic.Unmarshal)
 	if err != nil {
 		return nil, fmt.Errorf("decode block %#x: %w", n, err)
 	}
