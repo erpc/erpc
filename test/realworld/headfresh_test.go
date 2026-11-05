@@ -452,6 +452,35 @@ func p16Pause() spec {
 	})
 }
 
+const (
+	// p16TailsLate, p16TailsLateFrom, p16TailsLateTo: the share of
+	// P16-tails' blocks proposed late, uniform 3-6 s into their slot on
+	// Ethereum's clock; p16TailsMissed: the share of slots missed.
+	p16TailsLate     = 0.08
+	p16TailsLateFrom = 3 * time.Second / p16Scale
+	p16TailsLateTo   = 6 * time.Second / p16Scale
+	p16TailsMissed   = 0.01
+)
+
+// P16-tails: P16-spread with Ethereum's arrival tails: p16TailsLate of
+// the blocks proposed 3-6 s into their slot, p16TailsMissed of the slots
+// missed. As P16-spread: the new image's served latest age and latency
+// within P16's slacks of the old image's, at most turnBound head fetches
+// per slot.
+func p16Tails() spec {
+	ups := p16SpreadUps()
+	slot := func() (time.Duration, bool) {
+		switch r := rand.Float64(); {
+		case r < p16TailsMissed:
+			return 0, true
+		case r < p16TailsMissed+p16TailsLate:
+			return p16TailsLateFrom + rand.N(p16TailsLateTo-p16TailsLateFrom), false
+		}
+		return 0, false
+	}
+	return freshSpec("P16-tails", p16Scale, ups, chainsim.Config{Slot: slot}, chainsim.Faults{HeadJitter: p16SpreadJitter}, func(s *scenario) { p16SpreadBody(s, ups, false) })
+}
+
 func p16SpreadBody(s *scenario, ups []freshUp, blip bool) {
 	s.blocks(10)
 	vl := &viewLog{}

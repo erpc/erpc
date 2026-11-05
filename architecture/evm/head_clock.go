@@ -25,8 +25,9 @@ const clockUnknownRTT = 150 * time.Millisecond
 // next block, it spends the voters' turns, the latest polls their
 // statePollerInterval pays for, at the times the block may arrive: a
 // ladder of rungs whose last sights the block at its 97th percentile,
-// each rung one due voter's fetch; the first sight stops the ladder, and
-// the turns not sent vote at once. It runs while the lane has demand: a
+// each rung one due voter's fetch, then tail rungs at the lane's turn
+// rate until the block comes; the first sight stops the ladder, and q−1
+// of the turns not sent vote at once. It runs while the lane has demand: a
 // tap that needs newHeads, or a read of latest within 2 W. Only the
 // tracker's goroutine touches it.
 type headClock struct {
@@ -46,9 +47,11 @@ type headClock struct {
 	// off is where the ladder's last rung sights the next block relative
 	// to its predicted sight, in block times, so it holds while the block
 	// time estimate moves from its cold value. It moves once per block, at
-	// the block's first sight (saw): up 32 steps when a tail rung brought
-	// it, down 1 when a rung did, never for a missed slot; so it settles
-	// where 3% of the blocks need a tail rung (k ≈ 1.9 at any spread).
+	// the block's first sight (saw): up 32 steps when the first tail rung
+	// brought it, down 1 when a rung did, never for a later block (a late
+	// proposal, a missed slot); so it settles where 3% of the blocks need
+	// a tail rung (k ≈ 1.9 at any spread) and leaves late proposals to
+	// the tail.
 	off    float64
 	offSet bool
 	// out is the fetch off the ladder the clock waits on (catch-up,
@@ -60,18 +63,21 @@ type headClock struct {
 	target  uint64
 	planned bool
 	// rungs are target's fires not sent yet, by send time; sent the ones
-	// sent; votes the due voters that take no rung (laggards), which
-	// vote at target's sight. k is the ladder's rung count, the tail
-	// rungs it may add; tails those added; delta the rungs' spacing;
-	// misses the fires past the tail, which double the delay up to W;
-	// lastDone when the last fire answered or was hedged.
-	rungs    []clockRung
-	sent     []*clockFire
-	votes    []string
-	k, tails int
-	delta    time.Duration
-	misses   int
-	lastDone time.Time
+	// sent; votes the due voters that take no rung (laggards), which may
+	// vote at target's sight. k is the ladder's rung count; sk its last
+	// rung's sight; tails the tail rungs added, tailsSent those sent;
+	// delta the rungs' spacing; misses the fires past the tail of a lane
+	// the ladder does not run, which double the delay up to W; lastDone
+	// when the last fire answered or was hedged.
+	rungs     []clockRung
+	sent      []*clockFire
+	votes     []string
+	k, tails  int
+	tailsSent int
+	sk        time.Time
+	delta     time.Duration
+	misses    int
+	lastDone  time.Time
 	// ladder: target's sight moves off; predicted is when it was due;
 	// kEarly: the ladder's last rung (S_k) answered below the target.
 	ladder, kEarly   bool
@@ -101,6 +107,9 @@ type headClock struct {
 
 type clockSight struct {
 	number uint64
+	// slot is the block time slot it came in: its number plus the slots
+	// missed before it (saw), so a missed slot or a halt moves no phase.
+	slot uint64
 	// at is when it reached this instance; from when its evidence was
 	// taken: a fetch's send time, a push's receipt.
 	at, from time.Time
@@ -168,10 +177,12 @@ func (c *headClock) reset() {
 // saw records the first local sight of number at at, its evidence taken
 // at from. The target's sight moves the offset once (spec §6.8): down a
 // step when the ladder's last rung did not answer below it, up 32 when
-// it did, and not at all when the sight came half a block or more after
-// its predicted sight: a missed slot or a halt says nothing of the
-// arrival spread. Each open fetch answer below number is decided
-// (answered).
+// it did and at most one tail rung was sent, and not at all when the
+// sight came later, or half a block or more after its predicted sight: a
+// late proposal, a missed slot or a halt says nothing of the arrival
+// spread. A sight a block or more after its predicted sight comes that
+// many slots later: the slots between were missed. Each open fetch answer
+// below number is decided (answered).
 func (c *headClock) saw(number uint64, at, from time.Time, pushed bool, bt time.Duration) {
 	if n := len(c.sights); n > 0 && number <= c.sights[n-1].number {
 		return
@@ -184,15 +195,20 @@ func (c *headClock) saw(number uint64, at, from time.Time, pushed bool, bt time.
 			switch {
 			case !c.kEarly:
 				c.off = max(c.off-1.0/400, -0.5)
-			case at.Before(c.predicted.Add(bt / 2)):
+			case at.Before(c.predicted.Add(bt/2)) && c.tailsSent <= 1:
 				c.off = min(c.off+32.0/400, 1)
 			}
 			c.ladder = false
 		}
 	}
 	c.scheduled = false
-	s := clockSight{number: number, at: at, from: from, pushed: pushed}
-	s.onTime = pushed && (!c.pushLane || bt <= 0 || !at.After(c.predict(number, bt).Add(c.pushLate(bt))))
+	s := clockSight{number: number, slot: c.slotOf(number), at: at, from: from, pushed: pushed}
+	if len(c.fit) > 0 && bt > 0 {
+		if late := at.Sub(c.predictSlot(s.slot, bt)); late >= bt {
+			s.slot += uint64(late / bt)
+		}
+	}
+	s.onTime = pushed && (!c.pushLane || bt <= 0 || !at.After(c.predictSlot(s.slot, bt).Add(c.pushLate(bt))))
 	if c.phasePoint(s, bt) {
 		c.fit = appendSight(c.fit, s)
 	}
@@ -254,7 +270,7 @@ func (c *headClock) phasePoint(s clockSight, bt time.Duration) bool {
 	case s.pushed:
 		return s.onTime
 	default:
-		return !c.pushFed() && s.at.Before(c.predict(s.number, bt))
+		return !c.pushFed() && s.at.Before(c.predictSlot(s.slot, bt))
 	}
 }
 
@@ -293,21 +309,36 @@ func (c *headClock) sightOf(number uint64) time.Time {
 	return c.sights[i].at
 }
 
-// predict is when number's first sight is due: a robust fit of the
-// phase points' phase, the median of each point's time less its number's
-// multiple of bt, plus number's multiple of bt.
+// slotOf is the slot number is due in: the top sight's slot plus the
+// numbers above it.
+func (c *headClock) slotOf(number uint64) uint64 {
+	n := len(c.sights)
+	if n == 0 {
+		return number
+	}
+	return c.sights[n-1].slot + number - c.sights[n-1].number
+}
+
+// predict is when number's first sight is due: predictSlot of its slot.
 func (c *headClock) predict(number uint64, bt time.Duration) time.Time {
+	return c.predictSlot(c.slotOf(number), bt)
+}
+
+// predictSlot is when a block of slot is due: a robust fit of the phase
+// points' phase, the median of each point's time less its slot's
+// multiple of bt, plus slot's multiple of bt.
+func (c *headClock) predictSlot(slot uint64, bt time.Duration) time.Time {
 	top, phase := c.phase(bt)
-	return top.at.Add(phase[len(phase)/2] + time.Duration(number-top.number)*bt)
+	return top.at.Add(phase[len(phase)/2] + time.Duration(slot-top.slot)*bt)
 }
 
 // phase is the newest phase point and every point's offset from it, less
-// the blocks between at bt, ascending.
+// the slots between at bt, ascending.
 func (c *headClock) phase(bt time.Duration) (clockSight, []time.Duration) {
 	top := c.fit[len(c.fit)-1]
 	offsets := make([]time.Duration, len(c.fit))
 	for i, s := range c.fit {
-		offsets[i] = s.at.Sub(top.at) - time.Duration(s.number-top.number)*bt
+		offsets[i] = s.at.Sub(top.at) - time.Duration(s.slot-top.slot)*bt
 	}
 	slices.Sort(offsets)
 	return top, offsets
@@ -685,9 +716,10 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 	}
 	c.planned, c.ladder, c.kEarly, c.scheduled = true, false, false, true
 	c.rungs, c.sent, c.votes = nil, nil, nil
-	c.k, c.tails, c.misses, c.lastDone = 1, 0, 0, time.Time{}
+	c.k, c.tails, c.tailsSent, c.misses, c.lastDone = 1, 0, 0, 0, time.Time{}
 	p := c.predict(c.target, bt)
 	sk := p.Add(time.Duration(c.off * float64(bt)))
+	c.sk = sk
 	_, phase := c.phase(bt)
 	c.delta = max(sk.Sub(p.Add(phase[0]-phase[len(phase)/2])), 0)
 	at := sk.Add(-c.bestRTT(cands))
@@ -742,17 +774,25 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 	slices.SortStableFunc(c.rungs, func(a, b clockRung) int { return a.at.Compare(b.at) })
 }
 
-// vote sends, at the target's first sight, the turns its ladder left
-// unsent and its laggards' (spec §6.8 stop at sight): q hash votes on the
-// sighted block within a round trip, each a voter's turn, which its poll
-// would else fetch. On a push-fed lane each voter whose turn is due votes
-// at each first sight.
+// vote sends, at the target's first sight, q−1 of the turns its ladder
+// left unsent and its laggards', fastest first (spec §6.8 stop at
+// sight): with the sight's own, q hash votes on the sighted block within
+// a round trip, each a voter's turn. The others stay unspent: the next
+// ladder plans them, so their polls keep waiting, and the lane's turns
+// pay for the tail rungs of a late block. On a push-fed lane each voter
+// whose turn is due votes at each first sight.
 func (t *ChainTracker) vote(cands []clockCandidate, now time.Time, bt, pace time.Duration) {
 	c := &t.clock
-	ids := c.votes
+	turns := slices.Clone(c.votes)
 	for _, r := range c.rungs {
 		if r.turn {
-			ids = append(ids, r.id)
+			turns = append(turns, r.id)
+		}
+	}
+	var ids []string
+	for _, cand := range c.byScore(cands) {
+		if len(ids) < max(t.voters.Need, 1)-1 && slices.Contains(turns, cand.id) && !c.busy(cand.id) {
+			ids = append(ids, cand.id)
 		}
 	}
 	if pace == 0 && c.pushFed() {
@@ -772,8 +812,7 @@ func (t *ChainTracker) vote(cands []clockCandidate, now time.Time, bt, pace time
 // climb sends the target's fires whose time came and hedges the late
 // ones (spec §6.8): a fire unanswered after hedgeAfter sends the next one
 // now, a tail rung when none is left. Once every fire answered below the
-// target, tail rungs follow every tailGap, to voters in score order, at
-// most k of them; then fires that double the delay up to W.
+// target, tail rungs follow (addTail).
 func (t *ChainTracker) climb(cands []clockCandidate, now time.Time, bt time.Duration) {
 	c := &t.clock
 	for _, f := range c.sent {
@@ -814,13 +853,17 @@ func (t *ChainTracker) climb(cands []clockCandidate, now time.Time, bt time.Dura
 // addTail adds the target's next fire after the ladder brought no block:
 // a tail rung (retry) to the next voter in score order, at the last
 // answer plus its explicit statePollerDebounce (#790), else plus
-// max(2 RTT, min(Δ, bt/10)); after k of them, one to the fastest voter
-// at the last fire plus bt doubled per miss, at most W. A hedge's goes
-// now.
+// max(2 RTT, min(Δ, bt/10)). While the ladder runs, tail rungs follow
+// until the block comes, from the second on at the lane's turn rate from
+// S_k, one every bt / max(1, Σ min(1, bt/I)): the turns its intervals pay
+// for, never a back-off, so a late proposal or a missed slot's block is
+// seen within a turn of its arrival. Else, after k of them, one to the
+// fastest voter at the last fire plus bt doubled per miss, at most W. A
+// hedge's goes now.
 func (t *ChainTracker) addTail(cands []clockCandidate, now time.Time, bt time.Duration, hedge bool) {
 	c := &t.clock
 	r := clockRung{kind: "retry", at: now}
-	if order := c.byScore(cands); c.tails < c.k && len(order) > 0 {
+	if order := c.byScore(cands); (c.ladder || c.tails < c.k) && len(order) > 0 {
 		cand := order[c.tails%len(order)]
 		c.tails++
 		r.id = cand.id
@@ -830,6 +873,13 @@ func (t *ChainTracker) addTail(cands []clockCandidate, now time.Time, bt time.Du
 		}
 		if !hedge {
 			r.at = c.lastDone.Add(gap)
+			if c.ladder && c.tails > 1 {
+				per := time.Duration(float64(bt) / max(1, turnsPerBlock(cands, bt)))
+				if paid := c.sk.Add(time.Duration(c.tails-1) * per); paid.After(r.at) {
+					r.at = paid
+				}
+				cand.poller.ClockTurn(r.at)
+			}
 		}
 	} else {
 		c.misses++
@@ -863,6 +913,9 @@ func (t *ChainTracker) fireRung(cands []clockCandidate, r clockRung, now time.Ti
 		return
 	}
 	f.turn, f.again = r.turn, r.again
+	if r.kind == "retry" && !r.again {
+		c.tailsSent++
+	}
 	c.sent = append(c.sent, f)
 }
 

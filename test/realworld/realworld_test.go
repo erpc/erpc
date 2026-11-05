@@ -131,6 +131,7 @@ func catalogue() []phaseSpec {
 		{"p16-spread-blip", 14401, []spec{p16Spread(true)}},
 		{"p16-irregular", 14451, []spec{p16Irregular()}},
 		{"p16-pause", 14551, []spec{p16Pause()}},
+		{"p16-tails", 14601, []spec{p16Tails()}},
 		{"p17", 13501, []spec{p17()}},
 		{"p17-avax", 14301, []spec{p17Avax()}},
 		{"p17-celo", 14501, []spec{p17Celo()}},
