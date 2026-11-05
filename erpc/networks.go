@@ -959,12 +959,12 @@ func isSimpleGroupSelector(selector string) bool {
 }
 
 // refreshFinalized refreshes the finalized numbers of selector sel's
-// voters for a finalized-tag request (spec §6.4 Finality, §6.8). While q
-// voters reported finalized within W the request waits for nothing: it
-// takes Finalized at once and the refresh runs in the background, one at
-// a time per lane. Only at the idle edge, fewer than q such reports, it
-// waits for the refresh, at most W: a report up to one full poll old
-// would serve a finalized block older than the tag gets live (§19 P7).
+// voters for a finalized-tag request (spec §6.4 Finality, §6.8). The
+// request never waits for it: it takes Finalized at once, and the refresh
+// runs in the background, one at a time per lane. While q voters reported
+// finalized within W it polls one voter; at the idle edge, fewer than q
+// such reports, as many as Finalized lacks, so the next request takes
+// their answers.
 func (n *Network) refreshFinalized(ctx context.Context, sel string) {
 	s := n.voters(tipScope{sel: sel}, voterQuery{kind: numberVote})
 	if s.count() == 0 {
@@ -983,10 +983,7 @@ func (n *Network) refreshFinalized(ctx context.Context, sel string) {
 		}
 		return true
 	})
-	if lacks := q.Of(s.count()) - fresh; lacks > 0 {
-		n.pollFinalized(ctx, sel, s, q, w, lacks)
-		return
-	}
+	slots := max(1, q.Of(s.count())-fresh)
 	l := n.laneFor(sel)
 	if l == nil {
 		l = &n.servedTipAll
@@ -1007,7 +1004,7 @@ func (n *Network) refreshFinalized(ctx context.Context, sel string) {
 					Msg("unexpected panic while refreshing a lane's finalized")
 			}
 		}()
-		n.pollFinalized(context.WithoutCancel(ctx), sel, s, q, w, 1)
+		n.pollFinalized(context.WithoutCancel(ctx), sel, s, q, w, slots)
 	}()
 }
 

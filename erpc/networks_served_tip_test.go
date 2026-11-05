@@ -1847,13 +1847,14 @@ func TestServedTip_Finalized_FloorLimits(t *testing.T) {
 	})
 }
 
-// A finalized-tag request's refresh (spec §6.4 Finality, §6.8) waits only
-// at the idle edge, fewer than q voters with a finalized report within one
-// full poll: then it polls the voters with a finalized tag and waits for
-// them, at most W, even when a poll outlasts the shared counter's
-// foreground budget (UpdateMaxWait). While q reports are fresh the request
-// takes Finalized at once and the refresh polls in the background. A voter
-// whose finalized tag is given up has no finalized poll and gets none.
+// A finalized-tag request's refresh (spec §6.4 Finality, §6.8) never makes
+// it wait: at the idle edge, fewer than q voters with a finalized report
+// within one full poll, the request takes Finalized at once and the
+// background refresh polls the voters with a finalized tag, even when a
+// poll outlasts the shared counter's foreground budget (UpdateMaxWait), so
+// the next request takes their answer. While q reports are fresh the
+// refresh polls one voter. A voter whose finalized tag is given up has no
+// finalized poll and gets none.
 func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
@@ -1955,11 +1956,15 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 		return network.EvmHead(ctx, r)
 	}
 	before := finalizedPolls()
+	began := time.Now()
 	head := tagRead()
+	assert.Less(t, time.Since(began), slowPoll, "at the idle edge the finalized-tag request waits for no poll")
+	assert.Equal(t, int64(9_998), head.Finalized, "at the idle edge the finalized-tag request takes Finalized at once")
+	assert.Eventually(t, func() bool { return tagRead().Finalized == 9_999 }, health.FreshnessWindow(network.EvmBlockTime()), 10*time.Millisecond,
+		"the idle edge's background refresh moves Finalized to the slow polls' answer")
 	now := finalizedPolls()
 	assert.True(t, now["fin-a"] > before["fin-a"] && now["fin-b"] > before["fin-b"],
 		"at the idle edge the refresh polls both voters with a finalized tag (polls %v → %v)", before, now)
-	assert.Equal(t, int64(9_999), head.Finalized, "at the idle edge the finalized-tag request waits for the slow polls and takes their answer")
 	assert.Equal(t, before["tagless"], now["tagless"], "a given-up finalized tag is not polled")
 
 	// Both reports are fresh now: each request takes Finalized at once,

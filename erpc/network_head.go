@@ -41,8 +41,8 @@ func (n *Network) EvmHead(ctx context.Context, req *common.NormalizedRequest) co
 // requestHead is the Head req took once from its scope; every later reader
 // of req gets that value, so retries, hedges, the cache key and
 // interpolation all see the same Latest. A request naming the finalized
-// tag takes it after the lane's finalized refresh starts (spec §6.4
-// Finality): it waits for it only at the idle edge. A read of latest
+// tag starts the lane's finalized refresh and takes it at once (spec §6.4
+// Finality). A read of latest
 // (evm.ReadsLatest) is the block clock's demand (§6.8); the first after W
 // without demand waits for the view to reach the idle edge's fetch,
 // before the cache: a cache hit is pinned to that Head too. A head number
