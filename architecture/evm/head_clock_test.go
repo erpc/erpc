@@ -49,7 +49,7 @@ func newClockNet(t *testing.T, voters ...laneVoter) *clockNet {
 }
 
 func (n *clockNet) EvmAllUpstreams(context.Context) []common.Upstream { return n.ups }
-func (n *clockNet) EvmBlockTime() time.Duration                      { return 500 * time.Millisecond }
+func (n *clockNet) EvmBlockTime() time.Duration                       { return 500 * time.Millisecond }
 
 func (n *clockNet) EvmHashVoters(string, time.Duration) HashVoters {
 	var ids []string
