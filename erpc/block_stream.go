@@ -211,11 +211,7 @@ func (rp *RequestProcessor) fetchBlockHeader(
 	if string(result) == "null" {
 		return nil, nil
 	}
-	var block evm.JsonRpcBlock
-	if err := sonic.Unmarshal(result, &block); err != nil {
-		return nil, err
-	}
-	protoBlock, err := block.ToProto()
+	protoBlock, err := evm.ParseJsonRpcBlock(result, sonic.Unmarshal)
 	if err != nil {
 		return nil, err
 	}
