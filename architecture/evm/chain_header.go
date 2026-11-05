@@ -372,14 +372,9 @@ func withoutFields(block json.RawMessage, keys []string) (json.RawMessage, error
 }
 
 // StreamBlockHeader is the gRPC StreamBlocks header of a block: its proto
-// header, transactions and withdrawals left out.
+// header, with every header key the node sent (otherFields).
 func StreamBlockHeader(block json.RawMessage) (*bdsevm.BlockHeader, error) {
-	var b bdsevm.JsonRpcBlock
-	if err := sonic.Unmarshal(block, &b); err != nil {
-		return nil, err
-	}
-	b.Transactions, b.Withdrawals = nil, nil
-	pb, err := b.ToProto()
+	pb, err := bdsevm.ParseJsonRpcBlock(block, sonic.Unmarshal)
 	if err != nil {
 		return nil, err
 	}

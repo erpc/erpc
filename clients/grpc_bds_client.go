@@ -231,6 +231,19 @@ func renderResult(write func([]byte) []byte) []byte {
 	return out
 }
 
+// renderBlock returns resp's block as the JSON-RPC result.
+func (c *GenericGrpcBdsClient) renderBlock(resp *evm.GetBlockResponse) ([]byte, error) {
+	var err error
+	result := renderResult(func(b []byte) []byte {
+		b, err = evm.AppendBlockJsonRpc(b, resp.Block, resp.Transactions, resp.FullTransactions, resp.Withdrawals, c.signatureEncoding())
+		return b
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+	return result, nil
+}
+
 // grpcResponseMetadataInterceptor captures all response metadata (headers)
 // from gRPC calls and records them as span attributes on detailed traces.
 func grpcResponseMetadataInterceptor() grpc.UnaryClientInterceptor {
@@ -497,9 +510,11 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn 
 		if err != nil {
 			return nil, fmt.Errorf("failed to set ID: %w", err)
 		}
-		jsonRpcResp.SetResult(renderResult(func(b []byte) []byte {
-			return evm.AppendBlockJsonRpc(b, grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
-		}))
+		result, err := c.renderBlock(grpcResp)
+		if err != nil {
+			return nil, err
+		}
+		jsonRpcResp.SetResult(result)
 
 		return common.NewNormalizedResponse().
 			WithRequest(req).
@@ -551,9 +566,11 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn 
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-	jsonRpcResp.SetResult(renderResult(func(b []byte) []byte {
-		return evm.AppendBlockJsonRpc(b, grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
-	}))
+	result, err := c.renderBlock(grpcResp)
+	if err != nil {
+		return nil, err
+	}
+	jsonRpcResp.SetResult(result)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -614,9 +631,11 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, conn *b
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-	jsonRpcResp.SetResult(renderResult(func(b []byte) []byte {
-		return evm.AppendBlockJsonRpc(b, grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
-	}))
+	result, err := c.renderBlock(grpcResp)
+	if err != nil {
+		return nil, err
+	}
+	jsonRpcResp.SetResult(result)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).

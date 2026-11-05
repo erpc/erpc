@@ -214,7 +214,8 @@ func TestGrpcBdsClient_RequestResponseMapping(t *testing.T) {
 			method: "eth_getBlockByHash",
 			params: fmt.Sprintf(`[%q,true]`, hashHex),
 			setup: func(s *scriptedBdsServer) {
-				s.block = &evm.GetBlockResponse{Block: &evm.BlockHeader{Number: 0x10, Hash: hashBytes}}
+				other := `{"timestampMillis":"0x1a1a8e4fb9f"}`
+				s.block = &evm.GetBlockResponse{Block: &evm.BlockHeader{Number: 0x10, Hash: hashBytes, OtherFields: &other}}
 			},
 			check: func(t *testing.T, s *scriptedBdsServer, result []byte) {
 				require.NotNil(t, s.byHash)
@@ -225,6 +226,7 @@ func TestGrpcBdsClient_RequestResponseMapping(t *testing.T) {
 				require.NoError(t, sonic.Unmarshal(result, &blk))
 				assert.Equal(t, "0x10", blk["number"])
 				assert.Equal(t, hashHex, blk["hash"])
+				assert.Equal(t, "0x1a1a8e4fb9f", blk["timestampMillis"], "a header key without a BDS field")
 			},
 		},
 		{
