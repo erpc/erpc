@@ -343,15 +343,10 @@ func standardMockWsHandler(conn *websocket.Conn, customHandler func(method strin
 	}
 }
 
-// mockHead is block n of the chain the mock WS upstreams push: a header that
-// passes intake parsing.
+// mockHead is block n of the chain the mock WS upstreams push: a
+// fakeHeader, whose hash no format reproduces.
 func mockHead(n int64) map[string]interface{} {
-	return map[string]interface{}{
-		"number":     fmt.Sprintf("0x%x", n),
-		"hash":       fmt.Sprintf("0x%064x", n),
-		"parentHash": fmt.Sprintf("0x%064x", n-1),
-		"timestamp":  fmt.Sprintf("0x%x", 1_700_000_000+n),
-	}
+	return fakeHeader(uint64(n), fmt.Sprintf("0x%064x", n), fmt.Sprintf("0x%064x", n-1), uint64(1_700_000_000+n))
 }
 
 // pushMockHeads pushes mockHead(from), from+1, … on subId, one per receive

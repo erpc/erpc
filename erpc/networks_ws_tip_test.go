@@ -103,24 +103,30 @@ func tipHash(tag string, n uint64) string {
 	return fmt.Sprintf("0x%s%0*x", tag, 64-len(tag), n)
 }
 
-// tipHead is block n of the linear chain tagged tag: a complete Ethereum
-// header carrying tipHash, so the Ethereum format encodes it to another
-// hash (spec §6.5): unverified while no header of the network verified, a
-// mismatch that serves only at q holders once one did (verifyTipAt). Its
-// roots are not the empty trie's: the block has transactions.
+// tipHead is block n of the linear chain tagged tag: a fakeHeader carrying
+// tipHash, unverified while no header of the network verified, a mismatch
+// that serves only at q holders once one did (verifyTipAt).
 func tipHead(tag string, n uint64) json.RawMessage {
 	if v, ok := verifiedTips.Load(tipKey{tag, n}); ok {
 		return v.(verifyingHeader).raw
 	}
-	fields := ethereumHeaderFields(n, tipHash(tag, n-1), 1_700_000_000+n)
-	fields["hash"] = tipHash(tag, n)
-	fields["transactionsRoot"] = "0x" + strings.Repeat("1", 64)
-	fields["receiptsRoot"] = "0x" + strings.Repeat("2", 64)
-	raw, err := json.Marshal(fields)
+	raw, err := json.Marshal(fakeHeader(n, tipHash(tag, n), tipHash(tag, n-1), 1_700_000_000+n))
 	if err != nil {
 		panic(err)
 	}
 	return raw
+}
+
+// fakeHeader is a complete Ethereum header for block n that claims hash,
+// not the hash its fields derive, so the Ethereum format encodes it to
+// another hash (spec §6.5). Its roots are not the empty trie's: the block
+// has transactions.
+func fakeHeader(n uint64, hash, parent string, ts uint64) map[string]interface{} {
+	fields := ethereumHeaderFields(n, parent, ts)
+	fields["hash"] = hash
+	fields["transactionsRoot"] = "0x" + strings.Repeat("1", 64)
+	fields["receiptsRoot"] = "0x" + strings.Repeat("2", 64)
+	return fields
 }
 
 type tipKey struct {
