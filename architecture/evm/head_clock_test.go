@@ -45,10 +45,13 @@ type laneVoter struct {
 	interval time.Duration // statePollerInterval
 	rtt      time.Duration
 	trail    time.Duration
+	// polled: its full poll fetched just now (justAsked), so its turn is
+	// never due; else only the clock's fetches date its turn.
+	polled bool
 }
 
-// justAsked is a poller whose full poll fetched just now: no clock turn is
-// due, so every clock fetch is a probe's choice.
+// justAsked is a poller whose full poll fetched just now: no turn of it
+// is due, so every clock fetch of it is the block's one fetch.
 type justAsked struct{ common.EvmStatePoller }
 
 func (justAsked) LatestAskAt() time.Time { return time.Now() }
@@ -56,7 +59,11 @@ func (justAsked) LatestAskAt() time.Time { return time.Now() }
 func newClockNet(t *testing.T, id string, voters ...laneVoter) *clockNet {
 	n := &clockNet{servedChain: newServedChain(t, id), rtt: map[string]time.Duration{}, trail: map[string]time.Duration{}, asks: map[string]int{}}
 	for _, v := range voters {
-		u := common.NewFakeUpstream(v.id, common.WithEvmStatePoller(justAsked{common.NewFakeEvmStatePoller(0, 0)}))
+		var p common.EvmStatePoller = common.NewFakeEvmStatePoller(0, 0)
+		if v.polled {
+			p = justAsked{p}
+		}
+		u := common.NewFakeUpstream(v.id, common.WithEvmStatePoller(p))
 		u.Config().Evm = &common.EvmUpstreamConfig{StatePollerInterval: common.Duration(v.interval)}
 		n.ups = append(n.ups, u)
 		n.rtt[v.id], n.trail[v.id] = v.rtt, v.trail
@@ -134,7 +141,7 @@ func (n *clockNet) clockAsks(t *testing.T, total int) map[string]int {
 	return got
 }
 
-// early is the clock's probes and retries that answered early.
+// early is the clock's last rungs and tail rungs that answered early.
 func (n *clockNet) early() float64 {
 	var sum float64
 	for _, kind := range []string{"probe", "retry"} {
@@ -144,43 +151,43 @@ func (n *clockNet) early() float64 {
 }
 
 // The block clock's target (spec §6.8): a voter's poll interval is its
-// operator's read budget for its head. Probes go to the fastest voter
-// polled at least every 2 blocks, never to a faster one polled every 10 s;
-// with none polled that often, the fastest takes them. Each voter the clock
-// has not measured takes one fetch, which measures its round trip.
+// operator's read budget for its head. Voters whose turn is due take the
+// block's fetches as the ladder's rungs; with none due, the fastest voter
+// takes the block's one fetch. Each voter the clock has not measured
+// takes one fetch, which measures its round trip.
 func TestBlockClockTarget(t *testing.T) {
-	t.Run("probes go to the voter polled every 500 ms, not the faster one polled every 10 s", func(t *testing.T) {
-		n := newClockNet(t, "evm:clock-budget",
-			laneVoter{id: "vendor-a", interval: 10 * time.Second, rtt: 200 * time.Millisecond},
+	t.Run("voters polled every block take its turns, not the faster one polled every 10 s", func(t *testing.T) {
+		n := newClockNet(t, "evm:clock-turns",
+			laneVoter{id: "vendor-a", interval: 10 * time.Second, rtt: 100 * time.Millisecond, polled: true},
 			laneVoter{id: "node-a", interval: 500 * time.Millisecond, rtt: 300 * time.Millisecond},
-			laneVoter{id: "node-b", interval: 500 * time.Millisecond, rtt: 600 * time.Millisecond},
+			laneVoter{id: "node-b", interval: 500 * time.Millisecond, rtt: 350 * time.Millisecond},
 		)
-		got := n.clockAsks(t, 10)
-		assert.Zero(t, got["vendor-a"], "a voter polled every 10 s takes no probe: %v", got)
-		assert.LessOrEqual(t, got["node-b"], 1, "the slower fast-polled voter only takes its measuring fetch: %v", got)
-		assert.GreaterOrEqual(t, got["node-a"], 9, "the fastest fast-polled voter takes the probes: %v", got)
+		got := n.clockAsks(t, 20)
+		assert.LessOrEqual(t, got["vendor-a"], 3, "a voter polled every 10 s takes about no fetch: %v", got)
+		assert.GreaterOrEqual(t, got["node-a"], 7, "each voter polled every block takes its turns: %v", got)
+		assert.GreaterOrEqual(t, got["node-b"], 7, "each voter polled every block takes its turns: %v", got)
 	})
 
-	t.Run("with no voter polled every 2 blocks the fastest takes the probes", func(t *testing.T) {
+	t.Run("with no turn due the fastest voter takes the block's one fetch", func(t *testing.T) {
 		n := newClockNet(t, "evm:clock-fallback",
-			laneVoter{id: "vendor-a", interval: 10 * time.Second, rtt: 200 * time.Millisecond},
-			laneVoter{id: "vendor-b", interval: 10 * time.Second, rtt: 600 * time.Millisecond},
+			laneVoter{id: "vendor-a", interval: 10 * time.Second, rtt: 200 * time.Millisecond, polled: true},
+			laneVoter{id: "vendor-b", interval: 10 * time.Second, rtt: 600 * time.Millisecond, polled: true},
 		)
 		got := n.clockAsks(t, 10)
 		assert.LessOrEqual(t, got["vendor-b"], 1, "the slower voter only takes its measuring fetch: %v", got)
-		assert.GreaterOrEqual(t, got["vendor-a"], 9, "the fastest voter takes the probes: %v", got)
+		assert.GreaterOrEqual(t, got["vendor-a"], 9, "the fastest voter takes the fetches: %v", got)
 	})
 
 	// node-a has the lowest round trip but gets each block 0.3 block after
 	// node-b: its answers come early, and node-b's fetch sent before node-a's
 	// brought the block, so node-a lagged whichever answer arrived first.
-	t.Run("a voter trailing by 0.3 block is marked late and stops taking probes", func(t *testing.T) {
+	t.Run("a voter trailing by 0.3 block is marked late and stops taking the block's fetch", func(t *testing.T) {
 		n := newClockNet(t, "evm:clock-trail",
-			laneVoter{id: "node-a", interval: 500 * time.Millisecond, rtt: 100 * time.Millisecond, trail: 150 * time.Millisecond},
-			laneVoter{id: "node-b", interval: 500 * time.Millisecond, rtt: 120 * time.Millisecond},
+			laneVoter{id: "node-a", interval: 10 * time.Second, rtt: 100 * time.Millisecond, trail: 150 * time.Millisecond, polled: true},
+			laneVoter{id: "node-b", interval: 10 * time.Second, rtt: 120 * time.Millisecond, polled: true},
 		)
 		got := n.clockAsks(t, 14)
-		assert.LessOrEqual(t, got["node-a"], 4, "the trailing voter stops taking probes once marked late: %v", got)
+		assert.LessOrEqual(t, got["node-a"], 4, "the trailing voter stops taking fetches once marked late: %v", got)
 		assert.GreaterOrEqual(t, got["node-b"], 10, "the voter that does not trail takes them: %v", got)
 		assert.LessOrEqual(t, n.early(), 2.0, "early answers stop with the trailing target: %v", got)
 	})

@@ -39,7 +39,9 @@ const (
 	// fire erpc_head_clock_total counts by kind.
 	AskClock AskReason = "clock"
 	// AskPoll: the latest part of an upstream's full poll, every
-	// statePollerInterval; a clock fetch within the interval meets it.
+	// statePollerInterval; a clock fetch within the interval meets it,
+	// within the interval plus a block while the clock takes the
+	// upstream's turns (ClockTurns).
 	AskPoll    AskReason = "poll"
 	AskRefusal AskReason = "refusal"
 	AskSettle  AskReason = "settle"
@@ -256,6 +258,10 @@ type EvmStatePoller interface {
 	// LatestAskAt is the send time of this instance's last Ask fetch of
 	// latest, zero before any: the Ask half of EvidenceAt.
 	LatestAskAt() time.Time
+	// ClockTurns hands the upstream's latest polls to its lane's block
+	// clock until until (spec §6.8): till then a full poll's latest part
+	// is met by a local fetch sent within its interval plus a block.
+	ClockTurns(until time.Time)
 	// HeadBackingOff reports whether the upstream's head fetches back off
 	// after node failures in a row: an Ask now fetches nothing.
 	HeadBackingOff() bool

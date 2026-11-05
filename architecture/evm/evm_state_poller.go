@@ -135,6 +135,9 @@ type EvmStatePoller struct {
 
 	// headAsk is the upstream's one head fetch schedule (Ask).
 	headAsk headAsk
+	// clockTurns is the unix nanoseconds until which the lane's block
+	// clock takes this upstream's latest polls as its turns (ClockTurns).
+	clockTurns atomic.Int64
 
 	// chainIdRecheck is the pending eth_chainId check of a chain-identity
 	// cordon, nil while none; chainIdRecheckUnwatch stops watching appCtx
@@ -289,8 +292,7 @@ func (e *EvmStatePoller) Wait() {
 }
 
 // pollLoop runs a full state poll every interval (spec §6.8): its latest
-// part is met by any local fetch sent within interval, the block clock's
-// turn of this upstream included.
+// part is met by any local fetch sent within latestPace.
 func (e *EvmStatePoller) pollLoop(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -306,7 +308,7 @@ func (e *EvmStatePoller) pollLoop(interval time.Duration) {
 }
 
 // pollPass is one full state poll, its latest part met by any local fetch
-// sent within interval. A panic ends the pass, never the loop.
+// sent within latestPace. A panic ends the pass, never the loop.
 func (e *EvmStatePoller) pollPass(interval time.Duration) {
 	defer e.recoverHeadPanic("poll-loop")
 	// Calculate timeout based on shared state config:
@@ -328,13 +330,32 @@ func (e *EvmStatePoller) pollPass(interval time.Duration) {
 
 	nctx, cancel := context.WithTimeout(e.appCtx, timeout)
 	defer cancel()
-	if err := e.poll(nctx, interval); err != nil {
+	if err := e.poll(nctx, e.latestPace(interval)); err != nil {
 		if errors.Is(nctx.Err(), context.Canceled) {
 			e.logger.Info().Err(err).
 				Msgf("shutting down evm state poller due to context cancellation (e.g. app exiting)")
 		} else {
 			e.logger.Warn().Err(err).Msgf("failed to poll evm state")
 		}
+	}
+}
+
+// latestPace is how old a local fetch may be and still meet a full poll's
+// latest part: interval, or, while the block clock takes this upstream's
+// turns (ClockTurns), interval plus a block: a turn lands at most a block
+// after it is due, so the poll fetches only when the clock missed one.
+func (e *EvmStatePoller) latestPace(interval time.Duration) time.Duration {
+	if e.tracker == nil || time.Now().UnixNano() >= e.clockTurns.Load() {
+		return interval
+	}
+	return interval + e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
+}
+
+// ClockTurns hands the upstream's latest polls to its lane's block clock
+// until until (spec §6.8, latestPace).
+func (e *EvmStatePoller) ClockTurns(until time.Time) {
+	if !e.IsObjectNull() {
+		e.clockTurns.Store(until.UnixNano())
 	}
 }
 

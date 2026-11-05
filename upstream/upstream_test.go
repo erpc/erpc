@@ -312,6 +312,7 @@ func (m *mockEvmStatePoller) RefreshFinalized(context.Context, time.Duration) bo
 func (m *mockEvmStatePoller) FinalizedReportAt() time.Time                         { return time.Time{} }
 func (m *mockEvmStatePoller) LatestReportAt() time.Time                            { return time.Time{} }
 func (m *mockEvmStatePoller) LatestAskAt() time.Time                               { return time.Time{} }
+func (m *mockEvmStatePoller) ClockTurns(time.Time)                                 {}
 func (m *mockEvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig)           {}
 func (m *mockEvmStatePoller) IsObjectNull() bool                                   { return m.isNull }
 
@@ -649,6 +650,7 @@ func (m *mockEvmStatePollerWithUpdate) RefreshFinalized(context.Context, time.Du
 func (m *mockEvmStatePollerWithUpdate) FinalizedReportAt() time.Time               { return time.Time{} }
 func (m *mockEvmStatePollerWithUpdate) LatestReportAt() time.Time                  { return time.Time{} }
 func (m *mockEvmStatePollerWithUpdate) LatestAskAt() time.Time                     { return time.Time{} }
+func (m *mockEvmStatePollerWithUpdate) ClockTurns(time.Time)                       {}
 func (m *mockEvmStatePollerWithUpdate) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerWithUpdate) IsObjectNull() bool                         { return false }
 
