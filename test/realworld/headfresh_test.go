@@ -618,6 +618,43 @@ func p17Avax() spec {
 	return sp
 }
 
+// p17CeloUps are celo's live voters on the shadow: a near reader whose
+// finalized tag answers unsupported (Prism's), polled every 5 s, and one
+// far vendor polled every 10 s.
+var p17CeloUps = []freshUp{
+	{"http-r", "reader", 5 * time.Millisecond, 5 * time.Second, 0, 0},
+	{"http-a", "vendor-a", 100 * time.Millisecond, 10 * time.Second, 0, 0},
+}
+
+const (
+	// p17CeloDepth, p17CeloStep: OP-stack finality on celo's 1 s blocks,
+	// minutes behind the head, moving in steps; p17CeloHistory keeps the
+	// blocks a voter without the tag derives (30 min below its head).
+	p17CeloDepth   = 600
+	p17CeloStep    = 32
+	p17CeloHistory = 2000
+	// p17CeloEvery: the period of each image's finalized-tag and
+	// eth_blockNumber clients, the shadow's celo reads (prod's state
+	// polls of it, about every 3 s): about W apart.
+	p17CeloEvery = 3 * time.Second
+)
+
+// P17-celo: P17's verdicts on celo: 1 s blocks in real time, finality
+// p17CeloDepth deep in p17CeloStep steps, p17CeloUps (the reader's
+// finalized tag unsupported, so given up), quorum 2; per image one
+// finalized-tag and one eth_blockNumber client every p17CeloEvery.
+func p17Celo() spec {
+	sim := chainsim.Config{BlockTime: time.Second, FinalityStep: p17CeloStep, History: p17CeloHistory}
+	sp := freshSpec("P17-celo", 1, p17CeloUps, sim, chainsim.Faults{FinalityDepth: p17CeloDepth}, func(s *scenario) {
+		p17Body(s, p17CeloEvery, p17CeloDepth, freshLoad{p17CeloEvery, "latest", freshHead})
+	})
+	sp.cache = true
+	f := sp.faults["http-r"]
+	f.NoFinalized = true
+	sp.faults["http-r"] = f
+	return sp
+}
+
 // p17Body reads the finalized tag every period beside extra loads.
 func p17Body(s *scenario, period time.Duration, depth uint64, extra ...freshLoad) {
 	s.blocks(10)
