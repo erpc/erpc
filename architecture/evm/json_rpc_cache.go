@@ -200,7 +200,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 
 	ntwId := req.NetworkId()
 	finState := req.Finality(ctx)
-	policies, err := c.findGetPolicies(ntwId, rpcReq.Method, rpcReq.Params, cacheFinalities(ctx, req, finState))
+	policies, err := c.findGetPolicies(ntwId, rpcReq.Method, rpcReq.Params, cacheFinalities(ctx, req, finState, true))
 	span.SetAttributes(
 		attribute.String("request.method", rpcReq.Method),
 		attribute.String("request.finality", finState.String()),
@@ -687,7 +687,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 	finState := resp.Finality(ctx)
 	isEmptyish := resp.IsResultEmptyish()
-	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, cacheFinalities(ctx, req, finState), isEmptyish)
+	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, cacheFinalities(ctx, req, finState, false), isEmptyish)
 	span.SetAttributes(
 		attribute.String("block.finality", finState.String()),
 		attribute.Int("cache.policies_matched", len(policies)),
@@ -1045,20 +1045,31 @@ func networkBlockTime(req *common.NormalizedRequest) time.Duration {
 }
 
 // cacheFinalities are the finalities whose policies a request of finality
-// fin reads and writes: fin, and for a "latest" tag interpolated to a
-// block N above the request Head's Finalized also Unfinalized. Its key is
-// N's (ResolveCacheBlockRef) and N's answer is its answer (spec §7), so
-// N's entries, written by numbered reads and the head fetch's seed (spec
-// §6), serve it, and its answer is N's entry.
-func cacheFinalities(ctx context.Context, req *common.NormalizedRequest, fin common.DataFinalityState) finalities {
+// fin reads (get) or writes: fin, and for a "latest" tag interpolated to a
+// block N also N's. Its key is N's (ResolveCacheBlockRef) and N's answer
+// is its answer (spec §7), so N's entries, written by numbered reads and
+// the head fetch's seed (spec §6), serve it: Unfinalized above the
+// request Head's Finalized; at or below it (finality at the head, as on
+// Avalanche) a get reads N's entries of either finality (Finalized
+// matches both), and a write adds none, since only a numbered answer's
+// own finality makes an entry permanent (#90).
+func cacheFinalities(ctx context.Context, req *common.NormalizedRequest, fin common.DataFinalityState, get bool) finalities {
 	fs := finalities{f: [2]common.DataFinalityState{fin}, n: 1}
 	if fin != common.DataFinalityStateRealtime || requestBlockTag(ctx, req) != "latest" {
 		return fs
 	}
-	if n := TagBlockNumber(ctx, req, "latest"); n <= 0 || n <= common.EvmHeadOf(req.Network(), ctx, req).Finalized {
+	n := TagBlockNumber(ctx, req, "latest")
+	switch {
+	case n <= 0:
+		return fs
+	case n > common.EvmHeadOf(req.Network(), ctx, req).Finalized:
+		fs.f[1] = common.DataFinalityStateUnfinalized
+	case get:
+		fs.f[1] = common.DataFinalityStateFinalized
+	default:
 		return fs
 	}
-	fs.f[1], fs.n = common.DataFinalityStateUnfinalized, 2
+	fs.n = 2
 	return fs
 }
 
