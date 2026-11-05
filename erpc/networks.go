@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -79,6 +80,9 @@ type Network struct {
 	// finalizedStepTo is the highest finalized any voter reported, and
 	// finalizedStepAt (unix ns) when it last rose (finalizedStep).
 	finalizedStepTo, finalizedStepAt atomic.Int64
+	// finalizedRTT is, per upstream id, its finalized polls' round trip
+	// average in ns (*atomic.Int64): a due step polls the fastest first.
+	finalizedRTT sync.Map
 
 	// servedTipLanes holds lazily-materialized per-group lanes for
 	// use-upstream selectors that carve out a real sub-group (e.g.
@@ -170,6 +174,37 @@ type servedTipLane struct {
 	// finalizedRefreshing: a background finalized refresh runs
 	// (refreshFinalized).
 	finalizedRefreshing atomic.Bool
+	// finalizedReadAt (unix ns) is the lane's last finalized-tag request:
+	// within 2 W of it the lane has finality demand (refreshFinalized).
+	finalizedReadAt atomic.Int64
+	// finalizedStepSize and finalizedStepDepth are the lane's finality
+	// step and its depth below Latest, the smallest of the last advances
+	// (finalizedSteps); 0 while none was seen. finalizedDueAt is the
+	// Latest a due step's refresh last started at (dueFinalizedStep).
+	finalizedStepSize, finalizedStepDepth, finalizedDueAt atomic.Int64
+	// finalizedSteps are the last advances of the lane's Finalized, size
+	// and depth below Latest, newest at finalizedStepsAt-1 mod len.
+	// Guarded by mu.
+	finalizedSteps   [8][2]int64
+	finalizedStepsAt int
+}
+
+// learnFinalizedStep records an advance of the lane's Finalized by size
+// blocks to depth below its Latest; callers hold mu.
+func (l *servedTipLane) learnFinalizedStep(size, depth int64) {
+	l.finalizedSteps[l.finalizedStepsAt%len(l.finalizedSteps)] = [2]int64{size, depth}
+	l.finalizedStepsAt++
+	minSize, minDepth := int64(0), int64(0)
+	for i, st := range l.finalizedSteps[:min(l.finalizedStepsAt, len(l.finalizedSteps))] {
+		if i == 0 || st[0] < minSize {
+			minSize = st[0]
+		}
+		if i == 0 || st[1] < minDepth {
+			minDepth = st[1]
+		}
+	}
+	l.finalizedStepSize.Store(minSize)
+	l.finalizedStepDepth.Store(minDepth)
 }
 
 // holdFinalized returns the Finalized to serve for the computed tip and
@@ -961,16 +996,26 @@ func isSimpleGroupSelector(selector string) bool {
 // refreshFinalized refreshes the finalized numbers of selector sel's
 // voters for a finalized-tag request (spec §6.4 Finality, §6.8). The
 // request never waits for it: it takes Finalized at once, and the refresh
-// runs in the background, one at a time per lane. While q voters reported
-// finalized within W it polls one voter; at the idle edge, fewer than q
-// such reports, as many as Finalized lacks, so the next request takes
-// their answers.
+// runs in the background, one at a time per lane. A lane that learned its
+// finality step and had a finalized-tag request within 2 W polls each
+// step as its Latest makes it due (dueFinalizedStep), so its requests poll
+// nothing. Otherwise, while q voters reported finalized within W the
+// refresh polls one voter; at the idle edge, fewer than q such reports, as
+// many as Finalized lacks, so the next request takes their answers.
 func (n *Network) refreshFinalized(ctx context.Context, sel string) {
+	l := n.laneFor(sel)
+	if l == nil {
+		l = &n.servedTipAll
+	}
+	w := health.FreshnessWindow(n.EvmBlockTime())
+	prev := l.finalizedReadAt.Swap(time.Now().UnixNano())
+	if l.finalizedStepSize.Load() > 0 && prev > 0 && time.Since(time.Unix(0, prev)) <= 2*w {
+		return
+	}
 	s := n.voters(tipScope{sel: sel}, voterQuery{kind: numberVote})
 	if s.count() == 0 {
 		return
 	}
-	w := health.FreshnessWindow(n.EvmBlockTime())
 	var q common.ServedTipQuorum
 	if n.cfg != nil {
 		q = n.cfg.Evm.ServedTipQuorum()
@@ -983,13 +1028,41 @@ func (n *Network) refreshFinalized(ctx context.Context, sel string) {
 		}
 		return true
 	})
-	slots := max(1, q.Of(s.attesting())-fresh)
-	l := n.laneFor(sel)
-	if l == nil {
-		l = &n.servedTipAll
-	}
-	if !l.finalizedRefreshing.CompareAndSwap(false, true) {
+	n.goPollFinalized(context.WithoutCancel(ctx), l, sel, s, q, w, max(1, q.Of(s.attesting())-fresh), 0)
+}
+
+// dueFinalizedStep starts lane l's refresh for its next finality step
+// once its Latest makes the step due: Latest at least Finalized + the
+// learned step + the learned depth, as the voters' own finality moved
+// before (spec §6.8). It runs while the lane has finality demand, once per
+// Latest; callers hold l.mu.
+func (n *Network) dueFinalizedStep(l *servedTipLane, finalized, latest int64) {
+	size, depth := l.finalizedStepSize.Load(), l.finalizedStepDepth.Load()
+	if size <= 0 || finalized <= 0 || latest < finalized+size+depth || latest <= l.finalizedDueAt.Load() || n.appCtx == nil {
 		return
+	}
+	w := health.FreshnessWindow(n.EvmBlockTime())
+	if time.Since(time.Unix(0, l.finalizedReadAt.Load())) > 2*w {
+		return
+	}
+	s := n.voters(tipScope{sel: l.selector}, voterQuery{kind: numberVote})
+	if s.count() == 0 {
+		return
+	}
+	var q common.ServedTipQuorum
+	if n.cfg != nil {
+		q = n.cfg.Evm.ServedTipQuorum()
+	}
+	if n.goPollFinalized(n.appCtx, l, l.selector, s, q, w, 0, finalized+size) {
+		l.finalizedDueAt.Store(latest)
+	}
+}
+
+// goPollFinalized runs pollFinalized in the background unless lane l
+// already runs a finalized refresh; started reports whether it did.
+func (n *Network) goPollFinalized(ctx context.Context, l *servedTipLane, sel string, s voterSet, q common.ServedTipQuorum, w time.Duration, slots int, step int64) (started bool) {
+	if !l.finalizedRefreshing.CompareAndSwap(false, true) {
+		return false
 	}
 	go func() {
 		defer l.finalizedRefreshing.Store(false)
@@ -1004,59 +1077,71 @@ func (n *Network) refreshFinalized(ctx context.Context, sel string) {
 					Msg("unexpected panic while refreshing a lane's finalized")
 			}
 		}()
-		n.pollFinalized(context.WithoutCancel(ctx), sel, s, q, w, slots)
+		n.pollFinalized(ctx, sel, s, q, w, slots, step)
 	}()
+	return true
 }
 
 // pollFinalized polls the finalized numbers of voters s of selector sel
 // and waits for them, at most W, then publishes sel's lane Head. Finality
 // moves in steps, and any voter may see a step first: a voter's finality
-// depth is its own, and a replica may trail the nodes. So each refresh
-// polls slots voters, those whose finalized reports are oldest, at their
-// poll cadence, as main sent each finalized-tag read to an upstream:
-// successive refreshes walk the voters. A voter finalized above every one
-// reported before, by any poll, starts a step: for W after, as many of
-// the voters still below it as Finalized, the q-th highest vote, lacks to
-// reach it poll once since the step began, oldest finalized report first,
-// at once on the refresh that saw it too, so Finalized follows within a
-// round trip; a voter that has not reached the step leaves the next one
-// to the next refresh. Every voter with no finalized number yet polls at
-// its cadence, so a cold instance gets its first ballot, or gives a
-// tagless voter's tag up, as soon as it would with every voter polled.
-// Each poller joins a poll in flight, and has none once its finalized tag
-// is given up.
-func (n *Network) pollFinalized(ctx context.Context, sel string, s voterSet, q common.ServedTipQuorum, w time.Duration, slots int) {
+// depth is its own, and a replica may trail the nodes. A due step (step >
+// 0, dueFinalizedStep) polls as many of the voters below it as Finalized,
+// the q-th highest vote, lacks to reach it, fastest first, at once: one
+// round trip. Otherwise each refresh polls slots voters, those whose
+// finalized reports are oldest, at their poll cadence: successive
+// refreshes walk the voters. A voter finalized above every one reported
+// before, by any poll, starts a step: for W after, as many of the voters
+// still below it as Finalized lacks to reach it poll once since the step
+// began, fastest first, at once on the refresh that saw it too, so
+// Finalized follows within a round trip; a voter that has not reached the
+// step leaves the next one to the next refresh. Every voter with no
+// finalized number yet polls at its cadence, so a cold instance gets its
+// first ballot, or gives a tagless voter's tag up, as soon as it would
+// with every voter polled. Each poller joins a poll in flight, and has
+// none once its finalized tag is given up.
+func (n *Network) pollFinalized(ctx context.Context, sel string, s voterSet, q common.ServedTipQuorum, w time.Duration, slots int, step int64) {
 	ctx, cancel := context.WithTimeout(ctx, w)
 	defer cancel()
 	var moved atomic.Bool
-	refresh := func(sp common.EvmStatePoller, maxAge time.Duration) (fetched bool) {
-		before := sp.FinalizedBlock()
+	refresh := func(u common.Upstream, sp common.EvmStatePoller, maxAge time.Duration) (fetched bool) {
+		before, sent := sp.FinalizedBlock(), time.Now()
 		fetched = sp.RefreshFinalized(ctx, maxAge)
+		if fetched {
+			n.finalizedRoundTrip(u.Id(), time.Since(sent))
+		}
 		if sp.FinalizedBlock() != before {
 			moved.Store(true)
 		}
 		return fetched
 	}
+	type voter struct {
+		u  common.Upstream
+		sp common.EvmStatePoller
+	}
 	stepRound := func(wg *sync.WaitGroup, top int64, at time.Time) {
 		lacks := q.Of(s.attesting())
-		var below []common.EvmStatePoller
+		var below []voter
 		s.each(func(u common.Upstream, _ int64) bool {
 			switch sp := u.(common.EvmUpstream).EvmStatePoller(); {
+			case finalizedTagless(sp):
 			case sp.FinalizedBlock() >= top:
 				lacks--
 			case sp.FinalizedReportAt().Before(at):
-				below = append(below, sp)
+				below = append(below, voter{u, sp})
 			}
 			return true
 		})
-		slices.SortFunc(below, func(a, b common.EvmStatePoller) int { return a.FinalizedReportAt().Compare(b.FinalizedReportAt()) })
-		// Each slot polls the oldest voter left until one polls: a voter
+		slices.SortFunc(below, func(a, b voter) int {
+			return cmp.Compare(n.finalizedRoundTripOf(a.u.Id()), n.finalizedRoundTripOf(b.u.Id()))
+		})
+		// Each slot polls the fastest voter left until one polls: a voter
 		// with no finalized poll (its tag given up) takes no slot.
 		var next atomic.Int32
 		for range max(0, min(lacks, len(below))) {
 			wg.Go(func() {
 				for i := int(next.Add(1)) - 1; i < len(below); i = int(next.Add(1)) - 1 {
-					if refresh(below[i], time.Since(at)) {
+					if refresh(below[i].u, below[i].sp, time.Since(at)) {
 						return
 					}
 				}
@@ -1064,27 +1149,35 @@ func (n *Network) pollFinalized(ctx context.Context, sel string, s voterSet, q c
 		}
 	}
 	var wg sync.WaitGroup
+	if step > 0 {
+		stepRound(&wg, step, time.Now())
+		wg.Wait()
+		if l := n.laneFor(sel); moved.Load() && l != nil {
+			n.refreshLaneRecovered(l)
+		}
+		return
+	}
 	top, at := n.finalizedStep(s, w)
 	if !at.IsZero() {
 		stepRound(&wg, top, at)
 	}
-	var buf [16]common.EvmStatePoller
+	var buf [16]voter
 	byAge := buf[:0]
 	s.each(func(u common.Upstream, _ int64) bool {
 		if sp := u.(common.EvmUpstream).EvmStatePoller(); sp.FinalizedBlock() > 0 {
-			byAge = append(byAge, sp)
+			byAge = append(byAge, voter{u, sp})
 		} else {
-			wg.Go(func() { refresh(sp, 0) })
+			wg.Go(func() { refresh(u, sp, 0) })
 		}
 		return true
 	})
-	slices.SortFunc(byAge, func(a, b common.EvmStatePoller) int { return a.FinalizedReportAt().Compare(b.FinalizedReportAt()) })
+	slices.SortFunc(byAge, func(a, b voter) int { return a.sp.FinalizedReportAt().Compare(b.sp.FinalizedReportAt()) })
 	var next atomic.Int32
 	var polls sync.WaitGroup
 	for range min(slots, len(byAge)) {
 		polls.Go(func() {
 			for i := int(next.Add(1)) - 1; i < len(byAge); i = int(next.Add(1)) - 1 {
-				if refresh(byAge[i], 0) {
+				if refresh(byAge[i].u, byAge[i].sp, 0) {
 					return
 				}
 			}
@@ -1100,6 +1193,26 @@ func (n *Network) pollFinalized(ctx context.Context, sel string, s voterSet, q c
 	if l := n.laneFor(sel); moved.Load() && l != nil {
 		n.refreshLaneRecovered(l)
 	}
+}
+
+// finalizedRoundTrip records d, a finalized poll of upstream id, in its
+// round trip average (finalizedRoundTripOf).
+func (n *Network) finalizedRoundTrip(id string, d time.Duration) {
+	v, _ := n.finalizedRTT.LoadOrStore(id, new(atomic.Int64))
+	rtt := v.(*atomic.Int64)
+	if old := rtt.Load(); old > 0 {
+		d = (3*time.Duration(old) + d) / 4
+	}
+	rtt.Store(int64(d))
+}
+
+// finalizedRoundTripOf is upstream id's finalized poll round trip, a
+// moving average; 0 before its first, so an unmeasured voter goes first.
+func (n *Network) finalizedRoundTripOf(id string) time.Duration {
+	if v, ok := n.finalizedRTT.Load(id); ok {
+		return time.Duration(v.(*atomic.Int64).Load())
+	}
+	return 0
 }
 
 // finalizedStep is the finality step under way: the highest finalized a

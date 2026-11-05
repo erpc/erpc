@@ -311,7 +311,9 @@ func (n *Network) refreshLaneRecovered(l *servedTipLane) {
 	n.refreshLane(l)
 }
 
-// refreshLane computes l's number facts and publishes them in one step.
+// refreshLane computes l's number facts and publishes them in one step,
+// learns the lane's finality step from an advance of its Finalized, and
+// starts the next step's refresh once it is due (dueFinalizedStep).
 func (n *Network) refreshLane(l *servedTipLane) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -321,6 +323,15 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	h.CeilingPeak, h.CeilingFellAt = max(old.CeilingPeak, h.Ceiling), old.CeilingFellAt
 	if h.Ceiling > 0 && h.Ceiling < old.CeilingPeak && (old.Ceiling == 0 || h.Ceiling < old.Ceiling) {
 		h.CeilingFellAt = time.Now()
+	}
+	if t := n.trackerOf(l); t != nil {
+		if head, ok := t.View().Head(); ok {
+			latest := int64(head.Number)
+			if old.Finalized > 0 && h.Finalized > old.Finalized && latest >= h.Finalized {
+				l.learnFinalizedStep(h.Finalized-old.Finalized, latest-h.Finalized)
+			}
+			n.dueFinalizedStep(l, h.Finalized, latest)
+		}
 	}
 	if h == *old {
 		return
