@@ -1752,7 +1752,7 @@ func (e *EvmStatePoller) FinalizedBlock() int64 {
 	if fin := e.finalizedBlockShared.GetValue(); fin > 0 {
 		return fin
 	}
-	if !e.finalizedTagless() {
+	if !e.FinalizedTagless() {
 		return 0
 	}
 	latest := e.latestBlockShared.GetValue()
@@ -1769,15 +1769,16 @@ func (e *EvmStatePoller) FinalizedBlock() int64 {
 // tag, latest − the derived finality depth (spec §6.4); ok false while it
 // has the tag.
 func (e *EvmStatePoller) DerivedFinalized() (number int64, ok bool) {
-	if !e.finalizedTagless() {
+	if !e.FinalizedTagless() {
 		return 0, false
 	}
 	return e.FinalizedBlock(), true
 }
 
-// finalizedTagless: finalized was given up and has not answered since,
-// through its retries, so derived finality never flips off on a retry.
-func (e *EvmStatePoller) finalizedTagless() bool {
+// FinalizedTagless: finalized was given up and has not answered since,
+// through its retries, so derived finality never flips off on a retry; its
+// finalized is no attestation (spec §6.4).
+func (e *EvmStatePoller) FinalizedTagless() bool {
 	e.stateMu.RLock()
 	defer e.stateMu.RUnlock()
 	return e.finalizedGiveUp.given()

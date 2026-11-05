@@ -430,6 +430,9 @@ func (n *Network) laneFinalized(l *servedTipLane, s tipScope, latest int64) int6
 			held = max(tip, latest)
 		}
 		tip = held
+		if prev := l.published().Finalized; prev > 0 && tip > prev && pick.Inputs < q.Of(n.voters(s, voterQuery{kind: numberVote}).count()) {
+			telemetry.MetricFinalizedUnderQuorumTotal.WithLabelValues(n.projectId, n.Label()).Inc()
+		}
 		if l == &n.servedTipAll {
 			n.publishFinalized(computed)
 		}

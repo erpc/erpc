@@ -1015,6 +1015,16 @@ var (
 		Help:      "Total head Asks, by caller (clock, refusal, settle) and outcome (fetched, shared_fresh, inflight, backoff).",
 	}, []string{"project", "network", "reason", "outcome"})
 
+	// MetricFinalizedUnderQuorumTotal counts each advance of a lane's
+	// served Finalized that fewer voters attested than the quorum asks of
+	// the lane's voters (spec §6.4): the others' finalized tags are given
+	// up, so a lone attestation decides it.
+	MetricFinalizedUnderQuorumTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "finalized_under_quorum_total",
+		Help:      "Total advances of a lane's served finalized block attested by fewer voters than the served-tip quorum asks, the others' finalized tags given up.",
+	}, []string{"project", "network"})
+
 	// MetricCacheExecutorAttempt counts every attempt a cache-connector
 	// failsafe executor governs, keyed by the executor's identity (the
 	// matchMethod / matchFinality it was configured with) and the outcome

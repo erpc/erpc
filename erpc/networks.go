@@ -978,12 +978,12 @@ func (n *Network) refreshFinalized(ctx context.Context, sel string) {
 	fresh := 0
 	s.each(func(u common.Upstream, _ int64) bool {
 		sp := u.(common.EvmUpstream).EvmStatePoller()
-		if sp.FinalizedBlock() > 0 && time.Since(sp.FinalizedReportAt()) <= w {
+		if sp.FinalizedBlock() > 0 && !finalizedTagless(sp) && time.Since(sp.FinalizedReportAt()) <= w {
 			fresh++
 		}
 		return true
 	})
-	slots := max(1, q.Of(s.count())-fresh)
+	slots := max(1, q.Of(s.attesting())-fresh)
 	l := n.laneFor(sel)
 	if l == nil {
 		l = &n.servedTipAll
@@ -1038,7 +1038,7 @@ func (n *Network) pollFinalized(ctx context.Context, sel string, s voterSet, q c
 		return fetched
 	}
 	stepRound := func(wg *sync.WaitGroup, top int64, at time.Time) {
-		lacks := q.Of(s.count())
+		lacks := q.Of(s.attesting())
 		var below []common.EvmStatePoller
 		s.each(func(u common.Upstream, _ int64) bool {
 			switch sp := u.(common.EvmUpstream).EvmStatePoller(); {
