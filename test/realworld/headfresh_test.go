@@ -618,7 +618,7 @@ func p17Avax() spec {
 	return sp
 }
 
-// p17CeloUps are celo's live voters on the shadow: a near reader whose
+// p17CeloUps are celo's measured live voters: a near reader whose
 // finalized tag answers unsupported (Prism's), polled every 5 s, and one
 // far vendor polled every 10 s.
 var p17CeloUps = []freshUp{
@@ -635,7 +635,7 @@ const (
 	p17CeloStep    = 12
 	p17CeloHistory = 2000
 	// p17CeloEvery: the period of each image's finalized-tag and
-	// eth_blockNumber clients, the shadow's celo reads (prod's state
+	// eth_blockNumber clients, the measured celo reads (another eRPC's state
 	// polls of it, about every 3 s): about W apart.
 	p17CeloEvery = 3 * time.Second
 )

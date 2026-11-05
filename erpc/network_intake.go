@@ -669,7 +669,7 @@ func (s voterSet) list() []common.Upstream {
 // A VOTER WITHOUT A FINALIZED TAG DOES NOT VOTE FINALIZED while any voter
 // can attest one (spec §6.4): its finalized tag was refused until given up
 // (its own answers, no chain list), so its vote is a derived depth or a
-// number stored before, which no poll refreshes. On celo's shadow such a
+// number stored before, which no poll refreshes. Measured on celo, such a
 // voter, Prism's, was one of two and held Finalized 9-13 min behind.
 func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (head int64, rank int, ok bool) {
 	eu, isEvm := u.(common.EvmUpstream)
