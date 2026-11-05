@@ -3,6 +3,7 @@ package evm
 import (
 	"cmp"
 	"context"
+	"math"
 	"slices"
 	"time"
 
@@ -471,19 +472,39 @@ func (c *headClock) busy(id string) bool {
 	return v != nil && v.out != nil
 }
 
-// turnDue reports whether cand's turn is due by at (spec §6.8): its
-// operator polls it, and its last local fetch, the clock's included, was
-// sent an interval or more before at. A voter polled every 0 s is not
-// polled at all: its poll interval pays for no turn.
-func (c *headClock) turnDue(cand clockCandidate, at time.Time) bool {
-	if cand.interval <= 0 {
-		return false
+// dueTurns are the candidates whose turn is due by at (spec §6.8): each
+// is polled, and its last local fetch, the clock's included, was sent
+// its interval or more before at. At most ceil(Σ min(1, bt/I)) of them
+// a block, the lane's turns per block, the longest waiting first: a
+// voter past them waits a block, which its poll's extra block allows,
+// so a block where two turns of a 0.28-a-block lane fall costs one
+// fetch, not two. A voter polled every 0 s pays for no turn.
+func (c *headClock) dueTurns(cands []clockCandidate, at time.Time, bt time.Duration) []clockCandidate {
+	type due struct {
+		cand clockCandidate
+		last time.Time
 	}
-	last := cand.poller.LatestAskAt()
-	if v := c.ups[cand.id]; v != nil && v.firedAt.After(last) {
-		last = v.firedAt
+	var dues []due
+	var turns float64
+	for _, cand := range cands {
+		if cand.interval <= 0 {
+			continue
+		}
+		turns += min(1, float64(bt)/float64(cand.interval))
+		last := cand.poller.LatestAskAt()
+		if v := c.ups[cand.id]; v != nil && v.firedAt.After(last) {
+			last = v.firedAt
+		}
+		if !last.Add(cand.interval).After(at) {
+			dues = append(dues, due{cand, last})
+		}
 	}
-	return !last.Add(cand.interval).After(at)
+	slices.SortStableFunc(dues, func(a, b due) int { return a.last.Compare(b.last) })
+	out := make([]clockCandidate, 0, len(dues))
+	for _, d := range dues[:min(len(dues), max(1, int(math.Ceil(turns-1e-9))))] {
+		out = append(out, d.cand)
+	}
+	return out
 }
 
 // score is id's expected first sight after a fire: its round trip plus
@@ -548,7 +569,7 @@ func (t *ChainTracker) runClock() {
 	var cands []clockCandidate
 	if target := c.top() + 1; target != c.target {
 		cands = t.clockCandidates()
-		t.vote(cands, now, pace)
+		t.vote(cands, now, bt, pace)
 		c.target, c.planned = target, false
 	}
 	if c.out != nil && !c.out.hedged {
@@ -676,12 +697,10 @@ func (t *ChainTracker) plan(cands []clockCandidate, now time.Time, bt, pace time
 		}
 	}
 	var turns []clockCandidate
-	for _, cand := range c.byScore(cands) {
-		switch v := c.ups[cand.id]; {
-		case !c.turnDue(cand, sk):
-		case v == nil || v.samples == 0 || c.score(cand.id) <= best+bt/4:
+	for _, cand := range c.byScore(c.dueTurns(cands, sk, bt)) {
+		if v := c.ups[cand.id]; v == nil || v.samples == 0 || c.score(cand.id) <= best+bt/4 {
 			turns = append(turns, cand)
-		default:
+		} else {
 			c.votes = append(c.votes, cand.id)
 		}
 	}
@@ -707,7 +726,7 @@ func (t *ChainTracker) plan(cands []clockCandidate, now time.Time, bt, pace time
 // sighted block within a round trip, each a voter's turn, which its poll
 // would else fetch. On a push-fed lane each voter whose turn is due votes
 // at each first sight.
-func (t *ChainTracker) vote(cands []clockCandidate, now time.Time, pace time.Duration) {
+func (t *ChainTracker) vote(cands []clockCandidate, now time.Time, bt, pace time.Duration) {
 	c := &t.clock
 	ids := c.votes
 	for _, r := range c.rungs {
@@ -715,10 +734,14 @@ func (t *ChainTracker) vote(cands []clockCandidate, now time.Time, pace time.Dur
 			ids = append(ids, r.id)
 		}
 	}
+	if pace == 0 && c.pushFed() {
+		for _, cand := range c.dueTurns(cands, now, bt) {
+			ids = append(ids, cand.id)
+		}
+	}
 	c.rungs, c.votes = nil, nil
 	for _, cand := range cands {
-		due := pace == 0 && c.pushFed() && c.turnDue(cand, now)
-		if (due || slices.Contains(ids, cand.id)) && !c.busy(cand.id) {
+		if slices.Contains(ids, cand.id) && !c.busy(cand.id) {
 			t.fire(cand.id, now, "vote")
 		}
 	}
