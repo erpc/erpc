@@ -27,7 +27,7 @@ const clockUnknownRTT = 150 * time.Millisecond
 // ladder of rungs whose last sights the block at its 97th percentile,
 // each rung one due voter's fetch, then tail rungs at the lane's turn
 // rate until the block comes; the first sight stops the ladder, and the
-// laggards and up to q−1 unsent rung turns vote at once. It runs while the lane has demand: a
+// turns not sent vote at once. It runs while the lane has demand: a
 // tap that needs newHeads, or a read of latest within 2 W. Only the
 // tracker's goroutine touches it.
 type headClock struct {
@@ -774,26 +774,19 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 	slices.SortStableFunc(c.rungs, func(a, b clockRung) int { return a.at.Compare(b.at) })
 }
 
-// vote sends, at the target's first sight, its laggards' turns and q−1
-// of the rung turns its ladder left unsent, fastest first (spec §6.8
-// stop at sight): with the sight's own, q hash votes on the sighted block
-// within a round trip, each a voter's turn. A laggard takes no rung, so
-// its vote is its turn; the other rung turns stay unspent: the next
-// ladder plans them, so their polls keep waiting, and the lane's turns
-// pay for the tail rungs of a late block. On a push-fed lane each voter
-// whose turn is due votes at each first sight.
+// vote sends, at the target's first sight, the turns its ladder left
+// unsent and its laggards' (spec §6.8 stop at sight): q hash votes on the
+// sighted block within a round trip, each a voter's turn, which its poll
+// would else fetch. Each also moves its voter's counter to the block,
+// which routes reads of it to the nearest holder: with q−1 votes, P22's
+// latest reads went 10 ms further. On a push-fed lane each voter whose
+// turn is due votes at each first sight.
 func (t *ChainTracker) vote(cands []clockCandidate, now time.Time, bt, pace time.Duration) {
 	c := &t.clock
-	var turns []string
+	ids := c.votes
 	for _, r := range c.rungs {
 		if r.turn {
-			turns = append(turns, r.id)
-		}
-	}
-	ids := slices.Clone(c.votes)
-	for _, cand := range c.byScore(cands) {
-		if len(ids) < max(t.voters.Need, 1)-1 && slices.Contains(turns, cand.id) && !c.busy(cand.id) {
-			ids = append(ids, cand.id)
+			ids = append(ids, r.id)
 		}
 	}
 	if pace == 0 && c.pushFed() {
