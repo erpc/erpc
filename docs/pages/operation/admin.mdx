@@ -1,6 +1,6 @@
 ---
 title: Admin API
-description: A built-in operator control plane — inspect topology, cordon sick upstreams without restarts, and manage API keys, all over a secure JSON-RPC 2.0 endpoint.
+description: A built-in operator control plane — inspect topology, cordon sick upstreams without restarts, purge JSON-RPC cache entries, and manage API keys, all over a secure JSON-RPC 2.0 endpoint.
 ---
 
 import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../components";
@@ -14,6 +14,7 @@ eRPC ships a live control plane at `POST /admin` — completely separate from yo
 **What you get:**
 - Runtime introspection of every project, network, and upstream
 - One-call cordon/uncordon to remove an upstream from traffic without a deploy
+- Admin cache purge (`erpc_purgeCache`) with dry-run match counts across connectors
 - API key provisioning backed by any database connector
 - `erpc validate` CLI to catch config errors before they reach production
 
@@ -366,6 +367,29 @@ Fetches the current record to retrieve `userId` (range key for deletion), then c
 
 ---
 
+#### `erpc_purgeCache`
+
+**Params**: `[{"projectId": string, "networkId": string, "method"?: string, "blockRef"?: string, "dryRun"?: bool, "confirm"?: string}]`
+
+Purges JSON-RPC cache entries for a network (or every network in the project when `networkId` is `"*"`). Prefer `dryRun: true` first — it returns match counts and deletes nothing. `networkId: "*"` requires `confirm: "WIPE"` and is rejected with 4xx before any store is touched. Optional `method` / `blockRef` narrow the partition/range key patterns. Patterns are built with `CachePartitionKey` using each network's configured `cacheKeySuffix` (never from API params). Gateable via `admin.denyMethods` / `admin.allowMethods`. Source: [`erpc/admin.go`](https://github.com/erpc/erpc/blob/main/erpc/admin.go) (`handlePurgeCache`)
+
+**Response**:
+```json
+{
+  "projectId": "main",
+  "scope": {"networkId": "evm:1", "cacheKeySuffix": "systx", "method": "", "blockRef": ""},
+  "dryRun": false,
+  "connectors": [
+    {"connectorId": "redis-cache", "driver": "redis", "matched": 128, "deleted": 128, "durationMs": 940}
+  ],
+  "totalDeleted": 128
+}
+```
+
+Unsupported connectors are reported per-row (`unsupported` / `error` fields); other connectors still purge. Remote connectors (Redis, DynamoDB, PostgreSQL) are fleet-wide; the `memory` driver only affects the replica that handled the call.
+
+---
+
 #### `erpc validate` CLI
 
 ```sh
@@ -440,6 +464,12 @@ Source: [`cmd/erpc/main.go:L97-L142`](https://github.com/erpc/erpc/blob/main/cmd
 14. **Batched admin requests fan out to per-method goroutines.** Each goroutine independently authenticates. A failed auth on one method in a batch does not block the others. Source: [`erpc/http_server.go:L404-L427`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L404-L427)
 15. **Block heatmap bucket start is always size-aligned.** `start = (blockNumber / size) * size` (integer floor-division). Two requests for blocks N and N+1 that straddle a size boundary land in different buckets. Source: [`erpc/block_heatmap.go:L91-L178`](https://github.com/erpc/erpc/blob/main/erpc/block_heatmap.go#L91-L178)
 16. **Block heatmap tip-unknown fallback.** When `tip ≤ 0`, `ComputeBlockHeatmapBucket` returns `size = 0`; the caller falls back to `telemetry.EvmBlockRangeBucketSize` (default `100000`) and formats absolute bucket labels. Source: [`erpc/block_heatmap.go:L63-L72`](https://github.com/erpc/erpc/blob/main/erpc/block_heatmap.go#L63-L72)
+17. **`erpc_purgeCache` memory driver is per-replica.** Remote connectors purge fleet-wide in one call; `memory` only clears the pod that received the admin request. Documented in the method response row via `driver: "memory"`.
+18. **Unsuffixed purge must not delete `cacheKeySuffix` siblings.** `SCAN evm:1:*` also matches `evm:1:systx:…` on a shared Redis. When the network has no suffix, the connector post-filters to the unsuffixed partition shape (escaped `:` in block refs still count as unsuffixed). Suffixed networks use the tighter `{networkId}:{suffix}:*` pattern.
+19. **Tip-tag `blockRef` values after chain-tracker tip resolution.** Prefer purging by `networkId` ± `method`, or a concrete decimal block number — not `blockRef: "latest"` / `"finalized"` once tip tags resolve to numbers in the partition key. Soft invalidation on reorg is not key deletion; ops purge remains required for intentional wipes.
+20. **`networkId: "*"` without `confirm: "WIPE"` is rejected before any store touch.** Unsupported connectors surface per-row; other connectors still purge.
+21. **`networkId: "*"` only covers networks already bootstrapped on this replica.** `GetNetworks()` returns in-memory prepared networks — keys written for networks only ever loaded on other pods (or before a restart) are not scanned. Prefer an exact `networkId` when possible.
+22. **`blockRef`-scoped purge skips `rvi#` companions.** Reverse-index keys are network-wide wildcards; deleting them for one block would wipe companions for every block. Dangling companions resolve to a miss on Get.
 
 ### Block heatmap algorithm
 
@@ -482,12 +512,15 @@ Source: [`erpc/block_heatmap.go:L91-L178`](https://github.com/erpc/erpc/blob/mai
 | `erpc_network_evm_block_range_requested_total` | counter | `project`, `network`, `vendor`, `upstream`, `category`, `user`, `finality`, `bucket`, `size` | Every successfully-forwarded EVM request. `bucket` = label like `"TIP"`, `"L100k"`, `"119m-120m"`. `size` = numeric bucket size as string. Source: [`telemetry/metrics.go:L724-L728`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L724-L728) |
 | `erpc_upstream_cordoned` | gauge | `project`, `vendor`, `network`, `upstream`, `category`, `reason` | Set to 1 on cordon, 0 on uncordon. Source: [`telemetry/metrics.go:L164-L168`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L164-L168) |
 | `erpc_upstream_cordon_duration_seconds` | histogram | `project`, `network`, `upstream` | Recorded on uncordon: time spent in cordoned state. Buckets 1–86400 seconds. Source: [`telemetry/metrics.go:L299`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L299) |
+| `erpc_admin_cache_purge_total` | counter | `project`, `network`, `connector`, `result` | Per-connector outcome of `erpc_purgeCache`. `result` ∈ {`ok`, `dry_run`, `unsupported`, `error`}. Audit log lines use `component=admin` with projectId, networkId, method, blockRef, dryRun, connectorId, matched, deleted, durationMs, actor, suffix. |
 
 No dedicated trace spans for admin methods. The HTTP server's standard OTel server span covers the entire request. The `component=admin` logger is used for all admin requests. The config analyzer uses a silent `zerolog.New(io.Discard)` logger during live upstream checks so that ephemeral upstream probes do not pollute CLI output. Source: [`erpc/config_analyzer.go:L282`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L282)
 
 ### Source code entry points
 
-- [`erpc/admin.go:L38-L64`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L38-L64) — `AdminHandleRequest`: switch-dispatch on method name for all 10 admin methods
+- [`erpc/admin.go:L38-L65`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L38-L65) — `AdminHandleRequest`: switch-dispatch on method name (includes `erpc_purgeCache`)
+- [`common/cache_dal.go`](https://github.com/erpc/erpc/blob/main/common/cache_dal.go) — optional `CachePurger` / `CachePurgeScope` (does not extend `CacheDAL`)
+- [`data/pattern_delete.go`](https://github.com/erpc/erpc/blob/main/data/pattern_delete.go) — purge pattern builders + connector walk
 - [`erpc/http_server.go:L835-L838`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L835-L838) — `parseUrlPath`: admin endpoint detection (single segment `"admin"`)
 - [`erpc/http_server.go:L295-L610`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L295-L610) — main handler: CORS, auth, dispatch, "admin not enabled" error path
 - [`erpc/erpc.go:L83-L88`](https://github.com/erpc/erpc/blob/main/erpc/erpc.go#L83-L88) — `NewERPC`: `adminAuthRegistry` construction from `cfg.Admin.Auth`

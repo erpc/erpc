@@ -816,3 +816,89 @@ func (r *RedisConnector) List(ctx context.Context, index string, limit int, pagi
 
 	return results, nextToken, nil
 }
+
+const redisPurgeScanCount = 500
+
+// DeleteByPattern SCAN+UNLINKs main keys and rvi# companions matching opts.
+// When UnsuffixedOnly is set, post-filters SCAN hits so unsuffixed network
+// patterns do not delete cacheKeySuffix siblings.
+func (r *RedisConnector) DeleteByPattern(ctx context.Context, opts PatternDeleteOpts) (int64, int64, error) {
+	ctx, span := common.StartSpan(ctx, "RedisConnector.DeleteByPattern")
+	defer span.End()
+
+	if err := r.checkReady(); err != nil {
+		common.SetTraceSpanError(span, err)
+		return 0, 0, err
+	}
+
+	var matched, deleted int64
+	patterns := append([]string{}, opts.MainPatterns...)
+	patterns = append(patterns, opts.RviPatterns...)
+
+	for _, pattern := range patterns {
+		m, d, err := r.scanUnlinkPattern(ctx, pattern, opts)
+		matched += m
+		deleted += d
+		if err != nil {
+			common.SetTraceSpanError(span, err)
+			return matched, deleted, err
+		}
+	}
+	return matched, deleted, nil
+}
+
+// escapeRedisScanPattern doubles backslashes so Redis MATCH treats them as
+// literals (keys may contain CachePartitionKey escapes like \:). Intentional
+// '*' wildcards are left alone.
+func escapeRedisScanPattern(pattern string) string {
+	return strings.ReplaceAll(pattern, `\`, `\\`)
+}
+
+func (r *RedisConnector) scanUnlinkPattern(ctx context.Context, pattern string, opts PatternDeleteOpts) (int64, int64, error) {
+	var matched, deleted int64
+	var cursor uint64
+	scanPattern := escapeRedisScanPattern(pattern)
+	for {
+		keys, next, err := r.client.Scan(ctx, cursor, scanPattern, redisPurgeScanCount).Result()
+		if err != nil {
+			r.markConnectionAsLostIfNecessary(err)
+			return matched, deleted, fmt.Errorf("redis SCAN %q: %w", scanPattern, err)
+		}
+
+		batch := make([]string, 0, len(keys))
+		for _, key := range keys {
+			if opts.UnsuffixedOnly {
+				if !matchUnsuffixedMainKey(opts.NetworkId, key, opts.Method) {
+					continue
+				}
+			} else if opts.Method != "" && !physicalKeyMatchesMethod(key, opts.Method) {
+				// SCAN patterns use method:* and would otherwise over-match
+				// colon-bearing SVM methods (custom vs custom:method).
+				continue
+			}
+			batch = append(batch, key)
+		}
+		matched += int64(len(batch))
+
+		if !opts.DryRun && len(batch) > 0 {
+			// UNLINK is non-blocking; fall back to DEL if unavailable.
+			n, err := r.client.Unlink(ctx, batch...).Result()
+			if err != nil {
+				n2, err2 := r.client.Del(ctx, batch...).Result()
+				if err2 != nil {
+					r.markConnectionAsLostIfNecessary(err2)
+					return matched, deleted, fmt.Errorf("redis UNLINK/DEL: %w", err2)
+				}
+				deleted += n2
+			} else {
+				deleted += n
+			}
+		}
+
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	return matched, deleted, nil
+}

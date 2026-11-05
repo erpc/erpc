@@ -147,6 +147,15 @@ func (c *SvmJsonRpcCache) IsObjectNull() bool {
 	return c == nil || len(c.policies) == 0
 }
 
+// Purge implements common.CachePurger for the SVM cache — same connector
+// walk as EvmJsonRpcCache.
+func (c *SvmJsonRpcCache) Purge(ctx context.Context, scope common.CachePurgeScope) ([]common.CachePurgeResult, error) {
+	if c == nil {
+		return nil, fmt.Errorf("svm json rpc cache is nil")
+	}
+	return data.PurgeConnectors(ctx, c.policies, scope), nil
+}
+
 // Get tries each matching policy in order and returns the first non-empty hit.
 // A miss is indicated by (nil, nil) — the network layer then falls through to
 // upstream forwarding.

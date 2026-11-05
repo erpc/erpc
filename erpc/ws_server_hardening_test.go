@@ -247,7 +247,8 @@ func TestWebSocket_UnsubscribeIsScopedToConnection(t *testing.T) {
 }
 
 // Shutdown closes client connections with 1001 as soon as it starts, not
-// after waitBeforeShutdown, and lets in-flight requests answer first.
+// after waitBeforeShutdown, lets in-flight requests answer first, and
+// refuses new connections before the upgrade.
 func TestWebSocket_ShutdownClosesPromptlyAfterInflightRequests(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -281,6 +282,8 @@ func TestWebSocket_ShutdownClosesPromptlyAfterInflightRequests(t *testing.T) {
 	require.NoError(t, requester.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":7,"method":"eth_getBalance","params":["0xaaaa","latest"]}`)))
 	time.Sleep(100 * time.Millisecond) // let the request start
 
+	refused := telemetry.MetricWebsocketRejectedTotal.WithLabelValues("test_ws", wsRejectShuttingDown)
+	refusedBefore := testutil.ToFloat64(refused)
 	start := time.Now()
 	cancel()
 
@@ -299,13 +302,14 @@ func TestWebSocket_ShutdownClosesPromptlyAfterInflightRequests(t *testing.T) {
 	require.ErrorAs(t, err, &closeErr)
 	assert.Equal(t, websocket.CloseGoingAway, closeErr.Code)
 
-	// A draining server closes new connections straight away.
-	late := dialWs(t, addr)
-	defer late.Close()
-	_ = late.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, _, err = late.ReadMessage()
-	require.ErrorAs(t, err, &closeErr)
-	assert.Equal(t, websocket.CloseGoingAway, closeErr.Code)
+	// A draining server refuses new connections with 503 before the upgrade.
+	late, status := dialWsExpectStatus(t, addr)
+	if late != nil {
+		_ = late.Close()
+	}
+	assert.Nil(t, late, "a draining server must not complete the handshake")
+	assert.Equal(t, http.StatusServiceUnavailable, status)
+	assert.Equal(t, refusedBefore+1, testutil.ToFloat64(refused), "the refusal must be counted")
 }
 
 // A peer that never answers pings is disconnected.
