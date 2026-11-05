@@ -363,30 +363,23 @@ func (t *ChainTracker) clockCandidates() []clockCandidate {
 // sight, round trip plus lateness, round-robin among those within a
 // quarter of its round trip: each millisecond of a slower target adds to
 // the served age, and the first read of the block goes to its holder.
+// Those come from the voters polled at least every two blocks while any
+// is a candidate (probePool): a poll interval is the operator's read
+// budget for that voter's head.
 // A turn is the block's fire too, so only a voter within a quarter block
 // of the fastest takes one, and only one polled less often than every two
 // blocks: a far or lagging voter, or one polled every block, polls on its
 // own. A voter the clock never measured takes its turn: only a clock
 // answer measures it, so else it would never take one and its full poll
 // would fetch on its own. An idle edge's fetch (edge) has a read waiting
-// on it: it takes no turn. ok false with none.
+// on it: it takes no turn, and goes to the fastest of every voter. ok
+// false with none.
 func (t *ChainTracker) pickTarget(cands []clockCandidate, skip string, now time.Time, bt time.Duration, edge bool) (clockCandidate, bool) {
 	c := &t.clock
-	score := func(id string) time.Duration {
-		s := c.rttOf(id)
-		if v := c.ups[id]; v != nil {
-			s += v.late
-		}
-		return s
-	}
 	best := time.Duration(-1)
-	var bestRTT time.Duration
 	for _, cand := range cands {
-		if cand.id == skip {
-			continue
-		}
-		if s := score(cand.id); best < 0 || s < best {
-			best, bestRTT = s, c.rttOf(cand.id)
+		if s := c.score(cand.id); cand.id != skip && (best < 0 || s < best) {
+			best = s
 		}
 	}
 	if best < 0 {
@@ -396,7 +389,7 @@ func (t *ChainTracker) pickTarget(cands []clockCandidate, skip string, now time.
 	var turnAt time.Time
 	for i := range cands {
 		cand := &cands[i]
-		if v := c.ups[cand.id]; edge || cand.id == skip || cand.interval <= 2*bt || v != nil && v.samples > 0 && score(cand.id) > best+bt/4 {
+		if v := c.ups[cand.id]; edge || cand.id == skip || cand.everyTwoBlocks(bt) || v != nil && v.samples > 0 && c.score(cand.id) > best+bt/4 {
 			continue
 		}
 		last := cand.poller.LatestAskAt()
@@ -410,14 +403,56 @@ func (t *ChainTracker) pickTarget(cands []clockCandidate, skip string, now time.
 	if turn != nil {
 		return *turn, true
 	}
+	pool := cands
+	if !edge {
+		pool = probePool(cands, skip, bt)
+	}
+	best = -1
+	var bestRTT time.Duration
+	for _, cand := range pool {
+		if s := c.score(cand.id); cand.id != skip && (best < 0 || s < best) {
+			best, bestRTT = s, c.rttOf(cand.id)
+		}
+	}
 	var near []clockCandidate
-	for _, cand := range cands {
-		if cand.id != skip && score(cand.id) <= best+bestRTT/4 {
+	for _, cand := range pool {
+		if cand.id != skip && c.score(cand.id) <= best+bestRTT/4 {
 			near = append(near, cand)
 		}
 	}
 	c.rr++
 	return near[c.rr%len(near)], true
+}
+
+// everyTwoBlocks reports whether the operator polls cand at least every
+// two blocks: its read budget pays for a fetch of about each block.
+func (cand clockCandidate) everyTwoBlocks(bt time.Duration) bool { return cand.interval <= 2*bt }
+
+// probePool is the candidates but skip a probe, a retry or a hedge may go
+// to: those polled at least every two blocks, or all when none is. A
+// voter polled every 10 s that took the probes of a 0.4 s chain was read
+// about 9 times as often as its operator polls it.
+func probePool(cands []clockCandidate, skip string, bt time.Duration) []clockCandidate {
+	var pool []clockCandidate
+	for _, cand := range cands {
+		if cand.id != skip && cand.everyTwoBlocks(bt) {
+			pool = append(pool, cand)
+		}
+	}
+	if len(pool) == 0 {
+		return cands
+	}
+	return pool
+}
+
+// score is id's expected first sight after a fire: its round trip plus
+// its lateness.
+func (c *headClock) score(id string) time.Duration {
+	s := c.rttOf(id)
+	if v := c.ups[id]; v != nil {
+		s += v.late
+	}
+	return s
 }
 
 // clockDemand reports whether the clock runs, and the fastest pace its
@@ -482,7 +517,8 @@ func (t *ChainTracker) runClock() {
 		}
 		return
 	}
-	if stale := t.staleVoters(t.clockCandidates()); len(stale) > 0 {
+	cands := t.clockCandidates()
+	if stale := t.staleVoters(cands, bt); len(stale) > 0 {
 		// All at once: each answer moves one vote, and the jumped tree takes
 		// the pins only with more votes than the older one (rule 4), so one
 		// after another costs a round trip each.
@@ -496,7 +532,7 @@ func (t *ChainTracker) runClock() {
 			return
 		}
 	}
-	if cand, ok := t.cappingVoter(t.clockCandidates()); ok {
+	if cand, ok := t.cappingVoter(cands); ok {
 		if c.out = t.fire(cand.id, now, "guarantee"); c.out != nil {
 			if waiting {
 				c.edge = c.out
@@ -504,7 +540,7 @@ func (t *ChainTracker) runClock() {
 			return
 		}
 	}
-	if holders := t.holderVoters(t.clockCandidates()); len(holders) > 0 {
+	if holders := t.holderVoters(cands); len(holders) > 0 {
 		// All at once: the pin serves once q counted votes back it.
 		if c.out = t.fire(holders[0].id, now, "holder"); c.out != nil {
 			for _, cand := range holders[1:] {
@@ -521,13 +557,12 @@ func (t *ChainTracker) runClock() {
 	}
 	at, probe := now, !waiting && len(c.sights) > 0
 	if probe {
-		at = t.fireAt(bt, pace)
+		at = t.fireAt(bt, pace, probePool(cands, "", bt))
 	}
 	if now.Before(at) {
 		c.nextAt, c.scheduled = at, true
 		return
 	}
-	cands := t.clockCandidates()
 	cand, ok := t.pickTarget(cands, "", now, bt, waiting)
 	if !ok {
 		if edge != nil {
@@ -562,20 +597,13 @@ func (t *ChainTracker) runClock() {
 // not one after another (spec §6.8 catch-up).
 func (t *ChainTracker) edgeVoters(cands []clockCandidate, first string) []string {
 	c := &t.clock
-	score := func(id string) time.Duration {
-		s := c.rttOf(id)
-		if v := c.ups[id]; v != nil {
-			s += v.late
-		}
-		return s
-	}
 	var ids []string
 	for _, cand := range cands {
 		if cand.id != first {
 			ids = append(ids, cand.id)
 		}
 	}
-	slices.SortFunc(ids, func(a, b string) int { return cmp.Compare(score(a), score(b)) })
+	slices.SortFunc(ids, func(a, b string) int { return cmp.Compare(c.score(a), c.score(b)) })
 	return ids[:min(len(ids), max(t.voters.Need, 1)-1)]
 }
 
@@ -587,7 +615,8 @@ func (t *ChainTracker) edgeVoters(cands []clockCandidate, first string) []string
 // and whose last fetch the clock took was sent before that vote was
 // sighted, as many as the jumped tree lacks to outvote the pins' tree if
 // each answer moves a vote; each voter is fetched once per such vote.
-func (t *ChainTracker) staleVoters(cands []clockCandidate) []clockCandidate {
+// Voters polled at least every two blocks go first (probePool's budget).
+func (t *ChainTracker) staleVoters(cands []clockCandidate, bt time.Duration) []clockCandidate {
 	head := t.head()
 	if head == nil {
 		return nil
@@ -622,15 +651,21 @@ func (t *ChainTracker) staleVoters(cands []clockCandidate) []clockCandidate {
 	seen := t.clock.sightOf(ahead.h.number)
 	var out []clockCandidate
 	for _, cand := range cands {
-		if len(out) == lacks {
-			break
-		}
 		n := t.votes[cand.id]
 		if t.alive(n) && t.rootOf(n) == pinRoot && t.clock.taken[cand.id].Before(seen) {
 			out = append(out, cand)
 		}
 	}
-	return out
+	slices.SortStableFunc(out, func(a, b clockCandidate) int {
+		switch fa, fb := a.everyTwoBlocks(bt), b.everyTwoBlocks(bt); {
+		case fa == fb:
+			return 0
+		case fa:
+			return -1
+		}
+		return 1
+	})
+	return out[:min(len(out), lacks)]
 }
 
 // cappingVoter is a guarantee subset's voter the clock fetches now because
@@ -693,11 +728,11 @@ func (t *ChainTracker) holderVoters(cands []clockCandidate) []clockCandidate {
 }
 
 // fireAt is when the clock fetches its target: the target's predicted
-// sight plus the tracked offset, less the expected target's round trip; a
-// retry's own time after an early answer; after misses, the last fire plus
-// bt doubled per miss, at most W; never sooner than pace after the last
-// fire.
-func (t *ChainTracker) fireAt(bt, pace time.Duration) time.Time {
+// sight plus the tracked offset, less the lowest round trip of pool, the
+// voters the probe may go to; a retry's own time after an early answer;
+// after misses, the last fire plus bt doubled per miss, at most W; never
+// sooner than pace after the last fire.
+func (t *ChainTracker) fireAt(bt, pace time.Duration, pool []clockCandidate) time.Time {
 	c := &t.clock
 	if !c.offSet {
 		c.off, c.offSet = 0.1, true
@@ -711,7 +746,7 @@ func (t *ChainTracker) fireAt(bt, pace time.Duration) time.Time {
 	case c.pushFed():
 		at = c.predict(c.target, bt).Add(c.pushLate(bt))
 	default:
-		at = c.predict(c.target, bt).Add(time.Duration(c.off*float64(bt)) - c.bestRTT())
+		at = c.predict(c.target, bt).Add(time.Duration(c.off*float64(bt)) - c.bestRTT(pool))
 	}
 	if p := c.lastFire.Add(pace); pace > 0 && at.Before(p) {
 		at = p
@@ -719,12 +754,12 @@ func (t *ChainTracker) fireAt(bt, pace time.Duration) time.Time {
 	return at
 }
 
-// bestRTT is the lowest round trip the clock measured, clockUnknownRTT
-// before any.
-func (c *headClock) bestRTT() time.Duration {
+// bestRTT is the lowest round trip the clock measured of cands,
+// clockUnknownRTT before any.
+func (c *headClock) bestRTT(cands []clockCandidate) time.Duration {
 	best := time.Duration(0)
-	for _, v := range c.ups {
-		if v.samples > 0 && (best == 0 || v.rtt < best) {
+	for _, cand := range cands {
+		if v := c.ups[cand.id]; v != nil && v.samples > 0 && (best == 0 || v.rtt < best) {
 			best = v.rtt
 		}
 	}
