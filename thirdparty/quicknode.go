@@ -419,9 +419,9 @@ func (v *QuicknodeVendor) SupportsNetwork(ctx context.Context, logger *zerolog.L
 		return false, nil
 	}
 
-	recheckInterval := DefaultQuicknodeRecheckInterval
-	if interval, ok := settings["recheckInterval"].(time.Duration); ok {
-		recheckInterval = interval
+	recheckInterval, err := settings.RecheckInterval(DefaultQuicknodeRecheckInterval)
+	if err != nil {
+		return false, err
 	}
 
 	endpoints, ok := v.resolveEndpoints(logger, apiKey, recheckInterval, settings)
@@ -459,9 +459,9 @@ func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.L
 			return nil, fmt.Errorf("quicknode vendor requires upstream.evm.chainId to be defined")
 		}
 
-		recheckInterval := DefaultQuicknodeRecheckInterval
-		if interval, ok := settings["recheckInterval"].(time.Duration); ok {
-			recheckInterval = interval
+		recheckInterval, err := settings.RecheckInterval(DefaultQuicknodeRecheckInterval)
+		if err != nil {
+			return nil, err
 		}
 
 		endpoints, ok := v.resolveEndpoints(logger, apiKey, recheckInterval, settings)

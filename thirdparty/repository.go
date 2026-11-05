@@ -53,9 +53,9 @@ func (v *RepositoryVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		urlStr = DefaultRepositoryURL
 	}
 
-	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
-	if !ok {
-		recheckInterval = DefaultRecheckInterval
+	recheckInterval, err := settings.RecheckInterval(DefaultRecheckInterval)
+	if err != nil {
+		return false, err
 	}
 
 	chains, ok := v.resolveChains(logger, urlStr, recheckInterval)
@@ -105,9 +105,9 @@ func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 		urlStr = DefaultRepositoryURL
 	}
 
-	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
-	if !ok {
-		recheckInterval = DefaultRecheckInterval
+	recheckInterval, err := settings.RecheckInterval(DefaultRecheckInterval)
+	if err != nil {
+		return nil, err
 	}
 	chains, ok := v.resolveChains(logger, urlStr, recheckInterval)
 	if !ok {

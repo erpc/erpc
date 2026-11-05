@@ -403,9 +403,9 @@ func (v *AlchemyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 		return false, err
 	}
 
-	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
-	if !ok {
-		recheckInterval = DefaultAlchemyRecheckInterval
+	recheckInterval, err := settings.RecheckInterval(DefaultAlchemyRecheckInterval)
+	if err != nil {
+		return false, err
 	}
 
 	networks := v.resolveNetworks(logger, apiUrl, recheckInterval)
@@ -445,9 +445,9 @@ func (v *AlchemyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 			return nil, err
 		}
 
-		recheckInterval, ok := settings["recheckInterval"].(time.Duration)
-		if !ok {
-			recheckInterval = DefaultAlchemyRecheckInterval
+		recheckInterval, err := settings.RecheckInterval(DefaultAlchemyRecheckInterval)
+		if err != nil {
+			return nil, err
 		}
 
 		networks := v.resolveNetworks(logger, apiUrl, recheckInterval)

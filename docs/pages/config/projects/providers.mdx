@@ -143,6 +143,14 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 | `upstreamIdTemplate` | string | `"<PROVIDER>-<NETWORK>"` | Placeholders: `<VENDOR>`, `<PROVIDER>`, `<NETWORK>` (full network id e.g. `evm:1`), `<EVM_CHAIN_ID>` (numeric; `N/A` for non-evm networks). Validation requires non-empty. <SourceLink file="common/defaults.go" lines="1477-1479" /> |
 | `overrides` | `map[string]*UpstreamConfig` | `nil` | Keys are wildcard patterns (WildcardMatch grammar: `*`, `?`, `\|` OR, `&` AND, `!` NOT). First match from Go map iteration (nondeterministic for overlapping keys) is copied as the base config; no match → fresh `UpstreamConfig` with defaults. Pattern-match errors silently skipped. Each override validated with endpoint check skipped. <SourceLink file="thirdparty/provider.go" lines="77-101" /> |
 
+#### Catalog refresh interval
+
+The remote-catalog vendors (alchemy, chainstack, conduit, drpc, quicknode, repository, superchain, tenderly) share the following setting. Their individual defaults remain listed in the vendor tables below.
+
+| field | type | default | behavior / footguns |
+|---|---|---|---|
+| `settings.recheckInterval` | duration string or number of milliseconds | vendor-specific; missing or `null` uses the vendor default | YAML and TypeScript accept `"1h"` or `3600000`; fractional milliseconds are supported. Programmatic Go config also accepts `time.Duration` and `common.Duration`. Malformed values, unsupported types, non-finite numbers, and numeric overflow fail config validation. <SourceLink file="common/vendor_settings.go" /> |
+
 #### URL shorthand derivation
 
 | shorthand | derived settings |
@@ -710,13 +718,13 @@ export default createConfig({
 - Use **`onlyNetworks`** to restrict expensive vendors to the chains you actually need; it also prevents the vendor's `SupportsNetwork` from being called for irrelevant chains.
 - Use **exact `evm:<chainId>` keys** in `overrides` — never mix a catch-all `"*"` with more-specific patterns in the same map. Go map iteration is nondeterministic; overlapping keys produce different results across restarts.
 - For **QuickNode** with multiple logical endpoint groups, use a separate `apiKey` per group (provisioned in the QuickNode dashboard). Sharing one `apiKey` with different `tagIds`/`tagLabels` shares one endpoint snapshot due to the apiKey-only cache key.
-- **`recheckInterval` cannot be set from YAML or TypeScript config.** The type assertion `.(time.Duration)` fails on YAML strings and JSON numbers. Use programmatic Go config (`common.VendorSettings{"recheckInterval": 12 * time.Hour}`) if you need a custom freshness window.
+- Set **`recheckInterval`** to a duration string such as `"12h"` or a number of milliseconds in YAML or TypeScript config to customize the catalog freshness window. Omit it or use `null` to retain the vendor default.
 - Vendors with no static fallback (conduit, superchain, tenderly, quicknode, chainstack, repository) return `ErrRemoteCacheCold` on cold start. The initializer retries with backoff, but first requests for those networks will see `ErrNetworkInitializing` until the remote catalog fetches. Pair these vendors with a fallback provider that has a static map if cold-start latency matters.
 - **Do not use `providers: []` to "disable" auto-injection** — an explicit empty providers list still triggers default injection if upstreams is also empty. Provide at least one upstream or one provider to take full control.
 
 ### Edge cases & gotchas
 
-1. **`recheckInterval` from YAML is silently ignored** — every vendor reads it with `.(time.Duration)`. YAML scalars decode to `string`/`int64` so the assertion fails and the vendor default applies. Only Go programmatic config can set it. <SourceLink file="thirdparty/repository.go" lines="56-59" />
+1. **`recheckInterval` uses explicit units** — nonzero duration strings need a unit (`"1h"`); numbers are milliseconds (`3600000` also means one hour). Zero and negative intervals retain the existing always-stale behavior, so each lookup can request an async refresh; they do not disable refreshes. Invalid values fail config loading with the provider id and `settings.recheckInterval` in the error. <SourceLink file="common/vendor_settings.go" /> <SourceLink file="common/vendor_settings_test.go" /> <SourceLink file="thirdparty/recheck_interval_test.go" />
 2. **Cold-start contract differs by vendor**: alchemy/drpc fall back to built-in maps; conduit/superchain/tenderly/quicknode/chainstack/repository return `ErrRemoteCacheCold` and block until the first remote fetch lands. <SourceLink file="thirdparty/remote_cache.go" lines="85" />
 3. **drpc replaces its fallback after a successful fetch** (no merge); alchemy merges fetched data with its static defaults (API wins on conflict, static fills gaps). <SourceLink file="thirdparty/drpc.go" lines="360-422" /> <SourceLink file="thirdparty/alchemy.go" lines="386-405" />
 4. **Missing-apiKey behavior is inconsistent**: pimlico/routemesh/thirdweb `SupportsNetwork` return an error (provider task retries forever); quicknode/chainstack return `(false, nil)` and are silently skipped. <SourceLink file="thirdparty/pimlico.go" lines="120-123" />
