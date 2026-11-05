@@ -559,7 +559,7 @@ const (
 	// p17AvaxBlockTime: Avalanche's C-chain blocks, real time;
 	// p17AvaxRate: each image's finalized-tag reads a second;
 	// p17AvaxHeadEvery: the period of each of its two head-read clients,
-	// 7.5 reads a second in all: the shadow's mirrored avalanche mix.
+	// 7.5 reads a second in all: a measured avalanche head-read mix.
 	p17AvaxBlockTime = 1200 * time.Millisecond
 	p17AvaxRate      = 3
 	p17AvaxHeadEvery = 2 * time.Second * 2 / 15
