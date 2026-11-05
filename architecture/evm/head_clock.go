@@ -646,12 +646,6 @@ func (t *ChainTracker) runClock() {
 		t.plan(cands, now, bt, pace)
 	}
 	t.climb(cands, now, bt)
-	if len(c.rungs) > 0 {
-		_, ph := c.phase(bt)
-		println("DBGRUN", now.Format("05.000"), c.target, len(cands), pace, c.rungs[0].at.Sub(now).Milliseconds(), c.rungs[0].kind, bt.Milliseconds(), len(c.fit), ph[0].Milliseconds(), ph[len(ph)/2].Milliseconds(), ph[len(ph)-1].Milliseconds(), c.fit[len(c.fit)-1].number, c.top())
-	} else {
-		println("DBGRUN", now.Format("05.000"), c.target, len(cands), pace, "norungs", len(c.sent))
-	}
 }
 
 // plan lays the target's fires (spec §6.8) and, while the clock fetches
@@ -835,7 +829,6 @@ func (t *ChainTracker) fireRung(cands []clockCandidate, r clockRung, now time.Ti
 	id := r.id
 	if id == "" || c.busy(id) || !slices.ContainsFunc(cands, func(cand clockCandidate) bool { return cand.id == id }) {
 		cand, ok := c.fastest(cands)
-		println("DBGRUNG", r.kind, r.id, ok, cand.id, len(cands), cands[0].id, c.busy(cands[0].id))
 		if r.turn || !ok {
 			c.lastDone = now
 			return
@@ -1008,7 +1001,6 @@ func (t *ChainTracker) fire(id string, now time.Time, kind string) *clockFire {
 		after = c.sights[n-1].at
 	}
 	c.lastFire = now
-	println("DBGFIRE", now.Format("05.000"), id, kind, c.top(), c.target, len(c.rungs), c.misses, c.tails)
 	seq := c.seq
 	if !t.askHead(id, common.HeadNeedHash, 0, after, common.AskClock, func(a common.HeadAnswer) { t.clockAnswered(seq, f, a) }) {
 		return nil
@@ -1083,7 +1075,6 @@ func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnsw
 	if current {
 		c.lastDone = now
 	}
-	println("DBGANS", now.Format("05.000"), f.id, f.kind, outcome, f.top, c.top())
 	t.countFire(f, a, outcome)
 }
 
