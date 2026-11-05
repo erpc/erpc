@@ -588,7 +588,7 @@ var p17AvaxUps = []freshUp{
 // its finalized-tag reads is slow (p17SlowRead).
 func p17() spec {
 	sp := freshSpec("P17", p17Scale, freshUps, chainsim.Config{FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth},
-		func(s *scenario) { p17Body(s, time.Second/p17Scale, p17Depth) })
+		func(s *scenario) { p17Judge(s, p17Body(s, time.Second/p17Scale, p17Depth)) })
 	sp.cache = true
 	return sp
 }
@@ -601,7 +601,7 @@ func p17() spec {
 // unverified.
 func p17Avax() spec {
 	sp := freshSpec("P17-avax", 1, p17AvaxUps, chainsim.Config{BlockTime: p17AvaxBlockTime}, chainsim.Faults{FinalityDepth: 1}, func(s *scenario) {
-		p17Body(s, time.Second/p17AvaxRate, 1, freshLoad{p17AvaxHeadEvery, "latest", freshHead}, freshLoad{p17AvaxHeadEvery, "latest", freshLatestBlock})
+		p17Judge(s, p17Body(s, time.Second/p17AvaxRate, 1, freshLoad{p17AvaxHeadEvery, "latest", freshHead}, freshLoad{p17AvaxHeadEvery, "latest", freshLatestBlock}))
 		for pod := range s.h.pods {
 			if s.image(pod) != "new" {
 				continue
@@ -639,14 +639,26 @@ const (
 	p17CeloEvery = 3 * time.Second
 )
 
-// P17-celo: P17's verdicts on celo: 1 s blocks in real time, finality
+// P17-celo: P17's step delays on celo: 1 s blocks in real time, finality
 // p17CeloDepth deep in p17CeloStep steps, p17CeloUps (the reader's
 // finalized tag unsupported, so given up), quorum 2; per image one
-// finalized-tag and one eth_blockNumber client every p17CeloEvery.
+// finalized-tag and one eth_blockNumber client every p17CeloEvery. The
+// old image forwards each tag read upstream, so its share of slow reads
+// is no reference: the new image serves the tag from its Head and cache,
+// so at most p17SlowSlack of its reads are slow (a read that waits for a
+// finalized poll is). With one read per W and a step per 32 reads, it may
+// read the finalized block by number once per step, where the old image
+// forwards every read.
 func p17Celo() spec {
 	sim := chainsim.Config{BlockTime: time.Second, FinalityStep: p17CeloStep, History: p17CeloHistory}
 	sp := freshSpec("P17-celo", 1, p17CeloUps, sim, chainsim.Faults{FinalityDepth: p17CeloDepth}, func(s *scenario) {
-		p17Body(s, p17CeloEvery, p17CeloDepth, freshLoad{p17CeloEvery, "latest", freshHead})
+		r := p17Body(s, p17CeloEvery, p17CeloDepth, freshLoad{p17CeloEvery, "latest", freshHead})
+		if n := r.numbered["new"]; n > float64(r.steps) {
+			s.violate(s.name, "new image sent %.0f by-number block reads for %d finality steps", n, r.steps)
+		}
+		if r.slow["new"] > p17SlowSlack {
+			s.violate(s.name, "%.1f%% of the new image's finalized-tag reads took over %s", 100*r.slow["new"], p17SlowRead)
+		}
 	})
 	sp.cache = true
 	f := sp.faults["http-r"]
@@ -655,17 +667,31 @@ func p17Celo() spec {
 	return sp
 }
 
-// p17Body reads the finalized tag every period beside extra loads.
-func p17Body(s *scenario, period time.Duration, depth uint64, extra ...freshLoad) {
+// p17Result is p17Body's tally per image: its step verdict, its by-number
+// block reads, its share of finalized-tag reads over p17SlowRead; and the
+// run's finality steps.
+type p17Result struct {
+	v              map[string]freshVerdict
+	numbered, slow map[string]float64
+	steps          int
+}
+
+// p17Body reads the finalized tag every period beside extra loads and
+// judges the step delays and the tag's upstream reads against the old
+// image's.
+func p17Body(s *scenario, period time.Duration, depth uint64, extra ...freshLoad) p17Result {
 	s.blocks(10)
 	start := time.Now()
 	imgs, counts := s.freshRun(p17Run, append([]freshLoad{{period, "finalized", freshFinalized}}, extra...)...)
 	end := time.Now()
 	events := s.freshSteps(start, end.Add(-3*s.chain.BlockTime()), depth)
 	var b strings.Builder
-	v := s.freshReport(&b, "steps", "finalized", imgs[0], counts[0], events, end, time.Minute, p17Run)
-	slow := map[string]float64{}
-	for _, im := range imgs[0] {
+	r := p17Result{v: s.freshReport(&b, "steps", "finalized", imgs[0], counts[0], events, end, time.Minute, p17Run),
+		numbered: map[string]float64{}, slow: map[string]float64{}, steps: len(events)}
+	for i, im := range imgs[0] {
+		for _, u := range s.spec.vendors {
+			r.numbered[s.image(im.pod)] += counts[0][i].numbered[u.key]
+		}
 		im.mu.Lock()
 		n := 0
 		for _, d := range im.took {
@@ -674,7 +700,7 @@ func p17Body(s *scenario, period time.Duration, depth uint64, extra ...freshLoad
 			}
 		}
 		if len(im.took) > 0 {
-			slow[s.image(im.pod)] = float64(n) / float64(len(im.took))
+			r.slow[s.image(im.pod)] = float64(n) / float64(len(im.took))
 		}
 		fmt.Fprintf(&b, "pod-%d (%s image): %d of %d finalized-tag reads over %s\n", im.pod+1, s.image(im.pod), n, len(im.took), p17SlowRead)
 		im.mu.Unlock()
@@ -683,12 +709,19 @@ func p17Body(s *scenario, period time.Duration, depth uint64, extra ...freshLoad
 	if len(events) == 0 {
 		s.violate(s.name, "chainsim made no finality step in %s", p17Run)
 	}
-	s.freshJudge(v, "a finality step", "made it", p17P50Slack, p17P90Slack)
-	if o, n := v["old"], v["new"]; n.numberedPerRead > o.numberedPerRead+p17NumberedSlack {
+	s.freshJudge(r.v, "a finality step", "made it", p17P50Slack, p17P90Slack)
+	return r
+}
+
+// p17Judge flags the new image reading the finalized block by number more
+// than p17NumberedSlack per finalized-tag read above the old image, or
+// taking a larger share of slow finalized-tag reads past p17SlowSlack.
+func p17Judge(s *scenario, r p17Result) {
+	if o, n := r.v["old"], r.v["new"]; n.numberedPerRead > o.numberedPerRead+p17NumberedSlack {
 		s.violate(s.name, "new image sent %.3f by-number block reads per finalized-tag read, old %.3f", n.numberedPerRead, o.numberedPerRead)
 	}
-	if slow["new"] > slow["old"]+p17SlowSlack {
-		s.violate(s.name, "%.1f%% of the new image's finalized-tag reads took over %s, old %.1f%%", 100*slow["new"], p17SlowRead, 100*slow["old"])
+	if r.slow["new"] > r.slow["old"]+p17SlowSlack {
+		s.violate(s.name, "%.1f%% of the new image's finalized-tag reads took over %s, old %.1f%%", 100*r.slow["new"], p17SlowRead, 100*r.slow["old"])
 	}
 }
 
