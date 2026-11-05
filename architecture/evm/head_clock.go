@@ -71,10 +71,10 @@ type headClock struct {
 	delta    time.Duration
 	misses   int
 	lastDone time.Time
-	// ladder: target's sight moves off; predicted is when it was due,
-	// sendK the send of the ladder's last rung (S_k).
-	ladder           bool
-	predicted, sendK time.Time
+	// ladder: target's sight moves off; predicted is when it was due;
+	// kEarly: the ladder's last rung (S_k) answered below the target.
+	ladder, kEarly bool
+	predicted      time.Time
 	nextAt, lastFire time.Time
 	// scheduled: target's last rung was not sent when a sight brought
 	// target, which the next run counts as skipped_push.
@@ -166,11 +166,11 @@ func (c *headClock) reset() {
 
 // saw records the first local sight of number at at, its evidence taken
 // at from. The target's sight moves the offset once (spec §6.8): down a
-// step when its evidence was taken by the ladder's last rung's send,
-// up 32 when later, by a tail rung or another channel, and not at all
-// when it came half a block or more after its predicted sight: a missed
-// slot or a halt says nothing of the arrival spread. Each open fetch
-// answer below number is decided (answered).
+// step when the ladder's last rung did not answer below it, up 32 when
+// it did, and not at all when the sight came half a block or more after
+// its predicted sight: a missed slot or a halt says nothing of the
+// arrival spread. Each open fetch answer below number is decided
+// (answered).
 func (c *headClock) saw(number uint64, at, from time.Time, pushed bool, bt time.Duration) {
 	if n := len(c.sights); n > 0 && number <= c.sights[n-1].number {
 		return
@@ -181,7 +181,7 @@ func (c *headClock) saw(number uint64, at, from time.Time, pushed bool, bt time.
 		}
 		if c.ladder {
 			switch {
-			case !from.After(c.sendK):
+			case !c.kEarly:
 				c.off = max(c.off-1.0/400, -0.5)
 			case at.Before(c.predicted.Add(bt / 2)):
 				c.off = min(c.off+32.0/400, 1)
@@ -644,7 +644,7 @@ func (t *ChainTracker) plan(cands []clockCandidate, now time.Time, bt, pace time
 	if !c.offSet {
 		c.off, c.offSet = 0.1, true
 	}
-	c.planned, c.ladder, c.scheduled = true, false, true
+	c.planned, c.ladder, c.kEarly, c.scheduled = true, false, false, true
 	c.rungs, c.sent, c.votes = nil, nil, nil
 	c.k, c.tails, c.misses, c.lastDone = 1, 0, 0, time.Time{}
 	p := c.predict(c.target, bt)
@@ -688,7 +688,6 @@ func (t *ChainTracker) plan(cands []clockCandidate, now time.Time, bt, pace time
 	c.ladder, c.predicted = true, p
 	if len(turns) == 0 {
 		c.rungs = []clockRung{{at: at, kind: "probe"}}
-		c.sendK = at
 		return
 	}
 	c.k = len(turns)
@@ -696,7 +695,7 @@ func (t *ChainTracker) plan(cands []clockCandidate, now time.Time, bt, pace time
 	for j, cand := range turns {
 		r := clockRung{id: cand.id, at: sk.Add(-time.Duration(c.k-1-j)*c.delta - c.rttOf(cand.id)), kind: "rung", turn: true}
 		if j == c.k-1 {
-			r.kind, c.sendK = "probe", r.at
+			r.kind = "probe"
 		}
 		c.rungs = append(c.rungs, r)
 	}
@@ -812,9 +811,6 @@ func (t *ChainTracker) fireRung(cands []clockCandidate, r clockRung, now time.Ti
 		return
 	}
 	f.turn, f.again = r.turn, r.again
-	if r.kind == "probe" && c.ladder {
-		c.sendK = now
-	}
 	c.sent = append(c.sent, f)
 }
 
@@ -1042,6 +1038,7 @@ func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnsw
 		outcome = "behind"
 	case f.ladder():
 		outcome = "early"
+		c.kEarly = c.kEarly || f.kind == "probe"
 	default:
 		outcome = "same"
 	}
