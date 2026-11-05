@@ -178,10 +178,11 @@ type servedTipLane struct {
 	// within 2 W of it the lane has finality demand (refreshFinalized).
 	finalizedReadAt atomic.Int64
 	// finalizedStepSize and finalizedStepDepth are the lane's finality
-	// step and its depth below Latest, the smallest of the last advances
-	// (finalizedSteps); 0 while none was seen. finalizedDueAt is the
-	// Latest a due step's refresh last started at (dueFinalizedStep).
-	finalizedStepSize, finalizedStepDepth, finalizedDueAt atomic.Int64
+	// step and its depth below the voters' sight of the head, the smallest
+	// of the last advances (finalizedSteps); 0 while none was seen.
+	// finalizedDueAt is the sight a due step's refresh last started at,
+	// finalizedDueStartedAt (unix ns) when (dueFinalizedStep).
+	finalizedStepSize, finalizedStepDepth, finalizedDueAt, finalizedDueStartedAt atomic.Int64
 	// finalizedSteps are the last advances of the lane's Finalized, size
 	// and depth below Latest, newest at finalizedStepsAt-1 mod len.
 	// Guarded by mu.
@@ -996,20 +997,20 @@ func isSimpleGroupSelector(selector string) bool {
 // refreshFinalized refreshes the finalized numbers of selector sel's
 // voters for a finalized-tag request (spec §6.4 Finality, §6.8). The
 // request never waits for it: it takes Finalized at once, and the refresh
-// runs in the background, one at a time per lane. A lane that learned its
-// finality step and had a finalized-tag request within 2 W polls each
-// step as its Latest makes it due (dueFinalizedStep), so its requests poll
-// nothing. Otherwise, while q voters reported finalized within W the
-// refresh polls one voter; at the idle edge, fewer than q such reports, as
-// many as Finalized lacks, so the next request takes their answers.
+// runs in the background, one at a time per lane. While the lane's head
+// makes its finality steps due (dueFinalizedStep started one within W),
+// its requests poll nothing. Otherwise, while q voters reported finalized
+// within W the refresh polls one voter; at the idle edge, fewer than q
+// such reports, as many as Finalized lacks, so the next request takes
+// their answers.
 func (n *Network) refreshFinalized(ctx context.Context, sel string) {
 	l := n.laneFor(sel)
 	if l == nil {
 		l = &n.servedTipAll
 	}
 	w := health.FreshnessWindow(n.EvmBlockTime())
-	prev := l.finalizedReadAt.Swap(time.Now().UnixNano())
-	if l.finalizedStepSize.Load() > 0 && prev > 0 && time.Since(time.Unix(0, prev)) <= 2*w {
+	l.finalizedReadAt.Store(time.Now().UnixNano())
+	if time.Since(time.Unix(0, l.finalizedDueStartedAt.Load())) <= w {
 		return
 	}
 	s := n.voters(tipScope{sel: sel}, voterQuery{kind: numberVote})
@@ -1055,6 +1056,7 @@ func (n *Network) dueFinalizedStep(l *servedTipLane, finalized, latest int64) {
 	}
 	if n.goPollFinalized(n.appCtx, l, l.selector, s, q, w, 0, finalized+size) {
 		l.finalizedDueAt.Store(latest)
+		l.finalizedDueStartedAt.Store(time.Now().UnixNano())
 	}
 }
 
