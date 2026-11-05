@@ -73,8 +73,8 @@ type headClock struct {
 	lastDone time.Time
 	// ladder: target's sight moves off; predicted is when it was due;
 	// kEarly: the ladder's last rung (S_k) answered below the target.
-	ladder, kEarly bool
-	predicted      time.Time
+	ladder, kEarly   bool
+	predicted        time.Time
 	nextAt, lastFire time.Time
 	// scheduled: target's last rung was not sent when a sight brought
 	// target, which the next run counts as skipped_push.
