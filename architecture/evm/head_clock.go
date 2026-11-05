@@ -84,7 +84,9 @@ type headClock struct {
 
 type clockSight struct {
 	number uint64
-	at     time.Time
+	// at is when it reached this instance; from when its evidence was
+	// taken: a fetch's send time, a push's receipt.
+	at, from time.Time
 	// pushed: a push, not a fetch, brought it first; onTime: a push no
 	// later than its predicted sight plus the push allowance (pushLate).
 	pushed, onTime bool
@@ -111,10 +113,15 @@ func (f *clockFire) probe() bool { return f.kind == "probe" || f.kind == "retry"
 
 // clockVoter is what the clock learned of one voter: its round trip's EMA
 // and mean deviation, and late, an EMA of how far behind the first sight
-// its answers were, so a lagging voter is not the target.
+// its answers were, so a lagging voter is not the target. asked and
+// askedAt are its last fetch's answer and send time, open until a first
+// sight above it decides whether it lagged (answered).
 type clockVoter struct {
 	rtt, dev, late time.Duration
 	samples        int
+	asked          uint64
+	askedAt        time.Time
+	open           bool
 }
 
 func (c *headClock) reset() {
@@ -122,13 +129,15 @@ func (c *headClock) reset() {
 	*c = headClock{seq: seq, ups: make(map[string]*clockVoter), taken: make(map[string]time.Time)}
 }
 
-// saw records the first local sight of number at at. A poll, not a push,
-// that brings the target before its scheduled probe shows the probe was
-// late by at least the gap: the offset moves earlier by it, so a voter
-// that lags the chain (an own node behind the vendors) and polls on its
-// own never sets the phase the vendors' blocks are fetched at. A push
-// skips the probe and moves nothing: it costs no fetch.
-func (c *headClock) saw(number uint64, at time.Time, pushed bool, bt time.Duration) {
+// saw records the first local sight of number at at, its evidence taken
+// at from. A poll, not a push, that brings the target before its
+// scheduled probe shows the probe was late by at least the gap: the
+// offset moves earlier by it, so a voter that lags the chain (an own node
+// behind the vendors) and polls on its own never sets the phase the
+// vendors' blocks are fetched at. A push skips the probe and moves
+// nothing: it costs no fetch. Each open fetch answer below number is
+// decided (answered).
+func (c *headClock) saw(number uint64, at, from time.Time, pushed bool, bt time.Duration) {
 	if n := len(c.sights); n > 0 && number <= c.sights[n-1].number {
 		return
 	}
@@ -139,7 +148,7 @@ func (c *headClock) saw(number uint64, at time.Time, pushed bool, bt time.Durati
 		}
 	}
 	c.scheduled = false
-	s := clockSight{number: number, at: at, pushed: pushed}
+	s := clockSight{number: number, at: at, from: from, pushed: pushed}
 	s.onTime = pushed && (!c.pushLane || bt <= 0 || !at.After(c.predict(number, bt).Add(c.pushLate(bt))))
 	if c.phasePoint(s, bt) {
 		c.fit = appendSight(c.fit, s)
@@ -151,6 +160,41 @@ func (c *headClock) saw(number uint64, at time.Time, pushed bool, bt time.Durati
 		c.missed++
 	}
 	c.sights = appendSight(c.sights, s)
+	for id, v := range c.ups {
+		if v.open && v.asked < number {
+			v.open = false
+			if v.askedAt.After(from) {
+				c.sampleLate(id, v.askedAt.Sub(from))
+			}
+		}
+	}
+}
+
+// answered takes voter id's fetch sent at sent that answered number: a
+// fetch sent before it that brought a higher number shows the voter
+// lagged by at least the gap, whichever answer reached this instance
+// first. A first sight above number decides it now if there is one, else
+// when it comes (saw); each answer is decided once, as the clock's answer
+// and as its vote.
+func (c *headClock) answered(id string, number uint64, sent time.Time) {
+	v := c.voter(id)
+	if v.asked == number && v.askedAt.Equal(sent) {
+		return
+	}
+	v.asked, v.askedAt, v.open = number, sent, true
+	var from time.Time
+	for _, s := range c.sights {
+		if s.number > number && (from.IsZero() || s.from.Before(from)) {
+			from = s.from
+		}
+	}
+	if from.IsZero() {
+		return
+	}
+	v.open = false
+	if sent.After(from) {
+		c.sampleLate(id, sent.Sub(from))
+	}
 }
 
 // phasePoint reports whether sight s moves the phase. Until a push
@@ -365,7 +409,9 @@ func (t *ChainTracker) clockCandidates() []clockCandidate {
 // the served age, and the first read of the block goes to its holder.
 // Those come from the voters polled at least every two blocks while any
 // is a candidate (probePool): a poll interval is the operator's read
-// budget for that voter's head.
+// budget for that voter's head. A voter there the clock never measured
+// is near too: one fetch measures it, where an unmeasured round trip
+// would keep it out while a measured voter's lateness grows.
 // A turn is the block's fire too, so only a voter within a quarter block
 // of the fastest takes one, and only one polled less often than every two
 // blocks: a far or lagging voter, or one polled every block, polls on its
@@ -416,7 +462,7 @@ func (t *ChainTracker) pickTarget(cands []clockCandidate, skip string, now time.
 	}
 	var near []clockCandidate
 	for _, cand := range pool {
-		if cand.id != skip && c.score(cand.id) <= best+bestRTT/4 {
+		if v := c.ups[cand.id]; cand.id != skip && (c.score(cand.id) <= best+bestRTT/4 || !edge && (v == nil || v.samples == 0)) {
 			near = append(near, cand)
 		}
 	}
@@ -792,8 +838,9 @@ func (t *ChainTracker) fire(id string, now time.Time, kind string) *clockFire {
 // after the vote it carried: a new block resets the misses, and a probe's
 // pulls the offset earlier; a probe's answer still at f's top was early,
 // which pushes the offset later and schedules the one retry, or a miss
-// once the retry was spent; an answer below what another voter brought
-// marks its voter late. Every answer is counted by f's kind and outcome.
+// once the retry was spent; an answer below what a fetch sent before it
+// brought marks its voter late (answered). Every answer is counted by f's
+// kind and outcome.
 func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnswer) {
 	c := &t.clock
 	if seq != c.seq {
@@ -827,22 +874,21 @@ func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnsw
 			c.edgeDone = true
 		}
 	}
+	if a.Err == nil && ok && sh.h != nil && !a.At.IsZero() {
+		c.answered(f.id, sh.h.number, a.At)
+	}
 	outcome := "failed"
 	switch {
 	case a.Err != nil || !ok || sh.h == nil:
 	case sh.h.number > f.top:
 		outcome, c.misses = "new", 0
-		c.sampleLate(f.id, 0)
 		if f.probe() && !f.hedged {
 			c.off = max(c.off-1.0/400, -0.5)
 		}
 	case c.top() > f.top:
 		// Another channel brought the block while this voter still
-		// answered the one before: it lags.
+		// answered the one before.
 		outcome = "behind"
-		if seen := c.sightOf(c.top()); !seen.IsZero() {
-			c.sampleLate(f.id, now.Sub(seen))
-		}
 	case !f.probe():
 		outcome = "same"
 	default:
