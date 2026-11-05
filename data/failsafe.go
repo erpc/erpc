@@ -3,6 +3,7 @@ package data
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"slices"
@@ -330,4 +331,12 @@ func (f *FailsafeConnector) WatchCounterInt64(ctx context.Context, key string) (
 
 func (f *FailsafeConnector) PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error {
 	return f.wrapped.PublishCounterInt64(ctx, key, value)
+}
+
+// DeleteByPattern forwards admin cache purge to the wrapped connector when supported.
+func (f *FailsafeConnector) DeleteByPattern(ctx context.Context, opts PatternDeleteOpts) (int64, int64, error) {
+	if d, ok := f.wrapped.(PatternDeleter); ok {
+		return d.DeleteByPattern(ctx, opts)
+	}
+	return 0, 0, fmt.Errorf("connector %q: %w", f.wrapped.Id(), ErrPatternDeleteUnsupported)
 }
