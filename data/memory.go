@@ -383,13 +383,20 @@ func (m *MemoryConnector) DeleteByPattern(ctx context.Context, opts PatternDelet
 	// hashIndex. Set/SetWithTTL return once the write is buffered; trackKey
 	// runs at that point. A Get-based liveness check in that window would miss
 	// and untrack the key permanently (OnEvict/OnReject never fire for a key
-	// that was never applied). Del on a missing orphan is a no-op.
+	// that was never applied).
 	m.cache.Wait()
 
 	var matched, deleted int64
 	m.hashIndex.Range(func(_, v any) bool {
 		key, ok := v.(string)
 		if !ok {
+			return true
+		}
+		// Drop index orphans left by Set↔OnEvict/OnReject races (entry already
+		// gone). GetTTL after Wait avoids the buffered-Set false miss and does
+		// not bump TinyLFU frequency or hit metrics the way Get would.
+		if _, alive := m.cache.GetTTL(key); !alive {
+			m.untrackKey(key)
 			return true
 		}
 		if !globMatchAny(key, patterns) {
