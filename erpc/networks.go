@@ -1032,7 +1032,7 @@ func (n *Network) refreshFinalized(ctx context.Context, sel string) {
 }
 
 // dueFinalizedStep starts lane l's refresh for its next finality step
-// once latest, the voters' q-th highest, makes the step due: at least
+// once latest, the voters' sight of the head (refreshLane), makes the step due: at least
 // Finalized + the learned step + the learned depth, as the voters' own
 // finality moved before (spec §6.8). It runs while the lane has finality
 // demand, once per latest; callers hold l.mu.
