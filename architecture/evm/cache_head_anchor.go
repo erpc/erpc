@@ -2,16 +2,17 @@ package evm
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 )
 
-// CacheHeadAnchor lowers a network's served tags to the newest block its cache
-// serves (evm.servedTip.followCacheHead), so a client that reads "latest" and
-// then asks for that block's receipts, logs or body asks for a block the cache
-// already holds.
+// CacheHeadAnchor lowers a network's served "latest" to the newest block its
+// cache serves (evm.servedTip.followCacheHead), so a client that reads
+// "latest" and then asks for that block's receipts, logs or body asks for a
+// block the cache already holds.
 //
 // The cache's head is the one its realtime policy for eth_getBlockByNumber
 // ("latest") reads from, and it counts only while that policy's age guard
@@ -20,11 +21,18 @@ import (
 // behind stops anchoring by itself, and tags are served as computed. The
 // anchor assumes the connector that serves latest blocks also serves the
 // follow-up reads.
+//
+// It is a read-side clamp only: it feeds no upstream head, no state poller,
+// no subscription and no reorg decision.
 type CacheHeadAnchor struct {
 	networkId string
 	blockTime func() time.Duration
 	policy    *data.CachePolicy
 	reporter  data.CacheHeadReporter
+	// heldSince is when Clamp started holding latest at the value already
+	// served above a fresh cache head; nil while it is not holding. Monotonic,
+	// so a clock step neither ends nor extends a hold.
+	heldSince atomic.Pointer[time.Time]
 }
 
 // HeadAnchor returns the anchor for networkId: the first realtime policy, on a
@@ -48,21 +56,45 @@ func (c *EvmJsonRpcCache) HeadAnchor(networkId string, blockTime func() time.Dur
 	return nil
 }
 
-// Clamp returns tip lowered to the cache's head while the policy's age guard
-// would serve that head, but never below served, the value last served: a
-// cache that turns fresh again below a tip already served holds the tip there
-// until it catches up, instead of stepping it back. It never raises tip, and
-// an unknown tip (<= 0) stays unknown. Nil-safe: a network without the anchor
-// pays one comparison.
+// Clamp returns the latest block to serve for tip, the computed latest, given
+// served, the latest last served: the cache's head while the policy's age
+// guard would serve it and it is below tip. Never below served, so latest
+// never steps back: a fresh head below served holds latest at served, for at
+// most one TTL. A cache that does not catch up within its own bound, one that
+// reports another chain say, then stops anchoring until it goes stale or
+// reaches the served value, so it cannot freeze latest. It never raises tip,
+// and an unknown tip (<= 0) stays unknown. Nil-safe: a network without the
+// anchor pays one comparison.
 func (a *CacheHeadAnchor) Clamp(tip, served int64) int64 {
 	if a == nil || tip <= 0 {
 		return tip
 	}
+	now := time.Now()
+	ttl := a.ttl()
 	number, timestamp, ok := a.reporter.CacheLatestBlock(a.networkId)
-	if !ok || number >= tip || !realtimeAdmits(a.ttl(), timestamp, time.Now()) {
+	if !ok || number >= tip || !realtimeAdmits(ttl, timestamp, now) {
+		a.endHold()
 		return tip
 	}
-	return min(tip, max(number, served))
+	if number >= served {
+		a.endHold()
+		return number
+	}
+	since := a.heldSince.Load()
+	if since == nil {
+		// Its own variable, so only a hold that starts allocates.
+		start := now
+		a.heldSince.CompareAndSwap(nil, &start)
+	} else if now.Sub(*since) > ttl {
+		return tip
+	}
+	return min(tip, served)
+}
+
+func (a *CacheHeadAnchor) endHold() {
+	if a.heldSince.Load() != nil {
+		a.heldSince.Store(nil)
+	}
 }
 
 // Run refreshes the connector's head every eighth of the TTL (50ms to 1s)

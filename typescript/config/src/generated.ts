@@ -2079,16 +2079,17 @@ export interface EvmServedTipConfig {
    */
   maxRegressionBlocks?: number /* int64 */;
   /**
-   * FollowCacheHead lowers "latest" and "finalized" to the cache's newest
-   * block while the cache would serve it: the newest block of the first
-   * realtime cache policy, with a TTL, on a head-aware connector (the grpc
-   * driver) that serves eth_getBlockByNumber("latest") for this network, as
-   * long as that policy's realtime TTL admits its age. eth_blockNumber,
-   * latest blocks and tag interpolation then name a block the cache already
-   * holds, so follow-up reads of it hit the cache. Older or unknown: tags are
-   * served as computed. It never raises a tag, never lowers one below a
-   * value already served, and never takes latest below a block a newHeads
-   * subscriber saw.
+   * FollowCacheHead lowers the network-wide "latest" to the cache's newest
+   * block while the cache would serve it, and keeps "finalized" at or below
+   * it: the newest block of the first realtime cache policy, with a TTL, on
+   * a head-aware connector (the grpc driver) that serves
+   * eth_getBlockByNumber("latest") for this network, as long as that
+   * policy's realtime TTL admits its age. eth_blockNumber, latest blocks and
+   * tag interpolation then name a block the cache already holds, so
+   * follow-up reads of it hit the cache. Older or unknown: tags are served
+   * as computed. It never raises latest, never lowers it below a value
+   * already served or a block a newHeads subscriber saw, and never touches
+   * subscriptions.
    */
   followCacheHead?: boolean;
 }

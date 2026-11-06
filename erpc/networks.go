@@ -1170,15 +1170,14 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 		tip = n.guardServedTipRegression(axis, lane.label, anchor, pick, live)
 	}
 
-	// Cache-head anchor (evm.servedTip.followCacheHead): the tip is lowered to
-	// the cache's newest block while the cache would serve that block, so
-	// follow-up reads of the served block hit the cache. Never below what the
-	// lane last served: a cache that turns fresh again below it holds the tip
-	// instead of stepping it back, so a request without a lane, which keeps no
-	// served value, is not anchored. It runs before the delivered-head floor,
-	// so latest never drops below a block a newHeads subscriber already saw.
-	// On finalized it keeps "finalized" at or below the anchored "latest".
-	if anchor != nil {
+	// Cache-head anchor (evm.servedTip.followCacheHead): network-wide "latest"
+	// is lowered to the cache's newest block while the cache would serve that
+	// block, so follow-up reads of the served block hit the cache, and never
+	// below what the lane last served (evm.CacheHeadAnchor.Clamp). Only the
+	// network-wide lane is anchored: the one served value the anchor holds.
+	// It runs before the delivered-head floor, so latest never drops below a
+	// block a newHeads subscriber already saw.
+	if !finalized && lane == &n.servedTipAll {
 		tip = n.cacheHead.Clamp(tip, anchor.seenValue.Load())
 	}
 
@@ -1200,6 +1199,15 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 	if tip > 0 {
 		if floor, _ := n.guaranteedFloor(ctx, finalized); floor > 0 && floor < tip {
 			tip = floor
+		}
+	}
+
+	// With the cache-head anchor, "finalized" never names a block above the
+	// anchored "latest": a chain that finalizes a block behind its head (bsc)
+	// would otherwise serve a finalized block above latest.
+	if finalized && tip > 0 && n.cacheHead != nil {
+		if latest := n.EvmHighestLatestBlockNumber(ctx); latest > 0 && tip > latest {
+			tip = latest
 		}
 	}
 

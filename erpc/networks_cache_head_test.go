@@ -237,12 +237,12 @@ func TestNetworkCacheHead_AnchorsServedLatestToFreshCacheHead(t *testing.T) {
 	assert.Equal(t, fmt.Sprintf("0x%x", upstreamHead), number)
 	assert.Equal(t, upstreamHash, hash, "a block the cache lacks comes from an upstream")
 
-	// 3. The cache turns fresh again one block below the latest already served:
-	// latest holds there instead of stepping back.
-	bds.set(uint64(upstreamHead-1), 0)
-	require.Eventually(t, func() bool { return cacheLatestGauge() == float64(upstreamHead-1) }, 5*time.Second, 50*time.Millisecond,
+	// 3. A glitch: the cache reports a fresh head far below the latest already
+	// served (another chain, say). Latest neither drops nor steps back.
+	bds.set(uint64(upstreamHead-500), 0)
+	require.Eventually(t, func() bool { return cacheLatestGauge() == float64(upstreamHead-500) }, 5*time.Second, 50*time.Millisecond,
 		"the anchor's poll must observe the fresh cache head")
-	assert.Equal(t, upstreamHead, blockNumber(), "the anchor must not step latest back")
+	assert.Equal(t, upstreamHead, blockNumber(), "a fresh head below the served latest must not drag it down")
 
 	// 4. The cache head ahead of the upstreams, fresh: the anchor never
 	// raises latest.
