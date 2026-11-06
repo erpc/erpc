@@ -213,11 +213,11 @@ func (f *FailsafeConnector) Id() string {
 
 // CacheLatestBlock forwards to the wrapped connector when it is head-aware, so the realtime cache
 // age guard and the cache-head anchor keep working through the failsafe wrapper.
-func (f *FailsafeConnector) CacheLatestBlock(networkId string) (CacheHead, bool) {
+func (f *FailsafeConnector) CacheLatestBlock(networkId string) (int64, int64, bool) {
 	if r, ok := f.wrapped.(CacheHeadReporter); ok {
 		return r.CacheLatestBlock(networkId)
 	}
-	return CacheHead{}, false
+	return 0, 0, false
 }
 
 // RefreshLatestBlock forwards to the wrapped connector when it is head-aware.

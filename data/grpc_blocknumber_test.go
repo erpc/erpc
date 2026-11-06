@@ -38,7 +38,7 @@ func newBlockNumberConnector(t *testing.T, cli clients.GrpcBdsClient) *GrpcConne
 		logger:             &lg,
 		clientByNetwork:    map[string]clients.GrpcBdsClient{"evm:1": cli},
 		earliestByNetwork:  map[string]uint64{},
-		latestByNetwork:    map[string]CacheHead{},
+		latestByNetwork:    map[string]latestBlock{},
 		finalizedByNetwork: map[string]uint64{},
 		initializer:        &util.Initializer{},
 	}

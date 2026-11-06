@@ -96,13 +96,14 @@ func TestGrpcConnector_ProbesChainIdAndPollsHeads(t *testing.T) {
 	gc.mu.RUnlock()
 	require.True(t, ok, "probed chainId 1 registers the server as evm:1")
 
-	_, known := gc.CacheLatestBlock("evm:1")
+	_, _, known := gc.CacheLatestBlock("evm:1")
 	assert.False(t, known, "head unknown before the first poll")
 
 	gc.pollBlockHeadsOnce(context.Background())
-	head, known := gc.CacheLatestBlock("evm:1")
+	number, ts, known := gc.CacheLatestBlock("evm:1")
 	assert.True(t, known)
-	assert.Equal(t, CacheHead{Number: 500, Timestamp: 5_000}, head)
+	assert.Equal(t, int64(500), number)
+	assert.Equal(t, int64(5_000), ts)
 	gc.mu.RLock()
 	assert.Equal(t, uint64(100), gc.earliestByNetwork["evm:1"])
 	assert.Equal(t, uint64(400), gc.finalizedByNetwork["evm:1"])
@@ -157,9 +158,10 @@ func TestGrpcConnector_PollKeepsPriorHeadsWhenTagsAreMissing(t *testing.T) {
 	assert.Equal(t, uint64(3), gc.earliestByNetwork["evm:1"], "a null earliest block leaves the prior value")
 	assert.Equal(t, uint64(6), gc.finalizedByNetwork["evm:1"], "a null finalized block leaves the prior value")
 	gc.mu.RUnlock()
-	head, known := gc.CacheLatestBlock("evm:1")
+	number, ts, known := gc.CacheLatestBlock("evm:1")
 	assert.True(t, known)
-	assert.Equal(t, CacheHead{Number: 7, Timestamp: 70}, head)
+	assert.Equal(t, int64(7), number)
+	assert.Equal(t, int64(70), ts)
 }
 
 func TestGrpcConnector_ConfiguredNetworkIdSkipsProbe(t *testing.T) {

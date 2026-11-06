@@ -163,30 +163,6 @@ func (c *EvmJsonRpcCache) SetPolicies(policies []*data.CachePolicy) {
 	c.policies = policies
 }
 
-// HeadReporters returns, once each, the head-aware connectors (data.CacheHeadReporter) of the
-// policies that cover networkId: the read-through caches whose newest block a network may anchor
-// its served "latest" to (evm.servedTip.cacheHeadMaxAge).
-func (c *EvmJsonRpcCache) HeadReporters(networkId string) []data.CacheHeadReporter {
-	var out []data.CacheHeadReporter
-	seen := make(map[data.Connector]bool)
-	for _, policy := range c.policies {
-		connector := policy.GetConnector()
-		if seen[connector] {
-			continue
-		}
-		reporter, ok := connector.(data.CacheHeadReporter)
-		if !ok {
-			continue
-		}
-		if match, err := policy.MatchesNetwork(networkId); err != nil || !match {
-			continue
-		}
-		seen[connector] = true
-		out = append(out, reporter)
-	}
-	return out
-}
-
 // observeGetLogsRange records the concrete block-range size of an eth_getLogs
 // request into MetricCacheEvmGetLogsRange, tagged by the connector/policy/ttl
 // involved and the hit/miss outcome. It is a no-op for non-getLogs methods and
@@ -1017,8 +993,8 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 		// can still be enforced for these methods when the connector is head-aware (read-through).
 		blockTimestamp = 0
 		if reporter, ok := policy.GetConnector().(data.CacheHeadReporter); ok {
-			if head, known := reporter.CacheLatestBlock(req.NetworkId()); known {
-				blockTimestamp = head.Timestamp
+			if _, ts, known := reporter.CacheLatestBlock(req.NetworkId()); known {
+				blockTimestamp = ts
 			}
 		}
 		if blockTimestamp <= 0 {
@@ -1034,18 +1010,14 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 		}
 	}
 
-	// Calculate the age of the block
-	now := time.Now().Unix()
-	age := time.Duration(now-blockTimestamp) * time.Second
-
-	// Check if the age exceeds the TTL
-	if age > effectiveTTL {
+	now := time.Now()
+	if !realtimeAdmits(effectiveTTL, blockTimestamp, now) {
 		if c.logger.GetLevel() <= zerolog.DebugLevel {
 			c.logger.Debug().
-				Dur("age", age).
+				Dur("age", time.Duration(now.Unix()-blockTimestamp)*time.Second).
 				Dur("ttl", effectiveTTL).
 				Int64("blockTimestamp", blockTimestamp).
-				Int64("now", now).
+				Int64("now", now.Unix()).
 				Str("policy", policy.String()).
 				Msg("rejecting cached result because block age exceeds policy TTL")
 		}
@@ -1068,6 +1040,15 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 
 	// Accept the result as it's within the acceptable age
 	return true
+}
+
+// realtimeAdmits reports whether a block stamped blockTimestamp (unix seconds)
+// is still young enough at now to serve under a realtime policy's ttl. Whole
+// seconds on both sides, as block timestamps are. It is the one rule for the
+// realtime age guard and the cache-head anchor, so the network serves "latest"
+// at the cache's head exactly while the cache would serve that block.
+func realtimeAdmits(ttl time.Duration, blockTimestamp int64, now time.Time) bool {
+	return time.Duration(now.Unix()-blockTimestamp)*time.Second <= ttl
 }
 
 // networkBlockTime returns the request network's estimated block time, or 0 if

@@ -43,11 +43,9 @@ type Network struct {
 	failsafeExecutors    []*networkExecutor // main: failsafe rename FailsafeExecutor → networkExecutor
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	cacheDal             common.CacheDAL
-	// cacheHead caps the served latest at the cache's fresh head; nil without
-	// evm.servedTip.cacheHeadMaxAge.
-	cacheHead         *cacheHeadAnchor
-	metricsTracker    *health.Tracker
-	upstreamsRegistry *upstream.UpstreamsRegistry
+	cacheHead            *evm.CacheHeadAnchor // nil without evm.servedTip.followCacheHead
+	metricsTracker       *health.Tracker
+	upstreamsRegistry    *upstream.UpstreamsRegistry
 	// policyEngine replaces the legacy `selectionPolicyEvaluator *PolicyEvaluator` field
 	// (and the `erpc/policy_evaluator.go` per-request `AcquirePermit` gating it owned).
 	// The engine pre-computes the ordered upstream list per (network, method) tick;
@@ -1172,6 +1170,18 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 		tip = n.guardServedTipRegression(axis, lane.label, anchor, pick, live)
 	}
 
+	// Cache-head anchor (evm.servedTip.followCacheHead): the tip is lowered to
+	// the cache's newest block while the cache would serve that block, so
+	// follow-up reads of the served block hit the cache. Never below what the
+	// lane last served: a cache that turns fresh again below it holds the tip
+	// instead of stepping it back, so a request without a lane, which keeps no
+	// served value, is not anchored. It runs before the delivered-head floor,
+	// so latest never drops below a block a newHeads subscriber already saw.
+	// On finalized it keeps "finalized" at or below the anchored "latest".
+	if anchor != nil {
+		tip = n.cacheHead.Clamp(tip, anchor.seenValue.Load())
+	}
+
 	// The delivered-head floor is network-wide, so it applies to unscoped
 	// requests whose voters are every upstream, and to eth_blockNumber
 	// whatever its voters: it reports the head subscribers already saw, so it
@@ -1191,15 +1201,6 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 		if floor, _ := n.guaranteedFloor(ctx, finalized); floor > 0 && floor < tip {
 			tip = floor
 		}
-	}
-
-	// Cache-head anchor (evm.servedTip.cacheHeadMaxAge): latest never exceeds
-	// the cache's newest block while that block is fresh, so follow-up reads of
-	// the served block hit the cache. Like the guarantees it only lowers the
-	// tip, and runs after the delivered-head floor, so a newHeads subscriber
-	// may have seen a block above the anchored latest.
-	if !finalized {
-		tip = n.cacheHead.clamp(tip)
 	}
 
 	// Finalized floor (#1353): a change of voters — the quorum passing to a

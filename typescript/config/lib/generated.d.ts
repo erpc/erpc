@@ -2066,18 +2066,18 @@ export interface EvmServedTipConfig {
      */
     maxRegressionBlocks?: number;
     /**
-     * CacheHeadMaxAge anchors "latest" to the cache's newest block. While a
-     * head-aware cache connector (the grpc driver) covering this network holds
-     * a block at most this old — its own timestamp against the wall clock —
-     * the served latest block is capped at that block, so eth_blockNumber,
-     * eth_getBlockByNumber("latest") and "latest" interpolation name a block
-     * the cache already holds and follow-up reads of it hit the cache. Older,
-     * or unknown, and the served latest is computed as without it. Block
-     * timestamps are whole seconds on most chains, so a block reads up to 1s
-     * older than it is: size the bound above the cache's ingestion delay plus
-     * that second. Unset or 0 disables it.
+     * FollowCacheHead lowers "latest" and "finalized" to the cache's newest
+     * block while the cache would serve it: the newest block of the first
+     * realtime cache policy, with a TTL, on a head-aware connector (the grpc
+     * driver) that serves eth_getBlockByNumber("latest") for this network, as
+     * long as that policy's realtime TTL admits its age. eth_blockNumber,
+     * latest blocks and tag interpolation then name a block the cache already
+     * holds, so follow-up reads of it hit the cache. Older or unknown: tags are
+     * served as computed. It never raises a tag, never lowers one below a
+     * value already served, and never takes latest below a block a newHeads
+     * subscriber saw.
      */
-    cacheHeadMaxAge?: Duration;
+    followCacheHead?: boolean;
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.

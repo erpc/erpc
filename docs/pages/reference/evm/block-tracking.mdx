@@ -195,10 +195,15 @@ With `enforceHighestBlock` on (the default) and the served head known, eRPC answ
 
 #### Cache-head anchor
 
-`servedTip.cacheHeadMaxAge` caps the served `latest` at the newest block a head-aware cache connector (the `grpc` driver) holds for the network, while that block is at most `cacheHeadMaxAge` old by its own `timestamp` against the wall clock. `eth_blockNumber`, `eth_getBlockByNumber("latest")` and `latest` interpolation then name a block the cache already holds, so a client's follow-up reads of it (receipts, logs, the block by number) hit the cache instead of upstreams. Older or unknown: `latest` is computed as without it. The anchor only lowers the tip (`min(pick, cache head)`), after the delivered-head floor and the guarantee subsets, so a cache ahead of the upstreams changes nothing and a `newHeads` subscriber may have seen a block above the anchored `latest`. The connectors are those of cache policies whose `network` matches; with several, the highest fresh head counts. While the option is set, the network refreshes their head every `cacheHeadMaxAge / 10` (50ms–1s; `cacheHeadAnchor.run`).
+`servedTip.followCacheHead: true` lowers the network's `latest` and `finalized` to the newest block its cache serves. The source is the first realtime cache policy, with a TTL, on a head-aware connector (the `grpc` driver) that serves `eth_getBlockByNumber("latest")` for the network. While that connector's newest block is young enough for the policy's TTL — the [realtime age guard](/config/database/evm-json-rpc-cache)'s own rule, in whole seconds — tags stop at it: `eth_blockNumber`, `eth_getBlockByNumber("latest")` and tag interpolation name a block the cache already holds, so a client's follow-up reads of it (receipts, logs, the block by number) hit the cache instead of upstreams. Older or unknown: tags are served as computed. The bound is that TTL, so the anchor stops where the cache stops serving `latest`. Source: <SourceLink file="architecture/evm/cache_head_anchor.go" />
 
-- **Bound:** most chains stamp blocks in whole seconds, so a block reads up to 1s older than it is. Set the bound above the cache's ingestion delay plus that second: a bound at or below it never anchors.
-- **Signal:** `erpc_network_cache_head_anchor_total{outcome}`: `anchored` lowered `latest`, `level` the cache already had it, `stale` the head was too old (bound too tight for the cache's delay), `absent` no head known (no head-aware connector, or its fetch fails).
+- **Only lowers:** `min(pick, cache head)`, so a cache ahead of the upstreams changes nothing.
+- **Never steps back:** a cache that turns fresh again below a tip the lane already served holds the tip there. While the cache's age keeps crossing the TTL, each stale moment lifts the served tip to the pick, so the anchor rarely lowers `latest`. A request without a [lane](#selector-scoped-served-tip) keeps no served value and is not anchored.
+- **Streams win:** it runs before the [delivered-head floor](#websocket-delivered-head-floor), so `latest` never drops below a block a `newHeads` subscriber saw; with active subscribers the anchor rarely lowers `latest`.
+- **One connector:** it assumes the connector that serves latest blocks also serves the follow-up reads.
+- **Poll:** while set, the network refreshes the connector's head every TTL/8 (50ms–1s), each fetch allowed up to the TTL; the connector's own head poll runs once a minute.
+- **Signal:** `time() − erpc_cache_connector_latest_block_timestamp_seconds` is the cache head's age; an absent or stalled series means no fresh head. `erpc_network_served_tip_lag_blocks` shows how far tags sit below the freshest upstream.
+- **Side effect:** the age guard reads the same connector head for realtime responses without a block timestamp (`eth_getLogs`, `eth_blockNumber`), so on a following network it judges them by a freshly polled head.
 
 #### Finalized floor
 
@@ -241,7 +246,7 @@ With a `use-upstream` selector, the candidates narrow to the matching upstreams;
 | `networks[*].evm.dynamicBlockTimeDebounceMultiplier` | \*float64 | `0.7` | Scales the EMA block time to compute the debounce. **`0` is silently treated as unset** — the default 0.7 is used. Valid useful range: `0.1`–`1.0`; values above `1.0` make the debounce longer than one block time, causing stale data between polls. To eliminate the EMA-derived debounce, use `statePollerDebounce` on the upstream instead. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="368-372" /> |
 | `networks[*].evm.finalizedDebounceDepthMultiplier` | \*float64 | `0.05` | Finalized polls wait until the upstream's finalized block is older than `(latest − finalized) × EMA block time × multiplier`, when that is longer than the regular debounce. `0` disables it: finalized uses the regular debounce, as before. Also throttles the forced finalized re-check of `blockAvailability` with finalized confidence. Source: <SourceLink file="common/defaults.go" lines="2446" /> |
 
-`networks[*].evm.servedTip.*` keys (`quorum`, `maxRegressionBlocks`, `guaranteedMethods`, `guaranteedFor`, `cacheHeadMaxAge`) and the removed keys with their migration: [Networks config](/config/projects/networks#config-schema).
+`networks[*].evm.servedTip.*` keys (`quorum`, `maxRegressionBlocks`, `guaranteedMethods`, `guaranteedFor`, `followCacheHead`) and the removed keys with their migration: [Networks config](/config/projects/networks#config-schema).
 
 ### Worked examples
 

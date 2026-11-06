@@ -278,20 +278,6 @@ var (
 		Help:      "Transitions into a served-tip regression-guard state (counts state ENTRIES, not evaluations; any nonzero rate is alert-worthy), by outcome: held = the last corroborated pick is being served instead of a pick far below the corroborated live head; failed_open = that hold outlasted the guard's window and the pick is served as computed.",
 	}, []string{"project", "network", "lane", "axis", "outcome"})
 
-	// MetricNetworkCacheHeadAnchorTotal counts the served-latest evaluations of a
-	// network with evm.servedTip.cacheHeadMaxAge, by what the cache-head anchor
-	// did. anchored = the cache's head was fresh and below the computed latest,
-	// so latest was lowered to it; level = it was fresh and at or above latest,
-	// which stands; stale = it was older than the bound; absent = no cache
-	// connector reported a head. stale and absent serve latest as computed, and
-	// they have opposite fixes: stale says the bound is tighter than the cache's
-	// ingestion delay, absent says the cache head is not being fetched.
-	MetricNetworkCacheHeadAnchorTotal = DefineCounter(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "network_cache_head_anchor_total",
-		Help:      "Served-latest evaluations of a network with a cache-head anchor, by outcome: anchored = lowered to the fresh cache head; level = cache head fresh and at or above latest; stale = cache head older than cacheHeadMaxAge; absent = no cache head known.",
-	}, []string{"project", "network", "outcome"})
-
 	// MetricUpstreamHeadBenchedTotal counts the times the health tracker benched
 	// an upstream's head: it stayed behind peers that kept advancing (stalled,
 	// or replaying far behind the tip) for its stall window. A benched upstream

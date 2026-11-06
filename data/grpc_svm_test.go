@@ -46,7 +46,7 @@ func newSvmConnector(t *testing.T, clientsByNetwork map[string]clients.GrpcBdsCl
 		logger:             &lg,
 		clientByNetwork:    clientsByNetwork,
 		earliestByNetwork:  map[string]uint64{},
-		latestByNetwork:    map[string]CacheHead{},
+		latestByNetwork:    map[string]latestBlock{},
 		finalizedByNetwork: map[string]uint64{},
 		initializer:        &util.Initializer{},
 	}
@@ -172,11 +172,12 @@ func TestGrpcConnectorSvmNetworksAreNotHeadPolled(t *testing.T) {
 	// The skipped network keeps no head state, which is what makes
 	// CacheLatestBlock report "unknown" so the realtime age guard
 	// fails open instead of judging SVM by an EVM block's timestamp.
-	_, known := g.CacheLatestBlock("svm:solana-mainnet")
+	_, _, known := g.CacheLatestBlock("svm:solana-mainnet")
 	assert.False(t, known)
 	assert.Equal(t, uint64(0), g.earliestByNetwork["svm:solana-mainnet"])
 
-	head, known := g.CacheLatestBlock("evm:1")
+	number, ts, known := g.CacheLatestBlock("evm:1")
 	assert.True(t, known)
-	assert.Equal(t, CacheHead{Number: 0x10, Timestamp: 0x6500}, head)
+	assert.Equal(t, int64(0x10), number)
+	assert.Equal(t, int64(0x6500), ts)
 }

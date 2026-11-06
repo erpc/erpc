@@ -74,8 +74,9 @@ func (s *cacheHeadBdsServer) GetBlockByNumber(_ context.Context, req *evm.GetBlo
 	}}, nil
 }
 
-// The served latest follows a fresh cache head down, never up, and falls back
-// to the upstreams' head once the cache head is older than cacheHeadMaxAge:
+// The served latest follows a fresh cache head down, never up and never back
+// below a block already served, and falls back to the upstreams' head once the
+// cache head is older than the cache's realtime TTL (evm.servedTip.followCacheHead):
 // full HTTP server, real pollers, the real grpc cache connector against an
 // in-process BDS reader; only the upstreams' HTTP answers are mocked.
 func TestNetworkCacheHead_AnchorsServedLatestToFreshCacheHead(t *testing.T) {
@@ -109,7 +110,7 @@ func TestNetworkCacheHead_AnchorsServedLatestToFreshCacheHead(t *testing.T) {
 				b := util.SafeReadBody(r)
 				return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
 			}).
-			Reply(200).JSON([]byte(`{"result":{"number":"0x1000","timestamp":"0x6702a8f0"}}`))
+			Reply(200).JSON([]byte(fmt.Sprintf(`{"result":{"number":"0x1000","hash":"%s","timestamp":"0x6702a8f0"}}`, upstreamHash)))
 		gock.New(host).Post("").Persist().
 			Filter(func(r *http.Request) bool {
 				b := util.SafeReadBody(r)
@@ -159,7 +160,7 @@ func TestNetworkCacheHead_AnchorsServedLatestToFreshCacheHead(t *testing.T) {
 					Grpc:   &common.GrpcConnectorConfig{Servers: []string{"grpc://" + lis.Addr().String()}},
 				}},
 				Policies: []*common.CachePolicyConfig{
-					{Network: "evm:123", Method: "*", Finality: common.DataFinalityStateRealtime, Connector: "bds", TTL: common.FixedDuration(10 * time.Second)},
+					{Network: "evm:123", Method: "*", Finality: common.DataFinalityStateRealtime, Connector: "bds", TTL: common.FixedDuration(3 * time.Second)},
 					{Network: "evm:123", Method: "*", Finality: common.DataFinalityStateUnfinalized, Connector: "bds", TTL: common.FixedDuration(10 * time.Second)},
 				},
 			},
@@ -170,7 +171,7 @@ func TestNetworkCacheHead_AnchorsServedLatestToFreshCacheHead(t *testing.T) {
 				Architecture: "evm",
 				Evm: &common.EvmNetworkConfig{
 					ChainId:   123,
-					ServedTip: &common.EvmServedTipConfig{CacheHeadMaxAge: common.Duration(3 * time.Second)},
+					ServedTip: &common.EvmServedTipConfig{FollowCacheHead: true},
 				},
 			}},
 			Upstreams: upstreams,
@@ -182,11 +183,9 @@ func TestNetworkCacheHead_AnchorsServedLatestToFreshCacheHead(t *testing.T) {
 	prj, err := erpcInstance.GetProject("test_project")
 	require.NoError(t, err)
 	policy.OverrideAllForTest(prj.policyEngine, "rpc1", "rpc2")
-	nw, err := prj.GetNetwork(context.Background(), util.EvmNetworkId(123))
-	require.NoError(t, err)
 
-	anchorTotal := func(outcome string) float64 {
-		return testutil.ToFloat64(telemetry.MetricNetworkCacheHeadAnchorTotal.WithLabelValues("test_project", nw.Label(), outcome))
+	cacheLatestGauge := func() float64 {
+		return testutil.ToFloat64(telemetry.MetricCacheConnectorLatestBlockNumber.WithLabelValues("bds", common.NetworkAlias(util.EvmNetworkId(123))))
 	}
 	blockNumber := func() int64 {
 		code, _, body := send(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`, nil, nil)
@@ -220,7 +219,6 @@ func TestNetworkCacheHead_AnchorsServedLatestToFreshCacheHead(t *testing.T) {
 
 	// 1. Cache two blocks behind the upstreams, stamped now: latest is the
 	// cache's head, and the block it names comes from the cache.
-	anchoredBefore := anchorTotal("anchored")
 	require.Eventually(t, func() bool { return blockNumber() == cacheHead }, 5*time.Second, 50*time.Millisecond,
 		"eth_blockNumber must serve the fresh cache head")
 	byNumberBefore := upstreamByNumber.Load()
@@ -229,26 +227,27 @@ func TestNetworkCacheHead_AnchorsServedLatestToFreshCacheHead(t *testing.T) {
 	assert.Equal(t, cacheHash, hash, "the anchored latest block must be read from the cache")
 	assert.Equal(t, "HIT", cacheHeader)
 	assert.Equal(t, byNumberBefore, upstreamByNumber.Load(), "no upstream eth_getBlockByNumber for the anchored block")
-	assert.Greater(t, anchorTotal("anchored"), anchoredBefore)
 
 	// 2. The cache head stops being fresh (its block is now 10s old, past the
-	// 3s bound): latest returns to the upstreams' head, read from them.
-	staleBefore := anchorTotal("stale")
+	// 3s realtime TTL): latest returns to the upstreams' head, read from them.
 	bds.set(uint64(cacheHead), 10*time.Second)
 	require.Eventually(t, func() bool { return blockNumber() == upstreamHead }, 10*time.Second, 50*time.Millisecond,
 		"a stale cache head must not anchor latest")
-	assert.Greater(t, anchorTotal("stale"), staleBefore)
-	byNumberBefore = upstreamByNumber.Load()
 	number, hash, _ = latestBlock()
 	assert.Equal(t, fmt.Sprintf("0x%x", upstreamHead), number)
 	assert.Equal(t, upstreamHash, hash, "a block the cache lacks comes from an upstream")
-	assert.Greater(t, upstreamByNumber.Load(), byNumberBefore)
 
-	// 3. The cache head ahead of the upstreams, fresh: the anchor never
+	// 3. The cache turns fresh again one block below the latest already served:
+	// latest holds there instead of stepping back.
+	bds.set(uint64(upstreamHead-1), 0)
+	require.Eventually(t, func() bool { return cacheLatestGauge() == float64(upstreamHead-1) }, 5*time.Second, 50*time.Millisecond,
+		"the anchor's poll must observe the fresh cache head")
+	assert.Equal(t, upstreamHead, blockNumber(), "the anchor must not step latest back")
+
+	// 4. The cache head ahead of the upstreams, fresh: the anchor never
 	// raises latest.
-	levelBefore := anchorTotal("level")
 	bds.set(uint64(cacheAhead), 0)
-	require.Eventually(t, func() bool { return anchorTotal("level") > levelBefore }, 5*time.Second, 50*time.Millisecond,
-		"the anchor must see the fresh cache head ahead of latest")
+	require.Eventually(t, func() bool { return cacheLatestGauge() == float64(cacheAhead) }, 5*time.Second, 50*time.Millisecond,
+		"the anchor's poll must observe the fresh cache head ahead of latest")
 	assert.Equal(t, upstreamHead, blockNumber())
 }

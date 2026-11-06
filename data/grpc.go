@@ -42,8 +42,8 @@ type GrpcConnector struct {
 	// earliest/finalized block number per network (0 if unknown)
 	earliestByNetwork  map[string]uint64
 	finalizedByNetwork map[string]uint64
-	// newest block per network, number and timestamp in lockstep (see recordLatest)
-	latestByNetwork map[string]CacheHead
+	// latest block per network, number and timestamp in lockstep (see recordLatest)
+	latestByNetwork map[string]latestBlock
 	// headers to apply to all clients
 	headers     map[string]string
 	initializer *util.Initializer
@@ -116,7 +116,7 @@ func NewGrpcConnector(
 		clientByNetwork:    make(map[string]clients.GrpcBdsClient),
 		earliestByNetwork:  make(map[string]uint64),
 		finalizedByNetwork: make(map[string]uint64),
-		latestByNetwork:    make(map[string]CacheHead),
+		latestByNetwork:    make(map[string]latestBlock),
 		headers:            map[string]string{},
 		initializer:        util.NewInitializer(ctx, &lg, nil),
 		getTimeout:         cfg.GetTimeout.Duration(),
@@ -247,14 +247,23 @@ func NewGrpcConnector(
 
 func (g *GrpcConnector) Id() string { return g.id }
 
-// CacheLatestBlock reports the newest block this read-through cache last observed for networkId
-// (by the background head poller, RefreshLatestBlock or an eth_blockNumber read). ok is false
-// until both its number and timestamp are known.
-func (g *GrpcConnector) CacheLatestBlock(networkId string) (CacheHead, bool) {
+// latestBlock is a network's latest block as last observed: its number and unix timestamp
+// (seconds), 0 when unknown.
+type latestBlock struct {
+	number    uint64
+	timestamp int64
+}
+
+// CacheLatestBlock reports the number and unix timestamp (seconds) of the latest block this
+// read-through cache last observed for networkId (by the background head poller or
+// RefreshLatestBlock), and whether it is known. Implements CacheHeadReporter so the realtime cache
+// age guard can be enforced for responses that carry no block timestamp of their own, and so a
+// network can follow this cache's head.
+func (g *GrpcConnector) CacheLatestBlock(networkId string) (int64, int64, bool) {
 	g.mu.RLock()
-	head := g.latestByNetwork[networkId]
+	b := g.latestByNetwork[networkId]
 	g.mu.RUnlock()
-	return head, head.Number > 0 && head.Timestamp > 0
+	return int64(b.number), b.timestamp, b.timestamp > 0
 }
 
 // RefreshLatestBlock fetches networkId's latest block now and records it. EVM only, like the
@@ -274,21 +283,14 @@ func (g *GrpcConnector) RefreshLatestBlock(ctx context.Context, networkId string
 	}
 }
 
-// recordLatest stores networkId's latest block, number and timestamp in lockstep (even when ts is
-// 0/unknown) so the reported head timestamp always belongs to the reported number: retaining a
-// previous ts after the number advances would judge an advanced head by an older block's time,
-// while 0 makes CacheLatestBlock report "unknown" and the realtime guard fail open.
-//
-// Several fetches run concurrently (the 60s poller, RefreshLatestBlock, eth_blockNumber reads), so
-// an answer that lands late must not replace a newer one: a block with an older timestamp than the
-// stored one is dropped. A reorg to a lower number still lands, since its block is newer in time.
+// recordLatest stores networkId's latest block and its gauges. The timestamp is stored with the
+// number even when it is 0/unknown, so the reported head timestamp always belongs to the reported
+// number: keeping a previous ts after the number advances would judge an advanced head by an
+// older block's time, while 0 makes CacheLatestBlock report "unknown" and the realtime guard fail
+// open.
 func (g *GrpcConnector) recordLatest(networkId string, num uint64, ts int64) {
 	g.mu.Lock()
-	if prev := g.latestByNetwork[networkId]; ts > 0 && prev.Timestamp > ts {
-		g.mu.Unlock()
-		return
-	}
-	g.latestByNetwork[networkId] = CacheHead{Number: int64(num), Timestamp: ts}
+	g.latestByNetwork[networkId] = latestBlock{number: num, timestamp: ts}
 	g.mu.Unlock()
 	lbl := common.NetworkAlias(networkId)
 	telemetry.MetricCacheConnectorLatestBlockNumber.WithLabelValues(g.id, lbl).Set(float64(num))
@@ -362,12 +364,11 @@ func (g *GrpcConnector) Get(ctx context.Context, index, partitionKey, rangeKey s
 	// eth_blockNumber result shape (a quoted hex string). Freshness is enforced
 	// by the cache layer's realtime gate via the connector's reported head.
 	if method == "eth_blockNumber" {
-		num, ts, ok := g.fetchTaggedBlock(callCtx, cli, "latest")
+		num, _, ok := g.fetchTaggedBlock(callCtx, cli, "latest")
 		if !ok {
 			span.SetAttributes(attribute.String("grpc.skip_reason", "latest_block_unavailable"))
 			return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, GrpcDriverName)
 		}
-		g.recordLatest(networkId, num, ts)
 		span.SetAttributes(attribute.String("grpc.result", "success_block_number"))
 		return []byte(fmt.Sprintf("\"0x%x\"", num)), nil
 	}

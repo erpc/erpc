@@ -18,7 +18,7 @@ type CachePolicy struct {
 	maxSize       *int
 	// readOnly is true when the connector only serves reads (ReadOnlyConnector);
 	// such a policy never matches for set.
-	readOnly bool
+	readOnly      bool
 }
 
 func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CachePolicy, error) {
@@ -134,19 +134,17 @@ func (p *CachePolicy) MatchesForSet(networkId, method string, params []interface
 	return p.config.Finality == finality, nil
 }
 
-// MatchesNetwork reports whether the policy's network pattern covers networkId.
-func (p *CachePolicy) MatchesNetwork(networkId string) (bool, error) {
-	return common.WildcardMatch(p.config.Network, networkId)
-}
-
 func (p *CachePolicy) MatchesForGet(networkId, method string, params []interface{}, finality common.DataFinalityState) (bool, error) {
 	// Respect appliesTo directive for get
 	if p.config.AppliesTo != "" && p.config.AppliesTo != common.CachePolicyAppliesToBoth && p.config.AppliesTo != common.CachePolicyAppliesToGet {
 		return false, nil
 	}
-	match, err := p.MatchesNetwork(networkId)
-	if err != nil || !match {
+	match, err := common.WildcardMatch(p.config.Network, networkId)
+	if err != nil {
 		return false, err
+	}
+	if !match {
+		return false, nil
 	}
 
 	match, err = common.WildcardMatch(p.config.Method, method)

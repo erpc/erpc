@@ -24,8 +24,8 @@ type headReportingConnector struct {
 	known    bool
 }
 
-func (h *headReportingConnector) CacheLatestBlock(networkId string) (data.CacheHead, bool) {
-	return data.CacheHead{Number: 1, Timestamp: h.latestTs}, h.known
+func (h *headReportingConnector) CacheLatestBlock(networkId string) (int64, int64, bool) {
+	return 1, h.latestTs, h.known
 }
 
 func (h *headReportingConnector) RefreshLatestBlock(context.Context, string) {}
