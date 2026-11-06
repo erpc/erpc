@@ -1892,6 +1892,10 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Svm.BlockAvailability == nil && defaults.Svm.BlockAvailability != nil {
 			u.Svm.BlockAvailability = defaults.Svm.BlockAvailability.Copy()
 		}
+		if u.Svm.SkipStatePoller == nil && defaults.Svm.SkipStatePoller != nil {
+			v := *defaults.Svm.SkipStatePoller
+			u.Svm.SkipStatePoller = &v
+		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
 		u.JsonRpc = &JsonRpcUpstreamConfig{
@@ -2157,6 +2161,11 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		} else {
 			e.SkipSyncingCheck = util.BoolPtr(false)
 		}
+	}
+
+	if e.SkipStatePoller == nil && defaults != nil && defaults.SkipStatePoller != nil {
+		v := *defaults.SkipStatePoller
+		e.SkipStatePoller = &v
 	}
 
 	if e.PinLatestTag == nil && defaults != nil {

@@ -208,6 +208,10 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 		e.logger.Debug().Msg("skipping evm state poller for upstream as interval is 0")
 		return nil
 	}
+	if cfg.Evm.SkipStatePoller != nil && *cfg.Evm.SkipStatePoller {
+		e.logger.Debug().Msg("skipping evm state poller for upstream as skipStatePoller is set")
+		return nil
+	}
 
 	if cfg.Evm != nil {
 		if cfg.Evm.StatePollerDebounce != 0 {

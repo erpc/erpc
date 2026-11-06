@@ -1466,6 +1466,12 @@ type EvmUpstreamConfig struct {
 	// Use for nodes that always return a syncing object (e.g. Pharos/Antora) where the response is
 	// misleading and causes circuit breaker false positives.
 	SkipSyncingCheck *bool `yaml:"skipSyncingCheck,omitempty" json:"skipSyncingCheck"`
+	// SkipStatePoller turns off background polling (latest/finalized block,
+	// eth_syncing, earliest-block probes) for this upstream, e.g. a fallback
+	// that bills every request. The upstream then has no known block, which
+	// block-availability treats as unknown, so it stays selectable. Heads
+	// pushed by a WebSocket subscription are still accepted.
+	SkipStatePoller *bool `yaml:"skipStatePoller,omitempty" json:"skipStatePoller"`
 	// HeadLagToleranceBlocks lets the block-availability gate send requests pinned up to N blocks
 	// ABOVE this upstream's observed head instead of rerouting them as stale. Useful for upstreams
 	// that follow the chain tightly but become able to serve a new block a moment after it is
@@ -1665,6 +1671,10 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	if c.SkipSyncingCheck != nil {
 		v := *c.SkipSyncingCheck
 		copied.SkipSyncingCheck = &v
+	}
+	if c.SkipStatePoller != nil {
+		v := *c.SkipStatePoller
+		copied.SkipStatePoller = &v
 	}
 	if c.PinLatestTag != nil {
 		v := *c.PinLatestTag
@@ -2963,6 +2973,12 @@ type SvmUpstreamConfig struct {
 	// every upstream and anchors a firstAvailableSlotPlus bound, mirroring EVM's
 	// earliestBlockPlus. Unknown floor = unbounded.
 	BlockAvailability *SvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
+	// SkipStatePoller turns off background polling (getSlot, getHealth,
+	// getMaxShredInsertSlot, the first-available-slot probe) for this
+	// upstream, e.g. a fallback that bills every request. The upstream then
+	// has no known slot, which the slot filters treat as unknown, so it stays
+	// selectable. Genesis-hash validation (checkGenesisHash) still runs.
+	SkipStatePoller *bool `yaml:"skipStatePoller,omitempty" json:"skipStatePoller"`
 }
 
 // SvmBlockAvailabilityConfig is the per-upstream declared slot window.
@@ -3043,6 +3059,10 @@ func (s *SvmUpstreamConfig) Copy() *SvmUpstreamConfig {
 	out := *s
 	if s.BlockAvailability != nil {
 		out.BlockAvailability = s.BlockAvailability.Copy()
+	}
+	if s.SkipStatePoller != nil {
+		v := *s.SkipStatePoller
+		out.SkipStatePoller = &v
 	}
 	return &out
 }

@@ -220,7 +220,8 @@ With a `use-upstream` selector, the candidates narrow to the matching upstreams;
 
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
-| `upstreams[*].evm.statePollerInterval` | Duration | `30s` | How often `Poll()` fires. **`0` disables the poller entirely**: no background goroutine, no initial synchronous poll. Consequences: `LatestBlock()` returns 0, `FinalizedBlock()` returns 0, `SyncingState()` returns `Unknown`, block-availability checks fail-open, `IsBlockFinalized` returns `ErrFinalizedBlockUnavailable` immediately. Intentional opt-out for chains where polling is expensive. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="147-160" /> |
+| `upstreams[*].evm.statePollerInterval` | Duration | `30s` | How often `Poll()` fires. `0` is unset and becomes `30s` (<SourceLink file="common/defaults.go" lines="2081-2088" />), so it can't turn the poller off; `skipStatePoller` does. |
+| `upstreams[*].evm.skipStatePoller` | `*bool` | `false` | **Turns the poller off**: no background goroutine, no initial synchronous poll. Consequences: `LatestBlock()` returns 0 until a WebSocket head arrives, `FinalizedBlock()` returns 0, `SyncingState()` returns `Unknown`, block-availability checks fail-open, `IsBlockFinalized` returns `ErrFinalizedBlockUnavailable` immediately. Intentional opt-out for upstreams where polling is expensive. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="211-214" /> |
 | `upstreams[*].evm.statePollerDebounce` | Duration | `0` (defer to dynamic/fallback) | Hard per-upstream override for the debounce window. When non-zero, short-circuits the entire `resolveDebounce` algorithm — EMA path and `fallbackStatePollerDebounce` are both bypassed. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="360-363" /> |
 | `upstreams[*].evm.blockAvailability.lower.updateRate` | Duration | `0` (freeze after first detection) | Re-detection cadence for `earliestBlockPlus`-based lower bounds. `0` means the binary-search result is never refreshed within a process lifetime. **Ignored for `latestBlockMinus` and `exactBlock` bounds.** The scheduler goroutine is NOT restarted on config hot-reload. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="694-700" /> |
 | `upstreams[*].evm.blockAvailability.upper.updateRate` | Duration | `0` (freeze after first detection) | Same semantics as `lower.updateRate`. The minimum non-zero rate across lower and upper bounds for the same probe governs the scheduler goroutine. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="694-700" /> |
@@ -328,10 +329,10 @@ With a `use-upstream` selector, the candidates narrow to the matching upstreams;
   yaml={`upstreams:
   - id: archive-node
     evm:
-      statePollerInterval: 0`}
+      skipStatePoller: true`}
   ts={`upstreams: [{
   id: "archive-node",
-  evm: { statePollerInterval: 0 },
+  evm: { skipStatePoller: true },
 }]`}
 />
 
@@ -351,7 +352,7 @@ With a `use-upstream` selector, the candidates narrow to the matching upstreams;
 
 ### Edge cases & gotchas
 
-1. **`statePollerInterval: 0` disables the poller silently.** All block numbers return 0, syncing state is `Unknown`, `IsBlockFinalized` returns `ErrFinalizedBlockUnavailable` immediately, and block availability checks fail-open. The upstream is not excluded from selection but its head is 0, so it never votes.
+1. **`skipStatePoller: true` turns the poller off silently** (`statePollerInterval: 0` does not: it means unset and becomes `30s`). All block numbers return 0, syncing state is `Unknown`, `IsBlockFinalized` returns `ErrFinalizedBlockUnavailable` immediately, and block availability checks fail-open. The upstream is not excluded from selection but its head is 0, so it never votes.
 2. **Two upstreams with the default quorum serve the lower head.** One stalled node holds `latest` until it is benched (its stall window: 90s at the default 30s `statePollerInterval`); then the other votes alone. A node that is catching up slowly is not benched and holds `latest` at its head until `eth_syncing` reports it syncing.
 3. **A rogue head needs `quorum − 1` accomplices.** One far-future or wrong-chain head never moves the pick at quorum ≥ 2.
 4. **`dynamicBlockTimeDebounceMultiplier: 0` is silently treated as unset.** The guard `> 0` causes the value to fall through to the default 0.7.
