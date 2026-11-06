@@ -2163,6 +2163,10 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		e.PinLatestTag = defaults.PinLatestTag
 	}
 
+	if e.RequestFormat == "" && defaults != nil {
+		e.RequestFormat = defaults.RequestFormat
+	}
+
 	if e.Multicall3 == nil && defaults != nil && defaults.Multicall3 != nil {
 		v := *defaults.Multicall3
 		e.Multicall3 = &v

@@ -3183,6 +3183,14 @@ func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req 
 		}
 		execSpanCtx = common.WithWireParams(execSpanCtx, req, params)
 	}
+	// evm.requestFormat: this upstream is sent the params in the form its
+	// client parses correctly, on top of any pinned block above. The request
+	// keeps the client's params for the cache, the response and other upstreams.
+	if params, rewritten, err := evm.FormatRequestForUpstream(execSpanCtx, n, u, req); err != nil {
+		return nil, err
+	} else if rewritten {
+		execSpanCtx = common.WithWireParams(execSpanCtx, req, params)
+	}
 
 	h := n.architectureHandler
 	if h != nil {

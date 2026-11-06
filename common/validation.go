@@ -1199,6 +1199,12 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 		}
 	}
 
+	switch e.RequestFormat {
+	case "", EvmRequestFormatCanonical, EvmRequestFormatErigonLegacy:
+	default:
+		return fmt.Errorf("upstream.*.evm.requestFormat '%s' is invalid, must be one of: %s, %s", e.RequestFormat, EvmRequestFormatCanonical, EvmRequestFormatErigonLegacy)
+	}
+
 	// Validate block availability config when provided
 	if e.BlockAvailability != nil {
 		if err := e.BlockAvailability.Validate(); err != nil {
