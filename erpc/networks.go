@@ -2244,13 +2244,15 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 // preferUpstreams reorders ups by hints only, every upstream staying
 // eligible: for bn, the block the client named (routingBlockNumber, read
 // before a tag is pinned to the Head, or the Head itself in the thin
-// region), upstreams known to hold it first; then failover tiers, then
-// voters with a stale hash vote, and voters on a minority fork last.
+// region), upstreams known, or in the thin region most likely (thinHolds),
+// to hold it first; then failover tiers, then voters with a stale hash
+// vote, and voters on a minority fork last.
 func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedRequest, method string, upsList []common.Upstream, bn int64) []common.Upstream {
 	if n.Architecture() == common.ArchitectureEvm && bn > 0 {
 		head := n.requestHead(ctx, req)
-		upsList = n.partitionUpstreamsByLatestBlock(upsList, bn, creditCap(head))
-		upsList = n.preferTipLeaderForNearTipGetBlock(upsList, method, bn, head.Leader, head.Latest)
+		holds := n.thinHolds(req, head, bn)
+		upsList = n.partitionUpstreamsByLatestBlock(upsList, bn, creditCap(head), holds)
+		upsList = n.preferTipLeaderForNearTipGetBlock(upsList, method, bn, head.Leader, head.Latest, holds)
 	}
 
 	// Failover tiering: try default-tier upstreams before fallback-tier ones,
@@ -2259,6 +2261,28 @@ func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedReq
 		upsList = tierUpstreamsByGroup(upsList)
 	}
 	return n.lateLast(upsList)
+}
+
+// thinHolds is, for bn in head's thin region (Firm < bn ≤ Latest), which
+// upstreams most likely hold bn although none of their evidence shows it
+// yet: those whose clock lateness passed since bn's first sight
+// (ChainTracker.HoldsLikely). It orders a request's first attempt only:
+// Firm, and the refusal rule's retry (headFirst), keep to evidence, so a
+// rare miss is that retry's. nil outside the thin region.
+func (n *Network) thinHolds(req *common.NormalizedRequest, head *common.EvmHead, bn int64) func(common.Upstream) bool {
+	if head.Firm <= 0 || bn <= head.Firm || bn > head.Latest {
+		return nil
+	}
+	sel := ""
+	if d := req.Directives(); d != nil {
+		sel = d.UseUpstream
+	}
+	t := n.laneTracker(sel)
+	if t == nil {
+		return nil
+	}
+	now := time.Now()
+	return func(u common.Upstream) bool { return t.HoldsLikely(u.Id(), uint64(bn), now) }
 }
 
 // lateLast moves sources with a stale hash vote (spec §6.1), then voters on
@@ -4339,7 +4363,7 @@ func (n *Network) headFirst(ctx context.Context, req *common.NormalizedRequest, 
 			rest = append(rest, u)
 		}
 	}
-	rest = n.partitionUpstreamsByLatestBlock(rest, bn, creditCap(n.requestHead(ctx, req)))
+	rest = n.partitionUpstreamsByLatestBlock(rest, bn, creditCap(n.requestHead(ctx, req)), nil)
 	return func() (common.Upstream, error) {
 		for len(rest) > 0 {
 			u := rest[0]
@@ -4367,10 +4391,11 @@ func creditCap(h *common.EvmHead) int64 {
 // each group (spec §6.1, §6.4, §8). A push source is judged by its hash
 // vote on this instance, as its requests ride this instance's socket,
 // which may be half-open while the shared head counter moves; any other
-// upstream by its head counter, credited up to credit (creditedHead); and
-// either by a by-number answer this instance took from it (heldAtLeast).
+// upstream by its head counter, credited up to credit (creditedHead);
+// either by a by-number answer this instance took from it (heldAtLeast);
+// and, when holds is set, as holding bn when holds says so (thinHolds).
 // An upstream with no known head keeps its place.
-func (n *Network) partitionUpstreamsByLatestBlock(ups []common.Upstream, bn, credit int64) []common.Upstream {
+func (n *Network) partitionUpstreamsByLatestBlock(ups []common.Upstream, bn, credit int64, holds func(common.Upstream) bool) []common.Upstream {
 	if bn <= 0 || len(ups) < 2 {
 		return ups
 	}
@@ -4382,7 +4407,7 @@ func (n *Network) partitionUpstreamsByLatestBlock(ups []common.Upstream, bn, cre
 			head = n.creditedHead(u, head, credit)
 		}
 		head = max(head, n.heldAtLeast(u.Id()))
-		return head > 0 && !common.EvmHeadReaches(u, head, bn)
+		return head > 0 && !common.EvmHeadReaches(u, head, bn) && (holds == nil || !holds(u))
 	})
 }
 
@@ -4410,9 +4435,10 @@ func stablePartition(ups []common.Upstream, last func(common.Upstream) bool) []c
 // to the front for eth_getBlockByNumber of its head or the next block while
 // its head is strictly ahead of every other upstream in ups, which may not
 // have imported that block yet. Heads are read as the Leader was chosen
-// (evmTipHead), the others credited up to latest (creditedHead), so a
-// fresher poll alone makes no leader.
-func (n *Network) preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn int64, leader common.Upstream, latest int64) []common.Upstream {
+// (evmTipHead), the others credited up to latest (creditedHead) or, when
+// holds is set, as holding bn when holds says so (thinHolds), so a fresher
+// poll alone makes no leader.
+func (n *Network) preferTipLeaderForNearTipGetBlock(ups []common.Upstream, method string, bn int64, leader common.Upstream, latest int64, holds func(common.Upstream) bool) []common.Upstream {
 	if method != "eth_getBlockByNumber" || len(ups) < 2 || leader == nil {
 		return ups
 	}
@@ -4425,7 +4451,7 @@ func (n *Network) preferTipLeaderForNearTipGetBlock(ups []common.Upstream, metho
 		switch {
 		case u == leader:
 			at = i
-		case n.creditedHead(u, evmTipHead(u), latest) >= tip:
+		case n.creditedHead(u, evmTipHead(u), latest) >= tip, bn == tip && holds != nil && holds(u):
 			return ups
 		}
 	}

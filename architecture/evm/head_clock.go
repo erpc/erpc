@@ -157,12 +157,19 @@ func (f *clockFire) ladder() bool {
 
 // clockVoter is what the clock learned of one voter: its round trip's EMA
 // and mean deviation, and late, an EMA of how far behind the first sight
-// its answers were, so a lagging voter takes no rung. asked and askedAt
-// are its last fetch's answer and send time, open until a first sight
-// above it decides whether it lagged (answered). firedAt is the send of
-// the clock's last fetch of it, out that fetch while unanswered.
+// its answers were, so a lagging voter takes no rung. lack is how long
+// after a block's first sight the voter was last seen without it, since
+// an answer showed it holding one sooner (lacked, held): the wait before
+// routing counts it a holder (HoldsLikely). late averages lower bounds
+// only, the fetches sent while it lacked the block, and those cluster
+// right after the sight, so it would count a voter that trails by most of
+// a block a holder too soon. asked and askedAt are its last fetch's
+// answer and send time, open until a first sight above it decides
+// whether it lagged (answered). firedAt is the send of the clock's last
+// fetch of it, out that fetch while unanswered.
 type clockVoter struct {
 	rtt, dev, late time.Duration
+	lack           time.Duration
 	samples        int
 	asked          uint64
 	askedAt        time.Time
@@ -226,6 +233,7 @@ func (c *headClock) saw(number uint64, at, from time.Time, pushed bool, bt time.
 			v.open = false
 			if v.askedAt.After(from) {
 				c.sampleLate(id, v.askedAt.Sub(from))
+				c.lacked(id, v.askedAt.Sub(from))
 			}
 		}
 	}
@@ -243,6 +251,11 @@ func (c *headClock) answered(id string, number uint64, sent time.Time) {
 		return
 	}
 	v.asked, v.askedAt, v.open = number, sent, true
+	for _, s := range c.sights {
+		if s.number == number {
+			c.held(id, max(sent.Sub(s.from), 0))
+		}
+	}
 	var from time.Time
 	for _, s := range c.sights {
 		if s.number > number && (from.IsZero() || s.from.Before(from)) {
@@ -255,7 +268,20 @@ func (c *headClock) answered(id string, number uint64, sent time.Time) {
 	v.open = false
 	if sent.After(from) {
 		c.sampleLate(id, sent.Sub(from))
+		c.lacked(id, sent.Sub(from))
 	}
+}
+
+// lacked records that voter id lacked a block d after its first sight.
+func (c *headClock) lacked(id string, d time.Duration) {
+	v := c.voter(id)
+	v.lack = max(v.lack, d)
+}
+
+// held records that voter id held a block d after its first sight.
+func (c *headClock) held(id string, d time.Duration) {
+	v := c.voter(id)
+	v.lack = min(v.lack, d)
 }
 
 // phasePoint reports whether sight s moves the phase. A fetch answer only
@@ -607,6 +633,7 @@ func (t *ChainTracker) readDemand() time.Duration { return 2 * t.W() }
 // while the edge waits for the view.
 func (t *ChainTracker) runClock() {
 	c := &t.clock
+	defer t.publishCredit()
 	if c.skips > 0 {
 		telemetry.CounterHandle(telemetry.MetricHeadClockTotal, t.projectId(), t.networkLabel(), t.laneLabel(), "probe", "skipped_push").Add(float64(c.skips))
 		c.skips = 0
@@ -1213,4 +1240,75 @@ func (t *ChainTracker) MarkRead() {
 	if prev := t.latestReadAt.Swap(time.Now().UnixNano()); prev == 0 || time.Since(time.Unix(0, prev)) >= t.readDemand() {
 		t.mb.put(trackerMsg{kind: msgTick})
 	}
+}
+
+// holdCredit is what the clock published for readers on other goroutines:
+// its recent first sights, each voter's lack and round trip, and when it
+// fetches next: now while a fetch is out, zero while none is due.
+type holdCredit struct {
+	sights    []clockSight
+	lack, rtt map[string]time.Duration
+	next      time.Time
+}
+
+// publishCredit publishes the clock's sights, its voters' lack and round
+// trips and its next fetch when any moved since the last publish.
+func (t *ChainTracker) publishCredit() {
+	c := &t.clock
+	next := c.due()
+	for _, v := range c.ups {
+		if v.out != nil {
+			next = v.out.sent
+			break
+		}
+	}
+	if p := t.credit.Load(); p != nil && p.next.Equal(next) && slices.Equal(p.sights, c.sights) && len(p.lack) == len(c.ups) {
+		same := true
+		for id, v := range c.ups {
+			if p.lack[id] != v.lack || p.rtt[id] != v.rtt {
+				same = false
+				break
+			}
+		}
+		if same {
+			return
+		}
+	}
+	p := &holdCredit{sights: slices.Clone(c.sights), lack: make(map[string]time.Duration, len(c.ups)), rtt: make(map[string]time.Duration, len(c.ups)), next: next}
+	for id, v := range c.ups {
+		p.lack[id], p.rtt[id] = v.lack, v.rtt
+	}
+	t.credit.Store(p)
+}
+
+// HoldsLikely reports whether voter id most likely holds block n at now,
+// for routing a thin Head's reads (spec §6.4 thin): n's first sight was
+// taken at least id's lack (clockVoter) before now. False when n is not
+// among the recent sights.
+func (t *ChainTracker) HoldsLikely(id string, n uint64, now time.Time) bool {
+	p := t.credit.Load()
+	if p == nil {
+		return false
+	}
+	for _, s := range p.sights {
+		if s.number == n {
+			return now.Sub(s.from) >= p.lack[id]
+		}
+	}
+	return false
+}
+
+// ClockFetchesBefore reports whether the block clock has a fetch out, or
+// sends one, before a fetch of voter id sent at now would answer: that
+// fetch brings the next block as soon (spec §6.4 by-hash wait).
+func (t *ChainTracker) ClockFetchesBefore(id string, now time.Time) bool {
+	p := t.credit.Load()
+	if p == nil || p.next.IsZero() {
+		return false
+	}
+	rtt, ok := p.rtt[id]
+	if !ok || rtt <= 0 {
+		rtt = clockUnknownRTT
+	}
+	return p.next.Before(now.Add(rtt))
 }

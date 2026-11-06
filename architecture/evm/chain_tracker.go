@@ -155,6 +155,9 @@ type ChainTracker struct {
 	// clock is the lane's block clock (spec §6.8): it fetches the next
 	// block's head when no push brings it.
 	clock headClock
+	// credit is the clock's sights and lateness as last published for
+	// routing on other goroutines (HoldsLikely).
+	credit atomic.Pointer[holdCredit]
 	// latestReadAt is when a request last read the lane's latest
 	// (LatestRead), in unix nanoseconds: within W of it the clock runs.
 	// edge, while set, is closed once the clock's first fetch after an
@@ -867,10 +870,13 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 		} else if prev := t.votes[msg.upstream]; t.alive(prev) && prev.h.number < h.number && now.Sub(t.voteAt[msg.upstream]) <= t.BlockTime() {
 			if seen := t.clock.sightOf(h.number); h.number <= t.clock.top() && !seen.IsZero() {
 				t.clock.sampleLate(msg.upstream, now.Sub(seen))
+				t.clock.held(msg.upstream, now.Sub(seen))
+				t.clock.lacked(msg.upstream, now.Sub(seen))
 			}
 		}
 		if h.number > t.clock.top() {
 			t.clock.sampleLate(msg.upstream, 0)
+			t.clock.held(msg.upstream, 0)
 		}
 	}
 	t.clock.saw(h.number, now, from, msg.pushed, t.BlockTime())
