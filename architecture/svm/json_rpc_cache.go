@@ -44,6 +44,10 @@ type SvmJsonRpcCache struct {
 	policies  []*data.CachePolicy
 	logger    *zerolog.Logger
 
+	// cachingStrategy is the write-side admission default (see
+	// common.AllowsCacheWrite). Combined with resp.Cacheable() at Set.
+	cachingStrategy common.CachingStrategy
+
 	// compressionThreshold is the minimum payload size (bytes) worth
 	// compressing; 0 means compression is disabled for writes. The decoder is
 	// always present so entries written while compression was enabled stay
@@ -81,7 +85,11 @@ func NewSvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 		policies = append(policies, policy)
 	}
 
-	cache := &SvmJsonRpcCache{policies: policies, logger: &lg}
+	strategy := cfg.CachingStrategy
+	if strategy == "" {
+		strategy = common.CachingStrategyDefaultAllow
+	}
+	cache := &SvmJsonRpcCache{policies: policies, logger: &lg, cachingStrategy: strategy}
 
 	// One stateless encoder/decoder pair is enough: zstd's EncodeAll/DecodeAll
 	// are documented safe for concurrent use and pull from their own internal
@@ -132,6 +140,7 @@ func (c *SvmJsonRpcCache) WithProjectId(projectId string) *SvmJsonRpcCache {
 		projectId:            projectId,
 		policies:             c.policies,
 		logger:               &lg,
+		cachingStrategy:      c.cachingStrategy,
 		compressionThreshold: c.compressionThreshold,
 		encoder:              c.encoder,
 		decoder:              c.decoder,
@@ -293,6 +302,15 @@ func ttlString(ttl *time.Duration) string {
 // upstream request path.
 func (c *SvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
 	if resp == nil || resp.IsObjectNull() {
+		return nil
+	}
+	// Write-side admission: strategy × response mark (cache stays consensus-ignorant).
+	if !common.AllowsCacheWrite(c.cachingStrategy, resp.Cacheable()) {
+		c.logger.Debug().
+			Str("cachingStrategy", string(c.cachingStrategy)).
+			Interface("cacheable", resp.Cacheable()).
+			Interface("id", req.ID()).
+			Msg("skipping cache write: response marked uncacheable under cachingStrategy")
 		return nil
 	}
 	rpcReq, err := req.JsonRpcRequest(ctx)

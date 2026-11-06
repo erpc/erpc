@@ -124,6 +124,7 @@ const _sharedUpstream: SvmUpstreamConfig = {
   chain: "solana",
   cluster: "devnet",
   checkGenesisHash: false,
+  statePollerDebounce: "5s",
   blockAvailability: {
     lower: { latestSlotMinus: 100_000 },
     upper: { exactSlot: 1_000_000_000 },

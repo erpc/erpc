@@ -692,7 +692,18 @@ func markStatefulMethod(defs map[string]*CacheMethodConfig, method string) {
 	defs[key] = &CacheMethodConfig{Stateful: true}
 }
 
+// ConsensusDefaultEvalTimeout is the wall-clock cap applied when
+// customPolicy.evalTimeout is omitted (0). Kept in sync with
+// ConsensusPolicyConfig.SetDefaults so NewConsensus (used by tests and any
+// caller that skips SetDefaults) cannot disable the selector timeout by
+// accident. Lives in defaults.go (tygo-excluded) so it is not emitted as
+// invalid TypeScript (`N * time.Millisecond` → `N * any`).
+const ConsensusDefaultEvalTimeout = 50 * time.Millisecond
+
 func (c *CacheConfig) SetDefaults() error {
+	if c.CachingStrategy == "" {
+		c.CachingStrategy = CachingStrategyDefaultAllow
+	}
 	if len(c.Policies) > 0 {
 		for _, policy := range c.Policies {
 			if err := policy.SetDefaults(); err != nil {
@@ -1898,6 +1909,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		// inherited true is ever needed.
 		if defaults.Svm.CheckGenesisHash {
 			u.Svm.CheckGenesisHash = true
+		}
+		if u.Svm.StatePollerDebounce == 0 && defaults.Svm.StatePollerDebounce != 0 {
+			u.Svm.StatePollerDebounce = defaults.Svm.StatePollerDebounce
 		}
 		if u.Svm.BlockAvailability == nil && defaults.Svm.BlockAvailability != nil {
 			u.Svm.BlockAvailability = defaults.Svm.BlockAvailability.Copy()
@@ -3124,11 +3138,30 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 		}
 	}
 
+	// Named policies omit cacheableResponses → false. Stamp before extends so
+	// a child that omits the field does not inherit a base's true — including
+	// extends: default (inline omit→true) and named→named where the base
+	// explicitly set true. Named omit always means uncacheable unless the
+	// operator opts in on that named entry. Circle posture: weaker grades
+	// like fallback stay out of the shared cache by default.
+	for _, p := range c.Policies {
+		if p != nil && p.CacheableResponses == nil {
+			p.CacheableResponses = util.BoolPtr(false)
+		}
+	}
+
 	// Resolve one-level extends on named policies before applying defaults so
 	// each runtime policy is fully merged (feature §2). Unknown base / nested
 	// extends are load-time errors.
 	if err := c.resolveNamedPolicyExtends(); err != nil {
 		return err
+	}
+
+	// Inline / fail-closed default omit → true (open cache write under
+	// defaultAllow). Named policies already carry an explicit value from the
+	// pre-extends stamp or the operator.
+	if c.CacheableResponses == nil {
+		c.CacheableResponses = util.BoolPtr(true)
 	}
 
 	// Named policies are full consensus configs; apply the same defaults so a
@@ -3142,6 +3175,9 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 		if err := p.SetDefaults(); err != nil {
 			return fmt.Errorf("consensus.policies[%q] defaults: %w", name, err)
 		}
+		// Named policies already carry CacheableResponses from the pre-extends
+		// stamp (or an explicit operator value). Nested SetDefaults does not
+		// clear a non-nil pointer, so no post-restore is needed.
 	}
 
 	return nil
@@ -3256,6 +3292,10 @@ func overlayConsensusPolicy(base, child *ConsensusPolicyConfig) {
 	if child.PreferLargerResponses != nil {
 		v := *child.PreferLargerResponses
 		base.PreferLargerResponses = &v
+	}
+	if child.CacheableResponses != nil {
+		v := *child.CacheableResponses
+		base.CacheableResponses = &v
 	}
 	if child.MisbehaviorsDestination != nil {
 		base.MisbehaviorsDestination = child.MisbehaviorsDestination.Copy()

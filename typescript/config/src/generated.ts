@@ -521,10 +521,25 @@ export interface SharedStateConfig {
    */
   updateMaxWait?: Duration;
 }
+/**
+ * CachingStrategy controls write-side admission when combined with a response
+ * cacheability mark (see AllowsCacheWrite). Cache hits are served with zero
+ * re-validation, so modules that decide grades (consensus in v1) mark the
+ * response instead of teaching the cache policy names.
+ */
+export type CachingStrategy = string;
+export const CachingStrategyDefaultAllow: CachingStrategy = "defaultAllow";
+export const CachingStrategyDefaultIgnore: CachingStrategy = "defaultIgnore";
 export interface CacheConfig {
   connectors?: TsConnectorConfig[];
   policies?: (CachePolicyConfig | undefined)[];
   compression?: CompressionConfig;
+  /**
+   * CachingStrategy is the default write posture for unmarked responses.
+   * Omit → defaultAllow (today's open write). defaultIgnore writes only when
+   * a module marks the response cacheable (true).
+   */
+  cachingStrategy?: 'defaultAllow' | 'defaultIgnore';
 }
 export interface CompressionConfig {
   enabled?: boolean;
@@ -1474,6 +1489,15 @@ export interface ConsensusPolicyConfig {
    * policies (only the inline default exists).
    */
   policies?: { [key: string]: ConsensusPolicyConfig | undefined};
+  /**
+   * CacheableResponses marks whether responses produced under this policy may
+   * be persisted by the cache. Consensus.Run stamps the winning response with
+   * this value; Cache.Set combines it with cachingStrategy (feature
+   * cacheable-responses). Omit defaults: inline / fail-closed "default" →
+   * true; named policies.* → false (stamped before extends so extends:default
+   * does not inherit the inline true).
+   */
+  cacheableResponses?: boolean;
 }
 /**
  * ConsensusDefaultPolicyName is the reserved label reported (metric +
@@ -1851,6 +1875,14 @@ export interface SvmUpstreamConfig {
    * private/local clusters with no published genesis hash still work.
    */
   checkGenesisHash?: boolean;
+  /**
+   * StatePollerDebounce is a hard per-upstream override for the poll fan-out
+   * gate. When non-zero it short-circuits networks[*].svm.statePollerDebounce
+   * for this upstream only (same precedence shape as upstreams[*].evm.statePollerDebounce).
+   * Zero / omit inherits the network debounce after defaults. Does not disable
+   * the poller — 0 means inherit, never "off".
+   */
+  statePollerDebounce?: Duration;
   /**
    * BlockAvailability is an operator restriction on the slot window this
    * upstream may serve. Only what the operator declares is enforced; the

@@ -19,6 +19,10 @@ type NormalizedResponse struct {
 	expectedSize int
 
 	fromCache atomic.Bool
+	// cacheable is the write-admission mark set by modules (consensus in v1).
+	// nil = undecided; true/false = explicit. Cache.Set combines this with
+	// cachingStrategy (see AllowsCacheWrite).
+	cacheable atomic.Pointer[bool]
 	attempts  atomic.Value
 	retries   atomic.Value
 	hedges    atomic.Value
@@ -112,6 +116,28 @@ func (r *NormalizedResponse) SetFromCache(fromCache bool) *NormalizedResponse {
 		return r
 	}
 	r.fromCache.Store(fromCache)
+	return r
+}
+
+// Cacheable returns the write-admission mark (nil = undecided).
+func (r *NormalizedResponse) Cacheable() *bool {
+	if r == nil {
+		return nil
+	}
+	return r.cacheable.Load()
+}
+
+// SetCacheable stores the write-admission mark. Pass nil to clear (undecided).
+func (r *NormalizedResponse) SetCacheable(v *bool) *NormalizedResponse {
+	if r == nil {
+		return r
+	}
+	if v == nil {
+		r.cacheable.Store(nil)
+		return r
+	}
+	b := *v
+	r.cacheable.Store(&b)
 	return r
 }
 
@@ -645,6 +671,7 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 	r.WithRequest(req)
 	r.SetUpstream(resp.Upstream())
 	r.SetFromCache(resp.FromCache())
+	r.SetCacheable(resp.Cacheable())
 	r.SetAttempts(resp.Attempts())
 	r.SetRetries(resp.Retries())
 	r.SetHedges(resp.Hedges())

@@ -390,6 +390,12 @@ func (s *SharedStateConfig) Validate() error {
 }
 
 func (c *CacheConfig) Validate() error {
+	switch c.CachingStrategy {
+	case "", CachingStrategyDefaultAllow, CachingStrategyDefaultIgnore:
+		// empty is fine pre-SetDefaults; after SetDefaults it is defaultAllow
+	default:
+		return fmt.Errorf("cache.*.cachingStrategy must be 'defaultAllow' or 'defaultIgnore', got %q", c.CachingStrategy)
+	}
 	existingIds := make(map[string]bool)
 	for _, connector := range c.Connectors {
 		if err := connector.Validate(); err != nil {
@@ -2109,6 +2115,9 @@ func (s *SvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	}
 	if !isValidSvmSegment(s.Cluster) {
 		return fmt.Errorf("upstream.*.svm.cluster '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Cluster)
+	}
+	if s.StatePollerDebounce.Duration() < 0 {
+		return fmt.Errorf("upstream.*.svm.statePollerDebounce must be greater than or equal to 0")
 	}
 	if s.BlockAvailability != nil {
 		if err := s.BlockAvailability.Validate(); err != nil {

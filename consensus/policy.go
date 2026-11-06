@@ -59,6 +59,7 @@ type config struct {
 	maxWaitOnEmpty          *common.AdaptiveDuration
 	requiredParticipants    []*common.ConsensusRequiredParticipant
 	policyName              string
+	cacheableResponses      *bool
 }
 
 // builder is the internal builder used by NewConsensus.
@@ -143,6 +144,15 @@ func (b *builder) WithRequiredParticipants(v []*common.ConsensusRequiredParticip
 }
 func (b *builder) WithPolicyName(name string) *builder {
 	b.cfg.policyName = name
+	return b
+}
+func (b *builder) WithCacheableResponses(v *bool) *builder {
+	if v == nil {
+		b.cfg.cacheableResponses = nil
+		return b
+	}
+	cp := *v
+	b.cfg.cacheableResponses = &cp
 	return b
 }
 
