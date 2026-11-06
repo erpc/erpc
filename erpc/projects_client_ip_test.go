@@ -38,6 +38,20 @@ func (b *lockedBuffer) String() string {
 }
 
 func TestProject_ForwardLogsClientIP(t *testing.T) {
+	t.Run("on", func(t *testing.T) {
+		line := forwardedLogLine(t, true)
+		require.Contains(t, line, `"clientIP":"203.0.113.7"`)
+	})
+	t.Run("off by default", func(t *testing.T) {
+		line := forwardedLogLine(t, false)
+		require.NotContains(t, line, "clientIP")
+		require.NotContains(t, line, "203.0.113.7")
+	})
+}
+
+// forwardedLogLine forwards one request from 203.0.113.7 and returns the
+// "successfully forwarded" log line, with server.logClientIp on or off.
+func forwardedLogLine(t *testing.T, logClientIP bool) string {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -98,6 +112,7 @@ func TestProject_ForwardLogsClientIP(t *testing.T) {
 		nil, // userScript
 	)
 	require.NoError(t, err)
+	prjReg.SetLogClientIP(logClientIP)
 	prjReg.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 
@@ -116,5 +131,5 @@ func TestProject_ForwardLogsClientIP(t *testing.T) {
 		}
 	}
 	require.NotEmpty(t, forwarded, "no 'successfully forwarded' log line")
-	require.Contains(t, forwarded, `"clientIP":"203.0.113.7"`)
+	return forwarded
 }
