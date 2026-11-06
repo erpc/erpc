@@ -39,12 +39,11 @@ type GrpcConnector struct {
 	mu     sync.RWMutex
 	// networkId -> single client
 	clientByNetwork map[string]clients.GrpcBdsClient
-	// earliest/latest/finalized block per network (0 if unknown)
+	// earliest/finalized block number per network (0 if unknown)
 	earliestByNetwork  map[string]uint64
-	latestByNetwork    map[string]uint64
 	finalizedByNetwork map[string]uint64
-	// unix timestamp (seconds) of the latest block per network (0 if unknown)
-	latestTsByNetwork map[string]int64
+	// latest block per network, number and timestamp in lockstep (see recordLatest)
+	latestByNetwork map[string]latestBlock
 	// headers to apply to all clients
 	headers     map[string]string
 	initializer *util.Initializer
@@ -116,9 +115,8 @@ func NewGrpcConnector(
 		appCtx:             ctx,
 		clientByNetwork:    make(map[string]clients.GrpcBdsClient),
 		earliestByNetwork:  make(map[string]uint64),
-		latestByNetwork:    make(map[string]uint64),
 		finalizedByNetwork: make(map[string]uint64),
-		latestTsByNetwork:  make(map[string]int64),
+		latestByNetwork:    make(map[string]latestBlock),
 		headers:            map[string]string{},
 		initializer:        util.NewInitializer(ctx, &lg, nil),
 		getTimeout:         cfg.GetTimeout.Duration(),
@@ -249,15 +247,56 @@ func NewGrpcConnector(
 
 func (g *GrpcConnector) Id() string { return g.id }
 
-// CacheLatestBlockTimestamp reports the unix timestamp (seconds) of the latest block this
-// read-through cache currently has for networkId (refreshed by the background head poller), and
-// whether it is known. Implements CacheHeadReporter so the realtime cache age guard can be enforced
-// for responses that carry no block timestamp of their own.
-func (g *GrpcConnector) CacheLatestBlockTimestamp(networkId string) (int64, bool) {
+// latestBlock is a network's latest block as last observed: its number and unix timestamp
+// (seconds), 0 when unknown.
+type latestBlock struct {
+	number    uint64
+	timestamp int64
+}
+
+// CacheLatestBlock reports the number and unix timestamp (seconds) of the latest block this
+// read-through cache last observed for networkId (by the background head poller or
+// RefreshLatestBlock), and whether it is known. Implements CacheHeadReporter so the realtime cache
+// age guard can be enforced for responses that carry no block timestamp of their own, and so a
+// network can follow this cache's head.
+func (g *GrpcConnector) CacheLatestBlock(networkId string) (int64, int64, bool) {
 	g.mu.RLock()
-	defer g.mu.RUnlock()
-	ts := g.latestTsByNetwork[networkId]
-	return ts, ts > 0
+	b := g.latestByNetwork[networkId]
+	g.mu.RUnlock()
+	return int64(b.number), b.timestamp, b.timestamp > 0
+}
+
+// RefreshLatestBlock fetches networkId's latest block now and records it. EVM only, like the
+// background poller; a network without a client, or a failed fetch, records nothing.
+func (g *GrpcConnector) RefreshLatestBlock(ctx context.Context, networkId string) {
+	if !strings.HasPrefix(networkId, "evm:") {
+		return
+	}
+	g.mu.RLock()
+	cli := g.clientByNetwork[networkId]
+	g.mu.RUnlock()
+	if cli == nil {
+		return
+	}
+	if num, ts, ok := g.fetchTaggedBlock(ctx, cli, "latest"); ok {
+		g.recordLatest(networkId, num, ts)
+	}
+}
+
+// recordLatest stores networkId's latest block and its gauges. The timestamp is stored with the
+// number even when it is 0/unknown, so the reported head timestamp always belongs to the reported
+// number: keeping a previous ts after the number advances would judge an advanced head by an
+// older block's time, while 0 makes CacheLatestBlock report "unknown" and the realtime guard fail
+// open.
+func (g *GrpcConnector) recordLatest(networkId string, num uint64, ts int64) {
+	g.mu.Lock()
+	g.latestByNetwork[networkId] = latestBlock{number: num, timestamp: ts}
+	g.mu.Unlock()
+	lbl := common.NetworkAlias(networkId)
+	telemetry.MetricCacheConnectorLatestBlockNumber.WithLabelValues(g.id, lbl).Set(float64(num))
+	if ts > 0 {
+		telemetry.MetricCacheConnectorLatestBlockTimestamp.WithLabelValues(g.id, lbl).Set(float64(ts))
+	}
 }
 
 func (g *GrpcConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, metadata interface{}) ([]byte, error) {
@@ -401,8 +440,8 @@ func (g *GrpcConnector) pollBlockHeadsOnce(ctx context.Context) {
 		//
 		// Consequence worth knowing: earliest stays 0, so the fast-miss
 		// rejection in Get never fires for SVM (it is keyed on
-		// EvmBlockNumber anyway), and CacheLatestBlockTimestamp reports
-		// unknown, so the realtime age guard fails open. Only cache SVM
+		// EvmBlockNumber anyway), and CacheLatestBlock reports unknown,
+		// so the realtime age guard fails open. Only cache SVM
 		// methods under a finalized policy until there is a slot-aware
 		// poller (BDA-3111).
 		if !strings.HasPrefix(nid, "evm:") {
@@ -423,19 +462,7 @@ func (g *GrpcConnector) pollBlockHeadsOnce(ctx context.Context) {
 		}
 
 		if num, ts, ok := g.fetchTaggedBlock(ctx, cli, "latest"); ok {
-			g.mu.Lock()
-			g.latestByNetwork[nid] = num
-			// Store the timestamp in lockstep with the number (even when ts is 0/unknown) so the
-			// reported head timestamp always corresponds to the current latest block. Retaining a
-			// previous ts after the number advances would make CacheLatestBlockTimestamp report a
-			// stale head time; storing 0 instead makes it report "unknown" so the realtime guard
-			// fails open rather than judging an advanced head by an older block's timestamp.
-			g.latestTsByNetwork[nid] = ts
-			g.mu.Unlock()
-			telemetry.MetricCacheConnectorLatestBlockNumber.WithLabelValues(g.id, lbl).Set(float64(num))
-			if ts > 0 {
-				telemetry.MetricCacheConnectorLatestBlockTimestamp.WithLabelValues(g.id, lbl).Set(float64(ts))
-			}
+			g.recordLatest(nid, num, ts)
 		}
 
 		if num, ts, ok := g.fetchTaggedBlock(ctx, cli, "finalized"); ok {

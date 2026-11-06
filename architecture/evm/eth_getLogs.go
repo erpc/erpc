@@ -37,13 +37,16 @@ func resolveBlockTagForGetLogs(ctx context.Context, network common.Network, bloc
 		return blockValue, bn
 	}
 
-	// Try to resolve block tags using the network's state poller
-	if resolved, ok := resolveBlockTagToHex(ctx, network, blockValue); ok {
-		bn, err := common.HexToInt64(resolved)
-		if err != nil {
-			return "", 0
-		}
-		return resolved, bn
+	// Resolve latest/finalized to the Head of the request bound to ctx.
+	var bn int64
+	switch blockValue {
+	case "latest":
+		bn = common.EvmHeadOf(network, ctx, nil).Latest
+	case "finalized":
+		bn = common.EvmHeadOf(network, ctx, nil).Finalized
+	}
+	if hx, err := common.NormalizeHex(bn); bn > 0 && err == nil {
+		return hx, bn
 	}
 
 	// Tag could not be resolved (e.g., "safe", "pending", "earliest", or no state available)
@@ -288,9 +291,9 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 		jrq.RUnlock()
 		return false, nil, nil
 	}
-	// Extract block values (may be hex or tags like "latest")
-	fbStr, _ := filter["fromBlock"].(string)
-	tbStr, _ := filter["toBlock"].(string)
+	// Bounds may be hex, tags, or absent ("latest", spec §7 family 4)
+	fbStr := rangeBound(filter, "fromBlock")
+	tbStr := rangeBound(filter, "toBlock")
 	addrCount, topicCount := getLogsFilterCounts(filter)
 	jrq.RUnlock()
 
@@ -367,8 +370,9 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		return false, nil, nil
 	}
 
-	fbStr, _ := filter["fromBlock"].(string)
-	tbStr, _ := filter["toBlock"].(string)
+	fbStr := rangeBound(filter, "fromBlock")
+	tbStr := rangeBound(filter, "toBlock")
+	sentAsTag := rangeSentAsTag(filter)
 	addrCount, topicCount := getLogsFilterCounts(filter)
 	jrq.RUnlock()
 
@@ -410,7 +414,7 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	}
 
 	// Proactive split if needed
-	if requestRange > 0 && effectiveThreshold > 0 && requestRange > effectiveThreshold {
+	if !sentAsTag && requestRange > 0 && effectiveThreshold > 0 && requestRange > effectiveThreshold {
 		// Build contiguous block sub-requests
 		subRequests := make([]ethGetLogsSubRequest, 0)
 		sb := fromBlock
@@ -490,8 +494,8 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		return false, nil, nil
 	}
 
-	fb, _ := filter["fromBlock"].(string)
-	tb, _ := filter["toBlock"].(string)
+	fb := rangeBound(filter, "fromBlock")
+	tb := rangeBound(filter, "toBlock")
 	jrq.RUnlock()
 
 	// Resolve block tags (like "latest", "finalized") to hex numbers for validation.

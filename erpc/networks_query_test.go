@@ -204,6 +204,8 @@ func mockQueryChain(blockDelay time.Duration) {
 // ignoreMethods, selected in the order given.
 func setupQueryTestNetwork(t *testing.T, ctx context.Context, queryShim *common.EvmQueryShimConfig, ignoreMethods []string, ids ...string) *Network {
 	t.Helper()
+	// The network lives as long as t, not the caller's ctx (stopAtEnd).
+	ctx, cancel := context.WithCancel(ctx)
 
 	clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 	rlr, err := upstream.NewRateLimitersRegistry(ctx, &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
@@ -254,14 +256,16 @@ func setupQueryTestNetwork(t *testing.T, ctx context.Context, queryShim *common.
 		Evm:          &common.EvmNetworkConfig{ChainId: 123},
 		Failsafe:     []*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{MaxAttempts: 1}}},
 	}, rlr, upr, mt, nil)
+	stopAtEnd(t, ntw)
+	t.Cleanup(cancel)
 	require.NoError(t, err)
 	ntw.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 	upr.OverrideOrderForTest(util.EvmNetworkId(123), ids...)
 	// The mocked chain's head: the range checks need a known latest block.
 	for _, u := range upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123)) {
-		u.EvmStatePoller().SuggestLatestBlock(qtLastNo)
-		u.EvmStatePoller().SuggestFinalizedBlock(qtLastNo)
+		u.EvmStatePoller().SuggestLatestBlock(qtLastNo, time.Now())
+		u.EvmStatePoller().SuggestFinalizedBlock(qtLastNo, time.Now())
 	}
 	return ntw
 }
@@ -288,26 +292,41 @@ func queryJson(t *testing.T, ctx context.Context, ntw *Network, method string, p
 // a QueryService client of it, with the metadata the server requires.
 func queryGrpc(t *testing.T, ctx context.Context, ntw *Network) (bdsevm.QueryServiceClient, context.Context) {
 	t.Helper()
+	conn, mdCtx := grpcConn(t, ctx, ntw)
+	return bdsevm.NewQueryServiceClient(conn), mdCtx
+}
+
+// grpcConn serves ntw on a real eRPC gRPC server (project prjA) and returns
+// a client connection to it, with the metadata the server requires.
+func grpcConn(t *testing.T, ctx context.Context, ntw *Network) (*grpc.ClientConn, context.Context) {
+	t.Helper()
 	networks := &NetworksRegistry{}
 	networks.preparedNetworks.Store(ntw.Id(), ntw)
 	erpcInstance := &ERPC{projectsRegistry: &ProjectsRegistry{preparedProjects: map[string]*PreparedProject{
 		"prjA": {Config: &common.ProjectConfig{Id: "prjA"}, networksRegistry: networks},
 	}}}
+	addr, stop := serveGrpc(t, ctx, erpcInstance)
+	t.Cleanup(stop)
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	md := metadata.New(map[string]string{"x-erpc-project": "prjA", "x-erpc-chain-id": "123"})
+	return conn, metadata.NewOutgoingContext(ctx, md)
+}
+
+// serveGrpc serves e on a real eRPC gRPC server until stop.
+func serveGrpc(t *testing.T, ctx context.Context, e *ERPC) (addr string, stop func()) {
+	t.Helper()
 	gs, err := NewGrpcServer(ctx, &log.Logger, &common.ServerConfig{
 		GrpcMaxRecvMsgSize: util.IntPtr(1 << 20),
 		GrpcMaxSendMsgSize: util.IntPtr(1 << 20),
 		GrpcReflection:     util.BoolPtr(false),
-	}, erpcInstance)
+	}, e)
 	require.NoError(t, err)
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	go func() { _ = gs.server.Serve(lis) }()
-	t.Cleanup(gs.server.Stop)
-	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
-	md := metadata.New(map[string]string{"x-erpc-project": "prjA", "x-erpc-chain-id": "123"})
-	return bdsevm.NewQueryServiceClient(conn), metadata.NewOutgoingContext(ctx, md)
+	return lis.Addr().String(), gs.server.Stop
 }
 
 // grpcPages reads every page of a server stream, and the status code it
@@ -347,7 +366,7 @@ func qtField(rows []map[string]interface{}, key string) []interface{} {
 
 func TestNetworkQuery_Shim(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	mockQueryChain(0)
 
@@ -436,6 +455,7 @@ func TestNetworkQuery_Shim(t *testing.T) {
 	})
 
 	t.Run("errors carry the MIP-16 codes", func(t *testing.T) {
+		sampleBlockTime(t, ntw)
 		for _, tc := range []struct {
 			name, method, params string
 			code                 int
@@ -617,7 +637,7 @@ func TestNetworkQuery_Shim(t *testing.T) {
 
 func TestNetworkQuery_ShimLimits(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	mockQueryChain(time.Second)
 

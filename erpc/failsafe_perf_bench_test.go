@@ -184,6 +184,7 @@ func setupBenchNetwork(b testing.TB, fsCfg []*common.FailsafeConfig, mocks []*be
 		},
 		rlr, upr, mt, nil,
 	)
+	stopAtEnd(b, ntw)
 	if err != nil {
 		cancel()
 		b.Fatalf("new network: %v", err)

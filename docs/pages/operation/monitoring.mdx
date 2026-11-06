@@ -615,7 +615,7 @@ Top-20 operational metrics:
 | `erpc_auth_failed_total` | counter | project, network, strategy, reason, agent_name | Client-facing auth denial; `agent_name` always `unknown`; closed `reason` sets |
 | `erpc_unexpected_panic_total` | counter | scope, extra, error | Recovered panic; `scope` ∈ request-handler/final-error-writer/top-level-handler/timeout-handler/validate-pattern/redis-pubsub/shared-state-registry/matcher |
 | `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | Served tip as served; `lane="all"` = network-wide; `axis` ∈ latest/finalized |
-| `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Blocks the served tip sits below the second-highest voter, clamped at 0 |
+| `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Blocks the served tip sits below the second-highest voter, clamped at 0; `latest` reads 0 while the lane has no read demand |
 | `erpc_network_served_tip_advance_age_seconds` | gauge | project, network, lane, axis | Seconds since the served tip last changed; absent until the first change |
 | `erpc_network_served_tip_regression_total` | counter | project, network, lane, axis, outcome | Regression-guard transitions; `outcome` ∈ held/failed_open |
 | `erpc_upstream_head_benched_total` | counter | project, vendor, network, upstream | Upstream head benched: it stayed behind peers that kept advancing |

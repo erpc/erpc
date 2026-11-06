@@ -1,7 +1,6 @@
 package wsupstream
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -11,18 +10,15 @@ import (
 
 // TestAdapterGivesUpNewHeadsWhenUnsupported: an upstream that rejects
 // newHeads as an unsupported method is asked once per connection, and its
-// filters still settle.
+// topics still settle.
 func TestAdapterGivesUpNewHeadsWhenUnsupported(t *testing.T) {
 	compressResubRetry(t)
 	server := newNotifyServer(t)
 	server.rejectNewHeads = true
-	a, sink := newTestAdapter(t, server.wsURL(t))
+	a, _ := newTestAdapter(t, server.wsURL(t))
 	conn1 := <-server.newConn
 	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
-
-	params := logsParams("0xabc")
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, indexer.BuildParamsKey(params), params))
+	a.Set([]indexer.Topic{indexer.TopicNewHeads, txTopic(t, "0xabc")})
 
 	var headsSubscribes int
 	deadline := time.After(time.Second)
@@ -37,7 +33,6 @@ func TestAdapterGivesUpNewHeadsWhenUnsupported(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, headsSubscribes, "newHeads must not be retried after an unsupported rejection")
-	require.False(t, a.HeadsLive())
 	a.subsMu.Lock()
 	settled := a.resubDone
 	a.subsMu.Unlock()

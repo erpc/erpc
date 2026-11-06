@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/common"
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -51,7 +52,7 @@ type covChecksPanicResolver struct{}
 func (covChecksPanicResolver) IsFinalized(ctx context.Context, bn int64) (bool, bool) {
 	return true, true
 }
-func (covChecksPanicResolver) CanonicalReceipts(ctx context.Context, ref string) ([]Receipt, bool) {
+func (covChecksPanicResolver) CanonicalReceipts(ctx context.Context, ref string, blockNumber int64) ([]Receipt, bool) {
 	return nil, false
 }
 func (covChecksPanicResolver) CanonicalHeader(ctx context.Context, ref string) (*Header, bool) {
@@ -192,7 +193,7 @@ func TestCovChecks_GetLogsCompletenessEdges(t *testing.T) {
 }
 
 func TestCovChecks_CompareBlockLogs(t *testing.T) {
-	f := &LogsFilter{FromBlock: -1, ToBlock: -1, addresses: map[string]struct{}{}}
+	f := logfilter.Parse([]any{map[string]any{}})
 
 	t.Run("malformed response logIndex → skip", func(t *testing.T) {
 		got := covChecksLog("0xzz", "0xd1", "0xa")
@@ -267,11 +268,11 @@ func TestCovChecks_ConsecutiveSkips(t *testing.T) {
 		hist          History
 	}{
 		{"baseFee: genesis number", "baseFeeDerivation", `{"number":"0x0","baseFeePerGas":"0x1"}`, segWith(full)},
-		{"baseFee: parent without gas fields", "baseFeeDerivation", `{"number":"0x65","baseFeePerGas":"0x1"}`, segWith(&Header{Number: "0x64", BaseFeePerGas: "0x1"})},
-		{"baseFee: parent zero gas limit", "baseFeeDerivation", `{"number":"0x65","baseFeePerGas":"0x1"}`, segWith(&Header{Number: "0x64", BaseFeePerGas: "0x1", GasLimit: "0x0", GasUsed: "0x0"})},
-		{"baseFee: unparseable child fee", "baseFeeDerivation", `{"number":"0x65","baseFeePerGas":"0xzz"}`, segWith(full)},
-		{"timestamp: absent", "timestampMonotonicity", `{"number":"0x65"}`, segWith(full)},
-		{"timestamp: unparseable", "timestampMonotonicity", `{"number":"0x65","timestamp":"0xzz"}`, segWith(full)},
+		{"baseFee: parent without gas fields", "baseFeeDerivation", `{"number":"0x65","parentHash":"0xparent","baseFeePerGas":"0x1"}`, segWith(&Header{Number: "0x64", Hash: "0xparent", BaseFeePerGas: "0x1"})},
+		{"baseFee: parent zero gas limit", "baseFeeDerivation", `{"number":"0x65","parentHash":"0xparent","baseFeePerGas":"0x1"}`, segWith(&Header{Number: "0x64", Hash: "0xparent", BaseFeePerGas: "0x1", GasLimit: "0x0", GasUsed: "0x0"})},
+		{"baseFee: unparseable child fee", "baseFeeDerivation", `{"number":"0x65","parentHash":"0xparent","baseFeePerGas":"0xzz"}`, segWith(full)},
+		{"timestamp: absent", "timestampMonotonicity", `{"number":"0x65","parentHash":"0xparent"}`, segWith(full)},
+		{"timestamp: unparseable", "timestampMonotonicity", `{"number":"0x65","parentHash":"0xparent","timestamp":"0xzz"}`, segWith(full)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -291,7 +292,8 @@ func TestCovChecks_ConsecutiveSkips(t *testing.T) {
 		opCfg := CheckConfig{Enabled: true, Params: map[string]string{"elasticity": "6", "denominator": "250"}}
 		want, ok := NextBaseFee(parent, feeModelFrom(opCfg))
 		require.True(t, ok)
-		good := fmt.Sprintf(`{"number":"0x65","baseFeePerGas":"0x%x"}`, want)
+		// The parent is found by parentHash, never by number (spec §12).
+		good := fmt.Sprintf(`{"number":"0x65","parentHash":"0xparent","baseFeePerGas":"0x%x"}`, want)
 		assert.Nil(t, covChecksRun(t, "baseFeeDerivation", MethodGetBlockByNumber, good, nil, segWith(parent), nil, opCfg))
 		v := covChecksRun(t, "baseFeeDerivation", MethodGetBlockByNumber, good, nil, segWith(parent), nil, cfg)
 		covChecksAssertFail(t, v, "elasticity 2 / denominator 8")
@@ -508,11 +510,13 @@ func TestCovChecks_LogsFilterRejectsUnmodeledShapes(t *testing.T) {
 		t.Run(p, func(t *testing.T) {
 			var params []any
 			require.NoError(t, common.SonicCfg.Unmarshal([]byte(`[`+p+`]`), &params))
-			assert.Nil(t, parseLogsFilter(params))
+			assert.Nil(t, logfilter.Parse(params))
 		})
 	}
 	t.Run("toBlock below fromBlock is not a concrete range", func(t *testing.T) {
-		f := filt(t, `{"fromBlock":"0x12","toBlock":"0x10"}`)
+		var params []any
+		require.NoError(t, common.SonicCfg.Unmarshal([]byte(`[{"fromBlock":"0x12","toBlock":"0x10"}]`), &params))
+		f := logfilter.Parse(params)
 		require.NotNil(t, f)
 		_, _, ok := f.ConcreteRange()
 		assert.False(t, ok)

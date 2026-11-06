@@ -24,9 +24,11 @@ type headReportingConnector struct {
 	known    bool
 }
 
-func (h *headReportingConnector) CacheLatestBlockTimestamp(networkId string) (int64, bool) {
-	return h.latestTs, h.known
+func (h *headReportingConnector) CacheLatestBlock(networkId string) (int64, int64, bool) {
+	return 1, h.latestTs, h.known
 }
+
+func (h *headReportingConnector) RefreshLatestBlock(context.Context, string) {}
 
 func newHeadReportingConnector(id string, latestTs int64, known bool) *headReportingConnector {
 	mc := &data.MockConnector{}
@@ -244,7 +246,13 @@ func TestEvmJsonRpcCache_ConnectorFreshnessThroughGet(t *testing.T) {
 		require.NoError(t, err)
 
 		cache := &EvmJsonRpcCache{projectId: "test-project", logger: &logger, policies: []*data.CachePolicy{policy}}
-		req := realtimeReq("eth_getBlockByNumber", `["latest",false]`)
+		// The tag keys on the number its Head gives it, never on the word `latest`.
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
+		req.SetNetwork(&testNetwork{
+			finalityState: common.DataFinalityStateRealtime,
+			highestLatest: 0x1234,
+			cfg:           &common.NetworkConfig{Architecture: common.ArchitectureEvm},
+		})
 		return cache, req
 	}
 

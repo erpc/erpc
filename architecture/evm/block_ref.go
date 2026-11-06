@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"go.opentelemetry.io/otel/attribute"
@@ -35,7 +36,7 @@ func ExtractBlockReferenceFromRequest(ctx context.Context, r *common.NormalizedR
 	}
 
 	if blockRef != "" && blockNumber != 0 {
-		if common.IsTracingDetailed {
+		if common.IsTracingDetailed() {
 			span.SetAttributes(
 				attribute.String("block.ref", blockRef),
 				attribute.Int64("block.number", blockNumber),
@@ -91,7 +92,7 @@ func ExtractBlockReferenceFromRequest(ctx context.Context, r *common.NormalizedR
 		}
 	}
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("block.ref", blockRef),
 			attribute.Int64("block.number", blockNumber),
@@ -115,10 +116,14 @@ func ExtractBlockReferenceFromRequest(ctx context.Context, r *common.NormalizedR
 }
 
 // ResolveCacheBlockRef is ExtractBlockReferenceFromRequest for cache keys: a
-// "latest" or "finalized" tag resolves to a concrete block so each tip advance
-// gets its own key. It uses the response's block number when given (SET), else
-// the network's current tip for the tag (GET). Other refs, including "safe",
-// are returned unchanged.
+// "latest" or "finalized" tag resolves to a concrete block so each head
+// advance gets its own key. It uses the response's block number when given
+// (SET), else the number the request's Head interpolates the tag to (spec
+// §7), so GET and SET key on the number the request ran at, in the decimal
+// form a numbered request's ref takes (parseCompositeBlockParam): the same
+// call at that number hits the entry. A tag that reaches upstreams as is
+// gets no key: "" is never cached. Other refs, including "safe", are
+// returned unchanged.
 func ResolveCacheBlockRef(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (string, int64, error) {
 	blockRef, blockNumber, err := ExtractBlockReferenceFromRequest(ctx, req)
 	if err != nil {
@@ -129,40 +134,31 @@ func ResolveCacheBlockRef(ctx context.Context, req *common.NormalizedRequest, re
 		return blockRef, blockNumber, nil
 	}
 
+	num := blockNumber
 	if resp != nil {
 		if _, respBN, rerr := ExtractBlockReferenceFromResponse(ctx, resp); rerr == nil && respBN > 0 {
-			if hex, herr := common.NormalizeHex(respBN); herr == nil {
-				return hex, respBN, nil
-			}
+			num = respBN
 		}
 	}
+	if num <= 0 {
+		num = TagBlockNumber(ctx, req, blockRef)
+	}
+	if num <= 0 {
+		return "", 0, nil
+	}
+	return strconv.FormatInt(num, 10), num, nil
+}
 
-	// Without a known tip, fall back to the tag-literal key.
-	net := req.Network()
-	if net == nil {
-		return blockRef, blockNumber, nil
+// requestBlockTag is the block tag req asked for as the client sent it,
+// kept in EvmBlockRef after interpolation (spec §7), or "" for a number, a
+// hash or no selector.
+func requestBlockTag(ctx context.Context, req *common.NormalizedRequest) string {
+	ref, _, _ := ExtractBlockReferenceFromRequest(ctx, req)
+	switch ref {
+	case "latest", "finalized", "safe", "pending", "earliest":
+		return ref
 	}
-	var num int64
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				num = 0
-			}
-		}()
-		switch blockRef {
-		case "latest":
-			num = common.EvmHighestLatestBlockNumber(net, ctx)
-		case "finalized":
-			num = common.EvmHighestFinalizedBlockNumber(net, ctx)
-		}
-	}()
-	if num > 0 {
-		if hex, herr := common.NormalizeHex(num); herr == nil {
-			return hex, num, nil
-		}
-	}
-
-	return blockRef, blockNumber, nil
+	return ""
 }
 
 func ExtractBlockReferenceFromResponse(ctx context.Context, r *common.NormalizedResponse) (string, int64, error) {
@@ -219,7 +215,7 @@ func ExtractBlockReferenceFromResponse(ctx context.Context, r *common.Normalized
 		return blockRef, blockNumber, err
 	}
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("block.ref", blockRef),
 			attribute.Int64("block.number", blockNumber),
@@ -265,20 +261,13 @@ func ExtractBlockTimestampFromResponse(ctx context.Context, r *common.Normalized
 	// Force-copy the small string to avoid any potential reference to backing buffers
 	timestampStr = string(append([]byte(nil), timestampStr...))
 
-	var blockTimestamp int64
-	// Handle both hex (0x...) and decimal formats
-	if strings.HasPrefix(timestampStr, "0x") {
-		blockTimestamp, err = common.HexToInt64(timestampStr)
-	} else {
-		blockTimestamp, err = strconv.ParseInt(timestampStr, 10, 64)
-	}
-
+	blockTimestamp, err := integrity.ParseTimestamp(timestampStr)
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return 0, err
 	}
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.Int64("block.timestamp", blockTimestamp),
 		)

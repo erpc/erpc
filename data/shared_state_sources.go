@@ -6,5 +6,6 @@ const (
 	UpdateSourceTryUpdate        = "try-update-direct"
 	UpdateSourceTryUpdateIfStale = "try-update-if-stale"
 	UpdateSourceRemoteCheck      = "remote-check-before-update"
+	UpdateSourceRewind           = "rewind"
 	UpdateSourceTest             = "test"
 )

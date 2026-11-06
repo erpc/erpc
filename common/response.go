@@ -43,6 +43,8 @@ type NormalizedResponse struct {
 	parseOnce sync.Once
 
 	duration time.Duration
+	// sentAt is when the request this answers was sent to its upstream.
+	sentAt time.Time
 
 	// pendingOps tracks background users (e.g., async cache writes).
 	// Release will wait for all pending ops to finish before freeing buffers.
@@ -205,6 +207,22 @@ func (r *NormalizedResponse) Duration() time.Duration {
 		return 0
 	}
 	return r.duration
+}
+
+// SentAt is when the request this answers was sent to its upstream; zero
+// for an answer no upstream sent now.
+func (r *NormalizedResponse) SentAt() time.Time {
+	if r == nil {
+		return time.Time{}
+	}
+	return r.sentAt
+}
+
+func (r *NormalizedResponse) SetSentAt(at time.Time) {
+	if r == nil {
+		return
+	}
+	r.sentAt = at
 }
 
 func (r *NormalizedResponse) SetDuration(dur time.Duration) {

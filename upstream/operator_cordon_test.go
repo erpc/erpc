@@ -276,7 +276,7 @@ func TestRecovery_PeerClearsByLocalGenerationNotWallClock(t *testing.T) {
 
 	// Epoch 1 is not a timestamp. The old path treated a non-positive
 	// millisecond watermark as time.Now() and compared clocks.
-	a.operatorRecoveryVar().TryUpdate(ctx, 1)
+	a.operatorRecoveryVar().TryUpdate(ctx, 1, time.Now())
 
 	classes := a.metricsTracker.CordonClasses(a, "*")
 	require.NotContains(t, classes, common.CordonClassAvailability,
@@ -298,7 +298,7 @@ func TestRecovery_SkipsWhenOperatorGenerationIsNewer(t *testing.T) {
 	require.Greater(t, a.operatorCordonVar().GetValue(), int64(1))
 	a.CordonClass("*", "availability", common.CordonClassAvailability)
 
-	a.operatorRecoveryVar().TryUpdate(ctx, 1)
+	a.operatorRecoveryVar().TryUpdate(ctx, 1, time.Now())
 
 	classes := a.metricsTracker.CordonClasses(a, "*")
 	require.Contains(t, classes, common.CordonClassOperator)
@@ -319,7 +319,7 @@ func TestUncordonAdmin_RecoveryKeepsPostSnapshotDetectorCordon(t *testing.T) {
 	a.CordonClass("*", "new punishment after snapshot", common.CordonClassPunishment)
 
 	epoch := time.Now().UnixMilli() * int64(time.Millisecond)
-	a.operatorRecoveryVar().TryUpdate(ctx, epoch)
+	a.operatorRecoveryVar().TryUpdate(ctx, epoch, time.Now())
 
 	classes := a.metricsTracker.CordonClasses(a, "*")
 	require.Contains(t, classes, common.CordonClassPunishment,
@@ -346,7 +346,7 @@ func TestCordonAdmin_ReassertSurvivesInFlightUncordon(t *testing.T) {
 	require.Greater(t, a.operatorCordonVar().GetValue(), before, "in-flight re-assert must advance the shared counter")
 	require.Greater(t, a.metricsTracker.CordonGens(a, "*")[operatorCordonGenIndex], gens[operatorCordonGenIndex])
 
-	a.operatorCordonVar().TryUpdate(ctx, 0)
+	a.operatorCordonVar().TryUpdate(ctx, 0, time.Now())
 	classes := a.metricsTracker.CordonClasses(a, "*")
 	require.Contains(t, classes, common.CordonClassOperator, "stale zero must not clear a re-asserted operator cordon")
 }

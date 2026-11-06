@@ -52,7 +52,7 @@ func svmSigPage(n int) string {
 // so the full page arrives in one call and the pruned validator is never asked.
 func TestSvm_GetSignaturesForAddress_DeepestFloorAnswersFirst(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-sigs-rpc1.localhost", 1000, 990, 1000, 500)
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-sigs-rpc2.localhost", 1000, 990, 1000, 0)
 
@@ -83,7 +83,7 @@ func TestSvm_GetSignaturesForAddress_DeepestFloorAnswersFirst(t *testing.T) {
 
 func TestSvm_GetSignaturesForAddress_FullPageStopsSweep(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForSvmStatePoller("svm-sigsfull-rpc1.localhost", 1000, 990)
 	util.SetupMocksForSvmStatePoller("svm-sigsfull-rpc2.localhost", 1000, 990)
 
@@ -111,7 +111,7 @@ func TestSvm_GetSignaturesForAddress_FullPageStopsSweep(t *testing.T) {
 // upstream's answer is final and no other upstream is called.
 func TestSvm_GetSignaturesForAddress_ShortPageAtEqualFloorsIsServed(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	hosts := []string{"svm-sigseq-rpc1.localhost", "svm-sigseq-rpc2.localhost", "svm-sigseq-rpc3.localhost"}
 	for _, h := range hosts {
 		util.SetupMocksForSvmStatePoller(h, 1000, 990)
@@ -142,7 +142,7 @@ func TestSvm_GetSignaturesForAddress_ShortPageAtEqualFloorsIsServed(t *testing.T
 
 func TestSvm_GetSignaturesForAddress_AllShortServesLastValidPage(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-sigsall-rpc1.localhost", 1000, 990, 1000, 500)
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-sigsall-rpc2.localhost", 1000, 990, 1000, 0)
 
@@ -178,7 +178,7 @@ const (
 
 func TestSvm_GetSignatureStatuses_SearchHistoryNullContinuesToNextUpstream(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-status-rpc1.localhost", 1000, 990, 1000, 500)
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-status-rpc2.localhost", 1000, 990, 1000, 0)
 
@@ -206,7 +206,7 @@ func TestSvm_GetSignatureStatuses_SearchHistoryNullContinuesToNextUpstream(t *te
 
 func TestSvm_GetSignatureStatuses_WithoutFlagNullIsServed(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForSvmStatePoller("svm-statusoff-rpc1.localhost", 1000, 990)
 	util.SetupMocksForSvmStatePoller("svm-statusoff-rpc2.localhost", 1000, 990)
 
@@ -240,7 +240,7 @@ func TestSvm_GetSignaturesForAddress_DeepestUpstreamShortPageIsAuthoritative(t *
 		order := order
 		t.Run(order[0]+"-first", func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 			archiveHost := "svm-sigsdeep-archive-" + order[0] + ".localhost"
 			prunedHost := "svm-sigsdeep-pruned-" + order[0] + ".localhost"
 			util.SetupMocksForSvmStatePollerWithFirstAvailable(archiveHost, 1000, 990, 1000, 0)
@@ -283,7 +283,7 @@ func TestSvm_GetSignatureStatuses_DeepestUpstreamNullIsAuthoritative(t *testing.
 		order := order
 		t.Run(order[0]+"-first", func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 			archiveHost := "svm-statusdeep-archive-" + order[0] + ".localhost"
 			prunedHost := "svm-statusdeep-pruned-" + order[0] + ".localhost"
 			util.SetupMocksForSvmStatePollerWithFirstAvailable(archiveHost, 1000, 990, 1000, 0)
@@ -317,7 +317,7 @@ func TestSvm_GetSignatureStatuses_DeepestUpstreamNullIsAuthoritative(t *testing.
 // rpc1's sweep-continuation MissingData must not record wrong-empty misbehavior.
 func TestSvm_HistorySweep_NoMisbehaviorForIdenticalShortPages(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-sigsmb-rpc1.localhost", 1000, 990, 1000, 500)
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-sigsmb-rpc2.localhost", 1000, 990, 1000, 0)
 
@@ -355,7 +355,7 @@ func TestSvm_HistorySweep_NoMisbehaviorForIdenticalShortPages(t *testing.T) {
 // participant's short page must stay a 200, or consensus agrees on an error.
 func TestSvm_Consensus_AllShortSignaturePagesAgreeOnSuccess(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-cons-sigs-a.localhost", 1000, 990, 1000, 500)
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-cons-sigs-b.localhost", 1000, 990, 1000, 0)
 

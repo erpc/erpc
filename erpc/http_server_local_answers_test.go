@@ -106,7 +106,7 @@ func TestHttpServer_LocalAnswers(t *testing.T) {
 
 	t.Run("on by default: eRPC answers, no upstream call", func(t *testing.T) {
 		mockUpstream()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		send, _, _, shutdown, _ := createServerTestFixtures(config(nil), t)
 		defer shutdown()
 
@@ -127,7 +127,7 @@ func TestHttpServer_LocalAnswers(t *testing.T) {
 
 	t.Run("off per method: routed to the upstream", func(t *testing.T) {
 		mockUpstream()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		off := map[string]bool{}
 		for method := range upstreamAnswers {
 			off[method] = false

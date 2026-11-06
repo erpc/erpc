@@ -257,6 +257,7 @@ func TestRedisConnector_WatchAndPublishCounter(t *testing.T) {
 	}
 
 	t.Run("unparsable and zero-timestamp messages are ignored", func(t *testing.T) {
+		malformed := rejectedTotal(rejectMalformed)
 		require.NoError(t, c.client.Publish(ctx, "counter:"+key, "garbage").Err())
 		require.NoError(t, c.client.Publish(ctx, "counter:"+key, `{"v":9,"t":0}`).Err())
 		valid := CounterInt64State{Value: 7, UpdatedAt: 300}
@@ -264,6 +265,7 @@ func TestRedisConnector_WatchAndPublishCounter(t *testing.T) {
 		select {
 		case st := <-updates:
 			assert.Equal(t, valid, st, "only the valid message reaches the subscriber")
+			assert.GreaterOrEqual(t, rejectedTotal(rejectMalformed)-malformed, 2.0, "both bad messages are counted malformed")
 		case <-time.After(5 * time.Second):
 			t.Fatal("valid publish not delivered")
 		}

@@ -23,7 +23,7 @@ func init() {
 // Test that finality is preserved as "realtime" when translating tags
 func TestInterpolation_PreservesRealtimeFinality(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -86,10 +86,12 @@ func TestInterpolation_PreservesRealtimeFinality(t *testing.T) {
 	assert.Equal(t, common.DataFinalityStateRealtime, respFinality, "Response should also be realtime")
 }
 
-// Test that finality is preserved for finalized tag
-func TestInterpolation_PreservesFinalizedTagFinality(t *testing.T) {
+// An interpolated finalized tag runs at its Head's Finalized, so it has that
+// block's finality, not a tag's realtime (spec §6.4): "latest" stays
+// realtime (TestInterpolation_PreservesRealtimeFinality).
+func TestInterpolation_FinalizedTagTakesItsBlockFinality(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -122,7 +124,7 @@ func TestInterpolation_PreservesFinalizedTagFinality(t *testing.T) {
 
 	// Check finality BEFORE normalization
 	finalityBefore := req.Finality(ctx)
-	assert.Equal(t, common.DataFinalityStateRealtime, finalityBefore, "Request with 'finalized' tag should be realtime before translation")
+	assert.NotEqual(t, common.DataFinalityStateRealtime, finalityBefore, "An interpolated 'finalized' tag has its block's finality")
 
 	// Normalize the request
 	jrq, err := req.JsonRpcRequest()
@@ -131,7 +133,7 @@ func TestInterpolation_PreservesFinalizedTagFinality(t *testing.T) {
 
 	// Check finality AFTER normalization
 	finalityAfter := req.Finality(ctx)
-	assert.Equal(t, common.DataFinalityStateRealtime, finalityAfter, "Request should STILL be realtime after finalized tag translation")
+	assert.Equal(t, finalityBefore, finalityAfter, "Normalization keeps the request's finality")
 
 	// Forward the request
 	resp, err := network.Forward(ctx, req)
@@ -141,14 +143,14 @@ func TestInterpolation_PreservesFinalizedTagFinality(t *testing.T) {
 
 		// Check response finality
 		respFinality := resp.Finality(ctx)
-		assert.Equal(t, common.DataFinalityStateRealtime, respFinality, "Response should also be realtime")
+		assert.NotEqual(t, common.DataFinalityStateRealtime, respFinality, "The response has the block's finality too")
 	}
 }
 
 // Test that numeric block parameters are correctly identified as unfinalized
 func TestInterpolation_NumericBlockFinality(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	// We don't forward any requests in this test, so no user mocks are needed
 	defer util.AssertNoPendingMocks(t, 0)
@@ -185,7 +187,7 @@ func TestInterpolation_InstantFinalityLatestStaysRealtime(t *testing.T) {
 	for _, method := range []string{"eth_getTransactionCount", "eth_getBalance"} {
 		t.Run(method, func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 			mockJsonRpcUpstream("rpc1.localhost", "0x7b", "0x11118888", "0x11118888")
 			for _, result := range []string{"0x1", "0x2"} {
 				gock.New("http://rpc1.localhost").
@@ -203,7 +205,7 @@ func TestInterpolation_InstantFinalityLatestStaysRealtime(t *testing.T) {
 			defer cancel()
 
 			network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-			require.Equal(t, network.EvmHighestLatestBlockNumber(ctx), network.EvmHighestFinalizedBlockNumber(ctx))
+			require.Equal(t, servedHead(network, ctx).Latest, servedHead(network, ctx).Finalized)
 
 			cacheCfg := &common.CacheConfig{
 				Connectors: []*common.ConnectorConfig{{
@@ -238,4 +240,11 @@ func TestInterpolation_InstantFinalityLatestStaysRealtime(t *testing.T) {
 			}
 		})
 	}
+}
+
+// hashedLatestBody is the shared poller's tip block at number with a hash,
+// so its answer forms the view (spec §6.5); the shared poller mocks carry
+// none. Its note keeps it a poller mock for util.AssertNoPendingMocks.
+func hashedLatestBody(number string) string {
+	return `{"result":{"number":"` + number + `","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`
 }

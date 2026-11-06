@@ -477,7 +477,7 @@ func KnownGenesisHash(cluster string) string {
 }
 ```
 
-The `Network` interface currently has three EVM-specific methods (`EvmHighestLatestBlockNumber`, `EvmHighestFinalizedBlockNumber`, `EvmLeaderUpstream`). These must stay on the interface to avoid breaking EVM callers in the short term.
+The `Network` interface has EVM-specific methods (`EvmHead`, `EvmLaneHead`). These must stay on the interface to avoid breaking EVM callers in the short term.
 
 > **Q3 — EVM stubs on `Network` interface — Decided:** The `ArchitectureHandler` approach avoids ever creating a `SvmNetwork` type, so the stubs problem never arises — the single `Network` struct in `erpc/networks.go` is used for all architectures. EVM-specific callers already guard on `Architecture() == ArchitectureEvm`. No change needed in Phase 1. Extract an `EvmNetwork` sub-interface in a follow-up once it is clear which callers need to be updated.
 

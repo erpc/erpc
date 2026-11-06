@@ -18,7 +18,7 @@ import (
 func TestHttpServer_ConsensusMisbehaviorScoring(t *testing.T) {
 	t.Run("MisbehavingUpstreamGetsDeprioritized", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// defer util.AssertNoPendingMocks(t, 2) // upstream4 and upstream5 might not be called
 

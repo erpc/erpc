@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -112,12 +113,12 @@ func TestCheckCallStateProbe_ExecutionCanary(t *testing.T) {
 			if method == "eth_getBalance" {
 				return rawResultResponse(`"0x0"`), nil
 			}
-			return rawResultResponse(`"0x"`), nil // no code at the canary address
+			return rawResultResponse(`"0x"`), nil // no code at either canary address
 		})
 		ok, _, err := e.checkCallStateProbe(context.Background(), block)
 		require.NoError(t, err)
 		assert.True(t, ok, "no canary deployed -> exactly the previous (balance) behavior")
-		assert.Equal(t, []string{"eth_call", "eth_getBalance"}, up.calls)
+		assert.Equal(t, []string{"eth_call", "eth_call", "eth_getBalance"}, up.calls, "ArbSys first, then Multicall3, then the balance")
 	})
 
 	t.Run("canary erroring falls back too, and the fallback's verdict stands", func(t *testing.T) {
@@ -140,30 +141,41 @@ func TestCheckCallStateProbe_ExecutionCanary(t *testing.T) {
 		}
 	})
 
-	t.Run("the canary is per-architecture: Nitro asks ArbSys, everyone else Multicall3", func(t *testing.T) {
-		// On Nitro chains block.number is the L1 height, so the standard
-		// Multicall3 getBlockNumber() canary would mismatch on every honest
-		// node; ArbSys arbBlockNumber() answers the chain's own height. An
-		// unknown chainId takes the Multicall3 default (200+ chains).
-		cases := []struct {
-			chainId  int64
-			wantTo   string
-			wantData string
-		}{
-			{42161, "0x0000000000000000000000000000000000000064", "0xa3b1b31d"},  // arbitrum-nitro -> ArbSys
-			{123456, "0xcA11bde05977b3631167028862bE2a173976CA11", "0x42cbb15c"}, // unknown chain -> Multicall3 default
-		}
-		for _, tc := range cases {
-			var gotParams string
-			e, _ := newCanaryPoller(tc.chainId, func(method, params string) (*common.NormalizedResponse, error) {
-				gotParams = params
-				return hexWordResponse(block), nil
+	t.Run("Nitro is wherever ArbSys answers, whatever the chain id; the first answer decides for good", func(t *testing.T) {
+		// On Nitro chains (Arbitrum One, Nova, every Orbit chain) block.number
+		// is the parent chain's height, so Multicall3 getBlockNumber() would
+		// mismatch on every honest node; ArbSys arbBlockNumber() answers the
+		// chain's own. Off Nitro, ArbSys has no code and answers "0x".
+		const arbSys, multicall3 = "0x0000000000000000000000000000000000000064", "0xcA11bde05977b3631167028862bE2a173976CA11"
+		for _, nitro := range []bool{true, false} {
+			var asked []string
+			e, _ := newCanaryPoller(42170, func(method, params string) (*common.NormalizedResponse, error) {
+				switch {
+				case strings.Contains(params, arbSys):
+					asked = append(asked, "arbSys")
+					if !nitro {
+						return rawResultResponse(`"0x"`), nil
+					}
+					return hexWordResponse(block), nil
+				case strings.Contains(params, multicall3):
+					asked = append(asked, "multicall3")
+					if nitro {
+						return hexWordResponse(block / 4), nil // the parent chain's height
+					}
+					return hexWordResponse(block), nil
+				}
+				return nil, fmt.Errorf("unexpected call %s %s", method, params)
 			})
-			ok, _, err := e.checkCallStateProbe(context.Background(), block)
-			require.NoError(t, err)
-			assert.True(t, ok)
-			assert.Contains(t, gotParams, tc.wantTo, "chain %d", tc.chainId)
-			assert.Contains(t, gotParams, tc.wantData, "chain %d", tc.chainId)
+			for range 2 {
+				ok, _, err := e.checkCallStateProbe(context.Background(), block)
+				require.NoError(t, err)
+				assert.True(t, ok, "nitro=%v", nitro)
+			}
+			if nitro {
+				assert.Equal(t, []string{"arbSys", "arbSys"}, asked)
+			} else {
+				assert.Equal(t, []string{"arbSys", "multicall3", "multicall3"}, asked)
+			}
 		}
 	})
 }

@@ -79,12 +79,37 @@ func setupTipLeaderServer(t *testing.T, evmCfg *common.EvmNetworkConfig, maxAtte
 	return sendRequest, shutdown, nw, leader
 }
 
-// EnforceHighestBlock's tip re-fetch must reach the upstream whose poller has
-// the tip, not settle for the lagging sibling that answered "latest" first.
-func TestHttpServer_GetBlockByNumberLatest_RefetchReachesTipUpstream(t *testing.T) {
+// mockHashedLatest makes id's latest answer the hashed block body, so it
+// forms the view (spec §6.5: the view is a pin hash votes back; a number
+// alone never moves it), persistent: the block clock fetches latest
+// again. The poller mock answering id's latest without a hash matches
+// first, so it goes.
+func mockHashedLatest(id, body string) {
+	for _, m := range gock.GetAll() {
+		probe, _ := http.NewRequest(http.MethodPost, "http://"+id+".localhost", strings.NewReader(`{"method":"eth_getBlockByNumber","params":["latest",false]}`))
+		if ok, _ := m.Match(probe); ok {
+			gock.Remove(m)
+		}
+	}
+	gock.New("http://" + id + ".localhost").
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			b := util.SafeReadBody(r)
+			return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, `"latest"`)
+		}).
+		Reply(200).
+		JSON([]byte(body))
+}
+
+// "latest" is interpolated to the Head, a number only the upstream whose
+// poller has the tip can serve: the request must reach it, not settle for
+// the lagging sibling preferred by selection order.
+func TestHttpServer_GetBlockByNumberLatest_InterpolatedReachesTipUpstream(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
+	mockHashedLatest("rpc2", `{"result":{"number":"0x22228889","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f1"}}`)
 	defer util.AssertNoPendingMocks(t, 0)
 
 	const tip = int64(0x22228889)
@@ -104,24 +129,22 @@ func TestHttpServer_GetBlockByNumberLatest_RefetchReachesTipUpstream(t *testing.
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x22228889","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f1"}}`))
 
-	// rpc1 lags, so the initial "latest" comes from it and triggers the
-	// EnforceHighestBlock re-fetch.
+	// rpc1 lags; "latest" becomes the tip's number. Quorum 1: rpc2's head
+	// alone is the tip.
 	sendRequest, shutdown, nw, leader := setupTipLeaderServer(t, &common.EvmNetworkConfig{
 		ChainId: 123,
 		Integrity: &common.EvmIntegrityConfig{
 			EnforceHighestBlock: util.BoolPtr(true),
 		},
+		ServedTip: &common.EvmServedTipConfig{Quorum: 1},
 	}, 3)
 	defer shutdown()
 
-	// Mirror WS ingest: the tip-source poller and the delivered-head floor
-	// advance before any client sees the head.
-	leader.EvmStatePoller().SuggestLatestBlock(tip)
-	nw.NoteObservedLatestBlock(context.Background(), tip)
+	require.Eventually(t, func() bool { return servedHead(nw, context.Background()).Latest == tip }, 5*time.Second, 50*time.Millisecond)
 
 	require.Equal(t, tip, leader.EvmStatePoller().LatestBlock())
-	require.Equal(t, "rpc2", nw.EvmLeaderUpstream(context.Background()).Id())
-	require.Equal(t, tip, nw.EvmHighestLatestBlockNumber(context.Background()))
+	require.Equal(t, "rpc2", servedHead(nw, context.Background()).Leader.Id())
+	require.Equal(t, tip, servedHead(nw, context.Background()).Latest)
 
 	statusCode, _, body := sendRequest(`{
 		"jsonrpc": "2.0",
@@ -139,15 +162,16 @@ func TestHttpServer_GetBlockByNumberLatest_RefetchReachesTipUpstream(t *testing.
 	assert.Equal(t, tipHex, result["number"])
 	assert.Equal(t, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", result["hash"])
 	assert.GreaterOrEqual(t, leaderHits.Load(), int64(1),
-		"the tip re-fetch must reach the upstream that has the tip")
+		"the interpolated request must reach the upstream that has the tip")
 }
 
 // Direct eth_getBlockByNumber(tip) goes first to the upstream that has the
 // tip, not to a lagging sibling preferred by selection order.
 func TestHttpServer_GetBlockByNumber_NearTipPrefersTipUpstream(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
+	mockHashedLatest("rpc2", `{"result":{"number":"0x33338889","hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","parentHash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","timestamp":"0x6702a8f1"}}`)
 	// rpc1 tip-null Persist mock is intentionally unused.
 	defer util.AssertNoPendingMocks(t, 1)
 
@@ -189,10 +213,17 @@ func TestHttpServer_GetBlockByNumber_NearTipPrefersTipUpstream(t *testing.T) {
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x33338889","hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","parentHash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","timestamp":"0x6702a8f1"}}`))
 
-	sendRequest, shutdown, nw, leader := setupTipLeaderServer(t, &common.EvmNetworkConfig{ChainId: 123}, 2)
+	// Quorum 1: rpc2's head alone is Latest, so rpc2 leads (the Leader is
+	// the highest voter within Latest + maxRetryableBlockDistance; with the
+	// default quorum one far-ahead upstream never leads, spec §6.4, U12).
+	sendRequest, shutdown, nw, leader := setupTipLeaderServer(t, &common.EvmNetworkConfig{
+		ChainId:   123,
+		ServedTip: &common.EvmServedTipConfig{Quorum: 1},
+	}, 2)
 	defer shutdown()
-	leader.EvmStatePoller().SuggestLatestBlock(tip)
-	require.Equal(t, "rpc2", nw.EvmLeaderUpstream(context.Background()).Id())
+	require.Eventually(t, func() bool { return servedHead(nw, context.Background()).Latest == tip }, 5*time.Second, 50*time.Millisecond)
+	require.Equal(t, tip, leader.EvmStatePoller().LatestBlock())
+	require.Equal(t, "rpc2", servedHead(nw, context.Background()).Leader.Id())
 
 	statusCode, _, body := sendRequest(`{
 		"jsonrpc": "2.0",

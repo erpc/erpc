@@ -185,6 +185,18 @@ var requestPermit = PermitCost{Hits: 1, Mode: common.RateLimitCountModeRequest}
 // the matching rules are enforced as one pool shared by every method. What a
 // rule actually charges is resolved per rule in resolveCost.
 func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId string, req *common.NormalizedRequest, method string, vendor string, upstreamId string, authLabel string, origin string, cost ...PermitCost) (bool, error) {
+	return b.tryAcquirePermit(ctx, projectId, req, method, vendor, upstreamId, authLabel, origin, false, cost...)
+}
+
+// TryAcquireSparePermit is TryAcquirePermit for work that yields to clients:
+// it is allowed only while every matching rule keeps more than half of its
+// capacity free after the hit. A denied spare permit still counts its hit:
+// the limiter cache cannot read a counter without adding to it.
+func (b *RateLimiterBudget) TryAcquireSparePermit(ctx context.Context, projectId string, req *common.NormalizedRequest, method string, vendor string, upstreamId string, authLabel string, origin string, cost ...PermitCost) (bool, error) {
+	return b.tryAcquirePermit(ctx, projectId, req, method, vendor, upstreamId, authLabel, origin, true, cost...)
+}
+
+func (b *RateLimiterBudget) tryAcquirePermit(ctx context.Context, projectId string, req *common.NormalizedRequest, method string, vendor string, upstreamId string, authLabel string, origin string, spare bool, cost ...PermitCost) (bool, error) {
 	permit := requestPermit
 	if len(cost) > 0 {
 		permit = cost[0]
@@ -246,6 +258,9 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 	}
 
 	blocking := overLimitIndex(statuses)
+	if blocking < 0 && spare {
+		blocking = noSpareIndex(statuses)
+	}
 	if blocking < 0 {
 		return true, nil
 	}
@@ -323,6 +338,17 @@ func (b *RateLimiterBudget) scaledLimits(rlReq *pb.RateLimitRequest, limits []*c
 func overLimitIndex(statuses []*pb.RateLimitResponse_DescriptorStatus) int {
 	for i, s := range statuses {
 		if s != nil && s.Code == pb.RateLimitResponse_OVER_LIMIT {
+			return i
+		}
+	}
+	return -1
+}
+
+// noSpareIndex is the first status whose rule keeps half or less of its
+// capacity free after the hit, or -1: a spare permit yields to clients.
+func noSpareIndex(statuses []*pb.RateLimitResponse_DescriptorStatus) int {
+	for i, s := range statuses {
+		if s != nil && s.CurrentLimit != nil && 2*uint64(s.LimitRemaining) <= uint64(s.CurrentLimit.RequestsPerUnit) {
 			return i
 		}
 	}

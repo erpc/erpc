@@ -15,26 +15,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// headNetwork is a minimal EvmNetwork test double reporting a fixed "latest"
-// head, so the empty-outside-retention waiver's block proof can be exercised
+// headNetwork is a minimal EvmNetwork test double whose Head reports a fixed
+// Latest, so the empty-outside-retention waiver's block proof can be exercised
 // end-to-end through determineWinner — the path chainHead actually reads
-// (common.EvmHighestLatestBlockNumber). The unit tests inject head/winnerBlock
-// directly; these drive the whole determineWinner pipeline the way a live
-// round does, which is what the reviewer asked to see proven.
+// (the request's Head through common.EvmHeadOf). The unit tests inject
+// head/winnerBlock directly; these drive the whole determineWinner pipeline
+// the way a live round does, which is what the reviewer asked to see proven.
 type headNetwork struct {
 	common.Network
 	latest  int64
 	maxMode bool // true → Config has no served-tip majority; chainHead must not trust latest
 }
 
-func (n *headNetwork) Id() string                                           { return "evm:1" }
-func (n *headNetwork) Label() string                                        { return "evm:1" }
-func (n *headNetwork) ProjectId() string                                    { return "test-project" }
-func (n *headNetwork) Architecture() common.NetworkArchitecture             { return common.ArchitectureEvm }
-func (n *headNetwork) EvmHighestLatestBlockNumber(context.Context) int64    { return n.latest }
-func (n *headNetwork) EvmHighestFinalizedBlockNumber(context.Context) int64 { return 0 }
-func (n *headNetwork) EvmLeaderUpstream(context.Context) common.Upstream    { return nil }
-func (n *headNetwork) EvmRefreshLatestBlock(context.Context)               {}
+func (n *headNetwork) Id() string                               { return "evm:1" }
+func (n *headNetwork) Label() string                            { return "evm:1" }
+func (n *headNetwork) ProjectId() string                        { return "test-project" }
+func (n *headNetwork) Architecture() common.NetworkArchitecture { return common.ArchitectureEvm }
+func (n *headNetwork) EvmHead(context.Context, *common.NormalizedRequest) common.EvmHead {
+	return common.EvmHead{Latest: n.latest}
+}
+func (n *headNetwork) EvmLaneHead(string, string) common.EvmHead {
+	return n.EvmHead(context.Background(), nil)
+}
 
 // Without this, a new EvmNetwork method makes the fake silently stop being an
 // EvmNetwork and chainHead falls back to participant pollers (fail-closed).

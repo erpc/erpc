@@ -53,22 +53,6 @@ func TestNetworkPostForward_EthBlockNumber(t *testing.T) {
 		assert.Equal(t, int64(0x1000), bn)
 	})
 
-	t.Run("EnforcedCacheHitRefreshesLatest", func(t *testing.T) {
-		// Cache hits return from Network.Forward before pre-forward, so the
-		// post-forward path must still ask pollers for a debounced refresh.
-		net := netWith(0x1000)
-		_, bn := run(t, net, true, "0x1000", true)
-		assert.Equal(t, int64(0x1000), bn)
-		assert.Equal(t, 1, net.refreshLatestCalls)
-	})
-
-	t.Run("EnforcementDisabledDoesNotRefresh", func(t *testing.T) {
-		net := netWith(0x1000)
-		_, bn := run(t, net, false, "0x1000", true)
-		assert.Equal(t, int64(0x1000), bn)
-		assert.Equal(t, 0, net.refreshLatestCalls)
-	})
-
 	t.Run("AboveTipIsPinnedToTip", func(t *testing.T) {
 		// The inversion bug: a fresher head passing a floor-only check lets
 		// eth_blockNumber run ahead of the served head that "latest"

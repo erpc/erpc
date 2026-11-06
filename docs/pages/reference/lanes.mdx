@@ -63,7 +63,7 @@ likely cause. Reference: https://docs.erpc.cloud/reference/lanes.llms.txt`}
 
 ### How it works
 
-A **lane** is not a config object. It is an emergent artifact: when a request carries a `use-upstream` selector (via `X-ERPC-Use-Upstream` header, `?use-upstream=` query parameter, or `directivesDefaults.useUpstream` in config), eRPC resolves which upstreams match. If the matched set is a proper subset of at least two upstreams — and the selector is "simple" (see below) — eRPC derives a stable key by SHA-256-hashing the sorted upstream IDs, then lazily creates a `servedTipLane` for that key (`servedTipLaneFor`). A lane holds no pick state: only its label and, per axis, an in-process anchor for the advance-age gauge, the regression guard's memory and, on `finalized`, the [finalized floor](/reference/evm/block-tracking#finalized-floor). The network-wide pick is the lane `servedTipAll`, labelled `"all"`; only it gets the WebSocket delivered-head floor. The tip itself is the [served-tip rule](/reference/evm/block-tracking#served-tip) over the matched subset, computed fresh for every selector, lane or not. Nothing is shared across pods. Source: <SourceLink file="erpc/networks.go" lines="117-137" />, <SourceLink file="erpc/networks.go" lines="641-668" />
+A **lane** is not a config object. It is an emergent artifact: when a request carries a `use-upstream` selector (via `X-ERPC-Use-Upstream` header, `?use-upstream=` query parameter, or `directivesDefaults.useUpstream` in config), eRPC resolves which upstreams match. If the matched set is a proper subset of at least two upstreams — and the selector is "simple" (see below) — eRPC derives a stable key by SHA-256-hashing the sorted upstream IDs, then lazily creates a `servedTipLane` for that key (`servedTipLaneFor`). A lane holds no pick state: only its label and, per axis, an in-process anchor for the advance-age gauge, the regression guard's memory and, on `finalized`, the [finalized floor](/reference/evm/block-tracking#finalized-floor). The network-wide pick is the lane `servedTipAll`, labelled `"all"`. The tip itself is the [served-tip rule](/reference/evm/block-tracking#served-tip) over the matched subset, computed fresh for every selector, lane or not. Only the network-wide lane's finalized floor is shared across pods. Source: <SourceLink file="erpc/networks.go" lines="113-132" />, <SourceLink file="erpc/networks.go" lines="628-655" />
 
 **LaneName algorithm.** `LaneName(ids)` sorts the upstream IDs alphabetically, then builds a set of non-empty hyphen-split tokens for each ID (empty strings from consecutive hyphens are discarded). It walks the tokens of the first sorted ID and returns the first token that appears in every other ID's token set. If no universally shared token exists, it falls back to a concatenation of the first two characters of each ID (up to five IDs). The result is deterministic and order-independent — every pod reaches the same name from the same upstream topology. Source: <SourceLink file="common/lane.go" lines="25" />
 
@@ -73,9 +73,9 @@ A **lane** is not a config object. It is an emergent artifact: when a request ca
 
 The lane key is derived from the **matched upstream set**, not the selector text. `flashblocks*` and `fl*` targeting the same three upstreams produce the same key and share one lane. Cardinality is bounded by the actual upstream topology, not selector diversity.
 
-**Method subsets.** The matched set holds only upstreams that serve the request's method (`ignoreMethods`/`allowMethods`), because only they vote on its [served tip](/reference/evm/block-tracking#served-tip). A request without a selector whose method every upstream serves, or none does, uses the network-wide lane; one whose method only some upstreams serve gets their lane, a single upstream included, so it keeps its own regression guard, finalized floor and gauges. Each method's voter set and lane are built on its first request and rebuilt when the network's upstreams or an upstream's method filter change; a request reads them with one lookup. Method lanes come from config, so they do not count against the 16-lane cap for selectors, and a rebuild drops a lane no method maps to any more. Only method names the config or the built-in tables define exactly are cached; a casing variant (`ETH_CALL`) or an unknown name is resolved per request, with no lane.
+**Method subsets.** Only upstreams that serve the request's method (`ignoreMethods`/`allowMethods`) vote on its [served tip](/reference/evm/block-tracking#served-tip). A request whose method every upstream serves, or none does, uses its selector's lane. One whose method only some upstreams serve forms no lane of its own: it reads its selector lane's view capped at the block `servedTip.quorum` of the serving upstreams hold, with the stateless pick (no guard, no finalized floor, no gauges). Each method's voter set is built on its first request and rebuilt when the network's upstreams or an upstream's method filter change; a request reads it with one lookup. Only method names the config or the built-in tables define exactly are cached; a casing variant (`ETH_CALL`) or an unknown name is resolved per request.
 
-**No lane.** When a selector is complex, matches fewer than two upstreams, matches all upstreams, or arrives past the cap, `servedTipLaneFor` returns nil. The subset pick still applies, with no regression guard, no anchor and no gauge write, so a subset value never overwrites the `lane="all"` gauge.
+**No lane.** When a selector is complex, matches fewer than two upstreams, matches all upstreams, or arrives past the cap, `laneFor` returns nil. The subset pick still applies, with no regression guard, no anchor and no gauge write, so a subset value never overwrites the `lane="all"` gauge.
 
 **UseUpstream directive precedence** (highest to lowest):
 
@@ -89,7 +89,7 @@ The selector is used in two places: to narrow the served-tip ballot (and resolve
 
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
-| `networks[*].directivesDefaults.useUpstream` | `*string` | `nil` (no default selector) | Sets the `use-upstream` selector for all requests on this network when the client sends none. Identical semantics to the `X-ERPC-Use-Upstream` header. **Footgun:** a selector matching all upstreams forms no lane: its pick runs over the same upstreams as the network-wide one, but without the regression guard, the WebSocket floor or any gauge. Sources: <SourceLink file="common/config.go" lines="2109" />, <SourceLink file="common/request.go" lines="589-590" /> |
+| `networks[*].directivesDefaults.useUpstream` | `*string` | `nil` (no default selector) | Sets the `use-upstream` selector for all requests on this network when the client sends none. Identical semantics to the `X-ERPC-Use-Upstream` header. **Footgun:** a selector matching all upstreams forms no lane: its pick runs over the same upstreams as the network-wide one, but without the regression guard or any gauge. Sources: <SourceLink file="common/config.go" lines="2109" />, <SourceLink file="common/request.go" lines="589-590" /> |
 
 Lanes themselves are not directly configured — they emerge from runtime request selectors and the upstream topology. They need no `servedTip` block; `servedTip.quorum` applies inside each lane as it does network-wide.
 
@@ -138,7 +138,7 @@ export default createConfig({
 
 ### Edge cases & gotchas
 
-1. **A single matched upstream does not form a selector lane.** `partitionKeyFor` requires `len(matched) >= 2`; a single-upstream selector gets that upstream's head and emits no gauge. A method only one upstream serves does get a lane (method subsets above).
+1. **A single matched upstream does not form a lane.** `partitionKeyFor` requires `len(matched) >= 2`; a single-upstream selector gets that upstream's head and emits no gauge.
 2. **Matching ALL upstreams does not form a lane.** `len(matched) >= len(all)` also falls through, preventing a match-all selector from shadowing `lane="all"`.
 3. **Boolean combinator selectors are never partitioned.** `alchemy | quicknode` contains `|`; it routes and scopes the tip correctly but never gets a lane.
 4. **The 16-lane cap is a soft guard.** Concurrent goroutines can transiently exceed 16. Beyond the cap, new groups get no lane.
@@ -146,7 +146,7 @@ export default createConfig({
 6. **`LaneName` is not guaranteed unique.** Two different upstream sets could produce the same name if both share the same common token. The lane key is the stable identifier; the name is decorative for dashboards.
 7. **Negated selectors match by ID only, never by tag.** A pattern containing `!` skips tag evaluation entirely. `!alchemy-*` excludes by ID but will not rescue non-matching IDs via tags.
 8. **`LaneName` sort is alphabetical.** For `(quicknode-systx, systx-quicknode)`, sorted order puts `quicknode-systx` first; `LaneName` returns `"quicknode"`, not `"systx"`. Source: `common/lane_test.go` (`order independent` test).
-9. **Lane state is per process.** Anchors, regression-guard memory and finalized floors live in memory; a restarted pod rebuilds them from live heads.
+9. **Lane state is per process.** Anchors, regression-guard memory and finalized floors live in memory; a restarted pod rebuilds them from live heads. The network-wide lane's finalized floor is also shared across pods, so a restarted pod serves it again once one of its voters reports it.
 10. **`LaneName` output is written to Prometheus labels as-is, without sanitization.** If upstream IDs contain unusual characters that cause `LaneName` to produce an unexpected string, that string becomes the label value verbatim. The label is never normalized or escaped beyond what `LaneName` itself produces.
 
 ### Observability
@@ -158,10 +158,10 @@ Lanes are the `lane` label of the four `erpc_network_served_tip_*` series ([mean
 - [`common/lane.go`](https://github.com/erpc/erpc/blob/main/common/lane.go) — `LaneName(ids []string) string`: naming algorithm, pure function.
 - [`common/lane_test.go`](https://github.com/erpc/erpc/blob/main/common/lane_test.go) — unit tests for `LaneName`: shared-token precedence, order-independence, fallback combo, single-id, empty input, determinism.
 - [`erpc/networks.go:L117-L137`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L117-L137) — `maxServedTipLanes = 16`, `servedTipLane` struct.
-- [`erpc/networks.go:L641-L668`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L641-L668) — `servedTipLaneFor`: lazy lane materialization with cap and `sync.Map`.
-- [`erpc/networks.go:L670-L759`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L670-L759) — `partitionKeyFor`: selector → SHA-256 key; `EvmUpstreamGroupForSelector`; `isSimpleGroupSelector` filter.
-- [`erpc/networks.go:L883-L981`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L883-L981) — `servedTip`: guard, floors and gauges per lane.
-- [`erpc/networks.go:L1647-L1677`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1647-L1677) — `observeServedTipMetrics`: gauge emission per lane label.
+- [`erpc/networks.go:L640-L667`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L640-L667) — `servedTipLaneFor`: lazy lane materialization with cap and `sync.Map`.
+- [`erpc/networks.go:L669-L758`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L669-L758) — `partitionKeyFor`: selector → SHA-256 key; `EvmUpstreamGroupForSelector`; `isSimpleGroupSelector` filter.
+- [`erpc/networks.go:L883-L971`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L883-L971) — `servedTip`: guard, floors and gauges per lane.
+- [`erpc/networks.go`](https://github.com/erpc/erpc/blob/main/erpc/networks.go) — `bindLaneGauges`, `servedTipGauges.observe`: gauges bound once per lane label.
 - [`common/matcher.go:L73-L112`](https://github.com/erpc/erpc/blob/main/common/matcher.go#L73-L112) — `MatchesSelector` + `UpstreamMatchesSelector`: ID + tag matching primitive.
 - [`common/request.go:L739-L741`](https://github.com/erpc/erpc/blob/main/common/request.go#L739-L741) — `X-ERPC-Use-Upstream` header extraction.
 - [`common/request.go:L811-L812`](https://github.com/erpc/erpc/blob/main/common/request.go#L811-L812) — `?use-upstream=` query-param extraction.

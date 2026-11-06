@@ -203,6 +203,7 @@ type Upstream struct {
 	networkId            atomic.Value
 	networkLabel         atomic.Value
 	supportedMethods     sync.Map
+	autoIgnored          sync.Map // method -> time.Time until which it stays ignored
 	metricsTracker       *health.Tracker
 	sharedStateRegistry  data.SharedStateRegistry
 	failsafeExecutors    []*upstreamExecutor
@@ -310,7 +311,9 @@ func NewUpstream(
 	pup.initRateLimitAutoTuner()
 
 	if vn != nil {
-		cfgs, err := vn.GenerateConfigs(appCtx, &lg, cfg, nil)
+		// A vendor keeps this logger for async refreshes; lg is rewritten below.
+		vendorLg := lg
+		cfgs, err := vn.GenerateConfigs(appCtx, &vendorLg, cfg, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -635,7 +638,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 	)
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", nrq.ID())),
 		)
@@ -679,7 +682,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 
 	lg := u.logger.With().Str("method", method).Str("networkId", u.NetworkId()).Interface("id", nrq.ID()).Logger()
 
-	if limitersBudget != nil {
+	if limitersBudget != nil && nrq.UpstreamPolicies() != common.UpstreamPoliciesHeadAsk {
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
 		rules, err := limitersBudget.GetRulesByMethod(method)
 		if err != nil {
@@ -687,7 +690,11 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nil, err
 		}
 		if len(rules) > 0 {
-			allowed, err := limitersBudget.TryAcquirePermit(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream", u.rateLimitCost(nrq))
+			acquire := limitersBudget.TryAcquirePermit
+			if nrq.UpstreamPolicies() == common.UpstreamPoliciesTrackerFill {
+				acquire = limitersBudget.TryAcquireSparePermit
+			}
+			allowed, err := acquire(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream", u.rateLimitCost(nrq))
 			if err != nil {
 				common.SetTraceSpanError(span, err)
 				return nil, err
@@ -855,11 +862,13 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					attribute.String("client.type", string(clientType)),
 				),
 			)
+			sentAt := time.Now()
 			nrs, errCall := u.Client.SendRequest(ctx, nrq)
 			sendSpan.End()
 			isSuccess := false
 			if errCall == nil && nrs != nil {
 				nrs.SetUpstream(u)
+				nrs.SetSentAt(sentAt)
 				jrr, _ := nrs.JsonRpcResponse()
 				if jrr != nil && jrr.Error == nil {
 					nrq.SetLastValidResponse(ctx, nrs)
@@ -1085,8 +1094,11 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 }
 
 // resolveAvailabilityBounds computes effective [min,max] based on BlockAvailabilityConfig.
-// Returns MinInt64/MaxInt64 when a side is unbounded.
-func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
+// Returns MinInt64/MaxInt64 when a side is unbounded. upperTolerance is added
+// to an upper bound relative to the head: the gate's head predicate
+// (common.EvmHeadReaches) passes the upstream's headLagToleranceBlocks; its
+// vote and the ceiling pass 0 and keep the configured bound (spec §6.4).
+func (u *Upstream) resolveAvailabilityBounds(upperTolerance int64) (int64, int64) {
 	cfg := u.Config()
 	if cfg == nil || cfg.Evm == nil {
 		return math.MinInt64, math.MaxInt64
@@ -1149,6 +1161,9 @@ func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
 			}
 			if latest > 0 {
 				val = latest - *bound.LatestBlockMinus
+				if !isLower {
+					val += upperTolerance
+				}
 				u.logger.Debug().
 					Int64("latestBlock", latest).
 					Int64("minus", *bound.LatestBlockMinus).
@@ -1206,7 +1221,7 @@ func (u *Upstream) EvmEffectiveLatestBlock() int64 {
 		return 0
 	}
 
-	_, maxBound := u.resolveAvailabilityBounds()
+	_, maxBound := u.resolveAvailabilityBounds(0)
 	if maxBound != math.MaxInt64 && maxBound < latestBlock {
 		return maxBound
 	}
@@ -1224,7 +1239,7 @@ func (u *Upstream) EvmEffectiveFinalizedBlock() int64 {
 		return 0
 	}
 
-	_, maxBound := u.resolveAvailabilityBounds()
+	_, maxBound := u.resolveAvailabilityBounds(0)
 	if maxBound != math.MaxInt64 && maxBound < finalizedBlock {
 		return maxBound
 	}
@@ -1237,7 +1252,7 @@ func (u *Upstream) EvmEffectiveFinalizedBlock() int64 {
 // This is used post-forward to determine if an upstream's MissingData response
 // is expected (block outside configured range) vs. a genuine wrong-empty misbehavior.
 func (u *Upstream) EvmBlockAvailabilityBounds() (int64, int64) {
-	return u.resolveAvailabilityBounds()
+	return u.resolveAvailabilityBounds(common.EvmHeadLagTolerance(u))
 }
 
 // assertUpstreamLowerBound checks if a full node can handle a block based on its lower bound.
@@ -1288,6 +1303,11 @@ func (u *Upstream) assertUpstreamLowerBound(ctx context.Context, statePoller com
 	return available, nil
 }
 
+// autoIgnoreExpiry is how long a method the upstream answered as
+// unsupported stays ignored, so a vendor that refused it during a deploy
+// serves it again (spec §10, §13.1).
+var autoIgnoreExpiry = 10 * time.Minute
+
 // methodFilterEpoch moves whenever a network's upstream set or an upstream's
 // method filter changes, so a view built from them (a network's served-tip
 // voter sets) knows to rebuild with one atomic load.
@@ -1296,12 +1316,19 @@ var methodFilterEpoch atomic.Uint64
 // MethodFilterEpoch returns the current methodFilterEpoch.
 func MethodFilterEpoch() uint64 { return methodFilterEpoch.Load() }
 
-// MethodFilter returns copies of the upstream's ignoreMethods and
-// allowMethods.
+// MethodFilter returns copies of the upstream's ignoreMethods, with its
+// auto-ignored methods appended in order, and allowMethods.
 func (u *Upstream) MethodFilter() (ignore, allow []string) {
 	u.cfgMu.RLock()
-	defer u.cfgMu.RUnlock()
-	return slices.Clone(u.config.IgnoreMethods), slices.Clone(u.config.AllowMethods)
+	ignore, allow = slices.Clone(u.config.IgnoreMethods), slices.Clone(u.config.AllowMethods)
+	u.cfgMu.RUnlock()
+	var auto []string
+	u.autoIgnored.Range(func(m, _ any) bool {
+		auto = append(auto, m.(string))
+		return true
+	})
+	slices.Sort(auto)
+	return append(ignore, auto...), allow
 }
 
 func (u *Upstream) IgnoreMethod(method string) {
@@ -1309,12 +1336,8 @@ func (u *Upstream) IgnoreMethod(method string) {
 	if ai == nil || !*ai {
 		return
 	}
-	u.logger.Warn().Str("method", method).Msgf("upstream does not support method, dynamically adding to ignoreMethods")
-
-	u.cfgMu.Lock()
-	u.config.IgnoreMethods = append(u.config.IgnoreMethods, method)
-	u.cfgMu.Unlock()
-	u.supportedMethods.Store(method, false)
+	u.logger.Warn().Str("method", method).Dur("for", autoIgnoreExpiry).Msg("upstream does not support method, ignoring it for a while")
+	u.autoIgnored.Store(method, time.Now().Add(autoIgnoreExpiry))
 	methodFilterEpoch.Add(1)
 }
 
@@ -1358,13 +1381,36 @@ func (u *Upstream) recordRemoteRateLimit(ctx context.Context, method string, nrq
 	}
 }
 
-func (u *Upstream) ShouldHandleMethod(method string) (v bool, err error) {
-	cfg := u.Config()
-	if s, ok := u.supportedMethods.Load(method); ok {
-		return s.(bool), nil
-	}
+// methodSupport is what the upstream's config says of a method: handled, and
+// whether an allowMethods entry names it.
+type methodSupport struct {
+	handled, allowListed bool
+}
 
-	v = true
+// ShouldHandleMethod applies ignoreMethods, then allowMethods, then an
+// unexpired auto-ignore entry, which never overrides an allowMethods entry.
+func (u *Upstream) ShouldHandleMethod(method string) (bool, error) {
+	s, err := u.configMethodSupport(method)
+	if err != nil || !s.handled || s.allowListed {
+		return s.handled, err
+	}
+	if until, ok := u.autoIgnored.Load(method); ok {
+		if time.Now().Before(until.(time.Time)) {
+			return false, nil
+		}
+		if u.autoIgnored.CompareAndDelete(method, until) {
+			methodFilterEpoch.Add(1)
+		}
+	}
+	return true, nil
+}
+
+func (u *Upstream) configMethodSupport(method string) (methodSupport, error) {
+	if s, ok := u.supportedMethods.Load(method); ok {
+		return s.(methodSupport), nil
+	}
+	cfg := u.Config()
+	s := methodSupport{handled: true}
 
 	// First check if method is ignored, and then check if it is explicitly mentioned to be allowed.
 	// This order allows an upstream for example to define "ignore all except eth_getLogs".
@@ -1372,36 +1418,32 @@ func (u *Upstream) ShouldHandleMethod(method string) (v bool, err error) {
 	u.cfgMu.RLock()
 	defer u.cfgMu.RUnlock()
 
-	if cfg.IgnoreMethods != nil {
-		for _, m := range cfg.IgnoreMethods {
-			match, err := common.WildcardMatch(m, method)
-			if err != nil {
-				return false, err
-			}
-			if match {
-				v = false
-				break
-			}
+	for _, m := range cfg.IgnoreMethods {
+		match, err := common.WildcardMatch(m, method)
+		if err != nil {
+			return methodSupport{}, err
+		}
+		if match {
+			s.handled = false
+			break
 		}
 	}
 
-	if cfg.AllowMethods != nil {
-		for _, m := range cfg.AllowMethods {
-			match, err := common.WildcardMatch(m, method)
-			if err != nil {
-				return false, err
-			}
-			if match {
-				v = true
-				break
-			}
+	for _, m := range cfg.AllowMethods {
+		match, err := common.WildcardMatch(m, method)
+		if err != nil {
+			return methodSupport{}, err
+		}
+		if match {
+			s = methodSupport{handled: true, allowListed: true}
+			break
 		}
 	}
 
-	u.supportedMethods.Store(method, v)
-	u.logger.Debug().Bool("allowed", v).Str("method", method).Msg("method support result")
+	u.supportedMethods.Store(method, s)
+	u.logger.Debug().Bool("allowed", s.handled).Str("method", method).Msg("method support result")
 
-	return v, nil
+	return s, nil
 }
 
 func (u *Upstream) detectFeatures(ctx context.Context) error {
@@ -1453,8 +1495,12 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 				u,
 			))
 		}
-		cfg.Evm.ChainId = realChainID
-		u.networkId.Store(util.EvmNetworkId(cfg.Evm.ChainId))
+		// Only an unset chainId is written: a Bootstrap re-run on a registered
+		// upstream must not write the config its readers hold.
+		if cfg.Evm.ChainId == 0 {
+			cfg.Evm.ChainId = realChainID
+		}
+		u.networkId.Store(util.EvmNetworkId(realChainID))
 		u.chainIdValidated.Store(true)
 
 		// Arm chain-identity enforcement on clients that support it (the gRPC
@@ -1674,21 +1720,21 @@ func (u *Upstream) CordonAdmin(ctx context.Context, reason string) {
 	if publish <= floor {
 		publish = floor + 1
 	}
-	v.TryUpdate(ctx, publish)
+	v.TryUpdate(ctx, publish, time.Now())
 	if v.GetValue() == 0 {
 		retryAt := time.Now().UnixMilli()
 		if retryAt <= publish {
 			retryAt = publish + 1
 		}
-		v.TryUpdate(ctx, retryAt)
+		v.TryUpdate(ctx, retryAt, time.Now())
 	}
 	u.operatorCordonReason.Store("")
 }
 
 // UncordonAdmin lifts the shared operator cordon fleet-wide and clears every
-// cordon class on "*" locally (and on peers via shared-state callbacks).
-// That is the intentional recovery path for availability cordons that have no
-// automatic Uncordon — e.g. EVM chain-identity mismatch. Class-scoped
+// cordon class on "*" locally (and on peers via shared-state callbacks): the
+// operator call overrides a detector verdict. A detector that still sees its
+// fault cordons again (the chain-identity recheck does). Class-scoped
 // Uncordon still clears one bit only (feature §4.5).
 func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
 	u.adminCordonMu.Lock()
@@ -1714,7 +1760,7 @@ func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
 	// reads zero: a peer may still hold a positive operator counter that our
 	// local view has not caught up to. Equal local 0→0 is a no-op here; the
 	// recovery epoch below also lifts a still-positive peer counter.
-	v.TryUpdate(ctx, 0)
+	v.TryUpdate(ctx, 0, time.Now())
 	rv := u.operatorRecoveryVar()
 	next := clearedGen
 	if next < 1 {
@@ -1725,7 +1771,7 @@ func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
 	if cur := rv.GetValue(); next <= cur {
 		next = cur + 1
 	}
-	rv.TryUpdate(ctx, next)
+	rv.TryUpdate(ctx, next, time.Now())
 
 	u.adminCordonMu.Lock()
 	defer u.adminCordonMu.Unlock()
@@ -1743,7 +1789,7 @@ func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
 				restore = 1
 			}
 			u.adminCordonMu.Unlock()
-			v.TryUpdate(ctx, restore)
+			v.TryUpdate(ctx, restore, time.Now())
 			u.adminCordonMu.Lock()
 		}
 		return
@@ -1754,15 +1800,11 @@ func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
 	}
 	cleared := u.metricsTracker.UncordonClassesAtMostGens(u, "*", reason, gens)
 
-	// Reset detector state only for a class the recovery actually cleared
-	// (Copilot finding: an unconditional reset stopped a newer punishment's
-	// timer / cleared a newer chain-id cordon's ownership). A punishment that
-	// landed after the snapshot keeps its bit AND its sit-out timer.
+	// Reset the sit-out only when the recovery actually cleared its
+	// punishment: a punishment that landed after the snapshot keeps its bit
+	// AND its sit-out timer.
 	if slices.Contains(cleared, common.CordonClassPunishment) {
 		resetSitout(u.ProjectId, u.Id())
-	}
-	if slices.Contains(cleared, common.CordonClassAvailability) && u.evmStatePoller != nil {
-		u.evmStatePoller.ResetChainIdCordon()
 	}
 }
 
@@ -1844,7 +1886,7 @@ func (u *Upstream) operatorRecoveryVar() data.CounterInt64SharedVariable {
 				if opVal > epoch {
 					return
 				}
-				op.TryUpdate(u.appCtx, 0)
+				op.TryUpdate(u.appCtx, 0, time.Now())
 			}
 
 			u.adminCordonMu.Lock()
@@ -1854,16 +1896,13 @@ func (u *Upstream) operatorRecoveryVar() data.CounterInt64SharedVariable {
 				return
 			}
 			// Issuing pod: clear by the snapshot taken before publish, so a
-			// detector cordon during the publish is kept. Fire the sit-out /
-			// chain-id reset hooks for classes actually cleared here, since the
-			// explicit UncordonAdmin tail may then find nothing left to clear.
+			// detector cordon during the publish is kept. Fire the sit-out
+			// reset for a punishment actually cleared here, since the explicit
+			// UncordonAdmin tail may then find nothing left to clear.
 			if snap := u.uncordonSnap.Load(); snap != nil {
 				cleared := u.metricsTracker.UncordonClassesAtMostGens(u, "*", reason, *snap)
 				if slices.Contains(cleared, common.CordonClassPunishment) {
 					resetSitout(u.ProjectId, u.Id())
-				}
-				if slices.Contains(cleared, common.CordonClassAvailability) && u.evmStatePoller != nil {
-					u.evmStatePoller.ResetChainIdCordon()
 				}
 				return
 			}
@@ -1877,9 +1916,6 @@ func (u *Upstream) operatorRecoveryVar() data.CounterInt64SharedVariable {
 			// bit and sit-out timer.
 			if slices.Contains(cleared, common.CordonClassPunishment) {
 				resetSitout(u.ProjectId, u.Id())
-			}
-			if slices.Contains(cleared, common.CordonClassAvailability) && u.evmStatePoller != nil {
-				u.evmStatePoller.ResetChainIdCordon()
 			}
 		})
 		u.operatorRecovery.Store(v)
