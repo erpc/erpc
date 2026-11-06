@@ -347,6 +347,7 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 		if nr.evmJsonRpcCache != nil {
 			network.cacheDal = nr.evmJsonRpcCache.WithProjectId(nr.project.Config.Id)
 		}
+		network.cacheHead = newCacheHeadAnchor(network, nr.evmJsonRpcCache)
 	case common.ArchitectureSvm:
 		if nr.svmJsonRpcCache != nil {
 			network.cacheDal = nr.svmJsonRpcCache.WithProjectId(nr.project.Config.Id)

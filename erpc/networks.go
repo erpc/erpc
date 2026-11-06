@@ -43,8 +43,11 @@ type Network struct {
 	failsafeExecutors    []*networkExecutor // main: failsafe rename FailsafeExecutor → networkExecutor
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	cacheDal             common.CacheDAL
-	metricsTracker       *health.Tracker
-	upstreamsRegistry    *upstream.UpstreamsRegistry
+	// cacheHead caps the served latest at the cache's fresh head; nil without
+	// evm.servedTip.cacheHeadMaxAge.
+	cacheHead         *cacheHeadAnchor
+	metricsTracker    *health.Tracker
+	upstreamsRegistry *upstream.UpstreamsRegistry
 	// policyEngine replaces the legacy `selectionPolicyEvaluator *PolicyEvaluator` field
 	// (and the `erpc/policy_evaluator.go` per-request `AcquirePermit` gating it owned).
 	// The engine pre-computes the ordered upstream list per (network, method) tick;
@@ -1188,6 +1191,15 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 		if floor, _ := n.guaranteedFloor(ctx, finalized); floor > 0 && floor < tip {
 			tip = floor
 		}
+	}
+
+	// Cache-head anchor (evm.servedTip.cacheHeadMaxAge): latest never exceeds
+	// the cache's newest block while that block is fresh, so follow-up reads of
+	// the served block hit the cache. Like the guarantees it only lowers the
+	// tip, and runs after the delivered-head floor, so a newHeads subscriber
+	// may have seen a block above the anchored latest.
+	if !finalized {
+		tip = n.cacheHead.clamp(tip)
 	}
 
 	// Finalized floor (#1353): a change of voters — the quorum passing to a

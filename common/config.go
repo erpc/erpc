@@ -3225,6 +3225,18 @@ type EvmServedTipConfig struct {
 	// deep correction. -1 disables the regression guard entirely; no other
 	// negative value is accepted.
 	MaxRegressionBlocks int64 `yaml:"maxRegressionBlocks,omitempty" json:"maxRegressionBlocks,omitempty"`
+
+	// CacheHeadMaxAge anchors "latest" to the cache's newest block. While a
+	// head-aware cache connector (the grpc driver) covering this network holds
+	// a block at most this old — its own timestamp against the wall clock —
+	// the served latest block is capped at that block, so eth_blockNumber,
+	// eth_getBlockByNumber("latest") and "latest" interpolation name a block
+	// the cache already holds and follow-up reads of it hit the cache. Older,
+	// or unknown, and the served latest is computed as without it. Block
+	// timestamps are whole seconds on most chains, so a block reads up to 1s
+	// older than it is: size the bound above the cache's ingestion delay plus
+	// that second. Unset or 0 disables it.
+	CacheHeadMaxAge Duration `yaml:"cacheHeadMaxAge,omitempty" json:"cacheHeadMaxAge,omitempty" tstype:"Duration"`
 }
 
 // ShortCircuitFutureBlocksEnabled reports whether a numbered eth_getBlockByNumber

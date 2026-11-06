@@ -207,6 +207,32 @@ export interface BlockTimeAdaptiveDuration {
 // source: cache_dal.go
 
 export type CacheDAL = any;
+/**
+ * CachePurgeScope describes which cache keys an admin purge should match.
+ * Suffix must come from network config (never from API params).
+ */
+export interface CachePurgeScope {
+  networkid: string;
+  suffix: string; // network cacheKeySuffix
+  method: string; // "" = all methods
+  blockref: string; // "" = all refs
+  dryrun: boolean;
+}
+/**
+ * CachePurgeResult is one connector's outcome from a purge (or dry-run).
+ */
+export interface CachePurgeResult {
+  connectorid: string;
+  driver: string;
+  matched: number /* int64 */;
+  deleted: number /* int64 */;
+  durationms: number /* int64 */;
+}
+/**
+ * CachePurger is an optional capability on a CacheDAL. Unsupported
+ * implementations must surface an error — never silently no-op.
+ */
+export type CachePurger = any;
 
 //////////
 // source: cache_mock.go
@@ -1761,6 +1787,16 @@ export interface SvmNetworkConfig {
    */
   statePollerDebounce?: Duration;
   /**
+   * SkipProcessedSlotProbe skips the state poller's getSlot(processed)
+   * probe and lets the finalized probe feed LatestSlot. Default false
+   * (probe runs) — correct for any finality gap. Set true only on chains
+   * finalizing within ~1 slot of the processed tip (Alpenglow); on
+   * ~32-slot-gap chains (TowerBFT) it shifts the shred-lag cordon and
+   * availability windows by that gap. Plain bool: unset and false are the
+   * same (poll), matching the opt-in skip framing.
+   */
+  skipProcessedSlotProbe?: boolean;
+  /**
    * MaxFinalizedSlotLag bounds how many slots an upstream's FinalizedSlot may
    * trail the pool's highest FinalizedSlot before it is excluded from
    * consensus voting on finalized data. Only applied when a consensus policy
@@ -2042,6 +2078,19 @@ export interface EvmServedTipConfig {
    * negative value is accepted.
    */
   maxRegressionBlocks?: number /* int64 */;
+  /**
+   * CacheHeadMaxAge anchors "latest" to the cache's newest block. While a
+   * head-aware cache connector (the grpc driver) covering this network holds
+   * a block at most this old — its own timestamp against the wall clock —
+   * the served latest block is capped at that block, so eth_blockNumber,
+   * eth_getBlockByNumber("latest") and "latest" interpolation name a block
+   * the cache already holds and follow-up reads of it hit the cache. Older,
+   * or unknown, and the served latest is computed as without it. Block
+   * timestamps are whole seconds on most chains, so a block reads up to 1s
+   * older than it is: size the bound above the cache's ingestion delay plus
+   * that second. Unset or 0 disables it.
+   */
+  cacheHeadMaxAge?: Duration;
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.

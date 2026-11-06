@@ -359,6 +359,7 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 | `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | `Freshest − served`, clamped at 0. `Freshest` is the second-highest head on the ballot (the only one when one votes), so a lone far-ahead head never inflates it. Reads 0 at quorum ≤ 2 unless a guarantee floor sits below the pick, and 0 while the guard or the WebSocket floor lifts the tip. Keeps its last value while no upstream has a head. |
 | `erpc_network_served_tip_advance_age_seconds` | gauge | project, network, lane, axis | Seconds since this process saw the served value change, written at each evaluation; absent until the first change. Keeps rising while no upstream has a head: the stuck-tip signal. |
 | `erpc_network_served_tip_regression_total` | counter | project, network, lane, axis, outcome | [Regression-guard](/reference/evm/block-tracking#regression-guard) transitions, not evaluations. `outcome` ∈ `"held"` (serving the last corroborated pick), `"failed_open"` (the hold outlasted 1 minute). Any increase is alert-worthy. |
+| `erpc_network_cache_head_anchor_total` | counter | project, network, outcome | Served-latest evaluations of a network with [`servedTip.cacheHeadMaxAge`](/reference/evm/block-tracking#cache-head-anchor). `outcome` ∈ `"anchored"` (latest lowered to the fresh cache head), `"level"` (cache head fresh, at or above latest), `"stale"` (cache head older than the bound), `"absent"` (no cache head known). |
 | `erpc_upstream_head_benched_total` | counter | project, vendor, network, upstream | Times this process [benched](/reference/evm/block-tracking#benching) the upstream's head out of the served-tip ballots and the lag reference: it stayed behind peers that kept advancing for its stall window. |
 
 #### Area 4: Cache connector freshness
@@ -366,10 +367,10 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
 | `erpc_cache_connector_earliest_block_number` | gauge | connector, network | gRPC cache connector availability poll — earliest available block. |
-| `erpc_cache_connector_latest_block_number` | gauge | connector, network | Same poll — latest block. |
+| `erpc_cache_connector_latest_block_number` | gauge | connector, network | Same poll — latest block; also written by `eth_blockNumber` cache reads and by the [cache-head anchor](/reference/evm/block-tracking#cache-head-anchor)'s poll. |
 | `erpc_cache_connector_finalized_block_number` | gauge | connector, network | Same poll — finalized block. |
 | `erpc_cache_connector_earliest_block_timestamp_seconds` | gauge | connector, network | Same poll — earliest block unix timestamp. |
-| `erpc_cache_connector_latest_block_timestamp_seconds` | gauge | connector, network | Same poll — latest block unix timestamp. |
+| `erpc_cache_connector_latest_block_timestamp_seconds` | gauge | connector, network | Same writers as the latest block number — latest block unix timestamp. |
 | `erpc_cache_connector_finalized_block_timestamp_seconds` | gauge | connector, network | Same poll — finalized block unix timestamp. |
 
 #### Area 5: Cache operations (JSON-RPC cache)

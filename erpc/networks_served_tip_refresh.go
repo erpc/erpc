@@ -11,7 +11,8 @@ import (
 const servedTipRefreshInterval = time.Second
 
 // startServedTipRefresh evaluates an EVM network's network-wide served tip on
-// both axes every servedTipRefreshInterval until the app stops.
+// both axes every servedTipRefreshInterval until the app stops, and starts
+// the cache-head anchor's poll (cacheHeadAnchor.run) when the network has one.
 //
 // Only an evaluation writes the served-tip gauges, moves the advance-age
 // anchor and refreshes the regression guard's memory. Without this loop a
@@ -25,6 +26,9 @@ func (n *Network) startServedTipRefresh() {
 		return
 	}
 	n.servedTipRefreshOnce.Do(func() {
+		if n.cacheHead != nil {
+			go n.cacheHead.run(n.appCtx)
+		}
 		go func() {
 			ticker := time.NewTicker(servedTipRefreshInterval)
 			defer ticker.Stop()

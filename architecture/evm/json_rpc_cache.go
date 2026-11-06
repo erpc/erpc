@@ -163,6 +163,30 @@ func (c *EvmJsonRpcCache) SetPolicies(policies []*data.CachePolicy) {
 	c.policies = policies
 }
 
+// HeadReporters returns, once each, the head-aware connectors (data.CacheHeadReporter) of the
+// policies that cover networkId: the read-through caches whose newest block a network may anchor
+// its served "latest" to (evm.servedTip.cacheHeadMaxAge).
+func (c *EvmJsonRpcCache) HeadReporters(networkId string) []data.CacheHeadReporter {
+	var out []data.CacheHeadReporter
+	seen := make(map[data.Connector]bool)
+	for _, policy := range c.policies {
+		connector := policy.GetConnector()
+		if seen[connector] {
+			continue
+		}
+		reporter, ok := connector.(data.CacheHeadReporter)
+		if !ok {
+			continue
+		}
+		if match, err := policy.MatchesNetwork(networkId); err != nil || !match {
+			continue
+		}
+		seen[connector] = true
+		out = append(out, reporter)
+	}
+	return out
+}
+
 // observeGetLogsRange records the concrete block-range size of an eth_getLogs
 // request into MetricCacheEvmGetLogsRange, tagged by the connector/policy/ttl
 // involved and the hit/miss outcome. It is a no-op for non-getLogs methods and
@@ -993,8 +1017,8 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 		// can still be enforced for these methods when the connector is head-aware (read-through).
 		blockTimestamp = 0
 		if reporter, ok := policy.GetConnector().(data.CacheHeadReporter); ok {
-			if ts, known := reporter.CacheLatestBlockTimestamp(req.NetworkId()); known && ts > 0 {
-				blockTimestamp = ts
+			if head, known := reporter.CacheLatestBlock(req.NetworkId()); known {
+				blockTimestamp = head.Timestamp
 			}
 		}
 		if blockTimestamp <= 0 {

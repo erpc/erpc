@@ -618,6 +618,7 @@ Top-20 operational metrics:
 | `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Blocks the served tip sits below the second-highest voter, clamped at 0 |
 | `erpc_network_served_tip_advance_age_seconds` | gauge | project, network, lane, axis | Seconds since the served tip last changed; absent until the first change |
 | `erpc_network_served_tip_regression_total` | counter | project, network, lane, axis, outcome | Regression-guard transitions; `outcome` ∈ held/failed_open |
+| `erpc_network_cache_head_anchor_total` | counter | project, network, outcome | Cache-head anchor evaluations; `outcome` ∈ anchored/level/stale/absent |
 | `erpc_upstream_head_benched_total` | counter | project, vendor, network, upstream | Upstream head benched: it stayed behind peers that kept advancing |
 
 ### Source code entry points

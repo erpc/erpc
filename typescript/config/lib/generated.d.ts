@@ -168,6 +168,32 @@ export interface BlockTimeAdaptiveDuration {
     blockTimeMultiplier?: number;
 }
 export type CacheDAL = any;
+/**
+ * CachePurgeScope describes which cache keys an admin purge should match.
+ * Suffix must come from network config (never from API params).
+ */
+export interface CachePurgeScope {
+    networkid: string;
+    suffix: string;
+    method: string;
+    blockref: string;
+    dryrun: boolean;
+}
+/**
+ * CachePurgeResult is one connector's outcome from a purge (or dry-run).
+ */
+export interface CachePurgeResult {
+    connectorid: string;
+    driver: string;
+    matched: number;
+    deleted: number;
+    durationms: number;
+}
+/**
+ * CachePurger is an optional capability on a CacheDAL. Unsupported
+ * implementations must surface an error — never silently no-op.
+ */
+export type CachePurger = any;
 export interface MockCacheDal {
     mock: any;
 }
@@ -420,10 +446,25 @@ export interface SharedStateConfig {
      */
     updateMaxWait?: Duration;
 }
+/**
+ * CachingStrategy controls write-side admission when combined with a response
+ * cacheability mark (see AllowsCacheWrite). Cache hits are served with zero
+ * re-validation, so modules that decide grades (consensus in v1) mark the
+ * response instead of teaching the cache policy names.
+ */
+export type CachingStrategy = string;
+export declare const CachingStrategyDefaultAllow: CachingStrategy;
+export declare const CachingStrategyDefaultIgnore: CachingStrategy;
 export interface CacheConfig {
     connectors?: TsConnectorConfig[];
     policies?: (CachePolicyConfig | undefined)[];
     compression?: CompressionConfig;
+    /**
+     * CachingStrategy is the default write posture for unmarked responses.
+     * Omit → defaultAllow (today's open write). defaultIgnore writes only when
+     * a module marks the response cacheable (true).
+     */
+    cachingStrategy?: 'defaultAllow' | 'defaultIgnore';
 }
 export interface CompressionConfig {
     enabled?: boolean;
@@ -1391,6 +1432,15 @@ export interface ConsensusPolicyConfig {
     policies?: {
         [key: string]: ConsensusPolicyConfig | undefined;
     };
+    /**
+     * CacheableResponses marks whether responses produced under this policy may
+     * be persisted by the cache. Consensus.Run stamps the winning response with
+     * this value; Cache.Set combines it with cachingStrategy (feature
+     * cacheable-responses). Omit defaults: inline / fail-closed "default" →
+     * true; named policies.* → false (stamped before extends so extends:default
+     * does not inherit the inline true).
+     */
+    cacheableResponses?: boolean;
 }
 /**
  * ConsensusDefaultPolicyName is the reserved label reported (metric +
@@ -1722,6 +1772,16 @@ export interface SvmNetworkConfig {
      */
     statePollerDebounce?: Duration;
     /**
+     * SkipProcessedSlotProbe skips the state poller's getSlot(processed)
+     * probe and lets the finalized probe feed LatestSlot. Default false
+     * (probe runs) — correct for any finality gap. Set true only on chains
+     * finalizing within ~1 slot of the processed tip (Alpenglow); on
+     * ~32-slot-gap chains (TowerBFT) it shifts the shred-lag cordon and
+     * availability windows by that gap. Plain bool: unset and false are the
+     * same (poll), matching the opt-in skip framing.
+     */
+    skipProcessedSlotProbe?: boolean;
+    /**
      * MaxFinalizedSlotLag bounds how many slots an upstream's FinalizedSlot may
      * trail the pool's highest FinalizedSlot before it is excluded from
      * consensus voting on finalized data. Only applied when a consensus policy
@@ -2005,6 +2065,19 @@ export interface EvmServedTipConfig {
      * negative value is accepted.
      */
     maxRegressionBlocks?: number;
+    /**
+     * CacheHeadMaxAge anchors "latest" to the cache's newest block. While a
+     * head-aware cache connector (the grpc driver) covering this network holds
+     * a block at most this old — its own timestamp against the wall clock —
+     * the served latest block is capped at that block, so eth_blockNumber,
+     * eth_getBlockByNumber("latest") and "latest" interpolation name a block
+     * the cache already holds and follow-up reads of it hit the cache. Older,
+     * or unknown, and the served latest is computed as without it. Block
+     * timestamps are whole seconds on most chains, so a block reads up to 1s
+     * older than it is: size the bound above the cache's ingestion delay plus
+     * that second. Unset or 0 disables it.
+     */
+    cacheHeadMaxAge?: Duration;
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
@@ -2935,26 +3008,25 @@ export declare const CordonClassOperator: CordonClass;
  * (legacy call sites, internal probes, batch retries). Cordon/Uncordon
  * stay finality-agnostic because cordoning is an admin-level decision
  * about an entire (upstream, method) pair, not a per-finality bucket.
+ * Cordon and Uncordon stay class-less so existing tracker implementations
+ * keep compiling. Class-aware cordoning is the optional ClassedHealthTracker.
  */
 export type HealthTracker = any;
+/**
+ * ClassedHealthTracker is the optional capability for a cordon that carries a
+ * class. The consensus selector reads CordonClasses. A tracker that does not
+ * implement this still receives HealthTracker.Cordon/Uncordon; the class is
+ * not stored, and the selector does not treat that upstream as
+ * availability-only (the only class that permits a policy downgrade).
+ */
+export type ClassedHealthTracker = any;
 export type Upstream = any;
 /**
- * User is the authenticated caller. Beyond identity (Id) it carries the
- * per-caller capabilities resolved at authentication time. Capability fields
- * are populated ONLY by auth strategies; the trusted-header path
- * (NormalizedRequest.SetUserFromTrustedHeader) sets Id alone, so an
- * unvalidated header can never grant a capability.
+ * ClassedUpstream is the optional capability for an upstream that records a
+ * cordon class. In-tree upstreams implement it. Out-of-tree upstreams keep
+ * the class-less Upstream.Cordon/Uncordon methods.
  */
-export interface User {
-    id: string;
-    ratelimitbudget: string;
-    /**
-     * AllowClientDirectives is the client-directive wildcard pattern granted by
-     * the strategy that authenticated this user. Nil means "no strategy-level
-     * override" — the project-level pattern applies.
-     */
-    allowclientdirectives?: string;
-}
+export type ClassedUpstream = any;
 /**
  * MaxGrpcConnPoolSize is the upper bound accepted for a gRPC connection-pool
  * size. It guards against a fat-fingered value opening an absurd number of
