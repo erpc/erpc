@@ -116,6 +116,9 @@ type Network struct {
 	// by-number client answers from it held (*atomic.Int64): holder
 	// evidence for Firm and routing only, never a head report (spec §6.5).
 	heldAt sync.Map
+	// byHashAsked is, per lane selector, the highest block a by-hash
+	// wait Asked its prover about (holdByHash): one head fetch per block.
+	byHashAsked sync.Map
 
 	// queryTraceSource remembers which trace method answered the eth_query*
 	// shim on this network (queryTraceSource* values), so a network whose
@@ -1241,82 +1244,6 @@ func (n *Network) finalizedStep(s voterSet, w time.Duration) (top int64, at time
 		return 0, time.Time{}
 	}
 	return n.finalizedStepTo.Load(), at
-}
-
-// lackingVoters are the pollers of as many of the voters of selector's
-// lane whose head is below block as q holders of it still lack, oldest
-// evidence first, each once (spec §6.4 by-hash wait): Firm is their
-// ballot. A guarantee subset's majority caps the Head too
-// (guaranteedFloor), so each subset adds the voters its own ballot lacks.
-func (n *Network) lackingVoters(selector string, block int64) []common.EvmStatePoller {
-	var ec *common.EvmNetworkConfig
-	if n.cfg != nil {
-		ec = n.cfg.Evm
-	}
-	out := n.lacking(nil, selector, block, voterQuery{kind: numberVote}, ec.ServedTipQuorum())
-	if ec == nil || ec.ServedTip == nil {
-		return out
-	}
-	for _, g := range ec.ServedTip.GuaranteedFor {
-		out = n.lacking(out, selector, block, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
-			m, _ := common.UpstreamMatchesSelector(g, u)
-			return m
-		}}, common.ServedTipQuorumMajority)
-	}
-	for _, m := range ec.ServedTip.GuaranteedMethods {
-		out = n.lacking(out, selector, block, voterQuery{kind: numberVote, member: func(u common.Upstream) bool {
-			handle, _ := u.ShouldHandleMethod(m)
-			return handle
-		}}, common.ServedTipQuorumMajority)
-	}
-	return out
-}
-
-// lacking appends to out, unless already there, as many of q's voters
-// below block as quorum lacks to hold it (quorum less the voters at or
-// above it), oldest evidence first.
-func (n *Network) lacking(out []common.EvmStatePoller, selector string, block int64, q voterQuery, quorum common.ServedTipQuorum) []common.EvmStatePoller {
-	s := n.voters(tipScope{sel: selector}, q)
-	if s.count() == 0 {
-		return out
-	}
-	lacks := quorum.Of(s.count())
-	var below []common.EvmStatePoller
-	s.each(func(u common.Upstream, head int64) bool {
-		if head >= block {
-			lacks--
-		} else if sp := u.(common.EvmUpstream).EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-			below = append(below, sp)
-		}
-		return true
-	})
-	if lacks <= 0 {
-		return out
-	}
-	oldestEvidenceFirst(below)
-	for _, sp := range below[:min(lacks, len(below))] {
-		if !slices.Contains(out, sp) {
-			out = append(out, sp)
-		}
-	}
-	return out
-}
-
-// oldestEvidenceFirst orders pollers by their latest evidence time
-// (common.EvidenceAt), oldest first, stably.
-func oldestEvidenceFirst(pollers []common.EvmStatePoller) {
-	type ranked struct {
-		sp common.EvmStatePoller
-		at time.Time
-	}
-	rs := make([]ranked, len(pollers))
-	for i, sp := range pollers {
-		rs[i] = ranked{sp, common.EvidenceAt(sp.LatestReportAt(), sp.LatestAskAt())}
-	}
-	slices.SortStableFunc(rs, func(a, b ranked) int { return a.at.Compare(b.at) })
-	for i, r := range rs {
-		pollers[i] = r.sp
-	}
 }
 
 // firstHolder is the poller of the first voter of selector's lane, in
