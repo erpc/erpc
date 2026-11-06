@@ -58,7 +58,7 @@ import (
 //      do atomic.Load only — never wait on a mutex, never block on I/O.
 //
 //   2. A short-held refreshMu (sync.Mutex) guards ONLY the in-flight
-//      refresh tracker map. It is NEVER held across the HTTP call.
+//      refresh tracker and failure deadlines. It is NEVER held across the HTTP call.
 //
 //   3. Refresh runs in a dedicated goroutine. Single-flight per cacheKey:
 //      if a refresh is already running, additional callers do not wait —
@@ -84,6 +84,8 @@ import (
 // the original call should have populated the snapshot.
 var ErrRemoteCacheCold = fmt.Errorf("vendor remote-data cache not yet populated; retry shortly")
 
+const remoteCacheFailureRetryDelay = 3 * time.Second
+
 // RemoteDataCache is a generic lock-free, copy-on-write cache keyed by
 // arbitrary string (typically apiKey, apiUrl, or apiKey+filterHash) and
 // backed by a periodic-refresh fetcher. Hot-path Lookup is a single
@@ -101,11 +103,12 @@ type RemoteDataCache[T any] struct {
 	// Refreshes build a new snapshot off-thread and CAS it in place.
 	snapshot atomic.Pointer[remoteCacheSnapshot[T]]
 
-	// refreshMu serializes the inflight tracker only — NEVER held during
+	// refreshMu serializes refresh tracking only — NEVER held during
 	// the HTTP fetch. Holding it for any reason longer than a few
 	// nanoseconds violates the request-path safety rule.
-	refreshMu sync.Mutex
-	inflight  map[string]struct{} // key: cacheKey; presence = refresh running
+	refreshMu  sync.Mutex
+	inflight   map[string]struct{}  // key: cacheKey; presence = refresh running
+	retryAfter map[string]time.Time // key: cacheKey; earliest retry after a fetch error
 
 	// loggerName is included in async-refresh log lines so messages
 	// identify which vendor is refreshing.
@@ -123,6 +126,7 @@ type remoteCacheSnapshot[T any] struct {
 func NewRemoteDataCache[T any](loggerName string) *RemoteDataCache[T] {
 	return &RemoteDataCache[T]{
 		inflight:   make(map[string]struct{}),
+		retryAfter: make(map[string]time.Time),
 		loggerName: loggerName,
 	}
 }
@@ -172,16 +176,18 @@ func (c *RemoteDataCache[T]) Has(cacheKey string) bool {
 // caller's context is intentionally NOT used because it may belong to a
 // transient request that will return long before the fetch completes.
 //
-// Failures are logged and silently dropped — readers continue to see the
-// previous snapshot until a future refresh succeeds. There is no return
-// path that can block a request goroutine.
+// Fetch errors delay further attempts for this key by 3s. Calls during the
+// cooldown return immediately without starting another fetch. Readers continue
+// to see the previous snapshot until a future refresh succeeds; failures never
+// change its freshness timestamp. There is no return path that can block a
+// request goroutine.
 func (c *RemoteDataCache[T]) TriggerAsyncRefresh(
 	logger *zerolog.Logger,
 	cacheKey string,
 	fetcher func(ctx context.Context) (T, error),
 ) {
 	c.refreshMu.Lock()
-	if _, busy := c.inflight[cacheKey]; busy {
+	if _, busy := c.inflight[cacheKey]; busy || time.Now().Before(c.retryAfter[cacheKey]) {
 		c.refreshMu.Unlock()
 		return
 	}
@@ -189,8 +195,14 @@ func (c *RemoteDataCache[T]) TriggerAsyncRefresh(
 	c.refreshMu.Unlock()
 
 	go func() {
+		failed := false
 		defer func() {
 			c.refreshMu.Lock()
+			if failed {
+				c.retryAfter[cacheKey] = time.Now().Add(remoteCacheFailureRetryDelay)
+			} else {
+				delete(c.retryAfter, cacheKey)
+			}
 			delete(c.inflight, cacheKey)
 			c.refreshMu.Unlock()
 			if rec := recover(); rec != nil {
@@ -207,6 +219,7 @@ func (c *RemoteDataCache[T]) TriggerAsyncRefresh(
 
 		val, err := fetcher(ctx)
 		if err != nil {
+			failed = true
 			// Keep previous snapshot on failure. This matches the old
 			// "use stale data" behaviour but without ever blocking a
 			// request goroutine.
