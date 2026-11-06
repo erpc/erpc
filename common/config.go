@@ -189,6 +189,12 @@ type ServerConfig struct {
 	// default. Credit-unit pricing is vendor-level configuration — see
 	// CreditUnitsProvider and UpstreamConfig.CreditUnits.
 	CostHeaders *bool `yaml:"costHeaders,omitempty" json:"costHeaders"`
+
+	// LogClientIP adds the caller's IP (resolved through trustedIPForwarders
+	// and trustedIPHeaders) as `clientIP` to the per-request proxy logs and
+	// the websocket connection log. An IP address is personal data under
+	// GDPR and similar rules, so this is off by default.
+	LogClientIP *bool `yaml:"logClientIp,omitempty" json:"logClientIp"`
 }
 
 type WebSocketServerConfig struct {

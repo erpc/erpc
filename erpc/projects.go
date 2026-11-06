@@ -37,7 +37,9 @@ type PreparedProject struct {
 	// the raw pattern. Built once at registration and read-only afterwards, so
 	// resolving a caller's matcher is a map lookup rather than a regex compile.
 	strategyDirectiveMatchers map[string]common.MatcherFunc
-	cfgMu                     sync.RWMutex
+	// logClientIP mirrors server.logClientIp: add the caller's IP to the proxy logs.
+	logClientIP bool
+	cfgMu       sync.RWMutex
 }
 
 type ProjectHealthInfo struct {
@@ -161,15 +163,17 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	telemetry.CounterHandle(telemetry.MetricNetworkRequestsReceived,
 		p.Config.Id, network.Label(), method, reqFinality.String(), nq.UserId(), nq.AgentName(),
 	).Inc()
-	lg := p.Logger.With().
+	lgc := p.Logger.With().
 		Str("component", "proxy").
 		Str("projectId", p.Config.Id).
 		Str("networkId", network.Id()).
 		Str("method", method).
 		Interface("id", nq.ID()).
-		Str("ptr", fmt.Sprintf("%p", nq)).
-		Str("clientIP", nq.ClientIP()).
-		Logger()
+		Str("ptr", fmt.Sprintf("%p", nq))
+	if p.logClientIP {
+		lgc = lgc.Str("clientIP", nq.ClientIP())
+	}
+	lg := lgc.Logger()
 
 	resp, err := p.doForward(ctx, network, nq)
 

@@ -880,6 +880,9 @@ func (s *ServerConfig) SetDefaults() error {
 	if s.CostHeaders == nil {
 		s.CostHeaders = util.BoolPtr(false)
 	}
+	if s.LogClientIP == nil {
+		s.LogClientIP = util.BoolPtr(false)
+	}
 
 	if s.WebSocket == nil {
 		s.WebSocket = &WebSocketServerConfig{}
