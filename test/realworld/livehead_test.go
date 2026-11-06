@@ -165,12 +165,14 @@ func (s *scenario) judgeRequests(b *strings.Builder, fs fetchSpan) {
 // liveRead is one method's reads on every pod and its bounds against the
 // old image: the slacks on served age and latency at p50 and p90, and
 // noSlower: latency p50 and p90 at most the old image's plus
-// latencyNoise.
+// latencyNoise; tail: latency p99 at most the old image's plus the p90
+// slack, the canary's measure.
 type liveRead struct {
 	name     string
 	load     freshLoad
 	slack    [2]time.Duration
 	noSlower bool
+	tail     bool
 }
 
 // latencyNoise: how far a noSlower latency may sit above the old image's
@@ -247,8 +249,8 @@ func (s *scenario) judgeAgeLatency(b *strings.Builder, reads []liveRead, imgs []
 			}
 			slices.Sort(c.took)
 			ages[img] = s.servedAges(c.ims, nil)
-			fmt.Fprintf(b, "%s image %s: %d answers, %d errors, served block age p50 %s p90 %s, latency p50 %s p90 %s max %s\n",
-				img, rd.name, len(c.took), c.errs, pctl(ages[img], 50), pctl(ages[img], 90), pctl(c.took, 50), pctl(c.took, 90), pctl(c.took, 100))
+			fmt.Fprintf(b, "%s image %s: %d answers, %d errors, served block age p50 %s p90 %s, latency p50 %s p90 %s p99 %s max %s\n",
+				img, rd.name, len(c.took), c.errs, pctl(ages[img], 50), pctl(ages[img], 90), pctl(c.took, 50), pctl(c.took, 90), pctl(c.took, 99), pctl(c.took, 100))
 		}
 		o, n := by["old"], by["new"]
 		if o == nil || n == nil {
@@ -269,6 +271,9 @@ func (s *scenario) judgeAgeLatency(b *strings.Builder, reads []liveRead, imgs []
 					s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("new image %s latency p%d %s, above the old image's %s + %s", rd.name, p, pctl(n.took, p), pctl(o.took, p), latencyNoise)))
 				}
 			}
+		}
+		if rd.tail && pctl(n.took, 99) > pctl(o.took, 99)+rd.slack[1] {
+			s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("new image %s latency p99 %s, above the old image's %s + %s", rd.name, pctl(n.took, 99), pctl(o.took, 99), rd.slack[1])))
 		}
 	}
 }
@@ -339,10 +344,18 @@ func (s *scenario) liveRun(run time.Duration, reads []liveRead, fault func(conte
 // liveCompare: liveReads at liveRate on every pod for liveRun; per image,
 // served age and latency against the old image; per new-image pod, head
 // fetches per new block; per image, upstream requests.
-func liveCompare(s *scenario) {
+func liveCompare(s *scenario) { liveCompareRun(s, false) }
+
+// liveCompareTail is liveCompare that also judges latency p99 (tail).
+func liveCompareTail(s *scenario) { liveCompareRun(s, true) }
+
+func liveCompareRun(s *scenario, tail bool) {
 	s.blocks(10)
 	vl := &viewLog{}
 	reads := liveReads(liveRate, s.chain.BlockTime(), vl)
+	for i := range reads {
+		reads[i].tail = tail
+	}
 	imgs, all, _, from, to := s.liveRun(liveRun, reads, nil)
 	var b strings.Builder
 	s.judgeAgeLatency(&b, reads, imgs, from, to)
@@ -831,6 +844,60 @@ func p20(ahead bool) spec {
 	sp := freshSpec(name, 1, ups, chainsim.Config{BlockTime: liveBlockTime, FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, liveCompare)
 	sp.cache = true
 	sp.network = map[string]interface{}{"selectionPolicy": rankFirst("http-a")}
+	return sp
+}
+
+const (
+	// p20FastRTT: P20-asym's vendor-a round trip, zora's nearest vendor's;
+	// p20SlowRTTs the others', 80-175 ms, as its other vendors' p50.
+	p20FastRTT = 5 * time.Millisecond
+	// p20Lead: P20-flash's vendor-a serves each block this long before the
+	// others, as a flashblocks node does.
+	p20Lead = 200 * time.Millisecond
+)
+
+var p20SlowRTTs = map[string]time.Duration{
+	"http-b": 80 * time.Millisecond, "http-c": 95 * time.Millisecond, "http-d": 110 * time.Millisecond,
+	"http-e": 130 * time.Millisecond, "http-f": 150 * time.Millisecond, "http-g": 175 * time.Millisecond,
+}
+
+// P20-asym: P19's layout, no head skew, the selection policy ranking
+// vendor-a first, which answers in p20FastRTT, the others in
+// p20SlowRTTs. A thin Head's reads go to vendor-a, which holds every
+// block another vendor does: latency p99 too within P19's p90 slack of
+// the old image's (liveCompareTail), which sends every latest there.
+func p20Asym() spec {
+	var ups []freshUp
+	for _, u := range p19Ups {
+		u.slow, u.delay = p20FastRTT, 0
+		if rtt, ok := p20SlowRTTs[u.key]; ok {
+			u.slow = rtt
+		}
+		ups = append(ups, u)
+	}
+	sp := freshSpec("P20-asym", 1, ups, chainsim.Config{BlockTime: liveBlockTime, FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, liveCompareTail)
+	sp.cache = true
+	sp.network = map[string]interface{}{"selectionPolicy": rankFirst("http-a")}
+	return sp
+}
+
+// P20-flash: P20's layout, vendor-a serving each block p20Lead before
+// the others, the selection policy ranking vendor-b first. A thin Head's
+// reads go to vendor-a, the Leader, as no other vendor holds the block
+// yet: no slower than the old image, which reads vendor-b's older head,
+// at no more upstream requests (liveCompareTail).
+func p20Flash() spec {
+	var ups []freshUp
+	for _, u := range p19Ups {
+		u.slow, u.delay = p20RTT, p20Lead
+		if u.key == "http-a" {
+			u.delay = 0
+		}
+		ups = append(ups, u)
+	}
+	sp := freshSpec("P20-flash", 1, ups, chainsim.Config{BlockTime: liveBlockTime, FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, liveCompareTail)
+	sp.cache = true
+	sp.network = map[string]interface{}{"selectionPolicy": rankFirst("http-b")}
 	return sp
 }
 

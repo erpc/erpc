@@ -35,17 +35,22 @@ const (
 	// r1Follow: harness, how often a lower latest on another pod is read
 	// again to measure when it reaches N.
 	r1Follow = 10 * time.Millisecond
+	// r1ReceiptP99: the old image answers a receipt from its first
+	// upstream; the new image's p99 may add P19's p90 slack to that
+	// vendor round trip, never a hold of the block's wait.
+	r1ReceiptP99 = p19P90Slack
 )
 
 // R1: clients on both pods (ws newHeads, ws logs, gRPC StreamBlocks) read at
 // once at each delivered block N, on the delivering pod and on the other:
 // eth_call Multicall3 getBlockNumber() at latest, at N, at N's hash
-// (EIP-1898), eth_getBlockByNumber(latest), eth_blockNumber, and for logs
+// (EIP-1898), eth_getBlockByNumber(latest), eth_blockNumber,
+// eth_getTransactionReceipt of N's first transaction, and for logs
 // clients eth_getLogs by blockHash. One vendor serves r1Behind blocks
 // behind, one executes latest r1Stale behind, reorgs 1–3 deep. No answer
 // errs or is null; at N answers N; latest answers ≥ N on the delivering
 // pod, and on the other ≥ N within r1CatchUp, its lower answers counted
-// apart.
+// apart; receipts answer within r1ReceiptP99 at p99 per side.
 func r1() spec {
 	ra := &readAfter{stats: map[string]*raStat{}, own: map[string]time.Time{}}
 	return spec{name: "R1", bound: healthyDelivery,
@@ -185,6 +190,29 @@ var raLogs = raCheck{"logs-hash", false, func(s *scenario, t int, b *chainsim.Bl
 	return b.Number, ""
 }}
 
+// raReceipt: eth_getTransactionReceipt of N's first transaction answers
+// its receipt in N; null only once a reorg took N off the chain.
+var raReceipt = raCheck{"receipt", false, func(s *scenario, t int, b *chainsim.Block, _ int) (uint64, string) {
+	var raw json.RawMessage
+	if err := s.call(t, &raw, "eth_getTransactionReceipt", b.TxHash(0).Hex()); err != nil {
+		return 0, "error: " + err.Error()
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		if cb := s.chain.CanonAt(b.Number); cb == nil || cb.Hash != b.Hash {
+			return b.Number, ""
+		}
+		return 0, "null"
+	}
+	var r receiptJSON
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return 0, "unparsable: " + err.Error()
+	}
+	if r.BlockHash != b.Hash || r.TxHash != b.TxHash(0) {
+		return 0, fmt.Sprintf("receipt of %s in block %s", short(r.TxHash), short(r.BlockHash))
+	}
+	return b.Number, ""
+}}
+
 // onDeliver sends R1's reads for the first delivery of each block per
 // client kind and pod, every read at once, to every pod.
 func (ra *readAfter) onDeliver(s *scenario, c *clientBase, pod int, b *chainsim.Block) {
@@ -199,8 +227,11 @@ func (ra *readAfter) onDeliver(s *scenario, c *clientBase, pod int, b *chainsim.
 		return
 	}
 	checks := raChecks
+	if b.TxCount() > 0 {
+		checks = append(slices.Clone(checks), raReceipt)
+	}
 	if kind == "logs" {
-		checks = append(slices.Clone(raChecks), raLogs)
+		checks = append(slices.Clone(checks), raLogs)
 	}
 	for target := range s.h.pods {
 		for _, ck := range checks {
@@ -304,6 +335,9 @@ func (ra *readAfter) report(s *scenario) {
 		st := ra.stats[k]
 		slices.Sort(st.lat)
 		fmt.Fprintf(&b, "%-18s %5d %5d %5d %7s %7s %7s\n", k, st.ok, st.fail, st.lower, pctl(st.lat, 50), pctl(st.lat, 99), pctl(st.lat, 100))
+		if strings.HasPrefix(k, raReceipt.name+"/") && pctl(st.lat, 99) > r1ReceiptP99 {
+			s.violate(s.name, "%s latency p99 %s, bound %s (max %s)", k, pctl(st.lat, 99), r1ReceiptP99, pctl(st.lat, 100))
+		}
 	}
 	if len(ra.gaps) > 0 {
 		blocks := map[uint64]int{}
