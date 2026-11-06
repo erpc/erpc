@@ -54,6 +54,7 @@ var (
 	chaosVendorBudget  = uint32(40)  // requests per second per upstream; client load under -race exceeds 4x this
 	chaosMailboxBurst  = 1500        // above the tracker's mailbox header cap of 1024
 	chaosHistoryBlocks = 40
+	chaosCacheTTL      = time.Second // the cacheHead seed's realtime TTL: 5 block times
 )
 
 func chaosBlocksFor(d time.Duration) int {
@@ -116,6 +117,11 @@ const (
 	fStreamSlow       = "gRPC client that stops reading"
 	fStreamBadHeader  = "gRPC header that cannot be encoded"
 	fStreamForkTree   = "gRPC resume from one vendor's branch deeper than reorgWindow, held in a tree without the pins"
+
+	// fCacheGlitch: with evm.servedTip.followCacheHead, the cache's head
+	// lags the chain, stalls, jumps ahead and reports another chain in
+	// turn, while the seed's other faults hit the vendors.
+	fCacheGlitch = "cache head that lags, stalls, jumps ahead and reports another chain"
 )
 
 var chaosFaults = []string{
@@ -123,7 +129,7 @@ var chaosFaults = []string{
 	f429, fLate, fLoad, fSplit, fNonLinking, fRestart, fOrphanCached, fMailbox, fPanicOnce, fPanicThrice, fPendingSilent,
 	fNullReceipts, fTruncReceipts, fLateReceipts, fNoReceipts, fReceiptsDown13, fBlockDown60, fReceiptsDown90, fWrongBloom, fChainBloom, fBloomFollower, fFetchPanic,
 	fForgedLog, fForgedHash, fReorg3, fClientGetLogs, fBadBaseFee, fBadBaseFeeLone, fForgedAhead, fSlowWalk,
-	fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow, fStreamBadHeader, fStreamForkTree,
+	fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow, fStreamBadHeader, fStreamForkTree, fCacheGlitch,
 }
 
 // TestChainFeed_ConvergesUnderFaults runs real eRPC against 4 mocked vendors
@@ -196,6 +202,10 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 		// A window of 10s holds the deep reorg's fork point, 20 blocks
 		// down, even when load slows block production 2x.
 		{79, true, chaosOpts{grpc: true, maxBackfill: 10 * time.Second}, []string{fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow, fStreamBadHeader, fStreamForkTree, fReorg3, fDeepReorg}},
+		// Reads anchored to a glitching cache's head: streams and newHeads
+		// stay whole through reorgs, a vendor on its own fork ahead, 429s
+		// and late answers.
+		{83, true, chaosOpts{grpc: true, cacheHead: true, maxBackfill: 10 * time.Second}, []string{fCacheGlitch, fReorg3, fDeepReorg, fAheadFork, f429, fLate, fStreamResume}},
 	}
 	before := erpcGoroutines()
 	covered := make(map[string][]int64)
@@ -831,6 +841,10 @@ type chaosSeed struct {
 	// internalOK are the times a stream may end with INTERNAL: a header
 	// that cannot be encoded is pinned; to is zero while it lasts.
 	internalOK []interval
+
+	// bds is the cacheHead seed's BDS cache reader, at bdsAddr.
+	bds     *cacheHeadBds
+	bdsAddr string
 }
 
 // faultSpan is when one fault ran; to is zero while it runs.
@@ -882,7 +896,9 @@ func (s *chaosSeed) faultsSince(since time.Time) string {
 // hard reject), a chain whose base fee no parent derives, a network of one
 // vendor, gRPC streams on 2 eRPC instances (with headers padded by
 // chaosStreamPad), a maxBackfill other than chaosMaxBackfill, matching
-// blocks a capped eth_getLogs answer can cut short (chainsim MatchLast).
+// blocks a capped eth_getLogs answer can cut short (chainsim MatchLast),
+// reads anchored to the head of a BDS cache reader (cacheHead,
+// evm.servedTip.followCacheHead).
 type chaosOpts struct {
 	integrity   bool
 	strict      bool
@@ -891,6 +907,7 @@ type chaosOpts struct {
 	grpc        bool
 	maxBackfill time.Duration
 	matchLast   bool
+	cacheHead   bool
 }
 
 func newChaosSeed(t *testing.T, seed int64, pollSources bool, opts chaosOpts) *chaosSeed {
@@ -918,6 +935,10 @@ func newChaosSeed(t *testing.T, seed int64, pollSources bool, opts chaosOpts) *c
 		s.httpA = add("http-a", "vendor-a", false)
 		s.httpB = add("http-b", "vendor-b", false)
 		s.vendors = []*chainsim.Vendor{s.wsA, s.wsB, s.httpA, s.httpB}
+	}
+	if opts.cacheHead {
+		s.bds, s.bdsAddr = startCacheHeadBds(t, s.chain, false)
+		s.bds.set(s.chain.Tip().Number, 0)
 	}
 	s.baseline = s.metrics()
 	s.hook = &chaosHook{s: s, first: make(map[*evm.ChainTracker]indexer.Cursor), firstFrom: make(map[*evm.ChainTracker]string)}
@@ -968,6 +989,9 @@ func (s *chaosSeed) config() *common.Config {
 				nw.Integrity.InvalidBehavior = &common.IntegrityInvalidBehaviorConfig{Unfinalized: "hardReject"}
 			}
 		}
+		if s.opts.cacheHead {
+			nw.Evm.ServedTip = &common.EvmServedTipConfig{FollowCacheHead: true}
+		}
 	}, ups...)
 	// No readiness grace: its 10s default sleep outlives the 10s the
 	// leak check waits after the last seed.
@@ -983,6 +1007,11 @@ func (s *chaosSeed) config() *common.Config {
 			Connector: "mem", TTL: common.FixedDuration(time.Minute),
 		}},
 	}}
+	if s.opts.cacheHead {
+		bds := cacheHeadCache("bds-chaos", s.bdsAddr, chaosCacheTTL, false)
+		cfg.Database.EvmJsonRpcCache.Connectors = append(cfg.Database.EvmJsonRpcCache.Connectors, bds.Connectors...)
+		cfg.Database.EvmJsonRpcCache.Policies = append(cfg.Database.EvmJsonRpcCache.Policies, bds.Policies...)
+	}
 	return cfg
 }
 
@@ -1143,6 +1172,11 @@ func (s *chaosSeed) run(faults []string) {
 	if i := slices.Index(order, fNonLinking); i >= 0 {
 		order = append([]string{fNonLinking}, slices.Delete(order, i, i+1)...)
 	}
+	// The cache glitches through every other fault of the seed.
+	glitching := false
+	if i := slices.Index(order, fCacheGlitch); i >= 0 {
+		order, glitching = slices.Delete(order, i, i+1), true
+	}
 
 	var slowFrom, slowTo atomic.Int64
 	slow := func() bool {
@@ -1161,6 +1195,13 @@ func (s *chaosSeed) run(faults []string) {
 	}
 	s.blocks(4)
 
+	glitchCtx, endGlitch := context.WithCancel(ctx)
+	defer endGlitch()
+	var glitch sync.WaitGroup
+	if glitching {
+		glitch.Add(1)
+		go func() { defer glitch.Done(); s.during(fCacheGlitch, func() { s.cacheGlitch(glitchCtx) }) }()
+	}
 	var bg sync.WaitGroup
 	for i, f := range order {
 		switch i {
@@ -1186,6 +1227,8 @@ func (s *chaosSeed) run(faults []string) {
 		s.during(f, func() { s.inject(f) })
 	}
 	bg.Wait()
+	endGlitch()
+	glitch.Wait()
 	if _, ok := s.occurred[fReorgSmall]; !ok {
 		s.during(fReorgSmall, s.reorgSmall)
 	}
@@ -1378,6 +1421,76 @@ func (s *chaosSeed) inject(f string) {
 		s.badBaseFee(f)
 	default:
 		s.t.Fatalf("unknown fault %q", f)
+	}
+}
+
+// cacheGlitch moves the cacheHead seed's cache head through its glitches,
+// 12 block times each, until ctx ends: caught up with the chain, then
+// trailing it by 2 blocks, fresh, as a reader that ingests behind the
+// vendors; stalled and aging past the TTL; 50 blocks ahead and fresh;
+// another chain's block 7, fresh, far below every served Latest. It
+// occurs once a network-wide eth_blockNumber read the trailing head below
+// the view's: the reads were anchored while the streams ran.
+func (s *chaosSeed) cacheGlitch(ctx context.Context) {
+	modes := []string{"trail", "stall", "trail", "ahead", "trail", "other chain"}
+	for i := 0; ctx.Err() == nil; i++ {
+		mode := modes[i%len(modes)]
+		start, since, until := s.chain.Tip().Number, time.Now(), s.chain.Ticks()+12
+		for ctx.Err() == nil && s.chain.Ticks() < until {
+			tip := s.chain.Tip().Number
+			switch mode {
+			case "trail":
+				head := max(start, tip-2)
+				s.bds.set(head, 0)
+				s.anchoredRead(ctx, head)
+			case "stall":
+				s.bds.set(start, time.Since(since))
+			case "ahead":
+				s.bds.set(tip+50, 0)
+			case "other chain":
+				s.bds.set(7, 0)
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}
+}
+
+// anchoredRead records fCacheGlitch the first time eth_blockNumber reads
+// head, the cache's, below the view's head.
+func (s *chaosSeed) anchoredRead(ctx context.Context, head uint64) {
+	s.mu.Lock()
+	_, done := s.occurred[fCacheGlitch]
+	addr := s.liveAddr
+	s.mu.Unlock()
+	t := s.tracker()
+	if done || t == nil {
+		return
+	}
+	view, ok := t.View().Head()
+	if !ok {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://%s/test_ws/evm/123", addr),
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+	if err != nil {
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	var r struct {
+		Result string `json:"result"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&r) != nil {
+		return
+	}
+	if b, err := strconv.ParseUint(strings.TrimPrefix(r.Result, "0x"), 16, 64); err == nil && b == head && b < view.Number {
+		s.occur(fCacheGlitch, fmt.Sprintf("eth_blockNumber %d at the cache's head, the view at %d", b, view.Number))
 	}
 }
 
