@@ -79,10 +79,12 @@ type headClock struct {
 	misses    int
 	lastDone  time.Time
 	// ladder: target's sight moves off; predicted is when it was due;
-	// kEarly: the ladder's last rung (S_k) answered below the target.
-	ladder, kEarly   bool
-	predicted        time.Time
-	nextAt, lastFire time.Time
+	// kEarly: the ladder's last rung (S_k) answered below the target;
+	// early: any of its fires did, so the target's next sight brackets
+	// when the block came.
+	ladder, kEarly, early bool
+	predicted             time.Time
+	nextAt, lastFire      time.Time
 	// scheduled: target's last rung was not sent when a sight brought
 	// target, which the next run counts as skipped_push.
 	scheduled bool
@@ -256,19 +258,25 @@ func (c *headClock) answered(id string, number uint64, sent time.Time) {
 	}
 }
 
-// phasePoint reports whether sight s moves the phase. Until a push
-// brought a block, every sight does: the lane's blocks come by fetch. In
-// a push lane, an on-time push does, and, while the lane is not push-fed,
-// a fetch answer before its predicted sight: an answer only bounds when
-// the block became available from above, so a later one says nothing,
-// and a late push says when that source sent it, not when the block was
-// out. The off/early rule stays the only way the fires move later.
+// phasePoint reports whether sight s moves the phase. A fetch answer only
+// bounds when the block became available from above: on a lane no push
+// fed yet it does when it came before its predicted sight, or after a
+// ladder answer below the target bounded it from below. A fire that found
+// the block at once says only when the clock fired: as a phase point it
+// moves the next fire a little later each block until one fetch brings
+// two blocks, so a lane with one fetch a block skipped blocks. In a push
+// lane, an on-time push does, and, while the lane is not push-fed, a
+// fetch answer before its predicted sight: a late push says when that
+// source sent it, not when the block was out. The off/early rule stays
+// the only way an unbracketed fire moves later.
 func (c *headClock) phasePoint(s clockSight, bt time.Duration) bool {
 	switch {
-	case !c.pushLane || len(c.fit) == 0 || bt <= 0:
+	case len(c.fit) == 0 || bt <= 0:
 		return true
 	case s.pushed:
 		return s.onTime
+	case !c.pushLane:
+		return c.early || s.at.Before(c.predictSlot(s.slot, bt))
 	default:
 		return !c.pushFed() && s.at.Before(c.predictSlot(s.slot, bt))
 	}
@@ -721,7 +729,7 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 	if !c.offSet {
 		c.off, c.offSet = 0.1, true
 	}
-	c.planned, c.ladder, c.kEarly, c.scheduled = true, false, false, true
+	c.planned, c.ladder, c.kEarly, c.early, c.scheduled = true, false, false, false, true
 	c.rungs, c.sent, c.votes = nil, nil, nil
 	c.k, c.tails, c.tailsSent, c.misses, c.lastDone = 1, 0, 0, 0, time.Time{}
 	p := c.predict(c.target, bt)
@@ -1145,6 +1153,7 @@ func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnsw
 	case f.ladder():
 		outcome = "early"
 		c.kEarly = c.kEarly || f.kind == "probe"
+		c.early = true
 	default:
 		outcome = "same"
 	}

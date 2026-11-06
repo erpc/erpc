@@ -453,6 +453,55 @@ func p16Pause() spec {
 }
 
 const (
+	// p16SparseBlockTime, p16SparseRate, p16SparseRun: an OP-stack
+	// testnet in real time: 2 s blocks, about 1.8 head reads a second per
+	// pod (worldchain-sepolia's), 180 blocks.
+	p16SparseBlockTime = 2 * time.Second
+	p16SparseRate      = 1.8
+	p16SparseRun       = 6 * time.Minute
+	// p16SparseDelay, p16SparseJitter: each vendor serves each block this
+	// long after its mint, plus a share of the jitter fixed per vendor and
+	// block.
+	p16SparseDelay  = 200 * time.Millisecond
+	p16SparseJitter = 300 * time.Millisecond
+)
+
+// p16SparseUps are worldchain-sepolia's two voters, each polled every
+// 10 s: Σ min(1, bt/I) is 0.4 turns a block.
+var p16SparseUps = []freshUp{
+	{"http-a", "vendor-a", 20 * time.Millisecond, 10 * time.Second, 0, p16SparseDelay},
+	{"http-b", "vendor-b", 30 * time.Millisecond, 10 * time.Second, 0, p16SparseDelay},
+}
+
+// P16-sparse: a 2 s chain whose two voters' intervals pay for 0.4 turns a
+// block, read p16SparseRate times a second, as the testnets of image 18's
+// canary were (0.6 clock fetches a block, served latest 0.8-1.1 s older).
+// As P16-pause, in real time: the new image's served latest age and
+// latency at most P16's slacks on Ethereum's clock (0.48 s p50, 0.96 s
+// p90) above the old image's, its latency no slower,
+// at most max(1, 0.4) + 0.05 head fetches per new block, no more upstream
+// requests.
+func p16Sparse() spec {
+	sim := chainsim.Config{BlockTime: p16SparseBlockTime}
+	return freshSpec("P16-sparse", 1, p16SparseUps, sim, chainsim.Faults{HeadJitter: p16SparseJitter}, func(s *scenario) {
+		s.blocks(5)
+		vl := &viewLog{}
+		reads := liveReads(p16SparseRate, s.chain.BlockTime(), vl)
+		for i := range reads {
+			reads[i].slack = [2]time.Duration{p16P50Slack * p16Scale, p16P90Slack * p16Scale}
+		}
+		before := s.clockMix()
+		imgs, all, _, from, to := s.liveRun(p16SparseRun, reads, nil)
+		var b strings.Builder
+		s.judgeAgeLatency(&b, reads, imgs, from, to)
+		s.judgeFetches(&b, "over the run", all, turnBound(p16SparseUps, 1, s.chain.BlockTime()))
+		s.judgeRequests(&b, all)
+		reportClockMix(&b, before, s.clockMix(), all.blocks)
+		s.logf("%s", b.String())
+	})
+}
+
+const (
 	// p16TailsLate, p16TailsLateFrom, p16TailsLateTo: the share of
 	// P16-tails' blocks proposed late, uniform 3-6 s into their slot on
 	// Ethereum's clock; p16TailsMissed: the share of slots missed.
