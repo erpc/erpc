@@ -1166,6 +1166,28 @@ export interface GrpcUpstreamConfig {
    */
   healthCheckService?: string;
 }
+/**
+ * EvmRequestFormat names the request form an upstream's client parses
+ * correctly. It applies to the state and block overrides and the call
+ * objects of the methods eRPC knows the shape of (architecture/evm
+ * request_format.go); every other method and every value eRPC cannot read
+ * exactly is sent unchanged.
+ */
+export type EvmRequestFormat = string;
+/**
+ * EvmRequestFormatCanonical sends storage keys and values in state
+ * overrides as 32-byte hex words: the execution-apis spec, geth and reth.
+ */
+export const EvmRequestFormatCanonical: EvmRequestFormat = "canonical";
+/**
+ * EvmRequestFormatErigonLegacy sends the form Erigon up to v2.60.5 parses:
+ * minimal storage values, "data" for trace_call's "input", and Erigon's
+ * blockOverride field names for eth_callMany. A request whose meaning
+ * Erigon would silently drop (a state-override or blockOverride field it
+ * does not know, unequal "input" and "data") is not sent to the upstream,
+ * so another upstream answers it.
+ */
+export const EvmRequestFormatErigonLegacy: EvmRequestFormat = "erigonLegacy";
 export interface EvmUpstreamConfig {
   chainId: number /* int64 */;
   statePollerInterval?: Duration;
@@ -1218,6 +1240,13 @@ export interface EvmUpstreamConfig {
    * head. Unset: true for ws/wss endpoints, false otherwise.
    */
   subscriptionSource?: boolean;
+  /**
+   * RequestFormat rewrites the params this upstream is sent into the request
+   * form its client parses correctly; other upstreams, the cache and the
+   * response keep the client's own params. Unset sends the params unchanged.
+   * See EvmRequestFormat for the values.
+   */
+  requestFormat?: EvmRequestFormat;
   /**
    * Deprecated: never read at runtime. Configure data integrity via the network
    * `integrity` block instead. Retained only so existing YAML still parses.

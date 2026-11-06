@@ -955,6 +955,12 @@ var (
 		Help:      "eth_calls seen by an upstream with multicall3 packing, by outcome: packed (answered by a multicall), alone (no other call to pack with), reverted/empty/failed (multicall could not answer it exactly, sent alone), ineligible (not packable, sent alone), bypassed (target in bypassContracts or learned, sent alone), canceled (attempt ended while waiting).",
 	}, []string{"project", "network", "upstream", "vendor", "outcome"})
 
+	MetricUpstreamRequestFormatTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_request_format_total",
+		Help:      "Requests to an upstream with evm.requestFormat whose method has a known override shape, by outcome: rewritten (sent in the upstream's form), unreadable (a value eRPC cannot read exactly, sent unchanged), refused (the upstream's form would drop part of the request, not sent). Already-formatted requests are not counted.",
+	}, []string{"project", "network", "upstream", "vendor", "category", "outcome"})
+
 	MetricUpstreamMulticall3BatchSize = DefineLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "upstream_multicall3_batch_size",

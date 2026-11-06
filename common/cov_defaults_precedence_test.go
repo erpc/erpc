@@ -368,6 +368,7 @@ func TestCovDefaults_EvmUpstreamSetDefaults(t *testing.T) {
 		SkipWhenSyncing:     util.BoolPtr(true),
 		SkipSyncingCheck:    util.BoolPtr(true),
 		PinLatestTag:        util.BoolPtr(true),
+		RequestFormat:       EvmRequestFormatCanonical,
 		Multicall3:          &EvmMulticall3Config{MaxCalls: 5},
 	}
 	e := &EvmUpstreamConfig{}
@@ -379,6 +380,7 @@ func TestCovDefaults_EvmUpstreamSetDefaults(t *testing.T) {
 	assert.True(t, *e.SkipWhenSyncing)
 	assert.True(t, *e.SkipSyncingCheck)
 	assert.True(t, *e.PinLatestTag)
+	assert.Equal(t, EvmRequestFormatCanonical, e.RequestFormat)
 	assert.Equal(t, 5, e.Multicall3.MaxCalls)
 	assert.Equal(t, covDefaultsDur(10*time.Millisecond), e.Multicall3.MaxWait)
 	assert.NotSame(t, defaults.Multicall3, e.Multicall3)
@@ -388,8 +390,9 @@ func TestCovDefaults_EvmUpstreamSetDefaults(t *testing.T) {
 	assert.Equal(t, int64(64), legacy.MaxAvailableRecentBlocks)
 	assert.Equal(t, int64(64), *legacy.BlockAvailability.Lower.LatestBlockMinus)
 
-	own := &EvmUpstreamConfig{Multicall3: &EvmMulticall3Config{MaxWait: 1, MaxCalls: 2}}
-	require.NoError(t, own.SetDefaults(nil))
+	own := &EvmUpstreamConfig{Multicall3: &EvmMulticall3Config{MaxWait: 1, MaxCalls: 2}, RequestFormat: EvmRequestFormatErigonLegacy}
+	require.NoError(t, own.SetDefaults(&EvmUpstreamConfig{RequestFormat: EvmRequestFormatCanonical}))
+	assert.Equal(t, EvmRequestFormatErigonLegacy, own.RequestFormat, "an upstream's own format beats the default")
 	assert.Equal(t, Duration(1), own.Multicall3.MaxWait)
 	assert.Equal(t, 2, own.Multicall3.MaxCalls)
 }

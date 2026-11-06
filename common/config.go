@@ -1430,6 +1430,26 @@ func (c *GrpcUpstreamConfig) Copy() *GrpcUpstreamConfig {
 	return copied
 }
 
+// EvmRequestFormat names the request form an upstream's client parses
+// correctly. It applies to the state and block overrides and the call
+// objects of the methods eRPC knows the shape of (architecture/evm
+// request_format.go); every other method and every value eRPC cannot read
+// exactly is sent unchanged.
+type EvmRequestFormat string
+
+const (
+	// EvmRequestFormatCanonical sends storage keys and values in state
+	// overrides as 32-byte hex words: the execution-apis spec, geth and reth.
+	EvmRequestFormatCanonical EvmRequestFormat = "canonical"
+	// EvmRequestFormatErigonLegacy sends the form Erigon up to v2.60.5 parses:
+	// minimal storage values, "data" for trace_call's "input", and Erigon's
+	// blockOverride field names for eth_callMany. A request whose meaning
+	// Erigon would silently drop (a state-override or blockOverride field it
+	// does not know, unequal "input" and "data") is not sent to the upstream,
+	// so another upstream answers it.
+	EvmRequestFormatErigonLegacy EvmRequestFormat = "erigonLegacy"
+)
+
 type EvmUpstreamConfig struct {
 	ChainId             int64    `yaml:"chainId" json:"chainId"`
 	StatePollerInterval Duration `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
@@ -1470,6 +1490,11 @@ type EvmUpstreamConfig struct {
 	// endpoint is refused at load: the block clock fetches every upstream's
 	// head. Unset: true for ws/wss endpoints, false otherwise.
 	SubscriptionSource *bool `yaml:"subscriptionSource,omitempty" json:"subscriptionSource"`
+	// RequestFormat rewrites the params this upstream is sent into the request
+	// form its client parses correctly; other upstreams, the cache and the
+	// response keep the client's own params. Unset sends the params unchanged.
+	// See EvmRequestFormat for the values.
+	RequestFormat EvmRequestFormat `yaml:"requestFormat,omitempty" json:"requestFormat" tstype:"EvmRequestFormat"`
 	// Deprecated: never read at runtime. Configure data integrity via the network
 	// `integrity` block instead. Retained only so existing YAML still parses.
 	DeprecatedIntegrity *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
