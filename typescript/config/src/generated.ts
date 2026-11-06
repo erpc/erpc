@@ -89,12 +89,20 @@ export const HeadNeedFork: HeadNeed = 2;
  * erpc_head_ask_total (spec §6.8, §17).
  */
 export type AskReason = string;
+/**
+ * AskClock: a lane's block clock (spec §6.8); every such fetch is a
+ * fire erpc_head_clock_total counts by kind.
+ */
+export const AskClock: AskReason = "clock";
+/**
+ * AskPoll: the latest part of an upstream's full poll, every
+ * statePollerInterval; a clock fetch within the interval meets it,
+ * within the interval plus a block, at most two intervals, while the
+ * clock has a turn of the upstream planned (ClockTurn).
+ */
 export const AskPoll: AskReason = "poll";
-export const AskCatchUp: AskReason = "catch_up";
 export const AskRefusal: AskReason = "refusal";
-export const AskRefresh: AskReason = "refresh";
 export const AskSettle: AskReason = "settle";
-export const AskNoSource: AskReason = "no_source";
 /**
  * AskOutcome is how a head Ask was met, the outcome label of
  * erpc_head_ask_total (spec §17).
@@ -290,6 +298,32 @@ export interface BlockTimeAdaptiveDuration {
 // source: cache_dal.go
 
 export type CacheDAL = any;
+/**
+ * CachePurgeScope describes which cache keys an admin purge should match.
+ * Suffix must come from network config (never from API params).
+ */
+export interface CachePurgeScope {
+  networkid: string;
+  suffix: string; // network cacheKeySuffix
+  method: string; // "" = all methods
+  blockref: string; // "" = all refs
+  dryrun: boolean;
+}
+/**
+ * CachePurgeResult is one connector's outcome from a purge (or dry-run).
+ */
+export interface CachePurgeResult {
+  connectorid: string;
+  driver: string;
+  matched: number /* int64 */;
+  deleted: number /* int64 */;
+  durationms: number /* int64 */;
+}
+/**
+ * CachePurger is an optional capability on a CacheDAL. Unsupported
+ * implementations must surface an error — never silently no-op.
+ */
+export type CachePurger = any;
 
 //////////
 // source: cache_mock.go
@@ -1178,9 +1212,10 @@ export interface EvmUpstreamConfig {
    */
   pinLatestTag?: boolean;
   /**
-   * SubscriptionSource makes this upstream a chain-tracker source: it feeds
-   * newHeads by push over ws/wss, by polling eth_getBlockByNumber(latest)
-   * otherwise. Unset: true for ws/wss endpoints, false otherwise.
+   * SubscriptionSource makes this ws/wss upstream a push source of the chain
+   * tracker: it subscribes newHeads from network init. true on any other
+   * endpoint is refused at load: the block clock fetches every upstream's
+   * head. Unset: true for ws/wss endpoints, false otherwise.
    */
   subscriptionSource?: boolean;
   /**
@@ -1828,6 +1863,16 @@ export interface SvmNetworkConfig {
    */
   statePollerDebounce?: Duration;
   /**
+   * SkipProcessedSlotProbe skips the state poller's getSlot(processed)
+   * probe and lets the finalized probe feed LatestSlot. Default false
+   * (probe runs) — correct for any finality gap. Set true only on chains
+   * finalizing within ~1 slot of the processed tip (Alpenglow); on
+   * ~32-slot-gap chains (TowerBFT) it shifts the shred-lag cordon and
+   * availability windows by that gap. Plain bool: unset and false are the
+   * same (poll), matching the opt-in skip framing.
+   */
+  skipProcessedSlotProbe?: boolean;
+  /**
    * MaxFinalizedSlotLag bounds how many slots an upstream's FinalizedSlot may
    * trail the pool's highest FinalizedSlot before it is excluded from
    * consensus voting on finalized data. Only applied when a consensus policy
@@ -2123,6 +2168,21 @@ export interface EvmServedTipConfig {
    * negative value is accepted.
    */
   maxRegressionBlocks?: number /* int64 */;
+  /**
+   * FollowCacheHead lowers the "latest" a network-wide read takes to the
+   * cache's newest block while the cache would serve it, and keeps its
+   * "finalized" at or below it: the newest block of the first realtime
+   * cache policy, with a TTL, on a head-aware connector (the grpc driver)
+   * that serves eth_getBlockByNumber("latest") for this network, as long as
+   * that policy's realtime TTL admits its age. eth_blockNumber, latest
+   * blocks and tag interpolation then name a block the cache already holds,
+   * so follow-up reads of it hit the cache. Older or unknown: reads take
+   * the chain tracker's head. It never raises latest, and holds it at the
+   * value last served for at most one TTL rather than step back. The chain
+   * tracker, its pins and reorg handling, and every stream (newHeads, gRPC,
+   * taps) never see it.
+   */
+  followCacheHead?: boolean;
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
@@ -2950,17 +3010,27 @@ export type Network = any;
 export type EvmNetwork = 
     Network;
 /**
- * EvmHead is one lane's head (spec §6.4), published as one value. The zero
- * Head is an unknown one.
+ * EvmHead is one lane's head (spec §6.4, §6.5), published as one value. The
+ * zero Head is an unknown one. Latest, LatestHash and Firm are the lane's
+ * one view, the chain tracker's; the rest is the head loop's number facts.
  */
 export interface EvmHead {
   /**
-   * Latest is the q-th highest voter number, guarded and clamped to the
-   * guarantees.
+   * Latest is the view's Head: the highest pin one counted hash vote
+   * holds, undisputed, within every guarantee, sticky until the pins move.
    */
   latest: number /* int64 */;
   /**
-   * Finalized is the same ballot over the voters' finalized numbers.
+   * LatestHash is Latest's hash, the hash every transport sends there.
+   */
+  latesthash: string /* []byte */;
+  /**
+   * Firm is the highest block at or below Latest that q voters hold;
+   * routing and the refusal rule read it, nothing serves it alone.
+   */
+  firm: number /* int64 */;
+  /**
+   * Finalized is the q-th highest voter finalized number, at most Latest.
    */
   finalized: number /* int64 */;
   /**
@@ -2992,25 +3062,29 @@ export interface EvmHead {
  */
 export type HeadRule = number /* uint8 */;
 /**
- * HeadServe: N ≤ Latest, or Latest unknown (tags and numbers reach
- * upstreams unchanged).
+ * HeadServe: N ≤ Firm, or Latest or Firm unknown (tags and numbers
+ * reach upstreams unchanged).
  */
 export const HeadServe: HeadRule = 0;
 /**
+ * HeadThin: Firm < N ≤ Latest: fewer than q voters hold N yet.
+ */
+export const HeadThin: HeadRule = 1;
+/**
  * HeadBand: Latest < N ≤ ceiling, or the ceiling is unknown.
  */
-export const HeadBand: HeadRule = 1;
+export const HeadBand: HeadRule = 2;
 /**
  * HeadFuture: above the ceiling, every counted report younger than
  * 1 bt: no counted upstream has N yet.
  */
-export const HeadFuture: HeadRule = 2;
+export const HeadFuture: HeadRule = 3;
 /**
  * HeadStale: above the ceiling, a counted report 1 bt old or older:
  * those reports are Asked before N is decided again. Never a request's
  * verdict.
  */
-export const HeadStale: HeadRule = 3;
+export const HeadStale: HeadRule = 4;
 /**
  * HeadRefusal is the refusal rule's verdict for one request's block, taken
  * once (spec §6.4), and the retryable misses its legs got since.
@@ -3045,8 +3119,8 @@ export interface HeadRefusal {
 export interface RefusalLeg {
 }
 /**
- * MissVerdict is what an empty or missing answer above Latest is to the
- * leg that got it.
+ * MissVerdict is what an empty or missing answer above Firm is to the leg
+ * that got it.
  */
 export type MissVerdict = number /* uint8 */;
 /**
@@ -3123,8 +3197,7 @@ export const ServedTipQuorumMajority: ServedTipQuorum = -1;
  * erpc_chain_tracker_invariant_violations_total (§17).
  */
 export type Invariant = string;
-export const InvariantSentAboveLatest: Invariant = "sent_above_latest";
-export const InvariantSentUnconfirmed: Invariant = "sent_unconfirmed";
+export const InvariantSentAboveHead: Invariant = "sent_above_head";
 export const InvariantTapGap: Invariant = "tap_gap";
 export const InvariantRemovedUnsent: Invariant = "removed_unsent";
 export const InvariantPinsUnlinked: Invariant = "pins_unlinked";

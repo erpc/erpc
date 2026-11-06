@@ -62,12 +62,20 @@ export declare const HeadNeedFork: HeadNeed;
  * erpc_head_ask_total (spec §6.8, §17).
  */
 export type AskReason = string;
+/**
+ * AskClock: a lane's block clock (spec §6.8); every such fetch is a
+ * fire erpc_head_clock_total counts by kind.
+ */
+export declare const AskClock: AskReason;
+/**
+ * AskPoll: the latest part of an upstream's full poll, every
+ * statePollerInterval; a clock fetch within the interval meets it,
+ * within the interval plus a block, at most two intervals, while the
+ * clock has a turn of the upstream planned (ClockTurn).
+ */
 export declare const AskPoll: AskReason;
-export declare const AskCatchUp: AskReason;
 export declare const AskRefusal: AskReason;
-export declare const AskRefresh: AskReason;
 export declare const AskSettle: AskReason;
-export declare const AskNoSource: AskReason;
 /**
  * AskOutcome is how a head Ask was met, the outcome label of
  * erpc_head_ask_total (spec §17).
@@ -251,6 +259,32 @@ export interface BlockTimeAdaptiveDuration {
     blockTimeMultiplier?: number;
 }
 export type CacheDAL = any;
+/**
+ * CachePurgeScope describes which cache keys an admin purge should match.
+ * Suffix must come from network config (never from API params).
+ */
+export interface CachePurgeScope {
+    networkid: string;
+    suffix: string;
+    method: string;
+    blockref: string;
+    dryrun: boolean;
+}
+/**
+ * CachePurgeResult is one connector's outcome from a purge (or dry-run).
+ */
+export interface CachePurgeResult {
+    connectorid: string;
+    driver: string;
+    matched: number;
+    deleted: number;
+    durationms: number;
+}
+/**
+ * CachePurger is an optional capability on a CacheDAL. Unsupported
+ * implementations must surface an error — never silently no-op.
+ */
+export type CachePurger = any;
 export interface MockCacheDal {
     mock: any;
 }
@@ -480,10 +514,25 @@ export interface SharedStateConfig {
      */
     updateMaxWait?: Duration;
 }
+/**
+ * CachingStrategy controls write-side admission when combined with a response
+ * cacheability mark (see AllowsCacheWrite). Cache hits are served with zero
+ * re-validation, so modules that decide grades (consensus in v1) mark the
+ * response instead of teaching the cache policy names.
+ */
+export type CachingStrategy = string;
+export declare const CachingStrategyDefaultAllow: CachingStrategy;
+export declare const CachingStrategyDefaultIgnore: CachingStrategy;
 export interface CacheConfig {
     connectors?: TsConnectorConfig[];
     policies?: (CachePolicyConfig | undefined)[];
     compression?: CompressionConfig;
+    /**
+     * CachingStrategy is the default write posture for unmarked responses.
+     * Omit → defaultAllow (today's open write). defaultIgnore writes only when
+     * a module marks the response cacheable (true).
+     */
+    cachingStrategy?: 'defaultAllow' | 'defaultIgnore';
 }
 export interface CompressionConfig {
     enabled?: boolean;
@@ -1136,9 +1185,10 @@ export interface EvmUpstreamConfig {
      */
     pinLatestTag?: boolean;
     /**
-     * SubscriptionSource makes this upstream a chain-tracker source: it feeds
-     * newHeads by push over ws/wss, by polling eth_getBlockByNumber(latest)
-     * otherwise. Unset: true for ws/wss endpoints, false otherwise.
+     * SubscriptionSource makes this ws/wss upstream a push source of the chain
+     * tracker: it subscribes newHeads from network init. true on any other
+     * endpoint is refused at load: the block clock fetches every upstream's
+     * head. Unset: true for ws/wss endpoints, false otherwise.
      */
     subscriptionSource?: boolean;
     /**
@@ -1455,6 +1505,15 @@ export interface ConsensusPolicyConfig {
     policies?: {
         [key: string]: ConsensusPolicyConfig | undefined;
     };
+    /**
+     * CacheableResponses marks whether responses produced under this policy may
+     * be persisted by the cache. Consensus.Run stamps the winning response with
+     * this value; Cache.Set combines it with cachingStrategy (feature
+     * cacheable-responses). Omit defaults: inline / fail-closed "default" →
+     * true; named policies.* → false (stamped before extends so extends:default
+     * does not inherit the inline true).
+     */
+    cacheableResponses?: boolean;
 }
 /**
  * ConsensusDefaultPolicyName is the reserved label reported (metric +
@@ -1789,6 +1848,16 @@ export interface SvmNetworkConfig {
      */
     statePollerDebounce?: Duration;
     /**
+     * SkipProcessedSlotProbe skips the state poller's getSlot(processed)
+     * probe and lets the finalized probe feed LatestSlot. Default false
+     * (probe runs) — correct for any finality gap. Set true only on chains
+     * finalizing within ~1 slot of the processed tip (Alpenglow); on
+     * ~32-slot-gap chains (TowerBFT) it shifts the shred-lag cordon and
+     * availability windows by that gap. Plain bool: unset and false are the
+     * same (poll), matching the opt-in skip framing.
+     */
+    skipProcessedSlotProbe?: boolean;
+    /**
      * MaxFinalizedSlotLag bounds how many slots an upstream's FinalizedSlot may
      * trail the pool's highest FinalizedSlot before it is excluded from
      * consensus voting on finalized data. Only applied when a consensus policy
@@ -2086,6 +2155,21 @@ export interface EvmServedTipConfig {
      * negative value is accepted.
      */
     maxRegressionBlocks?: number;
+    /**
+     * FollowCacheHead lowers the "latest" a network-wide read takes to the
+     * cache's newest block while the cache would serve it, and keeps its
+     * "finalized" at or below it: the newest block of the first realtime
+     * cache policy, with a TTL, on a head-aware connector (the grpc driver)
+     * that serves eth_getBlockByNumber("latest") for this network, as long as
+     * that policy's realtime TTL admits its age. eth_blockNumber, latest
+     * blocks and tag interpolation then name a block the cache already holds,
+     * so follow-up reads of it hit the cache. Older or unknown: reads take
+     * the chain tracker's head. It never raises latest, and holds it at the
+     * value last served for at most one TTL rather than step back. The chain
+     * tracker, its pins and reorg handling, and every stream (newHeads, gRPC,
+     * taps) never see it.
+     */
+    followCacheHead?: boolean;
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
@@ -2902,17 +2986,27 @@ export type Network = any;
  */
 export type EvmNetwork = Network;
 /**
- * EvmHead is one lane's head (spec §6.4), published as one value. The zero
- * Head is an unknown one.
+ * EvmHead is one lane's head (spec §6.4, §6.5), published as one value. The
+ * zero Head is an unknown one. Latest, LatestHash and Firm are the lane's
+ * one view, the chain tracker's; the rest is the head loop's number facts.
  */
 export interface EvmHead {
     /**
-     * Latest is the q-th highest voter number, guarded and clamped to the
-     * guarantees.
+     * Latest is the view's Head: the highest pin one counted hash vote
+     * holds, undisputed, within every guarantee, sticky until the pins move.
      */
     latest: number;
     /**
-     * Finalized is the same ballot over the voters' finalized numbers.
+     * LatestHash is Latest's hash, the hash every transport sends there.
+     */
+    latesthash: string;
+    /**
+     * Firm is the highest block at or below Latest that q voters hold;
+     * routing and the refusal rule read it, nothing serves it alone.
+     */
+    firm: number;
+    /**
+     * Finalized is the q-th highest voter finalized number, at most Latest.
      */
     finalized: number;
     /**
@@ -2944,10 +3038,14 @@ export interface EvmHead {
  */
 export type HeadRule = number;
 /**
- * HeadServe: N ≤ Latest, or Latest unknown (tags and numbers reach
- * upstreams unchanged).
+ * HeadServe: N ≤ Firm, or Latest or Firm unknown (tags and numbers
+ * reach upstreams unchanged).
  */
 export declare const HeadServe: HeadRule;
+/**
+ * HeadThin: Firm < N ≤ Latest: fewer than q voters hold N yet.
+ */
+export declare const HeadThin: HeadRule;
 /**
  * HeadBand: Latest < N ≤ ceiling, or the ceiling is unknown.
  */
@@ -2997,8 +3095,8 @@ export interface HeadRefusal {
 export interface RefusalLeg {
 }
 /**
- * MissVerdict is what an empty or missing answer above Latest is to the
- * leg that got it.
+ * MissVerdict is what an empty or missing answer above Firm is to the leg
+ * that got it.
  */
 export type MissVerdict = number;
 /**
@@ -3066,8 +3164,7 @@ export declare const ServedTipQuorumMajority: ServedTipQuorum;
  * erpc_chain_tracker_invariant_violations_total (§17).
  */
 export type Invariant = string;
-export declare const InvariantSentAboveLatest: Invariant;
-export declare const InvariantSentUnconfirmed: Invariant;
+export declare const InvariantSentAboveHead: Invariant;
 export declare const InvariantTapGap: Invariant;
 export declare const InvariantRemovedUnsent: Invariant;
 export declare const InvariantPinsUnlinked: Invariant;

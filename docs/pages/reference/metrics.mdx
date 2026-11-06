@@ -393,10 +393,10 @@ One chain tracker per network follows the canonical chain from source headers an
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
 | `erpc_cache_connector_earliest_block_number` | gauge | connector, network | gRPC cache connector availability poll — earliest available block. |
-| `erpc_cache_connector_latest_block_number` | gauge | connector, network | Same poll — latest block. |
+| `erpc_cache_connector_latest_block_number` | gauge | connector, network | Same poll — latest block; on a network with [`servedTip.followCacheHead`](/reference/evm/block-tracking#cache-head-anchor), refreshed every realtime TTL/8 as well. |
 | `erpc_cache_connector_finalized_block_number` | gauge | connector, network | Same poll — finalized block. |
 | `erpc_cache_connector_earliest_block_timestamp_seconds` | gauge | connector, network | Same poll — earliest block unix timestamp. |
-| `erpc_cache_connector_latest_block_timestamp_seconds` | gauge | connector, network | Same poll — latest block unix timestamp. |
+| `erpc_cache_connector_latest_block_timestamp_seconds` | gauge | connector, network | Same writers as the latest block number — latest block unix timestamp. |
 | `erpc_cache_connector_finalized_block_timestamp_seconds` | gauge | connector, network | Same poll — finalized block unix timestamp. |
 
 #### Area 5: Cache operations (JSON-RPC cache)

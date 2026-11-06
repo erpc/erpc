@@ -24,9 +24,11 @@ type headReportingConnector struct {
 	known    bool
 }
 
-func (h *headReportingConnector) CacheLatestBlockTimestamp(networkId string) (int64, bool) {
-	return h.latestTs, h.known
+func (h *headReportingConnector) CacheLatestBlock(networkId string) (int64, int64, bool) {
+	return 1, h.latestTs, h.known
 }
+
+func (h *headReportingConnector) RefreshLatestBlock(context.Context, string) {}
 
 func newHeadReportingConnector(id string, latestTs int64, known bool) *headReportingConnector {
 	mc := &data.MockConnector{}

@@ -27,7 +27,7 @@ type CachePurgeResult struct {
 	Matched     int64
 	Deleted     int64
 	DurationMs  int64
-	Err         error
+	Err         error `tstype:"-"`
 }
 
 // CachePurger is an optional capability on a CacheDAL. Unsupported

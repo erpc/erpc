@@ -3236,6 +3236,20 @@ type EvmServedTipConfig struct {
 	// deep correction. -1 disables the regression guard entirely; no other
 	// negative value is accepted.
 	MaxRegressionBlocks int64 `yaml:"maxRegressionBlocks,omitempty" json:"maxRegressionBlocks,omitempty"`
+
+	// FollowCacheHead lowers the "latest" a network-wide read takes to the
+	// cache's newest block while the cache would serve it, and keeps its
+	// "finalized" at or below it: the newest block of the first realtime
+	// cache policy, with a TTL, on a head-aware connector (the grpc driver)
+	// that serves eth_getBlockByNumber("latest") for this network, as long as
+	// that policy's realtime TTL admits its age. eth_blockNumber, latest
+	// blocks and tag interpolation then name a block the cache already holds,
+	// so follow-up reads of it hit the cache. Older or unknown: reads take
+	// the chain tracker's head. It never raises latest, and holds it at the
+	// value last served for at most one TTL rather than step back. The chain
+	// tracker, its pins and reorg handling, and every stream (newHeads, gRPC,
+	// taps) never see it.
+	FollowCacheHead bool `yaml:"followCacheHead,omitempty" json:"followCacheHead,omitempty"`
 }
 
 // ShortCircuitFutureBlocksEnabled reports whether a numbered eth_getBlockByNumber

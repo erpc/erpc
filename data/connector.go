@@ -125,14 +125,18 @@ type Connector interface {
 	PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error
 }
 
-// CacheHeadReporter is an optional capability implemented by read-through connectors that can report
-// the timestamp of the latest block they currently serve. It lets the realtime cache age guard be
-// enforced even for responses that carry no block timestamp of their own (eth_blockNumber,
-// eth_gasPrice, eth_getLogs). Connectors that serve locally-written data do not implement it.
+// CacheHeadReporter is an optional capability implemented by read-through connectors that know the
+// newest block they serve per network. The realtime cache age guard reads it for responses that
+// carry no block timestamp of their own (eth_blockNumber, eth_gasPrice, eth_getLogs), and a
+// network with evm.servedTip.followCacheHead serves its tags at it while that guard would admit
+// it. Connectors that serve locally-written data do not implement it.
 type CacheHeadReporter interface {
-	// CacheLatestBlockTimestamp returns the unix timestamp (seconds) of the latest block this
-	// connector can currently serve for networkId, and whether it is known.
-	CacheLatestBlockTimestamp(networkId string) (unixSeconds int64, ok bool)
+	// CacheLatestBlock returns the number and unix timestamp (seconds) of the newest block this
+	// connector last observed for networkId, and whether it is known.
+	CacheLatestBlock(networkId string) (number, unixSeconds int64, ok bool)
+	// RefreshLatestBlock fetches networkId's newest block now and records it. A failed fetch
+	// keeps the last observation.
+	RefreshLatestBlock(ctx context.Context, networkId string)
 }
 
 // ReadOnlyConnector is an optional capability implemented by connectors that only serve reads
