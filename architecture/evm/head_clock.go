@@ -171,12 +171,15 @@ func (f *clockFire) ladder() bool {
 type clockVoter struct {
 	rtt, dev, late time.Duration
 	lack           time.Duration
-	samples        int
-	asked          uint64
-	askedAt        time.Time
-	open           bool
-	firedAt        time.Time
-	out            *clockFire
+	// lackKnown: lacked or held measured lack; until then the voter is no
+	// likely holder.
+	lackKnown bool
+	samples   int
+	asked     uint64
+	askedAt   time.Time
+	open      bool
+	firedAt   time.Time
+	out       *clockFire
 }
 
 func (c *headClock) reset() {
@@ -276,13 +279,13 @@ func (c *headClock) answered(id string, number uint64, sent time.Time) {
 // lacked records that voter id lacked a block d after its first sight.
 func (c *headClock) lacked(id string, d time.Duration) {
 	v := c.voter(id)
-	v.lack = max(v.lack, d)
+	v.lack, v.lackKnown = max(v.lack, d), true
 }
 
 // held records that voter id held a block d after its first sight.
 func (c *headClock) held(id string, d time.Duration) {
 	v := c.voter(id)
-	v.lack = min(v.lack, d)
+	v.lack, v.lackKnown = min(v.lack, d), true
 }
 
 // phasePoint reports whether sight s moves the phase. A fetch answer only
@@ -1242,29 +1245,34 @@ func (t *ChainTracker) MarkRead() {
 }
 
 // holdCredit is what the clock published for readers on other goroutines:
-// its recent first sights, each voter's lack and round trip, and when it
-// fetches next: now while a fetch is out, zero while none is due.
+// its recent first sights, each voter's round trip and measured lack, and
+// when it fetches next: now while a fetch is out, zero while none is due.
 type holdCredit struct {
 	sights    []clockSight
 	lack, rtt map[string]time.Duration
 	next      time.Time
 }
 
-// publishCredit publishes the clock's sights, its voters' lack and round
-// trips and its next fetch when any moved since the last publish.
+// publishCredit publishes the clock's sights, its voters' round trips and
+// measured lacks and its next fetch when any moved since the last publish.
 func (t *ChainTracker) publishCredit() {
 	c := &t.clock
 	next := c.due()
+	out := false
+	known := 0
 	for _, v := range c.ups {
-		if v.out != nil {
-			next = v.out.sent
-			break
+		if v.out != nil && !out {
+			next, out = v.out.sent, true
+		}
+		if v.lackKnown {
+			known++
 		}
 	}
-	if p := t.credit.Load(); p != nil && p.next.Equal(next) && slices.Equal(p.sights, c.sights) && len(p.lack) == len(c.ups) {
+	if p := t.credit.Load(); p != nil && p.next.Equal(next) && slices.Equal(p.sights, c.sights) && len(p.lack) == known && len(p.rtt) == len(c.ups) {
 		same := true
 		for id, v := range c.ups {
-			if p.lack[id] != v.lack || p.rtt[id] != v.rtt {
+			lack, ok := p.lack[id]
+			if ok != v.lackKnown || ok && lack != v.lack || p.rtt[id] != v.rtt {
 				same = false
 				break
 			}
@@ -1273,25 +1281,32 @@ func (t *ChainTracker) publishCredit() {
 			return
 		}
 	}
-	p := &holdCredit{sights: slices.Clone(c.sights), lack: make(map[string]time.Duration, len(c.ups)), rtt: make(map[string]time.Duration, len(c.ups)), next: next}
+	p := &holdCredit{sights: slices.Clone(c.sights), lack: make(map[string]time.Duration, known), rtt: make(map[string]time.Duration, len(c.ups)), next: next}
 	for id, v := range c.ups {
-		p.lack[id], p.rtt[id] = v.lack, v.rtt
+		p.rtt[id] = v.rtt
+		if v.lackKnown {
+			p.lack[id] = v.lack
+		}
 	}
 	t.credit.Store(p)
 }
 
 // HoldsLikely reports whether voter id most likely holds block n at now,
 // for routing a thin Head's reads (spec §6.4 thin): n's first sight was
-// taken at least id's lack (clockVoter) before now. False when n is not
-// among the recent sights.
+// taken at least id's measured lack (clockVoter) before now. False when n
+// is not among the recent sights, or id has no measured lack.
 func (t *ChainTracker) HoldsLikely(id string, n uint64, now time.Time) bool {
 	p := t.credit.Load()
 	if p == nil {
 		return false
 	}
+	lack, ok := p.lack[id]
+	if !ok {
+		return false
+	}
 	for _, s := range p.sights {
 		if s.number == n {
-			return now.Sub(s.from) >= p.lack[id]
+			return now.Sub(s.from) >= lack
 		}
 	}
 	return false
