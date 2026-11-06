@@ -166,7 +166,7 @@ func (s *scenario) judgeRequests(b *strings.Builder, fs fetchSpan) {
 // old image: the slacks on served age and latency at p50 and p90, and
 // noSlower: latency p50 and p90 at most the old image's plus
 // latencyNoise; tail: latency p99 at most the old image's plus the p90
-// slack, the canary's measure.
+// slack, the canary's measure, and no read failing on the new image.
 type liveRead struct {
 	name     string
 	load     freshLoad
@@ -275,6 +275,9 @@ func (s *scenario) judgeAgeLatency(b *strings.Builder, reads []liveRead, imgs []
 		if rd.tail && pctl(n.took, 99) > pctl(o.took, 99)+rd.slack[1] {
 			s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("new image %s latency p99 %s, above the old image's %s + %s", rd.name, pctl(n.took, 99), pctl(o.took, 99), rd.slack[1])))
 		}
+		if rd.tail && n.errs > 0 {
+			s.violate(s.name, "new image %s: %d reads failed (old image %d)", rd.name, n.errs, o.errs)
+		}
 	}
 }
 
@@ -344,24 +347,60 @@ func (s *scenario) liveRun(run time.Duration, reads []liveRead, fault func(conte
 // liveCompare: liveReads at liveRate on every pod for liveRun; per image,
 // served age and latency against the old image; per new-image pod, head
 // fetches per new block; per image, upstream requests.
-func liveCompare(s *scenario) { liveCompareRun(s, false) }
-
-// liveCompareTail is liveCompare that also judges latency p99 (tail).
-func liveCompareTail(s *scenario) { liveCompareRun(s, true) }
-
-func liveCompareRun(s *scenario, tail bool) {
+func liveCompare(s *scenario) {
 	s.blocks(10)
-	vl := &viewLog{}
-	reads := liveReads(liveRate, s.chain.BlockTime(), vl)
+	liveJudge(s, liveReads(liveRate, s.chain.BlockTime(), &viewLog{}))
+}
+
+// liveCompareTail is liveCompare plus, at the same rate, the receipt of
+// the newest block's first transaction (tipReceipt), every read also
+// judged at p99 (tail) and never failing on the new image.
+func liveCompareTail(s *scenario) {
+	s.blocks(10)
+	reads := liveReads(liveRate, s.chain.BlockTime(), &viewLog{})
+	r := reads[0]
+	reads = append(reads, liveRead{"eth_getTransactionReceipt(tip)", freshLoad{r.load.period, "latest", tipReceipt}, r.slack, r.noSlower, true})
 	for i := range reads {
-		reads[i].tail = tail
+		reads[i].tail = true
 	}
+	liveJudge(s, reads)
+}
+
+func liveJudge(s *scenario, reads []liveRead) {
 	imgs, all, _, from, to := s.liveRun(liveRun, reads, nil)
 	var b strings.Builder
 	s.judgeAgeLatency(&b, reads, imgs, from, to)
 	s.judgeFetches(&b, "over the run", all, liveFetchBound)
 	s.judgeRequests(&b, all)
 	s.logf("%s", b.String())
+}
+
+// tipReceipt reads on pod the receipt of the first transaction of the
+// chain's newest block that has one, as a wallet does for a transaction
+// just mined: its block's number; a null or another block is an error.
+func tipReceipt(s *scenario, pod int) (uint64, error) {
+	b := s.chain.Tip()
+	for b != nil && b.TxCount() == 0 {
+		b = b.Parent
+	}
+	if b == nil {
+		return 0, errors.New("no block with a transaction")
+	}
+	var raw json.RawMessage
+	if err := s.call(pod, &raw, "eth_getTransactionReceipt", b.TxHash(0).Hex()); err != nil {
+		return 0, err
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, fmt.Errorf("null receipt of block %d's first transaction", b.Number)
+	}
+	var r receiptJSON
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return 0, err
+	}
+	if r.BlockHash != b.Hash {
+		return 0, fmt.Errorf("receipt of block %d's first transaction names block %s", b.Number, short(r.BlockHash))
+	}
+	return b.Number, nil
 }
 
 //
@@ -863,9 +902,11 @@ var p20SlowRTTs = map[string]time.Duration{
 
 // P20-asym: P19's layout, no head skew, the selection policy ranking
 // vendor-a first, which answers in p20FastRTT, the others in
-// p20SlowRTTs. A thin Head's reads go to vendor-a, which holds every
-// block another vendor does: latency p99 too within P19's p90 slack of
-// the old image's (liveCompareTail), which sends every latest there.
+// p20SlowRTTs; no cache, so every latest read reaches a vendor, as on
+// zora (no cache anchor). A thin Head's reads go to vendor-a, which holds
+// every block another vendor does, and a tip receipt waits no block:
+// latency p99 too within P19's p90 slack of the old image's
+// (liveCompareTail), which sends every read there.
 func p20Asym() spec {
 	var ups []freshUp
 	for _, u := range p19Ups {
@@ -876,16 +917,15 @@ func p20Asym() spec {
 		ups = append(ups, u)
 	}
 	sp := freshSpec("P20-asym", 1, ups, chainsim.Config{BlockTime: liveBlockTime, FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, liveCompareTail)
-	sp.cache = true
 	sp.network = map[string]interface{}{"selectionPolicy": rankFirst("http-a")}
 	return sp
 }
 
 // P20-flash: P20's layout, vendor-a serving each block p20Lead before
-// the others, the selection policy ranking vendor-b first. A thin Head's
-// reads go to vendor-a, the Leader, as no other vendor holds the block
-// yet: no slower than the old image, which reads vendor-b's older head,
-// at no more upstream requests (liveCompareTail).
+// the others, the selection policy ranking vendor-b first, no cache. A
+// thin Head's reads go to vendor-a, the Leader, as no other vendor holds
+// the block yet: no slower than the old image, which reads vendor-b's
+// older head, at no more upstream requests (liveCompareTail).
 func p20Flash() spec {
 	var ups []freshUp
 	for _, u := range p19Ups {
@@ -896,7 +936,6 @@ func p20Flash() spec {
 		ups = append(ups, u)
 	}
 	sp := freshSpec("P20-flash", 1, ups, chainsim.Config{BlockTime: liveBlockTime, FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, liveCompareTail)
-	sp.cache = true
 	sp.network = map[string]interface{}{"selectionPolicy": rankFirst("http-b")}
 	return sp
 }
