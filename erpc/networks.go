@@ -54,10 +54,10 @@ type Network struct {
 	// cacheHead lowers network-wide reads' Latest to the cache's fresh head
 	// (anchorHead); nil without evm.servedTip.followCacheHead. servedLatest
 	// is the Latest those reads took last, its Clamp's floor.
-	cacheHead            *evm.CacheHeadAnchor
-	servedLatest         atomic.Int64
-	metricsTracker       *health.Tracker
-	upstreamsRegistry    *upstream.UpstreamsRegistry
+	cacheHead         *evm.CacheHeadAnchor
+	servedLatest      atomic.Int64
+	metricsTracker    *health.Tracker
+	upstreamsRegistry *upstream.UpstreamsRegistry
 	// policyEngine replaces the legacy `selectionPolicyEvaluator *PolicyEvaluator` field
 	// (and the `erpc/policy_evaluator.go` per-request `AcquirePermit` gating it owned).
 	// The engine pre-computes the ordered upstream list per (network, method) tick;

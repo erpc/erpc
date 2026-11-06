@@ -40,7 +40,8 @@ type CacheHeadAnchor struct {
 // ("latest") for it. nil when there is none. blockTime is the network's
 // estimated block time, which a block-time-relative TTL resolves against.
 func (c *EvmJsonRpcCache) HeadAnchor(networkId string, blockTime func() time.Duration) *CacheHeadAnchor {
-	policies, err := c.findGetPolicies(networkId, "eth_getBlockByNumber", []interface{}{"latest", false}, common.DataFinalityStateRealtime)
+	realtime := finalities{f: [2]common.DataFinalityState{common.DataFinalityStateRealtime}, n: 1}
+	policies, err := c.findGetPolicies(networkId, "eth_getBlockByNumber", []interface{}{"latest", false}, realtime)
 	if err != nil {
 		return nil
 	}
