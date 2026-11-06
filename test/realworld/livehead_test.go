@@ -356,14 +356,16 @@ func liveCompare(s *scenario) {
 // the newest block's first transaction (tipReceipt), every read also
 // judged at p99 (tail) and never failing on the new image; head fetches
 // per new block at most fetchBound. The slacks are P19's in blocks, a
-// fifth and two fifths of one.
+// fifth and two fifths of one. The receipt keeps the slacks only, not
+// noSlower: its block may be above the view, which it waits for (rule 5),
+// a round trip of the upstream that answered it.
 func liveCompareTail(fetchBound float64) func(*scenario) {
 	return func(s *scenario) {
 		s.blocks(10)
 		bt := s.chain.BlockTime()
 		reads := liveReads(liveRate, bt, &viewLog{})
 		r := reads[0]
-		reads = append(reads, liveRead{"eth_getTransactionReceipt(tip)", freshLoad{r.load.period, "latest", tipReceipt}, r.slack, r.noSlower, true})
+		reads = append(reads, liveRead{"eth_getTransactionReceipt(tip)", freshLoad{r.load.period, "latest", tipReceipt}, r.slack, false, true})
 		for i := range reads {
 			reads[i].tail, reads[i].slack = true, [2]time.Duration{bt / 5, 2 * bt / 5}
 		}
