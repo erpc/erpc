@@ -11,7 +11,6 @@ import (
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 // Spec §6 bounds; variables so tests run fast.
@@ -1037,7 +1036,7 @@ func (t *ChainTracker) follow(ctx context.Context) {
 				Msg("integrity follow tap out of range; restarting after the head")
 			continue
 		}
-		log.Warn().Err(err).Str("network", t.networkLabel()).Str("group", t.group).
+		t.network.Logger().Warn().Err(err).Str("network", t.networkLabel()).Str("group", t.group).
 			Msg("integrity follow tap ended; restarting after the head")
 		select {
 		case <-ctx.Done():

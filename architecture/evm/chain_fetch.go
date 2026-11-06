@@ -15,7 +15,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
-	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -492,7 +491,7 @@ func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 				fmt.Sprintf("project:%s network:%s method:%s", s.projectId(), s.networkLabel(), r.spec.method),
 				common.ErrorFingerprint(rec),
 			).Inc()
-			log.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).
+			s.network.Logger().Error().Interface("panic", rec).Str("stack", string(debug.Stack())).
 				Str("network", s.networkLabel()).Str("method", r.spec.method).Msg("chain tracker fetch panicked")
 			res = fetchResult{err: fmt.Errorf("chain tracker fetch panicked: %v", rec)}
 		}

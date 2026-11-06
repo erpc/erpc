@@ -11,6 +11,7 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/rs/zerolog"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,6 +32,7 @@ func (s *fleetNetwork) EvmAllUpstreams(ctx context.Context) []common.Upstream { 
 func (s *fleetNetwork) ProjectId() string                                     { return "test" }
 func (s *fleetNetwork) Label() string                                         { return "testnet" }
 func (s *fleetNetwork) Config() *common.NetworkConfig                         { return s.cfg }
+func (s *fleetNetwork) Logger() *zerolog.Logger                               { l := zerolog.Nop(); return &l }
 func (s *fleetNetwork) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	return s.forward(ctx, req)
 }

@@ -3173,28 +3173,44 @@ func pollsSettle(t *testing.T, polls *atomic.Int64, window time.Duration, msg st
 // after 2 matching eth_chainId checks a recheck interval apart (#997), and
 // a major move right after the lift goes through the gate again and
 // cordons it again. The client's heads stay contiguous: the other chain's
-// head never reaches it.
+// head never reaches it. While cordoned it is no voter, so it holds no
+// quorum back: when the one voter left skips more blocks than the walk
+// window, heads resume on that voter alone; once lifted, it votes again.
 func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
 	setupGock()
 	t.Cleanup(util.ResetGock)
 	prevRecheck := evm.ChainIdCordonRecheck.Load()
 	evm.ChainIdCordonRecheck.Store(500 * time.Millisecond)
 	defer evm.ChainIdCordonRecheck.Store(prevRecheck)
+	// rpc-a's failed polls back off at most 500ms, so its first answer
+	// after the outage comes within a block.
+	prevBackoff := evm.AskMaxBackoff.Load()
+	evm.AskMaxBackoff.Store(500 * time.Millisecond)
+	defer evm.AskMaxBackoff.Store(prevBackoff)
+	// W at 1s blocks (3 bt), and a walk window an outage of a few blocks
+	// passes.
+	const w = 3 * time.Second
+	const walkWindow = 4
 
 	chain := newMockChain(0x100, false)
-	_, srv := newMockHttpVendor(t, chain)
+	a, srv := newMockHttpVendor(t, chain)
 	crossed, crossedSrv := newMockHttpVendor(t, chain)
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
-	go chain.run(ctx, 150*time.Millisecond)
+	// One block a second, as mockHead's timestamps say: the block clock
+	// times rpc-a's fetches by that block time, and rpc-a has no faster
+	// poll of its own. At 150ms the clock fetched rpc-a ~5s after the
+	// cordon, a gap past the walk window that only a voter majority links.
+	go chain.run(ctx, time.Second)
 
 	crossedCfg := sourceUpstream("rpc-crossed", crossedSrv.URL, util.BoolPtr(true))
 	// Its own state polls reach it while it is no poll source, cordoned.
 	crossedCfg.Evm.StatePollerInterval = common.Duration(200 * time.Millisecond)
-	// Quorum 1: the cordoned upstream's frozen head must not hold latest,
-	// which bounds what the client receives.
 	erpcSrv, addr, cancel := startTestERPCServer(t, sourcesConfig(func(nw *common.NetworkConfig) {
-		nw.Evm.ServedTip = &common.EvmServedTipConfig{Quorum: 1}
+		nw.Evm.ChainTracker = &common.EvmChainTrackerConfig{ReorgWindow: walkWindow}
+		// The policy drops a cordoned upstream only at its next pass; the
+		// voter rule must not wait for it.
+		nw.SelectionPolicy = &common.SelectionPolicyConfig{EvalInterval: common.Duration(time.Minute)}
 	}, sourceUpstream("rpc-a", srv.URL, util.BoolPtr(true)), crossedCfg))
 	defer func() { _ = erpcSrv.Shutdown(&log.Logger); cancel() }()
 	prj, err := erpcSrv.erpc.GetProject("test_ws")
@@ -3209,6 +3225,10 @@ func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
 	}
 	require.NotNil(t, up)
 	cordoned := func() bool { return nw.metricsTracker.IsCordoned(up, "eth_getBlockByNumber") }
+	votes := func() bool {
+		return slices.ContainsFunc(nw.voters(tipScope{}, voterQuery{kind: hashVote}).list(),
+			func(u common.Upstream) bool { return u.Id() == "rpc-crossed" })
+	}
 	conn := dialWs(t, addr)
 	defer conn.Close()
 	subscribeNewHeads(t, conn)
@@ -3231,7 +3251,31 @@ func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
 	crossed.wrongChain.Store(true)
 	require.Eventually(t, cordoned, 5*time.Second, 10*time.Millisecond,
 		"a major move right after the lift goes through the chain-identity gate again")
-	requireContiguous(t, conn, 3, last)
+	last = requireContiguous(t, conn, 3, last)
+	assert.False(t, votes(), "a cordoned upstream is no voter")
+
+	// rpc-a, the one voter left, fails its latest polls for more blocks
+	// than the walk window: its next answer roots a tree of its own, which
+	// only the voters' majority re-anchors on.
+	a.failLatest.Store(http.StatusServiceUnavailable)
+	require.Eventually(t, func() bool { return chain.Head() > last+3*walkWindow }, 20*time.Second, 50*time.Millisecond)
+	a.failLatest.Store(0)
+	resumed, gapTop := time.Now(), chain.Head()
+	for {
+		left := time.Until(resumed.Add(w))
+		require.Positive(t, left, "newHeads resume within W of rpc-a's answers")
+		n, _ := nextNewHead(t, conn, left)
+		require.LessOrEqual(t, n, chain.Head(), "the other chain's head never reaches the client")
+		if last = n; n >= gapTop {
+			break
+		}
+	}
+
+	crossed.wrongChain.Store(false)
+	require.Eventually(t, func() bool { return !cordoned() }, 5*time.Second, 10*time.Millisecond,
+		"2 matching checks lift the cordon")
+	require.Eventually(t, votes, 5*time.Second, 10*time.Millisecond, "a lifted upstream votes again")
+	requireContiguous(t, conn, 2, last)
 }
 
 // Polls stop sourceIdleStop after the last client leaves. A later client

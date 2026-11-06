@@ -7,12 +7,14 @@ import (
 	"strings"
 
 	"github.com/erpc/erpc/common"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 )
 
 // Input is everything Validate needs to check one upstream response.
 type Input struct {
-	Method   string
+	Method string
+	// Logger is the owning network's logger; a check that panics logs there.
+	Logger   *zerolog.Logger
 	Upstream common.Upstream
 	Response *common.NormalizedResponse
 	Checks   CheckSet
@@ -187,7 +189,7 @@ func Validate(ctx context.Context, in Input) Result {
 			continue
 		}
 
-		v, panicked := runCheck(ctx, c, d, cfg)
+		v, panicked := runCheck(ctx, in.Logger, c, d, cfg)
 		if panicked {
 			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "panic"})
 			continue
@@ -216,7 +218,7 @@ func Validate(ctx context.Context, in Input) Result {
 				case PinFresh:
 					// Skipped counts as cleared too: the adopted pin resolved the
 					// dispute and the check has nothing left to verify.
-					v2, panicked := runCheck(ctx, c, d, cfg)
+					v2, panicked := runCheck(ctx, in.Logger, c, d, cfg)
 					if panicked {
 						res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "panic"})
 						continue
@@ -293,10 +295,10 @@ func Validate(ctx context.Context, in Input) Result {
 // runCheck runs one check and turns a panic into "no verdict". Checks parse
 // upstream bytes, so a crash in one must cost that check's verdict, never the
 // request or the process.
-func runCheck(ctx context.Context, c *Check, d *Decoded, cfg CheckConfig) (v *Violation, panicked bool) {
+func runCheck(ctx context.Context, logger *zerolog.Logger, c *Check, d *Decoded, cfg CheckConfig) (v *Violation, panicked bool) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Error().Str("check", c.ID).Str("method", d.method).Interface("panic", r).
+			logger.Error().Str("check", c.ID).Str("method", d.method).Interface("panic", r).
 				Str("stack", string(debug.Stack())).Msg("integrity: check panicked; no verdict for this response")
 			v, panicked = nil, true
 		}

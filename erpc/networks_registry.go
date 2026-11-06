@@ -223,7 +223,7 @@ func NewNetwork(
 		// intake from their first message on, and intake reaches the sources.
 		network.intake = newNetworkIntake(network)
 		network.sources = newSourceReconciler(network)
-		network.taps = indexer.NewTaps(projectId, func(string) {
+		network.taps = indexer.NewTaps(network.logger, projectId, func(string) {
 			network.sources.demandChanged()
 			evm.DemandChanged(network)
 		})

@@ -20,6 +20,7 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -164,7 +165,7 @@ func covMiscTagPack(results ...aggregate3Result) []aggregate3Result {
 // (Multicall3, as its first probe would on a chain without ArbSys), so its
 // tag packs carry the block-number call.
 func covMiscDecided(t *testing.T, n common.Network) *stateProber {
-	tracker := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+	tracker := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 	startStateProber(t.Context(), n, tracker, nil)
 	p := stateProberFor(n)
 	require.NotNil(t, p)
@@ -636,6 +637,7 @@ func (n *covMiscIntegrityNetwork) Config() *common.NetworkConfig { return n.cfg 
 func (n *covMiscIntegrityNetwork) Id() string                    { return n.id }
 func (n *covMiscIntegrityNetwork) ProjectId() string             { return "test-project" }
 func (n *covMiscIntegrityNetwork) Label() string                 { return n.id }
+func (n *covMiscIntegrityNetwork) Logger() *zerolog.Logger       { l := zerolog.Nop(); return &l }
 
 var covMiscNetSeq atomic.Int64
 

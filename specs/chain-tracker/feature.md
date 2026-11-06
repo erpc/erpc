@@ -219,7 +219,7 @@ type MempoolFeed interface {
 
 // Taps runs read loops: read, emit, repeat. A loop ends when ctx ends, emit
 // fails, or the feed returns an error. transport and kind label metrics.
-func NewTaps(projectId string, onDemandChange func(networkId string)) *Taps // the callback never blocks
+func NewTaps(logger *zerolog.Logger, projectId string, onDemandChange func(networkId string)) *Taps // the callback never blocks
 func (t *Taps) RunChain(ctx context.Context, networkId, transport, kind string,
     f ChainFeed, start *Cursor, o ReadOpts, emit func(Batch) error) error // start nil: f.Head
 func (t *Taps) RunMempool(ctx context.Context, networkId, transport, variant string,
@@ -347,7 +347,8 @@ Owner: `health/tracker.go`. Readers: the `Head` ballots (bench), the confirmed h
 
 ### 6.2 Voters: who votes?
 
-- `voter(u)` = `u` in the policy's eligible set for the lane (`tipCandidateUpstreams`), not syncing, not benched, best rank (live heads before configured caps). It is one function: the `Head` ballots, `Leader`, the Asks that move `Latest` (refresh, catch-up, band), the hash voters and topic admission all take their voters from it.
+- `voter(u)` = `u` in the policy's eligible set for the lane (`tipCandidateUpstreams`), not syncing, not benched, not cordoned for chain identity, best rank (live heads before configured caps). It is one function: the `Head` ballots, `Leader`, the Asks that move `Latest` (refresh, catch-up, band), the hash voters and topic admission all take their voters from it.
+- A chain-identity cordon (§5.3) takes `u` out of the voters when it is set and back in when the recheck lifts it, not at the policy's next pass: a cross-wired upstream counts in no quorum or majority, so on 2 voters the other alone re-anchors the pins after a gap no walk links.
 - A number vote needs a head. A voter on a minority fork has none (§6.3), so the ballots, `Leader` and the Asks that move `Latest` skip it; its hash vote still counts, which is how it returns. A poller with no head yet is a voter for topic admission only: it gets its first head once admitted.
 - No tier filter on votes: a fallback upstream's latest is fetched anyway, and its hash costs nothing more.
 - A request's `Head` counts only the voters that serve its method (`servesMethod`, the filter `Forward` applies; every voter when none does; every voter for `eth_blockNumber`, which reports the view). Such a scope (`tipScope`) forms no lane: it reads its selector lane's view capped at the block q of its voters hold, `Finalized` and `Leader` from their ballot. Per-method voter sets are built on first use and rebuilt when the upstreams or a method filter (an auto-ignore or its expiry) change; uniform filters keep every method on its selector's lane. Lanes, trackers and streams stay per selector: one view per lane.

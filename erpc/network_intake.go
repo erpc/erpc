@@ -517,6 +517,30 @@ func syncing(u common.Upstream) bool {
 	return ok && eu.EvmSyncingState() == common.EvmSyncingStateSyncing
 }
 
+// chainIdCordoned: u answered for another chain and is cordoned until its
+// recheck lifts it (spec §5.3); it is no voter and out of the ceiling.
+func chainIdCordoned(u common.Upstream) bool {
+	eu, ok := u.(common.EvmUpstream)
+	if !ok {
+		return false
+	}
+	sp := eu.EvmStatePoller()
+	if sp == nil || sp.IsObjectNull() {
+		return false
+	}
+	c, ok := sp.(interface{ ChainIdCordoned() bool })
+	return ok && c.ChainIdCordoned()
+}
+
+// chainIdCordonChanged: an upstream's chain-identity cordon was set or
+// lifted, which moves it out of or into the voters. The trackers read
+// their voters again and the reconciler rechecks the topics.
+func (in *networkIntake) chainIdCordonChanged() {
+	in.voterIds.Store(nil)
+	evm.VotersChanged(in.nw)
+	in.nw.sources.wake()
+}
+
 // voteKind is what a walk of the voters counts (spec §6.2).
 type voteKind uint8
 
@@ -545,10 +569,11 @@ type voterQuery struct {
 // voterSet is voter(u) over scope s (tipScope), the one place its rule
 // applies (spec §6.2): upstreams in the policy's eligible set, else every
 // registered one (tipCandidates), that s's selector matches and that serve
-// its method, with a state poller and not syncing, of the best rank
-// present (tipVoterRank), minus what the query's kind excludes
-// (voteKind). No tier filter: the fallback tier votes too. voters finds
-// the best rank in one pass and each walks again, so neither allocates.
+// its method, with a state poller, not syncing and not cordoned for
+// another chain's identity, of the best rank present (tipVoterRank), minus
+// what the query's kind excludes (voteKind). No tier filter: the fallback
+// tier votes too. voters finds the best rank in one pass and each walks
+// again, so neither allocates.
 type voterSet struct {
 	n     *Network
 	scope tipScope
@@ -572,9 +597,11 @@ func (n *Network) voters(s tipScope, q voterQuery) voterSet {
 }
 
 // rank is u's rank for the query; ok is false when u casts no such vote
-// whatever the other candidates' ranks.
+// whatever the other candidates' ranks. A chain-identity cordon takes u
+// out at once, not at the policy's next pass: one cross-wired upstream
+// never dilutes a count it cannot join.
 func (s voterSet) rank(u common.Upstream) (head int64, rank int, ok bool) {
-	if s.q.member != nil && !s.q.member(u) || s.q.kind == numberVote && s.n.isForkDemoted(u) {
+	if s.q.member != nil && !s.q.member(u) || s.q.kind == numberVote && s.n.isForkDemoted(u) || chainIdCordoned(u) {
 		return 0, 0, false
 	}
 	head, rank, ok = tipVoterRank(u, s.q.finalized, s.n.metricsTracker)
@@ -930,7 +957,7 @@ func (n *Network) EvmHashVoters(selector string, w time.Duration) evm.HashVoters
 		}
 	}
 	for c := range n.tipCandidates(tipScope{sel: selector}) {
-		if syncing(c) || slices.Contains(hv.Voters, c.Id()) {
+		if syncing(c) || chainIdCordoned(c) || slices.Contains(hv.Voters, c.Id()) {
 			continue
 		}
 		if eu, ok := c.(common.EvmUpstream); ok && eu.EvmStatePoller() != nil && !eu.EvmStatePoller().IsObjectNull() {
