@@ -996,7 +996,7 @@ func p19Body(s *scenario, rate float64) {
 	s.blocks(10)
 	vl := &viewLog{}
 	reads := append(liveReads(rate, s.chain.BlockTime(), vl), liveRead{"eth_getBlockByNumber(finalized)",
-		freshLoad{time.Duration(float64(4*time.Second) / rate), "finalized", freshFinalized}, [2]time.Duration{p17P50Slack, p17P90Slack}, false})
+		freshLoad{time.Duration(float64(4*time.Second) / rate), "finalized", freshFinalized}, [2]time.Duration{p17P50Slack, p17P90Slack}, false, false})
 	imgs, all, _, from, to := s.liveRun(p19Run, reads, nil)
 	var b strings.Builder
 	s.judgeAgeLatency(&b, reads, imgs, from, to)

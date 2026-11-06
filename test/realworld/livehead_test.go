@@ -191,8 +191,8 @@ func liveReads(rate float64, bt time.Duration, vl *viewLog) []liveRead {
 	w := max(3*bt, 2*time.Second)
 	busy := rate*w.Seconds() >= 1
 	return []liveRead{
-		{viewHead, freshLoad{period, "latest", vl.reader(viewHead)}, slack, busy},
-		{viewLatest, freshLoad{period, "latest", vl.reader(viewLatest)}, slack, busy},
+		{viewHead, freshLoad{period, "latest", vl.reader(viewHead)}, slack, busy, false},
+		{viewLatest, freshLoad{period, "latest", vl.reader(viewLatest)}, slack, busy, false},
 	}
 }
 
