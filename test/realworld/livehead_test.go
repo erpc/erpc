@@ -349,28 +349,31 @@ func (s *scenario) liveRun(run time.Duration, reads []liveRead, fault func(conte
 // fetches per new block; per image, upstream requests.
 func liveCompare(s *scenario) {
 	s.blocks(10)
-	liveJudge(s, liveReads(liveRate, s.chain.BlockTime(), &viewLog{}))
+	liveJudge(s, liveReads(liveRate, s.chain.BlockTime(), &viewLog{}), liveFetchBound)
 }
 
 // liveCompareTail is liveCompare plus, at the same rate, the receipt of
 // the newest block's first transaction (tipReceipt), every read also
-// judged at p99 (tail) and never failing on the new image.
-func liveCompareTail(s *scenario) {
-	s.blocks(10)
-	reads := liveReads(liveRate, s.chain.BlockTime(), &viewLog{})
-	r := reads[0]
-	reads = append(reads, liveRead{"eth_getTransactionReceipt(tip)", freshLoad{r.load.period, "latest", tipReceipt}, r.slack, r.noSlower, true})
-	for i := range reads {
-		reads[i].tail = true
+// judged at p99 (tail) and never failing on the new image; head fetches
+// per new block at most fetchBound.
+func liveCompareTail(fetchBound float64) func(*scenario) {
+	return func(s *scenario) {
+		s.blocks(10)
+		reads := liveReads(liveRate, s.chain.BlockTime(), &viewLog{})
+		r := reads[0]
+		reads = append(reads, liveRead{"eth_getTransactionReceipt(tip)", freshLoad{r.load.period, "latest", tipReceipt}, r.slack, r.noSlower, true})
+		for i := range reads {
+			reads[i].tail = true
+		}
+		liveJudge(s, reads, fetchBound)
 	}
-	liveJudge(s, reads)
 }
 
-func liveJudge(s *scenario, reads []liveRead) {
+func liveJudge(s *scenario, reads []liveRead, fetchBound float64) {
 	imgs, all, _, from, to := s.liveRun(liveRun, reads, nil)
 	var b strings.Builder
 	s.judgeAgeLatency(&b, reads, imgs, from, to)
-	s.judgeFetches(&b, "over the run", all, liveFetchBound)
+	s.judgeFetches(&b, "over the run", all, fetchBound)
 	s.judgeRequests(&b, all)
 	s.logf("%s", b.String())
 }
@@ -890,6 +893,14 @@ const (
 	// p20FastRTT: P20-asym's vendor-a round trip, zora's nearest vendor's;
 	// p20SlowRTTs the others', 80-175 ms, as its other vendors' p50.
 	p20FastRTT = 5 * time.Millisecond
+	// p20AsymBlockTime: zora's blocks. Every vendor's round trip is then
+	// within bt/4 of vendor-a's, so the clock's due turns are rungs that
+	// may sight a block first, as on zora, not votes after vendor-a's
+	// probe sighted it.
+	p20AsymBlockTime = 2 * time.Second
+	// p20AsymFetchBound: P19's voters' turns on 2 s blocks, Σ min(1,
+	// bt/I) = 2.23, plus 5%: what their polls pay for (liveFetchBound).
+	p20AsymFetchBound = 2.35
 	// p20Lead: P20-flash's vendor-a serves each block this long before the
 	// others, as a flashblocks node does.
 	p20Lead = 200 * time.Millisecond
@@ -900,13 +911,13 @@ var p20SlowRTTs = map[string]time.Duration{
 	"http-e": 130 * time.Millisecond, "http-f": 150 * time.Millisecond, "http-g": 175 * time.Millisecond,
 }
 
-// P20-asym: P19's layout, no head skew, the selection policy ranking
-// vendor-a first, which answers in p20FastRTT, the others in
-// p20SlowRTTs; no cache, so every latest read reaches a vendor, as on
-// zora (no cache anchor). A thin Head's reads go to vendor-a, which holds
-// every block another vendor does, and a tip receipt waits no block:
-// latency p99 too within P19's p90 slack of the old image's
-// (liveCompareTail), which sends every read there.
+// P20-asym: P19's voters on zora's 2 s blocks, no head skew, the
+// selection policy ranking vendor-a first, which answers in p20FastRTT,
+// the others in p20SlowRTTs; no cache, so every latest read reaches a
+// vendor, as on zora (no cache anchor). A thin Head's reads go to
+// vendor-a, which holds every block another vendor does, and a tip
+// receipt waits no block: latency p99 too within P19's p90 slack of the
+// old image's (liveCompareTail), which sends every read there.
 func p20Asym() spec {
 	var ups []freshUp
 	for _, u := range p19Ups {
@@ -916,7 +927,7 @@ func p20Asym() spec {
 		}
 		ups = append(ups, u)
 	}
-	sp := freshSpec("P20-asym", 1, ups, chainsim.Config{BlockTime: liveBlockTime, FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, liveCompareTail)
+	sp := freshSpec("P20-asym", 1, ups, chainsim.Config{BlockTime: p20AsymBlockTime, FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, liveCompareTail(p20AsymFetchBound))
 	sp.network = map[string]interface{}{"selectionPolicy": rankFirst("http-a")}
 	return sp
 }
@@ -935,7 +946,7 @@ func p20Flash() spec {
 		}
 		ups = append(ups, u)
 	}
-	sp := freshSpec("P20-flash", 1, ups, chainsim.Config{BlockTime: liveBlockTime, FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, liveCompareTail)
+	sp := freshSpec("P20-flash", 1, ups, chainsim.Config{BlockTime: liveBlockTime, FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, liveCompareTail(liveFetchBound))
 	sp.network = map[string]interface{}{"selectionPolicy": rankFirst("http-b")}
 	return sp
 }
