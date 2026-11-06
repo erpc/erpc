@@ -3186,7 +3186,11 @@ func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
 	crossed, crossedSrv := newMockHttpVendor(t, chain)
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
-	go chain.run(ctx, 150*time.Millisecond)
+	// One block a second, as mockHead's timestamps say: the block clock
+	// times rpc-a's fetches by that block time, and rpc-a has no faster
+	// poll of its own. At 150ms the clock fetched rpc-a ~5s after the
+	// cordon, a gap past the walk window that only a voter majority links.
+	go chain.run(ctx, time.Second)
 
 	crossedCfg := sourceUpstream("rpc-crossed", crossedSrv.URL, util.BoolPtr(true))
 	// Its own state polls reach it while it is no poll source, cordoned.
