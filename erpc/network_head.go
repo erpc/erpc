@@ -46,7 +46,8 @@ func (n *Network) EvmHead(ctx context.Context, req *common.NormalizedRequest) co
 // (evm.ReadsLatest) is the block clock's demand (§6.8); the first after W
 // without demand waits for the view to reach the idle edge's fetch,
 // before the cache: a cache hit is pinned to that Head too. A head number
-// waits only on a view that stood for W.
+// waits only on a view that stood for W. A network-wide Head is anchored
+// to the cache's head (anchorHead).
 func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest) *common.EvmHead {
 	if h := req.EvmHead(); h != nil {
 		return h
@@ -64,7 +65,41 @@ func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest
 			t.LatestRead(ctx, number)
 		}
 	}
-	return req.TakeEvmHead(n.headFor(s))
+	h := n.headFor(s)
+	if n.cacheHead == nil || s.sel != "" || len(s.excluded) > 0 {
+		return req.TakeEvmHead(h)
+	}
+	h = req.TakeEvmHead(n.anchorHead(h))
+	if h.Latest > 0 {
+		n.servedLatest.Store(h.Latest)
+	}
+	return h
+}
+
+// anchorHead is h, a network-wide read's Head, with Latest lowered to the
+// cache's fresh head (evm.servedTip.followCacheHead, evm.CacheHeadAnchor
+// .Clamp against the latest last served): Latest takes the view's pin at
+// that number, its hash, and Finalized and Firm stay at or below it, as
+// viewHead does for a limit. Only the read Head: headFor, the view, pins,
+// intake, hash votes, the block clock, the refusal ceiling and every
+// stream stay on the tracker's own head.
+func (n *Network) anchorHead(h *common.EvmHead) *common.EvmHead {
+	latest := n.cacheHead.Clamp(h.Latest, n.servedLatest.Load())
+	if latest >= h.Latest {
+		return h
+	}
+	a := *h
+	c, pinned := indexer.Cursor{}, false
+	if t := n.laneTracker(""); t != nil {
+		c, pinned = t.View().PinAt(uint64(latest))
+	}
+	if !pinned {
+		c = indexer.Cursor{Number: uint64(latest)}
+	}
+	a.Latest, a.LatestHash = latest, c.Hash
+	a.Firm = min(a.Firm, latest)
+	a.Finalized = min(a.Finalized, latest)
+	return &a
 }
 
 // requestScope is whose heads req's Head counts: the upstreams its
@@ -216,7 +251,8 @@ func (n *Network) markLanes(u common.Upstream) {
 // startHeads computes every lane's Head now, so a network bootstrapped on
 // upstreams with known heads serves its first request with a Head, then
 // computes the dirty lanes on each wake (markLanes) and marks every lane
-// each headRefresh until the app stops. Once per network: its bootstrap
+// each headRefresh until the app stops, and runs the cache-head anchor's
+// poll (evm.CacheHeadAnchor.Run) as long. Once per network: its bootstrap
 // can run again after it succeeded.
 func (n *Network) startHeads() {
 	if n.cfg == nil || n.cfg.Architecture != common.ArchitectureEvm || n.appCtx == nil {
@@ -228,6 +264,9 @@ func (n *Network) startHeads() {
 	}
 	n.headLoopOnce.Do(func() {
 		n.refreshHeads()
+		if n.cacheHead != nil {
+			n.bg.Go(func() { n.cacheHead.Run(n.appCtx) })
+		}
 		n.bg.Go(func() {
 			ticker := time.NewTicker(every)
 			defer ticker.Stop()

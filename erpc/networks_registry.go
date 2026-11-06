@@ -380,6 +380,14 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 		if nr.evmJsonRpcCache != nil {
 			network.cacheDal = nr.evmJsonRpcCache.WithProjectId(nr.project.Config.Id)
 		}
+		if nwCfg.Evm != nil && nwCfg.Evm.ServedTip != nil && nwCfg.Evm.ServedTip.FollowCacheHead {
+			if nr.evmJsonRpcCache != nil {
+				network.cacheHead = nr.evmJsonRpcCache.HeadAnchor(network.networkId, network.EvmBlockTime)
+			}
+			if network.cacheHead == nil {
+				network.logger.Warn().Msg("evm.servedTip.followCacheHead is set, but no realtime cache policy with a TTL on a head-aware connector serves eth_getBlockByNumber(\"latest\") for this network; reads are not anchored")
+			}
+		}
 	case common.ArchitectureSvm:
 		if nr.svmJsonRpcCache != nil {
 			network.cacheDal = nr.svmJsonRpcCache.WithProjectId(nr.project.Config.Id)
